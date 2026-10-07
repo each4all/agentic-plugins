@@ -28,6 +28,8 @@ async function branchBaseStep() {
   const text = await readFile(resolve(ORCH_ROOT, 'commands/next.md'), 'utf8');
   const from = text.indexOf(START);
   const to = text.indexOf(END);
+  // Contract: the tests below run the step between these markers — moved or
+  // renamed markers must fail here, not run nothing.
   ok(from >= 0 && to > from, 'next.md carries the marked branch-base step');
   return text.slice(from, to + END.length);
 }

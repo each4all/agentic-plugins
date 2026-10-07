@@ -1,4 +1,4 @@
-// Runbook contracts over the generated regions (ADR-0066 Decision 5, PC2a T4).
+// Runbook contracts over the persona command runbooks' generated regions.
 //
 // The drift check proves that each persona's runbook regions equal what the
 // canonical templates render. It cannot prove the templates are right: a
@@ -10,10 +10,15 @@
 //   - over the committed runbook (what the agent reads), and
 //   - over the runbook assembled in memory from its authored text and the
 //     regions rendered fresh from the canonical templates (what the next
-//     `--write` would produce),
+//     `--write` would produce).
 //
-// and each assertion is bound to its call site, with a nonzero count, so a
-// contract that matches nothing fails instead of passing.
+// What they hold: the shell blocks' calls, flags, order and `|| exit` stops
+// (read from the text, and run with `node` stubbed), and the few agent
+// instructions outside the blocks that change what the agent runs — the
+// privacy gate before a dispatch, routing between blocks, the owner gates
+// and their anchors, the per-profile ensemble type. Each assertion is bound
+// to its call site, with a nonzero count, so a contract that matches nothing
+// fails instead of passing.
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
@@ -30,7 +35,7 @@ import {
   replaceRegionBodies,
 } from '../../scripts/lib/persona-pipeline.mjs';
 import { MANIFEST, REPO_ROOT, declaration, pluginRoot } from './_personas.mjs';
-import { FIXTURE, NOTE_READER, characterize, expectedFor } from './_verb-runbooks.mjs';
+import { FIXTURE, NOTE_READER, characterize } from './_verb-runbooks.mjs';
 import {
   archiveTimingProblems,
   argsFileRunbookProblems,
@@ -127,14 +132,27 @@ const START = 'commands/start.md';
 // is on.
 const COMMIT = 'commands/commit.md';
 
-// Each extension a slot holds (QD8): the sentences its authored text must
-// state, so a marker left without the text it stands for fails.
+// The instructions an extension's authored text holds that change what the
+// agent runs: designer's archetype rides on the resolve call as an
+// environment prefix decide-registry.mjs reads, and the bounded loop and an
+// unverified visual re-critique set the CONVERGED the finalize block reads.
 const EXTENSION_ANCHORS = {
-  'start-archetype': ['Prefix the resolve invocation in the **same block** instead', 'AGENTIC_DESIGNER_PROFILE="<general|ui|flow|cta|content>" \\'],
-  'critique-dual-input': ['Vision is **host-direct**: on the active host the model reads the screenshot directly'],
-  'refine-convergence-loop': ['critique → refine → re-critique until findings converge.'],
-  'refine-convergence-bound': ['**Bounded convergence (no unbounded loop).**', 'visual re-critique **UNVERIFIED**, set `CONVERGED=no`'],
+  'start-archetype': ['AGENTIC_DESIGNER_PROFILE="<general|ui|flow|cta|content>" \\'],
+  'refine-convergence-bound': ['STOP looping: set `CONVERGED=no`', 'visual re-critique **UNVERIFIED**, set `CONVERGED=no`'],
 };
+
+/** Each extension's authored text is not empty, and holds its slot's operative instructions. */
+function checkExtensionTexts(exts) {
+  for (const ext of exts) {
+    // Contract: the sync places each extension marker in its slot — a marker
+    // left without the text it stands for would pass that check empty.
+    ok(ext.text.trim().length > 0, `extension ${ext.id} holds no text`);
+    // Contract: the agent running the block — without the archetype prefix the
+    // resolve call loses the L4 preset; without CONVERGED=no an unbounded or
+    // unverified loop reads as converged and the finalize closes the workflow.
+    for (const sentence of EXTENSION_ANCHORS[ext.id] ?? []) strictEqual(sentenceAt(ext.text, sentence).length, 1, `${ext.id}: ${sentence}`);
+  }
+}
 
 /** Each extension marker, with the authored text after it up to the next marker. */
 function extensionTexts(text) {
@@ -157,10 +175,11 @@ const ARGS_DIR_LINE = "ARGS_DIR='<directory from step 1>'";
 const verbOf = (dest) => /^commands\/([a-z]+)\.md$/.exec(dest)[1];
 
 // The operative privacy sentences each verb runbook states before its
-// dispatch: the prohibition, generated in the privacy-gate region (PC2a3 QD4),
-// and designer's screenshot sentence, authored right after the regions.
+// dispatch: the prohibition, generated in the privacy-gate region, and
+// designer's screenshot sentence, authored right after the regions.
 // investigate's gate covers web search as well as the peer, so it words both
-// differently.
+// differently. They are what limits the text an agent passes to WebSearch,
+// WebFetch or the peer prompt; no block can enforce them.
 const PROHIBITION = {
   start: 'The lifecycle runs web search (Phase 1 investigate) and dispatches the peer ensemble at every phase boundary (always-max) — genericize before any external call; the pre-genericization value MUST never leave the local host.',
   critique: 'Genericize the artifact before the peer prompt; the pre-genericization value MUST never leave the local host.',
@@ -184,7 +203,7 @@ const logical = (block) => block.replace(/[ \t]*\\\n[ \t]*/g, ' ');
 
 const squash = (t) => t.replace(/\s+/g, ' ');
 
-// PC2b U5b: a verb whose persona declares terminal_requires_convergence renders
+// A verb whose persona declares terminal_requires_convergence renders
 // the convergent finalize, whose CONVERGED line is a placeholder the agent
 // fills from the re-critique. `converged` sets it the way the agent would
 // (UNSET drops the line); the shared cases run the finalize converged.
@@ -354,13 +373,17 @@ const HOSTILE_NOTE = [
   'ends with a backslash \\',
 ].join('\n');
 
-// PC2b U5b: the convergent finalize is a variant of the plain one, not a
-// second copy that can drift: the plain template with the convergence
-// paragraph before the last-write paragraph, and its terminal write, comment
-// and call, indented in the then branch of the fail-closed check. The
-// variant's own lines (the paragraph, the check, the else branch) are bound by
-// the refine finalize, start terminal and Owner decision runs.
-describe('each convergent variant is its plain template plus the convergence check, nothing else (PC2b U5b, U5c, Review of code step 6)', () => {
+// The convergent finalize is a variant of the plain one, not a second copy
+// that can drift: the plain template with the convergence paragraph before
+// the last-write paragraph, and its terminal write, comment and call,
+// indented in the then branch of the fail-closed check. The variant's own
+// lines (the paragraph, the check, the else branch) are bound by the refine
+// finalize, start terminal and Owner decision runs. The anchors below only
+// slice the two templates for the rebuild.
+// Contract: the sync renders the variant for a persona that waits for
+// convergence — a shared line that drifts (a dropped `|| exit $?`) changes
+// what that persona's terminal block runs while the plain one stays right.
+describe('each convergent variant is its plain template plus the convergence check, nothing else', () => {
   const LAST = 'The last write, `finish-verb`, records';
   const TERMINAL_COMMENT = '# ADR-0029 §1 / completion-output contract §2';
   // [plain, variant, the variant's paragraph opening, the paragraph the
@@ -397,62 +420,8 @@ describe('each convergent variant is its plain template plus the convergence che
   }
 });
 
-// Which ADR enabled a persona's footer is history, not a capability (PC3b U5a
-// review, then the finish and terminal templates): every template that states
-// the code-emitted footer, the skills' included, rendered under every legal
-// capability combination (dispatch_target needs commit_surface), attributes
-// it to ADR-0039 alone, so an attribution placed under a capability shows even
-// where no persona's declaration renders it.
-describe('the code-emitted footer names ADR-0039 alone, in every template and every legal combination (PC3b)', () => {
-  const FOOTER = /The runtime completion footer is \*\*code-emitted\*\* on [^(]*\(([^)]*)\)/g;
-  const templates = [...new Map(MANIFEST.regions
-    .filter((r) => readFileSync(join(REPO_ROOT, 'persona-pipeline', r.template), 'utf8').includes('The runtime completion footer is **code-emitted**'))
-    .map((r) => [r.template, r])).values()];
-  it('finds every template that states the footer', () => {
-    deepStrictEqual(templates.map((r) => r.template).sort(), [
-      'regions/commit-completion-footer.md', 'regions/skill-start-finish-commit.md', 'regions/skill-start-finish-convergent.md', 'regions/skill-start-finish.md',
-      'regions/skill-verb-finish-convergent.md', 'regions/skill-verb-finish.md', 'regions/start-commit.md', 'regions/start-terminal-convergent.md',
-      'regions/start-terminal.md', 'regions/verb-completion-footer.md',
-    ]);
-    const both = (r) => /`blocked`/.test(readFileSync(join(REPO_ROOT, 'persona-pipeline', r.template), 'utf8')) && /`publish-needed`/.test(readFileSync(join(REPO_ROOT, 'persona-pipeline', r.template), 'utf8'));
-    deepStrictEqual(templates.filter(both).map((r) => r.template).sort(), ['regions/skill-verb-finish-convergent.md', 'regions/skill-verb-finish.md', 'regions/verb-completion-footer.md'], 'the templates whose completion state the matrix checks');
-  });
-  for (const dispatch of [false, true]) {
-    for (const commit of [false, true]) {
-      for (const legacy of [false, true]) {
-        if (dispatch && !commit) continue;
-        it(`dispatch_target ${dispatch}, commit_surface ${commit}, legacy_homes ${legacy}`, () => {
-          for (const r of templates) {
-            const base = declaration(r.personas[0]);
-            const source = readFileSync(join(REPO_ROOT, 'persona-pipeline', r.template), 'utf8');
-            const rendered = renderTemplate(source, {
-              declaration: renderingDeclaration({ ...base, capabilities: { ...base.capabilities, dispatch_target: dispatch, commit_surface: commit, legacy_homes: legacy } }),
-              substitutions: r.substitutions ?? {}, label: r.template,
-            });
-            const out = squash(rendered);
-            ok(!out.includes('{{'), `${r.template}: nothing left unrendered`);
-            deepStrictEqual([...out.matchAll(FOOTER)].map((m) => m[1]), ['ADR-0039'], `${r.template}: the footer, stated once, attributed to ADR-0039 alone`);
-            ok(!/ADR-0043|enabled for \S+ by ADR-/.test(out), `${r.template}: no capability-keyed attribution`);
-            // The footer's paragraph joins across its capability blocks with
-            // no line that starts a Markdown list (review of this unit).
-            const para = rendered.split(/\n[ \t]*\n/).find((p) => p.includes('The runtime completion footer is **code-emitted**'));
-            ok(!/^ {0,3}(?:[-+*]|\d+[.)])\s/m.test(para), `${r.template}: a line of the footer paragraph starts a list`);
-            // Where the template states both completion states, the one it
-            // renders follows commit_surface, whatever the other capabilities
-            // are. Chosen by the states, not by the template's capability
-            // keys, which the defect itself may change (N101).
-            if (/`blocked`/.test(source) && /`publish-needed`/.test(source)) {
-              strictEqual(/`blocked`/.test(out), commit, `${r.template}: blocked exactly with commit_surface`);
-              strictEqual(/`publish-needed`/.test(out), !commit, `${r.template}: publish-needed exactly without it`);
-            }
-          }
-        });
-      }
-    }
-  }
-});
-
-// engineer's runbooks join the regions one group at a time in Stage 3 (PC3 U7).
+// The runbooks whose regions every persona is enrolled into (commit.md follows
+// commit_surface instead).
 const ENGINEER_JOINED = new Set(['commands/checkpoint.md', 'commands/peer-now.md', 'commands/resume.md', 'commands/frame.md', 'commands/compose.md', 'commands/decide.md', 'commands/critique.md', 'commands/refine.md', 'commands/investigate.md', 'commands/start.md']);
 
 describe('runbook regions: the contracts hold for every enrolled persona', () => {
@@ -480,15 +449,22 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             for (const b of blocks) {
               const lines = b.text.split('\n');
               const at = lines[0] === ARGS_DIR_LINE ? 1 : 0;
-              // A block nested in a list item is indented; the code is the same.
+              // Contract: the agent running a block in a fresh shell — without the
+              // persona's own override and cache path the block runs another
+              // plugin's scripts, or none. A block nested in a list item is indented.
               strictEqual(lines[at].trim(), `ROOT_OVERRIDE="$(printenv '${env}' || true)"`, `${persona}: block at line ${b.start + 1}`);
               ok(lines[at + 2].includes(`agentic-plugins/'${persona}' -mindepth`), `${persona}: cache path at line ${b.start + 1}`);
             }
+            // Contract: the agent running a block — an unrendered {{placeholder}} is run as text.
             ok(!text.includes('{{'), 'a placeholder survived the render');
           });
 
           // The repository-wide runbook gates read committed files; their rules
           // run here on both documents, so the next --write cannot break them.
+          // Contract: the resolver rule as above; the completion block's six
+          // fields and next_command are the hand-off the completion-output
+          // contract fixes; the archive-timing note above each terminal write
+          // names --terminal-marker false, the only way to keep the workflow open.
           it('the shared runbook checks hold: the resolver rule, and in a verb runbook the completion block and the archive-timing note', () => {
             const label = `${persona}/${dest} (${which})`;
             const resolver = resolverProblems(text, persona, label);
@@ -505,10 +481,10 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             }
           });
 
-          // PC2b RV9: collection waits for the host's notification that the
-          // runner exited, so the runner runs in the foreground of a host
-          // background task; a shell `&` would detach it from the host.
-          it('no dispatch detaches: the runner command ends without a shell & (PC2b RV9)', () => {
+          // Contract: the host's background task runs the runner in its
+          // foreground, and collection waits for its exit notification — a
+          // shell `&` detaches the runner and the host never reports it done.
+          it('no dispatch detaches: the runner command ends without a shell &', () => {
             const runs = shellBlocks(text).filter((b) => /peer-runner\.mjs" run\b/.test(b.text));
             if (PIPELINE_VERB_DESTS.includes(dest) || dest === 'commands/peer-now.md') ok(runs.length > 0, 'the dispatch block');
             for (const b of runs) {
@@ -518,44 +494,17 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             }
           });
 
+          // Contract: the companion peer path has no image channel — an `--image`
+          // flag on a runner call is refused, or would send image bytes off the host.
           it('no shell block passes an image to the peer (the companion path has no image channel)', () => {
             const runs = shellSites(text, /peer-runner\.mjs" run/);
             if (dest === 'commands/peer-now.md') strictEqual(runs.length, 1, 'peer-now dispatches once');
             strictEqual(shellSites(text, /--image\b/).length, 0, `${persona}: --image in a shell block`);
           });
 
-          if (PIPELINE_VERB_DESTS.includes(dest)) {
-            // The path-targeted sidecar renders on a detached HEAD under the
-            // runtime's usual continue-vs-fresh policy; only the branch
-            // preflight never recommends a fresh session there (plan-verify
-            // peer, PC3b U3b, measured with the real projection functions).
-            it('the completion footer states the detached-HEAD rule as the scripts apply it', () => {
-              const verb = dest.slice('commands/'.length, -'.md'.length);
-              const footer = squash(region(text, `${verb}-completion-footer`));
-              ok(footer.includes('On a detached HEAD the branch-based preflight reports "no active branch context" and never recommends a fresh session (ADR-0018 §sub-2); the path-targeted terminal sidecar renders the footer as on a branch, its continue-vs-fresh advice included.'), footer);
-              ok(!/Detached HEAD never auto-recommends/i.test(footer), 'not the blanket rule the sidecar does not keep');
-            });
-
-            // Which ADR enabled a persona's footer is history, not a capability
-            // (PC3b U5a review): the footer names ADR-0039 alone, and the
-            // completion state, by commit surface, sits inside the one sentence.
-            it('the completion footer names ADR-0039 alone, and its completion state by commit surface', () => {
-              const verb = dest.slice('commands/'.length, -'.md'.length);
-              const raw = region(text, `${verb}-completion-footer`);
-              // Squashing hides a break that starts a Markdown list mid-sentence
-              // (review of this unit), so the raw lines are read first.
-              ok(!/^ {0,3}(?:[-+*]|\d+[.)])\s/m.test(raw), 'no line of the footer paragraph starts a list');
-              const footer = squash(raw);
-              ok(footer.includes('The runtime completion footer is **code-emitted** on this verb\'s terminal path (ADR-0039): the terminal write (`state.mjs finish-verb`, which takes `set-terminal`\'s path) fires the ADR-0031 session-handoff sidecar, which shells out to the runtime `footer.mjs` and prints the rendered footer — context state, completion state ('), 'the emitting write, ADR-0039 alone');
-              ok(!/ADR-0043/.test(footer), 'no ADR-0043 attribution');
-              const commit = declaration(persona).capabilities.commit_surface === true;
-              const tail = ' + state-derived next action, workflow id/path, artifact pointers, recommended next work, and the continue-vs-fresh session-handoff — on that command\'s **stderr**.';
-              strictEqual(footer.includes(`completion state (\`blocked\`, with the commit as its unblocking action, when only the commit remains)${tail}`), commit, 'blocked, exactly where the persona has a commit surface');
-              strictEqual(footer.includes(`completion state (${persona}'s manually-published mapping surfaces \`publish-needed\` when only the owner's save/commit remains)${tail}`), !commit, 'publish-needed, exactly where the owner commits');
-            });
-          }
-
           if (dest === 'commands/checkpoint.md') {
+            // Contract: the agent running /checkpoint — a checkpoint-set on any
+            // other path than the $ACTIVE find-active printed writes the wrong workflow.
             it('the checkpoint is written to the workflow find-active found, after finding it', () => {
               const find = shellSites(text, /^ACTIVE="\$\(node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" \\\n\s+find-active /m);
               const set = shellSites(text, /state\.mjs" checkpoint-set \\\n\s+--workflow-path "\$ACTIVE" /);
@@ -566,6 +515,8 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
           }
 
           if (dest === 'commands/resume.md') {
+            // Contract: the agent running /resume — the read and the resumed
+            // marker must target the workflow find-active found, in that order.
             it('resume finds, reads, then marks the same workflow; archive acts on the one it resolved', () => {
               const find = shellSites(text, /^ACTIVE="\$\(node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" \\\n\s+find-active --repo-root/m);
               const read = shellSites(text, /state\.mjs" read --workflow-path "\$ACTIVE"/);
@@ -576,8 +527,8 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               ok(mark[0] < archive[0], 'the archive mode follows the resume mode');
             });
 
-            // ADR-0017 §sub-decision-1 host_history fidelity: no resumed event
-            // over a baseline whose commit object is not available.
+            // Contract: the agent running the marker block — a resumed event over a
+            // baseline whose commit object is gone breaks host_history fidelity.
             it('resume appends its marker only when the baseline commit is available', () => {
               const blocks = shellBlocks(text).filter((b) => /--event resumed/.test(b.text));
               strictEqual(blocks.length, 1, 'one marker block');
@@ -590,22 +541,22 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               ok(guard >= 0 && otherwise > guard && append > otherwise && code.indexOf('\nfi', append) > append, code);
             });
 
-            it('resume takes no argument or archive with an optional workflow id, and Phase 0 routes an argument starting with archive to archive mode', () => {
+            it('resume takes no argument or archive with an optional workflow id, and an argument starting with archive is routed to archive mode', () => {
+              // Contract: Claude Code reads argument-hint from the command frontmatter
+              // and offers it on completion — without archive the archive mode is hidden.
               ok(/^argument-hint: .*\barchive \[<workflow-id>\]/m.test(frontmatterOf(text)), 'the argument hint offers archive [<workflow-id>]');
-              const phase0 = squash(between(text, '## Phase 0', '## Phase 1'));
+              // Contract: the agent running /resume — this routing is what sends an
+              // `archive` argument to the archive block instead of the resume blocks.
+              const phase0 = squash(between(text, '<!-- pipeline:end plugin-root -->', '<!-- pipeline:begin resume-locate -->'));
               ok(phase0.includes('Starts with `archive` (case-insensitive)') && /\barchive mode\b/i.test(phase0), phase0);
             });
 
             it('after find-active, resume branches on its exit status and output: no active workflow, a single path, a per-branch duplicate', () => {
+              // Contract: the agent running /resume — the locate block does not stop
+              // on find-active's status, so these branches are what stop it on no
+              // workflow or a per-branch duplicate before the read.
               const branches = squash(between(text, '<!-- pipeline:end resume-locate -->', '<!-- pipeline:begin resume-read -->'));
-              for (const branch of ['- **Exit 0, empty stdout** →', '- **Exit 0, single path', '- **Exit 1, per-branch duplicate error']) ok(branches.includes(branch), `${branch}: ${branches}`);
-              ok(branches.includes('No active workflow; nothing to resume.'), 'the no-active outcome');
-            });
-
-            it('a dirty report closes with the no-auto-reconcile notice, stated once between the drift read and the resume marker', () => {
-              const notice = 'current plugin does not auto-reconcile; review and decide [resume / archive / abort]';
-              strictEqual(text.split(notice).length - 1, 1, 'the notice, once');
-              ok(between(text, '<!-- pipeline:end resume-read -->', '<!-- pipeline:begin resume-marker -->').includes(notice), 'between the drift read and the marker');
+              for (const branch of ['Exit 0, empty stdout', 'Exit 0, single path', 'Exit 1, per-branch duplicate']) ok(branches.includes(branch), `${branch}: ${branches}`);
             });
           }
 
@@ -615,12 +566,17 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             it('the privacy gate precedes the dispatch, which is synchronous, and the note goes to the workflow found', () => {
               const gate = text.indexOf('PRIVACY GATE:');
               const run = shellSites(text, /peer-runner\.mjs" run/);
+              // Contract: the agent writing the --prompt-text it dispatches — a gate
+              // after the dispatch block lets the verbatim, ungenericized prompt leave the host.
               if (declaration(persona).peer) {
                 ok(gate >= 0, 'the privacy prohibition is present');
                 ok(gate < run[0], 'the privacy prohibition precedes the dispatch block');
               } else {
                 strictEqual(gate, -1, 'no privacy prohibition without a declared peer policy');
               }
+              // Contract: the agent running the dispatch and note blocks — a status read
+              // late reads as success, and a note without find-active's own code
+              // lands on no workflow when the branch has duplicates.
               strictEqual(shellSites(text, /> "\$RUN_JSON" 2> "\$RUN_ERR"\nRUN_RC=\$\?/).length, 1, 'the runner\'s exit code is read right after it');
               const find = shellSites(text, /^ACTIVE="\$\(node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" find-active --repo-root "\$REPO_ROOT" 2>\/tmp\/[^\n]*-find\.err\)"\nFIND_RC=\$\?$/m);
               const note = shellSites(text, /state\.mjs" append \\\n\s+--workflow-path "\$ACTIVE" /);
@@ -629,12 +585,15 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             });
 
             it('peer-now takes --peer and exactly one of the two prompt forms', () => {
+              // Contract: Claude Code reads argument-hint from the command frontmatter.
               ok(/^argument-hint: --peer <claude\|codex> \(--prompt-text "\.\.\." \| --prompt-file <path>\)$/m.test(frontmatterOf(text)), frontmatterOf(text));
             });
 
             it('dispatch, run: the run id is a peer-now- id, surfaced on stderr before the runner call, which keys the run with it', () => {
               const [block] = shellBlocks(region(text, 'peer-now-dispatch'));
               ok(block, 'the dispatch block');
+              // Contract: the agent collecting the run — the id is printed before the
+              // runner call, so a dispatch that never returns still names its run.
               ok(block.text.indexOf('echo "peer-now run_id=$RUN_ID" >&2') >= 0 && block.text.indexOf('echo "peer-now run_id=$RUN_ID" >&2') < block.text.indexOf('peer-runner.mjs" run'), 'the run id is surfaced before the runner call');
               const r = runBlock('bash', block.text, persona, {});
               strictEqual(r.status, 0, r.stderr);
@@ -646,6 +605,8 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
 
             it('after find-active, peer-now branches three ways (standalone, a single path, a per-branch duplicate sent to this persona\'s resume), and the note, run, is a [Peer] phase note on that workflow that leaves the phase alone', () => {
               const branches = squash(between(text, '<!-- pipeline:end peer-now-locate -->', '<!-- pipeline:begin peer-now-note -->'));
+              // Contract: the agent running /peer-now — the note block runs only on a
+              // single path; a duplicate is handed off to this persona's resume.
               ok(/\bstandalone\b/i.test(branches) && /\bsingle path\b/i.test(branches) && /\bper-branch duplicate\b/i.test(branches), branches);
               ok(branches.includes(`/${persona}:resume`), 'the duplicate branch points at this persona\'s resume');
               const [block] = shellBlocks(region(text, 'peer-now-note'));
@@ -662,8 +623,9 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
           }
 
           if (dest === COMMIT) {
-            // PC3b U4: the commit surface's runbook. Every block resolves the
-            // workflow itself (a shell variable does not outlive a Bash call).
+            // The commit surface's runbook. Every block resolves the workflow
+            // itself (a shell variable does not outlive a Bash call). The region
+            // ids, which the sync reads, are what each case slices its block by.
             const only = (id) => {
               const found = shellBlocks(region(text, id));
               strictEqual(found.length, 1, `${persona}/commit: one block in ${id}`);
@@ -713,6 +675,8 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             });
 
             it('commit driver blocks, run: each finds the workflow, hands it to the driver in its own mode, propagates the driver\'s exit, and never reaches the driver without one; the autopilot block exactly where dispatch_target is on, with no bypass flag (PC3b U4)', () => {
+              // Contract: the sync renders the autopilot block by dispatch_target — a
+              // persona without it must not be handed a --mode autopilot call.
               strictEqual(parseRegions(text).regions.some((x) => x.id === 'commit-autopilot'), dispatch, 'the autopilot region');
               const modes = [['commit-plan', 'plan'], ['commit-execute', 'execute'], ['commit-close', 'close'], ...(dispatch ? [['commit-autopilot', 'autopilot']] : [])];
               for (const [id, mode] of modes) {
@@ -725,6 +689,8 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 if (mode === 'autopilot') {
                   const tokens = r.argv[1].split(' ');
                   for (const flag of ['--confirm-non-interactive', '--non-interactive', '--include-extra', '--accept-current-tree', '--subject', '--subject-pkg', '--suggested-subjects']) ok(!tokens.includes(flag), `the autopilot block passes ${flag}`);
+                  // Contract: the agent running the autopilot block — reading
+                  // ACCEPT_CURRENT_TREE there would bypass the owner's staging-set confirmation.
                   ok(!block.includes('ACCEPT_CURRENT_TREE'), 'the autopilot block reads no accept bypass');
                 }
               }
@@ -738,7 +704,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               strictEqual(found.length, 1, `${persona}/start: one block matches ${re}`);
               return found[0];
             };
-            // PC3b U2: with commit_surface on, the bootstrap reads an args file
+            // With commit_surface on, the bootstrap reads an args file
             // (the description, an optional --base-branch), runs the redundancy
             // probe first, and the lifecycle's one terminal write is the Phase 7
             // driver; off, the request is the placeholder and the terminal write
@@ -747,47 +713,30 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             const terminalBlock = () => (commits ? blockWith(/phase7-commit\.mjs" \\\n\s+--mode plan/) : blockWith(/state\.mjs" finish-verb \\/));
             const FEATURE_TEXT = `Fix it's "A"; $(id) > f --base-branch 'feat/x'`;
 
-            // PC3b U3c: the footer the lifecycle's terminal write emits is
-            // stated by the terminal region, once. founder's and designer's
-            // authored paragraph after it claimed the blanket detached-HEAD
-            // rule the path-targeted sidecar does not keep, and named
-            // ADR-0043 by stage.
-            it('the terminal region states the footer, once, with the detached-HEAD rule as the scripts apply it', () => {
+            // Contract: the sync renders one terminal variant by commit_surface and
+            // the declared convergence — two of them would hand the agent two
+            // terminal writes, or one the persona's capabilities do not take.
+            it('the terminal region is the one variant the declaration selects, and hands the next deliverable to after the archive', () => {
               const id = commits ? 'start-commit' : convergent(persona, 'start') ? 'start-terminal-convergent' : 'start-terminal';
+              strictEqual(parseRegions(text).regions.filter((r) => r.id === id).length, 1, `the selected terminal variant ${id}`);
               for (const other of ['start-commit', 'start-terminal', 'start-terminal-convergent'].filter((x) => x !== id)) {
                 strictEqual(parseRegions(text).regions.filter((r) => r.id === other).length, 0, `only the terminal variant the declaration selects, not ${other}`);
               }
-              const terminal = squash(region(text, id));
-              for (const sentence of [
-                'Do **not** hand-compose a second footer; surface the emitted one.',
-                'It is advisory, pointer-only and fail-closed (a missing or too-old runtime emits nothing, and the SessionStart backstop still re-surfaces the handoff); it never mutates host session context.',
-                'On a detached HEAD the branch-based preflight reports "no active branch context" and never recommends a fresh session (ADR-0018 §sub-2); the path-targeted terminal sidecar renders the footer as on a branch, its continue-vs-fresh advice included.',
-                'Wiring details: `core/skills/_shared/references/session-handoff.md`.',
-              ]) ok(terminal.includes(sentence), `${persona}/start: ${sentence}`);
-              // Which ADR enabled a persona's footer is history, not a
-              // capability (PC3b U5a review): ADR-0039 alone, for every persona.
-              ok(!/ADR-0043/.test(terminal), 'no ADR-0043 attribution');
-              strictEqual(terminal.includes('completion state (`publish-needed` while only the owner\'s save and commit remain)'), !commits, 'the publish-needed mapping, exactly where the owner commits');
-              // How the footer is emitted, by the write that emits it (plan-verify
-              // peer, PC3b U3c: engineer's was not required).
-              ok(terminal.includes(commits
-                ? 'The runtime completion footer is **code-emitted** on this terminal path (ADR-0039): `set-terminal` fires the ADR-0031 session-handoff sidecar, which shells out to the runtime `footer.mjs`'
-                : 'The runtime completion footer is **code-emitted** on this terminal write (ADR-0039): `finish-verb` takes `set-terminal`\'s path, which fires the ADR-0031 session-handoff sidecar; it shells out to the runtime `footer.mjs`'), 'the write that emits the footer');
-              strictEqual(terminal.split('**code-emitted**').length - 1, 1, 'stated once in the region');
-              // A terminal workflow stays on the branch until the Stop hook
-              // archives it, and start resumes it until then (plan-verify peer,
-              // PC3b U3c).
-              strictEqual(terminal.includes(`The workflow is then terminal, and the Stop hook archives it once every archive gate passes (here, once the owner's commit moves HEAD); until then \`/${persona}:start\` on this branch finds it and resumes it, so start the next deliverable after the archive, or on another branch.`), !commits, 'when the next start bootstraps, where the owner commits');
-              if (convergent(persona, 'start')) ok(terminal.includes('so the workflow stays open, the Stop hook cannot archive it, and no footer prints.'), 'not converged, no footer prints');
-              // Nothing outside the region states the footer again.
-              const outside = text.slice(0, text.indexOf(`<!-- pipeline:begin ${id} -->`)) + text.slice(text.indexOf(`<!-- pipeline:end ${id} -->`));
-              for (const fact of [/code-emit/i, /Detached HEAD never auto-recommends/i, /ADR-0043 S\d/, /the branch-based preflight is what reports/i]) {
-                ok(!fact.test(outside), `${persona}/start: ${fact} stated outside the terminal region`);
+              // Contract: the hand-off to the next deliverable, where the owner
+              // commits — the terminal workflow stays on the branch until the Stop
+              // hook archives it, and a `/<persona>:start` there resumes it instead
+              // of bootstrapping, so the next deliverable waits for the archive or
+              // takes another branch.
+              if (!commits) {
+                const terminal = squash(region(text, id));
+                ok(terminal.includes(`until then \`/${persona}:start\` on this branch finds it and resumes it, so start the next deliverable after the archive, or on another branch`), `${persona}/start: the next deliverable waits for the archive, or takes another branch`);
               }
             });
 
             it('start Phase 0 runs autopilot-preflight on $ACTIVE after the find guard and before the baseline check or any write; a refusal stops the block (PC2b DD5)', () => {
               const block = blockWith(/find-active --repo-root "\$REPO_ROOT"\)"$/m);
+              // Contract: the agent running /start under autopilot — a preflight that
+              // does not stop the block, or runs after a write, lets a step cross an owner gate.
               ok(/node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" autopilot-preflight --workflow-path "\$ACTIVE" --host "\$\{AGENTIC_HOST:-claude\}" \|\| exit \$\?$/m.test(logical(block.text)), logical(block.text));
               const pre = shellSites(text, /state\.mjs" autopilot-preflight/);
               const later = shellSites(text, /(state\.mjs" (check-clean-baseline|diagnose-redundancy|create|append|set-terminal|finish-verb)|phase7-commit\.mjs")/);
@@ -853,6 +802,8 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             if (commits) {
               it('start redundancy probe (commit_surface), run: it reads the base branch from its args file, writes nothing, pauses on a finding, and never stops on a failed probe (ADR-0020 §Sub-decision 7)', () => {
                 const block = blockWith(/state\.mjs" diagnose-redundancy /).text;
+                // Contract: the test fills this ARGS_DIR line to run the block, and the
+                // agent fills it with the directory it wrote — typed text never reaches the shell.
                 ok(block.startsWith("ARGS_DIR='<directory from step 1>'\n"), 'the probe reads an args file of its own');
                 const cases = [
                   ['{"status":"redundancy","scanned":{"git_present":true},"evidence":{"commits":["abc"]},"recommended_action":"review"}', 0, ['⚠ Redundancy detected on branch', '"commits": [', '- proceed:', '- abort:', '→ PAUSED: put the evidence to the user and wait for proceed or abort.']],
@@ -873,9 +824,11 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 }
                 const refused = runBlock('bash', block, persona, { argsText: '' });
                 deepStrictEqual([refused.status, refused.log], [2, ['start-args']], 'an args file outside the grammar stops the probe');
-                // The prose puts the finding to the user before the bootstrap block runs.
+                // Contract: the agent running /start — the probe block always exits 0,
+                // so only these instructions stop it on abort, keep it from archiving,
+                // and send the bootstrap a fresh args file.
                 const prose = squash(between(text, blockWith(/state\.mjs" diagnose-redundancy /).text, blockWith(/state\.mjs" check-clean-baseline /).text));
-                ok(prose.includes(`ask for an explicit proceed-or-abort decision: \`/${persona}:start\` never archives on redundancy`) && prose.includes('Abort stops here, with nothing written.'), prose);
+                ok(prose.includes('never archives on redundancy') && prose.includes('Abort stops here, with nothing written.'), prose);
                 ok(prose.includes('run the bootstrap block with a new args file'), prose);
               });
             }
@@ -914,15 +867,16 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               deepStrictEqual([failed.status, failed.out], [7, null], 'a failed clear stops the block with its status');
             });
 
-            // PC2b U5c, DD5: the lifecycle's terminal write is finish-verb kind
-            // commit (the owner saves and commits); a persona that waits for
-            // convergence makes it only once Phase 4 converged, and otherwise
-            // records the next step, turning an inherited marker off.
+            // The lifecycle's terminal write is finish-verb kind commit (the owner
+            // saves and commits); a persona that waits for convergence makes it
+            // only once Phase 4 converged, and otherwise records the next step,
+            // turning an inherited marker off.
             if (!commits) it('start terminal, run: finish-verb kind commit, only once converged where the persona waits for it (fail-closed); otherwise a non-terminal append with the next step (PC2b U5c)', () => {
               const block = blockWith(/state\.mjs" finish-verb \\/).text;
               const waits = convergent(persona, 'start');
+              // Contract: the test sets this CONVERGED line to run each case, and the
+              // agent fills it from Phase 4 — a block without it never closes, or always does.
               strictEqual(CONVERGED_LINE.test(block), waits, 'the block assigns CONVERGED exactly where the persona waits for convergence');
-              if (waits) strictEqual(CONVERGED_LINE.exec(block)[0], 'CONVERGED="<yes|no — from the Phase 4 re-critique verdict; unset means no>"', 'the convergence placeholder');
               const cases = waits
                 ? [['yes', 'finish-verb'], ['no', 'append'], [UNSET, 'append'], ['<yes|no>', 'append'], [null, 'append']]
                 : [[null, 'finish-verb']];
@@ -944,12 +898,15 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               }
             });
 
-            // PC3b U2: the Phase 7 commit, two blocks — plan (writes nothing),
-            // then execute with the subject the user confirmed — and no
-            // finish-verb anywhere in the lifecycle's blocks.
+            // The Phase 7 commit, two blocks — plan (writes nothing), then execute
+            // with the subject the user confirmed — and no finish-verb anywhere
+            // in the lifecycle's blocks.
             if (commits) it('start commit (commit_surface), run: plan, then execute with the confirmed subject, each on $ACTIVE in the repository; a failure stops its block with its status; no finish-verb (PC3b U2)', () => {
               const plan = blockWith(/phase7-commit\.mjs" \\\n\s+--mode plan/).text;
               const execute = blockWith(/phase7-commit\.mjs" \\\n\s+--mode execute/).text;
+              // Contract: the agent running Phase 7 — execute before plan commits a
+              // subject nobody confirmed; a finish-verb or set-terminal in a block
+              // closes the lifecycle beside the driver's own terminal write.
               ok(text.indexOf(plan) < text.indexOf(execute), 'plan before execute');
               strictEqual(shellSites(text, /state\.mjs" (finish-verb|set-terminal)\b/).length, 0, 'the driver writes set-terminal; no block does');
               const p = runBlock('bash', `ACTIVE='/w/active.md'\n${plan}`, persona, { after: '\nprintf ran > out\n' });
@@ -957,6 +914,8 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               ok(/ --mode plan --workflow-path \/w\/active\.md --repo-root \/\S+ --host claude/.test(p.argv[0]), p.argv[0]);
               const pFailed = runBlock('bash', `ACTIVE='/w/active.md'\n${plan}`, persona, { phase7Status: 5, after: '\nprintf ran > out\n' });
               deepStrictEqual([pFailed.status, pFailed.out], [5, null], 'a failed plan stops its block');
+              // Contract: the test fills this line to run the block, as the agent fills
+              // it with the subject the user confirmed.
               ok(execute.includes("APPROVED_SUBJECT='<the subject the user confirmed>'"), 'the execute block assigns the confirmed subject');
               const approved = execute.replace("APPROVED_SUBJECT='<the subject the user confirmed>'", () => "APPROVED_SUBJECT='feat(x): it'\\''s done'");
               const e = runBlock('bash', `ACTIVE='/w/active.md'\n${approved}`, persona, { after: '\nprintf ran > out\n' });
@@ -976,22 +935,27 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 const failed = runBlock('bash', block, persona, { active: '/w/found.md', findStatus: 5, after: '\nprintf ran > out\n' });
                 deepStrictEqual([failed.status, failed.log], [5, ['find-active']], `${name}: a failed find stops the block`);
               }
-              // The archive-timing rule precedes the execute block it governs.
+              // Contract: the agent running Phase 7 — execute's set-terminal is
+              // archived at this turn's end, so the decision to keep the workflow
+              // open must come before the execute block, not after it.
               const timing = text.indexOf('ARCHIVE TIMING — decide before running execute mode.');
               ok(timing > text.indexOf(plan) && timing < text.indexOf(execute), 'the archive-timing rule between plan and execute');
             });
 
-            it('start privacy: the prohibition precedes the lifecycle, the no-image rule follows the phase-boundary paragraph (where the phases dispatch) and precedes the terminal write; designer\'s screenshot sentence precedes the lifecycle', () => {
+            // Contract: the agent running the lifecycle's web search and peer
+            // dispatches — a gate stated after the phases dispatch, or missing,
+            // lets ungenericized text or a screenshot leave the host.
+            it('start privacy: the prohibition precedes the phase boundaries (where the phases dispatch), the no-image rule follows that paragraph and precedes the terminal write; designer\'s screenshot sentence precedes the phase boundaries', () => {
               const prohibition = sentenceAt(text, PROHIBITION.start);
               // A persona that declares no peer policy (engineer) has no gate.
               if (!declaration(persona).peer) {
                 deepStrictEqual([prohibition.length, sentenceAt(text, NO_IMAGE).length, text.includes('PRIVACY GATE:')], [0, 0, false]);
                 return;
               }
-              const lifecycle = text.indexOf('## Entry routing + Phases 1–4 + terminal');
-              ok(lifecycle > 0, 'the lifecycle section');
+              const lifecycle = text.indexOf('<!-- pipeline:begin start-phase-boundary -->');
+              ok(lifecycle > 0, 'the phase-boundary region');
               strictEqual(prohibition.length, 1, 'the prohibition sentence');
-              ok(prohibition[0] < lifecycle, 'before the lifecycle');
+              ok(prohibition[0] < lifecycle, 'before the phase boundaries');
               const noImage = sentenceAt(text, NO_IMAGE);
               strictEqual(noImage.length, declaration(persona).peer.images === false ? 1 : 0, 'the no-image rule, exactly where images are off');
               const boundaryEnd = text.indexOf('<!-- pipeline:end start-phase-boundary -->');
@@ -1000,40 +964,44 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               if (persona === 'designer') {
                 const screenshot = sentenceAt(text, SCREENSHOT.start);
                 strictEqual(screenshot.length, 1, 'the screenshot sentence');
-                ok(screenshot[0] < lifecycle, 'the screenshot sentence before the lifecycle');
+                ok(screenshot[0] < lifecycle, 'the screenshot sentence before the phase boundaries');
               }
             });
 
-            it('start lifecycle: the workflow begins at investigate, and each phase boundary rotates the verb, writes state and dispatches its ensemble', () => {
-              const initial = squash(region(text, 'start-initial-verb'));
-              ok(initial.includes('The initial `verb` is `investigate` (Phase 1a); rotate the `verb` field at each phase boundary via `state.mjs append --verb <verb>`'), 'the initial verb and its rotation');
+            // Contract: the agent running the lifecycle — these are the only places
+            // it is told which state and settle calls to make at a phase boundary
+            // (test-start-lifecycle.mjs runs them against the real scripts), and
+            // that a verb's own finish-verb never runs inside the lifecycle.
+            it('start lifecycle: each phase boundary writes state and dispatches its ensemble, settles each attempt by run id, records and clears owner gates, and never runs a verb\'s finish-verb, before the terminal block', () => {
               const boundary = squash(region(text, 'start-phase-boundary'));
               ok(boundary.includes('Each phase boundary writes state via `state.mjs append --verb <verb> --current-phase <phase> --next-action <...> --event updated`'), 'the state write at each boundary');
-              ok(boundary.includes('and dispatches the per-phase peer ensemble per `core/skills/_shared/references/ensemble-protocol.md` (always-max)'), 'the per-phase ensemble');
-              // PC2b RV3: the rules that hold inside the lifecycle, each run by
-              // test-start-lifecycle.mjs against the real scripts.
+              ok(boundary.includes('and dispatches the per-phase peer ensemble'), 'the per-phase ensemble');
               for (const rule of [
-                '**Each ensemble attempt is settled.** After its synthesis note, settle the phase\'s attempt from its run ledger with `peer-runner.mjs settle --phase <verb> --run-id <that attempt\'s run id>` (empty when no run launched), before the next phase. A repeated phase (a second refine pass) dispatches under a new run id and settles each attempt.',
-                '**No phase closes the workflow.** A verb\'s own terminal write (`finish-verb`) never runs inside the lifecycle; the lifecycle\'s last step below makes its one terminal write.',
-                'record it after the phase note with `state.mjs awaiting-owner-set --gate <gate> --anchor <anchor>`, a write that leaves the workflow open, and pause. Once the owner decides, clear it with `state.mjs awaiting-owner-clear --gate <gate> --resolution <the owner\'s decision> --next-step-kind verb --next-step-verb <the next phase\'s verb> --next-step-confidence HIGH --next-action <the next phase\'s action>`, and continue at that phase. The verb\'s own resolving step (decide\'s Owner selection, refine\'s Owner decision), run inside the lifecycle, clears the gate and stops instead of making the verb\'s terminal write; resume the lifecycle from it.',
+                '`peer-runner.mjs settle --phase <verb> --run-id <that attempt\'s run id>`',
+                'dispatches under a new run id and settles each attempt',
+                '(`finish-verb`) never runs inside the lifecycle',
+                '`state.mjs awaiting-owner-set --gate <gate> --anchor <anchor>`',
+                '`state.mjs awaiting-owner-clear --gate <gate> --resolution <the owner\'s decision> --next-step-kind verb --next-step-verb <the next phase\'s verb> --next-step-confidence HIGH --next-action <the next phase\'s action>`',
               ]) ok(boundary.includes(rule), rule);
+              // Contract: the same agent — the order and stop point: an attempt
+              // settled after the next phase starts is lost to it, and a gate
+              // cleared without waiting takes the owner's decision.
+              ok(boundary.includes('(empty when no run launched), before the next phase'), 'settle precedes the next phase');
+              ok(boundary.includes('leaves the workflow open, and pause. Once the owner decides, clear it with'), 'an owner gate pauses until the owner decides');
               ok(text.indexOf('<!-- pipeline:end start-phase-boundary -->') < text.indexOf(terminalBlock().text), 'the rules precede the terminal block they name');
-              const bootstrap = text.indexOf('<!-- pipeline:begin start-bootstrap -->');
-              ok(bootstrap > 0 && bootstrap < text.indexOf('<!-- pipeline:begin start-initial-verb -->'), 'the initial verb is stated after the bootstrap that creates the workflow');
             });
 
-            it('start: the terminal write follows every extension, and each extension holds the text its slot exists for (QD8)', () => {
+            it('start: the terminal write follows every extension, and each extension holds the instructions its slot exists for', () => {
               const exts = extensionTexts(text);
               const slots = MANIFEST.extension_points.filter((e) => e.dest === dest && e.personas.includes(persona)).map((e) => e.id);
+              // Contract: the sync reads the extension markers against the
+              // manifest's slots — one marker per slot this persona owns.
               deepStrictEqual(exts.map((e) => e.id).sort(), [...slots].sort(), 'one marker per slot this persona owns');
               const terminal = terminalBlock();
-              for (const ext of exts) {
-                ok(ext.line < terminal.start, `extension ${ext.id} precedes the terminal write`);
-                for (const sentence of EXTENSION_ANCHORS[ext.id] ?? [null]) {
-                  ok(sentence, `anchor sentences for ${ext.id}`);
-                  strictEqual(sentenceAt(ext.text, sentence).length, 1, `${ext.id}: ${sentence}`);
-                }
-              }
+              // Contract: the agent running the lifecycle — an extension after the
+              // terminal write is read once the workflow is already closed.
+              for (const ext of exts) ok(ext.line < terminal.start, `extension ${ext.id} precedes the terminal write`);
+              checkExtensionTexts(exts);
             });
           }
 
@@ -1047,19 +1015,24 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               return found[0];
             };
 
-            it('Phase 0 names the persona before its guard, finds the workflow into $ACTIVE, and exits on a failed find', () => {
+            it('Phase 0 stops on a detached HEAD before it finds the workflow into $ACTIVE, and exits on a failed find', () => {
               const block = blockWith(/find-active --repo-root "\$REPO_ROOT"\)"$/m);
               const lines = block.text.split('\n');
-              const persona_ = lines.indexOf(`PERSONA='${persona}'`);
+              // Contract: the agent running Phase 0 — workflows are keyed by branch,
+              // so the block stops on a detached HEAD before find-active, and stops
+              // with find-active's own status when it fails.
               const guard = lines.indexOf('if [ -z "$GIT_BRANCH" ]; then');
-              ok(persona_ > 0 && guard > persona_, 'PERSONA is assigned before the detached-HEAD guard');
-              ok(lines.includes('  echo "✗ Detached HEAD detected — ${PERSONA} workflows are anchored to a branch (ADR-0018 §sub-2)." >&2'), 'the guard names the persona through PERSONA');
+              const findLine = lines.findIndex((l) => /^ACTIVE="\$\(node /.test(l));
+              ok(guard >= 0 && guard < findLine && lines.slice(guard, findLine).some((l) => /^\s+exit 1$/.test(l)), 'the detached-HEAD guard exits before find-active');
               const find = shellSites(text, /^ACTIVE="\$\(node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" \\\n\s+find-active --repo-root "\$REPO_ROOT"\)"\nFIND_RC=\$\?\nif \[ "\$FIND_RC" -ne 0 \]; then\n[^\n]*\n\s+exit "\$FIND_RC"\nfi$/m);
               strictEqual(find.length, 1, 'find-active, then its status read and exited with');
             });
 
             it('Phase 0 runs autopilot-preflight on $ACTIVE right after the find guard, before any write, and a refusal stops the block (PC2b DD5)', () => {
               const block = blockWith(/find-active --repo-root "\$REPO_ROOT"\)"$/m);
+              // Contract: the agent running the verb under autopilot — a preflight
+              // that does not stop the block, or runs after a write, lets a step
+              // cross an owner gate or write before the refusal.
               ok(/\nfi\n(#[^\n]*\n)*node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" autopilot-preflight --workflow-path "\$ACTIVE" --host "\$\{AGENTIC_HOST:-claude\}" \|\| exit \$\?$/.test(logical(block.text)), logical(block.text));
               const pre = shellSites(text, /state\.mjs" autopilot-preflight/);
               const writes = shellSites(text, /state\.mjs" (create|append|set-terminal|finish-verb|ensemble-commit)\b/);
@@ -1073,6 +1046,9 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             });
 
             it('the resume append clears the next step the previous verb recorded (PC2b DD5)', () => {
+              // Contract: the agent running the resume block — without
+              // --clear-next-step the previous verb's next step survives into this
+              // verb, and without || exit a failed append goes on.
               ok(/^node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" append --workflow-path "\$ACTIVE" [^\n]*--current-phase phase-0-resume --clear-next-step true [^\n]*--event resumed \|\| exit \$\?$/m.test(logical(blockWith(/--event resumed/).text)), logical(blockWith(/--event resumed/).text));
             });
 
@@ -1087,6 +1063,9 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               strictEqual(failed.out, null, 'nothing after the guard ran');
             });
 
+            // Contract: the agent running the verb — these authored lines choose
+            // between the bootstrap block and the resume block; swapped, a found
+            // workflow is bootstrapped over.
             it('the authored conditions route an empty $ACTIVE to the bootstrap and a found one to the resume', () => {
               const lines = text.split('\n');
               const before = (id) => {
@@ -1095,10 +1074,13 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 strictEqual(lines[at - 1], '', `a blank line before ${verb}-${id}`);
                 return lines[at - 2];
               };
-              ok(new RegExp(`^Empty \`\\$ACTIVE\` → bootstrap .*verb=${verb}( \\([^)]*\\))?:$`).test(before('bootstrap')), before('bootstrap'));
-              ok(/^Non-empty `\$ACTIVE` → append-on-resume( \([^)]*\))?:$/.test(before('resume')), before('resume'));
+              ok(/^Empty `\$ACTIVE` → bootstrap\b/.test(before('bootstrap')), before('bootstrap'));
+              ok(/^Non-empty `\$ACTIVE` → append-on-resume\b/.test(before('resume')), before('resume'));
             });
 
+            // Contract: the agent running the bootstrap or resume block — a write
+            // that is not on $ACTIVE, or does not stop the block when it fails,
+            // lets the verb run on with no workflow or the wrong one.
             it('bootstrap and resume write the workflow Phase 0 found, after it, and each stops the block when it fails (PD6)', () => {
               const find = shellSites(text, /^ACTIVE="\$\(node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" \\\n\s+find-active /m);
               const create = blockWith(/state\.mjs" create \\/);
@@ -1111,6 +1093,9 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               ok(find[0] < createAt[0] && createAt[0] < resumeAt[0], 'find-active, bootstrap, resume in that order');
             });
 
+            // Contract: the agent running the dispatch and finalize — settle before
+            // the note, finish-verb before settle, or a write that does not stop
+            // the block closes the workflow with its attempt unsettled.
             if (VERB_DESTS.includes(dest)) it('the dispatch, the note, settle and finish-verb run in that order on $ACTIVE; each write stops the block when it fails (PC2b DD6/DD7)', () => {
               const run = shellSites(text, /peer-runner\.mjs" run \\/);
               const finalize = blockWith(/peer-runner\.mjs" settle \\/);
@@ -1125,13 +1110,16 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               ok(run[0] < shellSites(text, /^IFS= read -r -d '' NOTE/m)[0], 'the dispatch precedes the finalize block');
               ok(repo < note && note < settle && settle < terminal, 'REPO_ROOT, append, settle, finish-verb in that order');
               strictEqual(shellSites(text, /state\.mjs" (set-terminal|ensemble-commit)\b/).length, 0, 'no set-terminal or ensemble-commit runs beside them');
-              // The owner-decision form, commented under the typical finish.
+              // Contract: the agent ending on an owner gate runs this commented form
+              // in place of the typical finish — its flags record the gate in one write.
               ok(/\n# node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" finish-verb \\\n#   --workflow-path "\$ACTIVE" --host "\$\{AGENTIC_HOST:-claude\}" \\\n#   --next-action '<Owner: the judgment, in a few words>' \\\n#   --next-step-kind owner-decision --next-step-confidence "<HIGH\|MEDIUM\|LOW>" \\\n#   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' \|\| exit \$\?\n```$/.test(finalize.text + '\n```'), 'the commented owner-decision form ends the block');
-              // The gates the prose names for this verb, with their anchors.
-              const gates = squash(text.slice(text.indexOf('The last write, `finish-verb`'), text.indexOf(finalize.text)));
-              ok(gates.includes('- `scope-routing` (heading `### Routing recommendation`, anchor `routing-recommendation`)'), gates);
-              strictEqual(gates.includes('- `decide-conflict` (the `Ensemble synthesis` heading, anchor `ensemble-synthesis`)'), verb === 'decide', 'decide-conflict exactly in decide');
-              strictEqual(gates.includes('- `recurring-finding` (heading `### Recurring finding`, anchor `recurring-finding`)'), verb === 'refine', 'recurring-finding exactly in refine');
+              // Contract: the --owner-gate and --owner-gate-anchor values that form
+              // takes, which state.mjs validates — the gates this verb may end with,
+              // each with its anchor, between the last-write paragraph and the block.
+              const gates = squash(text.slice(text.indexOf('<!-- pipeline:begin ' + verb + '-finalize'), text.indexOf(finalize.text)));
+              ok(/- `scope-routing` \([^)]*anchor `routing-recommendation`\)/.test(gates), gates);
+              strictEqual(/- `decide-conflict` \([^)]*anchor `ensemble-synthesis`\)/.test(gates), verb === 'decide', 'decide-conflict exactly in decide');
+              strictEqual(/- `recurring-finding` \([^)]*anchor `recurring-finding`\)/.test(gates), verb === 'refine', 'recurring-finding exactly in refine');
             });
 
             if (VERB_DESTS.includes(dest)) it('the finalize, run: a settle refusal stops the block before finish-verb, with its status (PC2b DD6)', () => {
@@ -1145,6 +1133,9 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               deepStrictEqual([refused.status, refused.log], [1, ['append', 'settle']], 'no finish-verb after a refused settle');
             });
 
+            // Contract: the arguments the agent passes, read from the blocks as the
+            // shell reads them — a wrong --persona, --verb, --phase or
+            // --ensemble-type writes or dispatches as another persona or verb.
             it('identity: persona, verb, phase, ensemble type and run-id prefix are the expected ones (the T0 map, not the manifest)', () => {
               const got = characterize(text);
               const type = FIXTURE.expected_ensemble_types[persona][verb];
@@ -1171,42 +1162,40 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               deepStrictEqual(got.mktemp_templates, [`${persona}-${verb}-prompt.XXXXXX`]);
             });
 
-            if (VERB_DESTS.includes(dest)) it('the phase note: the scaffold right above the finalize block is the recorded one, read from a quoted heredoc and passed as "$NOTE" (PD2)', () => {
-              strictEqual(characterize(text).note, expectedFor(key).note);
+            // Contract: the agent running the finalize — the note reaches state.mjs
+            // through a quoted heredoc, never through the shell; an unquoted one,
+            // a NOTE the shell inherited, or an empty read records the wrong note.
+            // The test fills the placeholder line to run the block.
+            if (VERB_DESTS.includes(dest)) it('the phase note is read from a quoted heredoc and passed as "$NOTE" (PD2)', () => {
               const finalize = blockWith(/peer-runner\.mjs" settle \\/);
               const lines = finalize.text.split('\n');
               const reader = lines.indexOf(NOTE_READER);
               ok(reader > 0, 'the block reads NOTE from a quoted heredoc');
               strictEqual(lines[reader - 1], 'unset NOTE', 'NOTE is cleared right before it is read');
               deepStrictEqual(lines.slice(reader + 1, reader + 3), ['<the phase note above, filled in>', 'PHASE_NOTE'], 'the heredoc holds only the placeholder line');
-              strictEqual(lines[reader + 4], '[ -n "$NOTE" ] || { echo "✗ No phase note was read; nothing was written." >&2; exit 1; }', 'an empty note stops the block before any write');
+              ok(/^\[ -n "\$NOTE" \] \|\| \{ .*exit 1; \}$/.test(lines[reader + 4]), 'an empty note stops the block before any write');
               ok(lines.findIndex((l) => /state\.mjs" append \\$/.test(l)) > reader + 4, 'the guard precedes the append');
-              // The delimiter rule the agent follows when its note holds the line.
-              const rule = sentenceAt(text, 'so when the note itself holds such a line, replace both `PHASE_NOTE` delimiters with a word no line of the note consists of.');
+              // Contract: the agent editing the block before it runs — a note that
+              // holds the delimiter line runs its tail as shell unless both
+              // delimiters are renamed, and the rule must come before the block.
+              const rule = sentenceAt(text, 'replace both `PHASE_NOTE` delimiters');
               strictEqual(rule.length, 1, 'the delimiter rule');
               ok(rule[0] < shellSites(text, /^IFS= read -r -d '' NOTE/m)[0], 'the delimiter rule precedes the block');
               strictEqual(finalize.text.split('NOTE=').length - 1, 0, 'nothing else assigns NOTE');
-              // The scaffold fence is the last fence before the finalize block.
-              const all = text.split('\n');
-              const fencesBefore = all.slice(0, finalize.start).filter((l) => /^\s*```/.test(l));
-              deepStrictEqual(fencesBefore.slice(-2), ['```markdown', '```'], 'the markdown scaffold is the fence right above the block');
             });
 
+            // Contract: the agent writing the peer prompt (and investigate's web
+            // queries) — a gate missing, or stated after the dispatch block, lets
+            // ungenericized text or a screenshot leave the host. A persona that
+            // declares no peer policy (engineer) has no gate and no no-image rule.
             it('privacy: the prohibition sentence precedes the dispatch; the no-image rule where images are off; designer\'s screenshot sentence too; no --image', () => {
               const run = shellSites(text, /peer-runner\.mjs" run \\/);
               const prohibition = sentenceAt(text, PROHIBITION[verb] ?? PROHIBITION.other);
               const noImage = sentenceAt(text, NO_IMAGE);
-              // A persona that declares no peer policy (engineer, PC3 U7) has
-              // no privacy gate and no no-image rule, as in peer-now.
               const peer = declaration(persona).peer;
               strictEqual(prohibition.length, peer ? 1 : 0, 'the prohibition sentence, exactly where a peer policy is declared');
               ok(prohibition.every((at) => at < run[0]), 'the prohibition precedes the dispatch block');
               strictEqual(noImage.length, peer?.images === false ? 1 : 0, 'the no-image rule, exactly where images are off');
-              // The never-launched note names the privacy gate only where a
-              // persona has one (PC3 U7, derived.ensemble_skip_*).
-              const skipped = squash(text).match(/its first heading reads `### Ensemble skipped: [^`]* \(([a-z -]+)\)` instead/);
-              ok(skipped, 'the never-launched heading');
-              strictEqual(skipped[1], peer ? 'privacy gate' : 'local-only', 'the skip names the privacy gate exactly where one is declared');
               ok(noImage.every((at) => at < run[0]), 'the no-image rule precedes the dispatch block');
               if (persona === 'designer') {
                 const screenshot = sentenceAt(text, SCREENSHOT[verb] ?? SCREENSHOT.other);
@@ -1220,6 +1209,10 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               it('Phase 0.5: between the resume and the dispatch, the resolver reads the args file the agent wrote, and either failure stops the block', () => {
                 const block = blockWith(/decide-registry\.mjs" resolve /);
                 const lines = block.text.split('\n');
+                // Contract: the agent running Phase 0.5 — the typed arguments reach
+                // the resolver only through the args file named on the first line
+                // (the test fills it to run the block), its status read right after,
+                // between the resume and the dispatch.
                 strictEqual(lines[0], ARGS_DIR_LINE, 'the block names the args directory first');
                 const call = lines.indexOf('node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve --args-file "$ARGS_DIR/args.json"');
                 ok(call > 0, 'the resolver is given the args file');
@@ -1246,13 +1239,13 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 }
               });
 
-              it('Phase 0.5: the args-file pins hold, and the fallback the prose names is the one the registry takes (measured)', () => {
+              it('Phase 0.5: the args-file pins hold, and an unknown or empty --preset resolves as the declaration says (measured)', () => {
                 const label = `${persona}/${dest} (${which})`;
+                // Contract: args-file transport — the agent writes the typed text to
+                // a file the resolver reads, never splicing it into the command line.
                 deepStrictEqual(argsFileRunbookProblems(text, label), []);
                 deepStrictEqual(argsFileTypedTextProblems(text, label), []);
                 const fallback = declaration(persona).decide.fallback.preset_id;
-                const prose = sentenceAt(text, `fall-back to the \`${fallback}\` preset with a diagnostic (no halt), while an empty one counts as no \`--preset\` at all.`);
-                strictEqual(prose.length, 1, 'the prose names the declared fallback preset');
                 const unknown = resolveWith(persona, '--preset=no-such-preset choose a direction');
                 deepStrictEqual([unknown.context.preset_id, unknown.context.registry_fallback], [fallback, true], 'an unknown preset');
                 ok(/unknown preset id "no-such-preset"/.test(unknown.stderr), 'with a diagnostic');
@@ -1265,20 +1258,18 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               });
             }
 
-            // QD5, RV14: founder critique's dispatch is generated; the agent sets
-            // its type by profile in the block, and settle reads it from the
-            // ledger. PC3 U7: engineer's critique joins the same way, its
-            // adversarial profile full-codebase (with or without a sub-focus).
+            // A critique's dispatch is generated; the agent sets its type by
+            // profile in the block, and settle reads it from the ledger. founder's
+            // adversarial profile is red-team, engineer's full-codebase (with or
+            // without a sub-focus).
             const ADVERSARIAL = {
               founder: {
                 profile: 'red-team',
-                prose: "for `--profile=red-team`, set `ENSEMBLE_TYPE='adversarial-scan'` in it before running it, and build the prompt from §Adversarial-scan.",
-                fallback: 'Missing profile → default. Unknown profile → fallback to default with a one-line warning.',
+                prose: "for `--profile=red-team`, set `ENSEMBLE_TYPE='adversarial-scan'`",
               },
               engineer: {
                 profile: 'full-codebase',
-                prose: "for `--profile=full-codebase`, with or without a sub-focus, set `ENSEMBLE_TYPE='adversarial-scan'` in it before running it, and build the prompt from § Adversarial-scan.",
-                fallback: 'Missing profile → default (recent diff). Unknown profile → fallback to default with one-line warning.',
+                prose: "for `--profile=full-codebase`, with or without a sub-focus, set `ENSEMBLE_TYPE='adversarial-scan'`",
               },
             };
             if (verb === 'critique' && Object.hasOwn(ADVERSARIAL, persona)) it(`${persona} critique, instantiated per profile: ${ADVERSARIAL[persona].profile} dispatches adversarial-scan; default, unknown and missing review; settle names the same run (QD5, RV14)`, () => {
@@ -1286,12 +1277,15 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               const dispatch = blockWith(/peer-runner\.mjs" run \\/).text;
               const finalize = blockWith(/peer-runner\.mjs" settle \\/).text;
               const TYPE_LINE = /^ENSEMBLE_TYPE='review'$/m;
+              // Contract: the test edits this TYPE line to run each profile, and the
+              // dispatch must pass the type the block assigned.
               ok(TYPE_LINE.test(dispatch), 'the block assigns review, the default profile\'s type');
               ok(/^ {2}--ensemble-type "\$ENSEMBLE_TYPE" --run-id "\$RUN_ID" \\$/m.test(dispatch), 'the dispatch names the type the block assigned, once');
+              // Contract: the agent running the dispatch — this instruction, before
+              // the block, is the only thing that changes the type for the profile.
               strictEqual(sentenceAt(text, adv.prose).length, 1, 'the prose says when to change it');
               const flat = text.replace(/\s+/g, ' ');
               ok(flat.indexOf(adv.prose) < flat.indexOf('peer-runner.mjs" run'), 'the prose comes before the block it changes');
-              strictEqual(sentenceAt(text, adv.fallback).length, 1, 'the fallback sentence');
               for (const [profile, expected] of [['default', 'review'], [adv.profile, 'adversarial-scan'], ['unknown', 'review'], ['missing', 'review']]) {
                 const script = profile === adv.profile ? dispatch.replace(TYPE_LINE, "ENSEMBLE_TYPE='adversarial-scan'") : dispatch;
                 const sent = runBlock('bash', `ACTIVE='/w/active.md'\n${script}\nprintf '%s' "$RUN_ID" > out`, persona, {});
@@ -1303,18 +1297,17 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               }
             });
 
-            // PC3 U7: engineer's investigate joins as its critique did: the block
-            // assigns the analysis profile's type, and the prose sets the
-            // root-cause or cited-brief type there by profile; settle reads the
-            // type from the ledger.
+            // engineer's investigate, as its critique: the block assigns the
+            // analysis profile's type, and the prose sets the root-cause or
+            // cited-brief type there by profile; settle reads the type from the
+            // ledger.
             const PROFILED_INVESTIGATE = {
               engineer: {
                 base: 'investigate',
                 profiles: {
-                  'root-cause': "for `--profile=root-cause`, set `ENSEMBLE_TYPE='root-cause'` in it before running it, and build the prompt from § Investigate;",
-                  'cited-brief': "for `--profile=cited-brief`, set `ENSEMBLE_TYPE='cited-brief'` in it before running it, and build the prompt from `core/skills/investigate/references/cited-brief-ensemble.md` § Prompt Construction.",
+                  'root-cause': "for `--profile=root-cause`, set `ENSEMBLE_TYPE='root-cause'`",
+                  'cited-brief': "for `--profile=cited-brief`, set `ENSEMBLE_TYPE='cited-brief'`",
                 },
-                fallback: 'Missing profile → `analysis`. Unknown profile → fallback to `analysis` with a one-line warning.',
               },
             };
             if (verb === 'investigate' && Object.hasOwn(PROFILED_INVESTIGATE, persona)) it(`${persona} investigate, instantiated per profile: root-cause and cited-brief dispatch their own type; analysis, unknown and missing investigate; settle names the same run (PC3 U7)`, () => {
@@ -1322,14 +1315,17 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               const dispatch = blockWith(/peer-runner\.mjs" run \\/).text;
               const finalize = blockWith(/peer-runner\.mjs" settle \\/).text;
               const TYPE_LINE = new RegExp(`^ENSEMBLE_TYPE='${spec.base}'$`, 'm');
+              // Contract: the test edits this TYPE line to run each profile, and the
+              // dispatch must pass the type the block assigned.
               ok(TYPE_LINE.test(dispatch), 'the block assigns the default profile\'s type');
               ok(/^ {2}--ensemble-type "\$ENSEMBLE_TYPE" --run-id "\$RUN_ID" \\$/m.test(dispatch), 'the dispatch names the type the block assigned, once');
+              // Contract: the agent running the dispatch — these instructions, before
+              // the block, are the only thing that changes the type for each profile.
               const flat = text.replace(/\s+/g, ' ');
               for (const prose of Object.values(spec.profiles)) {
                 strictEqual(sentenceAt(text, prose).length, 1, `the prose says when to change it: ${prose}`);
                 ok(flat.indexOf(prose) < flat.indexOf('peer-runner.mjs" run'), 'the prose comes before the block it changes');
               }
-              strictEqual(sentenceAt(text, spec.fallback).length, 1, 'the fallback sentence');
               const cases = [['analysis', spec.base], ...Object.keys(spec.profiles).map((p) => [p, p]), ['unknown', spec.base], ['missing', spec.base]];
               for (const [profile, expected] of cases) {
                 const script = Object.hasOwn(spec.profiles, profile) ? dispatch.replace(TYPE_LINE, `ENSEMBLE_TYPE='${expected}'`) : dispatch;
@@ -1342,12 +1338,13 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               }
             });
 
-            // PC3b U1 (peer review of step 1): a stop inside the lifecycle is an
-            // exit, not just a message: a write placed after the block is never
+            // A stop inside the lifecycle is an exit, not just a message: a write placed after the block is never
             // reached there, and is reached where the block falls through.
             const AFTER = '\nnode "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append --workflow-path "$ACTIVE" --host claude';
             if (verb === 'decide') it('Owner selection, run: it finds the workflow, clears decide-conflict with the resolution and the next step, then finishes the verb; a failed find or clear, or no workflow, stops the block (PC2b DD7)', () => {
               const block = blockWith(/state\.mjs" awaiting-owner-clear \\/).text;
+              // Contract: the agent resolving the gate — the clear comes after the
+              // finalize whose owner-decision form records it.
               ok(text.indexOf(block) > text.indexOf('<!-- pipeline:end decide-finalize -->'), 'after Phase 2, whose owner-decision form records the gate');
               const CHAIN = { active: '/w/active.md', readOutput: '{"workflow_type":"verb-chain"}' };
               const r = runBlock('bash', block, persona, CHAIN);
@@ -1391,7 +1388,11 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             });
 
             if (HEADING_DESTS.includes(dest)) {
-              it('the finalize follows the finalize heading region and every extension; the synthesis instruction sits between the dispatch and the heading (QD7, QD8)', () => {
+              // Contract: the agent running the verb — the terminal block comes after
+              // the finalize heading and every extension (read once the workflow is
+              // closed otherwise), and after the dispatch; the sync reads one marker
+              // per slot this persona owns.
+              it('the finalize follows the finalize heading region, every extension and the dispatch', () => {
                 const lines = text.split('\n');
                 const heading = lines.indexOf(`<!-- pipeline:end ${verb}-finalize-heading -->`);
                 ok(heading > 0, 'the finalize heading region');
@@ -1402,34 +1403,23 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 const slots = MANIFEST.extension_points.filter((e) => e.dest === dest && e.personas.includes(persona)).map((e) => e.id);
                 deepStrictEqual(exts.map((e) => e.id).sort(), [...slots].sort(), 'one marker per slot this persona owns');
                 ok(shellSites(text, /peer-runner\.mjs" run \\/)[0] < shellSites(text, /peer-runner\.mjs" settle \\/)[0], 'the dispatch precedes the finalize block');
-                // The agent collects and synthesizes the peer result between the
-                // dispatch and the finalize (the note records the synthesis).
-                const synth = sentenceAt(text, 'Synthesize per AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT');
-                strictEqual(synth.length, 1, 'the synthesis instruction');
-                const dispatchAt = text.indexOf(blockWith(/peer-runner\.mjs" run \\/).text);
-                ok(dispatchAt < synth[0] && synth[0] < text.indexOf(`<!-- pipeline:begin ${verb}-finalize-heading -->`), 'the synthesis instruction sits between the dispatch and the finalize heading');
               });
 
-              it('each extension holds the text its slot exists for (QD8)', () => {
-                const exts = extensionTexts(text);
-                for (const ext of exts) {
-                  ok(EXTENSION_ANCHORS[ext.id], `anchor sentences for ${ext.id}`);
-                  for (const sentence of EXTENSION_ANCHORS[ext.id]) strictEqual(sentenceAt(ext.text, sentence).length, 1, `${ext.id}: ${sentence}`);
-                }
+              it('each extension holds the instructions its slot exists for', () => {
+                checkExtensionTexts(extensionTexts(text));
               });
             }
 
-            // DD5, PC2b U5b, run: a persona that declares refine convergent
+            // Run: a persona that declares refine convergent
             // closes it only once converged (fail-closed); otherwise the last
             // write records the next step, turns an inherited terminal marker
             // off and closes nothing. The other persona always closes.
             if (verb === 'refine') it('refine finalize, run: closes only once converged where the persona waits for it (fail-closed), otherwise records the next step without a terminal write and turns an inherited marker off (PC2b U5b, DD5)', () => {
               const block = blockWith(/peer-runner\.mjs" settle \\/).text;
               const waits = convergent(persona, verb);
+              // Contract: the test sets this CONVERGED line to run each case, and the
+              // agent fills it from the re-critique — run untouched, the block pauses.
               strictEqual(CONVERGED_LINE.test(block), waits, 'the block assigns CONVERGED exactly where the persona waits for convergence');
-              // A placeholder the agent fills from the re-critique, never a
-              // value: run untouched, the block pauses.
-              if (waits) strictEqual(CONVERGED_LINE.exec(block)[0], 'CONVERGED="<yes|no — from the re-critique verdict; unset means no>"', 'the convergence placeholder');
               const cases = waits
                 ? [['yes', 'finish-verb'], ['no', 'append'], [UNSET, 'append'], ['<yes|no>', 'append'], [null, 'append']]
                 : [[null, 'finish-verb']];
@@ -1458,11 +1448,15 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               strictEqual(found.length, 2, 'fix now and defer');
               const [fix, deferAsCommitted] = found;
               const waits = convergent(persona, verb);
+              // Contract: the test sets the defer block's CONVERGED line to run each
+              // case; the agent fills it — without it a deferral always closes.
               strictEqual(CONVERGED_LINE.test(deferAsCommitted), waits, 'the defer block assigns CONVERGED exactly where the persona waits for convergence');
               // The shared cases run the deferral converged; the persona that
               // waits for convergence is run unconverged below.
               const defer = converged(deferAsCommitted, persona, verb);
               const finalizeEnd = `<!-- pipeline:end ${waits ? 'refine-finalize-convergent' : 'refine-finalize'} -->`;
+              // Contract: the agent resolving the gate — the clear comes after the
+              // finalize whose owner-decision form records it.
               ok(text.indexOf(fix) > text.indexOf(finalizeEnd) && text.indexOf(finalizeEnd) > 0, 'after Phase 2, whose owner-decision form records the gate');
               const CHAIN = { active: '/w/active.md', readOutput: '{"workflow_type":"verb-chain"}' };
               const f = runBlock('bash', fix, persona, CHAIN);
@@ -1511,7 +1505,6 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               // that resolves what is open, and makes no terminal write, inside
               // a start lifecycle too.
               if (waits) {
-                strictEqual(CONVERGED_LINE.exec(deferAsCommitted)[0], 'CONVERGED="<yes|no — from the re-critique verdict with the finding deferred; unset means no>"', 'the convergence placeholder');
                 for (const value of ['no', UNSET, '<yes|no>', null]) {
                   const label = `CONVERGED ${value === null ? 'as committed' : value === UNSET ? 'unset' : JSON.stringify(value)}`;
                   const script = value === null ? deferAsCommitted : converged(deferAsCommitted, persona, verb, value);

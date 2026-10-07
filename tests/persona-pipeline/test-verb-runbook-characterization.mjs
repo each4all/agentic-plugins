@@ -141,6 +141,9 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
     });
   });
 
+  // Contract: the agent running each runbook's blocks — the script calls, their arguments by
+  // flag, their order and the guards' exits below are what it runs; a change to any is a change
+  // to what runs.
   for (const persona of VERB_RUNBOOK_PERSONAS) {
     for (const verb of VERB_RUNBOOK_VERBS) {
       describe(`${persona}/${verb}`, () => {
@@ -280,12 +283,9 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
           ok(got.guards.find_rc.includes('exit "$FIND_RC"'), 'with its status');
           if (verb === 'decide') strictEqual(exits(got.guards.resolve_rc), 2, 'both resolver failures exit');
           else strictEqual(got.guards.resolve_rc, null);
-          if (verb === 'start') {
-            strictEqual(got.note, null, 'start writes no phase note of its own');
-            return;
-          }
-          const launched = FIXTURE.expected_launched?.[persona]?.[verb] ?? (verb === 'investigate' ? FIXTURE.expected_ensemble_types[persona][verb] : verb);
-          ok(got.note !== null && got.note.startsWith(`### Ensemble launched: ${launched} at <iso-utc>\n`));
+          // Contract: the lifecycle's phase notes are its verbs' — a note scaffold of its own would
+          // add a phase-note write to start.
+          if (verb === 'start') strictEqual(got.note, null, 'start writes no phase note of its own');
         });
 
         // PC2a3 T0': the guards start, critique and refine add.

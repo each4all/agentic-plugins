@@ -514,6 +514,8 @@ const SCHEMA_12_KEYS = [
 // its own module state (including its own carrier Symbol).
 async function importSchema11Reader(dir) {
   const src = await readFile(STATE_PATH, 'utf8');
+  // Contract: the 1.1 reader below is built by editing these source lines — an
+  // anchor that no longer matches would leave a 1.2 build posing as the 1.1 reader.
   const keyOrderLine = new RegExp(`^  '(${SCHEMA_12_KEYS.join('|')})',\\n`, 'gm');
   const removed = (src.match(keyOrderLine) ?? []).map((l) => l.trim());
   deepStrictEqual(removed, SCHEMA_12_KEYS.map((k) => `'${k}',`),

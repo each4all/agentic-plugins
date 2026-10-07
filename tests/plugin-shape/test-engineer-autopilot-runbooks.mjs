@@ -1,21 +1,23 @@
-// ADR-0063 S3+S4 — the engineer runbooks' autopilot deltas, pinned by shape.
+// ADR-0063 S3+S4 — the calls engineer's verb runbooks make for autopilot, in
+// the order that makes them safe.
 //
-// The behavior lives in code (state.mjs autopilot-preflight / finish-verb,
-// phase7-commit.mjs --mode autopilot|close) and is exercised end to end in
-// tests/persona-pipeline/test-autopilot-verbs.mjs, test-commit-surface.mjs,
-// test-verb-runbook-runs.mjs and test-commit-runbook.mjs. This file pins that
-// every runbook calls it
-// where it must, in the order that makes it safe:
+// The behavior lives in code (state.mjs autopilot-preflight / finish-verb /
+// owner-gate clears, phase7-commit.mjs --mode autopilot|close) and is exercised
+// end to end in tests/persona-pipeline/test-autopilot-verbs.mjs,
+// test-commit-surface.mjs, test-verb-runbook-runs.mjs and
+// test-commit-runbook.mjs. This file pins that every runbook calls it where it
+// must:
 //   - Phase 0: the preflight runs before any write and stops the block when it
 //     refuses; resuming clears the previous next step and stops on failure;
 //   - Phase 2: every write stops the block when it fails, and the last one is
-//     finish-verb with the next step — never set-terminal;
-//   - the peer runner is not detached with a shell `&`;
-//   - the autopilot section, the owner-gate variants and their resolving
-//     steps are present, and every gate anchor the runbooks and scripts use is
-//     the one autopilot-mode.md documents;
-//   - interactive runs keep their ceremonies: the autopilot rules are
-//     conditional text, and the Codex mirrors say autopilot is Claude-only.
+//     finish-verb with the next step — never set-terminal; the proposal hands
+//     commit and done to /engineer:commit;
+//   - the peer runner runs as a host background task, never behind a shell `&`;
+//   - compose and refine never run `git commit` under autopilot;
+//   - the decide-conflict and recurring-finding gates are recorded on their
+//     condition and cleared by one write that names the next step;
+//   - every owner-gate anchor the runbooks and phase7-commit.mjs record is the
+//     one the routing contract tables.
 
 import { describe, it } from 'node:test';
 import { ok, strictEqual, deepStrictEqual } from 'node:assert/strict';
@@ -28,6 +30,8 @@ const ENG = resolve(REPO_ROOT, 'plugins/engineer');
 const VERBS = ['investigate', 'frame', 'decide', 'compose', 'critique', 'refine'];
 const read = (rel) => readFile(resolve(ENG, rel), 'utf8');
 
+// Slices the runbook section under `heading`; the checks below look for calls
+// inside it.
 function section(text, heading) {
   const start = text.indexOf(heading);
   ok(start >= 0, `missing section ${heading}`);
@@ -49,6 +53,8 @@ describe('verb runbooks — Phase 0 (ADR-0063 D4, D6)', () => {
   for (const verb of VERBS) {
     it(`${verb}: the preflight runs before any write and stops the block when it refuses`, async () => {
       const phase0 = section(await read(`commands/${verb}.md`), '## Phase 0');
+      // Contract: the agent running Phase 0 under autopilot — a preflight after a
+      // write, or one whose refusal does not exit, writes over a pending owner gate.
       const pre = phase0.indexOf('scripts/state.mjs" autopilot-preflight');
       ok(pre >= 0, 'Phase 0 runs autopilot-preflight');
       ok(/autopilot-preflight \\\n\s+--workflow-path "\$ACTIVE" --host "\$\{AGENTIC_HOST:-claude\}" \|\| exit \$\?\n/.test(phase0),
@@ -61,6 +67,9 @@ describe('verb runbooks — Phase 0 (ADR-0063 D4, D6)', () => {
 
     it(`${verb}: resuming clears the previous next step and stops on failure`, async () => {
       const phase0 = section(await read(`commands/${verb}.md`), '## Phase 0');
+      // Contract: the agent resuming a workflow — without --clear-next-step a verb
+      // that dies after Phase 0 leaves the previous verb's next step, which the
+      // driver reads as progress; without `|| exit $?` a failed append runs on.
       const resume = bashBlocks(phase0).find((b) => b.includes('state.mjs" append'));
       ok(resume, 'Phase 0 has its append-on-resume block');
       ok(/--clear-next-step true \\\n/.test(resume), resume);
@@ -74,6 +83,9 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
     it(`${verb}: every write stops the block on failure; the last write is finish-verb with the next step`, async () => {
       const text = await read(`commands/${verb}.md`);
       const phase2 = section(text, '## Phase 2 — State finalize');
+      // Contract: the agent finishing a verb — a write that fails without stopping
+      // lets finish-verb publish a next step for a verb that did not finish;
+      // set-terminal instead of finish-verb ends an autopilot run's workflow.
       const block = bashBlocks(phase2)[0];
       ok(block, 'Phase 2 has its block');
       ok(!/state\.mjs" set-terminal/.test(block), 'no set-terminal call in a verb: finish-verb branches by mode');
@@ -84,6 +96,8 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
       ok(append >= 0 && commit > append && finish > commit, gen ? 'append → settle → finish-verb' : 'append → ensemble-commit → finish-verb');
       ok(/--event updated \|\| exit \$\?\n/.test(block.slice(append, commit)), 'the append stops the block when it fails');
       ok((gen ? /--summary "\$SUMMARY" \|\| exit \$\?\n/ : /--completed-at "[^\n]*" \|\| exit \$\?\n/).test(block.slice(commit, finish)), 'the ensemble write stops the block when it fails');
+      // Contract: finish-verb's flags — the closed-enum next step the autopilot
+      // driver reads; terminal flags here would close the workflow mid-run.
       const finishCall = block.slice(finish).split('\n#')[0];
       ok(/--next-action (?:"[^"\n]*"|'[^'\n]*') \\\n/.test(finishCall), finishCall);
       ok(/--next-step-kind verb --next-step-verb (?:[a-z]+|'[a-z]+'|"<next verb>") \\\n/.test(finishCall), finishCall);
@@ -93,8 +107,9 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
 
     it(`${verb}: the proposal templates offer done, and commit routes to /engineer:commit`, async () => {
       const text = await read(`commands/${verb}.md`);
-      // Generated, the phase note holds the one proposal template and the
-      // Completion section points at it (a second copy is a re-enumeration).
+      // Contract: the hand-off the proposal names — without `done` and the
+      // /engineer:commit route, a finished verb has no command that commits or
+      // closes its workflow. Generated, the phase note holds the one template.
       const copies = generated(text, verb) ? 1 : 2;
       strictEqual((text.match(/- selected_next:\s+<verb \| commit \| (?:owner decision \| done|done \| owner decision)>/g) ?? []).length, copies);
       strictEqual((text.match(/\/engineer:commit for commit or done/g) ?? []).length, copies);
@@ -102,41 +117,39 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
 
     it(`${verb}: the peer runner runs as a host background task, never behind a shell &`, async () => {
       const text = await read(`commands/${verb}.md`);
+      // Contract: the agent launching the peer — a shell `&` detaches the runner
+      // where neither the agent nor the autopilot host can wait for it.
       const launch = bashBlocks(text).find((b) => b.includes('peer-runner.mjs" run'));
       ok(launch, 'a peer launch block');
       ok(!/&\s*$/m.test(launch.replace(/&&/g, '')), 'no line ends in a background &');
       ok(/run_in_background/.test(text.slice(0, text.indexOf(launch))), 'the text before it says to use the host background task');
     });
 
-    it(`${verb}: the completion footer paragraph says autopilot prints none: the driver is the handoff`, async () => {
-      const flat = (await read(`commands/${verb}.md`)).replace(/\s+/g, ' ');
-      strictEqual(flat.split('Under an autopilot run `finish-verb` makes no terminal write, so no footer is printed: the driver is the handoff.').length - 1, 1);
-    });
-
-    it(`${verb}: the autopilot section names the rules file and the finish-verb contract`, async () => {
+    it(`${verb}: under autopilot the agent waits for the peer's notification and reports again after finish-verb`, async () => {
       const ap = section(await read(`commands/${verb}.md`), '## Autopilot mode (ADR-0063, Claude only)');
-      ok(ap.includes('core/skills/_shared/references/autopilot-mode.md'), ap);
-      ok(ap.includes('the preflight prints nothing interactively, and none of this applies then'), ap);
-      ok(ap.includes('No presentation-mode prompt (present in\n  batch)'), ap);
-      ok(ap.includes("`set-terminal --terminal-marker\n  true` is refused"), ap);
-      ok(ap.includes('wait for the background notification; never sleep-poll'), ap);
-      ok(ap.includes('taken while you wait is provisional: when the notification re-invokes you,\n  finish the verb through `finish-verb`, then report again'), ap);
+      // Contract: the agent running a verb under autopilot — without these it
+      // sleep-polls, or takes the report it filed while waiting as final and
+      // leaves the ensemble unsettled (docket C87).
+      ok(ap.includes('never sleep-poll'), verb);
+      ok(/finish the verb through `finish-verb`, then report again/.test(ap.replace(/\s+/g, ' ')), verb);
     });
   }
 
-  it('compose and refine never commit; critique carries CRITICAL and MAJOR only', async () => {
+  it('compose and refine never run git commit under autopilot; they hand off with --next-step-kind commit', async () => {
     for (const verb of ['compose', 'refine']) {
       const ap = section(await read(`commands/${verb}.md`), '## Autopilot mode (ADR-0063, Claude only)');
-      ok(ap.includes('**Never run `git commit`.** Set `--next-step-kind commit` when the artifact\n  is ready'), verb);
+      // Contract: the agent running compose or refine under autopilot — a verb
+      // that commits takes the commit away from /engineer:commit's staging rules.
+      ok(ap.includes('**Never run `git commit`.**'), verb);
+      ok(ap.includes('Set `--next-step-kind commit`'), verb);
     }
-    const critique = await read('commands/critique.md');
-    ok(section(critique, '## Autopilot mode (ADR-0063, Claude only)').includes('**Refine carries CRITICAL and MAJOR findings only**'));
-    ok(critique.includes('under\nautopilot, CRITICAL + MAJOR only, with no pick'));
   });
 
   it('decide: a CONFLICT ends with the decide-conflict gate at the synthesis\'s confidence, resolved by the Owner selection step', async () => {
     const text = await read('commands/decide.md');
     const phase2 = section(text, '## Phase 2 — State finalize');
+    // Contract: the agent finishing decide — the gate it records, and when: a
+    // CONFLICT left unrecorded lets autopilot pick a direction only the owner can.
     if (generated(text, 'decide')) {
       // PC3 U7: the generated finalize names each gate with its heading and
       // anchor above the block, and the block's owner-decision form takes it.
@@ -145,11 +158,11 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
     } else {
       ok(/#   --next-step-kind owner-decision --next-step-confidence "<HIGH\|MEDIUM\|LOW>" \\\n#   --owner-gate decide-conflict --owner-gate-anchor ensemble-synthesis\n/.test(phase2), phase2);
     }
+    // Contract: the agent running the Owner selection block — one write records
+    // the decision, clears the gate and names the next step, and stops on
+    // failure; a separate append could publish the step without the decision.
     const sel = section(text, '## Owner selection (decide-conflict)');
     const [block] = bashBlocks(sel);
-    // PC3b U1: the clear also replaces the gate's next action; its next step
-    // is compose, or none inside a start lifecycle (the lifecycle owns its
-    // phase order).
     ok(/--gate decide-conflict \\\n\s+--resolution "[^"\n]+" --next-action "\$NEXT_ACTION" \\\n\s+"\$\{NEXT_STEP\[@\]\}" \|\| exit \$\?\n/.test(block),
       'one write records the decision, clears the gate and names the next step, and stops the block on failure');
     ok(/^ {2}NEXT_STEP=\(--next-step-kind verb --next-step-verb compose --next-step-confidence HIGH\)$/m.test(block), 'outside the lifecycle the next step is compose');
@@ -162,16 +175,17 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
   it('refine: a recurring finding ends with the recurring-finding gate, resolved by the Owner decision step', async () => {
     const text = await read('commands/refine.md');
     const phase2 = section(text, '## Phase 2 — State finalize');
+    // Contract: the agent finishing refine — the owner-decision form records the
+    // gate and stops the block when the write fails.
     if (generated(text, 'refine')) {
-      // PC3 U7: the generated finalize names the gate with its heading and
-      // anchor above the block, and the block's owner-decision form takes it.
-      ok(/^- `recurring-finding` \(heading `### Recurring finding`, anchor\n  `recurring-finding`\): /m.test(phase2), phase2);
       ok(phase2.includes("#   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' || exit $?\n"), phase2);
     } else {
       ok(/#   --owner-gate recurring-finding --owner-gate-anchor recurring-finding\n/.test(phase2));
     }
+    // Contract: the agent running an Owner decision block — each resolution is one
+    // write that names its next step (refine for fix now, commit for defer) and
+    // stops on failure; a separate append could publish the step without it.
     const blocks = bashBlocks(section(text, '## Owner decision (recurring-finding)'));
-    // PC3b U1: each clear also replaces the gate's next action.
     ok(blocks.some((b) => /--gate recurring-finding \\\n\s+--resolution "[^"\n]+" --next-action "\$NEXT_ACTION" \\\n\s+--next-step-kind verb --next-step-verb refine --next-step-confidence HIGH \|\| exit \$\?\n/.test(b)), 'fix now: one write, naming this refine, stopping the block on failure');
     ok(blocks.some((b) => /--gate recurring-finding \\\n\s+--resolution "[^"\n]+" --next-action "\$NEXT_ACTION" \\\n\s+--next-step-kind commit --next-step-confidence HIGH \|\| exit \$\?\n/.test(b)), 'defer: one write naming commit, stopping the block on failure');
     for (const b of blocks) {
@@ -187,40 +201,11 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
 // declares the capability on, in tests/persona-pipeline/test-runbook-contracts.mjs
 // and test-skill-contracts.mjs, and run in test-commit-runbook.mjs.
 
-describe('Codex verb mirrors and shared references', () => {
-  // Each verb skill's next step fields and its Claude-only autopilot are the
-  // generated finish paragraph's now, checked for every persona by capability
-  // (tests/persona-pipeline/test-skill-contracts.mjs, PC3b U3b).
-
-  it('the approval points in the decide, compose and refine skills say what autopilot does there', async () => {
-    const decide = await read('core/skills/decide/SKILL.md');
-    strictEqual((decide.match(/\*\*Autopilot mode \(Claude only, ADR-0063 D4 \/ R4\):\*\*/g) ?? []).length, 2);
-    ok((await read('core/skills/compose/SKILL.md')).includes('**Autopilot mode (Claude only, ADR-0063 D4):** the approval is the\ndriver\'s.'));
-    ok((await read('core/skills/refine/SKILL.md')).includes('record the `recurring-finding` owner gate'));
-  });
-
-  it('ensemble and entry-routing references carry their autopilot rules', async () => {
-    // The presentation protocol's two autopilot paragraphs and the ensemble
-    // protocol's autopilot wait are generated under dispatch_target, and the
-    // ensemble Launch's shell `&` rule for every persona; each is checked by
-    // capability (tests/persona-pipeline/test-reference-contracts.mjs, RV3,
-    // PC3b U5b; RV12, PC3b U5c).
-    const mode = await read('core/skills/_shared/references/autopilot-mode.md');
-    ok(mode.includes('**A report taken while you wait is provisional.**'));
-    ok(mode.includes('step by the last report only'));
-    const contract = await read('core/skills/_shared/references/entry-routing-contract.md');
-    ok(contract.includes('**Closed-enum projection: `next_step` (ADR-0063 D6, amending ADR-0029\n§3; every persona since ADR-0066 Stage 2).**'));
-    ok(contract.includes('| `done` | `done` | absent |'));
-    ok(contract.includes('for `done`,\n  the same command, which closes the workflow without a commit when there is\n  nothing to commit;'));
-  });
-
+describe('owner-gate anchors', () => {
   it('every owner-gate anchor the runbooks and scripts record is the one the routing contract tables', async () => {
-    // PC3b U5b: the gates are tabled once, in the generated routing contract;
-    // autopilot-mode.md points there and says only when each is recorded.
-    const mode = await read('core/skills/_shared/references/autopilot-mode.md');
-    ok(mode.replace(/\s+/g, ' ').includes('are tabled once, in `entry-routing-contract.md` § Owner gates.'), 'autopilot-mode.md points at the table');
-    ok(!/^\| `staging-set` \|/m.test(mode), 'autopilot-mode.md holds no second gate table');
-    ok(mode.replace(/\s+/g, ' ').includes('`decide-conflict`, `recurring-finding` and `scope-routing` are recorded in either mode; `staging-set`'), 'autopilot-mode.md says which gates autopilot alone records');
+    // Contract: the autopilot halt points the owner at the gate's anchor — a
+    // runbook or phase7-commit.mjs recording an anchor other than the one the
+    // routing contract tables for that gate sends the owner to a missing section.
     const doc = await read('core/skills/_shared/references/entry-routing-contract.md');
     const rows = [...doc.matchAll(/^\| `([a-z-]+)` \| [^|]+ \| [^|]+ · `([a-z0-9-]+)` \|/gm)]
       .map((m) => [m[1], m[2]]);

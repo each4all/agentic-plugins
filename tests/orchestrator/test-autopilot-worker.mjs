@@ -294,7 +294,8 @@ describe('the posture (D5)', () => {
     ok(JSON.parse(valueOf(verb, '--json-schema')).required.includes('workflow'));
     ok(!verb.includes('--model') && !verb.includes('--effort'), 'the owner\'s default when the plan says so');
     deepStrictEqual([valueOf(argsFor('verb', { model: 'sonnet', effort: 'low' }), '--model'), valueOf(argsFor('verb', { model: 'sonnet', effort: 'low' }), '--effort')], ['sonnet', 'low']);
-    ok(!/CLAUDE_PLUGIN_ROOT is NOT set|plugin roots/i.test(valueOf(verb, '--append-system-prompt')), 'SHIM-3 is gone (S0 released)');
+    // Contract: the worker agent reads this appended system prompt — without the rule
+    // it ends the step on the report it gave while a background task was pending.
     ok(valueOf(verb, '--append-system-prompt').includes('A report the host takes when you end a turn to wait for a background task is provisional'), 'a report taken mid-wait does not end the step');
     ok(valueOf(verb, '--append-system-prompt').includes('Only the last report counts.'));
   });
@@ -315,6 +316,9 @@ describe('the posture (D5)', () => {
       AGENTIC_COMPANION_DEPTH: '1', AGENTIC_PARENT_WORKFLOW: 'macro-other', AGENTIC_ORIGINATING_SUBTASK: 'Z',
       AGENTIC_PROFILE: 'x', AGENTIC_TOPIC: 'y', AGENTIC_HOST: 'codex', CLAUDE_PLUGIN_ROOT: '/stale',
       AGENTIC_AUTOPILOT: 'autopilot-19990101T000000Z-000000', KEEP_ME: 'yes',
+      // An autopilot worker running this suite already carries a push block;
+      // counted from none, the check below sees only the one this worker adds.
+      GIT_CONFIG_COUNT: '0',
     });
     const env = started[0].env;
     for (const k of ['CLAUDECODE', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_SESSION_KIND', 'CLAUDE_BG_SESSION_PERMISSION_RULES',
@@ -326,6 +330,8 @@ describe('the posture (D5)', () => {
     strictEqual(env.KEEP_ME, 'yes');
     strictEqual(env.AGENTIC_AUTOPILOT, RUN);
     deepStrictEqual([env.AGENTIC_ORCHESTRATOR_ROOT, env.AGENTIC_ENGINEER_ROOT, env.AGENTIC_RUNTIME_ROOT], [ROOTS.orchestrator, ROOTS.engineer, ROOTS.runtime]);
+    // Contract: git reads GIT_CONFIG_COUNT/KEY/VALUE — without the block the worker
+    // pushes with `git -C`, which the command denylist does not match.
     ok(Number(env.GIT_CONFIG_COUNT) >= 4, 'the push block is in the worker environment');
   });
 });

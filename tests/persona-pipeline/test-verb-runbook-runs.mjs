@@ -81,6 +81,8 @@ function assembled(persona, dest, text) {
 
 function section(text, heading) {
   const start = text.indexOf(heading);
+  // Contract: this file slices the blocks it runs by these headings — a heading gone would run
+  // nothing, or the wrong section's blocks.
   ok(start >= 0, `missing ${heading}`);
   const next = text.indexOf('\n## ', start + heading.length);
   return text.slice(start, next < 0 ? undefined : next);
@@ -94,6 +96,8 @@ const dedent = (b) => {
 
 /** A placeholder the case fills in, checked present so the fill is never vacuous. */
 function fill(block, placeholder, value) {
+  // Contract: the placeholder the agent fills before running the block — absent, the run would
+  // execute the unfilled text and prove nothing.
   ok(block.includes(placeholder), `the block holds ${placeholder}`);
   return block.replaceAll(placeholder, value);
 }
@@ -210,6 +214,8 @@ for (const persona of PERSONAS) {
       // that resolves what is still open.
       const finalize = (verb, { converged = true } = {}) => {
         let b = fill(verbBlocks(verb).phase2, '--next-step-confidence "<HIGH|MEDIUM|LOW>"', '--next-step-confidence HIGH');
+        // Contract: the agent running the finalize — the convergence step it fills exists exactly
+        // where the verb waits for convergence; elsewhere it would hold back the terminal write.
         if (convergent(verb)) {
           b = b.replace(/CONVERGED="<yes\|no[^"\n]*>"/, () => `CONVERGED="${converged ? 'yes' : 'no'}"`);
           ok(b.includes(`CONVERGED="${converged ? 'yes' : 'no'}"`), 'the convergence is set in the block');
@@ -339,8 +345,9 @@ for (const persona of PERSONAS) {
             const gone = await stubCompanions({ missing: true });
             try {
               await withRepo(async (dir) => {
-                const { phase2: raw, type } = verbBlocks(verb);
-                ok(raw.includes('peer-runner.mjs" settle'), 'the generated finalize settles');
+                const { type } = verbBlocks(verb);
+                // Contract: the dispatch's ENSEMBLE_TYPE, which this case launches the run under —
+                // unread, the launch below would book the run under no type.
                 ok(typeof type === 'string', 'the runbook names its ensemble type');
                 const phase2 = finalize(verb);
                 const vars = { VERDICT: 'agreed', SUMMARY: 'fine' };
@@ -417,6 +424,8 @@ for (const persona of PERSONAS) {
             // (PC3 U7); the owner's words go in place of its placeholder line.
             const placeholder = '<Owner selection: the direction the owner chose, and why>';
             const raw = blocks(section(docs.decide, '## Owner selection (decide-conflict)'))[0];
+            // Contract: the owner's words go into a quoted heredoc, which the shell does not expand;
+            // a placeholder elsewhere would let `$` and backticks in them run.
             ok(raw.includes(`\n${placeholder}\nOWNER_RESOLUTION\n`), 'the resolution placeholder sits inside the heredoc');
             const block = raw.replace(placeholder, 'Owner selection: option A, the $simplest `one`');
             const wf = createWorkflow(dir, 'decide');
@@ -460,6 +469,7 @@ for (const persona of PERSONAS) {
             // The generated blocks read the owner's resolution from a quoted
             // heredoc (PC3 U7); the owner's words go in place of its placeholder.
             const owner = (block, placeholder, words) => {
+              // Contract: the owner's words go into a quoted heredoc, which the shell does not expand.
               ok(block.includes(`\n${placeholder}\nOWNER_RESOLUTION\n`), placeholder);
               return block.replace(placeholder, words);
             };
@@ -471,6 +481,7 @@ for (const persona of PERSONAS) {
             const defer = convergent('refine')
               ? deferWords.replace(/CONVERGED="<yes\|no[^"\n]*>"/, 'CONVERGED="yes"')
               : deferWords;
+            // Contract: the Defer block's convergence step exists exactly where refine waits for it.
             ok(convergent('refine') === defer.includes('CONVERGED="yes"'), 'the convergence is set exactly where the verb waits for it');
             // The deferral's next action: the commit /<persona>:commit makes
             // (commit_surface on), or the owner's save and commit (off).

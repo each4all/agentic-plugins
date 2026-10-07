@@ -207,6 +207,8 @@ const inSuite = (suite, contract) => new RegExp(
 );
 const IDENTITY = /^identity: persona, verb, phase, ensemble type and run-id prefix/;
 const PRIVACY = /^privacy: the prohibition sentence precedes the dispatch/;
+// The finalize reads the phase note from a quoted heredoc (M11, M18, M21, M33).
+const HEREDOC = /^the phase note is read from a quoted heredoc and passed as "\$NOTE" \(PD2\)$/;
 const verbCaught = (contract, verbs = VERB_RUNBOOKS) => ['founder', 'designer'].flatMap((p) => verbs.map((v) => new RegExp(
   `(?:^| > )${`${p}/commands/${v}.md (committed)`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} > ${contract.source.replace(/^\^/, '')}`,
 )));
@@ -233,15 +235,14 @@ const isSkill = (dest) => dest.startsWith('core/skills/');
 // PC3b U3b: the verb skills' finish paragraph and its contract.
 const FINISH = 'regions/skill-verb-finish.md';
 const FINISH_CONVERGENT = 'regions/skill-verb-finish-convergent.md';
-const FINISH_CONTRACT = /^the finish paragraph states the command's last write, the footer and the archive timing, by capability$/;
-// PC3b U3c: the start skill's finish region and the start runbook's footer.
+const FINISH_CONTRACT = /^the finish paragraph names the handoff by capability, and its citations resolve inside the plugin$/;
+// PC3b U3c: the start skill's finish region.
 const START_FINISH = 'regions/skill-start-finish.md';
-const START_FINISH_CONTRACT = /^the finish paragraph states the lifecycle's last write, the footer and the archive timing, by declaration$/;
-const START_FOOTER_CONTRACT = /^the terminal region states the footer, once, with the detached-HEAD rule as the scripts apply it$/;
+const START_FINISH_CONTRACT = /^the finish paragraph names the lifecycle's last write, by declaration, and its citations resolve$/;
 // The privacy contract of each runbook a privacy template renders into, from
 // its enrollment: start's has its own name (Codex review of PC2a3: the
 // verbCaught default left critique, refine and start unrequired).
-const START_PRIVACY = /^start privacy: the prohibition precedes the lifecycle/;
+const START_PRIVACY = /^start privacy: the prohibition precedes the phase boundaries/;
 const privacyCaught = (template) => [
   ...templateCaught(template, PRIVACY, (d) => d.startsWith('commands/') && d !== 'commands/start.md'),
   ...templateCaught(template, START_PRIVACY, (d) => d === 'commands/start.md'),
@@ -1060,13 +1061,13 @@ export const MUTATIONS = [
   {
     id: 'G58', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/start-phase-boundary.md', from: "- **No phase closes the workflow.** A verb's own terminal write\n  (`finish-verb`) never runs inside the lifecycle; the lifecycle's last step\n  below makes its one terminal write.\n", to: '' }),
-    killed_by: templateCaught('regions/start-phase-boundary.md', /^start lifecycle: the workflow begins at investigate/),
+    killed_by: templateCaught('regions/start-phase-boundary.md', /^start lifecycle: each phase boundary writes state and dispatches its ensemble, settles each attempt by run id, records and clears owner gates, and never runs a verb's finish-verb/),
     why: "the lifecycle no longer says a verb's own terminal write never runs inside it, so a decide that finishes closes the lifecycle mid-way (PC2b RV3)",
   },
   {
     id: 'G59', tests: [T_SKILL],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-start-command-intro.md', from: "settled from its run ledger (`peer-runner.mjs settle`) before the next phase,\na repeated phase under a new run id.", to: 'committed when the lifecycle ends.' }),
-    killed_by: templateCaught('regions/skill-start-command-intro.md', /^start names only the Phase 0 steps its runbook runs, and the gates it states$/),
+    killed_by: templateCaught('regions/skill-start-command-intro.md', /^start's intro gives the clean-baseline gate, the handoff commands, the accept flag and the lifecycle's calls$/),
     why: "the start skill says the lifecycle commits its ensembles at the end, where each phase's attempt is settled before the next (PC2b RV3)",
   },
 
@@ -1240,8 +1241,8 @@ export const MUTATIONS = [
   },
   {
     id: 'V6', tests: [T_VERBS], file: 'plugins/designer/commands/refine.md',
-    from: 'if [ "${CONVERGED:-no}" = "yes" ]; then',
-    to: 'if true; then',
+    from: 'CONVERGED="<yes|no — from the re-critique verdict; unset means no>"\nif [ "${CONVERGED:-no}" = "yes" ]; then',
+    to: 'CONVERGED="<yes|no — from the re-critique verdict; unset means no>"\nif true; then',
     why: 'designer refine closes the workflow without a converged re-critique while its declaration says it waits for one (DD5)',
   },
   {
@@ -1340,14 +1341,14 @@ export const MUTATIONS = [
   },
   {
     id: 'V8', tests: [T_VERBS], file: 'plugins/designer/commands/refine.md',
-    from: '  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \\\n',
-    to: '  :; else\n  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \\\n',
+    from: '  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \\\n    --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \\\n    --next-action \'<compact',
+    to: '  :; else\n  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \\\n    --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \\\n    --next-action \'<compact',
     why: 'designer refine\'s terminal write moves to the else branch: it runs when the re-critique did not converge',
   },
   {
     id: 'V9', tests: [T_VERBS], file: 'plugins/designer/commands/refine.md',
-    from: 'if [ "${CONVERGED:-no}" = "yes" ]; then',
-    to: 'node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb --workflow-path "$ACTIVE"\nif [ "${CONVERGED:-no}" = "yes" ]; then',
+    from: 'CONVERGED="<yes|no — from the re-critique verdict; unset means no>"\nif [ "${CONVERGED:-no}" = "yes" ]; then',
+    to: 'CONVERGED="<yes|no — from the re-critique verdict; unset means no>"\nnode "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb --workflow-path "$ACTIVE"\nif [ "${CONVERGED:-no}" = "yes" ]; then',
     why: 'designer refine gains a second, unguarded terminal write next to the guarded one',
   },
   {
@@ -1498,7 +1499,7 @@ export const MUTATIONS = [
   {
     id: 'M6', tests: [T_CONTRACT, T_CHAR],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-phase-0.md', from: '  exit "$FIND_RC"\n', to: '' }),
-    killed_by: verbCaught(/^Phase 0 names the persona before its guard/),
+    killed_by: verbCaught(/^Phase 0 stops on a detached HEAD before it finds the workflow into \$ACTIVE, and exits on a failed find$/),
     why: 'a failed find-active no longer stops Phase 0',
   },
   {
@@ -1519,17 +1520,12 @@ export const MUTATIONS = [
     killed_by: templateCaught('regions/verb-dispatch.md', /^privacy: the prohibition sentence precedes the dispatch/),
     why: 'the dispatch passes a screenshot to a companion path that has no image channel',
   },
-  {
-    id: 'M10', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '{{artifact}}\n\n', to: '' }),
-    killed_by: verbCaught(/^the phase note: the scaffold right above the finalize block is the recorded one/),
-    why: 'the phase-note scaffold loses its artifact sections',
-  },
+  // Dropped with C1 (E1 rule 3): M10 — the phase note's wording, which no program reads (the characterization fixture records it, C3's to judge).
   {
     id: 'M11', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: "NOTE <<'PHASE_NOTE' || true", to: 'NOTE <<PHASE_NOTE || true' }),
     // bash only: the suite runs the other shells only where they are installed.
-    killed_by: [/^bash: the finalize block hands a hostile note to state\.mjs byte for byte/, ...verbCaught(/^the phase note: the scaffold right above the finalize block/)],
+    killed_by: [/^bash: the finalize block hands a hostile note to state\.mjs byte for byte/, ...verbCaught(HEREDOC)],
     why: 'the heredoc is unquoted: the shell expands $(…), backticks and $VARS in the note the agent wrote (the ADR-0059 class)',
   },
   {
@@ -1603,7 +1599,7 @@ export const MUTATIONS = [
   {
     id: 'M18', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '[ -n "$NOTE" ] || { echo "✗ No phase note was read; nothing was written." >&2; exit 1; }\n', to: '' }),
-    killed_by: [/^dash: a shell whose read has no -d stops the finalize block before any write/, ...verbCaught(/^the phase note: the scaffold right above the finalize block/)],
+    killed_by: [/^dash: a shell whose read has no -d stops the finalize block before any write/, ...verbCaught(HEREDOC)],
     why: 'a shell whose read has no -d records an empty note and archives the workflow',
   },
   {
@@ -1621,7 +1617,7 @@ export const MUTATIONS = [
   {
     id: 'M21', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: 'so when the note itself holds\nsuch a line, replace both `PHASE_NOTE` delimiters with a word no line of the\nnote consists of.', to: 'so keep it short.' }),
-    killed_by: verbCaught(/^the phase note: the scaffold right above the finalize block/),
+    killed_by: verbCaught(HEREDOC),
     why: 'the agent is no longer told to rename a delimiter its note holds: such a note runs its tail as shell',
   },
 
@@ -1649,7 +1645,7 @@ export const MUTATIONS = [
       writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
       regenerate(copy);
     },
-    killed_by: verbCaught(/^the phase note: the scaffold right above the finalize block is the recorded one/, ['investigate']),
+    killed_by: [/(?:^| > )founder\/investigate > does what the fixture recorded, with the listed changes/, /(?:^| > )designer\/investigate > does what the fixture recorded, with the listed changes/],
     why: 'investigate\'s note headings swap the ensemble type and the profile (the launch line names the brief, the synthesis the scan)',
   },
   {
@@ -1694,20 +1690,7 @@ export const MUTATIONS = [
     killed_by: verbCaught(/^Phase 0\.5: the args-file pins hold/, ['decide']),
     why: 'the resolver gets the typed text through the shell again instead of the args file (ADR-0059)',
   },
-  {
-    id: 'M29', tests: [T_CONTRACT],
-    prepare: (copy) => {
-      const path = join(copy, 'persona-pipeline/manifest.json');
-      const manifest = JSON.parse(readFileSync(path, 'utf8'));
-      const region = manifest.regions.find((r) => r.id === 'decide-resolve');
-      if (!region) throw new MutationHarnessError('no decide-resolve region');
-      region.substitutions.fallback_preset = { value: 'default', context: 'markdown' };
-      writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
-      regenerate(copy);
-    },
-    killed_by: inSuite('designer/commands/decide.md (committed)', /^Phase 0\.5: the args-file pins hold/),
-    why: 'the prose names founder\'s fallback preset for every persona: designer\'s decide says "default" while its registry falls back to "balanced"',
-  },
+  // Dropped with C1 (E1 rule 3): M29 — prose no program reads and no run, order, stop or hand-off depends on.
   {
     id: 'M30', tests: [T_CONTRACT],
     prepare: (copy, tools) => canonicalDefect(copy, tools, { dest: 'scripts/decide-registry.mjs', from: '    if (presetId) {\n', to: '    if (presetId !== undefined) {\n' }),
@@ -1718,7 +1701,7 @@ export const MUTATIONS = [
   {
     id: 'M33', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '# value the shell inherited must not stand in for the note.\nunset NOTE\n', to: '# value the shell inherited must not stand in for the note.\n' }),
-    killed_by: [/^dash: a shell whose read has no -d stops the finalize block before any write/, ...verbCaught(/^the phase note: the scaffold right above the finalize block/)],
+    killed_by: [/^dash: a shell whose read has no -d stops the finalize block before any write/, ...verbCaught(HEREDOC)],
     why: 'a NOTE the shell inherited stands in for the note a shell without read -d could not take, and is recorded and archived',
   },
   {
@@ -1760,7 +1743,7 @@ export const MUTATIONS = [
       }
       writeFileSync(path, moved);
     },
-    killed_by: [inSuite('designer/commands/refine.md (committed)', /^the finalize follows the finalize heading region and every extension/)],
+    killed_by: [inSuite('designer/commands/refine.md (committed)', /^the finalize follows the finalize heading region, every extension and the dispatch$/)],
     why: 'designer refine\'s terminal write moves above its convergence-bound extension: the extension now follows the terminal write',
   },
   {
@@ -1772,7 +1755,7 @@ export const MUTATIONS = [
       if (!para) throw new MutationHarnessError('designer refine: no bounded-convergence paragraph');
       writeFileSync(path, text.replace(para[0], ''));
     },
-    killed_by: [inSuite('designer/commands/refine.md (committed)', /^each extension holds the text its slot exists for/)],
+    killed_by: [inSuite('designer/commands/refine.md (committed)', /^each extension holds the instructions its slot exists for$/)],
     why: 'designer refine keeps the extension marker but loses the bounded-convergence text it stands for',
   },
   {
@@ -1783,8 +1766,8 @@ export const MUTATIONS = [
   },
   {
     id: 'M39', tests: [T_CONTRACT], file: 'plugins/designer/commands/refine.md',
-    from: 'if [ "${CONVERGED:-no}" = "yes" ]; then',
-    to: 'if [ "${CONVERGED:-yes}" = "yes" ]; then',
+    from: 'CONVERGED="<yes|no — from the re-critique verdict; unset means no>"\nif [ "${CONVERGED:-no}" = "yes" ]; then',
+    to: 'CONVERGED="<yes|no — from the re-critique verdict; unset means no>"\nif [ "${CONVERGED:-yes}" = "yes" ]; then',
     killed_by: [inSuite('designer/commands/refine.md (committed)', /^refine finalize, run: /)],
     why: 'designer refine closes the workflow when CONVERGED was never assigned (the guard fails open)',
   },
@@ -1798,18 +1781,7 @@ export const MUTATIONS = [
   },
   // M41 (founder critique committed a red-team result under another type) is
   // gone with PC2b U5a: settle names no type, it reads the ledger's.
-  {
-    id: 'M42', tests: [T_CONTRACT],
-    prepare: (copy) => {
-      const path = join(copy, 'plugins/designer/commands/critique.md');
-      const text = readFileSync(path, 'utf8');
-      const para = /\*\*Dual input \(ADR-0042 SD4\)\*\*[\s\S]*?\n\n/.exec(text);
-      if (!para) throw new MutationHarnessError('designer critique: no dual-input paragraph');
-      writeFileSync(path, text.replace(para[0], ''));
-    },
-    killed_by: [inSuite('designer/commands/critique.md (committed)', /^each extension holds the text its slot exists for/)],
-    why: 'designer critique keeps its dual-input marker but loses the host-direct vision text it stands for',
-  },
+  // Dropped with C1 (E1 rule 3): M42 — prose no program reads and no run, order, stop or hand-off depends on.
   {
     id: 'M43', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-finalize-convergent.md', from: "  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" append \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n    --current-phase phase-2-presented \\\n", to: "  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" set-terminal \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n    --terminal-phase summary-complete \\\n" }),
@@ -1891,20 +1863,7 @@ export const MUTATIONS = [
     killed_by: templateCaught('regions/skill-decide-approval-gate.md', /^decide waits for the user's explicit choice/),
     why: 'decide proceeds without the user\'s choice',
   },
-  {
-    id: 'M55', tests: [T_SKILL],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-checkpoint-host-availability.md', from: '`[{{persona}}-active-metadata]`', to: '`[{{persona}}-metadata]`' }),
-    killed_by: templateCaught('regions/skill-checkpoint-host-availability.md', /^the checkpoint is written to the workflow Phase 1 found/),
-    why: 'the checkpoint skill names a re-injection marker the persona\'s hook never prints',
-  },
-  {
-    id: 'M56', tests: [T_SKILL],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-start-command-intro.md', from: 'detached-HEAD guard,\nclean-baseline gate', to: 'detached-HEAD guard,\nredundancy probe, clean-baseline gate' }),
-    // The defect is in the commit_surface-off branch: engineer renders the
-    // other one, where the probe is real (PC3b U3).
-    killed_by: templateCaught('regions/skill-start-command-intro.md', /^start names only the Phase 0 steps its runbook runs/).filter((r) => !/engineer/.test(r.source)),
-    why: 'start\'s skill names a redundancy probe its runbook never runs (the founder text before PC2a3)',
-  },
+  // Dropped with C1 (E1 rule 3): M55, M56 — the text restated what a script does, which that script's own tests run.
   // PC2a3 U7(b): the privacy gate critique, refine and start state in SKILL.md,
   // the runbooks' template with the spec cited from the skill's directory.
   {
@@ -1936,12 +1895,7 @@ export const MUTATIONS = [
     why: 'designer refine\'s skill keeps its screenshot label but now sends the screen to the peer as bytes (authored text after the regions)',
   },
   // Codex review of PC2a3 (code step 3): each of these passed the reviewed tests.
-  {
-    id: 'M61', tests: [T_SKILL], file: 'plugins/designer/core/skills/start/SKILL.md',
-    from: '**Carry the archetype inline, not as durable state.**', to: '**Carry the archetype.**',
-    killed_by: inSuite('designer/core/skills/start/SKILL.md (committed)', /^each extension this persona's slots hold states the sentences it exists for/),
-    why: 'designer start\'s skill keeps its archetype marker but loses the inline-carry rule it stands for',
-  },
+  // Dropped with C1 (E1 rule 3): M61 — prose no program reads and no run, order, stop or hand-off depends on.
   {
     id: 'M62', tests: [T_SYNC], file: 'plugins/designer/core/skills/start/SKILL.md',
     from: '<!-- pipeline:extension start-archetype -->\n', to: '',
@@ -1986,33 +1940,14 @@ export const MUTATIONS = [
     killed_by: templateCaught('regions/start-phase-boundary.md', /^start lifecycle: /),
     why: 'start stops writing state at its phase boundaries',
   },
-  {
-    id: 'M69', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/start-initial-verb.md', from: 'The initial `verb` is `investigate`', to: 'The initial `verb` is `frame`' }),
-    killed_by: templateCaught('regions/start-initial-verb.md', /^start lifecycle: /),
-    why: 'start says its workflow begins at frame, not where the bootstrap creates it',
-  },
+  // Dropped with C1 (E1 rule 3): M69 — the text restated what a script does, which that script's own tests run.
   {
     id: 'M70', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/start-bootstrap.md', from: 'if [ "$BASELINE_RC" -ne 0 ]; then', to: 'if [ "$BASELINE_RC" -ne 0 ] && [ -z "$BASELINE" ]; then' }),
     killed_by: templateCaught('regions/start-bootstrap.md', /^start bootstrap, run: /),
     why: 'a failed clean-baseline check that printed a clean status creates the workflow',
   },
-  {
-    id: 'M71', tests: [T_CONTRACT],
-    prepare: (copy) => {
-      const path = join(copy, 'plugins/designer/commands/critique.md');
-      const text = readFileSync(path, 'utf8');
-      const heading = /<!-- pipeline:begin critique-finalize-heading -->\n[\s\S]*?<!-- pipeline:end critique-finalize-heading -->\n/.exec(text);
-      const anchor = '<!-- pipeline:end critique-dispatch -->\n';
-      if (!heading || !text.includes(anchor)) throw new MutationHarnessError('designer critique: no finalize heading region or dispatch end');
-      const moved = text.replace(heading[0], () => '').replace(anchor, () => `${anchor}\n${heading[0]}`);
-      if (moved.split(heading[0]).length !== 2) throw new MutationHarnessError('designer critique: the heading did not move whole');
-      writeFileSync(path, moved);
-    },
-    killed_by: [inSuite('designer/commands/critique.md (committed)', /^the finalize follows the finalize heading region and every extension/)],
-    why: 'designer critique\'s finalize heading moves above the synthesis instruction: the note would be finalized before the peer result is synthesized',
-  },
+  // Dropped with C1 (E1 rule 3): M71 — paragraph order the finalize block's own inputs already force (its note and verdict come from the synthesis).
   {
     id: 'M72', tests: [T_CONTRACT], file: 'plugins/designer/commands/refine.md',
     from: 'CONVERGED="<yes|no — from the re-critique verdict; unset means no>"', to: 'CONVERGED="yes"',
@@ -2090,7 +2025,7 @@ export const MUTATIONS = [
   {
     id: 'X3', tests: [T_REF],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/routing-routes.md', from: 'can be carried from idea to its saved artifact on the current branch.', to: 'can be carried from idea to commit on the current branch.' }),
-    killed_by: /the capability text agrees with the declaration$/,
+    killed_by: /the routing templates keep each claim under its capability, in every legal combination \(PC3b U5b\) > dispatch_target false, commit_surface false, legacy_homes (?:true|false)$/,
     why: 'the start route promises a commit to a persona whose commit_surface is off',
   },
   {
@@ -2117,18 +2052,7 @@ export const MUTATIONS = [
     killed_by: /the capability text agrees with the declaration$/,
     why: "designer's investigate proposal offers a next step outside the closed vocabulary finish-verb records (RV5; retargeted in PC2b U6b, where commit and done joined the vocabulary)",
   },
-  {
-    id: 'X8', tests: [T_REF],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/routing-preflight-policy.md', from: 'capture` with `--next-session-prompt`.', to: 'capture` with `--next-session-prompt` — the projection itself is\n  ephemeral and is never written to a second state-like artifact.' }),
-    killed_by: /the preflight states what the generated scripts do \(RV1\)$/,
-    why: "the preflight restores engineer's claim that the projection is never persisted (RV1)",
-  },
-  {
-    id: 'X9', tests: [T_REF],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/routing-preflight-policy.md', from: "automatic archive happens in the persona's Stop hook, preserving the", to: 'real archive still happens only via the Stop hook after a real commit, preserving the' }),
-    killed_by: /the preflight states what the generated scripts do \(RV1\)$/,
-    why: "the preflight restores engineer's claim that archiving happens only after a real commit (RV1)",
-  },
+  // Dropped with C1 (E1 rule 3): X8, X9 — the text restated what a script does, which that script's own tests run.
   {
     id: 'X10', tests: [T_REF, T_CODEX],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/routing-lens.md', from: 'Codex injects the mentioned skill with its absolute path, and', to: 'Codex hands the agent the mentioned skill, and' }),
@@ -2136,30 +2060,14 @@ export const MUTATIONS = [
     why: 'the lens keeps a valid citation of the checkpoint table but loses where the Codex root comes from (RV9)',
   },
 
-  {
-    id: 'X11', tests: [T_REF],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-verb-present.md', from: 'Follow the Presentation Mode Protocol\n(`../_shared/references/presentation-protocol.md`) before presenting.\n\n', to: '' }),
-    killed_by: /every verb skill's Present step follows the protocol, in each invocation mode \(RV6\)$/,
-    why: "a generated Present site (compose's command mode) loses its protocol citation",
-  },
-  {
-    id: 'X12', tests: [T_REF], file: 'plugins/founder/core/skills/critique/SKILL.md',
-    from: '### Step 3: Synthesize\n\nFollow the Presentation Mode Protocol\n(`../_shared/references/presentation-protocol.md`) before presenting.\n\n', to: '### Step 3: Synthesize\n\n',
-    killed_by: /every verb skill's Present step follows the protocol, in each invocation mode \(RV6\)$/,
-    why: "an authored Present site (founder critique, auto-activated) loses its protocol citation",
-  },
+  // Dropped with C1 (E1 rule 3): X11, X12 — presentation pacing prose or its citation; the autopilot no-ask rule stays pinned.
   {
     id: 'X13', tests: [T_REF, T_CHAR],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '(per `core/skills/_shared/references/entry-routing-contract.md` § Active Next-Action Proposal — derived from this artifact, not a fixed table)\n', to: '' }),
-    killed_by: [/the finalize note and the start routing cite the persona's own contract$/, /does what the fixture recorded, with the listed changes/],
+    killed_by: /does what the fixture recorded, with the listed changes/,
     why: 'the finalize note drops its citation of the entry-routing contract (RV4)',
   },
-  {
-    id: 'X14', tests: [T_REF],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/presentation-rules.md', from: 'so this is a single-item presentation and the protocol does\nnot split it', to: 'so interview mode presents it as 4 per-option segments + 1 aggregate, [1/4] Option A first' }),
-    killed_by: /the presentation protocol ships whole, with the decision item as its unit \(RV3\)$/,
-    why: "Example 1 reverts to engineer's per-option segments (RV3)",
-  },
+  // Dropped with C1 (E1 rule 3): X14 — presentation pacing prose or its citation; the autopilot no-ask rule stays pinned.
   {
     id: 'X15', tests: [T_ARCH],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/handoff-wiring.md', from: 'The Stop hook fires at **every turn end**, so the archive gates', to: 'The Stop hook fires at **session close**, so the archive gates' }),
@@ -2168,7 +2076,7 @@ export const MUTATIONS = [
   },
   {
     id: 'X16', tests: [T_REF], file: 'scripts/lib/persona-pipeline.mjs',
-    from: ": `${profile.split('-').join('_')}.md`;", to: ": profile.split('-').join('_');",
+    from: ": `${briefProfile.split('-').join('_')}.md`;", to: ": briefProfile.split('-').join('_');",
     killed_by: /the output-file rules name the brief file and output root the declaration implies \(RD7\)$/,
     why: 'derived.brief_file loses its .md, so the assembled output-file rules name a file the investigate verb never writes',
   },
@@ -2178,12 +2086,7 @@ export const MUTATIONS = [
     killed_by: /fails on an investigate artifact naming another brief file$/,
     why: 'the brief_file cross-field rule is dropped (RD7)',
   },
-  {
-    id: 'X18', tests: [T_REF],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/handoff-wiring.md', from: "live in {{persona}}'s own\n`entry-routing-contract.md` § Session-Level Continue-vs-Fresh Preflight\n(ADR-0031), beside this file", to: "live in the engineer plugin's\n`entry-routing-contract.md` § Session-Level Continue-vs-Fresh Preflight\n(ADR-0031)" }),
-    killed_by: /the session handoff cites this persona's own preflight section \(D6\)$/,
-    why: "the handoff's D6 citation reverts to engineer's contract",
-  },
+  // Dropped with C1 (E1 rule 3): X18 — a citation's wording, past what the resolution check reads.
 
   {
     id: 'X19', tests: [T_REF], file: 'plugins/founder/core/skills/investigate/SKILL.md',
@@ -2216,22 +2119,12 @@ export const MUTATIONS = [
     killed_by: /the ensemble Collect reads the runner result before any envelope, in the runner's own terms \(RV10\)$/,
     why: 'the Collect step reads the envelope before the runner result, which may name none (RV10)',
   },
-  {
-    id: 'X24', tests: [T_REF],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/ensemble-bookkeeping.md', from: '**`peer-now` is structurally excluded** from `ensemble_results`, by two\nindependent mechanisms:', to: 'Two mechanisms keep `ensemble_results` to verb ensembles:' }),
-    killed_by: /State Bookkeeping excludes peer-now, and the peer-now skill agrees \(RV7\)$/,
-    why: "State Bookkeeping drops the peer-now exclusion that both personas' peer-now skills cite (RV7)",
-  },
-  {
-    id: 'X25', tests: [T_REF], file: 'plugins/designer/core/skills/_shared/references/ensemble-protocol.md',
-    from: '<!-- pipeline:end ensemble-bookkeeping -->\n', to: '<!-- pipeline:end ensemble-bookkeeping -->\n\n**Do not record an ensemble that never ran.** When the privacy gate\nforces local-only, or the companion is unavailable, skip\n`ensemble-commit` entirely.\n',
-    killed_by: /no runbook guards ensemble-commit on shell variables, and the protocol says settle decides from the run ledger instead \(D2, PC2b U5b\)$/,
-    why: "designer's protocol tells the agent again to skip ensemble-commit by hand, beside the settle rule that decides it from the ledger (D2, PC2b U5b)",
-  },
+  // Dropped with C1 (E1 rule 3): X24 — prose no program reads and no run, order, stop or hand-off depends on.
+  // Dropped with C1 (E1 rule 3): X25 — the text restated what a script does, which that script's own tests run.
   {
     id: 'X26', tests: [T_REF], file: 'plugins/founder/core/skills/peer-now/SKILL.md',
     from: '(`--workflow-path /\n--phase / --ensemble-type`)', to: '(`--workflow-path /\n--phase / --ensemble-type / --run-id`)',
-    killed_by: /State Bookkeeping excludes peer-now, and the peer-now skill agrees \(RV7\)$/,
+    killed_by: /(?:^| > )founder: reference contracts > committed: the peer-now skill omits exactly the accounting flags its dispatch omits, and the dispatch passes --run-id$/,
     why: "founder's peer-now skill lists --run-id among the flags it omits, which its dispatch passes (RV7)",
   },
   {
@@ -2247,29 +2140,21 @@ export const MUTATIONS = [
     killed_by: /the brief ensemble gates before dispatch and collects the runner result first, as the investigate runbook dispatches \(RD8, RV10\)$/,
     why: "the brief ensemble's Step 2 reverts to reading the envelope from the companion's stdout (RV10)",
   },
-  {
-    id: 'X29', tests: [T_REF],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/brief-spec-label-policy.md', from: 'the bidirectional {{ensemble_type}} ensemble (per', to: 'the bidirectional ensemble (per' }),
-    killed_by: /the brief spec's label policy names the declared ensemble type and brief ensemble \(RD8\)$/,
-    why: 'the label policy loses the ensemble type (RD8)',
-  },
+  // Dropped with C1 (E1 rule 3): X29 — prose no program reads and no run, order, stop or hand-off depends on.
   {
     id: 'X30', tests: [T_REF],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/orchestration-failure.md', from: "If any local analysis fails to return (timeout, error, or empty result):\nnotify the user which perspective failed, ask retry-or-proceed, follow the\nuser's decision, and if proceeding note the missing perspective in the\nsynthesis so the user knows coverage was incomplete. ", to: '' }),
-    killed_by: /the orchestration failure handling keeps every case, and each Task Profile names this persona \(RD9, PC3b U5b\)$/,
+    killed_by: /committed: the orchestration failure handling stops to ask on a failed local analysis and never blocks on a peer failure$/,
     why: "orchestration.md's failure handling drops the local-analysis case (RD9)",
   },
+  // Dropped with C1 (E1 rule 3): X31 — prose no program reads and no run, order, stop or hand-off depends on.
   {
-    id: 'X31', tests: [T_REF],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/brief-ensemble-failure.md', from: '### Peer returns PEER-ONLY claim with no source URL\n\n- Treat as malformed at the per-claim level (no source URL means nothing\n  to verify).\n- Discard the claim. Do NOT add it to Open Questions — there is nothing\n  to follow up on.\n\n', to: '' }),
-    killed_by: /the failure handling sections keep every case \(RD8, RD9\)$/,
-    why: "the brief ensemble's failure handling drops a subsection (RD8)",
-  },
-  {
+    // C1 critique: re-added; the agent re-dispatches before inspecting, under
+    // a run id the runner refuses (E1 rule 2).
     id: 'X32', tests: [T_REF],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/brief-ensemble-state.md', from: 'Inspect that run before dispatching again:', to: 'The next session must re-dispatch (the helper is idempotent on `run_id`\nso duplicate entries do not accumulate). Inspect that run before\ndispatching again:' }),
     killed_by: /the brief recovery inspects the run before a retry, in the runner's terms \(RV11\)$/,
-    why: "the brief recovery regains the false 'idempotent on run_id' claim (RV11)",
+    why: "the brief recovery regains the false 'idempotent on run_id' claim and sends the agent to re-dispatch before it inspects the run (RV11)",
   },
   {
     id: 'X33', tests: [T_REF], file: 'plugins/designer/core/skills/investigate/references/design-brief-ensemble.md',
@@ -2296,18 +2181,7 @@ export const MUTATIONS = [
     killed_by: /the brief recovery inspects the run before a retry, in the runner's terms \(RV11\)$/,
     why: 'the brief recovery retries under the old run id, which the runner refuses (Plan-verify of code step 2)',
   },
-  {
-    id: 'X37', tests: [T_REF],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/brief-spec-label-policy.md', from: '- No host-named markers anywhere in the brief — none of `[Local]`,\n  `[Peer]`, `[Both]`, or any host-specific equivalent.\n', to: '' }),
-    killed_by: /the brief spec's label policy names the declared ensemble type and brief ensemble \(RD8\)$/,
-    why: 'the label policy drops its prohibition of source-of-discovery labels (Plan-verify of code step 2)',
-  },
-  {
-    id: 'X38', tests: [T_REF],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/brief-ensemble-failure.md', from: '- Discard the claim. Do NOT add it to Open Questions — there is nothing\n  to follow up on.', to: '- Keep the uncited claim in Findings.' }),
-    killed_by: /the failure handling sections keep every case \(RD8, RD9\)$/,
-    why: "a failure case keeps its heading but changes its action (Plan-verify of code step 2)",
-  },
+  // Dropped with C1 (E1 rule 3): X37, X38 — prose no program reads and no run, order, stop or hand-off depends on.
   {
     id: 'X39', tests: [T_REF], file: 'plugins/designer/commands/critique.md',
     from: '# ADR-0066 PC2b — settle the ensemble attempt from its ledger', to: 'if [ -n "${RUN_ID:-}" ]; then :; fi\n# ADR-0066 PC2b — settle the ensemble attempt from its ledger',
@@ -2317,7 +2191,7 @@ export const MUTATIONS = [
   {
     id: 'X40', tests: [T_REF],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-peer-now-dispatch.md', from: '--run-id "$RUN_ID" --kind peer-now \\', to: '--run-id "$RUN_ID" --kind peer-now --phase peer-now \\' }),
-    killed_by: /State Bookkeeping excludes peer-now, and the peer-now skill agrees \(RV7\)$/,
+    killed_by: /committed: the peer-now skill omits exactly the accounting flags its dispatch omits, and the dispatch passes --run-id$/,
     why: 'the peer-now dispatch passes an ensemble-accounting flag its skill says it omits (Plan-verify of code step 2)',
   },
   {
@@ -2338,24 +2212,9 @@ export const MUTATIONS = [
     killed_by: /the lens's default size keeps a profile preset where the persona has one$/,
     why: "an authored designer skill's lens call goes back to --size=minor, against its contract (Review of code step 3)",
   },
-  {
-    id: 'X44', tests: [T_REF],
-    prepare: (copy, tools) => tools.applyEdit(copy, { file: 'plugins/founder/core/skills/start/SKILL.md', from: '`../_shared/references/entry-routing-contract.md` § Routing Recommendation\nand the sections after it):', to: '`../_shared/references/entry-routing-contract.md` § Routing Recommendation: Missing subsection\nand the sections after it):' }),
-    killed_by: /the finalize note and the start routing cite the persona's own contract$/,
-    why: "start's routing pointer names a subsection the contract does not have, past the citation check's documented limit (Review of code step 3)",
-  },
-  {
-    id: 'X45', tests: [T_REF],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/presentation-rules.md', from: "1. Each direction's full analysis (4 blocks, in order)\n2. The multi-perspective comparison table, after all directions (rows =\n   axes, columns = A/B/C/D)\n", to: "1. The multi-perspective comparison table, after all directions (rows =\n   axes, columns = A/B/C/D)\n2. Each direction's full analysis (4 blocks, in order)\n" }),
-    killed_by: /the presentation protocol ships whole, with the decision item as its unit \(RV3\)$/,
-    why: "Example 1 puts the comparison table before the directions, against decide's output format (Review of code step 3)",
-  },
-  {
-    id: 'X46', tests: [T_REF],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/ensemble-bookkeeping.md', from: 'entry with verdict `failed` and the ledger\'s `error_kind` in its summary;', to: 'entry with the synthesis verdict and the ledger\'s `error_kind` in its summary;' }),
-    killed_by: /no runbook guards ensemble-commit on shell variables, and the protocol says settle decides from the run ledger instead \(D2, PC2b U5b\)$/,
-    why: 'the protocol says a failed run records the synthesis verdict, where settle records verdict failed whatever the agent passed (PC2b U5b)',
-  },
+  // Dropped with C1 (E1 rule 3): X44 — a citation's wording, past what the resolution check reads.
+  // Dropped with C1 (E1 rule 3): X45 — presentation pacing prose or its citation; the autopilot no-ask rule stays pinned.
+  // Dropped with C1 (E1 rule 3): X46 — the text restated what a script does, which that script's own tests run.
   {
     id: 'X47', tests: [T_REF],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/brief-ensemble-state.md', from: "settled: cancel the old run if it is still live, then settle it with\n`peer-runner.mjs settle --run-id <old run_id>`, whether the step retries\nor proceeds local-only.", to: "settled: settle it with `state.mjs ensemble-commit` and a verdict that\nsays the run was abandoned, whether the step retries or proceeds\nlocal-only." }),
@@ -2386,7 +2245,7 @@ export const MUTATIONS = [
   {
     id: 'X51', tests: [T_REF],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/routing-owner-gates.md', from: "`staging-set` belongs to a commit command, and {{persona}} declares\n`commit_surface` off, so `state.mjs` refuses to set it, naming the capability.\n", to: '' }),
-    killed_by: /the owner-gates and next-step tables agree with this persona's state\.mjs \(PC2b DD8\)$/,
+    killed_by: /the routing templates keep each claim under its capability, in every legal combination \(PC3b U5b\) > dispatch_target false, commit_surface false, legacy_homes (?:true|false)$/,
     why: 'the contract stops saying a gate the persona cannot set is refused (PC2b DD2/DD8)',
   },
   {
@@ -2401,22 +2260,7 @@ export const MUTATIONS = [
     killed_by: /the owner-gates and next-step tables agree with this persona's state\.mjs \(PC2b DD8\)$/,
     why: 'state.mjs lets a persona set the capability gates its documents say it refuses: the table is checked against the code, not a restated list (PC2b DD8)',
   },
-  {
-    id: 'X54', tests: [T_REF],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/handoff-wiring.md', from: "  (ADR-0039): the terminal mutation (`state.mjs\n  finish-verb`,", to: "  (ADR-0039): the terminal mutation (`state.mjs\n  set-terminal`," }),
-    killed_by: /the session handoff names finish-verb as the terminal write \(PC2b DD8\)$/,
-    why: 'the session handoff names set-terminal as the completion entry point again, where every runbook now ends in finish-verb (PC2b DD8)',
-  },
-  {
-    id: 'X55', tests: [T_REF],
-    prepare: (copy, tools) => templateDefect(copy, tools, {
-      template: 'regions/verb-finalize.md',
-      from: "`### Ensemble skipped: {{launched}} ({{skip_label}})`",
-      to: "`### Ensemble skipped: {{launched}} (<privacy gate | companion unavailable>)`",
-    }),
-    killed_by: /the skills and the runbooks name finish-verb as the terminal write \(PC2b DD8\)$/,
-    why: 'the finalize offers a skip for a missing companion, where the runner launched that run and settle records it failed (PC2b U6b)',
-  },
+  // Dropped with C1 (E1 rule 3): X54, X55 — the text restated what a script does, which that script's own tests run.
   {
     id: 'X56', tests: [T_REF], file: 'plugins/founder/core/skills/refine/SKILL.md',
     from: '- selected_next:         <verb | commit | done | owner decision>',
@@ -2449,7 +2293,7 @@ export const MUTATIONS = [
   {
     id: 'X60', tests: [T_REF],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/brief-ensemble-failure.md', from: ' `settle` sees\n  an empty or unreadable answer itself; an answer that parses to only\n  structural shell reads to it like any other, so pass `degraded` as the\n  synthesis verdict then.', to: '' }),
-    killed_by: /the failure handling sections keep every case \(RD8, RD9\)$/,
+    killed_by: /committed: the brief ensemble's failure handling settles each attempt, passes degraded for an empty answer and never blocks the save$/,
     why: "the brief's empty-output action leaves an answer of structural shell to settle, which records the agent's verdict for it",
   },
   {
@@ -2794,16 +2638,7 @@ export const MUTATIONS = [
     killed_by: /verb runbooks — Phase 2 \(ADR-0063 D3\) > compose: every write stops the block on failure; the last write is finish-verb with the next step$/,
     why: 'a refused settlement no longer stops the block, so engineer closes the verb with its ensemble attempt unsettled',
   },
-  {
-    id: 'N33', tests: [T_ENG_AP],
-    prepare: (copy, tools) => templateDefect(copy, tools, {
-      template: 'regions/verb-completion-footer.md',
-      from: 'Under an autopilot run `finish-verb` makes no terminal write, so no footer is\nprinted: the driver is the handoff.\n',
-      to: '',
-    }),
-    killed_by: /verb runbooks — Phase 2 \(ADR-0063 D3\) > frame: the completion footer paragraph says autopilot prints none: the driver is the handoff$/,
-    why: "engineer's completion text no longer says an autopilot run prints no footer",
-  },
+  // Dropped with C1 (E1 rule 3): N33 — the footer's wording; the sidecar and footer.mjs are tested by what they print.
   {
     id: 'N34', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, {
@@ -2824,19 +2659,7 @@ export const MUTATIONS = [
     killed_by: /(?:^| > )engineer: verb runbook blocks \(bash, committed\) > frame's finalize: /,
     why: "engineer's generated finalize never settles: a completed run's verdict is not recorded and its pending row stays",
   },
-  {
-    id: 'N36', tests: [T_CONTRACT],
-    prepare: (copy) => {
-      const path = join(copy, 'scripts/lib/persona-pipeline.mjs');
-      const text = readFileSync(path, 'utf8');
-      const from = "derived.ensemble_skip_label = gated ? 'privacy gate' : 'local-only';";
-      if (text.split(from).length !== 2) throw new MutationHarnessError('N36 anchor');
-      writeFileSync(path, text.replace(from, "derived.ensemble_skip_label = 'privacy gate';"));
-      regenerate(copy);
-    },
-    killed_by: /engineer\/commands\/frame\.md \(committed\) > privacy: /,
-    why: "engineer's never-launched note blames a privacy gate engineer does not have",
-  },
+  // Dropped with C1 (E1 rule 3): N36 — the phase note's wording, which no program reads (the characterization fixture records it, C3's to judge).
   {
     id: 'N37', tests: [T_VERB_RB],
     prepare: (copy, tools) => templateDefect(copy, tools, {
@@ -2992,7 +2815,7 @@ export const MUTATIONS = [
   {
     id: 'G75', tests: [T_SKILL],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-start-command-intro.md', from: '{{#capability commit_surface}}\n   commits it (`${{persona}}:commit`),\n{{/capability}}\n', to: '   commits it (`${{persona}}:commit`),\n' }),
-    killed_by: templateCaught('regions/skill-start-command-intro.md', /^start names only the Phase 0 steps its runbook runs/).filter((r) => !/engineer/.test(r.source)),
+    killed_by: templateCaught('regions/skill-start-command-intro.md', /^start's intro gives the clean-baseline gate, the handoff commands, the accept flag and the lifecycle's calls$/).filter((r) => !/engineer/.test(r.source)),
     why: "founder's and designer's start skill tells the user to commit a workflow with a commit command they do not have",
   },
   // PC3b U3, plan-verify peer: only a start workflow resumes, and an owner
@@ -3086,7 +2909,7 @@ export const MUTATIONS = [
   {
     id: 'N58', tests: [T_SKILL],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-start-command-intro.md', from: 'the lifecycle\'s one terminal write is the Phase 7 commit driver\n(`phase7-commit.mjs` in execute mode, which writes `set-terminal` last).', to: 'the lifecycle\'s one terminal write is `finish-verb` at the end.' }),
-    killed_by: /(?:^| > )engineer\/core\/skills\/start\/SKILL\.md \(committed\) > start names only the Phase 0 steps its runbook runs, and the gates it states$/,
+    killed_by: /(?:^| > )engineer\/core\/skills\/start\/SKILL\.md \(committed\) > start's intro gives the clean-baseline gate, the handoff commands, the accept flag and the lifecycle's calls$/,
     why: "engineer's start skill names finish-verb as the lifecycle's terminal write, where its lifecycle ends with the Phase 7 driver",
   },
   {
@@ -3104,26 +2927,18 @@ export const MUTATIONS = [
   {
     id: 'N61', tests: [T_SKILL],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-start-command-intro.md', from: ' so pass\n`--accept-current-tree` to both of its modes (the plan too, so its preview\nmatches what execute commits).', to: '.' }),
-    killed_by: /(?:^| > )engineer\/core\/skills\/start\/SKILL\.md \(committed\) > start names only the Phase 0 steps its runbook runs, and the gates it states$/,
+    killed_by: /(?:^| > )engineer\/core\/skills\/start\/SKILL\.md \(committed\) > start's intro gives the clean-baseline gate, the handoff commands, the accept flag and the lifecycle's calls$/,
     why: "engineer's start skill no longer tells Codex to pass the accepted tree to Phase 7 again, so the commit stages only the manifest intersection (plan-verify peer, PC3b U3)",
   },
   // PC3b U3b: the verb skills' finish paragraph (skill-verb-finish.md). G, a
   // shared defect every persona's contract fails; N, the capability-on
   // branches only engineer renders; M, the off branch and the authored text
   // around the region.
+  // Dropped with C1 (E1 rule 3): G78 — the text restated what a script does, which that script's own tests run.
+  // Dropped with C1 (E1 rule 3): G79 — the footer's wording; the sidecar and footer.mjs are tested by what they print.
   {
-    id: 'G78', tests: [T_SKILL],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINISH, from: 'Unless it ends with an owner gate, that\nwrite is terminal.', to: 'That\nwrite is terminal.' }),
-    killed_by: templateCaught(FINISH, FINISH_CONTRACT),
-    why: 'the skills call the last write terminal even when it records an owner gate, which leaves the workflow open',
-  },
-  {
-    id: 'G79', tests: [T_SKILL],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINISH, from: 'projection; surface the emitted one. On a detached HEAD the branch-based\npreflight reports "no active branch context" and never recommends a fresh\nsession (ADR-0018 §sub-2); the path-targeted terminal sidecar renders the\nfooter as on a branch, its continue-vs-fresh advice included.', to: 'projection; surface the emitted one. On a detached HEAD the sidecar reports\n"no active branch context" and never recommends a fresh session.' }),
-    killed_by: templateCaught(FINISH, FINISH_CONTRACT),
-    why: "the skills say the terminal sidecar renders nothing and never recommends a fresh session on a detached HEAD, engineer's old claim: it is path-targeted and renders as on a branch (ADR-0043 §2)",
-  },
-  {
+    // C1 critique: re-added; when the agent may clear the marker is an order
+    // it follows, which set-terminal's own tests do not see (E1 rule 2).
     id: 'G80', tests: [T_SKILL],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: FINISH, from: 'works only before\nthat Stop fires', to: 'works at any time,\nbefore or after that Stop fires' }),
     killed_by: templateCaught(FINISH, FINISH_CONTRACT),
@@ -3135,12 +2950,7 @@ export const MUTATIONS = [
     killed_by: templateCaught(FINISH, FINISH_CONTRACT).filter((r) => /engineer/.test(r.source)),
     why: "engineer's verb skills no longer tell Codex to ignore autopilot mode, which only Claude runs (ADR-0063)",
   },
-  {
-    id: 'N63', tests: [T_SKILL],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINISH, from: '{{#capability commit_surface}}\n`blocked`, with the commit as its unblocking action', to: '{{#capability commit_surface}}\n`publish-needed`, with the commit as its unblocking action' }),
-    killed_by: templateCaught(FINISH, FINISH_CONTRACT).filter((r) => /engineer/.test(r.source)),
-    why: "engineer's verb skills name the publish-needed state its footer never shows: with a commit surface a remaining commit is blocked",
-  },
+  // Dropped with C1 (E1 rule 3): N63 — the footer's wording; the sidecar and footer.mjs are tested by what they print.
   {
     // PC3b U5b: engineer's routing contract holds § Owner gates now, so every
     // persona's verb skills cite it; N64 is re-aimed at the table itself.
@@ -3149,46 +2959,20 @@ export const MUTATIONS = [
     killed_by: /the routing templates keep each claim under its capability, in every legal combination \(PC3b U5b\) > dispatch_target (true|false), commit_surface (true|false), legacy_homes (true|false)$/,
     why: "the staging-set row renders under legacy_homes instead of commit_surface: no persona's table changes (engineer has both on, founder and designer both off), so only a rendering with the two apart shows the gate offered without a commit command, or missing with one",
   },
+  // Dropped with C1 (E1 rule 3): M78, M79 — the footer's wording; the sidecar and footer.mjs are tested by what they print.
+  // Dropped with C1 (E1 rule 3): M80 — prose no program reads and no run, order, stop or hand-off depends on.
   {
-    id: 'M78', tests: [T_SKILL],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINISH, from: '`publish-needed` when only the owner\'s save and commit remain, since', to: '`blocked` when only the owner\'s save and commit remain, since' }),
-    killed_by: templateCaught(FINISH, FINISH_CONTRACT).filter((r) => !/engineer/.test(r.source)),
-    why: "founder's and designer's verb skills name the blocked state, where their footer shows publish-needed for the owner's own save and commit",
-  },
-  {
-    id: 'M79', tests: [T_SKILL], file: 'plugins/engineer/core/skills/frame/SKILL.md',
-    from: 'hands the model to the invoking command, which owns the write.',
-    to: 'hands the model to the invoking command, which owns the write. The\ncompletion footer is code-emitted on the terminal write.',
-    killed_by: /(?:^| > )engineer\/core\/skills\/frame\/SKILL\.md \(committed\) > the finish paragraph states the command's last write/,
-    why: "an authored second statement of the footer beside the generated one, as engineer's skills had (its State-write paragraph and Session-level handoff section)",
-  },
-  {
-    id: 'M80', tests: [T_SKILL], file: 'plugins/founder/core/skills/compose/SKILL.md',
-    from: '<!-- pipeline:begin compose-finish -->',
-    to: '## Recording\n\n<!-- pipeline:begin compose-finish -->',
-    killed_by: /(?:^| > )founder\/core\/skills\/compose\/SKILL\.md \(committed\) > the finish paragraph states the command's last write/,
-    why: 'the finish paragraph leaves the Completion section it closes',
-  },
-  {
+    // C1 critique: re-added; finish-verb has no convergence check, so the
+    // skill's last-write instruction is the only guard (E1 rule 2).
     id: 'M81', tests: [T_SKILL],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: FINISH_CONVERGENT, from: "the finalize's last write is an `append` that records the", to: "the finalize's last write is `finish-verb`, which records the" }),
     killed_by: templateCaught(FINISH_CONVERGENT, FINISH_CONTRACT),
     why: "designer's refine skill says an unconverged refine closes with finish-verb, where its command leaves the workflow open with an append",
   },
-  {
-    id: 'M82', tests: [T_SKILL],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINISH_CONVERGENT, from: 'Unless it ends with an owner gate, that\nwrite is terminal.', to: 'That\nwrite is terminal.' }),
-    killed_by: /(?:^| > )skill-verb-finish-convergent\.md: its opening paragraph, then skill-verb-finish\.md$/,
-    why: 'the convergent variant drifts from the plain template it repeats',
-  },
+  // Dropped with C1 (E1 rule 3): M82 — wording drift between two prose variants of one template.
   // PC3b U3b, plan-verify peer: the runbook footer's detached-HEAD rule, the
   // citation check's containment and whole heading, and the replaced section.
-  {
-    id: 'G81', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-completion-footer.md', from: 'context. On a detached HEAD the branch-based preflight reports "no active\nbranch context" and never recommends a fresh session (ADR-0018 §sub-2); the\npath-targeted terminal sidecar renders the footer as on a branch, its\ncontinue-vs-fresh advice included.\n', to: 'context. Detached HEAD never auto-recommends a fresh session (ADR-0018\n§sub-2).\n' }),
-    killed_by: templateCaught('regions/verb-completion-footer.md', /^the completion footer states the detached-HEAD rule as the scripts apply it$/),
-    why: 'the verb runbooks promise no fresh-session advice on a detached HEAD, which the path-targeted footer gives as on a branch',
-  },
+  // Dropped with C1 (E1 rule 3): G81 — the footer's wording; the sidecar and footer.mjs are tested by what they print.
   {
     id: 'N65', tests: [T_SKILL],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: FINISH, from: '`../_shared/references/entry-routing-contract.md` § Owner gates.', to: '`../../../../founder/core/skills/_shared/references/entry-routing-contract.md` § Owner gates.' }),
@@ -3201,96 +2985,34 @@ export const MUTATIONS = [
     killed_by: templateCaught(FINISH, FINISH_CONTRACT),
     why: "the verb skills cite a heading their routing contract does not hold (the check read only its prefix; re-aimed in PC3b U5b)",
   },
-  {
-    id: 'M83', tests: [T_SKILL], file: 'plugins/engineer/core/skills/compose/SKILL.md',
-    from: '<!-- pipeline:end compose-finish -->\n',
-    to: '<!-- pipeline:end compose-finish -->\n\n## Session-level handoff preflight (ADR-0031)\n\nOn detached HEAD the sidecar reports "no active branch context" and does not\nrecommend a fresh session.\n',
-    killed_by: /(?:^| > )engineer\/core\/skills\/compose\/SKILL\.md \(committed\) > the finish paragraph states the command's last write/,
-    why: "engineer's removed handoff section comes back with its wrong detached-HEAD claim beside the generated paragraph",
-  },
+  // Dropped with C1 (E1 rule 3): M83 — the footer's wording; the sidecar and footer.mjs are tested by what they print.
   // PC3b U3c: start's footer, stated once by the runbook's terminal region and
   // the skill's finish region (skill-start-finish.md, its convergent and
   // commit variants). G, the plain templates founder renders; N, engineer's
   // commit variants; M, designer's convergent variants and authored text
   // around the regions.
-  {
-    id: 'G82', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/start-terminal.md', from: 'context. On a detached HEAD the branch-based preflight reports "no active\nbranch context" and never recommends a fresh session (ADR-0018 §sub-2); the\npath-targeted terminal sidecar renders the footer as on a branch, its\ncontinue-vs-fresh advice included. Wiring details:\n', to: 'context. Detached HEAD never auto-recommends a fresh session (ADR-0018\n§sub-2). Wiring details:\n' }),
-    killed_by: templateCaught('regions/start-terminal.md', START_FOOTER_CONTRACT),
-    why: "founder's start runbook promises no fresh-session advice on a detached HEAD, which the path-targeted footer gives as on a branch",
-  },
-  {
-    id: 'N67', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/start-commit.md', from: 'context. On a detached HEAD the branch-based preflight reports "no active\nbranch context" and never recommends a fresh session (ADR-0018 §sub-2); the\npath-targeted terminal sidecar renders the footer as on a branch, its\ncontinue-vs-fresh advice included. Wiring details:\n', to: 'context. Detached HEAD never auto-recommends a fresh session (ADR-0018\n§sub-2). Wiring details:\n' }),
-    killed_by: templateCaught('regions/start-commit.md', START_FOOTER_CONTRACT),
-    why: "engineer's Phase 7 footer promises no fresh-session advice on a detached HEAD, which the path-targeted footer gives as on a branch",
-  },
-  {
-    id: 'M84', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/start-terminal-convergent.md', from: 'so the workflow stays open, the Stop\nhook cannot archive it, and no footer prints.\n', to: 'so the workflow stays open and the\nStop hook cannot archive it.\n' }),
-    killed_by: templateCaught('regions/start-terminal-convergent.md', START_FOOTER_CONTRACT),
-    why: "designer's start runbook no longer says an unconverged lifecycle prints no footer, beside a footer paragraph that reads as unconditional",
-  },
-  {
-    id: 'M85', tests: [T_CONTRACT], file: 'plugins/founder/commands/start.md',
-    from: '<!-- pipeline:end start-terminal -->\n',
-    to: '<!-- pipeline:end start-terminal -->\n\nThe `finish-verb` above fires the sidecar, which **code-emits** the footer;\ndetached HEAD never auto-recommends a fresh session.\n',
-    killed_by: /(?:^| > )founder\/commands\/start\.md \(committed\) > the terminal region states the footer, once, with the detached-HEAD rule as the scripts apply it$/,
-    why: "founder's authored footer paragraph comes back after the terminal region, with the blanket detached-HEAD rule",
-  },
-  {
-    id: 'G83', tests: [T_SKILL],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: START_FINISH, from: 'projection; surface the emitted one. On a detached HEAD the branch-based\npreflight reports "no active branch context" and never recommends a fresh\nsession (ADR-0018 §sub-2); the path-targeted terminal sidecar renders the\nfooter as on a branch, its continue-vs-fresh advice included.\n', to: 'projection; surface the emitted one. On a detached HEAD the sidecar reports\n"no active branch context" and never recommends a fresh session.\n' }),
-    killed_by: templateCaught(START_FINISH, START_FINISH_CONTRACT),
-    why: "founder's start skill says the terminal sidecar renders nothing on a detached HEAD: it is path-targeted and renders as on a branch",
-  },
+  // Dropped with C1 (E1 rule 3): G82, N67, M84, M85 — the footer's wording; the sidecar and footer.mjs are tested by what they print.
+  // Dropped with C1 (E1 rule 3): G83 — the footer's wording; the sidecar and footer.mjs are tested by what they print.
   {
     id: 'M86', tests: [T_SKILL],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: START_FINISH, from: '  --next-step-kind commit --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?\n', to: '  --next-step-kind done --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?\n' }),
     killed_by: templateCaught(START_FINISH, START_FINISH_CONTRACT),
     why: "founder's start skill shows Codex a terminal write of kind done, where the runbook records commit for the owner's save",
   },
-  {
-    id: 'M87', tests: [T_SKILL],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-start-finish-convergent.md', from: 'of the proposal instead (selected_next, a one-line why, next_command), which\nthe footer shows as recommended next work.\n', to: 'of the proposal instead (selected_next, a one-line why, next_command).\n' }),
-    killed_by: /(?:^| > )skill-start-finish-convergent\.md: its opening paragraph, then skill-start-finish\.md$/,
-    why: "designer's start finish drifts from the plain template it repeats",
-  },
+  // Dropped with C1 (E1 rule 3): M87 — wording drift between two prose variants of one template.
   {
     id: 'N68', tests: [T_SKILL],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-start-finish-commit.md', from: 'writes `set-terminal` last; no `finish-verb` runs.', to: 'writes `set-terminal` last; `finish-verb` then\nrecords the next step.' }),
     killed_by: templateCaught('regions/skill-start-finish-commit.md', START_FINISH_CONTRACT),
     why: "engineer's start skill tells Codex to run finish-verb after the Phase 7 driver already closed the workflow",
   },
-  {
-    id: 'N69', tests: [T_SKILL], file: 'plugins/engineer/core/skills/start/SKILL.md',
-    from: '<!-- pipeline:end start-finish-commit -->\n',
-    to: '<!-- pipeline:end start-finish-commit -->\n\nSurface the ADR-0031 session-level continue-vs-fresh preflight at this\ncompletion: pass the projection to the runtime footer\n(`--workflow-projection-file`).\n',
-    killed_by: /(?:^| > )engineer\/core\/skills\/start\/SKILL\.md \(committed\) > the finish paragraph states the lifecycle's last write, the footer and the archive timing, by declaration$/,
-    why: "engineer's hand-passed completion projection comes back beside the emitted footer (plan-verify peer, PC3b U3b suggestion 6)",
-  },
-  {
-    id: 'N70', tests: [T_SKILL],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-start-finish-commit.md', from: 'marked for a later Stop to re-evaluate.', to: 'marked until a later Stop re-evaluates it.' }),
-    killed_by: /(?:^| > )skill-start-finish-commit\.md: the footer and the archive timing are skill-start-finish\.md's, byte for byte$/,
-    why: "engineer's start finish states the footer and the archive timing in words of its own, which can drift from the plain template's",
-  },
+  // Dropped with C1 (E1 rule 3): N69 — the footer's wording; the sidecar and footer.mjs are tested by what they print.
+  // Dropped with C1 (E1 rule 3): N70 — wording drift between two prose variants of one template.
   // PC3b U3c, plan-verify peer: engineer's emission sentence, a restatement
   // outside the skill region, the skill block's archive-timing annotation, and
   // when the next start bootstraps.
-  {
-    id: 'N71', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/start-commit.md', from: 'The runtime completion footer is **code-emitted** on this terminal path\n(ADR-0039): `set-terminal` fires the ADR-0031 session-handoff sidecar, which\nshells out to the runtime `footer.mjs` and prints the rendered footer —', to: 'The runtime completion footer prints —' }),
-    killed_by: templateCaught('regions/start-commit.md', START_FOOTER_CONTRACT),
-    why: "engineer's Phase 7 no longer says the footer is code-emitted by set-terminal's sidecar, so an agent may hand-compose one",
-  },
-  {
-    id: 'M88', tests: [T_SKILL], file: 'plugins/founder/core/skills/start/SKILL.md',
-    from: '(ADR-0036 §SD5).\n\n<!-- pipeline:begin start-finish -->',
-    to: '(ADR-0036 §SD5). The write fires the session-handoff sidecar, which renders\nthe runtime `footer.mjs` on that command\'s stderr.\n\n<!-- pipeline:begin start-finish -->',
-    killed_by: /(?:^| > )founder\/core\/skills\/start\/SKILL\.md \(committed\) > the finish paragraph states the lifecycle's last write, the footer and the archive timing, by declaration$/,
-    why: "founder's start skill states the sidecar again in authored text before the region, a second copy that can drift",
-  },
+  // Dropped with C1 (E1 rule 3): N71 — the footer's wording; the sidecar and footer.mjs are tested by what they print.
+  // Dropped with C1 (E1 rule 3): M88 — the footer's wording; the sidecar and footer.mjs are tested by what they print.
   {
     id: 'M89', tests: [T_ARCH],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: START_FINISH, from: '# ARCHIVE TIMING — on Claude the Stop hook fires at EVERY turn end, so the\n', to: '# On Claude the Stop hook fires at EVERY turn end, so the\n' }),
@@ -3344,12 +3066,7 @@ export const MUTATIONS = [
     killed_by: templateCaught('regions/commit-close.md', /^commit driver blocks, run: /),
     why: 'the close block reuses a workflow an earlier shell found, and fails (or closes another) in a fresh shell',
   },
-  {
-    id: 'N78', tests: [T_COMMIT_RB],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-commit-close.md', from: 'running it again.\n{{#capability dispatch_target}}\nThe Stop hook never notes a `close-complete` workflow on a parent macro,\nbecause it made no commit. For a macro subtask', to: 'running it again. The Stop hook never notes a `close-complete` workflow on a\nparent macro, because it made no commit.\n{{#capability dispatch_target}}\nFor a macro subtask' }),
-    killed_by: /the commit templates with dispatch_target off say nothing of autopilot or a parent macro \(PC3b U4\) > engineer: each commit_surface region rendered with dispatch_target off$/,
-    why: 'a parent-macro sentence sits outside its dispatch_target block, so a persona with the commit surface and no dispatch target is told of a macro it cannot have',
-  },
+  // Dropped with C1 (E1 rule 3): N78 — the text restated what a script does, which that script's own tests run.
   // PC3b U4b: the verb runbooks' blocks run for every persona, by declaration.
   {
     id: 'G85', tests: [T_VERB_RB],
@@ -3398,46 +3115,23 @@ export const MUTATIONS = [
     killed_by: /(?:^| > )designer: verb runbook blocks \(bash, committed\) > refine's Owner decision: /,
     why: "designer's Defer ends the verb with commit next although the re-critique did not converge",
   },
-  // PC3b U5a: engineer's session handoff joins the handoff templates; each
-  // capability branch is checked against the generated scripts (RD6), the
-  // shared regions name no other persona (C104), and every legal capability
-  // combination keeps each claim under its capability.
-  {
-    id: 'N79', tests: [T_REF],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/handoff-wiring.md', from: "  `set-terminal`'s write; and the Phase 7 driver `phase7-commit.mjs`,\n  whose commit ends `/{{persona}}:start` and `/{{persona}}:commit` with the\n  same write) fires\n", to: "  `set-terminal`'s write) fires\n" }),
-    killed_by: /(?:^| > )engineer: reference contracts > committed: the session handoff's capability and floor text agree with the declaration \(RD6\)$/,
-    why: "engineer's handoff no longer names the Phase 7 driver among the writes that emit the footer, although phase7-commit's commit emits it",
-  },
+  // PC3b U5a: engineer's session handoff joins the handoff templates; every
+  // legal capability combination keeps each claim under its capability.
+  // Dropped with C1 (E1 rule 3): N79 — the text restated what a script does, which that script's own tests run.
   {
     id: 'N80', tests: [T_REF],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/handoff-recipe.md', from: "{{#capability legacy_homes}}\nand the pre-migration slot's\n`.claude/agentic-{{persona}}/last-session-handoff.json*`, whether or not a\nworkflow still lives there (a pending handoff outlives its workflow)\n{{/capability}}\n", to: '' }),
-    killed_by: /(?:^| > )engineer: reference contracts > committed: the session handoff's capability and floor text agree with the declaration \(RD6\)$/,
+    killed_by: /(?:^| > )engineer: reference contracts > committed: the session handoff's recipe and rollback name this persona's own resume and legacy slot$/,
     why: 'the rollback cleanup names only the canonical slot, and a legacy-home repository keeps a pre-rollback handoff (PC3 step-3 MINOR 7)',
   },
   {
     id: 'N81', tests: [T_REF],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/handoff-recipe.md', from: "  `terminal_phase`, `no_active_children`, `awaiting_owner`) → **`blocked`**,\n", to: "  `terminal_phase`, `no_active_children`, `awaiting_owner`) → **`publish-needed`**,\n" }),
-    killed_by: [/(?:^| > )engineer: reference contracts > committed: the session handoff's capability and floor text agree with the declaration \(RD6\)$/, /the handoff templates keep each claim under its capability, in every legal combination \(PC3b U5a\) > dispatch_target true, commit_surface true, legacy_homes true$/],
+    killed_by: /the handoff templates keep each claim under its capability, in every legal combination \(PC3b U5a\) > dispatch_target true, commit_surface true, legacy_homes true$/,
     why: "the commit-surface mapping says publish-needed, which engineer's session-handoff.mjs never computes",
   },
-  {
-    id: 'N82', tests: [T_REF],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/handoff-wiring.md', from: "tip),\nexcept after a no-changes close, which made no commit. A Phase 7 commit sends", to: 'tip).\nA Phase 7 commit sends' }),
-    killed_by: /(?:^| > )engineer: reference contracts > committed: the session handoff's capability and floor text agree with the declaration \(RD6\)$/,
-    why: 'the handoff says every archived dispatched workflow is noted on its parent, where stop-archive skips a no-changes close',
-  },
-  {
-    id: 'G86', tests: [T_REF],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/handoff-wiring.md', from: "attempt, one sweep in\nevery persona's `scripts/stop-archive.mjs` (orchestrator's", to: "attempt, same as engineer's sweep (orchestrator's" }),
-    killed_by: /(?:^| > )founder: reference contracts > committed: the shared handoff and privacy regions name no other persona \(C104\)$/,
-    why: "the shared wiring compares the persona with engineer again, a sentence that turns self-referential once engineer renders it (C104)",
-  },
-  {
-    id: 'G87', tests: [T_REF],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/ensemble-privacy-contract.md', from: 'difference from the protocol of a persona that declares no peer privacy\npolicy, where most points omit it.', to: 'difference from the engineer protocol, where most points omit it.' }),
-    killed_by: /(?:^| > )designer: reference contracts > committed: the shared handoff and privacy regions name no other persona \(C104\)$/,
-    why: 'the shared privacy region names engineer again (C104)',
-  },
+  // Dropped with C1 (E1 rule 3): N82 — the text restated what a script does, which that script's own tests run.
+  // Dropped with C1 (E1 rule 3): G86, G87 — prose no program reads and no run, order, stop or hand-off depends on.
   {
     id: 'G88', tests: [T_REF],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/handoff-wiring.md', from: '{{#capability dispatch_target}}\n  Under an autopilot run (Claude, ADR-0063)', to: '{{#capability commit_surface}}\n  Under an autopilot run (Claude, ADR-0063)' }),
@@ -3464,7 +3158,7 @@ export const MUTATIONS = [
   {
     id: 'N85', tests: [T_REF],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/routing-preflight-policy.md', from: "{{#capability commit_surface}}\n  The commit command's no-changes close (`phase7-commit.mjs`) archives its\n  workflow itself, right after its terminal write: with nothing committed,\n  HEAD never moves past the baseline, so the Stop hook would never pass it.\n{{/capability}}\n", to: '' }),
-    killed_by: /(?:^| > )engineer: reference contracts > committed: the preflight states what the generated scripts do \(RV1\)$/,
+    killed_by: /the routing templates keep each claim under its capability, in every legal combination \(PC3b U5b\) > dispatch_target (?:true|false), commit_surface true, legacy_homes (?:true|false)$/,
     why: "engineer's preflight names the Stop hook as the one automatic archive, where phase7-commit's no-changes close archives its workflow itself",
   },
   {
@@ -3473,19 +3167,8 @@ export const MUTATIONS = [
     killed_by: /the routing templates keep each claim under its capability, in every legal combination \(PC3b U5b\) > dispatch_target (true|false), commit_surface true, legacy_homes false$/,
     why: 'the legacy slot sentence renders under commit_surface, so a persona with the commit surface and no legacy home is told of a slot it never writes (engineer, with both on, cannot tell)',
   },
-  {
-    id: 'G89', tests: [T_REF],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/routing-floor.md', from: "path artifact and the `workflow checkpoint` line). `rejected_alternatives`\nand the full `rationale` have **no durable home**", to: "path artifact and the `workflow checkpoint` line). `rejected_alternatives`,\nthe full `rationale` and `confidence` have **no durable home**" }),
-    killed_by: ['designer', 'engineer', 'founder'].map((p) => new RegExp(`(?:^| > )${p}: reference contracts > committed: the owner-gates and next-step tables agree with this persona's state\\.mjs \\(PC2b DD8\\)$`)),
-    why: 'the floor lists confidence among the fields with no durable home again, where finish-verb records next_step_confidence for every persona',
-  },
-  {
-    id: 'M93', tests: [T_REF], file: 'plugins/engineer/core/skills/_shared/references/entry-routing-contract.md',
-    from: '  write (`state.mjs finish-verb`) fires the handoff sidecar, and so does the\n',
-    to: '  write (`state.mjs set-terminal`) fires the handoff sidecar, and so does the\n',
-    killed_by: /(?:^| > )engineer: reference contracts > committed: the skills and the runbooks name finish-verb as the terminal write \(PC2b DD8\)$/,
-    why: "engineer's authored firing points name set-terminal as the completion write again, where every verb command's terminal write is finish-verb",
-  },
+  // Dropped with C1 (E1 rule 3): G89 — prose no program reads and no run, order, stop or hand-off depends on.
+  // Dropped with C1 (E1 rule 3): M93 — the text restated what a script does, which that script's own tests run.
   {
     id: 'M95', tests: [T_REF], file: 'plugins/engineer/core/skills/start/SKILL.md',
     from: 'compose, stage, commit, gate, and set-terminal in one atomic pass.\n',
@@ -3507,15 +3190,15 @@ export const MUTATIONS = [
   {
     id: 'N87', tests: [T_REF],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/presentation-offer.md', from: "{{#capability dispatch_target}}\n**Autopilot mode (ADR-0063, Claude only):** when the command's Phase 0\npreflight printed the autopilot banner, do not offer the choice: present in\nbatch (`autopilot-mode.md`). Everything below is the interactive rule.\n\n{{/capability}}\n", to: '' }),
-    killed_by: /(?:^| > )engineer: reference contracts > committed: the presentation protocol ships whole, with the decision item as its unit \(RV3\)$/,
+    killed_by: /(?:^| > )engineer: reference contracts > committed: the presentation protocol keeps an autopilot step from asking, under dispatch_target only$/,
     why: "engineer's presentation offer loses its autopilot rule, so an autopilot step asks a question no one answers",
   },
   {
     id: 'N88', tests: [T_REF],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/presentation-rules.md', from: "{{#capability dispatch_target}}\n**Autopilot mode (ADR-0063, Claude only):** there is no one to answer", to: "{{^capability dispatch_target}}\n**Autopilot mode (ADR-0063, Claude only):** there is no one to answer" }),
     killed_by: [
-      /(?:^| > )engineer: reference contracts > committed: the presentation protocol ships whole, with the decision item as its unit \(RV3\)$/,
-      /(?:^| > )founder: reference contracts > committed: the presentation protocol ships whole, with the decision item as its unit \(RV3\)$/,
+      /(?:^| > )engineer: reference contracts > committed: the presentation protocol keeps an autopilot step from asking, under dispatch_target only$/,
+      /(?:^| > )founder: reference contracts > committed: the presentation protocol keeps an autopilot step from asking, under dispatch_target only$/,
       /the presentation and orchestration templates name autopilot under dispatch_target only, in every legal combination \(PC3b U5b\) > dispatch_target false, commit_surface false, legacy_homes false$/,
     ],
     why: 'the confirmation rule for autopilot renders with dispatch_target off: founder and designer are told of runs they never take, engineer loses it',
@@ -3523,88 +3206,18 @@ export const MUTATIONS = [
   {
     id: 'N89', tests: [T_REF],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/orchestration-failure.md', only: 'engineer', from: "If any local analysis fails to return (timeout, error, or empty result):\nnotify the user which perspective failed, ask retry-or-proceed, follow the\nuser's decision, and if proceeding note the missing perspective in the\nsynthesis so the user knows coverage was incomplete. ", to: '' }),
-    killed_by: /(?:^| > )engineer: reference contracts > committed: the orchestration failure handling keeps every case, and each Task Profile names this persona \(RD9, PC3b U5b\)$/,
+    killed_by: /(?:^| > )engineer: reference contracts > committed: the orchestration failure handling stops to ask on a failed local analysis and never blocks on a peer failure$/,
     why: "engineer's orchestration failure handling drops the local-agent case (the template regenerated into engineer alone)",
   },
-  {
-    id: 'M96', tests: [T_REF], file: 'plugins/engineer/core/skills/decide/SKILL.md',
-    from: '(`../_shared/references/presentation-protocol.md`) before presenting: one\ndecision with its compared options is a single decision item, presented\nwhole.\n',
-    to: '(`../_shared/references/presentation-protocol.md`) before presenting. In\ninterview mode, one decision item = one option with its multi-perspective\nanalysis.\n',
-    killed_by: /(?:^| > )engineer: reference contracts > committed: the presentation protocol ships whole, with the decision item as its unit \(RV3\)$/,
-    why: "engineer's decide makes each option an interview item again, against the protocol's Example 1",
-  },
-  {
-    id: 'M97', tests: [T_REF], file: 'plugins/engineer/core/skills/_shared/references/presentation-protocol.md',
-    from: '| Direction comparison (decide) | One decision with its compared directions |\n',
-    to: '| Option comparison (decide) | One option with its multi-perspective analysis |\n',
-    killed_by: /(?:^| > )engineer: reference contracts > committed: the presentation protocol ships whole, with the decision item as its unit \(RV3\)$/,
-    why: "engineer's taxonomy makes one option the decide item again",
-  },
-  {
-    id: 'M98', tests: [T_REF], file: 'plugins/engineer/core/skills/_shared/references/orchestration.md',
-    from: '  Persona: engineer\n  Profile: [profile arg',
-    to: '  Persona: [engineer | (designer in Stage 3+)]\n  Profile: [profile arg',
-    killed_by: /(?:^| > )engineer: reference contracts > committed: the orchestration failure handling keeps every case, and each Task Profile names this persona \(RD9, PC3b U5b\)$/,
-    why: "engineer's Task Profile names designer as a persona still to come",
-  },
-  {
-    id: 'M99', tests: [T_REF], file: 'plugins/engineer/core/skills/_shared/references/presentation-protocol.md',
-    from: '---\n\n<!-- pipeline:begin presentation-offer -->\n',
-    to: '---\n\n**Autopilot mode (ADR-0063, Claude only):** present in batch.\n\n<!-- pipeline:begin presentation-offer -->\n',
-    killed_by: /(?:^| > )engineer: reference contracts > committed: the presentation protocol ships whole, with the decision item as its unit \(RV3\)$/,
-    why: "engineer's authored text restates an autopilot rule outside the generated regions",
-  },
-  {
-    id: 'M100', tests: [T_REF], file: 'plugins/engineer/core/skills/critique/SKILL.md',
-    from: '### Step 5: Present\n\nFollow the Presentation Mode Protocol\n(`../_shared/references/presentation-protocol.md`) before\npresenting. ',
-    to: '### Step 5: Present\n\n',
-    killed_by: /(?:^| > )engineer: reference contracts > committed: every verb skill's Present step follows the protocol, in each invocation mode \(RV6\)$/,
-    why: "engineer's command-mode critique Present step (its own Step 5) loses its protocol citation",
-  },
+  // Dropped with C1 (E1 rule 3): M96, M97, M99, M100 — presentation pacing prose or its citation; the autopilot no-ask rule stays pinned.
+  // Dropped with C1 (E1 rule 3): M98 — prose no program reads and no run, order, stop or hand-off depends on.
   {
     id: 'N90', tests: [T_REF],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/orchestration-failure.md', from: ORCH_FAILURE, to: `{{#capability dispatch_target}}\n${ORCH_FAILURE}{{/capability}}\n{{^capability commit_surface}}\n${ORCH_FAILURE}{{/capability}}\n` }),
     killed_by: /the presentation and orchestration templates name autopilot under dispatch_target only, in every legal combination \(PC3b U5b\) > dispatch_target false, commit_surface true, legacy_homes (true|false)$/,
     why: 'the failure handling renders under dispatch_target and again under commit_surface off: every persona today renders it, a persona with the commit surface and no dispatch target gets none (the review probe)',
   },
-  {
-    id: 'X62', tests: [T_REF],
-    prepare: (copy, tools) => {
-      const file = 'plugins/founder/core/skills/critique/SKILL.md';
-      tools.applyEdit(copy, { file, from: '### Step 5: Synthesize\n\n1. Collect the peer ensemble result.', to: '### Step 5: Present\n\nFollow the Presentation Mode Protocol\n(`../_shared/references/presentation-protocol.md`) before presenting.\n\n1. Collect the peer ensemble result.' });
-      tools.applyEdit(copy, { file, from: '### Step 6: Present\n\nFollow the Presentation Mode Protocol\n(`../_shared/references/presentation-protocol.md`) before presenting.\n\nUse the same output shape', to: '### Step 6: Present\n\nUse the same output shape' });
-    },
-    killed_by: /(?:^| > )founder: reference contracts > committed: every verb skill's Present step follows the protocol, in each invocation mode \(RV6\)$/,
-    why: "founder's command-mode critique moves its citation to a Step 5 renamed Present, leaving its Step 6 Present without it: the pattern that took either persona's step read Step 5 and passed (the review probe)",
-  },
-  {
-    id: 'M103', tests: [T_REF], file: 'plugins/engineer/core/skills/refine/SKILL.md',
-    from: 'presenting. Use the same shape as auto-activated mode.\n\n### State write (when invoked from a workflow command)\n',
-    to: 'presenting. Use the same shape as auto-activated mode.\n\n### Step 5: Present\n\nPresent the fix.\n\n### State write (when invoked from a workflow command)\n',
-    killed_by: /(?:^| > )engineer: reference contracts > committed: every verb skill's Present step follows the protocol, in each invocation mode \(RV6\)$/,
-    why: "engineer's command-mode refine holds its Present heading twice, the second without the citation: the first match alone would pass",
-  },
-  {
-    id: 'X63', tests: [T_REF], file: 'plugins/founder/core/skills/critique/SKILL.md',
-    from: '### Step 6: Present\n\nFollow the Presentation Mode Protocol\n(`../_shared/references/presentation-protocol.md`) before presenting.\n\nUse the same output shape',
-    to: '### Step 6: Present\n\nUse the same output shape',
-    killed_by: /(?:^| > )founder: reference contracts > committed: every verb skill's Present step follows the protocol, in each invocation mode \(RV6\)$/,
-    why: "founder's command-mode critique Present step (its Step 6) loses its citation",
-  },
-  {
-    id: 'M101', tests: [T_REF], file: 'plugins/engineer/core/skills/_shared/references/presentation-protocol.md',
-    from: '| Plan (compose `plan`) | The whole task list, with its dependencies, success criteria and recommended first task: one item, as compose presents it |\n',
-    to: '| Plan task (compose) | One task with description, completion criterion, dependencies |\n',
-    killed_by: /(?:^| > )engineer: reference contracts > committed: the presentation protocol ships whole, with the decision item as its unit \(RV3\)$/,
-    why: "engineer's taxonomy makes each plan task an item again, where its compose skill presents the plan as one",
-  },
-  {
-    id: 'M102', tests: [T_REF], file: 'plugins/engineer/core/skills/_shared/references/presentation-protocol.md',
-    from: '- Code review findings (critique skill)\n',
-    to: '- Code review findings (critique skill)\n- Implementation plan tasks (compose skill)\n',
-    killed_by: /(?:^| > )engineer: reference contracts > committed: the presentation protocol ships whole, with the decision item as its unit \(RV3\)$/,
-    why: "engineer's list of where the protocol applies names plan tasks again, where its compose skill presents the plan as one item",
-  },
+  // Dropped with C1 (E1 rule 3): X62, M103, X63, M101, M102 — presentation pacing prose or its citation; the autopilot no-ask rule stays pinned.
 
   // PC3b U5c: engineer joins the ensemble protocol's seventeen regions that
   // state no peer privacy policy; the privacy regions stay founder's and
@@ -3674,13 +3287,13 @@ export const MUTATIONS = [
   {
     id: 'M105', tests: [T_REF], file: 'plugins/engineer/core/skills/peer-now/SKILL.md',
     from: '(`--workflow-path / --phase /\n--ensemble-type`)', to: '(`--workflow-path / --phase /\n--ensemble-type / --run-id`)',
-    killed_by: /(?:^| > )engineer: reference contracts > committed: State Bookkeeping excludes peer-now, and the peer-now skill agrees \(RV7\)$/,
+    killed_by: /(?:^| > )engineer: reference contracts > committed: the peer-now skill omits exactly the accounting flags its dispatch omits, and the dispatch passes --run-id$/,
     why: "engineer's peer-now skill lists --run-id among the flags it omits again, which its dispatch passes (the drift RV7 found when engineer joined)",
   },
   {
     id: 'M106', tests: [T_REF], file: 'plugins/engineer/core/skills/_shared/references/ensemble-protocol.md',
     from: '### State Bookkeeping\n', to: '### State Bookkeeping (Stage 2.5+)\n',
-    killed_by: /(?:^| > )engineer: reference contracts > committed: State Bookkeeping excludes peer-now, and the peer-now skill agrees \(RV7\)$/,
+    killed_by: /(?:^| > )engineer: reference contracts > committed: no runbook guards ensemble-commit on shell variables, and the protocol says settle decides from the run ledger instead \(D2, PC2b U5b\)$/,
     why: "engineer's State Bookkeeping heading takes its old suffix back, so the contracts that read the section by its heading read nothing",
   },
   {
@@ -3698,16 +3311,10 @@ export const MUTATIONS = [
     id: 'N96', tests: [T_REF], file: 'scripts/lib/persona-pipeline.mjs',
     from: "    const briefProfile = typeof investigate.brief_profile === 'string' ? investigate.brief_profile : profile;\n",
     to: "    const briefProfile = profile;\n",
-    killed_by: /(?:^| > )engineer: reference contracts > assembled from the templates: the output-file rules name the brief file and output root the declaration implies \(RD7\)$/,
+    killed_by: /(?:^| > )engineer: reference contracts > assembled from the templates: every in-plugin citation resolves, and its § names a heading of the target$/,
     why: "engineer's declared brief profile is ignored, so its brief references name analysis, a profile that saves no brief",
   },
-  {
-    id: 'N97', tests: [T_REF], file: 'scripts/lib/persona-pipeline.mjs',
-    from: "    const briefType = typeof investigate.brief_ensemble_type === 'string' ? investigate.brief_ensemble_type : investigate.ensemble_type;\n",
-    to: "    const briefType = investigate.ensemble_type;\n",
-    killed_by: /(?:^| > )engineer: reference contracts > assembled from the templates: the brief spec's label policy names the declared ensemble type and brief ensemble \(RD8\)$/,
-    why: "engineer's brief ensemble is named after its default profile's ensemble (investigate), not the research-scan point its brief runs",
-  },
+  // Dropped with C1 (E1 rule 3): N97 — prose no program reads and no run, order, stop or hand-off depends on.
   {
     id: 'N98', tests: [T_REF],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/brief-ensemble-launch-privacy.md', from: '{{privacy_scope}}\npass an explicit privacy gate before BOTH web search AND peer-host\ndispatch', to: 'pass a privacy gate before dispatch' }),
@@ -3747,116 +3354,20 @@ export const MUTATIONS = [
     killed_by: /(?:^| > )engineer: reference contracts > committed: the brief ensemble gates before dispatch and collects the runner result first, as the investigate runbook dispatches \(RD8, RV10\)$/,
     why: 'engineer is enrolled in the brief privacy region, which states a genericization discipline it does not declare',
   },
-  {
-    id: 'M109', tests: [T_REF],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/output-rules-intro.md', from: 'produces a separate user-facing artifact; every other profile, present or\nfuture, writes phase notes through `state.mjs` to the workflow `.md` and\nproduces no standalone file.', to: 'produces a separate user-facing artifact; any future non-brief profiles\nwrite phase notes through `state.mjs` to the workflow `.md` and do not\nproduce a standalone file.' }),
-    killed_by: /(?:^| > )engineer: reference contracts > committed: the output-file rules name the brief file and output root the declaration implies \(RD7\)$/,
-    why: "the output rules say only future profiles write phase notes, where engineer's analysis and root-cause profiles do today",
-  },
-  {
-    id: 'M110', tests: [T_REF],
-    // Review of U5d: the claim is added and the access-date sentence kept
-    // whole, so only the As-of check can catch it.
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/brief-spec-citations.md', from: 'Records when the source was fetched/read.\n', to: "Records when the source was fetched/read. It is distinct from `As-of`,\nthe date the source's content describes.\n" }),
-    killed_by: /(?:^| > )engineer: reference contracts > committed: the brief spec's label policy names the declared ensemble type and brief ensemble \(RD8\)$/,
-    why: "the shared citation conventions name an As-of field again, which engineer's brief sources do not carry",
-  },
+  // Dropped with C1 (E1 rule 3): M109, M110 — prose no program reads and no run, order, stop or hand-off depends on.
   {
     id: 'M111', tests: [T_REF],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/output-rules-layout.md', from: '6. **Truncate at 15 Unicode code points** (characters). One CJK\n   character is one code point.\n', to: '' }),
     killed_by: /(?:^| > )engineer: reference contracts > committed: the output-file rules sanitize the slug, sandbox the root and gate an existing directory \(RD7\)$/,
     why: 'the slug sanitization loses its truncation step (a check moved from tests/engineer/test-cited-brief.mjs)',
   },
-  {
-    id: 'M112', tests: [T_ENG], file: 'plugins/engineer/core/skills/investigate/references/output-file-rules.md',
-    from: 'deprecated), both names are a stable interface across the absorption; renaming\neither would be a separate ADR decision.', to: 'deprecated), both names may be renamed after the cited-brief profile.',
-    killed_by: /output-file-rules\.md keeps the Stage 1 names and engineer's slug examples$/,
-    why: "engineer's rules drop the guarantee that its Stage 1 names are a stable interface (the compatibility the removed tests/engineer/test-cited-brief.mjs pinned)",
-  },
-  {
-    id: 'M113', tests: [T_ENG], file: 'plugins/engineer/core/skills/investigate/references/cited-brief-spec.md',
-    from: '`[research interrupted — partial coverage]`', to: 'research interrupted',
-    killed_by: /cited-brief-spec\.md Audit Checklist enumerates all required sentinels$/,
-    why: 'the checklist loses the bracketed sentinel, so a brief marks interrupted coverage in words no audit recognizes (review of U5d)',
-  },
+  // Dropped with C1 (E1 rule 3): M112, M113 — prose no program reads and no run, order, stop or hand-off depends on.
   // PC3b: which ADR enabled a persona's footer is history, not a capability
   // (U5a review); the finish and terminal templates attribute it to ADR-0039
   // alone. Each G puts the capability-keyed attribution back in the form it had.
-  {
-    id: 'G95', tests: [T_SKILL, T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, {
-      template: FINISH,
-      from: 'The runtime completion footer is **code-emitted** on that terminal write\n(ADR-0039): its completion state is\n{{^capability commit_surface}}\n',
-      to: '{{^capability commit_surface}}\nThe runtime completion footer is **code-emitted** on that terminal write\n(ADR-0039, enabled for {{persona}} by ADR-0043): its completion state is\n{{/capability}}\n{{#capability commit_surface}}\nThe runtime completion footer is **code-emitted** on that terminal write\n(ADR-0039): its completion state is\n{{/capability}}\n{{^capability commit_surface}}\n',
-    }),
-    killed_by: [
-      ...templateCaught(FINISH, FINISH_CONTRACT).filter((r) => !/engineer/.test(r.source)),
-      /^the code-emitted footer names ADR-0039 alone, in every template and every legal combination \(PC3b\) > dispatch_target false, commit_surface false, legacy_homes false$/,
-    ],
-    why: "founder's and designer's verb skills credit ADR-0043 under commit_surface off: a persona fact keyed to a capability, which a persona that gained a commit surface would silently lose",
-  },
-  {
-    id: 'G96', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/start-terminal.md', from: '(ADR-0039): `finish-verb` takes', to: '(ADR-0039, enabled for {{persona}} by ADR-0043): `finish-verb` takes' }),
-    killed_by: [
-      ...templateCaught('regions/start-terminal.md', START_FOOTER_CONTRACT),
-      /^the code-emitted footer names ADR-0039 alone, in every template and every legal combination \(PC3b\) > dispatch_target true, commit_surface true, legacy_homes true$/,
-    ],
-    why: "founder's start runbook credits ADR-0043 in the terminal footer, the attribution that rode on its variant (commit_surface off)",
-  },
-  {
-    id: 'G97', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, {
-      template: 'regions/verb-completion-footer.md',
-      // Whole lines: a block marker stands alone on its line (review of this
-      // unit: the first draft cut the line and the regeneration refused it).
-      from: 'The runtime completion footer is **code-emitted** on this verb\'s terminal\npath (ADR-0039): the terminal write (`state.mjs finish-verb`, which takes\n',
-      to: '{{^capability commit_surface}}\nThe runtime completion footer is **code-emitted** on this verb\'s terminal\npath (ADR-0039, enabled for {{persona}} by ADR-0043): the terminal write (`state.mjs finish-verb`, which takes\n{{/capability}}\n{{#capability commit_surface}}\nThe runtime completion footer is **code-emitted** on this verb\'s terminal\npath (ADR-0039): the terminal write (`state.mjs finish-verb`, which takes\n{{/capability}}\n',
-    }),
-    killed_by: [
-      ...templateCaught('regions/verb-completion-footer.md', /^the completion footer names ADR-0039 alone, and its completion state by commit surface$/).filter((r) => !/engineer/.test(r.source)),
-      /^the code-emitted footer names ADR-0039 alone, in every template and every legal combination \(PC3b\) > dispatch_target false, commit_surface false, legacy_homes true$/,
-    ],
-    why: "founder's and designer's verb runbooks credit ADR-0043 in the completion footer under commit_surface off",
-  },
-  {
-    id: 'G98', tests: [T_SKILL],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: START_FINISH, from: '(ADR-0039): its completion state is', to: '(ADR-0039, enabled for {{persona}} by ADR-0043): its completion state is' }),
-    killed_by: templateCaught(START_FINISH, START_FINISH_CONTRACT),
-    why: "founder's start skill credits ADR-0043 in the lifecycle's footer paragraph",
-  },
-  {
-    id: 'N99', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-completion-footer.md', from: 'when only the commit\nremains) + state-derived next action,\n', to: 'when only the commit\nremains)\n' }),
-    killed_by: templateCaught('regions/verb-completion-footer.md', /^the completion footer names ADR-0039 alone, and its completion state by commit surface$/).filter((r) => /engineer/.test(r.source)),
-    why: "engineer's verb runbooks lose the state-derived next action from the footer's contents: the commit branch of the hoisted sentence no longer rejoins it",
-  },
-  {
-    // Review of this unit: whitespace squashing hid a line break that turns
-    // the rest of the hoisted sentence into a Markdown list item.
-    id: 'N100', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-completion-footer.md', from: 'when only the commit\nremains) + state-derived next action,\n', to: 'when only the commit\nremains)\n+ state-derived next action,\n' }),
-    killed_by: [
-      ...templateCaught('regions/verb-completion-footer.md', /^the completion footer names ADR-0039 alone, and its completion state by commit surface$/).filter((r) => /engineer/.test(r.source)),
-      /^the code-emitted footer names ADR-0039 alone, in every template and every legal combination \(PC3b\) > dispatch_target true, commit_surface true, legacy_homes true$/,
-    ],
-    why: "engineer's verb runbooks render the footer's remaining contents as a list item: the sentence breaks at the commit branch",
-  },
-  {
-    // Review of this unit: the completion state under the wrong capability
-    // changes no persona's text (engineer has both on, founder and designer
-    // both off); only a rendering with the two apart shows it.
-    id: 'N101', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, {
-      template: 'regions/verb-completion-footer.md',
-      edits: [
-        { from: '{{^capability commit_surface}}\n({{persona}}', to: '{{^capability legacy_homes}}\n({{persona}}' },
-        { from: '{{#capability commit_surface}}\n(`blocked`', to: '{{#capability legacy_homes}}\n(`blocked`' },
-      ],
-    }),
-    killed_by: /^the code-emitted footer names ADR-0039 alone, in every template and every legal combination \(PC3b\) > dispatch_target false, commit_surface true, legacy_homes false$/,
-    why: 'the verb runbooks map the remaining commit to publish-needed for a persona with a commit surface and no legacy homes: the completion state keyed to legacy_homes',
-  },
+  // Dropped with C1 (E1 rule 3): G95, G96, G97 — the footer's wording; the sidecar and footer.mjs are tested by what they print.
+  // Dropped with C1 (E1 rule 3): G98 — the footer's wording; the sidecar and footer.mjs are tested by what they print.
+  // Dropped with C1 (E1 rule 3): N99, N100, N101 — the footer's wording; the sidecar and footer.mjs are tested by what they print.
   // ---- C: control -------------------------------------------------------------------
   {
     id: 'C1', tests: [T_SYNC], expect: 'SURVIVED',

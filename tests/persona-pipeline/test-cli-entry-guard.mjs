@@ -79,6 +79,8 @@ for (const persona of MANIFEST.personas) {
     });
 
     it('has the CLIs the plugin ships (sanity: the list is not empty)', () => {
+      // Contract: clisOf selects the CLIs by matching the entry guard in their source — a guard
+      // rewritten past GUARD_RE would drop every CLI from the runs below.
       ok(clis.includes('state.mjs') && clis.includes('peer-runner.mjs') && clis.includes('dispatch-peer.mjs'), clis.join(', '));
     });
 

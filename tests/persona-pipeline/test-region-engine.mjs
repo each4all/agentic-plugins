@@ -277,6 +277,8 @@ describe('region rendering', () => {
         }
       }
       ok(blocks > 300, `only ${blocks} shell blocks found`);
+      // Contract: the renderer's shell lexer (placeholderPlacements) — a committed block it reads
+      // as unclosed makes it misplace, or wrongly refuse, a placeholder in a template of that shape.
       deepStrictEqual(misread, []);
     });
     it('refuses a placeholder that spans lines, and one the lexer cannot read', () => {

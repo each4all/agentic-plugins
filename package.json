@@ -14,7 +14,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --test --test-timeout=120000",
+    "test": "node --test --test-timeout=120000 --import ./tests/_hermetic-env.mjs",
     "lint:plugin-shape": "for d in plugins/*/; do node kit/lint/check-plugin-shape.mjs \"$d\" || exit 1; done",
     "test:smoke": "COMPANIONS_SMOKE=1 node --test companions/tests/claude-companion.smoke.mjs companions/tests/codex-companion.smoke.mjs",
     "validate:marketplace": "node scripts/validate-marketplace.mjs",

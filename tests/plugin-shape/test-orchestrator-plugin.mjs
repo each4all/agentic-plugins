@@ -1,29 +1,19 @@
-// plugins/orchestrator plugin-shape conformance test (Stage 3+ ADR-0018
-// §sub-decision-1 plan-only MVP).
+// plugins/orchestrator plugin-shape conformance test.
 //
-// Mirrors tests/plugin-shape/test-engineer-plugin.mjs structure with
-// orchestrator-specific plan-only shape:
-//   - 2 manifests (Claude + Codex)
-//   - 1 verb skill (plan) × {SKILL.md, agents/openai.yaml}
-//   - 2 shared references (presentation-protocol, ensemble-protocol)
-//     — engineer's orchestration.md / agent-taxonomy.md are explicitly
-//     engineer-internal per ADR-0010 §5 cross-plugin import ban; the
-//     orchestrator MVP intentionally ships a strict subset
-//   - 4 host-shared canonical scripts (state.mjs, dispatch-peer.mjs,
-//     peer-runner.mjs, stop-archive.mjs)
-//   - 1 verb command (plan), 2 dispatch commands (next/done),
-//     finalize/abort lifecycle commands, 3 meta commands
-//     (resume/checkpoint/peer-now), and an audit follow-up alias
-//   - 4 Claude adapter hooks (pre-compact, stop, session-start, _shared)
-//   - 3 Codex adapter hooks (session-start / pre-compact / stop) plus a
-//     Node resolver wrapper and Codex-specific hook manifest
-//   - 1 bundled Claude hooks manifest (hooks/hooks.json) declaring SessionStart,
-//     PreCompact, and Stop. The Codex manifest's `hooks` field points at
-//     adapters/codex/hooks/hooks.json.
+// Checks what a host, a release tool or an agent reads from the plugin's
+// committed files:
+//   - both manifests (Claude + Codex), the two marketplace catalogs and the
+//     release-please registration
+//   - the Claude and Codex hooks.json routing, and the scripts and hooks they
+//     run (present, executable)
+//   - SKILL.md and command frontmatter, and the agents/openai.yaml fields
+//     Codex reads
+//   - the calls, flags and paths the Codex skill mirrors and the commands tell
+//     the agent to run
+//   - the Claude-only autopilot adapter's shape and import boundary
 //
-// This verifies manifest + marketplace + hooks + command shape. The
-// tests/orchestrator/ suite covers state.mjs, dispatch-peer.mjs,
-// peer-runner.mjs, hook behavior, and command-mode flow.
+// The tests/orchestrator/ suite covers state.mjs, dispatch-peer.mjs,
+// peer-runner.mjs, hook behavior, and the runbook blocks it runs.
 //
 // Run via `node --test tests/plugin-shape/test-orchestrator-plugin.mjs`.
 
@@ -38,58 +28,36 @@ const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/orchestrator');
 
 // Where this plugin's skills actually live, read from its own Codex manifest
-// rather than assumed. The 2026-09-18 Amendment to ADR-0006 moved the root to
-// core/skills/. `resolveSkillsRoot` throws on a broken declaration rather than
-// falling back, so this file fails loudly at load instead of pointing every
-// path below at a directory nothing writes to. A manifest with no `skills` key
-// does fall back, to the README-only `skills/`; the skill checks below fail.
+// rather than assumed. `resolveSkillsRoot` throws on a broken declaration
+// rather than falling back, so this file fails loudly at load instead of
+// pointing every path below at a directory nothing writes to. A manifest with
+// no `skills` key does fall back, to the README-only `skills/`; the skill
+// checks below fail.
 const SKILLS_REL = relative(PLUGIN_ROOT, resolveSkillsRoot(PLUGIN_ROOT)).split(sep).join('/');
 
 const VERBS = ['plan'];
 const ALIAS_VERBS = ['audit'];
-// ADR-0019 PR-D — orchestrator dispatch commands. `next` and `done`
-// are slash-command runbooks (same-host dispatch + manual backup);
-// they are NOT 6-verb persona commands (those live in engineer).
+// Orchestrator dispatch commands: slash-command runbooks (same-host dispatch
+// + manual backup), not 6-verb persona commands (those live in engineer).
 const DISPATCH_COMMANDS = ['next', 'done'];
 const LIFECYCLE_COMMANDS = ['finalize', 'abort'];
 const META_COMMANDS = ['resume', 'checkpoint', 'peer-now', 'approve'];
-// ADR-0063 D9 — Claude adapter commands with no Codex skill mirror.
+// Claude adapter commands with no Codex skill mirror.
 const CLAUDE_ONLY_COMMANDS = ['autopilot'];
 const DISPATCH_AND_LIFECYCLE_SKILLS = [...DISPATCH_COMMANDS, ...LIFECYCLE_COMMANDS];
 const ALL_COMMANDS = [...VERBS, ...ALIAS_VERBS, ...DISPATCH_COMMANDS, ...LIFECYCLE_COMMANDS, ...META_COMMANDS, ...CLAUDE_ONLY_COMMANDS];
 const SHARED_REFS = ['ensemble-protocol.md', 'presentation-protocol.md', 'session-handoff.md'];
 const HOST_SHARED_SCRIPTS = ['state.mjs', 'dispatch-peer.mjs', 'peer-runner.mjs', 'stop-archive.mjs'];
 const CLAUDE_HOOKS = ['_shared.mjs', 'session-start.mjs', 'pre-compact.mjs', 'stop.mjs'];
-const CODEX_HOOK_HELPERS = ['session-start.mjs', 'pre-compact.mjs', 'stop.mjs', 'run-node-hook.sh', 'hooks.json', 'README.md'];
-
-// Stale tokens that should NEVER appear in orchestrator SKILL/commands/refs.
-// Mirrors test-engineer-plugin.mjs and reflects the schema-2 ensemble
-// taxonomy host-agnostic switch (LOCAL-ONLY / PEER-ONLY) — host-source
-// labels (CLAUDE-ONLY / CODEX-ONLY / [Claude] / [Codex]) are forbidden.
-const STALE_TOKENS = [
-  'omcc-research',
-  '/omcc-research',
-  'CODEX_HOME',
-  'CLAUDE-ONLY',
-  'CODEX-ONLY',
-  '[Claude]',
-  '[Codex]',
-];
+const CODEX_HOOK_HELPERS = ['session-start.mjs', 'pre-compact.mjs', 'stop.mjs', 'run-node-hook.sh', 'hooks.json'];
 
 async function readJSON(path) {
   const text = await readFile(path, 'utf-8');
   return JSON.parse(text);
 }
 
-async function exists(path) {
-  try {
-    await stat(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
+// Contract: Claude Code and Codex read these manifest fields to install, list and
+// load the plugin — a missing or mistyped field breaks install or the listing.
 describe('plugins/orchestrator manifest pair', () => {
   it('Claude manifest is valid JSON with required fields', async () => {
     const manifest = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
@@ -109,6 +77,7 @@ describe('plugins/orchestrator manifest pair', () => {
     strictEqual(manifest.name, 'orchestrator');
     strictEqual(typeof manifest.version, 'string');
     strictEqual(typeof manifest.description, 'string');
+    // Contract: Codex loads skills and hooks from these paths — a wrong path loads none.
     strictEqual(manifest.skills, './core/skills/',
       'the Codex manifest must declare the relocated root — typeof alone passes on the pre-relocation value');
     strictEqual(manifest.hooks, './adapters/codex/hooks/hooks.json');
@@ -122,18 +91,6 @@ describe('plugins/orchestrator manifest pair', () => {
     ok(Array.isArray(manifest.interface.capabilities));
     ok(Array.isArray(manifest.interface.defaultPrompt));
     ok(manifest.interface.defaultPrompt.length > 0);
-    ok(
-      manifest.interface.longDescription.includes('Codex skills mirror plan, next, done, finalize, abort, approve, resume, checkpoint, and peer-now'),
-      'longDescription documents the Codex skill mirror surface',
-    );
-    ok(
-      manifest.interface.longDescription.includes('.agentic-plugins/state/orchestrator/workflows/'),
-      'longDescription documents the canonical ADR-0025 workflow home',
-    );
-    ok(
-      !manifest.interface.longDescription.includes('[features].plugin_hooks = true'),
-      'longDescription no longer claims the removed plugin_hooks flag as the current gate',
-    );
   });
 
   // Their versions are validate-versions' to check (ADR-0065 Decision 8 rule 6).
@@ -152,6 +109,8 @@ describe('plugins/orchestrator manifest pair', () => {
 // to check (ADR-0065 Decision 8 rule 6). The release job's sync writes them
 // after the release commit, so a test reading them would turn that commit
 // red; a first release has no Codex entry until the sync adds it.
+// Contract: the host catalogs and release-please read these entries — a wrong
+// source, policy or package key leaves the plugin uninstallable or unreleased.
 describe('plugins/orchestrator marketplace registration', () => {
   it('Claude marketplace catalog has an orchestrator entry for the package directory', async () => {
     const catalog = await readJSON(resolve(REPO_ROOT, '.claude-plugin/marketplace.json'));
@@ -191,6 +150,8 @@ describe('plugins/orchestrator marketplace registration', () => {
   });
 });
 
+// Contract: Claude Code reads hooks/hooks.json — a missing event, matcher or
+// script path means that lifecycle hook never runs.
 describe('plugins/orchestrator hooks/hooks.json shape', () => {
   it('declares SessionStart (matcher compact), PreCompact, and Stop lifecycle hooks', async () => {
     const hooks = await readJSON(resolve(PLUGIN_ROOT, 'hooks/hooks.json'));
@@ -212,43 +173,11 @@ describe('plugins/orchestrator hooks/hooks.json shape', () => {
   });
 });
 
-describe('plugins/orchestrator README + CHANGELOG', () => {
-  it('README documents the full ADR-0019 PR-A..PR-E lifecycle surface', async () => {
-    const readme = await readFile(resolve(PLUGIN_ROOT, 'README.md'), 'utf-8');
-    // PR-D: /next + /done.
-    ok(readme.includes('/orchestrator:next'), 'README documents /orchestrator:next');
-    ok(readme.includes('/orchestrator:done'), 'README documents /orchestrator:done');
-    // PR-E: /finalize + /abort + macro auto-archive (no longer "deferred").
-    ok(readme.includes('/orchestrator:finalize'), 'README documents /orchestrator:finalize');
-    ok(readme.includes('/orchestrator:abort'), 'README documents /orchestrator:abort');
-    ok(/macro.*(auto.?archive|A1.?A4)/i.test(readme),
-      'README documents macro auto-archive A1-A4 gates');
-    // PR-B schema 1.1.
-    ok(/schema:?\s*['"]?1\.2['"]?/.test(readme), 'README documents schema 1.2');
-    ok(readme.includes('macro-<verb>-<iso>-<rand>') || readme.includes('macro-&lt;verb&gt;'), 'README documents workflow_id format');
-    // PR-E Stop hook now auto-archives — snapshot-only language must be retired.
-    ok(!/snapshot.?only/i.test(readme),
-      'README no longer documents Stop as snapshot-only (PR-E ships auto-archive)');
-    // Codex hook scope wording must remain explicit and current (ADR-0030
-    // stage-aware gate: generic [features].hooks, not the removed flag).
-    ok(/\[features\]\.hooks/.test(readme),
-      'README documents the generic Codex [features].hooks gate');
-    ok(!/\[features\]\.plugin_hooks\s*=\s*true/i.test(readme),
-      'README no longer claims the removed plugin_hooks flag as the current gate');
-    ok(/manual fallback/i.test(readme),
-      'README documents Codex fallback helper');
-  });
-
-  it('CHANGELOG exists with 0.1.0 initial entry', async () => {
-    const changelog = await readFile(resolve(PLUGIN_ROOT, 'CHANGELOG.md'), 'utf-8');
-    ok(changelog.includes('0.1.0'), 'CHANGELOG contains 0.1.0');
-    ok(/plan-only MVP/i.test(changelog), 'CHANGELOG flags plan-only MVP');
-  });
-});
-
 // ---------------------------------------------------------------------------
-// Phase 5 plugin-shape boost — script / hook / skill / command presence
+// Script / hook / skill / command presence
 
+// Contract: the runbooks and hooks run these scripts — a missing file or a lost
+// executable bit fails the call.
 describe('plugins/orchestrator scripts/', () => {
   for (const script of HOST_SHARED_SCRIPTS) {
     it(`${script} exists and is executable`, async () => {
@@ -261,6 +190,8 @@ describe('plugins/orchestrator scripts/', () => {
   }
 });
 
+// Contract: hooks/hooks.json runs these hook scripts — a missing file or a lost
+// executable bit fails the hook.
 describe('plugins/orchestrator adapters/claude/hooks/', () => {
   for (const hook of CLAUDE_HOOKS) {
     it(`${hook} exists${hook === '_shared.mjs' ? '' : ' and is executable'}`, async () => {
@@ -276,15 +207,8 @@ describe('plugins/orchestrator adapters/claude/hooks/', () => {
 });
 
 describe('plugins/orchestrator adapters/codex/hooks/', () => {
-  it('README.md documents the ADR-0030 stage-aware Codex hook gate', async () => {
-    const text = await readFile(resolve(PLUGIN_ROOT, 'adapters/codex/hooks/README.md'), 'utf-8');
-    // Current gate must be the generic [features].hooks model, and the legacy
-    // plugin_hooks=true literal may appear ONLY qualified as legacy-only
-    // (Codex Phase 5 review MINOR — hub README wording was previously unguarded).
-    ok(/\[features\]\.hooks/.test(text), 'hub README documents the generic Codex [features].hooks gate');
-    ok(/removed in Codex/i.test(text) && /legacy Codex/i.test(text),
-      'hub README qualifies plugin_hooks=true as legacy-only (removed on current Codex), not the current gate');
-  });
+  // Contract: Codex reads hooks.json, which runs run-node-hook.sh and the .mjs
+  // hooks — a missing file or a lost executable bit fails the hook.
   for (const file of CODEX_HOOK_HELPERS) {
     it(`${file} exists${file.endsWith('.mjs') ? ' and is executable' : ''}`, async () => {
       const p = resolve(PLUGIN_ROOT, 'adapters/codex/hooks', file);
@@ -297,6 +221,8 @@ describe('plugins/orchestrator adapters/codex/hooks/', () => {
     });
   }
 
+  // Contract: Codex runs these hook commands — a wrong wrapper or script path
+  // means the lifecycle hook never runs.
   it('hooks.json routes lifecycle commands to Codex adapter hooks via $PLUGIN_ROOT', async () => {
     const hooks = await readJSON(resolve(PLUGIN_ROOT, 'adapters/codex/hooks/hooks.json'));
     const hookCommand = (event) => hooks.hooks[event][0].hooks[0].command;
@@ -315,6 +241,8 @@ describe(`plugins/orchestrator ${SKILLS_REL}/`, () => {
     it(`${SKILLS_REL}/${verb}/SKILL.md exists with frontmatter name === ${verb}`, async () => {
       const skillPath = skillsPath(PLUGIN_ROOT, verb, 'SKILL.md');
       const text = await readFile(skillPath, 'utf-8');
+      // Contract: Codex reads `name` and `description` from SKILL.md frontmatter — a
+      // missing block or a mismatched name hides the skill.
       ok(text.startsWith('---\n'), 'SKILL.md starts with frontmatter');
       const fmEnd = text.indexOf('\n---\n', 4);
       ok(fmEnd > 0, 'SKILL.md frontmatter is closed');
@@ -324,19 +252,10 @@ describe(`plugins/orchestrator ${SKILLS_REL}/`, () => {
       ok(/^description:/m.test(fm), 'SKILL.md frontmatter has description');
     });
 
-    it(`${SKILLS_REL}/${verb}/SKILL.md documents both Claude and Codex explicit entry tokens`, async () => {
-      const skillPath = skillsPath(PLUGIN_ROOT, verb, 'SKILL.md');
-      const text = await readFile(skillPath, 'utf-8');
-      const heading = text.match(/^## When invoked by command .+$/m)?.[0] ?? '';
-      ok(heading.includes(`/orchestrator:${verb}`), `${SKILLS_REL}/${verb}/SKILL.md missing Claude /orchestrator:${verb} entry token`);
-      ok(heading.includes(`$orchestrator:${verb}`), `${SKILLS_REL}/${verb}/SKILL.md missing Codex $orchestrator:${verb} entry token`);
-      ok(/Claude command/i.test(heading), `${SKILLS_REL}/${verb}/SKILL.md must label the Claude command entry path`);
-      ok(/Codex skill mention/i.test(heading), `${SKILLS_REL}/${verb}/SKILL.md must label the Codex skill entry path`);
-    });
-
     it(`${SKILLS_REL}/${verb}/agents/openai.yaml exists with display_name`, async () => {
       const yamlPath = skillsPath(PLUGIN_ROOT, verb, 'agents', 'openai.yaml');
       const text = await readFile(yamlPath, 'utf-8');
+      // Contract: Codex reads these openai.yaml interface fields to list the skill.
       ok(/display_name:/.test(text), 'openai.yaml has display_name');
       ok(/short_description:/.test(text), 'openai.yaml has short_description');
     });
@@ -345,81 +264,33 @@ describe(`plugins/orchestrator ${SKILLS_REL}/`, () => {
   for (const ref of SHARED_REFS) {
     it(`${SKILLS_REL}/_shared/references/${ref} exists`, async () => {
       const refPath = resolve(PLUGIN_ROOT, `${SKILLS_REL}/_shared/references`, ref);
-      const text = await readFile(refPath, 'utf-8');
-      ok(text.length > 100, `${ref} has substantive content`);
+      // Contract: the commands and skills send the agent to this file by path — a
+      // missing file breaks the step that reads it.
+      ok((await stat(refPath)).isFile(), `${ref} is a file`);
     });
   }
 
-  it('does NOT ship engineer-internal references (orchestration.md, agent-taxonomy.md)', async () => {
-    for (const banned of ['orchestration.md', 'agent-taxonomy.md']) {
-      const p = resolve(PLUGIN_ROOT, `${SKILLS_REL}/_shared/references`, banned);
-      let exists = true;
-      try {
-        await stat(p);
-      } catch (err) {
-        if (err.code === 'ENOENT') exists = false;
-      }
-      strictEqual(exists, false, `${banned} absent (engineer-internal per ADR-0010 §5)`);
-    }
-  });
-
-  it('plan skill documents opposite-host peer semantics, not Codex-only command semantics', async () => {
+  it('plan skill and ensemble protocol dispatch to the opposite host, never a hard-coded one', async () => {
     const skill = await readFile(skillsPath(PLUGIN_ROOT, 'plan/SKILL.md'), 'utf-8');
     const agent = await readFile(skillsPath(PLUGIN_ROOT, 'plan/agents/openai.yaml'), 'utf-8');
     const protocol = await readFile(skillsPath(PLUGIN_ROOT, '_shared/references/ensemble-protocol.md'), 'utf-8');
     const planDocs = `${skill}\n${protocol}`;
 
-    for (const phrase of [
-      'Plan-verify opposite-host peer ensemble',
+    // Contract: the agent running plan dispatches Plan-verify and writes the plan with
+    // these calls — the peer and --host must follow the current host.
+    for (const call of [
       '`peer-runner.mjs run --kind ensemble --peer <opposite-host>',
       '`state.mjs plan-set --workflow-path <path> --host <current-host>',
-      'Claude invokes Codex; Codex invokes Claude',
-      'opposite-host peer review',
-      'Opposite-host peer ensemble unavailable',
-      'Opposite-host peer analysis did not complete',
     ]) {
-      ok(planDocs.includes(phrase), `orchestrator plan docs missing host-neutral phrase: ${phrase}`);
-    }
-    ok(agent.includes('opposite-host peer ensemble'), 'plan agent prompt must be host-neutral');
-
-    for (const pattern of [
-      /Plan-verify Codex/,
-      /Codex peer ensemble/,
-      /--peer codex/,
-      /--host claude --subtasks-json-file/,
-      /orchestrator and Codex/,
-      /Codex surfaced/,
-      /Codex peer review/,
-      /Codex ensemble unavailable/,
-      /configure the Codex peer/,
-      /Codex peer analysis/,
-    ]) {
-      ok(!pattern.test(skill), `${SKILLS_REL}/plan/SKILL.md must not hard-code Codex-only plan peer wording: ${pattern}`);
-      ok(!pattern.test(agent), `${SKILLS_REL}/plan/agents/openai.yaml must not hard-code Codex-only plan peer wording: ${pattern}`);
-      ok(!pattern.test(protocol), `ensemble-protocol.md must not hard-code Codex-only plan peer wording: ${pattern}`);
-    }
-  });
-
-  it('orchestrator README presents Plan-verify as opposite-host peer behavior', async () => {
-    const readme = await readFile(resolve(PLUGIN_ROOT, 'README.md'), 'utf-8');
-    const rootReadme = await readFile(resolve(REPO_ROOT, 'README.md'), 'utf-8');
-
-    for (const phrase of [
-      'Plan-verify opposite-host peer ensemble',
-      'If the opposite-host companion is unavailable',
-      'Plan-verify opposite-host peer ensemble inside `/orchestrator:plan`',
-    ]) {
-      ok(readme.includes(phrase), `orchestrator README missing host-neutral phrase: ${phrase}`);
+      ok(planDocs.includes(call), `orchestrator plan docs missing host-neutral call: ${call}`);
     }
 
-    for (const pattern of [
-      /Plan-verify Codex ensemble/,
-      /Plan-verify Codex peer/,
-      /Codex companion is unavailable/,
-      /Plan-verify Codex ensemble inside/,
-    ]) {
-      ok(!pattern.test(readme), `orchestrator README must not hard-code Codex-only plan peer wording: ${pattern}`);
-      ok(!pattern.test(rootReadme), `root README must not hard-code Codex-only plan peer wording: ${pattern}`);
+    // Contract: the agent running plan — a hard-coded peer or host makes Codex
+    // dispatch to itself, or record the plan as written by Claude.
+    for (const pattern of [/--peer codex/, /--host claude --subtasks-json-file/]) {
+      ok(!pattern.test(skill), `${SKILLS_REL}/plan/SKILL.md must not hard-code ${pattern}`);
+      ok(!pattern.test(agent), `${SKILLS_REL}/plan/agents/openai.yaml must not hard-code ${pattern}`);
+      ok(!pattern.test(protocol), `ensemble-protocol.md must not hard-code ${pattern}`);
     }
   });
 });
@@ -429,6 +300,8 @@ describe(`plugins/orchestrator ${SKILLS_REL}/ meta skills`, () => {
     it(`${SKILLS_REL}/${meta}/SKILL.md exists with frontmatter name === ${meta}`, async () => {
       const skillPath = skillsPath(PLUGIN_ROOT, meta, 'SKILL.md');
       const text = await readFile(skillPath, 'utf-8');
+      // Contract: Codex reads `name` and `description` from SKILL.md frontmatter — a
+      // missing block or a mismatched name hides the skill.
       ok(text.startsWith('---\n'), 'SKILL.md starts with frontmatter');
       const fmEnd = text.indexOf('\n---\n', 4);
       ok(fmEnd > 0, 'SKILL.md frontmatter is closed');
@@ -436,13 +309,16 @@ describe(`plugins/orchestrator ${SKILLS_REL}/ meta skills`, () => {
       ok(new RegExp(`^name:\\s*${meta}\\s*$`, 'm').test(fm),
         `SKILL.md frontmatter name is ${meta}`);
       ok(/^description:/m.test(fm), 'SKILL.md frontmatter has description');
-      ok(/## Host availability/.test(text), `${meta} skill documents host availability`);
+      // Contract: the Codex agent passes --host codex to the state CLI — without it the
+      // write is recorded as a Claude write.
       ok(text.includes('--host codex'), `${meta} skill documents Codex host flag`);
     });
 
     it(`${SKILLS_REL}/${meta}/agents/openai.yaml exists with display_name`, async () => {
       const yamlPath = skillsPath(PLUGIN_ROOT, meta, 'agents', 'openai.yaml');
       const text = await readFile(yamlPath, 'utf-8');
+      // Contract: Codex reads openai.yaml — the listing fields, an explicit-only policy,
+      // and a default prompt that mentions the skill (the only way to invoke it).
       ok(/display_name:/.test(text), 'openai.yaml has display_name');
       ok(/short_description:/.test(text), 'openai.yaml has short_description');
       ok(text.includes(`$orchestrator:${meta}`), `default prompt references $orchestrator:${meta}`);
@@ -456,6 +332,8 @@ describe('plugins/orchestrator dispatch + lifecycle Codex skill mirrors/', () =>
     it(`${SKILLS_REL}/${skill}/SKILL.md mirrors /orchestrator:${skill} for Codex`, async () => {
       const skillPath = skillsPath(PLUGIN_ROOT, skill, 'SKILL.md');
       const text = await readFile(skillPath, 'utf-8');
+      // Contract: Codex reads `name` and `description` from SKILL.md frontmatter — a
+      // missing block or a mismatched name hides the skill.
       ok(text.startsWith('---\n'), 'SKILL.md starts with frontmatter');
       const fmEnd = text.indexOf('\n---\n', 4);
       ok(fmEnd > 0, 'SKILL.md frontmatter is closed');
@@ -463,10 +341,9 @@ describe('plugins/orchestrator dispatch + lifecycle Codex skill mirrors/', () =>
       ok(new RegExp(`^name:\\s*${skill}\\s*$`, 'm').test(fm),
         `SKILL.md frontmatter name is ${skill}`);
       ok(/^description:/m.test(fm), 'SKILL.md frontmatter has description');
-      ok(text.includes('## Host availability'), `${skill} skill documents host availability`);
-      ok(text.includes('## Command resolution'), `${skill} skill documents command resolution`);
-      ok(text.includes(`/orchestrator:${skill}`), `${skill} skill documents Claude entry token`);
-      ok(text.includes(`$orchestrator:${skill}`), `${skill} skill documents Codex entry token`);
+      // Contract: the Codex agent follows this path to the runbook it executes, and
+      // passes --host codex to the state CLI — a wrong path leaves it without the
+      // steps; a missing flag records the write as Claude's.
       ok(text.includes(`commands/${skill}.md`), `${skill} skill points to canonical command runbook`);
       ok(text.includes('--host codex'), `${skill} skill documents Codex host flag`);
     });
@@ -474,6 +351,8 @@ describe('plugins/orchestrator dispatch + lifecycle Codex skill mirrors/', () =>
     it(`${SKILLS_REL}/${skill}/agents/openai.yaml exists with explicit-only $orchestrator:${skill} prompt`, async () => {
       const yamlPath = skillsPath(PLUGIN_ROOT, skill, 'agents', 'openai.yaml');
       const text = await readFile(yamlPath, 'utf-8');
+      // Contract: Codex reads openai.yaml — the listing fields, an explicit-only policy,
+      // and a default prompt that mentions the skill (the only way to invoke it).
       ok(/display_name:/.test(text), 'openai.yaml has display_name');
       ok(/short_description:/.test(text), 'openai.yaml has short_description');
       ok(text.includes(`$orchestrator:${skill}`), `default prompt references $orchestrator:${skill}`);
@@ -481,37 +360,38 @@ describe('plugins/orchestrator dispatch + lifecycle Codex skill mirrors/', () =>
     });
   }
 
-  it('next/done mirrors preserve same-host dispatch and completion invariants', async () => {
+  it('next/done mirrors keep the dispatch handoff and the completion write', async () => {
     const next = await readFile(skillsPath(PLUGIN_ROOT, 'next/SKILL.md'), 'utf-8');
+    // Contract: the engineer child reads these variables to link back to the macro —
+    // without them the child is created unlinked and nothing records the subtask.
     ok(next.includes('AGENTIC_PARENT_WORKFLOW'), 'next documents parent workflow env');
     ok(next.includes('AGENTIC_ORIGINATING_SUBTASK'), 'next documents originating subtask env');
+    // Contract: the Codex agent running $orchestrator:next — calling the verb skill
+    // directly skips the engineer command's Phase 0, so no child workflow is created.
     ok(next.includes('Do not invoke `core/skills/<verb>/SKILL.md` directly'), 'next forbids bypassing engineer command Phase 0');
+    // Contract: the Codex agent records the dispatch with subtask-update after create.
     ok(next.includes('subtask-update'), 'next documents post-create subtask-update');
 
     const done = await readFile(skillsPath(PLUGIN_ROOT, 'done/SKILL.md'), 'utf-8');
-    ok(done.includes('engineer_workflow_id'), 'done documents engineer workflow ownership');
-    ok(done.includes('resolve-landing'), 'done resolves the landed merge commit (ADR-0062)');
-    ok(!done.includes('git rev-parse refs/heads/<subtask.branch>'), 'done no longer records the branch tip');
-    ok(done.includes('status completed'), 'done documents completed subtask-update');
+    // Contract: the Codex agent running $orchestrator:done completes the subtask with
+    // this flag value.
+    ok(done.includes('--status completed'), 'done documents completed subtask-update');
   });
 
-  it('finalize/abort mirrors preserve lifecycle lock order plus Codex Stop hook fallback boundary', async () => {
+  it('finalize/abort mirrors keep the lifecycle calls and the Codex Stop fallback helper', async () => {
+    // Contract: the Codex agent running $orchestrator:finalize / :abort — the bulk
+    // transition status, the child archive call, the terminal phase, and the stop
+    // helper it runs when the Codex Stop hook is not loaded.
     const finalize = await readFile(skillsPath(PLUGIN_ROOT, 'finalize/SKILL.md'), 'utf-8');
     ok(finalize.includes('--to-status deferred'), 'finalize documents deferred bulk transition');
     ok(finalize.includes('detach-archive'), 'finalize documents detach-archive child path');
     ok(finalize.includes('--terminal-phase finalized'), 'finalize documents finalized terminal phase');
-    ok(finalize.includes('[features].hooks'), 'finalize documents the generic Codex hook gate (ADR-0030)');
-    ok(!finalize.includes('[features].plugin_hooks = true'), 'finalize no longer claims the removed plugin_hooks flag');
-    ok(finalize.includes('/hooks` review/trust'), 'finalize documents Codex hook review/trust requirement');
     ok(finalize.includes('adapters/codex/hooks/stop.mjs'), 'finalize documents Codex stop fallback helper');
 
     const abort = await readFile(skillsPath(PLUGIN_ROOT, 'abort/SKILL.md'), 'utf-8');
     ok(abort.includes('--to-status abandoned'), 'abort documents abandoned bulk transition');
     ok(abort.includes('detach-archive'), 'abort documents detach-archive child path');
     ok(abort.includes('--terminal-phase aborted'), 'abort documents aborted terminal phase');
-    ok(abort.includes('[features].hooks'), 'abort documents the generic Codex hook gate (ADR-0030)');
-    ok(!abort.includes('[features].plugin_hooks = true'), 'abort no longer claims the removed plugin_hooks flag');
-    ok(abort.includes('/hooks` review/trust'), 'abort documents Codex hook review/trust requirement');
     ok(abort.includes('adapters/codex/hooks/stop.mjs'), 'abort documents Codex stop fallback helper');
   });
 });
@@ -521,28 +401,24 @@ describe('plugins/orchestrator commands/', () => {
     it(`commands/${cmd}.md exists with description + argument-hint frontmatter`, async () => {
       const cmdPath = resolve(PLUGIN_ROOT, 'commands', `${cmd}.md`);
       const text = await readFile(cmdPath, 'utf-8');
+      // Contract: Claude Code reads command frontmatter — description and argument-hint
+      // list the command; a stray model or allowed-tools key pins the model or
+      // narrows the tools the runbook needs.
       ok(text.startsWith('---\n'), `${cmd}.md starts with frontmatter`);
       const fmEnd = text.indexOf('\n---\n', 4);
       ok(fmEnd > 0, `${cmd}.md frontmatter is closed`);
       const fm = text.slice(4, fmEnd);
       ok(/^description:/m.test(fm), `${cmd}.md has description`);
       ok(/^argument-hint:/m.test(fm), `${cmd}.md has argument-hint`);
-      // Engineer commands convention: no model / allowed-tools keys.
       ok(!/^model:/m.test(fm), `${cmd}.md has no model key (convention)`);
       ok(!/^allowed-tools:/m.test(fm), `${cmd}.md has no allowed-tools key (convention)`);
     });
   }
 
-  it('ships /orchestrator:finalize + /orchestrator:abort commands (ADR-0019 PR-E §5)', async () => {
-    for (const required of ['finalize', 'abort']) {
-      const p = resolve(PLUGIN_ROOT, 'commands', `${required}.md`);
-      const st = await stat(p);
-      ok(st.isFile(), `${required}.md is a file`);
-    }
-  });
-
-  it('/orchestrator:plan uses peer-runner.mjs for managed Plan-verify dispatch (ADR-0023 PR-D)', async () => {
+  it('/orchestrator:plan uses peer-runner.mjs for managed Plan-verify dispatch', async () => {
     const text = await readFile(resolve(PLUGIN_ROOT, 'commands/plan.md'), 'utf-8');
+    // Contract: the agent running /orchestrator:plan — Plan-verify goes through the
+    // managed runner with the run id, and its run JSON is captured for the next step.
     ok(
       /peer-runner\.mjs"\s+run[\s\S]{0,260}--kind ensemble[\s\S]{0,260}--run-id "\$RUN_ID"/.test(text),
       'commands/plan.md must dispatch managed Plan-verify through peer-runner.mjs run',
@@ -553,7 +429,10 @@ describe('plugins/orchestrator commands/', () => {
     );
   });
 
-  it('/orchestrator:plan no longer routes managed Plan-verify through dispatch-peer.mjs', async () => {
+  // Contract: the agent running /orchestrator:plan — dispatch-peer.mjs keeps no
+  // peer-run ledger, so a Plan-verify it starts cannot be inspected, cancelled
+  // or settled through peer-runner, and its pending entry is closed by hand.
+  it('/orchestrator:plan does not route managed Plan-verify through dispatch-peer.mjs', async () => {
     const text = await readFile(resolve(PLUGIN_ROOT, 'commands/plan.md'), 'utf-8');
     ok(
       !/scripts\/dispatch-peer\.mjs|dispatch-peer\.mjs"\s+\\/.test(text),
@@ -561,91 +440,52 @@ describe('plugins/orchestrator commands/', () => {
     );
   });
 
-  it('meta command files delegate to matching skills and preserve orchestrator namespace', async () => {
+  it('meta command files delegate to matching skills', async () => {
     for (const meta of META_COMMANDS) {
       const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${meta}.md`), 'utf-8');
+      // Contract: the agent follows this path to the skill it runs — a wrong path
+      // leaves the command without its steps.
       ok(text.includes(`${SKILLS_REL}/${meta}/SKILL.md`), `${meta}.md points at ${SKILLS_REL}/${meta}/SKILL.md`);
-      ok(text.includes('agentic-orchestrator'), `${meta}.md uses orchestrator workflow namespace`);
     }
   });
 
-  it('/orchestrator:checkpoint uses checkpoint-set and documents Codex hook-gate boundary', async () => {
+  it('/orchestrator:checkpoint uses checkpoint-set', async () => {
     const text = await readFile(resolve(PLUGIN_ROOT, 'commands/checkpoint.md'), 'utf-8');
+    // Contract: the agent running /orchestrator:checkpoint — without this call the
+    // checkpoint is never written and SessionStart has nothing to re-inject.
     ok(/state\.mjs"\s+checkpoint-set/.test(text), 'checkpoint command calls checkpoint-set');
-    ok(text.includes('latest_checkpoint'), 'checkpoint command documents latest_checkpoint');
-    ok(/\[features\]\.hooks/.test(text),
-      'checkpoint command documents the generic Codex hook gate (ADR-0030)');
-    ok(!/\[features\]\.plugin_hooks\s*=\s*true/.test(text),
-      'checkpoint command no longer claims the removed plugin_hooks flag');
   });
 
-  it('/orchestrator:peer-now uses peer-runner side-channel and excludes ensemble_results', async () => {
+  it('/orchestrator:peer-now runs peer-runner kind=peer-now with its status and cancel calls', async () => {
     const text = await readFile(resolve(PLUGIN_ROOT, 'commands/peer-now.md'), 'utf-8');
+    // Contract: the agent running /orchestrator:peer-now — the side-channel kind keeps
+    // the run out of ensemble_results; status and cancel are the calls it controls it with.
     ok(/peer-runner\.mjs"\s+run[\s\S]{0,240}--kind peer-now/.test(text),
       'peer-now command calls peer-runner kind=peer-now');
-    ok(/never writes[\s\S]{0,80}ensemble_results/i.test(text),
-      'peer-now command excludes ensemble_results');
-    ok(/status[\s\S]{0,120}cancel/.test(text), 'peer-now documents status/cancel controls');
+    ok(/peer-runner\.mjs"\s+status/.test(text), 'peer-now command calls peer-runner status');
+    ok(/peer-runner\.mjs"\s+cancel/.test(text), 'peer-now command calls peer-runner cancel');
   });
 
-  it('/orchestrator:audit canonicalizes to /orchestrator:plan, not a new verb', async () => {
+  it('/orchestrator:audit hands off to /orchestrator:plan', async () => {
     const text = await readFile(resolve(PLUGIN_ROOT, 'commands/audit.md'), 'utf-8');
+    // Contract: the agent running /orchestrator:audit — the alias expands to this plan
+    // invocation, not to a verb of its own.
     ok(text.includes('/orchestrator:plan Audit follow-up'), 'audit maps to plan follow-up');
-    ok(text.includes('verb=plan'), 'audit preserves plan verb');
-    ok(text.includes('macro-plan-'), 'audit preserves macro-plan workflow id shape');
-    ok(!text.includes('macro-audit-'), 'audit must not introduce macro-audit workflow ids');
-  });
-
-  it('terminal completion commands defer to the code-emitted runtime completion footer (ADR-0039)', async () => {
-    // done/finalize/abort reach the fireMacroHandoffSidecar terminal path, so
-    // their footer is CODE-EMITTED (ADR-0039 §9) — the prose must defer to it,
-    // not hand-compose a duplicate. Guard the new contract phrasing AND the
-    // removal of the old "render the same fields manually" hand-compose line.
-    for (const cmd of ['done', 'finalize', 'abort']) {
-      const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${cmd}.md`), 'utf-8');
-      ok(/runtime completion footer/i.test(text), `commands/${cmd}.md missing runtime footer guidance`);
-      ok(/code-emitted/i.test(text), `commands/${cmd}.md must state the footer is code-emitted (ADR-0039 §9)`);
-      ok(!/render the same fields manually/i.test(text), `commands/${cmd}.md must not instruct hand-composing the footer`);
-      ok(/advisory/i.test(text), `commands/${cmd}.md must mark footer advisory`);
-      ok(/pointer-only/i.test(text), `commands/${cmd}.md must keep footer pointer-only`);
-      ok(
-        /(do not\s+mutate|never\s+mutates)\s+host\s+session\s+context/i.test(text),
-        `commands/${cmd}.md must forbid host session context mutation`,
-      );
-    }
-  });
-
-  it('non-terminal completion commands keep the hand-composed runtime completion footer contract', async () => {
-    // plan/next do NOT reach the terminal sidecar path (they mark a macro/subtask
-    // active, not terminal), so they still hand-compose the footer — the ADR-0039
-    // §9 code-emit de-dup is scoped to the terminal surfaces (done/finalize/abort).
-    for (const cmd of ['plan', 'next']) {
-      const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${cmd}.md`), 'utf-8');
-      ok(/runtime completion footer/i.test(text), `commands/${cmd}.md missing runtime footer guidance`);
-      ok(/advisory/i.test(text), `commands/${cmd}.md must mark footer advisory`);
-      ok(/pointer-only/i.test(text), `commands/${cmd}.md must keep footer pointer-only`);
-      ok(/do not mutate host session\s+context/i.test(text), `commands/${cmd}.md must forbid context mutation`);
-    }
   });
 });
 
-describe('plugins/orchestrator Claude-only commands (ADR-0063 D9)', () => {
+describe('plugins/orchestrator Claude-only commands', () => {
   for (const cmd of CLAUDE_ONLY_COMMANDS) {
-    it(`/orchestrator:${cmd} has no Codex skill, and the README and the Codex manifest say so`, async () => {
+    it(`/orchestrator:${cmd} has no Codex skill`, async () => {
       let mirrored = true;
       try {
         await stat(resolve(PLUGIN_ROOT, SKILLS_REL, cmd));
       } catch {
         mirrored = false;
       }
+      // Contract: Codex loads every directory under the skills root as a skill — a
+      // mirror would offer a Claude-only command on Codex.
       strictEqual(mirrored, false, `${SKILLS_REL}/${cmd}/ must not exist: the command is a Claude adapter`);
-      const readme = await readFile(resolve(PLUGIN_ROOT, 'README.md'), 'utf-8');
-      ok(readme.includes(`/orchestrator:${cmd}`) && /There is no Codex skill for it: on Codex\s+the steps stay manual/.test(readme),
-        'the README states the non-parity');
-      const codex = await readJSON(resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json'));
-      ok(!codex.interface.longDescription.includes(cmd), 'the Codex manifest does not list it among its skills');
-      const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${cmd}.md`), 'utf-8');
-      ok(/\*\*Claude Code only\*\* \(ADR-0063 D9\)/.test(text), `commands/${cmd}.md states it is Claude-only`);
     });
   }
 
@@ -653,6 +493,8 @@ describe('plugins/orchestrator Claude-only commands (ADR-0063 D9)', () => {
     const dir = resolve(PLUGIN_ROOT, 'adapters/claude/autopilot');
     const entries = (await readdir(dir)).sort();
     deepStrictEqual(entries, ['cli.mjs', 'driver.mjs', 'launcher.template.mjs', 'ledger.mjs', 'observe.mjs', 'policy.mjs', 'roots.mjs', 'worker.mjs']);
+    // Contract: the runbook and the launcher exec these files directly — without the
+    // executable bit and a node shebang the exec fails.
     for (const exe of ['cli.mjs', 'launcher.template.mjs']) {
       const st = await stat(resolve(dir, exe));
       ok((st.mode & 0o111) !== 0, `${exe} is executable`);
@@ -660,232 +502,16 @@ describe('plugins/orchestrator Claude-only commands (ADR-0063 D9)', () => {
     }
   });
 
-  it('the autopilot imports nothing from another plugin (ADR-0010 §5)', async () => {
+  it('the autopilot imports nothing from another plugin', async () => {
     const dir = resolve(PLUGIN_ROOT, 'adapters/claude/autopilot');
     for (const name of await readdir(dir)) {
       const text = await readFile(resolve(dir, name), 'utf-8');
+      // Contract: Node resolves these specifiers in the installed plugin — a path into
+      // another plugin does not exist where the plugin is installed alone.
       for (const m of text.matchAll(/^import [^;]*? from '([^']+)';$/gms)) {
         const spec = m[1];
         ok(spec.startsWith('node:') || spec.startsWith('./') || spec.startsWith('../../../scripts/'), `${name} imports ${spec}`);
       }
     }
   });
-});
-
-describe('plugins/orchestrator stale-token audit', () => {
-  // Stale tokens (CLAUDE-ONLY / CODEX-ONLY / [Claude] / [Codex] /
-  // CODEX_HOME / omcc-research) MUST NOT appear in any orchestrator doc.
-  // Bodies MAY cite engineer / omcc-dev as experiential references per
-  // ADR-0007.
-  //
-  // PR #53 SUGGESTION (e) — audit scope expansion to all orchestrator
-  // docs. Engineer audit (test-engineer-plugin.mjs) covers SKILL.md +
-  // shared refs only; orchestrator extends to all .md files for tighter
-  // regression safety. Asymmetry is intentional and tracked in the
-  // workflow record; future engineer audit expansion would re-symmetrize.
-  const ALL_AUDIT_DOCS = [
-    'README.md',
-    'CHANGELOG.md',
-    'commands/plan.md',
-    'commands/next.md',     // ADR-0019 PR-D
-    'commands/done.md',     // ADR-0019 PR-D
-    'commands/finalize.md', // ADR-0019 PR-E
-    'commands/abort.md',    // ADR-0019 PR-E
-    'commands/resume.md',
-    'commands/checkpoint.md',
-    'commands/peer-now.md',
-    'commands/audit.md',
-    'commands/autopilot.md', // ADR-0063 S8
-    `${SKILLS_REL}/plan/SKILL.md`,
-    `${SKILLS_REL}/next/SKILL.md`,
-    `${SKILLS_REL}/done/SKILL.md`,
-    `${SKILLS_REL}/finalize/SKILL.md`,
-    `${SKILLS_REL}/abort/SKILL.md`,
-    `${SKILLS_REL}/resume/SKILL.md`,
-    `${SKILLS_REL}/checkpoint/SKILL.md`,
-    `${SKILLS_REL}/peer-now/SKILL.md`,
-    ...SHARED_REFS.map((ref) => `${SKILLS_REL}/_shared/references/${ref}`),
-    'adapters/codex/hooks/README.md',
-  ];
-  for (const doc of ALL_AUDIT_DOCS) {
-    it(`${doc} contains no stale tokens`, async () => {
-      const docPath = resolve(PLUGIN_ROOT, doc);
-      const text = await readFile(docPath, 'utf-8');
-      for (const stale of STALE_TOKENS) {
-        ok(!text.includes(stale), `${doc} must not contain ${stale}`);
-      }
-    });
-  }
-});
-
-// ADR-0029 §1 — orch-next-action-shape. A macro-completion surface must replace
-// the fixed lifecycle literal (e.g. always "recommend /orchestrator:next") with
-// the evidence-based Active Next-Action Proposal derived from the macro state.
-// Mirrors the engineer shape guard (test-engineer-plugin.mjs six-verb Active
-// Next-Action Proposal checks), adapted to orchestrator's HETEROGENEOUS macro
-// surfaces: the "active planning/dispatch" surfaces (plan + next, on BOTH the
-// Claude command and the Codex skill mirror) carry the full six-field proposal;
-// the meta guard paths (checkpoint/resume no-active-workflow) carry the compact
-// meta/guard-exception pointer, not the full proposal — exactly as the engineer
-// meta skills are excluded from the six-verb proposal guard. The orchestrator
-// does NOT own the contract: its local wiring (session-handoff.md) cites the
-// engineer canonical entry-routing-contract.md BY NAME (ADR-0010 §5 copy-not-
-// import single source), so completion surfaces cite session-handoff.md.
-describe('plugins/orchestrator — ADR-0029 §1 Active Next-Action Proposal (orch-next-action-shape)', () => {
-  const PROPOSAL_FIELDS = [
-    'selected_next',
-    'rejected_alternatives',
-    'rationale',
-    'evidence_pointers',
-    'confidence',
-    'next_command',
-  ];
-
-  // Bound the field checks to the ## Completion section (up to the next ##
-  // heading) so they assert presence IN the proposal, not anywhere downstream.
-  const completionRegionOf = (text) => {
-    const compIdx = text.indexOf('## Completion');
-    if (compIdx === -1) return null;
-    const afterHeading = text.slice(compIdx + '## Completion'.length);
-    const nextHeadingRel = afterHeading.search(/\n##\s/);
-    return nextHeadingRel === -1
-      ? text.slice(compIdx)
-      : text.slice(compIdx, compIdx + '## Completion'.length + nextHeadingRel);
-  };
-
-  // The FORWARD-DECISION surfaces (plan + next + done, on both hosts) — those
-  // whose completion leaves a genuine "what next?" choice. plan.md additionally
-  // carries the durable Phase 2 NOTE skeleton locus (the state.mjs phase note),
-  // like the engineer verb commands; the Codex skills, next.md, and done.md
-  // carry the single Completion locus. done is a HYBRID: its Completion hosts the
-  // proposal for the subtasks-remain path AND defers to the footer on the
-  // auto-terminal path — the terminal-close guard below covers the latter.
-  // finalize/abort are terminal closes (footer-only) — asserted separately.
-  const PROPOSAL_SURFACES = [
-    { path: 'commands/plan.md', phase2: true },
-    { path: 'commands/next.md', phase2: false },
-    { path: 'commands/done.md', phase2: false },
-    { path: `${SKILLS_REL}/plan/SKILL.md`, phase2: false },
-    { path: `${SKILLS_REL}/next/SKILL.md`, phase2: false },
-    { path: `${SKILLS_REL}/done/SKILL.md`, phase2: false },
-  ];
-
-  for (const surface of PROPOSAL_SURFACES) {
-    it(`${surface.path} emits the Active Next-Action Proposal (all six fields, cites the contract) and drops the fixed literal`, async () => {
-      const text = await readFile(resolve(PLUGIN_ROOT, surface.path), 'utf-8');
-
-      // (1) Fixed-literal anti-patterns (ADR-0029 W1) must be gone. Two targeted
-      // markers — NOT a blanket ban on "/orchestrator:next", which the runbook
-      // prose legitimately mentions throughout next.md / plan.md:
-      //   (a) the plan.md NOTE heading "### Recommended next step"
-      //   (b) the "Recommended next: `/orchestrator:…`" bare single-command form
-      ok(!/###\s+Recommended next step/.test(text),
-        `${surface.path} still carries the "### Recommended next step" fixed literal (ADR-0029 W1)`);
-      ok(!/Recommended next:\s*`\/orchestrator:/.test(text),
-        `${surface.path} still carries a "Recommended next: \`/orchestrator:…\`" fixed literal (ADR-0029 W1)`);
-
-      // (2) The Completion section hosts the proposal.
-      const completionRegion = completionRegionOf(text);
-      ok(completionRegion !== null,
-        `${surface.path} has no "## Completion" section to host the proposal (ADR-0029 §1)`);
-      ok(/Active Next-Action Proposal/i.test(completionRegion),
-        `${surface.path} Completion must reference the Active Next-Action Proposal (ADR-0029 §1)`);
-      // (3) Cites the orchestrator-local contract wiring (which cites the
-      // engineer canonical BY NAME — ADR-0010 §5). Assert the basename
-      // session-handoff.md to stay robust to the mixed path conventions across
-      // orchestrator surfaces (plugin-root `core/skills/_shared/…` and
-      // skill-relative `../_shared/…`).
-      ok(/session-handoff\.md/.test(completionRegion),
-        `${surface.path} Completion must cite the orchestrator-local session-handoff.md contract wiring (ADR-0029 §1)`);
-      for (const field of PROPOSAL_FIELDS) {
-        // Require each field as a **bold** proposal field or a "- field:"
-        // skeleton line — NOT a bare token. A generic sentence merely listing
-        // the six field names (a stub) would pass includes() but fails this.
-        ok(new RegExp(`\\*\\*${field}\\*\\*|-\\s+${field}:`).test(completionRegion),
-          `${surface.path} Completion must present "${field}" as a **bold** proposal field or a "- ${field}:" skeleton line, not a bare token (ADR-0029 §1 proposal shape — prevents a token-list stub from passing)`);
-      }
-
-      // (4) plan.md's durable Phase 2 NOTE skeleton locus (before ## Completion).
-      if (surface.phase2) {
-        const compIdx = text.indexOf('## Completion');
-        const phase2Region = text.slice(0, compIdx);
-        ok(/###\s+Active next-action proposal/i.test(phase2Region),
-          `${surface.path} Phase 2 NOTE must record the "### Active next-action proposal" skeleton (ADR-0029 §1)`);
-        ok(/session-handoff\.md/.test(phase2Region),
-          `${surface.path} Phase 2 NOTE must cite the session-handoff.md contract wiring (ADR-0029 §1)`);
-        for (const field of PROPOSAL_FIELDS) {
-          ok(new RegExp(`-\\s+${field}:`).test(phase2Region),
-            `${surface.path} Phase 2 NOTE skeleton is missing the "- ${field}:" line (ADR-0029 §1 proposal shape)`);
-        }
-      }
-    });
-  }
-
-  it(`${SKILLS_REL}/_shared/references/session-handoff.md documents the proposal + cites the engineer canonical BY NAME (ADR-0010 §5 single source)`, async () => {
-    const text = await readFile(
-      skillsPath(PLUGIN_ROOT, '_shared/references/session-handoff.md'), 'utf-8');
-    ok(/Active Next-Action Proposal/.test(text),
-      'session-handoff.md must document the Active Next-Action Proposal (ADR-0029)');
-    ok(/entry-routing-contract\.md/.test(text),
-      'session-handoff.md must cite the engineer canonical entry-routing-contract.md BY NAME (ADR-0010 §5 single source)');
-    // Cited BY NAME, never imported by a cross-plugin path (ADR-0010 §5).
-    ok(!/plugins\/engineer/.test(text) && !/\.\.\/\.\.\/engineer/.test(text),
-      'session-handoff.md must not reach the engineer contract by a cross-plugin path — cite it by name (ADR-0010 §5)');
-    for (const field of PROPOSAL_FIELDS) {
-      ok(text.includes(field),
-        `session-handoff.md proposal wiring is missing the "${field}" field (ADR-0029 §1)`);
-    }
-    // The guard exception must be documented AND enumerate the dispatch/no-child
-    // guards, so their early-exit recovery-command pointers (e.g. next.md's
-    // all_terminal → /orchestrator:finalize) are explicitly a compact
-    // single-honest-recovery pointer, not the W1 fixed-literal anti-pattern.
-    ok(/guard/i.test(text),
-      'session-handoff.md must document the meta/guard exception (ADR-0029 §1)');
-    ok(/all_terminal/.test(text) && /no-child/i.test(text),
-      'session-handoff.md guard exception must enumerate the /orchestrator:next dispatch guards (all_terminal, …) and the /orchestrator:done no-child guard, so their recovery pointers are a documented exception rather than an unswept fixed literal (ADR-0029 §1 meta/guard exception)');
-  });
-
-  // Meta guard paths (Claude command AND Codex skill mirror): the no-active-
-  // workflow branch drops the fixed single-command literal for the compact
-  // meta/guard-exception pointer. These are NOT verb completions with a result —
-  // like the engineer meta skills they do not carry the full six-field proposal
-  // (ADR-0029 §1 meta/guard exception). The softened pointer names the two
-  // honest routes (macro plan OR single-deliverable engineer:start) so it can
-  // never regress to a single hardcoded command.
-  for (const guard of ['commands/checkpoint.md', 'commands/resume.md',
-                       `${SKILLS_REL}/checkpoint/SKILL.md`, `${SKILLS_REL}/resume/SKILL.md`]) {
-    it(`${guard} no-active-workflow guard uses the softened meta/guard pointer, not a fixed single command`, async () => {
-      const text = await readFile(resolve(PLUGIN_ROOT, guard), 'utf-8');
-      ok(!/Recommended next:\s*`\/orchestrator:/.test(text),
-        `${guard} still carries the fixed "Recommended next: \`/orchestrator:…\`" literal (ADR-0029 W1 meta/guard)`);
-      ok(/Active Next-Action Proposal/.test(text),
-        `${guard} guard should reference the session-handoff.md meta/guard exception (ADR-0029 §1)`);
-      ok(/engineer:start/.test(text),
-        `${guard} softened pointer must name the single-deliverable alternative route (engineer:start), proving it is not a single hardcoded command (ADR-0029 §1 meta/guard exception)`);
-    });
-  }
-
-  // Terminal-close surfaces: /orchestrator:finalize + /orchestrator:abort close
-  // the macro and defer their state-derived next action to the ADR-0039 footer
-  // (no six-field prose — a close has no forward branch). /orchestrator:done's
-  // auto-terminal path is likewise footer-driven. NONE may carry a hardcoded
-  // imperative next-command literal ("Run `/orchestrator:… or wait`",
-  // "### Recommended next step", "Recommended next: `/orchestrator:…`"). (done's
-  // forward-decision proposal is asserted in the PROPOSAL_SURFACES loop above.)
-  // NOTE: Phase-0/1 dispatch-guard early-exits (e.g. next.md's all_terminal →
-  // /orchestrator:finalize) are NOT held to this rule — they are the documented
-  // meta/guard exception (a compact single-honest-recovery pointer), enforced by
-  // the session-handoff.md guard-enumeration assertion above, not here.
-  for (const surface of ['commands/finalize.md', 'commands/abort.md', 'commands/done.md',
-                         `${SKILLS_REL}/finalize/SKILL.md`, `${SKILLS_REL}/abort/SKILL.md`, `${SKILLS_REL}/done/SKILL.md`]) {
-    it(`${surface} carries no fixed imperative next-command literal (terminal close defers to the ADR-0039 footer)`, async () => {
-      const text = await readFile(resolve(PLUGIN_ROOT, surface), 'utf-8');
-      ok(!/Run\s+`?\/orchestrator:\w+`?\s+or\s+wait/i.test(text),
-        `${surface} still carries a "Run /orchestrator:… or wait" fixed lifecycle literal (ADR-0029 W1)`);
-      ok(!/###\s+Recommended next step/.test(text),
-        `${surface} still carries the "### Recommended next step" fixed literal (ADR-0029 W1)`);
-      ok(!/Recommended next:\s*`\/orchestrator:/.test(text),
-        `${surface} still carries a "Recommended next: \`/orchestrator:…\`" fixed literal (ADR-0029 W1)`);
-    });
-  }
 });

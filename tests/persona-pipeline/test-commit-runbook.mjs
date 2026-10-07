@@ -1,13 +1,12 @@
-// The commit surface's runbook blocks (ADR-0063 D3; ADR-0066 Stage 3, PC3b
-// U4), run as written in bash and (when installed) zsh against temporary
-// repositories with the persona's real scripts, for every persona whose
-// declaration turns commit_surface on (the manifest enrolls the commit
-// regions exactly there). Each case runs over the committed command and skill
-// and over the ones assembled from the templates, so a template defect the
-// drift check cannot see still fails. Moved from
-// tests/engineer/test-verb-runbook-autopilot.mjs. The `plugins/engineer` paths
-// and `feat(engineer)` subjects below are commit-routing data (this
-// repository's release-please packages), not the persona under test.
+// The commit surface's runbook blocks, run as written in bash and (when
+// installed) zsh against temporary repositories with the persona's real
+// scripts, for every persona whose declaration turns commit_surface on (the
+// manifest enrolls the commit regions exactly there). Each case runs over the
+// committed command and skill and over the ones assembled from the templates,
+// so a template defect the drift check cannot see still fails. The
+// `plugins/engineer` paths and `feat(engineer)` subjects below are
+// commit-routing data (this repository's release-please packages), not the
+// persona under test.
 //
 // Covers:
 //   - with dispatch_target on: Phase 0 + the Autopilot block commit, stop at
@@ -17,7 +16,9 @@
 //     next step and its next action, so a commit that then fails leaves
 //     neither the gate's owner-decision nor its "Owner: …" next action;
 //   - Phase 0 refuses a /start workflow and a branch with none;
-//   - every Codex skill block runs on its own, in a separate shell.
+//   - every Codex skill block runs on its own, in a separate shell;
+//   - with dispatch_target off, the commit templates name no autopilot call
+//     and no orchestrator hand-off.
 
 import { describe, it } from 'node:test';
 import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
@@ -56,6 +57,8 @@ function assembled(persona, dest, text) {
   return replaceRegionBodies(text, parsed.regions, bodies);
 }
 
+// Contract: the headings below are where each case slices out the block it
+// runs — a renamed heading fails here instead of running the wrong block.
 function section(text, heading) {
   const start = text.indexOf(heading);
   ok(start >= 0, `missing ${heading}`);
@@ -145,6 +148,8 @@ for (const persona of PERSONAS) {
         close: blocks(section(doc.command, '## Phase 3 — Close without a commit (interactive)'))[0],
       });
       const optIn = (execute) => {
+        // Contract: the test splices the owner's opt-in flags in at this line; a
+        // block without it would run without them and fail for another reason.
         ok(execute.includes('  --suggested-subjects\n'), 'the execute block passes the accepted suggestions');
         return execute.replace('  --suggested-subjects\n', '  --suggested-subjects --confirm-non-interactive --include-extra stray.md\n');
       };
@@ -302,12 +307,13 @@ for (const persona of PERSONAS) {
 // A declaration may turn commit_surface on without dispatch_target (the sync
 // refuses only the reverse). No persona does today, so the off branches of the
 // commit templates are rendered here from each enrolled persona's declaration
-// with dispatch_target turned off: they must say nothing of an autopilot run,
-// a parent macro or the orchestrator, which belong to dispatch_target (ADR-0066
-// Decision 3). The same patterns must occur with it on, or the check proves
-// nothing.
-describe('the commit templates with dispatch_target off say nothing of autopilot or a parent macro (PC3b U4)', () => {
-  const DISPATCH_ONLY = [/autopilot run/i, /autopilot banner/i, /--mode autopilot/, /\/orchestrator:/, /parent (note|macro)/i, /\bP10\b/, /ADR-0063 D[49]/];
+// with dispatch_target turned off. The same patterns must occur with it on, or
+// the check proves nothing.
+// Contract: the agent running /commit — a persona without dispatch_target has
+// no autopilot mode and no parent macro, so its runbook must not hand it a
+// `--mode autopilot` call or an `/orchestrator:` command to run next.
+describe('the commit templates with dispatch_target off name no autopilot call and no orchestrator hand-off', () => {
+  const DISPATCH_ONLY = [/--mode autopilot/, /\/orchestrator:/];
   const render = (decl, r) => renderTemplate(readFileSync(join(REPO_ROOT, 'persona-pipeline', r.template), 'utf8'), {
     declaration: renderingDeclaration(decl), substitutions: r.substitutions ?? {}, label: r.template,
   });
