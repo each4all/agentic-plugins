@@ -310,10 +310,11 @@ If a source has no clear title: use the page `<title>`; otherwise
 
 ### Access Date
 
-ISO format `YYYY-MM-DD`. Records when the source was fetched/read
-(distinct from `As-of`, the date or version the source's content
-describes).
+ISO format `YYYY-MM-DD`. Records when the source was fetched/read.
 <!-- pipeline:end brief-spec-citations -->
+
+The access date is distinct from `As-of`, the date or version the source's
+content describes.
 
 ---
 

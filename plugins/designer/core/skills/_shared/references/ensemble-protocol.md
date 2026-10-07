@@ -139,36 +139,40 @@ Every ensemble point follows three steps: **Launch**, **Collect**,
 
 ### Step 1: Launch
 
-**Screenshots are sensitive by default**: the privacy gate of step 2
-below covers every screenshot that would inform the peer, before any
-dispatch.
+**Screenshots are sensitive by default**: the privacy gate below covers
+every screenshot that would inform the peer, before any dispatch.
+
+<!-- pipeline:begin ensemble-launch-privacy -->
+Before the steps below, **pass the privacy gate** (see *Privacy* below) for
+the topic AND everything that will travel in the peer prompt:
+proprietary UI, unreleased features/flows, customer data visible in screenshots, and secret-bearing frontend code
+pass an explicit privacy gate before BOTH web search AND peer-host
+dispatch. Genericize before constructing the prompt (step 3).
+<!-- pipeline:end ensemble-launch-privacy -->
 
 <!-- pipeline:begin ensemble-launch -->
 1. Determine the ensemble point type (see *Ensemble Point Types* below).
-2. **Pass the privacy gate** (see *Privacy* below) for the topic AND
-   everything that will travel in the peer prompt:
-   proprietary UI, unreleased features/flows, customer data visible in screenshots, and secret-bearing frontend code
-   pass an explicit privacy gate before BOTH web search AND peer-host
-   dispatch. Genericize before constructing the prompt.
-3. Resolve the peer companion via the companion-cache discovery
+2. Resolve the peer companion via the companion-cache discovery
    (`AGENTIC_COMPANIONS_ROOT` env override honored, per ADR-0008). If
    discovery fails, the ensemble degrades to local-only.
-4. Construct the peer prompt per the type-specific template (see *Prompt
+3. Construct the peer prompt per the type-specific template (see *Prompt
    Construction Rules*). Write it to a per-dispatch UTF-8 tempfile and
    pass it via `--prompt-file <path>` per `companions/contract.md` §2.2 —
    never as a positional argument and never inlined into a shell command,
-   so the genericized prompt never crosses shell parsing, process argv,
-   or `ps aux`.
-5. Invoke the companion in **JSON envelope mode** through
+   so the prompt never crosses shell parsing, process argv, or `ps aux`.
+4. Invoke the companion in **JSON envelope mode** through
    `../../../../scripts/peer-runner.mjs run`, which records the matching
    `pending_ensemble` row and writes raw stdout/stderr plus the parsed
    envelope under the hidden peer-run ledger. The orchestrator SHOULD
    background the call (Bash `run_in_background` on Claude; the `task`
-   subcommand on Codex) so its own analysis proceeds in parallel.
-6. The orchestrator proceeds immediately to its own parallel analysis.
+   subcommand on Codex) so its own analysis proceeds in parallel. The
+   runner runs in the foreground of that background task, never behind a
+   shell `&`, which would detach it where the host can neither track it
+   nor notify you when it exits.
+5. The orchestrator proceeds immediately to its own parallel analysis.
 <!-- pipeline:end ensemble-launch -->
 
-Step 6's own analysis includes any host-direct vision read, which the
+Step 5's own analysis includes any host-direct vision read, which the
 peer cannot perform.
 
 ### Step 2: Collect
@@ -279,8 +283,8 @@ and MAY be written in separate calls.
 generated (empty when no run launched) before its last write, and the
 ledger, not the agent, decides what the workflow records:
 
-- never launched (no dispatch ran: the privacy gate kept the verb
-  local-only): nothing, and the phase note's first heading reads
+- never launched (the privacy gate kept the verb local-only, so no dispatch ran):
+  nothing, and the phase note's first heading reads
   `### Ensemble skipped: …`;
 - launched, then failed, cancelled or abandoned: an `ensemble_results`
   entry with verdict `failed` and the ledger's `error_kind` in its summary;
@@ -353,7 +357,8 @@ ceiling.
 Every designer ensemble prompt carries a `<privacy_contract>` block —
 external transmission to the peer host is treated with the same
 discipline as web search (see *Privacy* below). This is the load-bearing
-difference from the engineer protocol, where most points omit it.
+difference from the protocol of a persona that declares no peer privacy
+policy, where most points omit it.
 <!-- pipeline:end ensemble-privacy-contract -->
 
 The `<vision_boundary>` block is designer-specific. It tells the peer
@@ -918,7 +923,7 @@ orchestrator holds the vision perspective (host-direct). Both are held to
   findings, only structural shell, reads to it like any other, so pass
   `degraded` as the synthesis verdict then.
 - **Surface**: Mention in the completion summary that ensemble coverage
-  was partial.
+  was partial, and which sections the peer did not cover.
 <!-- pipeline:end ensemble-failure-empty -->
 
 ### Peer asks for the screenshot
@@ -947,10 +952,10 @@ orchestrator holds the vision perspective (host-direct). Both are held to
 
 <!-- pipeline:begin ensemble-graceful -->
 Ensemble failure must never block the workflow. Orchestrator-only results
-are always sufficient to proceed — the brief, the design deliverable or
-the critique report is always assembled and saved on the local-only path.
-The peer adds value when available but is not required, and the saved
-artifact never reveals whether the ensemble ran.
+are always sufficient to proceed: on the local-only path the verb still
+assembles its brief, design deliverable or critique report, and saves it
+where it saves one. The peer adds value when available but is not
+required, and a saved artifact never reveals whether the ensemble ran.
 <!-- pipeline:end ensemble-graceful -->
 
 The one thing degradation must NOT do is quietly downgrade honesty: a

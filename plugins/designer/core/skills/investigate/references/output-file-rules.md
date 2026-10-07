@@ -3,15 +3,17 @@
 <!-- pipeline:begin output-rules-intro -->
 Output-file conventions for the design-brief profile of
 `designer:investigate`. This is the only designer:investigate profile that
-produces a separate user-facing artifact; any future non-brief profiles
-write phase notes through `state.mjs` to the workflow `.md` and do not
-produce a standalone file.
+produces a separate user-facing artifact; every other profile, present or
+future, writes phase notes through `state.mjs` to the workflow `.md` and
+produces no standalone file.
 
 designer ships its own copy of these conventions (ADR-0010 §5 no
-cross-plugin import; ADR-0029 §Neutral copy/adapt). The filename and
-env-var name are designer-owned (`design_brief.md` / `DESIGNER_OUTPUT_ROOT`)
-— designer has no Stage-1 backward-compatibility constraint.
+cross-plugin import; ADR-0029 §Neutral copy/adapt). The brief file is
+`design_brief.md`, and `DESIGNER_OUTPUT_ROOT` overrides where it is saved.
 <!-- pipeline:end output-rules-intro -->
+
+Both names are designer's own: designer has no Stage-1 backward-compatibility
+constraint.
 
 **Workspace convention (ADR-0042)**: designer workflows anchor to the
 **frontend / design project git repository** — design briefs, flow specs,

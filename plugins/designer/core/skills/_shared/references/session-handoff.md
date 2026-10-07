@@ -3,21 +3,21 @@
 <!-- pipeline:begin handoff-wiring -->
 This is the designer-side wiring for the **session-level continue-vs-fresh
 preflight** (ADR-0031) and the **code-emitted completion footer**
-(ADR-0039, enabled for designer by ADR-0043). The **canonical contracts** —
+(ADR-0039). The **canonical contracts** —
 the firing rules, the three inputs, the bounded projection schema, and the
 continue-vs-fresh decision policy — live in designer's own
 `entry-routing-contract.md` § Session-Level Continue-vs-Fresh Preflight
 (ADR-0031), beside this file (the single source; restating the schema
 here would drift). The completion-flag minimum content is owned
 by the runtime's `docs/completion-output-contract.md`. This file holds only
-the designer-local wiring: how a designer surface computes its own bounded
+the designer-local wiring: how each designer surface computes its own bounded
 projection, passes it **into** the runtime seam (L3 → L1; the runtime never
 reads designer state), and what the code-emitted terminal path guarantees.
 
 ## When it fires
 
 - at **standalone verb / lifecycle completion** — **code-emitted**
-  (ADR-0039 via ADR-0043): the terminal mutation (`state.mjs
+  (ADR-0039): the terminal mutation (`state.mjs
   finish-verb`, the production completion entry point for the six verb
   commands and the `/designer:start` terminal step, which makes
   `set-terminal`'s write) fires
@@ -97,8 +97,9 @@ Consequences for a runbook author:
 
 ## Fail-closed baseline (ADR-0043 §2)
 
-The designer sidecar follows engineer's **path-targeted projection**
-semantics plus orchestrator's **hardened delivery**:
+The designer sidecar keeps the ADR-0043 §2 baseline, a
+**path-targeted projection** with **hardened delivery**, in the one
+`session-handoff.mjs` every persona runs (ADR-0066):
 
 - the projection is computed for the **exact workflow being terminated
   (by path)**, never a current-branch lookup — `finish-verb` and
@@ -127,8 +128,9 @@ semantics plus orchestrator's **hardened delivery**:
 **Scope honesty (inherited limitations):** the branch-agnostic Stop-hook
 **orphan sweep** archives terminal workflows whose branch is not checked
 out — deleted, or kept and moved past its baseline, and never one with an
-owner gate pending — **without** a final sidecar emit attempt, same as engineer's sweep (orchestrator's Stop runs
-its handoff backstop before its archive scan). A workflow that
+owner gate pending — **without** a final sidecar emit attempt, one sweep in
+every persona's `scripts/stop-archive.mjs` (orchestrator's Stop runs its
+handoff backstop before its archive scan). A workflow that
 terminalizes and whose branch is deleted or switched away from before any
 Stop fires on it gets no backstop emit, so a missed primary emit leaves it
 with no footer and no pending handoff. Two further slot-model properties are
@@ -145,7 +147,7 @@ shares the same LWW family: a different workflow's later claim replaces the
 tombstone, so under concurrent cross-branch terminals a still-active
 terminal workflow's Stop backstop can re-render an already-delivered
 transition — accepted with the slot model (a slot-transaction redesign is a
-cross-persona follow-up, not this onboarding).
+cross-persona follow-up, outside this wiring).
 
 ## Footer-rendered marker (documented cross-package contract)
 
@@ -214,8 +216,8 @@ semantics, not engineer's dichotomy:
 - otherwise → **`next-work-available`**.
 
 The reason names the projection phase (+ the failed gate tokens when
-blocked); the recommended next work carries the workflow's `next_action`
-verbatim; `publish-needed` and `blocked` completions always pass an
+blocked); the recommended next work carries the workflow's `next_action`,
+normalized to one line; `publish-needed` and `blocked` completions always pass an
 explicit `--completion-next-action` (the contract's §3.2 marker-free
 floor: a designer terminal footer never renders a `[generic fallback]`
 marker).
@@ -262,10 +264,12 @@ esac
 ## Runtime discovery floor (ADR-0043 §4)
 
 `discover-runtime.mjs` gates on one floor, the **footer floor**
-`MIN_RUNTIME_VERSION` (gates on `scripts/footer.mjs`): the first released
-runtime containing the ADR-0043 S2 enum expansion. A runtime below it would
-reject `workflow_kind: designer` and render the unsupported-kind degradation
-text, so discovery fail-closes instead (silent, no stale-cache fallback).
+`minRuntimeVersion()` (gates on `scripts/footer.mjs`): the declared
+`runtime_footer_floor`, **0.79.0** for designer, the first released
+runtime that renders a `workflow_kind: designer` footer. A runtime below it
+would not — it lacks the complete render interface, or it rejects the kind and
+renders the unsupported-kind degradation text — so discovery fail-closes
+instead (silent, no stale-cache fallback).
 
 The second floor, `NOTIFY_MIN_RUNTIME_VERSION` on `scripts/notify.mjs`, served
 the peer-runner's ADR-0040 §5 notification, and went with it (ADR-0064).
@@ -287,13 +291,14 @@ re-injection depends on the attested Codex hook state.
 ## Rollback note (ADR-0043 §5)
 
 Rollback order is **personas first, runtime second**: the discovery floor
-compares versions, not capabilities, so a runtime release that reverted
-the four-persona seam would still satisfy `>= 0.79.0` and designer sidecars
+compares versions, not capabilities, so a runtime release that stopped
+accepting `workflow_kind: designer` would still satisfy `>= 0.79.0` and designer sidecars
 would keep firing into honest-but-silent rejection. Rolling back the
 designer package alone is safe; it leaves the durable one-shot artifacts
 behind — remove
 `.agentic-plugins/state/designer/last-session-handoff.json*` (projection +
-rendered-marker tombstone) so a later re-enable cannot surface a
+rendered-marker tombstone)
+so a later re-enable cannot surface a
 pre-rollback handoff as current.
 
 ## Boundaries
