@@ -78,28 +78,43 @@ is no `plugin_hooks` settings key.)
 <!-- pipeline:begin start-command-intro -->
 Phase 0 host-side bootstrap (argument intake, detached-HEAD guard,
 clean-baseline gate, active-workflow branching) is owned by the entry path:
-`commands/start.md` carries the canonical bash on the Claude side. Direct
-`$founder:start` on Codex follows the equivalent operational sequence
-inline using the same `scripts/state.mjs` CLI (the state writer is
-host-agnostic).
+`commands/start.md` carries the canonical bash on the Claude side, generated
+from the shared start regions (ADR-0066). Direct `$founder:start` on Codex
+follows the same operational sequence inline, in this order, using the same
+`scripts/state.mjs` CLI (the state writer is host-agnostic):
 
-**Active-workflow branching** (both hosts): when `find-active` returns a
-non-empty workflow, read its `workflow_type` before continuing. Resume into
-the lifecycle only when `workflow_type == start`; when it is a single-verb
-`verb-chain` workflow, **reject** — `start` must not absorb a single-verb
-workflow into lifecycle phase space. The user finishes or archives it
-(`/founder:resume`) or continues it with the matching `/founder:<verb>`
-first. The **clean-baseline gate** fails closed: only an explicit
-`clean` / `accepted` status proceeds; a non-zero check, a `dirty` tree, or an
-unparseable status stops the bootstrap.
+1. **Guard and find.** Refuse a detached HEAD (workflows are anchored to a
+   branch), then `state.mjs find-active --repo-root <root>`, then
+   `state.mjs autopilot-preflight --workflow-path <found> --host codex`
+   before any write: it reports a pending owner gate and writes nothing.
+2. **Active-workflow branching.** `workflow_type` `start` → resume:
+   `state.mjs append --workflow-path <found> --host codex --clear-next-step
+   true --event resumed`; put an owner gate step 1 reported to the user
+   first (once it is resolved, clear it with the phase the lifecycle
+   continues at and that phase's `--next-action`), then continue from its
+   `current_phase`; no description is needed. Any other workflow
+   (`verb-chain`, or a legacy one without the field) → typed conflict:
+   refuse, writing nothing, its owner gate included — `start` must not
+   absorb a single-verb workflow into lifecycle phase space. The user
+   continues it with its `$founder:<verb>`,
+   archives it (`$founder:resume`) or switches branch, then runs
+   `$founder:start` again.
+3. **No active workflow.** The arguments are the description: the
+   **clean-baseline gate** below, then `state.mjs create --workflow-type
+   start --verb investigate --persona founder --original-request <the
+   description>`.
 
 The **clean-baseline gate** runs on the bootstrap branch (when `find-active`
 returns empty and a new workflow is about to be created) before `state.mjs
-create`. It calls `state.mjs check-clean-baseline --repo-root <root>` and
-inspects the returned `status` (`clean` / `dirty` / `accepted`). On `dirty`
-the gate refuses to bootstrap and presents resolutions: clean the tree,
-stash, or set `ACCEPT_CURRENT_TREE=1` to acknowledge the dirty tree.
-`.agentic-plugins/state/**` is excluded from the dirty check.
+create`. It calls `state.mjs check-clean-baseline --repo-root <root>` (with
+`--accept-current-tree true` once the user accepts the current tree, as
+`ACCEPT_CURRENT_TREE=1` does in the command) and inspects the returned
+`status` (`clean` / `dirty` / `accepted`). The gate fails closed: only an
+explicit `clean` / `accepted` status proceeds; a non-zero check, a `dirty`
+tree, or an unparseable status stops the bootstrap. On `dirty` the gate
+refuses to bootstrap and presents resolutions:
+clean the tree, stash, or set `ACCEPT_CURRENT_TREE=1` to acknowledge the
+dirty tree. `.agentic-plugins/state/**` is excluded from the dirty check.
 
 **Inside the lifecycle** (both hosts, ADR-0066 PC2b): Phase 0 runs
 `state.mjs autopilot-preflight` once, before any write, and a resumed start
@@ -107,11 +122,13 @@ workflow clears the next step it carried. Each phase's ensemble attempt is
 settled from its run ledger (`peer-runner.mjs settle`) before the next phase,
 a repeated phase under a new run id. No phase makes a verb's terminal write;
 the lifecycle's one terminal write is `finish-verb` at the end, once it
-converged where the persona waits for convergence. An owner gate met in a
+converged where the persona waits for convergence.
+An owner gate met in a
 phase (a decide CONFLICT, a recurring finding) is recorded with
 `state.mjs awaiting-owner-set`, which leaves the workflow open; the lifecycle
 pauses, and continues at the next phase once the owner's decision clears it
-(`state.mjs awaiting-owner-clear` with that phase as the next step).
+(`state.mjs awaiting-owner-clear` with that phase as the next step and its
+action as the next action).
 <!-- pipeline:end start-command-intro -->
 
 ### Privacy gate (applies to every phase that calls the peer or the web)
@@ -212,16 +229,23 @@ and discuss whether to address now or defer to a follow-up `/founder:refine`.
 
 Present the final business artifact and save it (the durable
 `business_brief.md` / venture plan / canvas at its
-`<root>/YYYY-MM-DD_<topic-slug>/` location). Write the terminal state:
+`<root>/YYYY-MM-DD_<topic-slug>/` location). founder does NOT auto-commit —
+the user saves the deliverable to their per-venture content repository
+(ADR-0036 §SD5).
+
+<!-- pipeline:begin start-finish -->
+The lifecycle's last write, `state.mjs finish-verb`, records its next step in
+closed-enum form, `--next-step-kind commit`: the owner saves and commits the
+deliverable (founder runs no commit itself). It closes the workflow
+`summary-complete` and sets the terminal marker. The next action shown is the
+lifecycle's default; when the result selects another, write the compact form
+of the proposal instead (selected_next, a one-line why, next_command), which
+the footer shows as recommended next work.
 
 ```bash
-# ADR-0029 §1 / completion-output contract §2 — write the COMPACT form
-# (selected_next + one-line why + next_command) into --next-action; the
-# code-emitted footer surfaces it verbatim as "recommended next work".
 # ADR-0063 D3 — finish-verb is the lifecycle's last write: the ADR-0017
 # §sub-decision 5 atomic terminal write (summary-complete + terminal marker)
-# with the next step, kind commit (the owner saves and commits). ADR-0066
-# Decision 3: an inherited AGENTIC_AUTOPILOT changes nothing here.
+# with the next step, kind commit (the owner saves and commits).
 # ARCHIVE TIMING — on Claude the Stop hook fires at EVERY turn end, so the
 # archive gates are evaluated at the end of THIS turn, not at session close;
 # if a gate fails the workflow stays marked and a later Stop re-evaluates it.
@@ -233,23 +257,38 @@ Present the final business artifact and save it (the durable
 # core/skills/_shared/references/session-handoff.md § Archive timing.
 node "<plugin-root>/scripts/state.mjs" finish-verb \
   --workflow-path "$ACTIVE" --host <claude|codex> \
-  --next-action "Save/commit the business deliverable; optionally /founder:start the next item" \
+  --next-action 'Save/commit the business deliverable; optionally /founder:start the next item' \
   --next-step-kind commit --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?
 ```
 
-founder does NOT auto-commit — the user saves the deliverable to their
-per-venture content repository (ADR-0036 §SD5). The `finish-verb` above
-fires the ADR-0031 session-handoff sidecar, which **code-emits** the
-runtime completion footer on stderr (ADR-0039, enabled by ADR-0043 S3):
-context state, completion state (`publish-needed` while only the owner's
-save/commit remains) + state-derived next action, workflow id/path,
-artifact pointers, recommended next work, and the continue-vs-fresh read —
-the macro workflow is terminal, so a fresh deliverable starts a new
-`/founder:start`. Do NOT hand-compose a second footer; surface the emitted
-one. The footer never mutates host session context; detached HEAD never
-auto-recommends a fresh session (the branch-based preflight is what
-reports "no active branch context"). Wiring:
-`core/skills/_shared/references/session-handoff.md`.
+The runtime completion footer is **code-emitted** on that terminal write
+(ADR-0039): its completion state is
+`publish-needed` while only the owner's save and commit remain, since
+founder runs no commit itself.
+The write fires the session-handoff sidecar, which renders the runtime
+`footer.mjs`, the ADR-0031 continue-vs-fresh session handoff included, on that
+command's stderr. It is advisory and pointer-only, and never mutates host
+session context. The workflow is then terminal, and the Stop hook archives it
+once every archive gate passes; until then `/founder:start` on this branch
+finds it and resumes it, so start the next deliverable after the archive, or
+on another branch. Do not hand-compose a second footer or hand-pass the
+projection; surface the emitted one. On a detached HEAD the branch-based
+preflight reports "no active branch context" and never recommends a fresh
+session (ADR-0018 §sub-2); the path-targeted terminal sidecar renders the
+footer as on a branch, its continue-vs-fresh advice included.
+`$founder:start` on Codex surfaces the footer as `/founder:start`
+does. Wiring: `core/skills/_shared/references/session-handoff.md`.
+
+On Claude the Stop hook fires at **every turn end**, so that terminal write puts
+the workflow in front of the archive gates at the end of **that same turn**, not
+at session close — it archives then if every gate passes, and otherwise stays
+marked for a later Stop to re-evaluate. Clearing the marker
+(`--terminal-marker false`, with set-terminal's full flag set) works only before
+that Stop fires and does not restore the previous phase. On Codex the hook runs
+only once the operator has trusted the plugin hooks (`/hooks`), so evaluation
+waits. Full contract: `core/skills/_shared/references/session-handoff.md`
+§ Archive timing.
+<!-- pipeline:end start-finish -->
 
 ---
 
