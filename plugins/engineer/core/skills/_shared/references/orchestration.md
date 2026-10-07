@@ -1,17 +1,20 @@
 # Dynamic Agent Orchestration
 
-Follow this framework at every stage that allocates agents.
+<!-- pipeline:begin orchestration-intro -->
+Follow this framework at every stage that allocates analysis effort.
 Pursue the best results through task-analysis-based dynamic composition,
 not static counts.
+<!-- pipeline:end orchestration-intro -->
 
 **Plugin boundary note**: this orchestration framework is
 engineer-internal (lives at
 `plugins/engineer/core/skills/_shared/references/`). Per ADR-0010 §5,
-cross-plugin imports are forbidden — when Stage 3+ designer plugin
-needs equivalent orchestration, it MUST ship its own copy. If the
-framework proves universal across L3 personas during Stage 3
-implementation, an L1/L2 extraction may be considered through a
-fresh ADR; this file does NOT serve cross-persona imports as-is.
+cross-plugin imports are forbidden — founder and designer ship their
+own copies (ADR-0029 §Neutral copy/adapt rule), and the paragraphs the
+copies share are generated from one source in `persona-pipeline/`
+(ADR-0066). If the framework proves universal across L3 personas, an
+L1/L2 extraction may be considered through a fresh ADR; this file does
+NOT serve cross-persona imports as-is.
 
 The **orchestrator** is the host where the user is currently invoking the
 skill (Claude Code or Codex CLI). It dispatches its host's local agents
@@ -50,7 +53,7 @@ this format:
 Task Profile:
   Scope: [file count], [estimated LOC]
   Layers: [framework layers + project layers]
-  Persona: [engineer | (designer in Stage 3+)]
+  Persona: engineer
   Profile: [profile arg, e.g., backend / frontend / devops / sre / ml / data]
   Risks: [list applicable risk areas, or "none"]
   Complexity: [low / medium / high]
@@ -69,8 +72,8 @@ criteria, vocabulary, etc.).
 - **Layers**: Framework layers (L1 framework primitive / L2 capability /
   L3 persona / L4 profile per ADR-0010) plus project layers (UI / API /
   business logic / data / infrastructure / configuration).
-- **Persona**: which L3 plugin is invoked (`engineer` for now; `designer`
-  from Stage 3).
+- **Persona**: the L3 plugin that owns the orchestration, `engineer` in
+  this copy.
 - **Profile**: the `--profile=<name>` argument carrying sub-discipline
   context (`backend` / `frontend` / `devops` / `sre` / `ml` / `data`,
   etc.). May be empty when the verb operates persona-wide.
@@ -154,18 +157,16 @@ The peer runs as an independent parallel track — it is NOT an "agent" in
 the agent taxonomy. Do not include it in the agent count or mission
 briefing. It receives its own prompt via `ensemble-protocol.md`.
 
-### Agent failure handling
+### Failure handling
 
-If any local agent fails to return (timeout, error, or empty result):
-
-1. Notify the user which agent (perspective) failed.
-2. Ask: retry, or proceed with available results?
-3. Follow the user's decision.
-4. If proceeding without retry, note the missing perspective in the
-   synthesis output so the user knows coverage was incomplete.
-
-Peer ensemble failures are handled separately per `ensemble-protocol.md`
-§Failure Handling — graceful degradation, never blocks the workflow.
+<!-- pipeline:begin orchestration-failure -->
+If any local analysis fails to return (timeout, error, or empty result):
+notify the user which perspective failed, ask retry-or-proceed, follow the
+user's decision, and if proceeding note the missing perspective in the
+synthesis so the user knows coverage was incomplete. Peer ensemble failures
+are handled separately per the ensemble contract — graceful degradation,
+never blocks the workflow.
+<!-- pipeline:end orchestration-failure -->
 
 ---
 

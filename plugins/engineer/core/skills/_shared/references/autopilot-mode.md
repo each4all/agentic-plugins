@@ -135,20 +135,23 @@ open: recording any gate turns an inherited terminal marker off. The Stop hook
 never archives a workflow with a gate pending, not even once its branch is
 gone, and `/engineer:commit` refuses to commit or close over one.
 
-| gate | set when | recorded | heading · anchor | resolved by |
-|---|---|---|---|---|
-| `decide-conflict` | `/engineer:decide`'s ensemble synthesis is a CONFLICT | either mode | `Ensemble synthesis: decide verdict=conflict` · `ensemble-synthesis` | the owner's selection in `/engineer:decide` (its Owner selection step clears it) |
-| `recurring-finding` | `/engineer:refine`: a finding an earlier refine pass on this workflow already addressed survives verification again | either mode | `Recurring finding` · `recurring-finding` | the owner's fix-now-or-defer in `/engineer:refine` (its Owner decision step clears it) |
-| `scope-routing` | a verb concludes the request does not belong in this verb or workflow (another route in `entry-routing-contract.md` § Routing Recommendation fits) | either mode | `Routing recommendation` · `routing-recommendation` | the owner picks the route, then `awaiting-owner-clear` with the next step |
-| `staging-set` | `/engineer:commit` under autopilot: the staging set needs the owner (`ask_user`, a workflow that did not begin on a clean tree, or a pre-staged index) | autopilot | `Phase 7 plan` · `phase7-plan` | interactive `/engineer:commit`, which clears it once the owner confirms the set |
-| `pr-handling` | under autopilot, the task itself needs an outward action: a push, a pull request, a release or an issue | autopilot | `Outward action needed` · `pr-handling` | the owner takes or declines the action, then `awaiting-owner-clear` with the next step |
+The gates, when each is set, the phase-note heading and anchor each takes,
+and what resolves each are tabled once, in `entry-routing-contract.md` § Owner
+gates. Under autopilot what differs is when a gate is recorded:
+`decide-conflict`, `recurring-finding` and `scope-routing` are recorded in
+either mode; `staging-set` (`/engineer:commit`: the staging set needs the
+owner — `ask_user`, a workflow that did not begin on a clean tree, or a
+pre-staged index) and `pr-handling` only under an autopilot run.
 
 `awaiting-owner-clear --resolution "<the decision>" --next-step-kind …
---next-step-confidence … [--next-step-verb …]` records the owner's decision,
-clears the gate and names the next step in one write. The next step is never
+--next-step-confidence … [--next-step-verb …] --next-action "<what comes next>"`
+records the owner's decision, clears the gate, names the next step and
+replaces the gate's `Owner: …` next action in one write. The next step is never
 runnable without the decision behind it, and the `owner-decision` the gate
 left does not stop the driver again. Every resolving block in these runbooks
-does this, and resolves the workflow itself.
+does this, and resolves the workflow itself; inside an `/engineer:start`
+lifecycle, decide's Owner selection records no next step instead
+(`--clear-next-step true`), since the lifecycle owns its phase order.
 
 **Anchors are labels.** A pointer's `#anchor` names the phase note with that
 heading — the latest one when a workflow has several — not an HTML id (the
@@ -156,7 +159,7 @@ macro's `#macro-plan` / `#ensemble-synthesis` convention).
 
 `/engineer:commit` never sets `pr-handling` for the commit it just made.
 Landing a committed subtask is the owner's routine step: the driver reads it
-from state (the table above) and halts `awaiting-landing`.
+from state (§ Outcomes the driver reads) and halts `awaiting-landing`.
 
 `duplicate-workflow` is never stored: two live workflows on one branch have
 no single file to hold it. The driver meets it as an entry-brief
@@ -178,8 +181,8 @@ takes the structured step report each time your turn ends, including a turn
 you end to wait for a background task. That report does not end the step.
 When the task's notification re-invokes you, carry on where the runbook left
 off: collect the peer, synthesize, record the ensemble result (Phase 2's
-`peer-runner.mjs settle`, or `ensemble-commit` where Phase 2 still calls
-it) and the verb's last write (`finish-verb`), then end with a new report.
+`peer-runner.mjs settle`) and the verb's last write (`finish-verb`), then
+end with a new report.
 The driver judges the step by the last report only. A report you file
 while still waiting says `failed` and names what it waits for, so a step
 that never gets past it halts rather than passes. On the first two autopilot

@@ -1,5 +1,5 @@
 {
-  "schema": "persona-declaration-1.3",
+  "schema": "persona-declaration-1.4",
   "name": "engineer",
   "deliverable_noun": "deliverable",
   "runtime_footer_floor": "0.63.0",
@@ -84,6 +84,8 @@
       "default_profile": "analysis",
       "request_placeholder": "one-line scrubbed user request",
       "ensemble_type": "investigate",
+      "brief_profile": "cited-brief",
+      "brief_ensemble_type": "research-scan",
       "brief_file": "research_brief.md",
       "output_root_env": "RESEARCH_OUTPUT_ROOT",
       "artifact": [
@@ -179,6 +181,9 @@
       "evidence_pointers": "phase notes / files / artifacts",
       "next_action": "Critique to verify, or investigate deeper if root cause is uncertain",
       "terminal_requires_convergence": false
+    },
+    "start": {
+      "request_placeholder": "feature description"
     }
   }
 }

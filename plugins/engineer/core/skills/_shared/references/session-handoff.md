@@ -1,28 +1,42 @@
 # Session-Level Handoff Wiring (engineer, ADR-0031)
 
+<!-- pipeline:begin handoff-wiring -->
 This is the engineer-side wiring for the **session-level continue-vs-fresh
-preflight** specified in
-[`entry-routing-contract.md` § Session-Level Continue-vs-Fresh Preflight](./entry-routing-contract.md).
-It is the single source for how an engineer command computes its own bounded
-workflow projection and passes it **into** the runtime seam — the runtime
-layer never reads engineer state (projection / inversion-of-control model,
-preserving the ADR-0010 L3 → L1 direction).
+preflight** (ADR-0031) and the **code-emitted completion footer**
+(ADR-0039). The **canonical contracts** —
+the firing rules, the three inputs, the bounded projection schema, and the
+continue-vs-fresh decision policy — live in engineer's own
+`entry-routing-contract.md` § Session-Level Continue-vs-Fresh Preflight
+(ADR-0031), beside this file (the single source; restating the schema
+here would drift). The completion-flag minimum content is owned
+by the runtime's `docs/completion-output-contract.md`. This file holds only
+the engineer-local wiring: how each engineer surface computes its own bounded
+projection, passes it **into** the runtime seam (L3 → L1; the runtime never
+reads engineer state), and what the code-emitted terminal path guarantees.
 
-## When to surface it
+## When it fires
 
-Per the contract's firing rules, surface the preflight **before guiding the
-user toward substantial next work**:
-
-- at **`engineer:start` Phase 0** (before sequencing a fresh lifecycle) — a
-  pre-work surface the model still performs, and
-- at **standalone verb / lifecycle completion** — **now code-emitted** (ADR-0039):
-  the terminal mutation (`state.mjs set-terminal`, and `phase7-commit.mjs` for
-  the lifecycle) fires `emitTerminalHandoffSidecar`, which — after writing the
-  projection — shells out to the runtime `footer.mjs` and prints the completion
-  footer (context state, completion state + next action, workflow id/path,
-  artifact pointers, recommended next work, and this continue-vs-fresh
-  session-handoff) on the caller's **stderr**. The model does **not** hand-compose
-  it at completion; it surfaces the emitted one.
+- at **standalone verb / lifecycle completion** — **code-emitted**
+  (ADR-0039): the terminal mutation (`state.mjs finish-verb`, the
+  production completion entry point for the six verb commands, which makes
+  `set-terminal`'s write; and the Phase 7 driver `phase7-commit.mjs`,
+  whose commit ends `/engineer:start` and `/engineer:commit` with the
+  same write) fires
+  `emitTerminalHandoffSidecar`, which — after writing the projection —
+  shells out to the runtime `footer.mjs` and prints the completion footer
+  (context state, completion state + next action, workflow id/path,
+  artifact pointers, recommended next work, and the continue-vs-fresh
+  session-handoff) on the caller's **stderr**. The model does **not**
+  hand-compose it at completion; it surfaces the emitted one. A
+  `finish-verb` that records an owner gate is not a terminal write and
+  emits nothing: the footer comes with the terminal write that follows the
+  owner's resolution.
+  The Phase 7 driver's no-changes close emits nothing either: it archives
+  the workflow itself right after its terminal write, and the command's
+  completion names the next step.
+  Under an autopilot run (Claude, ADR-0063) `finish-verb` writes the next
+  step only, so it emits nothing: the commit command makes the terminal
+  write, and the driver is the handoff.
 
   The sidecar supplies **no** `--context-state`: it owns no context-budget
   sensor, and footer.mjs reads a supplied value as a caller assertion.
@@ -35,32 +49,57 @@ user toward substantial next work**:
   it below 0.92.0, which is why no capability floor guards the omission. A
   measured risk is still honored when a caller that actually measures one
   passes it.
+- from the **Stop hook backstop** — if the active workflow is terminal,
+  the hook (both hosts) re-fires the sidecar **before** the auto-archive
+  move, so the guaranteed-channel projection exists even when the primary
+  emit was missed. The idempotency marker makes this a no-op when the
+  primary already rendered.
+- at **SessionStart (matcher: compact)** — the hook re-surfaces a pending
+  handoff **once** and consumes the one-shot file. This runs independently
+  of an active workflow (the handoff is typically from a now-archived
+  workflow). Inherited matcher consequence: a pending handoff written just
+  before a session ends is consumed on the next *compaction* start, not an
+  ordinary fresh startup; widening the matcher is ADR-0045 (macro S6)
+  entry-time work, not this wiring.
 
 It is not emitted on a trivial reversible step.
 
 ## Archive timing — Claude same-turn Stop vs Codex
 
-`state.mjs set-terminal --terminal-marker true` is **not** a deferred marker on
-Claude. The Stop hook fires at **every turn end**, so the archive gates — terminal
-marker, terminal phase, HEAD movement, no active children — are evaluated at the
-end of **that same turn**, not when the session closes. If they all pass the
+The terminal write (`state.mjs finish-verb`, or `set-terminal --terminal-marker
+true`) is **not** a deferred marker on Claude.
+The Stop hook fires at **every turn end**, so the archive gates — terminal
+marker, terminal phase, HEAD movement, no active children, no owner gate
+pending — are evaluated at the end of **that same turn**, not when the session
+closes. If they all pass the
 engineer workflow is archived then; if any fails it stays marked and a later Stop
 re-evaluates it. Same-turn *evaluation* is the guarantee; same-turn *archival* is
 not, and the move itself is best-effort and non-fatal.
 
-Parent writeback is **not** part of this Stop step on the normal Phase 7 path:
-`phase7-commit.mjs` runs P10 `writebackParent` synchronously *before* it writes
-the terminal marker, and the Stop hook only retries idempotently, or acts as the
-backstop when Phase 7 died between the two. A verb-command terminal write (no
-Phase 7) leaves the writeback to that Stop. Neither write completes the macro
-subtask (ADR-0062): the writeback notes the terminal commit on the macro and
-binds ownership, and `/orchestrator:done` records completion after the pull
-request merges.
+A workflow the orchestrator dispatched carries its parent: after the archive
+move the Stop hook notes the workflow's terminal commit on it, best effort
+(`scripts/stop-archive.mjs`; a kept branch's sweep notes that branch's tip),
+except after a no-changes close, which made no commit. A Phase 7 commit sends
+the same note itself first (P10, synchronously, before its terminal write),
+so on that path the Stop's note is a retry, which is idempotent, and makes up
+for a P10 note that failed (Phase 7 goes on to its terminal write when it
+does); a Phase 7 that stops before its terminal write leaves the workflow
+unarchived, and running it again is the recovery. A verb's terminal write
+leaves the note to that Stop. The sweep archives a workflow whose branch was
+deleted without a note, since it has no commit to name, and reports it for
+`/orchestrator:done`. No note completes the macro subtask (ADR-0062):
+`/orchestrator:done` records completion after the pull request merges.
+Note also that a verb's terminal write usually fails the HEAD-movement gate on
+the same turn, until `/engineer:commit` commits the change; a Phase 7 commit
+moves HEAD before its terminal write, so that turn's Stop can archive the
+workflow, and a no-changes close archives the workflow itself.
 
 Consequences for a runbook author:
 
 - **Decide before writing the marker.** If the workflow must stay open past this
-  turn, do not set `--terminal-marker true` yet.
+  turn, do not make the terminal write yet: end with an owner gate
+  (`finish-verb --owner-gate`, never terminal) or with an `append` that records
+  the next step.
 - **The unset window closes at that Stop, and it is a partial rollback.**
   `set-terminal --terminal-marker false` is accepted by both CLIs (covered by
   `tests/orchestrator/test-handoff-sidecar.mjs`), but it is not a bare flag —
@@ -75,35 +114,146 @@ Consequences for a runbook author:
   happens at all, so the unset window stays open across turns and the archive
   lands on the first trusted Stop (or a manual run of the adapter hook).
 
-## Completion footer is code-emitted (ADR-0039)
+## Fail-closed baseline (ADR-0043 §2)
 
-The `## How to compute + pass the projection` recipe below is the **contract
-reference** and the mechanism the **Phase 0** pre-work preflight uses. At
-**completion** the same projection is computed and handed to `footer.mjs`
-automatically by `emitTerminalHandoffSidecar` (engineer `session-handoff.mjs`),
-via the `discover-runtime.mjs` resolver (copy-not-import, ADR-0010 §5). That
-render is:
+The engineer sidecar keeps the ADR-0043 §2 baseline, a
+**path-targeted projection** with **hardened delivery**, in the one
+`session-handoff.mjs` every persona runs (ADR-0066):
 
-- **stderr only, never stdout** (the completion scripts' stdout is a load-bearing
-  machine channel);
-- **fail-closed silent** — a missing/too-old runtime (below
-  `MIN_RUNTIME_VERSION`) emits nothing and never throws; the completion proceeds
-  and the `SessionStart` backstop still re-surfaces the pending handoff;
-- **idempotent** — rendered at most once per terminal transition (a sibling
-  marker keyed to `workflow_id` makes the Stop-hook backstop a no-op once the
-  primary rendered), and a rendered footer suppresses the false "missed-footer"
-  `SessionStart` nudge.
+- the projection is computed for the **exact workflow being terminated
+  (by path)**, never a current-branch lookup — `finish-verb` and
+  `set-terminal` can be invoked cross-branch;
+- **stderr only, never stdout** (the completion scripts' stdout is a
+  load-bearing machine channel: path-only / JSON);
+- **fail-closed silent** — a missing/too-old runtime emits nothing and
+  never throws; the completion proceeds and the SessionStart backstop
+  still re-surfaces the pending handoff;
+- **delivery failure returns not-rendered** — a footer that could not be
+  written to stderr leaves the marker un-upgraded, so the SessionStart
+  nudge still fires (a swallowed delivery failure never counts as a
+  rendered footer);
+- **a failed emit clears any stale projection** from a prior successful
+  emit — the stable file always reflects *this* emit;
+- **idempotent** — rendered at most once per terminal transition (the
+  sibling marker below), and a rendered footer suppresses the false
+  "missed-footer" SessionStart nudge;
+- the projection slot is the single per-persona
+  `.agentic-plugins/state/engineer/last-session-handoff.json`
+  (`legacy_homes`: a workflow still stored under the pre-migration
+  `.claude/agentic-engineer/` home writes its projection to that home's
+  `last-session-handoff.json`, and the SessionStart backstop reads both
+  slots, the canonical one first; workflow writes refuse a repository whose
+  two homes both hold state).
+  Concurrent cross-branch terminals are
+  **last-writer-wins** on the slot (accepted by ADR-0043 §2; the marker
+  prevents double render, not cross-workflow overwrite).
 
-## How to compute + pass the projection
+**Scope honesty (inherited limitations):** the branch-agnostic Stop-hook
+**orphan sweep** archives terminal workflows whose branch is not checked
+out — deleted, or kept and moved past its baseline, and never one with an
+owner gate pending — **without** a final sidecar emit attempt, one sweep in
+every persona's `scripts/stop-archive.mjs` (orchestrator's Stop runs its
+handoff backstop before its archive scan). A workflow that
+terminalizes and whose branch is deleted or switched away from before any
+Stop fires on it gets no backstop emit, so a missed primary emit leaves it
+with no footer and no pending handoff. Two further slot-model properties are
+inherited and accepted (ADR-0043 §2 keeps the ADR-0031 single-slot design;
+per-workflow projection files are explicitly out of scope): projection and
+marker writes are plain truncating writes (a concurrent reader of a
+half-written file fail-closes to "no handoff" rather than corrupting), and
+SessionStart's consume runs after `stdout.write` returns without a
+delivery acknowledgment — a truncated injection can lose the one pending
+nudge. The render itself reads an immutable per-process snapshot, so a
+concurrent cross-branch overwrite of the slot can no longer mix one emit's
+completion flags with another emit's projection. The single-workflow marker
+shares the same LWW family: a different workflow's later claim replaces the
+tombstone, so under concurrent cross-branch terminals a still-active
+terminal workflow's Stop backstop can re-render an already-delivered
+transition — accepted with the slot model (a slot-transaction redesign is a
+cross-persona follow-up, outside this wiring).
 
-The engineer projection is computed **fail-closed** by a read-only script that
-uses the **pure** `evaluateStopArchive` evaluator (never the side-effecting
-`runStopArchive` runner), so computing it has no side effects:
+## Footer-rendered marker (documented cross-package contract)
+
+ADR-0043 §2 fixes the marker as a contract (the attention follow-up
+consumes this documentation, not the implementation):
+
+- **filename**: `<projectionFile>.footer-rendered`, i.e. the canonical
+  slot's sibling
+  `.agentic-plugins/state/engineer/last-session-handoff.json.footer-rendered`
+  (the legacy slot's sibling for a legacy-home workflow)
+  (every persona shares the single-projection-slot structure);
+- **JSON shape**: `{"workflow_id": <id>, "status": "claimed"|"rendered",
+  "at": <iso-utc>, "transition": <key>, "claim": <token>}`;
+- a render **counts only** as `status === 'rendered'` for the matching
+  `workflow_id`; a bare `claimed` marker is an in-flight/crashed render
+  and never suppresses the backstop;
+- **transition** (additive): which terminal transition of that workflow
+  rendered, a key over its terminal phase and next action. A workflow that
+  terminalizes again (a verb's finish, then its commit or close) is a new
+  transition, so an earlier transition's render suppresses neither the Stop
+  backstop nor the SessionStart nudge for it. A marker without the field
+  matches any transition of its workflow;
+- a `claimed` marker of another transition of the workflow, or one older
+  than a render can take (a render that died), is taken over by the next
+  emit; **claim** (additive) is the render attempt's token, and only the
+  attempt holding it upgrades or releases the marker. The marker is read and
+  written under a short lock file, `<projectionFile>.footer-rendered.lock`,
+  holding its owner's token, so overlapping emits cannot both take it over;
+- **tombstone semantics** (every persona since ADR-0066 D4): a
+  `rendered` marker **survives** SessionStart consumption of the one-shot
+  projection. A terminal workflow can stay active across sessions, until HEAD
+  moves past its baseline or while another archive gate fails
+  (a no-changes close stays active until its commit command archives it),
+  so the surviving tombstone is what keeps every later
+  Stop backstop from re-rendering the already-delivered transition
+  (terminal write → SessionStart consume → Stop would otherwise re-render).
+  Only a **new primary transition** (the `setTerminal` emit, which may
+  legitimately re-render a re-terminalized workflow), a **different
+  transition** of the same workflow, or a **different workflow's** claim
+  replaces it; a dead `claimed` marker is still removed on consumption, a
+  live one stays for its render to upgrade or release.
+
+Pinned by `tests/persona-pipeline/test-footer-activation.mjs` and
+`tests/persona-pipeline/test-handoff-backstop.mjs`, which run for every
+persona the session-handoff script is generated into (ADR-0066).
+<!-- pipeline:end handoff-wiring -->
+
+## Completion-flag mapping (completion-output contract §2)
+
+The sidecar maps `--completion-state` from engineer's own terminal
+semantics, which match the runtime's own inference (`footer.mjs`
+`inferCompletionState`): the change is committed by the Phase 7 driver that
+ends `/engineer:start` and `/engineer:commit`.
+
+<!-- pipeline:begin handoff-recipe -->
+- archive gate `blocked` with any gate unmet (`head_moved`,
+  `terminal_phase`, `no_active_children`, `awaiting_owner`) → **`blocked`**,
+  with gate-specific unblocking actions: for `head_moved`, the commit (for
+  a `close-complete` workflow, `/engineer:commit` again, since a
+  no-changes close makes no commit and archives the workflow itself;
+  `head_moved` is a fail-closed collapse that also covers a failed git
+  probe); for `awaiting_owner`, the pending gate's resolving surface;
+- otherwise → **`next-work-available`**.
+
+There is no `publish-needed`: engineer commits through its own commit
+surface. The reason names the projection phase (+ the failed gate tokens
+when blocked); the recommended next work carries the workflow's
+`next_action`, normalized to one line; `blocked` completions always pass an explicit
+`--completion-next-action` (the contract's §3.2 marker-free floor:
+engineer's terminal footer never renders a `[generic fallback]` marker).
+
+## How to compute + pass the projection (pre-work / manual preflight)
+
+The recipe below is the **contract reference** for a *pre-work* preflight
+surface; at completion the same projection is computed and handed to
+`footer.mjs` automatically by `emitTerminalHandoffSidecar` via the
+`discover-runtime.mjs` resolver (copy-not-import, ADR-0010 §5).
 
 ```bash
-# 1. Compute the bounded projection from engineer's OWN state.
+# 1. Compute the bounded projection from this persona's OWN state.
+PERSONA='engineer'
 HANDOFF="$(node "$CLAUDE_PLUGIN_ROOT/scripts/session-handoff.mjs" project \
-  --repo-root "$REPO_ROOT" --routing "/engineer:resume")"
+  --repo-root "$REPO_ROOT" --routing "/${PERSONA}:resume")"
 STATUS="$(echo "$HANDOFF" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).status||"")}catch{}})')"
 # Routing is always present in the result (ADR-0031 input (c)) — pass it
 # standalone when there is no projection so the seam never loses it.
@@ -114,40 +264,84 @@ case "$STATUS" in
     # 2. Materialize just the projection object to a temp file and pass it to
     #    the runtime seam. runtime composes context-risk × archive_gate into
     #    the continue-vs-fresh decision + next-session prompt/command.
-    PROJ_FILE="$(mktemp -t engineer-projection.XXXXXX).json"
+    PROJ_FILE="$(mktemp -t "${PERSONA}-projection.XXXXXX").json"
     echo "$HANDOFF" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{process.stdout.write(JSON.stringify(JSON.parse(s).projection))})' > "$PROJ_FILE"
-    # The runtime footer/check is advisory + pointer-only; --risk is the
-    # caller-supplied context-budget risk (host-measured tokens are not
-    # available — ADR-0031 §7). Use the runtime footer helper when present:
     #   runtime:context check --risk <green|yellow|red> --workflow-projection-file "$PROJ_FILE"
-    #   runtime footer --workflow-projection-file "$PROJ_FILE" ...
     ;;
   no_active_branch_context)
     # Detached HEAD — report it, do NOT auto-recommend a fresh session
     # (ADR-0018 §sub-2). Surface: "no active branch context".
     ;;
   no_active_workflow|fail_closed)
-    # No active engineer workflow, or a corrupt / ambiguous (canonical+legacy
-    # split) state. Degrade: NO projection, but routing is still available —
-    # pass it standalone so the seam keeps the routing-shaped next command:
+    # No active workflow of this persona, or a corrupt or ambiguous state (a
+    # canonical + legacy split, legacy_homes). Degrade: NO projection,
+    # but routing is still available — pass it standalone so the seam keeps
+    # the routing-shaped next command:
     #   runtime:context check --risk <green|yellow|red> --routing-recommendation "$ROUTING"
-    # Surface the reason from the handoff result.
     ;;
 esac
 ```
 
-The projection schema (workflow_kind, workflow_id, workflow_path, phase,
-next_action, checkpoint, archive_gate, routing_recommendation) and its
-fail-closed rules are owned by the contract section linked above; this wiring
-just produces a schema-valid projection and hands it to the seam.
+## Runtime discovery floor (ADR-0043 §4)
+
+`discover-runtime.mjs` gates on one floor, the **footer floor**
+`minRuntimeVersion()` (gates on `scripts/footer.mjs`): the declared
+`runtime_footer_floor`, **0.63.0** for engineer, the first released
+runtime that renders a `workflow_kind: engineer` footer. A runtime below it
+would not — it lacks the complete render interface, or it rejects the kind and
+renders the unsupported-kind degradation text — so discovery fail-closes
+instead (silent, no stale-cache fallback).
+
+The second floor, `NOTIFY_MIN_RUNTIME_VERSION` on `scripts/notify.mjs`, served
+the peer-runner's ADR-0040 §5 notification, and went with it (ADR-0064).
+
+## Codex hook parity (diagnose + operator attestation only)
+
+The primary emission fires **synchronously at completion** and is fully
+host-symmetric: a Codex `$engineer:<verb>` completion runs the same
+`finish-verb` CLI and renders the same footer, and `$engineer:start` and
+`$engineer:commit` run the same Phase 7 driver. What is not
+non-interactively provable on Codex is the *hook-borne* re-surfacing
+(Stop backstop + SessionStart re-injection): those ride the packaged
+hooks, which require the stage-appropriate hook gate plus a `/hooks`
+review/trust — and every hook-bearing engineer upgrade requires a fresh
+`/hooks` re-attestation (`runtime:settings --attest-codex-hook-review`;
+diagnose with `runtime:doctor`). This is the honest-scope boundary
+(ADR-0001 §5): the durable state is host-shared; only the automatic
+re-injection depends on the attested Codex hook state.
+
+## Rollback note (ADR-0043 §5)
+
+Rollback order is **personas first, runtime second**: the discovery floor
+compares versions, not capabilities, so a runtime release that stopped
+accepting `workflow_kind: engineer` would still satisfy `>= 0.63.0` and engineer sidecars
+would keep firing into honest-but-silent rejection. Rolling back the
+engineer package alone is safe; it leaves the durable one-shot artifacts
+behind — remove
+`.agentic-plugins/state/engineer/last-session-handoff.json*` (projection +
+rendered-marker tombstone)
+and the pre-migration slot's
+`.claude/agentic-engineer/last-session-handoff.json*`, whether or not a
+workflow still lives there (a pending handoff outlives its workflow)
+so a later re-enable cannot surface a
+pre-rollback handoff as current.
 
 ## Boundaries
 
-- **Read-only / non-mutating.** `session-handoff.mjs` only reads engineer state
-  and runs the pure evaluator; it never archives, marks terminal, or mutates
-  the workflow. The runtime footer it feeds is advisory and pointer-only.
-- **Fail-closed.** A corrupt or ambiguous engineer state yields no projection;
-  the seam degrades to context-risk + routing rather than trusting a partial
-  projection.
-- **No auto-fresh on detached HEAD.** Report "no active branch context"; do not
-  recommend a fresh session from a state with no branch to anchor to.
+- **Workflow-state read-only.** `session-handoff.mjs` only reads engineer
+  workflow state and runs the pure evaluator; it never archives, marks
+  terminal, or mutates the workflow. Its only writes are engineer's own
+  handoff artifacts — the projection slot, the render snapshot, and the
+  footer-rendered marker. The runtime footer it feeds is advisory and
+  pointer-only.
+- **Fail-closed.** A corrupt engineer state yields no projection, and so
+  does an ambiguous one (a canonical + legacy split) for the branch-based
+  preflight, which finds the workflow itself (the terminal sidecar is handed
+  its path); the seam degrades to context-risk + routing rather than
+  trusting a partial projection.
+- **No auto-fresh on detached HEAD.** The branch-based preflight reports
+  "no active branch context" and never recommends a fresh session from a
+  state with no branch to anchor to. The path-targeted terminal sidecar
+  does not consult the branch at all — it renders normally for the exact
+  workflow it was handed and stays advisory.
+<!-- pipeline:end handoff-recipe -->

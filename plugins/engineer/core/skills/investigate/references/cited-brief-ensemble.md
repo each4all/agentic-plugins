@@ -7,50 +7,50 @@ Investigate) used by other engineer profiles. Activated inside the
 cited-brief profile's command-invoked mode to cross-validate
 sub-question findings against an independent model on the peer host.
 
+<!-- pipeline:begin brief-ensemble-intro -->
 The user never invokes the peer host directly. The skill orchestrates
 dispatch, collection, and synthesis transparently through
 `companions/contract.md` v0.1.1 (Claude → Codex via `codex-companion`,
 Codex → Claude via `claude-companion`). When the peer host is not
-installed or returns no usable output, the ensemble degrades silently
-to local-only.
+installed or returns no usable output, the ensemble degrades silently to
+local-only.
 
-This document is the **bidirectional contract** for research-scan
-inside the engineer plugin. Mechanics — how to dispatch the peer
-companion, how to consume its JSON envelope — live in
-`plugins/engineer/scripts/peer-runner.mjs` for command-managed
-ensembles, with `dispatch-peer.mjs` retained as the blocking
-compatibility surface. This protocol describes only the wire-level
-contract: what to send, what to expect back, how to synthesize.
+Mechanics — how to dispatch the peer companion, how to consume its JSON
+envelope — live in `plugins/engineer/scripts/peer-runner.mjs` for
+command-managed ensembles, with `dispatch-peer.mjs` retained as the
+blocking compatibility surface. This protocol describes only the
+wire-level contract: what to send, what to expect back, how to synthesize.
+<!-- pipeline:end brief-ensemble-intro -->
 
-Per [ADR-0014](../../../../../../docs/adr/0014-plugins-research-deprecation.md)
-(Amendment 2026-05-06), this protocol absorbs the research-scan ensemble
-contract from the now-removed `plugins/research` plugin (retired at
-Stage 2.5+). The ensemble point type name `research-scan` is preserved
-for continuity with the Stage 1 contract and the omcc base synthesis
-taxonomy.
+This document is engineer's bidirectional contract for research-scan. Per
+[ADR-0014](../../../../../../docs/adr/0014-plugins-research-deprecation.md)
+(Amendment 2026-05-06), it absorbs the research-scan ensemble contract from
+the now-removed `plugins/research` plugin (retired at Stage 2.5+). The
+ensemble point type name `research-scan` is preserved for continuity with the
+Stage 1 contract and the omcc base synthesis taxonomy.
 
 ---
 
 ## When This Protocol Applies
 
-Activates inside the cited-brief profile's command-invoked mode (Step 1
-end through Step 3 entry) when invoked as:
+<!-- pipeline:begin brief-ensemble-when -->
+Activates inside the cited-brief profile's command-invoked mode (Step
+1 end through Step 3 entry) when invoked as:
 
 - Claude: `/engineer:investigate --profile=cited-brief <topic>` (slash command)
 - Codex: `$engineer:investigate cited-brief <topic>` (skill mention; per
-  ADR-0014 MVP statement, full slash-command parity is deferred to
-  ADR-0013 reserved)
+  ADR-0021 cognitive-runbook parity, full slash-command parity is
+  deferred to ADR-0013 reserved)
 
-Does NOT apply to:
+Does NOT apply to: auto-activated cited-brief outside command-invoked
+mode; inline cross-references from other engineer skills (`frame`,
+`decide`, `compose`, `refine`, `critique`); binary confirmations or
+progress updates within the same session.
+<!-- pipeline:end brief-ensemble-when -->
 
-- Auto-activated cited-brief profile outside the command-invoked mode.
-- Other engineer:investigate profiles (`analysis`, `root-cause`) — they
-  use the Explore / Investigate ensemble point types defined in
-  `_shared/references/ensemble-protocol.md`.
-- Inline cross-references from other engineer skills (`frame`, `decide`,
-  `compose`, `refine`, `critique`) — those skills suggest cited-brief
-  via handoff text but do not run the ensemble themselves.
-- Binary confirmations or progress updates within the same session.
+Nor does it apply to engineer's other investigate profiles (`analysis`,
+`root-cause`): they use the Explore and Investigate point types defined in
+`_shared/references/ensemble-protocol.md`.
 
 ---
 
@@ -68,59 +68,75 @@ peer host CLI is not installed).
 
 ## Execution Pattern
 
+<!-- pipeline:begin brief-ensemble-execution-intro -->
 Three steps per cited-brief session: **Launch**, **Collect**, **Synthesize**.
+<!-- pipeline:end brief-ensemble-execution-intro -->
 
 ### Step 1: Launch — after sub-question confirmation + scope
 
-Pre-conditions before dispatch:
+Before dispatch, the cited-brief profile's privacy gate (`../SKILL.md` Step 1,
+re-confirmed in its Step 2 survey) has passed for the topic AND the confirmed
+sub-questions: it covers BOTH web search AND peer-host dispatch — see
+"Privacy" below.
 
-1. The privacy gate has passed for the topic AND the confirmed
-   sub-questions. The gate covers BOTH web search AND external
-   ensemble dispatch — see "Privacy" below.
-2. The existing-directory check (per `output-file-rules.md`) has
-   completed and the user did NOT choose abort. Aborting before
-   dispatch prevents wasted peer runs on a session the user will
-   discard.
+<!-- pipeline:begin brief-ensemble-launch -->
+Pre-condition before dispatch: the existing-directory check (per
+`output-file-rules.md`) has completed and the user did NOT choose abort.
+Aborting before dispatch prevents wasted peer runs on a session the user will
+discard.
 
 Dispatch (mechanics owned by `plugins/engineer/scripts/peer-runner.mjs`;
 this protocol pins shape only):
 
-3. Engineer's `peer-runner.mjs run` resolves the peer-companion script
-   path via the same companion-cache discovery (cache-glob with
+1. engineer's `peer-runner.mjs run` resolves the peer-companion script
+   path via the companion-cache discovery (cache-glob with
    `AGENTIC_COMPANIONS_ROOT` env override, per ADR-0008), records the
    matching `pending_ensemble` row, and creates the hidden peer-run
    ledger. If discovery fails, the ensemble degrades to local-only per
-   "Failure Handling" below.
-4. The caller constructs the research-scan prompt per "Prompt
+   "Failure Handling".
+2. The caller constructs the research-scan prompt per "Prompt
    Construction" below and writes it to a per-dispatch temporary file
    (UTF-8), then passes that file to the runner. The prompt contains
-   user-controlled material (topic, sub-questions, scope), so it MUST
-   be passed via `--prompt-file <path>` per `companions/contract.md`
-   § 2.2 — never as a positional argument and never inlined into a
-   shell command. The companion reads the file directly; the prompt
-   never crosses shell parsing, process argv, or `ps aux`.
-5. The runner invokes the companion in **JSON envelope mode**:
+   user-controlled material (topic, sub-questions, scope), so it MUST be
+   passed via `--prompt-file <path>` per `companions/contract.md` § 2.2 —
+   never as a positional argument and never inlined into a shell command.
+   The companion reads the file directly; the prompt never crosses shell
+   parsing, process argv, or `ps aux`.
+3. The runner invokes the companion in **JSON envelope mode**:
 
    ```
    <peer-companion> task --prompt-file <path> --output-format json [--cwd <wd>]
    ```
 
-   per `companions/contract.md` § 4.2. The caller SHOULD background
-   the call so the local host's own research can proceed in parallel.
-   The runner MUST NOT pass companion-internal flags (no
-   `--background`, no timeout knobs); those are out of contract scope
-   per `companions/contract.md` § 6.2 and § 6.4.
-6. The local host proceeds immediately to Step 2 of the cited-brief
-   profile flow (per-sub-question WebSearch / WebFetch).
+   per `companions/contract.md` § 4.2. The caller SHOULD background the
+   call so the local host's own research can proceed in parallel. The
+   runner MUST NOT pass companion-internal flags (no `--background`, no
+   timeout knobs); those are out of contract scope per
+   `companions/contract.md` § 6.2 and § 6.4.
+4. The local host proceeds immediately to per-sub-question WebSearch /
+   WebFetch.
+<!-- pipeline:end brief-ensemble-launch -->
 
-### Step 2: Collect — before profile Step 3 synthesis
+### Step 2: Collect — before profile synthesis
 
+<!-- pipeline:begin brief-ensemble-collect -->
 1. Wait for the background dispatch notification — do NOT poll, sleep,
    or proactively check status.
-2. Read the JSON envelope from the companion's stdout. The envelope
+2. Read the peer-runner JSON first. Its `status` (`completed`, `failed`
+   or `cancelled`), `error_kind` and `envelope_path` describe the run,
+   not the peer's answer. When `envelope_path` is null there is no
+   envelope to read, and the run degrades to local-only: `error_kind`
+   says why — `peer_cli_not_found` (no companion resolved),
+   `envelope_parse_error` (the companion's stdout was not JSON), or a
+   spawn, signal or cancel kind.
+3. Otherwise read `envelope_path` for the parsed companion envelope. Its
    keys are pinned by `companions/contract.md` § 4.2:
-   `{status, peer_host, peer_model, stdout, exit_code, [error, metadata]}`.
-3. Classify by `status`:
+   `{status, peer_host, peer_model, stdout, exit_code, [error, metadata]}`;
+   an envelope the runner marked `error_kind: envelope_shape_invalid`
+   breaks that contract (a missing or mistyped key, or a `status` that
+   disagrees with its `exit_code` or `error`) and is malformed, with no
+   answer to parse. Classify by the envelope's
+   `status`:
    - `success` → proceed to peer-claim parsing.
    - `peer_error` (`error.kind: peer_run_error`) → treat as peer
      malformed-or-empty (see "Failure Handling").
@@ -128,18 +144,19 @@ this protocol pins shape only):
      peer_unauthenticated, peer_invocation_error}` → peer infrastructure
      unavailable; degrade to local-only.
    - `companion_error` with `error.kind: companion_misuse` → adapter
-     bug; surface as a runtime error (this is NOT a degradation case —
-     it indicates the dispatcher constructed an invalid invocation).
+     bug; surface as a runtime error (NOT a degradation case — it
+     indicates the dispatcher constructed an invalid invocation).
 4. The peer's `stdout` is the structured answer to the research-scan
-   prompt: claims and sources for each sub-question. Parse against
-   the Normalized Claim Shape below.
-5. If the peer failed in any failure-mode, record the failure
-   internally and proceed to Synthesize with local-only findings.
-   Mention degradation in the user-facing completion summary AFTER
-   the brief is saved — never as a finding label inside the brief
-   artifact.
+   prompt: claims and sources for each sub-question. Parse against the
+   Normalized Claim Shape below.
+5. If the peer failed in any failure-mode, proceed to Synthesize with
+   local-only findings; the finalize settles the attempt from its run
+   ledger (`peer-runner.mjs settle`), which records the failure. Mention
+   degradation in the user-facing completion summary AFTER the brief is
+   saved — never as a finding label inside the brief artifact.
+<!-- pipeline:end brief-ensemble-collect -->
 
-### Step 3: Synthesize — during cited-brief profile Step 3
+### Step 3: Synthesize — during cited-brief profile synthesis
 
 1. Normalize each peer finding into the intermediate Claim Shape
    defined below.
@@ -225,20 +242,24 @@ reference.
 </privacy_contract>
 ```
 
+<!-- pipeline:begin brief-ensemble-model -->
 Model and effort are NOT passed via flags — the user's peer-host
 configuration is the single source of truth. (`companions/contract.md`
-§ 2.2 makes `--model` / `--effort` optional; engineer's always-max
-policy declines to override at the protocol layer.)
+§ 2.2 makes `--model` / `--effort` optional; engineer's always-max policy
+declines to override at the protocol layer.)
+<!-- pipeline:end brief-ensemble-model -->
 
 ---
 
 ## Independence Rule
 
+<!-- pipeline:begin brief-ensemble-independence -->
 The peer must analyze independently. The peer prompt MUST NOT include:
 
 - The local host's in-progress findings, synthesis drafts, or citation list.
 - The local host's confidence ratings or judgments about sources.
 - The local host's interpretation of which sub-questions are easy or hard.
+<!-- pipeline:end brief-ensemble-independence -->
 
 The Independence Rule is explicitly **bidirectional**: when the local
 host is Claude, Claude does not leak its findings into the
@@ -274,15 +295,17 @@ synthesis:
 }
 ```
 
-This shape is internal — it is not written into the brief artifact.
-The brief uses the structure defined in `cited-brief-spec.md`.
-Synthesis maps normalized claims into the brief's Findings and Sources
-sections.
+<!-- pipeline:begin brief-ensemble-claim-shape-note -->
+This shape is internal — it is not written into the brief artifact. The
+brief uses the structure defined in `cited-brief-spec.md`. Synthesis
+maps normalized claims into the brief's Findings and Sources sections.
+<!-- pipeline:end brief-ensemble-claim-shape-note -->
 
 ---
 
 ## Synthesis Categories
 
+<!-- pipeline:begin brief-ensemble-categories -->
 Every claim from either model classifies into one of four categories
 during reconciliation:
 
@@ -293,9 +316,10 @@ during reconciliation:
 | PEER-ONLY    | The peer found it, the local host did not              |
 | CONFLICT     | Models reached opposing conclusions                    |
 
-`LOCAL-ONLY` / `PEER-ONLY` are host-neutral — they describe the
-discovery side relative to the invoked profile, regardless of which
-host happens to be local. The same protocol works in both directions.
+`LOCAL-ONLY` / `PEER-ONLY` are host-neutral — they describe the discovery
+side relative to the invoked profile, regardless of which host happens to
+be local. The same protocol works in both directions.
+<!-- pipeline:end brief-ensemble-categories -->
 
 This taxonomy is a domain-specific application of the omcc base
 synthesis taxonomy (AGREED / CLAUDE-ONLY / CODEX-ONLY / CONFLICT) —
@@ -307,30 +331,35 @@ discovery side relative to the invoked workflow.
 
 ### AGREED handling
 
+<!-- pipeline:begin brief-ensemble-agreed -->
 - Same sources: present once with the existing citations.
 - Different sources, same conclusion: AGREED + **Source Union**
-  (verified, URL-deduplicated). Each peer source goes through
-  Citation Remapping before joining the union.
-- Same conclusion, different confidence: take the higher confidence
-  level only when its source-tier coverage is at least as strong as
-  the lower-confidence side. Otherwise keep the lower confidence and
-  record the divergence in Open Questions.
+  (verified, URL-deduplicated). Each peer source goes through Citation
+  Remapping before joining the union.
+- Same conclusion, different confidence: take the higher confidence level
+  only when its source-tier coverage is at least as strong as the
+  lower-confidence side. Otherwise keep the lower confidence and record
+  the divergence in Open Questions.
+<!-- pipeline:end brief-ensemble-agreed -->
 
 ### LOCAL-ONLY handling
 
+<!-- pipeline:begin brief-ensemble-local-only -->
 Present normally with the local host's citations. **No
 source-of-discovery label appears in the brief artifact** — the brief
 never carries `[Local]` / `[Peer]` / `[Both]` markers (per
 `cited-brief-spec.md` "Ensemble Label Policy"). Workflow phase notes
-elsewhere (engineer's standard `state.mjs`-driven workflow `.md` body)
-may carry these labels for orchestration transparency, but the saved
-brief artifact strips them.
+elsewhere may carry these labels for orchestration transparency, but the
+saved brief artifact strips them.
+<!-- pipeline:end brief-ensemble-local-only -->
 
 ### PEER-ONLY handling
 
+<!-- pipeline:begin brief-ensemble-peer-only -->
 The brief's audit checklist requires every substantive claim to have
-either a `[N]` citation OR an allowed sentinel (per
-`cited-brief-spec.md`). PEER-ONLY claims must take ONE of these paths:
+either a `[N]` citation OR an allowed sentinel. PEER-ONLY claims must
+take ONE of these paths:
+<!-- pipeline:end brief-ensemble-peer-only -->
 
 - **Path A — Verify and cite**: The local host fetches the
   peer-provided source via WebFetch (or its host-equivalent),
@@ -344,11 +373,13 @@ either a `[N]` citation OR an allowed sentinel (per
   cite the unverified source — bare-URL pointers do not pass the
   audit.
 
+<!-- pipeline:begin brief-ensemble-path-c -->
 Path C — using `[uncited inference]` — is **forbidden** for factual
-external claims. The `[uncited inference]` sentinel is reserved for
-the model's own interpretation/synthesis. A factual claim attributed
-to an external source cannot be inference; it must be verified or
-deferred.
+external claims. The `[uncited inference]` sentinel is reserved for the
+model's own interpretation/synthesis (including extrapolation). A factual
+claim attributed to an external source cannot be inference; it must be
+verified or deferred.
+<!-- pipeline:end brief-ensemble-path-c -->
 
 ### CONFLICT handling
 
@@ -361,24 +392,26 @@ one source is significantly higher tier. The wording in
 
 ## Citation Remapping
 
-The peer's response uses peer-internal labels (none, prose, or its
-own numbering scheme). These are NOT copied into the final brief.
-Mapping rule:
+<!-- pipeline:begin brief-ensemble-remapping -->
+The peer's response uses peer-internal labels (none, prose, or its own
+numbering scheme). These are NOT copied into the final brief. Mapping
+rule:
 
-1. For each peer source URL, canonicalize: strip tracking parameters
-   and trailing-slash variations.
-2. Compare against the local host's already-captured Sources by
-   canonical URL.
+1. For each peer source URL, canonicalize: strip tracking parameters and
+   trailing-slash variations.
+2. Compare against the local host's already-captured Sources by canonical
+   URL.
 3. If match: the source is already in the brief; the peer finding's
    citation is the existing `[N]`.
-4. If no match (new source from the peer), apply Path A or Path B
-   from "PEER-ONLY handling" above. Path A appends a new entry to
-   Sources in research capture order — the next available `[N]`.
-   Path B does not modify Sources.
+4. If no match (new source from the peer), apply Path A or Path B from
+   "PEER-ONLY handling" above. Path A appends a new entry to Sources in
+   research capture order — the next available `[N]`. Path B does not
+   modify Sources.
 
 The brief's Sources section remains single-numbered, capture-order
 preserving, and URL-deduplicated per `cited-brief-spec.md`. The peer
 contributes to that ordering only via Path A.
+<!-- pipeline:end brief-ensemble-remapping -->
 
 ---
 
@@ -409,6 +442,7 @@ dispatch to the peer.
 
 ## Failure Handling
 
+<!-- pipeline:begin brief-ensemble-failure -->
 Failure modes map to the JSON envelope `error.kind` values defined in
 `companions/contract.md` § 5.3, plus per-claim malformed-output cases
 that surface only after parsing the peer's content.
@@ -416,20 +450,22 @@ that surface only after parsing the peer's content.
 ### Peer host CLI unavailable, not installed, or unauthenticated
 
 - Detect: `error.kind ∈ {peer_cli_not_found, peer_unauthenticated,
-  peer_invocation_error}` per `companions/contract.md` § 5.3, OR
-  `peer-runner.mjs run` returns no companion path
-  (`peer_cli_not_found` equivalent at the discovery layer).
-- Action: Skip dispatch silently. Proceed with local-only research.
+  peer_invocation_error}`, OR `peer-runner.mjs run` returns no companion
+  path (`peer_cli_not_found` equivalent at the discovery layer).
+- Action: Proceed with local-only research, silently. A run the runner
+  started settles as verdict `failed` with this `error_kind`
+  (`peer-runner.mjs settle`); with no run launched there is nothing to
+  settle.
 - Surface: Mention in the user-facing completion summary that the
   ensemble was unavailable. Do NOT label findings inside the brief.
 
 ### Peer timeout or runtime error
 
-- Detect: `status: peer_error` with `error.kind: peer_run_error`, OR
-  the background dispatch exits in a way the dispatcher cannot map to
-  any envelope `error.kind` (treated as `peer_invocation_error`).
-- Action: Record the failure mode internally; proceed with local-only
-  research.
+- Detect: `status: peer_error` with `error.kind: peer_run_error`, OR the
+  background dispatch exits unmappably (treated as
+  `peer_invocation_error`).
+- Action: Proceed local-only; settling the attempt records verdict
+  `failed` with the ledger's `error_kind`.
 - Surface: Same as above.
 
 ### Peer returns empty output
@@ -437,76 +473,94 @@ that surface only after parsing the peer's content.
 - Detect: Envelope `status: success` but `stdout` parses to no claims,
   only structural shell, or is missing the per-sub-question response
   blocks.
-- Action: Treat as if the peer was unavailable. Proceed with
-  local-only research.
+- Action: Treat as if the peer was unavailable. Proceed local-only;
+  settling the completed attempt records verdict `degraded`. `settle` sees
+  an empty or unreadable answer itself; an answer that parses to only
+  structural shell reads to it like any other, so pass `degraded` as the
+  synthesis verdict then.
 - Surface: Same as above.
 
 ### Peer returns malformed partial output
 
-- Detect: `stdout` is structurally valid but missing required fields
-  for some claims (e.g., source-type omitted, claim without
-  conclusion, source-URL field empty).
-- Action: Parse only the claims that pass structural validation
-  (claim + conclusion + at least one retrievable source URL).
-  Discard claims with unverifiable or empty source URLs. Continue
-  with the salvageable subset for synthesis.
-- Surface: Mention in the completion summary that ensemble coverage
-  was partial.
+- Detect: `stdout` is structurally valid but missing required fields for
+  some claims (e.g., tier omitted, claim without conclusion, source-URL
+  field empty).
+- Action: Parse only the claims that pass structural validation (claim +
+  conclusion + at least one retrievable source URL). Discard claims with
+  unverifiable or empty source URLs. Continue with the salvageable subset.
+- Surface: Mention in the completion summary that ensemble coverage was
+  partial.
 
 ### Peer returns PEER-ONLY claim with no source URL
 
-- Treat as malformed at the per-claim level (no source URL means
-  nothing to verify).
-- Discard the claim. Do NOT add it to Open Questions — there is
-  nothing to follow up on.
+- Treat as malformed at the per-claim level (no source URL means nothing
+  to verify).
+- Discard the claim. Do NOT add it to Open Questions — there is nothing
+  to follow up on.
 
 ### Graceful degradation principle
 
-The brief is always assembled and saved on the local-only path.
-Ensemble failure NEVER blocks save. The completion summary states
-the degradation; the brief itself shows no ensemble-specific labels
-or markers — readers of the brief should not be able to tell whether
-the ensemble ran at all.
+The brief is always assembled and saved on the local-only path. Ensemble
+failure NEVER blocks save. The completion summary states the degradation;
+the brief itself shows no ensemble-specific labels or markers — readers
+of the brief should not be able to tell whether the ensemble ran at all.
+<!-- pipeline:end brief-ensemble-failure -->
 
 ---
 
 ## State and Recovery
 
-Unlike the Stage 1 `plugins/research` plugin (which had no persistent
-workflow state), the cited-brief profile writes phase notes through
-engineer's persistent workflow `.md` via `state.mjs`. Concretely:
+<!-- pipeline:begin brief-ensemble-state -->
+The cited-brief profile writes phase notes through engineer's
+persistent workflow `.md` via `state.mjs`:
 
-- The cited-brief profile's command-mode flow appends phase notes
-  through `state.mjs append` at each protocol step (Launch, Collect,
-  Synthesize). The notes preserve a body-level audit trail of which
-  ensemble was launched at what time and what its synthesis verdict
-  was, in human-readable form.
-- The brief artifact itself (the saved `research_brief.md`) remains
-  the durable artifact; even if the workflow `.md` is archived later,
-  the brief is preserved at its `<root>/YYYY-MM-DD_<topic-slug>/`
-  location.
+- The command-mode flow records the ensemble in the phase note it
+  appends through `state.mjs append` after synthesis: the launch marker
+  and the synthesis verdict, a body-level audit trail of which ensemble
+  ran at what time and what it concluded, in human-readable form.
+- The brief artifact itself (the saved `research_brief.md`) remains the
+  durable artifact; even if the workflow `.md` is archived later, the
+  brief is preserved at its `<root>/YYYY-MM-DD_<topic-slug>/` location.
 
-In-flight peer dispatches do NOT survive session compaction. The
-schema-1.1 `pending_ensemble` field (per
-[ADR-0017 §sub-decision 4](../../../../../../docs/adr/0017-stage25-continuity-and-schema-roadmap.md)
-and [`_shared/references/ensemble-protocol.md`](../../_shared/references/ensemble-protocol.md)
-§"State Bookkeeping (Stage 2.5+)") records that a dispatch began
-(`run_id` + `started_at`), but the background task itself is not
-recoverable across sessions — the OS process is gone. If a peer
-dispatch is in flight when the session compacts, the recovered
-session sees both the in-flight phase note
-(`### Ensemble launched: <type> at <iso-utc>`) and the
-`pending_ensemble[]` entry with the matching `run_id`; it cannot
-collect the original background task. The next session must
-re-dispatch the ensemble (which calls `recordPendingEnsemble` with
-the same or a new `run_id`; the helper is idempotent on `run_id` so
-duplicate entries do not accumulate).
+In-flight peer dispatches do NOT survive session compaction as a task:
+the background task and its notification belong to the session that
+launched it, although the detached companion process may still be
+running. The schema-1.x `pending_ensemble` field records that a dispatch
+began (`run_id` + `started_at`). The launch marker is written with the
+synthesis, so a session that compacts while the peer runs finds the
+`pending_ensemble[]` entry with the matching `run_id`, not a phase note;
+it cannot collect the original background task.
+
+Inspect that run before dispatching again:
+`peer-runner.mjs status --run-id <run_id> --json` reports its `status`,
+`live`, `derived_status` and `paths.envelope` (the status JSON, not the
+run result Step 2 reads):
+
+- `live: true` — the companion is still running, and no notification
+  will reach this session: cancel it (`peer-runner.mjs cancel --run-id
+  <run_id>`) before a retry, or proceed local-only.
+- `derived_status: completed_uncommitted` — the companion finished and
+  wrote its envelope while the workflow still holds the pending entry:
+  read `paths.envelope` as Step 2 item 3 reads `envelope_path`,
+  synthesize it, and settle it in the finalize (`peer-runner.mjs settle
+  --run-id <run_id>`), with no new dispatch.
+- Otherwise the run ended without an envelope to use: proceed local-only,
+  or retry.
+
+A retry takes a fresh run id, since the runner refuses a `run_id` whose
+ledger already exists. The old pending entry stays until its attempt is
+settled: cancel the old run if it is still live, then settle it with
+`peer-runner.mjs settle --run-id <old run_id>`, whether the step retries
+or proceeds local-only. The ledger decides what that records (verdict
+`failed` with its `error_kind` for a run that ended without a usable
+answer), never a verdict the agent picks; the retry then settles under its
+own run id.
 
 Workflow re-entry uses engineer's own continuity — `scripts/state.mjs`
 restores the workflow `.md`'s tasks frontmatter and current_phase per
 ADR-0011 §5; the cited-brief profile inherits that without
-profile-specific wiring. The body-level phase notes (above) plus the
-saved brief artifact together give the user the recovery surface.
+profile-specific wiring.
+<!-- pipeline:end brief-ensemble-state -->
 
 ---
 
@@ -542,9 +596,8 @@ profile owns its prompt template and artifact contract.
 - `output-file-rules.md` — output-file conventions; the
   existing-directory check that gates ensemble dispatch lives here.
 - `../../_shared/references/ensemble-protocol.md` — engineer's
-  standard ensemble protocol (Explore + Investigate point types).
-  research-scan registers as a third point type with this protocol as
-  its contract.
+  standard ensemble protocol; its Research-scan point type names this
+  protocol as its contract.
 - `../../../../scripts/peer-runner.mjs` — engineer's managed peer runner;
   the mechanics that resolve and invoke the peer companion, write the
   ledger, and record `pending_ensemble` for command-managed ensembles.

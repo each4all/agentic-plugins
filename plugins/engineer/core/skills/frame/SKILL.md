@@ -121,29 +121,23 @@ After both sides return:
 
 ### Step 5: Present
 
+<!-- pipeline:begin frame-present -->
 Follow the Presentation Mode Protocol
 (`../_shared/references/presentation-protocol.md`) before presenting.
-Use the same shape as auto-activated mode.
+
+Use the same shape as auto-activated mode, at the deeper synthesized
+fidelity. Present clearly and confirm before downstream verbs.
+<!-- pipeline:end frame-present -->
 
 ### State write (when invoked from a workflow command)
 
-When `/engineer:frame` is invoked as a sub-step of a workflow
+When `/engineer:frame` is invoked as a sub-step of an engineer workflow
 command, the invoking command writes the problem model to its
-workflow file per `continuity-protocol.md` Phase-boundary Write
-Rules (Deliverable D). This skill itself does not write workflow
-state — it hands the model to the invoking command, which owns the
-write.
+workflow file. This skill itself does not write workflow state — it
+hands the model to the invoking command, which owns the write.
 
 When invoked standalone (no parent workflow command), no workflow
 file write occurs.
-
-The invoking command's last write, `state.mjs finish-verb`, also records
-the closed-enum form of this skill's Active Next-Action Proposal —
-`next_step_kind`, `next_step_verb` and `next_step_confidence` (ADR-0063 D6;
-`../_shared/references/entry-routing-contract.md` § Active Next-Action
-Proposal). The fields are host-shared. Autopilot mode, which changes the
-ceremonies and leaves the terminal marker unset, is Claude-only (ADR-0063);
-ignore it on Codex.
 
 ---
 
@@ -156,12 +150,12 @@ next verb, per `../_shared/references/entry-routing-contract.md`
 table:
 
 ```
-- selected_next:         <verb | commit | owner decision>
+- selected_next:         <verb | commit | done | owner decision>
 - rejected_alternatives: <1-2 alternatives, each + one-line why-not>
 - rationale:             <why best — 본질/근본 (essence/foundation) + Standards/Root-Cause gate>
 - evidence_pointers:     <phase notes / files / artifacts — pointers only>
 - confidence:            <HIGH | MEDIUM | LOW>
-- next_command:          <exact next step: /engineer:<verb> … or $engineer:<verb> for a verb; the commit / owner-decision action otherwise>
+- next_command:          <exact next step: /engineer:<verb> … or $engineer:<verb> for a verb; /engineer:commit or $engineer:commit for commit or done; the owner-decision action otherwise>
 ```
 
 Typical `selected_next` candidates for frame: `/engineer:decide` when 2+
@@ -173,19 +167,39 @@ genuinely neutral — do not end with a hardcoded "next: X". When
 stays lightweight (ADR-0029 §3): it emits this proposal shape and routing
 reasoning without dispatching a peer.
 
----
+<!-- pipeline:begin frame-finish -->
+Run by `/engineer:frame`, the command's last write, `state.mjs
+finish-verb`, records this proposal's closed-enum form — `next_step_kind`,
+`next_step_verb` and `next_step_confidence` (ADR-0063 D6;
+`../_shared/references/entry-routing-contract.md` § Active Next-Action
+Proposal); the fields are host-shared. Unless it ends with an owner gate, that
+write is terminal. Inside `/engineer:start` no phase makes a verb's
+terminal write: the lifecycle makes its one terminal write at its end. A
+standalone skill invocation writes no workflow state and emits no footer.
+The owner gates, and the step that resolves each:
+`../_shared/references/entry-routing-contract.md` § Owner gates.
 
-## Session-level handoff preflight (ADR-0031)
+Autopilot mode, which changes the ceremonies and leaves the terminal marker
+unset, is Claude-only (ADR-0063); ignore it on Codex. Under an autopilot run
+`finish-verb` writes the next step only and leaves the terminal marker for the
+commit command, which alone closes a workflow there, so no footer is printed:
+the driver is the handoff.
 
-The completion footer — including the ADR-0031 continue-vs-fresh
-session-handoff — is **code-emitted** on this verb's terminal path (ADR-0039):
-the terminal write `state.mjs finish-verb` makes (set-terminal
-`summary-complete`) fires the session-handoff sidecar, which renders the
-runtime `footer.mjs` on the terminal command's stderr. Do not hand-compose the
-footer or hand-pass the projection here; surface the emitted one. On detached
-HEAD the sidecar reports "no active branch context" and does not auto-recommend
-a fresh session. This mirrors the `/engineer:frame`
-command's preflight so `$engineer:frame` on Codex surfaces it identically.
+The runtime completion footer is **code-emitted** on that terminal write
+(ADR-0039): its completion state is
+`blocked`, with the commit as its unblocking action, when only the commit
+remains — `/engineer:commit` commits the change, or closes the workflow
+when there is none.
+The write fires the session-handoff sidecar, which renders the runtime
+`footer.mjs`, the ADR-0031 continue-vs-fresh session handoff included, on that
+command's stderr. Do not hand-compose a second footer or hand-pass the
+projection; surface the emitted one. On a detached HEAD the branch-based
+preflight reports "no active branch context" and never recommends a fresh
+session (ADR-0018 §sub-2); the path-targeted terminal sidecar renders the
+footer as on a branch, its continue-vs-fresh advice included.
+`$engineer:frame` on Codex surfaces the footer as
+`/engineer:frame` does. Wiring:
+`core/skills/_shared/references/session-handoff.md`.
 
 On Claude the Stop hook fires at **every turn end**, so that terminal write puts
 the workflow in front of the archive gates at the end of **that same turn**, not
@@ -196,6 +210,7 @@ that Stop fires and does not restore the previous phase. On Codex the hook runs
 only once the operator has trusted the plugin hooks (`/hooks`), so evaluation
 waits. Full contract: `core/skills/_shared/references/session-handoff.md`
 § Archive timing.
+<!-- pipeline:end frame-finish -->
 
 ---
 

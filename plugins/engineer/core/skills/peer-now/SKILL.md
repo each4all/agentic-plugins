@@ -23,13 +23,11 @@ This skill is a deliberate side-channel: it does NOT update
 `current_phase`, `next_action`, `latest_checkpoint`, or the
 `ensemble_results` frontmatter list. peer-now is **excluded from
 `ensemble_results`** by design — that field is reserved for verb-
-skill structured ensemble verdicts. The managed ensemble
-bookkeeping argument set (`--workflow-path / --phase /
---ensemble-type / --run-id`) is what opts a dispatch INTO
-`ensemble_results`; `peer-now` deliberately omits the workflow
-bookkeeping flags even though it now has an operational `run_id`,
-mirroring the structural exclusion that verb-skill ensembles record in
-`core/skills/_shared/references/ensemble-protocol.md`
+skill structured ensemble verdicts. peer-now deliberately omits the
+three ensemble-accounting flags (`--workflow-path / --phase /
+--ensemble-type`); the `--run-id` it passes is the peer-run ledger key,
+not an ensemble key. This mirrors the structural exclusion documented
+in `core/skills/_shared/references/ensemble-protocol.md`
 § State Bookkeeping.
 
 ---

@@ -37,16 +37,43 @@ state, recovery path, and evidence even when command syntax differs.
 
 ## When invoked by command (`/engineer:start` Claude command or `$engineer:start` Codex skill mention)
 
-Phase 0 host-side bootstrap (argument parsing, detached-HEAD guard,
-redundancy probe, **Layer 1 clean-baseline gate**, active-workflow
-branching) is owned by the entry path: `commands/start.md` on the
-Claude side carries the canonical bash. Direct `$engineer:start`
-invocation on Codex follows the equivalent operational sequence inline
-using the same engineer `scripts/state.mjs` CLI (the state writer is
-host-agnostic).
+<!-- pipeline:begin start-command-intro -->
+Phase 0 host-side bootstrap (argument intake, detached-HEAD guard,
+redundancy probe, clean-baseline gate, active-workflow branching) is owned by
+the entry path:
+`commands/start.md` carries the canonical bash on the Claude side, generated
+from the shared start regions (ADR-0066). Direct `$engineer:start` on Codex
+follows the same operational sequence inline, in this order, using the same
+`scripts/state.mjs` CLI (the state writer is host-agnostic):
+
+1. **Guard and find.** Refuse a detached HEAD (workflows are anchored to a
+   branch), then `state.mjs find-active --repo-root <root>`, then
+   `state.mjs autopilot-preflight --workflow-path <found> --host codex`
+   before any write: it reports a pending owner gate and writes nothing.
+2. **Active-workflow branching.** `workflow_type` `start` → resume:
+   `state.mjs append --workflow-path <found> --host codex --clear-next-step
+   true --event resumed`; put an owner gate step 1 reported to the user
+   first (once it is resolved, clear it with the phase the lifecycle
+   continues at and that phase's `--next-action`), then continue from its
+   `current_phase`; no description is needed. Any other workflow
+   (`verb-chain`, or a legacy one without the field) → typed conflict:
+   refuse, writing nothing, its owner gate included — `start` must not
+   absorb a single-verb workflow into lifecycle phase space. The user
+   continues it with its `$engineer:<verb>`,
+   commits it (`$engineer:commit`),
+   archives it (`$engineer:resume`) or switches branch, then runs
+   `$engineer:start` again.
+3. **No active workflow.** The arguments are read from an args file, twice:
+   first for the **redundancy probe** (`state.mjs diagnose-redundancy
+   --repo-root <root> --base-branch <ref>`, informational — a failed probe
+   never stops; a finding is put to the user for proceed or abort, and abort
+   writes nothing), then, with a new args file, for the bootstrap: the
+   **clean-baseline gate** below, then `state.mjs create --workflow-type
+   start --verb investigate --persona engineer --original-request <the
+   description>`.
 
 Argument parsing is `scripts/start-args.mjs --args-file <path>` on both
-hosts (ADR-0059 Decision 7). The feature description, with any
+hosts (ADR-0059 Decision 7). The description, with any
 `--base-branch <ref>` in it, goes into an args file — never into a command
 line, where an apostrophe aborts the line and `;` or `$(…)` cuts or runs it.
 Write `{"agentic_args": 1, "text": "…"}` with the file-editing tool into a
@@ -57,33 +84,54 @@ so running it again needs a new args file:
 
 ```bash
 ARGS_DIR='<directory mktemp printed>'
-START_ARGS="$(node "<engineer-plugin-root>/scripts/start-args.mjs" --args-file "$ARGS_DIR/args.json")" || exit $?
+START_ARGS="$(node "<plugin-root>/scripts/start-args.mjs" --args-file "$ARGS_DIR/args.json")" || exit $?
 printf '%s\n' "$START_ARGS"
-BASE_BRANCH="$(printf '%s' "$START_ARGS" | jq -r .base_branch)"
-FEATURE="$(printf '%s' "$START_ARGS" | jq -j .feature; printf x)"; FEATURE="${FEATURE%x}"
+BASE_BRANCH="$(printf '%s' "$START_ARGS" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>process.stdout.write(JSON.parse(s).base_branch))')" || exit $?
+# A command substitution drops trailing newlines; the sentinel keeps them.
+FEATURE="$(printf '%s' "$START_ARGS" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>process.stdout.write(JSON.parse(s).feature))'; printf x)"; FEATURE="${FEATURE%x}"
 ```
 
-The **Layer 1 clean-baseline gate** (ADR-0028 §Layer-1) runs on the
-bootstrap branch — i.e., when `find-active` returns empty and a new
-workflow is about to be created — before `state.mjs create`. It calls
-`state.mjs check-clean-baseline --repo-root <root>` and inspects the
-returned `status` (`clean` / `dirty` / `accepted`). On `dirty` the gate
-refuses to bootstrap and presents four resolutions to the user:
+The **clean-baseline gate** (ADR-0028 §Layer-1) runs on the bootstrap branch
+(when `find-active`
+returns empty and a new workflow is about to be created) before `state.mjs
+create`. It calls `state.mjs check-clean-baseline --repo-root <root>` (with
+`--accept-current-tree true` once the user accepts the current tree, as
+`ACCEPT_CURRENT_TREE=1` does in the command) and inspects the returned
+`status` (`clean` / `dirty` / `accepted`). The gate fails closed: only an
+explicit `clean` / `accepted` status proceeds; a non-zero check, a `dirty`
+tree, or an unparseable status stops the bootstrap. On `dirty` the gate
+refuses to bootstrap and presents resolutions:
 
 - **clean** — `git restore . ; git clean -fd` and re-run;
 - **stash** — `git stash push --include-untracked`, re-run, then `git stash pop`;
 - **worktree** — `/runtime:worktree plan` (`$runtime:worktree` on Codex)
   suggests the `git worktree add` command for a clean checkout once its
   checks pass, without running it; re-run in the new worktree;
-- **accept-current-tree** — set `ACCEPT_CURRENT_TREE=1` in the environment
-  before re-running. The workflow's commit will sweep whatever was in
-  the tree; the user acknowledges this.
+- **accept-current-tree** — set `ACCEPT_CURRENT_TREE=1` before re-running.
+  The workflow's commit will sweep whatever was in the tree; the user
+  acknowledges this.
 
 `.agentic-plugins/state/**` is excluded from the dirty check — workflow
-storage is engineer's own bookkeeping and never counts. On `clean` or
-`accepted` the bootstrap proceeds; Phase 7 honors the
-`ACCEPT_CURRENT_TREE` flag by staging all of `git_changes` rather than
-the manifest intersection.
+storage is the persona's own bookkeeping and never counts. An accepted tree
+is not remembered: Phase 7 stages all of `git_changes` rather than the
+manifest intersection only when it is told again, so pass
+`--accept-current-tree` to both of its modes (the plan too, so its preview
+matches what execute commits).
+
+**Inside the lifecycle** (both hosts, ADR-0066 PC2b): Phase 0 runs
+`state.mjs autopilot-preflight` once, before any write, and a resumed start
+workflow clears the next step it carried. Each phase's ensemble attempt is
+settled from its run ledger (`peer-runner.mjs settle`) before the next phase,
+a repeated phase under a new run id. No phase makes a verb's terminal write;
+the lifecycle's one terminal write is the Phase 7 commit driver
+(`phase7-commit.mjs` in execute mode, which writes `set-terminal` last).
+An owner gate met in a
+phase (a decide CONFLICT, a recurring finding) is recorded with
+`state.mjs awaiting-owner-set`, which leaves the workflow open; the lifecycle
+pauses, and continues at the next phase once the owner's decision clears it
+(`state.mjs awaiting-owner-clear` with that phase as the next step and its
+action as the next action).
+<!-- pipeline:end start-command-intro -->
 
 State writes at each phase boundary (`state.mjs append --verb …`)
 are an orchestrator concern, not a skill concern — see
@@ -91,7 +139,12 @@ are an orchestrator concern, not a skill concern — see
 and `core/skills/_shared/references/orchestration.md` for the canonical
 state-write pattern shared with the verb skills.
 
-Before Phase 1, present an **Entry routing recommendation**:
+### Entry routing recommendation (before Phase 1)
+
+Before Phase 1, present an **Entry routing recommendation** (the routes, the
+prompt shape and the quality-first defaults are defined in
+`../_shared/references/entry-routing-contract.md` § Routing Recommendation
+and the sections after it):
 
 - continue with `/engineer:start` / `$engineer:start` for one coherent
   deliverable on the current branch;
@@ -141,9 +194,10 @@ continue-vs-fresh preflight per
 projection for the current branch and pass it — or, when no active workflow
 exists, the standalone routing — to the runtime seam, so the Entry routing
 recommendation above is sized by context-budget risk + archive-gate readiness.
-On detached HEAD report "no active branch context"; do not auto-recommend a
-fresh session. This mirrors the `/engineer:start` command's Phase 0d preflight
-so `$engineer:start` on Codex surfaces it identically.
+On a detached HEAD the entry's guard (step 1 above) stops it before any write
+(workflows are anchored to a branch); do not auto-recommend a fresh session.
+This mirrors the `/engineer:start` command's Phase 0d preflight so
+`$engineer:start` on Codex surfaces it identically.
 
 ### Phase 1 — Brainstorm composite (investigate → frame → decide)
 
@@ -293,38 +347,45 @@ terminal marker, terminal phase, HEAD movement (real commit progress),
 and no active children. When all four hold, the workflow archives
 without manual cleanup.
 
-On Claude those gates are evaluated **at the end of the same turn** as the Phase 7
-commit — the Stop hook fires at every turn end, not at session close — and the
-workflow archives then only if all four hold. Decide before running execute mode:
-the driver writes the terminal marker itself, after running P10 `writebackParent`
-synchronously, so by the time it returns the choice is made. Clearing the marker
-afterwards works only before that Stop fires and needs set-terminal's full flag
-set (`--workflow-path`, `--host`, `--terminal-phase`). On Codex the Stop hook runs
-only once the operator has trusted the plugin hooks (`/hooks`), so the evaluation
-waits. Full contract: `core/skills/_shared/references/session-handoff.md`
-§ Archive timing.
-
-The base runtime completion footer is **code-emitted** on the Phase 7 terminal
-path (ADR-0039): `phase7-commit.mjs` → `set-terminal` fires the session-handoff
-sidecar, which renders the runtime `footer.mjs` (context state, completion state
-+ state-derived next action, workflow id/path, artifact pointers, recommended
-next work, and the continue-vs-fresh session-handoff) on the commit command's
-stderr. Do not hand-compose that base footer; surface the emitted one. It is
-advisory + pointer-only and never mutates host session context.
 When the deliverable boundary is reached, include PR handling readiness
 fields in the footer. Ask the user what to do with PR handling only when
 the helper returns `pr_handling.recommendation == "ask-user"`; `defer`
 means evidence is incomplete, and `block` means a readiness criterion
 failed.
 
-Surface the ADR-0031 session-level continue-vs-fresh preflight at this
-completion (and at Phase 0 before sequencing a fresh lifecycle) per
-`core/skills/_shared/references/session-handoff.md`: compute the engineer workflow
-projection and pass it to the runtime footer/check
-(`--workflow-projection-file`) so the footer carries the continue-vs-fresh
-decision. On detached HEAD report "no active branch context". This mirrors the
-`/engineer:start` command's Phase 7 completion preflight so `$engineer:start`
-on Codex surfaces it identically.
+<!-- pipeline:begin start-finish-commit -->
+The lifecycle's one terminal write is the Phase 7 driver in execute mode
+(`phase7-commit.mjs`): it commits, runs the post-commit gates and the P10
+parent writeback, and writes `set-terminal` last; no `finish-verb` runs. The
+driver writes the marker itself, so decide before running execute mode whether
+the workflow may close in this turn (the archive timing below).
+
+The runtime completion footer is **code-emitted** on that terminal write
+(ADR-0039).
+The write fires the session-handoff sidecar, which renders the runtime
+`footer.mjs`, the ADR-0031 continue-vs-fresh session handoff included, on that
+command's stderr. It is advisory and pointer-only, and never mutates host
+session context. The workflow is then terminal, and the Stop hook archives it
+once every archive gate passes; until then `/engineer:start` on this branch
+finds it and resumes it, so start the next deliverable after the archive, or
+on another branch. Do not hand-compose a second footer or hand-pass the
+projection; surface the emitted one. On a detached HEAD the branch-based
+preflight reports "no active branch context" and never recommends a fresh
+session (ADR-0018 §sub-2); the path-targeted terminal sidecar renders the
+footer as on a branch, its continue-vs-fresh advice included.
+`$engineer:start` on Codex surfaces the footer as `/engineer:start`
+does. Wiring: `core/skills/_shared/references/session-handoff.md`.
+
+On Claude the Stop hook fires at **every turn end**, so that terminal write puts
+the workflow in front of the archive gates at the end of **that same turn**, not
+at session close — it archives then if every gate passes, and otherwise stays
+marked for a later Stop to re-evaluate. Clearing the marker
+(`--terminal-marker false`, with set-terminal's full flag set) works only before
+that Stop fires and does not restore the previous phase. On Codex the hook runs
+only once the operator has trusted the plugin hooks (`/hooks`), so evaluation
+waits. Full contract: `core/skills/_shared/references/session-handoff.md`
+§ Archive timing.
+<!-- pipeline:end start-finish-commit -->
 
 ---
 

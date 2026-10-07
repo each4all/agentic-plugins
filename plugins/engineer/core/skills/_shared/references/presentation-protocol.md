@@ -1,4 +1,5 @@
-# Presentation Mode Protocol
+<!-- pipeline:begin presentation-intro -->
+# Presentation Mode Protocol (engineer)
 
 When presenting review items, findings, or decisions that require user
 attention, offer the user a choice of presentation mode. The goal: the user
@@ -8,6 +9,7 @@ or detail.
 The unit divided by the choice is the **decision item**, not the option. A
 single decision item may contain 2+ comparison options examined together;
 both modes preserve the same multi-perspective depth per item.
+<!-- pipeline:end presentation-intro -->
 
 ---
 
@@ -16,21 +18,25 @@ both modes preserve the same multi-perspective depth per item.
 Activates when you are about to present **multiple decision items** that
 require user review or decision:
 
-- Option comparisons (decide skill / its inline brainstorm equivalent)
 - Code review findings (critique skill)
-- Implementation plan tasks (compose skill)
 - Investigation results (investigate skill — multiple hypotheses)
 - Audit-scope findings (critique skill, full-codebase profile)
 - Codebase exploration synthesis (investigate skill, analysis profile)
+- Several open decisions, each with its compared directions (frame or
+  decide surfacing more than one)
 
+<!-- pipeline:begin presentation-exclusions -->
 Does NOT apply to:
-- Single-item presentations (one finding, one recommendation)
+- Single-item presentations (one finding, one recommendation, or one
+  decision with its compared directions)
 - Binary confirmations (yes/no)
 - Progress updates or status reports
 - Internal orchestration output
+<!-- pipeline:end presentation-exclusions -->
 
 ---
 
+<!-- pipeline:begin presentation-offer -->
 ## Offering the Choice
 
 **Autopilot mode (ADR-0063, Claude only):** when the command's Phase 0
@@ -65,16 +71,13 @@ At the first major presentation point in a command or skill workflow, ask:
 - **Persistence**: When invoked from `/engineer:*` commands that own a
   workflow file, the chosen mode is recorded in the workflow's Markdown
   body as a phase note (`### Presentation mode: batch | interview`)
-  rather than in frontmatter. ADR-0017 schema 1.1 added `latest_checkpoint`
-  / `pending_ensemble` / `ensemble_results` / `terminal_marker` /
-  `child_completions` to the closed frontmatter set, but did not
-  promote `presentation_mode`; the body-note approach is intentionally
-  retained because presentation-mode preference rarely needs
-  machine-queryable retrospection. A future ADR may promote it to
-  frontmatter if dogfood reveals a strong need.
+  rather than in frontmatter: presentation-mode preference rarely needs
+  machine-queryable retrospection.
+<!-- pipeline:end presentation-offer -->
 
 ---
 
+<!-- pipeline:begin presentation-modes -->
 ## Mode 1: Batch (All at Once)
 
 Present all decision items in a single structured output.
@@ -116,22 +119,24 @@ input between each.
    - Switch to batch mode for remaining items
 4. **Proceed** only after the user signals readiness.
 5. **Synthesize** at the end: After all items are reviewed, deliver the
-   aggregate sections required by the originating workflow (e.g.,
-   comparison table and recommendation for the decide skill, summary
-   counts for full-codebase critique, overall assessment for review).
-   Then recap decisions made and actions agreed upon during the interview.
+   aggregate sections required by the originating workflow (e.g., the
+   comparison table and recommendation of a decide, summary counts of a
+   critique). Then recap decisions made and actions agreed upon during the
+   interview.
+<!-- pipeline:end presentation-modes -->
 
 ### Decision item taxonomy by content type
 
 | Content Type | One Decision Item = |
 |--------------|--------------------|
-| Option comparison (decide) | One option with its multi-perspective analysis |
+| Direction comparison (decide) | One decision with its compared directions |
 | Review finding (critique) | One finding with location, description, recommended action |
-| Plan task (compose) | One task with description, completion criterion, dependencies |
+| Plan (compose `plan`) | The whole task list, with its dependencies, success criteria and recommended first task: one item, as compose presents it |
 | Investigation hypothesis (investigate) | One hypothesis with verdict, confidence, evidence |
 | Audit-scope issue (critique full-codebase) | One issue with location, category, description, action |
 | Exploration perspective (investigate analysis) | One perspective (Architecture / Flow / Conventions) |
 
+<!-- pipeline:begin presentation-rules -->
 ### Worked Examples
 
 The "One Decision Item =" anchor above is correct but compressed. The two
@@ -139,34 +144,27 @@ scenarios below show how that anchor renders in batch and interview modes.
 
 #### Example 1 — 1 decision item with 4 options
 
-Setup: a decide skill produced 4 candidate approaches (Option A/B/C/D) to a
-single design decision. The "One Decision Item =" anchor for option
-comparison is *one option with its multi-perspective analysis*.
+Setup: a decide produced 4 candidate directions (A/B/C/D) for a single
+decision. That is **one** decision item — one decision with its compared
+directions — so this is a single-item presentation and the protocol does
+not split it: there is no mode to offer, and the item is presented whole in
+one message, in the order the decide output format sets:
 
-**Batch mode** — single message containing:
+1. Each direction's full analysis (4 blocks, in order)
+2. The multi-perspective comparison table, after all directions (rows =
+   axes, columns = A/B/C/D)
+3. The recommendation block (chosen direction + rationale + any gate
+   verdict its axes require + alternative-conditions)
 
-1. The multi-perspective comparison table (rows = perspectives, columns = A/B/C/D)
-2. Each option's full perspective analysis (4 blocks, in order)
-3. The recommendation block (chosen option + rationale + alternative-conditions)
-
-**Interview mode** — 4 sequential per-option segments + 1 aggregate, each
-its own assistant turn with a pause for user input between:
-
-1. `[1/4]` Option A — name, summary, multi-perspective analysis. Pause.
-2. `[2/4]` Option B — same shape. Pause.
-3. `[3/4]` Option C — same. Pause.
-4. `[4/4]` Option D — same. Pause.
-5. After all 4 reviewed: aggregate synthesis (comparison table +
-   recommendation). Mandatory in interview mode per the synthesis rule
-   above.
-
-Total assistant segments: **5** (4 per-option + 1 aggregate).
+Splitting it into per-option segments would break the comparison the item
+exists for: the user weighs one decision's trade-off across its directions
+at once.
 
 #### Example 2 — 5 decision items with varied option counts
 
-Setup: a plan has 5 tasks; each task internally has 2-4 viable
-implementation alternatives (e.g., 4 / 2 / 3 / 4 / 2 = 15 options total
-across the 5 tasks).
+Setup: an artifact has 5 open items; each item internally has 2-4 viable
+alternatives (e.g., 4 / 2 / 3 / 4 / 2 = 15 options total across the 5
+items).
 
 **Batch mode** — single message containing:
 
@@ -199,21 +197,24 @@ the "One Decision Item =" unit is itself a comparison container.
 ## Protocol Interaction Rule
 
 Presentation mode changes only the delivery format, not the decision-making
-process. When an individual decision item contains or reveals a meaningful
-choice between 2+ approaches:
+process: every confirmation and approval gate a verb states still applies,
+in either mode. When an individual decision item contains or reveals a
+meaningful choice between 2+ approaches:
 
 1. **Recognize**: A choice exists when the item presents 2+ distinct
-   remediation paths, implementation strategies, or design alternatives —
-   not when it merely lists variations of the same approach.
-2. **Invoke inline**: Pause the current item's presentation and run the
-   full decide skill (`core/skills/decide/SKILL.md`) within that item —
-   Research, Compare across multiple perspectives, and Recommend.
+   directions, remediation paths, or structures — not when it merely lists
+   variations of the same approach.
+2. **Surface the lens inline**: Pause the current item's presentation and
+   compare the branches with the compact multi-axis lens of
+   `entry-routing-contract.md` § Surfacing the multi-axis lens from a
+   non-decide verb (ADR-0029 §2), within that item. When the branch needs
+   the full ritual (peer ensemble, sensitivity perturbation), recommend
+   `/engineer:decide --size=<tier>` instead of resolving it inline.
 3. **Resume**: After the user decides, continue the interview from where
    it paused.
 
-This applies regardless of the originating content type (audit-scope
-finding, review suggestion, plan task, etc.). The item's original format
-may be extended to accommodate the comparison.
+This applies regardless of the originating content type. The item's
+original format may be extended to accommodate the comparison.
 
 ---
 
@@ -233,7 +234,7 @@ This is the only permitted asymmetry.
 ## Use of `AskUserQuestion`
 
 The `AskUserQuestion` tool surfaces options as a multiple-choice UI.
-Reserve it for genuinely complex design decisions where all three hold:
+Reserve it for genuinely complex decisions where all three hold:
 
 - 2+ substantive alternatives exist
 - The decide skill has already produced a comparison
@@ -247,9 +248,10 @@ as: *"Recommended: X. Proceed?"*
 **Autopilot mode (ADR-0063, Claude only):** there is no one to answer, so
 proceed with X instead of asking (`autopilot-mode.md`). A choice that is a
 genuine owner judgment is not a ceremony: it stops the step with its owner
-gate.
+gate (`entry-routing-contract.md` § Owner gates).
 
 If the user replies with "what's the difference?" / "compare them
 specifically" after a multiple-choice prompt, drop the tool, present the
 detailed comparison + clear recommendation in the body, and ask for
 plain-text confirmation.
+<!-- pipeline:end presentation-rules -->
