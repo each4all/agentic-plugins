@@ -926,9 +926,12 @@ export const MUTATIONS = [
   },
   // ---- G: PC2b U5a, critique's generated finalize and founder's generated dispatch ----
   {
-    id: 'G47', tests: [T_CONTRACT, 'tests/plugin-shape/test-designer-plugin.mjs'],
+    id: 'G47', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-dispatch.md', from: '  --ensemble-type "$ENSEMBLE_TYPE" --run-id "$RUN_ID" \\\n', to: '  --ensemble-type {{ensemble_type}} --run-id "$RUN_ID" \\\n' }),
-    killed_by: [inSuite('founder/commands/critique.md (committed)', /^founder critique, instantiated per profile/), /the Refine-verify ensemble dispatches via peer-runner\.mjs/],
+    // designer's plugin-shape check of the dispatch's spelling was dropped with
+    // C2 (E1 rule 3): designer's types are unchanged by the defect, and the
+    // founder run below is what it breaks.
+    killed_by: [inSuite('founder/commands/critique.md (committed)', /^founder critique, instantiated per profile/)],
     why: 'the dispatch names its type a second time: a red-team critique that sets ENSEMBLE_TYPE still dispatches review',
   },
   {

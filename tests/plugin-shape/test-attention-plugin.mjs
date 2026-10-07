@@ -1,35 +1,35 @@
-// plugins/attention plugin-shape conformance test (ADR-0040 §3, as reduced by
-// ADR-0064 Decision 1).
+// plugins/attention plugin-shape and sensor conformance test.
 //
-// The attention plugin is the repo's first HOOK-ONLY plugin — hooks + sensor
-// scripts only, the hook-bearing sibling of the ADR-0008 script-only shape.
-// It registers two Claude hooks: Stop (session capture, ADR-0044) and
-// SessionStart (entry brief, ADR-0045). This test holds five gates:
-//   1. shape — both host manifests, the hook registration, sensor scripts
-//      with exec bits, and the deliberate ABSENCE of skills/commands/state
-//      and of the removed notification surface;
+// attention is a hook-only plugin: hooks and sensor scripts, no skills,
+// commands or state machinery. It registers two Claude hooks, Stop (session
+// capture) and SessionStart (entry brief), and both spawn the runtime's
+// scripts/context.mjs. This file checks:
+//   1. shape — both host manifests, the manifest-declared hook registration
+//      and its per-event wiring to executable sensors, the absence of
+//      skills/commands/state, of a Codex hook surface and of any notification
+//      sensor or export, and the cross-plugin SessionStart matcher matrix
+//      (attention alone is startup-matched);
 //   2. discovery — the copied discover-runtime.mjs resolves the newest
-//      runtime by manifest identity, and the strict floor gate holds
-//      (missing/too-old ⇒ no spawn, no stale fallback);
-//   3. capture gate (ADR-0044 §2/§13) — the publisher-floor declaration
-//      (data/runtime-floors.json) agrees byte-for-byte with the sensor's
-//      spawn-gate constant, the Stop hot-path budget is pinned as contract,
-//      the Stop sensor is exit-0 silent and relays --workflow-evidence fresh
-//      only for a projection that passes the freshness gate, and the capture
-//      spawn resolves its runtime by manifest identity (below-floor and
-//      capability drift skip silently) — end-to-end against stub runtimes
-//      and the repo's REAL publisher;
-//   4. entry gate (ADR-0045 §7/§12/§18) — the entry-brief floor declaration
-//      agrees byte-for-byte with its spawn-gate constant (distinct from the
-//      publisher floor), the SessionStart budget values are pinned as
-//      contract, the stdout-capturing dispatcher's validation boundary
-//      relays exactly one marker-paired line and suppresses everything
-//      else (bounded buffer, child exit, extra output, control chars,
-//      oversize, timeout, below-floor, executor-absent), and the
-//      SessionStart sensor is exit-0-always with at most that one line —
-//      including end-to-end against the repo's REAL runtime;
+//      runtime by manifest identity, its semverCompare stays identical to the
+//      runtime original, and the strict floor gate holds (missing/too-old ⇒
+//      no spawn, no stale fallback);
+//   3. capture gate — data/runtime-floors.json agrees byte-for-byte with the
+//      spawn-gate constants, the Stop hot-path budget values hold, and
+//      spawnPublishSession and the Stop sensor are exit-0 silent with a fixed
+//      argv, a GIT_* scrub and a SIGKILL bound, relaying --workflow-evidence
+//      fresh only for a projection that passes the freshness gate —
+//      end-to-end against stub runtimes and the repo's REAL publisher;
+//   4. entry gate — the SessionStart budget and marker values, the
+//      validateEntryBriefStdout boundary, spawnEntryBrief (its own floor,
+//      distinct from the publisher's), and the SessionStart sensor (exit 0
+//      always, at most one validated line), including end-to-end against the
+//      repo's REAL runtime;
 //   5. freshness gate — readFreshProjection's per-persona projection and
 //      marker rules, which decide the capture's workflow evidence.
+//
+// Assertions on repo-authored text (manifests, hooks.json, the floor
+// declaration, source scans) carry a `Contract:` comment naming the program
+// that consumes the text and the defect the assertion rejects.
 //
 // Run via `node --test tests/plugin-shape/test-attention-plugin.mjs`.
 
@@ -54,6 +54,9 @@ async function readJSON(path) {
 
 describe('plugins/attention — manifests', () => {
   it('Claude manifest has required scalar fields and declares the adapter hooks path', async () => {
+    // Contract: Claude Code plugin loader (.claude-plugin/plugin.json) —
+    // rejects a manifest missing a field the host requires, or a hooks path
+    // other than the adapters registration (the sensors would go unregistered).
     const json = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
     strictEqual(json.name, 'attention');
     ok(/^\d+\.\d+\.\d+/.test(json.version), `version "${json.version}" not SemVer-shaped`);
@@ -67,6 +70,10 @@ describe('plugins/attention — manifests', () => {
   });
 
   it('Codex manifest has required fields, the skills placeholder, and NO hooks key', async () => {
+    // Contract: Codex plugin loader (.codex-plugin/plugin.json) — rejects a
+    // missing required field or interface block, a manifest-declared hook
+    // surface (Codex would run the Claude-shaped sensors), and a skills path
+    // that does not resolve to a real directory.
     const json = await readJSON(resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json'));
     strictEqual(json.name, 'attention');
     for (const field of ['version', 'description', 'homepage', 'license']) {
@@ -87,19 +94,6 @@ describe('plugins/attention — manifests', () => {
     strictEqual(typeof i.displayName, 'string');
     ok(Array.isArray(i.capabilities) && i.capabilities.length > 0);
     ok(Array.isArray(i.defaultPrompt) && i.defaultPrompt.length <= 3);
-  });
-
-  it('neither manifest describes a notification role (ADR-0064 Decision 1)', async () => {
-    for (const rel of ['.claude-plugin/plugin.json', '.codex-plugin/plugin.json']) {
-      const json = await readJSON(resolve(PLUGIN_ROOT, rel));
-      ok(!json.keywords.includes('notifications'), `${rel} keywords must drop "notifications"`);
-      const prose = [json.description, json.interface?.shortDescription, json.interface?.longDescription]
-        .filter((text) => typeof text === 'string')
-        .join(' ');
-      for (const word of ['notify.mjs', 'Notification', 'SubagentStop', 'notify_channel', 'notification-plan']) {
-        ok(!prose.includes(word), `${rel} still describes "${word}"`);
-      }
-    }
   });
 
   // The two manifests' versions are validate-versions' to check against
@@ -136,6 +130,9 @@ describe('plugins/attention — hook-only shape (ADR-0040 §3)', () => {
   }
 
   it('the declared registration carries exactly Stop and SessionStart(startup) — no Notification or SubagentStop (ADR-0064)', async () => {
+    // Contract: Claude Code hook dispatcher (hooks.json) — rejects an extra
+    // or missing event, a SessionStart group without the startup matcher, and
+    // a per-hook timeout that drifts from SESSION_START_HOOK_TIMEOUT_S.
     const json = await readDeclaredHooks();
     deepStrictEqual(Object.keys(json.hooks).sort(), ['SessionStart', 'Stop']);
     // Stop has no matcher by design (none exists for Stop).
@@ -156,6 +153,9 @@ describe('plugins/attention — hook-only shape (ADR-0040 §3)', () => {
   });
 
   it('every hook command target exists with the executable bit set, wired per event', async () => {
+    // Contract: Claude Code hook dispatcher (each hook's command string) —
+    // rejects a command naming a missing or non-executable file, or another
+    // event's sensor.
     const json = await readDeclaredHooks();
     // Exact per-registration wiring (not a Set union): each event/matcher
     // group carries exactly one plugin-root target, and that target is the
@@ -240,6 +240,10 @@ describe('plugins/attention — discover-runtime copy (ADR-0039 §5 ladder)', ()
   });
 
   it('semverCompare body stays byte-identical to the runtime lib/semver.mjs original (mirror-drift pin)', async () => {
+    // Contract: code-level source comparison; discover-runtime.mjs's floor
+    // gate and the runtime's lib/semver.mjs — rejects a comparator change in
+    // one copy only, which lets the spawn gate and the runtime disagree on
+    // whether a version meets a floor.
     // The comparator ships as a deliberate sibling copy (ADR-0010 §5 import
     // ban). A semantics fix that lands in only one copy re-opens the S9
     // build-metadata mirror gap — fix both or neither.
@@ -351,6 +355,9 @@ describe('plugins/attention — discover-runtime copy (ADR-0039 §5 ladder)', ()
 
 describe('plugins/attention — ADR-0045 §9 SessionStart coexistence matrix (cross-plugin)', () => {
   it('attention is the only startup-matched SessionStart hook; every persona SessionStart registration stays compact-matched', async () => {
+    // Contract: Claude Code hook dispatcher (every plugin's hooks.json
+    // SessionStart matcher) — rejects another plugin registering an omitted
+    // or startup matcher that would co-fire, unordered, with the entry sensor.
     // §9: "the four persona SessionStart hooks keep matcher: compact" — and
     // the probed no-precedence execution model means an omitted or startup
     // matcher on any other plugin would co-fire with (and be unorderable
@@ -785,6 +792,10 @@ describe('plugins/attention — the Stop sensor is a fail-closed silent observer
 
 describe('plugins/attention — ADR-0044 §13 + ADR-0045 §18 floor declarations (data/runtime-floors.json)', () => {
   it('ships the declaration file with the schema id and exactly the two plain-release floors', async () => {
+    // Contract: runtime scripts/lib/session-readiness.mjs
+    // (ATTENTION_RUNTIME_FLOORS_SCHEMA_RE, floors.publish_session and
+    // floors.entry_brief) — rejects a schema id, floor key or prerelease /
+    // build-suffixed floor that the runtime diagnosis refuses as malformed.
     const declaration = await readJSON(resolve(PLUGIN_ROOT, 'data/runtime-floors.json'));
     strictEqual(declaration.schema, 'attention-runtime-floors-1.0');
     // ADR-0064 removed the response_signal floor with the notification
@@ -803,6 +814,9 @@ describe('plugins/attention — ADR-0044 §13 + ADR-0045 §18 floor declarations
   });
 
   it('the sensor spawn gates and the declaration agree byte-for-byte on the floors (§13/§18 producer rule)', async () => {
+    // Contract: runtime session-readiness.mjs reads the declared floors, the
+    // sensors enforce the discover-runtime.mjs constants — rejects the two
+    // diverging, so readiness would report a floor the hooks do not enforce.
     const declaration = await readJSON(resolve(PLUGIN_ROOT, 'data/runtime-floors.json'));
     strictEqual(
       discoverLib.PUBLISH_SESSION_MIN_RUNTIME_VERSION,
@@ -872,6 +886,9 @@ describe('plugins/attention — ADR-0064 Decision 1: the notification group is r
   });
 
   it('no attention script names the runtime emitter or the notify environment', async () => {
+    // Contract: code-level scan of every attention .mjs (forbidden call and
+    // env read) — rejects a sensor that spawns the runtime's notify.mjs or
+    // reads AGENTIC_NOTIFY_*, re-adding a notification side effect to a hook.
     const { readdir } = await import('node:fs/promises');
     const files = (await readdir(PLUGIN_ROOT, { recursive: true }))
       .filter((rel) => rel.endsWith('.mjs'));
@@ -1048,6 +1065,8 @@ describe('plugins/attention — ADR-0044 §2 spawnPublishSession (unit)', () => 
   });
 
   it("both sensor spawnSync seams pin killSignal: 'SIGKILL' (entry + capture; source-level exact pin)", async () => {
+    // Contract: code-level scan of sensor.mjs spawnSync options — rejects
+    // either seam's killSignal weakening to a signal a child can trap.
     // The behavioral trap tests cannot enumerate every catchable signal;
     // this pins the exact spawn option so a weakening to any OTHER signal —
     // catchable or not — is a test failure, not a silent contract change.

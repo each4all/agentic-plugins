@@ -455,21 +455,10 @@ export const MUTATIONS = [
     to: 'is the marketplace checkout Codex installs from, not that copy.',
     why: 'one persona cell says again that Codex installs from the checkout',
   },
-  // ---- T: the stale-token rules, narrowed for code only ---------------------
-  // S1 let founder's and image's .mjs honor CODEX_HOME (Decision 3 requires
-  // it). The prose half of each rule must still bite.
-  {
-    id: 'T1', file: 'plugins/founder/README.md', tests: ['tests/plugin-shape/test-founder-plugin.mjs'],
-    from: '# founder — new-business planning workbench (L3 persona)',
-    to: '# founder — new-business planning workbench (L3 persona)\n\nSet CODEX_HOME to point discovery elsewhere.',
-    why: 'founder prose regains the omcc-era CODEX_HOME discovery label',
-  },
-  {
-    id: 'T2', file: 'plugins/image/README.md', tests: ['tests/plugin-shape/test-image-plugin.mjs'],
-    from: '# image — cross-host image generation capability (ADR-0037)',
-    to: '# image — cross-host image generation capability (ADR-0037)\n\nSet CODEX_HOME to point discovery elsewhere.',
-    why: 'image prose regains the omcc-era CODEX_HOME discovery label',
-  },
+  // ---- T: the stale-token rules ---------------------------------------------
+  // Dropped with C2 (E1 rule 3): T1, T2 — a CODEX_HOME label in the founder and
+  // image READMEs is wording no program reads; the stale-token scans that killed
+  // them are gone, and the code half (CODEX_HOME honored by the .mjs) is S1's.
 
   // ---- V: the home-rendered receivers (S3) ----------------------------------
   // V1–V6, V11 and V12 were the Codex notify shuttle's; it was deleted in

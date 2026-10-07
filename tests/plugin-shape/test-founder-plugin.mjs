@@ -1,32 +1,23 @@
-// plugins/founder plugin-shape conformance test (ADR-0036 — revised at
-// PR6, the start lifecycle macro + resume/checkpoint/peer-now meta skill
-// landing).
+// plugins/founder plugin-shape conformance.
 //
-// Boundary history:
-//   - PR1 shipped the fully-inert scaffold (manifests + README + CHANGELOG
-//     + wiring only, every functional directory absent).
-//   - PR2 landed scripts/ + hooks/ + adapters/ (REQUIRED below) with the
-//     Codex manifest hooks key exposed; commands/ and skills/ stayed forbidden.
-//   - PR3 landed the first two verb surfaces — investigate (business-brief
-//     profile) and frame — so commands/ and skills/ became REQUIRED (with
-//     investigate/frame entries) rather than forbidden, and the Codex
-//     manifest gained the skills + interface keys.
-//   - PR4 landed the decide + compose verb surfaces and the persona-local
-//     decision registry (scripts/decide-registry.mjs + scripts/lib/* +
-//     skills/decide/references/decision-axes.yml, ADR-0036 SD3 / ADR-0027
-//     portable schema, copied per ADR-0029).
-//   - PR5 landed the final two verb surfaces — critique (default review +
-//     red-team pre-mortem) and refine — plus founder's own
-//     skills/_shared/references/ensemble-protocol.md (the nine
-//     business-anchored ensemble point templates) and extended the
-//     privacy-gate sentinel to the ensemble dispatch surfaces (ADR-0036
-//     SD6 / F7). All six canonical verbs present.
-//   - PR6 (this revision) lands the start lifecycle macro (command + SKILL
-//     + Codex mirror) and the three meta skills — resume / checkpoint /
-//     peer-now — each with a Host-availability matrix (ADR-0022), plus the
-//     privacy-gate sentinel on the peer-now + start runbooks (ADR-0036
-//     SD2). start is a lifecycle macro (workflow_type=start), not a 7th
-//     verb. The PR1-only forbidden-surface suite is fully retired.
+// What the hosts and the tools read from the plugin's committed files:
+//   - both manifests, the two catalog entries and the release-please package;
+//   - every skill's SKILL.md frontmatter and agents/openai.yaml (6 verbs, the
+//     `start` macro, the `resume` / `checkpoint` / `peer-now` meta skills), and
+//     every command's frontmatter;
+//   - the files those name: the scripts, the hook entrypoints (present and
+//     executable), the decision registry, the references, and the module
+//     every hook imports.
+//
+// Plus the founder instructions no shared suite pins: the privacy gates
+// founder authors itself (peer-now's command gate included), refine's
+// profile-less create, peer-now's synchronous dispatch, the commands' freedom
+// from parent-linkage variables (founder is no orchestrator dispatch target,
+// ADR-0036 Non-Goal 3), the session-handoff runbook's freedom from cross-plugin
+// paths, and the completion-footer handoff.
+//
+// The runbook, skill and reference regions every persona shares are checked
+// under tests/persona-pipeline/.
 //
 // Run via `node --test tests/plugin-shape/test-founder-plugin.mjs`.
 
@@ -49,63 +40,15 @@ const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/founder');
 // does fall back, to the README-only `skills/`; the skill checks below fail.
 const SKILLS_REL = relative(PLUGIN_ROOT, resolveSkillsRoot(PLUGIN_ROOT)).split(sep).join('/');
 
-// ADR-0036 was Accepted at PR7 (the real-topic dogfood validated founder).
-// The user-facing surfaces must now be FREE of this incubating marker — the
-// assertions below flipped from "must carry" to "must NOT carry".
-const INCUBATING_MARKER = /incubating scaffold/i;
-
-// The PR3 privacy-gate textual sentinel (ADR-0036 SD4). The gate must be
-// stated in the spec AND in the investigate prompt-guard surfaces; this
-// load-bearing invariant phrase guards against silent removal. Checked
-// whitespace-normalized so markdown line-wrapping does not break the match.
-//
-// Two sentinels (ADR-0066, PC2a3): a runbook or skill whose privacy gate is a
-// generated region states the canonical wording ("an explicit privacy gate",
-// persona-pipeline/regions/verb-privacy-gate.md); founder's authored files keep
-// their own until they are generated too. Each list is explicit, and the
-// generated one is checked against the manifest below.
-const FOUNDER_PRIVACY_SENTINEL =
-  'pass an explicit gate before BOTH web search AND peer-host dispatch';
-const CANONICAL_PRIVACY_SENTINEL =
-  'pass an explicit privacy gate before BOTH web search AND peer-host dispatch';
-// The region templates that state the gate: the verb runbooks' and skills'
-// privacy gate, the ensemble protocol's Launch step and Privacy section, and
-// the brief ensemble's Launch pre-conditions (PC2a4 RD4/RD5/RD8).
-const GATE_TEMPLATES = ['regions/verb-privacy-gate.md', 'regions/ensemble-launch-privacy.md', 'regions/ensemble-privacy-intro.md', 'regions/brief-ensemble-launch.md'];
-const GENERATED_GATE_FILES = [
-  'commands/compose.md',
-  'commands/critique.md',
-  'commands/decide.md',
-  'commands/frame.md',
-  'commands/investigate.md',
-  'commands/refine.md',
-  'commands/start.md',
-  'core/skills/_shared/references/ensemble-protocol.md',
-  'core/skills/critique/SKILL.md',
-  'core/skills/investigate/references/business-brief-ensemble.md',
-  'core/skills/refine/SKILL.md',
-  'core/skills/start/SKILL.md',
-];
-const privacySentinel = (rel) => (GENERATED_GATE_FILES.includes(rel) ? CANONICAL_PRIVACY_SENTINEL : FOUNDER_PRIVACY_SENTINEL);
-
-// founder is the first persona with NO omcc ancestor (ADR-0036 Context):
-// these stale tokens must never appear in its verb-surface files.
-const STALE_TOKENS = [
-  /\bomcc\b/i,
-  /\[Claude\]/,
-  /\[Codex\]/,
-  /CODEX_HOME/,
-  /CLAUDE-ONLY/,
-  /CODEX-ONLY/,
-];
-
-const CODE_EXT = new Set(['.mjs', '.js', '.sh']);
-
 const VERB_SKILLS = ['investigate', 'frame', 'decide', 'compose', 'critique', 'refine'];
 
-// PR4 decision-registry copy (ADR-0036 SD3 / ADR-0027 portable schema,
-// copied not imported per ADR-0029). These files must ship for the
-// founder:decide axis resolution + founder:compose multi-axis lens.
+// start is a lifecycle macro and resume/checkpoint/peer-now are meta skills —
+// none is a cognitive verb, so they stay out of VERB_SKILLS. Each still ships a
+// command, a SKILL.md and an agents/openai.yaml.
+const MACRO_AND_META = ['start', 'resume', 'checkpoint', 'peer-now'];
+
+// The decision registry founder:decide and founder:compose run, and the axes
+// file it reads.
 const REQUIRED_RESOLVER = [
   'scripts/decide-registry.mjs',
   'scripts/lib/yaml-mini.mjs',
@@ -138,6 +81,23 @@ function normalizeWhitespace(text) {
   return text.replace(/\s+/g, ' ');
 }
 
+// Every `state.mjs" create` invocation in a runbook, with its backslash
+// continuation lines.
+function createCalls(text) {
+  const lines = text.split('\n');
+  const calls = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!/state\.mjs" create \\$/.test(lines[i])) continue;
+    const call = [lines[i]];
+    while (lines[i].endsWith('\\') && i + 1 < lines.length) call.push(lines[++i]);
+    calls.push(call.join('\n'));
+  }
+  return calls;
+}
+
+// Contract: Claude Code reads .claude-plugin/plugin.json to install and list the
+// plugin — a missing name, a non-SemVer version or an empty description fails
+// the install or lists the plugin blank; the publishing fields fill its listing.
 describe('plugins/founder — Claude manifest (.claude-plugin/plugin.json)', () => {
   const path = resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json');
 
@@ -150,12 +110,6 @@ describe('plugins/founder — Claude manifest (.claude-plugin/plugin.json)', () 
     ok(json.description.length > 0);
   });
 
-  it('no longer carries the incubating marker (ADR-0036 Accepted at PR7)', async () => {
-    const json = await readJSON(path);
-    ok(!INCUBATING_MARKER.test(json.description),
-      'Claude manifest description must drop the incubating marker now that ADR-0036 is Accepted');
-  });
-
   it('carries publishing metadata consistent with sibling plugins', async () => {
     const json = await readJSON(path);
     strictEqual(json.license, 'MIT');
@@ -166,6 +120,9 @@ describe('plugins/founder — Claude manifest (.claude-plugin/plugin.json)', () 
   });
 });
 
+// Contract: Codex reads .codex-plugin/plugin.json — `skills` and `hooks` locate
+// the skills root and the hooks manifest, `interface` drives the plugin listing;
+// a wrong value loads no skills or no hooks, or fails the listing.
 describe('plugins/founder — Codex manifest (.codex-plugin/plugin.json)', () => {
   const path = resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json');
 
@@ -174,32 +131,23 @@ describe('plugins/founder — Codex manifest (.codex-plugin/plugin.json)', () =>
     const json = await readJSON(path);
     strictEqual(json.name, 'founder');
     strictEqual(typeof json.description, 'string');
-    ok(!INCUBATING_MARKER.test(json.description),
-      'Codex manifest description must drop the incubating marker now that ADR-0036 is Accepted');
   });
 
-  it('declares hooks AND the skills/interface keys (PR3 boundary — verb surfaces landed)', async () => {
+  it('declares the hooks and skills paths and the interface block', async () => {
     const json = await readJSON(path);
     strictEqual(json.hooks, './adapters/codex/hooks/hooks.json',
-      'PR2 machinery hooks remain exposed in the Codex manifest');
+      'the Codex manifest must point at the Codex hooks manifest');
     strictEqual(json.skills, './core/skills/',
-      'PR3 lands the first SKILL.md surfaces — the Codex manifest must expose the skills path');
+      'the Codex manifest must point at the skills root');
     ok(json.interface && typeof json.interface === 'object',
-      'PR3 lands a verb surface — the Codex manifest must carry an interface block');
+      'the Codex manifest must carry an interface block');
     strictEqual(json.interface.displayName, 'Founder');
     strictEqual(json.interface.category, 'Productivity');
     ok(Array.isArray(json.interface.defaultPrompt) && json.interface.defaultPrompt.length > 0);
   });
 });
 
-// Negative-boundary suite — REVISED FOR PR5 (critique + refine verb surfaces
-// and founder's own ensemble-protocol.md landed: commands/ + skills/ now
-// REQUIRED with all six verb entries + scripts/decide-registry.mjs +
-// scripts/lib/* + skills/decide/references/decision-axes.yml +
-// skills/_shared/references/ensemble-protocol.md; the PR2 machinery remains
-// REQUIRED). All six canonical verbs are present — the PR1-only
-// forbidden-surface suite is fully retired.
-describe('plugins/founder — PR6 boundary (machinery + six verbs + decision registry + ensemble protocol + start/meta surfaces)', () => {
+describe('plugins/founder — shipped surface (machinery, verbs, decision registry, start and meta skills)', () => {
   const ABSENT_DIRS = [
     'personas',
     'mcp-servers',
@@ -218,6 +166,9 @@ describe('plugins/founder — PR6 boundary (machinery + six verbs + decision reg
     }
   }
 
+  // Contract: the runbooks and hooks run these scripts by path, every script
+  // reads persona.json through scripts/lib/persona.mjs, and the two hooks
+  // manifests run the hook entrypoints — a missing file fails every call.
   const REQUIRED_MACHINERY = [
     'scripts/state.mjs',
     'scripts/stop-archive.mjs',
@@ -225,9 +176,7 @@ describe('plugins/founder — PR6 boundary (machinery + six verbs + decision reg
     'scripts/dispatch-peer.mjs',
     'scripts/peer-runner.mjs',
     'scripts/session-handoff.mjs',
-    // ADR-0043 S3 — runtime resolver (footer floor).
     'scripts/discover-runtime.mjs',
-    // ADR-0066 — the declaration and the generated lib modules every script reads.
     'persona.json',
     'scripts/lib/persona.mjs',
     'scripts/lib/cli-entry.mjs',
@@ -244,13 +193,16 @@ describe('plugins/founder — PR6 boundary (machinery + six verbs + decision reg
   ];
 
   for (const rel of REQUIRED_MACHINERY) {
-    it(`ships ${rel} (PR2 machinery)`, async () => {
+    it(`ships ${rel} (machinery)`, async () => {
       strictEqual(await exists(resolve(PLUGIN_ROOT, rel)), true,
-        `plugins/founder/${rel} is part of the PR2 machinery copy-trim and must exist`);
+        `plugins/founder/${rel} is run by the runbooks or hooks and must exist`);
     });
   }
 
-  // PR3 + PR4 + PR5 verb surfaces — commands + skills now REQUIRED.
+  // Contract: Claude Code loads commands/<name>.md as /founder:<name>, Codex
+  // loads <skills-root>/<name>/SKILL.md and its agents/openai.yaml, and the
+  // runbooks open these references by path — a missing file drops the command
+  // or the skill, or fails the read.
   const REQUIRED_SURFACES = [
     'commands/investigate.md',
     'commands/frame.md',
@@ -262,14 +214,12 @@ describe('plugins/founder — PR6 boundary (machinery + six verbs + decision reg
     `${SKILLS_REL}/frame/SKILL.md`,
     `${SKILLS_REL}/frame/agents/openai.yaml`,
     `${SKILLS_REL}/_shared/references/orchestration.md`,
-    // PR4 decide + compose surfaces
     'commands/decide.md',
     'commands/compose.md',
     `${SKILLS_REL}/decide/SKILL.md`,
     `${SKILLS_REL}/decide/agents/openai.yaml`,
     `${SKILLS_REL}/compose/SKILL.md`,
     `${SKILLS_REL}/compose/agents/openai.yaml`,
-    // PR5 critique + refine surfaces + the ensemble-protocol templates
     'commands/critique.md',
     'commands/refine.md',
     `${SKILLS_REL}/critique/SKILL.md`,
@@ -277,7 +227,6 @@ describe('plugins/founder — PR6 boundary (machinery + six verbs + decision reg
     `${SKILLS_REL}/refine/SKILL.md`,
     `${SKILLS_REL}/refine/agents/openai.yaml`,
     `${SKILLS_REL}/_shared/references/ensemble-protocol.md`,
-    // PR6 start lifecycle macro + resume/checkpoint/peer-now meta skills
     'commands/start.md',
     `${SKILLS_REL}/start/SKILL.md`,
     `${SKILLS_REL}/start/agents/openai.yaml`,
@@ -290,26 +239,24 @@ describe('plugins/founder — PR6 boundary (machinery + six verbs + decision reg
     'commands/peer-now.md',
     `${SKILLS_REL}/peer-now/SKILL.md`,
     `${SKILLS_REL}/peer-now/agents/openai.yaml`,
-    // ADR-0043 S3 — the shared session-handoff wiring runbook (ADR-0039 §7
-    // recipe item; documents the code-emitted footer, the fail-closed
-    // baseline, and the footer-rendered marker contract).
     `${SKILLS_REL}/_shared/references/session-handoff.md`,
-    // PC2a4 (ADR-0066) — the persona's own entry-routing contract (D6).
     `${SKILLS_REL}/_shared/references/entry-routing-contract.md`,
   ];
 
   for (const rel of REQUIRED_SURFACES) {
-    it(`ships ${rel} (PR3/PR4 verb surface)`, async () => {
+    it(`ships ${rel} (command, skill or reference)`, async () => {
       strictEqual(await exists(resolve(PLUGIN_ROOT, rel)), true,
-        `plugins/founder/${rel} is part of the ADR-0036 verb surface and must exist`);
+        `plugins/founder/${rel} is loaded by a host or read by a runbook and must exist`);
     });
   }
 
-  // PR4 decision-registry copy (decide/compose + resolver files exist).
+  // Contract: founder:decide and founder:compose run decide-registry.mjs, which
+  // imports these modules and reads decision-axes.yml — a missing file fails
+  // the axis resolution.
   for (const rel of REQUIRED_RESOLVER) {
-    it(`ships ${rel} (PR4 decision registry, copied per ADR-0029)`, async () => {
+    it(`ships ${rel} (decision registry)`, async () => {
       strictEqual(await exists(resolve(PLUGIN_ROOT, rel)), true,
-        `plugins/founder/${rel} is part of the ADR-0036 PR4 decision registry and must exist`);
+        `plugins/founder/${rel} is part of the decision registry and must exist`);
     });
   }
 
@@ -339,11 +286,12 @@ describe('plugins/founder — PR6 boundary (machinery + six verbs + decision reg
     ];
     for (const rel of SOURCES) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
-      // ADR-0066 Stage 3: the parent step sits behind dispatch_target and
-      // imports parent-writeback.mjs dynamically only when it is on; founder
-      // never writes a parent note (tests/persona-pipeline/test-stop-archive.mjs
-      // "no parent writeback ever"). A static import would break the plugin,
-      // which never receives the module.
+      // Contract: Node resolves each static import at load — the parent step
+      // sits behind dispatch_target and imports parent-writeback.mjs dynamically
+      // only when it is on; founder never writes a parent note
+      // (tests/persona-pipeline/test-stop-archive.mjs "no parent writeback
+      // ever"). A static import fails the load of a plugin that never receives
+      // the module.
       ok(!text.includes("from './parent-writeback.mjs'"),
         `${rel} must not import parent-writeback machinery statically`);
     }
@@ -351,38 +299,32 @@ describe('plugins/founder — PR6 boundary (machinery + six verbs + decision reg
       'plugins/founder must not ship a parent-writeback module at all');
   });
 
-  it('the verb commands carry no parent-linkage env reads (ADR-0036 Non-Goal 3)', async () => {
-    // Guard against actual shell reads ($VAR / ${VAR}), not prose mentions:
-    // the commands legitimately *document* that they do NOT read these vars
-    // (backtick-quoted plain names), which must remain allowed.
+  it('no command shell-reads parent-linkage env (ADR-0036 Non-Goal 3)', async () => {
+    // Contract: the agent running a command's shell blocks — a block that reads
+    // $AGENTIC_PARENT_WORKFLOW / $AGENTIC_ORIGINATING_SUBTASK carries an
+    // orchestrator's linkage into a persona that is no dispatch target (its
+    // state.mjs create refuses --parent-workflow/--originating-subtask). Shell
+    // reads only: the commands may name the variables in prose to say they do
+    // not read them.
     const READ_FORMS = [
       /\$\{?AGENTIC_PARENT_WORKFLOW/,
       /\$\{?AGENTIC_ORIGINATING_SUBTASK/,
     ];
-    for (const verb of VERB_SKILLS) {
-      const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${verb}.md`), 'utf8');
+    for (const name of [...VERB_SKILLS, ...MACRO_AND_META]) {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${name}.md`), 'utf8');
       for (const form of READ_FORMS) {
         ok(!form.test(text),
-          `commands/${verb}.md must not shell-read ${form} — founder is not an orchestrator dispatch target (ADR-0036 Non-Goal 3)`);
+          `commands/${name}.md must not shell-read ${form} — founder is not an orchestrator dispatch target`);
       }
     }
   });
-
-  it('ships README.md without the incubating marker but with the ADR-0036 pointer (Accepted)', async () => {
-    const readme = await readFile(resolve(PLUGIN_ROOT, 'README.md'), 'utf8');
-    ok(!INCUBATING_MARKER.test(readme), 'plugin README must drop the incubating marker now that ADR-0036 is Accepted');
-    ok(readme.includes('ADR-0036'), 'plugin README must point at ADR-0036');
-  });
-
-  it('ships CHANGELOG.md with the initial scaffold seed entry', async () => {
-    const changelog = await readFile(resolve(PLUGIN_ROOT, 'CHANGELOG.md'), 'utf8');
-    ok(changelog.includes('0.1.0 (initial scaffold seed)'),
-      'CHANGELOG must record the seed entry without implying a published tag');
-  });
 });
 
-describe('plugins/founder — verb surface shape (PR3/PR4/PR5)', () => {
+describe('plugins/founder — verb skill and command frontmatter', () => {
   for (const verb of VERB_SKILLS) {
+    // Contract: Codex loads the skill by its frontmatter `name` and matches a
+    // request against its `description` — a name that differs from the folder,
+    // or no description, leaves the skill unreachable.
     it(`${SKILLS_REL}/${verb}/SKILL.md frontmatter name = ${verb} (folder ↔ frontmatter consistency)`, async () => {
       const text = await readFile(skillsPath(PLUGIN_ROOT, verb, 'SKILL.md'), 'utf8');
       const fm = frontmatter(text);
@@ -392,6 +334,9 @@ describe('plugins/founder — verb surface shape (PR3/PR4/PR5)', () => {
       match(fm, /description:/, `${SKILLS_REL}/${verb}/SKILL.md frontmatter must carry a description`);
     });
 
+    // Contract: Codex reads agents/openai.yaml interface.display_name — a
+    // missing name lists the skill unnamed, and one that names neither the verb
+    // nor the persona cannot be told apart from another persona's verb.
     it(`${SKILLS_REL}/${verb}/agents/openai.yaml display_name names the verb`, async () => {
       const text = await readFile(skillsPath(PLUGIN_ROOT, verb, 'agents/openai.yaml'), 'utf8');
       const m = text.match(/display_name:\s*"([^"]+)"/);
@@ -402,6 +347,8 @@ describe('plugins/founder — verb surface shape (PR3/PR4/PR5)', () => {
         `openai.yaml display_name "${m[1]}" must name the persona "founder"`);
     });
 
+    // Contract: Claude Code lists /founder:<verb> with its frontmatter
+    // `description` — without one the command is listed blank.
     it(`commands/${verb}.md carries a frontmatter description`, async () => {
       const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${verb}.md`), 'utf8');
       const fm = frontmatter(text);
@@ -409,198 +356,12 @@ describe('plugins/founder — verb surface shape (PR3/PR4/PR5)', () => {
       match(fm, /description:\s*\S/, `commands/${verb}.md frontmatter must carry a non-empty description`);
     });
   }
-
-  it('no stale tokens (omcc / [Claude] / [Codex] / CODEX_HOME / *-ONLY) anywhere in the plugin — founder has no omcc ancestor', async () => {
-    // Codex Plan-verify (PR3) caught a vestigial omcc-dev comment in
-    // scripts/stop-archive.mjs that the verb-surface-only scan missed.
-    // Scan the WHOLE plugin tree so copy-trim leaks in machinery /
-    // adapters / hooks are caught too (ADR-0036 Context: no omcc ancestor).
-    const TEXT_EXT = new Set(['.md', '.mjs', '.js', '.json', '.yaml', '.yml', '.sh']);
-    const entries = await readdir(PLUGIN_ROOT, { recursive: true, withFileTypes: true });
-    let scanned = 0;
-    for (const ent of entries) {
-      if (!ent.isFile()) continue;
-      const dot = ent.name.lastIndexOf('.');
-      if (dot < 0 || !TEXT_EXT.has(ent.name.slice(dot))) continue;
-      const parent = ent.parentPath ?? ent.path;
-      const full = resolve(parent, ent.name);
-      const rel = full.slice(PLUGIN_ROOT.length + 1);
-      const text = await readFile(full, 'utf8');
-      for (const token of STALE_TOKENS) {
-        // CODEX_HOME is an omcc-era discovery label in prose, but code must
-        // honor the variable: ADR-0061 §Decision 3 requires every resolver
-        // to find Codex's install cache under $CODEX_HOME.
-        if (token.source === 'CODEX_HOME' && CODE_EXT.has(ent.name.slice(dot))) continue;
-        ok(!token.test(text), `${rel} contains stale token ${token}`);
-      }
-      scanned += 1;
-    }
-    ok(scanned >= 20, `expected to scan the founder plugin tree, only saw ${scanned} files`);
-  });
 });
 
-describe('plugins/founder — business-brief spec contract (PR3 / ADR-0036 SD4)', () => {
-  const SPEC = `${SKILLS_REL}/investigate/references/business-brief-spec.md`;
-
-  it('declares the 5-tier business source taxonomy', async () => {
-    const text = await readFile(resolve(PLUGIN_ROOT, SPEC), 'utf8');
-    for (const tier of [
-      'official-stats',
-      'research-institutional',
-      'market-intelligence',
-      'primary-field',
-      'secondary-press',
-    ]) {
-      ok(text.includes(tier), `business-brief-spec.md must define the "${tier}" tier`);
-    }
-  });
-
-  it('states the freshness/jurisdiction and paywalled/vendor-claim rules', async () => {
-    const text = await readFile(resolve(PLUGIN_ROOT, SPEC), 'utf8');
-    match(text, /jurisdiction/i, 'spec must state jurisdiction tagging rules');
-    match(text, /as-of/i, 'spec must state as-of freshness dating rules');
-    match(text, /vendor-claim/i, 'spec must state vendor-claim citation treatment');
-    match(text, /paywalled/i, 'spec must state paywalled-source citation treatment');
-  });
-
-  it('the privacy gate sentinel appears in the spec AND the investigate prompt-guard surfaces (ADR-0036 SD4)', async () => {
-    // The macro plan requires the gate stated in the spec AND the
-    // investigate prompt guard (command + skill). Checked
-    // whitespace-normalized so line-wrapping does not break the match.
-    const REQUIRED = [
-      `${SKILLS_REL}/investigate/references/business-brief-spec.md`,
-      'commands/investigate.md',
-      `${SKILLS_REL}/investigate/SKILL.md`,
-    ];
-    for (const rel of REQUIRED) {
-      const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
-      ok(text.includes(privacySentinel(rel)),
-        `${rel} must carry the privacy-gate sentinel "${privacySentinel(rel)}"`);
-    }
-  });
-
-  it('the generated-gate list is exactly the founder files whose privacy gate is a region, and each says it once per region', async () => {
-    const manifest = JSON.parse(await readFile(resolve(PLUGIN_ROOT, '../../persona-pipeline/manifest.json'), 'utf8'));
-    const gates = manifest.regions.filter((r) => GATE_TEMPLATES.includes(r.template) && r.personas.includes('founder'));
-    deepStrictEqual([...new Set(gates.map((r) => r.dest))].sort(), GENERATED_GATE_FILES);
-    for (const rel of GENERATED_GATE_FILES) {
-      const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
-      strictEqual(text.split(CANONICAL_PRIVACY_SENTINEL).length - 1, gates.filter((r) => r.dest === rel).length, rel);
-      ok(!text.includes(FOUNDER_PRIVACY_SENTINEL), `${rel} holds the canonical wording only`);
-    }
-  });
-
-  it('the privacy gate sentinel also reaches the ensemble dispatch + frame surfaces', async () => {
-    const ALSO = [
-      `${SKILLS_REL}/investigate/references/business-brief-ensemble.md`,
-      'commands/frame.md',
-      `${SKILLS_REL}/frame/SKILL.md`,
-    ];
-    for (const rel of ALSO) {
-      const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
-      ok(text.includes(privacySentinel(rel)),
-        `${rel} should carry the privacy-gate sentinel "${privacySentinel(rel)}"`);
-    }
-  });
-});
-
-// PR5 — founder's own ensemble-protocol.md (the nine business-anchored
-// point templates) + the privacy gate restated on the ensemble dispatch
-// path (ADR-0036 SD6 / F7).
-describe('plugins/founder — ensemble protocol + privacy gate reach (PR5 / ADR-0036 SD6/F7)', () => {
-  const ENSEMBLE = `${SKILLS_REL}/_shared/references/ensemble-protocol.md`;
-
-  // The nine canonical ensemble point types. Each must be present as a
-  // section heading so the verb commands can cross-reference it by §name.
-  const POINT_TYPES = [
-    'Frame',
-    'Brainstorm',
-    'Explore',
-    'Plan-verify',
-    'Review',
-    'Investigate',
-    'Research-scan',
-    'Refine-verify',
-    'Adversarial-scan',
-  ];
-
-  it('ships all nine business-anchored ensemble point types as sections', async () => {
-    const text = await readFile(resolve(PLUGIN_ROOT, ENSEMBLE), 'utf8');
-    for (const pt of POINT_TYPES) {
-      ok(new RegExp(`^### ${pt}\\b`, 'm').test(text),
-        `ensemble-protocol.md must define the "${pt}" ensemble point type as a "### ${pt}" section`);
-    }
-  });
-
-  it('carries the business anchors and preserves the four synthesis categories', async () => {
-    const text = await readFile(resolve(PLUGIN_ROOT, ENSEMBLE), 'utf8');
-    // SD6/F7: the code anchors are re-anchored to market/regulation/
-    // competition. Spot-check load-bearing business vocabulary is present.
-    for (const term of ['unit-economics', 'regulatory', 'go-to-market', 'pre-mortem']) {
-      ok(text.includes(term), `ensemble-protocol.md must use the business anchor "${term}"`);
-    }
-    // The bidirectional synthesis vocabulary is preserved verbatim from the
-    // shared protocol shape (schema-stable public vocabulary).
-    for (const cat of ['AGREED', 'LOCAL-ONLY', 'PEER-ONLY', 'CONFLICT']) {
-      ok(text.includes(cat), `ensemble-protocol.md must keep the "${cat}" synthesis category`);
-    }
-  });
-
-  it('cross-references the research-scan contract rather than duplicating it (ADR-0010 §5)', async () => {
-    const text = await readFile(resolve(PLUGIN_ROOT, ENSEMBLE), 'utf8');
-    ok(text.includes('business-brief-ensemble.md'),
-      'ensemble-protocol.md §Research-scan must cross-reference the canonical business-brief-ensemble.md contract, not re-derive it');
-  });
-
-  it('restates the privacy-gate sentinel on the ensemble-protocol + critique/refine dispatch surfaces (gate repeated on every external path)', async () => {
-    // The macro plan requires the privacy gate restated on the ensemble
-    // dispatch path: the protocol itself AND every new command/skill that
-    // dispatches a peer. Checked whitespace-normalized so markdown
-    // line-wrapping does not break the match.
-    const REQUIRED = [
-      `${SKILLS_REL}/_shared/references/ensemble-protocol.md`,
-      'commands/critique.md',
-      `${SKILLS_REL}/critique/SKILL.md`,
-      'commands/refine.md',
-      `${SKILLS_REL}/refine/SKILL.md`,
-    ];
-    for (const rel of REQUIRED) {
-      const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
-      ok(text.includes(privacySentinel(rel)),
-        `${rel} must carry the privacy-gate sentinel "${privacySentinel(rel)}"`);
-    }
-  });
-
-  it('critique declares its two profiles (default review + red-team pre-mortem)', async () => {
-    const text = await readFile(skillsPath(PLUGIN_ROOT, 'critique/SKILL.md'), 'utf8');
-    ok(/red-team/.test(text), 'critique SKILL must declare the red-team profile');
-    match(text, /pre-mortem/i, 'critique SKILL must describe the adversarial pre-mortem');
-  });
-
-  it('refine is single-mode (no --profile branch) like decide/frame', async () => {
-    const text = await readFile(skillsPath(PLUGIN_ROOT, 'refine/SKILL.md'), 'utf8');
-    match(text, /single-mode/i, 'refine SKILL must state it is single-mode');
-  });
-
-  it('refine command does not pass --profile in its create path (single-mode, matches frame/decide)', async () => {
-    // Codex Plan-verify (PR5) caught refine's create path forwarding
-    // --profile "${AGENTIC_PROFILE:-}" even though refine is single-mode;
-    // frame/decide omit it. Guard against the regression.
-    const text = await readFile(resolve(PLUGIN_ROOT, 'commands/refine.md'), 'utf8');
-    ok(!/--profile\s+"\$\{?AGENTIC_PROFILE/.test(text),
-      'commands/refine.md must not pass --profile in the state.mjs create path — refine is single-mode like frame/decide');
-  });
-});
-
-// PR6 — the start lifecycle macro + resume/checkpoint/peer-now meta skills
-// (ADR-0022 meta-skill category, adopted for founder per ADR-0036 SD2).
-describe('plugins/founder — start lifecycle macro + meta skills (PR6 / ADR-0022 / ADR-0036 SD2)', () => {
-  // start is a lifecycle macro and resume/checkpoint/peer-now are meta
-  // skills — NONE are cognitive verbs, so they are deliberately kept out of
-  // VERB_SKILLS. Each still ships command + SKILL + Codex mirror.
-  const MACRO_AND_META = ['start', 'resume', 'checkpoint', 'peer-now'];
-
+describe('plugins/founder — start and meta skill and command frontmatter', () => {
   for (const name of MACRO_AND_META) {
+    // Contract: Codex loads the skill by its frontmatter `name` — a name that
+    // differs from the folder leaves the skill unreachable.
     it(`${SKILLS_REL}/${name}/SKILL.md frontmatter name = ${name}`, async () => {
       const text = await readFile(skillsPath(PLUGIN_ROOT, name, 'SKILL.md'), 'utf8');
       const fm = frontmatter(text);
@@ -609,6 +370,8 @@ describe('plugins/founder — start lifecycle macro + meta skills (PR6 / ADR-002
         `${SKILLS_REL}/${name}/SKILL.md frontmatter name != "${name}"`);
     });
 
+    // Contract: Codex reads agents/openai.yaml interface.display_name — see the
+    // verb skills above.
     it(`${SKILLS_REL}/${name}/agents/openai.yaml display_name names the skill + persona`, async () => {
       const text = await readFile(skillsPath(PLUGIN_ROOT, name, 'agents/openai.yaml'), 'utf8');
       const m = text.match(/display_name:\s*"([^"]+)"/);
@@ -619,6 +382,8 @@ describe('plugins/founder — start lifecycle macro + meta skills (PR6 / ADR-002
         `openai.yaml display_name "${m[1]}" must name the persona "founder"`);
     });
 
+    // Contract: Claude Code lists /founder:<name> with its frontmatter
+    // `description` — without one the command is listed blank.
     it(`commands/${name}.md carries a frontmatter description`, async () => {
       const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${name}.md`), 'utf8');
       const fm = frontmatter(text);
@@ -626,171 +391,119 @@ describe('plugins/founder — start lifecycle macro + meta skills (PR6 / ADR-002
       match(fm, /description:\s*\S/, `commands/${name}.md must carry a non-empty description`);
     });
   }
+});
 
-  it('every macro/meta SKILL declares a Host-availability matrix (ADR-0022)', async () => {
-    for (const name of MACRO_AND_META) {
-      const text = await readFile(skillsPath(PLUGIN_ROOT, name, 'SKILL.md'), 'utf8');
-      match(text, /Host availability/i,
-        `${SKILLS_REL}/${name}/SKILL.md must declare a Host-availability matrix (ADR-0022)`);
-    }
-  });
+// The privacy gates generated from the persona pipeline (the verb and start
+// runbooks, the critique/refine/start skills, the ensemble protocol and the
+// brief ensemble) are checked for every persona under tests/persona-pipeline/;
+// these are the ones founder authors itself. peer-now's command gate is
+// founder's own text, outside every generated region: the pipeline suite checks
+// only where its label sits.
+describe('plugins/founder — founder-authored privacy gates (ADR-0036 SD4)', () => {
+  // Either wording: founder's own, or the pipeline's canonical one if the file
+  // is generated later.
+  const PRIVACY_GATE = /pass an explicit (?:privacy )?gate before BOTH web search AND peer-host dispatch/;
+  const PROHIBITION = /\b[Tt]he pre-genericization value MUST never leave the local host/;
+  const SPEC = `${SKILLS_REL}/investigate/references/business-brief-spec.md`;
+  const SPEC_PROHIBITION = /Anything proprietary is genericized[\s\S]{0,200}? or removed\. Only the genericized form leaves the local host\./;
 
-  it('macro/meta surfaces do not require the removed plugin_hooks settings key (ADR-0030/0035)', async () => {
-    // The copy-trim source (engineer) requires `[features].plugin_hooks = true`;
-    // that settings key was removed per ADR-0030/0035. founder must use the
-    // generic `[features].hooks` + `/hooks` trust model. A corrective negation
-    // ("there is no plugin_hooks settings key") is allowed and encouraged —
-    // it warns future copy-trim against re-introducing the drift; only the
-    // require/set form is forbidden.
-    const REQUIRE_FORM = /\[features\]\.plugin_hooks|plugin_hooks\s*[:=]\s*true/;
-    for (const name of MACRO_AND_META) {
-      const skillText = await readFile(skillsPath(PLUGIN_ROOT, name, 'SKILL.md'), 'utf8');
-      ok(!REQUIRE_FORM.test(skillText),
-        `${SKILLS_REL}/${name}/SKILL.md must not require the removed plugin_hooks key — use [features].hooks + /hooks trust`);
-      const cmdText = await readFile(resolve(PLUGIN_ROOT, 'commands', `${name}.md`), 'utf8');
-      ok(!REQUIRE_FORM.test(cmdText),
-        `commands/${name}.md must not require the removed plugin_hooks key`);
-    }
-  });
-
-  it('the privacy-gate sentinel reaches the peer-now + start runbooks (ADR-0036 SD2)', async () => {
-    // The macro plan requires the privacy gate restated on peer-now/start —
-    // both dispatch to the peer host (and start also runs web search).
+  it('the brief spec, the investigate, frame and peer-now skills and the peer-now command gate web search and peer dispatch', async () => {
+    // Contract: the agent about to run a web search or dispatch the peer — it
+    // stops at this gate to genericize, and the raw value never leaves the
+    // host; a surface without the gate or its prohibition sends raw venture
+    // material out (commands/peer-now.md sends a verbatim prompt). Rejects
+    // "may be sent to the peer host as written" in place of either sentence.
+    // business-brief-spec.md is also the declared privacy_spec every generated
+    // gate cites (persona.json peer.privacy_spec); it words the prohibition as
+    // how the gate is satisfied.
     for (const rel of [
+      SPEC,
+      `${SKILLS_REL}/investigate/SKILL.md`,
+      `${SKILLS_REL}/frame/SKILL.md`,
       `${SKILLS_REL}/peer-now/SKILL.md`,
       'commands/peer-now.md',
-      `${SKILLS_REL}/start/SKILL.md`,
-      'commands/start.md',
     ]) {
-      const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
-      ok(text.includes(privacySentinel(rel)),
-        `${rel} must carry the privacy-gate sentinel "${privacySentinel(rel)}"`);
+      const text = normalizeWhitespace((await readFile(resolve(PLUGIN_ROOT, rel), 'utf8')).replaceAll('**', ''));
+      ok(PRIVACY_GATE.test(text), `${rel} must state the privacy gate before web search and peer-host dispatch`);
+      ok((rel === SPEC ? SPEC_PROHIBITION : PROHIBITION).test(text),
+        `${rel} must state that only the genericized form leaves the local host`);
     }
   });
+});
 
-  it('start declares itself a lifecycle macro, not a 7th verb (ADR-0020 §Sub-decision 1)', async () => {
-    const text = await readFile(skillsPath(PLUGIN_ROOT, 'start/SKILL.md'), 'utf8');
-    match(text, /lifecycle macro/i,
-      'start SKILL must declare itself a lifecycle macro — the six-verb enum is unchanged');
-    // The start command bootstraps with workflow_type=start (the shape
-    // discriminator pre-wired in state.mjs VALID_WORKFLOW_TYPES at PR2).
-    const cmd = await readFile(resolve(PLUGIN_ROOT, 'commands/start.md'), 'utf8');
-    match(cmd, /--workflow-type start/,
-      'commands/start.md must bootstrap the macro workflow with --workflow-type start');
-  });
-
-  it('start command guards workflow_type before resuming a non-empty active workflow (does not absorb a verb-chain)', async () => {
-    // Codex Plan-verify (PR6): /founder:start must read workflow_type and
-    // reject mutating a single-verb (verb-chain) workflow into lifecycle
-    // phase space — the engineer source rejects this case.
-    const cmd = await readFile(resolve(PLUGIN_ROOT, 'commands/start.md'), 'utf8');
-    match(cmd, /workflow_type/,
-      'commands/start.md must read workflow_type when a non-empty active workflow is found');
-    ok(/verb-chain/.test(cmd),
-      'commands/start.md must handle the verb-chain (non-start) active-workflow case explicitly');
-  });
-
-  it('start command clean-baseline gate fails closed (captures the check exit status)', async () => {
-    // Codex Plan-verify (PR6): an empty/unparseable status must NOT proceed.
-    const cmd = await readFile(resolve(PLUGIN_ROOT, 'commands/start.md'), 'utf8');
-    match(cmd, /BASELINE_RC/,
-      'commands/start.md must capture the check-clean-baseline exit status (fail-closed)');
+describe('plugins/founder — runbook instructions no shared suite pins', () => {
+  it('refine\'s create passes no --profile (single-mode); critique\'s, the control, does', async () => {
+    // Contract: state.mjs create --profile — refine is single-mode like frame
+    // and decide; a forwarded --profile records whatever profile the shell
+    // inherited on a workflow whose verb has none.
+    const refine = createCalls(await readFile(resolve(PLUGIN_ROOT, 'commands/refine.md'), 'utf8'));
+    strictEqual(refine.length, 1, 'commands/refine.md makes one state.mjs create call');
+    ok(!/--profile\b/.test(refine[0]),
+      `commands/refine.md must not pass --profile in its state.mjs create call:\n${refine[0]}`);
+    // Control: the extractor reaches the flag lines of a create that passes one.
+    const critique = createCalls(await readFile(resolve(PLUGIN_ROOT, 'commands/critique.md'), 'utf8'));
+    ok(critique.length === 1 && /--profile\b/.test(critique[0]), 'control: critique\'s create passes --profile');
   });
 
   it('peer-now command runs the dispatch synchronously (no run_in_background race)', async () => {
-    // Codex Plan-verify (PR6): peer-now is a synchronous side-channel — it
-    // reads RUN_RC/STDOUT_PATH immediately, so the Bash call must not be
-    // backgrounded.
+    // Contract: the agent running /founder:peer-now — the block reads RUN_RC and
+    // the response right after the runner; told to background the call, the
+    // agent reads them before the runner exits and reports no answer.
     const cmd = await readFile(resolve(PLUGIN_ROOT, 'commands/peer-now.md'), 'utf8');
     ok(!/run_in_background:\s*true/.test(cmd),
       'commands/peer-now.md must not background the dispatch — it reads the response immediately');
   });
 
-  it('start + meta commands never shell-read parent-linkage env (ADR-0036 Non-Goal 3)', async () => {
-    const READ_FORMS = [
-      /\$\{?AGENTIC_PARENT_WORKFLOW/,
-      /\$\{?AGENTIC_ORIGINATING_SUBTASK/,
+  // Contract: the agent following the session-handoff runbook resolves the paths
+  // it names inside the installed founder plugin — a path into another plugin
+  // (engineer's contract, above all) breaks where that plugin is not installed
+  // beside it (ADR-0010 §5). The citation checks skip plugins/ paths and
+  // kit/lint checks only that a path exists, so a runbook line pointing at
+  // plugins/engineer/... would pass both in this repository. Rejects a path
+  // that lands in a sibling as plugins/<sibling>/ or ../<sibling>/
+  // (plugins/founder/../<sibling>/ included), with `.` segments and repeated
+  // slashes removed.
+  it('the session-handoff runbook reaches no other plugin by path', async () => {
+    // `.` segments and repeated slashes removed first, so a path that only
+    // spells the step into a sibling differently is read as the same step.
+    const text = (await readFile(skillsPath(PLUGIN_ROOT, '_shared/references/session-handoff.md'), 'utf8'))
+      .replace(/\/\.(?=\/)/g, '').replace(/\/{2,}/g, '/');
+    const siblings = (await readdir(resolve(REPO_ROOT, 'plugins'), { withFileTypes: true }))
+      .filter((d) => d.isDirectory() && d.name !== 'founder').map((d) => d.name);
+    ok(siblings.includes('engineer') && siblings.length >= 5, `expected the sibling plugins to be listed (got ${siblings.join(', ')})`);
+    const crossPlugin = new RegExp(`(?:^|[^\\w.-])(?:plugins/|(?:\\.\\./)+)(?:${siblings.join('|')})/`, 'm');
+    const hit = crossPlugin.exec(text);
+    ok(!hit, `the runbook must not reach another plugin by path: ${hit?.[0]}`);
+  });
+
+  it('the verb and start commands and skills leave the completion footer to the terminal write', async () => {
+    const surfaces = [
+      ...[...VERB_SKILLS, 'start'].map((name) => `commands/${name}.md`),
+      ...[...VERB_SKILLS, 'start'].map((name) => `${SKILLS_REL}/${name}/SKILL.md`),
     ];
-    for (const name of MACRO_AND_META) {
-      const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${name}.md`), 'utf8');
-      for (const form of READ_FORMS) {
-        ok(!form.test(text),
-          `commands/${name}.md must not shell-read ${form} — founder is not an orchestrator dispatch target`);
-      }
+    for (const rel of surfaces) {
+      const text = normalizeWhitespace((await readFile(resolve(PLUGIN_ROOT, rel), 'utf8')).replaceAll('**', ''));
+      // Contract: the agent finishing a verb or the lifecycle — the terminal
+      // write already prints the code-emitted footer and its session handoff
+      // (ADR-0039); an agent not told so hand-composes a second footer whose
+      // next step and continue-vs-fresh advice can contradict the emitted one.
+      ok(/Do not hand-compose a second footer/.test(text),
+        `${rel} must tell the agent not to hand-compose a second completion footer`);
     }
   });
 });
 
-// PR7 — ADR-0036 Accepted; founder is complete, not mid-roadmap. The Codex
-// Plan-verify peer caught a systemic set of stale build-phase
-// forward-references that survived the first marker sweep; this guard
-// prevents their regression. These exact phrases described mid-build state
-// and must not reappear in the founder command/skill surface.
-describe('plugins/founder — de-incubated surface (PR7 / ADR-0036 Accepted)', () => {
-  const STALE_BUILD_PHRASES = [
-    /Roadmap note \(incubating/i,
-    /lands? with founder's meta skills/i,
-    /the shape above is the PR\d/i,
-    /until then, state the workflow/i,
-    /agent-spawning verbs landing/i,
-    /later roadmap PRs/i,
-  ];
-
-  // Resolved, not spelled. Naming the conventional root by hand is what made
-  // this scan walk a tombstone after the ADR-0006 Amendment move: every
-  // assertion still ran, over the one README left behind. The scan also counts
-  // what it opened, so a root that resolves to an empty or wrong directory
-  // fails loudly instead of reporting no offenders.
-  const SURFACE_ROOTS = [resolve(PLUGIN_ROOT, 'commands'), resolveSkillsRoot(PLUGIN_ROOT)];
-
-  it('the founder command + skill surface carries no stale build-phase forward-references', async () => {
-    const offenders = [];
-    const perRoot = new Map();
-    for (const root of SURFACE_ROOTS) {
-      let opened = 0;
-      const entries = await readdir(root, { recursive: true, withFileTypes: true });
-      for (const ent of entries) {
-        if (!ent.isFile() || !ent.name.endsWith('.md')) continue;
-        const parent = ent.parentPath ?? ent.path;
-        const full = resolve(parent, ent.name);
-        opened += 1;
-        const text = await readFile(full, 'utf8');
-        for (const re of STALE_BUILD_PHRASES) {
-          if (re.test(text)) offenders.push(`${full.slice(PLUGIN_ROOT.length + 1)} :: ${re.source}`);
-        }
-      }
-      perRoot.set(root, opened);
-    }
-    // Non-vacuity, per root rather than in aggregate. A root that resolves to
-    // an empty or wrong directory reports no offenders, which is
-    // indistinguishable from a clean surface — and an AGGREGATE floor does not
-    // catch it, because scanning one root twice clears the floor while leaving
-    // the other surface unopened (10 commands + 10 commands >= 20, measured,
-    // with a stale phrase sitting unread in the relocated tree). Distinctness
-    // plus a floor on EACH root is what pins both surfaces. Today: 10 commands
-    // and 16 files under the relocated root; the tombstone holds one.
-    strictEqual(new Set(SURFACE_ROOTS.map(String)).size, SURFACE_ROOTS.length,
-      'the surface roots must be distinct — a duplicated root satisfies any aggregate floor while leaving a surface unscanned');
-    for (const [root, opened] of perRoot) {
-      ok(opened >= 10,
-        `surface root ${root.slice(PLUGIN_ROOT.length + 1)} opened only ${opened} markdown files — a root resolving to a tombstone or the wrong directory reports no offenders`);
-    }
-    deepStrictEqual(offenders, [],
-      `stale build-phase forward-references must be removed now that ADR-0036 is Accepted:\n  ${offenders.join('\n  ')}`);
-  });
-});
-
+// Contract: Claude Code reads the catalog entry to install the plugin — a wrong
+// source installs nothing or another directory; the category files the listing.
 describe('plugins/founder — Claude marketplace catalog entry', () => {
   const path = resolve(REPO_ROOT, '.claude-plugin/marketplace.json');
 
-  it('exists with source/category/description aligned to the plugin', async () => {
+  it('exists with source/category aligned to the plugin', async () => {
     const catalog = await readJSON(path);
     const entry = catalog.plugins.find((p) => p.name === 'founder');
     ok(entry, 'Claude catalog must list founder');
     strictEqual(entry.source, './plugins/founder', 'the Claude entry points at the founder package directory');
     strictEqual(entry.category, 'Productivity');
-    ok(!INCUBATING_MARKER.test(entry.description),
-      'Claude catalog description must drop the incubating marker now that ADR-0036 is Accepted');
   });
 });
 
@@ -799,6 +512,9 @@ describe('plugins/founder — Claude marketplace catalog entry', () => {
 // to check (ADR-0065 Decision 8 rule 6). The release job's sync writes them
 // after the release commit, so a test reading them would turn that commit
 // red; a first release has no Codex entry until the sync adds it.
+//
+// Contract: Codex reads the entry's policy and category — a different policy
+// changes when the plugin installs or authenticates.
 describe('plugins/founder — Codex marketplace catalog entry', () => {
   const path = resolve(REPO_ROOT, '.agents/plugins/marketplace.json');
 
@@ -811,6 +527,9 @@ describe('plugins/founder — Codex marketplace catalog entry', () => {
   });
 });
 
+// Contract: release-please reads its manifest and config — an untracked package
+// is never released, and a missing extra-file leaves that host's manifest
+// version behind the release.
 describe('plugins/founder — release-please wiring', () => {
   it('is tracked in .release-please-manifest.json', async () => {
     // Its version's agreement with the plugin manifests is validate-versions' to
@@ -835,68 +554,6 @@ describe('plugins/founder — release-please wiring', () => {
   });
 });
 
-// ADR-0043 S3 — the session-handoff wiring runbook is founder's single source
-// for the code-emitted footer path; its citation discipline and its documented
-// cross-package contracts (marker shape, publish-needed mapping) are pinned so
-// they cannot silently drift out of the runbook.
-describe('plugins/founder — session-handoff runbook (ADR-0043 S3)', () => {
-  const RUNBOOK = `${SKILLS_REL}/_shared/references/session-handoff.md`;
-
-  // PC2a4 (D6): founder ships its own entry-routing-contract.md, rendered from
-  // the persona pipeline; the runbook cites that sibling, whose § heading
-  // exists (tests/persona-pipeline/test-reference-contracts.mjs resolves every
-  // citation of the plugin), never engineer's copy by a cross-plugin path.
-  it('cites founder\'s own contract, which holds the cited § heading, never a cross-plugin path (ADR-0010 §5)', async () => {
-    const text = await readFile(resolve(PLUGIN_ROOT, RUNBOOK), 'utf8');
-    ok(/`entry-routing-contract\.md` § Session-Level Continue-vs-Fresh Preflight\s+\(ADR-0031\)/.test(text),
-      'the runbook must cite the sibling entry-routing-contract.md § Session-Level Continue-vs-Fresh Preflight (ADR-0031)');
-    const contract = await readFile(resolve(PLUGIN_ROOT, `${SKILLS_REL}/_shared/references/entry-routing-contract.md`), 'utf8');
-    ok(/^## Session-Level Continue-vs-Fresh Preflight \(ADR-0031\)$/m.test(contract),
-      'the persona\'s own contract must hold the cited § heading');
-    ok(!/plugins\/engineer/.test(text) && !/\.\.\/\.\.\/engineer/.test(text),
-      'the runbook must not reach the engineer contract by a cross-plugin path');
-  });
-
-  it('documents the footer-rendered marker contract and the publish-needed mapping', async () => {
-    const text = await readFile(resolve(PLUGIN_ROOT, RUNBOOK), 'utf8');
-    ok(text.includes('.footer-rendered'),
-      'the marker filename contract (ADR-0043 §2 cross-package contract) must be documented');
-    ok(/"status":\s*"claimed"\|"rendered"|status.*claimed.*rendered/.test(text),
-      'the marker JSON shape (workflow_id + claimed/rendered status) must be documented');
-    ok(text.includes('publish-needed'),
-      "founder's manually-published completion mapping must be documented");
-    ok(/orphan sweep/i.test(text),
-      'the inherited orphan-sweep no-emit limitation must be documented (ADR-0043 §2 scope honesty)');
-  });
-
-  it('the verb command AND skill surfaces defer to the code-emitted footer (ADR-0039 §9 prose de-dup)', async () => {
-    const surfaces = [
-      'commands/investigate.md', 'commands/frame.md', 'commands/decide.md',
-      'commands/compose.md', 'commands/critique.md', 'commands/refine.md',
-      'commands/start.md',
-      // The skill runbooks carried the same pre-S3 deferral prose — pin them
-      // too so the de-dup cannot silently regress on the Codex-side surfaces
-      // (Codex Plan-verify: the command-only pin was incomplete).
-      `${SKILLS_REL}/investigate/SKILL.md`, `${SKILLS_REL}/frame/SKILL.md`, `${SKILLS_REL}/decide/SKILL.md`,
-      `${SKILLS_REL}/compose/SKILL.md`, `${SKILLS_REL}/critique/SKILL.md`, `${SKILLS_REL}/refine/SKILL.md`,
-      `${SKILLS_REL}/start/SKILL.md`,
-    ];
-    for (const rel of surfaces) {
-      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
-      // investigate/SKILL.md was footer-silent until its finish paragraph
-      // came from the shared region (PC3b U3b); every surface defers now.
-      ok(/code-emit/.test(text),
-        `${rel} must defer to the code-emitted completion footer`);
-      ok(text.includes('references/session-handoff.md'),
-        `${rel} must point at the shared session-handoff runbook`);
-      ok(!/future work if demand arrives/.test(text),
-        `${rel} must not carry the retired pre-S3 deferral prose`);
-      ok(!/is future work, not\s*\npart of founder's surface/.test(text),
-        `${rel} must not carry the retired pre-S3 skill deferral prose`);
-    }
-  });
-});
-
 // ADR-0066 D5 — the hook helpers live in one generated module,
 // scripts/lib/hook-helpers.mjs, which both adapters import; no adapter carries
 // its own copy, so neither reaches into the other's tree.
@@ -907,6 +564,9 @@ describe('plugins/founder — one hook-helper module (ADR-0066 D5)', () => {
         `adapters/${host}/hooks/_shared.mjs must be gone: the hooks import scripts/lib/hook-helpers.mjs`);
       for (const hook of ['session-start.mjs', 'pre-compact.mjs', 'stop.mjs']) {
         const text = await readFile(resolve(PLUGIN_ROOT, `adapters/${host}/hooks/${hook}`), 'utf8');
+        // Contract: Node resolves each hook's import — a hook importing an
+        // adapter-local helper, or not the shared module, loads a copy the
+        // pipeline no longer generates.
         ok(text.includes("from '../../../scripts/lib/hook-helpers.mjs'"), `adapters/${host}/hooks/${hook} must import the shared helpers`);
         ok(!text.includes('_shared.mjs'), `adapters/${host}/hooks/${hook} must not import an adapter-local helper`);
       }
