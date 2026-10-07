@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.9](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.24.8...plugin-engineer-v0.24.9) (2026-10-07)
+
+
+### Bug Fixes
+
+* **plugin/engineer:** generate start, commit and the shared references from the canonical persona pipeline (ADR-0066 Stage 3) ([066963d](https://github.com/each4all/agentic-plugins/commit/066963d791d5c153eed7478addfea3a5d5f893ec))
+
 ## [0.24.8](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.24.7...plugin-engineer-v0.24.8) (2026-10-06)
 
 
