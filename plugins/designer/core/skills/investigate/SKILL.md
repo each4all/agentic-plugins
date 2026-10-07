@@ -247,18 +247,6 @@ command writes the investigation results to its
 workflow file. This skill itself does not write workflow state — it hands
 findings to the invoking command, which owns the write.
 
-Run by `/designer:investigate`, that write is the command's last one, `state.mjs
-finish-verb`: it records the proposal's closed-enum next step and, unless it
-ends with an owner gate, is terminal (inside `/designer:start` no phase makes a
-verb's terminal write). On Claude the Stop hook fires at **every turn end**,
-so the archive gates are evaluated at the end of **that same turn**, not at
-session close — the workflow archives then if they all pass, and otherwise stays
-marked for a later Stop. Clearing the marker (`--terminal-marker false`, with
-set-terminal's full flag set) works only before that Stop fires. On Codex the hook
-runs only once the operator has trusted the plugin hooks (`/hooks`), so evaluation
-waits. Full contract: `core/skills/_shared/references/session-handoff.md`
-§ Archive timing.
-
 When invoked standalone (no parent workflow command), no workflow file
 write occurs.
 
@@ -308,6 +296,44 @@ the user can inspect or resume:
 ```
 Workflow: <absolute path to workflow .md file>
 ```
+
+<!-- pipeline:begin investigate-finish -->
+Run by `/designer:investigate`, the command's last write, `state.mjs
+finish-verb`, records this proposal's closed-enum form — `next_step_kind`,
+`next_step_verb` and `next_step_confidence` (ADR-0063 D6;
+`../_shared/references/entry-routing-contract.md` § Active Next-Action
+Proposal); the fields are host-shared. Unless it ends with an owner gate, that
+write is terminal. Inside `/designer:start` no phase makes a verb's
+terminal write: the lifecycle makes its one terminal write at its end. A
+standalone skill invocation writes no workflow state and emits no footer.
+The owner gates, and the step that resolves each:
+`../_shared/references/entry-routing-contract.md` § Owner gates.
+
+The runtime completion footer is **code-emitted** on that terminal write
+(ADR-0039): its completion state is
+`publish-needed` when only the owner's save and commit remain, since
+designer runs no commit itself.
+The write fires the session-handoff sidecar, which renders the runtime
+`footer.mjs`, the ADR-0031 continue-vs-fresh session handoff included, on that
+command's stderr. Do not hand-compose a second footer or hand-pass the
+projection; surface the emitted one. On a detached HEAD the branch-based
+preflight reports "no active branch context" and never recommends a fresh
+session (ADR-0018 §sub-2); the path-targeted terminal sidecar renders the
+footer as on a branch, its continue-vs-fresh advice included.
+`$designer:investigate` on Codex surfaces the footer as
+`/designer:investigate` does. Wiring:
+`core/skills/_shared/references/session-handoff.md`.
+
+On Claude the Stop hook fires at **every turn end**, so that terminal write puts
+the workflow in front of the archive gates at the end of **that same turn**, not
+at session close — it archives then if every gate passes, and otherwise stays
+marked for a later Stop to re-evaluate. Clearing the marker
+(`--terminal-marker false`, with set-terminal's full flag set) works only before
+that Stop fires and does not restore the previous phase. On Codex the hook runs
+only once the operator has trusted the plugin hooks (`/hooks`), so evaluation
+waits. Full contract: `core/skills/_shared/references/session-handoff.md`
+§ Archive timing.
+<!-- pipeline:end investigate-finish -->
 
 ---
 

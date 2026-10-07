@@ -86,7 +86,10 @@ CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 PERSONA='designer'
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 GIT_BRANCH="$(git branch --show-current)"
-BASELINE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" check-clean-baseline --repo-root "$REPO_ROOT")"
+# ACCEPT_CURRENT_TREE=1, exported or set in this block, accepts a dirty tree;
+# the flag carries it to the check either way.
+case "${ACCEPT_CURRENT_TREE:-}" in 1) ACCEPT_TREE=true ;; *) ACCEPT_TREE=false ;; esac
+BASELINE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" check-clean-baseline --repo-root "$REPO_ROOT" --accept-current-tree "$ACCEPT_TREE")"
 BASELINE_RC=$?
 if [ "$BASELINE_RC" -ne 0 ]; then
   echo "✗ clean-baseline check failed (exit $BASELINE_RC); its error is above." >&2; exit "$BASELINE_RC"
@@ -132,16 +135,25 @@ space (state.mjs defaults non-start workflows to `verb-chain` and validates
 ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'designer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-WF_TYPE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE" \
-  | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).workflow_type||"verb-chain")}catch{process.stdout.write("verb-chain")}})')"
+PERSONA='designer'
+# The read is checked on its own: a read that fails stops the block, whatever
+# it printed, before the type is parsed.
+WF_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE")" || exit $?
+WF_TYPE="$(printf '%s' "$WF_JSON" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).workflow_type||"verb-chain")}catch{process.stdout.write("verb-chain")}})')"
 # Resuming into the lifecycle clears the next step the last phase recorded, so
 # a phase that stops before its own last write leaves none behind (ADR-0063
-# D6); the position (verb, phase, next action) is kept. A verb-chain workflow
-# is refused below and is not written.
+# D6); the position (verb, phase, next action) is kept. Any other workflow is
+# refused, unwritten: the lifecycle never takes a single-verb workflow into
+# its phase space (ADR-0020 §Sub-decision 4).
 if [ "$WF_TYPE" = start ]; then
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
     --clear-next-step true --event resumed || exit $?
+else
+  echo "✗ The active workflow on this branch is workflow_type=${WF_TYPE}, not start: /${PERSONA}:start does not take a single-verb workflow into its lifecycle." >&2
+  echo "  Active workflow: $ACTIVE" >&2
+  echo "  Continue it with its /${PERSONA}:<verb>, or archive it (/${PERSONA}:resume archive), or switch branch (git switch -c <new>); then re-run /${PERSONA}:start." >&2
+  exit 1
 fi
 ```
 <!-- pipeline:end start-resume -->
@@ -264,18 +276,19 @@ phase (ADR-0066 PC2b):
   the next phase. A repeated phase (a second refine pass) dispatches under a
   new run id and settles each attempt.
 - **No phase closes the workflow.** A verb's own terminal write
-  (`finish-verb`) never runs inside the lifecycle; the Terminal block below is
-  its one terminal write.
+  (`finish-verb`) never runs inside the lifecycle; the lifecycle's last step
+  below makes its one terminal write.
 - **An owner gate pauses the lifecycle.** When a phase meets one (a decide
   CONFLICT, a recurring finding, a request that belongs elsewhere), record it
   after the phase note with `state.mjs awaiting-owner-set --gate <gate>
   --anchor <anchor>`, a write that leaves the workflow open, and pause. Once
   the owner decides, clear it with `state.mjs awaiting-owner-clear --gate
   <gate> --resolution <the owner's decision> --next-step-kind verb
-  --next-step-verb <the next phase's verb> --next-step-confidence HIGH`, and
-  continue at that phase. The verb's own resolving step (decide's Owner
-  selection, refine's Owner decision) ends in a terminal write, so the
-  lifecycle does not run it.
+  --next-step-verb <the next phase's verb> --next-step-confidence HIGH
+  --next-action <the next phase's action>`, and continue at that phase. The
+  verb's own resolving step (decide's Owner selection, refine's Owner
+  decision), run inside the lifecycle, clears the gate and stops instead of
+  making the verb's terminal write; resume the lifecycle from it.
 <!-- pipeline:end start-phase-boundary -->
 
 <!-- pipeline:begin start-privacy-no-image -->
@@ -293,8 +306,13 @@ channel.
 Present the final design artifact and save it (the durable design brief /
 flow spec / wireframe spec / CTA copy at its
 `<root>/YYYY-MM-DD_<topic-slug>/` location per
-`core/skills/investigate/references/output-file-rules.md`). Write terminal state
-**only when Phase 4 converged**:
+`core/skills/investigate/references/output-file-rules.md`). designer does NOT
+auto-commit and does NOT dispatch (ADR-0042 Non-Goal 2). The terminal output
+names the **artifact handoff** explicitly: the saved spec is the input to
+`/engineer:start` (single surface) or `/orchestrator:plan` (multi-deliverable
+frontend program), and the rendered result comes back to `/designer:critique`
+for the post-code quality pass. Write terminal state **only when Phase 4
+converged**:
 
 <!-- pipeline:begin start-terminal-convergent -->
 This lifecycle closes only once Phase 4 converged
@@ -303,8 +321,8 @@ when the Phase 4 re-critique converged; anything else, an unset value
 included, reads as not converged. Converged, the last write is `finish-verb`.
 Not converged, the last write is an `append` that records the next step
 resolving the flagged item (`refine`, `decide` or `investigate`) and turns off
-a terminal marker an earlier write left, so the workflow stays open and the
-Stop hook cannot archive it.
+a terminal marker an earlier write left, so the workflow stays open, the Stop
+hook cannot archive it, and no footer prints.
 
 The last write, `finish-verb`, records the lifecycle's next step in
 closed-enum form, `--next-step-kind commit`: the owner saves and commits the
@@ -352,24 +370,28 @@ else
   echo "→ PAUSED (not converged): the workflow stays open, not terminal. Resolve the flagged item, then run the next step recorded above." >&2
 fi
 ```
-<!-- pipeline:end start-terminal-convergent -->
 
-designer does NOT auto-commit and does NOT dispatch (ADR-0042 Non-Goal 2).
-The terminal output names the **artifact handoff** explicitly: the saved spec
-is the input to `/engineer:start` (single surface) or `/orchestrator:plan`
-(multi-deliverable frontend program), and the rendered result comes back to
-`/designer:critique` for the post-code quality pass. The `finish-verb` above
-fires the ADR-0031 session-handoff sidecar, which **code-emits** the
-runtime completion footer on stderr (ADR-0039, enabled by ADR-0043 S4):
-context state, completion state (`publish-needed` while only the owner's
-save/commit remains) + state-derived next action, workflow id/path,
-artifact pointers, recommended next work, and the continue-vs-fresh read —
-the macro workflow is terminal, so a fresh deliverable starts a new
-`/designer:start`. Do NOT hand-compose a second footer; surface the emitted
-one. The footer never mutates host session context; detached HEAD never
-auto-recommends a fresh session (the branch-based preflight is what
-reports "no active branch context"). Wiring details:
+The runtime completion footer is **code-emitted** on this terminal write
+(ADR-0039): `finish-verb` takes
+`set-terminal`'s path, which fires the ADR-0031 session-handoff sidecar; it
+shells out to the runtime `footer.mjs` and prints the rendered footer —
+context state, completion state (`publish-needed` while only the owner's save
+and commit remain) + state-derived next action, workflow id/path, artifact
+pointers, recommended next work, and the continue-vs-fresh session handoff —
+on this command's **stderr**. The workflow is then terminal, and the Stop hook
+archives it once every archive gate passes (here, once the owner's commit
+moves HEAD); until then `/designer:start` on this branch finds it and
+resumes it, so start the next deliverable after the archive, or on another
+branch. Do **not** hand-compose a
+second footer; surface the emitted one. It is advisory, pointer-only and
+fail-closed (a missing or too-old runtime emits nothing, and the SessionStart
+backstop still re-surfaces the handoff); it never mutates host session
+context. On a detached HEAD the branch-based preflight reports "no active
+branch context" and never recommends a fresh session (ADR-0018 §sub-2); the
+path-targeted terminal sidecar renders the footer as on a branch, its
+continue-vs-fresh advice included. Wiring details:
 `core/skills/_shared/references/session-handoff.md`.
+<!-- pipeline:end start-terminal-convergent -->
 
 Always include the workflow path:
 

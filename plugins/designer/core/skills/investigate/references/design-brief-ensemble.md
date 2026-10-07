@@ -79,41 +79,42 @@ Three steps per design-brief session: **Launch**, **Collect**, **Synthesize**.
 ### Step 1: Launch — after sub-question confirmation + scope
 
 **Screenshots are sensitive by default** and are never sent to the peer
-as inline bytes (see "Vision boundary" above): pre-condition 1 below
-gates them before any dispatch.
+as inline bytes (see "Vision boundary" above): the privacy gate below gates
+them before any dispatch.
+
+<!-- pipeline:begin brief-ensemble-launch-privacy -->
+Before dispatch, **pass the privacy gate** for the topic AND the confirmed
+sub-questions. PRIVACY GATE:
+proprietary UI, unreleased features/flows, customer data visible in screenshots, and secret-bearing frontend code
+pass an explicit privacy gate before BOTH web search AND peer-host
+dispatch — see "Privacy" below and `design-brief-spec.md` § Privacy
+Gate.
+<!-- pipeline:end brief-ensemble-launch-privacy -->
 
 <!-- pipeline:begin brief-ensemble-launch -->
-Pre-conditions before dispatch:
-
-1. The privacy gate has passed for the topic AND the confirmed
-   sub-questions. PRIVACY GATE:
-   proprietary UI, unreleased features/flows, customer data visible in screenshots, and secret-bearing frontend code
-   pass an explicit privacy gate before BOTH web search AND peer-host
-   dispatch — see "Privacy" below and `design-brief-spec.md` § Privacy
-   Gate.
-2. The existing-directory check (per `output-file-rules.md`) has
-   completed and the user did NOT choose abort. Aborting before dispatch
-   prevents wasted peer runs on a session the user will discard.
+Pre-condition before dispatch: the existing-directory check (per
+`output-file-rules.md`) has completed and the user did NOT choose abort.
+Aborting before dispatch prevents wasted peer runs on a session the user will
+discard.
 
 Dispatch (mechanics owned by `plugins/designer/scripts/peer-runner.mjs`;
 this protocol pins shape only):
 
-3. designer's `peer-runner.mjs run` resolves the peer-companion script
+1. designer's `peer-runner.mjs run` resolves the peer-companion script
    path via the companion-cache discovery (cache-glob with
    `AGENTIC_COMPANIONS_ROOT` env override, per ADR-0008), records the
    matching `pending_ensemble` row, and creates the hidden peer-run
    ledger. If discovery fails, the ensemble degrades to local-only per
    "Failure Handling".
-4. The caller constructs the reference-scan prompt per "Prompt
+2. The caller constructs the reference-scan prompt per "Prompt
    Construction" below and writes it to a per-dispatch temporary file
    (UTF-8), then passes that file to the runner. The prompt contains
-   user-controlled, genericized material (topic, sub-questions, scope),
-   so it MUST be passed via `--prompt-file <path>` per
-   `companions/contract.md` § 2.2 — never as a positional argument and
-   never inlined into a shell command. The companion reads the file
-   directly; the prompt never crosses shell parsing, process argv, or
-   `ps aux`.
-5. The runner invokes the companion in **JSON envelope mode**:
+   user-controlled material (topic, sub-questions, scope), so it MUST be
+   passed via `--prompt-file <path>` per `companions/contract.md` § 2.2 —
+   never as a positional argument and never inlined into a shell command.
+   The companion reads the file directly; the prompt never crosses shell
+   parsing, process argv, or `ps aux`.
+3. The runner invokes the companion in **JSON envelope mode**:
 
    ```
    <peer-companion> task --prompt-file <path> --output-format json [--cwd <wd>]
@@ -124,7 +125,7 @@ this protocol pins shape only):
    runner MUST NOT pass companion-internal flags (no `--background`, no
    timeout knobs); those are out of contract scope per
    `companions/contract.md` § 6.2 and § 6.4.
-6. The local host proceeds immediately to per-sub-question WebSearch /
+4. The local host proceeds immediately to per-sub-question WebSearch /
    WebFetch.
 <!-- pipeline:end brief-ensemble-launch -->
 

@@ -438,9 +438,11 @@ Ask the owner: fix it now, or defer it. The clear records the owner's decision
 (`--resolution`, written in place of the placeholder line between the two
 `OWNER_RESOLUTION` lines) and the next step it implies in one write, so the
 next step never becomes runnable without the decision behind it, and a failure
-never leaves the gate's `owner-decision` behind. Inside a `/designer:start`
-lifecycle the Defer block clears the gate and stops there: resume the
-lifecycle, which makes its one terminal write.
+never leaves the gate's `owner-decision` behind; the same write replaces the
+gate's next action. Inside a `/designer:start` lifecycle both blocks clear
+the gate and stop there: resume the lifecycle, which fixes the finding in its
+refine phase or continues at its terminal step, and makes its one terminal
+write.
 
 This refine closes only once it converged (`terminal_requires_convergence`),
 and deferring a finding does not make it converge. In the Defer block, set
@@ -454,7 +456,8 @@ terminal marker off, so the workflow stays open and the Stop hook cannot
 archive it.
 
 **Fix now.** Clear the gate with this refine as the next step, then run the
-phases above on that finding, as usual:
+phases above on that finding, as usual (inside a `/designer:start`
+lifecycle, resume the lifecycle instead):
 
 ```bash
 ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
@@ -464,6 +467,16 @@ PERSONA='designer'
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
 [ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
+# A gate met inside a /start lifecycle is resolved there: the lifecycle's
+# refine phase runs the fix, and the lifecycle makes the one terminal write,
+# which this refine's own phases would make otherwise. A failed read, or a type
+# that cannot be parsed, stops the block (the read is checked on its own: a
+# pipe reports its last command).
+WF_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE")" \
+  || { echo "✗ Could not read the workflow type; nothing was written." >&2; exit 1; }
+WF_TYPE="$(printf '%s' "$WF_JSON" \
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).workflow_type||"verb-chain")}catch{process.exit(1)}})')" \
+  || { echo "✗ Could not read the workflow type; nothing was written." >&2; exit 1; }
 # The owner's resolution, from a quoted heredoc: no quote, $, backtick or
 # backslash in it is read by the shell. An empty read stops the block.
 unset RESOLUTION
@@ -471,10 +484,19 @@ IFS= read -r -d '' RESOLUTION <<'OWNER_RESOLUTION' || true
 <Owner decision: fix the finding now>
 OWNER_RESOLUTION
 [ -n "$RESOLUTION" ] || { echo "✗ No resolution was read; nothing was written." >&2; exit 1; }
+if [ "$WF_TYPE" = start ]; then
+  NEXT_ACTION="Resume /${PERSONA}:start: its refine phase fixes the recurring finding"
+else
+  NEXT_ACTION='Fix the recurring finding in this refine, then re-critique'
+fi
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" awaiting-owner-clear \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --gate recurring-finding \
-  --resolution "$RESOLUTION" \
+  --resolution "$RESOLUTION" --next-action "$NEXT_ACTION" \
   --next-step-kind verb --next-step-verb refine --next-step-confidence HIGH || exit $?
+if [ "$WF_TYPE" = start ]; then
+  echo "→ Gate cleared. Resume the lifecycle with /${PERSONA}:start (\$${PERSONA}:start on Codex); its refine phase fixes the finding." >&2
+  exit 0
+fi
 ```
 
 **Defer.** Clear the gate with the deferral and `commit` as the next step (the
@@ -490,8 +512,11 @@ REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
 [ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
 # A gate met inside a /start lifecycle is resolved there: the lifecycle makes
-# the one terminal write. A type that cannot be read stops the block.
-WF_TYPE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE" \
+# the one terminal write. A failed read, or a type that cannot be parsed, stops
+# the block (the read is checked on its own: a pipe reports its last command).
+WF_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE")" \
+  || { echo "✗ Could not read the workflow type; nothing was written." >&2; exit 1; }
+WF_TYPE="$(printf '%s' "$WF_JSON" \
   | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).workflow_type||"verb-chain")}catch{process.exit(1)}})')" \
   || { echo "✗ Could not read the workflow type; nothing was written." >&2; exit 1; }
 # The owner's resolution, from a quoted heredoc: no quote, $, backtick or
@@ -501,6 +526,11 @@ IFS= read -r -d '' RESOLUTION <<'OWNER_RESOLUTION' || true
 <Owner decision: defer the finding, with the reason and where it is tracked>
 OWNER_RESOLUTION
 [ -n "$RESOLUTION" ] || { echo "✗ No resolution was read; nothing was written." >&2; exit 1; }
+if [ "$WF_TYPE" = start ]; then
+  NEXT_ACTION="Resume /${PERSONA}:start: the finding is deferred, and the lifecycle continues at its terminal step"
+else
+  NEXT_ACTION='The recurring finding is deferred; the owner saves and commits the refined artifact'
+fi
 # FAIL-CLOSED: shell state does not survive between Bash calls, so an unset
 # CONVERGED reads as not converged, never as success. Assign it here, from
 # the re-critique verdict with the finding deferred.
@@ -508,7 +538,7 @@ CONVERGED="<yes|no — from the re-critique verdict with the finding deferred; u
 if [ "${CONVERGED:-no}" = "yes" ]; then
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" awaiting-owner-clear \
     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --gate recurring-finding \
-    --resolution "$RESOLUTION" \
+    --resolution "$RESOLUTION" --next-action "$NEXT_ACTION" \
     --next-step-kind commit --next-step-confidence HIGH || exit $?
   if [ "$WF_TYPE" = start ]; then
     echo "→ Gate cleared. Resume the lifecycle with /${PERSONA}:start (\$${PERSONA}:start on Codex); it continues at its terminal step." >&2
@@ -530,7 +560,7 @@ else
   # is still open, and no terminal write is made.
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" awaiting-owner-clear \
     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --gate recurring-finding \
-    --resolution "$RESOLUTION" \
+    --resolution "$RESOLUTION" --next-action "<what the next step resolves, in a few words>" \
     --next-step-kind verb --next-step-verb "<refine|decide|investigate>" \
     --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?
   echo "→ PAUSED (not converged): the gate is cleared and the workflow stays open, not terminal. Run the next step recorded above (inside a /${PERSONA}:start lifecycle, resume it with /${PERSONA}:start)." >&2
@@ -538,7 +568,8 @@ fi
 ```
 
 `awaiting-owner-clear` records `### Owner gate resolved: recurring-finding at
-<iso>` with the pointer it cleared and the resolution. It refuses, writing
+<iso>` with the pointer it cleared and the resolution, and replaces the gate's
+next action. It refuses, writing
 nothing, when the gate set on the workflow is not `recurring-finding`.
 <!-- pipeline:end refine-owner-decision-convergent -->
 
@@ -583,21 +614,22 @@ Workflow: <absolute path to workflow .md file>
 
 <!-- pipeline:begin refine-completion-footer -->
 The runtime completion footer is **code-emitted** on this verb's terminal
-path (ADR-0039, enabled for designer by ADR-0043): the terminal write
-(`state.mjs finish-verb`, which takes `set-terminal`'s path) fires the
-ADR-0031 session-handoff sidecar, which shells out
-to the runtime `footer.mjs` and prints the rendered footer — context
-state, completion state (designer's manually-published mapping surfaces
-`publish-needed` when only the owner's save/commit remains) + state-derived
-next action, workflow id/path, artifact pointers, recommended next work,
-and the continue-vs-fresh session-handoff — on that command's **stderr**.
+path (ADR-0039): the terminal write (`state.mjs finish-verb`, which takes
+`set-terminal`'s path) fires the ADR-0031 session-handoff sidecar, which
+shells out to the runtime `footer.mjs` and prints the rendered footer —
+context state, completion state
+(designer's manually-published mapping surfaces `publish-needed` when
+only the owner's save/commit remains) + state-derived next action,
+workflow id/path, artifact pointers, recommended next work, and the
+continue-vs-fresh session-handoff — on that command's **stderr**.
 Do **not** hand-compose a second footer; surface the one the terminal
 command already emitted. The footer is advisory + pointer-only and
 fail-closed (a missing/too-old runtime emits nothing, and the SessionStart
 backstop still re-surfaces the handoff); it never mutates host session
-context. Detached HEAD never auto-recommends a fresh session (ADR-0018
-§sub-2; the branch-based preflight is what reports "no active branch
-context" — the path-targeted terminal sidecar still renders normally).
+context. On a detached HEAD the branch-based preflight reports "no active
+branch context" and never recommends a fresh session (ADR-0018 §sub-2); the
+path-targeted terminal sidecar renders the footer as on a branch, its
+continue-vs-fresh advice included.
 Wiring details:
 `core/skills/_shared/references/session-handoff.md`.
 <!-- pipeline:end refine-completion-footer -->

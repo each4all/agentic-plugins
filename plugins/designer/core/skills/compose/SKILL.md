@@ -170,10 +170,11 @@ Present the synthesized artifact and confirm before downstream verbs.
 ### State write (when invoked from a workflow command)
 
 <!-- pipeline:begin compose-state-write -->
-When `/designer:compose` runs as a sub-step of a designer workflow command,
-the invoking command writes the artifact + progress to its workflow file.
-This skill itself does not write workflow state. When invoked standalone,
-no workflow file write occurs.
+When `/designer:compose` runs as a sub-step of another designer workflow
+command, the invoking command writes the artifact + progress to its workflow
+file.
+This skill itself does not write workflow state. When invoked
+standalone, no workflow file write occurs.
 <!-- pipeline:end compose-state-write -->
 
 ---
@@ -213,16 +214,32 @@ Always include the workflow path when invoked from a workflow command:
 Workflow: <absolute path to workflow .md file>
 ```
 
-(The invoking workflow command's last write, `state.mjs finish-verb`, records
-this proposal's closed-enum form — `next_step_kind`, `next_step_verb` and
-`next_step_confidence`, per `../_shared/references/entry-routing-contract.md`
-§ Active Next-Action Proposal. Unless it ends with an owner gate
-(`../_shared/references/entry-routing-contract.md` § Owner gates), that
-write is terminal, and the runtime completion footer is **code-emitted** on
-that command's stderr per ADR-0039/ADR-0043 S4; do not hand-compose a
-second footer — surface the emitted one. Standalone skill invocations write no
-workflow state and emit no footer. Wiring:
-`core/skills/_shared/references/session-handoff.md`.)
+<!-- pipeline:begin compose-finish -->
+Run by `/designer:compose`, the command's last write, `state.mjs
+finish-verb`, records this proposal's closed-enum form — `next_step_kind`,
+`next_step_verb` and `next_step_confidence` (ADR-0063 D6;
+`../_shared/references/entry-routing-contract.md` § Active Next-Action
+Proposal); the fields are host-shared. Unless it ends with an owner gate, that
+write is terminal. Inside `/designer:start` no phase makes a verb's
+terminal write: the lifecycle makes its one terminal write at its end. A
+standalone skill invocation writes no workflow state and emits no footer.
+The owner gates, and the step that resolves each:
+`../_shared/references/entry-routing-contract.md` § Owner gates.
+
+The runtime completion footer is **code-emitted** on that terminal write
+(ADR-0039): its completion state is
+`publish-needed` when only the owner's save and commit remain, since
+designer runs no commit itself.
+The write fires the session-handoff sidecar, which renders the runtime
+`footer.mjs`, the ADR-0031 continue-vs-fresh session handoff included, on that
+command's stderr. Do not hand-compose a second footer or hand-pass the
+projection; surface the emitted one. On a detached HEAD the branch-based
+preflight reports "no active branch context" and never recommends a fresh
+session (ADR-0018 §sub-2); the path-targeted terminal sidecar renders the
+footer as on a branch, its continue-vs-fresh advice included.
+`$designer:compose` on Codex surfaces the footer as
+`/designer:compose` does. Wiring:
+`core/skills/_shared/references/session-handoff.md`.
 
 On Claude the Stop hook fires at **every turn end**, so that terminal write puts
 the workflow in front of the archive gates at the end of **that same turn**, not
@@ -233,6 +250,7 @@ that Stop fires and does not restore the previous phase. On Codex the hook runs
 only once the operator has trusted the plugin hooks (`/hooks`), so evaluation
 waits. Full contract: `core/skills/_shared/references/session-handoff.md`
 § Archive timing.
+<!-- pipeline:end compose-finish -->
 
 ---
 

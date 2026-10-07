@@ -148,8 +148,8 @@ one message, in the order the decide output format sets:
 1. Each direction's full analysis (4 blocks, in order)
 2. The multi-perspective comparison table, after all directions (rows =
    axes, columns = A/B/C/D)
-3. The recommendation block (chosen direction + rationale + gate verdict +
-   alternative-conditions)
+3. The recommendation block (chosen direction + rationale + any gate
+   verdict its axes require + alternative-conditions)
 
 Splitting it into per-option segments would break the comparison the item
 exists for: the user weighs one decision's trade-off across its directions
