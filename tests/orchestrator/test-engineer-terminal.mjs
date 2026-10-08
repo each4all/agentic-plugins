@@ -149,6 +149,26 @@ describe('recordEngineerTerminal (ADR-0062 §Decision 2)', () => {
     });
   });
 
+  // ADR-0067 Decision 3. Contract: the engineer's writeback passes the macro
+  // id it resolved the path for (--expect-workflow-id); the read under the
+  // lock is the one the write is made from, so a file that holds another
+  // macro by then must get nothing.
+  it('refuses a file whose workflow_id is not the expected one, on the locked read, and writes nothing (CLI too)', async () => {
+    await withMacro([st('A', { status: 'in_progress', engineer_workflow_id: 'eng-A' })], async (filePath) => {
+      const before = await readFile(filePath, 'utf8');
+      await rejects(() => call(filePath, { expectWorkflowId: 'macro-other' }), /holds macro "macro-plan-[^"]+", not "macro-other"; nothing was written/);
+      strictEqual(await readFile(filePath, 'utf8'), before);
+      const cli = spawnSync(process.execPath, [
+        STATE_MJS, 'subtask-engineer-terminal', `--workflow-path=${filePath}`, '--host=claude',
+        '--subtask-id=A', '--engineer-workflow-id=eng-A', '--branch-commit=b1', '--expect-workflow-id=macro-other',
+      ], { encoding: 'utf8' });
+      strictEqual(cli.status, 1, cli.stdout);
+      strictEqual(await readFile(filePath, 'utf8'), before);
+      const id = filePath.split('/').pop().replace(/\.md$/, '');
+      strictEqual((await call(filePath, { expectWorkflowId: id })).noted, true, 'the expected id passes');
+    });
+  });
+
   it('CLI: JSON envelope; a Codex caller gets the Codex command form', async () => {
     await withMacro([st('A', { status: 'in_progress', engineer_workflow_id: 'eng-A' })], async (filePath) => {
       const out = execFileSync(process.execPath, [

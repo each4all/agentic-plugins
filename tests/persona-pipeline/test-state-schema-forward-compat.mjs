@@ -649,4 +649,97 @@ for (const persona of personasFor('scripts/state.mjs')) {
       }
     });
   });
+
+  // -----------------------------------------------------------------------------
+  // ADR-0067 Decision 3 — a reader from before parent_workflow_path meets a
+  // child that records it (the version table's "older persona" rows: a host
+  // still on the previous engineer writes the child too)
+  // -----------------------------------------------------------------------------
+
+  const PATH_KEY_LINE = "    order.push('parent_workflow_path');\n";
+
+  // The previous build is this one without the line that makes the key known:
+  // schema 1.4, the key absent from its key order.
+  async function importPathlessReader(dir) {
+    const src = await readFile(STATE_PATH, 'utf8');
+    // Contract: the source rewrite below — if the line drifts, nothing is
+    // removed and the "previous reader" silently knows the key.
+    strictEqual(src.split(PATH_KEY_LINE).length - 1, 1, 'the key joins the key order on exactly one line');
+    const scripts = join(dir, 'scripts');
+    await mkdir(join(scripts, 'lib'), { recursive: true });
+    await mkdir(join(dir, '.claude-plugin'));
+    await writeFile(join(scripts, 'state.mjs'), src.replace(PATH_KEY_LINE, ''));
+    await copyFile(P.path('scripts/validate-commit.mjs'), join(scripts, 'validate-commit.mjs'));
+    for (const lib of ['cli-entry.mjs', 'persona.mjs']) {
+      await copyFile(P.path(`scripts/lib/${lib}`), join(scripts, 'lib', lib));
+    }
+    await copyFile(P.path('persona.json'), join(dir, 'persona.json'));
+    await copyFile(P.path('.claude-plugin/plugin.json'), join(dir, '.claude-plugin', 'plugin.json'));
+    return import(pathToFileURL(join(scripts, 'state.mjs')).href);
+  }
+
+  describeDispatchOn(`${persona}: ADR-0067 Decision 3 — a reader without parent_workflow_path carries it`, () => {
+    // Contract: the ADR-0063 S1 placement rule — the previous reader writes a
+    // key it does not know after every key it knows; the key must already be
+    // there, or each of that reader's writes moves it and a later write by
+    // either build reorders the file.
+    it('the key sits last, and the previous reader round-trips it byte for byte through read and through mutation', async () => {
+      const readerDir = await mkdtemp(join(tmpdir(), `${persona}-reader-pathless-`));
+      try {
+        const old = await importPathlessReader(readerDir);
+        await withTmpRepo(async (repoRoot) => {
+          const macroPath = execFileSync(process.execPath, [
+            resolve(REPO_ROOT, 'plugins/orchestrator/scripts/state.mjs'), 'create', '--repo-root', repoRoot,
+            '--verb', 'plan', '--host', 'claude', '--git-baseline-branch', 'main',
+            '--git-baseline-head', 'a'.repeat(40), '--original-request', 'pathless reader macro',
+          ], { encoding: 'utf8' }).trim();
+          const macroId = macroPath.split('/').pop().replace(/\.md$/, '');
+          await createWorkflow({
+            repoRoot, verb: 'decide', host: 'claude', gitBaseline: MIN_BASELINE,
+            originalRequest: 'pathless reader meets the key',
+            parentWorkflow: macroId, originatingSubtask: 'T1', parentWorkflowPath: macroPath,
+          });
+          const [filePath] = await listWorkflowFiles(repoRoot);
+          // Keys both builds know, written after the path.
+          await appendPhase({
+            workflowPath: filePath, host: 'claude', event: 'updated',
+            nextStep: { kind: 'verb', verb: 'compose', confidence: 'MEDIUM' },
+          });
+          await setAwaitingOwner({
+            workflowPath: filePath, host: 'claude', gate: 'decide-conflict',
+            pointer: `${P.workflowDirRel}/x.md#decision-pending`, since: '2026-10-08T01:02:03Z',
+          });
+          const pathLine = `parent_workflow_path: ${JSON.stringify(macroPath)}`;
+          const lastKey = (text) => frontmatterBlock(text).trimEnd().split('\n').at(-2);
+          const written = await readFile(filePath, 'utf8');
+          strictEqual(lastKey(written), pathLine, written);
+
+          const parsed = old.parseWorkflowFile(written);
+          deepStrictEqual((parsed.frontmatter[old.FORWARD_COMPAT_UNKNOWNS] ?? []).map((e) => e.key), ['parent_workflow_path']);
+          strictEqual(
+            frontmatterBlock(old.assembleWorkflowFile(parsed.frontmatter, parsed.body)),
+            frontmatterBlock(written),
+          );
+
+          // The previous reader's writes keep it last, byte for byte.
+          await old.setCheckpoint({ workflowPath: filePath, host: 'codex', summary: 'from the previous reader' });
+          await old.appendPhase({
+            workflowPath: filePath, host: 'codex', event: 'updated',
+            phaseLabel: 'previous append', phaseNote: 'untouched key',
+            nextStep: { kind: 'verb', verb: 'refine', confidence: 'HIGH' },
+          });
+          const after = await readFile(filePath, 'utf8');
+          strictEqual(lastKey(after), pathLine, after);
+          strictEqual(after.split('\nparent_workflow_path: ').length - 1, 1, 'one copy of the key');
+
+          const { frontmatter } = await readWorkflow(filePath);
+          strictEqual(frontmatter.parent_workflow_path, macroPath);
+          strictEqual(frontmatter.next_step_verb, 'refine');
+          strictEqual(frontmatter.latest_checkpoint.summary, 'from the previous reader');
+        });
+      } finally {
+        await rm(readerDir, { recursive: true, force: true });
+      }
+    });
+  });
 }

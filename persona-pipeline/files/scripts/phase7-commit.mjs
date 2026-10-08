@@ -1168,6 +1168,8 @@ async function runPostCommitGates({ workflowPath, repoRoot, flags, stderr, lande
     const wbResult = await writebackParent({
       repoRoot,
       parentWorkflowId: fresh.parent_workflow,
+      // ADR-0067 Decision 3 — tried first; absent on an older child.
+      parentWorkflowPath: fresh.parent_workflow_path,
       originatingSubtaskId: fresh.originating_subtask,
       engineerWorkflowId: fresh.workflow_id,
       commit: commitSha,

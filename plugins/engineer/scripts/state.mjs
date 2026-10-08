@@ -17,8 +17,9 @@
 //     write block while both hold state). Off: canonical home only.
 //   - dispatch_target: on, the ADR-0019 parent linkage (the create flags, the
 //     parent_workflow / originating_subtask / parent_detached /
-//     parent_writeback_at keys, the detach-archive and
-//     set/clear-parent-writeback-marker subcommands) and the ADR-0063
+//     parent_writeback_at keys, ADR-0067's parent_workflow_path, the
+//     detach-archive and set/clear-parent-writeback-marker subcommands) and
+//     the ADR-0063
 //     autopilot mode on Claude. Off: the keys stay opaque data the
 //     forward-compat carrier keeps, the flags and subcommands are refused,
 //     and an inherited AGENTIC_AUTOPILOT is ignored.
@@ -1153,9 +1154,10 @@ const FRONTMATTER_KEY_ORDER = [
   'awaiting_owner_pointer',
 ];
 
-// dispatch_target's frontmatter keys (ADR-0019 PR-A, ADR-0028 §P10): known,
-// ordered and validated only for a persona that declares the capability on.
-// parent_workflow + originating_subtask are immutable once set at create-time
+// dispatch_target's frontmatter keys (ADR-0019 PR-A, ADR-0028 §P10, ADR-0067
+// Decision 3): known, ordered and validated only for a persona that declares
+// the capability on. parent_workflow + originating_subtask, and
+// parent_workflow_path when recorded, are immutable once set at create-time
 // (ADR-0019 §3); parent_detached is set by the orchestrator's /finalize·/abort
 // detach pass (§5); parent_writeback_at is the P10 write-ahead marker.
 const PARENT_LINKAGE_KEYS = Object.freeze(['parent_workflow', 'originating_subtask', 'parent_detached']);
@@ -1166,6 +1168,12 @@ function frontmatterKeyOrder() {
   if (capabilityOn('dispatch_target')) {
     order.splice(order.indexOf('workflow_type'), 0, ...PARENT_LINKAGE_KEYS);
     order.splice(order.indexOf('next_step_kind'), 0, 'parent_writeback_at');
+    // ADR-0067 Decision 3 — the macro file's path, an optional flat scalar
+    // that needs no schema version. It is last, where a reader that does not
+    // know it writes it back through its forward-compat carrier (after every
+    // key it knows), so that reader's write leaves it byte for byte (the
+    // ADR-0063 S1 note).
+    order.push('parent_workflow_path');
   }
   keyOrderCache = Object.freeze(order);
   return keyOrderCache;
@@ -1773,6 +1781,14 @@ function validateSchema11Fields(fm) {
         throw new Error('parent_detached must be a boolean');
       }
     }
+    // ADR-0067 Decision 3 — a hint checked where it is used (create and the
+    // writeback); the file it names may have moved since, so a read checks
+    // only its type.
+    if ('parent_workflow_path' in fm) {
+      if (typeof fm.parent_workflow_path !== 'string' || fm.parent_workflow_path.length === 0) {
+        throw new Error('parent_workflow_path must be a non-empty string when present');
+      }
+    }
   }
 
   // ADR-0020 PR 2 — workflow_type enum discriminator. Absence is
@@ -2087,6 +2103,10 @@ export async function createWorkflowUnderLock({
   // forwarded as CLI flags).
   parentWorkflow,
   originatingSubtask,
+  // ADR-0067 Decision 3 — the macro file's absolute path, recorded beside
+  // the two ids (AGENTIC_PARENT_WORKFLOW_PATH, forwarded as a CLI flag).
+  // Optional: an older orchestrator exports none. Valid only with both ids.
+  parentWorkflowPath,
   // ADR-0020 PR 2 — workflow-shape discriminator. Always-written at
   // create-time (default 'verb-chain') so every new workflow is
   // self-describing. workflow_type is a primary discriminator, not a
@@ -2165,6 +2185,7 @@ export async function createWorkflowUnderLock({
   if (!capabilityOn('dispatch_target')) {
     parentWorkflow = undefined;
     originatingSubtask = undefined;
+    parentWorkflowPath = undefined;
   }
   if (parentWorkflow !== undefined && parentWorkflow !== null) {
     if (typeof parentWorkflow !== 'string' || parentWorkflow.length === 0) {
@@ -2184,6 +2205,29 @@ export async function createWorkflowUnderLock({
     throw new Error(
       'parent_workflow and originating_subtask must be set together or both omitted (ADR-0019 §3 parent-child linkage)',
     );
+  }
+  // ADR-0067 Decision 3 — the path names the macro the ids name: an existing
+  // orchestrator macro file, in a workflows/ home, whose workflow_id is
+  // parent_workflow. The path alone is refused; the ids alone stay valid
+  // (an older orchestrator).
+  if (parentWorkflowPath !== undefined && parentWorkflowPath !== null) {
+    if (typeof parentWorkflowPath !== 'string' || parentWorkflowPath.length === 0) {
+      throw new Error('parentWorkflowPath must be a non-empty string when provided');
+    }
+    if (!('parent_workflow' in frontmatter)) {
+      throw new Error(
+        'parent_workflow_path is valid only with parent_workflow and originating_subtask (ADR-0067 Decision 3)',
+      );
+    }
+    const { checkParentWorkflowPath } = await import('./parent-writeback.mjs');
+    const problem = await checkParentWorkflowPath(parentWorkflowPath, frontmatter.parent_workflow);
+    if (problem) {
+      throw new Error(
+        `parent_workflow_path ${JSON.stringify(parentWorkflowPath)} is not macro ` +
+          `${frontmatter.parent_workflow}'s file: ${problem} (ADR-0067 Decision 3)`,
+      );
+    }
+    frontmatter.parent_workflow_path = parentWorkflowPath;
   }
 
   const title = bodyTitle ?? `${persona}:${verb}`;
@@ -4128,10 +4172,14 @@ function cliPrintHelp() {
           '    [--parent-workflow <id> --originating-subtask <id>] (dispatch_target):',
           '    ADR-0019 §3 — when invoked by orchestrator dispatch, they record the',
           '    cross-plugin parent linkage. Both flags together or both omitted.',
+          '    [--parent-workflow-path <abs path>] (dispatch_target): ADR-0067',
+          '    Decision 3 — the macro file, recorded beside the two ids and only',
+          '    with them; it must name an existing orchestrator macro whose',
+          '    workflow_id is --parent-workflow.',
         ]
         : [
-          '    dispatch_target off — no --parent-workflow / --originating-subtask',
-          '    flags (ADR-0066 Decision 3).',
+          '    dispatch_target off — no --parent-workflow / --originating-subtask /',
+          '    --parent-workflow-path flags (ADR-0066 Decision 3).',
         ]),
       '    ADR-0020 §Sub-decision 5 — --workflow-type discriminates the',
       '    workflow shape. Omit (or pass verb-chain) for single-verb workflows',
@@ -4360,6 +4408,13 @@ async function cliMain(argv) {
               `${personaName()} is no orchestrator dispatch target (dispatch_target off, ADR-0066 Decision 3)`,
           );
         }
+        // ADR-0067 Decision 3's macro path, refused the same way.
+        if (!capabilityOn('dispatch_target') && flags['parent-workflow-path'] !== undefined) {
+          throw new Error(
+            `${personaName()} state.mjs create does not accept --parent-workflow-path: ` +
+              `${personaName()} is no orchestrator dispatch target (dispatch_target off, ADR-0066 Decision 3)`,
+          );
+        }
         // The persona is canonical: another persona's --persona landing in
         // this persona's state home would cross persona boundaries silently
         // (read-side stays tolerant for fixtures).
@@ -4387,6 +4442,7 @@ async function cliMain(argv) {
           // when it is off).
           parentWorkflow: flags['parent-workflow'],
           originatingSubtask: flags['originating-subtask'],
+          parentWorkflowPath: flags['parent-workflow-path'],
           // ADR-0020 PR 2 — workflow-shape discriminator. Omitting the
           // flag defaults to 'verb-chain' inside createWorkflowUnderLock;
           // the persona's `start` macro passes 'start'. cliParseFlags

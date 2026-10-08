@@ -18,7 +18,7 @@
 import { describe, it } from 'node:test';
 import { strictEqual, deepStrictEqual, ok, throws } from 'node:assert/strict';
 import { mkdtemp, rm, writeFile, mkdir, readFile } from 'node:fs/promises';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -789,6 +789,49 @@ for (const persona of personasFor('scripts/phase7-commit.mjs')) {
         ok(/next_action: ".*\/orchestrator:done T1/.test(wfText), `engineer next_action points at /orchestrator:done: ${wfText}`);
       } finally {
         await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    // ADR-0067 Decision 3 — P10 passes the child's recorded
+    // parent_workflow_path. Contract: phase7-commit.mjs hands writebackParent
+    // the recorded path — without it a commit made in a lane searches only the
+    // lane's own homes and the macro never hears of it.
+    itDispatchOn('P10 — a child whose checkout holds no copy of the macro notes it through the recorded parent_workflow_path', async () => {
+      const dir = await makeSandboxRepo();
+      const macroHome = await mkdtemp(join(tmpdir(), 'phase7-p10-macro-home-'));
+      try {
+        const ORCH_STATE = resolve(REPO_ROOT, 'plugins/orchestrator/scripts/state.mjs');
+        const head = shell(dir, 'git', ['rev-parse', 'HEAD']);
+        const macroPath = shell(macroHome, 'node', [
+          ORCH_STATE, 'create', '--repo-root', macroHome, '--verb', 'plan', '--host', 'claude',
+          '--git-baseline-branch', 'main', '--git-baseline-head', head, '--original-request', 'phase7 P10 macro elsewhere',
+        ]);
+        const macroId = macroPath.split('/').pop().replace(/\.md$/, '');
+        const subtasksFile = join(macroHome, 'subtasks.json');
+        await writeFile(subtasksFile, JSON.stringify([{ id: 'T1', verb: 'compose', branch: 'feat/t1', blocked_by: [], status: 'in_progress' }]));
+        shell(macroHome, 'node', [ORCH_STATE, 'plan-set', '--workflow-path', macroPath, '--host', 'claude', '--subtasks-json-file', subtasksFile]);
+
+        const wf = shell(dir, 'node', [
+          STATE_BIN, 'create', '--repo-root', dir, '--verb', 'compose', '--profile', 'code',
+          '--persona', persona, '--host', 'claude', '--workflow-type', 'start',
+          '--git-baseline-branch', 'main', '--git-baseline-head', head, '--status-digest', '',
+          '--current-phase', 'phase-4-implement', '--next-action', 'phase 7 sandbox',
+          '--original-request', 'P10 recorded path', '--parent-workflow', macroId, '--originating-subtask', 'T1',
+          '--parent-workflow-path', macroPath,
+        ]);
+        shell(dir, 'node', [STATE_BIN, 'record-composed-file', '--workflow-path', wf, '--path', 'README.md', '--op', 'edit']);
+        await writeFile(join(dir, 'README.md'), '# sandbox\nP10 recorded path\n');
+        const r = spawnSync('node', [
+          PHASE7_BIN, '--mode', 'execute', '--workflow-path', wf, '--repo-root', dir, '--host', 'claude',
+          '--subject', 'docs: P10 through the recorded path', '--confirm-non-interactive', '--lenient-cc',
+        ], { cwd: dir, encoding: 'utf8', env: { ...process.env, AGENTIC_ORCHESTRATOR_ROOT: resolve(REPO_ROOT, 'plugins/orchestrator') } });
+        strictEqual(r.status, 0, r.stderr);
+        const committed = shell(dir, 'git', ['rev-parse', 'HEAD']);
+        ok((await readFile(macroPath, 'utf8')).includes(`### engineer terminal: "T1" @ `) && (await readFile(macroPath, 'utf8')).includes(committed), r.stderr);
+        ok(!/parent-writeback failed/.test(r.stderr), r.stderr);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+        await rm(macroHome, { recursive: true, force: true });
       }
     });
   });

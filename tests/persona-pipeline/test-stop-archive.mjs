@@ -903,6 +903,42 @@ for (const persona of PERSONAS) {
       });
     });
 
+    // ADR-0067 Decision 3 — the Stop passes the child's recorded
+    // parent_workflow_path, the only thing that reaches a macro kept in
+    // another checkout. The orphan sweep's kept-branch path calls the same
+    // noteTerminalOnParent.
+    // Contract: noteTerminalOnParent hands writebackParent the recorded path —
+    // without it a lane's Stop searches only its own checkout and notes nothing.
+    it('notes the terminal commit through the recorded parent_workflow_path when its own checkout holds no copy of the macro', async () => {
+      await withRepo(async ({ repoRoot, baselineHead }) => {
+        const elsewhere = await mkdtemp(join(tmpdir(), `${persona}-stop-macro-home-`));
+        try {
+          const { macroPath, macroId } = await bootstrapMacroPlan(elsewhere, 'T1');
+          const { filePath: childPath, workflowId: childId } = await createWorkflow({
+            repoRoot,
+            verb: 'compose',
+            originalRequest: 'child of a macro in another checkout',
+            gitBaseline: { branch: 'main', head: baselineHead, status_digest: MIN_DIGEST },
+            host: 'claude',
+            parentWorkflow: macroId,
+            originatingSubtask: 'T1',
+            parentWorkflowPath: macroPath,
+          });
+          await setFrontmatter(childPath, (fm) => {
+            fm.current_phase = 'summary-complete';
+            fm.terminal_marker = true;
+          });
+          const newHead = makeAdvanceCommit(repoRoot);
+          const stderrBuf = [];
+          const result = await stop(childPath, repoRoot, newHead, stderrBuf);
+          strictEqual(result.archived, true, stderrBuf.join(''));
+          ok((await readFile(macroPath, 'utf8')).includes(`### engineer terminal: "T1" @ ${childId} ${newHead}`), stderrBuf.join(''));
+        } finally {
+          await rm(elsewhere, { recursive: true, force: true });
+        }
+      });
+    });
+
     it('with the P10 marker set but no note (a crash between the two), still writes the note', async () => {
       await withRepo(async ({ repoRoot, baselineHead }) => {
         const { macroPath, macroId } = await bootstrapMacroPlan(repoRoot, 'T1');

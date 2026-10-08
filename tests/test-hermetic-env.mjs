@@ -41,6 +41,18 @@ describe('npm test runs every test file without the operator\'s agentic session 
     strictEqual(isSessionVariable('AGENTIC_EGRESS_REAL_SMOKE'), false);
   });
 
+  // Contract: the dispatch contract /orchestrator:next exports (ADR-0019 §1,
+  // ADR-0067 Decision 3), named here rather than read from the list it checks:
+  // under an autopilot worker these are set, and a test run that inherits them
+  // links its fixtures' workflows to the worker's macro. The path ends in
+  // _PATH, so only its name, not the _ROOT pattern, removes it (ADR-0067
+  // Decision 2).
+  it('the dispatch contract is scrubbed by name', () => {
+    for (const name of ['AGENTIC_PARENT_WORKFLOW', 'AGENTIC_ORIGINATING_SUBTASK', 'AGENTIC_PARENT_WORKFLOW_PATH']) {
+      strictEqual(SESSION_VARIABLES.includes(name), true, name);
+    }
+  });
+
   it('through the npm script, the probe and its child see none of them', () => {
     const r = spawnSync('npm', ['test', '--', PROBE], { cwd: REPO, env: plantedEnv(), encoding: 'utf8' });
     strictEqual(r.status, 0, `${r.stdout}\n${r.stderr}`);
