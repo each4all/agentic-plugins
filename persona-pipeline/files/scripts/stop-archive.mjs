@@ -256,6 +256,8 @@ async function noteTerminalOnParent({ frontmatter, commit, host, repoRoot, stder
     await writebackParent({
       repoRoot,
       parentWorkflowId: frontmatter.parent_workflow,
+      // ADR-0067 Decision 3 — tried first; absent on an older child.
+      parentWorkflowPath: frontmatter.parent_workflow_path,
       originatingSubtaskId: frontmatter.originating_subtask,
       engineerWorkflowId: frontmatter.workflow_id,
       commit,

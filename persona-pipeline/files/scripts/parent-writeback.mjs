@@ -29,12 +29,17 @@
 //      cache is versioned and manifest-verified; the Codex marketplace clone
 //      (~/.codex/.tmp/marketplaces/…) tracks the repository's main branch
 //      and is never a candidate (ADR-0061 §Decision 3).
-//   2. Resolve the parent workflow file path under canonical
+//   2. Resolve the parent workflow file: the child's recorded
+//      `parent_workflow_path` first, when it names a file (ADR-0067
+//      Decision 3), else the candidates, canonical
 //      `<repoRoot>/.agentic-plugins/state/orchestrator/workflows/<parent>.md`
 //      or legacy `<repoRoot>/.claude/agentic-orchestrator/workflows/<parent>.md`.
-//      Apply the ADR-0019 §4 step 3 archive-fallback rule when the
-//      parent has already been moved to `archive/` (skip + stderr
-//      warning, do NOT throw — host stop lifecycle must not be blocked).
+//      The file found must carry the parent's workflow id, and must be the
+//      only one: a second copy refuses the writeback. The orchestrator is
+//      handed the file it physically is, never a symlink to it. Apply the ADR-0019 §4
+//      step 3 archive-fallback rule when the parent has already been moved to
+//      `archive/` (skip + stderr warning, do NOT throw — host stop lifecycle
+//      must not be blocked).
 //   3. Spawn the orchestrator state.mjs `subtask-engineer-terminal` CLI
 //      (ADR-0062). It checks existence, ownership and terminal states and
 //      writes the note under its own parent per-file lock — §6 lock-order
@@ -55,7 +60,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { stat, readdir, readFile as fsReadFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
-import { join, isAbsolute, resolve, dirname, basename, relative } from 'node:path';
+import { join, isAbsolute, resolve, dirname, basename, relative, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { personaName } from './lib/persona.mjs';
@@ -363,6 +368,163 @@ function parentFileBasename(parentWorkflowId) {
   return `${parentWorkflowId}.md`;
 }
 
+// An archived macro keeps its name, or gains `-<isoCompact>-<rand>` when
+// archiveWorkflow meets a collision. Only those two forms count: a macro whose
+// id merely starts with this one is another macro.
+function isArchivedName(name, parentWorkflowId) {
+  return name === parentFileBasename(parentWorkflowId)
+    || (name.startsWith(`${parentWorkflowId}-`) && name.endsWith('.md'));
+}
+
+/**
+ * What is wrong with a recorded `parent_workflow_path` as a path, before any
+ * file is read (ADR-0067 Decision 3): it must be absolute and normalized, be
+ * named `<parent_workflow>.md`, and sit in an orchestrator `workflows/` home.
+ * `null` when it is well formed.
+ */
+export function parentPathShapeProblem(path, parentWorkflowId) {
+  if (typeof path !== 'string' || path.length === 0) return 'it is not a non-empty string';
+  if (!isAbsolute(path)) return 'it is not absolute';
+  if (normalize(path) !== path) return 'it is not normalized';
+  if (basename(path) !== parentFileBasename(parentWorkflowId)) {
+    return `its file name is not ${parentFileBasename(parentWorkflowId)}`;
+  }
+  const dir = dirname(path);
+  if (!ORCH_WORKFLOW_DIR_RELS.some((rel) => dir.endsWith(`${sep}${rel.split('/').join(sep)}`))) {
+    return `it is not in an orchestrator workflows home (${ORCH_WORKFLOW_DIR_RELS.join(' or ')})`;
+  }
+  return null;
+}
+
+// The orchestrator checkout a well-formed macro path belongs to: the
+// directory its workflows home sits in.
+function checkoutOfMacroPath(path) {
+  const dir = dirname(path);
+  for (const rel of ORCH_WORKFLOW_DIR_RELS) {
+    const suffix = `${sep}${rel.split('/').join(sep)}`;
+    if (dir.endsWith(suffix)) return dir.slice(0, -suffix.length);
+  }
+  return null;
+}
+
+/**
+ * What a path names: `{ kind: 'file' }`, `{ kind: 'absent' }` (nothing there:
+ * the macro moved or was archived), or `{ kind: 'unreadable', why }` — not a
+ * regular file, or a stat that failed for another reason (a permission, an
+ * I/O error, a symlink loop). Only absence may send the search elsewhere: a
+ * target that cannot be inspected is refused, never read as missing.
+ */
+async function probePath(path) {
+  try {
+    const st = await stat(path);
+    return st.isFile() ? { kind: 'file' } : { kind: 'unreadable', why: 'it is not a regular file' };
+  } catch (err) {
+    if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return { kind: 'absent' };
+    return { kind: 'unreadable', why: `it cannot be inspected (${err.code ?? err.message})` };
+  }
+}
+
+// The two top-level scalars the identity check needs, read the way the
+// orchestrator's parser reads them (plugins/orchestrator/scripts/state.mjs
+// parseWorkflowFile and parseScalar): the file opens with `---\n` and the
+// frontmatter closes at `\n---\n`; a key runs to the first colon and one space
+// after it is dropped; a value starting with `"` is JSON, anything else is
+// the text as written. Indented lines belong to nested blocks and are
+// skipped. A key written twice is refused: the orchestrator keeps the last,
+// and a check that read another one would approve a file it then writes as a
+// different macro. `{ fields }` or `{ problem }`.
+const IDENTITY_KEYS = ['workflow_id', 'workflow_type'];
+
+function macroIdentityFields(text) {
+  if (!text.startsWith('---\n')) return { problem: 'its frontmatter does not open with "---"' };
+  const after = text.slice(4);
+  const close = after.indexOf('\n---\n');
+  if (close === -1) return { problem: 'its frontmatter does not close with "---"' };
+  const fields = {};
+  for (const line of after.slice(0, close).split('\n')) {
+    if (line === '' || line.startsWith(' ')) continue;
+    const colon = line.indexOf(':');
+    if (colon === -1) continue;
+    const key = line.slice(0, colon);
+    if (!IDENTITY_KEYS.includes(key)) continue;
+    if (Object.hasOwn(fields, key)) return { problem: `its frontmatter sets ${key} more than once` };
+    let rest = line.slice(colon + 1);
+    if (rest.startsWith(' ')) rest = rest.slice(1);
+    if (rest.startsWith('"')) {
+      try {
+        fields[key] = JSON.parse(rest);
+      } catch {
+        return { problem: `its ${key} is not a readable string` };
+      }
+    } else {
+      fields[key] = rest;
+    }
+  }
+  return { fields };
+}
+
+/**
+ * Whether the existing file at `path` is the active orchestrator macro
+ * `parentWorkflowId`: the file it physically is sits in an orchestrator
+ * `workflows/` home under the macro's name (so a symlinked file or directory
+ * cannot route the writeback into `archive/` or elsewhere), and its
+ * frontmatter has that `workflow_id` and `workflow_type: macro`.
+ * `{ physical }`, the file it physically is, when it is, else `{ problem }`.
+ * The identity is read from `physical`, the file the writeback then hands
+ * the orchestrator.
+ */
+async function inspectMacroFile(path, parentWorkflowId) {
+  let physical;
+  try {
+    physical = realpathSync(path);
+  } catch (err) {
+    return { problem: `it cannot be resolved (${err.code ?? err.message})` };
+  }
+  const shape = parentPathShapeProblem(physical, parentWorkflowId);
+  if (shape) return { problem: `the file it resolves to, ${physical}: ${shape}` };
+  let text;
+  try {
+    text = await fsReadFile(physical, 'utf8');
+  } catch (err) {
+    return { problem: `it cannot be read (${err.code ?? err.message})` };
+  }
+  const { fields, problem } = macroIdentityFields(text);
+  if (problem) return { problem };
+  if (fields.workflow_id !== parentWorkflowId) {
+    return { problem: `its workflow_id is ${JSON.stringify(fields.workflow_id ?? null)}, not ${JSON.stringify(parentWorkflowId)}` };
+  }
+  if (fields.workflow_type !== 'macro') {
+    return { problem: `its workflow_type is ${JSON.stringify(fields.workflow_type ?? null)}, not "macro"` };
+  }
+  return { physical };
+}
+
+/**
+ * The create-time check of `parent_workflow_path` (ADR-0067 Decision 3): the
+ * path is well formed and names an existing orchestrator macro file whose
+ * `workflow_id` is `parentWorkflowId`. `null` when it passes, else what is
+ * wrong. The persona's `state.mjs create` calls it; the writeback runs the
+ * same checks when the recorded path names a file.
+ */
+export async function checkParentWorkflowPath(path, parentWorkflowId) {
+  const shape = parentPathShapeProblem(path, parentWorkflowId);
+  if (shape) return shape;
+  const probe = await probePath(path);
+  if (probe.kind === 'absent') return 'it names no file';
+  if (probe.kind === 'unreadable') return probe.why;
+  return (await inspectMacroFile(path, parentWorkflowId)).problem ?? null;
+}
+
+// The physical file a path names, so one file reached by two spellings (a
+// symlinked checkout) counts once.
+function physicalPath(path) {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
 /**
  * Tell the orchestrator macro identified by `parentWorkflowId` that the
  * engineer workflow owning `originatingSubtaskId` reached its terminal
@@ -374,6 +536,17 @@ function parentFileBasename(parentWorkflowId) {
  * wrapper.
  *
  * Failure modes — none throw past the caller:
+ *   - the recorded `parent_workflow_path` is malformed, or names a file that
+ *     is not this macro → `{ok:false, skipped:true,
+ *     reason:'parent-path-invalid'}`; the candidates are not searched
+ *   - the recorded path or a candidate cannot be inspected (a permission,
+ *     an I/O error, not a regular file) → `{ok:false, skipped:true,
+ *     reason:'parent-unreadable'}`; it is never read as missing
+ *   - more than one file holds the macro's id (the recorded path's, a
+ *     candidate, or the other home of the recorded path's checkout) →
+ *     `{ok:false, skipped:true, reason:'parent-ambiguous'}`
+ *   - the one candidate found is not this macro → `{ok:false, skipped:true,
+ *     reason:'parent-id-mismatch'}`
  *   - parent file missing from workflows/ but present in archive/ →
  *     `{ok:false, skipped:true, reason:'parent-archived'}`
  *   - parent file missing from BOTH workflows/ and archive/ →
@@ -393,6 +566,10 @@ function parentFileBasename(parentWorkflowId) {
  * @param {string}  args.repoRoot — absolute path to the repo whose
  *   canonical or legacy orchestrator state tree holds the parent workflow
  * @param {string}  args.parentWorkflowId
+ * @param {?string} [args.parentWorkflowPath] — the child's recorded
+ *   `parent_workflow_path` (ADR-0067 Decision 3), absent on a child created
+ *   without one (an older orchestrator or persona). Tried first when it
+ *   names a file; otherwise the candidates under `repoRoot` are searched.
  * @param {string}  args.originatingSubtaskId
  * @param {string}  args.engineerWorkflowId — owner id (must match the
  *   `engineer_workflow_id` already recorded on the subtask, if set)
@@ -413,6 +590,7 @@ function parentFileBasename(parentWorkflowId) {
 export async function writebackParent({
   repoRoot,
   parentWorkflowId,
+  parentWorkflowPath = null,
   originatingSubtaskId,
   engineerWorkflowId,
   commit,
@@ -435,6 +613,11 @@ export async function writebackParent({
   requireString('engineerWorkflowId', engineerWorkflowId);
   requireString('commit', commit);
   requireString('host', host);
+  // A frontmatter key is absent or a non-empty string (the parser checks it),
+  // so anything else here is a caller's mistake.
+  if (parentWorkflowPath !== null && parentWorkflowPath !== undefined) {
+    requireString('parentWorkflowPath', parentWorkflowPath);
+  }
 
   // Reject any parent_workflow id that is not a basename-shaped
   // single path component. An id like `../archive/<other>` would
@@ -462,32 +645,108 @@ export async function writebackParent({
   }
 
   // ---------------------------------------------------------------------------
-  // Step 1 — resolve parent file path. Check canonical then legacy
-  // workflows/ first; on miss fall back to both archive/ homes. The
-  // ADR-0019 §4 step 3 rule says: if the parent is in archive/, emit
-  // a stderr warning and skip without touching the frozen state.
-  let resolvedParentPath = null;
-  for (const dir of orchWorkflowDirs(repoRoot)) {
-    const candidatePath = join(dir, parentFileBasename(parentWorkflowId));
-    if (await fileExists(candidatePath)) {
-      resolvedParentPath = candidatePath;
-      break;
+  // Step 1 — resolve the parent file (ADR-0067 Decision 3). The recorded
+  // path is checked as create checked it, and when it names a file it is
+  // the macro or nothing: a path that names the wrong file is not repaired
+  // by guessing. When no path is recorded, or the path names no file (the
+  // macro moved, or was archived), the candidates are searched: canonical
+  // then legacy workflows/ under repoRoot. On every path the file found must
+  // carry the parent's id, and no second copy may exist. When none is found,
+  // fall back to the archive/ homes: the ADR-0019 §4 step 3 rule says that
+  // if the parent is in archive/, emit a stderr warning and skip without
+  // touching the frozen state.
+  const recordedPath = parentWorkflowPath ?? null;
+  if (recordedPath !== null) {
+    const shape = parentPathShapeProblem(recordedPath, parentWorkflowId);
+    if (shape) {
+      stderr.write(
+        `${personaName()}/parent-writeback: WARN the recorded parent_workflow_path ` +
+        `${JSON.stringify(recordedPath)} is not a macro path for parent_workflow=${parentWorkflowId}: ` +
+        `${shape}. Skipping writeback; reconcile via /orchestrator:done.\n`,
+      );
+      return { ok: false, skipped: true, reason: 'parent-path-invalid' };
     }
   }
+  const unreadable = (path, why) => {
+    stderr.write(
+      `${personaName()}/parent-writeback: WARN ${path}, where macro ${parentWorkflowId} would be, ` +
+      `cannot be judged: ${why}. Skipping writeback rather than read it as missing; ` +
+      `reconcile via /orchestrator:done.\n`,
+    );
+    return { ok: false, skipped: true, reason: 'parent-unreadable' };
+  };
+  const recordedProbe = recordedPath === null ? null : await probePath(recordedPath);
+  if (recordedProbe?.kind === 'unreadable') return unreadable(recordedPath, recordedProbe.why);
+  const recordedNamesFile = recordedProbe?.kind === 'file';
+  let recordedPhysical = null;
+  if (recordedNamesFile) {
+    const { physical, problem } = await inspectMacroFile(recordedPath, parentWorkflowId);
+    if (problem) {
+      stderr.write(
+        `${personaName()}/parent-writeback: WARN the recorded parent_workflow_path ${recordedPath} ` +
+        `is not macro ${parentWorkflowId}: ${problem}. Skipping writeback without searching ` +
+        `elsewhere (ADR-0067 Decision 3); reconcile via /orchestrator:done.\n`,
+      );
+      return { ok: false, skipped: true, reason: 'parent-path-invalid' };
+    }
+    recordedPhysical = physical;
+  }
+  // Every file that holds the macro's id, one entry per physical file: the
+  // recorded path's, and those in the workflows homes of repoRoot and of the
+  // checkout the recorded path names (its other home too: a second copy there
+  // is as stale as one under repoRoot).
+  const recordedCheckout = recordedPath === null ? null : checkoutOfMacroPath(recordedPath);
+  const homes = [...orchWorkflowDirs(repoRoot), ...(recordedCheckout === null ? [] : orchWorkflowDirs(recordedCheckout))];
+  const copies = new Map();
+  if (recordedPhysical !== null) copies.set(recordedPhysical, recordedPath);
+  for (const dir of homes) {
+    const candidatePath = join(dir, parentFileBasename(parentWorkflowId));
+    const probe = await probePath(candidatePath);
+    if (probe.kind === 'absent') continue;
+    if (probe.kind === 'unreadable') return unreadable(candidatePath, probe.why);
+    const physical = physicalPath(candidatePath);
+    if (!copies.has(physical)) copies.set(physical, candidatePath);
+  }
+  if (copies.size > 1) {
+    stderr.write(
+      `${personaName()}/parent-writeback: WARN parent_workflow=${parentWorkflowId} is held by ` +
+      `${copies.size} files (${[...copies.values()].join(', ')}). Refusing the writeback rather ` +
+      `than pick one (ADR-0067 Decision 3): remove the stray copy, then reconcile via ` +
+      `/orchestrator:done.\n`,
+    );
+    return { ok: false, skipped: true, reason: 'parent-ambiguous' };
+  }
+  // The orchestrator is handed the physical file the identity was read from,
+  // never a spelling through a symlink: it locks and atomically replaces the
+  // path it is given, so a symlinked macro file would be replaced by a copy
+  // while the macro stayed unchanged — a second writable copy, the fork
+  // ADR-0067 Decision 4 exists to prevent.
+  let resolvedParentPath = recordedPhysical;
+  if (resolvedParentPath === null && copies.size === 1) {
+    const [candidatePath] = copies.values();
+    const { physical, problem } = await inspectMacroFile(candidatePath, parentWorkflowId);
+    if (problem) {
+      stderr.write(
+        `${personaName()}/parent-writeback: WARN ${candidatePath} is not macro ` +
+        `${parentWorkflowId}: ${problem}. Skipping writeback; reconcile via /orchestrator:done.\n`,
+      );
+      return { ok: false, skipped: true, reason: 'parent-id-mismatch' };
+    }
+    resolvedParentPath = physical;
+  }
   if (!resolvedParentPath) {
-    // Check archive/ — best-effort exact-name match. ADR-0019 §4 step
+    // Check archive/ — best-effort name match. ADR-0019 §4 step
     // 3 only requires us to detect the archived case and skip; the
-    // helper does not need to do anything with the archived file.
+    // helper does not need to do anything with the archived file. The
+    // recorded path's own checkout is looked at too, so a macro archived in
+    // another checkout reads as archived rather than dangling.
+    const archiveDirs = orchArchiveDirs(repoRoot);
+    if (recordedCheckout !== null) archiveDirs.push(...orchArchiveDirs(recordedCheckout));
     let archived = false;
-    for (const dir of orchArchiveDirs(repoRoot)) {
-      const archivedExact = join(dir, parentFileBasename(parentWorkflowId));
-      archived = await fileExists(archivedExact);
-      if (archived) break;
-      // archiveWorkflow appends `-<isoCompact>-<rand>.md` on collision —
-      // scan archive/ for any file whose name starts with the workflow id.
+    for (const dir of archiveDirs) {
       try {
         const archiveEntries = await readdir(dir);
-        archived = archiveEntries.some((name) => name.startsWith(parentWorkflowId));
+        archived = archiveEntries.some((name) => isArchivedName(name, parentWorkflowId));
         if (archived) break;
       } catch {
         // archive dir absent → not archived
@@ -504,6 +763,7 @@ export async function writebackParent({
       `${personaName()}/parent-writeback: WARN dangling parent linkage — ` +
       `parent_workflow=${parentWorkflowId} was set on this ${personaName()} workflow but the ` +
       `file does NOT exist in either canonical or legacy orchestrator workflow/archive homes ` +
+      `${recordedPath === null ? '' : `nor at the recorded parent_workflow_path ${recordedPath} `}` +
       `(possible data integrity issue — orchestrator workflow may have been ` +
       `manually deleted or never existed). Skipping writeback; reconcile via ` +
       `/orchestrator:done if the parent is recoverable.\n`,
@@ -571,6 +831,11 @@ export async function writebackParent({
     `--subtask-id=${originatingSubtaskId}`,
     `--engineer-workflow-id=${engineerWorkflowId}`,
     `--branch-commit=${commit}`,
+    // ADR-0067 Decision 3 — the orchestrator checks the id again on the read
+    // it makes under the macro's lock, with its own parser. An orchestrator
+    // from before the flag ignores it, as its CLI ignores any flag it does
+    // not read.
+    `--expect-workflow-id=${parentWorkflowId}`,
     `--event=updated`,
   ];
 

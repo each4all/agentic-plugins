@@ -75,6 +75,9 @@ STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum 
 # it sets AGENTIC_PARENT_WORKFLOW + AGENTIC_ORIGINATING_SUBTASK so
 # the create-time bootstrap records the immutable parent linkage.
 # Both must be set together (or both absent for direct invocation).
+# ADR-0067 Decision 3 — it also sets AGENTIC_PARENT_WORKFLOW_PATH, the
+# macro file's absolute path, recorded beside them; an older orchestrator
+# sets none. The path is valid only with both ids.
 PARENT_ARGS=()
 if [ -n "${AGENTIC_PARENT_WORKFLOW:-}" ] || [ -n "${AGENTIC_ORIGINATING_SUBTASK:-}" ]; then
   if [ -z "${AGENTIC_PARENT_WORKFLOW:-}" ] || [ -z "${AGENTIC_ORIGINATING_SUBTASK:-}" ]; then
@@ -82,6 +85,12 @@ if [ -n "${AGENTIC_PARENT_WORKFLOW:-}" ] || [ -n "${AGENTIC_ORIGINATING_SUBTASK:
     exit 1
   fi
   PARENT_ARGS=(--parent-workflow "$AGENTIC_PARENT_WORKFLOW" --originating-subtask "$AGENTIC_ORIGINATING_SUBTASK")
+  if [ -n "${AGENTIC_PARENT_WORKFLOW_PATH:-}" ]; then
+    PARENT_ARGS+=(--parent-workflow-path "$AGENTIC_PARENT_WORKFLOW_PATH")
+  fi
+elif [ -n "${AGENTIC_PARENT_WORKFLOW_PATH:-}" ]; then
+  echo "✗ AGENTIC_PARENT_WORKFLOW_PATH is set without AGENTIC_PARENT_WORKFLOW and AGENTIC_ORIGINATING_SUBTASK (ADR-0067 Decision 3: the macro path is valid only with both ids). This usually indicates a dispatcher bug, or a variable left over from another session; unset it, or set all three." >&2
+  exit 1
 fi
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
   --repo-root "$REPO_ROOT" \
