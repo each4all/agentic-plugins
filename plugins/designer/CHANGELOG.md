@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.4.2...plugin-designer-v0.5.0) (2026-10-08)
+
+
+### Features
+
+* **plugin/designer:** know ADR-0067's parent_workflow_path key in the shared persona scripts ([ffd0e91](https://github.com/each4all/agentic-plugins/commit/ffd0e91a0f93cf66bb8abbe616e92f83ada60cb6))
+
 ## [0.4.2](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.4.1...plugin-designer-v0.4.2) (2026-10-07)
 
 
