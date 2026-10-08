@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.24.9...plugin-engineer-v0.25.0) (2026-10-08)
+
+
+### Features
+
+* **plugin/engineer:** record the macro file's path and write back through it (ADR-0067 PL) ([1fd1bcf](https://github.com/each4all/agentic-plugins/commit/1fd1bcf6b7517a69629d990f6a2145905ceafbf5))
+
 ## [0.24.9](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.24.8...plugin-engineer-v0.24.9) (2026-10-07)
 
 
