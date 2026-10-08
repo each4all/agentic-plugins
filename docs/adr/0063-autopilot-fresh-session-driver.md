@@ -19,6 +19,12 @@ Accepted (2026-09-29, owner decision).
     `plugins/runtime/docs/session-capture-contract.md` that carries it.
   - Cascade item 6 therefore amends ADR-0045 §5, and §Context and §References
     cite §5.
+- Amended by [ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md)
+  (2026-10-08): R2's halt wording; D1's worktree-lanes clause; D3's
+  `/orchestrator:next` row and D4's proceed rules 1, 2, 4 and 5, per lane;
+  D4's gate enum, its `version-drift` and `budget` halt rows and its Lanes
+  paragraph; D5's Spawn paragraph and Env; D8's ledger location, run
+  directory list and Lock bullet.
 
 <!--
 Adds one named effect domain — S1, owner-launched fresh-session spawn —
@@ -65,7 +71,7 @@ system already computes. Two gaps sit at the root:
 | id | requirement |
 |----|-------------|
 | R1 | Each step runs in a **truly fresh context**. No compaction-based continuation: the owner's primary concern is context contamination. Carry-over happens only through curated durable state. |
-| R2 | At a genuine judgment point the run **halts**, and reports it: terminal + `halt.json` + exit code 2. It does not keep other subtasks running. With parallel lanes (W2, 2026-09-25) the halt **drains**: in-flight steps finish, and then everything stops. A subtask that waits for its PR to land is not a judgment point (D3a). |
+| R2 | At a genuine judgment point the run **halts**, and reports it: terminal + `halt.json` + exit code 2. Nothing starts after the halt. With parallel lanes ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decision 6) the halt **drains**: no new lane or step starts, steps already running finish and are recorded, then every lane reports once. A subtask that waits for its PR to land is not a judgment point (D3a). |
 | R3 | **Claude-only.** Codex parity is not required (Claude adapter, documented non-parity). |
 | R4 | `decide` results are auto-accepted **unless** the ensemble verdict is CONFLICT or confidence is below HIGH. |
 | R5 | **Deterministic control.** The driver never synthesizes a command from free text. Commands come only from closed enums in state (same principle as entry-brief R0). |
@@ -212,18 +218,33 @@ the owner's repo. The safety argument rests on seven properties:
   ledger files), post-verify, semantic failure classes, no mutation of
   sandbox/approval/auth/trust/active-session state, and documented
   partial-failure recovery.
-- **Worktree lanes (W1; the exact scope waits on W4 and W8).** S1 is meant to
-  cover, for the macro being driven, creating and removing lane worktrees
-  (`git worktree add/remove/prune`) under `<parent>/<repo>-lanes/<macro-id>/`.
-  - Never on the owner's checkout, never a push.
-  - The runtime executor guard still forbids these for runtime; the
-    orchestrator adapter performs them.
-  - Interactive phase 2 adds owner-invoked background lane sessions
-    (`claude --bg`, launched by `/orchestrator:next --parallel`).
-  - The 2026-09-25 draft also authorized a driver merge into a local
-    `integration/<macro-id>` branch. That clause is **held**: under ADR-0062 and
-    D3a a local merge completes nothing. The lanes track re-asks W4 (how results
-    integrate) before it starts, and amends this clause then.
+- **Worktree lanes ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md)).**
+  S1 also covers, for the macro being driven and only for lanes the driver
+  created (proven by the lock reason, or for an unlocked lane by an open
+  removal intent that names its lane id, ADR-0067 Decision 5):
+  - `git fetch --no-tags --refmap= origin +refs/heads/<baseline>:refs/remotes/origin/<baseline>`
+    at the start of a run with lanes and before it creates a lane, which
+    writes only that remote-tracking ref (and `FETCH_HEAD`);
+  - `git worktree add --lock --reason "agentic-autopilot <macro-id> <subtask-id>"`
+    under `<parent>/<repo>-lanes/<macro-id>/`. When the subtask branch is
+    absent it creates it with `--no-track -b <branch>` from
+    `refs/remotes/origin/<baseline>`, as `/orchestrator:next` would: the one
+    branch S1 creates;
+  - `git worktree lock`, `unlock` and `remove` (never `--force`) for those
+    lanes.
+
+  The lane operations above never touch a worktree the driver did not
+  create. For lanes S1 grants no `git worktree prune` (prune has no path
+  selector, so the owner prunes), no push, no merge, and no ref write but
+  the lane fetch's (its remote-tracking ref and `FETCH_HEAD`) and a new
+  lane's branch. D3a's landing fetch is unchanged. The runtime executor
+  guard still forbids the operations above for runtime; the orchestrator
+  adapter performs them. There is no local integration branch (ADR-0067
+  L1). Interactive lane sessions (`claude --bg`) are left to a later ADR.
+
+  In every run, serial or with lanes, S1 also covers the read-only overlap
+  check `git merge-tree --write-tree` (ADR-0067 Decision 7), which writes no
+  ref.
 
 Runtime is **not** granted S1. Runtime's §4 ceiling, including "hidden host
 startup", is unchanged.
@@ -254,7 +275,7 @@ One **step** = one command executed in one fresh `claude` process.
 
 | step command | when | notes |
 |---|---|---|
-| `/orchestrator:next` | macro approved, a subtask is ready, no active engineer child | dispatch + the subtask's first verb in the same process (ADR-0019 §1 requires the exports + Phase 0 + Phase 4 in one process) |
+| `/orchestrator:next` | macro approved, a subtask is ready, no active engineer child (with lanes, [ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decision 6: none on that subtask, which gets its own lane) | dispatch + the subtask's first verb in the same process (ADR-0019 §1 requires the exports + Phase 0 + Phase 4 in one process) |
 | `/engineer:<verb>` | active engineer child with `next_step.kind=verb`, `confidence=HIGH` | reattaches (append-on-resume) |
 | `/engineer:commit` | `next_step.kind ∈ {commit, done}`, `confidence=HIGH` | New verb-chain commit surface (Q1, D2; plugin change spec §1.8). `done` routes here too: with nothing staged it archives the workflow instead of committing (the no-changes close). It lands together with "autopilot verbs skip `set-terminal`". |
 | `/orchestrator:done <id>` | a committed subtask whose PR has merged (`state.mjs resolve-landing` ok), or `--no-commit` after a no-changes close | records completion (ADR-0062); successors unblock (D3a) |
@@ -311,15 +332,21 @@ view is:
 - git branch / HEAD / clean.
 
 **Proceed** only when **all** of the following hold:
-1. The observer yields exactly one command from the D3 step table. It comes from
-   an entry-brief `disposition=lead` with an allowlisted command, or from
-   engineer `next_step`, or from next-ready.
-2. No `awaiting_owner` is set on the macro or on the active engineer workflow.
+1. The observer yields exactly one command from the D3 step table: one in a
+   serial run, and one per lane with lanes
+   ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decision 6).
+   It comes from an entry-brief `disposition=lead` with an allowlisted
+   command, or from engineer `next_step`, or from next-ready.
+2. No `awaiting_owner` is set on the macro or on the active engineer
+   workflow (with lanes, on the lane's).
 3. `plan_approval.status=approved` and `plan_approval.plan_hash` matches the
    current `subtasks[]`.
-4. For `/orchestrator:next` only: the working tree is clean.
-5. The state fingerprint changed since the previous step. The first iteration is
-   exempt.
+4. For `/orchestrator:next` only: the working tree it runs in is clean (with
+   lanes, the lane's).
+5. The state fingerprint changed since the previous step: with lanes, a
+   lane's fingerprint since that lane's previous step, while `/orchestrator:done`
+   and `/orchestrator:finalize` keep the macro-wide one. The first iteration
+   is exempt, and with lanes each lane's first step.
 6. Budgets remain: iterations, total cost, wall clock.
 
 **Halt** reason codes (closed set):
@@ -338,13 +365,15 @@ view is:
 | `permission-denied` | the worker hit a denied tool it needed (from `permission_denials`) and made no progress |
 | `compaction-imminent` | a PreCompact hook event appears in the worker stream (the step is aborted) |
 | `step-oversized` | the step's peak context exceeds the oversize threshold (D7) |
-| `budget` | iteration, cost or time cap reached |
-| `version-drift` | installed plugin versions changed since the run started |
+| `budget` | iteration, cost or time cap reached, or a rate-limit window that cannot reopen before the deadline ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decision 6) |
+| `version-drift` | installed plugin versions changed since the run started, or the content of a loaded plugin or a pinned script root did ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decision 8) |
 | `interrupted` | SIGINT/SIGTERM from the owner |
 
 **`awaiting_owner.gate`** is a closed enum of genuine-judgment gates only:
 `plan-approval`, `plan-conflict`, `scope-routing`, `decide-conflict`,
-`recurring-finding`, `staging-set`, `pr-handling`, `duplicate-workflow`, `merge-conflict` (lanes; stored on the macro, see `design/worktree-parallel.md` §4.3). The
+`peer-conflict` ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md)
+Decision 8: a conflict verdict in critique or investigate),
+`recurring-finding`, `staging-set`, `pr-handling`, `duplicate-workflow`. The
 source of each gate is mapped in DESIGN §6.3.
 
 **Ceremony gates** auto-pass while `AGENTIC_AUTOPILOT` is set:
@@ -363,12 +392,18 @@ The same gates stay interactive when a human drives.
 
 **Lanes (W2).** Any lane halt drains the run: no new lane or step starts,
 in-flight steps finish, then every lane reports once. SIGINT/SIGTERM aborts
-without draining.
+without draining. Scheduling, the per-lane fingerprint, budgets and the
+throttle: [ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md)
+Decision 6.
 
 ### D5. Worker contract
 
-**Spawn.** An argv array, never a shell string. cwd is the repo root, and stdin
-is a pipe:
+**Spawn.** An argv array, never a shell string. cwd is the checkout the step
+runs in: in a serial run the driven worktree; with lanes, the subtask's lane
+for dispatch, verbs and commit, and the driver's own checkout for done and
+finalize
+([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decision 5).
+stdin is a pipe:
 
 ```
 claude -p --input-format stream-json --output-format stream-json --verbose
@@ -389,6 +424,10 @@ claude -p --input-format stream-json --output-format stream-json --verbose
     `plugins/engineer/scripts/parent-writeback.mjs:60`);
   - `AGENTIC_ENGINEER_ROOT`;
   - `AGENTIC_RUNTIME_ROOT`.
+- `AGENTIC_STATE_BASE=<the run's effective state root>` and
+  `AGENTIC_AUTOPILOT_TOKEN=<the run's admission secret>`
+  ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decisions 2
+  and 4). An inherited value of either is scrubbed first.
 - Scrubbed:
   - the launching session's identity (`CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`,
     `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_MESSAGING_*`,
@@ -478,7 +517,12 @@ content lands with the implementing pull requests.
 
 ### D8. Ledger and halt signal
 
-Everything lives under `<repo>/.agentic-plugins/runs/autopilot/<run-id>/`:
+A run's records live under `<repo>/.agentic-plugins/runs/autopilot/<run-id>/`
+in the checkout it was launched in. The macro-scoped files live under the
+main worktree's `.agentic-plugins/runs/autopilot/` instead: the lock, the
+landing log, the lane removal intents and the open-run records
+([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decisions 5,
+6 and 7). The run directory holds:
 - `run.json`: config, pinned plugin versions, git baseline, start/end, final status.
 - `steps.jsonl`: one line per step with:
   - seq, command, session_id, timings, exit, is_error;
@@ -487,11 +531,21 @@ Everything lives under `<repo>/.agentic-plugins/runs/autopilot/<run-id>/`:
 - `worker-<seq>.jsonl`: the raw stream, pointer-referenced only, with bounded
   retention.
 - `halt.json`: reason code, pointers to the blocking file + field, resume hint.
+- `lanes.jsonl`: with lanes, one line per lane event — created, adopted,
+  removed, kept, reconciled ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md)
+  Decision 6).
 
 Other rules:
 - **Lock.** One run per macro: `<main>/.agentic-plugins/runs/autopilot/locks/<macro-id>.lock`,
-  with a pid + start-time fingerprint. The serial prototype keeps a per-repo
-  `.lock`.
+  with a pid + start-time fingerprint. A run also holds the worktree lock of
+  every checkout it drives, `<checkout>/.agentic-plugins/runs/autopilot/worktree.lock`:
+  its own, and with lanes each lane's. With lanes a run adds one entry per
+  worker group in flight, so a driver that died with a lane worker alive
+  still holds its locks. The interactive orchestrator commands join the
+  macro lock as admission entries, live until released, and
+  `/orchestrator:next` first joins the worktree lock of its checkout
+  ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decisions 4
+  and 6).
 - **Resume a halted step interactively:** `claude --resume <session_id>`.
 - **Halt signal:** terminal output + `halt.json` + exit code 2. There is no plugin
   notification: the notification feature is removed ([ADR-0064](0064-runtime-surface-reduction.md), proposed alongside).

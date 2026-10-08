@@ -11,6 +11,9 @@ Accepted
 > measured cause is that a Codex skill mention has no plugin-root variable
 > in its environment. The scope-out itself stands.
 
+> Amended 2026-10-08 by [ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md)
+> — see the note at the end of §3.
+
 ## Context
 
 The engineer plugin's six-verb decomposition (ADR-0010 §2) gave each
@@ -223,6 +226,19 @@ single source of axis truth; no second axis list is created.
 > kind=verb) and `next_step_confidence` (`HIGH | MEDIUM | LOW`). Confidence
 > otherwise has no durable home. Machine consumers read only the closed-enum keys
 > and never parse `next_action`.
+
+> **Amendment ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md)):**
+> the six fields and the closed-enum projection are unchanged. On a synthesis
+> verdict of `conflict` in decide, critique, investigate or orchestrator
+> plan-verify, `selected_next` is the owner's decision after a bounded
+> consensus round, `next_command` is `/runtime:consensus plan --task-file <the
+> verb's contested-items file> --peers claude,codex --max-rounds 2`, and "the
+> owner decides now" is a rejected alternative; the projection stays
+> `owner-decision`, and critique and investigate record the `peer-conflict`
+> gate. Orchestrator plan and approve completions may add one display-only
+> line after the six fields, `lane_advice`, derived from the plan's
+> dependency graph each time; it is never projected into `next_step` and
+> never read by a machine.
 
 ### §4 — Implementation roadmap (trigger-driven, not a committed timeline)
 
