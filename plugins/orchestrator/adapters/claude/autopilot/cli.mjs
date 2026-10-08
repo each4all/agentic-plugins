@@ -326,7 +326,7 @@ async function statusCmd(o, repoRoot, out, err) {
     ? (live ? 'running' : 'gone (the driver exited without recording an end: it crashed or was killed)')
     : r.run.status;
   if (o.json) {
-    out(JSON.stringify({ run: r.run, steps: r.steps, halt: r.halt, live }, null, 2));
+    out(JSON.stringify({ run: r.run, steps: r.steps, landing: r.landing, halt: r.halt, live }, null, 2));
     return 0;
   }
   out(`${r.run.run_id} · ${liveness} · macro ${r.run.macro_id ?? '-'} · steps ${r.run.steps} · $${Number(r.run.cost_usd ?? 0).toFixed(2)}`);
@@ -334,6 +334,9 @@ async function statusCmd(o, repoRoot, out, err) {
   for (const s of r.steps) {
     const pct = typeof s.peak_pct === 'number' ? ` ${(s.peak_pct * 100).toFixed(1)}%` : '';
     out(`  [${s.seq}] ${s.command} → ${s.outcome ?? (s.event === 'started' ? 'running or interrupted' : '?')}${typeof s.cost_usd === 'number' ? ` · $${s.cost_usd.toFixed(2)}` : ''}${pct} · session ${s.session_id}`);
+  }
+  for (const l of r.landing) {
+    out(`  ◆ landing-ready after [${l.after_seq}]: ${l.subtask_id} on ${l.branch} at ${l.commit ?? 'no commit'} (${l.reason})`);
   }
   if (r.halt) {
     out(`  halt: ${r.halt.reason} — ${r.halt.detail}`);

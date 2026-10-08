@@ -7,8 +7,10 @@
 //
 // FAKE_SCENARIO names a JSON file: { "<subtask>": { "next": [<next_step>…],
 // "file": true|false }, "actions": { "<seq>": "noop"|"edit-plan"|"sleep"|
-// "bump-engineer" } } — `next` is the next step each verb of that subtask
-// records, in order; `file` makes its first verb write a file to commit.
+// "bump-engineer"|"report-failed" } } — `next` is the next step each verb of that subtask
+// records, in order; `file` makes its first verb write a file to commit:
+// `<id>.txt` for true, or the path it names, holding `<id>` either way (two
+// subtasks naming one path conflict).
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -101,7 +103,7 @@ export async function perform({ prompt, cwd, env }) {
     }
     await orch.updateSubtask({ workflowPath: macroPath, subtaskId: id, host: 'claude', status: 'in_progress', engineerWorkflowId: wf });
     if (scenario[id].file) {
-      const rel = `${id.toLowerCase()}.txt`;
+      const rel = typeof scenario[id].file === 'string' ? scenario[id].file : `${id.toLowerCase()}.txt`;
       fs.writeFileSync(path.join(cwd, rel), `${id}\n`);
       await eng.recordComposedFile({ workflowPath: filePath, path: rel, op: 'create' });
     }
@@ -138,6 +140,8 @@ export async function perform({ prompt, cwd, env }) {
       '--workflow-path', active, '--repo-root', cwd, '--host', 'claude'], { cwd, env, encoding: 'utf8' });
     fs.writeFileSync(path.join(path.dirname(env.FAKE_SCENARIO), `phase7-${seq}.json`), JSON.stringify({ status: r.status, stdout: r.stdout, stderr: r.stderr }));
     stopHooks();
+    // The commit landed, but the worker reports failure (worker-failed).
+    if (action === 'report-failed') return { report: { ...plainReport, outcome: 'failed', summary: 'scripted failure after the commit' } };
     return { report: plainReport };
   }
 

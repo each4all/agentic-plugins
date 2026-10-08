@@ -49,8 +49,14 @@ the steps stay manual**, and the host-neutral state it reads (`next_step_*`,
   continues from the state a halt left.
 - **Landing stays the owner's** (ADR-0062, owner decision D23). Workers never push or
   open a pull request — the denylist forbids it, and network pushes fail at the git
-  level in every worker. At an `awaiting-landing` halt the run lists each branch
-  with its push and pull-request commands; after the merge, a relaunch records the
+  level in every worker. Each commit is reported once while the run goes on
+  (ADR-0067 Decision 7): a `◆ landing-ready` line, a ledger record and a line in
+  the main worktree's `.agentic-plugins/runs/autopilot/landing/<macro-id>.jsonl`,
+  with the branch, its commit, the push and pull-request commands, a read-only
+  `git merge-tree` overlap check against the integration branch and the other
+  waiting branches (run in a scratch repository, so no merge driver or
+  attribute of the checkout applies), and an advisory merge order. At an `awaiting-landing` halt
+  the run lists each branch the same way; after the merge, a relaunch records the
   landing and goes on.
 - **Halts** print the reason and its pointer, write
   `.agentic-plugins/runs/autopilot/<run-id>/halt.json` and exit 2;

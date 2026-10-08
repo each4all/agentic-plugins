@@ -353,6 +353,7 @@ function classify(subtask, child, landing) {
       kind: 'waiting',
       waiting: {
         subtaskId: id, branch: subtask.branch, reason: landing.reason, detail: landing.detail ?? '',
+        engineerWorkflowId: child.workflow_id ?? null,
         ...(viaStop ? { note: `${child.workflow_id} was archived by a Stop hook after an interactive ${child.current_phase}; check that ${subtask.branch} carries the work` } : {}),
       },
     };
@@ -371,6 +372,22 @@ function landingList(waiting, integrationBranch) {
     const notes = [w.note, safe ? null : 'the branch name holds characters outside [A-Za-z0-9._/-]; push it by hand'].filter(Boolean);
     return { ...w, commands, note: notes.length ? notes.join('; ') : null };
   });
+}
+
+/**
+ * ADR-0067 Decision 7 — the subtasks committed and not landed, as the
+ * `awaiting-landing` halt lists them: each in_progress subtask whose engineer
+ * workflow is archived terminal, not close-complete, and whose landing check
+ * answered `no_pr` or `not_merged`. The driver's landing-ready event
+ * (landing-ready.mjs) reads this list, so the event and the halt never
+ * disagree about what waits.
+ */
+export function waitingToLand(view) {
+  const waiting = subtasksOf(view).filter((s) => s?.status === 'in_progress')
+    .map((s) => classify(s, view.children?.[s.id], view.landing?.[s.id]))
+    .filter((c) => c.kind === 'waiting')
+    .map((c) => c.waiting);
+  return landingList(waiting, view?.macro?.fm?.git_baseline?.branch ?? null);
 }
 
 // Every live engineer workflow that claims the macro must be the active child
@@ -525,14 +542,13 @@ export function decide(view, ctx = {}) {
     return step('finalize', {});
   }
 
-  const waiting = classified.filter((c) => c.kind === 'waiting').map((c) => c.waiting);
+  const waiting = waitingToLand(view);
   if (waiting.length > 0) {
     const integration = macro.fm?.git_baseline?.branch ?? null;
-    const list = landingList(waiting, integration);
     return halt('awaiting-landing',
       `${waiting.length} subtask(s) wait for their pull request to merge into ${integration}: ` +
         `${waiting.map((w) => `${w.subtaskId} (${w.branch}, ${w.reason})`).join(', ')}`,
-      { waiting: list });
+      { waiting });
   }
 
   if (view.ready?.reason === 'empty_plan') return halt('owner-choice', `macro ${macro.id} has no subtasks`);
