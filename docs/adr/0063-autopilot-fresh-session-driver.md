@@ -19,6 +19,12 @@ Accepted (2026-09-29, owner decision).
     `plugins/runtime/docs/session-capture-contract.md` that carries it.
   - Cascade item 6 therefore amends ADR-0045 §5, and §Context and §References
     cite §5.
+- [ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) (Proposed,
+  2026-10-07) proposes amending R2, D1's worktree-lanes clause, D3's
+  `/orchestrator:next` row and D4's proceed rules (per lane), D4's gate enum,
+  `version-drift` and `budget` halt rows and Lanes paragraph, D5's Spawn
+  paragraph and Env, and D8's ledger location, run directory list and Lock
+  bullet. Nothing here changes until it is accepted.
 
 <!--
 Adds one named effect domain — S1, owner-launched fresh-session spawn —

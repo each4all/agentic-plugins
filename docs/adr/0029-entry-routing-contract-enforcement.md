@@ -11,6 +11,11 @@ Accepted
 > measured cause is that a Codex skill mention has no plugin-root variable
 > in its environment. The scope-out itself stands.
 
+> [ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) (Proposed,
+> 2026-10-07) proposes a §3 note: a conflict verdict selects a bounded
+> consensus round, and orchestrator plan and approve may add a display-only
+> lane-advice line. Nothing here changes until it is accepted.
+
 ## Context
 
 The engineer plugin's six-verb decomposition (ADR-0010 §2) gave each
