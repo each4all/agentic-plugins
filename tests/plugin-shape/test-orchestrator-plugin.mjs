@@ -492,7 +492,7 @@ describe('plugins/orchestrator Claude-only commands', () => {
   it('the autopilot adapter ships its entry and launcher executable, and the rest as modules', async () => {
     const dir = resolve(PLUGIN_ROOT, 'adapters/claude/autopilot');
     const entries = (await readdir(dir)).sort();
-    deepStrictEqual(entries, ['cli.mjs', 'driver.mjs', 'launcher.template.mjs', 'ledger.mjs', 'observe.mjs', 'policy.mjs', 'roots.mjs', 'worker.mjs']);
+    deepStrictEqual(entries, ['cli.mjs', 'driver.mjs', 'landing-ready.mjs', 'launcher.template.mjs', 'ledger.mjs', 'observe.mjs', 'policy.mjs', 'roots.mjs', 'worker.mjs']);
     // Contract: the runbook and the launcher exec these files directly — without the
     // executable bit and a node shebang the exec fails.
     for (const exe of ['cli.mjs', 'launcher.template.mjs']) {

@@ -23,9 +23,20 @@ nothing. A halt prints the reason, writes `halt.json` in the run's ledger
 notification (`--notify-local` adds one local macOS notification).
 
 The driver never pushes, opens or merges a pull request. Landing is the
-owner's: at an `awaiting-landing` halt it lists each branch with the push and
-pull-request commands; after the merge, relaunch, and it records the landing
-with `/orchestrator:done` and goes on (ADR-0062, D3a).
+owner's. Once a subtask is committed, the run reports it and goes on with any
+other ready subtask (ADR-0067 Decision 7): a `◆ landing-ready` line, a record
+in the run's ledger, and a line appended to
+`.agentic-plugins/runs/autopilot/landing/<macro-id>.jsonl` under the main
+worktree, which a watcher can tail across relaunches. Each names the branch,
+its commit, the push and pull-request commands, a read-only overlap check
+(`git merge-tree`) against the integration branch and every other branch
+waiting to land, and an advisory merge order. The check runs in a scratch
+repository that borrows only the objects, so no merge driver, config or
+attribute of the checkout applies: its answer is git's own merge of the two
+commits. A commit is reported once, and a commit that no run reported is
+reported when the next run starts. At an `awaiting-landing`
+halt it lists each branch the same way; after the merge, relaunch, and it
+records the landing with `/orchestrator:done` and goes on (ADR-0062, D3a).
 
 **Claude Code only** (ADR-0063 D9). There is no Codex skill for this command;
 on Codex the steps stay manual.
@@ -134,7 +145,8 @@ node "$CLAUDE_PLUGIN_ROOT/adapters/claude/autopilot/cli.mjs" --args-file "$ARGS_
 5. When the task ends, read its output and report, without adding to it:
    - exit 0 — the macro completed (it is archived);
    - exit 2 — the halt: its reason, detail and pointer, and for
-     `awaiting-landing` each branch with its push and pull-request commands;
+     `awaiting-landing` each branch with its commit, overlap, and push and
+     pull-request commands, and the merge order;
      then the resume hints it printed (`claude --resume <session>` to inspect
      the last step, and the relaunch command);
    - exit 1 — the start condition or error it printed.

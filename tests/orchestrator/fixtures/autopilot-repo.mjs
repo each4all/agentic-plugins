@@ -38,22 +38,30 @@ process.exit(1);
 
 /**
  * @param o.subtasks  plan subtasks ({id, branch?, blocked_by?, verb?})
- * @returns the fixture: { dir, work, origin, macroPath, macroId, env, git, ... }
+ * @param o.linked    make `work` a linked worktree of a main checkout at `main`
+ *                    (detached there), instead of the clone itself
+ * @returns the fixture: { dir, work, main, origin, macroPath, macroId, env, git, ... }
  */
-export async function makeRepo({ subtasks = [{ id: 'A' }, { id: 'B', blocked_by: ['A'] }], approve = true } = {}) {
+export async function makeRepo({ subtasks = [{ id: 'A' }, { id: 'B', blocked_by: ['A'] }], approve = true, linked = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'autopilot-repo-'));
   const origin = join(dir, 'origin.git');
   const work = join(dir, 'work');
+  const main = linked ? join(dir, 'main') : work;
   const env = { ...process.env, ...GIT_ENV };
   for (const k of Object.keys(env)) if (k.startsWith('AGENTIC_') || k.startsWith('CLAUDE')) delete env[k];
-  const git = (...args) => execFileSync('git', ['-C', work, ...args], { env, encoding: 'utf8' }).trim();
+  const gitIn = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { env, encoding: 'utf8' }).trim();
+  const git = (...args) => gitIn(work, ...args);
   execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin], { env });
-  execFileSync('git', ['clone', '-q', origin, work], { env });
-  writeFileSync(join(work, '.gitignore'), '.agentic-plugins/runs/\n.agentic-plugins/state/\n.agentic-plugins/tmp/\n.agentic-plugins/cache/\n');
-  git('add', '.gitignore');
-  git('commit', '-q', '-m', 'chore: init');
-  git('push', '-q', 'origin', 'HEAD:main');
-  git('fetch', '-q', 'origin');
+  execFileSync('git', ['clone', '-q', origin, main], { env });
+  writeFileSync(join(main, '.gitignore'), '.agentic-plugins/runs/\n.agentic-plugins/state/\n.agentic-plugins/tmp/\n.agentic-plugins/cache/\n');
+  gitIn(main, 'add', '.gitignore');
+  gitIn(main, 'commit', '-q', '-m', 'chore: init');
+  gitIn(main, 'push', '-q', 'origin', 'HEAD:main');
+  gitIn(main, 'fetch', '-q', 'origin');
+  if (linked) {
+    gitIn(main, 'switch', '-q', '--detach');
+    gitIn(main, 'worktree', 'add', '-q', work, 'main');
+  }
 
   const bin = join(dir, 'bin');
   mkdirSync(bin);
@@ -79,7 +87,7 @@ export async function makeRepo({ subtasks = [{ id: 'A' }, { id: 'B', blocked_by:
   const macroId = (await orch.readWorkflow(macroPath)).frontmatter.workflow_id;
 
   const fx = {
-    dir, work, origin, macroPath, macroId, env, git, prs, orch, eng,
+    dir, work, main, origin, macroPath, macroId, env, git, prs, orch, eng,
     roots: { orchestrator: ORCH, engineer: ENG, runtime: RUNTIME },
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
     setPrs: (list) => writeFileSync(prs, JSON.stringify(list)),

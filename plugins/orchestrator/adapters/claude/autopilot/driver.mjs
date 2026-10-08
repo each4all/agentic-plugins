@@ -9,7 +9,9 @@
 // wall clock), foreground, and exits on completion (0), on a halt (2), or on
 // an error that prevented a run (1). It never pushes, opens or merges a pull
 // request, never switches branches itself, never archives, and never resumes,
-// forks or compacts a session (D1).
+// forks or compacts a session (D1). After each look under its locks it reports
+// every subtask newly committed and not landed (landing-ready.mjs, ADR-0067
+// Decision 7), and goes on.
 //
 // What it kills is only what its steps started: a worker's process group on
 // timeout or abort, and, through engineer's own `peer-runner cancel`, the peer
@@ -20,6 +22,7 @@ import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 
+import { orderText, overlapText, reportLandingReady } from './landing-ready.mjs';
 import { observe as defaultObserve } from './observe.mjs';
 import {
   decide, fingerprint, modelFor, renderStep, verifyStep, STEP_KINDS,
@@ -220,6 +223,7 @@ function haltRecord({ runId, d, lastSessionId, repoRoot }) {
     pointer: d.pointer ?? null,
     subtask_id: d.subtaskId ?? null,
     waiting: d.waiting ?? null,
+    merge_order: d.mergeOrder ?? null,
     last_session_id: lastSessionId,
     resume,
   };
@@ -239,9 +243,26 @@ function printHalt(out, d) {
   if (d.pointer) out(`  pointer: ${d.pointer}`);
   for (const w of d.waiting ?? []) {
     out(`  · ${w.subtaskId} on ${w.branch} (${w.reason})${w.detail ? `: ${w.detail}` : ''}`);
+    if (w.overlap) out(`      at ${w.commit ?? 'no commit'} · overlap: ${overlapText(w.overlap)}`);
     for (const c of w.commands ?? []) out(`      ${c}`);
     if (w.note) out(`      ${w.note}`);
   }
+  if (d.mergeOrder) out(`  merge order: ${orderText(d.mergeOrder)}`);
+}
+
+// The awaiting-landing halt lists what the landing-ready report holds for the
+// same look: each branch's commit and overlap, and the merge order.
+function withLanding(d, report) {
+  if (d.reason !== 'awaiting-landing' || !report) return d;
+  const byId = new Map(report.entries.map((e) => [e.subtaskId, e]));
+  return {
+    ...d,
+    waiting: (d.waiting ?? []).map((w) => {
+      const e = byId.get(w.subtaskId);
+      return e ? { ...w, commit: e.commit, overlap: e.overlap } : w;
+    }),
+    mergeOrder: report.mergeOrder,
+  };
 }
 
 /**
@@ -347,9 +368,12 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     out(`  repo ${repoRoot} · macro ${macroId ?? '(none)'} · ${Object.entries(pinned.versions).map(([k, v]) => `${k} ${v}`).join(', ')}`);
 
     const record = { run_id: runId, repo: repoRoot, macro_id: macroId, started_at: run.started_at };
+    // Read once: the macro's landing log is kept beside its lock (ADR-0067
+    // Decision 7), and a second read that fell back to repoRoot would part them.
+    const mainRoot = mainWorktreeRoot(repoRoot);
     try {
       locks.push(await acquireLock(worktreeLockPath(repoRoot), { record, now }));
-      if (macroId) locks.push(await acquireLock(macroLockPath(mainWorktreeRoot(repoRoot), macroId), { record, now }));
+      if (macroId) locks.push(await acquireLock(macroLockPath(mainRoot, macroId), { record, now }));
     } catch (e) {
       if (!(e instanceof LockHeldError)) throw e;
       return finish('halted', { reason: 'owner-choice', detail: e.message });
@@ -363,6 +387,22 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       return finish('halted', { reason: 'owner-choice', detail: `the macro changed while the run took its locks (${macroId ?? 'none'} → ${view.macro?.id ?? 'none'})` });
     }
 
+    // ADR-0067 Decision 7: after each look under the locks, every subtask
+    // newly committed and not landed is reported, a waiting one found at the
+    // start included. The report is never a gate: a failure is printed, and
+    // the next look reports what it missed.
+    const mergeChecks = new Map();
+    let landing = null;
+    const reportLanding = (v, seq) => {
+      try {
+        landing = reportLandingReady({ repoRoot, mainRoot, runDir, runId, seq, view: v, out, now, cache: mergeChecks, env });
+      } catch (e) {
+        landing = null;
+        out(`⚠ landing-ready: the report failed (${e?.message ?? e}); the run goes on, and the next look reports it`);
+      }
+    };
+    reportLanding(view, 0);
+
     const loaded = {};
     const ctx = { runId, macroId, forced: options.forced ?? null, finalizeAttempted: false };
     for (let seq = 1; ; seq += 1) {
@@ -374,7 +414,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         out(`[${seq}] ${d.detail}`);
         return finish('completed');
       }
-      if (d.outcome === 'halt') return finish('halted', d);
+      if (d.outcome === 'halt') return finish('halted', withLanding(d, landing));
 
       const elapsed = (now() - startedAt) / 1000;
       if (seq > options.maxSteps) return finish('halted', { reason: 'budget', detail: `the run reached its step cap (${options.maxSteps})` });
@@ -461,6 +501,8 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       writeRun(runDir, run);
       const pct = w.peakPct == null ? '?' : `${(w.peakPct * 100).toFixed(1)}%`;
       out(`    exit=${w.exitCode ?? w.signal} cost=$${(w.costUsd ?? cost).toFixed(2)}${w.costUsd === null ? ' (unreported; budget charged)' : ''} peak=${w.peakCtx} (${pct}) denials=${w.denials.length}`);
+      // A commit stands whatever the verdict on its step.
+      reportLanding(view, seq);
       if (verdict) return finish('halted', verdict);
     }
   } catch (e) {

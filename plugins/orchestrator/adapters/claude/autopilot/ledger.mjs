@@ -9,12 +9,15 @@
 //   steps.jsonl         a `started` line written BEFORE the worker is spawned
 //                       (D1: every spawn is on record before it starts), then a
 //                       `finished` line after it
+//   landing.jsonl       a `landing-ready` line for each committed subtask the
+//                       run reported (landing-ready.mjs, ADR-0067 Decision 7)
 //   worker-<seq>.jsonl  the raw worker stream (byte-capped by worker.mjs)
 //   halt.json           reason, detail, pointer, resume hints
 //
 // The lock is per macro (D8: at most one run drives a macro), under the main
 // worktree so linked worktrees share it:
-// `<main>/.agentic-plugins/runs/autopilot/locks/<macro-id>.lock/`. It is a
+// `<main>/.agentic-plugins/runs/autopilot/locks/<macro-id>.lock/`. The
+// macro's landing log sits beside it (`landing/<macro-id>.jsonl`). The lock is a
 // directory of participant entries, each holding its run's pid and process
 // fingerprint (the peer-runner pattern), so an entry whose run died, or whose
 // pid was reused, is recognised as stale.
@@ -77,6 +80,10 @@ export function appendStep(runDir, record) {
   fs.appendFileSync(path.join(runDir, 'steps.jsonl'), `${JSON.stringify(record)}\n`);
 }
 
+export function appendLanding(runDir, record) {
+  fs.appendFileSync(path.join(runDir, 'landing.jsonl'), `${JSON.stringify(record)}\n`);
+}
+
 export function writeHalt(runDir, haltRecord) {
   writeJsonAtomic(path.join(runDir, 'halt.json'), haltRecord);
 }
@@ -96,22 +103,36 @@ export function listRuns(repoRoot) {
   return names.filter((n) => isAutopilotRun({ AGENTIC_AUTOPILOT: n })).sort();
 }
 
-/** One run's records: run.json, the steps (started/finished paired by seq), halt.json. */
+const readLines = (file) => {
+  let text = '';
+  try { text = fs.readFileSync(file, 'utf8'); } catch { /* none yet */ }
+  const out = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try { out.push(JSON.parse(line)); } catch { /* torn */ }
+  }
+  return out;
+};
+
+/**
+ * One run's records: run.json, the steps (started/finished paired by seq), the
+ * landing-ready records in the order they were written, halt.json.
+ */
 export function readRun(repoRoot, runId) {
   const dir = path.join(autopilotDir(repoRoot), runId);
   const run = readJson(path.join(dir, 'run.json'));
   if (!run) return null;
   const steps = new Map();
-  let text = '';
-  try { text = fs.readFileSync(path.join(dir, 'steps.jsonl'), 'utf8'); } catch { /* none yet */ }
-  for (const line of text.split('\n')) {
-    if (!line.trim()) continue;
-    let rec;
-    try { rec = JSON.parse(line); } catch { continue; }
+  for (const rec of readLines(path.join(dir, 'steps.jsonl'))) {
     const prev = steps.get(rec.seq) ?? {};
     steps.set(rec.seq, rec.event === 'finished' ? { ...prev, ...rec } : { ...rec, ...prev });
   }
-  return { dir, run, steps: [...steps.values()].sort((a, b) => a.seq - b.seq), halt: readJson(path.join(dir, 'halt.json')) };
+  return {
+    dir, run,
+    steps: [...steps.values()].sort((a, b) => a.seq - b.seq),
+    landing: readLines(path.join(dir, 'landing.jsonl')),
+    halt: readJson(path.join(dir, 'halt.json')),
+  };
 }
 
 // ---------------------------------------------------------------------------

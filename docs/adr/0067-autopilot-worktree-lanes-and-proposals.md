@@ -1462,6 +1462,16 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
   Each answer is clean, conflict (with the paths) or unavailable (any other
   exit, or git older than 2.38). merge-tree writes only unreachable objects:
   no ref, index or worktree changes. Measured 2026-10-07 on git 2.54.
+
+  Note, 2026-10-08 (the implementation's review): that holds only where no
+  merge driver is configured. In the repository, merge-tree runs any driver
+  the config defines and an attribute selects, which can write refs and the
+  worktree, and it reads the checkout's attributes, so the answer depends on
+  more than the two commits (measured on git 2.54). The check therefore runs
+  in a scratch bare repository that borrows the objects and the shallow
+  boundary and nothing else (`landing-ready.mjs` `scratchRepo`). Its answer
+  is git's own merge of the two commits, and it writes nothing to the
+  repository.
 - **Merge order**, advisory: the waiting subtasks in plan order (dependency
   order, then position). Each conflicting pair is marked "the later one
   rebases once the first lands".
