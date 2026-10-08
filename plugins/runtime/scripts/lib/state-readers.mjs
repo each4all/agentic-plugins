@@ -18,24 +18,32 @@
 //   → { root, workflows, peer_runs, storage, homes: { canonical, legacy } }
 //   Persona-generic: a dashboard may call it with plugin:'founder' directly;
 //   doctor's inspectWorkflowLedgers keeps its {engineer, orchestrator} contract.
-//   - workflows (scanWorkflowFiles shape):
+//   Reads every state root of the ADR-0067 read set (lib/state-root.mjs) and
+//   merges them; `root` and `homes` are the checkout's.
+//   - workflows (scanWorkflowFiles shape, merged):
 //     { status: 'missing'|'available'|'blocked', dir, count, malformed,
-//       files: [{ file, status, workflow_id, current_phase, branch, reason? }], error? }
-//   - peer_runs (scanPeerRuns shape):
+//       files: [{ file, status, workflow_id, current_phase, branch, reason?,
+//                 location, dir, pointer }], unlisted: [{ location, dir, error }] }
+//     `blocked` also when a `workflows/` directory of any home in the read set
+//     exists and cannot be listed (`unlisted`); ENOENT alone is no state.
+//   - peer_runs (scanPeerRuns shape, merged; each run carries its location):
 //     { status: 'missing'|'available'|'blocked', dir, count, non_terminal,
 //       stale_non_terminal, malformed, runs: [{ run_id, status, terminal, stale,
 //       plugin, plugin_matches_namespace, kind, peer_host, model, effort,
-//       updated_at, issues }], error? }
-//   - storage (summarizeWorkflowStorage shape):
+//       updated_at, issues, location }], unlisted: [{ location, dir, error }] }
+//     `blocked` on an unlisted `peer-runs/` directory, as workflows are.
+//   - storage (summarizeWorkflowStorage shape, plus the read set):
 //     { status: 'empty'|'canonical'|'legacy'|'ambiguous'|'migration_blocked',
 //       plugin, selected_home, canonical_root, legacy_root, canonical_has_state,
-//       legacy_has_state, overlapping_branches, recommendation }
+//       legacy_has_state, overlapping_branches, recommendation,
+//       ambiguities: [{ kind: 'workflow_id'|'branch', value, files: [{ location, pointer }] }],
+//       locations: [{ location, state_root, status, selected_home }] }
 //
 // scanOneWorkflowHome({ root, home, expectedPlugin, now, staleGraceMs })
 //   → { home, root, workflows, peer_runs, has_state }
 //
 // scanWorkflowFiles(dir) / scanPeerRuns(dir, expectedPlugin, now, staleGraceMs)
-//   → the workflows / peer_runs shapes above.
+//   → the workflows / peer_runs shapes above, for one home.
 //
 // inspectConsensusRuns({ repoRoot })
 //   → { status: 'missing'|'empty'|'blocked'|'needs_attention'|'available',
@@ -62,10 +70,11 @@
 // (ADR-0060). Summary/aggregation helpers stay module-private, exactly as they
 // were private to doctor.mjs.
 
-import { lstat, readdir, readFile } from 'node:fs/promises';
+import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
 import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { sanitizeValue } from './sanitize.mjs';
 import { elapsedMsSince } from './clock.mjs';
+import { STATE_LOCATION_CHECKOUT, stateReadSet } from './state-root.mjs';
 
 // A beyond-skew future mtime yields `null` — "this file establishes no age" —
 // instead of the clamp's 0, which reported the oldest artifact as brand new
@@ -224,13 +233,23 @@ export function parseFrontmatterBlock(text) {
 }
 
 export function extractYamlScalar(frontmatter, key) {
-  const re = new RegExp(`^${escapeRegExp(key)}:\\s*['"]?([^'"\\n]+)['"]?\\s*$`, 'm');
-  return sanitizeValue(frontmatter.match(re)?.[1]?.trim() ?? null);
+  return sanitizeValue(rawYamlScalar(frontmatter, key));
 }
 
 export function extractNestedBranch(frontmatter) {
+  return sanitizeValue(rawNestedBranch(frontmatter));
+}
+
+// The same values before sanitizing: identity, never display. Sanitizing
+// redacts hash-like runs, so two different branches can display alike.
+function rawYamlScalar(frontmatter, key) {
+  const re = new RegExp(`^${escapeRegExp(key)}:\\s*['"]?([^'"\\n]+)['"]?\\s*$`, 'm');
+  return frontmatter.match(re)?.[1]?.trim() ?? null;
+}
+
+function rawNestedBranch(frontmatter) {
   const match = frontmatter.match(/git_baseline:\s*\n(?:\s{2,}.+\n)*?\s{2,}branch:\s*['"]?([^'"\n]+)['"]?/m);
-  return sanitizeValue(match?.[1]?.trim() ?? null);
+  return match?.[1]?.trim() ?? null;
 }
 
 export function parseDateMs(value) {
@@ -703,35 +722,221 @@ function machineArtifactInventoryLimits() {
   ];
 }
 
-export async function inspectWorkflowNamespace({ repoRoot, plugin, legacyNamespace, expectedPlugin, now, staleGraceMs }) {
-  const canonicalRoot = join(repoRoot, '.agentic-plugins', 'state', plugin);
-  const legacyRoot = join(repoRoot, '.claude', legacyNamespace);
-  const canonical = await scanOneWorkflowHome({
-    root: canonicalRoot,
-    home: 'canonical',
-    expectedPlugin,
-    now,
-    staleGraceMs,
-  });
-  const legacy = await scanOneWorkflowHome({
-    root: legacyRoot,
-    home: 'legacy',
-    expectedPlugin,
-    now,
-    staleGraceMs,
-  });
-  const storage = summarizeWorkflowStorage({ canonical, legacy, plugin });
-  const selected = storage.selected_home === 'canonical' ? canonical : legacy;
+// ADR-0067 Decision 4, item 1: the namespace is read in every state root of
+// the read set (lib/state-root.mjs), the default state root first, so a
+// workflow stored under the main worktree is seen from a linked worktree and
+// one in the linked worktree's own home still is. Each root keeps its own
+// canonical/legacy selection. `workflows` and `peer_runs` merge the selected
+// homes, each workflow file carrying its location, absolute `dir`, and a
+// pointer relative to its state root (Decision 1(c)); the same physical file
+// reached twice counts once. `root`, `homes` and the storage roots stay the
+// checkout's, as before. Two files with one workflow id, two workflow files on
+// one branch, or one pointer spelling naming two files (an alias's spelling
+// counted), in any home of the read set (a home not selected for display
+// included), make `storage.status` 'ambiguous', naming both pointers; a
+// directory of any of those homes that cannot be listed makes `workflows` or
+// `peer_runs` 'blocked'.
+export async function inspectWorkflowNamespace({
+  repoRoot,
+  plugin,
+  legacyNamespace,
+  expectedPlugin,
+  now,
+  staleGraceMs,
+  stateRoots = null,
+}) {
+  const locations = [];
+  for (const { location, root: stateRoot } of stateRoots ?? await stateReadSet(repoRoot)) {
+    const canonical = await scanOneWorkflowHome({
+      root: join(stateRoot, '.agentic-plugins', 'state', plugin),
+      home: 'canonical',
+      expectedPlugin,
+      now,
+      staleGraceMs,
+    });
+    const legacy = await scanOneWorkflowHome({
+      root: join(stateRoot, '.claude', legacyNamespace),
+      home: 'legacy',
+      expectedPlugin,
+      now,
+      staleGraceMs,
+    });
+    const storage = summarizeWorkflowStorage({ canonical, legacy, plugin });
+    const selected = storage.selected_home === 'canonical' ? canonical : legacy;
+    locations.push({ location, stateRoot, canonical, legacy, storage, selected });
+  }
+  const own = locations.find(({ location }) => location === STATE_LOCATION_CHECKOUT) ?? locations[locations.length - 1];
+  const workflows = await mergeWorkflowScans(locations, own);
+  const ambiguities = findWorkflowAmbiguities(await locatedWorkflowFiles(locations, ({ canonical, legacy }) => [canonical, legacy]));
   return {
-    root: selected.root,
-    workflows: selected.workflows,
-    peer_runs: selected.peer_runs,
-    storage,
+    root: own.selected.root,
+    workflows,
+    peer_runs: mergePeerRunScans(locations, own),
+    storage: mergeWorkflowStorage(locations, own, ambiguities),
     homes: {
-      canonical,
-      legacy,
+      canonical: own.canonical,
+      legacy: own.legacy,
     },
   };
+}
+
+// The workflow files of the homes `homesOf` picks in each location, in
+// read-set order, with their location, directory, pointer, raw identity keys
+// and real path (`identity`): `files` holds each file once, and `spellings`
+// every listing of it, the alias of a file already listed included.
+async function locatedWorkflowFiles(locations, homesOf) {
+  const files = [];
+  const spellings = [];
+  const seen = new Set();
+  for (const entry of locations) {
+    for (const home of homesOf(entry)) {
+      const scan = home.workflows;
+      for (const file of scan.files ?? []) {
+        const path = join(scan.dir, file.file);
+        let identity = path;
+        try {
+          identity = await realpath(path);
+        } catch {
+          // Unreadable here was already reported by the scan; its path stands in.
+        }
+        const located = { file, location: entry.location, dir: scan.dir, pointer: pointer(entry.stateRoot, path), keys: workflowFileKeys(file), identity };
+        spellings.push(located);
+        if (seen.has(identity)) continue;
+        seen.add(identity);
+        files.push(located);
+      }
+    }
+  }
+  return { files, spellings };
+}
+
+// A `workflows/` or `peer-runs/` directory that exists and cannot be listed
+// (ENOTDIR, EACCES): a single-home scan reports it `missing` with its error,
+// as it always has, and only ENOENT is the absence of state. The checkout's
+// collision check uses the same test.
+export function listingFailed(scan) {
+  return scan.status === 'missing' && Boolean(scan.error) && scan.error !== 'ENOENT';
+}
+
+// Every home of every location whose `scanOf` scan could not be listed, the
+// homes not selected for display included: the entry brief degrades on any of
+// them (ADR-0067 Decision 4, item 1), and the merged ledger blocks on them.
+function unlistedHomes(locations, scanOf) {
+  const unlisted = [];
+  for (const { location, canonical, legacy } of locations) {
+    for (const home of [canonical, legacy]) {
+      const scan = scanOf(home);
+      if (listingFailed(scan)) unlisted.push({ location, dir: scan.dir, error: scan.error });
+    }
+  }
+  return unlisted;
+}
+
+function mergedScanStatus(scans, unlisted) {
+  if (unlisted.length > 0 || scans.some((scan) => scan.status === 'blocked')) return 'blocked';
+  return scans.every((scan) => scan.status === 'missing') ? 'missing' : 'available';
+}
+
+async function mergeWorkflowScans(locations, own) {
+  const { files: located } = await locatedWorkflowFiles(locations, ({ selected }) => [selected]);
+  const files = located.map(({ file, location, dir, pointer: filePointer }) => ({ ...file, location, dir, pointer: filePointer }));
+  const malformed = locations.reduce((total, { selected }) => total + (selected.workflows.malformed ?? 0), 0);
+  const unlisted = unlistedHomes(locations, (home) => home.workflows);
+  return {
+    status: mergedScanStatus(locations.map(({ selected }) => selected.workflows), unlisted),
+    dir: own.selected.workflows.dir,
+    count: files.length,
+    malformed,
+    files,
+    unlisted,
+  };
+}
+
+// `files` holds each workflow file once; a pointer is grouped over every
+// spelling, since a consumer resolves it default-root-first (Decision 1(c)):
+// an alias's spelling reaches the aliased file, so a second file under it is a
+// pair even when the first was counted under another spelling.
+const AMBIGUITY_KEYS = Object.freeze({
+  workflow_id: { over: 'files', keyOf: (entry) => entry.keys.workflow_id },
+  branch: { over: 'files', keyOf: (entry) => entry.keys.branch },
+  pointer: { over: 'spellings', keyOf: (entry) => entry.pointer },
+});
+
+// Grouped on raw values, two distinct files at least; a group's reported
+// value is sanitized for display.
+function findWorkflowAmbiguities(located) {
+  const ambiguities = [];
+  for (const [kind, { over, keyOf }] of Object.entries(AMBIGUITY_KEYS)) {
+    const groups = new Map();
+    for (const entry of located[over]) {
+      const value = keyOf(entry);
+      if (typeof value !== 'string' || value.length === 0) continue;
+      if (!groups.has(value)) groups.set(value, new Map());
+      const group = groups.get(value);
+      if (!group.has(entry.identity)) group.set(entry.identity, entry);
+    }
+    for (const [value, group] of groups) {
+      if (group.size < 2) continue;
+      ambiguities.push({
+        kind,
+        value: sanitizeValue(value),
+        files: [...group.values()].map((entry) => ({ location: entry.location, pointer: entry.pointer })),
+      });
+    }
+  }
+  return ambiguities;
+}
+
+function mergePeerRunScans(locations, own) {
+  const scans = locations.map(({ location, selected }) => ({ location, scan: selected.peer_runs }));
+  const sum = (key) => scans.reduce((total, { scan }) => total + (scan[key] ?? 0), 0);
+  const runs = scans.flatMap(({ location, scan }) => (scan.runs ?? []).map((run) => ({ ...run, location })));
+  const unlisted = unlistedHomes(locations, (home) => home.peer_runs);
+  return {
+    status: mergedScanStatus(scans.map(({ scan }) => scan), unlisted),
+    dir: own.selected.peer_runs.dir,
+    count: runs.length,
+    non_terminal: sum('non_terminal'),
+    stale_non_terminal: sum('stale_non_terminal'),
+    malformed: sum('malformed'),
+    runs,
+    unlisted,
+  };
+}
+
+// The worst state of any root decides, in this order; the checkout's storage
+// fields stay as they were, and `locations` reports each root's own.
+const STORAGE_STATUS_PRECEDENCE = ['ambiguous', 'migration_blocked', 'legacy', 'canonical', 'empty'];
+const AMBIGUITY_LABELS = Object.freeze({ workflow_id: 'one workflow id', branch: 'one branch', pointer: 'one pointer' });
+
+function mergeWorkflowStorage(locations, own, ambiguities) {
+  const ranked = [...locations].sort((a, b) => (
+    STORAGE_STATUS_PRECEDENCE.indexOf(a.storage.status) - STORAGE_STATUS_PRECEDENCE.indexOf(b.storage.status)
+  ));
+  const worst = ranked[0].storage;
+  const merged = {
+    ...own.storage,
+    status: worst.status,
+    recommendation: worst.recommendation,
+    canonical_has_state: locations.some(({ storage }) => storage.canonical_has_state),
+    legacy_has_state: locations.some(({ storage }) => storage.legacy_has_state),
+    overlapping_branches: [...new Set(locations.flatMap(({ storage }) => storage.overlapping_branches))].sort(),
+    ambiguities,
+    locations: locations.map(({ location, stateRoot, storage }) => ({
+      location,
+      state_root: stateRoot,
+      status: storage.status,
+      selected_home: storage.selected_home,
+    })),
+  };
+  if (ambiguities.length > 0) {
+    const named = ambiguities
+      .map(({ kind, files }) => `${AMBIGUITY_LABELS[kind]} in ${files.map((file) => `${file.pointer} (${file.location})`).join(' and ')}`)
+      .join('; ');
+    merged.status = 'ambiguous';
+    merged.recommendation = `Two workflow files claim ${named}; finish, finalize or archive one before relying on either (ADR-0067 Decision 4).`;
+  }
+  return merged;
 }
 
 export async function scanOneWorkflowHome({ root, home, expectedPlugin, now, staleGraceMs }) {
@@ -803,21 +1008,46 @@ function branchSet(files) {
   return result;
 }
 
-export async function scanWorkflowFiles(dir) {
+// Listings of one `workflows/` directory before a file that keeps vanishing
+// between the listing and its read is reported blocked (ADR-0067 Decision 4,
+// item 1: another lane's archive moving a file out is routine once state is
+// shared). The entry-brief readers use the same bound.
+export const WORKFLOW_SCAN_ATTEMPTS = 3;
+
+// The unsanitized workflow id and branch of each file a scan returned, kept
+// off the file object so no report carries them: identity keys for collision
+// checks, which a sanitized value cannot be (two branches can redact alike).
+const RAW_WORKFLOW_KEYS = new WeakMap();
+
+export function workflowFileKeys(file) {
+  return RAW_WORKFLOW_KEYS.get(file) ?? { workflow_id: null, branch: null };
+}
+
+// `readText` is a test seam: a test passes its own to make a file vanish.
+export async function scanWorkflowFiles(dir, { readText = readTextIfExists } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    const { scan, vanished } = await scanWorkflowFilesOnce(dir, readText);
+    if (!vanished || attempt >= WORKFLOW_SCAN_ATTEMPTS) return scan;
+  }
+}
+
+async function scanWorkflowFilesOnce(dir, readText) {
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
   } catch (err) {
-    return { status: 'missing', dir, count: 0, malformed: 0, files: [], error: err.code ?? err.message };
+    return { scan: { status: 'missing', dir, count: 0, malformed: 0, files: [], error: err.code ?? err.message }, vanished: false };
   }
   const files = [];
   let malformed = 0;
+  let vanished = false;
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
     const path = join(dir, entry.name);
-    const text = await readTextIfExists(path);
+    const text = await readText(path);
     const summary = { file: entry.name, status: 'unknown', workflow_id: null, current_phase: null, branch: null };
     if (!text.ok) {
+      if (text.reason === 'ENOENT') vanished = true;
       summary.status = 'blocked';
       summary.reason = text.reason;
       malformed++;
@@ -836,14 +1066,18 @@ export async function scanWorkflowFiles(dir) {
     summary.workflow_id = extractYamlScalar(fm, 'workflow_id');
     summary.current_phase = extractYamlScalar(fm, 'current_phase');
     summary.branch = extractNestedBranch(fm);
+    RAW_WORKFLOW_KEYS.set(summary, { workflow_id: rawYamlScalar(fm, 'workflow_id'), branch: rawNestedBranch(fm) });
     files.push(summary);
   }
   return {
-    status: malformed > 0 ? 'blocked' : 'available',
-    dir,
-    count: files.length,
-    malformed,
-    files,
+    scan: {
+      status: malformed > 0 ? 'blocked' : 'available',
+      dir,
+      count: files.length,
+      malformed,
+      files,
+    },
+    vanished,
   };
 }
 

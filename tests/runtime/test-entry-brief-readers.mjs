@@ -820,6 +820,7 @@ describe('entry-brief readers — id patterns and caps', () => {
       MAX_DIR_ENTRIES: 128,
       MAX_FILE_BYTES: 256 * 1024,
       MAX_HOME_TOTAL_BYTES: 2 * 1024 * 1024,
+      MAX_SCAN_ATTEMPTS: 3,
       HANDOFF_FRESHNESS_MS: 10 * 60 * 1000,
       FUTURE_SKEW_MS: 60 * 1000,
     }));
