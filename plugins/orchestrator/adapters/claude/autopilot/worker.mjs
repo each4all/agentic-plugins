@@ -65,6 +65,9 @@ const SCRUB_EXACT = Object.freeze([
   // engineer workflow a foreign parent.
   'AGENTIC_PARENT_WORKFLOW', 'AGENTIC_ORIGINATING_SUBTASK', 'AGENTIC_PROFILE', 'AGENTIC_TOPIC',
   'AGENTIC_HOST',
+  // The macro file's path, exported beside the ids (ADR-0067 Decision 3);
+  // inherited, it would point the worker's child at a foreign macro file.
+  'AGENTIC_PARENT_WORKFLOW_PATH',
   // Runbooks resolve their root from AGENTIC_<PLUGIN>_ROOT first; a stale
   // inherited value must not stand in for it.
   'CLAUDE_PLUGIN_ROOT',

@@ -3907,12 +3907,19 @@ export async function updateSubtask(opts) {
 //   - appends one note per engineer workflow and branch commit, and points
 //     next_action at /orchestrator:done. A repeated call — Phase 7's P10 and
 //     then the Stop hook — finds its note and writes nothing.
+//
+// `expectWorkflowId` (ADR-0067 Decision 3) is the macro id the engineer's
+// writeback resolved this path for; the file read under the lock must carry
+// it, or nothing is written. The engineer checks the same before calling, but
+// with its own reader and before the lock: this read is the one the write
+// is made from.
 export async function recordEngineerTerminal({
   workflowPath,
   host,
   subtaskId,
   engineerWorkflowId,
   branchCommit,
+  expectWorkflowId,
   event = 'updated',
   now = new Date(),
 }) {
@@ -3923,10 +3930,19 @@ export async function recordEngineerTerminal({
       throw new Error(`recordEngineerTerminal: ${name} must be a non-empty string`);
     }
   }
+  if (expectWorkflowId !== undefined && (typeof expectWorkflowId !== 'string' || expectWorkflowId.length === 0)) {
+    throw new Error('recordEngineerTerminal: expectWorkflowId must be a non-empty string when provided');
+  }
   ensureNotArchived(workflowPath, 'recordEngineerTerminal');
   return withFileLock(workflowPath, async ({ lockPath, token }) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
+    if (expectWorkflowId !== undefined && frontmatter.workflow_id !== expectWorkflowId) {
+      throw new Error(
+        `recordEngineerTerminal: ${workflowPath} holds macro ${JSON.stringify(frontmatter.workflow_id)}, ` +
+          `not ${JSON.stringify(expectWorkflowId)}; nothing was written (ADR-0067 Decision 3).`,
+      );
+    }
     ensureMutable(frontmatter);
     const subtasks = Array.isArray(frontmatter.plan?.subtasks) ? frontmatter.plan.subtasks : [];
     const idx = subtasks.findIndex((s) => s.id === subtaskId);
@@ -4587,11 +4603,14 @@ function cliPrintHelp() {
       '',
       '  subtask-engineer-terminal --workflow-path <path> --host claude|codex --subtask-id <id>',
       '                            --engineer-workflow-id <id> --branch-commit <sha>',
+      '                            [--expect-workflow-id <macro id>]',
       '    ADR-0062 §Decision 2 — called by the engineer Phase 7 and Stop hook when its',
       '    workflow reaches its terminal commit. Does not complete the subtask: binds an',
       '    unrecorded owner (refuses a different one), moves pending to in_progress, notes',
       '    the branch commit once and points next_action at /orchestrator:done. Skips',
       '    completed / deferred / abandoned / blocked subtasks. JSON envelope on stdout.',
+      '    ADR-0067 Decision 3 — with --expect-workflow-id, a file whose workflow_id',
+      '    differs on the locked read is refused and nothing is written.',
       '',
       '  resolve-landing --repo-root <path> --workflow-path <path> --subtask-id <id>',
       '                  [--integration-branch <branch>] [--commit <sha>] [--pr <number>]',
@@ -4982,6 +5001,7 @@ async function cliMain(argv) {
           subtaskId: flags['subtask-id'],
           engineerWorkflowId: flags['engineer-workflow-id'],
           branchCommit: flags['branch-commit'],
+          expectWorkflowId: flags['expect-workflow-id'],
           event: flags.event ?? 'updated',
         });
         if (result.skipped) process.stderr.write(`state.mjs subtask-engineer-terminal: ${result.skipReason}\n`);

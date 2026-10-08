@@ -7,7 +7,7 @@ argument-hint: [<subtask-id>] [--workflow=<macro-id>]
 
 $ARGUMENTS
 
-Dispatch one orchestrator macro subtask into the engineer plugin's command runbook, recording the immutable parent linkage (`AGENTIC_PARENT_WORKFLOW` + `AGENTIC_ORIGINATING_SUBTASK`) so the engineer can note its terminal commit on the macro and bind ownership (Phase 7 and the Stop hook, ADR-0019 §4 as changed by ADR-0062). The subtask completes when `/orchestrator:done` records the merge. This is the **same-host default**; cross-host (`--peer`) remains trigger-deferred PR-F scope.
+Dispatch one orchestrator macro subtask into the engineer plugin's command runbook, recording the immutable parent linkage (`AGENTIC_PARENT_WORKFLOW` + `AGENTIC_ORIGINATING_SUBTASK`, and the macro file's path, `AGENTIC_PARENT_WORKFLOW_PATH`, ADR-0067 Decision 3) so the engineer can note its terminal commit on the macro and bind ownership (Phase 7 and the Stop hook, ADR-0019 §4 as changed by ADR-0062). The subtask completes when `/orchestrator:done` records the merge. This is the **same-host default**; cross-host (`--peer`) remains trigger-deferred PR-F scope.
 
 Maintain one progress entry per phase across the five phases below and advance its status as you go — use the host's task-tracking tools when the session exposes them, and keep an inline checklist when it does not. Each phase is a discrete bash snippet — execute them in order and **abort on any non-zero exit** unless the snippet's commentary explicitly handles the failure.
 
@@ -361,12 +361,16 @@ ORCH_PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"          # save before rebind — Phase 5
 
 export CLAUDE_PLUGIN_ROOT="$ENGINEER_PLUGIN_ROOT"
 export AGENTIC_PARENT_WORKFLOW="$MACRO_ID"
+# ADR-0067 Decision 3 — the macro file's absolute path, which the engineer
+# records beside the id and its writeback tries first, so a child whose own
+# checkout holds no copy of the macro still reaches it.
+export AGENTIC_PARENT_WORKFLOW_PATH="$MACRO_PATH"
 export AGENTIC_ORIGINATING_SUBTASK="$SUBTASK_ID"
 export AGENTIC_HOST="$DETECTED_HOST"
 
 # Forward subtask profile/topic to the engineer command via env vars
 # (orchestrator-defined contract). engineer's Phase 0 boilerplate reads
-# AGENTIC_PROFILE and AGENTIC_TOPIC alongside the three parent-linkage
+# AGENTIC_PROFILE and AGENTIC_TOPIC alongside the four parent-linkage
 # vars and forwards them as --profile / --original-request flags to
 # state.mjs create. This is the orchestrator-driven equivalent of the
 # user typing `--profile=<X>` / a topic argument at the command line —
@@ -379,7 +383,7 @@ export AGENTIC_TOPIC="${SUBTASK_TOPIC:-}"
 
 # Follow $ENGINEER_PLUGIN_ROOT/commands/$SUBTASK_VERB.md as if the user
 # typed `/engineer:$SUBTASK_VERB`. The engineer command's Phase 0
-# boilerplate reads all five AGENTIC_* env vars above and forwards
+# boilerplate reads all six AGENTIC_* env vars above and forwards
 # them to state.mjs create (parent linkage + host + profile + topic).
 ```
 

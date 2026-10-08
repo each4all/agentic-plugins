@@ -11,6 +11,8 @@ terminal commit on the macro (Phase 7 and the Stop hook; ADR-0062 — the
 subtask completes later, when `$orchestrator:done` records the merge):
 
 - `AGENTIC_PARENT_WORKFLOW=<macro id>`
+- `AGENTIC_PARENT_WORKFLOW_PATH=<macro file, absolute>` (ADR-0067
+  Decision 3: the engineer records it and its writeback tries it first)
 - `AGENTIC_ORIGINATING_SUBTASK=<subtask id>`
 - `AGENTIC_HOST=<claude|codex>`
 
@@ -164,6 +166,7 @@ Phase 0 plus verb body with this prelude in the same shell session:
 ORCH_PLUGIN_ROOT="<orchestrator-plugin-root>"
 export CLAUDE_PLUGIN_ROOT="$ENGINEER_PLUGIN_ROOT"
 export AGENTIC_PARENT_WORKFLOW="$MACRO_ID"
+export AGENTIC_PARENT_WORKFLOW_PATH="$MACRO_PATH"
 export AGENTIC_ORIGINATING_SUBTASK="$SUBTASK_ID"
 export AGENTIC_HOST="codex"
 export AGENTIC_PROFILE="${SUBTASK_PROFILE:-}"
