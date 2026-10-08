@@ -23,6 +23,11 @@ Superseded by [ADR-0062](0062-subtask-completion-recorded-at-landing.md) — §4
 > Claude layout are unchanged. The resolver still reads the clone until
 > ADR-0061's S2 ships.
 
+> **§3 amended by [ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md)
+> (2026-10-08).** A third immutable create-time linkage key,
+> `parent_workflow_path`; see the amendment note in §3, after the paragraph
+> on preserving the linkage fields.
+
 ## Context
 
 [ADR-0018](0018-stage3-architecture-orchestrator-and-branch-context.md)
@@ -475,6 +480,20 @@ subsequent mutations. Later association of a manually-started
 engineer workflow to an orchestrator subtask is **not supported**
 in this contract; if the need surfaces, raise a follow-up ADR for
 `/engineer:link-parent` or similar.
+
+> **Amendment ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decision 3):**
+> a child may also record `parent_workflow_path`, the absolute path of its
+> macro file, immutable once set at create like the two keys above. It is
+> optional (an older orchestrator exports no path). `create` requires it to
+> name an existing orchestrator macro file whose `workflow_id` is
+> `parent_workflow`, and refuses it otherwise. Afterwards it is a hint:
+> writeback checks the same when the path names a file, refusing a file that
+> fails, and takes the candidate search only when the path names no file
+> (the macro moved at a cutover, or was archived). `/orchestrator:next`
+> exports it as `AGENTIC_PARENT_WORKFLOW_PATH` beside the two §1 variables;
+> the path alone is refused. Unlike the schema-1.1 rule below, an older engineer does not
+> reject the key: schema 1.4 keeps an unknown key through its forward-compat
+> carrier, provided the key is placed where the ADR-0063 S1 note requires.
 
 **Schema-version handling**: engineer schema 1.1 frontmatter is
 **closed-set** at top level (`plugins/engineer/scripts/state.mjs:993-1000`

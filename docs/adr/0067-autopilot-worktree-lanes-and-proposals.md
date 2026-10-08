@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed (2026-10-07).
+Accepted (2026-10-08 — the owner accepted it explicitly at PR review, #903).
+Proposed 2026-10-07.
 - Asked for by the owner on 2026-10-05, at the E1 decision of macro
   `macro-plan-20261003T022443Z-139657`: keep `runtime:worktree` and
   `runtime:consensus`, run autopilot work in parallel worktree lanes, and
@@ -12,11 +13,11 @@ Proposed (2026-10-07).
   `macro-plan-20261007T174440Z-f76033`, with the defaults told to the owner
   at the same time (§Context).
 - Written as that macro's subtask AD. The other subtasks (PL, RR, LR, SR, WL,
-  DL, WP, CP) implement this ADR, and each waits until the owner accepts it.
-- It becomes Accepted only on the owner's explicit acceptance at pull-request
-  review. The accepting commit then applies
+  DL, WP, CP) implement this ADR, and each waited until the owner accepted it.
+- The owner accepted it explicitly at pull-request review (#903,
+  2026-10-08). The accepting commit applied
   [§Amendment cascade](#amendment-cascade-apply-verbatim-on-acceptance) and
-  marks the index row Accepted.
+  marked the index row Accepted.
 - **On acceptance** it:
   - amends [ADR-0063](0063-autopilot-fresh-session-driver.md): R2's halt
     wording, D1's worktree-lanes clause (the held integration-merge clause is
