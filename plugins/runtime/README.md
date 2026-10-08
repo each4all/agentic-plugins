@@ -23,6 +23,15 @@ Codex hook diagnosis also reads `~/.codex/config.toml` `[hooks.state]` and repor
 - read-only aggregate operator dashboard over persona workflow/peer-run ledgers, macro subtask progress, consensus runs, the snapshot-only arbitrated entry advisory, and recorded operator-health evidence.
 - advisory completion footer rendering for workflow handoff pointers.
 
+The workflow readers behind doctor, the dashboard and the entry brief read
+persona and orchestrator records across the ADR-0067 read set: the default
+state root, where git placed the main worktree, then the checkout when it
+differs. From a linked worktree they therefore see workflows stored under the
+main worktree as well as the worktree's own, and report two files holding one
+branch key or workflow id as ambiguity. Handoff slots, session capture and
+run ledgers stay per checkout. Install procedure and the collision check that
+precedes it: [`docs/runbooks/shared-state-readers.md`](../../docs/runbooks/shared-state-readers.md).
+
 It does not own persona-level engineering work or macro planning. Those remain in `engineer` and `orchestrator`.
 
 | Layer | Plugin | Responsibility |

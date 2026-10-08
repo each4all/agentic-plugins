@@ -266,12 +266,16 @@ function applySubtaskField(subtask, key, rawValue) {
   else subtask.status = value ?? 'unknown';
 }
 
+// The namespace merges the ADR-0067 read set, so each file names its own
+// directory and its pointer, relative to the state root it was found under:
+// a macro stored under the main worktree is reported from a linked worktree
+// without a `..` or absolute pointer.
 async function inspectMacroProgress({ repoRoot, orchestratorNamespace }) {
   const workflows = orchestratorNamespace.workflows ?? {};
-  const dir = workflows.dir;
   const files = Array.isArray(workflows.files) ? workflows.files : [];
   const macros = [];
   for (const file of files) {
+    const dir = file.dir ?? workflows.dir;
     if (file.status !== 'available' || !dir) continue;
     const filePath = path.join(dir, file.file);
     const text = await readTextIfExists(filePath);
@@ -286,7 +290,7 @@ async function inspectMacroProgress({ repoRoot, orchestratorNamespace }) {
       workflow_id: file.workflow_id,
       current_phase: file.current_phase,
       branch: file.branch,
-      pointer: pointer(repoRoot, filePath),
+      pointer: file.pointer ?? pointer(repoRoot, filePath),
       subtasks: {
         total: subtasks.length,
         by_status: byStatus,

@@ -2,9 +2,12 @@
 //
 // R0: reads only, consumes nothing — never touches projection lifecycles,
 // markers, or any write path. A versioned, tolerant parser layer over the
-// persona/orchestrator state homes plus the generic runtime sources. On any
+// persona/orchestrator state homes plus the generic runtime sources. The
+// workflow homes are read across the ADR-0067 read set (lib/state-root.mjs):
+// the default state root, then the checkout when it differs. On any
 // schema drift, parse failure, ambiguity (same-home duplicates, dual-home
-// conflicts, ambiguous macro bridge), overflow, or unreadable directory it
+// conflicts, the two state roots, one workflow id in two files, ambiguous
+// macro bridge), overflow, or unreadable directory it
 // degrades to `indeterminate` instead of interpreting — mirroring the owners'
 // fail-closed throws (engineer/orchestrator per-branch lookups) without
 // throwing. ENOENT alone is the fail-open "no state" case; ENOTDIR (an
@@ -27,18 +30,24 @@
 
 import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { open, opendir } from 'node:fs/promises';
+import { open, opendir, realpath } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 
 import {
   inspectSessionCaptureFileCore,
   sessionCaptureDir,
 } from './session-capture-inspect.mjs';
+import { checkoutOnlyReadSet, stateReadSet } from './state-root.mjs';
 
 export const ENTRY_READER_CAPS = Object.freeze({
   MAX_DIR_ENTRIES: 128,
   MAX_FILE_BYTES: 256 * 1024,
   MAX_HOME_TOTAL_BYTES: 2 * 1024 * 1024,
+  // Listings of one `workflows/` directory before a file that keeps vanishing
+  // between the listing and its read degrades the source (ADR-0067 Decision 4,
+  // item 1: another lane's archive moving a file out is routine once state is
+  // shared).
+  MAX_SCAN_ATTEMPTS: 3,
   HANDOFF_FRESHNESS_MS: 10 * 60 * 1000,
   FUTURE_SKEW_MS: 60 * 1000,
 });
@@ -70,16 +79,27 @@ const SAFE_IDENTIFIER_RE = /^[A-Za-z0-9._-]{1,128}$/;
 // produce would invent a source that cannot exist.
 const LEGACY_HOME_PERSONAS = new Set(['engineer', 'orchestrator']);
 
-function personaHomes(repoRoot, persona) {
-  const homes = [{ home: 'canonical', root: join(repoRoot, '.agentic-plugins', 'state', persona) }];
-  if (LEGACY_HOME_PERSONAS.has(persona)) {
-    homes.push({ home: 'legacy', root: join(repoRoot, '.claude', `agentic-${persona}`) });
+// Every home of `persona` under each state root of the read set, in read-set
+// order (ADR-0067 Decision 1(a): the default state root first, then the
+// checkout when it differs).
+function personaHomes(stateRoots, persona) {
+  const homes = [];
+  for (const { location, root: stateRoot } of stateRoots) {
+    homes.push({ location, stateRoot, home: 'canonical', root: join(stateRoot, '.agentic-plugins', 'state', persona) });
+    if (LEGACY_HOME_PERSONAS.has(persona)) {
+      homes.push({ location, stateRoot, home: 'legacy', root: join(stateRoot, '.claude', `agentic-${persona}`) });
+    }
   }
   return homes;
 }
 
-function toPointer(repoRoot, path) {
-  return relative(repoRoot, path).split(sep).join('/');
+// A pointer is relative to the state root its file was found under
+// (ADR-0067 Decision 1(c)), so a record under the main worktree is spelled
+// `.agentic-plugins/state/…` as a local one is: never absolute, never `..`,
+// and the arbiter's pointer hardening applies unchanged. A consumer resolves
+// it in its own read set, the default state root first.
+function toPointer(stateRoot, path) {
+  return relative(stateRoot, path).split(sep).join('/');
 }
 
 // Linkage token for free-string identifiers (macro subtask ids, originating
@@ -169,6 +189,56 @@ async function listBoundedDir(dir, caps) {
     return { state: 'refused', reason: 'directory-iteration-failed' };
   }
   return { state: 'ok', entries };
+}
+
+// The filesystem the workflow readers use (`io`); a test wraps it to make a
+// file vanish between the listing and the read.
+export const ENTRY_READER_IO = Object.freeze({ listDir: listBoundedDir, readFile: readBoundedFile, realpath });
+
+// Lists one `workflows/` directory and reads each `.md` file in it, with the
+// file's real path: the identity that tells one file reached through both
+// state roots (the roots coincide through a symlink) from two files. A file
+// that disappears between the listing and its read is listed again, up to
+// MAX_SCAN_ATTEMPTS listings; every other failure degrades at once.
+async function readWorkflowDir(dir, caps, io) {
+  for (let attempt = 0; attempt < caps.MAX_SCAN_ATTEMPTS; attempt++) {
+    const listing = await io.listDir(dir, caps);
+    if (listing.state === 'absent') return { state: 'ok', files: [] };
+    if (listing.state !== 'ok') return { state: 'refused', reason: listing.reason };
+    const files = [];
+    let homeBytes = 0;
+    let vanished = false;
+    for (const entry of listing.entries) {
+      if (!entry.name.endsWith('.md')) continue;
+      const path = join(dir, entry.name);
+      const file = await io.readFile(path, caps.MAX_FILE_BYTES);
+      if (file.state === 'absent') {
+        vanished = true;
+        break;
+      }
+      // A workflow file we cannot read might be the active one on this
+      // branch — the owners throw here; we degrade (fail-closed mirror).
+      if (file.state !== 'ok') return { state: 'refused', reason: file.reason };
+      homeBytes += file.bytes;
+      if (homeBytes > caps.MAX_HOME_TOTAL_BYTES) return { state: 'refused', reason: 'read-budget-exceeded' };
+      let real;
+      try {
+        real = await io.realpath(path);
+      } catch (error) {
+        if (error?.code !== 'ENOENT') return { state: 'refused', reason: 'realpath-failed' };
+        vanished = true;
+        break;
+      }
+      files.push({ path, real, text: file.text });
+    }
+    if (!vanished) return { state: 'ok', files };
+  }
+  return { state: 'refused', reason: 'workflow-file-vanished' };
+}
+
+function addRealPath(index, id, real) {
+  if (!index.has(id)) index.set(id, new Set());
+  index.get(id).add(real);
 }
 
 // --- tolerant frontmatter parsing ------------------------------------------
@@ -308,37 +378,52 @@ function parseMacroSubtasks(lines) {
 
 // --- persona workflow source (engineer / founder / designer) ---------------
 
-export async function readPersonaWorkflowSource({ repoRoot, persona, branch, caps = ENTRY_READER_CAPS }) {
+// Reads every home of the read set (ADR-0067 Decision 4, item 1): a workflow
+// stored under the main worktree is found from a linked worktree, and one in
+// the linked worktree's own home still is. The same physical file reached
+// through both state roots counts once (through two homes of one state root
+// it is dual-home ambiguity); two files on this branch, this branch's workflow id in a
+// second file, or its pointer spelling naming a second file (Decision 1(c)
+// resolves a pointer default-root-first, so it would reach the other one) are
+// ambiguity, never a choice.
+export async function readPersonaWorkflowSource({
+  repoRoot,
+  persona,
+  branch,
+  caps = ENTRY_READER_CAPS,
+  stateRoots = null,
+  io = ENTRY_READER_IO,
+}) {
   const base = { source: 'persona-workflow', persona };
-  const matchesByHome = [];
-  for (const { home, root } of personaHomes(repoRoot, persona)) {
-    const dir = join(root, 'workflows');
-    const listing = await listBoundedDir(dir, caps);
-    if (listing.state === 'absent') {
-      matchesByHome.push({ home, matches: [] });
-      continue;
-    }
-    if (listing.state !== 'ok') return indeterminate(base, listing.reason);
-    const matches = [];
-    let homeBytes = 0;
-    for (const entry of listing.entries) {
-      if (!entry.name.endsWith('.md')) continue;
-      const path = join(dir, entry.name);
-      const file = await readBoundedFile(path, caps.MAX_FILE_BYTES);
-      if (file.state !== 'ok') {
-        // A workflow file we cannot read might be the active one on this
-        // branch — the owners throw here; we degrade (fail-closed mirror).
-        return indeterminate(base, file.reason ?? 'workflow-file-vanished');
-      }
-      homeBytes += file.bytes;
-      if (homeBytes > caps.MAX_HOME_TOTAL_BYTES) return indeterminate(base, 'read-budget-exceeded');
-      const lines = splitFrontmatterLines(file.text);
+  const matches = [];
+  const filesById = new Map();
+  const filesByPointer = new Map();
+  const seen = new Map();
+  for (const home of personaHomes(stateRoots ?? await stateReadSet(repoRoot), persona)) {
+    const read = await readWorkflowDir(join(home.root, 'workflows'), caps, io);
+    if (read.state !== 'ok') return indeterminate(base, read.reason);
+    for (const { path, real, text } of read.files) {
+      // Every spelling is indexed, an alias of a file already read included:
+      // resolved default-root-first, the alias's spelling reaches that file,
+      // so a second file under the same spelling is a pair (Decision 1(c)).
+      const pointer = toPointer(home.stateRoot, path);
+      addRealPath(filesByPointer, pointer, real);
+      // One file reached through both state roots is read once. Listed by two
+      // homes of one state root (a legacy home aliasing the canonical one) it
+      // is read twice, so it stays dual-home ambiguity: the owner's lookup
+      // refuses that layout.
+      if (seen.has(real) && seen.get(real) !== home.location) continue;
+      seen.set(real, home.location);
+      const lines = splitFrontmatterLines(text);
       if (!lines) return indeterminate(base, 'unparseable-workflow-frontmatter');
       // Branch classification FIRST (owner parity — codex review MINOR): a
       // cross-branch file with schema drift must not poison this branch's
       // source; only a file whose branch cannot be established degrades.
       const branchToken = gitBaselineBranch(lines);
       if (branchToken === null || branchToken.invalid) return indeterminate(base, 'missing-workflow-branch');
+      const idToken = topLevelScalar(lines, 'workflow_id');
+      const idValue = idToken && !idToken.invalid ? idToken.value : null;
+      if (idValue !== null) addRealPath(filesById, idValue, real);
       if (branchToken.value !== branch) continue;
       const schemaToken = topLevelScalar(lines, 'schema');
       if (!personaSchemaSupported(schemaToken)) return indeterminate(base, 'unsupported-workflow-schema');
@@ -346,35 +431,45 @@ export async function readPersonaWorkflowSource({ repoRoot, persona, branch, cap
       if (terminal.invalid) return indeterminate(base, 'invalid-terminal-marker');
       const detached = booleanScalar(lines, 'parent_detached');
       if (detached.invalid) return indeterminate(base, 'invalid-parent-detached');
-      const idToken = topLevelScalar(lines, 'workflow_id');
-      const idValue = idToken && !idToken.invalid ? idToken.value : null;
       const idValid = idValue !== null && PERSONA_WORKFLOW_ID_RE.test(idValue);
       const parentToken = topLevelScalar(lines, 'parent_workflow');
       const parentValue = parentToken && !parentToken.invalid ? parentToken.value : null;
       const subToken = topLevelScalar(lines, 'originating_subtask');
       const updatedToken = topLevelScalar(lines, 'updated_at');
       matches.push({
-        workflow_id: idValid ? idValue : null,
-        workflow_id_valid: idValid,
-        branch: branchToken.value,
-        terminal_marker: terminal.value,
-        parent_workflow: parentValue !== null && MACRO_WORKFLOW_ID_RE.test(parentValue) ? parentValue : null,
-        // Closed boolean the §5.1 linked-child validation needs (codex review
-        // MAJOR): a detached child must be distinguishable from a linked one.
-        parent_detached: detached.value,
-        originating_subtask: subToken && !subToken.invalid ? linkageToken(subToken.value) : null,
-        updated_at_ms: updatedToken && !updatedToken.invalid ? parseIsoMs(updatedToken.value) : null,
-        pointer: toPointer(repoRoot, path),
+        home,
+        rawId: idValue,
+        summary: {
+          workflow_id: idValid ? idValue : null,
+          workflow_id_valid: idValid,
+          branch: branchToken.value,
+          terminal_marker: terminal.value,
+          parent_workflow: parentValue !== null && MACRO_WORKFLOW_ID_RE.test(parentValue) ? parentValue : null,
+          // Closed boolean the §5.1 linked-child validation needs (codex review
+          // MAJOR): a detached child must be distinguishable from a linked one.
+          parent_detached: detached.value,
+          originating_subtask: subToken && !subToken.invalid ? linkageToken(subToken.value) : null,
+          updated_at_ms: updatedToken && !updatedToken.invalid ? parseIsoMs(updatedToken.value) : null,
+          pointer,
+        },
       });
     }
-    matchesByHome.push({ home, matches });
   }
-  for (const { matches } of matchesByHome) {
-    if (matches.length > 1) return indeterminate(base, 'duplicate-active-workflows');
+  if (matches.length > 1) {
+    // Most specific first: two in one home, then two homes of one state root,
+    // then the two state roots.
+    const homesHit = new Set(matches.map(({ home }) => home));
+    if (homesHit.size < matches.length) return indeterminate(base, 'duplicate-active-workflows');
+    const rootsHit = new Set(matches.map(({ home }) => home.location));
+    return indeterminate(base, rootsHit.size === 1 ? 'dual-home-ambiguity' : 'cross-root-ambiguity');
   }
-  const nonEmpty = matchesByHome.filter(({ matches }) => matches.length > 0);
-  if (nonEmpty.length > 1) return indeterminate(base, 'dual-home-ambiguity');
-  return { ...base, status: 'ok', reason: null, active: nonEmpty.length === 1 ? nonEmpty[0].matches[0] : null };
+  if (matches.length === 1 && matches[0].rawId !== null && filesById.get(matches[0].rawId).size > 1) {
+    return indeterminate(base, 'duplicate-workflow-id');
+  }
+  if (matches.length === 1 && filesByPointer.get(matches[0].summary.pointer).size > 1) {
+    return indeterminate(base, 'duplicate-pointer');
+  }
+  return { ...base, status: 'ok', reason: null, active: matches.length === 1 ? matches[0].summary : null };
 }
 
 // --- orchestrator macro sources (own-branch active + subtask-branch bridge) --
@@ -389,24 +484,41 @@ export function deriveMacroReadiness(subtasks) {
   return anyReady ? 'ready' : 'in_progress_or_blocked';
 }
 
-export async function readMacroSources({ repoRoot, branch, caps = ENTRY_READER_CAPS }) {
+// Reads the orchestrator homes of the read set, as the persona reader does:
+// a macro under the main worktree is found from a linked worktree, the same
+// physical file reached through both state roots counts once, and a second file holding a matched macro's id
+// or its pointer spelling is ambiguity. So is a second macro on the bridged
+// macro's integration branch: one active macro per integration branch per
+// repository (ADR-0067 Decision 1(a)), and the owner's lookup by that branch
+// refuses the pair.
+export async function readMacroSources({
+  repoRoot,
+  branch,
+  caps = ENTRY_READER_CAPS,
+  stateRoots = null,
+  io = ENTRY_READER_IO,
+}) {
   const base = { source: 'macro' };
   const activeMatches = [];
   const bridgeMatches = [];
-  for (const { root } of personaHomes(repoRoot, 'orchestrator')) {
-    const dir = join(root, 'workflows'); // archive/ is deliberately not scanned (owner parity)
-    const listing = await listBoundedDir(dir, caps);
-    if (listing.state === 'absent') continue;
-    if (listing.state !== 'ok') return indeterminate(base, listing.reason);
-    let homeBytes = 0;
-    for (const entry of listing.entries) {
-      if (!entry.name.endsWith('.md')) continue;
-      const path = join(dir, entry.name);
-      const file = await readBoundedFile(path, caps.MAX_FILE_BYTES);
-      if (file.state !== 'ok') return indeterminate(base, file.reason ?? 'workflow-file-vanished');
-      homeBytes += file.bytes;
-      if (homeBytes > caps.MAX_HOME_TOTAL_BYTES) return indeterminate(base, 'read-budget-exceeded');
-      const lines = splitFrontmatterLines(file.text);
+  const filesById = new Map();
+  const filesByPointer = new Map();
+  const macrosByBranch = new Map();
+  const seen = new Map();
+  for (const home of personaHomes(stateRoots ?? await stateReadSet(repoRoot), 'orchestrator')) {
+    // archive/ is deliberately not scanned (owner parity)
+    const read = await readWorkflowDir(join(home.root, 'workflows'), caps, io);
+    if (read.state !== 'ok') return indeterminate(base, read.reason);
+    for (const { path, real, text } of read.files) {
+      // Every spelling is indexed before the record is deduplicated, as in
+      // the persona reader.
+      const pointer = toPointer(home.stateRoot, path);
+      addRealPath(filesByPointer, pointer, real);
+      // Once across the state roots, twice within one (an aliased legacy
+      // home: the owner refuses it), as in the persona reader.
+      if (seen.has(real) && seen.get(real) !== home.location) continue;
+      seen.set(real, home.location);
+      const lines = splitFrontmatterLines(text);
       // A corrupt file in the macro home could BE the matching macro — the
       // owner's findMacroBySubtaskBranch throws here (fail-closed); mirror it.
       if (!lines) return indeterminate(base, 'unparseable-workflow-frontmatter');
@@ -426,6 +538,7 @@ export async function readMacroSources({ repoRoot, branch, caps = ENTRY_READER_C
       if (terminal.invalid) return indeterminate(base, 'invalid-terminal-marker');
       const idToken = topLevelScalar(lines, 'workflow_id');
       const idValue = idToken && !idToken.invalid ? idToken.value : null;
+      if (idValue !== null) addRealPath(filesById, idValue, real);
       const idValid = idValue !== null && MACRO_WORKFLOW_ID_RE.test(idValue);
       const parsed = parseMacroSubtasks(lines);
       if (!parsed.ok) return indeterminate(base, 'malformed-macro-subtasks');
@@ -435,14 +548,17 @@ export async function readMacroSources({ repoRoot, branch, caps = ENTRY_READER_C
         workflow_id_valid: idValid,
         terminal_marker: terminal.value,
         updated_at_ms: updatedToken && !updatedToken.invalid ? parseIsoMs(updatedToken.value) : null,
-        pointer: toPointer(repoRoot, path),
+        pointer,
       };
       const branchToken = gitBaselineBranch(lines);
       if (branchToken === null || branchToken.invalid) return indeterminate(base, 'missing-workflow-branch');
-      if (branchToken.value === branch) activeMatches.push(summary);
+      addRealPath(macrosByBranch, branchToken.value, real);
+      if (branchToken.value === branch) activeMatches.push({ rawId: idValue, summary });
       const matchingSubtasks = parsed.subtasks.filter((st) => st.branch === branch);
       if (matchingSubtasks.length > 0) {
         bridgeMatches.push({
+          rawId: idValue,
+          integrationBranch: branchToken.value,
           macro_id: summary.workflow_id,
           macro_id_valid: summary.workflow_id_valid,
           pointer: summary.pointer,
@@ -455,6 +571,17 @@ export async function readMacroSources({ repoRoot, branch, caps = ENTRY_READER_C
   }
   if (activeMatches.length > 1) return indeterminate(base, 'duplicate-active-macros');
   if (bridgeMatches.length > 1) return indeterminate(base, 'ambiguous-macro-bridge');
+  const matched = [
+    ...activeMatches.map(({ rawId, summary }) => ({ rawId, pointer: summary.pointer })),
+    ...bridgeMatches,
+  ];
+  for (const { rawId, pointer } of matched) {
+    if (rawId !== null && filesById.get(rawId).size > 1) return indeterminate(base, 'duplicate-workflow-id');
+    if (filesByPointer.get(pointer).size > 1) return indeterminate(base, 'duplicate-pointer');
+  }
+  for (const { integrationBranch } of bridgeMatches) {
+    if (macrosByBranch.get(integrationBranch).size > 1) return indeterminate(base, 'duplicate-active-macros');
+  }
   let bridge = null;
   if (bridgeMatches.length === 1) {
     const match = bridgeMatches[0];
@@ -479,7 +606,7 @@ export async function readMacroSources({ repoRoot, branch, caps = ENTRY_READER_C
     ...base,
     status: 'ok',
     reason: null,
-    active_on_branch: activeMatches.length === 1 ? activeMatches[0] : null,
+    active_on_branch: activeMatches.length === 1 ? activeMatches[0].summary : null,
     bridge,
   };
 }
@@ -505,9 +632,11 @@ export async function readHandoffSlotSource({ repoRoot, persona, nowMs, caps = E
   const base = { source: 'handoff-slot', persona };
   // First existing candidate wins (sensor parity): when both homes hold a
   // slot the repo is already inconsistent — never trust the shadowed second.
+  // The slot is this checkout's last terminal handoff, so only the checkout's
+  // homes are read, never the default state root's (ADR-0067 Decision 1(a), W9).
   let projectionPath = null;
   let file = null;
-  for (const { root } of personaHomes(repoRoot, persona)) {
+  for (const { root } of personaHomes(checkoutOnlyReadSet(repoRoot), persona)) {
     const candidate = join(root, 'last-session-handoff.json');
     const read = await readBoundedFile(candidate, caps.MAX_FILE_BYTES);
     if (read.state === 'absent') continue;
@@ -779,14 +908,17 @@ export async function collectEntrySources({ repoRoot, branchProbe, now = Date.no
   const initial = await probe();
   const branch = typeof initial === 'string' && initial.length > 0 ? initial : null;
 
+  // Workflow records are read across the read set; the handoff slots, the
+  // entry capture and the run ledgers below stay the checkout's (ADR-0067 W9).
+  const stateRoots = await stateReadSet(repoRoot);
   const personas = {};
   for (const persona of PERSONA_SOURCES) {
     personas[persona] = branch
-      ? await readPersonaWorkflowSource({ repoRoot, persona, branch, caps })
+      ? await readPersonaWorkflowSource({ repoRoot, persona, branch, caps, stateRoots })
       : { source: 'persona-workflow', persona, status: 'no-branch', reason: null };
   }
   const macro = branch
-    ? await readMacroSources({ repoRoot, branch, caps })
+    ? await readMacroSources({ repoRoot, branch, caps, stateRoots })
     : { source: 'macro', status: 'no-branch', reason: null };
 
   const handoffSlots = {};

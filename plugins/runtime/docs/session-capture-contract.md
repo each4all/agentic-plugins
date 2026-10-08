@@ -497,8 +497,8 @@ versioned tolerant parser. Per-source tolerance, normative:
 
 | Source | Accepts | Degrades to `indeterminate` on |
 | --- | --- | --- |
-| Persona workflows (engineer/founder/designer; canonical + legacy homes where a legacy home exists) | frontmatter schema `1.x` string, or the legacy unquoted numeric `1` | unreadable dir (non-ENOENT), unreadable/oversized file, unparseable frontmatter, missing/invalid `git_baseline.branch`, unsupported schema on a **this-branch** file, invalid `terminal_marker`/`parent_detached`, same-home duplicate actives, dual-home ambiguity, scan overflow, read-budget overflow |
-| Orchestrator macros (own-branch active + subtask-branch bridge) | `workflow_type: macro`, schema `1.x` string ("1.0" parses but is **not dispatch-actionable** — carried as a closed boolean) | same file-level failures; malformed subtask rows (id/branch/status/blocked_by) fail the whole macro closed; two active macros on one branch; two macros (or two subtasks) bridging one branch |
+| Persona workflows (engineer/founder/designer; canonical + legacy homes where a legacy home exists, in each state root of the read set) | frontmatter schema `1.x` string, or the legacy unquoted numeric `1` | unreadable dir (non-ENOENT), unreadable/oversized file, unparseable frontmatter, missing/invalid `git_baseline.branch`, unsupported schema on a **this-branch** file, invalid `terminal_marker`/`parent_detached`, same-home duplicate actives, dual-home ambiguity, this branch's workflow in both state roots, this branch's workflow id or pointer spelling in a second file, a file still vanishing after the last listing, scan overflow, read-budget overflow |
+| Orchestrator macros (own-branch active + subtask-branch bridge, in each state root of the read set) | `workflow_type: macro`, schema `1.x` string ("1.0" parses but is **not dispatch-actionable** — carried as a closed boolean) | same file-level failures; malformed subtask rows (id/branch/status/blocked_by) fail the whole macro closed; two active macros on one branch; two macros (or two subtasks) bridging one branch; a matched macro's id or pointer spelling in a second file; a second macro on the bridged macro's integration branch (one active macro per integration branch per repository) |
 | Persona handoff slots (`last-session-handoff.json` ×4) | JSON object whose `workflow_kind` matches its home | unreadable/oversized/non-JSON slot, kind mismatch, unreadable or uninterpretable marker |
 | ADR-0044 `entry.json` | validates against `runtime-session-entry-1.0` | validation failure ⇒ source `invalid` (skipped, counted — **never** suppresses leadership) |
 | Context ledger / consensus runs | per-run JSON with pattern-valid run ids | unreadable runs root; per-run failures skip that run (internal count), never the collection |
@@ -507,7 +507,30 @@ Reader caps (`ENTRY_READER_CAPS`, new code — the pre-existing shared readers
 are unbounded): 128 directory entries per scan, 256 KiB per file, 2 MiB per
 storage home; exceeding any cap ⇒ `indeterminate`, never a silent prefix.
 Reads are handle-based (`O_NOFOLLOW | O_NONBLOCK`, fstat on the handle):
-symlinked final components, FIFOs, and oversized files are refused.
+symlinked final components, FIFOs, and oversized files are refused. A file
+listed in `workflows/` that is gone when it is read (another checkout's
+archive moved it) lists the directory again, at most 3 listings
+(`MAX_SCAN_ATTEMPTS`), before the source degrades.
+
+**The read set** (ADR-0067 Decision 1(a), Decision 4 item 1;
+`lib/state-root.mjs`). Persona workflows and macros are read under each
+state root of the checkout's read set: the default state root (the parent of
+the git common dir when it is named `.git`, found from `.git` and `commondir`
+without spawning git; otherwise the checkout), then the checkout when it
+differs. From a linked worktree that finds a workflow stored under the main
+worktree as well as one in the worktree's own home. The same physical file
+reached through both roots counts once (real-path identity), while one
+listed by two homes of one root (a legacy home aliasing the canonical home)
+stays dual-home ambiguity, as the owners' lookups refuse it; two distinct
+files are ambiguity, never a choice, and so is one pointer spelling naming a
+different file under each root, which a default-root-first resolution would
+confuse; every listed spelling counts, the alias of a file already read
+through a symlinked home included. A workflow's pointer is relative to the
+state root it was found under (Decision 1(c)), so it stays repo-relative and
+`..`-free and the §15.1 pointer hardening applies unchanged; a consumer
+resolves it in its own read set, the default state root first. The handoff
+slots, `entry.json` and the run ledgers stay the checkout's own (W9): their
+rows read the checkout only.
 
 ### 14.2 Identifier families
 
