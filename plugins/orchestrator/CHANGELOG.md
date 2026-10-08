@@ -18,6 +18,13 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.19.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.18.0...plugin-orchestrator-v0.19.0) (2026-10-08)
+
+
+### Features
+
+* **plugin/orchestrator:** report each committed subtask as landing-ready, with a read-only overlap check (ADR-0067 LR) ([f57f05f](https://github.com/each4all/agentic-plugins/commit/f57f05f4ea0c7a463247c6a7d67592e9e3ae7171))
+
 ## [0.18.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.17.2...plugin-orchestrator-v0.18.0) (2026-10-08)
 
 
