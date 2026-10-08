@@ -134,6 +134,10 @@ const ISO_UTC_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
 // canonical-home-only — no legacy home ever existed for them (ADR-0036 SD5 /
 // ADR-0042 SD7) — so their candidate list deliberately models only the path
 // their writers can produce.
+// The candidates are this checkout's homes only, never the shared state root
+// workflow records are read from in a linked worktree (ADR-0067 Decision 1(a),
+// W9): the slot is this checkout's last terminal handoff, and read from the
+// main worktree it would relay another session's completion as this one's.
 const LEGACY_HOME_PERSONAS = Object.freeze(['engineer', 'orchestrator']);
 function projectionCandidates(repoRoot, persona) {
   const candidates = [
