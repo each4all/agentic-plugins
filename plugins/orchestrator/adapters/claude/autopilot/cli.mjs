@@ -8,7 +8,9 @@
 //   start               the same as preview, plus how to execute
 //   start --execute     run the autopilot (driver.mjs)
 //   status              the latest run's ledger (or --run <id>), and its lock
-//   stop                SIGTERM the run that holds a macro's lock
+//   stop                SIGTERM the run that holds a macro's lock; for a run
+//                       whose driver died, empty its worker groups and clean
+//                       up after it (dead-runs.mjs)
 //
 // Dry-run by default (ADR-0035 §3 invariant 1 style): only `start --execute`
 // starts anything, and it needs a model plan (owner decision D5, 2026-10-01:
@@ -30,8 +32,10 @@ import { fileURLToPath } from 'node:url';
 import { expandArgsFile } from '../../../scripts/lib/args-file.mjs';
 import { describeAdmission } from '../../../scripts/lib/run-locks.mjs';
 import { isAutopilotRun } from '../../../scripts/state.mjs';
+import { cleanupDeadRuns } from './dead-runs.mjs';
 import { DEFAULTS, posture, preflight, startRun } from './driver.mjs';
-import { holderAlive, listLocks, listRuns, mainWorktreeRoot, provablySame, readRun } from './ledger.mjs';
+import { holderAlive, listLocks, listRuns, mainWorktreeRoot, provablySame, readOpenRun, readRun } from './ledger.mjs';
+import { resolveRoots } from './roots.mjs';
 import { observe } from './observe.mjs';
 import { decide, fingerprint, MODEL_PLANS, parseForcedStep, renderStep } from './policy.mjs';
 import { terminateGroup } from './worker.mjs';
@@ -47,7 +51,8 @@ export const USAGE = `Usage: autopilot [preview|start|status|stop] [options]
   start                   preview, plus how to execute
   start --execute         run the autopilot until the macro completes or a halt
   status [--run <id>]     the latest run (or that run) and whether it still holds its lock
-  stop [--macro <id>]     stop the run that drives a macro (SIGTERM; it records an interrupted halt)
+  stop [--macro <id>]     stop the run that drives a macro (SIGTERM; it records an interrupted halt), or
+                          clean up after one whose driver died (its peers, its unfinished step, its halt)
 
 Options:
   --repo <dir>            repository to drive (default: the current one)
@@ -347,16 +352,36 @@ async function statusCmd(o, repoRoot, out, err) {
   if (!r) { err(`✗ run ${id} has no readable run.json`); return 1; }
   const locks = listLocks(mainWorktreeRoot(repoRoot), repoRoot).filter((l) => l.holder?.run_id === id);
   let live = false;
-  for (const l of locks) if (await holderAlive(l.holder)) live = true;
+  const liveEntries = [];
+  for (const l of locks) if (await holderAlive(l.holder)) { live = true; liveEntries.push(l.holder); }
+  // Every worker group the run's live entries record, so a dead driver's
+  // surviving groups are shown, and `stop` can be told to empty them.
+  const groups = workerGroups(liveEntries).map((w) => ({ pid: w.pid, lane: w.lane ?? null, cwd: w.cwd ?? null, session_id: w.session_id ?? null }));
+  const driverAlive = liveEntries.length > 0 && await provablySame(liveEntries[0].pid, liveEntries[0].fingerprint);
+  // A run that is not live but keeps its open-run record has not been
+  // cleaned up after yet (ADR-0067 Decision 6, Locks).
+  let cleanupPending = false;
+  try { cleanupPending = !live && readOpenRun(mainWorktreeRoot(repoRoot), id) !== null; } catch { /* no record */ }
+  // An error, or a group that outlived SIGKILL, leaves the record too.
+  const pendingText = cleanupPending ? '; its cleanup is pending: /orchestrator:autopilot stop, or the next run of its macro, cleans up after it' : '';
   const liveness = r.run.status === 'running'
-    ? (live ? 'running' : 'gone (the driver exited without recording an end: it crashed or was killed)')
-    : r.run.status;
+    ? (live
+      ? (driverAlive || groups.length === 0 ? 'running' : `its driver is gone, but ${groups.length} worker group${groups.length === 1 ? '' : 's'} still run${groups.length === 1 ? 's' : ''}: /orchestrator:autopilot stop empties them`)
+      : `gone (the driver exited without recording an end: it crashed or was killed)${pendingText}`)
+    : `${r.run.status}${pendingText}`;
   if (o.json) {
-    out(JSON.stringify({ run: r.run, steps: r.steps, landing: r.landing, halt: r.halt, live, admissions }, null, 2));
+    out(JSON.stringify({ run: r.run, steps: r.steps, landing: r.landing, lanes: r.lanes, halt: r.halt, live, worker_groups: groups, cleanup_pending: cleanupPending, admissions }, null, 2));
     return 0;
   }
   out(`${r.run.run_id} · ${liveness} · macro ${r.run.macro_id ?? '-'} · steps ${r.run.steps} · $${Number(r.run.cost_usd ?? 0).toFixed(2)}`);
   out(`  started ${r.run.started_at}${r.run.ended_at ? ` · ended ${r.run.ended_at}` : ''} · ledger ${r.dir}`);
+  for (const g of groups) out(`  worker group ${groupLabel(g)}${g.session_id ? ` · session ${g.session_id}` : ''}`);
+  const c = r.run.dead_run_cleanup;
+  if (c) {
+    out(`  cleaned up after its dead driver by ${c.by ?? '?'} at ${c.at}${c.complete ? '' : ' (not finished: its record is kept)'}: ` +
+      `cancelled ${c.cancelled?.length ? c.cancelled.join(', ') : 'no peer run'} · steps counted as spent ${c.settled?.length ? c.settled.map((s) => `[${s.seq}]`).join(' ') : 'none'}` +
+      `${c.reported?.length ? ` · reported, not cancelled (they name no run): ${c.reported.join(', ')}` : ''}${c.unresolved?.length ? ` · not cancelled: ${c.unresolved.join(', ')}` : ''}`);
+  }
   for (const s of r.steps) {
     const pct = typeof s.peak_pct === 'number' ? ` ${(s.peak_pct * 100).toFixed(1)}%` : '';
     out(`  [${s.seq}] ${s.command} → ${s.outcome ?? (s.event === 'started' ? 'running or interrupted' : '?')}${typeof s.cost_usd === 'number' ? ` · $${s.cost_usd.toFixed(2)}` : ''}${pct} · session ${s.session_id}`);
@@ -374,46 +399,143 @@ async function statusCmd(o, repoRoot, out, err) {
   return 0;
 }
 
-async function stopCmd(o, repoRoot, out, err, { wait = 30_000 } = {}) {
-  // The runs that hold a lock here: every macro lock under the main worktree
-  // and this worktree's lock, one entry per run.
-  const runs = new Map();
-  for (const l of listLocks(mainWorktreeRoot(repoRoot), repoRoot)) {
-    if (!l.holder?.run_id || (o.macro && l.holder.macro_id !== o.macro)) continue;
-    if (!runs.has(l.holder.run_id) && await holderAlive(l.holder)) runs.set(l.holder.run_id, l.holder);
-  }
-  if (runs.size === 0) { out('no autopilot run is active'); return 0; }
-  if (runs.size > 1) {
-    err(`✗ ${runs.size} runs are active (${[...runs.values()].map((h) => `${h.run_id} on ${h.macro_id ?? '?'}`).join(', ')}); name one with --macro <id>`);
-    return 1;
-  }
-  const [holder] = runs.values();
-  // A signal needs proof that the pid is still the process the lock names
-  // (liveness errs toward "held"; this must not). The driver is stopped when
-  // it is provably there: it empties its worker's group, cancels the step's
-  // peers and records the halt itself. A driver that died leaves its worker,
-  // a process-group leader the run started; with no driver to finish the job,
-  // the group is emptied here — SIGTERM, then SIGKILL — before anything is
-  // reported.
-  if (await provablySame(holder.pid, holder.fingerprint)) {
-    process.kill(holder.pid, 'SIGTERM');
-    out(`sent SIGTERM to run ${holder.run_id} (pid ${holder.pid}) driving ${holder.macro_id ?? '(no macro)'}`);
-  } else if (await provablySame(holder.worker?.pid, holder.worker?.fingerprint)) {
-    out(`run ${holder.run_id}'s driver is gone; stopping its worker's process group (pid ${holder.worker.pid})`);
-    const outcome = await terminateGroup(holder.worker.pid);
-    if (outcome === 'lingering') {
-      err(`✗ a process in the worker's group (${holder.worker.pid}) is still there after SIGKILL; check it with ps -g ${holder.worker.pid}`);
+// A run's worker groups, once each, from every entry it holds: a serial run's
+// one worker on its own entry, and a run with lanes' one entry per group
+// (ADR-0067 Decision 6, Locks).
+function workerGroups(entries) {
+  const groups = new Map();
+  for (const h of entries) if (Number.isInteger(h?.worker?.pid) && !groups.has(h.worker.pid)) groups.set(h.worker.pid, h.worker);
+  return [...groups.values()];
+}
+
+const groupLabel = (w) => `${w.pid}${w.lane ? ` (lane ${w.lane}${w.cwd ? `, ${w.cwd}` : ''})` : ''}`;
+
+async function stopCmd(o, repoRoot, out, err, { wait = 30_000, env = process.env } = {}) {
+  const mainRoot = mainWorktreeRoot(repoRoot);
+  // ADR-0067 Decision 6, Locks: once no worker group of a dead driver runs,
+  // stop cleans up after it from its open-run record (dead-runs.mjs): it
+  // cancels the peers its steps started, counts its unfinished steps as
+  // spent, records its halt, and only then reports it stopped. A record the
+  // cleanup has to keep fails the stop, and so does a run part of which still
+  // runs (its cleanup says `live`): the run stop was asked to stop
+  // (`target`), or, when stop found none in the locks, any run in its scope
+  // (a lock it could not read hides a live run from the listing, never from
+  // its record).
+  const cleanUp = async (macroId, target = null) => {
+    const pinned = await resolveRoots({ env }).catch(() => null);
+    const results = await cleanupDeadRuns({
+      mainRoot, macroId: macroId ?? null, engineerRoot: pinned?.roots?.engineer ?? null, by: { run_id: null, label: 'stop' },
+      env, out: (s) => (/^\s*✗/.test(s) ? err(s) : out(s)),
+    });
+    const running = results.filter((r) => r.outcome === 'live' && (target === null || r.run_id === target));
+    for (const r of running) err(`✗ run ${r.run_id} is not stopped: ${r.detail}`);
+    // A record kept for the owner, or one another process is still cleaning
+    // up after, is not a run stop can report stopped.
+    const unfinished = results.some((r) => r.outcome === 'kept' || r.outcome === 'busy');
+    return { results, code: unfinished || running.length > 0 ? 1 : 0 };
+  };
+  // A run's live entries in every lock here, read now: a run holds one entry
+  // in each of its locks and, with lanes, one more per worker group in
+  // flight, and a dead driver with any group alive still holds the lock.
+  const liveEntriesOf = async (runId) => {
+    const live = [];
+    for (const l of listLocks(mainRoot, repoRoot)) {
+      if (l.holder?.run_id === runId && await holderAlive(l.holder)) live.push(l.holder);
+    }
+    return live;
+  };
+  // A driver that died leaves its workers, process-group leaders the run
+  // started; with no driver to finish the job, every group the run recorded
+  // is emptied here — SIGTERM, then SIGKILL — before anything is reported,
+  // and then stop cleans up after the run.
+  const stopDeadDriver = async (holder, entries) => {
+    const groups = workerGroups(entries);
+    const provable = [];
+    const unproven = [];
+    for (const w of groups) (await provablySame(w.pid, w.fingerprint) ? provable : unproven).push(w);
+    if (provable.length === 0) {
+      err(`✗ run ${holder.run_id} looks alive, but neither its driver (pid ${holder.pid}) nor its worker can be proven to be the process the lock recorded; nothing was signalled.`);
       return 1;
     }
-    out(`the worker's process group is empty (${outcome}); no halt was recorded, since its driver was gone — status shows the run as gone`);
-    return 0;
-  } else {
-    err(`✗ run ${holder.run_id} looks alive, but neither its driver (pid ${holder.pid}) nor its worker can be proven to be the process the lock recorded; nothing was signalled.`);
+    out(`run ${holder.run_id}'s driver is gone; stopping its worker group${provable.length === 1 ? '' : 's'} (pid ${provable.map(groupLabel).join(', ')})`);
+    const lingering = [];
+    for (const w of provable) {
+      const outcome = await terminateGroup(w.pid);
+      if (outcome === 'lingering') lingering.push(w);
+      else out(`  the worker ${groupLabel(w)}: its process group is empty (${outcome})`);
+    }
+    if (lingering.length > 0) {
+      for (const w of lingering) err(`✗ a process in the worker's group (${w.pid}) is still there after SIGKILL; check it with ps -g ${w.pid}`);
+      return 1;
+    }
+    if (unproven.length > 0) {
+      err(`✗ the run's other worker group${unproven.length === 1 ? '' : 's'} (pid ${unproven.map(groupLabel).join(', ')}) cannot be proven to be the process the lock recorded; ${unproven.length === 1 ? 'it was' : 'they were'} not signalled.`);
+      return 1;
+    }
+    out(`the worker's process group is empty${provable.length === 1 ? '' : ', for each of its groups'}; cleaning up after its dead driver`);
+    const { results, code } = await cleanUp(holder.macro_id ?? o.macro, holder.run_id);
+    if (!results.some((r) => r.run_id === holder.run_id)) {
+      out(`no open-run record names run ${holder.run_id} (a driver from before them): no halt was recorded, and its peers were not looked for — status shows the run as gone`);
+    }
+    // Record or none, the run is stopped only once none of its entries lives:
+    // a driver whose fingerprint does not read is alive to the lock, though no
+    // signal could be proven for it.
+    if (code === 0 && (await liveEntriesOf(holder.run_id)).length > 0) {
+      err(`✗ run ${holder.run_id} is not stopped: an entry of it still lives (its driver, pid ${holder.pid}, may run on, but cannot be proven the process the lock recorded); nothing more was signalled`);
+      return 1;
+    }
+    return code;
+  };
+  // The runs that hold a lock here: every macro lock under the main worktree
+  // and this worktree's lock. Each live entry is kept, grouped by run id.
+  const runs = new Map();
+  for (const l of listLocks(mainRoot, repoRoot)) {
+    if (!l.holder?.run_id || (o.macro && l.holder.macro_id !== o.macro)) continue;
+    if (!(await holderAlive(l.holder))) continue;
+    if (!runs.has(l.holder.run_id)) runs.set(l.holder.run_id, []);
+    runs.get(l.holder.run_id).push(l.holder);
+  }
+  if (runs.size === 0) {
+    out('no autopilot run is active');
+    return (await cleanUp(o.macro)).code;
+  }
+  if (runs.size > 1) {
+    err(`✗ ${runs.size} runs are active (${[...runs.values()].map(([h]) => `${h.run_id} on ${h.macro_id ?? '?'}`).join(', ')}); name one with --macro <id>`);
     return 1;
   }
+  const [entries] = runs.values();
+  const holder = entries[0];
+  // A signal needs proof that the pid is still the process the lock names
+  // (liveness errs toward "held"; this must not). The driver is stopped when
+  // it is provably there: it empties its worker groups, cancels the steps'
+  // peers and records the halt itself.
+  if (!(await provablySame(holder.pid, holder.fingerprint))) return stopDeadDriver(holder, entries);
+  process.kill(holder.pid, 'SIGTERM');
+  out(`sent SIGTERM to run ${holder.run_id} (pid ${holder.pid}) driving ${holder.macro_id ?? '(no macro)'}`);
   const deadline = Date.now() + wait;
   while (Date.now() < deadline) {
-    if (!(await holderAlive(holder))) { out('it stopped; its halt is recorded as interrupted'); return 0; }
+    // Read again each time: a worker group the run registered after stop
+    // listed its entries counts as much as one listed before.
+    const live = await liveEntriesOf(holder.run_id);
+    if (live.length === 0) {
+      // A driver that died instead of recording its end (a crash on the way
+      // out) leaves its open-run record: clean up after it now.
+      let left = null;
+      try { left = readOpenRun(mainRoot, holder.run_id); } catch { /* none */ }
+      if (left === null) { out('it stopped; its halt is recorded as interrupted'); return 0; }
+      out('its driver exited without recording its end; cleaning up after it');
+      return (await cleanUp(holder.macro_id ?? o.macro, holder.run_id)).code;
+    }
+    // Its driver gone and a group of it left: no driver will empty that group.
+    // An entry read while the driver still ran may be only its own, ended
+    // since: with no group among them, the next read decides.
+    if (!(await holderAlive({ pid: holder.pid, fingerprint: holder.fingerprint, worker: null }))) {
+      const n = workerGroups(live).length;
+      if (n > 0) {
+        out(`its driver exited, but ${n === 1 ? 'a worker group' : `${n} worker groups`} of it still run${n === 1 ? 's' : ''}`);
+        return stopDeadDriver(holder, live);
+      }
+    }
     await new Promise((r) => { setTimeout(r, 200); });
   }
   err('✗ it is still running; it stops once its worker\'s process group is empty (SIGKILL follows SIGTERM after 5 s)');
@@ -443,7 +565,7 @@ export async function main(argv = process.argv.slice(2), { env = process.env, io
     case 'preview': return previewCmd(o, repoRoot, env, out);
     case 'start': return startCmd(o, repoRoot, env, out, err, io);
     case 'status': return statusCmd(o, repoRoot, out, err);
-    case 'stop': return stopCmd(o, repoRoot, out, err);
+    case 'stop': return stopCmd(o, repoRoot, out, err, { env });
     default: return 1;
   }
 }

@@ -11,6 +11,11 @@
 //                       `finished` line after it
 //   landing.jsonl       a `landing-ready` line for each committed subtask the
 //                       run reported (landing-ready.mjs, ADR-0067 Decision 7)
+//   lanes.jsonl         the lane events of a run with lanes: created, adopted,
+//                       removed, kept, reconciled, reported, identity-assigned,
+//                       lanes-first-run, fetch-warning
+//                       (lanes.mjs, ADR-0067 Decisions 5 and 6); the lane's
+//                       git lock reason, not this file, proves ownership
 //   worker-<seq>.jsonl  the raw worker stream (byte-capped by worker.mjs)
 //   halt.json           reason, detail, pointer, resume hints
 //
@@ -21,6 +26,15 @@
 // directory of participant entries, each holding its run's pid and process
 // fingerprint (the peer-runner pattern), so an entry whose run died, or whose
 // pid was reused, is recognised as stale.
+//
+// Beside the locks, outside every lock directory, each run keeps an open-run
+// record, `<main>/.agentic-plugins/runs/autopilot/open/<run-id>.json`, from
+// before its first spawn until it ends with every worker group empty
+// (ADR-0067 Decision 6, Locks). It points at the run's ledger, so a run whose
+// driver died is found and cleaned up after (dead-runs.mjs), from any
+// checkout: no lock consumer lists that directory, so no lock cleanup deletes
+// the pointer. Whoever cleans up after a run holds `open/<run-id>.cleanup.lock/`
+// meanwhile, so two cleaners never meet in one ledger.
 
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
@@ -84,6 +98,10 @@ export function appendLanding(runDir, record) {
   fs.appendFileSync(path.join(runDir, 'landing.jsonl'), `${JSON.stringify(record)}\n`);
 }
 
+export function appendLaneEvent(runDir, record) {
+  fs.appendFileSync(path.join(runDir, 'lanes.jsonl'), `${JSON.stringify(record)}\n`);
+}
+
 export function writeHalt(runDir, haltRecord) {
   writeJsonAtomic(path.join(runDir, 'halt.json'), haltRecord);
 }
@@ -114,9 +132,88 @@ const readLines = (file) => {
   return out;
 };
 
+// ---------------------------------------------------------------------------
+// Open-run records (ADR-0067 Decision 6, Locks)
+
+export const OPEN_RUN_SCHEMA = 'agentic-autopilot-open-run-1.0';
+
+export function openRunsDir(mainRoot) {
+  return path.join(mainRoot, AUTOPILOT_DIR_REL, 'open');
+}
+
+export function openRunPath(mainRoot, runId) {
+  if (!isAutopilotRun({ AGENTIC_AUTOPILOT: runId })) throw new Error(`invalid run id ${runId}`);
+  return path.join(openRunsDir(mainRoot), `${runId}.json`);
+}
+
+/**
+ * Write a run's record: its id, macro, the checkout and run directory of its
+ * ledger, and its driver's pid and fingerprint, judged as a lock entry's are.
+ */
+export function writeOpenRun(mainRoot, { runId, macroId, checkout, runDir, pid, fingerprint, startedAt }) {
+  const file = openRunPath(mainRoot, runId);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  writeJsonAtomic(file, {
+    schema: OPEN_RUN_SCHEMA, run_id: runId, macro_id: macroId ?? null, checkout, run_dir: runDir,
+    pid, fingerprint, started_at: startedAt,
+  });
+  return file;
+}
+
+export function removeOpenRun(mainRoot, runId) {
+  try {
+    fs.unlinkSync(openRunPath(mainRoot, runId));
+    return true;
+  } catch (err) {
+    if (err.code === 'ENOENT') return false;
+    throw err;
+  }
+}
+
+export function readOpenRun(mainRoot, runId) {
+  return readJson(openRunPath(mainRoot, runId));
+}
+
+/**
+ * Every open-run record under the main worktree, oldest run first:
+ * [{ file, runId, record }] — `record` null, with `error`, for one that does
+ * not read as a record of its name.
+ */
+export function listOpenRuns(mainRoot) {
+  let names = [];
+  try {
+    names = fs.readdirSync(openRunsDir(mainRoot));
+  } catch (err) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
+  }
+  const out = [];
+  for (const name of names.filter((n) => n.endsWith('.json')).sort()) {
+    const runId = name.slice(0, -'.json'.length);
+    if (!isAutopilotRun({ AGENTIC_AUTOPILOT: runId })) continue;
+    const file = path.join(openRunsDir(mainRoot), name);
+    let record = null;
+    let error = null;
+    try {
+      record = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch (err) {
+      if (err.code === 'ENOENT') continue; // removed meanwhile
+      error = err.message;
+    }
+    if (record && (record.schema !== OPEN_RUN_SCHEMA || record.run_id !== runId
+      || typeof record.checkout !== 'string' || typeof record.run_dir !== 'string')) {
+      error = `not an open-run record of ${runId}`;
+      record = null;
+    }
+    out.push({ file, runId, record, ...(error ? { error } : {}) });
+  }
+  return out;
+}
+
 /**
  * One run's records: run.json, the steps (started/finished paired by seq), the
- * landing-ready records in the order they were written, halt.json.
+ * landing-ready records and the lane events in the order they were written,
+ * halt.json.
  */
 export function readRun(repoRoot, runId) {
   const dir = path.join(autopilotDir(repoRoot), runId);
@@ -131,6 +228,7 @@ export function readRun(repoRoot, runId) {
     dir, run,
     steps: [...steps.values()].sort((a, b) => a.seq - b.seq),
     landing: readLines(path.join(dir, 'landing.jsonl')),
+    lanes: readLines(path.join(dir, 'lanes.jsonl')),
     halt: readJson(path.join(dir, 'halt.json')),
   };
 }

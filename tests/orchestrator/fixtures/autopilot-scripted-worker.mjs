@@ -7,12 +7,12 @@
 //
 // FAKE_SCENARIO names a JSON file: { "<subtask>": { "next": [<next_step>…],
 // "file": true|false }, "actions": { "<seq>": "noop"|"edit-plan"|"sleep"|
-// "bump-engineer"|"report-failed" } } — `next` is the next step each verb of that subtask
+// "bump-engineer"|"report-failed"|"pending-sleep"|"peer-sleep" } } — `next` is the next step each verb of that subtask
 // records, in order; `file` makes its first verb write a file to commit:
 // `<id>.txt` for true, or the path it names, holding `<id>` either way (two
 // subtasks naming one path conflict).
 
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -98,7 +98,42 @@ export async function perform({ prompt, cwd, env }) {
       // before Phase 5 records the subtask in progress. The step is killed
       // in between.
       await eng.recordPendingEnsemble({ workflowPath: filePath, phase: 'compose', ensemble_type: 'plan-verify', run_id: 'plan-verify-20261001T000000Z-feed01' });
+      if (scenario.otherLane) {
+        // Another lane's subtask: its child launches a peer while this step
+        // runs. Killing this step must leave that peer alone.
+        const other = scenario.otherLane;
+        const { filePath: otherPath } = await eng.createWorkflow({
+          repoRoot: cwd, verb: 'compose', host: 'claude', profile: 'backend', originalRequest: `do ${other.id}`,
+          gitBaseline: { branch: other.branch, head: git('rev-parse', 'HEAD'), status_digest: '' },
+          currentPhase: 'phase-0-bootstrap', nextAction: 'Run the verb', parentWorkflow: macroId, originatingSubtask: other.id,
+        });
+        await eng.recordPendingEnsemble({ workflowPath: otherPath, phase: 'compose', ensemble_type: 'plan-verify', run_id: 'plan-verify-20261001T000000Z-feed02' });
+      }
       fs.writeFileSync(path.join(path.dirname(env.FAKE_SCENARIO), 'pending-ready'), '');
+      await new Promise((r) => { setTimeout(r, 60_000); });
+    }
+    if (action === 'peer-sleep') {
+      // The verb launches a real peer process, detached from this worker's
+      // group as peer-runner's is, under a handle that names the run
+      // (`autopilot_run`, ADR-0067 Decision 6) in the workflow's own peer-run
+      // home; then the driver dies (the test kills it) while the step runs.
+      const runner = await import(path.join(env.AGENTIC_ENGINEER_ROOT, 'scripts', 'peer-runner.mjs'));
+      const peer = spawn(node, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+      peer.unref();
+      await new Promise((r) => { setTimeout(r, 200); });
+      const peerId = 'plan-verify-20261001T000000Z-feed03';
+      const at = new Date().toISOString();
+      const dir = path.join(path.dirname(path.dirname(filePath)), 'peer-runs', peerId);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'handle.json'), JSON.stringify({
+        schema_version: '1.0', run_id: peerId, plugin: 'engineer', kind: 'ensemble', workflow_path: filePath, phase: 'compose',
+        ensemble_type: 'plan-verify', host: 'claude', peer_host: 'codex', model: null, effort: null, cwd, output_format: 'json',
+        status: 'running', pid: peer.pid, pgid: peer.pid, process_fingerprint: await runner.fingerprintForPid(peer.pid),
+        started_at: at, updated_at: at, completed_at: null, last_output_at: null, stdout_bytes: 0, stderr_bytes: 0,
+        exit_code: null, error_kind: null, prompt_retained: false, autopilot_run: env.AGENTIC_AUTOPILOT,
+      }, null, 2));
+      await eng.recordPendingEnsemble({ workflowPath: filePath, phase: 'compose', ensemble_type: 'plan-verify', run_id: peerId });
+      fs.writeFileSync(path.join(path.dirname(env.FAKE_SCENARIO), 'peer-ready'), JSON.stringify({ peer: peer.pid, peer_run_id: peerId, handle: path.join(dir, 'handle.json'), worker: process.pid }));
       await new Promise((r) => { setTimeout(r, 60_000); });
     }
     await orch.updateSubtask({ workflowPath: macroPath, subtaskId: id, host: 'claude', status: 'in_progress', engineerWorkflowId: wf });

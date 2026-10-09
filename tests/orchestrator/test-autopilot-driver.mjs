@@ -24,7 +24,7 @@ import { makeRepo, ORCH, ENG, RUNTIME } from './fixtures/autopilot-repo.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const AP = resolve(REPO_ROOT, 'plugins/orchestrator/adapters/claude/autopilot');
-const { startRun, DEFAULTS, effectiveStateRoot } = await import(resolve(AP, 'driver.mjs'));
+const { startRun, DEFAULTS, effectiveStateRoot, newPendingRuns } = await import(resolve(AP, 'driver.mjs'));
 const L = await import(resolve(AP, 'ledger.mjs'));
 const fingerprintForPid = L.processFingerprint;
 const FAKE = resolve(REPO_ROOT, 'tests/orchestrator/fixtures/autopilot-fake-claude.mjs');
@@ -83,6 +83,7 @@ describe('the landing round trip (D23 = A)', () => {
       }
       deepStrictEqual(L.readLockEntries(L.macroLockPath(t.work, t.fx.macroId)), [], 'the macro lock is released');
       deepStrictEqual(L.readLockEntries(L.worktreeLockPath(t.work)), [], 'the worktree lock is released');
+      deepStrictEqual(L.listOpenRuns(t.work), [], 'a halted run removes its open-run record');
 
       // The owner pushes, reviews and squash-merges A.
       t.fx.setPrs([t.fx.land('A', 'feat/a')]);
@@ -97,6 +98,7 @@ describe('the landing round trip (D23 = A)', () => {
       ]);
       strictEqual(r.run.status, 'completed');
       strictEqual(r.halt, null);
+      deepStrictEqual(L.listOpenRuns(t.work), [], 'a completed run removes its open-run record');
       ok(!existsSync(t.fx.macroPath), 'the macro is archived');
       const archived = readdirSync(join(t.work, '.agentic-plugins/state/orchestrator/archive')).filter((n) => n.startsWith(t.fx.macroId));
       strictEqual(archived.length, 1);
@@ -341,6 +343,61 @@ process.stdout.write(JSON.stringify({ ok: true, run_id: process.argv[4], status:
   });
 });
 
+describe('peer cancellation is the step\'s own (ADR-0067 Decision 6)', () => {
+  it('cancels the peer run of the killed step\'s subtask, and leaves another lane\'s pending run alone', async () => {
+    const copy = mkdtempSync(join(tmpdir(), 'autopilot-engineer-stub-'));
+    const engCopy = join(copy, 'engineer');
+    cpSync(ENG, engCopy, { recursive: true });
+    const log = join(copy, 'peer-runner.log');
+    writeFileSync(join(engCopy, 'scripts', 'peer-runner.mjs'), `#!/usr/bin/env node
+import fs from 'node:fs';
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + '\\n');
+process.stdout.write(JSON.stringify({ ok: true, run_id: process.argv[4], status: 'cancelled' }) + '\\n');
+`);
+    const t = await setup({
+      scenario: { A: { next: [COMMIT] }, B: { next: [DONE] }, actions: { 1: 'pending-sleep' }, otherLane: { id: 'B', branch: 'feat/b' } },
+      roots: { orchestrator: ORCH, engineer: engCopy, runtime: RUNTIME },
+    });
+    const signals = new EventEmitter();
+    try {
+      const running = startRun({
+        repoRoot: t.work,
+        options: { ...DEFAULTS, models: 'owner-default', model: null, effort: null, macro: null, forced: null, forcedText: null, notifyLocal: false },
+        env: t.env, out: (s) => t.lines.push(s), err: (s) => t.lines.push(`ERR ${s}`), deps: { signals },
+      });
+      const ready = join(t.fx.dir, 'pending-ready');
+      const deadline = Date.now() + 30_000;
+      while (Date.now() < deadline && !existsSync(ready)) await new Promise((r) => { setTimeout(r, 100); });
+      ok(existsSync(ready), t.lines.join('\n'));
+      signals.emit('SIGTERM');
+      strictEqual(await running, 2);
+      const r = t.latest();
+      strictEqual(r.halt.reason, 'interrupted');
+      deepStrictEqual(r.steps[0].peer_cancellations.map((c) => c.run_id), ['plan-verify-20261001T000000Z-feed01']);
+      const calls = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+      deepStrictEqual(calls, [['cancel', '--run-id', 'plan-verify-20261001T000000Z-feed01', '--repo-root', t.work]],
+        'B\'s pending run became pending during the step too, but it is another lane\'s');
+    } finally {
+      t.fx.cleanup();
+      rmSync(copy, { recursive: true, force: true });
+    }
+  });
+
+  it('takes a step\'s new pending runs from its own subtask\'s in-progress child and claims, never another subtask\'s child', () => {
+    // Both subtasks in progress, each child with a peer started during the
+    // step: the case the scripted test above, whose subtasks are pending, does
+    // not reach.
+    const before = { children: { A: { pending_runs: ['a0'] }, B: { pending_runs: ['b0'] } }, claims: [] };
+    const after = {
+      children: { A: { pending_runs: ['a0', 'a1'] }, B: { pending_runs: ['b0', 'b1'] } },
+      claims: [{ originating_subtask: 'A', pending_runs: ['a2'] }, { originating_subtask: 'B', pending_runs: ['b2'] }],
+    };
+    deepStrictEqual(newPendingRuns(before, after, 'A').sort(), ['a1', 'a2']);
+    deepStrictEqual(newPendingRuns(before, after, 'B').sort(), ['b1', 'b2']);
+    deepStrictEqual(newPendingRuns(before, after, null), [], 'a step with no subtask has none');
+  });
+});
+
 describe('a process group that outlives SIGKILL (round 4)', () => {
   it('halts the run, which keeps its lock entries until the group is empty', async () => {
     const t = await setup({ scenario: { A: { next: [COMMIT] }, B: { next: [DONE] } } });
@@ -357,6 +414,8 @@ describe('a process group that outlives SIGKILL (round 4)', () => {
       const r = t.latest();
       deepStrictEqual([r.steps.length, r.steps[0].group_teardown, r.halt.reason], [1, 'lingering', 'worker-failed']);
       ok(/still there after SIGKILL/.test(r.halt.detail), r.halt.detail);
+      // Its open-run record stays with the entries (ADR-0067 Decision 6, Locks).
+      ok(L.readOpenRun(t.work, r.run.run_id), 'a run whose group lingers keeps its open-run record');
       const locks = [L.worktreeLockPath(t.work), L.macroLockPath(t.work, t.fx.macroId)];
       for (const lock of locks) {
         const entries = L.readLockEntries(lock);
@@ -378,6 +437,31 @@ describe('a process group that outlives SIGKILL (round 4)', () => {
       }
     } finally {
       if (member) { try { process.kill(member, 'SIGKILL'); } catch { /* gone */ } }
+      t.fx.cleanup();
+    }
+  });
+});
+
+describe('an error in the middle of a step (ADR-0067 Decision 6, Locks)', () => {
+  it('tears the step down before it releases anything, and a group that outlived SIGKILL keeps the entries and the open-run record', async () => {
+    const t = await setup({ scenario: { A: { next: [COMMIT] }, B: { next: [DONE] } } });
+    try {
+      let aborted = null;
+      // A worker whose start fails once it is on the locks, and whose group
+      // outlives the teardown.
+      const startWorker = () => ({
+        sessionId: 's-err', pid: process.pid,
+        begin: () => { throw new Error('the step could not begin'); },
+        abort: (reason) => { aborted = reason; },
+        done: new Promise((r) => { setTimeout(() => r({ groupTeardown: 'lingering' }), 50); }),
+      });
+      await assert.rejects(t.run({}, { startWorker }), /the step could not begin/);
+      strictEqual(aborted, 'interrupted');
+      const r = t.latest();
+      strictEqual(r.run.status, 'error');
+      strictEqual(L.readLockEntries(L.worktreeLockPath(t.work)).length, 1, 'the entry naming the group stays');
+      ok(L.readOpenRun(t.work, r.run.run_id), 'so does the open-run record');
+    } finally {
       t.fx.cleanup();
     }
   });
