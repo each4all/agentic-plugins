@@ -29,6 +29,17 @@
       "requires": []
     },
     {
+      "id": "lib-state-root",
+      "source": "files/scripts/lib/state-root.mjs",
+      "dest": "scripts/lib/state-root.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
       "id": "lib-yaml-mini",
       "source": "files/scripts/lib/yaml-mini.mjs",
       "dest": "scripts/lib/yaml-mini.mjs",
@@ -464,6 +475,26 @@
     {
       "id": "resume-marker",
       "template": "regions/resume-marker.md",
+      "dest": "commands/resume.md",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "resume-archive-resolve",
+      "template": "regions/resume-archive-resolve.md",
       "dest": "commands/resume.md",
       "personas": [
         "designer",

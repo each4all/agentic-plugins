@@ -28,6 +28,9 @@ const DES = 'plugins/designer/scripts/stop-archive.mjs';
 const FOU = 'plugins/founder/scripts/stop-archive.mjs';
 const stateOf = (file) => file.replace('stop-archive.mjs', 'state.mjs');
 const DONE = 'plugins/orchestrator/commands/done.md';
+// done's owner and active-child scans read the engineer homes through one
+// reader in orchestrator's state.mjs (owner-dispatch, active-child).
+const ORCH_STATE = 'plugins/orchestrator/scripts/state.mjs';
 
 export const TESTS = [T_ENG, T_DONE];
 
@@ -63,10 +66,15 @@ const keptBranchPath = (id, file, tests, persona) => [
     why: `${persona}: a ref that does not resolve to a commit is treated as deleted and archived`,
   },
   {
+    // With the checkout unknown, two lines keep the checked-out branch's
+    // workflow from the sweep: the worktree-branch skip (git worktree list
+    // still names it) and the unknown-checkout guard. Dropping the guard alone
+    // is equivalent, so the defect drops both while the checkout is unknown.
     id: `${id}6`, file, tests,
-    from: "      if (checkout.state === 'unknown') continue; // any kept branch could be the checked-out one",
-    to: '      void 0;',
+    from: "    if (elsewhere.branches.has(branch)) continue; // another worktree's Stop owns it\n    const refState = branchRefState(repoRoot, branch);\n    if (refState === 'present') {\n      if (checkout.state === 'unknown' || !elsewhere.ok) continue; // any kept branch could be a checked-out one",
+    to: "    if (checkout.state !== 'unknown' && elsewhere.branches.has(branch)) continue; // another worktree's Stop owns it\n    const refState = branchRefState(repoRoot, branch);\n    if (refState === 'present') {\n      if (!elsewhere.ok) continue; // any kept branch could be a checked-out one",
     why: `${persona}: with the checkout unknown, the checked-out branch's workflow is judged by the sweep`,
+    killed_by: /leaves every kept branch when git cannot say which branch is checked out/,
   },
   {
     id: `${id}7`, file, tests,
@@ -111,32 +119,32 @@ export const MUTATIONS = [
   // ---- G: /orchestrator:done scans fail closed --------------------------------
   {
     id: 'G1', file: DONE, tests: [T_DONE],
-    from: ')" || {\n    echo "✗ Could not scan the engineer workflow homes for an active child of $SUBTASK_ID (see the error above); refusing --no-commit." >&2\n    exit 1\n  }',
+    from: ')" || {\n      echo "✗ Could not scan the engineer workflow homes for an active child of $SUBTASK_ID (see the error above); refusing --no-commit." >&2\n      return 1\n    }',
     to: ')"',
     why: '--no-commit reads a failed child scan as "no child" and completes the subtask',
   },
   {
-    id: 'G2', file: DONE, tests: [T_DONE],
-    from: 'catch (e) { if (missing(e)) continue; throw e; }\n            if (text.includes(',
-    to: 'catch (e) { continue; }\n            if (text.includes(',
-    why: '--no-commit skips a child file it cannot read',
+    id: 'G2', file: ORCH_STATE, tests: [T_DONE],
+    from: "          if (text === null) throw new Error(`${path} is not a regular file`);",
+    to: "          if (text === null) continue;",
+    why: 'the scans skip a workflow name that is not a file they can read (a directory)',
   },
   {
-    id: 'G3', file: DONE, tests: [T_DONE],
-    from: 'let names = []; try { names = fs.readdirSync(dir); } catch (e) { if (missing(e)) continue; throw e; }',
-    to: 'let names = []; try { names = fs.readdirSync(dir); } catch (e) { continue; }',
-    why: '--no-commit skips a workflow home it cannot list',
+    id: 'G3', file: ORCH_STATE, tests: [T_DONE],
+    from: "          names = readdirSync(dir);\n        } catch (err) {\n          if (err.code === 'ENOENT') continue;\n          throw err;\n        }",
+    to: "          names = readdirSync(dir);\n        } catch (err) {\n          continue;\n        }",
+    why: 'the scans skip a workflow home they cannot list',
   },
   {
     id: 'G4', file: DONE, tests: [T_DONE],
-    from: ')" || {\n    echo "✗ Could not scan the engineer workflow homes for $SUBTASK_ID\'s owner (see the error above); refusing to guess." >&2\n    exit 1\n  }',
-    to: ')"',
+    from: '  DISPATCH_ARGS=(--waive-dispatch)\nelse\n  exit 1\nfi',
+    to: '  DISPATCH_ARGS=(--waive-dispatch)\nfi',
     why: 'the owner scan reads a failed scan as its result and records a guessed owner',
   },
   {
-    id: 'G5', file: DONE, tests: [T_DONE],
-    from: 'catch (e) { if (missing(e)) continue; throw e; }\n            const fm =',
-    to: 'catch (e) { continue; }\n            const fm =',
-    why: 'the owner scan skips a file it cannot read, which could be a second claimant',
+    id: 'G5', file: ORCH_STATE, tests: [T_DONE],
+    from: "            text = readFrontmatterText(path);\n          } catch (err) {\n            if (err.code === 'ENOENT') continue;\n            throw err;\n          }",
+    to: "            text = readFrontmatterText(path);\n          } catch (err) {\n            continue;\n          }",
+    why: 'the scans skip a file they cannot read (a link loop), which could be a second claimant',
   },
 ];

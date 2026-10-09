@@ -127,8 +127,8 @@ export const MUTATIONS = [
   },
   {
     id: 'W7', file: WRITEBACK, tests: [T_PATH],
-    from: '    if (recordedCheckout !== null) archiveDirs.push(...orchArchiveDirs(recordedCheckout));',
-    to: '    void 0;',
+    from: '    const archiveDirs = roots.flatMap(orchArchiveDirs);',
+    to: '    const archiveDirs = readSet(resolve(repoRoot)).flatMap(orchArchiveDirs);',
     why: 'a macro archived in another checkout reads as a dangling linkage',
     killed_by: /a macro archived in the recorded home reads as archived/,
   },
@@ -148,8 +148,8 @@ export const MUTATIONS = [
   },
   {
     id: 'W10', file: WRITEBACK, tests: [T_PATH],
-    from: '  for (const dir of homes) {',
-    to: '  for (const dir of (recordedPath === null ? [] : homes)) {',
+    from: '  for (const [dir, candidate] of searchedDirs) {',
+    to: '  for (const [dir, candidate] of (recordedPath === null ? [] : searchedDirs)) {',
     why: 'a child with no recorded path (written before ADR-0067) no longer writes back',
     killed_by: /writes back through the candidates under repoRoot, as before/,
   },
@@ -162,8 +162,8 @@ export const MUTATIONS = [
   },
   {
     id: 'W12', file: WRITEBACK, tests: [T_PATH],
-    from: '  const homes = [...orchWorkflowDirs(repoRoot), ...(recordedCheckout === null ? [] : orchWorkflowDirs(recordedCheckout))];',
-    to: '  const homes = [...orchWorkflowDirs(repoRoot)];',
+    from: '    ...roots.flatMap(orchWorkflowDirs).map((dir) => [dir, true]),',
+    to: '    ...readSet(resolve(repoRoot)).flatMap(orchWorkflowDirs).map((dir) => [dir, true]),',
     why: 'a second copy in the other home of the recorded checkout goes unseen, and a migrated macro is lost',
     killed_by: [/refuses when a second file holds the macro id/, /a recorded path in a legacy home reaches the macro there/],
   },

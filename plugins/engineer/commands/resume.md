@@ -81,7 +81,8 @@ Branch on the result:
   per-branch single-active invariant (ADR-0018 §sub-2 cascade of
   ADR-0011 §1). This is corruption / external mutation since
   `createWorkflow` itself rejects same-branch duplicates. List ALL
-  candidate files in the workflows directory together with each
+  candidate files in the workflow homes of this checkout's read set
+  (the default state root and this checkout) together with each
   file's `git_baseline.branch` so the user can see which ones belong
   to other branches (those are coexisting workflows on parallel
   branches and are NOT the duplicate); the duplicates are the rows
@@ -91,15 +92,16 @@ Branch on the result:
   ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
   CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
   [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-  for dir in "$REPO_ROOT/.agentic-plugins/state/engineer/workflows" "$REPO_ROOT/.claude/agentic-engineer/workflows"; do
-    for f in "$dir"/*.md; do
-      [ -f "$f" ] || continue
+  REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+  # Every workflow file in the workflow homes of this checkout's read set
+  # (ADR-0067 Decision 1(a)), the default state root's first.
+  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" list-workflows --repo-root "$REPO_ROOT" \
+    | while IFS= read -r f; do
       BR="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read \
         --workflow-path "$f" 2>/dev/null \
         | sed -n 's/^[[:space:]]*"branch": "\(.*\)",/\1/p' | head -1)"
-      echo "  $(basename "$f") — branch=$BR"
+      echo "  $f — branch=$BR"
     done
-  done
   ```
 
   Present each candidate with its frontmatter `current_phase` /
@@ -292,24 +294,45 @@ Parse the rest of the argument:
   error, reject with a usage hint: `/engineer:resume archive
   <workflow-id>` is required when more than one workflow file exists
   on the current branch.
-- `archive <id>` → archive the named workflow. Validate the id
-  matches the workflow_id regex per ADR-0011 §1. Resolve to
-  `<REPO_ROOT>/.agentic-plugins/state/engineer/workflows/<id>.md`
-  (or the legacy `.claude/agentic-engineer/workflows/<id>.md`) and confirm
-  it exists.
+- `archive <id>` → archive the named workflow: the file the block
+  below prints, found in the workflow homes of this checkout's read set
+  (ADR-0067 Decision 4, item 2), the default state root first; stop
+  when it exits non-zero (an id that is not a workflow id, no root
+  holds it, or two files do).
+
+For the named form, put the id in place of `<workflow-id>` and run:
+
+<!-- pipeline:begin resume-archive-resolve -->
+```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+ARCHIVE_WORKFLOW_ID='<workflow-id>'
+if ! WORKFLOW="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
+    resolve-workflow --repo-root "$REPO_ROOT" --workflow-id "$ARCHIVE_WORKFLOW_ID")"; then
+  echo "✗ $ARCHIVE_WORKFLOW_ID names no single workflow file in the workflow homes of this checkout's read set (the reason is above); nothing archived." >&2
+  exit 1
+fi
+printf 'WORKFLOW=%s\n' "$WORKFLOW"
+```
+<!-- pipeline:end resume-archive-resolve -->
 
 Confirm with the user before mutating state — archive is reversible
 (the file moves to `archive/`, not deleted) but the active registry
 loses the entry. Show the workflow_id, current_phase, and next_action
 so the user can sanity-check.
 
-On confirmation:
+On confirmation, put the workflow path (Phase 1's, or the one printed
+above) in place of `<workflow path>` and run:
 
 <!-- pipeline:begin resume-archive -->
 ```bash
 ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+WORKFLOW='<workflow path>'
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" archive \
   --workflow-path "$WORKFLOW" --host "${AGENTIC_HOST:-claude}" --repo-root "$REPO_ROOT"
 ```

@@ -56,7 +56,9 @@ import {
   stat,
   mkdir,
   open,
+  lstat,
 } from 'node:fs/promises';
+import { lstatSync, realpathSync, statSync } from 'node:fs';
 import { join, dirname, basename, isAbsolute, resolve as resolvePath } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { hrtime, pid } from 'node:process';
@@ -72,6 +74,27 @@ import { execFileSync } from 'node:child_process';
 import { assertSafePath } from './validate-commit.mjs';
 import { isCliEntry } from './lib/cli-entry.mjs';
 import { capabilityOn, commandPrefix, personaName, personaOrRefuse, stateDirRel } from './lib/persona.mjs';
+import {
+  aliasedComponent,
+  commandCheckout,
+  creationRoot,
+  defaultStateRoot,
+  describeStateRoot,
+  disableSharedCreation,
+  enableSharedCreation,
+  otherCopiesOf,
+  otherWorktreeRoots,
+  readFrontmatterText,
+  readSet,
+  readSharedCreation,
+  repositoryRoots,
+  runInCommandDirectory,
+  sameDirectory,
+  samePhysicalFile,
+  workflowEntryProblem,
+  workflowIdOfText,
+  writerRoots,
+} from './lib/state-root.mjs';
 import { fileURLToPath } from 'node:url';
 
 // -----------------------------------------------------------------------------
@@ -329,6 +352,9 @@ function statePaths(repoRoot, home = 'canonical') {
   if (!spec) throw new Error(`unknown workflow state home: ${home}`);
   return {
     ...spec,
+    // The root this home sits under: a checkout's toplevel or the default
+    // state root (ADR-0067 Decision 1(a)), never read as a checkout for git.
+    stateRoot: repoRoot,
     root: join(repoRoot, spec.stateDirRel),
     workflows: join(repoRoot, spec.workflowDirRel),
     archive: join(repoRoot, spec.archiveDirRel),
@@ -402,20 +428,155 @@ export async function resolveWorkflowStorage(repoRoot, { mode = 'read' } = {}) {
   };
 }
 
+// The home a workflow file sits in and the state root that holds it (ADR-0067
+// Decision 1(b)): the root its archive, locks and peer runs derive from. It is
+// never a checkout: git facts come from the checkout a command runs in.
 function inferStorageFromWorkflowPath(workflowPath) {
   const text = String(workflowPath);
   const canonicalNeedle = `/${stateDirRel()}/`;
   const canonicalIndex = text.indexOf(canonicalNeedle);
   if (canonicalIndex >= 0) {
-    return { home: 'canonical', repoRoot: text.slice(0, canonicalIndex) };
+    return { home: 'canonical', stateRoot: text.slice(0, canonicalIndex) };
   }
   if (capabilityOn('legacy_homes')) {
     const legacyIndex = text.indexOf(`/${legacyStateDirRel()}/`);
     if (legacyIndex >= 0) {
-      return { home: 'legacy', repoRoot: text.slice(0, legacyIndex) };
+      return { home: 'legacy', stateRoot: text.slice(0, legacyIndex) };
     }
   }
   return null;
+}
+
+// The state root holding a workflow file (ADR-0067 Decision 1(c)): a pointer
+// into the record is spelled relative to it. Null when the path is under no
+// state home.
+export function workflowStateRoot(workflowPath) {
+  return workflowStorage(workflowPath)?.stateRoot ?? null;
+}
+
+// The home a workflow file sits in and the state root holding it,
+// `{ home, stateRoot }`, or null when the path is under no state home: the
+// home its archive, locks and peer runs derive from (ADR-0067 Decision 4,
+// item 2).
+export function workflowStorage(workflowPath) {
+  const inferred = inferStorageFromWorkflowPath(resolvePath(String(workflowPath)));
+  return inferred && inferred.stateRoot.length > 0 ? inferred : null;
+}
+
+// ADR-0067 Decision 1(a) — the checkout a command runs in, or null when it
+// cannot be told (lib/state-root.mjs).
+export { commandCheckout };
+
+// -----------------------------------------------------------------------------
+// ADR-0067 — the read set and the creation locks
+
+function homeNames() {
+  return capabilityOn('legacy_homes') ? ['canonical', 'legacy'] : ['canonical'];
+}
+
+// Where existing records are found: the default state root first, then the
+// checkout when it is another directory (Decision 1(a)). AGENTIC_STATE_BASE
+// and the shared-creation switch never narrow it.
+function lookupRoots(repoRoot) {
+  assertAbsoluteRepoRoot(repoRoot);
+  return readSet(repoRoot);
+}
+
+/**
+ * ADR-0067 Decision 4, item 2 — one writable copy. Every write to an existing
+ * record goes through `withFileLock`, which, holding the file's lock, refuses:
+ * - a path whose last component is a symbolic link: the atomic replace would
+ *   turn the alias into a second copy;
+ * - a record in a `workflows/` home whose workflow id is also held by a second
+ *   file, under its name or another, in any home of any root of the
+ *   repository (the read set and every worktree's own homes): two files at
+ *   one relative path under two roots are the ambiguity the readers report,
+ *   and a writer never picks one;
+ * - a record whose branch key has a second active workflow in the read set of
+ *   the root holding it or of the checkout the command runs in (Decision 2;
+ *   Decision 4, item 1): the readers there report the ambiguity.
+ * A directory or a file that cannot be read, or worktrees git cannot list,
+ * refuse too: the copy may be there.
+ */
+async function assertSingleCopy(workflowPath) {
+  const absolute = resolvePath(String(workflowPath));
+  let st;
+  try {
+    st = await lstat(absolute);
+  } catch (err) {
+    if (err.code === 'ENOENT') return;
+    throw err;
+  }
+  if (st.isSymbolicLink()) {
+    throw new Error(
+      `Refusing to write ${JSON.stringify(absolute)}: it is a symbolic link, and the atomic replace would turn ` +
+        'the alias into a second copy of the workflow. Write the file it names (ADR-0067 Decision 4, item 2).',
+    );
+  }
+  if (basename(dirname(absolute)) !== 'workflows') return;
+  const inferred = inferStorageFromWorkflowPath(absolute);
+  if (!inferred || inferred.stateRoot.length === 0) return;
+  // The frontmatter only, from a regular file opened without blocking: a FIFO
+  // in the record's place is refused, never waited on.
+  let text;
+  try {
+    text = readFrontmatterText(absolute);
+  } catch (err) {
+    if (err.code === 'ENOENT') return;
+    throw err;
+  }
+  if (text === null) {
+    throw new Error(
+      `Refusing to write ${JSON.stringify(absolute)}: it is not a regular file (ADR-0067 Decision 4, item 1).`,
+    );
+  }
+  const name = basename(absolute);
+  const copies = otherCopiesOf({
+    file: absolute,
+    workflowId: workflowIdOfText(text),
+    dirs: repositoryRoots(inferred.stateRoot).flatMap((root) => homeNames().map((home) => workflowDir(root, { home }))),
+  });
+  if (copies.length === 0) {
+    const branch = extractFrontmatterBranch(text);
+    // Throws, naming both files, when the branch key has a second one.
+    if (branch) await findActiveWorkflowByBranchInRoots(writerRoots(inferred.stateRoot), branch);
+  }
+  if (copies.length > 0) {
+    throw new Error(
+      `Ambiguous ${personaName()} workflow storage: ${name} is held by ${copies.length + 1} files: ` +
+        `${[absolute, ...copies].map((f) => JSON.stringify(f)).join(', ')}. One workflow has one writable copy ` +
+        '(ADR-0067 Decision 4, item 2): no write goes to either until one is removed ' +
+        '(docs/runbooks/state-root-cutover.md).',
+    );
+  }
+}
+
+// The write guard of withFileLock, run without the lock: a caller about to
+// start work that ends in a write to `workflowPath` (an ensemble run) asks it
+// first, so a refusal comes before that work (ADR-0067 Decision 4, item 2).
+// The write itself checks again, holding the lock.
+export async function assertWorkflowWritable(workflowPath) {
+  await assertSingleCopy(workflowPath);
+}
+
+/**
+ * ADR-0067 Decision 2 — the creation locks a create or an archive takes on
+ * the home it writes (`storage`): with shared creation on, the repository's
+ * (the default state root's home) first, then the written home's when that is
+ * another, always in that order, so an older script, which takes only the
+ * lock of the home it writes, still meets this one; with it off, the written
+ * home's alone, as before. An unreadable switch takes both.
+ */
+async function withCreationLocks(storage, fn) {
+  const switchState = readSharedCreation(storage.stateRoot).state;
+  if (switchState === 'off') return withDirectoryLock(storage.stateRoot, fn, { storage });
+  const defaultRoot = defaultStateRoot(storage.stateRoot);
+  const repoStorage = await resolveWorkflowStorage(defaultRoot, { mode: 'write' });
+  if (samePhysicalFile(repoStorage.creationLock, storage.creationLock) ||
+      (sameDirectory(defaultRoot, storage.stateRoot) && repoStorage.home === storage.home)) {
+    return withDirectoryLock(storage.stateRoot, fn, { storage });
+  }
+  return withDirectoryLock(defaultRoot, () => withDirectoryLock(storage.stateRoot, fn, { storage }), { storage: repoStorage });
 }
 
 // -----------------------------------------------------------------------------
@@ -690,6 +851,9 @@ export async function withFileLock(workflowPath, fn) {
   const token = await acquireLock(lockPath);
   let releaseOk = false;
   try {
+    // ADR-0067 Decision 4, item 2 — checked holding the lock, so a copy that
+    // appears while this writer waits for it is seen.
+    await assertSingleCopy(workflowPath);
     const result = await fn({ lockPath, token });
     releaseOk = true;
     return result;
@@ -715,20 +879,64 @@ export async function withFileLock(workflowPath, fn) {
  * directory-level lock if exclusivity matters.
  */
 export async function listWorkflowFiles(repoRoot) {
-  const storage = await resolveWorkflowStorage(repoRoot);
-  const st = await pathStat(storage.workflows);
-  if (!st) return [];
-  let entries;
-  try {
-    entries = await readdir(storage.workflows);
-  } catch (err) {
-    if (err.code === 'ENOENT') return [];
-    throw err;
+  // ADR-0067 Decision 1(a): every home of every root of the read set, not the
+  // home resolveWorkflowStorage selects: an active workflow in the legacy home
+  // stays listed while the canonical home holds only archive or peer state.
+  return listWorkflowFilesAllHomes(repoRoot);
+}
+
+// The `.md` workflow files of `dirs`, in that order, each directory's sorted,
+// one entry per physical file, under the name that is not a link, else the
+// first: the read set's default state root comes first, so of two plain names
+// that one is kept (ADR-0067 Decision 4, items 1 and 2).
+async function workflowFilesIn(dirs) {
+  const files = [];
+  const seen = new Map();
+  for (const dir of dirs) {
+    let entries;
+    try {
+      entries = await readdir(dir);
+    } catch (err) {
+      // Only absence is none: a file in the home's place (ENOTDIR) is a layout
+      // runtime's readers refuse too (ADR-0067 Decision 4, item 1).
+      if (err.code === 'ENOENT') continue;
+      throw err;
+    }
+    for (const name of entries.sort()) {
+      if (!name.endsWith('.md') || name.endsWith('.md.tmp')) continue;
+      const file = join(dir, name);
+      // A FIFO, a device or a directory under a workflow name is refused, as
+      // runtime's readers refuse it (ADR-0067 Decision 4, item 1): the Stop's
+      // sweep would otherwise wait on it.
+      const problem = workflowEntryProblem(file);
+      if (problem === 'gone') continue;
+      if (problem !== null) {
+        throw new Error(
+          `${personaName()} workflow home ${safeFilename(dir)}: ${name} is ${problem}. Remove it, or replace it with the workflow file (ADR-0067 Decision 4, item 1).`,
+        );
+      }
+      let identity = file;
+      try {
+        identity = realpathSync(file);
+      } catch {
+        /* vanished or unreadable: its spelling stands in */
+      }
+      if (seen.has(identity)) {
+        // The name that is not a link wins over a link kept first, as
+        // addPhysicalMatch keeps it: a writer is handed the file itself.
+        const index = seen.get(identity);
+        try {
+          if (lstatSync(files[index]).isSymbolicLink() && !lstatSync(file).isSymbolicLink()) files[index] = file;
+        } catch {
+          /* gone since the listing: keep the name already held */
+        }
+        continue;
+      }
+      seen.set(identity, files.length);
+      files.push(file);
+    }
   }
-  return entries
-    .filter((name) => name.endsWith('.md') && !name.endsWith('.md.tmp'))
-    .map((name) => join(storage.workflows, name))
-    .sort();
+  return files;
 }
 
 /**
@@ -740,24 +948,8 @@ export async function listWorkflowFiles(repoRoot) {
  * ENOENT is a clean skip.
  */
 export async function listWorkflowFilesAllHomes(repoRoot) {
-  const dirs = [
-    workflowDir(repoRoot, { home: 'canonical' }),
-    ...(capabilityOn('legacy_homes') ? [workflowDir(repoRoot, { home: 'legacy' })] : []),
-  ];
-  const files = [];
-  for (const dir of dirs) {
-    let entries;
-    try {
-      entries = await readdir(dir);
-    } catch (err) {
-      if (err.code === 'ENOENT') continue;
-      throw err;
-    }
-    for (const name of entries) {
-      if (name.endsWith('.md') && !name.endsWith('.md.tmp')) files.push(join(dir, name));
-    }
-  }
-  return files.sort();
+  // ADR-0067 Decision 1(a): every home of every root of the read set.
+  return workflowFilesIn(lookupRoots(repoRoot).flatMap((root) => homeNames().map((home) => workflowDir(root, { home }))));
 }
 
 /**
@@ -990,6 +1182,22 @@ function safeFilename(file) {
  *  - `readFile` failure (permissions, FIFO, etc.) is also fail-closed
  *    for the same reason — branch identity is undeterminable.
  */
+// One file reached through two names in a directory (a symlink to it) is one
+// workflow; the name that is not a link is kept, so a writer is handed the file
+// itself (ADR-0067 Decision 4, item 2).
+function addPhysicalMatch(matching, file) {
+  const index = matching.findIndex((m) => samePhysicalFile(m, file));
+  if (index < 0) {
+    matching.push(file);
+    return;
+  }
+  try {
+    if (lstatSync(matching[index]).isSymbolicLink() && !lstatSync(file).isSymbolicLink()) matching[index] = file;
+  } catch {
+    /* gone since the listing: keep the name already held */
+  }
+}
+
 async function findActiveWorkflowByBranchInDir(dir, branch) {
   if (!branch) return null;
   const st = await pathStat(dir);
@@ -1009,17 +1217,33 @@ async function findActiveWorkflowByBranchInDir(dir, branch) {
   for (const file of files) {
     let text;
     try {
-      text = await readFile(file, 'utf8');
+      // Through the frontmatter only, and regular files only: the scan runs
+      // under a writer's lock across every worktree, so a FIFO or a long body
+      // must not stall it (ADR-0067 Decision 4, item 2).
+      text = readFrontmatterText(file);
     } catch (err) {
+      // Gone since the listing: an archive moved it, so it is not active
+      // (ADR-0067: another worktree's archive may run between the two).
+      if (err.code === 'ENOENT') continue;
       throw new Error(
         `findActiveWorkflowByBranch: failed to read workflow file ${safeFilename(file)} ` +
           `(${err.code || err.message}). Cannot determine its branch — per-branch ` +
           `single-active invariant at risk (ADR-0018 §sub-2). Reconcile manually.`,
       );
     }
+    // Not a regular file (a FIFO, a device, a directory): its branch cannot
+    // be read, and runtime's readers report it as not a regular file, so the
+    // writers refuse too, without waiting on it (ADR-0067 Decision 4, item 1).
+    if (text === null) {
+      throw new Error(
+        `findActiveWorkflowByBranch: workflow file ${safeFilename(file)} is not a regular file. ` +
+          'Cannot determine its branch — per-branch single-active invariant at risk (ADR-0018 §sub-2). ' +
+          'Remove it or replace it with the workflow file.',
+      );
+    }
     const fmBranch = extractFrontmatterBranch(text);
     if (fmBranch !== null) {
-      if (fmBranch === branch) matching.push(file);
+      if (fmBranch === branch) addPhysicalMatch(matching, file);
       continue;
     }
     let fm;
@@ -1039,7 +1263,7 @@ async function findActiveWorkflowByBranchInDir(dir, branch) {
       typeof fm.git_baseline.branch === 'string' &&
       fm.git_baseline.branch === branch
     ) {
-      matching.push(file);
+      addPhysicalMatch(matching, file);
     }
   }
   if (matching.length === 0) return null;
@@ -1051,19 +1275,22 @@ async function findActiveWorkflowByBranchInDir(dir, branch) {
   );
 }
 
-export async function findActiveWorkflowByBranch(repoRoot, branch) {
-  if (!branch) return null;
+// The active workflow on `branch` under one state root, both homes.
+async function findActiveWorkflowByBranchInRoot(root, branch) {
   // With legacy_homes off, the canonical home only; no legacy probe, no
   // dual-home ambiguity error.
   const canonical = await findActiveWorkflowByBranchInDir(
-    workflowDir(repoRoot, { home: 'canonical' }),
+    workflowDir(root, { home: 'canonical' }),
     branch,
   );
   if (!capabilityOn('legacy_homes')) return canonical;
   const legacy = await findActiveWorkflowByBranchInDir(
-    workflowDir(repoRoot, { home: 'legacy' }),
+    workflowDir(root, { home: 'legacy' }),
     branch,
   );
+  // Both homes holding it is the dual-home ambiguity even when one home links
+  // to the other: writes there are refused (resolveWorkflowStorage), and the
+  // runtime readers report it the same way (ADR-0067 Decision 4, item 1).
   if (canonical && legacy) {
     throw new Error(
       `Ambiguous ${personaName()} workflow storage: both ${workflowDirRel()} and ` +
@@ -1072,6 +1299,30 @@ export async function findActiveWorkflowByBranch(repoRoot, branch) {
     );
   }
   return canonical ?? legacy;
+}
+
+// The active workflow on `branch` across `roots`. One physical file reached
+// twice counts once, under the name that is not a link, as within a home; two
+// distinct files are an error naming both, never a choice (ADR-0067 Decision
+// 4, item 2).
+async function findActiveWorkflowByBranchInRoots(roots, branch) {
+  const found = [];
+  for (const root of roots) {
+    const file = await findActiveWorkflowByBranchInRoot(root, branch);
+    if (file) addPhysicalMatch(found, file);
+  }
+  if (found.length <= 1) return found[0] ?? null;
+  throw new Error(
+    `Ambiguous ${personaName()} workflow storage: ${found.length} active workflows on branch ` +
+      `${JSON.stringify(branch)}: ${found.map((f) => JSON.stringify(f)).join(', ')}. One active workflow per ` +
+      'branch holds across the state root and every checkout (ADR-0018 §sub-2, ADR-0067 Decision 1(a)): ' +
+      'finish, finalize or archive one of them (docs/runbooks/state-root-cutover.md).',
+  );
+}
+
+export async function findActiveWorkflowByBranch(repoRoot, branch) {
+  if (!branch) return null;
+  return findActiveWorkflowByBranchInRoots(lookupRoots(repoRoot), branch);
 }
 
 /**
@@ -1090,6 +1341,36 @@ export async function findActiveWorkflowByBranch(repoRoot, branch) {
 export async function findActiveWorkflow(repoRoot) {
   const branch = currentGitBranch(repoRoot);
   return findActiveWorkflowByBranch(repoRoot, branch);
+}
+
+// ADR-0067 Decision 4, item 2 — the workflow file `<id>.md` in the workflows
+// homes of the checkout's read set, the default state root's first, or null
+// when none holds it. Two files holding the id are an error naming both, never
+// a choice; an entry in the id's place that is not a regular file refuses too.
+export async function resolveWorkflowById(repoRoot, workflowId) {
+  const shape = new RegExp(`^(${[...VALID_VERBS].join('|')})-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$`);
+  if (typeof workflowId !== 'string' || !shape.test(workflowId)) {
+    throw new Error(`not a ${personaName()} workflow id: ${JSON.stringify(workflowId)}`);
+  }
+  const found = [];
+  for (const root of lookupRoots(repoRoot)) {
+    for (const home of homeNames()) {
+      const candidate = workflowFilePath(root, workflowId, { home });
+      const problem = workflowEntryProblem(candidate);
+      if (problem === 'gone') continue;
+      if (problem !== null) {
+        throw new Error(`${personaName()} workflow storage: ${JSON.stringify(candidate)} is ${problem} (ADR-0067 Decision 4, item 1).`);
+      }
+      addPhysicalMatch(found, candidate);
+    }
+  }
+  if (found.length > 1) {
+    throw new Error(
+      `Ambiguous ${personaName()} workflow storage: workflow ${workflowId} is held by ${found.length} files: ` +
+        `${found.map((f) => JSON.stringify(f)).join(', ')} (ADR-0067 Decision 4, item 2).`,
+    );
+  }
+  return found[0] ?? null;
 }
 
 // -----------------------------------------------------------------------------
@@ -1158,6 +1439,7 @@ const FRONTMATTER_KEY_ORDER = [
 // (ADR-0019 §3); parent_detached is set by the orchestrator's /finalize·/abort
 // detach pass (§5); parent_writeback_at is the P10 write-ahead marker.
 const PARENT_LINKAGE_KEYS = Object.freeze(['parent_workflow', 'originating_subtask', 'parent_detached']);
+const DISPATCHED_KEYS = Object.freeze(['dispatched_branch', 'dispatched_verb', 'dispatched_profile', 'dispatched_topic']);
 let keyOrderCache = null;
 function frontmatterKeyOrder() {
   if (keyOrderCache !== null) return keyOrderCache;
@@ -1171,6 +1453,11 @@ function frontmatterKeyOrder() {
     // key it knows), so that reader's write leaves it byte for byte (the
     // ADR-0063 S1 note).
     order.push('parent_workflow_path');
+    // ADR-0067 Decision 4, item 5 — the selection /orchestrator:next's Phase 1
+    // made, recorded at create beside the parent linkage and immutable: every
+    // path that binds this workflow to its subtask compares it. Flat scalars
+    // at the tail, as parent_workflow_path, for the same carrier reason.
+    order.push(...DISPATCHED_KEYS);
   }
   keyOrderCache = Object.freeze(order);
   return keyOrderCache;
@@ -1786,6 +2073,21 @@ function validateSchema11Fields(fm) {
         throw new Error('parent_workflow_path must be a non-empty string when present');
       }
     }
+    // ADR-0067 Decision 4, item 5 — the four are recorded together, as
+    // strings; the branch and verb are never empty (an empty profile or topic
+    // is a subtask without one).
+    const dispatched = DISPATCHED_KEYS.filter((key) => key in fm);
+    if (dispatched.length > 0) {
+      if (dispatched.length !== DISPATCHED_KEYS.length) {
+        throw new Error(`${DISPATCHED_KEYS.join(', ')} are recorded together or not at all`);
+      }
+      for (const key of DISPATCHED_KEYS) {
+        if (typeof fm[key] !== 'string') throw new Error(`${key} must be a string`);
+      }
+      if (fm.dispatched_branch.length === 0 || fm.dispatched_verb.length === 0) {
+        throw new Error('dispatched_branch and dispatched_verb must be non-empty strings');
+      }
+    }
   }
 
   // ADR-0020 PR 2 — workflow_type enum discriminator. Absence is
@@ -2104,6 +2406,11 @@ export async function createWorkflowUnderLock({
   // the two ids (AGENTIC_PARENT_WORKFLOW_PATH, forwarded as a CLI flag).
   // Optional: an older orchestrator exports none. Valid only with both ids.
   parentWorkflowPath,
+  // ADR-0067 Decision 4, item 5 — the selection /orchestrator:next's Phase 1
+  // made ({subtask, branch, verb, profile, topic}; AGENTIC_DISPATCH_SELECTION,
+  // forwarded as a CLI flag), recorded beside the two ids. Optional: an older
+  // orchestrator exports none. Valid only with both ids.
+  dispatchSelection,
   // ADR-0020 PR 2 — workflow-shape discriminator. Always-written at
   // create-time (default 'verb-chain') so every new workflow is
   // self-describing. workflow_type is a primary discriminator, not a
@@ -2131,12 +2438,20 @@ export async function createWorkflowUnderLock({
   }
   // ADR-0018 §sub-2 — same-branch single-active invariant. Caller is
   // expected to be inside `withDirectoryLock`, so use the no-lock
-  // resolver variant to avoid deadlock against ourselves.
-  const existing = await findActiveWorkflowByBranch(repoRoot, gitBaseline.branch);
+  // resolver variant to avoid deadlock against ourselves. ADR-0067
+  // Decision 2: across the repository — the read set, the root the record
+  // goes to, and the own homes of every other worktree.
+  assertAbsoluteRepoRoot(repoRoot);
+  const storage = ownership?.storage ?? await resolveWorkflowStorage(repoRoot, { mode: 'write' });
+  const searched = [...lookupRoots(repoRoot)];
+  for (const root of [storage.stateRoot, ...otherWorktreeRoots(repoRoot)]) {
+    if (!searched.some((r) => sameDirectory(r, root))) searched.push(root);
+  }
+  const existing = await findActiveWorkflowByBranchInRoots(searched, gitBaseline.branch);
   if (existing) {
     throw new Error(
       `Cannot create workflow — a workflow already exists on branch '${gitBaseline.branch}' (${existing}). ` +
-        `Per-branch single-active invariant (ADR-0018 §sub-2). ` +
+        `Per-branch single-active invariant (ADR-0018 §sub-2, across the repository: ADR-0067 Decision 2). ` +
         `Resume with ${commandPrefix()}resume on this branch, or archive the existing workflow first.`,
     );
   }
@@ -2183,6 +2498,7 @@ export async function createWorkflowUnderLock({
     parentWorkflow = undefined;
     originatingSubtask = undefined;
     parentWorkflowPath = undefined;
+    dispatchSelection = undefined;
   }
   if (parentWorkflow !== undefined && parentWorkflow !== null) {
     if (typeof parentWorkflow !== 'string' || parentWorkflow.length === 0) {
@@ -2226,6 +2542,26 @@ export async function createWorkflowUnderLock({
     }
     frontmatter.parent_workflow_path = parentWorkflowPath;
   }
+  // ADR-0067 Decision 4, item 5 — the selection names the subtask the ids
+  // name, the branch this workflow is created on and the verb it is created
+  // by: a dispatcher that says otherwise is refused before the file lands.
+  if (dispatchSelection !== undefined && dispatchSelection !== null) {
+    if (!('parent_workflow' in frontmatter)) {
+      throw new Error(
+        'the dispatch selection is valid only with parent_workflow and originating_subtask (ADR-0067 Decision 4, item 5)',
+      );
+    }
+    const problem = dispatchSelectionProblem(dispatchSelection, {
+      subtask: frontmatter.originating_subtask, branch: gitBaseline.branch, verb,
+    });
+    if (problem) {
+      throw new Error(`the dispatch selection ${problem} (ADR-0067 Decision 4, item 5)`);
+    }
+    frontmatter.dispatched_branch = dispatchSelection.branch;
+    frontmatter.dispatched_verb = dispatchSelection.verb;
+    frontmatter.dispatched_profile = dispatchSelection.profile ?? '';
+    frontmatter.dispatched_topic = dispatchSelection.topic ?? '';
+  }
 
   const title = bodyTitle ?? `${persona}:${verb}`;
   const body =
@@ -2235,16 +2571,76 @@ export async function createWorkflowUnderLock({
     `## Phase notes\n\n` +
     `### ${currentPhase}\n\n`;
 
-  const storage = ownership?.storage ?? await resolveWorkflowStorage(repoRoot, { mode: 'write' });
-  const filePath = workflowFilePath(repoRoot, workflowId, { home: storage.home });
+  const filePath = join(storage.workflows, `${workflowId}.md`);
   await ensureDir(storage.workflows, 0o700);
   await atomicWrite(filePath, assembleWorkflowFile(frontmatter, body), ownership);
 
   return { workflowId, filePath, frontmatter, body };
 }
 
+// What is wrong with a dispatch selection for a workflow created for
+// `expected` ({subtask, branch, verb}), or null.
+function dispatchSelectionProblem(selection, expected) {
+  if (typeof selection !== 'object' || selection === null || Array.isArray(selection)) {
+    return 'must be an object';
+  }
+  const allowed = ['subtask', 'branch', 'verb', 'profile', 'topic'];
+  for (const [key, value] of Object.entries(selection)) {
+    if (!allowed.includes(key)) return `has unknown key ${JSON.stringify(key)} (allowed: ${allowed.join(', ')})`;
+    if (typeof value !== 'string') return `has a ${key} that is not a string`;
+  }
+  for (const key of ['subtask', 'branch', 'verb']) {
+    if (selection[key] !== expected[key]) {
+      return `names ${key} ${JSON.stringify(selection[key] ?? null)}, but this workflow is created for ${JSON.stringify(expected[key])}`;
+    }
+  }
+  return null;
+}
+
+// ADR-0067 Decision 3 — the state root holding the macro a dispatched child
+// names: the recorded path's, or the first root of the read set whose
+// orchestrator workflows home holds `<id>.md`; null when neither does.
+function macroStateRoot(repoRoot, parentWorkflow, parentWorkflowPath) {
+  const homes = ['.agentic-plugins/state/orchestrator/workflows', '.claude/agentic-orchestrator/workflows'];
+  if (typeof parentWorkflowPath === 'string' && parentWorkflowPath.length > 0) {
+    for (const rel of homes) {
+      const suffix = `/${rel}/${basename(parentWorkflowPath)}`;
+      if (parentWorkflowPath.endsWith(suffix)) return parentWorkflowPath.slice(0, -suffix.length);
+    }
+  }
+  if (typeof parentWorkflow !== 'string' || parentWorkflow.length === 0) return null;
+  for (const root of lookupRoots(repoRoot)) {
+    for (const rel of homes) {
+      try {
+        if (statSync(join(root, rel, `${parentWorkflow}.md`)).isFile()) return root;
+      } catch {
+        /* absent here */
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Where `createWorkflow` puts a new record (ADR-0067 Decisions 1(a), 3): the
+ * checkout while shared creation is off; once it is on, AGENTIC_STATE_BASE,
+ * else the default state root — except a dispatched child, which goes beside
+ * its macro. Throws on an unreadable switch or a refused AGENTIC_STATE_BASE.
+ */
+export function creationPlacement({ repoRoot, parentWorkflow, parentWorkflowPath, env = process.env }) {
+  assertAbsoluteRepoRoot(repoRoot);
+  const placement = creationRoot(repoRoot, { env });
+  if (placement.sharedCreation === 'on' && capabilityOn('dispatch_target') && parentWorkflow) {
+    const beside = macroStateRoot(repoRoot, parentWorkflow, parentWorkflowPath);
+    if (beside) return { ...placement, root: beside };
+  }
+  return placement;
+}
+
 export async function createWorkflow(args) {
-  return withDirectoryLock(args.repoRoot, ({ lockPath, token, storage }) =>
+  const placement = creationPlacement(args);
+  const storage = await resolveWorkflowStorage(placement.root, { mode: 'write' });
+  return withCreationLocks(storage, ({ lockPath, token }) =>
     createWorkflowUnderLock(args, { lockPath, token, storage }),
   );
 }
@@ -2851,6 +3247,10 @@ export async function setTerminal({
   // calls (tests, internal state setup) never emit. Default off keeps the
   // low-level helper side-effect-free for non-completion callers.
   emitHandoff = false,
+  // ADR-0067 Decision 1(a) — the checkout the command runs in, where the
+  // sidecar writes the handoff slot and runs git; derived from the working
+  // directory when omitted (commandCheckout).
+  checkout,
 }) {
   validateHost(host);
   validateHookEvent(event);
@@ -2906,7 +3306,21 @@ export async function setTerminal({
       const absWorkflowPath = isAbsolute(workflowPath) ? workflowPath : resolvePath(workflowPath);
       const inferred = inferStorageFromWorkflowPath(absWorkflowPath);
       if (inferred) {
-        const { repoRoot, home } = inferred;
+        // ADR-0067 Decision 1(a), 4 item 2 — the slot belongs to the checkout
+        // the command runs in, not to the root that holds the record: two
+        // lanes sharing one state root would overwrite each other's. Git
+        // facts come from that checkout too (Decision 1(b)).
+        const { stateRoot, home } = inferred;
+        const repoRoot = checkout ?? commandCheckout(stateRoot);
+        // A checkout that cannot be told writes no slot: the storage root's
+        // would be another checkout's (ADR-0067 Decision 1(a)).
+        if (repoRoot === null) {
+          process.stderr.write(
+            `${personaName()}: handoff slot not written: the checkout this command runs in cannot be told ` +
+              '(git failed); the terminal write has landed (ADR-0067 Decision 1(a)).\n',
+          );
+          return result;
+        }
         const projectionFile = join(statePaths(repoRoot, home).root, 'last-session-handoff.json');
         // Lazy dynamic import inside this async fn — a static
         // `state.mjs -> session-handoff.mjs` import would cycle
@@ -2953,12 +3367,13 @@ function resolveAwaitingOwnerPointer({ workflowPath, pointer, anchor }) {
   }
   const absolute = resolvePath(String(workflowPath));
   const inferred = inferStorageFromWorkflowPath(absolute);
-  if (!inferred || inferred.repoRoot.length === 0) {
+  if (!inferred || inferred.stateRoot.length === 0) {
     throw new Error(
       `cannot derive a pointer: ${JSON.stringify(workflowPath)} is not under the ${personaName()} state home; pass --pointer instead`,
     );
   }
-  return `${absolute.slice(inferred.repoRoot.length + 1)}#${anchor}`;
+  // ADR-0067 Decision 1(c): relative to the state root that holds the file.
+  return `${absolute.slice(inferred.stateRoot.length + 1)}#${anchor}`;
 }
 
 // The three awaiting_owner_* keys for a gate, checked before any lock is
@@ -3532,26 +3947,33 @@ export async function archiveWorkflow({
   if (!repoRoot && !archiveDirectory) {
     throw new Error('archiveWorkflow: repoRoot or archiveDirectory is required');
   }
-  const inferred = inferStorageFromWorkflowPath(workflowPath);
-  const effectiveRepoRoot = repoRoot ?? inferred?.repoRoot;
+  // ADR-0067 Decision 4, item 2 — the record's own home wins over the
+  // caller's checkout: a workflow under the default state root, archived by
+  // a Stop in a linked worktree, goes to its own home's archive, not that
+  // checkout's. The home is read from the resolved path: a relative path
+  // names a file under this process's directory, whatever repoRoot names.
+  const inferred = workflowStorage(workflowPath);
+  const effectiveRepoRoot = inferred?.stateRoot ?? repoRoot;
   const sourceHome = inferred?.home ?? 'canonical';
-  const sourceStorage = effectiveRepoRoot ? statePaths(effectiveRepoRoot, sourceHome) : null;
   const targetDir = archiveDirectory ?? archiveDir(effectiveRepoRoot, { home: sourceHome });
   const baseName = basename(workflowPath);
 
   // The directory lock must hash to the same `.creation-lock` path
   // `withDirectoryLock`/`createWorkflow` use for the source state home.
-  // When the caller provided only `archiveDirectory`, derive the repoRoot
+  // When the caller provided only `archiveDirectory`, derive the root
   // from the four-deep workflow layout
-  // (`<repoRoot>/<state-home>/workflows/<id>.md`). Codex re-review M-1
+  // (`<root>/<state-home>/workflows/<id>.md`). Codex re-review M-1
   // caught the previous two-deep derivation that double-appended the
   // state home, producing a different lock path and breaking
   // serialization with createWorkflow / archive.
   const dirLockRoot =
     effectiveRepoRoot ??
     dirname(dirname(dirname(dirname(workflowPath))));
+  const sourceStorage = effectiveRepoRoot
+    ? statePaths(dirLockRoot, sourceHome)
+    : await resolveWorkflowStorage(dirLockRoot, { mode: 'write' });
 
-  return withDirectoryLock(dirLockRoot, async () => {
+  return withCreationLocks(sourceStorage, async () => {
     const sourceStat = await pathStat(workflowPath);
     if (!sourceStat) {
       return { archived: false, reason: 'source-missing', workflowPath };
@@ -3632,7 +4054,7 @@ export async function archiveWorkflow({
         host,
       };
     });
-  }, sourceStorage ? { storage: sourceStorage } : {});
+  });
 }
 
 /**
@@ -4129,6 +4551,17 @@ function cliBoolean(flags, name, fallback) {
   throw new Error(`--${name} must be 'true' or 'false' (got '${v}')`);
 }
 
+// ADR-0067 Decision 4, item 5 — --dispatch-selection carries JSON; the
+// object's shape is checked by create.
+function cliDispatchSelection(value) {
+  if (value === undefined) return undefined;
+  try {
+    return JSON.parse(value);
+  } catch (err) {
+    throw new Error(`--dispatch-selection is not JSON: ${err.message}`);
+  }
+}
+
 function cliRequire(flags, names) {
   const missing = names.filter((n) => !(n in flags));
   if (missing.length > 0) {
@@ -4156,6 +4589,17 @@ function cliPrintHelp() {
       '    workflow files are on the same branch (per-branch single-active',
       '    invariant per ADR-0018 §sub-2).',
       '',
+      '  resolve-workflow --repo-root <checkout> --workflow-id <id>',
+      '    Print the workflow file <id>.md found in the workflows homes of the',
+      "    checkout's read set (ADR-0067 Decision 4, item 2). Exit 3 when none",
+      '    holds it; exit 1 on an error (two files hold it, or a root cannot be',
+      '    read).',
+      '',
+      '  list-workflows --repo-root <checkout>',
+      '    Print every workflow file in the workflows homes of the checkout\'s',
+      '    read set, one per line, the default state root\'s first (ADR-0067',
+      '    Decision 1(a)).',
+      '',
       '  create --repo-root <path> --verb <verb> --host <host>',
       '         --git-baseline-branch <name> --git-baseline-head <sha>',
       `         [--persona ${personaName()}] [--profile <name>] [--status-digest <hex>]`,
@@ -4173,10 +4617,14 @@ function cliPrintHelp() {
           '    Decision 3 — the macro file, recorded beside the two ids and only',
           '    with them; it must name an existing orchestrator macro whose',
           '    workflow_id is --parent-workflow.',
+          '    [--dispatch-selection <json>] (dispatch_target): ADR-0067 Decision 4,',
+          '    item 5 — {subtask, branch, verb, profile, topic} as the dispatch',
+          '    selected them, recorded as dispatched_* beside the ids and only with',
+          '    them; subtask, branch and verb must be this workflow\'s.',
         ]
         : [
           '    dispatch_target off — no --parent-workflow / --originating-subtask /',
-          '    --parent-workflow-path flags (ADR-0066 Decision 3).',
+          '    --parent-workflow-path / --dispatch-selection flags (ADR-0066 Decision 3).',
         ]),
       '    ADR-0020 §Sub-decision 5 — --workflow-type discriminates the',
       '    workflow shape. Omit (or pass verb-chain) for single-verb workflows',
@@ -4207,6 +4655,17 @@ function cliPrintHelp() {
       '  read --workflow-path <path>',
       '    Print the parsed frontmatter as JSON on stdout (informational).',
       '',
+      ...(capabilityOn('dispatch_target')
+        ? [
+          '  dispatch-selection --workflow-path <path> (dispatch_target)',
+          '    ADR-0067 Decision 4, item 5 — the dispatch the workflow records, as the',
+          '    orchestrator\'s --expect-dispatch takes it: {macro, subtask, branch, verb,',
+          '    profile, topic}, or {macro, subtask, branch} (its git_baseline branch)',
+          '    for a workflow created before the record. Exit 1 when no macro',
+          '    dispatched it.',
+          '',
+        ]
+        : []),
       '  ensemble-pending --workflow-path <path> --phase <name>',
       '                   --ensemble-type <name> --run-id <id> [--started-at <iso>]',
       '    ADR-0017 sub-4 — record a pending ensemble dispatch. Idempotent on run-id.',
@@ -4354,6 +4813,18 @@ function cliPrintHelp() {
       '      {archived: true, to: <archive-path>} on archive success',
       '      {archived: false, reason: <reason>, gateFailures?: [...]} otherwise',
       '',
+      '  state-root --repo-root <checkout>',
+      '    Read-only (ADR-0067 Decision 6). Print the default state root, the read',
+      '    set, the shared-creation switch, where a record would be created (or why',
+      '    not), and in the main checkout the attestation checks, as JSON.',
+      '',
+      '  shared-creation --repo-root <main checkout> --enable --versions <json>',
+      '  shared-creation --repo-root <checkout> --disable',
+      '    The operator cutover switch (ADR-0067 Decision 4, items 4 and 5;',
+      '    docs/runbooks/state-root-cutover.md). --enable runs the main-checkout',
+      '    checks, appends the inventory to the cutover manifest and turns shared',
+      '    creation on; --disable (rollback) is refused once lanes have run.',
+      '',
       'Verbs: investigate, frame, decide, compose, critique, refine.',
       'Hosts: claude, codex.',
       'Workflow types: verb-chain, start.',
@@ -4371,12 +4842,23 @@ async function cliMain(argv) {
 
   let flags;
   try {
-    flags = cliParseFlags(rest);
+    const { rest: valued, presence } = cliPresenceFlags(subcommand, rest);
+    flags = { ...cliParseFlags(valued), ...presence };
   } catch (err) {
     process.stderr.write(`state.mjs: ${err.message}\n`);
     return 2;
   }
 
+  // ADR-0067 Decision 1(a) — a subcommand given --repo-root acts in that
+  // checkout: its writes judge it (the write guard's read set, the handoff
+  // slot), not this process's working directory.
+  if (typeof flags['repo-root'] === 'string' && flags['repo-root'] !== '') {
+    return runInCommandDirectory(flags['repo-root'], () => cliRun(subcommand, flags));
+  }
+  return cliRun(subcommand, flags);
+}
+
+async function cliRun(subcommand, flags) {
   try {
     switch (subcommand) {
       case 'find-active': {
@@ -4389,6 +4871,32 @@ async function cliMain(argv) {
             ? await findActiveWorkflowByBranch(flags['repo-root'], flags.branch)
             : await findActiveWorkflow(flags['repo-root']);
         if (path) process.stdout.write(`${path}\n`);
+        return 0;
+      }
+
+      // ADR-0067 Decision 4, item 2 — resume's `archive <id>` resolver: the
+      // workflow file in the checkout's read set; exit 3 when no root holds
+      // it, an error (exit 1) when two files do.
+      case 'resolve-workflow': {
+        cliRequire(flags, ['repo-root', 'workflow-id']);
+        const path = await resolveWorkflowById(flags['repo-root'], flags['workflow-id']);
+        if (!path) {
+          process.stderr.write(
+            `state.mjs: no workflow ${JSON.stringify(flags['workflow-id'])} in the ${personaName()} workflows homes ` +
+              `of the read set of ${flags['repo-root']}\n`,
+          );
+          return 3;
+        }
+        process.stdout.write(`${path}\n`);
+        return 0;
+      }
+
+      // ADR-0067 Decision 1(a) — every workflow file in the workflows homes of
+      // the checkout's read set, one per line, the default state root's first.
+      case 'list-workflows': {
+        cliRequire(flags, ['repo-root']);
+        assertAbsoluteRepoRoot(flags['repo-root'], '--repo-root');
+        for (const file of await listWorkflowFiles(flags['repo-root'])) process.stdout.write(`${file}\n`);
         return 0;
       }
 
@@ -4406,6 +4914,12 @@ async function cliMain(argv) {
           );
         }
         // ADR-0067 Decision 3's macro path, refused the same way.
+        if (!capabilityOn('dispatch_target') && flags['dispatch-selection'] !== undefined) {
+          throw new Error(
+            `${personaName()} state.mjs create does not accept --dispatch-selection: ` +
+              `${personaName()} is no orchestrator dispatch target (dispatch_target off, ADR-0066 Decision 3)`,
+          );
+        }
         if (!capabilityOn('dispatch_target') && flags['parent-workflow-path'] !== undefined) {
           throw new Error(
             `${personaName()} state.mjs create does not accept --parent-workflow-path: ` +
@@ -4440,6 +4954,8 @@ async function cliMain(argv) {
           parentWorkflow: flags['parent-workflow'],
           originatingSubtask: flags['originating-subtask'],
           parentWorkflowPath: flags['parent-workflow-path'],
+          // ADR-0067 Decision 4, item 5 — JSON, as the dispatcher exports it.
+          dispatchSelection: cliDispatchSelection(flags['dispatch-selection']),
           // ADR-0020 PR 2 — workflow-shape discriminator. Omitting the
           // flag defaults to 'verb-chain' inside createWorkflowUnderLock;
           // the persona's `start` macro passes 'start'. cliParseFlags
@@ -4480,6 +4996,23 @@ async function cliMain(argv) {
           statusDigest: flags['status-digest'],
         });
         process.stdout.write(`${flags['workflow-path']}\n`);
+        return 0;
+      }
+
+      case 'dispatch-selection': {
+        // ADR-0067 Decision 4, item 5 — the dispatch this workflow records, as
+        // the orchestrator's --expect-dispatch takes it. Exit 1 when the
+        // workflow was not dispatched by a macro.
+        if (!capabilityOn('dispatch_target')) return unknownSubcommand(subcommand);
+        cliRequire(flags, ['workflow-path']);
+        const { frontmatter } = await readWorkflow(flags['workflow-path']);
+        const { dispatchExpectation } = await import('./parent-writeback.mjs');
+        const expectation = dispatchExpectation(frontmatter);
+        if (expectation === null) {
+          process.stderr.write(`${flags['workflow-path']} was not dispatched by an orchestrator macro (no parent linkage).\n`);
+          return 1;
+        }
+        process.stdout.write(`${JSON.stringify(expectation)}\n`);
         return 0;
       }
 
@@ -4756,6 +5289,8 @@ async function cliMain(argv) {
       case 'detach-archive': {
         if (!capabilityOn('dispatch_target')) return unknownSubcommand(subcommand);
         cliRequire(flags, ['workflow-path', 'host', 'repo-root']);
+        // The writes judge the checkout --repo-root names, the caller's
+        // (finalize, abort): cliMain runs this case in it.
         const result = await detachArchive({
           workflowPath: flags['workflow-path'],
           host: flags.host,
@@ -4813,6 +5348,36 @@ async function cliMain(argv) {
         return 0;
       }
 
+      // ADR-0067 Decision 6 — read-only: the state root, the read set, the
+      // shared-creation switch and, in the main checkout, the attestation
+      // checks. Runbooks resolve storage in shell from it.
+      case 'state-root': {
+        cliRequire(flags, ['repo-root']);
+        process.stdout.write(`${JSON.stringify(describeStateRoot(flags['repo-root']))}\n`);
+        return 0;
+      }
+
+      // ADR-0067 Decision 4, items 4 and 5 — the operator's switch.
+      case 'shared-creation': {
+        cliRequire(flags, ['repo-root']);
+        if (flags.enable === flags.disable) throw new Error('Pass exactly one of --enable and --disable.');
+        let result;
+        if (flags.enable) {
+          cliRequire(flags, ['versions']);
+          let versions;
+          try {
+            versions = JSON.parse(flags.versions);
+          } catch (err) {
+            throw new Error(`--versions is not JSON (${err.message})`);
+          }
+          result = enableSharedCreation({ checkout: flags['repo-root'], versions });
+        } else {
+          result = disableSharedCreation({ checkout: flags['repo-root'] });
+        }
+        process.stdout.write(`${JSON.stringify(result)}\n`);
+        return 0;
+      }
+
       default:
         return unknownSubcommand(subcommand);
     }
@@ -4820,6 +5385,19 @@ async function cliMain(argv) {
     process.stderr.write(`state.mjs ${subcommand}: ${err.message}\n`);
     return 1;
   }
+}
+
+// `shared-creation --enable` and `--disable` take no value; every other flag
+// of this CLI does. They become `true` before the generic parse.
+function cliPresenceFlags(subcommand, rest) {
+  if (subcommand !== 'shared-creation') return { rest, presence: {} };
+  const presence = {};
+  const kept = [];
+  for (const a of rest) {
+    if (a === '--enable' || a === '--disable') presence[a.slice(2)] = true;
+    else kept.push(a);
+  }
+  return { rest: kept, presence };
 }
 
 // Run as a CLI only when this file is the entry point (ADR-0066 D1): both

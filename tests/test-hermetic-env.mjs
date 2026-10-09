@@ -53,6 +53,17 @@ describe('npm test runs every test file without the operator\'s agentic session 
     }
   });
 
+  // Contract: ADR-0067 Decision 2 holds this list and the worker's scrub to
+  // the three names it introduces. None ends in _ROOT, so the plugin-root
+  // pattern does not remove them: a test that inherited AGENTIC_STATE_BASE
+  // would create its fixtures' records where the session's do.
+  it("ADR-0067's three variables are listed by name, not caught by the _ROOT pattern", () => {
+    for (const name of ['AGENTIC_STATE_BASE', 'AGENTIC_PARENT_WORKFLOW_PATH', 'AGENTIC_AUTOPILOT_TOKEN']) {
+      strictEqual(SESSION_VARIABLES.includes(name), true, name);
+      strictEqual(/^AGENTIC_[A-Z0-9_]+_ROOT$/.test(name), false, name);
+    }
+  });
+
   it('through the npm script, the probe and its child see none of them', () => {
     const r = spawnSync('npm', ['test', '--', PROBE], { cwd: REPO, env: plantedEnv(), encoding: 'utf8' });
     strictEqual(r.status, 0, `${r.stdout}\n${r.stderr}`);

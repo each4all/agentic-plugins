@@ -130,7 +130,7 @@ async function withOrchestratorEnv(value, fn) {
   }
 }
 
-async function bootstrapMacroPlan(repoRoot, subtaskId = 'T1') {
+async function bootstrapMacroPlan(repoRoot, subtaskId = 'T1', branch = `feat/${subtaskId.toLowerCase()}`) {
   // Create the orchestrator macro workflow + a single in_progress subtask.
   // Uses the real orchestrator state.mjs CLI so the on-disk shape matches
   // production semantics. The macro lands in the orchestrator's own workflow
@@ -158,7 +158,7 @@ async function bootstrapMacroPlan(repoRoot, subtaskId = 'T1') {
     JSON.stringify([{
       id: subtaskId,
       verb: 'compose',
-      branch: `feat/${subtaskId.toLowerCase()}`,
+      branch,
       blocked_by: [],
       status: 'in_progress',
     }]),
@@ -836,7 +836,7 @@ for (const persona of PERSONAS) {
     // leaves the subtask open for /orchestrator:done.
     it('notes the terminal commit on the parent without completing the subtask', async () => {
       await withRepo(async ({ repoRoot, baselineHead }) => {
-        const { macroPath, macroId } = await bootstrapMacroPlan(repoRoot, 'T1');
+        const { macroPath, macroId } = await bootstrapMacroPlan(repoRoot, 'T1', 'main');
         const { childPath, childId } = await terminalChild(repoRoot, baselineHead, macroId);
         const newHead = makeAdvanceCommit(repoRoot);
         const stderrBuf = [];
@@ -857,7 +857,7 @@ for (const persona of PERSONAS) {
 
     it('with the P10 marker set and the note already written, writes nothing more', async () => {
       await withRepo(async ({ repoRoot, baselineHead }) => {
-        const { macroPath, macroId } = await bootstrapMacroPlan(repoRoot, 'T1');
+        const { macroPath, macroId } = await bootstrapMacroPlan(repoRoot, 'T1', 'main');
         const { childPath, childId } = await terminalChild(repoRoot, baselineHead, macroId,
           (fm) => { fm.parent_writeback_at = '2026-09-27T10:00:00Z'; });
         const newHead = makeAdvanceCommit(repoRoot);
@@ -880,7 +880,7 @@ for (const persona of PERSONAS) {
     it('an owner gate written between the read and the lock: no archive, and no note on the parent', async () => {
       const { setAwaitingOwner, archiveWorkflow } = MODULES.get(persona).state;
       await withRepo(async ({ repoRoot, baselineHead }) => {
-        const { macroPath, macroId } = await bootstrapMacroPlan(repoRoot, 'T1');
+        const { macroPath, macroId } = await bootstrapMacroPlan(repoRoot, 'T1', 'main');
         const { childPath } = await terminalChild(repoRoot, baselineHead, macroId);
         const newHead = makeAdvanceCommit(repoRoot);
         const before = await readFile(macroPath, 'utf8');
@@ -913,7 +913,7 @@ for (const persona of PERSONAS) {
       await withRepo(async ({ repoRoot, baselineHead }) => {
         const elsewhere = await mkdtemp(join(tmpdir(), `${persona}-stop-macro-home-`));
         try {
-          const { macroPath, macroId } = await bootstrapMacroPlan(elsewhere, 'T1');
+          const { macroPath, macroId } = await bootstrapMacroPlan(elsewhere, 'T1', 'main');
           const { filePath: childPath, workflowId: childId } = await createWorkflow({
             repoRoot,
             verb: 'compose',
@@ -941,7 +941,7 @@ for (const persona of PERSONAS) {
 
     it('with the P10 marker set but no note (a crash between the two), still writes the note', async () => {
       await withRepo(async ({ repoRoot, baselineHead }) => {
-        const { macroPath, macroId } = await bootstrapMacroPlan(repoRoot, 'T1');
+        const { macroPath, macroId } = await bootstrapMacroPlan(repoRoot, 'T1', 'main');
         const { childPath, childId } = await terminalChild(repoRoot, baselineHead, macroId,
           (fm) => { fm.parent_writeback_at = '2026-09-27T10:00:00Z'; });
         const newHead = makeAdvanceCommit(repoRoot);
@@ -950,6 +950,69 @@ for (const persona of PERSONAS) {
         ok((await readFile(macroPath, 'utf8')).includes(`### engineer terminal: "T1" @ ${childId} ${newHead}`));
       });
     });
+
+    // ADR-0067 Decision 4, item 5 (N1) — the Stop's writeback of a child
+    // whose subtask a plan revision changed after the dispatch. Contract: the
+    // Stop sends the dispatch the child records (or, for a child created
+    // before the record, the branch it was created on), and the macro binds
+    // nothing, moves nothing and notes nothing; the child still archives.
+    // The unrevised control binds, so the refusal is the revision's.
+    const revisePlan = async (repoRoot, macroPath, subtask) => {
+      const file = join(repoRoot, 'subtasks-revised.json');
+      await writeFile(file, JSON.stringify([{ id: 'T1', verb: 'compose', blocked_by: [], status: 'pending', ...subtask }]));
+      execFileSync(process.execPath, [ORCHESTRATOR_STATE, 'plan-set', '--workflow-path', macroPath, '--host', 'claude', '--subtasks-json-file', file], { encoding: 'utf8' });
+    };
+    for (const host of ['claude', 'codex']) {
+      for (const [label, record, revision] of [
+        ['a recorded dispatch, the branch revised', true, { branch: 'feat/t1b' }],
+        ['a recorded dispatch, the topic revised', true, { branch: 'main', topic: 'another topic' }],
+        ['no record (a child created before it), the branch revised', false, { branch: 'feat/t1b' }],
+        ['a recorded dispatch, unrevised (control)', true, null],
+      ]) {
+        it(`${host}: ${label} — ${revision ? 'the Stop binds nothing on the macro' : 'the Stop binds and notes'}`, async () => {
+          await withRepo(async ({ repoRoot, baselineHead }) => {
+            const { macroPath, macroId } = await bootstrapMacroPlan(repoRoot, 'T1', 'main');
+            await revisePlan(repoRoot, macroPath, { branch: 'main', topic: 'the topic' });
+            const { filePath: childPath, workflowId: childId } = await createWorkflow({
+              repoRoot,
+              verb: 'compose',
+              originalRequest: 'N1 child',
+              gitBaseline: { branch: 'main', head: baselineHead, status_digest: MIN_DIGEST },
+              host,
+              parentWorkflow: macroId,
+              originatingSubtask: 'T1',
+              ...(record ? { dispatchSelection: { subtask: 'T1', branch: 'main', verb: 'compose', profile: '', topic: 'the topic' } } : {}),
+            });
+            ok(record === /^dispatched_branch: "main"$/m.test(await readFile(childPath, 'utf8')));
+            await setFrontmatter(childPath, (fm) => {
+              fm.current_phase = 'summary-complete';
+              fm.terminal_marker = true;
+            });
+            if (revision) await revisePlan(repoRoot, macroPath, { topic: 'the topic', ...revision });
+            const before = await readFile(macroPath, 'utf8');
+            const newHead = makeAdvanceCommit(repoRoot);
+            const stderrBuf = [];
+            const result = await withOrchestratorEnv(ORCHESTRATOR_ROOT, () => runStopArchive({
+              workflowPath: childPath,
+              host,
+              repoRoot,
+              headSha: newHead,
+              headSubject: `feat(plugins/${persona}): N1 child terminal commit`,
+              stderr: { write: (s) => stderrBuf.push(s) },
+            }));
+            strictEqual(result.archived, true, stderrBuf.join(''));
+            const after = await readFile(macroPath, 'utf8');
+            if (revision) {
+              strictEqual(after, before, stderrBuf.join(''));
+              match(stderrBuf.join(''), /refused the terminal note: .*\(dispatch-changed\)/);
+            } else {
+              ok(after.includes(`### engineer terminal: "T1" @ ${childId} ${newHead}`), stderrBuf.join(''));
+              match(after, new RegExp(`engineer_workflow_id: "${childId}"`));
+            }
+          });
+        });
+      }
+    }
   });
 
   describeDispatchOn(`${persona}: ADR-0019 PR-C — parent_workflow unset → no writeback attempted (dispatch_target on)`, () => {

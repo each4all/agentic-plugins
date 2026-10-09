@@ -39,14 +39,18 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 import { discoverRuntimePluginRoot } from './discover-runtime.mjs';
 import {
+  branchTip,
+  checkedOutBranch,
   currentGitBranch,
   findActiveWorkflowByBranch,
   legacyStateDirRel,
   readWorkflow,
   terminalPhases,
   workflowDir,
+  workflowStateRoot,
 } from './state.mjs';
 import { evaluateStopArchive } from './stop-archive.mjs';
+import { aliasedComponent } from './lib/state-root.mjs';
 import { isCliEntry } from './lib/cli-entry.mjs';
 import { capabilityOn, commandPrefix, loadPersona, personaName, personaOrRefuse } from './lib/persona.mjs';
 
@@ -73,6 +77,26 @@ export function mapArchiveGate(verdict) {
 function repoRelativePointer(repoRoot, target) {
   const rel = relative(repoRoot, target);
   return rel && !rel.startsWith('..') && !isAbsolute(rel) ? rel : target;
+}
+
+// ADR-0067 Decision 1(c) — a pointer into a workflow record is spelled
+// relative to the state root that holds it, which need not be the checkout.
+function workflowPointer(repoRoot, workflowPath) {
+  return repoRelativePointer(workflowStateRoot(workflowPath) ?? repoRoot, workflowPath);
+}
+
+// ADR-0067 Decision 1(b) — the git facts of the workflow's branch, always from
+// the checkout the command runs in, never from the root that stores the
+// record: its HEAD when it has that branch out, else the tip and subject of
+// refs/heads/<branch>, which every worktree of the repository shares (a lane's
+// HEAD, seen from another checkout). A branch that cannot be read is a null
+// probe, "did not move", as a failed HEAD probe is.
+function probeWorkflowHead(checkout, frontmatter) {
+  const branch = frontmatter?.git_baseline?.branch;
+  if (typeof branch !== 'string' || branch.length === 0) return probeHead(checkout);
+  const out = checkedOutBranch(checkout);
+  if (out.state === 'branch' && out.branch === branch) return probeHead(checkout);
+  return branchTip(checkout, branch) ?? { sha: null, subject: null };
 }
 
 // Probe HEAD sha + subject. A null probe (missing git / detached) is passed
@@ -126,7 +150,7 @@ function projectParsedWorkflow({ repoRoot, activePath, parsed, resolvedRouting, 
     }
   }
   const probe = headSha === undefined
-    ? probeHead(repoRoot)
+    ? probeWorkflowHead(repoRoot, frontmatter)
     : { sha: headSha, subject: headSubject ?? null };
   const verdict = evaluateStopArchive({
     frontmatter,
@@ -136,7 +160,7 @@ function projectParsedWorkflow({ repoRoot, activePath, parsed, resolvedRouting, 
   const projection = {
     workflow_kind: personaName(),
     workflow_id: frontmatter.workflow_id,
-    workflow_path: repoRelativePointer(repoRoot, activePath),
+    workflow_path: workflowPointer(repoRoot, activePath),
     phase: frontmatter.current_phase,
     next_action: frontmatter.next_action,
     archive_gate: mapArchiveGate(verdict),
@@ -221,13 +245,24 @@ export async function computeProjectionForPath({
   return projectParsedWorkflow({ repoRoot, activePath: workflowPath, parsed, resolvedRouting, headSha, headSubject });
 }
 
+// The symlinked directory on the way from the checkout to `target`'s, or null
+// (lib/state-root.mjs aliasedComponent). A target outside the checkout, as an
+// explicit projection file may be, is not checked.
+function slotAliasedComponent(repoRoot, target) {
+  const rel = relative(resolve(repoRoot), dirname(resolve(target)));
+  if (rel.startsWith('..') || isAbsolute(rel)) return null;
+  return aliasedComponent(repoRoot, rel);
+}
+
 /**
  * Default projection-file path: `<persona state root>/last-session-handoff.json`
  * (canonical home). Every writer and the hook backstop share this single
  * per-persona slot (the ADR-0031 slot model; ADR-0043 §2 accepts
- * last-writer-wins for concurrent cross-branch terminals). Callers that
- * already know the home — `setTerminal` via `inferStorageFromWorkflowPath` —
- * pass an explicit `projectionFile`.
+ * last-writer-wins for concurrent cross-branch terminals). The slot belongs to
+ * the checkout the command runs in, `repoRoot` here, even when the record
+ * lives under the shared state root (ADR-0067 Decision 1(a)). `setTerminal`,
+ * which knows the record's home, passes an explicit `projectionFile` in that
+ * checkout.
  */
 function defaultProjectionFile(repoRoot) {
   return resolve(workflowDir(repoRoot), '..', 'last-session-handoff.json');
@@ -856,6 +891,18 @@ export async function emitTerminalHandoffSidecar({ repoRoot, workflowPath, proje
   try {
     if (!repoRoot) return { emitted: false, status: 'no_repo_root' };
     target = projectionFile ?? projectionFileForWorkflow(repoRoot, workflowPath);
+    // ADR-0067 Decision 1(a) — the slot and its markers are this checkout's.
+    // Under a home linked to another checkout's they would be that one's too:
+    // write none, and leave that file alone.
+    const aliased = slotAliasedComponent(repoRoot, target);
+    if (aliased) {
+      process.stderr.write(
+        `${personaName()}: handoff slot not written: ${aliased} is a symbolic link, so the slot would be shared ` +
+          'with another checkout (ADR-0067 Decision 1(a)).\n',
+      );
+      target = null;
+      return { emitted: false, status: 'slot_aliased' };
+    }
     const result = await computeProjectionForPath({ repoRoot, workflowPath });
     if (result.status !== 'ok' || !result.projection) {
       await clearStaleProjection(target);
@@ -969,6 +1016,9 @@ export async function readPendingHandoff(repoRoot, projectionFile) {
   if (!repoRoot && !projectionFile) return null;
   const candidates = projectionFile ? [projectionFile] : pendingHandoffCandidates(repoRoot);
   for (const target of candidates) {
+    // ADR-0067 Decision 1(a) — a slot under a home linked to another
+    // checkout's is that checkout's: neither read nor consumed here.
+    if (repoRoot && slotAliasedComponent(repoRoot, target) !== null) continue;
     try {
       const projection = JSON.parse(await readFile(target, 'utf8'));
       if (projection && typeof projection === 'object' && !Array.isArray(projection)) {
@@ -1037,8 +1087,11 @@ export async function pendingHandoffReinjectionLine(repoRoot, projectionFile) {
  * tombstone is replaced by the next primary transition or a different
  * workflow's claim, and rollback cleanup removes it manually (runbook).
  */
-export async function consumePendingHandoff(projectionFile) {
+export async function consumePendingHandoff(projectionFile, repoRoot = null) {
   if (!projectionFile) return;
+  // ADR-0067 Decision 1(a) — the slot and its marker under a home linked to
+  // another checkout's are that checkout's: left alone.
+  if (repoRoot && slotAliasedComponent(repoRoot, projectionFile) !== null) return;
   try {
     await rm(projectionFile, { force: true });
   } catch {

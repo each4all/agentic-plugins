@@ -138,7 +138,7 @@ const RESOLVER_TEMPLATES = [
   'regions/commit-phase-0.md', 'regions/commit-plan.md', 'regions/commit-staging-clear.md', 'regions/decide-owner-selection.md', 'regions/decide-resolve.md', 'regions/locate-active.md',
   'regions/peer-now-dispatch.md', 'regions/peer-now-locate.md', 'regions/peer-now-note.md',
   'regions/refine-owner-decision.md', 'regions/refine-owner-decision-convergent.md',
-  'regions/resume-archive.md', 'regions/resume-marker.md', 'regions/resume-read.md',
+  'regions/resume-archive.md', 'regions/resume-archive-resolve.md', 'regions/resume-marker.md', 'regions/resume-read.md',
   'regions/start-bootstrap.md', 'regions/start-commit.md', 'regions/start-resume.md', 'regions/start-terminal.md',
   'regions/start-terminal-convergent.md', 'regions/verb-bootstrap-profiled.md',
   'regions/verb-bootstrap.md', 'regions/verb-dispatch.md', 'regions/verb-finalize.md',

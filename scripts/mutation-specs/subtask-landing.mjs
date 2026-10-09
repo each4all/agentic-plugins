@@ -282,8 +282,8 @@ export const MUTATIONS = [
     id: 'W3', file: STOP, tests: [T_STOP],
     // The canonical stop-archive imports parent-writeback.mjs inside the try
     // (ADR-0066 Decision 3: never statically), since Stage 3.
-    from: "  try {\n    const { writebackParent } = await import('./parent-writeback.mjs');\n",
-    to: "  if (frontmatter.parent_writeback_at) return;\n  try {\n    const { writebackParent } = await import('./parent-writeback.mjs');\n",
+    from: "  try {\n    const { writebackParent, dispatchExpectation } = await import('./parent-writeback.mjs');\n",
+    to: "  if (frontmatter.parent_writeback_at) return;\n  try {\n    const { writebackParent, dispatchExpectation } = await import('./parent-writeback.mjs');\n",
     why: 'the P10 marker gates the Stop call, so a crash after the marker loses the note',
   },
   {
@@ -319,9 +319,9 @@ export const MUTATIONS = [
     why: '/done records the branch tip again',
   },
   {
-    id: 'D2', file: DONE, tests: [T_DONE],
-    from: '].flatMap((h) => ["workflows", "archive"].map',
-    to: '].flatMap((h) => ["workflows"].map',
+    id: 'D2', file: 'plugins/orchestrator/scripts/state.mjs', tests: [T_DONE],
+    from: "      for (const sub of activeOnly ? ['workflows'] : ['workflows', 'archive']) {",
+    to: "      for (const sub of activeOnly ? ['workflows'] : ['workflows']) {",
     why: 'the owner of an archived child cannot be found after the merge',
   },
   {
