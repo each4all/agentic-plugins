@@ -361,6 +361,35 @@ describe('preflightEngineerCapability — PR-A flag detection', () => {
     });
   });
 
+  // ADR-0067 Decision 4, item 5 — an engineer that neither records the
+  // dispatch selection nor sends it with its terminal note would have its
+  // child bound, at its terminal commit, to a subtask revised since the
+  // dispatch; /orchestrator:next refuses to dispatch into it, and /finalize
+  // and /abort, which bind nothing, still pass.
+  it('returns ok=false when the engineer predates the dispatch selection (ADR-0067 Decision 4, item 5)', async () => {
+    await withTmpHomeAndRepo(async (dir) => {
+      const fakeRoot = join(dir, 'pre-dispatch-selection-engineer');
+      const q = (t) => `'${t}'`;
+      await writeEngineerLayout(fakeRoot, {
+        version: '0.25.0',
+        statePayload:
+          "#!/usr/bin/env node\n"
+          + "// PR-A gate marker: --parent-workflow flag\n"
+          + `const cases = [${q('detach-archive')}, ${q('stop-archive')}];\n`
+          + "process.exit(0);\n",
+      });
+      await mkdir(join(fakeRoot, 'commands'), { recursive: true });
+      await writeFile(join(fakeRoot, 'commands', 'investigate.md'), '# investigate\nAGENTIC_PARENT_WORKFLOW reading boilerplate\n');
+      await writeFile(join(fakeRoot, 'scripts', 'parent-writeback.mjs'), `const args = [${q('subtask-engineer-terminal')}];\n`);
+      await chmod(join(fakeRoot, 'scripts', 'state.mjs'), 0o755);
+      const result = await preflightEngineerCapability(fakeRoot);
+      strictEqual(result.ok, false);
+      match(result.reason, /dispatch selection/);
+      const lifecycle = await preflightEngineerCapability(fakeRoot, { purpose: 'lifecycle' });
+      strictEqual(lifecycle.ok, true, lifecycle.reason);
+    });
+  });
+
   it('returns ok=true for this repository engineer, which ships the engineer terminal note', async () => {
     const result = await preflightEngineerCapability(ENGINEER_ROOT);
     strictEqual(result.ok, true, result.reason);

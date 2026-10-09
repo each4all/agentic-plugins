@@ -315,6 +315,7 @@ describe('the posture (D5)', () => {
       CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_CODE_EXECPATH: '/x', AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram',
       AGENTIC_COMPANION_DEPTH: '1', AGENTIC_PARENT_WORKFLOW: 'macro-other', AGENTIC_ORIGINATING_SUBTASK: 'Z',
       AGENTIC_PARENT_WORKFLOW_PATH: '/other/.agentic-plugins/state/orchestrator/workflows/macro-other.md',
+      AGENTIC_STATE_BASE: '/other', AGENTIC_AUTOPILOT_TOKEN: 'f'.repeat(32),
       AGENTIC_PROFILE: 'x', AGENTIC_TOPIC: 'y', AGENTIC_HOST: 'codex', CLAUDE_PLUGIN_ROOT: '/stale',
       AGENTIC_AUTOPILOT: 'autopilot-19990101T000000Z-000000', KEEP_ME: 'yes',
       // An autopilot worker running this suite already carries a push block;
@@ -325,7 +326,8 @@ describe('the posture (D5)', () => {
     for (const k of ['CLAUDECODE', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_SESSION_KIND', 'CLAUDE_BG_SESSION_PERMISSION_RULES',
       'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_RELAUNCH_SESSION_ADD_DIRS', 'CLAUDE_PID', 'CLAUDE_EFFORT',
       'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_EXECPATH', 'AGENTIC_NOTIFY_EGRESS_CHANNEL', 'AGENTIC_COMPANION_DEPTH',
-      'AGENTIC_PARENT_WORKFLOW', 'AGENTIC_ORIGINATING_SUBTASK', 'AGENTIC_PARENT_WORKFLOW_PATH', 'AGENTIC_PROFILE', 'AGENTIC_TOPIC', 'AGENTIC_HOST', 'CLAUDE_PLUGIN_ROOT']) {
+      'AGENTIC_PARENT_WORKFLOW', 'AGENTIC_ORIGINATING_SUBTASK', 'AGENTIC_PARENT_WORKFLOW_PATH', 'AGENTIC_STATE_BASE',
+      'AGENTIC_AUTOPILOT_TOKEN', 'AGENTIC_PROFILE', 'AGENTIC_TOPIC', 'AGENTIC_HOST', 'CLAUDE_PLUGIN_ROOT']) {
       ok(!(k in env), `${k} reached the worker`);
     }
     strictEqual(env.KEEP_ME, 'yes');
@@ -334,6 +336,20 @@ describe('the posture (D5)', () => {
     // Contract: git reads GIT_CONFIG_COUNT/KEY/VALUE — without the block the worker
     // pushes with `git -C`, which the command denylist does not match.
     ok(Number(env.GIT_CONFIG_COUNT) >= 4, 'the push block is in the worker environment');
+  });
+
+  it("exports the run's state root, never the inherited one (ADR-0067 Decision 2)", () => {
+    const env = W.workerEnv({ AGENTIC_STATE_BASE: '/inherited', KEEP_ME: 'yes' }, { runId: RUN, roots: ROOTS, stateBase: '/the/run/root' });
+    strictEqual(env.AGENTIC_STATE_BASE, '/the/run/root');
+    const none = W.workerEnv({ AGENTIC_STATE_BASE: '/inherited' }, { runId: RUN, roots: ROOTS });
+    ok(!('AGENTIC_STATE_BASE' in none), 'no run root given: nothing, and never the inherited value');
+  });
+
+  it("exports the run's admission secret, never an inherited one (ADR-0067 Decision 4, item 5)", () => {
+    const env = W.workerEnv({ AGENTIC_AUTOPILOT_TOKEN: 'inherited', KEEP_ME: 'yes' }, { runId: RUN, roots: ROOTS, autopilotToken: 'the-run-secret' });
+    strictEqual(env.AGENTIC_AUTOPILOT_TOKEN, 'the-run-secret');
+    const none = W.workerEnv({ AGENTIC_AUTOPILOT_TOKEN: 'inherited' }, { runId: RUN, roots: ROOTS });
+    ok(!('AGENTIC_AUTOPILOT_TOKEN' in none), 'no secret given: nothing, and never the inherited value');
   });
 });
 

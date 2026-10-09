@@ -106,15 +106,30 @@ Do not mutate `current_phase`, `next_action`, or `plan`.
 ## Phase 3 — Archive mode
 
 Resolve the active or named workflow and ask for confirmation before
-mutation. Then run:
+mutation. A named workflow is the file `node "<plugin-root>/scripts/state.mjs"
+resolve-workflow --repo-root "$REPO_ROOT" --workflow-id <workflow-id>`
+prints: the orchestrator workflow homes of the checkout's read set, the
+default state root first (ADR-0067 Decision 4, item 2); stop when it exits
+non-zero (3: no root holds the id; 1: two files do). Then join the
+macro's run lock (ADR-0067 Decision 4, item 5) and archive, releasing the
+admission on every exit: a run or another session holding the lock
+refuses, naming the holder, and nothing is archived.
 
 ```bash
+MACRO_ID="$(basename "$WORKFLOW" .md)"
+ADMISSION="$(node "<plugin-root>/scripts/state.mjs" admission join \
+  --macro "$MACRO_ID" --checkout "$REPO_ROOT" --command resume --host <claude|codex>)" || exit 1
+release_admission() {
+  node "<plugin-root>/scripts/state.mjs" admission release \
+    --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION"
+}
+trap 'release_admission' EXIT
 node "<plugin-root>/scripts/state.mjs" archive \
   --workflow-path "$WORKFLOW" --host <claude|codex> --repo-root "$REPO_ROOT"
 ```
 
-Archive moves the file to the matching canonical or legacy
-orchestrator `archive/` home.
+Archive moves the file to the `archive/` beside it, in its own home
+(canonical or legacy, wherever the macro lives).
 
 ---
 

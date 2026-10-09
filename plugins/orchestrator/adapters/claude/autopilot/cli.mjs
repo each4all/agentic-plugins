@@ -28,6 +28,7 @@ import readline from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 
 import { expandArgsFile } from '../../../scripts/lib/args-file.mjs';
+import { describeAdmission } from '../../../scripts/lib/run-locks.mjs';
 import { isAutopilotRun } from '../../../scripts/state.mjs';
 import { DEFAULTS, posture, preflight, startRun } from './driver.mjs';
 import { holderAlive, listLocks, listRuns, mainWorktreeRoot, provablySame, readRun } from './ledger.mjs';
@@ -308,11 +309,36 @@ async function startCmd(o, repoRoot, env, out, err, io) {
   return startRun({ repoRoot, options: o, env, out, err });
 }
 
+// ADR-0067 Decision 4, item 5 — the interactive sessions admitted in the locks
+// this checkout's runs take (the macro locks under the main worktree and this
+// checkout's worktree lock), one row per admission, so the owner sees the id a
+// refusal names and can release a session they know is gone.
+function sessionAdmissions(repoRoot) {
+  const seen = new Map();
+  for (const l of listLocks(mainWorktreeRoot(repoRoot), repoRoot)) {
+    if (!l.session) continue;
+    const id = l.holder?.admission_id ?? l.entry;
+    if (!seen.has(id)) seen.set(id, { holder: l.holder, locks: [] });
+    seen.get(id).locks.push(l.lock);
+  }
+  return [...seen.values()];
+}
+
+function printAdmissions(admissions, out) {
+  if (admissions.length === 0) return;
+  out(`session admissions (${admissions.length}):`);
+  for (const a of admissions) out(`  ${a.holder ? describeAdmission(a.holder) : `an unreadable admission entry in ${a.locks.join(', ')}`}`);
+}
+
 async function statusCmd(o, repoRoot, out, err) {
   const runs = listRuns(repoRoot);
+  const admissions = sessionAdmissions(repoRoot);
   if (runs.length === 0) {
-    if (o.json) out(JSON.stringify({ runs: [] }));
-    else out(`no autopilot runs in ${repoRoot}`);
+    if (o.json) out(JSON.stringify({ runs: [], admissions }));
+    else {
+      out(`no autopilot runs in ${repoRoot}`);
+      printAdmissions(admissions, out);
+    }
     return 0;
   }
   const id = o.run ?? runs.at(-1);
@@ -326,7 +352,7 @@ async function statusCmd(o, repoRoot, out, err) {
     ? (live ? 'running' : 'gone (the driver exited without recording an end: it crashed or was killed)')
     : r.run.status;
   if (o.json) {
-    out(JSON.stringify({ run: r.run, steps: r.steps, landing: r.landing, halt: r.halt, live }, null, 2));
+    out(JSON.stringify({ run: r.run, steps: r.steps, landing: r.landing, halt: r.halt, live, admissions }, null, 2));
     return 0;
   }
   out(`${r.run.run_id} · ${liveness} · macro ${r.run.macro_id ?? '-'} · steps ${r.run.steps} · $${Number(r.run.cost_usd ?? 0).toFixed(2)}`);
@@ -344,6 +370,7 @@ async function statusCmd(o, repoRoot, out, err) {
     for (const line of r.halt.resume ?? []) out(`    ${line}`);
   }
   if (r.run.error) out(`  error: ${r.run.error}`);
+  printAdmissions(admissions, out);
   return 0;
 }
 

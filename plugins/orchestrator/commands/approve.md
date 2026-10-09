@@ -62,14 +62,12 @@ if [ -n "${EXPLICIT_WORKFLOW_ID:-}" ]; then
       echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID invalid — must be a basename-shaped workflow id (no '/', '\\\\', '..', or leading '.')." >&2
       exit 1;;
   esac
-  CANONICAL_MACRO_PATH="$REPO_ROOT/.agentic-plugins/state/orchestrator/workflows/${EXPLICIT_WORKFLOW_ID}.md"
-  LEGACY_MACRO_PATH="$REPO_ROOT/.claude/agentic-orchestrator/workflows/${EXPLICIT_WORKFLOW_ID}.md"
-  if [ -f "$CANONICAL_MACRO_PATH" ]; then
-    MACRO_PATH="$CANONICAL_MACRO_PATH"
-  elif [ -f "$LEGACY_MACRO_PATH" ]; then
-    MACRO_PATH="$LEGACY_MACRO_PATH"
-  else
-    echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID not found in canonical or legacy workflow homes (archived macros are not addressed)." >&2
+  # ADR-0067 Decision 4, item 2 — the macro file in the orchestrator workflow
+  # homes of this checkout's read set, the default state root's first. Two
+  # files holding the id are an error, named on stderr, never a choice.
+  if ! MACRO_PATH="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
+    resolve-workflow --repo-root "$REPO_ROOT" --workflow-id "$EXPLICIT_WORKFLOW_ID")"; then
+    echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID names no single macro file in the orchestrator workflow homes of this checkout's read set (the reason is above; archived macros are not addressed)." >&2
     exit 1
   fi
 else

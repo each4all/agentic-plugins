@@ -31,7 +31,8 @@ orchestrator homes.
   hook relays comes from runtime: RR changes no attention behaviour, so the
   attention version installed before RR serves it.
 - **Nothing is created or moved.** Where records are created changes later
-  (SR, then the cutover's shared-creation switch).
+  (SR, then the cutover's shared-creation switch:
+  [state-root-cutover.md](state-root-cutover.md)).
 
 A branch key or workflow id held by two files in one read set is
 **ambiguity**, and so is one pointer spelling naming a different file under
@@ -80,7 +81,8 @@ repository, updating that checkout *is* the install (Decision 4, item 3).
    workflow, finalize or abort its macro (`/orchestrator:finalize`,
    `/orchestrator:abort`), or archive it (`/engineer:resume`, which offers
    the archive). Move nothing between checkouts by hand: that is the
-   cutover's job, with its manifest (Decision 4, item 4).
+   cutover's job, with its manifest (Decision 4, item 4;
+   [state-root-cutover.md](state-root-cutover.md)).
 4. **Run the check again** until it exits 0, then install the release on both
    hosts, or update the marketplace checkout.
 

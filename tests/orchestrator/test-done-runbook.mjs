@@ -10,9 +10,9 @@
 // is a fake on PATH.
 
 import { describe, it } from 'node:test';
-import { strictEqual, ok } from 'node:assert/strict';
-import { mkdtemp, rm, writeFile, mkdir, chmod, readFile, rename } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { deepStrictEqual, strictEqual, ok, rejects } from 'node:assert/strict';
+import { mkdtemp, rm, writeFile, mkdir, chmod, readFile, rename, symlink } from 'node:fs/promises';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -48,11 +48,13 @@ const runbookScript = (args) => bashBlocks(renderPhases(args)).join('\n');
 
 /** The argument line an operator types for these variables (argument-hint order). */
 function typedArguments(vars, reason) {
-  const parts = [vars.EXPLICIT_SUBTASK_ID];
+  // An id holding a double quote is typed inside single quotes.
+  const parts = [vars.EXPLICIT_SUBTASK_ID.includes('"') ? `'${vars.EXPLICIT_SUBTASK_ID}'` : vars.EXPLICIT_SUBTASK_ID];
   if (vars.EXPLICIT_PR) parts.push(`--pr=${vars.EXPLICIT_PR}`);
   if (vars.EXPLICIT_COMMIT) parts.push(`--commit=${vars.EXPLICIT_COMMIT}`);
   if (vars.CORRECT === '1') parts.push('--correct');
   if (vars.NO_COMMIT === '1') parts.push('--no-commit');
+  if (vars.WAIVE_DISPATCH === '1') parts.push('--waive-dispatch');
   if (vars.EXPLICIT_WORKFLOW_ID) parts.push(`--workflow=${vars.EXPLICIT_WORKFLOW_ID}`);
   if (vars.EXPLICIT_INTEGRATION_BRANCH) parts.push(`--integration-branch=${vars.EXPLICIT_INTEGRATION_BRANCH}`);
   if (reason !== null) parts.push(reason);
@@ -83,7 +85,7 @@ if (process.env.FAKE_GH_RETARGET) {
 process.stdout.write(fs.readFileSync(process.env.FAKE_GH_PRS, 'utf8'));
 `;
 
-async function withFixture(fn, { topicA } = {}) {
+async function withFixture(fn, { topicA, idA = 'A' } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'orchestrator-done-runbook-'));
   try {
     const origin = join(dir, 'origin.git');
@@ -111,8 +113,8 @@ async function withFixture(fn, { topicA } = {}) {
     await setPlan({
       workflowPath: macroPath, host: 'claude',
       subtasks: [
-        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'in_progress', ...(topicA ? { topic: topicA } : {}) },
-        { id: 'B', verb: 'compose', branch: 'feat/b', blocked_by: ['A'], status: 'blocked' },
+        { id: idA, verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'in_progress', ...(topicA ? { topic: topicA } : {}) },
+        { id: 'B', verb: 'compose', branch: 'feat/b', blocked_by: [idA], status: 'blocked' },
       ],
     });
 
@@ -123,8 +125,12 @@ async function withFixture(fn, { topicA } = {}) {
     await mkdir(join(engDir, 'archive'), { recursive: true });
     const macroId = macroPath.split('/').pop().replace(/\.md$/, '');
     await writeFile(child('archive'), [
+      // Created on its subtask's branch, as /orchestrator:next creates it; it
+      // predates the dispatch record (ADR-0067 Decision 4, item 5), so the
+      // scan judges it by that branch.
       '---', 'schema: "1.3"', `workflow_id: "${ENGINEER_ID}"`,
-      `parent_workflow: "${macroId}"`, 'originating_subtask: "A"', '---', '', '# child', '',
+      'git_baseline:', '  branch: "feat/a"', `  head: "${'0'.repeat(40)}"`, '  status_digest: ""',
+      `parent_workflow: "${macroId}"`, `originating_subtask: ${JSON.stringify(idA)}`, '---', '', '# child', '',
     ].join('\n'));
 
     const bin = join(dir, 'bin');
@@ -142,7 +148,7 @@ async function withFixture(fn, { topicA } = {}) {
     // `prelude` runs before the script (shell options).
     async function done(vars, { prs = [pr()], reason = null, env = {}, typed = null, prelude = '' } = {}) {
       await writeFile(prsFile, JSON.stringify(prs));
-      const all = { EXPLICIT_SUBTASK_ID: 'A', ...vars };
+      const all = { EXPLICIT_SUBTASK_ID: idA, ...vars };
       const script = runbookScript(typed ?? typedArguments(all, reason));
       if (reason !== null) {
         const reasonFile = join(dir, 'reason.txt');
@@ -163,7 +169,7 @@ async function withFixture(fn, { topicA } = {}) {
       });
       return { status: r.status, stderr: r.stderr, stdout: r.stdout };
     }
-    const subtask = async (id = 'A') => (await readWorkflow(macroPath)).frontmatter.plan.subtasks.find((s) => s.id === id);
+    const subtask = async (id = idA) => (await readWorkflow(macroPath)).frontmatter.plan.subtasks.find((s) => s.id === id);
 
     return await fn({ dir, work, macroPath, squash, later, pr, done, subtask, child });
   } finally {
@@ -369,30 +375,101 @@ describe('/orchestrator:done runbook (ADR-0062)', () => {
     });
   });
 
+  // ADR-0067 Decision 4, item 5 — the owner Phase 2's scan finds is bound by
+  // done's write. Contract: the scan reads the dispatch the child records (or
+  // the branch it was created on, for a child that predates the record) and
+  // the write is refused under the macro's file lock when a plan revision
+  // changed the subtask since; nothing is bound or completed. The completed
+  // case above is the unrevised control.
+  // The same for an owner the subtask already records (bound normally, the plan
+  // revised afterwards with the owner kept): done completes the subtask in that
+  // owner's name, so it compares the dispatch the owner records; the unrevised
+  // case is the control.
+  const TOPIC_WHY = 'topic is "a revised topic"; the child was dispatched for "the topic"';
+  for (const [label, recorded, revision, why, noCommit, owned] of [
+    ['a child that predates the record, the branch revised (--no-commit)', false, { branch: 'feat/a2' }, 'branch is "feat/a2"; the child was dispatched for "feat/a"', true, false],
+    ['a recorded dispatch, the topic revised (--no-commit)', true, { topic: 'a revised topic' }, TOPIC_WHY, true, false],
+    ['a recorded dispatch, the topic revised (the landing)', true, { topic: 'a revised topic' }, TOPIC_WHY, false, false],
+    ['the owner recorded on the subtask, the topic revised (--no-commit)', true, { topic: 'a revised topic' }, TOPIC_WHY, true, true],
+    ['the owner recorded on the subtask, the topic revised (the landing)', true, { topic: 'a revised topic' }, TOPIC_WHY, false, true],
+    ['the owner recorded on the subtask, unrevised (the landing; control)', true, null, null, false, true],
+  ]) {
+    it(`${owned ? 'a recorded owner' : 'an owner the scan finds'} is not bound to a subtask revised since its dispatch: ${label}`, async () => {
+      await withFixture(async ({ done, subtask, child, macroPath }) => {
+        if (recorded) {
+          const text = await readFile(child('archive'), 'utf8');
+          await writeFile(child('archive'), text.replace('originating_subtask: "A"\n', 'originating_subtask: "A"\ndispatched_branch: "feat/a"\ndispatched_verb: "compose"\ndispatched_profile: ""\ndispatched_topic: "the topic"\n'));
+        }
+        await setPlan({
+          workflowPath: macroPath, host: 'claude',
+          subtasks: [
+            {
+              id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'in_progress', topic: 'the topic',
+              ...(owned ? { engineer_workflow_id: ENGINEER_ID } : {}), ...revision,
+            },
+            { id: 'B', verb: 'compose', branch: 'feat/b', blocked_by: ['A'], status: 'blocked' },
+          ],
+        });
+        const before = await readFile(macroPath, 'utf8');
+        const r = noCommit ? await done({ NO_COMMIT: '1' }, { reason: 'investigation only' }) : await done({});
+        if (!revision) {
+          strictEqual(r.status, 0, r.stderr);
+          strictEqual((await subtask('A')).status, 'completed');
+          return;
+        }
+        strictEqual(r.status, 1, r.stderr);
+        ok(r.stderr.includes(`(dispatch-changed): ${why}`), r.stderr);
+        strictEqual(await readFile(macroPath, 'utf8'), before);
+        strictEqual((await subtask('A')).engineer_workflow_id, owned ? ENGINEER_ID : undefined);
+        strictEqual((await subtask('A')).status, 'in_progress');
+      });
+    });
+  }
+
   // A scan that cannot read a workflow home or file must refuse, not read the
   // failure as "no child": that would complete the subtask while its child is
-  // still active (C3 review, G3). The faults are ones root cannot bypass. The
-  // owner is recorded first so the --no-commit cases reach the active-child
-  // scan rather than stopping at the owner scan.
-  it('--no-commit refuses when an engineer workflow file cannot be read', async () => {
+  // still active (C3 review, G3). The faults are ones root cannot bypass. Since
+  // the owner's dispatch is read from the owner scan whatever the owner
+  // (ADR-0067 Decision 4, item 5), a fault present from the start stops Phase
+  // 2; one that appears while `admission join` runs (a shim plugin root makes
+  // it, then hands every call to the real state.mjs) reaches the active-child
+  // scan after the join, the rule these cases hold.
+  const faultDuringJoin = async (dir, fault) => {
+    const shim = join(dir, 'shim-root');
+    await mkdir(join(shim, 'scripts'), { recursive: true });
+    await writeFile(join(shim, 'scripts', 'state.mjs'), [
+      "import { mkdirSync, writeFileSync } from 'node:fs';",
+      "import { spawnSync } from 'node:child_process';",
+      'const args = process.argv.slice(2);',
+      `if (args[0] === 'admission' && args[1] === 'join') { ${fault} }`,
+      `const r = spawnSync(process.execPath, [${JSON.stringify(resolve(ORCH_ROOT, 'scripts/state.mjs'))}, ...args], { stdio: 'inherit' });`,
+      'process.exit(r.status ?? 1);',
+    ].join('\n'));
+    return { CLAUDE_PLUGIN_ROOT: shim, AGENTIC_ORCHESTRATOR_ROOT: shim };
+  };
+  for (const [what, fault] of [
+    ['an engineer workflow file cannot be read', (work) => `mkdirSync(${JSON.stringify(join(work, '.agentic-plugins/state/engineer/workflows/compose-20260927T110000Z-bbbbbb.md'))}, { recursive: true });`],
+    ['an engineer workflow home cannot be listed', (work) => `mkdirSync(${JSON.stringify(join(work, '.claude/agentic-engineer'))}, { recursive: true }); writeFileSync(${JSON.stringify(join(work, '.claude/agentic-engineer/workflows'))}, 'not a directory\\n');`],
+  ]) {
+    it(`--no-commit refuses when ${what}`, async () => {
+      await withFixture(async ({ done, subtask, work, macroPath, dir }) => {
+        await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host: 'claude', engineerWorkflowId: ENGINEER_ID });
+        const r = await done({ NO_COMMIT: '1' }, { reason: 'investigation only', env: await faultDuringJoin(dir, fault(work)) });
+        strictEqual(r.status, 1, r.stderr);
+        ok(/could not scan the engineer workflow homes for an active child of A/i.test(r.stderr), r.stderr);
+        strictEqual((await subtask('A')).status, 'in_progress');
+        deepStrictEqual(sessionEntries(work, macroPath), [], 'released on that refusal');
+      });
+    });
+  }
+
+  it('with the owner recorded, a fault present from the start stops the owner scan', async () => {
     await withFixture(async ({ done, subtask, work, macroPath }) => {
       await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host: 'claude', engineerWorkflowId: ENGINEER_ID });
       await mkdir(join(work, '.agentic-plugins/state/engineer/workflows/compose-20260927T110000Z-bbbbbb.md'));
       const r = await done({ NO_COMMIT: '1' }, { reason: 'investigation only' });
       strictEqual(r.status, 1, r.stderr);
-      ok(/could not scan the engineer workflow homes for an active child of A/i.test(r.stderr), r.stderr);
-      strictEqual((await subtask('A')).status, 'in_progress');
-    });
-  });
-
-  it('--no-commit refuses when an engineer workflow home cannot be listed', async () => {
-    await withFixture(async ({ done, subtask, work, macroPath }) => {
-      await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host: 'claude', engineerWorkflowId: ENGINEER_ID });
-      await mkdir(join(work, '.claude/agentic-engineer'), { recursive: true });
-      await writeFile(join(work, '.claude/agentic-engineer/workflows'), 'not a directory\n');
-      const r = await done({ NO_COMMIT: '1' }, { reason: 'investigation only' });
-      strictEqual(r.status, 1, r.stderr);
-      ok(/could not scan the engineer workflow homes for an active child of A/i.test(r.stderr), r.stderr);
+      ok(/could not scan the engineer workflow homes for A's owner/i.test(r.stderr), r.stderr);
       strictEqual((await subtask('A')).status, 'in_progress');
     });
   });
@@ -400,6 +477,193 @@ describe('/orchestrator:done runbook (ADR-0062)', () => {
   it('the owner scan refuses when an engineer workflow file cannot be read, rather than guessing', async () => {
     await withFixture(async ({ done, subtask, work }) => {
       await mkdir(join(work, '.agentic-plugins/state/engineer/archive/compose-20260927T110000Z-bbbbbb.md'));
+      const r = await done({});
+      strictEqual(r.status, 1, r.stderr);
+      ok(/could not scan the engineer workflow homes for A's owner/i.test(r.stderr), r.stderr);
+      strictEqual((await subtask('A')).status, 'in_progress');
+    });
+  });
+
+  // R1 (refine-verify-20261009T035420Z-ed9f8f) — the dispatch of a recorded
+  // owner whose file is gone cannot be read (a lane's home removed, say), so
+  // the comparison cannot run: done refuses, and only --waive-dispatch with a
+  // reason completes, the macro recording both. Contract: the refusal writes
+  // nothing on either write path; the waiver is the one way through.
+  for (const [label, vars] of [['the landing', {}], ['--no-commit', { NO_COMMIT: '1' }]]) {
+    it(`a recorded owner with no file left refuses; --waive-dispatch with a reason completes and is recorded (${label})`, async () => {
+      await withFixture(async ({ done, subtask, child, macroPath }) => {
+        await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host: 'claude', engineerWorkflowId: ENGINEER_ID });
+        await rm(child('archive'));
+        const before = await readFile(macroPath, 'utf8');
+        const refused = await done(vars, { reason: vars.NO_COMMIT ? 'investigation only' : null });
+        strictEqual(refused.status, 1, refused.stderr);
+        ok(refused.stderr.includes(`recorded owner ${ENGINEER_ID} has no workflow file left`), refused.stderr);
+        ok(refused.stderr.includes('rerun with --waive-dispatch and a reason'), refused.stderr);
+        strictEqual(await readFile(macroPath, 'utf8'), before);
+        const bare = await done({ ...vars, WAIVE_DISPATCH: '1' });
+        strictEqual(bare.status, 1, bare.stderr);
+        ok(/need a reason/.test(bare.stderr), bare.stderr);
+        strictEqual(await readFile(macroPath, 'utf8'), before);
+        const reason = 'the lane that held the child was removed; the merged pull request is the work';
+        const r = await done({ ...vars, WAIVE_DISPATCH: '1' }, { reason });
+        strictEqual(r.status, 0, r.stderr);
+        strictEqual((await subtask('A')).status, 'completed');
+        const { body } = await readWorkflow(macroPath);
+        ok(body.includes(`Dispatch not compared (--waive-dispatch): the dispatch recorded by "${ENGINEER_ID}" could not be read`), body);
+        ok(body.includes(`Reason: ${reason}`), body);
+      });
+    });
+  }
+
+  it('--waive-dispatch is refused while the owner\'s dispatch can be read, and nothing is written', async () => {
+    await withFixture(async ({ done, subtask, macroPath }) => {
+      await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host: 'claude', engineerWorkflowId: ENGINEER_ID });
+      const before = await readFile(macroPath, 'utf8');
+      const r = await done({ WAIVE_DISPATCH: '1' }, { reason: 'nothing to waive' });
+      strictEqual(r.status, 1, r.stderr);
+      ok(r.stderr.includes("--waive-dispatch applies only when the owner's dispatch cannot be read"), r.stderr);
+      strictEqual(await readFile(macroPath, 'utf8'), before);
+      strictEqual((await subtask('A')).status, 'in_progress');
+    });
+  });
+
+  it('a recorded owner whose file claims another subtask refuses, --waive-dispatch or not', async () => {
+    await withFixture(async ({ done, subtask, child, macroPath }) => {
+      await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host: 'claude', engineerWorkflowId: ENGINEER_ID });
+      const text = await readFile(child('archive'), 'utf8');
+      await writeFile(child('archive'), text.replace('originating_subtask: "A"', 'originating_subtask: "B"'));
+      const before = await readFile(macroPath, 'utf8');
+      for (const vars of [{}, { WAIVE_DISPATCH: '1' }]) {
+        const r = await done(vars, { reason: vars.WAIVE_DISPATCH ? 'complete it anyway' : null });
+        strictEqual(r.status, 1, r.stderr);
+        ok(r.stderr.includes(`recorded owner ${ENGINEER_ID} was not dispatched for it`) && r.stderr.includes('originating_subtask=B'), r.stderr);
+        strictEqual(await readFile(macroPath, 'utf8'), before);
+        strictEqual((await subtask('A')).status, 'in_progress');
+      }
+    });
+  });
+
+  // R3 — the owner scan parses frontmatter values: a subtask id holding a quote
+  // is written with a JSON escape, which matching the serialized text never
+  // found, so its recorded owner read as missing. Contract: such an id is found
+  // by its value on both paths, compared like any other, and --no-commit sees
+  // its active child (the same reading).
+  const QUOTED = 'A"1';
+  it('a subtask id holding a quote: the claimant is found by its value and the subtask completes', async () => {
+    await withFixture(async ({ done, subtask }) => {
+      const r = await done({});
+      strictEqual(r.status, 0, r.stderr);
+      strictEqual((await subtask()).status, 'completed');
+      strictEqual((await subtask()).engineer_workflow_id, ENGINEER_ID);
+    }, { idA: QUOTED });
+  });
+
+  it('a subtask id holding a quote: its recorded owner\'s dispatch is read and compared, and a revision refuses', async () => {
+    await withFixture(async ({ done, subtask, macroPath }) => {
+      await updateSubtask({ workflowPath: macroPath, subtaskId: QUOTED, host: 'claude', engineerWorkflowId: ENGINEER_ID });
+      await setPlan({
+        workflowPath: macroPath, host: 'claude',
+        subtasks: [
+          { id: QUOTED, verb: 'compose', branch: 'feat/a2', blocked_by: [], status: 'in_progress', engineer_workflow_id: ENGINEER_ID },
+          { id: 'B', verb: 'compose', branch: 'feat/b', blocked_by: [QUOTED], status: 'blocked' },
+        ],
+      });
+      const before = await readFile(macroPath, 'utf8');
+      const r = await done({ NO_COMMIT: '1' }, { reason: 'investigation only' });
+      strictEqual(r.status, 1, r.stderr);
+      ok(r.stderr.includes('(dispatch-changed): branch is "feat/a2"; the child was dispatched for "feat/a"'), r.stderr);
+      strictEqual(await readFile(macroPath, 'utf8'), before);
+    }, { idA: QUOTED });
+  });
+
+  it('a subtask id holding a quote: --no-commit refuses while its child is active', async () => {
+    await withFixture(async ({ done, subtask, child }) => {
+      await rename(child('archive'), child('workflows'));
+      const r = await done({ NO_COMMIT: '1' }, { reason: 'investigation only' });
+      strictEqual(r.status, 1, r.stderr);
+      ok(/still active/.test(r.stderr), r.stderr);
+      strictEqual((await subtask()).status, 'in_progress');
+    }, { idA: QUOTED });
+  });
+
+  // A topic holding U+2028, a line terminator to a regular expression but not
+  // to the engineer's line-per-key frontmatter, is read whole.
+  it('a recorded dispatch whose topic holds U+2028 is read whole, and the unrevised subtask completes', async () => {
+    const topic = 'one two';
+    await withFixture(async ({ done, subtask, child }) => {
+      const text = await readFile(child('archive'), 'utf8');
+      await writeFile(child('archive'), text.replace('originating_subtask: "A"\n', `originating_subtask: "A"\ndispatched_branch: "feat/a"\ndispatched_verb: "compose"\ndispatched_profile: ""\ndispatched_topic: ${JSON.stringify(topic)}\n`));
+      const r = await done({});
+      strictEqual(r.status, 0, r.stderr);
+      strictEqual((await subtask()).status, 'completed');
+    }, { topicA: topic });
+  });
+
+  // R2 — two archived attempts claim the subtask (a re-dispatch after the first
+  // child was archived). done refuses and prints, for each claimant, a binding
+  // line that carries that claimant's dispatch, so a plan revised since refuses
+  // the binding as every binding does. Contract: the line runs as printed in
+  // bash and zsh, a topic with quotes and shell syntax included; the unrevised
+  // binding and done are the control.
+  it('two claimants: each binding line carries its dispatch, refuses a revised subtask, and binds an unrevised one', async () => {
+    const topic = `it's "quoted" $HOME \`true\``;
+    await withFixture(async ({ done, subtask, child, macroPath }) => {
+      const second = 'compose-20260927T100500Z-bbbbbb';
+      const recorded = (await readFile(child('archive'), 'utf8')).replace('originating_subtask: "A"\n', `originating_subtask: "A"\ndispatched_branch: "feat/a"\ndispatched_verb: "compose"\ndispatched_profile: ""\ndispatched_topic: ${JSON.stringify(topic)}\n`);
+      await writeFile(child('archive'), recorded);
+      await writeFile(join(dirname(child('archive')), `${second}.md`), recorded.replace(ENGINEER_ID, second));
+      const refused = await done({});
+      strictEqual(refused.status, 1, refused.stderr);
+      ok(refused.stderr.includes('More than one engineer workflow claims A'), refused.stderr);
+      const lines = refused.stderr.split('\n').filter((l) => l.startsWith('    node '));
+      strictEqual(lines.length, 2, refused.stderr);
+      ok(lines.every((l) => l.includes('--expect-dispatch=')), refused.stderr);
+      const line = lines.find((l) => l.includes(second)).trim();
+      const plan = (over) => setPlan({
+        workflowPath: macroPath, host: 'claude',
+        subtasks: [
+          { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'in_progress', topic, ...over },
+          { id: 'B', verb: 'compose', branch: 'feat/b', blocked_by: ['A'], status: 'blocked' },
+        ],
+      });
+      const shells = ['bash', ...(spawnSync('zsh', ['-c', 'true']).status === 0 ? ['zsh'] : [])];
+      const run = (shell) => spawnSync(shell, ['-c', line], { encoding: 'utf8', env: { ...GIT_ENV, PATH: `${dirname(process.execPath)}:${process.env.PATH}` } });
+      // A plan revision after the refusal: the binding refuses in every shell.
+      await plan({ topic: 'a revised topic' });
+      const before = await readFile(macroPath, 'utf8');
+      for (const shell of shells) {
+        const bind = run(shell);
+        strictEqual(bind.status, 1, `${shell}: ${bind.stderr}`);
+        ok(bind.stderr.includes(`(dispatch-changed): topic is "a revised topic"; the child was dispatched for ${JSON.stringify(topic)}`), `${shell}: ${bind.stderr}`);
+        strictEqual(await readFile(macroPath, 'utf8'), before);
+      }
+      // Revised back: the line binds the chosen claimant, and done completes it.
+      await plan({});
+      const bound = run(shells[shells.length - 1]);
+      strictEqual(bound.status, 0, bound.stderr);
+      strictEqual((await subtask()).engineer_workflow_id, second);
+      const r = await done({});
+      strictEqual(r.status, 0, r.stderr);
+      strictEqual((await subtask()).status, 'completed');
+    });
+  });
+
+  it('the waiver needs a reason, names an owner, and excludes a dispatch to compare (updateSubtask)', async () => {
+    await withFixture(async ({ macroPath }) => {
+      const base = { workflowPath: macroPath, subtaskId: 'A', host: 'claude', engineerWorkflowId: ENGINEER_ID, status: 'completed', closedAt: '2026-10-09T00:00:00Z', waiveDispatch: true };
+      const before = await readFile(macroPath, 'utf8');
+      await rejects(updateSubtask(base), /--waive-dispatch requires a non-empty reason/);
+      await rejects(updateSubtask({ ...base, reason: 'gone', engineerWorkflowId: undefined }), /--waive-dispatch names no owner/);
+      await rejects(updateSubtask({ ...base, reason: 'gone', expectDispatch: { macro: 'm', subtask: 'A', branch: 'feat/a' } }), /not both/);
+      strictEqual(await readFile(macroPath, 'utf8'), before);
+    });
+  });
+
+  // A name the scan cannot resolve (a link to itself) is no absence either.
+  it('the owner scan refuses when an engineer workflow name is a link loop, rather than guessing', async () => {
+    await withFixture(async ({ done, subtask, work }) => {
+      const home = join(work, '.agentic-plugins/state/engineer/archive');
+      await symlink('compose-20260927T110000Z-bbbbbb.md', join(home, 'compose-20260927T110000Z-bbbbbb.md'));
       const r = await done({});
       strictEqual(r.status, 1, r.stderr);
       ok(/could not scan the engineer workflow homes for A's owner/i.test(r.stderr), r.stderr);
@@ -438,6 +702,281 @@ describe('/orchestrator:done runbook (ADR-0062)', () => {
       ok(/no_pr/.test(r.stderr), r.stderr);
       strictEqual(r.status, 1);
       strictEqual((await subtask('A')).status, 'in_progress');
+    });
+  });
+
+  // ADR-0067 Decision 4, item 5 — the write joins the macro's run lock first.
+  const sessionEntries = (work, macroPath) => {
+    const lock = join(work, '.agentic-plugins/runs/autopilot/locks', `${macroPath.split('/').pop().replace(/\.md$/, '')}.lock`);
+    return existsSync(lock) ? readdirSync(lock).filter((n) => /^s-[0-9a-f]{32}\.json$/.test(n)) : [];
+  };
+  const holdAsSession = (work, macroPath) => execFileSync(process.execPath, [
+    resolve(ORCH_ROOT, 'scripts/state.mjs'), 'admission', 'join', '--macro', macroPath.split('/').pop().replace(/\.md$/, ''),
+    '--checkout', work, '--command', 'finalize', '--host', 'codex',
+  ], { encoding: 'utf8', env: GIT_ENV, stdio: 'pipe' }).trim();
+
+  it('a session holding the macro lock refuses the write, naming it; nothing is written and its entry is kept', async () => {
+    await withFixture(async ({ done, subtask, work, macroPath }) => {
+      const other = holdAsSession(work, macroPath);
+      for (const vars of [{}, { NO_COMMIT: '1' }]) {
+        const r = await done(vars, { reason: vars.NO_COMMIT ? 'investigation only' : null });
+        strictEqual(r.status, 1, r.stderr);
+        ok(new RegExp(`an interactive session holds .*/orchestrator:finalize, .*host codex, .*admission ${other}`).test(r.stderr), r.stderr);
+        strictEqual((await subtask('A')).status, 'in_progress');
+        deepStrictEqual(sessionEntries(work, macroPath), [`s-${other}.json`]);
+      }
+    });
+  });
+
+  it('every exit after the join releases: a recorded landing, a --no-commit completion, and a write refused after the join', async () => {
+    await withFixture(async ({ done, subtask, work, macroPath }) => {
+      const refused = await done({}, { env: { FAKE_GH_RETARGET: macroPath } });
+      strictEqual(refused.status, 1, refused.stderr);
+      ok(/not the expected "feat\/a"/.test(refused.stderr), refused.stderr);
+      deepStrictEqual(sessionEntries(work, macroPath), [], 'released after the refused write');
+    });
+    await withFixture(async ({ done, subtask, work, macroPath }) => {
+      const r = await done({});
+      strictEqual(r.status, 0, r.stderr);
+      strictEqual((await subtask('A')).status, 'completed');
+      deepStrictEqual(sessionEntries(work, macroPath), [], 'released after the landing');
+    });
+    await withFixture(async ({ done, subtask, work, macroPath }) => {
+      const r = await done({ NO_COMMIT: '1' }, { reason: 'investigation only' });
+      strictEqual(r.status, 0, r.stderr);
+      strictEqual((await subtask('A')).status, 'completed');
+      deepStrictEqual(sessionEntries(work, macroPath), [], 'released after the --no-commit completion');
+    });
+  });
+
+  // A shim plugin root whose state.mjs moves the child back into the active
+  // home while `admission join` runs, then hands every call to the real one:
+  // a run's step that dispatched the subtask again between the check and the join.
+  it('--no-commit reads the active children again after the join, and a child made meanwhile refuses and releases', async () => {
+    await withFixture(async ({ done, subtask, work, macroPath, child, dir }) => {
+      const shim = join(dir, 'shim-root');
+      await mkdir(join(shim, 'scripts'), { recursive: true });
+      await writeFile(join(shim, 'scripts', 'state.mjs'), [
+        "import { renameSync } from 'node:fs';",
+        "import { spawnSync } from 'node:child_process';",
+        'const args = process.argv.slice(2);',
+        `if (args[0] === 'admission' && args[1] === 'join') renameSync(${JSON.stringify(child('archive'))}, ${JSON.stringify(child('workflows'))});`,
+        `const r = spawnSync(process.execPath, [${JSON.stringify(resolve(ORCH_ROOT, 'scripts/state.mjs'))}, ...args], { stdio: 'inherit' });`,
+        'process.exit(r.status ?? 1);',
+      ].join('\n'));
+      const r = await done({ NO_COMMIT: '1' }, { reason: 'investigation only', env: { CLAUDE_PLUGIN_ROOT: shim, AGENTIC_ORCHESTRATOR_ROOT: shim } });
+      strictEqual(r.status, 1, r.stderr);
+      ok(/still active/.test(r.stderr), r.stderr);
+      strictEqual((await subtask('A')).status, 'in_progress');
+      deepStrictEqual(sessionEntries(work, macroPath), [], 'released on that refusal');
+    });
+  });
+
+  // U7d — the Codex mirror's Phase 4 block ($orchestrator:done), run as the
+  // agent runs it for --no-commit: the plugin root filled in, the optional
+  // flags it omits for --no-commit dropped.
+  const SKILL_TEXT = readFileSync(resolve(ORCH_ROOT, 'core/skills/done/SKILL.md'), 'utf8');
+  // `landing`: the block as the agent runs it with a resolved landing (the
+  // commit and pull request kept, no reason).
+  const codexPhase4 = (root = ORCH_ROOT, { landing = false } = {}) => {
+    const found = [...SKILL_TEXT.matchAll(/^```bash\n([\s\S]*?)^```$/gm)].map((m) => m[1]).filter((b) => b.includes('--command done --host codex'));
+    strictEqual(found.length, 1, 'one Codex block joins for done');
+    const block = found[0].replaceAll('<orchestrator-plugin-root>', root);
+    if (landing) return block.replace(' \\\n  [--correct] [--reason-file "$REASON_FILE"]', '');
+    return block
+      .replace(/^ {2}--commit "\$COMMIT_SHA" \\\n/m, '')
+      .replace(/^ {2}--pr-url "\$PR_URL" \\\n/m, '')
+      .replace('[--correct] [--reason-file "$REASON_FILE"]', '--reason-file "$REASON_FILE"');
+  };
+  const runCodexPhase4 = async ({ work, macroPath, dir }, vars, root = ORCH_ROOT, { landing = false, prelude = '' } = {}) => {
+    const reasonFile = join(dir, 'reason.txt');
+    await writeFile(reasonFile, 'investigation only');
+    const macroId = macroPath.split('/').pop().replace(/\.md$/, '');
+    const all = {
+      MACRO_ID: macroId, MACRO_PATH: macroPath, REPO_ROOT: work, SUBTASK_ID: 'A',
+      SUBTASK_BRANCH: 'feat/a', ENGINEER_WF_ID: ENGINEER_ID, CLOSED_AT: '2026-10-08T00:00:00Z', REASON_FILE: reasonFile, ...vars,
+    };
+    const assigns = Object.entries(all).map(([k, v]) => `${k}='${String(v).replace(/'/g, "'\\''")}'`).join('\n');
+    const r = spawnSync('bash', ['-c', `${prelude}\n${assigns}\n${codexPhase4(root, { landing })}`], { cwd: work, encoding: 'utf8', env: { ...GIT_ENV, PATH: `${dirname(process.execPath)}:${process.env.PATH}` } });
+    return { status: r.status, stderr: r.stderr, stdout: r.stdout };
+  };
+
+  // ADR-0067 Decision 4, item 5 — the Codex mirror's write passes the
+  // dispatch of the owner its Phase 2 scan found: a subtask revised since the
+  // dispatch is not completed or bound.
+  it('Codex: the Phase 4 write is refused when the subtask is no longer the one the scanned owner was dispatched for', async () => {
+    await withFixture(async ({ subtask, work, macroPath, dir }) => {
+      await setPlan({
+        workflowPath: macroPath, host: 'claude',
+        subtasks: [
+          { id: 'A', verb: 'compose', branch: 'feat/a2', blocked_by: [], status: 'in_progress' },
+          { id: 'B', verb: 'compose', branch: 'feat/b', blocked_by: ['A'], status: 'blocked' },
+        ],
+      });
+      const before = await readFile(macroPath, 'utf8');
+      const r = await runCodexPhase4({ work, macroPath, dir }, { NO_COMMIT: '1', SUBTASK_BRANCH: 'feat/a2' });
+      strictEqual(r.status, 1, r.stderr);
+      ok(r.stderr.includes('(dispatch-changed): branch is "feat/a2"; the child was dispatched for "feat/a"'), r.stderr);
+      strictEqual(await readFile(macroPath, 'utf8'), before);
+      strictEqual((await subtask('A')).engineer_workflow_id, undefined);
+      deepStrictEqual(sessionEntries(work, macroPath), [], 'released');
+    });
+  });
+
+  // As the Claude test's shim: the child moves back into the active home
+  // while `admission join` runs, so only a scan after the join sees it.
+  it('Codex --no-commit: the Phase 4 block reads the active children after its join, refuses one made during it, and releases', async () => {
+    await withFixture(async ({ subtask, work, macroPath, child, dir }) => {
+      const shim = join(dir, 'shim-root');
+      await mkdir(join(shim, 'scripts'), { recursive: true });
+      await writeFile(join(shim, 'scripts', 'state.mjs'), [
+        "import { renameSync } from 'node:fs';",
+        "import { spawnSync } from 'node:child_process';",
+        'const args = process.argv.slice(2);',
+        `if (args[0] === 'admission' && args[1] === 'join') renameSync(${JSON.stringify(child('archive'))}, ${JSON.stringify(child('workflows'))});`,
+        `const r = spawnSync(process.execPath, [${JSON.stringify(resolve(ORCH_ROOT, 'scripts/state.mjs'))}, ...args], { stdio: 'inherit' });`,
+        'process.exit(r.status ?? 1);',
+      ].join('\n'));
+      const refused = await runCodexPhase4({ work, macroPath, dir }, { NO_COMMIT: '1' }, shim);
+      strictEqual(refused.status, 1, refused.stderr);
+      ok(/still active/.test(refused.stderr), refused.stderr);
+      strictEqual((await subtask('A')).status, 'in_progress');
+      deepStrictEqual(sessionEntries(work, macroPath), [], 'released on that refusal');
+      // NO_COMMIT left unset, no commit to record: the scan still runs.
+      const unset = await runCodexPhase4({ work, macroPath, dir }, {});
+      strictEqual(unset.status, 1, unset.stderr);
+      ok(/still active/.test(unset.stderr), unset.stderr);
+      strictEqual((await subtask('A')).status, 'in_progress');
+      // Control: the child archived, the same block completes the subtask.
+      await rename(child('workflows'), child('archive'));
+      const r = await runCodexPhase4({ work, macroPath, dir }, { NO_COMMIT: '1' });
+      strictEqual(r.status, 0, r.stderr);
+      strictEqual((await subtask('A')).status, 'completed');
+      deepStrictEqual(sessionEntries(work, macroPath), [], 'released after the write');
+    });
+  });
+  // The Codex mirror's Phase 2 block: the owner and its dispatch come from
+  // owner-dispatch, code rather than the agent's reading of the prose.
+  const codexPhase2 = () => {
+    const found = [...SKILL_TEXT.matchAll(/^```bash\n([\s\S]*?)^```$/gm)].map((m) => m[1])
+      .filter((b) => b.includes('owner-dispatch') && !b.includes('admission join'));
+    strictEqual(found.length, 1, 'one Codex block reads the owner before the landing');
+    return found[0].replaceAll('<orchestrator-plugin-root>', ORCH_ROOT);
+  };
+  it('Codex: the Phase 2 block prints the owner and the dispatch it records, recorded or found', async () => {
+    await withFixture(async ({ work, macroPath, child }) => {
+      const text = await readFile(child('archive'), 'utf8');
+      await writeFile(child('archive'), text.replace('originating_subtask: "A"\n', 'originating_subtask: "A"\ndispatched_branch: "feat/a"\ndispatched_verb: "compose"\ndispatched_profile: "backend"\ndispatched_topic: "the topic"\n'));
+      const macroId = macroPath.split('/').pop().replace(/\.md$/, '');
+      const expected = { engineer_workflow_id: ENGINEER_ID, dispatch: { macro: macroId, subtask: 'A', branch: 'feat/a', verb: 'compose', profile: 'backend', topic: 'the topic' } };
+      for (const owned of [false, true]) {
+        if (owned) await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host: 'codex', engineerWorkflowId: ENGINEER_ID });
+        const r = spawnSync('bash', ['-c', `MACRO_ID='${macroId}'\nMACRO_PATH='${macroPath}'\nREPO_ROOT='${work}'\nSUBTASK_ID='A'\n${codexPhase2()}`], { cwd: work, encoding: 'utf8', env: { ...GIT_ENV, PATH: `${dirname(process.execPath)}:${process.env.PATH}` } });
+        strictEqual(r.status, 0, r.stderr);
+        const out = JSON.parse(r.stdout);
+        deepStrictEqual({ engineer_workflow_id: out.engineer_workflow_id, dispatch: JSON.parse(out.dispatch) }, expected);
+      }
+    });
+  });
+
+  // R1 on Codex: the recorded owner's file gone, the block refuses; with
+  // WAIVE_DISPATCH=1 and a reason it completes and the macro records the waiver.
+  it('Codex: a recorded owner with no file left refuses; WAIVE_DISPATCH=1 with a reason completes and is recorded', async () => {
+    await withFixture(async ({ subtask, work, macroPath, child, dir }) => {
+      await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host: 'codex', engineerWorkflowId: ENGINEER_ID });
+      await rm(child('archive'));
+      const before = await readFile(macroPath, 'utf8');
+      const refused = await runCodexPhase4({ work, macroPath, dir }, { NO_COMMIT: '1' });
+      strictEqual(refused.status, 1, refused.stderr);
+      ok(refused.stderr.includes(`recorded owner ${ENGINEER_ID} has no workflow file left`), refused.stderr);
+      strictEqual(await readFile(macroPath, 'utf8'), before);
+      deepStrictEqual(sessionEntries(work, macroPath), [], 'released on that refusal');
+      const r = await runCodexPhase4({ work, macroPath, dir }, { NO_COMMIT: '1', WAIVE_DISPATCH: '1' });
+      strictEqual(r.status, 0, r.stderr);
+      strictEqual((await subtask('A')).status, 'completed');
+      ok((await readWorkflow(macroPath)).body.includes(`Dispatch not compared (--waive-dispatch): the dispatch recorded by "${ENGINEER_ID}" could not be read`));
+    });
+  });
+
+  it('Codex: WAIVE_DISPATCH=1 is refused while the owner\'s dispatch can be read', async () => {
+    await withFixture(async ({ subtask, work, macroPath, dir }) => {
+      await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host: 'codex', engineerWorkflowId: ENGINEER_ID });
+      const r = await runCodexPhase4({ work, macroPath, dir }, { NO_COMMIT: '1', WAIVE_DISPATCH: '1' });
+      strictEqual(r.status, 1, r.stderr);
+      ok(r.stderr.includes("--waive-dispatch applies only when the owner's dispatch cannot be read"), r.stderr);
+      strictEqual((await subtask('A')).status, 'in_progress');
+    });
+  });
+  // refine-verify-20261009T044549Z-bc0075, finding 1 — Phase 3 resolved the
+  // landing for ENGINEER_WF_ID; a revision and a new dispatch before Phase 4
+  // bind another owner. Contract: the block keeps the landing's owner, refuses
+  // when the subtask now records another, and writes nothing; the unrevised
+  // landing is the control.
+  it('Codex: a landing resolved for one owner is not written for an owner bound since', async () => {
+    await withFixture(async ({ subtask, work, macroPath, dir, child, squash }) => {
+      const other = 'compose-20260927T101500Z-cccccc';
+      await writeFile(join(dirname(child('archive')), `${other}.md`), (await readFile(child('archive'), 'utf8'))
+        .replace(ENGINEER_ID, other)
+        .replace('originating_subtask: "A"\n', 'originating_subtask: "A"\ndispatched_branch: "feat/a"\ndispatched_verb: "compose"\ndispatched_profile: ""\ndispatched_topic: "a revised topic"\n'));
+      await setPlan({
+        workflowPath: macroPath, host: 'codex',
+        subtasks: [
+          { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'in_progress', topic: 'a revised topic', engineer_workflow_id: other },
+          { id: 'B', verb: 'compose', branch: 'feat/b', blocked_by: ['A'], status: 'blocked' },
+        ],
+      });
+      const before = await readFile(macroPath, 'utf8');
+      const landing = { COMMIT_SHA: squash, PR_URL: 'https://github.com/o/r/pull/7' };
+      const r = await runCodexPhase4({ work, macroPath, dir }, landing, ORCH_ROOT, { landing: true });
+      strictEqual(r.status, 1, r.stderr);
+      ok(r.stderr.includes(`A now records owner ${other}, not ${ENGINEER_ID}`), r.stderr);
+      strictEqual(await readFile(macroPath, 'utf8'), before);
+      deepStrictEqual(sessionEntries(work, macroPath), [], 'released on that refusal');
+    });
+    await withFixture(async ({ subtask, work, macroPath, dir, squash }) => {
+      await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host: 'codex', engineerWorkflowId: ENGINEER_ID });
+      const r = await runCodexPhase4({ work, macroPath, dir }, { COMMIT_SHA: squash, PR_URL: 'https://github.com/o/r/pull/7' }, ORCH_ROOT, { landing: true });
+      strictEqual(r.status, 0, r.stderr);
+      strictEqual((await subtask('A')).status, 'completed');
+      strictEqual((await subtask('A')).commit, squash);
+    });
+  });
+
+  // Finding 3 — owner-dispatch's exit 3 is an answer, not a failure: under
+  // set -e the waiver still completes, on both hosts.
+  it('under set -e, --waive-dispatch with a reason still completes (Claude and Codex)', async () => {
+    for (const host of ['claude', 'codex']) {
+      await withFixture(async ({ done, subtask, child, macroPath, work, dir }) => {
+        await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host, engineerWorkflowId: ENGINEER_ID });
+        await rm(child('archive'));
+        const r = host === 'claude'
+          ? await done({ NO_COMMIT: '1', WAIVE_DISPATCH: '1' }, { reason: 'the lane was removed', prelude: 'set -e' })
+          : await runCodexPhase4({ work, macroPath, dir }, { NO_COMMIT: '1', WAIVE_DISPATCH: '1' }, ORCH_ROOT, { prelude: 'set -e' });
+        strictEqual(r.status, 0, `${host}: ${r.stderr}`);
+        strictEqual((await subtask('A')).status, 'completed', host);
+      });
+    }
+  });
+  // The Codex Phase 3 block resolves the landing for ENGINEER_WF_ID, the owner
+  // Phase 2 printed: for an owner the scan recovered (none recorded), the
+  // landing is bound to that attempt's dispatch time, as on Claude.
+  it('Codex: the Phase 3 block resolves the landing for the owner Phase 2 printed', async () => {
+    await withFixture(async ({ work, macroPath, dir, pr, squash }) => {
+      const found = [...SKILL_TEXT.matchAll(/^```bash\n([\s\S]*?)^```$/gm)].map((m) => m[1]).filter((b) => b.includes('resolve-landing'));
+      strictEqual(found.length, 1, 'one Codex block resolves the landing');
+      const block = found[0].replaceAll('<orchestrator-plugin-root>', ORCH_ROOT).replace(' [--pr "$PR"] [--commit "$COMMIT"]', '');
+      const prs = join(dir, 'prs-codex.json');
+      await writeFile(prs, JSON.stringify([pr()]));
+      const vars = { REPO_ROOT: work, MACRO_PATH: macroPath, SUBTASK_ID: 'A', INTEGRATION_BRANCH: 'main', ENGINEER_WF_ID: ENGINEER_ID };
+      const assigns = Object.entries(vars).map(([k, v]) => `${k}='${v}'`).join('\n');
+      const r = spawnSync('bash', ['-c', `${assigns}\n${block}`], {
+        cwd: work, encoding: 'utf8',
+        env: { ...GIT_ENV, PATH: `${join(dir, 'bin')}:${dirname(process.execPath)}:${process.env.PATH}`, FAKE_GH_PRS: prs },
+      });
+      strictEqual(r.status, 0, r.stderr);
+      const landing = JSON.parse(r.stdout);
+      strictEqual(landing.ok, true, r.stdout);
+      strictEqual(landing.commit, squash);
     });
   });
 });

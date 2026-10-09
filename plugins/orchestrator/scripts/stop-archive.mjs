@@ -55,6 +55,9 @@ import {
   snapshot,
   terminalMarkerCheck,
 } from './state.mjs';
+import { readFrontmatterText, runInCommandDirectory, worktreeHoldingBranch } from './lib/state-root.mjs';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 
 /**
@@ -135,7 +138,13 @@ export function evaluateMacroStopArchive({
  * @param {NodeJS.WriteStream|{write:(s:string)=>void}} [args.stderr]
  * @returns {Promise<{archived: boolean, reason?: string, gateFailures?: string[], to?: string}>}
  */
-export async function runMacroStopArchive({
+// ADR-0067 Decision 1(a) — the writes act in the checkout `repoRoot` names,
+// whatever the process's working directory (a hook acts on its payload's).
+export async function runMacroStopArchive(args) {
+  return args?.repoRoot ? runInCommandDirectory(args.repoRoot, () => runMacroStopArchiveInCheckout(args)) : runMacroStopArchiveInCheckout(args);
+}
+
+async function runMacroStopArchiveInCheckout({
   workflowPath,
   host,
   repoRoot,
@@ -262,7 +271,13 @@ export async function runMacroStopArchive({
  * @param {NodeJS.WriteStream|{write:(s:string)=>void}} [args.stderr]
  * @returns {Promise<Array<{workflowPath: string, archived: boolean, reason?: string, gateFailures?: string[], to?: string}>>}
  */
-export async function runMacroStopArchiveAll({
+// ADR-0067 Decision 1(a) — the writes act in the checkout `repoRoot` names,
+// whatever the process's working directory (a hook acts on its payload's).
+export async function runMacroStopArchiveAll(args) {
+  return args?.repoRoot ? runInCommandDirectory(args.repoRoot, () => runMacroStopArchiveAllInCheckout(args)) : runMacroStopArchiveAllInCheckout(args);
+}
+
+async function runMacroStopArchiveAllInCheckout({
   repoRoot,
   host,
   headSubject = null,
@@ -276,19 +291,71 @@ export async function runMacroStopArchiveAll({
     stderr.write(`orchestrator/stop-archive: listAllMacros failed: ${err.message}\n`);
     return [];
   }
+  const ownBranch = gitOut(repoRoot, ['symbolic-ref', '--quiet', 'HEAD']);
   const results = [];
   for (const workflowPath of macros) {
+    const facts = await macroGitFacts({ workflowPath, repoRoot, ownBranch, statusDigest, headSubject });
     const result = await runMacroStopArchive({
       workflowPath,
       host,
       repoRoot,
-      statusDigest,
-      headSubject,
+      statusDigest: facts.statusDigest,
+      headSubject: facts.headSubject,
       stderr,
     });
     results.push({ workflowPath, ...result });
   }
   return results;
+}
+
+function gitOut(cwd, args) {
+  try {
+    return String(execFileSync('git', ['-C', cwd, ...args], { stdio: ['ignore', 'pipe', 'ignore'] })).replace(/\n$/, '');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * ADR-0067 Decision 1(b) — the git facts a macro's Stop snapshot records come
+ * from a checkout, never from the root that stores the macro: the caller's
+ * own (`statusDigest`, `headSubject`) when its checkout has the macro's
+ * integration branch out; else the subject of `refs/heads/<branch>`, which
+ * every worktree shares, and the status digest of the worktree that has the
+ * branch out, or none (`''`, unavailable) when no worktree has. A macro that
+ * cannot be read keeps the caller's facts: the runner reports the read itself.
+ */
+export async function macroGitFacts({ workflowPath, repoRoot, ownBranch, statusDigest = '', headSubject = null }) {
+  let branch = null;
+  try {
+    // The frontmatter only, from a regular file opened without blocking: a
+    // FIFO is never waited on (ADR-0067 Decision 4, item 1).
+    const text = readFrontmatterText(workflowPath);
+    if (text === null) return { statusDigest, headSubject };
+    branch = parseWorkflowFile(text).frontmatter?.git_baseline?.branch ?? null;
+  } catch {
+    return { statusDigest, headSubject };
+  }
+  if (typeof branch !== 'string' || branch.length === 0 || ownBranch === `refs/heads/${branch}`) {
+    return { statusDigest, headSubject };
+  }
+  const subject = gitOut(repoRoot, ['log', '-1', '--format=%s', `refs/heads/${branch}`, '--']);
+  const holder = worktreeHoldingBranch(repoRoot, branch);
+  let digest = '';
+  if (holder !== null) {
+    try {
+      // --no-optional-locks: a plain `git status` refreshes the index and
+      // writes it under that worktree's index.lock, so a commit there at the
+      // same moment (its owner's, a lane's Phase 7) would fail on the lock.
+      const raw = execFileSync('git', ['--no-optional-locks', '-C', holder, 'status', '--porcelain=v1', '-z', '--untracked-files=normal'], {
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      digest = createHash('sha256').update(raw).digest('hex');
+    } catch {
+      digest = '';
+    }
+  }
+  return { statusDigest: digest, headSubject: subject || null };
 }
 
 // Inline copy of the conventional-commit pattern used in the engineer

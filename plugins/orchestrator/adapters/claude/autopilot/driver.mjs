@@ -18,7 +18,7 @@
 // runs that step left pending (a peer runs detached from the worker's group).
 
 import { spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 
@@ -37,6 +37,8 @@ import {
 import {
   ALLOWED_TOOLS, COMMIT_DENY, DENIED_TOOLS, claudeBin, startWorker as defaultStartWorker,
 } from './worker.mjs';
+import { checkStateBase, creationRoot, STATE_BASE_ENV } from '../../../scripts/lib/state-root.mjs';
+import { tokenDigest } from '../../../scripts/lib/run-locks.mjs';
 
 // Owner decision D10 (2026-10-01): "don't worry about the budget". ADR-0063 D1
 // still requires bounds, so they are finite but out of the way.
@@ -122,7 +124,39 @@ export async function preflight({ repoRoot, env = process.env, checkClaude = tru
   problems.push(...resolved.problems);
   problems.push(...(await capabilityProblems(resolved.roots)));
   problems.push(...frozenInputProblems(resolved.roots, repoRoot));
-  return { problems, warnings, roots: resolved, claude };
+  const { stateRoot, problem } = effectiveStateRoot(repoRoot, env);
+  if (problem) problems.push(problem);
+  return { problems, warnings, roots: resolved, claude, stateRoot };
+}
+
+/**
+ * ADR-0067 Decision 2 — the run's effective state root, resolved once at
+ * start: an operator's AGENTIC_STATE_BASE binds, checked for the driven
+ * checkout; otherwise where the shared-creation switch says records are
+ * created (the checkout while it is off). The run records it in run.json and
+ * exports it to every worker, whose environment the scrub has cleared of an
+ * inherited value, so no step creates a record anywhere else. A value a
+ * worker's own scripts would refuse (a lane, say) refuses the start instead.
+ */
+export function effectiveStateRoot(repoRoot, env = process.env) {
+  let where;
+  try {
+    where = creationRoot(repoRoot, { env });
+  } catch (e) {
+    return { stateRoot: null, problem: `the run's state root: ${e.message}` };
+  }
+  const exported = checkStateBase({ checkout: repoRoot, env: { [STATE_BASE_ENV]: where.root }, switchState: where.sharedCreation });
+  if (!exported.ok) return { stateRoot: null, problem: `the run's state root: ${exported.error} (ADR-0067 Decision 2)` };
+  const operator = typeof env[STATE_BASE_ENV] === 'string' && env[STATE_BASE_ENV] !== '';
+  return {
+    stateRoot: {
+      root: where.root,
+      source: operator ? 'operator' : (where.sharedCreation === 'on' ? 'default-state-root' : 'checkout'),
+      shared_creation: where.sharedCreation,
+      default_state_root: where.defaultRoot,
+    },
+    problem: null,
+  };
 }
 
 export function posture(options) {
@@ -288,6 +322,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
   const pinned = pre.roots;
   const roots = pinned.roots;
   const remotes = remoteUrls(repoRoot);
+  const stateRoot = pre.stateRoot;
 
   let view = observe({ repoRoot, roots, macroId: options.macro ?? null, fetch: true, env });
   const macroId = view.macro?.id ?? null;
@@ -312,6 +347,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     versions: pinned.versions,
     sources: pinned.sources,
     loaded_plugins: null,
+    state_root: stateRoot,
     git_baseline: { branch: view.git.branch, head: view.git.head },
     steps: 0,
     cost_usd: 0,
@@ -367,7 +403,11 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     out(`autopilot ${runId}`);
     out(`  repo ${repoRoot} · macro ${macroId ?? '(none)'} · ${Object.entries(pinned.versions).map(([k, v]) => `${k} ${v}`).join(', ')}`);
 
-    const record = { run_id: runId, repo: repoRoot, macro_id: macroId, started_at: run.started_at };
+    // ADR-0067 Decision 4, item 5 — the run's secret: its workers pass the
+    // interactive commands' admission with it. Only its digest is written
+    // (the lock files are readable); the secret goes to the workers' env.
+    const token = deps.token ?? randomBytes(16).toString('hex');
+    const record = { run_id: runId, repo: repoRoot, macro_id: macroId, started_at: run.started_at, token_digest: tokenDigest(token) };
     // Read once: the macro's landing log is kept beside its lock (ADR-0067
     // Decision 7), and a second read that fell back to repoRoot would part them.
     const mainRoot = mainWorktreeRoot(repoRoot);
@@ -450,6 +490,8 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       current = startWorker({
         cwd: repoRoot, prompt: command, stepKind: s.kind, runId, seq, roots, sessionId,
         stepBudgetUsd, stepTimeoutSec, model, effort, rawPath: workerStreamPath(runDir, seq), env, remotes,
+        stateBase: stateRoot.root,
+        autopilotToken: token,
         checkInit: (plugins) => provenanceProblem(plugins, { pinned, repoRoot, loaded }),
         ...(deps.terminateGroup ? { terminateGroup: deps.terminateGroup } : {}),
       });

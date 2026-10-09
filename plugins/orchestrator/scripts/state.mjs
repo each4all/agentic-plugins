@@ -50,14 +50,37 @@ import {
   stat,
   mkdir,
   open,
+  lstat,
 } from 'node:fs/promises';
-import { join, dirname, basename, isAbsolute } from 'node:path';
+import { join, dirname, basename, isAbsolute, resolve as resolvePath } from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
 import { hrtime, pid } from 'node:process';
 import { execFileSync } from 'node:child_process';
-import { realpathSync } from 'node:fs';
+import { lstatSync, readdirSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolveLanding, dispatchTimeFromWorkflowId } from './landing.mjs';
+import {
+  commandCheckout,
+  creationRoot,
+  defaultStateRoot,
+  describeStateRoot,
+  disableSharedCreation,
+  enableSharedCreation,
+  otherCopiesOf,
+  otherWorktreeRoots,
+  readFrontmatterText,
+  readSet,
+  readSharedCreation,
+  repositoryRoots,
+  runInCommandDirectory,
+  sameDirectory,
+  samePhysicalFile,
+  workflowEntryProblem,
+  workflowIdOfText,
+  writerRoots,
+} from './lib/state-root.mjs';
+import { LockHeldError, checkAdmission, joinAdmission, releaseAdmission } from './lib/run-locks.mjs';
+import { moveCutover, moveRollback, planCutover, planRollback, verifyCutover } from './lib/cutover.mjs';
 
 // -----------------------------------------------------------------------------
 // Constants — ADR-0018 §sub-decision-1 + §sub-decision-2
@@ -468,6 +491,9 @@ function statePaths(repoRoot, home = 'canonical') {
   if (!spec) throw new Error(`unknown workflow state home: ${home}`);
   return {
     ...spec,
+    // The root this home sits under: a checkout's toplevel or the default
+    // state root (ADR-0067 Decision 1(a)), never read as a checkout for git.
+    stateRoot: repoRoot,
     root: join(repoRoot, spec.stateDirRel),
     workflows: join(repoRoot, spec.workflowDirRel),
     archive: join(repoRoot, spec.archiveDirRel),
@@ -531,19 +557,147 @@ export async function resolveWorkflowStorage(repoRoot, { mode = 'read' } = {}) {
   };
 }
 
+// The home a macro file sits in and the state root that holds it (ADR-0067
+// Decision 1(b)): the root its archive, locks and peer runs derive from. It is
+// never a checkout: git facts come from the checkout a command runs in.
 function inferStorageFromWorkflowPath(workflowPath) {
   const text = String(workflowPath);
   const canonicalNeedle = '/.agentic-plugins/state/orchestrator/';
   const legacyNeedle = '/.claude/agentic-orchestrator/';
   const canonicalIndex = text.indexOf(canonicalNeedle);
   if (canonicalIndex >= 0) {
-    return { home: 'canonical', repoRoot: text.slice(0, canonicalIndex) };
+    return { home: 'canonical', stateRoot: text.slice(0, canonicalIndex) };
   }
   const legacyIndex = text.indexOf(legacyNeedle);
   if (legacyIndex >= 0) {
-    return { home: 'legacy', repoRoot: text.slice(0, legacyIndex) };
+    return { home: 'legacy', stateRoot: text.slice(0, legacyIndex) };
   }
   return null;
+}
+
+// The home a macro file sits in and the state root holding it,
+// `{ home, stateRoot }`, or null when the path is under no state home: the
+// home its archive, locks and peer runs derive from (ADR-0067 Decision 4,
+// item 2).
+export function workflowStorage(workflowPath) {
+  const inferred = inferStorageFromWorkflowPath(resolvePath(String(workflowPath)));
+  return inferred && inferred.stateRoot.length > 0 ? inferred : null;
+}
+
+// The state root holding a macro file (ADR-0067 Decision 1(c)): a pointer
+// into the record is spelled relative to it. Null when the path is under no
+// state home.
+export function workflowStateRoot(workflowPath) {
+  return workflowStorage(workflowPath)?.stateRoot ?? null;
+}
+
+// ADR-0067 Decision 1(a) — the checkout a command runs in, or null when it
+// cannot be told (lib/state-root.mjs).
+export { commandCheckout };
+
+// -----------------------------------------------------------------------------
+// ADR-0067 — the read set, one writable copy, and the creation locks
+
+// Where existing records are found: the default state root first, then the
+// checkout when it is another directory (Decision 1(a)). AGENTIC_STATE_BASE
+// and the shared-creation switch never narrow it.
+function lookupRoots(repoRoot) {
+  assertAbsoluteRepoRoot(repoRoot);
+  return readSet(repoRoot);
+}
+
+/**
+ * ADR-0067 Decision 4, item 2 — one writable copy. Every write to an existing
+ * macro goes through `withFileLock`, which, holding the file's lock, refuses a
+ * path whose last component is a symbolic link (the atomic replace would turn
+ * the alias into a second copy); a macro in a `workflows/` home whose workflow
+ * id is also held by a second file, under its name or another, in any home of
+ * any root of the repository (the read set and every worktree's own homes);
+ * and a macro whose integration branch has a second active macro in the read
+ * set of the root holding it or of the checkout the command runs in
+ * (Decision 2; Decision 4, item 1). A directory or a file that cannot be read,
+ * or worktrees git cannot list, refuse too: the copy may be there.
+ */
+async function assertSingleCopy(workflowPath) {
+  const absolute = resolvePath(String(workflowPath));
+  let st;
+  try {
+    st = await lstat(absolute);
+  } catch (err) {
+    if (err.code === 'ENOENT') return;
+    throw err;
+  }
+  if (st.isSymbolicLink()) {
+    throw new Error(
+      `Refusing to write ${JSON.stringify(absolute)}: it is a symbolic link, and the atomic replace would turn ` +
+        'the alias into a second copy of the macro. Write the file it names (ADR-0067 Decision 4, item 2).',
+    );
+  }
+  if (basename(dirname(absolute)) !== 'workflows') return;
+  const inferred = inferStorageFromWorkflowPath(absolute);
+  if (!inferred || inferred.stateRoot.length === 0) return;
+  // The frontmatter only, from a regular file opened without blocking: a FIFO
+  // in the macro's place is refused, never waited on.
+  let text;
+  try {
+    text = readFrontmatterText(absolute);
+  } catch (err) {
+    if (err.code === 'ENOENT') return;
+    throw err;
+  }
+  if (text === null) {
+    throw new Error(
+      `Refusing to write ${JSON.stringify(absolute)}: it is not a regular file (ADR-0067 Decision 4, item 1).`,
+    );
+  }
+  const name = basename(absolute);
+  const copies = otherCopiesOf({
+    file: absolute,
+    workflowId: workflowIdOfText(text),
+    dirs: repositoryRoots(inferred.stateRoot).flatMap((root) =>
+      Object.keys(STATE_HOMES).map((home) => workflowDir(root, { home }))),
+  });
+  if (copies.length === 0) {
+    const branch = extractFrontmatterBranch(text);
+    // Throws, naming both files, when the integration branch has a second one.
+    if (branch) await findActiveWorkflowByBranchInRoots(writerRoots(inferred.stateRoot), branch);
+  }
+  if (copies.length > 0) {
+    throw new Error(
+      `Ambiguous orchestrator workflow storage: ${name} is held by ${copies.length + 1} files: ` +
+        `${[absolute, ...copies].map((f) => JSON.stringify(f)).join(', ')}. One macro has one writable copy ` +
+        '(ADR-0067 Decision 4, item 2): no write goes to either until one is removed ' +
+        '(docs/runbooks/state-root-cutover.md).',
+    );
+  }
+}
+
+// The write guard of withFileLock, run without the lock: a caller about to
+// start work that ends in a write to `workflowPath` (an ensemble run) asks it
+// first, so a refusal comes before that work (ADR-0067 Decision 4, item 2).
+// The write itself checks again, holding the lock.
+export async function assertWorkflowWritable(workflowPath) {
+  await assertSingleCopy(workflowPath);
+}
+
+/**
+ * ADR-0067 Decision 2 — the creation locks a create or an archive takes on
+ * the home it writes (`storage`): with shared creation on, the repository's
+ * (the default state root's home) first, then the written home's when that is
+ * another, always in that order, so an older script, which takes only the
+ * lock of the home it writes, still meets this one; with it off, the written
+ * home's alone, as before. An unreadable switch takes both.
+ */
+async function withCreationLocks(storage, fn) {
+  const switchState = readSharedCreation(storage.stateRoot).state;
+  if (switchState === 'off') return withDirectoryLock(storage.stateRoot, fn, { storage });
+  const defaultRoot = defaultStateRoot(storage.stateRoot);
+  const repoStorage = await resolveWorkflowStorage(defaultRoot, { mode: 'write' });
+  if (samePhysicalFile(repoStorage.creationLock, storage.creationLock) ||
+      (sameDirectory(defaultRoot, storage.stateRoot) && repoStorage.home === storage.home)) {
+    return withDirectoryLock(storage.stateRoot, fn, { storage });
+  }
+  return withDirectoryLock(defaultRoot, () => withDirectoryLock(storage.stateRoot, fn, { storage }), { storage: repoStorage });
 }
 
 /**
@@ -561,7 +715,19 @@ async function fireMacroHandoffSidecar(workflowPath, host) {
   try {
     const inferred = inferStorageFromWorkflowPath(workflowPath);
     if (!inferred) return;
-    const { repoRoot, home } = inferred;
+    // ADR-0067 Decision 1(a) — the slot belongs to the checkout the command
+    // runs in, not to the root that holds the macro.
+    const { stateRoot, home } = inferred;
+    const repoRoot = commandCheckout(stateRoot);
+    // A checkout that cannot be told writes no slot: the storage root's
+    // would be another checkout's.
+    if (repoRoot === null) {
+      process.stderr.write(
+        'orchestrator: handoff slot not written: the checkout this command runs in cannot be told ' +
+          '(git failed); the terminal write has landed (ADR-0067 Decision 1(a)).\n',
+      );
+      return;
+    }
     const projectionFile = join(statePaths(repoRoot, home).root, 'last-session-handoff.json');
     const { emitTerminalHandoffSidecar } = await import('./session-handoff.mjs');
     // Project the EXACT macro just terminalized (by path), not whatever is
@@ -839,6 +1005,9 @@ export async function withFileLock(workflowPath, fn) {
   const token = await acquireLock(lockPath);
   let releaseOk = false;
   try {
+    // ADR-0067 Decision 4, item 2 — checked holding the lock, so a copy that
+    // appears while this writer waits for it is seen.
+    await assertSingleCopy(workflowPath);
     const result = await fn({ lockPath, token });
     releaseOk = true;
     return result;
@@ -862,20 +1031,65 @@ export async function withFileLock(workflowPath, fn) {
  * directory-level lock if exclusivity matters.
  */
 export async function listWorkflowFiles(repoRoot) {
-  const storage = await resolveWorkflowStorage(repoRoot);
-  const st = await pathStat(storage.workflows);
-  if (!st) return [];
-  let entries;
-  try {
-    entries = await readdir(storage.workflows);
-  } catch (err) {
-    if (err.code === 'ENOENT') return [];
-    throw err;
+  // ADR-0067 Decision 1(a): both homes of every root of the read set, not the
+  // home resolveWorkflowStorage selects: an active macro in the legacy home
+  // stays listed while the canonical home holds only archive or peer state.
+  return listWorkflowFilesAllHomes(repoRoot);
+}
+
+// The files of `dirs` whose names `keep` accepts, in that order, each
+// directory's sorted, one entry per physical file, under the name that is not
+// a link, else the first: the read set's default state root comes first, so
+// of two plain names (a symlinked home) that one is kept (ADR-0067 Decision 4,
+// items 1 and 2).
+async function workflowFilesIn(dirs, keep = (name) => name.endsWith('.md') && !name.endsWith('.md.tmp')) {
+  const files = [];
+  const seen = new Map();
+  for (const dir of dirs) {
+    let entries;
+    try {
+      entries = await readdir(dir);
+    } catch (err) {
+      // Only absence is none: a file in the home's place (ENOTDIR) is a layout
+      // runtime's readers refuse too (ADR-0067 Decision 4, item 1).
+      if (err.code === 'ENOENT') continue;
+      throw err;
+    }
+    for (const name of entries.sort()) {
+      if (!keep(name)) continue;
+      const file = join(dir, name);
+      // A FIFO, a device or a directory under a workflow name is refused, as
+      // runtime's readers refuse it (ADR-0067 Decision 4, item 1): the Stop's
+      // sweep would otherwise wait on it.
+      const problem = workflowEntryProblem(file);
+      if (problem === 'gone') continue;
+      if (problem !== null) {
+        throw new Error(
+          `orchestrator workflow home ${safeFilename(dir)}: ${name} is ${problem}. Remove it, or replace it with the workflow file (ADR-0067 Decision 4, item 1).`,
+        );
+      }
+      let identity = file;
+      try {
+        identity = realpathSync(file);
+      } catch {
+        /* vanished or unreadable: its spelling stands in */
+      }
+      if (seen.has(identity)) {
+        // The name that is not a link wins over a link kept first, as
+        // addPhysicalMatch keeps it: a writer is handed the file itself.
+        const index = seen.get(identity);
+        try {
+          if (lstatSync(files[index]).isSymbolicLink() && !lstatSync(file).isSymbolicLink()) files[index] = file;
+        } catch {
+          /* gone since the listing: keep the name already held */
+        }
+        continue;
+      }
+      seen.set(identity, files.length);
+      files.push(file);
+    }
   }
-  return entries
-    .filter((name) => name.endsWith('.md') && !name.endsWith('.md.tmp'))
-    .map((name) => join(storage.workflows, name))
-    .sort();
+  return files;
 }
 
 /**
@@ -890,24 +1104,11 @@ export async function listWorkflowFiles(repoRoot) {
  * homes). ENOENT on either home is a clean skip.
  */
 async function listWorkflowFilesAllHomes(repoRoot) {
-  const dirs = [
-    workflowDir(repoRoot, { home: 'canonical' }),
-    workflowDir(repoRoot, { home: 'legacy' }),
-  ];
-  const files = [];
-  for (const dir of dirs) {
-    let entries;
-    try {
-      entries = await readdir(dir);
-    } catch (err) {
-      if (err.code === 'ENOENT') continue;
-      throw err;
-    }
-    for (const name of entries) {
-      if (name.endsWith('.md') && !name.endsWith('.md.tmp')) files.push(join(dir, name));
-    }
-  }
-  return files.sort();
+  // ADR-0067 Decision 1(a): both homes of every root of the read set.
+  return workflowFilesIn(lookupRoots(repoRoot).flatMap((root) => [
+    workflowDir(root, { home: 'canonical' }),
+    workflowDir(root, { home: 'legacy' }),
+  ]));
 }
 
 /**
@@ -1019,6 +1220,22 @@ function safeFilename(file) {
  *  - `readFile` failure (permissions, FIFO, etc.) is also fail-closed
  *    for the same reason — branch identity is undeterminable.
  */
+// One file reached through two names in a directory (a symlink to it) is one
+// macro; the name that is not a link is kept, so a writer is handed the file
+// itself (ADR-0067 Decision 4, item 2).
+function addPhysicalMatch(matching, file) {
+  const index = matching.findIndex((m) => samePhysicalFile(m, file));
+  if (index < 0) {
+    matching.push(file);
+    return;
+  }
+  try {
+    if (lstatSync(matching[index]).isSymbolicLink() && !lstatSync(file).isSymbolicLink()) matching[index] = file;
+  } catch {
+    /* gone since the listing: keep the name already held */
+  }
+}
+
 async function findActiveWorkflowByBranchInDir(dir, branch) {
   if (!branch) return null;
   const st = await pathStat(dir);
@@ -1038,17 +1255,33 @@ async function findActiveWorkflowByBranchInDir(dir, branch) {
   for (const file of files) {
     let text;
     try {
-      text = await readFile(file, 'utf8');
+      // Through the frontmatter only, and regular files only: the scan runs
+      // under a writer's lock across every worktree, so a FIFO or a long body
+      // must not stall it (ADR-0067 Decision 4, item 2).
+      text = readFrontmatterText(file);
     } catch (err) {
+      // Gone since the listing: an archive moved it, so it is not active
+      // (ADR-0067: another worktree's archive may run between the two).
+      if (err.code === 'ENOENT') continue;
       throw new Error(
         `findActiveWorkflowByBranch: failed to read workflow file ${safeFilename(file)} ` +
           `(${err.code || err.message}). Cannot determine its branch — per-branch ` +
           `single-active invariant at risk (ADR-0018 §sub-2). Reconcile manually.`,
       );
     }
+    // Not a regular file (a FIFO, a device, a directory): its branch cannot
+    // be read, and runtime's readers report it as not a regular file, so the
+    // writers refuse too, without waiting on it (ADR-0067 Decision 4, item 1).
+    if (text === null) {
+      throw new Error(
+        `findActiveWorkflowByBranch: workflow file ${safeFilename(file)} is not a regular file. ` +
+          'Cannot determine its branch — per-branch single-active invariant at risk (ADR-0018 §sub-2). ' +
+          'Remove it or replace it with the workflow file.',
+      );
+    }
     const fmBranch = extractFrontmatterBranch(text);
     if (fmBranch !== null) {
-      if (fmBranch === branch) matching.push(file);
+      if (fmBranch === branch) addPhysicalMatch(matching, file);
       continue;
     }
     let fm;
@@ -1068,7 +1301,7 @@ async function findActiveWorkflowByBranchInDir(dir, branch) {
       typeof fm.git_baseline.branch === 'string' &&
       fm.git_baseline.branch === branch
     ) {
-      matching.push(file);
+      addPhysicalMatch(matching, file);
     }
   }
   if (matching.length === 0) return null;
@@ -1080,8 +1313,31 @@ async function findActiveWorkflowByBranchInDir(dir, branch) {
   );
 }
 
+// The active macro on `branch` across `roots`. One physical file reached twice
+// counts once, under the name that is not a link, as within a home; two
+// distinct files are an error naming both, never a choice (ADR-0067 Decision
+// 1(a): one active macro per integration branch per repository).
+async function findActiveWorkflowByBranchInRoots(roots, branch) {
+  const found = [];
+  for (const root of roots) {
+    const file = await findActiveWorkflowByBranchInRoot(root, branch);
+    if (file) addPhysicalMatch(found, file);
+  }
+  if (found.length <= 1) return found[0] ?? null;
+  throw new Error(
+    `Ambiguous orchestrator workflow storage: ${found.length} active workflows on branch ` +
+      `${JSON.stringify(branch)}: ${found.map((f) => JSON.stringify(f)).join(', ')}. One active macro per ` +
+      'integration branch holds across the state root and every checkout (ADR-0018 §sub-2, ADR-0067 ' +
+      'Decision 1(a)): finish, finalize or archive one of them (docs/runbooks/state-root-cutover.md).',
+  );
+}
+
 export async function findActiveWorkflowByBranch(repoRoot, branch) {
   if (!branch) return null;
+  return findActiveWorkflowByBranchInRoots(lookupRoots(repoRoot), branch);
+}
+
+async function findActiveWorkflowByBranchInRoot(repoRoot, branch) {
   const canonical = await findActiveWorkflowByBranchInDir(
     workflowDir(repoRoot, { home: 'canonical' }),
     branch,
@@ -1090,6 +1346,9 @@ export async function findActiveWorkflowByBranch(repoRoot, branch) {
     workflowDir(repoRoot, { home: 'legacy' }),
     branch,
   );
+  // Both homes holding it is the dual-home ambiguity even when one home links
+  // to the other: writes there are refused (resolveWorkflowStorage), and the
+  // runtime readers report it the same way (ADR-0067 Decision 4, item 1).
   if (canonical && legacy) {
     throw new Error(
       `Ambiguous orchestrator workflow storage: both ${WORKFLOW_DIR_REL} and ` +
@@ -1166,9 +1425,15 @@ export async function findMacroBySubtaskBranch(repoRoot, branch) {
   for (const file of files) {
     let fm;
     try {
-      const text = await readFile(file, 'utf8');
+      // Through the frontmatter only, and regular files only: a FIFO is
+      // refused, never waited on, and a long body is never read (ADR-0067
+      // Decision 4, items 1 and 2).
+      const text = readFrontmatterText(file);
+      if (text === null) throw new Error('not a regular file');
       fm = parseWorkflowFile(text).frontmatter;
     } catch (err) {
+      // Gone since the listing: an archive moved it, so it is not active.
+      if (err?.code === 'ENOENT') continue;
       // Fail-closed on parse failure (Codex P2 finding): a corrupt or
       // unreadable workflow file COULD be the matching macro, or one of
       // two ambiguous macros referencing this branch. Silently skipping
@@ -2549,11 +2814,19 @@ export async function createWorkflowUnderLock({
     );
   }
 
-  const existing = await findActiveWorkflowByBranch(repoRoot, gitBaseline.branch);
+  // ADR-0067 Decision 2: across the repository — the read set, the root the
+  // macro goes to, and the own homes of every other worktree.
+  assertAbsoluteRepoRoot(repoRoot);
+  const storage = ownership?.storage ?? await resolveWorkflowStorage(repoRoot, { mode: 'write' });
+  const searched = [...lookupRoots(repoRoot)];
+  for (const root of [storage.stateRoot, ...otherWorktreeRoots(repoRoot)]) {
+    if (!searched.some((r) => sameDirectory(r, root))) searched.push(root);
+  }
+  const existing = await findActiveWorkflowByBranchInRoots(searched, gitBaseline.branch);
   if (existing) {
     throw new Error(
       `Cannot create workflow — a workflow already exists on branch '${gitBaseline.branch}' (${existing}). ` +
-        `Per-branch single-active invariant (ADR-0018 §sub-2). ` +
+        `Per-branch single-active invariant (ADR-0018 §sub-2, across the repository: ADR-0067 Decision 2). ` +
         `Resume on this branch, or archive the existing workflow first.`,
     );
   }
@@ -2591,16 +2864,21 @@ export async function createWorkflowUnderLock({
     `## Phase notes\n\n` +
     `### ${currentPhase}\n\n`;
 
-  const storage = ownership?.storage ?? await resolveWorkflowStorage(repoRoot, { mode: 'write' });
-  const filePath = workflowFilePath(repoRoot, workflowId, { home: storage.home });
+  const filePath = join(storage.workflows, `${workflowId}.md`);
   await ensureDir(storage.workflows, 0o700);
   await atomicWrite(filePath, assembleWorkflowFile(frontmatter, body), ownership);
 
   return { workflowId, filePath, frontmatter, body };
 }
 
+// ADR-0067 Decision 1(a): a macro is created in the checkout while shared
+// creation is off; once it is on, under AGENTIC_STATE_BASE, else the default
+// state root. Throws on an unreadable switch or a refused AGENTIC_STATE_BASE.
 export async function createWorkflow(args) {
-  return withDirectoryLock(args.repoRoot, ({ lockPath, token, storage }) =>
+  assertAbsoluteRepoRoot(args.repoRoot);
+  const placement = creationRoot(args.repoRoot, { env: args.env ?? process.env });
+  const storage = await resolveWorkflowStorage(placement.root, { mode: 'write' });
+  return withCreationLocks(storage, ({ lockPath, token }) =>
     createWorkflowUnderLock(args, { lockPath, token, storage }),
   );
 }
@@ -3481,7 +3759,98 @@ const UPDATE_SUBTASK_ALLOWED_KEYS = new Set([
   // closed_at; `reason` alone is noted with the write; `expectBranch` refuses
   // the write when the plan changed after the caller resolved the landing.
   'correct', 'reason', 'expectBranch',
+  // ADR-0067 Decision 4, item 5 — /orchestrator:next's writeback binds the
+  // child it dispatched only to the subtask it dispatched: these, with
+  // `expectBranch`, refuse the write when a plan revision changed what the
+  // dispatch read.
+  'expectVerb', 'expectProfile', 'expectTopic',
+  // The dispatch the child records at its creation, which every binding of a
+  // child compares (below). `waiveDispatch` (with a `reason`) is the operator's
+  // override when that record cannot be read: the write is not compared, and
+  // the macro body records why.
+  'expectDispatch', 'waiveDispatch',
 ]);
+
+// The plan-time fields a caller may expect unchanged, by option name. An empty
+// expected profile or topic stands for an absent one, and trailing newlines
+// are not compared: a runbook reads each field through a command
+// substitution, which drops them.
+const EXPECTED_SUBTASK_FIELDS = [
+  ['expectVerb', 'verb'],
+  ['expectProfile', 'profile'],
+  ['expectTopic', 'topic'],
+];
+
+// ADR-0067 Decision 4, item 5 — the dispatch a child records when
+// /orchestrator:next creates it (the engineer's `dispatch-selection`): the
+// macro and subtask it was dispatched for and, recorded at its creation, the
+// branch, verb, profile and topic Phase 1 selected. A child created before the
+// record carries only the branch it was created on. Every path that binds a
+// child to a subtask, or moves a subtask on a child's behalf, passes it, and
+// the write is refused under the macro's file lock when the subtask no longer
+// matches: the child was dispatched for the subtask as it was then.
+const DISPATCH_KEYS = ['macro', 'subtask', 'branch', 'verb', 'profile', 'topic'];
+
+export function parseExpectDispatch(value, caller) {
+  let parsed = value;
+  if (typeof value === 'string') {
+    try {
+      parsed = JSON.parse(value);
+    } catch (err) {
+      throw new Error(`${caller}: expectDispatch is not JSON: ${err.message}`);
+    }
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`${caller}: expectDispatch must be an object`);
+  }
+  for (const [key, field] of Object.entries(parsed)) {
+    if (!DISPATCH_KEYS.includes(key)) {
+      throw new Error(`${caller}: expectDispatch has unknown key ${JSON.stringify(key)} (allowed: ${DISPATCH_KEYS.join(', ')})`);
+    }
+    if (typeof field !== 'string') {
+      throw new Error(`${caller}: expectDispatch.${key} must be a string`);
+    }
+  }
+  for (const key of ['macro', 'subtask', 'branch']) {
+    if (!parsed[key]) throw new Error(`${caller}: expectDispatch.${key} must be a non-empty string`);
+  }
+  if ('verb' in parsed && parsed.verb.length === 0) {
+    throw new Error(`${caller}: expectDispatch.verb must be a non-empty string when present`);
+  }
+  return parsed;
+}
+
+// What differs between the subtask as the locked read has it and the dispatch
+// the child records, or null. An empty profile or topic stands for an absent
+// one, and trailing newlines are not compared (EXPECTED_SUBTASK_FIELDS).
+function dispatchMismatch({ frontmatter, subtaskId, current, expectDispatch }) {
+  if (expectDispatch.macro !== frontmatter.workflow_id) {
+    return `the child was dispatched by macro ${JSON.stringify(expectDispatch.macro)}, not ${JSON.stringify(frontmatter.workflow_id)}`;
+  }
+  if (expectDispatch.subtask !== subtaskId) {
+    return `the child was dispatched for subtask ${JSON.stringify(expectDispatch.subtask)}, not ${JSON.stringify(subtaskId)}`;
+  }
+  if (current.branch !== expectDispatch.branch) {
+    return `branch is ${JSON.stringify(current.branch)}; the child was dispatched for ${JSON.stringify(expectDispatch.branch)}`;
+  }
+  for (const field of ['verb', 'profile', 'topic']) {
+    if (!(field in expectDispatch)) continue;
+    const now = String(current[field] || '').replace(/\n+$/, '');
+    const dispatched = expectDispatch[field].replace(/\n+$/, '');
+    if (now !== dispatched) {
+      return `${field} is ${JSON.stringify(now)}; the child was dispatched for ${JSON.stringify(dispatched)}`;
+    }
+  }
+  return null;
+}
+
+function dispatchRefusal(caller, subtaskId, mismatch) {
+  return new Error(
+    `${caller}: subtask ${JSON.stringify(subtaskId)} changed after its child was dispatched ` +
+      `(dispatch-changed): ${mismatch}. Nothing was written (ADR-0067 Decision 4, item 5): ` +
+      `archive the child and dispatch the subtask again, or revise the plan back.`,
+  );
+}
 
 // ADR-0062 §Decision 3 — provenance fields a later write may fill but never
 // replace without `correct`. `closed_at` differs on every re-run (a fresh
@@ -3526,7 +3895,11 @@ export async function updateSubtask(opts) {
     correct = false,
     reason,
     expectBranch,
+    waiveDispatch = false,
   } = opts;
+  const expectDispatch = opts.expectDispatch === undefined
+    ? undefined
+    : parseExpectDispatch(opts.expectDispatch, 'updateSubtask');
   validateHost(host);
   validateHookEvent(event);
   if (typeof subtaskId !== 'string' || subtaskId.length === 0) {
@@ -3534,6 +3907,9 @@ export async function updateSubtask(opts) {
   }
   if (typeof correct !== 'boolean') {
     throw new Error('updateSubtask: correct must be a boolean');
+  }
+  if (typeof waiveDispatch !== 'boolean') {
+    throw new Error('updateSubtask: waiveDispatch must be a boolean');
   }
   if (reason !== undefined && typeof reason !== 'string') {
     throw new Error('updateSubtask: reason must be a string');
@@ -3545,8 +3921,32 @@ export async function updateSubtask(opts) {
         'a correction records why the recorded value was wrong).',
     );
   }
+  // ADR-0067 Decision 4, item 5 — a write in an owner's name compares the
+  // dispatch that owner records. When the record cannot be read, the operator
+  // may complete without it, saying why; the reason goes into the macro body.
+  if (waiveDispatch) {
+    if (reasonText.length === 0) {
+      throw new Error(
+        'updateSubtask: --waive-dispatch requires a non-empty reason (ADR-0067 Decision 4, item 5: ' +
+          'a write not compared with its owner\'s dispatch records why).',
+      );
+    }
+    if (expectDispatch !== undefined) {
+      throw new Error('updateSubtask: pass --expect-dispatch or --waive-dispatch, not both');
+    }
+    if (typeof engineerWorkflowId !== 'string' || engineerWorkflowId.length === 0) {
+      throw new Error('updateSubtask: --waive-dispatch names no owner; pass --engineer-workflow-id');
+    }
+  }
   if (expectBranch !== undefined && (typeof expectBranch !== 'string' || expectBranch.length === 0)) {
     throw new Error('updateSubtask: expectBranch must be a non-empty string');
+  }
+  for (const [option] of EXPECTED_SUBTASK_FIELDS) {
+    const expected = opts[option];
+    if (expected === undefined) continue;
+    if (typeof expected !== 'string' || (option === 'expectVerb' && expected.length === 0)) {
+      throw new Error(`updateSubtask: ${option} must be a ${option === 'expectVerb' ? 'non-empty ' : ''}string`);
+    }
   }
   ensureNotArchived(workflowPath, 'updateSubtask');
 
@@ -3650,8 +4050,24 @@ export async function updateSubtask(opts) {
       throw new Error(
         `updateSubtask: subtask ${JSON.stringify(subtaskId)} branch is ` +
           `${JSON.stringify(current.branch)}, not the expected ${JSON.stringify(expectBranch)}; ` +
-          `the plan changed after the landing was resolved. Resolve it again.`,
+          `the plan changed after the caller read the subtask (a landing resolved, or a dispatch). Read it again.`,
       );
+    }
+    for (const [option, field] of EXPECTED_SUBTASK_FIELDS) {
+      if (opts[option] === undefined) continue;
+      const now = String(current[field] || '').replace(/\n+$/, '');
+      const expected = opts[option].replace(/\n+$/, '');
+      if (now !== expected) {
+        throw new Error(
+          `updateSubtask: subtask ${JSON.stringify(subtaskId)} ${field} is ` +
+            `${JSON.stringify(now)}, not the expected ${JSON.stringify(expected)}; ` +
+            `the plan changed after the caller read the subtask (a dispatch). Read it again.`,
+        );
+      }
+    }
+    if (expectDispatch !== undefined) {
+      const mismatch = dispatchMismatch({ frontmatter, subtaskId, current, expectDispatch });
+      if (mismatch) throw dispatchRefusal('updateSubtask', subtaskId, mismatch);
     }
 
     // ADR-0019 §4 precondition — terminal-partial states (deferred /
@@ -3862,8 +4278,12 @@ export async function updateSubtask(opts) {
         .map((c) => `${c.key}: ${JSON.stringify(c.from)} -> ${JSON.stringify(c.to)}`)
         .join('; ')}.\n\n`
       : '';
+    const waiverNote = waiveDispatch
+      ? `Dispatch not compared (--waive-dispatch): the dispatch recorded by ${JSON.stringify(engineerWorkflowId)} ` +
+        'could not be read, so this write was not checked against it.\n\n'
+      : '';
     const reasonNote = reasonText.length > 0 ? `Reason: ${reasonText}\n\n` : '';
-    const newBody = `${body}${noteHeading}${noteSummary}${correctionNote}${reasonNote}`;
+    const newBody = `${body}${noteHeading}${noteSummary}${correctionNote}${waiverNote}${reasonNote}`;
 
     await atomicWrite(
       workflowPath,
@@ -3913,6 +4333,12 @@ export async function updateSubtask(opts) {
 // it, or nothing is written. The engineer checks the same before calling, but
 // with its own reader and before the lock: this read is the one the write
 // is made from.
+//
+// `expectDispatch` (ADR-0067 Decision 4, item 5) is the dispatch the engineer
+// workflow records (parseExpectDispatch): when the subtask, on that same
+// locked read, no longer matches it, nothing is written. A child bound to a
+// subtask a plan revision changed after its dispatch would otherwise be bound
+// here, at its terminal commit, after /orchestrator:next refused it.
 export async function recordEngineerTerminal({
   workflowPath,
   host,
@@ -3920,6 +4346,7 @@ export async function recordEngineerTerminal({
   engineerWorkflowId,
   branchCommit,
   expectWorkflowId,
+  expectDispatch: expectDispatchOption,
   event = 'updated',
   now = new Date(),
 }) {
@@ -3933,6 +4360,9 @@ export async function recordEngineerTerminal({
   if (expectWorkflowId !== undefined && (typeof expectWorkflowId !== 'string' || expectWorkflowId.length === 0)) {
     throw new Error('recordEngineerTerminal: expectWorkflowId must be a non-empty string when provided');
   }
+  const expectDispatch = expectDispatchOption === undefined
+    ? undefined
+    : parseExpectDispatch(expectDispatchOption, 'recordEngineerTerminal');
   ensureNotArchived(workflowPath, 'recordEngineerTerminal');
   return withFileLock(workflowPath, async ({ lockPath, token }) => {
     const text = await readFile(workflowPath, 'utf8');
@@ -3959,6 +4389,10 @@ export async function recordEngineerTerminal({
         skipped: true,
         skipReason: `subtask ${JSON.stringify(subtaskId)} is ${current.status}; the engineer terminal note is not written.`,
       };
+    }
+    if (expectDispatch !== undefined) {
+      const mismatch = dispatchMismatch({ frontmatter, subtaskId, current, expectDispatch });
+      if (mismatch) throw dispatchRefusal('recordEngineerTerminal', subtaskId, mismatch);
     }
     const recordedOwner = current.engineer_workflow_id;
     if (typeof recordedOwner === 'string' && recordedOwner.length > 0 && recordedOwner !== engineerWorkflowId) {
@@ -4049,10 +4483,14 @@ export async function archiveWorkflow({
   if (!repoRoot && !archiveDirectory) {
     throw new Error('archiveWorkflow: repoRoot or archiveDirectory is required');
   }
-  const inferred = inferStorageFromWorkflowPath(workflowPath);
-  const effectiveRepoRoot = repoRoot ?? inferred?.repoRoot;
+  // ADR-0067 Decision 4, item 2 — the record's own home wins over the
+  // caller's checkout: a macro under the default state root, archived by a
+  // Stop in a linked worktree, goes to its own home's archive. The home is
+  // read from the resolved path: a relative path names a file under this
+  // process's directory, whatever repoRoot names.
+  const inferred = workflowStorage(workflowPath);
+  const effectiveRepoRoot = inferred?.stateRoot ?? repoRoot;
   const sourceHome = inferred?.home ?? 'canonical';
-  const sourceStorage = effectiveRepoRoot ? statePaths(effectiveRepoRoot, sourceHome) : null;
   const targetDir = archiveDirectory ?? archiveDir(effectiveRepoRoot, { home: sourceHome });
   const baseName = basename(workflowPath);
 
@@ -4061,8 +4499,11 @@ export async function archiveWorkflow({
   const dirLockRoot =
     effectiveRepoRoot ??
     dirname(dirname(dirname(dirname(workflowPath))));
+  const sourceStorage = effectiveRepoRoot
+    ? statePaths(dirLockRoot, sourceHome)
+    : await resolveWorkflowStorage(dirLockRoot, { mode: 'write' });
 
-  return withDirectoryLock(dirLockRoot, async () => {
+  return withCreationLocks(sourceStorage, async () => {
     const sourceStat = await pathStat(workflowPath);
     if (!sourceStat) {
       return { archived: false, reason: 'source-missing', workflowPath };
@@ -4105,7 +4546,7 @@ export async function archiveWorkflow({
         host,
       };
     });
-  }, sourceStorage ? { storage: sourceStorage } : {});
+  });
 }
 
 async function resolveArchiveDestination({ targetDir, baseName, now }) {
@@ -4353,20 +4794,45 @@ export function allSubtasksTerminalCheck(frontmatter) {
  * iteration only touches genuine macro files.
  */
 export async function listAllMacros(repoRoot) {
-  const storage = await resolveWorkflowStorage(repoRoot);
-  const dir = storage.workflows;
-  let entries;
-  try {
-    entries = await readdir(dir);
-  } catch (err) {
-    if (err.code === 'ENOENT') return [];
-    throw err;
-  }
+  // ADR-0067 Decision 1(a): both homes of every root of the read set, in
+  // read-set order (stable, so iteration is deterministic), one entry per
+  // physical file, spelled as the default state root has it.
   const MACRO_ID_RE = /^macro-[a-z]+-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}\.md$/;
-  return entries
-    .filter((name) => MACRO_ID_RE.test(name))
-    .map((name) => join(dir, name))
-    .sort(); // stable order for deterministic iteration
+  return workflowFilesIn(
+    lookupRoots(repoRoot).flatMap((root) => Object.keys(STATE_HOMES).map((home) => workflowDir(root, { home }))),
+    (name) => MACRO_ID_RE.test(name),
+  );
+}
+
+// ADR-0067 Decision 4, item 2 — the explicit `--workflow=<id>` resolvers of
+// the runbooks: the macro file `<id>.md` in the orchestrator workflows homes
+// of the checkout's read set, under the name that is not a link. Null when
+// none holds it; two distinct files are an error naming both, never a choice;
+// a name that is no regular file (a FIFO) is refused, as runtime's readers
+// refuse it (Decision 4, item 1).
+export async function resolveMacroById(repoRoot, workflowId) {
+  if (typeof workflowId !== 'string' || !/^macro-[a-z]+-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$/.test(workflowId)) {
+    throw new Error(`not a macro workflow id: ${JSON.stringify(workflowId)}`);
+  }
+  const found = [];
+  for (const root of lookupRoots(repoRoot)) {
+    for (const home of Object.keys(STATE_HOMES)) {
+      const candidate = join(workflowDir(root, { home }), `${workflowId}.md`);
+      const problem = workflowEntryProblem(candidate);
+      if (problem === 'gone') continue;
+      if (problem !== null) {
+        throw new Error(`orchestrator workflow storage: ${JSON.stringify(candidate)} is ${problem} (ADR-0067 Decision 4, item 1).`);
+      }
+      addPhysicalMatch(found, candidate);
+    }
+  }
+  if (found.length > 1) {
+    throw new Error(
+      `Ambiguous orchestrator workflow storage: macro ${workflowId} is held by ${found.length} files: ` +
+        `${found.map((f) => JSON.stringify(f)).join(', ')} (ADR-0067 Decision 4, item 2).`,
+    );
+  }
+  return found[0] ?? null;
 }
 
 /**
@@ -4398,10 +4864,14 @@ export async function noActiveEngineerChildrenScan(repoRoot, macroId) {
   if (!isAbsolute(repoRoot)) {
     throw new Error(`noActiveEngineerChildrenScan: repoRoot must be absolute: ${repoRoot}`);
   }
-  const dirs = [
-    join(repoRoot, '.agentic-plugins/state/engineer/workflows'),
-    join(repoRoot, '.claude/agentic-engineer/workflows'),
-  ];
+  // ADR-0067 Decision 1(b): the read set and the own homes of every other
+  // worktree, so a child an older persona left in a checkout's own home still
+  // blocks the archive. One file reached twice counts once.
+  const dirs = repositoryRoots(repoRoot).flatMap((root) => [
+    join(root, '.agentic-plugins/state/engineer/workflows'),
+    join(root, '.claude/agentic-engineer/workflows'),
+  ]);
+  const counted = new Set();
   // Engineer workflow-id regex per engineer state.mjs generateWorkflowId.
   const ENG_ID_RE = /^[a-z]+-[0-9]{8}T[0-9]{6}Z-[0-9a-f]+\.md$/;
   let count = 0;
@@ -4416,6 +4886,14 @@ export async function noActiveEngineerChildrenScan(repoRoot, macroId) {
     for (const name of entries) {
       if (!ENG_ID_RE.test(name)) continue;
       const path = join(dir, name);
+      let identity = path;
+      try {
+        identity = realpathSync(path);
+      } catch {
+        /* unreadable below; its path stands in */
+      }
+      if (counted.has(identity)) continue;
+      counted.add(identity);
       let text;
       try {
         text = await readFile(path, 'utf8');
@@ -4448,6 +4926,191 @@ export async function noActiveEngineerChildrenScan(repoRoot, macroId) {
   }
   return count;
 }
+
+// -----------------------------------------------------------------------------
+// The engineer workflows that claim a subtask (ADR-0067 Decision 4, item 5)
+//
+// /orchestrator:done completes a subtask in its owner's name, and binds the
+// owner it finds, so its write compares the dispatch that owner records. These
+// read every engineer workflow file in the homes of every root of the
+// repository and parse the frontmatter values they need, never matching
+// serialized text: the engineer writes each scalar as a JSON string (a bare
+// value is taken as written), so an id holding a quote, or a topic holding a
+// line separator, is read as the engineer wrote it. No engineer code is
+// imported (ADR-0010 §5).
+
+const ENGINEER_HOMES = [['.agentic-plugins', 'state', 'engineer'], ['.claude', 'agentic-engineer']];
+const CLAIM_KEYS = new Set([
+  'workflow_id', 'parent_workflow', 'originating_subtask',
+  'dispatched_branch', 'dispatched_verb', 'dispatched_profile', 'dispatched_topic',
+]);
+
+function claimScalar(raw, key, file) {
+  if (!raw.startsWith('"')) return raw.trim();
+  let value;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    value = undefined;
+  }
+  if (typeof value !== 'string') {
+    throw new Error(`${file}: ${key} is not a readable value (${JSON.stringify(raw)})`);
+  }
+  return value;
+}
+
+// The CLAIM_KEYS values of an engineer frontmatter, and its git_baseline
+// branch under `git_baseline.branch`; null when the text opens no frontmatter
+// or never closes it (no engineer reader takes such a file as a workflow).
+function claimValues(text, file) {
+  const lines = text.split('\n').map((line) => line.replace(/\r$/, ''));
+  if (lines[0] !== '---') return null;
+  const values = {};
+  let block = null;
+  for (let i = 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (line === '---') return values;
+    if (line.startsWith(' ')) {
+      const branch = block === 'git_baseline' ? line.match(/^ {2}branch:(?: (.*))?$/) : null;
+      if (branch) values['git_baseline.branch'] = claimScalar(branch[1] ?? '', 'git_baseline.branch', file);
+      continue;
+    }
+    const colon = line.indexOf(':');
+    if (colon === -1) {
+      block = null;
+      continue;
+    }
+    const key = line.slice(0, colon);
+    const rest = line.slice(colon + 1).replace(/^ /, '');
+    block = rest === '' ? key : null;
+    if (rest !== '' && CLAIM_KEYS.has(key)) values[key] = claimScalar(rest, key, file);
+  }
+  return null;
+}
+
+// Every engineer workflow file in the homes of every root of the repository
+// (ADR-0067 Decision 1(b)), each physical file once: [{ path, active, values }].
+// Only a missing home or file is "nothing there"; anything else that cannot
+// be read throws, a non-regular entry included, since it could hide a claimant.
+function engineerWorkflowFiles(repoRoot, { activeOnly = false } = {}) {
+  const files = [];
+  const seen = new Set();
+  for (const root of repositoryRoots(repoRoot)) {
+    for (const home of ENGINEER_HOMES) {
+      for (const sub of activeOnly ? ['workflows'] : ['workflows', 'archive']) {
+        const dir = join(root, ...home, sub);
+        let names;
+        try {
+          names = readdirSync(dir);
+        } catch (err) {
+          if (err.code === 'ENOENT') continue;
+          throw err;
+        }
+        for (const name of names.filter((n) => n.endsWith('.md'))) {
+          const path = join(dir, name);
+          let identity;
+          let text;
+          try {
+            identity = realpathSync(path);
+            if (seen.has(identity)) continue;
+            text = readFrontmatterText(path);
+          } catch (err) {
+            if (err.code === 'ENOENT') continue;
+            throw err;
+          }
+          seen.add(identity);
+          if (text === null) throw new Error(`${path} is not a regular file`);
+          const values = claimValues(text, path);
+          if (values) files.push({ path, active: sub === 'workflows', values });
+        }
+      }
+    }
+  }
+  return files;
+}
+
+// The dispatch a claimant records, in the form --expect-dispatch takes: the
+// selection recorded at its creation, or, for a child created before that
+// record, the branch it was created on.
+function claimDispatch({ values, path }, macroId, subtaskId) {
+  const dispatch = { macro: macroId, subtask: subtaskId };
+  if ('dispatched_branch' in values) {
+    for (const key of ['branch', 'verb', 'profile', 'topic']) {
+      if (!(`dispatched_${key}` in values)) {
+        throw new Error(`${path} records a partial dispatch (no dispatched_${key})`);
+      }
+      dispatch[key] = values[`dispatched_${key}`];
+    }
+    if (!dispatch.branch || !dispatch.verb) {
+      throw new Error(`${path} records a dispatch with an empty branch or verb`);
+    }
+    return dispatch;
+  }
+  if (!values['git_baseline.branch']) {
+    throw new Error(`${path} records neither a dispatch nor the branch it was created on (git_baseline)`);
+  }
+  dispatch.branch = values['git_baseline.branch'];
+  return dispatch;
+}
+
+/**
+ * The engineer workflows that claim `subtaskId` of `macroId` (both
+ * `parent_workflow` and `originating_subtask` equal), by workflow id, with the
+ * dispatch each records: Map id → { id, paths, active, dispatch }. Two files
+ * of one id that record different dispatches throw; so does any entry that
+ * cannot be read. `others` maps the ids of the files that claim something else.
+ */
+export function subtaskClaims({ repoRoot, macroId, subtaskId, activeOnly = false }) {
+  const claims = new Map();
+  const others = new Map();
+  for (const file of engineerWorkflowFiles(repoRoot, { activeOnly })) {
+    const { values, path } = file;
+    const claimant = values.parent_workflow === macroId && values.originating_subtask === subtaskId;
+    if (!claimant) {
+      if (values.workflow_id) others.set(values.workflow_id, [...(others.get(values.workflow_id) ?? []), file]);
+      continue;
+    }
+    if (!values.workflow_id) throw new Error(`${path} claims subtask ${JSON.stringify(subtaskId)} but records no workflow_id`);
+    const dispatch = claimDispatch(file, macroId, subtaskId);
+    const known = claims.get(values.workflow_id);
+    if (known) {
+      if (JSON.stringify(known.dispatch) !== JSON.stringify(dispatch)) {
+        throw new Error(
+          `two files of ${values.workflow_id} record different dispatches: ${known.paths[0]} and ${path}`,
+        );
+      }
+      known.paths.push(path);
+      known.active ||= file.active;
+      continue;
+    }
+    claims.set(values.workflow_id, { id: values.workflow_id, paths: [path], active: file.active, dispatch });
+  }
+  return { claims, others };
+}
+
+/**
+ * The owner /orchestrator:done completes `subtaskId` in the name of, and the
+ * dispatch it records (ADR-0067 Decision 4, item 5). With `owner` (the
+ * subtask's recorded engineer_workflow_id): { status: 'found', claim } when a
+ * file of that workflow claims the subtask; 'elsewhere' when its files claim
+ * something else; 'owner-missing' when no file of it is left anywhere in the
+ * repository. Without: 'found' for the one claimant, 'none', or 'ambiguous'
+ * with every claimant. Throws when an entry cannot be read.
+ */
+export function ownerDispatch({ repoRoot, macroId, subtaskId, owner = null }) {
+  const { claims, others } = subtaskClaims({ repoRoot, macroId, subtaskId });
+  if (owner !== null) {
+    if (claims.has(owner)) return { status: 'found', claim: claims.get(owner) };
+    if (others.has(owner)) return { status: 'elsewhere', files: others.get(owner) };
+    return { status: 'owner-missing' };
+  }
+  if (claims.size === 0) return { status: 'none' };
+  if (claims.size > 1) return { status: 'ambiguous', claims: [...claims.values()] };
+  return { status: 'found', claim: [...claims.values()][0] };
+}
+
+// A word the POSIX shells (bash, zsh) read back as `value`, quotes and all.
+const shellWord = (value) => `'${String(value).replaceAll("'", "'\\''")}'`;
 
 // -----------------------------------------------------------------------------
 // CLI
@@ -4603,7 +5266,7 @@ function cliPrintHelp() {
       '',
       '  subtask-engineer-terminal --workflow-path <path> --host claude|codex --subtask-id <id>',
       '                            --engineer-workflow-id <id> --branch-commit <sha>',
-      '                            [--expect-workflow-id <macro id>]',
+      '                            [--expect-workflow-id <macro id>] [--expect-dispatch <json>]',
       '    ADR-0062 §Decision 2 — called by the engineer Phase 7 and Stop hook when its',
       '    workflow reaches its terminal commit. Does not complete the subtask: binds an',
       '    unrecorded owner (refuses a different one), moves pending to in_progress, notes',
@@ -4611,6 +5274,11 @@ function cliPrintHelp() {
       '    completed / deferred / abandoned / blocked subtasks. JSON envelope on stdout.',
       '    ADR-0067 Decision 3 — with --expect-workflow-id, a file whose workflow_id',
       '    differs on the locked read is refused and nothing is written.',
+      '    ADR-0067 Decision 4, item 5 — --expect-dispatch=<json> is the dispatch the',
+      '    engineer workflow records (engineer state.mjs dispatch-selection: macro,',
+      '    subtask, branch, and verb, profile, topic when recorded); a subtask that no',
+      '    longer matches it on the locked read is refused (dispatch-changed), nothing',
+      '    written. subtask-update takes it too.',
       '',
       '  resolve-landing --repo-root <path> --workflow-path <path> --subtask-id <id>',
       '                  [--integration-branch <branch>] [--commit <sha>] [--pr <number>]',
@@ -4692,6 +5360,8 @@ function cliPrintHelp() {
       '                 [--status <status>] [--engineer-workflow-id <id>]',
       '                 [--commit <sha>] [--pr-url <url>] [--closed-at <iso>]',
       '                 [--event updated|resumed] [--expect-branch <branch>]',
+      '                 [--expect-verb <verb>] [--expect-profile <profile>]',
+      '                 [--expect-topic <topic>] [--expect-dispatch <json> | --waive-dispatch]',
       '                 [--correct] [--reason-file <path>|- | --reason <text>]',
       '    ADR-0019 PR-C0 — atomic single-subtask mutation. Updates one',
       '    plan.subtasks[i] entry by id without rewriting the whole plan.',
@@ -4707,7 +5377,15 @@ function cliPrintHelp() {
       '    ADR-0062 §Decision 3: a recorded commit / pr_url is never replaced',
       '    and a recorded closed_at is kept unless --correct (reason required);',
       '    a call that changes nothing writes nothing ({skipped, noop: true});',
-      '    --expect-branch refuses the write if the subtask branch changed.',
+      '    --expect-branch refuses the write if the subtask branch changed;',
+      '    --expect-verb, --expect-profile and --expect-topic likewise (an empty',
+      '    profile or topic expects none; trailing newlines are not compared).',
+      '    Pass a topic as --expect-topic=<topic>, so one starting with -- is',
+      '    not read as a flag. --expect-dispatch=<json> is the dispatch an engineer',
+      '    workflow records (see subtask-engineer-terminal, owner-dispatch); each',
+      '    expectation given is compared on its own. --waive-dispatch (reason',
+      '    required, with --engineer-workflow-id) writes without that comparison when',
+      '    the record cannot be read; the macro body records the waiver and the reason.',
       '',
       '  bulk-subtask-status --workflow-path <path> --host claude|codex',
       '                      --from-statuses <csv> --to-status deferred|abandoned',
@@ -4733,6 +5411,76 @@ function cliPrintHelp() {
       '    archive/. Collision-safe (timestamp-suffix). Idempotent if source is',
       '    already absent. Engineer-pattern mirror.',
       '',
+      '  resolve-workflow --repo-root <checkout> --workflow-id <macro id>',
+      '    Print the macro file <id>.md found in the orchestrator workflows homes',
+      "    of the checkout's read set (ADR-0067 Decision 4, item 2). Exit 3 when",
+      '    none holds it; exit 1 on an error (two files hold it, or a root cannot',
+      '    be read).',
+      '',
+      '  admission join --macro <id> --checkout <path> --command next|done|finalize|abort|resume',
+      '                 --host claude|codex [--session-id <id>]',
+      '  admission check --macro <id> --checkout <path> --admission <admission id>',
+      '  admission release --macro <id> --checkout <path> --admission <admission id>',
+      '    ADR-0067 Decision 4, item 5: an interactive command takes part in the',
+      "    locks an autopilot run takes. join writes one entry under a new id in",
+      "    the macro lock (and, for next, the checkout's worktree lock first),",
+      '    prints the id and proceeds only when no other live entry is there; exit 1',
+      "    names the holder. A worker of the run holding them passes with no entry",
+      "    (it prints an empty id). check: exit 1 when any entry of the id is gone.",
+      '    release removes them (an owner may release a gone session the same way).',
+      '',
+      '  scan-roots --repo-root <checkout>',
+      "    Print the repository-wide scan set as a JSON array: the checkout's read",
+      "    set, then every other worktree's toplevel (ADR-0067 Decision 1(b)). Exit 1",
+      '    when git cannot list the worktrees.',
+      '',
+      '  owner-dispatch --repo-root <checkout> --macro-id <id> --workflow-path <macro>',
+      '                 --subtask-id <id> --host claude|codex [--engineer-workflow-id <owner>]',
+      "    ADR-0067 Decision 4, item 5 — /orchestrator:done's owner and the dispatch",
+      '    it records, from the engineer workflow files in every root of the repository',
+      '    (their frontmatter values parsed, never matched as text). With the recorded',
+      '    owner: its file that claims the subtask. Without: the one claimant. Exit 0,',
+      '    JSON {engineer_workflow_id, dispatch, path} (dispatch is --expect-dispatch\'s',
+      '    JSON); exit 3 when the recorded owner has no file left (done may then',
+      '    --waive-dispatch); exit 1 otherwise: no claimant, more than one (each with a',
+      '    binding line that carries its dispatch), an owner dispatched for something',
+      '    else, or an entry that cannot be read. The path goes only into those lines.',
+      '',
+      '  active-child --repo-root <checkout> --macro-id <id> --subtask-id <id>',
+      '    The path of an active engineer workflow claiming the subtask, or nothing',
+      '    (same reading as owner-dispatch). Exit 1 when an entry cannot be read.',
+      '',
+      '  state-root --repo-root <checkout>',
+      '    Read-only (ADR-0067 Decision 6). Print the default state root, the read',
+      '    set, the shared-creation switch, where a record would be created (or why',
+      '    not), and in the main checkout the attestation checks, as JSON.',
+      '',
+      '  shared-creation --repo-root <main checkout> --enable --versions <json>',
+      '  shared-creation --repo-root <checkout> --disable',
+      '    The operator cutover switch (ADR-0067 Decision 4, items 4 and 5;',
+      '    docs/runbooks/state-root-cutover.md). --enable runs the main-checkout',
+      '    checks, appends the inventory to the cutover manifest and turns shared',
+      '    creation on; --disable (rollback) is refused once lanes have run.',
+      '',
+      '  cutover --repo-root <main checkout> --plan | --move | --verify',
+      '    The operator cutover (ADR-0067 Decision 4, item 4, steps 3, 4 and 6;',
+      "    docs/runbooks/state-root-cutover.md). --plan (read-only) prints the set: each",
+      "    macro in a linked worktree's own home, every engineer workflow there of a",
+      '    macro moved or under the default state root, and their peer-run ledgers,',
+      '    with every refusal. --move writes the manifest under',
+      '    .agentic-plugins/runs/cutover/ first, then renames each pair under the',
+      '    writers\' locks; a rerun continues an interrupted move, and otherwise plans',
+      '    again. --verify checks the result after shared-creation --enable. Exit 1',
+      '    on a refusal or a failed check.',
+      '',
+      '  cutover --repo-root <main checkout> --rollback --plan | --move',
+      '    The rollback, until lanes first run (ADR-0067 Decision 4, item 4,',
+      '    Rollback). --plan (read-only) finds each record under the default state',
+      "    root and where it goes back: a moved record to the checkout the cutover's",
+      "    manifests name, one created after the switch in a linked worktree to that",
+      '    checkout (its repo_root); the rest stay. --move writes its own manifest,',
+      '    turns shared creation off and moves; a rerun continues it.',
+      '',
       'Verbs: plan (orchestrator MVP).',
       'Hosts: claude, codex.',
       '',
@@ -4741,11 +5489,14 @@ function cliPrintHelp() {
 }
 
 async function cliMain(argv) {
-  const [subcommand, ...rest] = argv;
+  const [subcommand, ...args] = argv;
   if (!subcommand || subcommand === '-h' || subcommand === '--help') {
     cliPrintHelp();
     return 0;
   }
+  // `admission <join|check|release>` takes its action as a word.
+  const action = subcommand === 'admission' && args.length > 0 && !args[0].startsWith('--') ? args[0] : undefined;
+  const rest = action === undefined ? args : args.slice(1);
 
   let flags;
   try {
@@ -4754,7 +5505,18 @@ async function cliMain(argv) {
     process.stderr.write(`state.mjs: ${err.message}\n`);
     return 2;
   }
+  if (action !== undefined) flags['admission-action'] = action;
 
+  // ADR-0067 Decision 1(a) — a subcommand given --repo-root acts in that
+  // checkout: its writes judge it (the write guard's read set, the handoff
+  // slot), not this process's working directory.
+  if (typeof flags['repo-root'] === 'string' && flags['repo-root'] !== '') {
+    return runInCommandDirectory(flags['repo-root'], () => cliRun(subcommand, flags));
+  }
+  return cliRun(subcommand, flags);
+}
+
+async function cliRun(subcommand, flags) {
   try {
     switch (subcommand) {
       case 'find-active': {
@@ -4777,6 +5539,165 @@ async function cliMain(argv) {
           flags['subtask-branch'],
         );
         if (path) process.stdout.write(`${path}\n`);
+        return 0;
+      }
+
+      // ADR-0067 Decision 4, item 2 — the runbooks' `--workflow=<id>`
+      // resolver: the macro file in the checkout's read set; exit 1 when no
+      // root holds it, an error when two files do.
+      case 'resolve-workflow': {
+        cliRequire(flags, ['repo-root', 'workflow-id']);
+        const path = await resolveMacroById(flags['repo-root'], flags['workflow-id']);
+        if (!path) {
+          process.stderr.write(
+            `state.mjs: no macro ${JSON.stringify(flags['workflow-id'])} in the orchestrator workflows homes ` +
+              `of the read set of ${flags['repo-root']}\n`,
+          );
+          // 3, not 1: the autopilot observer then looks in the archive, which
+          // it must not do when the lookup failed (exit 1).
+          return 3;
+        }
+        process.stdout.write(`${path}\n`);
+        return 0;
+      }
+
+      // ADR-0067 Decision 4, item 5 — the interactive commands' admission
+      // entries in the locks a run takes (scripts/lib/run-locks.mjs).
+      case 'admission': {
+        const admissionAction = flags['admission-action'];
+        cliRequire(flags, ['macro', 'checkout']);
+        if (admissionAction === 'join') {
+          cliRequire(flags, ['command', 'host']);
+          let joined;
+          try {
+            joined = await joinAdmission({
+              command: flags.command, checkout: flags.checkout, macroId: flags.macro,
+              host: flags.host, sessionId: flags['session-id'] || null,
+            });
+          } catch (err) {
+            if (!(err instanceof LockHeldError)) throw err;
+            process.stderr.write(`state.mjs admission join: refused: ${err.message}\n`);
+            return 1;
+          }
+          process.stderr.write(joined.admissionId === ''
+            ? `admitted as a worker of the holding run ${joined.workerOf}\n`
+            : `admitted: ${joined.admissionId} (${joined.locks.join(', ')})\n`);
+          process.stdout.write(`${joined.admissionId}\n`);
+          return 0;
+        }
+        if (admissionAction === 'check' || admissionAction === 'release') cliRequire(flags, ['admission']);
+        if (admissionAction === 'check') {
+          const checked = await checkAdmission({ checkout: flags.checkout, macroId: flags.macro, admissionId: flags.admission });
+          if (checked.ok) return 0;
+          process.stderr.write(
+            `state.mjs admission check: ${checked.why}. Stop before acting: another session or run may hold ` +
+              'the checkout or the macro now.\n',
+          );
+          return 1;
+        }
+        if (admissionAction === 'release') {
+          const removed = releaseAdmission({ checkout: flags.checkout, macroId: flags.macro, admissionId: flags.admission });
+          process.stderr.write(`released ${removed.length} admission entr${removed.length === 1 ? 'y' : 'ies'}\n`);
+          return 0;
+        }
+        throw new Error(`admission takes join, check or release (got ${JSON.stringify(admissionAction ?? '')})`);
+      }
+
+      // ADR-0067 Decision 1(b) — the repository-wide scan set the runbooks'
+      // engineer scans read: the read set, then every other worktree's
+      // toplevel, each directory once, as a JSON array. Fails (exit 1) when
+      // the worktrees cannot be listed: a scan that skipped one could miss a
+      // child.
+      case 'scan-roots': {
+        cliRequire(flags, ['repo-root']);
+        process.stdout.write(`${JSON.stringify(repositoryRoots(flags['repo-root']))}\n`);
+        return 0;
+      }
+
+      // ADR-0067 Decision 4, item 5 — /orchestrator:done's owner, and the
+      // dispatch it records, which done's write compares (ownerDispatch); the
+      // macro path only goes into the binding lines it prints. Exit 0
+      // with JSON {engineer_workflow_id, dispatch, path}, dispatch in the form
+      // --expect-dispatch takes; exit 3 when the recorded owner has no file left
+      // in the repository (only then may done waive the comparison); exit 1,
+      // the reason on stderr, otherwise.
+      case 'owner-dispatch': {
+        cliRequire(flags, ['repo-root', 'macro-id', 'workflow-path', 'subtask-id', 'host']);
+        validateHost(flags.host);
+        const subtaskId = flags['subtask-id'];
+        const macroPath = flags['workflow-path'];
+        const macroId = flags['macro-id'];
+        const owner = flags['engineer-workflow-id'] || null;
+        let found;
+        try {
+          found = ownerDispatch({ repoRoot: flags['repo-root'], macroId, subtaskId, owner });
+        } catch (err) {
+          process.stderr.write(
+            `✗ Could not scan the engineer workflow homes for ${subtaskId}'s owner: ${err.message}; refusing to guess.\n`,
+          );
+          return 1;
+        }
+        if (found.status === 'found') {
+          process.stdout.write(`${JSON.stringify({
+            engineer_workflow_id: found.claim.id,
+            dispatch: JSON.stringify(found.claim.dispatch),
+            path: found.claim.paths[0],
+          })}\n`);
+          return 0;
+        }
+        if (found.status === 'owner-missing') {
+          process.stderr.write(
+            `✗ ${subtaskId}'s recorded owner ${owner} has no workflow file left in any engineer home of the repository, ` +
+              `so the dispatch it records cannot be read and this completion cannot be compared with it ` +
+              `(ADR-0067 Decision 4, item 5). To complete it anyway, rerun with --waive-dispatch and a reason; ` +
+              `the macro records both.\n`,
+          );
+          return 3;
+        }
+        if (found.status === 'elsewhere') {
+          const claims = found.files.map((f) => `parent_workflow=${f.values.parent_workflow ?? '<none>'}, ` +
+            `originating_subtask=${f.values.originating_subtask ?? '<none>'} (${f.path})`);
+          process.stderr.write(
+            `✗ ${subtaskId}'s recorded owner ${owner} was not dispatched for it: its workflow claims ` +
+              `${claims.join('; ')}, not parent_workflow=${macroId}, originating_subtask=${subtaskId}.\n`,
+          );
+          return 1;
+        }
+        if (found.status === 'none') {
+          process.stderr.write(
+            `✗ No engineer workflow found with parent_workflow=${macroId} AND originating_subtask=${subtaskId} (active or archived).\n` +
+              `  This subtask was likely never dispatched — run ${flags.host === 'codex' ? '$' : '/'}orchestrator:next ${subtaskId} first.\n`,
+          );
+          return 1;
+        }
+        // Ambiguous: the operator names the owner with a binding that compares
+        // the chosen child's dispatch, as every binding does.
+        const script = fileURLToPath(import.meta.url);
+        const lines = [`✗ More than one engineer workflow claims ${subtaskId} in ${macroId}:`];
+        for (const claim of found.claims) lines.push(`  ${claim.id} (${claim.paths[0]})`);
+        lines.push(
+          '  Record the owner explicitly first, with the line of the workflow that did the work; it binds',
+          `  that workflow only while ${subtaskId} is still the subtask it was dispatched for:`,
+        );
+        for (const claim of found.claims) {
+          lines.push(`    node ${shellWord(script)} subtask-update --workflow-path=${shellWord(macroPath)} ` +
+            `--host=${flags.host} --subtask-id=${shellWord(subtaskId)} --engineer-workflow-id=${shellWord(claim.id)} ` +
+            `--expect-dispatch=${shellWord(JSON.stringify(claim.dispatch))}`);
+        }
+        process.stderr.write(`${lines.join('\n')}\n`);
+        return 1;
+      }
+
+      // ADR-0067 Decision 4, item 5 — an active engineer workflow claiming the
+      // subtask (done --no-commit refuses one): its path, or nothing. Exit 1,
+      // the reason on stderr, when an entry cannot be read.
+      case 'active-child': {
+        cliRequire(flags, ['repo-root', 'macro-id', 'subtask-id']);
+        const { claims } = subtaskClaims({
+          repoRoot: flags['repo-root'], macroId: flags['macro-id'], subtaskId: flags['subtask-id'], activeOnly: true,
+        });
+        const [active] = claims.values();
+        if (active) process.stdout.write(active.paths[0]);
         return 0;
       }
 
@@ -5002,6 +5923,7 @@ async function cliMain(argv) {
           engineerWorkflowId: flags['engineer-workflow-id'],
           branchCommit: flags['branch-commit'],
           expectWorkflowId: flags['expect-workflow-id'],
+          expectDispatch: flags['expect-dispatch'],
           event: flags.event ?? 'updated',
         });
         if (result.skipped) process.stderr.write(`state.mjs subtask-engineer-terminal: ${result.skipReason}\n`);
@@ -5291,6 +6213,11 @@ async function cliMain(argv) {
           correct: cliPresenceFlag(flags, 'correct'),
           reason: await cliReasonFlag(flags),
           expectBranch: flags['expect-branch'],
+          expectVerb: flags['expect-verb'],
+          expectProfile: flags['expect-profile'],
+          expectTopic: flags['expect-topic'],
+          expectDispatch: flags['expect-dispatch'],
+          waiveDispatch: cliPresenceFlag(flags, 'waive-dispatch'),
         });
         // Emit JSON envelope so callers (PR-C engineer parent-writeback
         // helper, PR-D /next + /done runbooks) can parse the result
@@ -5311,6 +6238,65 @@ async function cliMain(argv) {
           process.stderr.write(`state.mjs subtask-update: ${result.skipReason}\n`);
         }
         process.stdout.write(`${JSON.stringify(envelope)}\n`);
+        return 0;
+      }
+
+      // ADR-0067 Decision 6 — read-only: the state root, the read set, the
+      // shared-creation switch and, in the main checkout, the attestation
+      // checks. Runbooks resolve storage in shell from it.
+      case 'state-root': {
+        cliRequire(flags, ['repo-root']);
+        process.stdout.write(`${JSON.stringify(describeStateRoot(flags['repo-root']))}\n`);
+        return 0;
+      }
+
+      // ADR-0067 Decision 4, items 4 and 5 — the operator's switch.
+      case 'shared-creation': {
+        cliRequire(flags, ['repo-root']);
+        const enable = cliPresenceFlag(flags, 'enable');
+        const disable = cliPresenceFlag(flags, 'disable');
+        if (enable === disable) throw new Error('pass exactly one of --enable and --disable');
+        let result;
+        if (enable) {
+          cliRequire(flags, ['versions']);
+          let versions;
+          try {
+            versions = JSON.parse(flags.versions);
+          } catch (err) {
+            throw new Error(`--versions is not JSON (${err.message})`);
+          }
+          result = enableSharedCreation({ checkout: flags['repo-root'], versions });
+        } else {
+          result = disableSharedCreation({ checkout: flags['repo-root'] });
+        }
+        process.stdout.write(`${JSON.stringify(result)}\n`);
+        return 0;
+      }
+
+      // ADR-0067 Decision 4, item 4 — the operator cutover's plan, move and
+      // verify (scripts/lib/cutover.mjs).
+      case 'cutover': {
+        cliRequire(flags, ['repo-root']);
+        const modes = ['plan', 'move', 'verify'].filter((m) => cliPresenceFlag(flags, m));
+        if (modes.length !== 1) throw new Error('pass exactly one of --plan, --move and --verify');
+        // A --repo-root left without its value would resolve to the working
+        // directory and move records from there.
+        if (flags['repo-root'] === '') throw new Error('--repo-root needs a value: the main checkout');
+        const checkout = resolvePath(flags['repo-root']);
+        const rollback = cliPresenceFlag(flags, 'rollback');
+        if (rollback && modes[0] === 'verify') throw new Error('--rollback takes --plan or --move');
+        let result;
+        if (rollback && modes[0] === 'plan') result = await planRollback(checkout, { readWorkflow });
+        else if (rollback) result = await moveRollback(checkout, { withFileLock, withDirectoryLock, readWorkflow });
+        else if (modes[0] === 'plan') result = planCutover(checkout);
+        else if (modes[0] === 'move') result = await moveCutover(checkout, { withFileLock, withDirectoryLock });
+        else result = await verifyCutover(checkout, { resolveMacroById, findMacroBySubtaskBranch, readWorkflow, subtaskReadiness });
+        process.stdout.write(`${JSON.stringify(result)}\n`);
+        if (!result.ok) {
+          for (const r of result.refusals ?? []) process.stderr.write(`state.mjs cutover: ${r.code}: ${r.detail}\n`);
+          for (const c of (result.checks ?? []).filter((x) => !x.ok)) process.stderr.write(`state.mjs cutover: ${c.id}: ${c.detail}\n`);
+          return 1;
+        }
         return 0;
       }
 

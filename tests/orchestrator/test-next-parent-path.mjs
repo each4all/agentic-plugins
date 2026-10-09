@@ -14,7 +14,7 @@
 
 import { describe, it } from 'node:test';
 import { strictEqual, ok, match } from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -58,8 +58,10 @@ function regionBlock(verb, id) {
 }
 
 const PRELUDE = blockWith(readFileSync(join(ORCH_ROOT, 'commands/next.md'), 'utf8'), 'export AGENTIC_PARENT_WORKFLOW="$MACRO_ID"');
-// The Codex mirror's own prelude ($orchestrator:next), maintained apart.
-const CODEX_PRELUDE = blockWith(readFileSync(join(ORCH_ROOT, 'core/skills/next/SKILL.md'), 'utf8'), 'export AGENTIC_PARENT_WORKFLOW="$MACRO_ID"');
+// The Codex mirror's own prelude ($orchestrator:next), maintained apart, with
+// the plugin-root placeholder filled in as the agent fills it.
+const CODEX_PRELUDE = blockWith(readFileSync(join(ORCH_ROOT, 'core/skills/next/SKILL.md'), 'utf8'), 'export AGENTIC_PARENT_WORKFLOW="$MACRO_ID"')
+  .replaceAll('<orchestrator-plugin-root>', ORCH_ROOT);
 
 function withDispatch(fn) {
   const dir = mkdtempSync(join(tmpdir(), 'next-parent-path-'));
@@ -83,25 +85,30 @@ function withDispatch(fn) {
   }
 }
 
-function run(shell, script, work) {
+function run(shell, script, work, env = {}) {
   const r = spawnSync(shell, ['-c', script], {
     cwd: work, encoding: 'utf8',
-    env: { ...baseEnv(), HOME: work, AGENTIC_ORCHESTRATOR_ROOT: ORCH_ROOT },
+    env: { ...baseEnv(), HOME: work, AGENTIC_ORCHESTRATOR_ROOT: ORCH_ROOT, ...env },
   });
   const dir = join(work, ENGINEER_WORKFLOWS);
   const files = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.md')) : [];
   return { ...r, files, text: files.length === 1 ? readFileSync(join(dir, files[0]), 'utf8') : null };
 }
 
-const dispatchVars = ({ macroId, macroPath, work }) => [
+// Phase 3b's admission (ADR-0067 Decision 4, item 5), which the prelude
+// checks before it dispatches.
+const dispatchVars = ({ macroId, macroPath, work }, { verb = 'compose', branch = 'feat/t1' } = {}) => [
   `MACRO_ID='${macroId}'`,
   `MACRO_PATH='${macroPath}'`,
   "SUBTASK_ID='T1'",
+  `SUBTASK_BRANCH='${branch}'`,
+  `SUBTASK_VERB='${verb}'`,
   `ENGINEER_PLUGIN_ROOT='${ENGINEER_ROOT}'`,
   "DETECTED_HOST='claude'",
   "SUBTASK_PROFILE='backend'",
   "SUBTASK_TOPIC='parent path dispatch'",
   `REPO_ROOT='${work}'`,
+  `ADMISSION="$(node '${join(ORCH_ROOT, 'scripts/state.mjs')}' admission join --macro '${macroId}' --checkout '${work}' --command next --host claude)" || exit 9`,
 ].join('\n');
 
 describe('/orchestrator:next hands the macro path to the engineer bootstrap (ADR-0067 Decision 3)', () => {
@@ -112,12 +119,15 @@ describe('/orchestrator:next hands the macro path to the engineer bootstrap (ADR
       // kept in another checkout.
       it(`${shell}, ${verb}: the dispatched child records parent_workflow_path beside the two ids`, () => {
         withDispatch((ctx) => {
-          const r = run(shell, `${dispatchVars(ctx)}\n${PRELUDE}\n${regionBlock(verb, region)}`, ctx.work);
+          const r = run(shell, `${dispatchVars(ctx, { verb })}\n${PRELUDE}\n${regionBlock(verb, region)}`, ctx.work);
           strictEqual(r.status, 0, r.stderr);
           strictEqual(r.files.length, 1, r.stderr);
           match(r.text, new RegExp(`^parent_workflow_path: ${JSON.stringify(ctx.macroPath).replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}$`, 'm'));
           match(r.text, new RegExp(`^parent_workflow: "${ctx.macroId}"$`, 'm'));
           match(r.text, /^originating_subtask: "T1"$/m);
+          // ADR-0067 Decision 4, item 5 — the selection Phase 1 made, recorded
+          // beside the ids for every later binding to compare.
+          match(r.text, new RegExp(`^dispatched_branch: "feat/t1"\ndispatched_verb: "${verb}"\ndispatched_profile: "backend"\ndispatched_topic: "parent path dispatch"$`, 'm'));
         });
       });
     }
@@ -130,19 +140,59 @@ describe('/orchestrator:next hands the macro path to the engineer bootstrap (ADR
         strictEqual(r.status, 0, r.stderr);
         match(r.text, new RegExp(`^parent_workflow_path: ${JSON.stringify(ctx.macroPath).replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}$`, 'm'));
         match(r.text, /^host_history:\n {2}- host: "codex"$/m);
+        match(r.text, /^dispatched_branch: "feat\/t1"\ndispatched_verb: "compose"\ndispatched_profile: "backend"\ndispatched_topic: "parent path dispatch"$/m);
       });
     });
+
+    // Contract: the selection is built apart from its export, which would
+    // hide a failure. A node killed while building it (an ordinary process
+    // death) stops the prelude; it never creates a child without the record,
+    // which a later binding could only judge by its branch.
+    for (const [name, prelude] of [['Claude', PRELUDE], ['Codex', CODEX_PRELUDE]]) {
+      it(`${shell}, ${name} prelude: a selection that cannot be built stops the dispatch before create`, () => {
+        withDispatch((ctx) => {
+          const bin = join(ctx.dir, 'bin');
+          mkdirSync(bin);
+          writeFileSync(join(bin, 'node'), [
+            `#!${process.execPath}`,
+            "import { spawnSync } from 'node:child_process';",
+            'const a = process.argv.slice(2);',
+            "if (a[0] === '-e' && a[1].includes('JSON.stringify({ subtask, branch, verb, profile, topic })')) process.kill(process.pid, 'SIGKILL');",
+            `const r = spawnSync(${JSON.stringify(process.execPath)}, a, { stdio: 'inherit' });`,
+            'process.exit(r.status ?? 1);',
+          ].join('\n'), { mode: 0o755 });
+          const r = run(shell, `${dispatchVars(ctx)}\n${prelude}\n${regionBlock('compose', 'compose-bootstrap')}`, ctx.work, { PATH: `${bin}:${baseEnv().PATH ?? process.env.PATH}` });
+          ok(r.status !== 0, `exit ${r.status}: ${r.stderr}`);
+          strictEqual(r.files.length, 0, r.stderr);
+        });
+      });
+    }
 
     // Contract: an orchestrator from before ADR-0067 exports the ids only;
     // its dispatched children must keep being created and linked.
     it(`${shell}: an orchestrator that exports no path still dispatches a child linked by id`, () => {
       withDispatch((ctx) => {
-        const r = run(shell, `${dispatchVars(ctx)}\n${PRELUDE}\nunset AGENTIC_PARENT_WORKFLOW_PATH\n${regionBlock('compose', 'compose-bootstrap')}`, ctx.work);
+        const r = run(shell, `${dispatchVars(ctx)}\n${PRELUDE}\nunset AGENTIC_PARENT_WORKFLOW_PATH AGENTIC_DISPATCH_SELECTION\n${regionBlock('compose', 'compose-bootstrap')}`, ctx.work);
         strictEqual(r.status, 0, r.stderr);
         ok(!/^parent_workflow_path:/m.test(r.text), r.text);
+        ok(!/^dispatched_/m.test(r.text), r.text);
         match(r.text, new RegExp(`^parent_workflow: "${ctx.macroId}"$`, 'm'));
       });
     });
+
+    // Contract: the selection names the subtask, branch and verb the child is
+    // created for; one that names another (a dispatcher bug, or a value lost
+    // between Bash calls) stops create before the file lands.
+    for (const [over, field] of [[{ branch: 'feat/other' }, 'branch'], [{ verb: 'frame' }, 'verb']]) {
+      it(`${shell}: a selection naming another ${field} than the child's stops create before any write`, () => {
+        withDispatch((ctx) => {
+          const r = run(shell, `${dispatchVars(ctx, over)}\n${PRELUDE}\n${regionBlock('compose', 'compose-bootstrap')}`, ctx.work);
+          strictEqual(r.status, 1, r.stdout);
+          match(r.stderr, new RegExp(`the dispatch selection names ${field} `));
+          strictEqual(r.files.length, 0);
+        });
+      });
+    }
 
     // Contract: the bootstrap's own check — a path without the ids is a
     // leftover or a dispatcher bug, never a parent link; it stops before create.
@@ -152,6 +202,15 @@ describe('/orchestrator:next hands the macro path to the engineer bootstrap (ADR
           const r = run(shell, `REPO_ROOT='${ctx.work}'\nexport CLAUDE_PLUGIN_ROOT='${ENGINEER_ROOT}'\nexport AGENTIC_PARENT_WORKFLOW_PATH='${ctx.macroPath}'\n${regionBlock(verb, region)}`, ctx.work);
           strictEqual(r.status, 1, r.stdout);
           match(r.stderr, /AGENTIC_PARENT_WORKFLOW_PATH is set without AGENTIC_PARENT_WORKFLOW and AGENTIC_ORIGINATING_SUBTASK/);
+          strictEqual(r.files.length, 0);
+        });
+      });
+      it(`${shell}, ${verb}: the selection without the two ids stops the bootstrap before any write`, () => {
+        withDispatch((ctx) => {
+          const selection = JSON.stringify({ subtask: 'T1', branch: 'feat/t1', verb, profile: '', topic: '' });
+          const r = run(shell, `REPO_ROOT='${ctx.work}'\nexport CLAUDE_PLUGIN_ROOT='${ENGINEER_ROOT}'\nexport AGENTIC_DISPATCH_SELECTION='${selection}'\n${regionBlock(verb, region)}`, ctx.work);
+          strictEqual(r.status, 1, r.stdout);
+          match(r.stderr, /AGENTIC_DISPATCH_SELECTION is set without AGENTIC_PARENT_WORKFLOW and AGENTIC_ORIGINATING_SUBTASK/);
           strictEqual(r.files.length, 0);
         });
       });

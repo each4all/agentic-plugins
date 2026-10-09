@@ -1,6 +1,6 @@
 ---
 description: Record a macro subtask completed once its work has landed — resolves the pull request's merge commit (ADR-0062)
-argument-hint: <subtask-id> [--pr=<n>] [--commit=<sha>] [--correct | --no-commit] [--workflow=<macro-id>] [--integration-branch=<b>] [reason]
+argument-hint: <subtask-id> [--pr=<n>] [--commit=<sha>] [--correct | --no-commit] [--waive-dispatch] [--workflow=<macro-id>] [--integration-branch=<b>] [reason]
 ---
 
 # Orchestrator · Done
@@ -23,6 +23,7 @@ shell variable does not outlive a Bash call.
 - `EXPLICIT_COMMIT` ← value of `--commit=<sha>`: must equal that pull request's merge commit; without a working `gh` it is verified by ancestry only.
 - `CORRECT` ← `1` when `--correct` is present: replace a recorded value deliberately. Needs a reason.
 - `NO_COMMIT` ← `1` when `--no-commit` is present: the work legitimately landed no commit (for example an investigation closed with evidence only). Needs a reason. Excludes `--pr`, `--commit` and `--correct`.
+- `WAIVE_DISPATCH` ← `1` when `--waive-dispatch` is present: complete the subtask in its recorded owner's name without comparing the dispatch that owner records, because no file of it is left to read it from (Phase 2 says when). Needs a reason; the macro records the waiver and the reason.
 - `EXPLICIT_WORKFLOW_ID` ← value of `--workflow=<id>`.
 - `EXPLICIT_INTEGRATION_BRANCH` ← value of `--integration-branch=<b>`; default is the macro's `git_baseline.branch`.
 - `REASON` ← the remaining free text, verbatim. It never passes through the shell (ADR-0059): before running the block below, write it to a new file with your file-writing tool (Claude: the Write tool), exactly as given, and set `REASON_FILE` to that file's path at the top of the block. Leave `REASON_FILE` unset when there is no reason. A heredoc is not safe here: a reason that contains the delimiter line ends it and runs what follows.
@@ -34,6 +35,7 @@ shell variable does not outlive a Bash call.
 - A completion writeback MUST supply the matching `engineer_workflow_id` (ADR-0019 §4 ownership, unchanged).
 - A recorded `commit` or `pr_url` is never replaced, and a recorded `closed_at` is kept, unless `--correct` with a reason; the macro body then records the old value, the new value and the reason.
 - `--expect-branch` is always passed, so a plan revision between resolving the landing and writing it is refused.
+- The write completes the subtask in its owner's name, so it always compares the dispatch that owner records (`--expect-dispatch`, ADR-0067 Decision 4, item 5). When it cannot be read, done refuses; only `--waive-dispatch` with a reason writes without the comparison, and the macro body records it.
 - Only active macros are addressed. An archived macro is a frozen record (ADR-0062 §Decision 7).
 
 ---
@@ -66,14 +68,12 @@ if [ -n "${EXPLICIT_WORKFLOW_ID:-}" ]; then
       echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID invalid — must be a basename-shaped workflow id (no '/', '\\\\', '..', or leading '.')." >&2
       exit 1;;
   esac
-  CANONICAL_MACRO_PATH="$REPO_ROOT/.agentic-plugins/state/orchestrator/workflows/${EXPLICIT_WORKFLOW_ID}.md"
-  LEGACY_MACRO_PATH="$REPO_ROOT/.claude/agentic-orchestrator/workflows/${EXPLICIT_WORKFLOW_ID}.md"
-  if [ -f "$CANONICAL_MACRO_PATH" ]; then
-    MACRO_PATH="$CANONICAL_MACRO_PATH"
-  elif [ -f "$LEGACY_MACRO_PATH" ]; then
-    MACRO_PATH="$LEGACY_MACRO_PATH"
-  else
-    echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID not found in canonical or legacy workflow homes (archived macros are not addressed)." >&2
+  # ADR-0067 Decision 4, item 2 — the macro file in the orchestrator workflow
+  # homes of this checkout's read set, the default state root's first. Two
+  # files holding the id are an error, named on stderr, never a choice.
+  if ! MACRO_PATH="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
+    resolve-workflow --repo-root "$REPO_ROOT" --workflow-id "$EXPLICIT_WORKFLOW_ID")"; then
+    echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID names no single macro file in the orchestrator workflow homes of this checkout's read set (the reason is above; archived macros are not addressed)." >&2
     exit 1
   fi
 else
@@ -143,7 +143,7 @@ if [ "$SUBTASK_STATUS" = "completed" ] && [ "${CORRECT:-}" != "1" ]; then
 fi
 ```
 
-When `CORRECT=1` or `NO_COMMIT=1`, a reason is required. The reason stays in `REASON_FILE`: the runbook only checks that it holds text, and Phase 3 hands the file's bytes to `state.mjs`, so the shell never reads the reason as text:
+When `CORRECT=1`, `NO_COMMIT=1` or `WAIVE_DISPATCH=1`, a reason is required. The reason stays in `REASON_FILE`: the runbook only checks that it holds text, and Phase 3 hands the file's bytes to `state.mjs`, so the shell never reads the reason as text:
 
 ```bash
 if [ -n "${REASON_FILE:-}" ] && [ ! -f "$REASON_FILE" ]; then
@@ -152,8 +152,8 @@ if [ -n "${REASON_FILE:-}" ] && [ ! -f "$REASON_FILE" ]; then
 fi
 HAS_REASON=0
 if [ -n "${REASON_FILE:-}" ] && grep -q '[^[:space:]]' "$REASON_FILE"; then HAS_REASON=1; fi
-if { [ "${CORRECT:-}" = "1" ] || [ "${NO_COMMIT:-}" = "1" ]; } && [ "$HAS_REASON" -eq 0 ]; then
-  echo "✗ --correct and --no-commit need a reason (the free text after the flags)." >&2
+if { [ "${CORRECT:-}" = "1" ] || [ "${NO_COMMIT:-}" = "1" ] || [ "${WAIVE_DISPATCH:-}" = "1" ]; } && [ "$HAS_REASON" -eq 0 ]; then
+  echo "✗ --correct, --no-commit and --waive-dispatch need a reason (the free text after the flags)." >&2
   exit 1
 fi
 ```
@@ -162,53 +162,41 @@ fi
 
 ## Phase 2 — Resolve the owning engineer workflow
 
-- `EXISTING_ENG_WF_ID` set → use it (the normal path after `/orchestrator:next` recorded it, or after the engineer terminal note bound it).
-- Otherwise scan the engineer workflow homes **and archive homes** — by the time the work has merged, the child has normally archived itself. **Both** `parent_workflow == $MACRO_ID` and `originating_subtask == $SUBTASK_ID` must match, and more than one distinct match is refused rather than guessed. A home or file that cannot be read (anything but a missing one) also refuses, since it could hide a second claimant:
+The write in Phase 3 completes the subtask in its owner's name, so it compares the dispatch that owner records (ADR-0067 Decision 4, item 5: `dispatched_*`, or its `git_baseline` branch when it was created before that record), and is refused under the macro's file lock when the subtask is no longer the one the owner was dispatched for. `state.mjs owner-dispatch` finds the owner and reads that dispatch. It reads every engineer workflow file in the workflow homes **and archive homes** of every root of the repository (by the time the work has merged, the child has normally archived itself) and parses the frontmatter values it needs, never matching serialized text:
+
+- `EXISTING_ENG_WF_ID` set (the normal path after `/orchestrator:next` recorded it, or after the engineer terminal note bound it) → the file of that workflow that claims the subtask. When no file of it is left anywhere in the repository (a lane's home removed, for example), the dispatch cannot be read: done refuses, and only a rerun with `--waive-dispatch` and a reason completes the subtask without the comparison. A file of it that claims another subtask refuses, with no waiver.
+- Otherwise → the one workflow whose `parent_workflow == $MACRO_ID` **and** `originating_subtask == $SUBTASK_ID`. None refuses (the subtask was likely never dispatched). More than one refuses rather than guessing: it lists each claimant with a binding line that carries that claimant's dispatch (`subtask-update --engineer-workflow-id=<id> --expect-dispatch=<its dispatch>`), so the owner chosen is bound only while the subtask is the one it was dispatched for; then rerun done.
+
+A home or file that cannot be read (anything but a missing one) also refuses, since it could hide a claimant or the owner's file. `DISPATCH_ARGS` carries the comparison, or the waiver, into Phase 3a or 3b:
 
 ```bash
-if [ -z "$EXISTING_ENG_WF_ID" ]; then
-  MATCHES="$(
-    env MACRO_ID="$MACRO_ID" SUBTASK_ID="$SUBTASK_ID" REPO_ROOT="$REPO_ROOT" node -e '
-      const fs = require("fs"); const path = require("path");
-      const { MACRO_ID, SUBTASK_ID, REPO_ROOT } = process.env;
-      const homes = [
-        [".agentic-plugins", "state", "engineer"], [".claude", "agentic-engineer"],
-      ].flatMap((h) => ["workflows", "archive"].map((d) => path.join(REPO_ROOT, ...h, d)));
-      const ids = new Set();
-      // Only a missing home or file is "nothing there"; any other read error
-      // could hide a second claimant, so the scan fails instead of guessing.
-      const missing = (e) => e.code === "ENOENT";
-      try {
-        for (const dir of homes) {
-          let names = [];
-          try { names = fs.readdirSync(dir); } catch (e) { if (missing(e)) continue; throw e; }
-          for (const name of names.filter((n) => n.endsWith(".md"))) {
-            let text; try { text = fs.readFileSync(path.join(dir, name), "utf8"); } catch (e) { if (missing(e)) continue; throw e; }
-            const fm = (text.match(/^---\r?\n([\s\S]*?)\r?\n---/) || [])[1] || "";
-            if (!fm.includes(`parent_workflow: "${MACRO_ID}"`) || !fm.includes(`originating_subtask: "${SUBTASK_ID}"`)) continue;
-            const id = (fm.match(/^workflow_id:\s*"([^"]+)"/m) || [])[1];
-            if (id) ids.add(id);
-          }
-        }
-      } catch (e) { process.stderr.write(`${e.message}\n`); process.exit(1); }
-      process.stdout.write([...ids].join("\n"));
-    '
-  )" || {
-    echo "✗ Could not scan the engineer workflow homes for $SUBTASK_ID's owner (see the error above); refusing to guess." >&2
-    exit 1
-  }
-  if [ -z "$MATCHES" ]; then
-    echo "✗ No engineer workflow found with parent_workflow=$MACRO_ID AND originating_subtask=$SUBTASK_ID (active or archived)." >&2
-    echo "  This subtask was likely never dispatched — run /orchestrator:next $SUBTASK_ID first." >&2
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+# ADR-0067 Decision 4, item 5 — the owner and the dispatch it records. Every
+# refusal's reason is printed by owner-dispatch; exit 3 alone (the recorded
+# owner has no file left) may be waived.
+OWNER_ARGS=(--repo-root "$REPO_ROOT" --macro-id "$MACRO_ID" --workflow-path "$MACRO_PATH" --subtask-id "$SUBTASK_ID" --host "$DETECTED_HOST")
+[ -n "$EXISTING_ENG_WF_ID" ] && OWNER_ARGS+=(--engineer-workflow-id "$EXISTING_ENG_WF_ID")
+# Under set -e an unguarded nonzero exit would end the block before OWNER_RC.
+OWNER_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" owner-dispatch "${OWNER_ARGS[@]}")" && OWNER_RC=0 || OWNER_RC=$?
+if [ "$OWNER_RC" -eq 0 ]; then
+  if [ "${WAIVE_DISPATCH:-}" = "1" ]; then
+    echo "✗ --waive-dispatch applies only when the owner's dispatch cannot be read; it was read, and the write compares it. Rerun without --waive-dispatch." >&2
     exit 1
   fi
-  if [ "$(printf '%s\n' "$MATCHES" | wc -l | tr -d ' ')" -gt 1 ]; then
-    echo "✗ More than one engineer workflow claims $SUBTASK_ID in $MACRO_ID:" >&2
-    printf '%s\n' "$MATCHES" | sed 's/^/  /' >&2
-    echo "  Record the owner explicitly with state.mjs subtask-update --engineer-workflow-id=<id> first." >&2
+  EXISTING_ENG_WF_ID="$(printf '%s' "$OWNER_JSON" | JSON_KEY=engineer_workflow_id node -e "$JSON_FIELD")"
+  OWNER_DISPATCH="$(printf '%s' "$OWNER_JSON" | JSON_KEY=dispatch node -e "$JSON_FIELD")"
+  if [ -z "$EXISTING_ENG_WF_ID" ] || [ -z "$OWNER_DISPATCH" ]; then
+    echo "✗ Could not read owner-dispatch's answer for $SUBTASK_ID; refusing to guess." >&2
     exit 1
   fi
-  EXISTING_ENG_WF_ID="$MATCHES"
+  DISPATCH_ARGS=(--expect-dispatch="$OWNER_DISPATCH")
+elif [ "$OWNER_RC" -eq 3 ] && [ "${WAIVE_DISPATCH:-}" = "1" ]; then
+  # The recorded owner's file is gone, and the operator completes in its name
+  # anyway; subtask-update records the waiver and the reason in the macro.
+  DISPATCH_ARGS=(--waive-dispatch)
+else
+  exit 1
 fi
 ```
 
@@ -222,37 +210,44 @@ Refused while an engineer workflow for this subtask is still **active**: a child
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 if [ "${NO_COMMIT:-}" = "1" ]; then
-  ACTIVE_CHILD="$(
-    env MACRO_ID="$MACRO_ID" SUBTASK_ID="$SUBTASK_ID" REPO_ROOT="$REPO_ROOT" node -e '
-      const fs = require("fs"); const path = require("path");
-      const { MACRO_ID, SUBTASK_ID, REPO_ROOT } = process.env;
-      // Only a missing home or file is "no child"; any other read error could
-      // hide the active child, so the scan fails instead.
-      const missing = (e) => e.code === "ENOENT";
-      try {
-        for (const dir of [path.join(REPO_ROOT, ".agentic-plugins", "state", "engineer", "workflows"), path.join(REPO_ROOT, ".claude", "agentic-engineer", "workflows")]) {
-          let names = []; try { names = fs.readdirSync(dir); } catch (e) { if (missing(e)) continue; throw e; }
-          for (const name of names.filter((n) => n.endsWith(".md"))) {
-            let text; try { text = fs.readFileSync(path.join(dir, name), "utf8"); } catch (e) { if (missing(e)) continue; throw e; }
-            if (text.includes(`parent_workflow: "${MACRO_ID}"`) && text.includes(`originating_subtask: "${SUBTASK_ID}"`)) { process.stdout.write(path.join(dir, name)); process.exit(0); }
-          }
-        }
-      } catch (e) { process.stderr.write(`${e.message}\n`); process.exit(1); }
-    '
-  )" || {
-    echo "✗ Could not scan the engineer workflow homes for an active child of $SUBTASK_ID (see the error above); refusing --no-commit." >&2
-    exit 1
+  # Returns non-zero, the reason on stderr, when an engineer workflow of this
+  # subtask is active or a home cannot be read. active-child reads every root of
+  # the repository (ADR-0067 Decision 1(b)) and parses each frontmatter, as
+  # owner-dispatch does.
+  no_active_child() {
+    ACTIVE_CHILD="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" active-child \
+      --repo-root "$REPO_ROOT" --macro-id "$MACRO_ID" --subtask-id "$SUBTASK_ID")" || {
+      echo "✗ Could not scan the engineer workflow homes for an active child of $SUBTASK_ID (see the error above); refusing --no-commit." >&2
+      return 1
+    }
+    if [ -n "$ACTIVE_CHILD" ]; then
+      echo "✗ An engineer workflow for $SUBTASK_ID is still active: $ACTIVE_CHILD" >&2
+      echo "  Archive it first (/engineer:resume archive on its branch), then rerun /orchestrator:done $SUBTASK_ID --no-commit." >&2
+      return 1
+    fi
   }
-  if [ -n "$ACTIVE_CHILD" ]; then
-    echo "✗ An engineer workflow for $SUBTASK_ID is still active: $ACTIVE_CHILD" >&2
-    echo "  Archive it first (/engineer:resume archive on its branch), then rerun /orchestrator:done $SUBTASK_ID --no-commit." >&2
-    exit 1
-  fi
+  no_active_child || exit 1
+  # ADR-0067 Decision 4, item 5 — join the macro's run lock before the write:
+  # a refusal names the autopilot run or session holding it, and writes
+  # nothing. Every exit from here releases the admission.
+  ADMISSION="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" admission join \
+    --macro "$MACRO_ID" --checkout "$REPO_ROOT" --command done \
+    --host "$DETECTED_HOST" --session-id "${CLAUDE_CODE_SESSION_ID:-}")" || exit 1
+  release_admission() {
+    node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" admission release \
+      --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION"
+  }
+  trap 'release_admission' EXIT
+  # A run's step could have dispatched the subtask again before the join.
+  no_active_child || exit 1
+  # The write completes the subtask in its owner's name: only while the
+  # subtask is the one that owner records it was dispatched for, unless the
+  # operator waived that check (Phase 2).
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" subtask-update \
     --workflow-path="$MACRO_PATH" --host="$DETECTED_HOST" --subtask-id="$SUBTASK_ID" \
     --status=completed --engineer-workflow-id="$EXISTING_ENG_WF_ID" \
     --closed-at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" --expect-branch="$SUBTASK_BRANCH" \
-    --reason-file="$REASON_FILE" --event=updated || exit $?
+    "${DISPATCH_ARGS[@]}" --reason-file="$REASON_FILE" --event=updated || exit $?
   exit 0
 fi
 ```
@@ -287,10 +282,28 @@ if [ "$(printf '%s' "$LANDING" | JSON_KEY=verification node -e "$JSON_FIELD")" =
   LANDING_NOTE="Landing verified by ancestry only: gh was unavailable, so $COMMIT_SHA could not be matched to its pull request."
 fi
 
+# ADR-0067 Decision 4, item 5 — join the macro's run lock before the write: a
+# routine refusal above (not_merged and the rest) left no entry; this one names
+# the autopilot run or session holding the lock, and writes nothing. Every exit
+# from here releases the admission. subtask-update checks ownership and
+# provenance itself, under the macro's file lock.
+ADMISSION="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" admission join \
+  --macro "$MACRO_ID" --checkout "$REPO_ROOT" --command done \
+  --host "$DETECTED_HOST" --session-id "${CLAUDE_CODE_SESSION_ID:-}")" || exit 1
+release_admission() {
+  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" admission release \
+    --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION"
+}
+trap 'release_admission' EXIT
+
 UPDATE_ARGS=(--workflow-path="$MACRO_PATH" --host="$DETECTED_HOST" --subtask-id="$SUBTASK_ID"
   --status=completed --engineer-workflow-id="$EXISTING_ENG_WF_ID" --commit="$COMMIT_SHA"
   --closed-at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" --expect-branch="$SUBTASK_BRANCH" --event=updated)
 [ -n "$PR_URL" ] && UPDATE_ARGS+=(--pr-url="$PR_URL")
+# The write completes the subtask in its owner's name: only while the subtask
+# is the one that owner records it was dispatched for, unless the operator
+# waived that check (Phase 2).
+UPDATE_ARGS+=("${DISPATCH_ARGS[@]}")
 [ "${CORRECT:-}" = "1" ] && UPDATE_ARGS+=(--correct)
 if [ -n "$LANDING_NOTE" ] || [ "$HAS_REASON" -eq 1 ]; then
   # The note reaches state.mjs on stdin: the landing line, then the reason
@@ -303,6 +316,8 @@ else
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" subtask-update "${UPDATE_ARGS[@]}" || exit $?
 fi
 ```
+
+A write refused with `dispatch-changed` bound and completed nothing: the owner, recorded or found by Phase 2's scan, was dispatched for the subtask as it was before a plan revision. Report it with the child's id; the user revises the plan back, or dispatches the subtask again. A waived write records `Dispatch not compared (--waive-dispatch)` and the reason in the macro body.
 
 `subtask-update` handles ownership, the provenance guard (a different recorded value is refused and names `--correct`), the unblock pass and the auto-terminal pass atomically; surface its JSON envelope. `noop: true` means the record already held these values.
 
@@ -319,6 +334,10 @@ Report one of:
 - `✓ /orchestrator:done was a no-op — subtask <id> already records these values.`
 - `✗ Cannot record <id> yet — <reason>: <detail>` (`not_merged`, `no_pr`, `ambiguous`, `base_mismatch`, `commit_mismatch`, `not_reachable`, `gh_unavailable`, `no_integration_ref`).
 - `✗ Ownership conflict — engineer_workflow_id mismatch (existing=<X>, supplied=<Y>).`
+- `✗ Not recorded — <id> changed after its child was dispatched (dispatch-changed): <what differs>.` Nothing was bound or completed.
+- `✗ Not recorded — the recorded owner <X> has no workflow file left, so its dispatch cannot be read.` Repeat that `--waive-dispatch` with a reason completes it without the comparison, and that the macro records both; do not rerun with it on your own judgment.
+- `✗ Not recorded — more than one engineer workflow claims <id>.` Repeat the claimants and their binding lines; the user picks the one that did the work.
+- `✗ Not recorded: <holder>.` when the admission join was refused (ADR-0067 Decision 4, item 5) — an autopilot run or another session holds the macro. Repeat the refusal's holder and the command it names; nothing was written.
 
 When subtasks remain (no auto-terminal), `/orchestrator:done` is a
 **forward-decision** surface — emit an **Active Next-Action Proposal** instead of

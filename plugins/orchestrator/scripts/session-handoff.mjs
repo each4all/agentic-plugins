@@ -52,8 +52,10 @@ import {
   noActiveEngineerChildrenScan,
   readWorkflow,
   workflowDir,
+  workflowStateRoot,
 } from './state.mjs';
 import { evaluateMacroStopArchive } from './stop-archive.mjs';
+import { aliasedComponent } from './lib/state-root.mjs';
 
 // Default routing recommendation for an active macro workflow: resume it.
 const DEFAULT_ROUTING = '/orchestrator:resume';
@@ -79,6 +81,12 @@ export function mapArchiveGate(verdict) {
 function repoRelativePointer(repoRoot, target) {
   const rel = relative(repoRoot, target);
   return rel && !rel.startsWith('..') && !isAbsolute(rel) ? rel : target;
+}
+
+// ADR-0067 Decision 1(c) — a pointer into a macro is spelled relative to the
+// state root that holds it, which need not be the checkout.
+function macroPointer(repoRoot, macroPath) {
+  return repoRelativePointer(workflowStateRoot(macroPath) ?? repoRoot, macroPath);
 }
 
 /**
@@ -133,7 +141,7 @@ async function projectParsedMacro({ repoRoot, macroPath, frontmatter, resolvedRo
   const projection = {
     workflow_kind: 'orchestrator',
     workflow_id: frontmatter.workflow_id,
-    workflow_path: repoRelativePointer(repoRoot, macroPath),
+    workflow_path: macroPointer(repoRoot, macroPath),
     phase: frontmatter.current_phase,
     next_action: frontmatter.next_action,
     archive_gate: mapArchiveGate(verdict),
@@ -259,6 +267,15 @@ export async function computeOrchestratorProjectionForPath({
     resolvedRouting,
     headSubject,
   });
+}
+
+// The symlinked directory on the way from the checkout to `target`'s, or null
+// (lib/state-root.mjs aliasedComponent). A target outside the checkout, as an
+// explicit projection file may be, is not checked.
+function slotAliasedComponent(repoRoot, target) {
+  const rel = relative(resolve(repoRoot), dirname(resolve(target)));
+  if (rel.startsWith('..') || isAbsolute(rel)) return null;
+  return aliasedComponent(repoRoot, rel);
 }
 
 /**
@@ -604,6 +621,18 @@ export async function emitTerminalHandoffSidecar({ repoRoot, workflowPath, proje
   try {
     if (!repoRoot) return { emitted: false, status: 'no_repo_root' };
     target = projectionFile ?? projectionFileForWorkflow(repoRoot, workflowPath);
+    // ADR-0067 Decision 1(a) — the slot and its markers are this checkout's.
+    // Under a home linked to another checkout's they would be that one's too:
+    // write none, and leave that file alone.
+    const aliased = slotAliasedComponent(repoRoot, target);
+    if (aliased) {
+      process.stderr.write(
+        `${'orchestrator'}: handoff slot not written: ${aliased} is a symbolic link, so the slot would be shared ` +
+          'with another checkout (ADR-0067 Decision 1(a)).\n',
+      );
+      target = null;
+      return { emitted: false, status: 'slot_aliased' };
+    }
     const result = await computeOrchestratorProjectionForPath({ repoRoot, workflowPath });
     if (result.status !== 'ok' || !result.projection) {
       await clearStaleProjection(target);
@@ -712,6 +741,9 @@ export async function readPendingHandoff(repoRoot, projectionFile) {
   if (!repoRoot && !projectionFile) return null;
   const candidates = projectionFile ? [projectionFile] : pendingHandoffCandidates(repoRoot);
   for (const target of candidates) {
+    // ADR-0067 Decision 1(a) — a slot under a home linked to another
+    // checkout's is that checkout's: neither read nor consumed here.
+    if (repoRoot && slotAliasedComponent(repoRoot, target) !== null) continue;
     try {
       const projection = JSON.parse(await readFile(target, 'utf8'));
       if (projection && typeof projection === 'object' && !Array.isArray(projection)) {
@@ -769,8 +801,11 @@ export async function pendingHandoffReinjectionLine(repoRoot, projectionFile) {
  * Best-effort one-shot consume of the pending-handoff file after a hook
  * re-surfaced it, so the nudge does not repeat every session. Never throws.
  */
-export async function consumePendingHandoff(projectionFile) {
+export async function consumePendingHandoff(projectionFile, repoRoot = null) {
   if (!projectionFile) return;
+  // ADR-0067 Decision 1(a) — the slot and its marker under a home linked to
+  // another checkout's are that checkout's: left alone.
+  if (repoRoot && slotAliasedComponent(repoRoot, projectionFile) !== null) return;
   // Derive THIS handoff's per-workflow footer marker from the projection's
   // workflow_id (read BEFORE removal), so we clean exactly this macro's marker
   // and never a concurrent macro's that shares the canonical slot. A missing /

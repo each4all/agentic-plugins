@@ -11,19 +11,20 @@
 // records the landing and finishes the macro, judged from the archived macro.
 
 import { describe, it } from 'node:test';
-import assert, { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
+import assert, { deepStrictEqual, match, ok, strictEqual } from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { makeRepo, ORCH, ENG, RUNTIME } from './fixtures/autopilot-repo.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const AP = resolve(REPO_ROOT, 'plugins/orchestrator/adapters/claude/autopilot');
-const { startRun, DEFAULTS } = await import(resolve(AP, 'driver.mjs'));
+const { startRun, DEFAULTS, effectiveStateRoot } = await import(resolve(AP, 'driver.mjs'));
 const L = await import(resolve(AP, 'ledger.mjs'));
 const fingerprintForPid = L.processFingerprint;
 const FAKE = resolve(REPO_ROOT, 'tests/orchestrator/fixtures/autopilot-fake-claude.mjs');
@@ -442,6 +443,84 @@ describe('stop', () => {
       ok(!workerAlive, 'the worker was killed');
       deepStrictEqual(L.readLockEntries(L.worktreeLockPath(t.work)), [], 'the locks are released');
     } finally {
+      t.fx.cleanup();
+    }
+  });
+});
+
+describe("the run's state root (ADR-0067 Decision 2)", () => {
+  // No log file: no worker (and no fake claude at all) started.
+  const workerStarts = (t) => (existsSync(join(t.fx.dir, 'claude.log'))
+    ? readFileSync(join(t.fx.dir, 'claude.log'), 'utf8').trim().split('\n').map((l) => JSON.parse(l))
+      .filter((e) => typeof e.env.AGENTIC_AUTOPILOT === 'string')
+    : []);
+
+  it('is resolved once at start, recorded in run.json and exported to every worker', async () => {
+    const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [DONE], file: false } } });
+    try {
+      strictEqual(await t.run({ maxSteps: 1 }), 2, t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual(r.run.state_root, { root: t.work, source: 'checkout', shared_creation: 'off', default_state_root: t.work });
+      const starts = workerStarts(t);
+      ok(starts.length >= 1, 'a worker started');
+      for (const s of starts) strictEqual(s.env.AGENTIC_STATE_BASE, t.work);
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it("an operator's value binds when the driven checkout's scripts accept it, and refuses the start otherwise", async () => {
+    const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [DONE], file: false } } });
+    try {
+      t.env.AGENTIC_STATE_BASE = join(t.fx.dir, 'elsewhere');
+      strictEqual(await t.run({ maxSteps: 1 }), 1);
+      ok(t.lines.some((l) => /the run's state root: AGENTIC_STATE_BASE=.* names neither this checkout/.test(l)), t.lines.join('\n'));
+      strictEqual(workerStarts(t).length, 0, 'no worker started');
+      t.env.AGENTIC_STATE_BASE = t.work;
+      strictEqual(await t.run({ maxSteps: 1 }), 2, t.lines.join('\n'));
+      deepStrictEqual(t.latest().run.state_root.source, 'operator');
+      for (const s of workerStarts(t)) strictEqual(s.env.AGENTIC_STATE_BASE, t.work);
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it("draws a secret its workers carry, and writes only the secret's digest, in its lock entry (ADR-0067 Decision 4, item 5)", async () => {
+    const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [DONE], file: false } } });
+    try {
+      strictEqual(await t.run({ maxSteps: 1 }), 2, t.lines.join('\n'));
+      const starts = workerStarts(t);
+      ok(starts.length >= 1, 'a worker started');
+      const sha = (s) => createHash('sha256').update(s).digest('hex');
+      for (const s of starts) {
+        const token = s.env.AGENTIC_AUTOPILOT_TOKEN;
+        match(token ?? '', /^[0-9a-f]{32}$/, 'a 128-bit secret');
+        const own = s.locks.filter((e) => e.run_id === s.env.AGENTIC_AUTOPILOT);
+        strictEqual(own.length, 1, JSON.stringify(s.locks));
+        strictEqual(own[0].token_digest, sha(token), "the run's lock entry holds the secret's digest");
+        ok(!JSON.stringify(s.locks).includes(token), 'never the secret itself');
+      }
+      const runDir = t.latest().dir;
+      for (const name of readdirSync(runDir)) {
+        ok(!readFileSync(join(runDir, name), 'utf8').includes(starts[0].env.AGENTIC_AUTOPILOT_TOKEN), `not in the ledger's ${name}`);
+      }
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('a driven checkout that is a lane refuses the start: records created there would go with it', async () => {
+    const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [DONE], file: false } } });
+    try {
+      const lane = join(`${t.work}-lanes`, 'macro', 'T');
+      mkdirSync(dirname(lane), { recursive: true });
+      t.fx.git('worktree', 'add', '-q', '-b', 'feat/lane-t', lane);
+      const refused = effectiveStateRoot(realpathSync(lane), {});
+      strictEqual(refused.stateRoot, null);
+      ok(/names a lane/.test(refused.problem), refused.problem);
+      strictEqual(effectiveStateRoot(t.work, {}).problem, null, 'control: the main checkout');
+    } finally {
+      rmSync(`${t.work}-lanes`, { recursive: true, force: true });
       t.fx.cleanup();
     }
   });

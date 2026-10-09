@@ -216,6 +216,31 @@ describe('updateSubtask — recorded values are not replaced silently (ADR-0062 
     });
   });
 
+  // ADR-0067 Decision 4, item 5 — /orchestrator:next's writeback binds the
+  // child only to the subtask it dispatched.
+  it('refuses the write when the subtask verb, profile or topic no longer matches the expectation; an empty one expects none', async () => {
+    await withTmpRepo('expect-fields', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'refine', branch: 'feat/a', blocked_by: [], status: 'pending', topic: 'line one\nline two\n' },
+      ]);
+      const write = (expect) => updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        engineerWorkflowId: 'eng-X', status: 'in_progress', ...expect,
+      });
+      await rejects(() => write({ expectVerb: 'compose' }), /verb is "refine", not the expected "compose"; the plan changed after the caller read the subtask/);
+      await rejects(() => write({ expectProfile: 'plan' }), /profile is "", not the expected "plan"/);
+      await rejects(() => write({ expectTopic: 'line one' }), /topic is "line one\\nline two", not the expected "line one"/);
+      await rejects(() => write({ expectVerb: '' }), /expectVerb must be a non-empty string/);
+      strictEqual((await readWorkflow(filePath)).frontmatter.plan.subtasks[0].status, 'pending', 'nothing was written');
+      // As dispatched: the topic as a command substitution leaves it, no profile.
+      const r = await write({ expectBranch: 'feat/a', expectVerb: 'refine', expectProfile: '', expectTopic: 'line one\nline two' });
+      deepStrictEqual([r.updatedSubtask.status, r.updatedSubtask.engineer_workflow_id], ['in_progress', 'eng-X']);
+      // A trailing newline on the expected side is not compared either.
+      const again = await write({ expectTopic: 'line one\nline two\n' });
+      strictEqual(again.updatedSubtask.engineer_workflow_id, 'eng-X');
+    });
+  });
+
   it('CLI: a conflict exits non-zero; --correct with --reason-file writes the correction', async () => {
     await withTmpRepo('cli', async (root) => {
       const filePath = await setupCompleted(root);

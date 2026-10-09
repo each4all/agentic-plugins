@@ -10,8 +10,8 @@
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
-import { mkdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { makeRepo } from './fixtures/autopilot-repo.mjs';
@@ -212,6 +212,122 @@ describe('observe → decide on real state', () => {
       const v = look({ macroId: fx.macroId });
       deepStrictEqual([v.macro.archived, v.ready.approval.status, v.ready.approval.hash_ok], [true, 'approved', true]);
       strictEqual(decide(v, { runId: RUN }).outcome, 'completed');
+    });
+  });
+});
+
+// ADR-0067 Decision 1 (SR, U6) — the observer finds records where the
+// plugins' readers find them: a pinned macro through resolve-workflow (the
+// read set), its archive in the read set, an engineer child archived, or a
+// claim, in any worktree's own homes; pointers are relative to the state root
+// holding the record (Decision 1(c)), never absolute.
+describe('observe from a linked worktree (ADR-0067 Decision 1)', () => {
+  const addWorktree = (fx, name) => {
+    const wt = join(fx.dir, name);
+    fx.git('worktree', 'add', '-q', '-b', `wt/${name}`, wt, 'refs/remotes/origin/main');
+    return realpathSync(wt);
+  };
+  const lookFrom = (fx, repoRoot, over = {}) => observe({ repoRoot, roots: fx.roots, macroId: fx.macroId, fetch: false, env: fx.env, ...over });
+
+  it('a macro in the main checkout, pinned by id, is found from a lane and pointed to relative to its root', async () => {
+    await withRepo(async (fx) => {
+      const lane = addWorktree(fx, 'lane');
+      const v = lookFrom(fx, lane);
+      strictEqual(v.macroLookupError, null);
+      strictEqual(v.macro.path, realpathSync(fx.macroPath));
+      strictEqual(v.macro.relPath, `.agentic-plugins/state/orchestrator/workflows/${fx.macroId}.md`);
+      strictEqual(decide(v, { runId: RUN }).outcome, 'step');
+    });
+  });
+
+  it('two files holding the pinned macro are an error, never one of them', async () => {
+    await withRepo(async (fx) => {
+      const lane = addWorktree(fx, 'lane');
+      const copy = join(lane, '.agentic-plugins/state/orchestrator/workflows', `${fx.macroId}.md`);
+      mkdirSync(dirname(copy), { recursive: true });
+      writeFileSync(copy, readFileSync(fx.macroPath, 'utf8'));
+      const v = lookFrom(fx, lane);
+      strictEqual(v.macro, null);
+      ok(/resolve-workflow exited 1: .*held by 2 files/.test(v.macroLookupError), v.macroLookupError);
+    });
+  });
+
+  it('the archived macro, pinned by id, is found in the read set from a lane', async () => {
+    await withRepo(async (fx) => {
+      const lane = addWorktree(fx, 'lane');
+      for (const id of ['A', 'B']) {
+        await fx.orch.updateSubtask({
+          workflowPath: fx.macroPath, subtaskId: id, host: 'claude', status: 'completed',
+          engineerWorkflowId: `compose-20261001T00000${id === 'A' ? 1 : 2}Z-abcdef`, closedAt: '2026-10-01T00:00:00Z', reason: 'fixture',
+        });
+      }
+      await fx.orch.archiveWorkflow({ workflowPath: fx.macroPath, host: 'claude', repoRoot: fx.work });
+      const v = lookFrom(fx, lane);
+      strictEqual(v.macroLookupError, null);
+      deepStrictEqual([v.macro.archived, v.macro.relPath.startsWith('.agentic-plugins/state/orchestrator/archive/')], [true, true]);
+      strictEqual(decide(v, { runId: RUN }).outcome, 'completed');
+    });
+  });
+
+  it("a child archived in a third worktree's own home is found, and its pointer is relative to that worktree", async () => {
+    await withRepo(async (fx) => {
+      const lane = addWorktree(fx, 'lane');
+      const third = addWorktree(fx, 'third');
+      const c = await fx.dispatch('A');
+      await fx.finish(c.path, { kind: 'commit', verb: null, confidence: 'HIGH' });
+      const archived = await fx.commitAndArchive(c.path);
+      const moved = join(third, '.agentic-plugins/state/engineer/archive', basename(archived.to));
+      mkdirSync(dirname(moved), { recursive: true });
+      renameSync(archived.to, moved);
+      const v = lookFrom(fx, lane);
+      strictEqual(v.children.A.location, 'archived', JSON.stringify(v.children.A));
+      strictEqual(v.children.A.relPath, `.agentic-plugins/state/engineer/archive/${basename(moved)}`);
+    });
+  });
+
+  it("a live engineer workflow claiming the macro in a third worktree's own home is a claim", async () => {
+    await withRepo(async (fx) => {
+      const lane = addWorktree(fx, 'lane');
+      const third = addWorktree(fx, 'third');
+      const { filePath } = await fx.eng.createWorkflow({
+        repoRoot: third, verb: 'compose', host: 'claude', originalRequest: 'x',
+        gitBaseline: { branch: 'wt/third', head: fx.git('rev-parse', 'HEAD'), status_digest: '' },
+        parentWorkflow: fx.macroId, originatingSubtask: 'A',
+      });
+      ok(filePath.startsWith(join(third, '.agentic-plugins/state/engineer/workflows')), filePath);
+      const v = lookFrom(fx, lane);
+      strictEqual(v.claimsError, null);
+      deepStrictEqual(v.claims.map((c) => [c.originating_subtask, c.relPath]), [['A', `.agentic-plugins/state/engineer/workflows/${basename(filePath)}`]]);
+      ok(/claims subtask A, which is pending/.test(decide(v, { runId: RUN }).detail));
+    });
+  });
+
+  // U4j — only absence (ENOENT) is an empty home; a file in a directory's
+  // place is refused, as the state library's scans refuse it.
+  it("a file in an engineer workflow home's place in a third worktree is a claims error, never no claim", async () => {
+    await withRepo(async (fx) => {
+      const lane = addWorktree(fx, 'lane');
+      const third = addWorktree(fx, 'third');
+      mkdirSync(join(third, '.agentic-plugins/state/engineer'), { recursive: true });
+      writeFileSync(join(third, '.agentic-plugins/state/engineer/workflows'), 'not a directory');
+      const v = lookFrom(fx, lane);
+      ok(/cannot list .*\/third\/\.agentic-plugins\/state\/engineer\/workflows: ENOTDIR/.test(v.claimsError ?? ''), String(v.claimsError));
+    });
+  });
+
+  it("a file in an engineer archive's place in a third worktree is an error for an archived child, never a skip", async () => {
+    await withRepo(async (fx) => {
+      const lane = addWorktree(fx, 'lane');
+      const third = addWorktree(fx, 'third');
+      const c = await fx.dispatch('A');
+      await fx.finish(c.path, { kind: 'commit', verb: null, confidence: 'HIGH' });
+      await fx.commitAndArchive(c.path);
+      strictEqual(lookFrom(fx, lane).children.A.location, 'archived', 'control: found in the main checkout');
+      mkdirSync(join(third, '.agentic-plugins/state/engineer'), { recursive: true });
+      writeFileSync(join(third, '.agentic-plugins/state/engineer/archive'), 'not a directory');
+      const v = lookFrom(fx, lane);
+      strictEqual(v.children.A.location, 'error', JSON.stringify(v.children.A));
+      ok(/ENOTDIR/.test(v.children.A.detail), v.children.A.detail);
     });
   });
 });

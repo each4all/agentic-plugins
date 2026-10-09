@@ -35,7 +35,7 @@ command file as the canonical Claude runbook.
 
 | Concern | Claude | Codex |
 |---------|--------|-------|
-| Entry | `/orchestrator:done <subtask-id> [--pr=<n>] [--commit=<sha>] [--correct \| --no-commit] [--workflow=<macro-id>] [--integration-branch=<b>] [reason]` | `$orchestrator:done` with the same arguments |
+| Entry | `/orchestrator:done <subtask-id> [--pr=<n>] [--commit=<sha>] [--correct \| --no-commit] [--waive-dispatch] [--workflow=<macro-id>] [--integration-branch=<b>] [reason]` | `$orchestrator:done` with the same arguments |
 | Canonical command runbook | `commands/done.md` | `commands/done.md` is the behavioral source |
 | Plugin root | `$CLAUDE_PLUGIN_ROOT` or Claude cache fallback | For a mentioned `orchestrator` skill, the plugin directory that contains it: Codex injects a mentioned skill with its absolute path (`<path>…/core/skills/<skill>/SKILL.md</path>`), and dropping `/core/skills/<skill>/SKILL.md` from it leaves the root, which holds `.codex-plugin/plugin.json`. If that path is no longer in context, for example after compaction, a new mention of the skill supplies it again. With the default Codex home and the `agentic-plugins` marketplace added from Git, the root is `~/.codex/plugins/cache/agentic-plugins/orchestrator/<version>`, the versioned copy Codex loads skills from, and `~/.codex/.tmp/marketplaces/agentic-plugins/plugins/orchestrator` is the marketplace checkout, which tracks the repository's `main` branch, not that copy. |
 | Host flag | `--host claude` | `--host codex` |
@@ -53,6 +53,10 @@ Parse optional:
 - `--correct` — replace a recorded value deliberately (needs a reason);
 - `--no-commit` — the work landed no commit (needs a reason; excludes
   `--pr`, `--commit` and `--correct`);
+- `--waive-dispatch` — complete in the recorded owner's name without
+  comparing the dispatch it records, when no file of it is left to read it
+  from (Phase 2; needs a reason, and the macro records both). Set
+  `WAIVE_DISPATCH=1`;
 - `--workflow=<macro-id>`;
 - `--integration-branch=<b>` — default is the macro's `git_baseline.branch`;
 - the remaining free text is the reason. Write it to a file with your
@@ -89,24 +93,48 @@ states are absorbing and must not be overwritten.
 
 ## Phase 2 - Resolve engineer workflow id
 
-Prefer the subtask's recorded `engineer_workflow_id`.
+Phase 4's write completes the subtask in its owner's name, so it compares the
+dispatch that owner records (ADR-0067 Decision 4, item 5), and is refused
+(`dispatch-changed`) when the subtask is no longer the one the owner was
+dispatched for. `state.mjs owner-dispatch` finds the owner and reads that
+dispatch: it reads every engineer workflow file in the workflow homes **and
+archive homes** of every root of the repository (by the time the work has
+merged the child has normally archived itself) and parses the frontmatter
+values it needs, never matching serialized text:
 
-If absent, scan the engineer workflow homes **and archive homes** (by the
-time the work has merged the child has normally archived itself), and
-require both frontmatter keys to match; refuse more than one distinct
-match rather than guess. Also refuse when a home or file cannot be read
-(anything but a missing one), since it could hide a second claimant:
+- the subtask records an `engineer_workflow_id` → the file of that workflow
+  that claims the subtask. When no file of it is left anywhere in the
+  repository the dispatch cannot be read, and the command exits 3: stop, unless
+  the user gave `--waive-dispatch` with a reason. A file of it that claims
+  another subtask exits 1, with no waiver.
+- otherwise → the one workflow whose `parent_workflow` is the macro id **and**
+  whose `originating_subtask` is the subtask id. None exits 1: this subtask
+  was likely never dispatched via `$orchestrator:next` — re-dispatch it with
+  `$orchestrator:next <id>` to create the engineer child (the single honest
+  recovery for this guard state). Manual completion without a child is **not**
+  supported — `subtask-update` requires `--engineer-workflow-id`. More than
+  one exits 1 and lists each claimant with a binding line that carries its
+  dispatch (`subtask-update --engineer-workflow-id=<id>
+  --expect-dispatch=<its dispatch>`); surface them, and let the user pick the
+  one that did the work, then rerun.
 
-- `parent_workflow == <macro id>`;
-- `originating_subtask == <subtask id>`.
+A home or file that cannot be read (anything but a missing one) also exits 1,
+since it could hide a claimant or the owner's file. Do not invent an engineer
+workflow id. Run it to read the owner before Phase 3 (Phase 4 runs it again,
+after the join, and passes its answer to the write itself):
 
-Do not match on only one key. Do not invent an engineer workflow id.
-If no child is found, stop: this subtask was likely never dispatched via
-`$orchestrator:next` — re-dispatch it with `$orchestrator:next <id>` to create
-the engineer child (the single honest recovery for this guard state). Manual
-completion without a child is **not** supported — `subtask-update` requires
-`--engineer-workflow-id`; reconciling that scenario would need a follow-up ADR
-(mirrors `commands/done.md`'s no-child guard).
+```bash
+SUBTASK_JSON="$(node "<orchestrator-plugin-root>/scripts/state.mjs" read-subtask \
+  --workflow-path "$MACRO_PATH" --subtask-id "$SUBTASK_ID")" || exit 1
+RECORDED_OWNER="$(printf '%s' "$SUBTASK_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{process.stdout.write(JSON.parse(d).engineer_workflow_id||"")})')" || exit 1
+OWNER_ARGS=(--repo-root "$REPO_ROOT" --macro-id "$MACRO_ID" --workflow-path "$MACRO_PATH" --subtask-id "$SUBTASK_ID" --host codex)
+[ -n "$RECORDED_OWNER" ] && OWNER_ARGS+=(--engineer-workflow-id "$RECORDED_OWNER")
+node "<orchestrator-plugin-root>/scripts/state.mjs" owner-dispatch "${OWNER_ARGS[@]}"
+```
+
+On exit 0 its JSON's `engineer_workflow_id` is the owner: set
+`ENGINEER_WF_ID` to it for Phase 3 and Phase 4. On exit 3 with
+`--waive-dispatch`, `ENGINEER_WF_ID` is the recorded owner.
 
 ---
 
@@ -124,11 +152,12 @@ Otherwise `git fetch origin <integration>` and run:
 node "<orchestrator-plugin-root>/scripts/state.mjs" resolve-landing \
   --repo-root "$REPO_ROOT" --workflow-path "$MACRO_PATH" \
   --subtask-id "$SUBTASK_ID" --integration-branch "$INTEGRATION_BRANCH" \
-  [--pr "$PR"] [--commit "$COMMIT"]
+  --engineer-workflow-id "$ENGINEER_WF_ID" [--pr "$PR"] [--commit "$COMMIT"]
 ```
 
 It finds the merged pull request whose head is the subtask branch and that
-was opened after the engineer workflow was dispatched, checks its base is
+was opened after the engineer workflow `ENGINEER_WF_ID` (Phase 2) was
+dispatched, checks its base is
 the integration branch, and verifies its merge commit is reachable from
 `refs/remotes/origin/<integration>`. On `{ok: false}` report its `reason`
 and `detail` and stop (`not_merged`, `no_pr`, `ambiguous`,
@@ -141,9 +170,64 @@ tip or `HEAD`.
 
 ## Phase 4 - Atomic subtask update
 
-Run:
+The checks above only read: a routine refusal (`not_merged`, an active
+child) leaves nothing behind. Before the write, join the macro's run lock
+(ADR-0067 Decision 4, item 5): an autopilot run or another session holding
+it refuses, naming the holder, and nothing is written. With `--no-commit`
+(set `NO_COMMIT=1`; a block with no `COMMIT_SHA` runs it too), the block runs
+the active-child check again after the join, since a run's step could have
+dispatched the subtask meanwhile. Release the admission on every exit
+from the join on, the write's failure included; `subtask-update` checks
+ownership and provenance itself. Set `ENGINEER_WF_ID` to the owner Phase 2
+printed, the one Phase 3 resolved the landing for: the block reads that owner's
+dispatch again after the join and passes it to the write itself, and refuses
+when the subtask records another owner by then. Run in one shell call:
 
 ```bash
+ADMISSION="$(node "<orchestrator-plugin-root>/scripts/state.mjs" admission join \
+  --macro "$MACRO_ID" --checkout "$REPO_ROOT" --command done --host codex)" || exit 1
+release_admission() {
+  node "<orchestrator-plugin-root>/scripts/state.mjs" admission release \
+    --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION"
+}
+trap 'release_admission' EXIT
+# --no-commit (NO_COMMIT=1, or no commit to record): the active-child check
+# again, after the join. active-child reads every root of the repository and
+# parses each frontmatter; only a missing home or file is "no child".
+if [ "${NO_COMMIT:-}" = "1" ] || [ -z "${COMMIT_SHA:-}" ]; then
+  ACTIVE_CHILD="$(node "<orchestrator-plugin-root>/scripts/state.mjs" active-child \
+    --repo-root "$REPO_ROOT" --macro-id "$MACRO_ID" --subtask-id "$SUBTASK_ID")" \
+    || { echo "✗ Could not scan the engineer workflow homes for an active child of $SUBTASK_ID; refusing --no-commit." >&2; exit 1; }
+  [ -z "$ACTIVE_CHILD" ] || { echo "✗ An engineer workflow for $SUBTASK_ID is still active: $ACTIVE_CHILD" >&2; exit 1; }
+fi
+# The dispatch of ENGINEER_WF_ID, the owner Phase 2 printed and Phase 3
+# resolved the landing for, read again here so the write compares what this
+# block read. A subtask that now records another owner (a revision and a new
+# dispatch since) refuses: the landing is that owner's. Exit 3 alone (the
+# recorded owner has no file left) may be waived, with WAIVE_DISPATCH=1 and a
+# reason.
+[ -n "${ENGINEER_WF_ID:-}" ] || { echo "✗ ENGINEER_WF_ID is not set: run Phase 2, and set it to the owner it printed." >&2; exit 1; }
+JSON_FIELD='let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const v=JSON.parse(d)[process.env.JSON_KEY];process.stdout.write(v==null?"":String(v))}catch{}})'
+SUBTASK_JSON="$(node "<orchestrator-plugin-root>/scripts/state.mjs" read-subtask \
+  --workflow-path "$MACRO_PATH" --subtask-id "$SUBTASK_ID")" || exit 1
+RECORDED_OWNER="$(printf '%s' "$SUBTASK_JSON" | JSON_KEY=engineer_workflow_id node -e "$JSON_FIELD")"
+if [ -n "$RECORDED_OWNER" ] && [ "$RECORDED_OWNER" != "$ENGINEER_WF_ID" ]; then
+  echo "✗ $SUBTASK_ID now records owner $RECORDED_OWNER, not $ENGINEER_WF_ID, the owner Phase 3 resolved the landing for; nothing was written. Rerun from Phase 2." >&2
+  exit 1
+fi
+OWNER_ARGS=(--repo-root "$REPO_ROOT" --macro-id "$MACRO_ID" --workflow-path "$MACRO_PATH" --subtask-id "$SUBTASK_ID" --host codex --engineer-workflow-id "$ENGINEER_WF_ID")
+# Under set -e an unguarded nonzero exit would end the block before OWNER_RC.
+OWNER_JSON="$(node "<orchestrator-plugin-root>/scripts/state.mjs" owner-dispatch "${OWNER_ARGS[@]}")" && OWNER_RC=0 || OWNER_RC=$?
+if [ "$OWNER_RC" -eq 0 ]; then
+  [ "${WAIVE_DISPATCH:-}" != "1" ] || { echo "✗ --waive-dispatch applies only when the owner's dispatch cannot be read; it was read, and the write compares it." >&2; exit 1; }
+  OWNER_DISPATCH="$(printf '%s' "$OWNER_JSON" | JSON_KEY=dispatch node -e "$JSON_FIELD")"
+  [ -n "$OWNER_DISPATCH" ] || { echo "✗ Could not read owner-dispatch's answer for $SUBTASK_ID." >&2; exit 1; }
+  DISPATCH_ARGS=(--expect-dispatch "$OWNER_DISPATCH")
+elif [ "$OWNER_RC" -eq 3 ] && [ "${WAIVE_DISPATCH:-}" = "1" ] && [ "$RECORDED_OWNER" = "$ENGINEER_WF_ID" ]; then
+  DISPATCH_ARGS=(--waive-dispatch)
+else
+  exit 1
+fi
 node "<orchestrator-plugin-root>/scripts/state.mjs" subtask-update \
   --workflow-path "$MACRO_PATH" \
   --host codex \
@@ -154,13 +238,18 @@ node "<orchestrator-plugin-root>/scripts/state.mjs" subtask-update \
   --pr-url "$PR_URL" \
   --closed-at "$CLOSED_AT" \
   --expect-branch "$SUBTASK_BRANCH" \
+  "${DISPATCH_ARGS[@]}" \
   --event updated \
   [--correct] [--reason-file "$REASON_FILE"]
 ```
 
 Omit `--commit` and `--pr-url` for `--no-commit`, and `--pr-url` when the
 landing has none. `--expect-branch` refuses the write if a plan revision
-moved the subtask after the landing was resolved. A recorded `commit` or
+moved the subtask after the landing was resolved. `DISPATCH_ARGS` carries the
+owner's dispatch: the write is refused (`dispatch-changed`) when the subtask
+is no longer the one that owner was dispatched for, and binds or completes
+nothing. With `--waive-dispatch` (exit 3 only) it carries the waiver instead,
+which the macro body records with the reason. A recorded `commit` or
 `pr_url` is never replaced, and a recorded `closed_at` is kept, unless
 `--correct` with a reason; the macro body then records old value, new
 value and reason.
