@@ -61,6 +61,33 @@ the steps stay manual**, and the host-neutral state it reads (`next_step_*`,
 - **Halts** print the reason and its pointer, write
   `.agentic-plugins/runs/autopilot/<run-id>/halt.json` and exit 2;
   `--notify-local` adds one local macOS notification. There is no plugin notification.
+- **Locks, stop and peers.** A run holds its macro's lock, under the main worktree, and
+  the lock of each checkout it drives. A worker group in flight may have an entry of its
+  own in the macro lock (ADR-0067 Decision 6), so a driver that died while any group runs
+  still holds the macro. `status` lists the worker groups a run's entries record, and
+  `stop` on a dead driver empties every group it can prove is the run's before it reports.
+  `stop` reports a run stopped (exit 0) only once nothing of it runs: it reads the run's
+  entries again while it waits, so a group left by a driver that died as it was stopped
+  is emptied too, and it exits 1 while any part of the run still runs.
+  After a killed or failed step, the driver cancels only the peer runs that step left
+  pending on its own subtask's engineer workflows.
+- **A dead run is cleaned up.** Each run keeps a record in the main worktree's
+  `.agentic-plugins/runs/autopilot/open/<run-id>.json` from before its first step until
+  it ends with every worker group empty. Once nothing of a dead driver's run is left
+  running, `stop`, or the next run of the macro before its first step, cancels the pending
+  peer runs whose handle names that run, counts its unfinished step's whole budget as
+  spent, records it halted (`interrupted`), and removes the record. A pending peer that
+  names no run is reported, never cancelled: peer-runner does not record the run yet, so
+  until it does, `stop` and the next run print the command that cancels such a peer. A
+  record whose ledger is gone, whose peer could not be cancelled, or one of whose peer-run
+  homes cannot be read (anything but its absence), is kept and reported for the owner.
+- **Lanes (the layer only).** `adapters/claude/autopilot/lanes.mjs` holds ADR-0067
+  Decision 5's lane layer: a lane is a locked git worktree at
+  `<parent>/<repo>-lanes/<macro-id>/<subtask-id>`, named from the main worktree, created
+  from a freshly fetched baseline, removed only once its subtask is done and only when
+  clean and provably the run's (read again from git and the lane where each step of the
+  removal acts), and reconciled at a run's start. The scheduler that runs
+  steps in lanes (`--lanes`, Decision 6) is not shipped yet: every run is serial, as before.
 - **Bounds.** Steps, total cost, a run wall clock, and each step's budget and wall
   clock (`--max-steps`, `--max-cost`, `--max-time`, `--step-budget`,
   `--step-timeout`). A step started inside a Claude session runs as a background task,

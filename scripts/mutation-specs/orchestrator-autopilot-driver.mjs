@@ -415,7 +415,7 @@ export const MUTATIONS = [
   },
   {
     id: 'D6', file: DRIVER, tests: [TD],
-    from: '        cancelled = cancelPeerRuns(newPendingRuns(before, view), { roots, repoRoot, env });',
+    from: '        cancelled = cancelPeerRuns(newPendingRuns(before, view, s.subtaskId), { roots, checkout: repoRoot, env });',
     to: '        cancelled = [];',
     why: 'a killed step\'s peer keeps running, detached from the worker\'s group',
   },
@@ -434,7 +434,7 @@ export const MUTATIONS = [
   },
   {
     id: 'D9', file: DRIVER, tests: [TD],
-    from: '  for (const c of view?.claims ?? []) for (const id of c?.pending_runs ?? []) ids.add(id);',
+    from: '    for (const id of c?.pending_runs ?? []) ids.add(id);',
     to: '',
     why: 'a dispatch killed before it recorded its subtask leaves its peer running',
   },
@@ -497,14 +497,14 @@ export const MUTATIONS = [
   },
   {
     id: 'C3', file: CLI, tests: [TC],
-    from: '  if (await provablySame(holder.pid, holder.fingerprint)) {',
-    to: '  if (await holderAlive({ pid: holder.pid, fingerprint: holder.fingerprint })) {',
+    from: '  if (!(await provablySame(holder.pid, holder.fingerprint))) return stopDeadDriver(holder, entries);',
+    to: '  if (!(await holderAlive({ pid: holder.pid, fingerprint: holder.fingerprint }))) return stopDeadDriver(holder, entries);',
     why: 'stop signals a pid it cannot prove is the run\'s process (round 2: a reused pid)',
   },
   {
     id: 'C5', file: CLI, tests: [TC],
-    from: '    const outcome = await terminateGroup(holder.worker.pid);',
-    to: "    try { process.kill(-holder.worker.pid, 'SIGTERM'); } catch { /* gone */ }\n    const outcome = 'terminated';",
+    from: '      const outcome = await terminateGroup(w.pid);',
+    to: "      try { process.kill(-w.pid, 'SIGTERM'); } catch { /* gone */ }\n      const outcome = 'terminated';",
     why: 'stop reports an orphaned worker stopped while a member of its group that ignores SIGTERM runs on (round 3)',
   },
   {

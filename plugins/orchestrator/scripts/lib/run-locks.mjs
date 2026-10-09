@@ -324,8 +324,17 @@ async function clearDebris(lock, judged) {
 }
 
 /**
- * Take a lock. Resolves to { release, setWorker, entry }, or rejects with
- * LockHeldError while another live run holds it or is taking it.
+ * Take a lock. Resolves to { release, setWorker, addWorkerGroup, entry }, or
+ * rejects with LockHeldError while another live run holds it or is taking it.
+ *
+ * A serial run records its one worker on its own entry (`setWorker`). A run
+ * with several worker groups in flight (ADR-0067 Decision 6, Locks) adds one
+ * more entry per group instead (`addWorkerGroup(worker)`, released once the
+ * group is empty): each entry records the driver and that one group, so
+ * `holderAlive` keeps the lock live while the driver or any group lives — for
+ * an older reader too, which judges each entry alone and would delete an
+ * entry listing several groups once the one it read had ended. The worker
+ * field adds the group's lane and cwd.
  *
  *   1. Another live entry: refused. One that is still unreadable but fresh:
  *      wait for it.
@@ -362,6 +371,15 @@ export async function acquireLock(lock, { record, now = () => Date.now(), probe 
         release: () => unlinkQuiet(mine),
         setWorker: (worker) => {
           if (fs.existsSync(mine)) writeWhole(lock, mine, { ...base, worker });
+        },
+        addWorkerGroup: (worker) => {
+          if (!worker || !Number.isInteger(worker.pid)) throw new Error('addWorkerGroup needs the group\'s worker pid');
+          // Only while the run still holds the lock: an entry added after the
+          // release would hold it for a group no run accounts for.
+          if (!fs.existsSync(mine)) throw new Error(`the run no longer holds ${lock}`);
+          const group = path.join(lock, `h-${process.pid}-${randomBytes(6).toString('hex')}.json`);
+          writeWhole(lock, group, { ...base, worker });
+          return { entry: group, release: () => unlinkQuiet(group) };
         },
       };
     }

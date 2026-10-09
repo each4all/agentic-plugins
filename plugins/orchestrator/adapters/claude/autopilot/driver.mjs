@@ -16,12 +16,16 @@
 // What it kills is only what its steps started: a worker's process group on
 // timeout or abort, and, through engineer's own `peer-runner cancel`, the peer
 // runs that step left pending (a peer runs detached from the worker's group).
+// A run whose driver died cannot do that, so before its first spawn each run
+// cleans up after the dead runs of its macro, from their open-run records
+// (dead-runs.mjs), and keeps its own record until it ends.
 
 import { spawnSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 
+import { cleanupDeadRuns, summary as cleanupSummary } from './dead-runs.mjs';
 import { orderText, overlapText, reportLandingReady } from './landing-ready.mjs';
 import { observe as defaultObserve } from './observe.mjs';
 import {
@@ -29,7 +33,7 @@ import {
 } from './policy.mjs';
 import {
   appendStep, acquireLock, createRunDir, LockHeldError, macroLockPath, mainWorktreeRoot, newRunId,
-  processFingerprint, workerStreamPath, worktreeLockPath, writeHalt, writeRun,
+  processFingerprint, removeOpenRun, workerStreamPath, worktreeLockPath, writeHalt, writeOpenRun, writeRun,
 } from './ledger.mjs';
 import {
   capabilityProblems, driftOf, frozenInputProblems, PLUGINS, resolveRoots,
@@ -212,30 +216,38 @@ export function provenanceProblem(plugins, { pinned, repoRoot, loaded }) {
   return null;
 }
 
-// Every peer run pending on an engineer workflow of this macro: the
-// in-progress subtasks' children, and any workflow that claims the macro —
+// Every peer run pending on an engineer workflow of one subtask: its
+// in-progress child, and any workflow that claims that subtask of the macro —
 // a dispatch killed before it recorded its subtask in progress leaves one.
-function pendingRuns(view) {
+// Another subtask's workflows are another lane's (ADR-0067 Decision 6, Peer
+// cancellation), and a step with no subtask has none.
+function pendingRuns(view, subtaskId) {
   const ids = new Set();
-  for (const c of Object.values(view?.children ?? {})) for (const id of c?.pending_runs ?? []) ids.add(id);
-  for (const c of view?.claims ?? []) for (const id of c?.pending_runs ?? []) ids.add(id);
+  if (!subtaskId) return ids;
+  for (const id of view?.children?.[subtaskId]?.pending_runs ?? []) ids.add(id);
+  for (const c of view?.claims ?? []) {
+    if (c?.originating_subtask !== subtaskId) continue;
+    for (const id of c?.pending_runs ?? []) ids.add(id);
+  }
   return ids;
 }
 
-/** Peer runs a step started and left pending (engineer `pending_ensemble`). */
-export function newPendingRuns(before, after) {
-  const had = pendingRuns(before);
-  return [...pendingRuns(after)].filter((id) => !had.has(id));
+/** Peer runs a step on `subtaskId` started and left pending on that subtask's workflows (engineer `pending_ensemble`). */
+export function newPendingRuns(before, after, subtaskId) {
+  const had = pendingRuns(before, subtaskId);
+  return [...pendingRuns(after, subtaskId)].filter((id) => !had.has(id));
 }
 
 // A peer runs detached from the worker's process group, so killing the worker
 // leaves it running. Cancel it through engineer's supervisor, which verifies
-// the process fingerprint before it signals anything.
-function cancelPeerRuns(runIds, { roots, repoRoot, env }) {
+// the process fingerprint before it signals anything, from the checkout the
+// step ran in: its read set holds the workflow's home, where the run's ledger
+// is (ADR-0067 Decision 4, item 2).
+export function cancelPeerRuns(runIds, { roots, checkout, env }) {
   const cli = join(roots.engineer, 'scripts', 'peer-runner.mjs');
   return runIds.map((runId) => {
-    const r = spawnSync(process.execPath, [cli, 'cancel', '--run-id', runId, '--repo-root', repoRoot], {
-      cwd: repoRoot, env, encoding: 'utf8', timeout: 60_000,
+    const r = spawnSync(process.execPath, [cli, 'cancel', '--run-id', runId, '--repo-root', checkout], {
+      cwd: checkout, env, encoding: 'utf8', timeout: 60_000,
     });
     let out = null;
     try { out = JSON.parse((r.stdout ?? '').trim()); } catch { /* not JSON */ }
@@ -355,6 +367,10 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     halt: null,
   };
   writeRun(runDir, run);
+  // Read once: the macro's landing log is kept beside its lock (ADR-0067
+  // Decision 7), and so is the run's open-run record (Decision 6); a second
+  // read that fell back to repoRoot would part them.
+  const mainRoot = mainWorktreeRoot(repoRoot);
 
   const locks = [];
   // A step whose process group outlived SIGKILL leaves the run's entries in
@@ -393,6 +409,16 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     }
     writeRun(runDir, run);
     release();
+    // The run ended with every worker group empty, so nothing is left for a
+    // cleanup to find. A group that outlived SIGKILL keeps the record, as it
+    // keeps the lock entries.
+    if (!lingering) {
+      try {
+        removeOpenRun(mainRoot, runId);
+      } catch (e) {
+        out(`⚠ the run's open-run record could not be removed (${e?.message ?? e}); stop, or the next run of the macro, cleans it up`);
+      }
+    }
     detach();
     out(`  run ${runId} · steps=${run.steps} · cost=$${run.cost_usd.toFixed(2)}${run.cost_complete ? '' : ' (at least: a killed step reported no cost, so its budget was counted)'} · ledger ${runDir}`);
     notifyLocal(options, `autopilot: ${status}`, d ? `${d.reason} — ${d.detail}` : 'the macro completed');
@@ -408,9 +434,6 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     // (the lock files are readable); the secret goes to the workers' env.
     const token = deps.token ?? randomBytes(16).toString('hex');
     const record = { run_id: runId, repo: repoRoot, macro_id: macroId, started_at: run.started_at, token_digest: tokenDigest(token) };
-    // Read once: the macro's landing log is kept beside its lock (ADR-0067
-    // Decision 7), and a second read that fell back to repoRoot would part them.
-    const mainRoot = mainWorktreeRoot(repoRoot);
     try {
       locks.push(await acquireLock(worktreeLockPath(repoRoot), { record, now }));
       if (macroId) locks.push(await acquireLock(macroLockPath(mainRoot, macroId), { record, now }));
@@ -426,6 +449,25 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     if ((view.macro?.id ?? null) !== macroId) {
       return finish('halted', { reason: 'owner-choice', detail: `the macro changed while the run took its locks (${macroId ?? 'none'} → ${view.macro?.id ?? 'none'})` });
     }
+
+    // ADR-0067 Decision 6, Locks: before its first spawn the run cleans up
+    // after every dead run of its macro (holding the macro lock, it finds none
+    // of their worker groups alive), then puts its own open-run record beside
+    // the lock. The cleanup never halts the run: what it cannot finish is
+    // printed, kept for the owner, and recorded in run.json.
+    if (macroId) {
+      const dead = await cleanupDeadRuns({
+        mainRoot, macroId, selfRunId: runId, engineerRoot: roots.engineer, by: { run_id: runId, label: `run ${runId}` },
+        env, now, out: (s) => out(`  ${s}`), ...(deps.probe ? { probe: deps.probe } : {}),
+      });
+      if (dead.length > 0) {
+        run.dead_runs = dead.map(cleanupSummary);
+        writeRun(runDir, run);
+      }
+    }
+    writeOpenRun(mainRoot, {
+      runId, macroId, checkout: repoRoot, runDir, pid: process.pid, fingerprint: await processFingerprint(process.pid), startedAt: run.started_at,
+    });
 
     // ADR-0067 Decision 7: after each look under the locks, every subtask
     // newly committed and not landed is reported, a waiting one found at the
@@ -526,7 +568,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         : verifyStep({ step: s, worker: w, before, after: view, oversizePct: options.oversizePct });
       let cancelled = [];
       if (verdict && (w.aborted || verdict.reason === 'worker-failed' || verdict.reason === 'interrupted')) {
-        cancelled = cancelPeerRuns(newPendingRuns(before, view), { roots, repoRoot, env });
+        cancelled = cancelPeerRuns(newPendingRuns(before, view, s.subtaskId), { roots, checkout: repoRoot, env });
         if (cancelled.length) {
           verdict = { ...verdict, detail: `${verdict.detail}; cancelled the step's pending peer run(s) ${cancelled.map((c) => c.run_id).join(', ')}` };
         }
@@ -549,8 +591,16 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     }
   } catch (e) {
     // The run could not go on: record it, release the locks, and let the CLI
-    // report the error (exit 1).
-    current?.abort('interrupted');
+    // report the error (exit 1). A step in flight is torn down first, and a
+    // group that outlived SIGKILL keeps the run's lock entries, as on every
+    // other end. The open-run record stays, so stop, or the next run, cleans
+    // up after the step (its peers, its budget).
+    if (current) {
+      current.abort('interrupted');
+      const w = await current.done;
+      if (w?.groupTeardown === 'lingering') lingering = true;
+      current = null;
+    }
     run.status = 'error';
     run.ended_at = new Date(now()).toISOString();
     run.error = e?.message ?? String(e);

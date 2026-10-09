@@ -48,7 +48,13 @@ on Codex the steps stay manual.
   refuses when `AGENTIC_AUTOPILOT` names a run).
 - `status` reads the latest run's ledger; `stop` sends SIGTERM to the run
   driving a macro, which records an `interrupted` halt. When that run's driver
-  has died, `stop` ends the worker's processes itself, and no halt is recorded.
+  has died, `stop` ends the worker's processes itself, then cleans up after the
+  run (ADR-0067 Decision 6): it cancels the pending peer runs that name it,
+  counts its unfinished step as spent, and records the `interrupted` halt. The
+  next run of the macro does the same before its first step. What it cannot
+  finish (a peer it could not cancel, a peer-run home it could not read, a
+  ledger that is gone) it prints, keeps, and makes `stop` exit 1, as does a
+  run any part of which still runs.
 
 Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
 from `AGENTIC_ORCHESTRATOR_ROOT` when that is set, else from the plugin path
