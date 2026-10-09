@@ -48,7 +48,13 @@ founder workflows anchor to a **per-venture content git repository**
 deliverables, and the lifecycle terminates on real commits. Running
 inside a code repository works but is the friction ADR-0036 §F3
 records. State lives at `<repo>/.agentic-plugins/state/founder/`
-(ADR-0025 canonical home; created at first use, never committed).
+(ADR-0025 canonical home; created at first use, never committed). In a
+repository with linked worktrees, `<repo>` is read as the default state
+root, where git placed the main worktree, first, then the checkout itself;
+records are created in the checkout until the operator's cutover turns
+shared creation on, and under the default state root from then on
+([ADR-0067](../../docs/adr/0067-autopilot-worktree-lanes-and-proposals.md)
+Decision 1; [`docs/runbooks/state-root-cutover.md`](../../docs/runbooks/state-root-cutover.md)).
 
 ## Owner gates and mixed versions (ADR-0066 Decision 7)
 

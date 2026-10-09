@@ -29,6 +29,7 @@ import {
   readFile,
   rename,
   rm,
+  stat,
   writeFile,
 } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
@@ -38,13 +39,34 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { resolveCompanion, validateEnvelopeShape } from './dispatch-peer.mjs';
 import {
   ENSEMBLE_RESULTS_RETENTION_CAP,
+  assertWorkflowWritable,
   commitEnsemble,
   parseWorkflowFile,
   recordPendingEnsemble,
   resolveWorkflowStorage,
+  workflowStorage,
 } from './state.mjs';
 import { isCliEntry } from './lib/cli-entry.mjs';
 import { capabilityOn, personaName, personaOrRefuse, stateDirRel } from './lib/persona.mjs';
+import {
+  absentAt,
+  claimName,
+  claimRunDirectory,
+  creationRoot,
+  isClaimName,
+  ledgerIdentity,
+  ledgersHolding,
+  readSet,
+  recoverClaims,
+  releaseClaim,
+  runDirectoryAt,
+  runDirectoryEntries,
+  runInCommandDirectory,
+  sameDirectory,
+  samePhysicalFile,
+  StateRootError,
+  sweepSelection,
+} from './lib/state-root.mjs';
 
 
 // ADR-0061 §Decision 4: record where the companion came from — which host
@@ -123,31 +145,101 @@ export function peerRunPaths(repoRoot, runId, opts = {}) {
   };
 }
 
-// With legacy_homes off, all three resolvers collapse to the canonical home
-// (no dual-home write block, read ambiguity, or sweep preference). With it
-// on, a write goes where the workflow storage resolves (which refuses a
-// dual-home write), a read refuses a run id found in both homes, and the
-// sweep prefers the home that holds ledgers and refuses when both do.
-async function resolvePeerRunPathsForWrite(repoRoot, runId) {
-  if (!capabilityOn('legacy_homes')) return peerRunPaths(repoRoot, runId, { home: 'canonical' });
-  const storage = await resolveWorkflowStorage(resolve(repoRoot), { mode: 'write' });
-  return peerRunPaths(repoRoot, runId, { home: storage.home });
+// ADR-0067 Decision 1(a), Decision 4 item 2 — the roots whose peer-run homes
+// are read: the root holding the workflow, whose own home keeps its runs,
+// first, then the read set of the checkout (`repoRoot`).
+function peerRunReadRoots(repoRoot, workflowPath) {
+  const roots = [];
+  const own = workflowPath ? workflowStorage(workflowPath)?.stateRoot : null;
+  for (const root of [...(own ? [own] : []), ...readSet(resolve(repoRoot))]) {
+    if (!roots.some((r) => sameDirectory(r, root))) roots.push(root);
+  }
+  return roots;
 }
 
-async function resolvePeerRunPathsForRead(repoRoot, runId) {
-  const canonical = peerRunPaths(repoRoot, runId, { home: 'canonical' });
-  if (!capabilityOn('legacy_homes')) return canonical;
-  const legacy = peerRunPaths(repoRoot, runId, { home: 'legacy' });
-  const canonicalExists = await exists(canonical.handle) || await exists(canonical.dir);
-  const legacyExists = await exists(legacy.handle) || await exists(legacy.dir);
-  if (canonicalExists && legacyExists) {
-    const rels = peerRunsDirRels();
+// With legacy_homes off, each root collapses to its canonical home (no
+// dual-home write block, read ambiguity, or sweep preference). A run of a
+// workflow is written in that workflow's own home, wherever it lives; any
+// other run where a new record is created (ADR-0067 Decision 1(a): the
+// checkout until shared creation is on), in the home its workflow storage
+// resolves (which refuses a dual-home write). A read finds the run id in any
+// home of the read roots and refuses one found in two directories; the sweep
+// prefers, per root, the home that holds ledgers and refuses when both do.
+async function resolvePeerRunPathsForWrite(repoRoot, runId, workflowPath) {
+  const own = workflowPath ? workflowStorage(workflowPath) : null;
+  if (own) return peerRunPaths(own.stateRoot, runId, { home: capabilityOn('legacy_homes') ? own.home : 'canonical' });
+  const root = creationRoot(resolve(repoRoot)).root;
+  if (!capabilityOn('legacy_homes')) return peerRunPaths(root, runId, { home: 'canonical' });
+  const storage = await resolveWorkflowStorage(root, { mode: 'write' });
+  return peerRunPaths(root, runId, { home: storage.home });
+}
+
+// The ledgers of `runId` in every home of the read roots, each directory once:
+// its run directories, and a prune's claim on it (`claim: true`), which is
+// still that run id's ledger (ADR-0067 Decision 4, item 2).
+async function findPeerRunPaths(repoRoot, runId, workflowPath) {
+  const found = [];
+  for (const root of peerRunReadRoots(repoRoot, workflowPath)) {
+    for (const home of Object.keys(peerRunsDirRels())) {
+      const paths = peerRunPaths(root, runId, { home });
+      if (runDirectoryAt(paths.dir) && !found.some((f) => sameDirectory(f.dir, paths.dir))) {
+        found.push(paths);
+      }
+      const claim = join(dirname(paths.dir), claimName(runId));
+      if (runDirectoryAt(claim) && !found.some((f) => sameDirectory(f.dir, claim))) {
+        found.push({ dir: claim, claim: true });
+      }
+    }
+  }
+  return found;
+}
+
+async function resolvePeerRunPathsForRead(repoRoot, runId, workflowPath) {
+  const found = await findPeerRunPaths(repoRoot, runId, workflowPath);
+  if (found.length > 1) {
     throw new Error(
       `Ambiguous ${personaName()} peer-run storage: run_id=${runId} exists in both ` +
-        `${rels.canonical} and ${rels.legacy}.`,
+        `${found.map((f) => dirname(f.dir)).join(' and ')} (ADR-0067 Decision 4, item 2).`,
     );
   }
-  return legacyExists ? legacy : canonical;
+  // A claimed ledger is read by no one but the prune judging it: one an
+  // interrupted prune left is put back by the next sweep.
+  if (found[0]?.claim) {
+    throw new Error(
+      `Peer-run storage: run_id=${runId} is claimed by a prune at ${found[0].dir} (a prune judging it, or one ` +
+        'interrupted, which the next sweep puts back) (ADR-0067 Decision 4, item 2).',
+    );
+  }
+  if (found[0]) return found[0];
+  // No run directory holds it: an explicit missing result, reported as no
+  // ledger and never a path to read, since a link made at the fallback path
+  // after this look would be followed; a link or a file standing there is
+  // refused (ADR-0067 Decision 4, items 1 and 2: a link is no run directory).
+  const fallback = peerRunPaths(peerRunReadRoots(repoRoot, workflowPath)[0], runId, { home: 'canonical' });
+  if (!absentAt(fallback.dir)) {
+    throw new Error(`Peer-run storage: ${fallback.dir} is not a run directory (a link or a file): run_id=${runId} names no ledger (ADR-0067 Decision 4, items 1 and 2).`);
+  }
+  return { ...fallback, missing: true };
+}
+
+// The ledger a status or a cancel reads: none for a run id no run directory
+// holds.
+function refuseMissingLedger(paths, runId) {
+  if (!paths.missing) return;
+  const error = new Error(`no peer-run ledger for run_id: ${runId}`);
+  error.code = 'ENOENT';
+  throw error;
+}
+
+// Every peer-run directory a sweep or an attempt scan reads: per read root,
+// the one resolvePeerRunsDirForSweep picks, each once.
+async function peerRunsDirsToScan(repoRoot, workflowPath) {
+  const dirs = [];
+  for (const stateRoot of peerRunReadRoots(repoRoot, workflowPath)) {
+    const dir = await resolvePeerRunsDirForSweep(stateRoot);
+    if (!dirs.some((d) => sameDirectory(d.dir, dir))) dirs.push({ stateRoot, dir, home: homeOfPeerRunsDir(stateRoot, dir) });
+  }
+  return dirs;
 }
 
 // The home a directory resolvePeerRunsDirForSweep returned stands for, so a
@@ -264,7 +356,10 @@ export async function readHandle(handlePath) {
   return handle;
 }
 
-export async function writeHandle(handlePath, handle) {
+// `guard`, when given, is asked synchronously right before the rename (a
+// sweep's: is this still the only ledger of its run id?); a refusal removes
+// the temporary file, leaves the handle as it is, and returns false.
+export async function writeHandle(handlePath, handle, { guard = null } = {}) {
   const shape = validateHandleShape(handle);
   if (!shape.ok) {
     throw new Error(`refusing to write invalid handle: ${shape.reason}`);
@@ -275,17 +370,27 @@ export async function writeHandle(handlePath, handle) {
     `.${basename(handlePath)}.${process.pid}.${Date.now()}.${atomicWriteCounter++}.tmp`,
   );
   await writeFile(tmp, `${JSON.stringify(handle, null, 2)}\n`, { mode: 0o600 });
+  let allowed = false;
+  try {
+    allowed = guard === null || guard();
+  } finally {
+    if (!allowed) await rm(tmp, { force: true });
+  }
+  if (!allowed) return false;
   await rename(tmp, handlePath);
+  return true;
 }
 
 let atomicWriteCounter = 0;
 
-async function updateHandle(handlePath, mutator) {
+// null when the write was refused: `expect`, asked of the handle re-read
+// here, says it is not the ledger the caller read, or the guard refused.
+async function updateHandle(handlePath, mutator, { guard = null, expect = null } = {}) {
   const handle = await readHandle(handlePath);
+  if (expect !== null && !expect(handle)) return null;
   const next = await mutator(handle) ?? handle;
   next.updated_at = new Date().toISOString();
-  await writeHandle(handlePath, next);
-  return next;
+  return await writeHandle(handlePath, next, { guard }) ? next : null;
 }
 
 async function touchPrivateFile(path) {
@@ -564,7 +669,14 @@ async function writeEnvelopeIfValid({ paths, stdout, outputFormat }) {
   };
 }
 
+// ADR-0067 Decision 1(a) — a run acts in the checkout `repoRoot` names, as
+// the CLI's does, whatever this process's working directory: the write guard
+// before the run and the registration under the lock judge that checkout.
 export async function runPeer(args) {
+  return runInCommandDirectory(args?.repoRoot ?? process.cwd(), () => runPeerInCheckout(args));
+}
+
+async function runPeerInCheckout(args) {
   const options = {
     repoRoot: process.cwd(),
     kind: 'manual',
@@ -578,9 +690,16 @@ export async function runPeer(args) {
 
   const runId = options.runId ?? generateRunId(options.kind);
   assertSafeRunId(runId);
-  const paths = await resolvePeerRunPathsForWrite(options.repoRoot, runId);
+  // ADR-0067 Decision 4, item 2 — an ensemble run records its attempt on the
+  // workflow: when the write guard refuses that workflow (a second copy, a
+  // second active workflow on its branch), the run is refused before its
+  // ledger is written or the companion called. A registration that fails
+  // later, under the lock, keeps the runner's continuation.
+  if (options.kind === 'ensemble' && options.workflowPath) await assertWorkflowWritable(options.workflowPath);
+  const paths = await resolvePeerRunPathsForWrite(options.repoRoot, runId, options.workflowPath);
 
-  if (await exists(paths.dir)) {
+  // A run id names one ledger across every root its readers search.
+  if (await exists(paths.dir) || (await findPeerRunPaths(options.repoRoot, runId, options.workflowPath)).length > 0) {
     throw new Error(`peer-run ledger already exists for run_id: ${runId}`);
   }
   await mkdir(paths.dir, { recursive: true, mode: 0o700 });
@@ -833,6 +952,7 @@ async function runResult(paths, handle, extra = {}) {
 export async function statusPeerRun({ repoRoot = process.cwd(), runId, json = true } = {}) {
   assertSafeRunId(runId);
   const paths = await resolvePeerRunPathsForRead(repoRoot, runId);
+  refuseMissingLedger(paths, runId);
   const handle = await readHandle(paths.handle);
   const derived = await deriveStatusAnnotation(handle, paths);
   const live = Number.isInteger(handle.pid) ? await isProcessAlive(handle.pid) : false;
@@ -877,6 +997,7 @@ export async function cancelPeerRun({
 } = {}) {
   assertSafeRunId(runId);
   const paths = await resolvePeerRunPathsForRead(repoRoot, runId);
+  refuseMissingLedger(paths, runId);
   const handle = await readHandle(paths.handle);
 
   if (isTerminalStatus(handle.status)) {
@@ -954,15 +1075,71 @@ export async function cancelPeerRun({
   };
 }
 
-export async function sweepPeerRuns({
-  repoRoot = process.cwd(),
+// ADR-0067 Decision 1(a) — the sweep reads every root of the checkout's read
+// set, each directory under its own retention plan. A run id held by two of
+// those directories is left alone in both and listed in `ambiguous`
+// (Decision 4, item 2). `root` is the checkout's own directory, `roots`
+// every directory read, and the lists are all of theirs.
+export async function sweepPeerRuns({ repoRoot = process.cwd(), applyRetention = false, ...options } = {}) {
+  // The checkout's own directory, found apart from the scans (when it is
+  // linked to another root's, the scans hold that root's spelling only), and
+  // before any of them changes a home: a prune must not move it.
+  const own = await resolvePeerRunsDirForSweep(resolve(repoRoot));
+  const scans = await peerRunsDirsToScan(repoRoot);
+  // Asked again before each change: every home of every read root, an empty
+  // one included, since a second ledger may appear in either.
+  const dirs = peerRunReadRoots(repoRoot).flatMap((root) => Object.keys(peerRunsDirRels()).map((home) => peerRunsDir(root, { home })));
+  // A claim an interrupted prune left is put back under its run id first, so
+  // the selection below sees that ledger by its name (Decision 4, item 2).
+  const claims = recoverClaims({
+    scanDirs: scans.map((scan) => scan.dir),
+    dirs,
+    graceMs: options.staleGraceMs ?? DEFAULT_STALE_GRACE_MS,
+    now: options.now ?? new Date(),
+    handleFile: HANDLE_FILE,
+    validName: validRunId,
+  });
+  // Each physical ledger is swept once, through one spelling chosen with all
+  // of them in view; a run id two ledgers hold is swept through none, and one
+  // that a second ledger takes meanwhile is left alone from then on.
+  const { ambiguous, chosen } = sweepSelection(scans.map((scan) => scan.dir), validRunId);
+  const reports = [];
+  for (const { stateRoot, dir, home } of scans) {
+    reports.push(await sweepPeerRunsDir({ stateRoot, root: dir, home, applyRetention, chosen, dirs, ambiguous, ...options }));
+  }
+  const merged = { ...reports[reports.length - 1], root: own, roots: reports.map((r) => r.root) };
+  for (const key of ['reconciled', 'planned_prunes', 'pruned', 'undateable', 'prune_skipped']) {
+    merged[key] = reports.flatMap((r) => r[key]);
+  }
+  merged.scanned = reports.reduce((n, r) => n + r.scanned, 0);
+  merged.missing = reports.every((r) => r.missing);
+  merged.retention_applied = applyRetention;
+  merged.ambiguous = [...ambiguous].map(([run_id, dirs]) => ({ run_id, dirs }));
+  merged.claims = claims;
+  return merged;
+}
+
+async function sweepPeerRunsDir({
+  stateRoot,
+  root,
+  home,
   applyRetention = false,
   staleGraceMs = DEFAULT_STALE_GRACE_MS,
   retentionTtlDays = DEFAULT_RETENTION_TTL_DAYS,
   retentionCap = DEFAULT_RETENTION_CAP,
   now = new Date(),
-} = {}) {
-  const root = await resolvePeerRunsDirForSweep(repoRoot);
+  chosen = null,
+  dirs = [root],
+  ambiguous = new Map(),
+}) {
+  // ADR-0067 Decision 4, item 2 — the selection is checked again before each
+  // change: a run id that a second ledger now holds is left alone and listed.
+  const stillSole = (runId, runDir) => {
+    const held = ledgersHolding(dirs, runId);
+    if (held.length === 1 && samePhysicalFile(held[0], runDir)) return true;
+    if (held.length > 1 && !ambiguous.has(runId)) ambiguous.set(runId, held.map((h) => dirname(h)));
+    return false;
+  };
   const report = {
     root,
     scanned: 0,
@@ -992,33 +1169,45 @@ export async function sweepPeerRuns({
     prune_skipped: [],
     missing: false,
   };
-  let entries;
+  // Only absence (ENOENT) is a missing directory; one that cannot be listed
+  // is refused, as runDirectoryEntries refuses it (Decision 4, item 2).
   try {
-    entries = await readdir(root, { withFileTypes: true });
-  } catch {
+    await readdir(root);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
     report.missing = true;
     return report;
   }
 
   const terminal = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const runId = entry.name;
+  // ADR-0067 Decision 4, items 1 and 2 — the identity rule every listing of
+  // run directories follows: a directory is one, a link is none.
+  for (const { runId, runDir } of runDirectoryEntries(root)) {
+    if (chosen !== null && !chosen.has(runDir)) continue;
+    if (!stillSole(runId, runDir)) continue;
     let paths;
     try {
-      paths = peerRunPaths(repoRoot, runId, { home: homeOfPeerRunsDir(repoRoot, root) });
+      paths = peerRunPaths(stateRoot, runId, { home });
     } catch {
       continue;
     }
     if (!(await exists(paths.handle))) continue;
     report.scanned += 1;
     const before = await readHandle(paths.handle);
-    const after = await reconcileOne(paths, before, { staleGraceMs, now });
+    // Checked again at the write itself: a second ledger made meanwhile
+    // leaves this one as it is.
+    const after = await reconcileOne(paths, before, { staleGraceMs, now, guard: () => stillSole(runId, runDir) });
     if (after.status !== before.status) {
       report.reconciled.push({ run_id: runId, from: before.status, to: after.status });
     }
     if (isTerminalStatus(after.status)) {
-      terminal.push({ run_id: runId, paths, handle: after });
+      let identity = null;
+      try {
+        identity = ledgerIdentity(paths.dir, after);
+      } catch {
+        /* gone since the read: never pruned under this plan */
+      }
+      terminal.push({ run_id: runId, paths, handle: after, identity });
     }
   }
 
@@ -1052,9 +1241,9 @@ export async function sweepPeerRuns({
 
   report.retention_applied = applyRetention;
   if (applyRetention) {
-    const plannedByRunId = new Map(terminal.map((item) => [item.run_id, item.paths]));
+    const plannedByRunId = new Map(terminal.map((item) => [item.run_id, item]));
     for (const planned of report.planned_prunes) {
-      const paths = plannedByRunId.get(planned.run_id);
+      const { paths, identity } = plannedByRunId.get(planned.run_id);
       // RE-VERIFY IMMEDIATELY BEFORE DELETING. Computing the whole plan first
       // is what makes the preview honest, and it also widens the window between
       // deciding to delete a run and deleting it. A run id is reusable once its
@@ -1078,12 +1267,82 @@ export async function sweepPeerRuns({
         report.prune_skipped.push({ run_id: planned.run_id, reason: 'no-longer-terminal' });
         continue;
       }
-      await rm(paths.dir, { recursive: true, force: true });
-      report.pruned.push(planned);
+      // The same ledger, not one recreated under its run id since the plan:
+      // its directory and its handle's timestamps are the planned ones.
+      let now;
+      try {
+        now = ledgerIdentity(paths.dir, current);
+      } catch {
+        now = null;
+      }
+      if (identity === null || now !== identity) {
+        report.prune_skipped.push({ run_id: planned.run_id, reason: 'replaced' });
+        continue;
+      }
+      const outcome = await pruneClaimed({ planned, paths, identity, dirs, ambiguous });
+      if (outcome === null) report.pruned.push(planned);
+      else report.prune_skipped.push(outcome);
     }
   }
 
   return report;
+}
+
+// The deletion, bound to the directory judged (ADR-0067 Decision 4, item 2):
+// the run directory is claimed (moved out of every lookup by run id) and
+// judged there: the planned ledger, terminal, and no other ledger holding its
+// run id now (a second ledger made at any point since the plan leaves both).
+// Deleted on a match; otherwise put back under its run id, or, when a ledger
+// was made under that name meanwhile, kept under the claim name, reported.
+// null when deleted; else the prune_skipped entry. Every failure names where
+// the claimed directory is left and in what state.
+async function pruneClaimed({ planned, paths, identity, dirs, ambiguous }) {
+  const runId = planned.run_id;
+  const claimed = claimRunDirectory(paths.dir);
+  if (claimed.gone) return { run_id: runId, reason: 'gone' };
+  if (claimed.held) {
+    if (!ambiguous.has(runId)) ambiguous.set(runId, [dirname(paths.dir), dirname(claimed.held)]);
+    return { run_id: runId, reason: 'ambiguous', kept: claimed.held };
+  }
+  const { claim } = claimed;
+  let reason = null;
+  try {
+    let handle = null;
+    try {
+      handle = await readHandle(join(claim, basename(paths.handle)));
+    } catch {
+      reason = 'handle-unreadable';
+    }
+    if (reason === null && (handle.run_id !== runId || !isTerminalStatus(handle.status))) reason = 'no-longer-terminal';
+    if (reason === null && ledgerIdentity(claim, handle) !== identity) reason = 'replaced';
+    if (reason === null) {
+      const held = ledgersHolding(dirs, runId).filter((h) => !samePhysicalFile(h, claim));
+      if (held.length > 0) {
+        reason = 'ambiguous';
+        if (!ambiguous.has(runId)) ambiguous.set(runId, [dirname(paths.dir), ...held.map((h) => dirname(h))]);
+      }
+    }
+  } catch (error) {
+    const back = releaseClaim(claim, paths.dir);
+    throw new StateRootError(
+      `${error?.message ?? error}; run_id=${runId}: ` +
+        (back ? `its run directory was put back at ${paths.dir}` : `its run directory stays claimed at ${claim} (a later sweep puts it back once no other ledger holds the run id)`),
+      error?.code ?? 'scan-failed',
+    );
+  }
+  if (reason === null) {
+    try {
+      await rm(claim, { recursive: true, force: true });
+    } catch (error) {
+      throw new StateRootError(
+        `Peer-run storage: cannot delete the claimed run directory of run_id=${runId} (${error?.code || error?.message}): it stays, partly deleted, at ${claim} (ADR-0067 Decision 4, item 2).`,
+        'prune-failed',
+      );
+    }
+    return null;
+  }
+  if (releaseClaim(claim, paths.dir)) return { run_id: runId, reason };
+  return { run_id: runId, reason, kept: claim };
 }
 
 // A non-terminal handle whose run is over: the envelope decides when there is
@@ -1091,32 +1350,43 @@ export async function sweepPeerRuns({
 // for `staleGraceMs` is orphaned. `queued` is judged by staleness alone (PC2b
 // RV1): no process is recorded before the spawn, and the PID recorded after it
 // is the companion's, never the runner's.
-export async function reconcileOne(paths, handle, { staleGraceMs, now }) {
+export async function reconcileOne(paths, handle, { staleGraceMs, now, guard = null }) {
   if (isTerminalStatus(handle.status)) return handle;
+  // A caller's check (a sweep's: is this still the only ledger of its run
+  // id?), made before each write and again right before its rename; a refusal
+  // leaves the handle as it is. Its errors propagate: a scan that cannot judge
+  // the run directory is no corrupt envelope.
+  const allowed = () => guard === null || guard();
+  // Bound to the ledger read (ADR-0067 Decision 4, item 2): a handle re-read
+  // at the write that is another run's, a directory made anew under the run
+  // id since, is left as it is, never given this run's result.
+  const sameRun = (h) => h.run_id === handle.run_id && h.started_at === handle.started_at;
 
   // Each write keeps a terminal status already on disk: the caller's handle
   // may predate one the runner or a cancel wrote (PC2b re-review).
   if (await exists(paths.envelope)) {
+    let envelope = null;
+    let shape = null;
     try {
-      const envelope = JSON.parse(await readFile(paths.envelope, 'utf8'));
-      const shape = validateEnvelopeShape(envelope);
-      const next = await updateHandle(paths.handle, (h) => {
-        if (isTerminalStatus(h.status)) return h;
-        h.status = shape.ok && envelope.status === 'success' ? 'completed' : 'failed';
-        h.completed_at ??= now.toISOString();
-        h.exit_code = Number.isInteger(envelope.exit_code) ? envelope.exit_code : h.exit_code;
-        h.error_kind = envelope.error?.kind ?? (shape.ok ? null : 'envelope_shape_invalid');
-      });
-      return next;
+      envelope = JSON.parse(await readFile(paths.envelope, 'utf8'));
+      shape = validateEnvelopeShape(envelope);
     } catch {
-      const next = await updateHandle(paths.handle, (h) => {
-        if (isTerminalStatus(h.status)) return h;
-        h.status = 'failed';
-        h.completed_at ??= now.toISOString();
-        h.error_kind = 'envelope_parse_error';
-      });
-      return next;
+      envelope = null;
     }
+    if (!allowed()) return handle;
+    const next = await updateHandle(paths.handle, (h) => {
+      if (isTerminalStatus(h.status)) return h;
+      h.completed_at ??= now.toISOString();
+      if (envelope === null) {
+        h.status = 'failed';
+        h.error_kind = 'envelope_parse_error';
+        return h;
+      }
+      h.status = shape.ok && envelope.status === 'success' ? 'completed' : 'failed';
+      h.exit_code = Number.isInteger(envelope.exit_code) ? envelope.exit_code : h.exit_code;
+      h.error_kind = envelope.error?.kind ?? (shape.ok ? null : 'envelope_shape_invalid');
+    }, { guard, expect: sameRun });
+    return next ?? handle;
   }
 
   if (['queued', 'spawning', 'running', 'cancel_requested'].includes(handle.status)) {
@@ -1128,7 +1398,8 @@ export async function reconcileOne(paths, handle, { staleGraceMs, now }) {
       // an envelope that appeared is reconciled as such, and the handle is
       // re-read so a terminal status the runner wrote is never replaced
       // (PC2b Review of code step 6).
-      if (await exists(paths.envelope)) return reconcileOne(paths, await readHandle(paths.handle), { staleGraceMs, now });
+      if (await exists(paths.envelope)) return reconcileOne(paths, await readHandle(paths.handle), { staleGraceMs, now, guard });
+      if (!allowed()) return handle;
       const next = await updateHandle(paths.handle, (h) => {
         if (!['queued', 'spawning', 'running', 'cancel_requested'].includes(h.status)) return h;
         h.status = 'orphaned';
@@ -1137,8 +1408,8 @@ export async function reconcileOne(paths, handle, { staleGraceMs, now }) {
         h.pgid = null;
         h.process_fingerprint = { kind: 'none' };
         h.error_kind = 'orphaned';
-      });
-      return next;
+      }, { guard, expect: sameRun });
+      return next ?? handle;
     }
   }
 
@@ -1201,37 +1472,46 @@ async function completedAnswer(paths, handle) {
 // results list is full, a run that ended before its oldest entry may have been
 // settled and pruned since, so it does not count.
 async function unsettledAttempts({ repoRoot, workflowPath, phase, results }) {
-  const root = await resolvePeerRunsDirForSweep(repoRoot);
-  let entries;
-  try {
-    entries = await readdir(root, { withFileTypes: true });
-  } catch (err) {
-    if (err.code === 'ENOENT') return [];
-    throw err;
+  // ADR-0067 — the workflow's own home first, then the checkout's read set: an
+  // attempt with no pending row may sit in either.
+  const out = [];
+  for (const { stateRoot, dir, home } of await peerRunsDirsToScan(repoRoot, workflowPath)) {
+    out.push(...await unsettledAttemptsIn({ stateRoot, root: dir, home, workflowPath, phase, results }));
   }
+  return out;
+}
+
+async function unsettledAttemptsIn({ stateRoot, root, home, workflowPath, phase, results }) {
   const settled = new Set(results.map((r) => r.run_id));
   const oldestKept = results.length >= ENSEMBLE_RESULTS_RETENTION_CAP
     ? results.map((r) => r.completed_at).filter((t) => typeof t === 'string').sort()[0] ?? null
     : null;
   const out = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+  // The identity rule of every run-directory listing (ADR-0067 Decision 4,
+  // items 1 and 2): a directory is a ledger, a link is none.
+  for (const { runId, runDir } of runDirectoryEntries(root)) {
     let paths;
-    try {
-      paths = peerRunPaths(repoRoot, entry.name, { home: homeOfPeerRunsDir(repoRoot, root) });
-    } catch {
-      continue;
+    if (isClaimName(runId)) {
+      // A prune's claim is still its run id's ledger.
+      paths = { handle: join(runDir, HANDLE_FILE) };
+    } else {
+      try {
+        paths = peerRunPaths(stateRoot, runId, { home });
+      } catch {
+        continue;
+      }
     }
-    if (!(await exists(paths.handle))) continue;
+    // Only ENOENT is absence: an inaccessible ledger is not "no attempt".
+    if (!(await present(paths.handle))) continue;
     let handle;
     try {
       handle = JSON.parse(await readFile(paths.handle, 'utf8'));
     } catch {
-      out.push(`${entry.name} (unreadable handle)`);
+      out.push(`${runId} (unreadable handle)`);
       continue;
     }
     if (handle?.kind !== 'ensemble' || handle.phase !== phase) continue;
-    if (typeof handle.workflow_path !== 'string' || resolve(handle.workflow_path) !== workflowPath) continue;
+    if (typeof handle.workflow_path !== 'string' || !samePhysicalFile(handle.workflow_path, workflowPath)) continue;
     if (settled.has(handle.run_id)) continue;
     // Ended before a full results list's oldest entry: settled and pruned. A
     // settlement comes after the run ended and the list drops its oldest entries
@@ -1249,7 +1529,13 @@ async function unsettledAttempts({ repoRoot, workflowPath, phase, results }) {
  * Throws SettleRefusal when the ledger does not let it decide; returns
  * `{ settlement: 'skipped' | 'committed' | 'already-settled', … }` otherwise.
  */
-export async function settleEnsemble({
+// Settles in the checkout `repoRoot` names, as the CLI does (ADR-0067 Decision
+// 1(a)): the write guard of the workflow write judges that checkout.
+export async function settleEnsemble(args = {}) {
+  return runInCommandDirectory(args.repoRoot ?? process.cwd(), () => settleEnsembleInCheckout(args));
+}
+
+async function settleEnsembleInCheckout({
   repoRoot = process.cwd(),
   workflowPath,
   phase,
@@ -1308,8 +1594,8 @@ export async function settleEnsemble({
     return { ok: true, settlement: 'already-settled', run_id: runId, phase, verdict: done.verdict };
   }
 
-  const paths = await resolvePeerRunPathsForRead(repoRoot, runId);
-  if (!(await exists(paths.handle))) {
+  const paths = await resolvePeerRunPathsForRead(repoRoot, runId, wf);
+  if (paths.missing || !(await present(paths.handle))) {
     if (!row) refuse(`no ledger and no pending entry for run ${runId} in phase ${phase}`);
     const settlement = await commit({
       ensemble_type: row.ensemble_type,
@@ -1321,7 +1607,7 @@ export async function settleEnsemble({
 
   let handle = await readHandle(paths.handle);
   if (handle.kind !== 'ensemble') refuse(`run ${runId} is a ${handle.kind} run, not an ensemble attempt`);
-  if (typeof handle.workflow_path !== 'string' || resolve(handle.workflow_path) !== wf) {
+  if (typeof handle.workflow_path !== 'string' || !samePhysicalFile(handle.workflow_path, wf)) {
     refuse(`run ${runId} belongs to another workflow (${handle.workflow_path})`);
   }
   if (handle.phase !== phase) refuse(`run ${runId} is phase ${handle.phase}, not ${phase}`);
@@ -1377,14 +1663,33 @@ async function exists(path) {
   }
 }
 
-async function directoryHasEntries(dir) {
+// Whether `path` exists, where only ENOENT or ENOTDIR is absence: a run id
+// read as absent from a directory that cannot be judged could be created, or
+// picked, twice (ADR-0067 Decision 4, item 2). Anything else throws.
+async function present(path) {
   try {
-    const entries = await readdir(dir);
-    return entries.length > 0;
+    await access(path, fsConstants.F_OK);
+    return true;
   } catch (err) {
-    if (err.code !== 'ENOENT') throw err;
+    if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') return false;
+    throw new Error(`cannot tell whether ${path} exists (${err?.code || err?.message}) (ADR-0067 Decision 4, item 2)`);
+  }
+}
+
+// Whether `runId` is a name a ledger may have (peerRunPaths accepts it).
+function validRunId(runId) {
+  try {
+    assertSafeRunId(runId);
+    return true;
+  } catch {
     return false;
   }
+}
+
+// Whether `dir` holds a run directory, by the one rule (a directory, never a
+// link): a stray file or link does not make a home hold ledgers.
+async function directoryHasEntries(dir) {
+  return runDirectoryEntries(dir).length > 0;
 }
 
 function parseCliArgs(argv) {
@@ -1401,6 +1706,10 @@ function parseCliArgs(argv) {
     switch (a) {
       case '--repo-root':
         opts.repoRoot = rest[++i];
+        // An option in its place (`sweep --repo-root --apply`) is no path.
+        if (typeof opts.repoRoot !== 'string' || opts.repoRoot === '' || opts.repoRoot.startsWith('--')) {
+          throw new Error('--repo-root needs a path');
+        }
         break;
       case '--run-id':
         opts.runId = rest[++i];
@@ -1517,6 +1826,12 @@ async function cliMain(argv) {
     return 0;
   }
 
+  // ADR-0067 Decision 1(a) — the writes (a pending row, a settlement) judge
+  // the checkout --repo-root names, not this process's working directory.
+  return runInCommandDirectory(opts.repoRoot, () => cliRun(opts));
+}
+
+async function cliRun(opts) {
   try {
     if (opts.subcommand === 'run') {
       const result = await runPeer({
