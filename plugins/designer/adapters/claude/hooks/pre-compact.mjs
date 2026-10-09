@@ -12,6 +12,7 @@
 // compaction.
 
 import { findActiveWorkflow, snapshot } from '../../../scripts/state.mjs';
+import { runInCommandDirectory } from '../../../scripts/lib/state-root.mjs';
 import { hookPersona, readStdinJson, gitTopLevel, gitStatusDigest } from '../../../scripts/lib/hook-helpers.mjs';
 
 async function main() {
@@ -35,12 +36,13 @@ async function main() {
 
   const statusDigest = gitStatusDigest(repoRoot);
   try {
-    await snapshot({
+    // ADR-0067 Decision 1(a) — the write guard judges the payload's checkout.
+    await runInCommandDirectory(repoRoot, () => snapshot({
       workflowPath: active,
       host: 'claude',
       trigger: 'pre-compact',
       statusDigest,
-    });
+    }));
   } catch (err) {
     process.stderr.write(`${persona.name}/pre-compact: ${err.message}\n`);
   }

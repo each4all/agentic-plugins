@@ -60,8 +60,10 @@ FIND_RC=$?
   Recommend `/designer:investigate` (or another verb, or `/designer:start`)
   to bootstrap one.
 - **Exit 0, single path** → that path is the active workflow → Phase 2.
-- **Exit 1, per-branch duplicate error** → list ALL candidate files with
-  each file's `git_baseline.branch`; ask the user to pick one or to archive
+- **Exit 1, per-branch duplicate error** → list ALL candidate files
+  (`state.mjs list-workflows --repo-root "$REPO_ROOT"` prints those of this
+  checkout's read set, ADR-0067 Decision 1(a)) with each file's
+  `git_baseline.branch`; ask the user to pick one or to archive
   stale candidates via `/designer:resume archive <id>`. Do NOT pick one
   yourself (ADR-0018 §sub-2 user-resolvable invariant).
 
@@ -142,19 +144,40 @@ not survive across Bash calls). Do NOT bump `current_phase` / `next_action`.
 
 - `archive` (no id) → archive the single active workflow on the current
   branch (reject on per-branch duplicate; require an explicit id).
-- `archive <id>` → validate against the workflow-id regex (ADR-0011 §1),
-  resolve to
-  `<REPO_ROOT>/.agentic-plugins/state/designer/workflows/<id>.md`, confirm it
-  exists.
+- `archive <id>` → the file the block below prints, found in the workflow
+  homes of this checkout's read set (ADR-0067 Decision 4, item 2), the
+  default state root first; stop when it exits non-zero (not a workflow id,
+  no root holds it, or two files do). Put the id in place of
+  `<workflow-id>`:
+
+<!-- pipeline:begin resume-archive-resolve -->
+```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'designer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+ARCHIVE_WORKFLOW_ID='<workflow-id>'
+if ! WORKFLOW="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
+    resolve-workflow --repo-root "$REPO_ROOT" --workflow-id "$ARCHIVE_WORKFLOW_ID")"; then
+  echo "✗ $ARCHIVE_WORKFLOW_ID names no single workflow file in the workflow homes of this checkout's read set (the reason is above); nothing archived." >&2
+  exit 1
+fi
+printf 'WORKFLOW=%s\n' "$WORKFLOW"
+```
+<!-- pipeline:end resume-archive-resolve -->
 
 Confirm with the user before mutating (show workflow_id / current_phase /
-next_action). The durable design artifact is NOT affected. On confirmation:
+next_action). The durable design artifact is NOT affected. On confirmation,
+put the workflow path (Phase 1's, or the one printed above) in place of
+`<workflow path>`:
 
 <!-- pipeline:begin resume-archive -->
 ```bash
 ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'designer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+WORKFLOW='<workflow path>'
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" archive \
   --workflow-path "$WORKFLOW" --host "${AGENTIC_HOST:-claude}" --repo-root "$REPO_ROOT"
 ```
