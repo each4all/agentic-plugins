@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.26.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.25.0...plugin-engineer-v0.26.0) (2026-10-09)
+
+
+### Features
+
+* **plugin/engineer:** find workflow records across the repository's shared state root, and record each dispatched child's selection (ADR-0067 SR) ([cd4ba19](https://github.com/each4all/agentic-plugins/commit/cd4ba1970a79aee87e77c5be5742707180c102c2))
+
 ## [0.25.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.24.9...plugin-engineer-v0.25.0) (2026-10-08)
 
 

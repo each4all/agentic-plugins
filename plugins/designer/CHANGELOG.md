@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.5.0...plugin-designer-v0.6.0) (2026-10-09)
+
+
+### Features
+
+* **plugin/designer:** find workflow records across the repository's shared state root (ADR-0067 SR) ([7babc1c](https://github.com/each4all/agentic-plugins/commit/7babc1c15735f3c60c16d5f3db4ece9c95261b63))
+
 ## [0.5.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.4.2...plugin-designer-v0.5.0) (2026-10-08)
 
 

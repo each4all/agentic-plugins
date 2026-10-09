@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.6.0...plugin-founder-v0.7.0) (2026-10-09)
+
+
+### Features
+
+* **plugin/founder:** find workflow records across the repository's shared state root (ADR-0067 SR) ([5113318](https://github.com/each4all/agentic-plugins/commit/511331800fcc7713268835fd94ad6ee64b6bb636))
+
 ## [0.6.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.5.2...plugin-founder-v0.6.0) (2026-10-08)
 
 
