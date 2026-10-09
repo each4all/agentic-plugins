@@ -202,10 +202,12 @@ When the argument starts with `archive`:
 - `archive` (no id) → archive the single active workflow on the current
   branch. If `find-active` returned a per-branch duplicate error, reject —
   the user must run `archive <workflow-id>` explicitly.
-- `archive <id>` → validate the id against the workflow-id regex (ADR-0011
-  §1), resolve to
-  `<REPO_ROOT>/.agentic-plugins/state/founder/workflows/<id>.md`, confirm it
-  exists.
+- `archive <id>` → resolve the id with `node "<plugin-root>/scripts/state.mjs"
+  resolve-workflow --repo-root "$REPO_ROOT" --workflow-id <id>`: it prints the
+  workflow file found in the workflow homes of this checkout's read set
+  (ADR-0067 Decision 4, item 2), the default state root first. Stop when it
+  exits non-zero (an id that is not a workflow id, no root holds it — exit 3
+  — or two files do), and use the path it prints as `$WORKFLOW`.
 
 Confirm with the user before mutating state — archive is reversible (the
 file moves to `archive/`, not deleted) but the active registry loses the
