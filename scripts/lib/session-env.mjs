@@ -14,8 +14,13 @@ export const SESSION_VARIABLES = Object.freeze([
   'AGENTIC_AUTOPILOT',
   'AGENTIC_HOST',
   'AGENTIC_PARENT_WORKFLOW',
-  // ADR-0067 Decision 2 lists it by name: it ends in _PATH, not _ROOT.
+  // ADR-0067 Decision 2 lists these by name: none ends in _ROOT, so the
+  // plugin-root pattern below would not catch them.
   'AGENTIC_PARENT_WORKFLOW_PATH',
+  // ADR-0067 Decision 4, item 5 — the dispatch selection, beside the ids.
+  'AGENTIC_DISPATCH_SELECTION',
+  'AGENTIC_STATE_BASE',
+  'AGENTIC_AUTOPILOT_TOKEN',
   'AGENTIC_ORIGINATING_SUBTASK',
   'AGENTIC_PROFILE',
   'AGENTIC_DESIGNER_PROFILE',

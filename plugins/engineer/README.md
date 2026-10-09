@@ -85,7 +85,14 @@ current release ships:
   `<cwd>/.agentic-plugins/state/engineer/workflows/<workflow_id>.md`
   for new repos; existing legacy `.claude/agentic-engineer/` state
   remains readable/writable until explicit migration per
-  [ADR-0025](../../docs/adr/0025-workflow-storage-migration.md)
+  [ADR-0025](../../docs/adr/0025-workflow-storage-migration.md).
+  In a repository with linked worktrees a checkout reads the default
+  state root, where git placed the main worktree, first, then its own
+  home; it creates records in its own home until the operator's cutover
+  turns shared creation on, and under the default state root from then
+  on ([ADR-0067](../../docs/adr/0067-autopilot-worktree-lanes-and-proposals.md)
+  Decision 1; [`docs/runbooks/state-root-cutover.md`](../../docs/runbooks/state-root-cutover.md)).
+  Git queries (branch, HEAD, the clean check) stay on the checkout.
 
 Both hosts can invoke engineer verbs in **command-invoked mode**
 (local subagent dispatch + peer ensemble dispatch). On Claude Code

@@ -28,7 +28,9 @@ const TC = 'tests/orchestrator/test-autopilot-cli.mjs';
 const AP = 'plugins/orchestrator/adapters/claude/autopilot';
 const POLICY = `${AP}/policy.mjs`;
 const WORKER = `${AP}/worker.mjs`;
-const LEDGER = `${AP}/ledger.mjs`;
+// The locks, which the autopilot ledger re-exports (ADR-0067 Decision 4,
+// item 5); the ledger tests reach them through it.
+const LOCKS = 'plugins/orchestrator/scripts/lib/run-locks.mjs';
 const OBSERVE = `${AP}/observe.mjs`;
 const DRIVER = `${AP}/driver.mjs`;
 const CLI = `${AP}/cli.mjs`;
@@ -255,97 +257,97 @@ export const MUTATIONS = [
 
   // ---- L: the ledger and locks --------------------------------------------------
   {
-    id: 'L1', file: LEDGER, tests: [TL],
-    from: "    const rival = after.find((e) => e.state !== 'gone');",
-    to: '    const rival = undefined;',
+    id: 'L1', file: LOCKS, tests: [TL],
+    from: "    const rival = after.find((e) => e.state !== 'gone');\n    if (!rival) {",
+    to: '    const rival = undefined;\n    if (!rival) {',
     why: 'contenders that added their entries at the same time all take the lock',
   },
   {
-    id: 'L2', file: LEDGER, tests: [TL],
+    id: 'L2', file: LOCKS, tests: [TL],
     from: "  if (worker === 'live') return true;",
     to: "  if (false) return true;",
     why: 'a dead driver\'s lock is reclaimed while its worker still runs',
   },
   {
-    id: 'L3', file: LEDGER, tests: [TL],
+    id: 'L3', file: LOCKS, tests: [TL],
     from: '    unlinkQuiet(mine);\n    if (attempt === attempts)',
     to: '    if (attempt === attempts)',
     why: 'a contender that backs off leaves its entry, so every later run is refused',
   },
   {
-    id: 'L4', file: LEDGER, tests: [TL],
+    id: 'L4', file: LOCKS, tests: [TL],
     from: "  if (comparable && startDiffers(recorded, current)) return 'other';",
     to: "  if (!comparable || startDiffers(recorded, current)) return 'other';",
     why: 'a fingerprint that cannot be read counts as stale, so a live run\'s lock is taken',
   },
   {
-    id: 'L5', file: LEDGER, tests: [TL],
+    id: 'L5', file: LOCKS, tests: [TL],
     from: "    if (before.some((e) => e.state === 'busy')) { await pause(100); continue; }",
     to: '',
     why: 'an entry that cannot be read yet is reported as a live holder instead of waited for',
   },
   {
-    id: 'L6', file: LEDGER, tests: [TL],
+    id: 'L6', file: LOCKS, tests: [TL],
     from: '    if (m && !(await isProcessAlive(Number(m[1])))) unlinkQuiet(path.join(lock, n));',
     to: '    if (m) unlinkQuiet(path.join(lock, n));',
     why: 'a live participant\'s half-written entry is removed under it',
   },
   {
-    id: 'L7', file: LEDGER, tests: [TL],
+    id: 'L7', file: LOCKS, tests: [TL],
     from: "  if (e.holder === null) return now() - e.mtimeMs < FRESH_UNPARSED_MS ? 'busy' : 'gone';",
     to: "  if (e.holder === null) return 'gone';",
     why: 'an entry that does not parse is removed however fresh it is',
   },
   {
-    id: 'L8', file: LEDGER, tests: [TL],
+    id: 'L8', file: LOCKS, tests: [TL],
     from: "    for (let rereads = 0; state === 'gone'; rereads += 1) {",
     to: '    for (let rereads = 0; false; rereads += 1) {',
     why: 'an entry judged on a record its owner has since rewritten — recording a live worker, then dying — is removed, and a second run starts beside that worker (round 4)',
   },
   {
-    id: 'L10', file: LEDGER, tests: [TL],
+    id: 'L10', file: LOCKS, tests: [TL],
     from: "  if (worker === 'other' && holder.worker?.pgid === holder.worker?.pid) return false;",
     to: '',
     why: 'a group that reused the worker\'s id keeps a dead run\'s lock held until that unrelated group ends (round 5)',
   },
   {
-    id: 'L11', file: LEDGER, tests: [TL],
+    id: 'L11', file: LOCKS, tests: [TL],
     from: "  if (comparable && startDiffers(recorded, current)) return 'other';",
     to: "  if (comparable && !fingerprintsMatch(recorded, current)) return 'other';",
     why: 'a worker whose command line changed with an exec in place counts as a reused pid, and its live run\'s lock is taken (round 6)',
   },
   {
-    id: 'L12', file: LEDGER, tests: [TL],
+    id: 'L12', file: LOCKS, tests: [TL],
     from: "  return Boolean(current && current.kind !== 'none' && current.zombie !== true && fingerprintsMatch(recorded, current));",
     to: "  return Boolean(current && current.kind !== 'none' && current.zombie !== true && !startDiffers(recorded, current));",
     why: 'stop signals a pid whose start time matches but whose command does not — proof weakened to what only keeps a lock held (round 7)',
   },
   {
-    id: 'L13', file: LEDGER, tests: [TL, TD],
+    id: 'L13', file: LOCKS, tests: [TL, TD],
     from: "  if (current?.zombie === true) return 'dead';\n",
     to: '',
     why: 'an exited driver its parent has not reaped yet still holds its lock, and stop waits on it (CI, Linux)',
   },
   {
-    id: 'L14', file: LEDGER, tests: [TL],
+    id: 'L14', file: LOCKS, tests: [TL],
     from: "env: { ...process.env, LC_ALL: 'C' },",
     to: 'env: process.env,',
     why: 'the start time is read in the caller\'s locale, so outside the C locale it cannot be told from the command line',
   },
   {
-    id: 'L15', file: LEDGER, tests: [TL],
+    id: 'L15', file: LOCKS, tests: [TL],
     from: "current.kind !== 'none' && current.zombie !== true && fingerprintsMatch(recorded, current)",
     to: "current.kind !== 'none' && fingerprintsMatch(recorded, current)",
     why: 'an exited, unreaped process counts as proof for a signal',
   },
   {
-    id: 'L16', file: LEDGER, tests: [TL],
+    id: 'L16', file: LOCKS, tests: [TL],
     from: "  if (comparable && startDiffers(recorded, current)) return 'other';\n  // The recorded process, exited and not yet reaped by its parent (CI,\n  // 2026-10-03: a driver whose parent was blocked in spawnSync held its lock\n  // until the wait ended).\n  if (current?.zombie === true) return 'dead';\n",
     to: "  if (current?.zombie === true) return 'dead';\n  if (comparable && startDiffers(recorded, current)) return 'other';\n  // The recorded process, exited and not yet reaped by its parent (CI,\n  // 2026-10-03: a driver whose parent was blocked in spawnSync held its lock\n  // until the wait ended).\n",
     why: 'a stranger that reused the worker\'s pid and then exited is taken for the worker having exited, so its group keeps a dead run\'s lock held (round 8)',
   },
   {
-    id: 'L9', file: LEDGER, tests: [TL, TD],
+    id: 'L9', file: LOCKS, tests: [TL, TD],
     from: '  return groupAlive(holder.worker?.pgid);',
     to: '  return false;',
     why: 'a lock whose worker\'s group outlived SIGKILL is reclaimed while that group still has members (round 4)',
@@ -354,8 +356,8 @@ export const MUTATIONS = [
   // ---- O: the observer ------------------------------------------------------------
   {
     id: 'O1', file: OBSERVE, tests: [TO],
-    from: '  const child = summarizeChild(archived.fm, \'archived\', archived.file, repoRoot);\n  const wrong = linkageProblems(child, { macroId, subtask });',
-    to: '  const child = summarizeChild(archived.fm, \'archived\', archived.file, repoRoot);\n  const wrong = [];',
+    from: '  const child = summarizeChild(archived.fm, \'archived\', archived.file, roots.scan);\n  const wrong = linkageProblems(child, { macroId, subtask });',
+    to: '  const child = summarizeChild(archived.fm, \'archived\', archived.file, roots.scan);\n  const wrong = [];',
     why: 'an earlier attempt\'s archive on another branch completes the revised subtask',
   },
   {

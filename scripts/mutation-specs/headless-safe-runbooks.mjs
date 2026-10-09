@@ -186,7 +186,7 @@ export const MUTATIONS = [
   },
   {
     id: 'O3', tests: [T_RUNBOOK], file: 'plugins/orchestrator/commands/finalize.md',
-    from: "    ' || STEP2_RC=$?\nfi", to: "    ' || true\nfi",
+    from: "    ' || STEP2_RC=$?\n", to: "    ' || true\n",
     why: 'the runbook ignores the shim\'s status — the gate reads a variable nothing sets',
   },
   {

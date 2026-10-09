@@ -45,6 +45,7 @@ import {
 } from './state.mjs';
 import { CONVENTIONAL_COMMIT_RE } from './validate-commit.mjs';
 import { capabilityOn, personaName } from './lib/persona.mjs';
+import { readFrontmatterText, runInCommandDirectory, worktreeBranches } from './lib/state-root.mjs';
 import { readFile } from 'node:fs/promises';
 
 /**
@@ -133,7 +134,13 @@ export function evaluateStopArchive({ frontmatter, headSha, headSubject }) {
  *   wrapper to write between the gates' read and the archive's lock
  * @returns {Promise<{archived: boolean, reason?: string, gateFailures?: string[], to?: string}>}
  */
-export async function runStopArchive({
+// ADR-0067 Decision 1(a) — the writes act in the checkout `repoRoot` names,
+// whatever the process's working directory (a hook acts on its payload's).
+export async function runStopArchive(args) {
+  return args?.repoRoot ? runInCommandDirectory(args.repoRoot, () => runStopArchiveInCheckout(args)) : runStopArchiveInCheckout(args);
+}
+
+async function runStopArchiveInCheckout({
   workflowPath,
   host,
   repoRoot,
@@ -252,7 +259,7 @@ async function noteTerminalOnParent({ frontmatter, commit, host, repoRoot, stder
   // when the note is already there, and it covers a crash between P10's
   // marker and its write.
   try {
-    const { writebackParent } = await import('./parent-writeback.mjs');
+    const { writebackParent, dispatchExpectation } = await import('./parent-writeback.mjs');
     await writebackParent({
       repoRoot,
       parentWorkflowId: frontmatter.parent_workflow,
@@ -262,6 +269,9 @@ async function noteTerminalOnParent({ frontmatter, commit, host, repoRoot, stder
       engineerWorkflowId: frontmatter.workflow_id,
       commit,
       host,
+      // ADR-0067 Decision 4, item 5 — the subtask is bound to this workflow
+      // only while it is the one it was dispatched for.
+      expectDispatch: dispatchExpectation(frontmatter),
       stderr,
     });
   } catch (err) {
@@ -321,7 +331,13 @@ async function noteTerminalOnParent({ frontmatter, commit, host, repoRoot, stder
  * @returns {Promise<Array<{workflowPath: string, archived: boolean, to?: string, reason?: string, gateFailures?: string[]}>>}
  *   one entry per workflow the sweep acted on (archived or attempted).
  */
-export async function runStopArchiveOrphanSweep({ repoRoot, host, stderr = process.stderr, archive = archiveWorkflow }) {
+// ADR-0067 Decision 1(a) — the writes act in the checkout `repoRoot` names,
+// whatever the process's working directory (a hook acts on its payload's).
+export async function runStopArchiveOrphanSweep(args) {
+  return args?.repoRoot ? runInCommandDirectory(args.repoRoot, () => runStopArchiveOrphanSweepInCheckout(args)) : runStopArchiveOrphanSweepInCheckout(args);
+}
+
+async function runStopArchiveOrphanSweepInCheckout({ repoRoot, host, stderr = process.stderr, archive = archiveWorkflow }) {
   let files;
   try {
     files = await listWorkflowFilesAllHomes(repoRoot);
@@ -330,11 +346,19 @@ export async function runStopArchiveOrphanSweep({ repoRoot, host, stderr = proce
     return [];
   }
   const checkout = checkedOutBranch(repoRoot);
+  // ADR-0067 Decision 1(b): the list now spans the read set, so a branch
+  // checked out in ANY worktree is left to that worktree's own Stop, the only
+  // one that sees its working tree. When git cannot list the worktrees, every
+  // kept branch is left alone, as when this checkout's branch is unknown.
+  const elsewhere = worktreeBranches(repoRoot);
   const results = [];
   for (const workflowPath of files) {
     let frontmatter;
     try {
-      const text = await readFile(workflowPath, 'utf8');
+      // The frontmatter only, from a regular file opened without blocking: a
+      // FIFO in a home is skipped, never waited on (ADR-0067 Decision 4, item 1).
+      const text = readFrontmatterText(workflowPath);
+      if (text === null) throw new Error('not a regular file');
       ({ frontmatter } = parseWorkflowFile(text));
     } catch (err) {
       // Corrupt/unreadable workflow — skip (fail-open, ADR-0011 §4). One bad
@@ -346,9 +370,10 @@ export async function runStopArchiveOrphanSweep({ repoRoot, host, stderr = proce
     const branch = frontmatter?.git_baseline?.branch;
     if (typeof branch !== 'string' || branch.length === 0) continue;
     if (checkout.state === 'branch' && branch === checkout.branch) continue; // the per-branch path owns it
+    if (elsewhere.branches.has(branch)) continue; // another worktree's Stop owns it
     const refState = branchRefState(repoRoot, branch);
     if (refState === 'present') {
-      if (checkout.state === 'unknown') continue; // any kept branch could be the checked-out one
+      if (checkout.state === 'unknown' || !elsewhere.ok) continue; // any kept branch could be a checked-out one
       const result = await archiveOnKeptBranch({ workflowPath, frontmatter, branch, host, repoRoot, stderr, archive });
       if (result) results.push(result);
       continue;

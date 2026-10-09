@@ -77,7 +77,14 @@ async function main() {
   let active = null;
   try {
     active = await findActiveWorkflow(repoRoot);
-  } catch {
+  } catch (err) {
+    // Nonfatal, so the handoff backstop below still runs; but a lookup the
+    // scans refuse (two active workflows on the branch, a FIFO or a file in a
+    // home's place) is reported, not shown as no active workflow (ADR-0067
+    // Decision 4).
+    // One line on stderr, the hook's diagnostic channel: stdout is what a
+    // host adds to the model's context.
+    process.stderr.write(`${persona.name}/session-start: no active workflow shown: ${String(err?.message ?? err).replace(CONTROL_CHARS, ' ')}\n`);
     active = null;
   }
   if (active) {
@@ -125,7 +132,7 @@ async function main() {
       // ADR-0039 §4 — line is null when the completion footer already rendered
       // (suppress the false "missed-footer" nudge); still consume the one-shot.
       if (pending.line) process.stdout.write(`${pending.line}\n`);
-      await consumePendingHandoff(pending.projectionFile);
+      await consumePendingHandoff(pending.projectionFile, repoRoot);
     }
   } catch {
     /* non-fatal */

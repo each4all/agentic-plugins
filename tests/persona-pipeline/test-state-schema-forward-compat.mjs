@@ -560,13 +560,14 @@ for (const persona of personasFor('scripts/state.mjs')) {
     const reader = src.replace(keyOrderLine, '').replace(emit, "export const SCHEMA_VERSION = '1.3';");
     // A plugin-shaped copy: state.mjs reads its persona from the plugin's own
     // persona.json through lib/persona.mjs, which checks the plugin manifest
-    // name (ADR-0066 Decision 2); its CLI entry guard lives in lib/cli-entry.mjs.
+    // name (ADR-0066 Decision 2); its CLI entry guard lives in lib/cli-entry.mjs,
+    // and its state root (ADR-0067) in lib/state-root.mjs.
     const scripts = join(dir, 'scripts');
     await mkdir(join(scripts, 'lib'), { recursive: true });
     await mkdir(join(dir, '.claude-plugin'));
     await writeFile(join(scripts, 'state.mjs'), reader);
     await copyFile(P.path('scripts/validate-commit.mjs'), join(scripts, 'validate-commit.mjs'));
-    for (const lib of ['cli-entry.mjs', 'persona.mjs']) {
+    for (const lib of ['cli-entry.mjs', 'persona.mjs', 'state-root.mjs']) {
       await copyFile(P.path(`scripts/lib/${lib}`), join(scripts, 'lib', lib));
     }
     await copyFile(P.path('persona.json'), join(dir, 'persona.json'));
@@ -670,7 +671,7 @@ for (const persona of personasFor('scripts/state.mjs')) {
     await mkdir(join(dir, '.claude-plugin'));
     await writeFile(join(scripts, 'state.mjs'), src.replace(PATH_KEY_LINE, ''));
     await copyFile(P.path('scripts/validate-commit.mjs'), join(scripts, 'validate-commit.mjs'));
-    for (const lib of ['cli-entry.mjs', 'persona.mjs']) {
+    for (const lib of ['cli-entry.mjs', 'persona.mjs', 'state-root.mjs']) {
       await copyFile(P.path(`scripts/lib/${lib}`), join(scripts, 'lib', lib));
     }
     await copyFile(P.path('persona.json'), join(dir, 'persona.json'));

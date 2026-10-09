@@ -16,7 +16,8 @@
 // Run via `node --test tests/persona-pipeline/test-phase7-commit.mjs`.
 
 import { describe, it } from 'node:test';
-import { strictEqual, deepStrictEqual, ok, throws } from 'node:assert/strict';
+import { strictEqual, deepStrictEqual, match, ok, throws } from 'node:assert/strict';
+import { writeFileSync } from 'node:fs';
 import { mkdtemp, rm, writeFile, mkdir, readFile } from 'node:fs/promises';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -754,10 +755,12 @@ for (const persona of personasFor('scripts/phase7-commit.mjs')) {
         shell(dir, 'node', [ORCH_STATE, 'plan-set', '--workflow-path', macroPath, '--host', 'claude', '--subtasks-json-file', subtasksFile]);
 
         const head = shell(dir, 'git', ['rev-parse', 'HEAD']);
+        // The child is on its subtask's branch, where /orchestrator:next creates it.
+        shell(dir, 'git', ['switch', '-q', '-c', 'feat/t1']);
         const wf = shell(dir, 'node', [
           STATE_BIN, 'create', '--repo-root', dir, '--verb', 'compose', '--profile', 'code',
           '--persona', persona, '--host', 'claude', '--workflow-type', 'start',
-          '--git-baseline-branch', 'main', '--git-baseline-head', head, '--status-digest', '',
+          '--git-baseline-branch', 'feat/t1', '--git-baseline-head', head, '--status-digest', '',
           '--current-phase', 'phase-4-implement', '--next-action', 'phase 7 sandbox',
           '--original-request', 'P10 sandbox', '--parent-workflow', macroId, '--originating-subtask', 'T1',
         ]);
@@ -811,10 +814,11 @@ for (const persona of personasFor('scripts/phase7-commit.mjs')) {
         await writeFile(subtasksFile, JSON.stringify([{ id: 'T1', verb: 'compose', branch: 'feat/t1', blocked_by: [], status: 'in_progress' }]));
         shell(macroHome, 'node', [ORCH_STATE, 'plan-set', '--workflow-path', macroPath, '--host', 'claude', '--subtasks-json-file', subtasksFile]);
 
+        shell(dir, 'git', ['switch', '-q', '-c', 'feat/t1']);
         const wf = shell(dir, 'node', [
           STATE_BIN, 'create', '--repo-root', dir, '--verb', 'compose', '--profile', 'code',
           '--persona', persona, '--host', 'claude', '--workflow-type', 'start',
-          '--git-baseline-branch', 'main', '--git-baseline-head', head, '--status-digest', '',
+          '--git-baseline-branch', 'feat/t1', '--git-baseline-head', head, '--status-digest', '',
           '--current-phase', 'phase-4-implement', '--next-action', 'phase 7 sandbox',
           '--original-request', 'P10 recorded path', '--parent-workflow', macroId, '--originating-subtask', 'T1',
           '--parent-workflow-path', macroPath,
@@ -834,6 +838,68 @@ for (const persona of personasFor('scripts/phase7-commit.mjs')) {
         await rm(macroHome, { recursive: true, force: true });
       }
     });
+
+    // ADR-0067 Decision 4, item 5 (N1) — a child /orchestrator:next refused
+    // to bind (its subtask revised after the dispatch read it) commits
+    // anyway. Contract: P10 sends the dispatch the child records, and the
+    // macro, comparing it under its lock, neither binds the child nor moves
+    // the subtask nor notes the commit; Phase 7 itself still completes. The
+    // unrevised control binds, so the refusal is the revision's.
+    for (const host of ['claude', 'codex']) {
+      for (const revised of [true, false]) {
+        itDispatchOn(`P10 (${host}) — a subtask ${revised ? 'revised after its child was dispatched is not bound to it' : 'as the child records its dispatch is bound and noted'}`, async () => {
+          const dir = await makeSandboxRepo();
+          try {
+            const ORCH_STATE = resolve(REPO_ROOT, 'plugins/orchestrator/scripts/state.mjs');
+            const head = shell(dir, 'git', ['rev-parse', 'HEAD']);
+            const macroPath = shell(dir, 'node', [
+              ORCH_STATE, 'create', '--repo-root', dir, '--verb', 'plan', '--host', host,
+              '--git-baseline-branch', 'main', '--git-baseline-head', head, '--original-request', 'phase7 P10 dispatch',
+            ]);
+            const macroId = macroPath.split('/').pop().replace(/\.md$/, '');
+            const subtasksFile = join(dir, '.agentic-plugins', 'state', 'subtasks.json');
+            const plan = (branch) => {
+              writeFileSync(subtasksFile, JSON.stringify([{ id: 'T1', verb: 'compose', branch, blocked_by: [], status: 'pending', topic: 'the topic' }]));
+              shell(dir, 'node', [ORCH_STATE, 'plan-set', '--workflow-path', macroPath, '--host', host, '--subtasks-json-file', subtasksFile]);
+            };
+            plan('feat/t1');
+            shell(dir, 'git', ['switch', '-q', '-c', 'feat/t1']);
+            const wf = shell(dir, 'node', [
+              STATE_BIN, 'create', '--repo-root', dir, '--verb', 'compose', '--profile', 'code',
+              '--persona', persona, '--host', host,
+              '--git-baseline-branch', 'feat/t1', '--git-baseline-head', head, '--status-digest', '',
+              '--current-phase', 'phase-4-implement', '--next-action', 'phase 7 sandbox',
+              '--original-request', 'P10 dispatch', '--parent-workflow', macroId, '--originating-subtask', 'T1',
+              '--dispatch-selection', JSON.stringify({ subtask: 'T1', branch: 'feat/t1', verb: 'compose', profile: '', topic: 'the topic' }),
+            ]);
+            // Another session's plan revision, after /orchestrator:next refused the binding.
+            if (revised) plan('feat/t1b');
+            const before = await readFile(macroPath, 'utf8');
+            shell(dir, 'node', [STATE_BIN, 'record-composed-file', '--workflow-path', wf, '--path', 'README.md', '--op', 'edit']);
+            await writeFile(join(dir, 'README.md'), '# sandbox\nP10 dispatch\n');
+            const r = spawnSync('node', [
+              PHASE7_BIN, '--mode', 'execute', '--workflow-path', wf, '--repo-root', dir, '--host', host,
+              '--subject', 'docs: P10 dispatch', '--confirm-non-interactive', '--lenient-cc',
+            ], { cwd: dir, encoding: 'utf8', env: { ...process.env, AGENTIC_ORCHESTRATOR_ROOT: resolve(REPO_ROOT, 'plugins/orchestrator') } });
+            strictEqual(r.status, 0, r.stderr);
+            const committed = shell(dir, 'git', ['rev-parse', 'HEAD']);
+            const after = await readFile(macroPath, 'utf8');
+            if (revised) {
+              strictEqual(after, before, 'the macro is untouched');
+              match(r.stderr, /parent-writeback failed but Phase 7 will continue: dispatch-changed/);
+              match(r.stderr, /branch is "feat\/t1b"; the child was dispatched for "feat\/t1"/);
+              ok(!/^parent_writeback_at:/m.test(await readFile(wf, 'utf8')), 'the P10 marker is cleared');
+            } else {
+              ok(after.includes(`### engineer terminal: "T1" @ `) && after.includes(committed), r.stderr);
+              match(after, /engineer_workflow_id: "compose-/);
+              match(after, /status: "in_progress"/);
+            }
+          } finally {
+            await rm(dir, { recursive: true, force: true });
+          }
+        });
+      }
+    }
   });
 
   // -----------------------------------------------------------------------------

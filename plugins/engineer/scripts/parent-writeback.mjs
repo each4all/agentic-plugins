@@ -35,16 +35,18 @@
 //   2. Resolve the parent workflow file: the child's recorded
 //      `parent_workflow_path` first, when it names a file (ADR-0067
 //      Decision 3), else the candidates, canonical
-//      `<repoRoot>/.agentic-plugins/state/orchestrator/workflows/<parent>.md`
-//      or legacy `<repoRoot>/.claude/agentic-orchestrator/workflows/<parent>.md`.
-//      The file found must carry the parent's workflow id, and must be the
-//      only one: a second copy refuses the writeback. The orchestrator is
+//      `<root>/.agentic-plugins/state/orchestrator/workflows/<parent>.md`
+//      or legacy `<root>/.claude/agentic-orchestrator/workflows/<parent>.md`
+//      for each root of the checkout's read set, the default state root's
+//      first. The file found must carry the parent's workflow id, and must be
+//      the only one in the repository: a second copy refuses the writeback. The orchestrator is
 //      handed the file it physically is, never a symlink to it. Apply the ADR-0019 §4
 //      step 3 archive-fallback rule when the parent has already been moved to
 //      `archive/` (skip + stderr warning, do NOT throw — host stop lifecycle
 //      must not be blocked).
 //   3. Spawn the orchestrator state.mjs `subtask-engineer-terminal` CLI
-//      (ADR-0062). It checks existence, ownership and terminal states and
+//      (ADR-0062). It checks existence, ownership, terminal states and the
+//      dispatch the workflow records (ADR-0067 Decision 4, item 5) and
 //      writes the note under its own parent per-file lock — §6 lock-order
 //      holds because the engineer side has released its own locks before
 //      this helper is called. An orchestrator from before ADR-0062 has no
@@ -67,6 +69,7 @@ import { join, isAbsolute, resolve, dirname, basename, relative, normalize, sep 
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { personaName } from './lib/persona.mjs';
+import { StateRootError, otherCopiesOf, readSet, repositoryRoots, sameDirectory } from './lib/state-root.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -503,6 +506,36 @@ async function inspectMacroFile(path, parentWorkflowId) {
 }
 
 /**
+ * ADR-0067 Decision 4, item 5 — the dispatch a workflow records, as the
+ * orchestrator's `--expect-dispatch` takes it: the macro and subtask of its
+ * parent linkage and the branch, verb, profile and topic recorded at its
+ * creation; for a workflow created before that record, the branch it was
+ * created on (`git_baseline.branch`: /orchestrator:next creates every child
+ * on its subtask's branch). Null when no macro dispatched the workflow.
+ *
+ * @param {object} frontmatter
+ * @returns {?{macro: string, subtask: string, branch: string, verb?: string, profile?: string, topic?: string}}
+ */
+export function dispatchExpectation(frontmatter) {
+  const macro = frontmatter?.parent_workflow;
+  const subtask = frontmatter?.originating_subtask;
+  if (typeof macro !== 'string' || macro.length === 0 || typeof subtask !== 'string' || subtask.length === 0) {
+    return null;
+  }
+  if (typeof frontmatter.dispatched_branch === 'string') {
+    return {
+      macro,
+      subtask,
+      branch: frontmatter.dispatched_branch,
+      verb: frontmatter.dispatched_verb,
+      profile: frontmatter.dispatched_profile,
+      topic: frontmatter.dispatched_topic,
+    };
+  }
+  return { macro, subtask, branch: frontmatter.git_baseline?.branch ?? '' };
+}
+
+/**
  * The create-time check of `parent_workflow_path` (ADR-0067 Decision 3): the
  * path is well formed and names an existing orchestrator macro file whose
  * `workflow_id` is `parentWorkflowId`. `null` when it passes, else what is
@@ -561,6 +594,9 @@ function physicalPath(path) {
  *     stderr, exitCode}`
  *   - state.mjs CLI exits non-zero otherwise →
  *     `{ok:false, reason:'cli-failed', stderr, exitCode}`
+ *   - the subtask no longer matches `expectDispatch` (a plan revision after
+ *     the dispatch) → `{ok:false, reason:'dispatch-changed', stderr,
+ *     exitCode}`; nothing is written
  *   - subtask already completed / deferred / abandoned (or blocked) →
  *     envelope `{skipped: true, skipReason}`; a repeated call for the same
  *     commit → envelope `{noop: true}`. Both return `{ok:true, envelope}`.
@@ -580,6 +616,9 @@ function physicalPath(path) {
  *   workflow's branch (noted on the macro, never recorded as the
  *   subtask's `commit`)
  * @param {string}  args.host — 'claude' | 'codex'
+ * @param {?object} [args.expectDispatch] — `dispatchExpectation` of the
+ *   workflow (ADR-0067 Decision 4, item 5); the orchestrator refuses the note
+ *   when the subtask no longer matches it
  * @param {?string} [args.orchestratorRoot] — explicit override; when
  *   omitted, `discoverOrchestratorPluginRoot` runs with
  *   `discoverOpts`. Tests pass this directly to avoid relying on
@@ -598,6 +637,7 @@ export async function writebackParent({
   engineerWorkflowId,
   commit,
   host,
+  expectDispatch = null,
   orchestratorRoot = null,
   discoverOpts = undefined,
   stderr = process.stderr,
@@ -694,21 +734,56 @@ export async function writebackParent({
     }
     recordedPhysical = physical;
   }
-  // Every file that holds the macro's id, one entry per physical file: the
-  // recorded path's, and those in the workflows homes of repoRoot and of the
-  // checkout the recorded path names (its other home too: a second copy there
-  // is as stale as one under repoRoot).
+  // ADR-0067 Decisions 3 and 4 — the candidates are the workflows homes of
+  // repoRoot's read set, the default state root's first, and of the root the
+  // recorded path names (its other home too: a second copy there is as stale
+  // as one under repoRoot). Every file that holds the macro's id, one entry per
+  // physical file, is looked for in those and in the own homes of every other
+  // worktree of the repository: one id in two files refuses the writeback.
   const recordedCheckout = recordedPath === null ? null : checkoutOfMacroPath(recordedPath);
-  const homes = [...orchWorkflowDirs(repoRoot), ...(recordedCheckout === null ? [] : orchWorkflowDirs(recordedCheckout))];
+  const roots = [];
+  for (const root of [...readSet(resolve(repoRoot)), ...(recordedCheckout === null ? [] : [recordedCheckout])]) {
+    if (!roots.some((r) => sameDirectory(r, root))) roots.push(root);
+  }
+  let otherRoots;
+  try {
+    otherRoots = repositoryRoots(resolve(repoRoot)).filter((root) => !roots.some((r) => sameDirectory(r, root)));
+  } catch (err) {
+    if (!(err instanceof StateRootError)) throw err;
+    return unreadable(`the other worktrees of ${resolve(repoRoot)}`, err.message);
+  }
   const copies = new Map();
+  const candidates = new Map();
   if (recordedPhysical !== null) copies.set(recordedPhysical, recordedPath);
-  for (const dir of homes) {
+  const searchedDirs = [
+    ...roots.flatMap(orchWorkflowDirs).map((dir) => [dir, true]),
+    ...otherRoots.flatMap(orchWorkflowDirs).map((dir) => [dir, false]),
+  ];
+  for (const [dir, candidate] of searchedDirs) {
     const candidatePath = join(dir, parentFileBasename(parentWorkflowId));
     const probe = await probePath(candidatePath);
     if (probe.kind === 'absent') continue;
     if (probe.kind === 'unreadable') return unreadable(candidatePath, probe.why);
     const physical = physicalPath(candidatePath);
     if (!copies.has(physical)) copies.set(physical, candidatePath);
+    if (candidate && !candidates.has(physical)) candidates.set(physical, candidatePath);
+  }
+  // ADR-0067 Decision 4, item 2 — a copy is a file holding the macro's id,
+  // whatever its name: a second file under another name refuses too.
+  let renamed;
+  try {
+    renamed = otherCopiesOf({
+      file: join(searchedDirs[0][0], parentFileBasename(parentWorkflowId)),
+      workflowId: parentWorkflowId,
+      dirs: searchedDirs.map(([dir]) => dir),
+    });
+  } catch (err) {
+    if (!(err instanceof StateRootError)) throw err;
+    return unreadable(searchedDirs.map(([dir]) => dir).join(', '), err.message);
+  }
+  for (const copy of renamed) {
+    const physical = physicalPath(copy);
+    if (!copies.has(physical)) copies.set(physical, copy);
   }
   if (copies.size > 1) {
     stderr.write(
@@ -725,8 +800,8 @@ export async function writebackParent({
   // while the macro stayed unchanged — a second writable copy, the fork
   // ADR-0067 Decision 4 exists to prevent.
   let resolvedParentPath = recordedPhysical;
-  if (resolvedParentPath === null && copies.size === 1) {
-    const [candidatePath] = copies.values();
+  if (resolvedParentPath === null && candidates.size === 1) {
+    const [candidatePath] = candidates.values();
     const { physical, problem } = await inspectMacroFile(candidatePath, parentWorkflowId);
     if (problem) {
       stderr.write(
@@ -743,8 +818,7 @@ export async function writebackParent({
     // helper does not need to do anything with the archived file. The
     // recorded path's own checkout is looked at too, so a macro archived in
     // another checkout reads as archived rather than dangling.
-    const archiveDirs = orchArchiveDirs(repoRoot);
-    if (recordedCheckout !== null) archiveDirs.push(...orchArchiveDirs(recordedCheckout));
+    const archiveDirs = roots.flatMap(orchArchiveDirs);
     let archived = false;
     for (const dir of archiveDirs) {
       try {
@@ -841,6 +915,13 @@ export async function writebackParent({
     `--expect-workflow-id=${parentWorkflowId}`,
     `--event=updated`,
   ];
+  // ADR-0067 Decision 4, item 5 — the dispatch this workflow records: under
+  // the macro's lock, a subtask a plan revision changed since is not bound to
+  // it, nor moved on its behalf. An orchestrator from before the flag ignores
+  // it.
+  if (expectDispatch !== null && expectDispatch !== undefined) {
+    args.push(`--expect-dispatch=${JSON.stringify(expectDispatch)}`);
+  }
 
   try {
     const { stdout, stderr: cliStderr } = await execFileAsync(
@@ -852,7 +933,10 @@ export async function writebackParent({
       // (RETRY_BACKOFF_MAX_MS = 5_000ms) the normal completion time is
       // well under a second; a multi-second timeout indicates the lock
       // is genuinely stuck.
-      { encoding: 'utf8', timeout: 30_000 },
+      // ADR-0067 Decision 1(a) — run in the child's checkout: the orchestrator's
+      // write guard reads the checkout a command runs in from its working
+      // directory, and this process's may be another (a hook, a test).
+      { encoding: 'utf8', timeout: 30_000, cwd: resolve(repoRoot) },
     );
     // The orchestrator may emit informational warnings on stderr (e.g.,
     // the skip diagnostic for a completed / deferred / abandoned subtask).
@@ -903,6 +987,13 @@ export async function writebackParent({
         `--commit=<the merge commit>.\n`,
       );
       return { ok: false, reason: 'orchestrator-too-old', stderr: cliStderr, exitCode };
+    }
+    if (exitCode === 1 && /\(dispatch-changed\)/.test(cliStderr)) {
+      stderr.write(
+        `${personaName()}/parent-writeback: macro ${parentWorkflowId} refused the terminal note: ` +
+        `${cliStderr.trim()}\n`,
+      );
+      return { ok: false, reason: 'dispatch-changed', stderr: cliStderr, exitCode };
     }
     stderr.write(
       `${personaName()}/parent-writeback: orchestrator CLI exited ${exitCode ?? err.code}: ` +

@@ -48,6 +48,7 @@
 // merges.
 
 import { isCliEntry } from './lib/cli-entry.mjs';
+import { runInCommandDirectory } from './lib/state-root.mjs';
 import { capabilityOn, commandPrefix, personaOrRefuse } from './lib/persona.mjs';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -1160,7 +1161,7 @@ async function runPostCommitGates({ workflowPath, repoRoot, flags, stderr, lande
   // Parent linkage is dispatch_target's (ADR-0066 Decision 3): with it off,
   // the keys are opaque data and nothing is written back.
   if (parentLinked && capabilityOn('dispatch_target')) {
-    const { writebackParent } = await import('./parent-writeback.mjs');
+    const { writebackParent, dispatchExpectation } = await import('./parent-writeback.mjs');
     const commitSha = gitSync(repoRoot, ['rev-parse', 'HEAD']);
     await setParentWritebackMarker({
       workflowPath, host: flags.host, at: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
@@ -1174,6 +1175,9 @@ async function runPostCommitGates({ workflowPath, repoRoot, flags, stderr, lande
       engineerWorkflowId: fresh.workflow_id,
       commit: commitSha,
       host: flags.host,
+      // ADR-0067 Decision 4, item 5 — the subtask is bound to this workflow
+      // only while it is the one it was dispatched for.
+      expectDispatch: dispatchExpectation(fresh),
       stderr,
     });
     if (wbResult && wbResult.ok === false) {
@@ -1200,6 +1204,8 @@ async function runPostCommitGates({ workflowPath, repoRoot, flags, stderr, lande
     // ADR-0031 amendment — Phase 7 commit is a production completion entry
     // point; fire the session-handoff sidecar (after the terminal write).
     emitHandoff: true,
+    // ADR-0067 Decision 1(a) — the slot and the git facts are this checkout's.
+    checkout: repoRoot,
   });
   return { ok: true, landed };
 }
@@ -1769,7 +1775,19 @@ Exit codes:
   ≠ 0 — refine fallback emitted to stderr; workflow remains active.
 `;
 
+// ADR-0067 Decision 1(a) — the driver's writes act in the checkout --repo-root
+// names, whatever the process's working directory.
 export async function main(argv) {
+  let repoRoot = null;
+  try {
+    repoRoot = parseFlags(argv)['repo-root'] || null;
+  } catch {
+    repoRoot = null;
+  }
+  return repoRoot ? runInCommandDirectory(repoRoot, () => runMain(argv)) : runMain(argv);
+}
+
+async function runMain(argv) {
   let flags;
   try {
     flags = parseFlags(argv);
