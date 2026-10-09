@@ -55,7 +55,8 @@ describe('/orchestrator:next takes readiness from the plan', () => {
     // and create the branch from origin/<integration> without an upstream (otherwise a
     // successor starts from the previous subtask's branch, or a bare push targets main).
     ok(text.includes('subtask-readiness'), 'next skill uses subtask-readiness');
-    ok(text.includes('refs/remotes/origin/<integration>'), 'next skill branches from the remote-tracking ref');
+    // The switching block runs it (U7e), as next.md's does.
+    ok(text.includes('switch --no-track -c "$SUBTASK_BRANCH" "refs/remotes/origin/$INTEGRATION_BRANCH"'), 'next skill branches from the remote-tracking ref');
     ok(text.includes('--no-track'), 'next skill does not set an upstream on the new branch');
   });
 });

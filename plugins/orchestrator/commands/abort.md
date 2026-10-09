@@ -65,14 +65,12 @@ if [ -n "${EXPLICIT_WORKFLOW_ID:-}" ]; then
       echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID invalid — must be a basename-shaped workflow id." >&2
       exit 1;;
   esac
-  CANONICAL_MACRO_PATH="$REPO_ROOT/.agentic-plugins/state/orchestrator/workflows/${EXPLICIT_WORKFLOW_ID}.md"
-  LEGACY_MACRO_PATH="$REPO_ROOT/.claude/agentic-orchestrator/workflows/${EXPLICIT_WORKFLOW_ID}.md"
-  if [ -f "$CANONICAL_MACRO_PATH" ]; then
-    MACRO_PATH="$CANONICAL_MACRO_PATH"
-  elif [ -f "$LEGACY_MACRO_PATH" ]; then
-    MACRO_PATH="$LEGACY_MACRO_PATH"
-  else
-    echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID not found in canonical or legacy workflow homes." >&2
+  # ADR-0067 Decision 4, item 2 — the macro file in the orchestrator workflow
+  # homes of this checkout's read set, the default state root's first. Two
+  # files holding the id are an error, named on stderr, never a choice.
+  if ! MACRO_PATH="$(node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" \
+    resolve-workflow --repo-root "$REPO_ROOT" --workflow-id "$EXPLICIT_WORKFLOW_ID")"; then
+    echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID names no single macro file in the orchestrator workflow homes of this checkout's read set (the reason is above)." >&2
     exit 1
   fi
 else
@@ -102,6 +100,18 @@ echo "→ Aborting macro: $MACRO_ID (host=$DETECTED_HOST)"
 
 ```bash
 : "${MACRO_PATH:?Phase 0 did not run in this shell — run Phases 0–3 in one Bash invocation}"
+# ADR-0067 Decision 4, item 5 — join the macro's run lock before the first
+# write: an autopilot run or another session holding it refuses here, naming
+# the holder, and nothing is written. The trap releases the admission on every
+# exit from here, after Phase 3's last write included.
+ADMISSION="$(node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" admission join \
+  --macro "$MACRO_ID" --checkout "$REPO_ROOT" --command abort \
+  --host "$DETECTED_HOST" --session-id "${CLAUDE_CODE_SESSION_ID:-}")" || exit 1
+release_admission() {
+  node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" admission release \
+    --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION"
+}
+trap 'release_admission' EXIT
 node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" \
   bulk-subtask-status \
   --workflow-path "$MACRO_PATH" \
@@ -131,11 +141,16 @@ node "$ORCH_PLUGIN_ROOT/scripts/discover-engineer.mjs" preflight --root "$ENGINE
 # Child-archive failure gate (Codex P2 finding) — same pattern as
 # /orchestrator:finalize. The shim exits non-zero when any child failed.
 STEP2_RC=0
-CANONICAL_ENG_WORKFLOW_DIR="$REPO_ROOT/.agentic-plugins/state/engineer/workflows"
-LEGACY_ENG_WORKFLOW_DIR="$REPO_ROOT/.claude/agentic-engineer/workflows"
-if [ -d "$CANONICAL_ENG_WORKFLOW_DIR" ] || [ -d "$LEGACY_ENG_WORKFLOW_DIR" ]; then
+# ADR-0067 Decision 1(b) — a child may be held by the default state root, this
+# checkout, or another worktree's own home: scan the repository-wide set
+# scan-roots prints (the read set, then every other worktree), each file once.
+# scan-roots fails rather than leave a worktree out, and so does this step.
+SCAN_ROOTS="$(node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" scan-roots --repo-root "$REPO_ROOT")" || {
+  echo "✗ Could not list the repository's worktrees to scan for children of $MACRO_ID (see the error above); refusing to close the macro over a child left unseen." >&2
+  exit 1
+}
   env MACRO_ID="$MACRO_ID" REPO_ROOT="$REPO_ROOT" \
-    ENG_WORKFLOW_DIRS="$CANONICAL_ENG_WORKFLOW_DIR:$LEGACY_ENG_WORKFLOW_DIR" \
+    SCAN_ROOTS="$SCAN_ROOTS" \
     ENGINEER_PLUGIN_ROOT="$ENGINEER_PLUGIN_ROOT" \
     DETECTED_HOST="$DETECTED_HOST" \
     node -e '
@@ -144,20 +159,39 @@ if [ -d "$CANONICAL_ENG_WORKFLOW_DIR" ] || [ -d "$LEGACY_ENG_WORKFLOW_DIR" ]; th
       const { execFile } = require("child_process");
       const { promisify } = require("util");
       const execFileAsync = promisify(execFile);
-      const { MACRO_ID, REPO_ROOT, ENG_WORKFLOW_DIRS, ENGINEER_PLUGIN_ROOT, DETECTED_HOST } = process.env;
+      const { MACRO_ID, REPO_ROOT, SCAN_ROOTS, ENGINEER_PLUGIN_ROOT, DETECTED_HOST } = process.env;
       const ENG_STATE = path.join(ENGINEER_PLUGIN_ROOT, "scripts/state.mjs");
       let failures = 0;
       (async () => {
         const ID_RE = /^[a-z]+-[0-9]{8}T[0-9]{6}Z-[0-9a-f]+\.md$/;
-        for (const ENG_WORKFLOW_DIR of String(ENG_WORKFLOW_DIRS || "").split(path.delimiter).filter(Boolean)) {
+        const ENG_WORKFLOW_DIRS = JSON.parse(SCAN_ROOTS).flatMap((root) => [
+          path.join(root, ".agentic-plugins", "state", "engineer", "workflows"),
+          path.join(root, ".claude", "agentic-engineer", "workflows"),
+        ]);
+        // One file reached through two roots (a linked home) is one child,
+        // worked on by its physical path.
+        const seen = new Set();
+        for (const ENG_WORKFLOW_DIR of ENG_WORKFLOW_DIRS) {
           let entries;
           try { entries = await fs.readdir(ENG_WORKFLOW_DIR); }
           catch (err) { if (err.code === "ENOENT") continue; throw err; }
           for (const name of entries) {
             if (!ID_RE.test(name)) continue;
-            const childPath = path.join(ENG_WORKFLOW_DIR, name);
+            let childPath;
+            try { childPath = await fs.realpath(path.join(ENG_WORKFLOW_DIR, name)); }
+            catch (err) { if (err.code === "ENOENT") continue; throw err; }
+            if (seen.has(childPath)) continue;
+            seen.add(childPath);
             let text;
-            try { text = await fs.readFile(childPath, "utf8"); } catch { continue; }
+            // Only a file gone since the listing is no child: one that cannot
+            // be read may belong to this macro, so it counts as a failure.
+            try { text = await fs.readFile(childPath, "utf8"); }
+            catch (err) {
+              if (err.code === "ENOENT") continue;
+              process.stderr.write(`  ! cannot read ${childPath}: ${err.code || err.message}\n`);
+              failures += 1;
+              continue;
+            }
             // CRLF tolerance — engineer files written by a Windows tool
             // would carry \r\n; defend so a CRLF-saved child is correctly
             // routed (Phase 5 review).
@@ -255,7 +289,6 @@ if [ -d "$CANONICAL_ENG_WORKFLOW_DIR" ] || [ -d "$LEGACY_ENG_WORKFLOW_DIR" ]; th
           }
         });
     ' || STEP2_RC=$?
-fi
 
 # Codex P2 finding (Phase 6 resolve): refuse to mark macro terminal when
 # any child failed to archive — A4 would keep failing forever otherwise.

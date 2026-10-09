@@ -7,9 +7,9 @@ argument-hint: [<subtask-id>] [--workflow=<macro-id>]
 
 $ARGUMENTS
 
-Dispatch one orchestrator macro subtask into the engineer plugin's command runbook, recording the immutable parent linkage (`AGENTIC_PARENT_WORKFLOW` + `AGENTIC_ORIGINATING_SUBTASK`, and the macro file's path, `AGENTIC_PARENT_WORKFLOW_PATH`, ADR-0067 Decision 3) so the engineer can note its terminal commit on the macro and bind ownership (Phase 7 and the Stop hook, ADR-0019 §4 as changed by ADR-0062). The subtask completes when `/orchestrator:done` records the merge. This is the **same-host default**; cross-host (`--peer`) remains trigger-deferred PR-F scope.
+Dispatch one orchestrator macro subtask into the engineer plugin's command runbook, recording the immutable parent linkage (`AGENTIC_PARENT_WORKFLOW` + `AGENTIC_ORIGINATING_SUBTASK`, and the macro file's path, `AGENTIC_PARENT_WORKFLOW_PATH`, ADR-0067 Decision 3, and the selection Phase 1 made, `AGENTIC_DISPATCH_SELECTION`, which every later binding of the child compares, ADR-0067 Decision 4, item 5) so the engineer can note its terminal commit on the macro and bind ownership (Phase 7 and the Stop hook, ADR-0019 §4 as changed by ADR-0062). The subtask completes when `/orchestrator:done` records the merge. This is the **same-host default**; cross-host (`--peer`) remains trigger-deferred PR-F scope.
 
-Maintain one progress entry per phase across the five phases below and advance its status as you go — use the host's task-tracking tools when the session exposes them, and keep an inline checklist when it does not. Each phase is a discrete bash snippet — execute them in order and **abort on any non-zero exit** unless the snippet's commentary explicitly handles the failure.
+Maintain one progress entry per phase across the phases below and advance its status as you go — use the host's task-tracking tools when the session exposes them, and keep an inline checklist when it does not. Each phase is a discrete bash snippet — execute them in order and **abort on any non-zero exit** unless the snippet's commentary explicitly handles the failure. One exception: once Phase 3b has joined the run locks, go on to Phase 5 whatever Phase 4's outcome, since Phase 5 releases the admission (ADR-0067 Decision 4, item 5).
 
 Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
 from `AGENTIC_ORCHESTRATOR_ROOT` when that is set, else from the plugin path
@@ -25,7 +25,8 @@ shell variable does not outlive a Bash call.
 - Do NOT invoke the engineer skill directly (`core/skills/<verb>/SKILL.md`) — bypasses Phase 0 bootstrap and drops the parent linkage the engineer terminal note needs.
 - Do NOT call `engineer state.mjs create` directly — bypasses the engineer command's runbook semantics.
 - All AGENTIC_* env exports + the engineer command's Phase 0+ snippets MUST run in the **same shell session** (a single Bash tool call). The Bash tool spawns a fresh process per call, so split execution drops the env exports — emit the prelude exports inline at the top of each engineer Phase 0 bash block, OR run the entire engineer Phase 0+verb as one consolidated Bash tool invocation. The CLAUDE_PLUGIN_ROOT rebind also lives in the same block; argv positions use `$ENGINEER_PLUGIN_ROOT` directly (not the rebound `$CLAUDE_PLUGIN_ROOT`).
-- Branch precondition order is fixed: clean-check → resolve `subtasks[i].branch` → ownership-check → switch → invoke. Any reordering breaks the §1 invariants.
+- Branch precondition order is fixed: clean-check → resolve `subtasks[i].branch` → ownership-check → engineer preflight → join the run locks → switch → invoke → writeback → release. Any reordering breaks the §1 invariants.
+- Admission (ADR-0067 Decision 4, item 5): Phase 3b joins the locks an autopilot run takes and prints this session's admission id (empty for a worker of the run that holds them). Carry it into every later block as `ADMISSION`, as you carry `MACRO_PATH`. Each block that switches the branch, dispatches into the checkout or writes the macro checks it first, and every exit after the join releases it.
 
 ---
 
@@ -56,14 +57,12 @@ if [ -n "${EXPLICIT_WORKFLOW_ID:-}" ]; then
       echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID invalid — must be a basename-shaped workflow id (no '/', '\\\\', '..', or leading '.')." >&2
       exit 1;;
   esac
-  CANONICAL_MACRO_PATH="$REPO_ROOT/.agentic-plugins/state/orchestrator/workflows/${EXPLICIT_WORKFLOW_ID}.md"
-  LEGACY_MACRO_PATH="$REPO_ROOT/.claude/agentic-orchestrator/workflows/${EXPLICIT_WORKFLOW_ID}.md"
-  if [ -f "$CANONICAL_MACRO_PATH" ]; then
-    MACRO_PATH="$CANONICAL_MACRO_PATH"
-  elif [ -f "$LEGACY_MACRO_PATH" ]; then
-    MACRO_PATH="$LEGACY_MACRO_PATH"
-  else
-    echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID not found in canonical or legacy workflow homes." >&2
+  # ADR-0067 Decision 4, item 2 — the macro file in the orchestrator workflow
+  # homes of this checkout's read set, the default state root's first. Two
+  # files holding the id are an error, named on stderr, never a choice.
+  if ! MACRO_PATH="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
+    resolve-workflow --repo-root "$REPO_ROOT" --workflow-id "$EXPLICIT_WORKFLOW_ID")"; then
+    echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID names no single macro file in the orchestrator workflow homes of this checkout's read set (the reason is above)." >&2
     echo "  Use \`gh pr list\` or run /orchestrator:plan to start a new macro." >&2
     exit 1
   fi
@@ -283,8 +282,102 @@ if [ -n "$EXISTING_ENG_PATH" ]; then
     exit 1
   fi
 fi
+```
 
-# Step 4: switch. The user lands on $SUBTASK_BRANCH whether or not
+Phase 2 only reads: a refusal here leaves nothing behind. The switch is
+Phase 3b's, after the engineer preflight and the join.
+
+---
+
+## Phase 3 — Engineer plugin minimum-version preflight
+
+Read-only, so it runs before the switch: an engineer install that fails it
+leaves the checkout where it was.
+
+```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+node "$CLAUDE_PLUGIN_ROOT/scripts/discover-engineer.mjs" preflight \
+  --root "$ENGINEER_PLUGIN_ROOT" || {
+  echo "✗ engineer install at $ENGINEER_PLUGIN_ROOT does not satisfy ADR-0019 PR-A minimum (preflight failed; see preceding diagnostic for cause)." >&2
+  exit 1
+}
+```
+
+The `preflight` subcommand prints the precise reason on its own stderr — surface it as-is.
+
+---
+
+## Phase 3b — Join the run locks, then switch (ADR-0067 Decision 4, item 5)
+
+An autopilot run holds this checkout's worktree lock and its macro's lock
+while it works. This command takes part in both, in the order the driver
+takes them, as an **admission**: `admission join` writes one entry under a
+random id in each, and refuses, naming the holder, when a run or another
+session is there. A worker of the run that holds them passes with no entry and
+an empty id. Then the block reads again what a run's step or a plan revision
+could have changed before the join (the tree, the subtask branch's engineer
+workflow, the selected subtask's status, engineer workflow id, branch, verb,
+profile and topic, and for a pending subtask whether it still waits on
+nothing) and switches. Every exit from the join until the switch has succeeded releases the
+admission.
+
+```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+case "$CLAUDE_PLUGIN_ROOT" in
+  *"/.codex/"*) DETECTED_HOST="codex" ;;
+  *"/.claude/"*) DETECTED_HOST="claude" ;;
+  *) DETECTED_HOST="${AGENTIC_HOST:-claude}" ;;
+esac
+# The id this prints is this session's admission: carry it into every later
+# block as ADMISSION. A refusal names the holder and writes nothing.
+ADMISSION="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" admission join \
+  --macro "$MACRO_ID" --checkout "$REPO_ROOT" --command next \
+  --host "$DETECTED_HOST" --session-id "${CLAUDE_CODE_SESSION_ID:-}")" || exit 1
+release_admission() {
+  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" admission release \
+    --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION"
+}
+trap 'release_admission' EXIT
+if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=normal)" ]; then
+  echo "✗ The working tree changed after Phase 2's clean check; nothing was switched. Rerun /orchestrator:next." >&2
+  exit 1
+fi
+NOW_ENG_PATH="$(node "$ENGINEER_PLUGIN_ROOT/scripts/state.mjs" \
+  find-active --repo-root "$REPO_ROOT" --branch "$SUBTASK_BRANCH")" || exit 1
+if [ "$NOW_ENG_PATH" != "$EXISTING_ENG_PATH" ]; then
+  echo "✗ The engineer workflow on '$SUBTASK_BRANCH' changed after Phase 2's ownership check (was '${EXISTING_ENG_PATH:-none}', now '${NOW_ENG_PATH:-none}'); nothing was switched. Rerun /orchestrator:next." >&2
+  exit 1
+fi
+# The subtask as Phase 1 selected it, every field Phase 1 read that a later
+# phase acts on: a run's step may have completed it, and archived its child, and
+# a plan revision may have changed its branch, verb, profile or topic, before
+# the join. Each name below is followed by the value Phase 1 read, which lost
+# its trailing newlines to the command substitution.
+SUBTASK_CHANGES="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read-subtask \
+  --workflow-path "$MACRO_PATH" --subtask-id "$SUBTASK_ID" \
+  | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const s=JSON.parse(d),a=process.argv.slice(1),out=[];for(let i=0;i<a.length;i+=2){const now=String(s[a[i]]||"").replace(/\n+$/,"");if(now!==a[i+1])out.push(a[i]+" was "+JSON.stringify(a[i+1])+", now "+JSON.stringify(now))}process.stdout.write(out.join("; "))})' -- \
+  status "$SUBTASK_STATUS" engineer_workflow_id "$SUBTASK_EXISTING_ENG_WF_ID" \
+  branch "$SUBTASK_BRANCH" verb "$SUBTASK_VERB" profile "$SUBTASK_PROFILE" topic "$SUBTASK_TOPIC")" || exit 1
+if [ -n "$SUBTASK_CHANGES" ]; then
+  echo "✗ Subtask $SUBTASK_ID changed after Phase 1's selection ($SUBTASK_CHANGES); nothing was switched. Rerun /orchestrator:next." >&2
+  exit 1
+fi
+# Phase 1's dependency gate, judged again: a plan revision may have given the
+# pending subtask a predecessor not yet completed, with every field above
+# unchanged.
+if [ "$SUBTASK_STATUS" = "pending" ]; then
+  WAITING_NOW="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" subtask-readiness \
+    --workflow-path "$MACRO_PATH" --subtask-id "$SUBTASK_ID" \
+    | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>process.stdout.write(JSON.parse(d).waiting_on.join(", ")))')" || exit 1
+  if [ -n "$WAITING_NOW" ]; then
+    echo "✗ Subtask $SUBTASK_ID now waits on: $WAITING_NOW (the plan changed after Phase 1's selection); nothing was switched. Record each predecessor with /orchestrator:done <id> once its pull request has merged, then rerun /orchestrator:next." >&2
+    exit 1
+  fi
+fi
+
+# The switch. The user lands on $SUBTASK_BRANCH whether or not
 # we re-attached — engineer's resume keys on `git branch --show-current`.
 # A new branch starts from the integration branch (the macro's baseline
 # branch) as the remote last reported it, never from the checked-out HEAD:
@@ -316,23 +409,9 @@ else
   echo "→ Created $SUBTASK_BRANCH from local $INTEGRATION_BRANCH (no origin remote)." >&2
 fi
 # --- end ADR-0062 branch-base step ---
+# Switched: from here the admission is held until Phase 5 releases it.
+trap - EXIT
 ```
-
----
-
-## Phase 3 — Engineer plugin minimum-version preflight
-
-```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-node "$CLAUDE_PLUGIN_ROOT/scripts/discover-engineer.mjs" preflight \
-  --root "$ENGINEER_PLUGIN_ROOT" || {
-  echo "✗ engineer install at $ENGINEER_PLUGIN_ROOT does not satisfy ADR-0019 PR-A minimum (preflight failed; see preceding diagnostic for cause)." >&2
-  exit 1
-}
-```
-
-The `preflight` subcommand prints the precise reason on its own stderr — surface it as-is.
 
 ---
 
@@ -352,12 +431,18 @@ case "$CLAUDE_PLUGIN_ROOT" in
 esac
 ```
 
-Then drive the engineer command's runbook from a single Bash tool call. **Save the orchestrator's plugin root BEFORE rebinding** — Phase 5's `subtask-update` writeback is an orchestrator CLI that MUST be invoked through the orchestrator's `state.mjs`, not engineer's:
+Then drive the engineer command's runbook from a single Bash tool call. **Save the orchestrator's plugin root BEFORE rebinding** — after the rebind `$CLAUDE_PLUGIN_ROOT` names the engineer's root, and the `admission check` is an orchestrator CLI that MUST be invoked through the orchestrator's `state.mjs`, not engineer's:
 
 ```bash
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-ORCH_PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"          # save before rebind — Phase 5 needs this
+ORCH_PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"          # save before the rebind below
+
+# ADR-0067 Decision 4, item 5 — this block dispatches into the checkout: stop
+# before it when this session's admission is gone (Phase 5 still runs, and
+# releases what is left of it).
+node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" admission check \
+  --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION" || exit 1
 
 export CLAUDE_PLUGIN_ROOT="$ENGINEER_PLUGIN_ROOT"
 export AGENTIC_PARENT_WORKFLOW="$MACRO_ID"
@@ -366,6 +451,14 @@ export AGENTIC_PARENT_WORKFLOW="$MACRO_ID"
 # checkout holds no copy of the macro still reaches it.
 export AGENTIC_PARENT_WORKFLOW_PATH="$MACRO_PATH"
 export AGENTIC_ORIGINATING_SUBTASK="$SUBTASK_ID"
+# ADR-0067 Decision 4, item 5 — the selection Phase 1 made, which the engineer
+# records beside the ids: every later binding of the child to this subtask
+# (Phase 5, the engineer's terminal note, /orchestrator:done's owner scan)
+# compares it under the macro's file lock.
+# Built apart from its export, which would hide the node's failure: a selection
+# lost here would create a child without the record.
+AGENTIC_DISPATCH_SELECTION="$(node -e 'const [subtask, branch, verb, profile, topic] = process.argv.slice(1); process.stdout.write(JSON.stringify({ subtask, branch, verb, profile, topic }))' -- "$SUBTASK_ID" "$SUBTASK_BRANCH" "$SUBTASK_VERB" "${SUBTASK_PROFILE:-}" "${SUBTASK_TOPIC:-}")" || exit 1
+export AGENTIC_DISPATCH_SELECTION
 export AGENTIC_HOST="$DETECTED_HOST"
 
 # Forward subtask profile/topic to the engineer command via env vars
@@ -387,15 +480,33 @@ export AGENTIC_TOPIC="${SUBTASK_TOPIC:-}"
 # them to state.mjs create (parent linkage + host + profile + topic).
 ```
 
-**Important**: the LLM following this runbook MUST read engineer's command markdown and execute its bash snippets in the same Bash tool invocation as the exports above, OR re-emit the AGENTIC_* exports at the top of each engineer Phase 0 bash block. The simplest and most robust shape is a single Bash tool call that begins with the exports and proceeds through engineer's Phase 0+verb body inline.
+**Important**: the LLM following this runbook MUST read engineer's command markdown and execute its bash snippets in the same Bash tool invocation as the exports above, OR re-emit the AGENTIC_* exports — and the `admission check` before them — at the top of each engineer Phase 0 bash block. The simplest and most robust shape is a single Bash tool call that begins with the exports and proceeds through engineer's Phase 0+verb body inline.
+
+Whatever the engineer runbook's outcome — it finished, stopped at a gate, or one of its blocks exited non-zero (a `create` the repository-wide check refused, for one) — go on to Phase 5: the engineer's exits cannot release this command's admission, and Phase 5 releases it on every path.
 
 ---
 
 ## Phase 5 — Post-create writeback (engineer_workflow_id + status=in_progress)
 
-After engineer's Phase 0 creates the workflow file and the verb skill begins, capture the engineer workflow id and write it back to the macro plan so `/orchestrator:done` and `find-active` can locate the child. **Critical**: use `$ORCH_PLUGIN_ROOT` (saved in Phase 4) — `$CLAUDE_PLUGIN_ROOT` is currently rebound to the engineer plugin root and would route `subtask-update` to the wrong state.mjs:
+After engineer's Phase 0 creates the workflow file and the verb skill begins, capture the engineer workflow id and write it back to the macro plan so `/orchestrator:done` and `find-active` can locate the child. Set `SUBTASK_ID`, `SUBTASK_BRANCH`, `SUBTASK_VERB`, `SUBTASK_PROFILE` and `SUBTASK_TOPIC` as Phase 1 read them (the writeback expects the last four unchanged). The block sets the orchestrator's plugin root itself, as `$ORCH_PLUGIN_ROOT`, and the host: in a fresh Bash call nothing Phase 4 set is left, and in the shell of Phase 4's engineer call `$CLAUDE_PLUGIN_ROOT` names the engineer's root until the opening line sets it back. Without them the check and the release would fail, and the admission would stay in both locks, blocking the macro until someone releases it by hand:
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ORCH_PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"
+case "$ORCH_PLUGIN_ROOT" in
+  *"/.codex/"*) DETECTED_HOST="codex" ;;
+  *"/.claude/"*) DETECTED_HOST="claude" ;;
+  *) DETECTED_HOST="${AGENTIC_HOST:-claude}" ;;
+esac
+# ADR-0067 Decision 4, item 5 — every exit of this block releases the
+# admission Phase 3b joined; the writeback, which writes the macro, checks it
+# first. From the writeback on, the driver's own claim rules see the subtask.
+release_admission() {
+  node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" admission release \
+    --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION"
+}
+trap 'release_admission' EXIT
 ACTIVE_PATH="$(node "$ENGINEER_PLUGIN_ROOT/scripts/state.mjs" \
   find-active --repo-root "$REPO_ROOT" --branch "$SUBTASK_BRANCH" 2>/dev/null)"
 if [ -z "$ACTIVE_PATH" ]; then
@@ -403,17 +514,32 @@ if [ -z "$ACTIVE_PATH" ]; then
   exit 1
 fi
 ENGINEER_WF_ID="$(basename "$ACTIVE_PATH" .md)"
+# The dispatch the child records (ADR-0067 Decision 4, item 5), for a child
+# Phase 4 created and for one re-attached from an earlier dispatch alike.
+CHILD_DISPATCH="$(node "$ENGINEER_PLUGIN_ROOT/scripts/state.mjs" \
+  dispatch-selection --workflow-path "$ACTIVE_PATH")" || exit 1
 
+node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" admission check \
+  --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION" || exit 1
+# The child is bound only to the subtask it was dispatched for: the write is
+# refused, under the macro's file lock, when a plan revision since Phase 1
+# changed the subtask's branch, verb, profile or topic, or when the subtask is
+# no longer the one the child records it was dispatched for.
 node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" subtask-update \
   --workflow-path="$MACRO_PATH" \
   --host="$DETECTED_HOST" \
   --subtask-id="$SUBTASK_ID" \
   --status=in_progress \
   --engineer-workflow-id="$ENGINEER_WF_ID" \
+  --expect-branch="$SUBTASK_BRANCH" --expect-verb="$SUBTASK_VERB" \
+  --expect-profile="$SUBTASK_PROFILE" --expect-topic="$SUBTASK_TOPIC" \
+  --expect-dispatch="$CHILD_DISPATCH" \
   --event=updated
 ```
 
-Surface the orchestrator JSON envelope. PR-C0 handles single-writer ownership rejection, absorbing-completed precondition, and unblock/auto-terminal passes — surface its stderr verbatim on any non-zero exit.
+Surface the orchestrator JSON envelope. The block ends by releasing the admission, whatever the writeback's outcome; a failed `admission check` means the admission was released meanwhile (a run or another session may hold the macro now), and the child stays unrecorded until a later `/orchestrator:next` re-attaches it. PR-C0 handles single-writer ownership rejection, absorbing-completed precondition, and unblock/auto-terminal passes — surface its stderr verbatim on any non-zero exit.
+
+The admission keeps out a run and the other commands that join, not a plan revision (`/orchestrator:plan` stays available, ADR-0067 Decision 4): Phase 3b's re-read catches one made before it, and the writeback's expectations one made since; the child's recorded dispatch also refuses a re-attached child an earlier dispatch made for the subtask as it was then. A refused writeback names the field that changed. The child it would have bound was dispatched for the subtask as Phase 1 read it, so it stays unrecorded: report the refusal and the child's workflow id, and leave the choice to the user (archive the child with `/engineer:resume archive <id>` on its branch and rerun `/orchestrator:next`, or revise the plan back).
 
 If the envelope reports `skipped: true` (deferred / abandoned absorbing-terminal state), report it and stop — `/orchestrator:next` should NOT advance a subtask the user has already terminated via `/finalize` / `/abort`.
 
@@ -426,6 +552,8 @@ Report one of:
 - `✓ Subtask <id> dispatched. engineer_workflow_id=<id> on branch <branch>.` (happy path, status=in_progress recorded.)
 - `✓ Subtask <id> already in_progress — re-attached to existing engineer workflow <id>.` (idempotent re-attach.)
 - `✓ Subtask <id> auto-promoted: engineer Stop hook had already completed it; macro now terminal_marker=true.` (rare race; PR-C0 auto-terminal pass fired.)
+- `✗ Not dispatched: <holder>.` when Phase 3b's join was refused — an autopilot run or another session holds this checkout or the macro. Repeat the refusal's holder and the command it names (`/orchestrator:autopilot status` in the run's checkout, or the release command for a session the owner knows is gone); nothing was switched or written.
+- `✗ Not recorded: subtask <id> changed after its dispatch (<field>).` when Phase 5's writeback was refused — the plan was revised after Phase 1 read the subtask. Name the child's engineer workflow id, which stays unrecorded, and the choice Phase 5 leaves to the user.
 
 When the Phase 1 approval gate printed its warning line, repeat that line
 under the report. A refused dispatch (`✗ plan-unapproved`) reports the gate's

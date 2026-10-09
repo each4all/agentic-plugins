@@ -7,10 +7,17 @@
 //   - git: branch, HEAD, `status --porcelain --untracked-files=normal` (the
 //     clean rule /orchestrator:next applies);
 //   - runtime `context.mjs entry-brief --surface cli` (R0, read-only);
-//   - orchestrator `state.mjs` find-active / find-macro / read / next-ready /
-//     resolve-landing;
+//   - orchestrator `state.mjs` state-root / scan-roots / find-active /
+//     find-macro / resolve-workflow / read / next-ready / resolve-landing;
 //   - engineer `state.mjs` find-active / read, and the engineer archive homes
 //     for a subtask's archived workflow;
+//
+// ADR-0067 Decision 1 — records are found where the plugins' readers find
+// them: a macro in the orchestrator homes of the checkout's read set (the
+// default state root first), an engineer child, archived or claiming the
+// macro, in the engineer homes of the repository-wide scan set (the read set,
+// then every other worktree), each physical file once. A pointer into a record
+// is spelled relative to the state root holding it (Decision 1(c)).
 //   - `git fetch origin <integration branch>` before a landing check, as
 //     /orchestrator:done does (it updates remote-tracking refs only). Preview
 //     skips it.
@@ -49,20 +56,48 @@ function parseJson(text) {
   try { return JSON.parse(text); } catch { return undefined; }
 }
 
-const relTo = (repoRoot, p) => {
-  const rel = path.relative(repoRoot, p);
-  return rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? rel.split(path.sep).join('/') : p;
+// ADR-0067 Decision 1(c) — a pointer into a record, relative to the state
+// root holding it: the deepest of `roots` the file is under (a worktree may
+// sit inside another's directory). A file under none keeps its absolute path.
+const relTo = (roots, p) => {
+  let best = null;
+  for (const root of roots) {
+    const rel = path.relative(root, p);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) continue;
+    if (best === null || rel.length < best.length) best = rel;
+  }
+  return best === null ? p : best.split(path.sep).join('/');
 };
+
+const physical = (p) => {
+  try { return fs.realpathSync(p); } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+};
+
+// The read set and the repository-wide scan set of `repoRoot`, from
+// orchestrator's CLI (ADR-0010 §5: no import). Either failing fails the look:
+// a scan that left a root out could miss the record it is looking for.
+function observeRoots(orchCli, repoRoot, o) {
+  const sr = node(orchCli, ['state-root', '--repo-root', repoRoot], o);
+  const report = parseJson(sr.stdout);
+  if (sr.code !== 0 || !Array.isArray(report?.read_set)) return { error: failure(sr, 'orchestrator state-root') };
+  const scan = node(orchCli, ['scan-roots', '--repo-root', repoRoot], o);
+  const all = parseJson(scan.stdout);
+  if (scan.code !== 0 || !Array.isArray(all)) return { error: failure(scan, 'orchestrator scan-roots') };
+  return { readSet: report.read_set, scan: all };
+}
 
 function progressEvents(history) {
   return Array.isArray(history) ? history.filter((h) => h && h.event && h.event !== 'snapshot').length : 0;
 }
 
-function summarizeChild(fm, location, file, repoRoot) {
+function summarizeChild(fm, location, file, roots) {
   return {
     location,
     path: file,
-    relPath: relTo(repoRoot, file),
+    relPath: relTo(roots, file),
     workflow_id: fm.workflow_id ?? null,
     branch: fm.git_baseline?.branch ?? null,
     current_phase: fm.current_phase ?? null,
@@ -88,18 +123,29 @@ function summarizeChild(fm, location, file, repoRoot) {
 }
 
 // Archived files are named `<id>.md`, or `<id>-<isoCompact>-<hex>.md` when the
-// name was taken (both plugins' archiveWorkflow).
-function archivedCandidates(repoRoot, homes, id) {
+// name was taken (both plugins' archiveWorkflow). Every root's homes, each
+// physical file once (a home linked to another root's is read once).
+function archivedCandidates(roots, homes, id) {
   const found = [];
-  for (const home of homes) {
-    const dir = path.join(repoRoot, home, 'archive');
-    let names;
-    try { names = fs.readdirSync(dir); } catch (err) {
-      if (err.code === 'ENOENT') continue;
-      throw err;
-    }
-    for (const n of names) {
-      if (n === `${id}.md` || (n.startsWith(`${id}-`) && n.endsWith('.md'))) found.push(path.join(dir, n));
+  const seen = new Set();
+  for (const root of roots) {
+    for (const home of homes) {
+      const dir = path.join(root, home, 'archive');
+      let names;
+      // Only absence (ENOENT) is no archive; a file in a directory's place
+      // (ENOTDIR) is refused, as the state library's scans refuse it.
+      try { names = fs.readdirSync(dir); } catch (err) {
+        if (err.code === 'ENOENT') continue;
+        throw err;
+      }
+      for (const n of names.sort()) {
+        if (!(n === `${id}.md` || (n.startsWith(`${id}-`) && n.endsWith('.md')))) continue;
+        const file = path.join(dir, n);
+        const real = physical(file);
+        if (real === null || seen.has(real)) continue;
+        seen.add(real);
+        found.push(file);
+      }
     }
   }
   return found;
@@ -112,9 +158,9 @@ function readFrontmatter(stateCli, file, o) {
   return fm && typeof fm === 'object' ? { fm } : { error: `state.mjs read ${file} printed no JSON` };
 }
 
-function findArchived(stateCli, repoRoot, homes, id, o) {
+function findArchived(stateCli, roots, homes, id, o) {
   let files;
-  try { files = archivedCandidates(repoRoot, homes, id); } catch (err) { return { error: err.message }; }
+  try { files = archivedCandidates(roots, homes, id); } catch (err) { return { error: err.message }; }
   const matches = [];
   for (const f of files) {
     const r = readFrontmatter(stateCli, f, o);
@@ -149,17 +195,20 @@ function observeBrief(roots, repoRoot, o) {
   return { brief: report.brief };
 }
 
-function locateMacro({ orchCli, repoRoot, macroId, branch, o }) {
+// resolve-workflow's exit status when no root of the read set holds the id
+// (1 is an error: two files hold it, or a root cannot be read).
+const RESOLVE_NOT_FOUND = 3;
+
+function locateMacro({ orchCli, repoRoot, roots, macroId, branch, o }) {
   if (macroId) {
-    for (const home of ORCHESTRATOR_STATE_HOMES) {
-      const file = path.join(repoRoot, home, 'workflows', `${macroId}.md`);
-      if (fs.existsSync(file)) return { file, archived: false };
-    }
-    const archived = findArchived(orchCli, repoRoot, ORCHESTRATOR_STATE_HOMES, macroId, o);
+    const resolved = node(orchCli, ['resolve-workflow', '--repo-root', repoRoot, '--workflow-id', macroId], o);
+    if (resolved.code === 0 && resolved.stdout) return { file: resolved.stdout, archived: false };
+    if (resolved.code !== RESOLVE_NOT_FOUND) return { error: failure(resolved, 'orchestrator resolve-workflow') };
+    const archived = findArchived(orchCli, roots.readSet, ORCHESTRATOR_STATE_HOMES, macroId, o);
     if (archived?.error) return { error: archived.error };
     if (archived?.ambiguous) return { error: `more than one archived file holds macro ${macroId}: ${archived.ambiguous.join(', ')}` };
     if (archived) return { file: archived.file, archived: true, fm: archived.fm };
-    return { error: `macro ${macroId} is neither active nor archived in this repository` };
+    return { error: `macro ${macroId} is neither active nor archived in the read set of ${repoRoot}` };
   }
   const active = node(orchCli, ['find-active', '--repo-root', repoRoot], o);
   if (active.code !== 0) return { error: failure(active, 'orchestrator find-active') };
@@ -186,7 +235,7 @@ function linkageProblems(child, { macroId, subtask }) {
   return wrong;
 }
 
-function observeChild({ engCli, repoRoot, macroId, subtask, o }) {
+function observeChild({ engCli, repoRoot, roots, macroId, subtask, o }) {
   if (typeof subtask.branch !== 'string' || subtask.branch.length === 0) {
     return { location: 'error', detail: 'the subtask records no branch' };
   }
@@ -195,41 +244,47 @@ function observeChild({ engCli, repoRoot, macroId, subtask, o }) {
   if (active.stdout) {
     const r = readFrontmatter(engCli, active.stdout, o);
     if (r.error) return { location: 'error', detail: r.error };
-    const child = summarizeChild(r.fm, 'active', active.stdout, repoRoot);
+    const child = summarizeChild(r.fm, 'active', active.stdout, roots.scan);
     const wrong = linkageProblems(child, { macroId, subtask });
     if (wrong.length > 0) return { ...child, location: 'linkage-mismatch', detail: wrong.join(', ') };
     return child;
   }
   const id = subtask.engineer_workflow_id;
   if (!id) return { location: 'unrecorded' };
-  const archived = findArchived(engCli, repoRoot, ENGINEER_STATE_HOMES, id, o);
+  const archived = findArchived(engCli, roots.scan, ENGINEER_STATE_HOMES, id, o);
   if (archived?.error) return { location: 'error', workflow_id: id, detail: archived.error };
   if (archived?.ambiguous) return { location: 'ambiguous', workflow_id: id, detail: archived.ambiguous.join(', ') };
   if (!archived) return { location: 'missing', workflow_id: id };
-  const child = summarizeChild(archived.fm, 'archived', archived.file, repoRoot);
+  const child = summarizeChild(archived.fm, 'archived', archived.file, roots.scan);
   const wrong = linkageProblems(child, { macroId, subtask });
   if (wrong.length > 0) return { ...child, location: 'linkage-mismatch', detail: wrong.join(', ') };
   return child;
 }
 
-function listClaims({ engCli, repoRoot, macroId, o }) {
+function listClaims({ engCli, roots, macroId, o }) {
   const list = [];
-  for (const home of ENGINEER_STATE_HOMES) {
-    const dir = path.join(repoRoot, home, 'workflows');
+  const seen = new Set();
+  for (const dir of roots.scan.flatMap((root) => ENGINEER_STATE_HOMES.map((home) => path.join(root, home, 'workflows')))) {
     let names;
+    // Only absence (ENOENT) is an empty home; a file in a directory's place
+    // (ENOTDIR) is refused, as the state library's scans refuse it.
     try { names = fs.readdirSync(dir); } catch (err) {
       if (err.code === 'ENOENT') continue;
       return { error: `cannot list ${dir}: ${err.message}` };
     }
     for (const n of names.filter((x) => x.endsWith('.md')).sort()) {
       const file = path.join(dir, n);
+      let real;
+      try { real = physical(file); } catch (err) { return { error: `cannot read ${file}: ${err.message}` }; }
+      if (real === null || seen.has(real)) continue;
+      seen.add(real);
       const r = readFrontmatter(engCli, file, o);
       if (r.error) return { error: r.error };
       if (r.fm.parent_workflow !== macroId) continue;
       list.push({
         id: r.fm.workflow_id ?? null,
         path: file,
-        relPath: relTo(repoRoot, file),
+        relPath: relTo(roots.scan, file),
         originating_subtask: r.fm.originating_subtask ?? null,
         branch: r.fm.git_baseline?.branch ?? null,
         pending_runs: Array.isArray(r.fm.pending_ensemble)
@@ -268,7 +323,9 @@ export function observe({ repoRoot, roots, macroId = null, fetch = true, env = p
   };
   Object.assign(view, observeBrief(roots, repoRoot, o));
 
-  const located = locateMacro({ orchCli, repoRoot, macroId, branch: view.git.branch, o });
+  const stateRoots = observeRoots(orchCli, repoRoot, o);
+  if (stateRoots.error) { view.macroLookupError = stateRoots.error; return view; }
+  const located = locateMacro({ orchCli, repoRoot, roots: stateRoots, macroId, branch: view.git.branch, o });
   if (located.error) { view.macroLookupError = located.error; return view; }
   if (located.none) return view;
   let fm = located.fm;
@@ -278,7 +335,7 @@ export function observe({ repoRoot, roots, macroId = null, fetch = true, env = p
     fm = r.fm;
   }
   const id = fm.workflow_id ?? path.basename(located.file, '.md');
-  view.macro = { id, path: located.file, relPath: relTo(repoRoot, located.file), archived: located.archived, fm };
+  view.macro = { id, path: located.file, relPath: relTo(stateRoots.scan, located.file), archived: located.archived, fm };
 
   // next-ready reads an archived file too: the approval facts decide whether
   // an archived macro counts as completed (a plan edited during the last step).
@@ -292,7 +349,7 @@ export function observe({ repoRoot, roots, macroId = null, fetch = true, env = p
   const childPaths = new Set();
   for (const s of subtasks) {
     if (s?.status !== 'in_progress') continue;
-    const child = observeChild({ engCli, repoRoot, macroId: id, subtask: s, o });
+    const child = observeChild({ engCli, repoRoot, roots: stateRoots, macroId: id, subtask: s, o });
     view.children[s.id] = child;
     if (child.path) childPaths.add(child.path);
   }
@@ -300,7 +357,7 @@ export function observe({ repoRoot, roots, macroId = null, fetch = true, env = p
   // Every live engineer workflow that claims this macro, whatever its
   // branch: a dispatch interrupted before it recorded in_progress leaves one
   // behind a subtask that still reads pending.
-  const claims = listClaims({ engCli, repoRoot, macroId: id, o });
+  const claims = listClaims({ engCli, roots: stateRoots, macroId: id, o });
   if (claims.error) view.claimsError = claims.error;
   else view.claims = claims.list;
 
@@ -313,14 +370,14 @@ export function observe({ repoRoot, roots, macroId = null, fetch = true, env = p
     } else if (here.stdout && !childPaths.has(here.stdout)) {
       const r = readFrontmatter(engCli, here.stdout, o);
       if (r.error) {
-        view.foreign = { id: null, path: here.stdout, relPath: relTo(repoRoot, here.stdout), detail: r.error };
+        view.foreign = { id: null, path: here.stdout, relPath: relTo(stateRoots.scan, here.stdout), detail: r.error };
       } else {
         const parent = r.fm.parent_workflow ?? null;
         const sub = subtasks.find((s) => s?.id === r.fm.originating_subtask);
         view.foreign = {
           id: r.fm.workflow_id ?? null,
           path: here.stdout,
-          relPath: relTo(repoRoot, here.stdout),
+          relPath: relTo(stateRoots.scan, here.stdout),
           detail: parent !== id ? `its parent is ${parent ?? 'none'}`
             : `its subtask ${r.fm.originating_subtask ?? '?'} is ${sub?.status ?? 'not in the plan'}`,
         };

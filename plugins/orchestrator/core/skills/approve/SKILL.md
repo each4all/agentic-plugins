@@ -51,9 +51,10 @@ The Claude command runbook is `commands/approve.md`.
 
 ## Phase 0 — Resolve the macro
 
-With `--workflow=<macro-id>`, use
-`<repo>/.agentic-plugins/state/orchestrator/workflows/<macro-id>.md` (or the
-legacy `<repo>/.claude/agentic-orchestrator/workflows/<macro-id>.md`). Refuse
+With `--workflow=<macro-id>`, use the file `state.mjs resolve-workflow
+--repo-root "$REPO_ROOT" --workflow-id "<macro-id>"` prints: the macro in the
+orchestrator workflow homes of this checkout's read set (ADR-0067 Decision 4,
+item 2); it exits non-zero when no root holds it (3) or two files do (1). Refuse
 an id containing `/`, `\`, `..` or a leading `.`. Otherwise:
 
 ```bash

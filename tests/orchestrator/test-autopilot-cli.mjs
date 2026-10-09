@@ -170,6 +170,29 @@ describe('status and stop', () => {
     });
   });
 
+  // ADR-0067 Decision 4, item 5 — status shows each session's admission once,
+  // with its age (stale past 4 h) and the command that releases it, with or
+  // without a run in this checkout.
+  it('status lists the session admissions, once each, stale past 4 h, with the release command', async () => {
+    await withRepo(async (fx, env, work) => {
+      const orchState = join(REPO_ROOT, 'plugins/orchestrator/scripts/state.mjs');
+      const joined = spawnSync(process.execPath, [orchState, 'admission', 'join', '--macro', fx.macroId, '--checkout', work, '--command', 'next', '--host', 'claude', '--session-id', 'sess-9'], { encoding: 'utf8', env });
+      strictEqual(joined.status, 0, joined.stderr);
+      const id = joined.stdout.trim();
+      const entry = join(L.macroLockPath(L.mainWorktreeRoot(work), fx.macroId), `s-${id}.json`);
+      writeFileSync(entry, `${JSON.stringify({ ...JSON.parse(readFileSync(entry, 'utf8')), acquired_at: new Date(Date.now() - 5 * 3600_000).toISOString() })}\n`);
+      const none = (await main(['status'], env, work)).out;
+      ok(none.startsWith(`no autopilot runs in ${work}\nsession admissions (1):\n`), none);
+      ok(none.includes(`/orchestrator:next, checkout ${work}, host claude, session sess-9, admitted 5 h 0 min ago (stale: older than 4 h`), none);
+      ok(none.includes(`state.mjs admission release --macro ${fx.macroId} --checkout ${work} --admission ${id}`), none);
+      deepStrictEqual(JSON.parse((await main(['status', '--json'], env, work)).out).admissions.map((a) => [a.holder.admission_id, a.locks.length]), [[id, 2]]);
+      const runId = L.newRunId();
+      L.writeRun(L.createRunDir(work, runId), { run_id: runId, status: 'running', macro_id: fx.macroId, steps: 0, cost_usd: 0, started_at: 'then' });
+      const withRun = (await main(['status'], env, work)).out;
+      strictEqual(withRun.split('session admissions (1):').length, 2, withRun);
+    });
+  });
+
   it('stop signals nothing it cannot prove is the run\'s process', async () => {
     await withRepo(async (fx, env, work) => {
       const { spawn } = await import('node:child_process');

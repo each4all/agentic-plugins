@@ -57,12 +57,26 @@ Set `DETECTED_HOST=codex` when running from Codex.
 Run:
 
 ```bash
+# ADR-0067 Decision 4, item 5 — join the macro's run lock before the first
+# write: a run or another session holding it refuses here, naming the
+# holder, and nothing is written.
+ADMISSION="$(node "<orchestrator-plugin-root>/scripts/state.mjs" admission join \
+  --macro "$MACRO_ID" --checkout "$REPO_ROOT" --command abort --host codex)" || exit 1
 node "<orchestrator-plugin-root>/scripts/state.mjs" bulk-subtask-status \
   --workflow-path "$MACRO_PATH" \
   --host codex \
   --from-statuses pending,blocked,in_progress \
-  --to-status abandoned
+  --to-status abandoned || {
+  node "<orchestrator-plugin-root>/scripts/state.mjs" admission release \
+    --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION"
+  exit 1
+}
 ```
+
+Carry the admission id the join printed into Phases 2 and 3 as `ADMISSION`,
+as you carry `MACRO_PATH`. When Phase 2 stops, release it before you stop
+(`state.mjs admission release --macro "$MACRO_ID" --checkout "$REPO_ROOT"
+--admission "$ADMISSION"`); Phase 3 releases it after its write.
 
 Parent per-file lock is released after this command returns.
 
@@ -73,7 +87,9 @@ Parent per-file lock is released after this command returns.
 This phase is identical to `finalize`:
 
 1. resolve and preflight the engineer plugin (`preflight --purpose lifecycle`);
-2. scan engineer workflow homes for `parent_workflow == <macro id>`;
+2. scan the engineer workflow homes of every root `state.mjs scan-roots`
+   prints for `parent_workflow == <macro id>`, each physical file once
+   (ADR-0067 Decision 1(b));
 3. route terminal children through engineer `state.mjs stop-archive`;
 4. route mid-flight, deleted-branch, or gate-not-met children through
    engineer `state.mjs detach-archive`;
@@ -82,6 +98,20 @@ This phase is identical to `finalize`:
 The parent macro lock must not be held during this pass. Engineer-side
 CLI invocations must use `$ENGINEER_PLUGIN_ROOT` in argv.
 
+Phases 1-3 run in separate shell calls here, so begin every Phase 2 shell
+call that archives a child with the admission check, and stop (releasing the
+admission) when it fails: the admission was released meanwhile, and a run or
+another session may hold the macro now.
+
+```bash
+node "<orchestrator-plugin-root>/scripts/state.mjs" admission check \
+  --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION" || {
+  node "<orchestrator-plugin-root>/scripts/state.mjs" admission release \
+    --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION"
+  exit 1
+}
+```
+
 ---
 
 ## Phase 3 - Set macro terminal markers
@@ -89,6 +119,16 @@ CLI invocations must use `$ENGINEER_PLUGIN_ROOT` in argv.
 Run:
 
 ```bash
+# ADR-0067 Decision 4, item 5 — release the admission on every exit, after
+# the write included, and check it before the write: it may have been
+# released since Phase 1's join.
+release_admission() {
+  node "<orchestrator-plugin-root>/scripts/state.mjs" admission release \
+    --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION"
+}
+trap 'release_admission' EXIT
+node "<orchestrator-plugin-root>/scripts/state.mjs" admission check \
+  --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION" || exit 1
 # ARCHIVE TIMING — on Claude the Stop hook fires at EVERY turn end, so the
 # macro archive gates are evaluated at the end of THIS turn, not at session
 # close; if a gate fails (a subtask still non-terminal, an engineer child

@@ -155,23 +155,53 @@ Forms:
 - `/orchestrator:resume archive` -> archive the single active macro
   workflow on the current branch.
 - `/orchestrator:resume archive <workflow-id>` -> archive the named
-  macro workflow under `.agentic-plugins/state/orchestrator/workflows/`
-  or the legacy `.claude/agentic-orchestrator/workflows/` home.
+  macro workflow: the file the block below prints, found in the
+  orchestrator workflow homes of this checkout's read set (ADR-0067
+  Decision 4, item 2), the default state root first; stop when it exits
+  non-zero (no root holds it, or two files do).
 
-Confirm with the user before mutation. Show workflow id, current
-phase, subtask counts, and path.
-
-On confirmation:
+For the named form, put the id in place of `<workflow-id>` and run:
 
 ```bash
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+ARCHIVE_WORKFLOW_ID='<workflow-id>'
+if ! WORKFLOW="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
+    resolve-workflow --repo-root "$REPO_ROOT" --workflow-id "$ARCHIVE_WORKFLOW_ID")"; then
+  echo "✗ $ARCHIVE_WORKFLOW_ID names no single macro file in the orchestrator workflow homes of this checkout's read set (the reason is above); nothing archived." >&2
+  exit 1
+fi
+printf 'WORKFLOW=%s\n' "$WORKFLOW"
+```
+
+Confirm with the user before mutation. Show workflow id, current
+phase, subtask counts, and path.
+
+On confirmation, join the macro's run lock and archive (ADR-0067 Decision 4,
+item 5): an autopilot run or another session holding the lock refuses,
+naming the holder, and nothing is archived; the admission is released on
+every exit, after the archive included.
+
+```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+MACRO_ID="$(basename "$WORKFLOW" .md)"
+ADMISSION="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" admission join \
+  --macro "$MACRO_ID" --checkout "$REPO_ROOT" --command resume \
+  --host claude --session-id "${CLAUDE_CODE_SESSION_ID:-}")" || exit 1
+release_admission() {
+  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" admission release \
+    --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION"
+}
+trap 'release_admission' EXIT
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" archive \
   --workflow-path "$WORKFLOW" --host claude --repo-root "$REPO_ROOT"
 ```
 
-Archive is a move to the matching canonical or legacy `archive/` home,
-not a delete. The state CLI is collision-safe and idempotent.
+Archive is a move to the `archive/` beside the macro, in its own home
+(canonical or legacy, wherever the macro lives), not a delete. The state
+CLI is collision-safe and idempotent.
 
 ---
 

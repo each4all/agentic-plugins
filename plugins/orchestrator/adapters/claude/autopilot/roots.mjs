@@ -99,6 +99,7 @@ const PROBES = Object.freeze({
     ['scripts/state.mjs', "'plan-approve'", 'plan approval (S2, orchestrator 0.15.0)'],
     ['scripts/state.mjs', "'approval-gate'", 'the /orchestrator:next approval gate (S6, orchestrator 0.16.0)'],
     ['scripts/state.mjs', "'resolve-landing'", 'landing resolution (ADR-0062, orchestrator 0.14.0)'],
+    ['scripts/state.mjs', "case 'admission'", 'the admission entries the runbooks join (ADR-0067 Decision 4, item 5, SR)'],
     ['commands/next.md', 'approval-gate', 'the gated /orchestrator:next runbook (S6, orchestrator 0.16.0)'],
     ['commands/next.md', '${AGENTIC_ORCHESTRATOR_ROOT:-', 'runbooks that honor AGENTIC_ORCHESTRATOR_ROOT (S0)'],
     ['commands/done.md', '--no-commit', '/orchestrator:done --no-commit (ADR-0062)'],

@@ -78,10 +78,20 @@ async function withRepo(fn) {
 }
 
 /** An orchestrator root whose state.mjs fails every call with status 7. */
+// Every write fails with status 7. The admission (ADR-0067 Decision 4, item 5)
+// goes to the real script, so Phase 1 reaches the write it joins for.
 async function failingOrchestrator(dir) {
   const root = join(dir, 'failing-orchestrator');
   await mkdir(join(root, 'scripts'), { recursive: true });
-  await writeFile(join(root, 'scripts', 'state.mjs'), 'process.stderr.write("state.mjs: boom\\n"); process.exit(7);\n');
+  await writeFile(join(root, 'scripts', 'state.mjs'), [
+    "import { spawnSync } from 'node:child_process';",
+    "if (process.argv[2] === 'admission') {",
+    `  const r = spawnSync(process.execPath, [${JSON.stringify(resolve(ORCH_ROOT, 'scripts/state.mjs'))}, ...process.argv.slice(2)], { stdio: 'inherit' });`,
+    '  process.exit(r.status ?? 1);',
+    '}',
+    'process.stderr.write("state.mjs: boom\\n"); process.exit(7);',
+    '',
+  ].join('\n'));
   return root;
 }
 

@@ -29,7 +29,9 @@
 //               `perform({prompt, cwd, env})` does the step with the real
 //               state CLIs and returns {report, cost})
 //
-// Every start appends {argv, env, cwd} to FAKE_CLAUDE_LOG when it is set.
+// Every start appends {argv, env, cwd, locks} to FAKE_CLAUDE_LOG when it is
+// set; `locks` holds the entries of the driven checkout's worktree lock as the
+// worker finds them.
 // `--version` and `--help` answer like the real CLI does for preflight.
 
 import { spawn } from 'node:child_process';
@@ -46,7 +48,13 @@ if (argv[0] === '--help') {
   process.exit(0);
 }
 if (process.env.FAKE_CLAUDE_LOG) {
-  fs.appendFileSync(process.env.FAKE_CLAUDE_LOG, `${JSON.stringify({ argv, env: process.env, cwd: process.cwd() })}\n`);
+  const lockDir = `${process.cwd()}/.agentic-plugins/runs/autopilot/worktree.lock`;
+  let locks = [];
+  try {
+    locks = fs.readdirSync(lockDir).filter((n) => n.endsWith('.json')).sort()
+      .map((n) => JSON.parse(fs.readFileSync(`${lockDir}/${n}`, 'utf8')));
+  } catch { /* no lock there */ }
+  fs.appendFileSync(process.env.FAKE_CLAUDE_LOG, `${JSON.stringify({ argv, env: process.env, cwd: process.cwd(), locks })}\n`);
 }
 
 const mode = process.env.FAKE_CLAUDE_MODE || 'simple';

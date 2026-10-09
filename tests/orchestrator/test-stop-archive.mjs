@@ -514,3 +514,57 @@ describe('runMacroStopArchive — scan error fails closed (Phase 5 review)', () 
     });
   });
 });
+
+// =============================================================================
+// 5. The Stop reads another worktree's status without writing its index
+// (ADR-0067 Decision 1(b)): a plain `git status` there refreshes the index
+// under that worktree's index.lock, which a commit there at the same moment
+// would fail on.
+
+describe('runMacroStopArchiveAll — the status of the worktree holding the macro branch', () => {
+  it("leaves that worktree's index untouched, even when it is stat-stale", async () => {
+    await withTmpRepo('other-index', async (root) => {
+      const gitIn = (cwd, ...args) => String(execFileSync('git', ['-C', cwd, ...args], { stdio: ['ignore', 'pipe', 'ignore'] }));
+      await writeFile(join(root, 'f.txt'), 'same\n');
+      gitIn(root, 'add', 'f.txt');
+      gitIn(root, 'commit', '-q', '--no-gpg-sign', '-m', 'f');
+      const lane = `${root}-lane`;
+      gitIn(root, 'worktree', 'add', '-q', '-b', 'feat/m', lane);
+      try {
+        const { utimesSync, statSync, readFileSync } = await import('node:fs');
+        const { createHash } = await import('node:crypto');
+        const index = gitIn(lane, 'rev-parse', '--path-format=absolute', '--git-path', 'index').trim();
+        const indexState = () => {
+          const s = statSync(index);
+          return { ino: s.ino, mtimeMs: s.mtimeMs, bytes: readFileSync(index).toString('hex') };
+        };
+        const touch = (secondsAgo) => {
+          const t = new Date(Date.now() - secondsAgo * 1000);
+          utimesSync(join(lane, 'f.txt'), t, t);
+        };
+        // Settle the index on an old mtime (not racily clean), then give the
+        // file the same bytes under a newer mtime than the index records.
+        touch(1000);
+        gitIn(lane, 'status', '--porcelain');
+        touch(500);
+        const before = indexState();
+
+        const path = await bootstrapMacro(root, { branch: 'feat/m' });
+        const results = await runMacroStopArchiveAll({ repoRoot: root, host: 'claude', stderr: { write() {} } });
+        strictEqual(results.length, 1);
+        deepStrictEqual(indexState(), before, "the lane's index is neither rewritten nor replaced");
+        const expected = createHash('sha256')
+          .update(execFileSync('git', ['--no-optional-locks', '-C', lane, 'status', '--porcelain=v1', '-z', '--untracked-files=normal']))
+          .digest('hex');
+        const { frontmatter } = await readWorkflow(path);
+        strictEqual(frontmatter.last_snapshot.status_digest, expected, "the snapshot holds the lane's status: the Stop did read it");
+
+        // Control: a plain `git status` there does rewrite that index.
+        gitIn(lane, 'status', '--porcelain');
+        ok(JSON.stringify(indexState()) !== JSON.stringify(before), 'control: a plain status rewrites the stat-stale index');
+      } finally {
+        await rm(lane, { recursive: true, force: true });
+      }
+    });
+  });
+});

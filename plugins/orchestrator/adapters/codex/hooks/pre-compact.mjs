@@ -6,6 +6,7 @@
 // non-blocking.
 
 import { findActiveWorkflow, snapshot } from '../../../scripts/state.mjs';
+import { runInCommandDirectory } from '../../../scripts/lib/state-root.mjs';
 import { gitStatusDigest, gitTopLevel, readStdinJson } from '../../claude/hooks/_shared.mjs';
 
 async function main() {
@@ -23,12 +24,13 @@ async function main() {
   if (!active) return 0;
 
   try {
-    await snapshot({
+    // ADR-0067 Decision 1(a) — the write guard judges the payload's checkout.
+    await runInCommandDirectory(repoRoot, () => snapshot({
       workflowPath: active,
       host: 'codex',
       trigger: 'pre-compact',
       statusDigest: gitStatusDigest(repoRoot),
-    });
+    }));
   } catch (err) {
     process.stderr.write(`orchestrator/codex-pre-compact: ${err.message}\n`);
   }

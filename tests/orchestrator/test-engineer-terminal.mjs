@@ -189,3 +189,100 @@ describe('recordEngineerTerminal (ADR-0062 §Decision 2)', () => {
     });
   });
 });
+
+// ADR-0067 Decision 4, item 5 — the dispatch a child records (the engineer's
+// `dispatch-selection`). Contract: every writer that binds a child to a
+// subtask, or moves a subtask on its behalf, compares it on the read under the
+// macro's lock, and a subtask that a plan revision changed since the dispatch
+// gets nothing; the root of the M6 / F2 / N1 class.
+describe('the dispatch a child records, compared by every binding (ADR-0067 Decision 4, item 5)', () => {
+  const macroIdOf = (filePath) => filePath.split('/').pop().replace(/\.md$/, '');
+  const dispatched = (filePath, over = {}) => ({
+    macro: macroIdOf(filePath), subtask: 'A', branch: 'feat/a', verb: 'compose', profile: '', topic: 'the topic\n', ...over,
+  });
+  const revisions = [
+    ['branch', { branch: 'feat/a2' }],
+    ['verb', { verb: 'frame' }],
+    ['profile', { profile: 'backend' }],
+    ['topic', { topic: 'another topic' }],
+  ];
+
+  for (const [field, change] of revisions) {
+    it(`recordEngineerTerminal: a ${field} revised since the dispatch binds nothing, moves nothing and notes nothing`, async () => {
+      await withMacro([st('A', { topic: 'the topic' }), st('Z')], async (filePath) => {
+        await setPlan({ workflowPath: filePath, host: 'claude', subtasks: [st('A', { topic: 'the topic', ...change }), st('Z')] });
+        const before = await readFile(filePath, 'utf8');
+        await rejects(() => call(filePath, { expectDispatch: dispatched(filePath) }), new RegExp(`\\(dispatch-changed\\): ${field} is `));
+        strictEqual(await readFile(filePath, 'utf8'), before);
+      });
+    });
+  }
+
+  it('recordEngineerTerminal: the dispatch as recorded binds the child; trailing newlines and an absent profile compare equal', async () => {
+    await withMacro([st('A', { topic: 'the topic' })], async (filePath) => {
+      const r = await call(filePath, { expectDispatch: dispatched(filePath) });
+      strictEqual(r.boundOwner, true);
+      const [a] = (await readWorkflow(filePath)).frontmatter.plan.subtasks;
+      strictEqual(a.engineer_workflow_id, 'eng-A');
+      strictEqual(a.status, 'in_progress');
+    });
+  });
+
+  it('recordEngineerTerminal: a child already bound is refused too once its subtask is revised', async () => {
+    await withMacro([st('A', { status: 'in_progress', engineer_workflow_id: 'eng-A', topic: 'the topic' })], async (filePath) => {
+      await setPlan({ workflowPath: filePath, host: 'claude', subtasks: [st('A', { status: 'in_progress', engineer_workflow_id: 'eng-A', branch: 'feat/a2', topic: 'the topic' })] });
+      const before = await readFile(filePath, 'utf8');
+      await rejects(() => call(filePath, { expectDispatch: dispatched(filePath) }), /\(dispatch-changed\): branch is "feat\/a2"/);
+      strictEqual(await readFile(filePath, 'utf8'), before);
+    });
+  });
+
+  it('recordEngineerTerminal: a child dispatched for another macro or subtask is refused; a child recorded before the record is judged by its branch', async () => {
+    await withMacro([st('A', { topic: 'the topic' })], async (filePath) => {
+      const before = await readFile(filePath, 'utf8');
+      await rejects(() => call(filePath, { expectDispatch: dispatched(filePath, { macro: 'macro-other' }) }), /dispatched by macro "macro-other"/);
+      await rejects(() => call(filePath, { expectDispatch: dispatched(filePath, { subtask: 'Z' }) }), /dispatched for subtask "Z"/);
+      await rejects(() => call(filePath, { expectDispatch: { macro: macroIdOf(filePath), subtask: 'A', branch: 'main' } }), /branch is "feat\/a"; the child was dispatched for "main"/);
+      strictEqual(await readFile(filePath, 'utf8'), before);
+      strictEqual((await call(filePath, { expectDispatch: { macro: macroIdOf(filePath), subtask: 'A', branch: 'feat/a' } })).boundOwner, true);
+    });
+  });
+
+  it('CLI: --expect-dispatch on subtask-engineer-terminal and subtask-update; malformed JSON and unknown keys are refused before any read', async () => {
+    await withMacro([st('A', { topic: 'the topic' })], async (filePath) => {
+      const before = await readFile(filePath, 'utf8');
+      const cli = (args) => spawnSync(process.execPath, [STATE_MJS, ...args], { encoding: 'utf8' });
+      const terminal = (json) => cli(['subtask-engineer-terminal', `--workflow-path=${filePath}`, '--host=codex',
+        '--subtask-id=A', '--engineer-workflow-id=eng-A', '--branch-commit=b1', `--expect-dispatch=${json}`]);
+      for (const bad of ['{not json', JSON.stringify({ ...dispatched(filePath), extra: 'x' }), JSON.stringify({ subtask: 'A', branch: 'feat/a' })]) {
+        const r = terminal(bad);
+        strictEqual(r.status, 1, r.stderr);
+        ok(/expectDispatch/.test(r.stderr), r.stderr);
+      }
+      const revised = cli(['subtask-update', `--workflow-path=${filePath}`, '--host=claude', '--subtask-id=A',
+        '--status=in_progress', '--engineer-workflow-id=eng-A', `--expect-dispatch=${JSON.stringify(dispatched(filePath, { verb: 'frame' }))}`]);
+      strictEqual(revised.status, 1, revised.stdout);
+      ok(/\(dispatch-changed\): verb is "compose"; the child was dispatched for "frame"/.test(revised.stderr), revised.stderr);
+      strictEqual(await readFile(filePath, 'utf8'), before);
+      const ok1 = terminal(JSON.stringify(dispatched(filePath)));
+      strictEqual(ok1.status, 0, ok1.stderr);
+      strictEqual(JSON.parse(ok1.stdout).boundOwner, true);
+    });
+  });
+
+  for (const [field, change] of revisions) {
+    it(`updateSubtask: a ${field} revised since the dispatch refuses the binding write, whatever the other expectations say`, async () => {
+      await withMacro([st('A', { topic: 'the topic', ...change })], async (filePath) => {
+        const before = await readFile(filePath, 'utf8');
+        await rejects(() => updateSubtask({
+          workflowPath: filePath, subtaskId: 'A', host: 'claude', status: 'in_progress', engineerWorkflowId: 'eng-A',
+          // Phase 1 read the revised subtask (a re-attach): its own
+          // expectations hold, the child's dispatch does not.
+          expectBranch: change.branch ?? 'feat/a',
+          expectDispatch: dispatched(filePath),
+        }), /\(dispatch-changed\)/);
+        strictEqual(await readFile(filePath, 'utf8'), before);
+      });
+    });
+  }
+});

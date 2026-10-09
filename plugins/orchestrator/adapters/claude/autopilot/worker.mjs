@@ -68,6 +68,13 @@ const SCRUB_EXACT = Object.freeze([
   // The macro file's path, exported beside the ids (ADR-0067 Decision 3);
   // inherited, it would point the worker's child at a foreign macro file.
   'AGENTIC_PARENT_WORKFLOW_PATH',
+  // The dispatch selection, exported beside them (ADR-0067 Decision 4, item
+  // 5); inherited, it would record a foreign selection on the worker's child.
+  'AGENTIC_DISPATCH_SELECTION',
+  // ADR-0067 Decision 2: where records are created, and a run's admission
+  // secret. Inherited from an outer session they would name another
+  // checkout's homes or another run: only the driver may supply them.
+  'AGENTIC_STATE_BASE', 'AGENTIC_AUTOPILOT_TOKEN',
   // Runbooks resolve their root from AGENTIC_<PLUGIN>_ROOT first; a stale
   // inherited value must not stand in for it.
   'CLAUDE_PLUGIN_ROOT',
@@ -112,7 +119,7 @@ export function pushBlockConfig(base, { fetchUrls = [], pushUrls = [] } = {}) {
   return out;
 }
 
-export function workerEnv(base, { runId, roots, remotes = {} }) {
+export function workerEnv(base, { runId, roots, remotes = {}, stateBase = null, autopilotToken = null }) {
   const env = {};
   for (const [k, v] of Object.entries(base)) {
     if (SCRUB_EXACT.includes(k) || SCRUB_PREFIXES.some((p) => k.startsWith(p))) continue;
@@ -123,6 +130,12 @@ export function workerEnv(base, { runId, roots, remotes = {} }) {
   env.AGENTIC_ORCHESTRATOR_ROOT = roots.orchestrator;
   env.AGENTIC_ENGINEER_ROOT = roots.engineer;
   env.AGENTIC_RUNTIME_ROOT = roots.runtime;
+  // ADR-0067 Decision 2 — the run's effective state root, which the driver
+  // resolved once at start; never the inherited value scrubbed above.
+  if (typeof stateBase === 'string' && stateBase !== '') env.AGENTIC_STATE_BASE = stateBase;
+  // ADR-0067 Decision 4, item 5 — the run's secret, which admits its workers
+  // to the locks it holds; never an inherited one.
+  if (typeof autopilotToken === 'string' && autopilotToken !== '') env.AGENTIC_AUTOPILOT_TOKEN = autopilotToken;
   return env;
 }
 
@@ -259,7 +272,7 @@ export function startWorker(o) {
   });
   // Everything that can fail before the worker runs is done before it starts.
   const raw = fs.openSync(o.rawPath, 'a');
-  const workerEnvironment = workerEnv(env, { runId: o.runId, roots: o.roots, remotes: o.remotes ?? {} });
+  const workerEnvironment = workerEnv(env, { runId: o.runId, roots: o.roots, remotes: o.remotes ?? {}, stateBase: o.stateBase ?? null, autopilotToken: o.autopilotToken ?? null });
   let child;
   try {
     child = spawn(claudeBin(env), args, {

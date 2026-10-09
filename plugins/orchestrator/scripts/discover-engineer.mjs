@@ -511,6 +511,20 @@ export async function preflightEngineerCapability(root, { purpose = 'dispatch' }
         'Upgrade engineer together with orchestrator before /orchestrator:next.',
     };
   }
+  // ADR-0067 Decision 4, item 5 — /orchestrator:next's writeback reads the
+  // dispatch the child records (`dispatch-selection`), and the engineer's own
+  // terminal note must send it (`--expect-dispatch`); an older engineer has
+  // neither, and its child would be bound unchecked at its terminal commit.
+  if (!stateText.includes("'dispatch-selection'") || !writebackText.includes('--expect-dispatch=')) {
+    return {
+      ok: false,
+      reason: 'preflight-missing-cli: engineer does NOT record or send the dispatch selection ' +
+        '(state.mjs `dispatch-selection`, parent-writeback.mjs `--expect-dispatch`) — install ' +
+        'pre-dates ADR-0067 Decision 4, item 5, and its child could be bound to a subtask a ' +
+        'plan revision changed after the dispatch. Upgrade engineer together with ' +
+        'orchestrator before /orchestrator:next.',
+    };
+  }
   return { ok: true };
 }
 
