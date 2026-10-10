@@ -94,8 +94,10 @@ this protocol pins shape only):
    ledger. If discovery fails, the ensemble degrades to local-only per
    "Failure Handling".
 2. The caller constructs the research-scan prompt per "Prompt
-   Construction" below and writes it to a per-dispatch temporary file
-   (UTF-8), then passes that file to the runner. The prompt contains
+   Construction" below and writes it with its file-writing tool, not the
+   shell, as `prompt.xml` in a private directory
+   (`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`), then passes that
+   file to the runner (ADR-0059, amendment of 2026-10-10). The prompt contains
    user-controlled material (topic, sub-questions, scope), so it MUST be
    passed via `--prompt-file <path>` per `companions/contract.md` § 2.2 —
    never as a positional argument and never inlined into a shell command.
