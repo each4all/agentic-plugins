@@ -171,30 +171,30 @@ describe('/engineer:start — runtime:worktree routes name a subcommand the CLI 
     strictEqual(parsed.command, route.subcommand, `${where}: the worktree CLI did not read ${route.subcommand} as its command`);
   }
 
-  it('the Layer 1 gate\'s worktree resolution, in the command and the skill', async () => {
-    // Contract: the user following the dirty-tree refusal runs this route — a
-    // resolution line that loses it, or names a subcommand the CLI rejects,
-    // leaves the refusal with no working way to isolate the change.
-    const gates = {
-      'commands/start.md': {
-        text: await readFile(COMMAND_PATH, 'utf8'),
-        line: /^\s*echo "\s*• worktree:.*$/m,
-      },
-      'start/SKILL.md': {
-        text: await readFile(SKILL_PATH, 'utf8'),
-        line: /^- \*\*worktree\*\* .*$/m,
-      },
-    };
-    for (const [where, { text, line }] of Object.entries(gates)) {
-      const resolution = text.match(line);
-      ok(resolution, `${where} has no worktree resolution in the clean-baseline gate`);
-      const routes = worktreeRoutes(resolution[0]);
-      ok(
-        routes.some((route) => route.raw.startsWith('/') && route.subcommand !== null),
-        `${where}'s worktree resolution names no /runtime:worktree subcommand: ${resolution[0].trim()}`,
-      );
-      for (const route of routes) assertWorktreeRoute(route, `${where}'s worktree resolution`);
-    }
+  it('the Layer 1 gate selects a worktree first, in the command and the skill (ADR-0067 Decision 8, item 3)', async () => {
+    // Contract: the user following the dirty-tree refusal — the refusal asks the
+    // runtime planner for this request's worktree before it lists the
+    // resolutions here, so the worktree is the selection, not one option of four,
+    // and the fallback line names a /runtime:worktree subcommand the CLI accepts.
+    const command = await readFile(COMMAND_PATH, 'utf8');
+    const dirty = command.slice(command.indexOf('  dirty)\n'), command.indexOf('    exit 1;;', command.indexOf('  dirty)\n')));
+    ok(dirty.length > 0, 'commands/start.md has the dirty branch of the clean-baseline gate');
+    const plan = dirty.indexOf('"$CLAUDE_PLUGIN_ROOT/scripts/discover-runtime.mjs" worktree-plan --repo-root "$REPO_ROOT"');
+    ok(plan >= 0, 'the dirty branch asks the planner for the worktree');
+    ok(/worktree-plan --repo-root "\$REPO_ROOT" \\\n\s+--task "\$FEATURE" --base "\$BASE_BRANCH" /.test(dirty), 'for this request and its base');
+    ok(plan < dirty.indexOf('Or resolve it here, then re-run:'), 'before the resolutions here');
+    ok(!/• worktree:/.test(dirty), 'the worktree is no longer one option among the resolutions');
+    const skill = await readFile(SKILL_PATH, 'utf8');
+    const flat = skill.replace(/\s+/g, ' ');
+    ok(flat.includes('refuses to bootstrap and selects a worktree first') && flat.includes('`scripts/discover-runtime.mjs worktree-plan --repo-root <root> --args-file <path> --host codex --format text`'), 'the skill selects the worktree first');
+    // ADR-0059: the Codex sequence passes the request in an args file, never as --task on a command line.
+    ok(flat.includes('with the arguments in a new args file, never on a command line') && !flat.includes('worktree-plan --repo-root <root> --task'), 'the skill keeps the request off the command line');
+    ok(!/^- \*\*worktree\*\* /m.test(skill), 'the skill no longer lists it as one resolution');
+    const { worktreePlanText } = await import(resolve(ENGINEER_ROOT, 'scripts/discover-runtime.mjs'));
+    const fallback = worktreePlanText({ command: null, reason: 'no runtime' }, { persona: 'engineer' });
+    const routes = worktreeRoutes(fallback);
+    ok(routes.some((route) => route.raw.startsWith('/') && route.subcommand !== null), fallback);
+    for (const route of routes) assertWorktreeRoute(route, 'the planner fallback line');
   });
 
   it('every runtime:worktree subcommand the start route surfaces name', async () => {

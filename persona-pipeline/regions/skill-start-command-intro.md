@@ -30,7 +30,14 @@ follows the same operational sequence inline, in this order, using the same
    commits it (`${{persona}}:commit`),
 {{/capability}}
    archives it (`${{persona}}:resume`) or switches branch, then runs
-   `${{persona}}:start` again.
+   `${{persona}}:start` again. Either type: when the arguments are a new
+   request that does not belong to the active workflow, nothing is written;
+   the proposal selects a worktree first (ADR-0067 Decision 8, item 3) —
+   write the arguments into an args file and run `scripts/discover-runtime.mjs
+   worktree-plan --repo-root <root> --args-file <path> --host codex --format
+   text`, which prints the runtime:worktree planner's `git worktree add`
+   command for the request — and the ordinary resume stays the selection when
+   the request belongs to the workflow.
 {{^capability commit_surface}}
 3. **No active workflow.** The arguments are the description: the
    **clean-baseline gate** below, then `state.mjs create --workflow-type
@@ -81,7 +88,19 @@ create`. It calls `state.mjs check-clean-baseline --repo-root <root>` (with
 `status` (`clean` / `dirty` / `accepted`). The gate fails closed: only an
 explicit `clean` / `accepted` status proceeds; a non-zero check, a `dirty`
 tree, or an unparseable status stops the bootstrap. On `dirty` the gate
-refuses to bootstrap and presents resolutions:
+refuses to bootstrap and selects a worktree first (ADR-0067 Decision 8,
+item 3): with the arguments in a new args file, never on a command line
+(`{"agentic_args": 1, "text": "…"}`, written with the file-editing tool into a
+directory from `mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"`; the reader
+removes it), `scripts/discover-runtime.mjs worktree-plan --repo-root <root>
+--args-file <path> --host codex --format text` prints the runtime:worktree
+planner's `git worktree add -b <branch> <path> <base>` for the request,
+{{#capability commit_surface}}
+from the `--base-branch <ref>` in it when there is one,
+{{/capability}}
+to run before the start again inside the new worktree, or why there is none
+(no runtime with the planner, an existing branch, an occupied path, an
+unresolved base). The resolutions here stay the rejected alternatives:
 {{^capability commit_surface}}
 clean the tree, stash, or set `ACCEPT_CURRENT_TREE=1` to acknowledge the
 dirty tree. `.agentic-plugins/state/**` is excluded from the dirty check.
@@ -90,9 +109,6 @@ dirty tree. `.agentic-plugins/state/**` is excluded from the dirty check.
 
 - **clean** — `git restore . ; git clean -fd` and re-run;
 - **stash** — `git stash push --include-untracked`, re-run, then `git stash pop`;
-- **worktree** — `/runtime:worktree plan` (`$runtime:worktree` on Codex)
-  suggests the `git worktree add` command for a clean checkout once its
-  checks pass, without running it; re-run in the new worktree;
 - **accept-current-tree** — set `ACCEPT_CURRENT_TREE=1` before re-running.
   The workflow's commit will sweep whatever was in the tree; the user
   acknowledges this.

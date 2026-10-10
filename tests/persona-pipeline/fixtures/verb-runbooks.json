@@ -5114,6 +5114,161 @@
         ]
       },
       "why": "PC3b U2 (plan-verify peer, MAJOR): each Phase 7 block binds the workflow itself when ACTIVE is unset (a shell variable does not outlive a Bash call), from find-active on this branch, and stops when there is none"
+    },
+    {
+      "runbooks": [
+        "designer/start"
+      ],
+      "where": "call:state.mjs append#1",
+      "op": "insert-call",
+      "from": "decide-registry.mjs resolve",
+      "to": {
+        "script": "discover-runtime.mjs",
+        "sub": "worktree-plan",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--args-file",
+            "<directory from step 1>/args.json"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--format",
+            "text"
+          ]
+        ]
+      },
+      "why": "ADR-0067-WP U4: a new request beside an active workflow: the resume region's second block asks the runtime:worktree planner for its worktree, from the args file (read-only)"
+    },
+    {
+      "runbooks": [
+        "designer/start"
+      ],
+      "where": "guards.baseline_status",
+      "from": "case \"$STATUS\" in\n  clean|accepted) ;;\n  dirty)\n    echo \"✗ Working tree not clean — /${PERSONA}:start gates a clean baseline before bootstrapping a deliverable.\" >&2\n    echo \"  Resolve, then re-run:\" >&2\n    echo \"    • clean:  git restore . ; git clean -fd\" >&2\n    echo \"    • stash:  git stash push --include-untracked  (re-run, then git stash pop)\" >&2\n    echo \"    • accept: set ACCEPT_CURRENT_TREE=1 to acknowledge the dirty tree\" >&2\n    exit 1;;\n  *)\n    echo \"✗ clean-baseline check returned an unrecognized status ('$STATUS') — refusing to bootstrap (fail-closed).\" >&2\n    exit 1;;\nesac",
+      "to": "case \"$STATUS\" in\n  clean|accepted) ;;\n  dirty)\n    echo \"✗ Working tree not clean — /${PERSONA}:start gates a clean baseline before bootstrapping a deliverable.\" >&2\n    echo \"→ Proposed: a new worktree first, which leaves this checkout's changes where they are: run the worktree block (the active-workflow section) with the request in an args file; it prints the git worktree add command.\" >&2\n    echo \"  Or resolve it here, then re-run:\" >&2\n    echo \"    • clean:  git restore . ; git clean -fd\" >&2\n    echo \"    • stash:  git stash push --include-untracked  (re-run, then git stash pop)\" >&2\n    echo \"    • accept: set ACCEPT_CURRENT_TREE=1 to acknowledge the dirty tree\" >&2\n    exit 1;;\n  *)\n    echo \"✗ clean-baseline check returned an unrecognized status ('$STATUS') — refusing to bootstrap (fail-closed).\" >&2\n    exit 1;;\nesac",
+      "why": "ADR-0067-WP U4: the dirty arm selects a worktree first (the planner's command) and keeps clean, stash and accept as the alternatives; the worktree is no longer one option among them"
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "where": "call:state.mjs check-clean-baseline",
+      "op": "insert-call",
+      "from": "state.mjs create",
+      "to": {
+        "script": "discover-runtime.mjs",
+        "sub": "worktree-plan",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--task",
+            "$FEATURE"
+          ],
+          [
+            "--base",
+            "$BASE_BRANCH"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--format",
+            "text"
+          ]
+        ]
+      },
+      "why": "ADR-0067-WP U4: the dirty-tree refusal asks the runtime:worktree planner for this request's worktree first (read-only), before the clean, stash and accept resolutions"
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "where": "call:state.mjs append#1",
+      "op": "insert-call",
+      "from": "state.mjs append",
+      "to": {
+        "script": "discover-runtime.mjs",
+        "sub": "worktree-plan",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--args-file",
+            "<directory from step 1>/args.json"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--format",
+            "text"
+          ]
+        ]
+      },
+      "why": "ADR-0067-WP U4: a new request beside an active workflow: the resume region's second block asks the runtime:worktree planner for its worktree, from the args file (read-only)"
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "where": "guards.baseline_status",
+      "from": "case \"$STATUS\" in\n  clean|accepted) ;;\n  dirty)\n    echo \"✗ Working tree not clean — /${PERSONA}:start gates a clean baseline before bootstrapping a deliverable.\" >&2\n    printf '%s' \"$BASELINE\" | node -e 'let s=\"\";process.stdin.on(\"data\",d=>s+=d);process.stdin.on(\"end\",()=>console.log(JSON.stringify(JSON.parse(s).categories,null,2)))' >&2\n    echo \"  Resolve, then re-run:\" >&2\n    echo \"    • clean:  git restore . ; git clean -fd\" >&2\n    echo \"    • stash:  git stash push --include-untracked  (re-run, then git stash pop)\" >&2\n    echo \"    • worktree: /runtime:worktree plan  (suggests a git worktree add command once its checks pass; re-run in the new worktree)\" >&2\n    echo \"    • accept: set ACCEPT_CURRENT_TREE=1 to sweep the current tree into the workflow's commit (Phase 7 stages all of it)\" >&2\n    exit 1;;\n  *)\n    echo \"✗ clean-baseline check returned an unrecognized status ('$STATUS') — refusing to bootstrap (fail-closed).\" >&2\n    exit 1;;\nesac",
+      "to": "case \"$STATUS\" in\n  clean|accepted) ;;\n  dirty)\n    echo \"✗ Working tree not clean — /${PERSONA}:start gates a clean baseline before bootstrapping a deliverable.\" >&2\n    printf '%s' \"$BASELINE\" | node -e 'let s=\"\";process.stdin.on(\"data\",d=>s+=d);process.stdin.on(\"end\",()=>console.log(JSON.stringify(JSON.parse(s).categories,null,2)))' >&2\n    node \"$CLAUDE_PLUGIN_ROOT/scripts/discover-runtime.mjs\" worktree-plan --repo-root \"$REPO_ROOT\" \\\n      --task \"$FEATURE\" --base \"$BASE_BRANCH\" --host \"${AGENTIC_HOST:-claude}\" --format text >&2\n    echo \"  Or resolve it here, then re-run:\" >&2\n    echo \"    • clean:  git restore . ; git clean -fd\" >&2\n    echo \"    • stash:  git stash push --include-untracked  (re-run, then git stash pop)\" >&2\n    echo \"    • accept: set ACCEPT_CURRENT_TREE=1 to sweep the current tree into the workflow's commit (Phase 7 stages all of it)\" >&2\n    exit 1;;\n  *)\n    echo \"✗ clean-baseline check returned an unrecognized status ('$STATUS') — refusing to bootstrap (fail-closed).\" >&2\n    exit 1;;\nesac",
+      "why": "ADR-0067-WP U4: the dirty arm selects a worktree first (the planner's command) and keeps clean, stash and accept as the alternatives; the worktree is no longer one option among them"
+    },
+    {
+      "runbooks": [
+        "founder/start"
+      ],
+      "where": "call:state.mjs append",
+      "op": "insert-call",
+      "from": "state.mjs finish-verb",
+      "to": {
+        "script": "discover-runtime.mjs",
+        "sub": "worktree-plan",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--args-file",
+            "<directory from step 1>/args.json"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--format",
+            "text"
+          ]
+        ]
+      },
+      "why": "ADR-0067-WP U4: a new request beside an active workflow: the resume region's second block asks the runtime:worktree planner for its worktree, from the args file (read-only)"
+    },
+    {
+      "runbooks": [
+        "founder/start"
+      ],
+      "where": "guards.baseline_status",
+      "from": "case \"$STATUS\" in\n  clean|accepted) ;;\n  dirty)\n    echo \"✗ Working tree not clean — /${PERSONA}:start gates a clean baseline before bootstrapping a deliverable.\" >&2\n    echo \"  Resolve, then re-run:\" >&2\n    echo \"    • clean:  git restore . ; git clean -fd\" >&2\n    echo \"    • stash:  git stash push --include-untracked  (re-run, then git stash pop)\" >&2\n    echo \"    • accept: set ACCEPT_CURRENT_TREE=1 to acknowledge the dirty tree\" >&2\n    exit 1;;\n  *)\n    echo \"✗ clean-baseline check returned an unrecognized status ('$STATUS') — refusing to bootstrap (fail-closed).\" >&2\n    exit 1;;\nesac",
+      "to": "case \"$STATUS\" in\n  clean|accepted) ;;\n  dirty)\n    echo \"✗ Working tree not clean — /${PERSONA}:start gates a clean baseline before bootstrapping a deliverable.\" >&2\n    echo \"→ Proposed: a new worktree first, which leaves this checkout's changes where they are: run the worktree block (the active-workflow section) with the request in an args file; it prints the git worktree add command.\" >&2\n    echo \"  Or resolve it here, then re-run:\" >&2\n    echo \"    • clean:  git restore . ; git clean -fd\" >&2\n    echo \"    • stash:  git stash push --include-untracked  (re-run, then git stash pop)\" >&2\n    echo \"    • accept: set ACCEPT_CURRENT_TREE=1 to acknowledge the dirty tree\" >&2\n    exit 1;;\n  *)\n    echo \"✗ clean-baseline check returned an unrecognized status ('$STATUS') — refusing to bootstrap (fail-closed).\" >&2\n    exit 1;;\nesac",
+      "why": "ADR-0067-WP U4: the dirty arm selects a worktree first (the planner's command) and keeps clean, stash and accept as the alternatives; the worktree is no longer one option among them"
     }
   ],
   "runbooks": {

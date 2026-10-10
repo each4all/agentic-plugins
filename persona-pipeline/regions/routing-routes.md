@@ -17,7 +17,7 @@ recommendation:
 {{^capability dispatch_target}}
 | `orchestrator:plan` | The work naturally splits into 2+ independently completable deliverables, PRs, branches, owners, or dependency edges. The orchestrator plans the program but dispatches its subtasks into engineer only, so a {{deliverable_noun}} inside it runs through `/{{persona}}:start` on its own branch. | `/orchestrator:plan` or `$orchestrator:plan` |
 {{/capability}}
-| `runtime:worktree` | The next slice should be isolated because the current checkout is dirty, long-running, risky, or parallelizable. | `/runtime:worktree plan` or `$runtime:worktree` |
+| `runtime:worktree` | The next slice should be isolated because the current checkout is dirty, long-running, risky, or parallelizable. A start that a dirty tree or another active workflow blocks selects it first and prints its `git worktree add` command (ADR-0067 Decision 8, item 3); the ordinary resume stays when the request belongs to the active workflow. | `/runtime:worktree plan` or `$runtime:worktree` |
 | `runtime:*` | The problem is host readiness, plugin install/update, context handoff, or workflow storage. | `/runtime:doctor`, `/runtime:settings`, `/runtime:context` or Codex equivalents |
 | Single verb | The user only needs investigation, framing, decision support, composition, critique, or refinement without lifecycle state. | `/{{persona}}:<verb>` or `${{persona}}:<verb>` |
 

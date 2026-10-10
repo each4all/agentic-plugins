@@ -21,6 +21,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { makeRepo, ORCH, ENG, RUNTIME } from './fixtures/autopilot-repo.mjs';
+import { installLikeRelease } from './fixtures/install-cache.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const AP = resolve(REPO_ROOT, 'plugins/orchestrator/adapters/claude/autopilot');
@@ -526,6 +527,27 @@ describe('stop', () => {
       try { process.kill(lock.worker.pid, 0); } catch { workerAlive = false; }
       ok(!workerAlive, 'the worker was killed');
       deepStrictEqual(L.readLockEntries(L.worktreeLockPath(t.work)), [], 'the locks are released');
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+});
+
+// ADR-0067 Decision 8, item 4 — launched on the main checkout, start prints
+// the home-worktree setup, pinned to the installed releases, and goes on.
+describe('the launch proposal at start', () => {
+  it('on the main checkout, start proposes the home worktree pinned to the installed cache, then runs', async () => {
+    const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [DONE], file: false } } });
+    try {
+      // Releases laid out as this repository's plugins are (runtime has no state.mjs).
+      const pins = Object.fromEntries(['orchestrator', 'engineer', 'runtime'].map((p) => [p, installLikeRelease(t.env.HOME, p, '1.0.0')]));
+      strictEqual(await t.run({ maxSteps: 1 }), 2, t.lines.join('\n'));
+      const at = t.lines.findIndex((l) => l.startsWith('→ Proposed (main-checkout): this is the main checkout, whose branch a serial run switches at each dispatch'));
+      ok(at >= 0, t.lines.join('\n'));
+      const command = t.lines[at + 1];
+      ok(command.startsWith(`    git -C ${t.work} worktree add -b autopilot/home `), command);
+      ok(command.includes(`AGENTIC_ORCHESTRATOR_ROOT=${pins.orchestrator} AGENTIC_ENGINEER_ROOT=${pins.engineer} AGENTIC_RUNTIME_ROOT=${pins.runtime} node `), command);
+      strictEqual(t.latest().steps.length, 1, 'the run went on after the proposal');
     } finally {
       t.fx.cleanup();
     }

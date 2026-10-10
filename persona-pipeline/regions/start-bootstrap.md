@@ -85,6 +85,26 @@ block sets the repository and branch itself: a shell variable does not outlive
 a Bash call.
 {{/capability}}
 
+A dirty tree's refusal selects a worktree first (ADR-0067 Decision 8, item 3):
+`scripts/discover-runtime.mjs worktree-plan` prints the runtime:worktree
+planner's `git worktree add -b <branch> <path> <base>` for this request, to
+run before `/{{persona}}:start` again inside the new worktree; this checkout's
+changes stay where they are. It is the refusal's `selected_next`. Cleaning,
+stashing or accepting the tree here stay among the rejected alternatives: right
+when the changes are finished or belong to this request, wrong when they are
+other work. When no runtime with the planner resolves, or the planner blocks
+(an existing branch, an occupied path, an unresolved base), the line names the
+reason and `/runtime:worktree plan`.
+{{#capability commit_surface}}
+The refusal plans it for the description and base the args file held.
+{{/capability}}
+{{^capability commit_surface}}
+The request reaches the planner through an args file, never through the
+shell: the refusal names the worktree block in the active-workflow section
+below, which a new request beside an active workflow uses too; run it with the
+request in a new args file.
+{{/capability}}
+
 ```bash
 {{#capability commit_surface}}
 ARGS_DIR='<directory from step 1>'
@@ -100,6 +120,7 @@ START_ARGS="$(node "$CLAUDE_PLUGIN_ROOT/scripts/start-args.mjs" --args-file "$AR
 # A command substitution drops trailing newlines; the sentinel keeps them.
 FEATURE="$(printf '%s' "$START_ARGS" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>process.stdout.write(JSON.parse(s).feature))'; printf x)"; FEATURE="${FEATURE%x}"
 [ -n "$FEATURE" ] || { echo "✗ No feature description was read; nothing was written." >&2; exit 2; }
+BASE_BRANCH="$(printf '%s' "$START_ARGS" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>process.stdout.write(JSON.parse(s).base_branch))')" || exit $?
 {{/capability}}
 # ACCEPT_CURRENT_TREE=1, exported or set in this block, accepts a dirty tree;
 # the flag carries it to the check either way.
@@ -120,11 +141,21 @@ case "$STATUS" in
 {{#capability commit_surface}}
     printf '%s' "$BASELINE" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>console.log(JSON.stringify(JSON.parse(s).categories,null,2)))' >&2
 {{/capability}}
-    echo "  Resolve, then re-run:" >&2
+{{#capability commit_surface}}
+    # ADR-0067 Decision 8, item 3 — a worktree first: the runtime planner's
+    # command for this request, read-only.
+    node "$CLAUDE_PLUGIN_ROOT/scripts/discover-runtime.mjs" worktree-plan --repo-root "$REPO_ROOT" \
+      --task "$FEATURE" --base "$BASE_BRANCH" --host "${AGENTIC_HOST:-claude}" --format text >&2
+{{/capability}}
+{{^capability commit_surface}}
+    # ADR-0067 Decision 8, item 3 — a worktree first; the request reaches the
+    # planner through an args file, never through this block.
+    echo "→ Proposed: a new worktree first, which leaves this checkout's changes where they are: run the worktree block (the active-workflow section) with the request in an args file; it prints the git worktree add command." >&2
+{{/capability}}
+    echo "  Or resolve it here, then re-run:" >&2
     echo "    • clean:  git restore . ; git clean -fd" >&2
     echo "    • stash:  git stash push --include-untracked  (re-run, then git stash pop)" >&2
 {{#capability commit_surface}}
-    echo "    • worktree: /runtime:worktree plan  (suggests a git worktree add command once its checks pass; re-run in the new worktree)" >&2
     echo "    • accept: set ACCEPT_CURRENT_TREE=1 to sweep the current tree into the workflow's commit (Phase 7 stages all of it)" >&2
 {{/capability}}
 {{^capability commit_surface}}

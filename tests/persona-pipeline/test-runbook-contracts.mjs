@@ -746,6 +746,21 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               deepStrictEqual([refused.status, refused.out, refused.log], [4, null, ['find-active', 'autopilot-preflight']]);
             });
 
+            // ADR-0067 Decision 8, item 3 — a new request beside an active
+            // workflow: the resume region's second block asks the runtime
+            // planner for a worktree, from the args file, and writes nothing.
+            it('start resume, a new request: the worktree block reads the request from its args file and writes nothing', () => {
+              const block = blockWith(/discover-runtime\.mjs" worktree-plan --repo-root "\$REPO_ROOT" \\\n\s+--args-file /).text;
+              ok(block.startsWith(`${ARGS_DIR_LINE}\n`), block);
+              const r = runBlock('bash', block, persona, { argsText: 'Another deliverable' });
+              strictEqual(r.status, 0, r.stderr);
+              deepStrictEqual(r.log, ['worktree-plan']);
+              ok(/ worktree-plan --repo-root \/\S+ --args-file \/\S+\/start-args\/args\.json --host claude --format text$/.test(r.argv[0].trimEnd()), r.argv[0]);
+              const resume = squash(region(text, 'start-resume'));
+              ok(resume.includes('When the arguments above are a new request that does not belong to the active workflow'), `${persona}/start: the request decides between resume and worktree`);
+              ok(resume.includes('the ordinary resume is the selection: run the first block'), `${persona}/start: the ordinary resume stays`);
+            });
+
             it('start bootstrap, run: only a clean or accepted baseline creates the workflow (investigate, workflow_type start); any other status, or a failed check, stops before any write', () => {
               const block = blockWith(/state\.mjs" check-clean-baseline /).text;
               const reads = commits ? ['start-args'] : [];
@@ -777,15 +792,36 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                   // With commit_surface the description the args file held, the
                   // embedded --base-branch removed and nothing in it run.
                   if (commits) ok(r.argv[1].includes(` --original-request Fix it's "A"; $(id) > f --current-phase `), `${what}: the description: ${r.argv[1]}`);
+                  // Without commit_surface the create takes the request in place
+                  // of its placeholder, where the block always had it.
+                  else ok(r.argv[1].includes(' --original-request <the original request described above> --current-phase '), `${what}: the request: ${r.argv[1]}`);
                   strictEqual(r.out, '/w/created.md', `${what}: $ACTIVE holds the workflow create printed`);
+                } else if (baseline.startsWith('{"status":"dirty"')) {
+                  // ADR-0067 Decision 8, item 3: the dirty refusal asks the
+                  // runtime planner for a worktree first, which writes nothing;
+                  // without commit_surface the request is in no shell variable,
+                  // and the refusal names the worktree block instead.
+                  deepStrictEqual(r.log, [...reads, 'check-clean-baseline', ...(commits ? ['worktree-plan'] : [])], `${what}: nothing written`);
                 } else {
                   deepStrictEqual(r.log, [...reads, 'check-clean-baseline'], `${what}: nothing written`);
                 }
                 if (baseline.startsWith('{"status":"dirty"')) {
                   ok(r.stderr.includes(`/${persona}:start gates a clean baseline`), 'the dirty message names the persona');
-                  // commit_surface: the categories, and the worktree and
-                  // sweep-into-commit resolutions (ADR-0028 §Layer-1).
-                  for (const part of ['"modified": [', '• worktree: /runtime:worktree plan', "• accept: set ACCEPT_CURRENT_TREE=1 to sweep the current tree into the workflow's commit"]) strictEqual(r.stderr.includes(part), commits, `${part}: ${r.stderr}`);
+                  // The worktree for this request comes first: with
+                  // commit_surface the description the args file held and its
+                  // base; off, the request placeholder the create takes too.
+                  const plan = r.argv.find((a) => a.includes('/scripts/discover-runtime.mjs worktree-plan '));
+                  if (commits) {
+                    ok(plan && / --repo-root \/\S+ /.test(plan) && plan.trimEnd().endsWith(' --host claude --format text'), `${what}: ${plan}`);
+                    ok(plan.includes(` --task Fix it's "A"; $(id) > f --base `), `${what}: the request: ${plan}`);
+                  } else {
+                    strictEqual(plan, undefined, `${what}: no request reaches a command line`);
+                    ok(r.stderr.includes('→ Proposed: a new worktree first, which leaves this checkout\'s changes where they are: run the worktree block (the active-workflow section) with the request in an args file'), `${what}: ${r.stderr}`);
+                  }
+                  ok(r.stderr.includes('Or resolve it here, then re-run:') && !r.stderr.includes('• worktree:'), `${what}: the worktree is not one option among the resolutions: ${r.stderr}`);
+                  // commit_surface: the categories, and the sweep-into-commit
+                  // resolution (ADR-0028 §Layer-1).
+                  for (const part of ['"modified": [', "• accept: set ACCEPT_CURRENT_TREE=1 to sweep the current tree into the workflow's commit"]) strictEqual(r.stderr.includes(part), commits, `${part}: ${r.stderr}`);
                 }
               }
               // ACCEPT_CURRENT_TREE=1 set in the block, unexported, still reaches the check.
