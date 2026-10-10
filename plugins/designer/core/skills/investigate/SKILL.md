@@ -221,6 +221,11 @@ pass `--model` or `--effort` flags.
    citation numbering is remapped to local capture order (peer's internal
    labels MUST NOT be copied verbatim).
 
+A CONFLICT the synthesis leaves (verdict `conflict`) is the owner's:
+`/designer:investigate` ends with the `peer-conflict` owner gate, with a
+bounded consensus round proposed first (ADR-0067 Decision 8;
+`../_shared/references/entry-routing-contract.md` § Owner gates).
+
 ### Step 5: Present
 
 Follow the Presentation Mode Protocol
