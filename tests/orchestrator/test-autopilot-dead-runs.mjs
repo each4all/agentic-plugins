@@ -278,6 +278,28 @@ describe('cleaning up after a dead run (ADR-0067 Decision 6, Locks)', () => {
     }
   });
 
+  it('settles each step once by its seq: with lanes a later step can finish first, so an earlier unfinished one below `steps` is still counted, and a run that died draining is halted', { timeout: 60_000 }, async () => {
+    const t = await setup();
+    try {
+      // Lane A's step 2 never finished; lane B's step 3 finished and was
+      // counted (run.json: two steps taken, accounted 1 and 3, $3 + $5).
+      const lanes = 'autopilot-20261009T010000Z-1a7e5a';
+      const dir = await t.deadRun(lanes, { steps: [{ seq: 2, subtask_id: 'A', step_budget_usd: 25 }, { seq: 3, subtask_id: 'B', step_budget_usd: 25, finished: { cost_usd: 5, cost_charged_usd: 5 } }] });
+      L.writeRun(dir, { ...L.readRun(t.work, lanes).run, status: 'draining', steps: 2, cost_usd: 8, accounted_seqs: [1, 3] });
+      const { lines, of } = await t.cleanup();
+      strictEqual(of(lanes).outcome, 'cleaned', lines.join('\n'));
+      deepStrictEqual(of(lanes).settled.map((s) => [s.seq, s.charged_usd, s.finished]), [[2, 25, false]]);
+      const r = L.readRun(t.work, lanes).run;
+      // Three steps taken: counted by seq, not up to the highest seq it settled.
+      deepStrictEqual([r.cost_usd, r.accounted_seqs, r.steps, r.cost_complete, r.status], [33, [1, 2, 3], 3, false, 'halted']);
+      // Idempotent: a second cleanup meets no record and counts nothing twice.
+      await t.cleanup();
+      strictEqual(L.readRun(t.work, lanes).run.cost_usd, 33);
+    } finally {
+      t.done();
+    }
+  });
+
   it('keeps the record when a peer-run home cannot be resolved for any reason but its absence', { timeout: 60_000 }, async (tt) => {
     if (process.getuid?.() === 0) { tt.skip('root reads through a mode-000 directory'); return; }
     const t = await setup();

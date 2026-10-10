@@ -38,7 +38,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { listOpenRuns, openRunsDir, readRun, removeOpenRun, writeHalt, writeRun } from './ledger.mjs';
+import { listOpenRuns, openRunsDir, readRun, relaunchCommand, removeOpenRun, writeHalt, writeRun } from './ledger.mjs';
 import { ENGINEER_STATE_HOMES } from './observe.mjs';
 import {
   acquireLock, holderAlive, LockHeldError, macroLockPath, processFingerprint, readLockEntries, worktreeLockPath,
@@ -335,19 +335,22 @@ async function cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, 
       if (step) reported.push({ run_id: handle.run_id, root, workflow: handle.workflow_path ?? null, subtask_id: step.subtask_id, seq: step.seq, engineer });
     }
 
-    // What run.json does not count yet: the serial driver charges a step
-    // (steps = seq) in memory and writes run.json after the step's finished
-    // line, so a driver that died in between leaves a finished step, with its
-    // charge in that line, uncounted; one that died during the step leaves an
-    // unfinished step, which counts its whole budget. The error path writes
-    // run.json with the charge and no finished line: a step up to `steps` is
-    // counted already.
+    // What run.json does not count yet: the driver charges a step in memory
+    // and writes run.json after the step's finished line, so a driver that
+    // died in between leaves a finished step, with its charge in that line,
+    // uncounted; one that died during the step leaves an unfinished step,
+    // which counts its whole budget. The error path writes run.json with the
+    // charge and no finished line. Which steps run.json counts is its
+    // `accounted_seqs` (ADR-0067 Decision 6, Budgets: a step is settled once,
+    // by its seq), since with lanes a later step can finish before an earlier
+    // one; a ledger from before it counts every step up to `steps`.
     let steps = Number.isInteger(run.steps) ? run.steps : 0;
+    const accounted = Array.isArray(run.accounted_seqs) ? new Set(run.accounted_seqs) : null;
     let cost = Number(run.cost_usd ?? 0);
     const settled = [];
     let costKnown = true;
     for (const s of strict.steps) {
-      if (s.seq <= steps) continue;
+      if (accounted ? accounted.has(s.seq) : s.seq <= steps) continue;
       const finished = s.event === 'finished';
       const charged = finished && Number.isFinite(s.cost_charged_usd) ? s.cost_charged_usd
         : (Number.isFinite(s.step_budget_usd) ? s.step_budget_usd : 0);
@@ -356,9 +359,12 @@ async function cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, 
       settled.push({ seq: s.seq, charged_usd: charged, finished });
     }
     if (settled.length > 0) {
-      steps = Math.max(steps, ...settled.map((s) => s.seq));
+      // The steps run.json counts: by seq where it lists them (a later step
+      // can finish before an earlier one), else up to the highest seq.
+      steps = accounted ? new Set([...accounted, ...settled.map((s) => s.seq)]).size : Math.max(steps, ...settled.map((s) => s.seq));
       run.steps = steps;
       run.cost_usd = cost;
+      if (accounted) run.accounted_seqs = [...accounted, ...settled.map((s) => s.seq)].sort((a, b) => a - b);
       if (!costKnown) run.cost_complete = false;
     }
 
@@ -372,7 +378,9 @@ async function cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, 
       reported: reported.map((p) => p.run_id),
       unresolved: unresolved.map((p) => p.run_id),
     };
-    if (complete && run.status === 'running') {
+    // A run that died draining (its lanes' in-flight steps finishing after a
+    // halt) died running too.
+    if (complete && (run.status === 'running' || run.status === 'draining')) {
       const last = unfinished.at(-1) ?? null;
       run.status = 'halted';
       run.ended_at = at;
@@ -385,7 +393,7 @@ async function cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, 
         waiting: null,
         merge_order: null,
         last_session_id: last?.session_id ?? null,
-        resume: ['Check what the last step left, then relaunch:', `/orchestrator:autopilot start --execute   (or: agentic-autopilot start --execute --repo ${run.repo ?? record.checkout})`],
+        resume: ['Check what the last step left, then relaunch:', relaunchCommand({ macroId: run.macro_id ?? record.macro_id ?? null, lanes: run.options?.lanes ?? 1, repoRoot: run.repo ?? record.checkout })],
       };
       if (!r.halt) writeHalt(r.dir, run.halt);
     }

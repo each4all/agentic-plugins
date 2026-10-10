@@ -14,32 +14,45 @@
 // Decision 7), and goes on.
 //
 // What it kills is only what its steps started: a worker's process group on
-// timeout or abort, and, through engineer's own `peer-runner cancel`, the peer
-// runs that step left pending (a peer runs detached from the worker's group).
+// timeout or abort (with lanes, an off-loop task's too, offloop.mjs), and,
+// through engineer's own `peer-runner cancel`, the peer runs that step left
+// pending (a peer runs detached from the worker's group). SIGINT, SIGTERM and
+// SIGHUP interrupt the run; an exit that did not unwind it empties every
+// group still in flight.
 // A run whose driver died cannot do that, so before its first spawn each run
 // cleans up after the dead runs of its macro, from their open-run records
 // (dead-runs.mjs), and keeps its own record until it ends.
+//
+// With `--lanes N` (N of 2 or more, ADR-0067 Decision 6) the start is the
+// same, then scheduler.mjs runs the macro's subtasks in lanes, each in its
+// own git worktree, up to N workers at a time. Without it, or with 1, the
+// run is this serial loop, which refuses to start while a lane of the macro
+// holds a subtask that is not completed.
 
 import { spawnSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 
+import { createBudget } from './budget.mjs';
 import { cleanupDeadRuns, summary as cleanupSummary } from './dead-runs.mjs';
 import { orderText, overlapText, reportLandingReady } from './landing-ready.mjs';
+import { lanesHoldingWork, lanesRequirements } from './lanes.mjs';
 import { observe as defaultObserve } from './observe.mjs';
 import {
   decide, fingerprint, modelFor, renderStep, verifyStep, STEP_KINDS,
 } from './policy.mjs';
 import {
   appendStep, acquireLock, createRunDir, LockHeldError, macroLockPath, mainWorktreeRoot, newRunId,
-  processFingerprint, removeOpenRun, workerStreamPath, worktreeLockPath, writeHalt, writeOpenRun, writeRun,
+  processFingerprint, relaunchCommand, removeOpenRun, workerStreamPath, worktreeLockPath, writeHalt, writeOpenRun, writeRun,
 } from './ledger.mjs';
 import {
-  capabilityProblems, driftOf, frozenInputProblems, PLUGINS, resolveRoots,
+  capabilityProblems, driftOf, frozenInputProblems, lanesCapabilityProblems, PLUGINS, resolveRoots,
 } from './roots.mjs';
+import { observeInChild, offLoop as defaultOffLoop } from './offloop.mjs';
+import { laneBlock, runLanes } from './scheduler.mjs';
 import {
-  ALLOWED_TOOLS, COMMIT_DENY, DENIED_TOOLS, claudeBin, startWorker as defaultStartWorker,
+  ALLOWED_TOOLS, COMMIT_DENY, DENIED_TOOLS, claudeBin, startWorker as defaultStartWorker, terminateGroupsSync,
 } from './worker.mjs';
 import { checkStateBase, creationRoot, STATE_BASE_ENV } from '../../../scripts/lib/state-root.mjs';
 import { tokenDigest } from '../../../scripts/lib/run-locks.mjs';
@@ -54,9 +67,6 @@ export const DEFAULTS = Object.freeze({
   maxTimeSec: 86400,
   oversizePct: 0.25,
 });
-// A step with less than this left of the run's cost cap is not started.
-const MIN_STEP_BUDGET_USD = 0.5;
-const MIN_STEP_TIMEOUT_SEC = 60;
 // The Claude Code flags the worker host depends on (verified on 2.1.281 and
 // 2.1.286).
 const REQUIRED_CLAUDE_FLAGS = ['--input-format', '--permission-prompts', '--include-hook-events', '--max-budget-usd', '--json-schema'];
@@ -96,7 +106,7 @@ export function remoteUrls(repoRoot) {
  * plugin roots with their capability floor, and no root inside the repository.
  * `problems` refuse a start; `warnings` are printed.
  */
-export async function preflight({ repoRoot, env = process.env, checkClaude = true }) {
+export async function preflight({ repoRoot, env = process.env, checkClaude = true, lanes = 1 }) {
   const problems = [];
   const warnings = ['-p skips the workspace trust dialog: run the autopilot only in a repository you trust.'];
   if (git(repoRoot, ['rev-parse', '--is-inside-work-tree']).stdout !== 'true') {
@@ -128,6 +138,7 @@ export async function preflight({ repoRoot, env = process.env, checkClaude = tru
   problems.push(...resolved.problems);
   problems.push(...(await capabilityProblems(resolved.roots)));
   problems.push(...frozenInputProblems(resolved.roots, repoRoot));
+  if (lanes >= 2) problems.push(...lanesCapabilityProblems(resolved.roots, repoRoot, { env }));
   const { stateRoot, problem } = effectiveStateRoot(repoRoot, env);
   if (problem) problems.push(problem);
   return { problems, warnings, roots: resolved, claude, stateRoot };
@@ -255,13 +266,14 @@ export function cancelPeerRuns(runIds, { roots, checkout, env }) {
   });
 }
 
-function haltRecord({ runId, d, lastSessionId, repoRoot }) {
+function haltRecord({ runId, d, lastSessionId, repoRoot, macroId, lanes }) {
   const resume = [];
   if (lastSessionId) resume.push(`claude --resume ${lastSessionId}   # inspect the last step interactively`);
   resume.push(d.reason === 'awaiting-landing'
     ? 'Push each branch listed, open and review its pull request, merge it, then relaunch:'
     : 'Resolve what the reason names, then relaunch:');
-  resume.push(`/orchestrator:autopilot start --execute   (or: agentic-autopilot start --execute --repo ${repoRoot})`);
+  // ADR-0067 Decision 6: the relaunch repeats the run's macro and lanes.
+  resume.push(relaunchCommand({ macroId, lanes, repoRoot }));
   return {
     run_id: runId,
     reason: d.reason,
@@ -272,6 +284,9 @@ function haltRecord({ runId, d, lastSessionId, repoRoot }) {
     merge_order: d.mergeOrder ?? null,
     last_session_id: lastSessionId,
     resume,
+    // A run with lanes: the other halts its drain met, and one entry per lane.
+    ...(d.also ? { also: d.also } : {}),
+    ...(lanes >= 2 ? { lanes: d.lanes ?? [] } : {}),
   };
 }
 
@@ -311,6 +326,20 @@ function withLanding(d, report) {
   };
 }
 
+// ADR-0067 Decision 6: a serial run does not reconcile lanes, and would halt
+// on their active children or ask for a switch to a branch git will not check
+// out twice; it refuses while a lane of the macro holds unfinished work.
+function serialRefusal({ repoRoot, macroId, view, env }) {
+  if (!macroId) return [];
+  const held = lanesHoldingWork({ checkout: repoRoot, macroId, view, env });
+  if (held.problem) return [held.problem];
+  if (held.lanes.length === 0) return [];
+  return [
+    `a lane of macro ${macroId} holds work that is not completed (${held.lanes.map((l) => `${l.subtaskId}=${l.status} at ${l.path}`).join(', ')}): ` +
+      `a serial run does not drive lanes. Run it with lanes: ${relaunchCommand({ macroId, lanes: 2, repoRoot })}`,
+  ];
+}
+
 /**
  * Start a run. Resolves to the exit code: 0 completed, 2 halted, 1 error.
  *
@@ -318,13 +347,15 @@ function withLanding(d, report) {
  * @param a.options   parsed CLI options (budgets, models, macro, forced, notifyLocal)
  * @param a.env       the environment (workers inherit it, scrubbed)
  * @param a.out, a.err  line printers
- * @param a.deps      test seams: { observe, startWorker, now, signals, checkClaude }
+ * @param a.deps      test seams: { observe, observeAsync, offLoop, startWorker, now, signals, checkClaude, terminateGroupsSync }
  */
 export async function startRun({ repoRoot, options, env = process.env, out = console.log, err = console.error, deps = {} }) {
   const observe = deps.observe ?? defaultObserve;
   const startWorker = deps.startWorker ?? defaultStartWorker;
   const now = deps.now ?? (() => Date.now());
-  const pre = await preflight({ repoRoot, env, checkClaude: deps.checkClaude ?? true });
+  // ADR-0067 Decision 6: absent or 1, the serial driver; 2 or more, lanes.
+  const lanes = Number.isInteger(options.lanes) && options.lanes >= 2 ? options.lanes : 1;
+  const pre = await preflight({ repoRoot, env, checkClaude: deps.checkClaude ?? true, lanes });
   for (const w of pre.warnings) out(`⚠ ${w}`);
   if (pre.problems.length > 0) {
     err('✗ The autopilot cannot start:');
@@ -338,6 +369,19 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
 
   let view = observe({ repoRoot, roots, macroId: options.macro ?? null, fetch: true, env });
   const macroId = view.macro?.id ?? null;
+  // Lanes require shared creation, the default state root and the macro
+  // there (Decision 2); a serial run refuses beside a lane of the macro that
+  // holds a subtask not completed, and names the lanes command.
+  const refusal = lanes >= 2
+    ? (macroId
+      ? lanesRequirements({ checkout: repoRoot, stateRoot, macroPath: view.macro.path, view })
+      : [`a run with lanes needs its macro${view.macroLookupError ? ` (${view.macroLookupError})` : ''}: name it with --macro <id>`])
+    : serialRefusal({ repoRoot, macroId, view, env });
+  if (refusal.length > 0) {
+    err(`✗ The autopilot cannot start${lanes >= 2 ? ` with --lanes ${lanes}` : ''}:`);
+    for (const p of refusal) err(`  - ${p}`);
+    return 1;
+  }
   const runId = newRunId(new Date(now()));
   const runDir = createRunDir(repoRoot, runId);
   const startedAt = now();
@@ -352,7 +396,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       max_steps: options.maxSteps, max_cost_usd: options.maxCostUsd, step_budget_usd: options.stepBudgetUsd,
       step_timeout_sec: options.stepTimeoutSec, max_time_sec: options.maxTimeSec, oversize_pct: options.oversizePct,
       model_plan: options.models, model_override: { model: options.model ?? null, effort: options.effort ?? null },
-      forced: options.forcedText ?? null, notify_local: options.notifyLocal === true,
+      forced: options.forcedText ?? null, notify_local: options.notifyLocal === true, lanes,
     },
     claude_version: pre.claude,
     roots,
@@ -364,6 +408,9 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     steps: 0,
     cost_usd: 0,
     cost_complete: true,
+    // The seqs whose charge cost_usd holds: a dead run's cleanup settles
+    // every other started step, once (ADR-0067 Decision 6, Budgets).
+    accounted_seqs: [],
     halt: null,
   };
   writeRun(runDir, run);
@@ -376,6 +423,10 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
   // A step whose process group outlived SIGKILL leaves the run's entries in
   // place: they name the group, and holderAlive counts it while it has members.
   let lingering = false;
+  // A run with lanes whose look after a step failed keeps its open-run
+  // record: that step's peers are unknown, and the next run's cleanup
+  // cancels the ones that name it (scheduler.mjs).
+  let keepRecord = false;
   const release = () => {
     if (lingering) locks.length = 0;
     while (locks.length) locks.pop().release();
@@ -383,36 +434,60 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
   const setWorker = (worker) => { for (const l of locks) l.setWorker(worker); };
   let lastSessionId = null;
   let current = null;
+  // The step's reservation while it is open (budget.mjs).
+  let reservation = null;
   let interrupted = false;
+  // A run with lanes aborts every worker group it has in flight, and lists
+  // them with its tasks' groups (scheduler.mjs).
+  let onInterrupt = null;
+  let groupsInFlight = () => [];
+  // SIGHUP too: a closed terminal (tmux kill-pane, an ssh drop) interrupts
+  // the run as Ctrl-C does, rather than killing the driver and leaving its
+  // groups to run on.
   const onSignal = () => {
     interrupted = true;
     current?.abort('interrupted');
+    onInterrupt?.();
+  };
+  // The backstop for an exit that did not unwind the run (a crash, an output
+  // that failed after SIGHUP): every group still in flight is emptied
+  // (SIGTERM, a grace, SIGKILL). On every other end none is left.
+  const onExit = () => {
+    (deps.terminateGroupsSync ?? terminateGroupsSync)([...(Number.isInteger(current?.pid) ? [current.pid] : []), ...groupsInFlight()]);
   };
   const signals = deps.signals ?? process;
   signals.on('SIGINT', onSignal);
   signals.on('SIGTERM', onSignal);
+  signals.on('SIGHUP', onSignal);
+  signals.on('exit', onExit);
   const detach = () => {
     signals.off?.('SIGINT', onSignal);
     signals.off?.('SIGTERM', onSignal);
+    signals.off?.('SIGHUP', onSignal);
+    signals.off?.('exit', onExit);
   };
 
-  const finish = (status, d = null) => {
+  // A run with lanes passes its lanes (one report block each) and its
+  // rate-limit line (scheduler.mjs).
+  const finish = (status, d = null, laneReport = null) => {
     run.status = status;
     run.ended_at = new Date(now()).toISOString();
     if (d) {
-      run.halt = haltRecord({ runId, d, lastSessionId, repoRoot });
+      run.halt = haltRecord({ runId, d: laneReport ? { ...d, lanes: laneReport.lanes } : d, lastSessionId, repoRoot, macroId, lanes });
       writeHalt(runDir, run.halt);
       printHalt(out, d);
       for (const line of run.halt.resume) out(`  ${line}`);
     } else {
       out(`■ ${status}`);
     }
+    for (const l of laneReport?.lanes ?? []) for (const line of laneBlock(l)) out(line);
+    if (laneReport?.rateLimit) out(`  ${laneReport.rateLimit}`);
     writeRun(runDir, run);
     release();
     // The run ended with every worker group empty, so nothing is left for a
     // cleanup to find. A group that outlived SIGKILL keeps the record, as it
     // keeps the lock entries.
-    if (!lingering) {
+    if (!lingering && !keepRecord) {
       try {
         removeOpenRun(mainRoot, runId);
       } catch (e) {
@@ -485,8 +560,46 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     };
     reportLanding(view, 0);
 
+    if (lanes >= 2) {
+      // With lanes the report runs in a child (offloop.mjs), through the
+      // scheduler's task runner (on the run's locks): its overlap checks would
+      // stop the supervision of every worker in flight. Its answers per commit
+      // pair come back with it, for the next look.
+      const offLoop = deps.offLoop ?? defaultOffLoop;
+      const reportLandingOffLoop = async (v, seq, runTask = offLoop) => {
+        const r = await runTask('reportLanding', { repoRoot, mainRoot, runDir, runId, seq, view: v, nowMs: now(), cache: [...mergeChecks] }, { env, cwd: repoRoot });
+        for (const line of r.value?.lines ?? []) out(line);
+        if (r.error) {
+          landing = null;
+          out(`⚠ landing-ready: the report failed (${r.error}); the run goes on, and the next look reports it`);
+          return;
+        }
+        mergeChecks.clear();
+        for (const [k, a] of r.value.cache) mergeChecks.set(k, a);
+        landing = r.value.report;
+      };
+      return await runLanes({
+        repoRoot, options: { ...options, lanes }, env, out, now, roots, pinned, remotes, stateRoot, token, record,
+        runId, runDir, run, mainRoot, macroId, view, locks, driverLock: locks[0], macroLock: locks[1],
+        finish, reportLanding: reportLandingOffLoop, landing: () => landing, withLanding: (d) => withLanding(d, landing),
+        markLingering: () => { lingering = true; },
+        keepOpenRecord: () => { keepRecord = true; },
+        setLastSessionId: (id) => { lastSessionId = id ?? lastSessionId; },
+        interrupted: () => interrupted,
+        onInterrupt: (fn) => { onInterrupt = fn; },
+        groupsInFlight: (fn) => { groupsInFlight = fn; },
+        observeAsync: deps.observeAsync ?? (deps.observe ? async (a) => deps.observe(a) : observeInChild),
+        offLoop, startWorker, terminateGroup: deps.terminateGroup ?? null,
+        helpers: { provenanceProblem, newPendingRuns },
+      });
+    }
+
     const loaded = {};
     const ctx = { runId, macroId, forced: options.forced ?? null, finalizeAttempted: false };
+    const budget = createBudget({
+      maxSteps: options.maxSteps, maxCostUsd: options.maxCostUsd, stepBudgetUsd: options.stepBudgetUsd,
+      stepTimeoutSec: options.stepTimeoutSec, maxTimeSec: options.maxTimeSec, startedAt, now,
+    });
     for (let seq = 1; ; seq += 1) {
       if (interrupted) return finish('halted', { reason: 'interrupted', detail: 'the owner interrupted the run' });
       // What the state says comes first: completion on the last step the
@@ -498,17 +611,19 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       }
       if (d.outcome === 'halt') return finish('halted', withLanding(d, landing));
 
-      const elapsed = (now() - startedAt) / 1000;
-      if (seq > options.maxSteps) return finish('halted', { reason: 'budget', detail: `the run reached its step cap (${options.maxSteps})` });
-      if (options.maxCostUsd - run.cost_usd < MIN_STEP_BUDGET_USD) {
-        return finish('halted', { reason: 'budget', detail: `the run spent $${run.cost_usd.toFixed(2)} of its $${options.maxCostUsd} cap` });
-      }
-      if (options.maxTimeSec - elapsed < MIN_STEP_TIMEOUT_SEC) {
-        return finish('halted', { reason: 'budget', detail: `the run reached its wall clock (${options.maxTimeSec} s)` });
-      }
+      // ADR-0067 Decision 6, Budgets: the step is reserved before it spawns,
+      // and every end settles it. One reservation at a time: what is spent,
+      // the steps taken and the time elapsed decide, as they always did.
+      const r = budget.reserve();
+      if (!r.ok) return finish('halted', { reason: 'budget', detail: r.detail ?? r.why });
+      reservation = r.reservation;
       if (seq > 1) {
         const drift = driftOf(pinned, await resolveRoots({ env }));
-        if (drift.length > 0) return finish('halted', { reason: 'version-drift', detail: drift.join('; ') });
+        if (drift.length > 0) {
+          budget.settle(reservation, { spawned: false });
+          reservation = null;
+          return finish('halted', { reason: 'version-drift', detail: drift.join('; ') });
+        }
       }
 
       const s = d.step;
@@ -517,8 +632,8 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       const { model, effort } = modelFor(s, { plan: options.models, override: { model: options.model, effort: options.effort } });
       // The run's caps bound the step too: the step may spend only what is
       // left, and may run only until the run's deadline.
-      const stepBudgetUsd = Math.min(options.stepBudgetUsd, options.maxCostUsd - run.cost_usd);
-      const stepTimeoutSec = Math.floor(Math.min(options.stepTimeoutSec, options.maxTimeSec - elapsed));
+      const stepBudgetUsd = reservation.usd;
+      const stepTimeoutSec = reservation.timeoutSec;
       const sessionId = randomUUID();
       const fpBefore = fingerprint(view);
       // D1: the spawn is on record before it starts.
@@ -557,9 +672,13 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         if (!run.loaded_plugins) run.loaded_plugins = { ...loaded };
       }
       run.steps = seq;
-      const cost = w.costUsd ?? stepBudgetUsd;
-      if (w.costUsd === null) run.cost_complete = false;
-      run.cost_usd += cost;
+      // A step that reported no cost (killed, or a spawn error) is charged its
+      // whole reservation.
+      const cost = budget.settle(reservation, { spawned: true, costUsd: w.costUsd });
+      reservation = null;
+      run.cost_complete = budget.costComplete;
+      run.cost_usd = budget.spent;
+      run.accounted_seqs.push(seq);
 
       const before = view;
       view = observe({ repoRoot, roots, macroId: view.macro.id, fetch: true, env });

@@ -936,6 +936,35 @@ export function lanesRequirements({ checkout, stateRoot, macroPath, view = null 
 }
 
 /**
+ * The lanes with this macro's lock reason whose subtask is not completed
+ * (ADR-0067 Decision 6, `--lanes N`): a serial run refuses to start beside
+ * them. It does not reconcile lanes, and would halt on their active children
+ * or ask for a switch to a branch git will not check out twice.
+ * { lanes: [{ subtaskId, path, status }] } or { problem } when they cannot be
+ * listed; a repository with no shared root has none.
+ */
+export function lanesHoldingWork({ checkout, macroId, view, env = process.env }) {
+  if (!isSafeMacroId(macroId)) return { lanes: [] };
+  const home = laneHome(checkout);
+  if (home.problem) return { lanes: [] };
+  let worktrees;
+  try {
+    worktrees = listWorktrees(home.mainRoot, { env });
+  } catch (err) {
+    return { problem: `whether a lane of macro ${macroId} holds a subtask cannot be told: ${err.message}` };
+  }
+  const subtasks = Array.isArray(view?.macro?.fm?.plan?.subtasks) ? view.macro.fm.plan.subtasks : [];
+  const status = new Map(subtasks.map((s) => [s?.id, s?.status]));
+  const lanes = [];
+  for (const w of worktrees) {
+    const r = w.locked ? parseLockReason(w.lockReason) : null;
+    if (!r || r.macroId !== macroId || status.get(r.subtaskId) === 'completed') continue;
+    lanes.push({ subtaskId: r.subtaskId, path: w.path, status: status.get(r.subtaskId) ?? 'not in the plan' });
+  }
+  return { lanes };
+}
+
+/**
  * Take the lane's worktree lock for the run (Decision 5: a run that drives a
  * lane holds that lane's worktree lock while it does), with the run's record
  * — its token digest included, so the run's worker in the lane passes

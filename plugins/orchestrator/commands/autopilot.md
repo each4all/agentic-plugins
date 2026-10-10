@@ -1,6 +1,6 @@
 ---
 description: Run an approved macro unattended — one fresh Claude worker per step, halting at owner judgment (ADR-0063, Claude only; dry-run by default)
-argument-hint: "[preview|start [--execute]|status|stop] [--macro <id>] [--models owner-default|mixed|sonnet] [--model <m>] [--effort <e>] [--max-steps <n>] [--max-cost <usd>] [--step-budget <usd>] [--step-timeout <s>] [--max-time <s>] [--next \"<step>\"] [--notify-local] [--json]"
+argument-hint: "[preview|start [--execute]|status|stop] [--macro <id>] [--models owner-default|mixed|sonnet] [--model <m>] [--effort <e>] [--max-steps <n>] [--max-cost <usd>] [--step-budget <usd>] [--step-timeout <s>] [--max-time <s>] [--lanes <n>] [--next \"<step>\"] [--lane <subtask> --next \"<step>\"] [--notify-local] [--json]"
 ---
 
 # Orchestrator · Autopilot
@@ -37,6 +37,23 @@ commits. A commit is reported once, and a commit that no run reported is
 reported when the next run starts. At an `awaiting-landing`
 halt it lists each branch the same way; after the merge, relaunch, and it
 records the landing with `/orchestrator:done` and goes on (ADR-0062, D3a).
+
+**Lanes.** With `--lanes N` (2 or more; the owner's default is 2, and a larger N
+spends the rate limit faster) the run drives up to N subtasks at once, each in
+its own git worktree beside the repository, with `/orchestrator:done` and
+`/orchestrator:finalize` in the checkout the run starts from (ADR-0067
+Decision 6). Run it from a checkout no one works in: work there halts the run
+at its next done. A new lane waits while the rate limit's five-hour window is
+at 0.85 or more, or refused; a halt in any lane lets the steps in flight finish,
+then reports every lane and exits 2. Ctrl-C, `stop` or a closed terminal
+(SIGINT, SIGTERM, SIGHUP) ends it at once instead: a lane's creation or removal,
+or a peer run's cancellation, already under way gets 15 s to finish, the workers
+and everything else in flight are stopped, and the lanes are kept for the next
+run. With more than one subtask in progress,
+`--next` needs `--lane <subtask>` before it (one pair per lane). Lanes need
+shared creation on (`docs/runbooks/state-root-cutover.md`); `preview --lanes 2`
+shows the lanes it would reconcile and the first steps. A halt prints the
+relaunch command with the run's `--macro` and `--lanes`.
 
 **Claude Code only** (ADR-0063 D9). There is no Codex skill for this command;
 on Codex the steps stay manual.

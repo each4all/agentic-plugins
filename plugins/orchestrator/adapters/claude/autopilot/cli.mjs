@@ -32,12 +32,17 @@ import { fileURLToPath } from 'node:url';
 import { expandArgsFile } from '../../../scripts/lib/args-file.mjs';
 import { describeAdmission } from '../../../scripts/lib/run-locks.mjs';
 import { isAutopilotRun } from '../../../scripts/state.mjs';
+import { MIN_STEP_BUDGET_USD } from './budget.mjs';
 import { cleanupDeadRuns } from './dead-runs.mjs';
 import { DEFAULTS, posture, preflight, startRun } from './driver.mjs';
+import { gatherLaneFacts, laneHome, lanePath, lanesRequirements, planReconciliation } from './lanes.mjs';
 import { holderAlive, listLocks, listRuns, mainWorktreeRoot, provablySame, readOpenRun, readRun } from './ledger.mjs';
 import { resolveRoots } from './roots.mjs';
 import { observe } from './observe.mjs';
-import { decide, fingerprint, MODEL_PLANS, parseForcedStep, renderStep } from './policy.mjs';
+import { INTERRUPT_BOUND_MS } from './offloop.mjs';
+import {
+  decide, decideLanes, fingerprint, forcedForLanes, isSafeSubtaskId, MODEL_PLANS, parseForcedStep, renderStep,
+} from './policy.mjs';
 import { terminateGroup } from './worker.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
@@ -65,8 +70,14 @@ Options:
   --step-timeout <s>      default ${DEFAULTS.stepTimeoutSec} (at least 60)
   --max-time <s>          default ${DEFAULTS.maxTimeSec} (at least 60)
   --oversize-pct <p>      default ${DEFAULTS.oversizePct} (a fraction of the context window)
+  --lanes <n>             run up to n subtasks at once, each in its own git worktree (a lane); 1 or absent:
+                          one subtask at a time in this checkout. The owner's default with lanes is 2
+                          (ADR-0067 Decision 6); a larger n spends the rate limit faster
   --next "<step>"         the first step after resolving a halt: /engineer:<verb>, /engineer:commit,
                           /orchestrator:next [<subtask>]
+  --lane <subtask> --next "<step>"
+                          with lanes, the first step of that subtask's lane; one pair per lane, and
+                          needed when more than one subtask has an active engineer workflow
   --notify-local          one macOS notification when the run ends (driver-local, no plugin channel)
   --json                  preview and status as JSON
   --args-file <path>      read the arguments from an ADR-0059 args file
@@ -100,8 +111,12 @@ export function parseCli(argv) {
     models: null, model: null, effort: null,
     maxSteps: DEFAULTS.maxSteps, maxCostUsd: DEFAULTS.maxCostUsd, stepBudgetUsd: DEFAULTS.stepBudgetUsd,
     stepTimeoutSec: DEFAULTS.stepTimeoutSec, maxTimeSec: DEFAULTS.maxTimeSec, oversizePct: DEFAULTS.oversizePct,
-    forced: null, forcedText: null, notifyLocal: false, json: false, help: false,
+    forced: null, forcedText: null, forcedPairs: null, lanes: 1, notifyLocal: false, json: false, help: false,
   };
+  // --lane <id> --next "<step>" pairs, in order; a --next with no --lane
+  // before it names no lane.
+  const pairs = [];
+  let pendingLane = null;
   let i = 0;
   if (words[0] !== undefined && !words[0].startsWith('-')) {
     if (!SUBCOMMANDS.includes(words[0])) throw new UsageError(`unknown subcommand ${JSON.stringify(words[0])}`);
@@ -134,11 +149,24 @@ export function parseCli(argv) {
       case '--effort': o.effort = value(); break;
       case '--max-steps': o.maxSteps = positive(name, value(), { integer: true }); break;
       case '--max-cost': o.maxCostUsd = positive(name, value()); break;
-      case '--step-budget': o.stepBudgetUsd = positive(name, value()); break;
+      case '--step-budget':
+        o.stepBudgetUsd = positive(name, value());
+        // ADR-0067 Decision 6, Budgets: a step reserved below the minimum is
+        // never spawned, so a per-step cap below it could never run one.
+        if (o.stepBudgetUsd < MIN_STEP_BUDGET_USD) throw new UsageError(`${name} must be at least ${MIN_STEP_BUDGET_USD} (got ${o.stepBudgetUsd})`);
+        break;
       case '--step-timeout': o.stepTimeoutSec = atLeast(name, value(), MIN_SECONDS); break;
       case '--max-time': o.maxTimeSec = atLeast(name, value(), MIN_SECONDS); break;
       case '--oversize-pct': o.oversizePct = positive(name, value(), { max: 1 }); break;
-      case '--next': o.forcedText = value(); break;
+      case '--lanes': o.lanes = positive(name, value(), { integer: true }); break;
+      case '--lane': {
+        const id = value();
+        if (pendingLane !== null) throw new UsageError(`--lane ${pendingLane} needs a --next after it`);
+        if (!isSafeSubtaskId(id)) throw new UsageError(`--lane ${JSON.stringify(id)} is not a subtask id`);
+        pendingLane = id;
+        break;
+      }
+      case '--next': pairs.push({ lane: pendingLane, text: value() }); pendingLane = null; break;
       case '--notify-local': o.notifyLocal = flag(); break;
       case '--json': o.json = flag(); break;
       case '--help': case '-h': o.help = true; break;
@@ -153,8 +181,19 @@ export function parseCli(argv) {
   if (o.macro !== null && !/^macro-[a-z][a-z0-9-]*-\d{8}T\d{6}Z-[0-9a-f]{6}$/.test(o.macro)) {
     throw new UsageError(`--macro ${JSON.stringify(o.macro)} is not a macro workflow id`);
   }
-  if (o.forcedText !== null) {
-    try { o.forced = parseForcedStep(o.forcedText); } catch (e) { throw new UsageError(e.message); }
+  if (pendingLane !== null) throw new UsageError(`--lane ${pendingLane} needs a --next after it`);
+  if (pairs.length > 0) {
+    if (o.lanes < 2) {
+      if (pairs.some((p) => p.lane !== null)) throw new UsageError('--lane applies only with --lanes 2 or more');
+      if (pairs.length > 1) throw new UsageError('--next is given once without lanes');
+    }
+    try {
+      o.forcedPairs = pairs.map((p) => ({ lane: p.lane, step: parseForcedStep(p.text) }));
+    } catch (e) {
+      throw new UsageError(e.message);
+    }
+    o.forcedText = pairs.map((p) => (p.lane ? `--lane ${p.lane} --next ${p.text}` : p.text)).join(' ');
+    if (o.lanes < 2) o.forced = o.forcedPairs[0].step;
   }
   return o;
 }
@@ -206,21 +245,116 @@ function launcherInstall(roots) {
   return `mkdir -p ~/.agentic-plugins/bin && install -m 755 '${template}' ~/.agentic-plugins/bin/agentic-autopilot`;
 }
 
+// The text a preview shows for a step: a done-no-commit's reason names the
+// run, which a preview has none of.
+const previewCommand = (step, macroId) => (step.kind === 'done-no-commit'
+  ? `/orchestrator:done ${step.subtaskId} --no-commit --workflow=${macroId} <reason naming this run>`
+  : renderStep(step, { macroId, runId: null }));
+
+/**
+ * ADR-0067 Decision 6 — what a run with lanes would do first, read-only: the
+ * start conditions lanes add, the reconciliation plan from the facts as they
+ * are (no fetch, no write: a prepared lane is judged against the last fetched
+ * baseline), and the first wave decideLanes gives, up to N steps, each with
+ * the lane it runs in.
+ */
+export function previewLanes(o, repoRoot, view, pre, env = process.env) {
+  const n = o.lanes;
+  const macroId = view.macro?.id ?? null;
+  const problems = macroId
+    ? lanesRequirements({ checkout: repoRoot, stateRoot: pre.stateRoot, macroPath: view.macro.path, view })
+    : [`a run with lanes needs its macro${view.macroLookupError ? ` (${view.macroLookupError})` : ''}: name it with --macro <id>`];
+  const result = { n, problems, plan: null, first_wave: [], halt: null, idle: null };
+  const home = laneHome(repoRoot);
+  if (home.problem || !macroId || view.macro.archived) return result;
+  let facts;
+  try {
+    facts = gatherLaneFacts({ home, checkout: repoRoot, macroId, view, baseline: view.macro.fm?.git_baseline?.branch ?? null, env });
+  } catch (e) {
+    result.problems = [...problems, e.message];
+    return result;
+  }
+  const plan = planReconciliation(facts);
+  result.plan = {
+    lanes: plan.lanes.map((e) => ({ subtask_id: e.subtaskId, path: e.lane.path, row: e.row, action: e.action })),
+    create: plan.subtasks.filter((x) => x.action !== 'halt').map((x) => ({ subtask_id: x.subtaskId, row: x.row, action: x.action, path: lanePath(home, macroId, x.subtaskId) })),
+    halts: plan.halts.map((h) => ({ row: h.row, reason: h.reason, detail: h.detail, subtask_id: h.subtaskId ?? null })),
+    others: plan.others.map((x) => x.report),
+  };
+  const held = new Map(plan.lanes.filter((e) => e.action === 'adopt' || e.action === 'prepared')
+    .map((e) => [e.subtaskId, { path: e.lane.path, branch: e.lane.branch, subtaskId: e.subtaskId, state: e.action }]));
+  let forced = new Map();
+  if (plan.halts.length > 0) result.halt = { reason: plan.halts[0].reason, detail: plan.halts[0].detail };
+  if (o.forcedPairs?.length) {
+    const f = forcedForLanes(o.forcedPairs, view);
+    if (f.halt) result.halt ??= f.halt;
+    else forced = f.forced;
+  }
+  const d = decideLanes(view, { lanes: held, forced });
+  if (d.outcome === 'halt') {
+    result.halt ??= d;
+    return result;
+  }
+  if (d.outcome === 'completed') return result;
+  // As the run admits them: forced steps first; a lane's halt then drains the
+  // run, so nothing else starts.
+  const steps = d.laneHalts.length > 0
+    ? d.laneSteps.filter((x) => x.forced)
+    : [...d.laneSteps.filter((x) => x.forced), ...(d.driverStep ? [d.driverStep] : []),
+      ...d.laneSteps.filter((x) => !x.forced && !x.newLane), ...d.laneSteps.filter((x) => !x.forced && x.newLane)];
+  for (const st of steps.slice(0, n)) {
+    const id = st.subtaskId ?? null;
+    result.first_wave.push({
+      kind: st.kind, subtask_id: id, command: previewCommand(st, macroId), forced: st.forced === true,
+      checkout: st.lane ? (held.get(id)?.path ?? lanePath(home, macroId, id)) : repoRoot,
+      creates_lane: st.lane === true && !held.has(id),
+      // Before the first rate-limit event the throttle is unknown: a new lane
+      // waits while any worker runs, a driver step's included (Throttle, rule 2).
+      waits_for_rate_limit_event: st.newLane === true && result.first_wave.length > 0,
+    });
+  }
+  if (d.laneHalts.length > 0) result.halt ??= d.laneHalts[0];
+  if (result.first_wave.length === 0) result.idle = d.idle;
+  return result;
+}
+
+function printLanesPreview(lp, out) {
+  out(`lanes (--lanes ${lp.n}):`);
+  if (lp.n > 2) out(`  ⚠ ${lp.n} lanes: each is a worker drawing on the same rate limit at once; the owner's default is 2 (the throttle still gates each new lane)`);
+  if (lp.problems.length) {
+    out('  ✗ lanes cannot run:');
+    for (const x of lp.problems) out(`    - ${x}`);
+  }
+  if (lp.plan) {
+    out('  reconciliation (read-only; origin is not fetched):');
+    for (const l of lp.plan.lanes) out(`    lane ${l.subtask_id} · ${l.path} · row ${l.row ?? '-'} · ${l.action}`);
+    for (const l of lp.plan.create) out(`    lane ${l.subtask_id} · ${l.path} · ${l.action}${l.row ? ` (row ${l.row})` : ''} · created when its first step is admitted`);
+    for (const x of lp.plan.others) out(`    ${x}`);
+    for (const h of lp.plan.halts) out(`    ✗ ${h.subtask_id ? `${h.subtask_id}: ` : ''}${h.detail}`);
+  }
+  if (lp.first_wave.length) {
+    out('  first wave:');
+    for (const w of lp.first_wave) {
+      out(`    ${w.subtask_id ? `${w.subtask_id}: ` : ''}${w.command}${w.forced ? ' (forced)' : ''} · in ${w.checkout}${w.creates_lane ? ' (a new lane)' : ''}${w.waits_for_rate_limit_event ? ' · starts once the first worker\'s rate-limit event opens the throttle' : ''}`);
+    }
+  }
+  if (lp.halt) out(`  would halt: ${lp.halt.reason} — ${lp.halt.detail}`);
+  else if (lp.idle) out(`  would halt: ${lp.idle.reason} — ${lp.idle.detail}`);
+}
+
 async function previewCmd(o, repoRoot, env, out) {
-  const pre = await preflight({ repoRoot, env });
+  const pre = await preflight({ repoRoot, env, lanes: o.lanes });
   const p = posture(o);
   let view = null;
   let decision = null;
+  let lanesPreview = null;
   if (pre.roots && pre.roots.problems.length === 0) {
     view = observe({ repoRoot, roots: pre.roots.roots, macroId: o.macro, fetch: false, env });
-    decision = decide(view, { runId: 'autopilot-00000000T000000Z-000000', macroId: view.macro?.id ?? null, forced: o.forced });
+    if (o.lanes >= 2) lanesPreview = previewLanes(o, repoRoot, view, pre, env);
+    else decision = decide(view, { runId: 'autopilot-00000000T000000Z-000000', macroId: view.macro?.id ?? null, forced: o.forced });
   }
   let command = null;
-  if (decision?.outcome === 'step') {
-    command = decision.step.kind === 'done-no-commit'
-      ? `/orchestrator:done ${decision.step.subtaskId} --no-commit --workflow=${view.macro.id} <reason naming this run>`
-      : renderStep(decision.step, { macroId: view.macro.id, runId: null });
-  }
+  if (decision?.outcome === 'step') command = previewCommand(decision.step, view.macro.id);
   const report = {
     dry_run: true,
     repo: repoRoot,
@@ -228,6 +362,7 @@ async function previewCmd(o, repoRoot, env, out) {
     plugins: pre.roots ? Object.fromEntries(Object.keys(pre.roots.roots).map((k) => [k, { version: pre.roots.versions[k], root: pre.roots.roots[k], source: pre.roots.sources[k] }])) : null,
     view: view ? summarizeView(view) : null,
     decision: decision ? { ...decision, command } : null,
+    lanes: lanesPreview,
     posture: p,
     launcher_install: pre.roots?.roots?.orchestrator ? launcherInstall(pre.roots.roots) : null,
   };
@@ -259,16 +394,21 @@ async function previewCmd(o, repoRoot, env, out) {
         for (const c of w.commands) out(`      ${c}`);
       }
     }
+    if (lanesPreview) printLanesPreview(lanesPreview, out);
     out(`posture: --permission-mode manual · --permission-prompts none · model plan ${p.model_plan ?? '(asked at start)'}${p.model_override.model || p.model_override.effort ? ` · override ${p.model_override.model ?? '-'}/${p.model_override.effort ?? '-'}` : ''}`);
-    out(`  budgets: ${o.maxSteps} steps · $${o.maxCostUsd} per run · $${o.stepBudgetUsd} and ${o.stepTimeoutSec} s per step · ${o.maxTimeSec} s per run · oversize ${o.oversizePct}`);
+    out(`  budgets: ${o.maxSteps} steps · $${o.maxCostUsd} per run · $${o.stepBudgetUsd} and ${o.stepTimeoutSec} s per step · ${o.maxTimeSec} s per run · oversize ${o.oversizePct}${o.lanes >= 2 ? ` · each step's budget reserved before it spawns, up to ${o.lanes} at once` : ''}`);
     out(`  allowed: ${p.allowed_tools.join(' ')}`);
     out(`  denied: ${p.denied_tools.join(' ')} (+ ${p.denied_on_non_commit_steps.join(' ')} except on /engineer:commit)`);
     for (const w of pre.warnings) out(`⚠ ${w}`);
-    out('⚠ A dedicated worktree is recommended (the runtime:worktree planner): the run switches branches in this checkout.');
+    out(o.lanes >= 2
+      ? '⚠ Run lanes from a checkout no one works in: a done or finalize runs there, and work in it halts the run (ADR-0067 Decision 6).'
+      : '⚠ A dedicated worktree is recommended (the runtime:worktree planner): the run switches branches in this checkout.');
     if (report.launcher_install) out(`launcher (optional, for runs longer than a session's 2-hour background limit): ${report.launcher_install}`);
-    out(`to start: /orchestrator:autopilot start --execute   (terminal: agentic-autopilot start --execute --repo ${repoRoot})`);
+    const lanesArg = o.lanes >= 2 ? `${view?.macro?.id ? ` --macro ${view.macro.id}` : ''} --lanes ${o.lanes}` : '';
+    out(`to start: /orchestrator:autopilot start --execute${lanesArg}   (terminal: agentic-autopilot start --execute${lanesArg} --repo ${repoRoot})`);
   }
-  if (pre.problems.length) return 1;
+  if (pre.problems.length || lanesPreview?.problems.length) return 1;
+  if (lanesPreview) return lanesPreview.halt || lanesPreview.idle ? 2 : 0;
   return decision?.outcome === 'halt' ? 2 : 0;
 }
 
@@ -311,6 +451,7 @@ async function startCmd(o, repoRoot, env, out, err, io) {
       return 1;
     }
   }
+  if (o.lanes > 2) out(`⚠ --lanes ${o.lanes}: each lane is a worker drawing on the same rate limit at once; the owner's default is 2 (the throttle still gates each new lane)`);
   return startRun({ repoRoot, options: o, env, out, err });
 }
 
@@ -356,7 +497,7 @@ async function statusCmd(o, repoRoot, out, err) {
   for (const l of locks) if (await holderAlive(l.holder)) { live = true; liveEntries.push(l.holder); }
   // Every worker group the run's live entries record, so a dead driver's
   // surviving groups are shown, and `stop` can be told to empty them.
-  const groups = workerGroups(liveEntries).map((w) => ({ pid: w.pid, lane: w.lane ?? null, cwd: w.cwd ?? null, session_id: w.session_id ?? null }));
+  const groups = workerGroups(liveEntries).map((w) => ({ pid: w.pid, task: w.task ?? null, lane: w.lane ?? null, cwd: w.cwd ?? null, session_id: w.session_id ?? null }));
   const driverAlive = liveEntries.length > 0 && await provablySame(liveEntries[0].pid, liveEntries[0].fingerprint);
   // A run that is not live but keeps its open-run record has not been
   // cleaned up after yet (ADR-0067 Decision 6, Locks).
@@ -384,7 +525,7 @@ async function statusCmd(o, repoRoot, out, err) {
   }
   for (const s of r.steps) {
     const pct = typeof s.peak_pct === 'number' ? ` ${(s.peak_pct * 100).toFixed(1)}%` : '';
-    out(`  [${s.seq}] ${s.command} → ${s.outcome ?? (s.event === 'started' ? 'running or interrupted' : '?')}${typeof s.cost_usd === 'number' ? ` · $${s.cost_usd.toFixed(2)}` : ''}${pct} · session ${s.session_id}`);
+    out(`  [${s.seq}] ${s.lane ? `lane ${s.lane}: ` : ''}${s.command} → ${s.outcome ?? (s.event === 'started' ? 'running or interrupted' : '?')}${typeof s.cost_usd === 'number' ? ` · $${s.cost_usd.toFixed(2)}` : ''}${pct} · session ${s.session_id}`);
   }
   for (const l of r.landing) {
     out(`  ◆ landing-ready after [${l.after_seq}]: ${l.subtask_id} on ${l.branch} at ${l.commit ?? 'no commit'} (${l.reason})`);
@@ -393,6 +534,10 @@ async function statusCmd(o, repoRoot, out, err) {
     out(`  halt: ${r.halt.reason} — ${r.halt.detail}`);
     if (r.halt.pointer) out(`    pointer: ${r.halt.pointer}`);
     for (const line of r.halt.resume ?? []) out(`    ${line}`);
+  }
+  // A run with lanes: one line per lane it met (ADR-0067 Decision 6).
+  for (const l of r.run.lanes?.lanes ?? []) {
+    out(`  lane ${l.subtask_id} · ${l.state ?? '?'}${l.path ? ` · ${l.path}` : ''}${l.last_step ? ` · last [${l.last_step.seq}] ${l.last_step.outcome}` : ''}${l.halt ? ` · halted: ${l.halt.reason}` : ''}`);
   }
   if (r.run.error) out(`  error: ${r.run.error}`);
   printAdmissions(admissions, out);
@@ -408,7 +553,11 @@ function workerGroups(entries) {
   return [...groups.values()];
 }
 
-const groupLabel = (w) => `${w.pid}${w.lane ? ` (lane ${w.lane}${w.cwd ? `, ${w.cwd}` : ''})` : ''}`;
+// A worker's group, or an off-loop task's (offloop.mjs: `task` names it).
+const groupLabel = (w) => {
+  const where = [w.task ? `task ${w.task}` : null, w.lane ? `lane ${w.lane}${w.cwd ? `, ${w.cwd}` : ''}` : null].filter(Boolean);
+  return `${w.pid}${where.length ? ` (${where.join(', ')})` : ''}`;
+};
 
 async function stopCmd(o, repoRoot, out, err, { wait = 30_000, env = process.env } = {}) {
   const mainRoot = mainWorktreeRoot(repoRoot);
@@ -538,7 +687,7 @@ async function stopCmd(o, repoRoot, out, err, { wait = 30_000, env = process.env
     }
     await new Promise((r) => { setTimeout(r, 200); });
   }
-  err('✗ it is still running; it stops once its worker\'s process group is empty (SIGKILL follows SIGTERM after 5 s)');
+  err(`✗ it is still running; it stops once every worker and task group of it is empty (SIGKILL follows SIGTERM after 5 s; a lane's creation or removal under way gets ${INTERRUPT_BOUND_MS / 1000} s to finish)`);
   return 1;
 }
 

@@ -81,13 +81,32 @@ the steps stay manual**, and the host-neutral state it reads (`next_step_*`,
   until it does, `stop` and the next run print the command that cancels such a peer. A
   record whose ledger is gone, whose peer could not be cancelled, or one of whose peer-run
   homes cannot be read (anything but its absence), is kept and reported for the owner.
-- **Lanes (the layer only).** `adapters/claude/autopilot/lanes.mjs` holds ADR-0067
+- **Lanes (`--lanes N`).** `adapters/claude/autopilot/lanes.mjs` holds ADR-0067
   Decision 5's lane layer: a lane is a locked git worktree at
   `<parent>/<repo>-lanes/<macro-id>/<subtask-id>`, named from the main worktree, created
   from a freshly fetched baseline, removed only once its subtask is done and only when
   clean and provably the run's (read again from git and the lane where each step of the
-  removal acts), and reconciled at a run's start. The scheduler that runs
-  steps in lanes (`--lanes`, Decision 6) is not shipped yet: every run is serial, as before.
+  removal acts), and reconciled at a run's start. With `--lanes N` (2 or more; the
+  owner's default is 2) `scheduler.mjs` runs up to N subtasks at once, each in its lane,
+  with the done and finalize steps in the driver's checkout (Decision 6): each step reserves
+  its budget before it spawns, a new lane starts only while the rate limit's five-hour
+  window is open (below 0.85, and before the first rate-limit event only while no worker
+  runs), a lane step is judged by its lane's own fingerprint and gates, and a halt in any
+  lane drains the run — steps in flight finish and are recorded, nothing new starts — before
+  it records one entry per lane and exits 2. SIGINT, SIGTERM and SIGHUP (a closed terminal)
+  abort every worker instead. The work the scheduler runs in a child process while workers
+  run (`offloop.mjs`: a look, a lane's creation and removal, a baseline fetch, the
+  landing-ready report, a peer cancellation) is held as a worker is: each task's process
+  group is on the macro lock and its checkout's lock before it starts, and is emptied before
+  its answer, so a dead driver's task keeps the lock until it ends or `stop` empties it. On
+  an interrupt a look, a fetch and the landing report in flight are killed at once; a
+  lane's creation or removal, or a peer cancellation, already under way gets 15 s to finish;
+  then no lane is created or removed, and an interrupted run keeps its lanes. A lane the run
+  created and no step used is removed when its admission gives way, and before the run ends.
+  `--lane <subtask> --next "<step>"` forces one lane's first step. Lanes need shared
+  creation on, the default state root, and the macro there; `preview --lanes 2` shows the
+  reconciliation and the first wave. Absent or 1, the run is serial, and it refuses to
+  start while a lane of the macro holds a subtask that is not completed.
 - **Bounds.** Steps, total cost, a run wall clock, and each step's budget and wall
   clock (`--max-steps`, `--max-cost`, `--max-time`, `--step-budget`,
   `--step-timeout`). A step started inside a Claude session runs as a background task,

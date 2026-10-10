@@ -82,6 +82,13 @@ readline.createInterface({ input: process.stdin })
     started = true;
     const prompt = JSON.parse(line).message.content[0].text;
     emit({ type: 'system', subtype: 'init', model, tools: [], plugins, cwd: process.cwd() });
+    // FAKE_RATE_LIMIT: a rate_limit_info object, or an array of them, emitted
+    // as rate_limit_events after init (the real CLI sends one with its first
+    // model response).
+    if (process.env.FAKE_RATE_LIMIT) {
+      const infos = [JSON.parse(process.env.FAKE_RATE_LIMIT)].flat();
+      for (const info of infos) emit({ type: 'rate_limit_event', rate_limit_info: info, uuid: 'fake', session_id: 'fake' });
+    }
     if (mode === 'noresult') process.exit(3);
     emit({ type: 'assistant', message: { model, usage: usage(40000), content: [] } });
     if (mode === 'background' || mode === 'background-slow') {

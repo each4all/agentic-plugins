@@ -56,6 +56,24 @@ const alive = (pid) => {
 };
 
 describe('stream-json hosting', () => {
+  it('hands every rate_limit_event to the driver as it comes, and keeps the last (ADR-0067 Decision 6, Throttle)', async () => {
+    const infos = [
+      { status: 'allowed', rateLimitType: 'five_hour', resetsAt: 1791572400, unifiedWindows: { five_hour: { utilization: 0.4, resetsAt: 1791572400 } } },
+      { status: 'allowed_warning', rateLimitType: 'seven_day', resetsAt: 1791792000, utilization: 0.81, unifiedWindows: { seven_day: { utilization: 0.81, resetsAt: 1791792000 } } },
+    ];
+    const seen = [];
+    const { w } = await run('simple', { onRateLimit: (info) => seen.push(info) }, { FAKE_RATE_LIMIT: JSON.stringify(infos) });
+    deepStrictEqual(seen, infos, 'each event, in stream order');
+    deepStrictEqual(w.rateLimit, infos[1]);
+    strictEqual(w.exitCode, 0);
+  });
+
+  it('a throwing rate-limit callback does not stop the stream', async () => {
+    const { w } = await run('simple', { onRateLimit: () => { throw new Error('driver bug'); } }, { FAKE_RATE_LIMIT: JSON.stringify({ status: 'allowed' }) });
+    strictEqual(w.exitCode, 0);
+    strictEqual(w.costUsd, 0.05, 'the result after the event is still read');
+  });
+
   it('holds stdin open until the background task and its follow-up turn finish (probe D2)', async () => {
     const { w, lines } = await run('background');
     strictEqual(w.turns, 2);

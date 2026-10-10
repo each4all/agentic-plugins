@@ -244,6 +244,29 @@ export async function terminateGroup(pgid, { graceMs = KILL_GRACE_MS, signalled 
   return 'lingering';
 }
 
+const sleepSync = (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
+
+/**
+ * terminateGroup for the driver's exit, where nothing can be awaited: every
+ * group gets SIGTERM, then up to the grace to empty, then what is left gets
+ * SIGKILL, which is not waited on (the process is exiting). The backstop
+ * for an exit that did not unwind its steps and tasks (a crash, a SIGHUP whose
+ * output failed); on every other end no group is left in flight to kill.
+ */
+export function terminateGroupsSync(pgids, { graceMs = KILL_GRACE_MS } = {}) {
+  const targets = [...new Set(pgids.filter((p) => Number.isInteger(p) && p > 0))]
+    .map((p) => (process.platform === 'win32' ? p : -p))
+    .filter(targetAlive);
+  for (const t of targets) { try { process.kill(t, 'SIGTERM'); } catch { /* emptied meanwhile */ } }
+  const deadline = Date.now() + graceMs;
+  let left = targets;
+  while (left.length > 0 && Date.now() < deadline) {
+    sleepSync(50);
+    left = left.filter(targetAlive);
+  }
+  for (const t of left) { try { process.kill(t, 'SIGKILL'); } catch { /* emptied meanwhile */ } }
+}
+
 /**
  * Start one worker. Returns { sessionId, pid, begin(), abort(reason), done }.
  * The worker gets its prompt only from `begin()`: the driver records the
@@ -262,6 +285,7 @@ export async function terminateGroup(pgid, { graceMs = KILL_GRACE_MS, signalled 
  * @param o.env            the driver's environment (defaults to process.env)
  * @param o.remotes        {fetchUrls, pushUrls} of the repository's remotes (pushBlockConfig)
  * @param o.checkInit      (plugins) => null | {reason, detail}: refuse the loaded plugins
+ * @param o.onRateLimit    (rate_limit_info) => void: each rate_limit_event, as it comes (throttle.mjs)
  */
 export function startWorker(o) {
   const env = o.env ?? process.env;
@@ -305,7 +329,7 @@ export function startWorker(o) {
   const st = {
     pending: 0, awaitingFollowUp: false, results: [], model: null, plugins: null,
     peakByModel: new Map(), denialEvents: [], aborted: null, abortReason: null, abortDetail: null,
-    closeTimer: null, stdinClosed: false, stderrTail: '', exit: null, abortedAt: null,
+    closeTimer: null, stdinClosed: false, stderrTail: '', exit: null, abortedAt: null, rateLimit: null,
   };
 
   const killGroup = (signal) => {
@@ -365,6 +389,13 @@ export function startWorker(o) {
       const hookEvent = ev.hook_event ?? ev.hook_event_name ?? null;
       if ((ev.subtype === 'hook_started' || ev.subtype === 'hook_response') && hookEvent === 'PreCompact') {
         abort('compaction-imminent');
+      }
+    } else if (ev.type === 'rate_limit_event') {
+      // ADR-0067 Decision 6, Throttle: the driver keeps every event, from
+      // every worker stream. Its bookkeeping never stops the stream.
+      st.rateLimit = ev.rate_limit_info ?? null;
+      if (o.onRateLimit) {
+        try { o.onRateLimit(ev.rate_limit_info ?? null); } catch { /* the driver's, not the step's */ }
       }
     } else if (ev.type === 'result') {
       st.results.push(ev);
@@ -431,6 +462,8 @@ export function startWorker(o) {
         denials: resultDenials ?? st.denialEvents,
         stderrTail: st.stderrTail,
         rawTruncated: rawCapped,
+        // The stream's last rate_limit_info, or null when it carried none.
+        rateLimit: st.rateLimit,
         groupTeardown,
         pgid: spawnError || process.platform === 'win32' ? null : child.pid,
       });

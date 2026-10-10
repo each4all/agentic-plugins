@@ -78,7 +78,10 @@ describe('parseCli', () => {
       [['--macro', '../x'], /not a macro workflow id/], [['--max-steps', '0'], /positive integer/], [['--oversize-pct', '2'], /up to 1/],
       [['--next', 'Reply with OK'], /not a step command/], [['--run', 'x'], /--run applies only to status/], [['--json=yes'], /takes no value/],
       [['--step-timeout', '5'], /at least 60 seconds/], [['--max-time', '30'], /at least 60 seconds/], [['--next', '/orchestrator:done A'], /not a step command/],
+      // ADR-0067 Decision 6, Budgets: a step reserved below the minimum never spawns.
+      [['--step-budget', '0.1'], /--step-budget must be at least 0\.5/],
     ]) throws(() => C.parseCli(argv), re, argv.join(' '));
+    strictEqual(C.parseCli(['--step-budget', '0.5']).stepBudgetUsd, 0.5, 'the minimum itself is accepted');
   });
 
   it('reads an ADR-0059 args file, quoting and all, and removes it', () => {
@@ -92,6 +95,23 @@ describe('parseCli', () => {
     writeFileSync(join(bad, 'args.json'), encodeArgsFile('preview; rm -rf /'));
     throws(() => C.parseCli(['--args-file', join(bad, 'args.json')]), /arguments:/);
     rmSync(bad, { recursive: true, force: true });
+  });
+
+  it('reads --lanes, and --lane <subtask> --next "<step>" pairs, each --next paired with the --lane before it (ADR-0067 Decision 6)', () => {
+    strictEqual(C.parseCli([]).lanes, 1, 'absent: the serial driver');
+    const o = C.parseCli(['start', '--lanes', '2', '--lane', 'A', '--next', '/engineer:commit', '--next', '/orchestrator:next B']);
+    deepStrictEqual([o.lanes, o.forced, o.forcedPairs], [2, null, [
+      { lane: 'A', step: { kind: 'commit' } }, { lane: null, step: { kind: 'dispatch', subtaskId: 'B' } },
+    ]]);
+    deepStrictEqual(C.parseCli(['--next', '/engineer:refine']).forced, { kind: 'verb', verb: 'refine' }, 'serial: one --next, as before');
+    for (const [argv, re] of [
+      [['--lanes', '2', '--lane', 'A'], /--lane A needs a --next after it/],
+      [['--lanes', '2', '--lane', 'A', '--lane', 'B', '--next', '/engineer:commit'], /--lane A needs a --next after it/],
+      [['--lane', 'A', '--next', '/engineer:commit'], /--lane applies only with --lanes 2 or more/],
+      [['--next', '/engineer:commit', '--next', '/engineer:refine'], /--next is given once without lanes/],
+      [['--lanes', '2', '--lane', '../A', '--next', '/engineer:commit'], /is not a subtask id/],
+      [['--lanes', '0'], /positive integer/], [['--lanes', '1.5'], /positive integer/],
+    ]) throws(() => C.parseCli(argv), re, argv.join(' '));
   });
 });
 

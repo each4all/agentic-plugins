@@ -73,6 +73,20 @@ export function newRunId(now = new Date(), random = () => randomBytes(3).toStrin
   return id;
 }
 
+/**
+ * ADR-0067 Decision 6 — the command that relaunches a run: it repeats the
+ * run's macro and its lanes, since a run with lanes is proposed from a
+ * checkout no one works in, often off the branch the macro would be found
+ * from. `--lanes` is repeated when the run had two or more.
+ */
+export function relaunchCommand({ macroId = null, lanes = 1, repoRoot }) {
+  const args = ['start --execute'];
+  if (macroId) args.push(`--macro ${macroId}`);
+  if (Number.isInteger(lanes) && lanes >= 2) args.push(`--lanes ${lanes}`);
+  const a = args.join(' ');
+  return `/orchestrator:autopilot ${a}   (or: agentic-autopilot ${a} --repo ${repoRoot})`;
+}
+
 function writeJsonAtomic(file, value) {
   const tmp = `${file}.${process.pid}.${randomBytes(3).toString('hex')}.tmp`;
   fs.writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`);
