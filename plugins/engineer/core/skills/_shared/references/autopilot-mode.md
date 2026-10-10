@@ -138,10 +138,14 @@ gone, and `/engineer:commit` refuses to commit or close over one.
 The gates, when each is set, the phase-note heading and anchor each takes,
 and what resolves each are tabled once, in `entry-routing-contract.md` § Owner
 gates. Under autopilot what differs is when a gate is recorded:
-`decide-conflict`, `recurring-finding` and `scope-routing` are recorded in
-either mode; `staging-set` (`/engineer:commit`: the staging set needs the
-owner — `ask_user`, a workflow that did not begin on a clean tree, or a
-pre-staged index) and `pr-handling` only under an autopilot run.
+`decide-conflict`, `peer-conflict`, `recurring-finding` and `scope-routing`
+are recorded in either mode; `staging-set` (`/engineer:commit`: the staging
+set needs the owner — `ask_user`, a workflow that did not begin on a clean
+tree, or a pre-staged index) and `pr-handling` only under an autopilot run.
+A conflict gate (`decide-conflict` or `peer-conflict`, set on a synthesis
+verdict of `conflict`) records its run id beside a consensus task file; the
+driver's halt report carries the bounded consensus round it proposes, for the
+owner to run (ADR-0067 Decision 8). No step runs it.
 
 `awaiting-owner-clear --resolution "<the decision>" --next-step-kind …
 --next-step-confidence … [--next-step-verb …] --next-action "<what comes next>"`
