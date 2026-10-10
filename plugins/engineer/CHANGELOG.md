@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.26.0...plugin-engineer-v0.27.0) (2026-10-10)
+
+
+### Features
+
+* **plugin/engineer:** propose a worktree first when a dirty tree or another active workflow blocks a start (ADR-0067 WP) ([4dcdf19](https://github.com/each4all/agentic-plugins/commit/4dcdf19a0cda1fc786e4f13e37ef79f281c612f3))
+
 ## [0.26.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.25.0...plugin-engineer-v0.26.0) (2026-10-09)
 
 
