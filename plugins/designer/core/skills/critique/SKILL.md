@@ -247,7 +247,9 @@ Reconcile local + peer findings per AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT.
 Label discovery side (`[Local]` / `[Peer]` / `[Both]`) in workflow phase notes
 only — never in a saved artifact. Dedupe, then sort by severity. An unmitigated
 accessibility gate FAIL is CRITICAL regardless of which side found it. Present
-CONFLICT findings both ways and let the user weigh them.
+CONFLICT findings both ways and let the user weigh them. A synthesis verdict
+of `conflict` ends `/designer:critique` with the `peer-conflict` owner gate,
+with a bounded consensus round proposed first (ADR-0067 Decision 8).
 
 ### Step 6: Present
 
