@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.7.0...plugin-founder-v0.8.0) (2026-10-10)
+
+
+### Features
+
+* **plugin/founder:** propose a worktree first when a dirty tree or another active workflow blocks a start (ADR-0067 WP) ([406ad62](https://github.com/each4all/agentic-plugins/commit/406ad6243e33a56c938d21ee53cd1336cd5ee72f))
+
 ## [0.7.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.6.0...plugin-founder-v0.7.0) (2026-10-09)
 
 
