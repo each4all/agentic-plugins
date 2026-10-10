@@ -37,7 +37,8 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
       const structural = Object.hasOwn(d, 'op');
       deepStrictEqual(Object.keys(d).sort(), structural ? ['from', 'op', 'runbooks', 'to', 'where', 'why'] : ['from', 'runbooks', 'to', 'where', 'why'], JSON.stringify(d));
       ok(d.runbooks.length > 0 && d.runbooks.every((k) => keys.includes(k)), `${d.where}: runbooks`);
-      ok(/^(?:PC2(?:a[234]|b)|PC3b?) /.test(d.why), `${d.where}: a change with its reason`);
+      // ADR-0067-WP: the worktree-first start (ADR-0067 Decision 8, item 3).
+      ok(/^(?:PC2(?:a[234]|b)|PC3b?|ADR-0067-WP) /.test(d.why), `${d.where}: a change with its reason`);
       if (structural) ok(STRUCTURAL_OPS.includes(d.op), `${d.where}: a known op`);
       else ok(typeof d.from === 'string' && typeof d.to === 'string' && d.from !== d.to && d.from.length > 0, `${d.where}: a string change`);
     }

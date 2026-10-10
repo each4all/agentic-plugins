@@ -11,6 +11,12 @@
 //     declared runtime_footer_floor (ADR-0066 V18); every ladder rung gates on
 //     `scripts/footer.mjs`.
 //
+//   - WORKTREE (ADR-0067 Decision 8, item 3): a start that a dirty tree or
+//     another active workflow blocks proposes a worktree first, with the
+//     runtime `scripts/worktree.mjs plan` planner's `git worktree add`
+//     command (the `worktree-plan` subcommand below). Same ladder and floor;
+//     the rung gates on `scripts/worktree.mjs`.
+//
 // The capability file is a PARAMETER (ADR-0043 §2), defaulting to the footer.
 // A second consumer, the ADR-0040 §5 peer-run notification, was removed by
 // ADR-0064.
@@ -48,6 +54,7 @@
 //   - the sibling checkout applies only when this file runs from a checkout,
 //     never from a host install or a marketplace clone.
 
+import { spawnSync } from 'node:child_process';
 import { stat, readdir, readFile as fsReadFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { join, isAbsolute, resolve, dirname, relative, basename } from 'node:path';
@@ -55,7 +62,8 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 
 import { isCliEntry } from './lib/cli-entry.mjs';
-import { loadPersona, personaName, personaOrRefuse } from './lib/persona.mjs';
+import { capabilityOn, loadPersona, personaName, personaOrRefuse } from './lib/persona.mjs';
+import { extractStartArguments, readArgsFile } from './lib/args-file.mjs';
 
 const ENV_OVERRIDE = 'AGENTIC_RUNTIME_ROOT';
 
@@ -78,6 +86,7 @@ export function minRuntimeVersion() {
 
 // Gating capability file (basename under `<runtime-root>/scripts/`).
 export const FOOTER_CAPABILITY = 'footer.mjs';
+export const WORKTREE_CAPABILITY = 'worktree.mjs';
 
 async function fileExists(path) {
   try {
@@ -454,6 +463,56 @@ export async function discoverRuntimePluginRoot({
   return located.root;
 }
 
+// A shell word: bare when it needs no quoting, else single-quoted. `=` and `~`
+// are quoted too: zsh expands a word that starts with either.
+const shellQuote = (value) => {
+  const text = String(value);
+  return /^[A-Za-z0-9_./:@+-]+$/.test(text) ? text : `'${text.replaceAll("'", "'\\''")}'`;
+};
+
+/**
+ * ADR-0067 Decision 8, item 3 — the worktree a blocked start proposes first:
+ * the runtime planner's `git worktree add -b <branch> <path> <base>` for the
+ * request, read-only (the planner runs nothing). The command is rendered here
+ * from the planner's argv, every word quoted for the shell: its own text
+ * leaves the base as typed, and a typed `--base-branch` must not reach a
+ * pasted line as shell source. Returns {command, branch, path, base,
+ * runtime_root}, or {command: null, reason} when no runtime with the planner
+ * resolves, the planner fails, or it blocks (an existing branch, an occupied
+ * path, an unresolved base).
+ */
+export async function planWorktree({ repoRoot, task, base = null, env = process.env, home = homedir(), selfUrl = import.meta.url, stderr = process.stderr }) {
+  const root = await discoverRuntimePluginRoot({ env, home, selfUrl, capability: WORKTREE_CAPABILITY, stderr });
+  if (!root) return { command: null, reason: `no runtime ${minRuntimeVersion()} or newer with scripts/${WORKTREE_CAPABILITY} resolved` };
+  const args = [join(root, 'scripts', WORKTREE_CAPABILITY), 'plan', '--format', 'json', '--repo-root', repoRoot, '--task', task];
+  if (base) args.push('--base', base);
+  const r = spawnSync(process.execPath, args, { cwd: repoRoot, env, encoding: 'utf8', timeout: 60_000 });
+  let report = null;
+  try { report = JSON.parse(r.stdout ?? ''); } catch { /* not JSON */ }
+  if (r.status !== 0 || !report?.recommendation) {
+    return { command: null, reason: `runtime:worktree plan failed: ${(r.stderr || r.error?.message || 'no report').trim().split('\n')[0]}` };
+  }
+  if (report.recommendation.blocked) return { command: null, reason: `runtime:worktree plan is blocked: ${report.recommendation.reason}` };
+  const add = (report.recommendation.commands ?? []).find((c) => c?.label === 'create_worktree');
+  const argv = add?.argv;
+  if (!Array.isArray(argv) || argv.length !== 7 || !argv.every((w) => typeof w === 'string' && w !== '')
+    || argv.slice(0, 4).join(' ') !== 'git worktree add -b') {
+    return { command: null, reason: 'runtime:worktree plan suggested no git worktree add -b <branch> <path> <base>' };
+  }
+  return { command: argv.map(shellQuote).join(' '), branch: argv[4], path: argv[5], base: argv[6], runtime_root: root };
+}
+
+/** The lines a start prints for a planWorktree result. */
+export function worktreePlanText(plan, { host = 'claude', persona = personaName() } = {}) {
+  const start = `${host === 'codex' ? '$' : '/'}${persona}:start`;
+  if (!plan.command) return `→ Proposed: a new worktree; /runtime:worktree plan --task "<the request>" suggests its git worktree add command (${plan.reason}).`;
+  return [
+    '→ Proposed: start this in a new worktree, which leaves this checkout as it is:',
+    `    ${plan.command}`,
+    `  then, in ${plan.path}: ${start} again with the same request.`,
+  ].join('\n');
+}
+
 // -----------------------------------------------------------------------------
 // CLI surface — a thin `discover` shim for manual sanity checks + debugging.
 // The persona's terminal paths call `discoverRuntimePluginRoot` in-process, so
@@ -478,6 +537,14 @@ async function cliMain(argv) {
         '    Prints the absolute path on stdout. Empty stdout + exit 0 if not',
         '    resolved or too old. --json prints one JSON object with the root and',
         '    where it came from.',
+        '',
+        '  worktree-plan --repo-root <root> (--task <text> [--base <ref>] | --args-file <path>)',
+        '                [--host claude|codex] [--format text|json]',
+        '    The worktree a blocked start proposes first (ADR-0067 Decision 8, item 3):',
+        '    the runtime:worktree planner\'s git worktree add command for the request,',
+        '    read from --task or from an args file in the start\'s own grammar (with',
+        '    commit_surface, a --base-branch <ref> in it is the base). Read-only. Exit 0',
+        '    with the proposal or the reason there is none; exit 2 on a usage error.',
         '',
       ].join('\n'),
     );
@@ -510,6 +577,50 @@ async function cliMain(argv) {
     }
     const root = await discoverRuntimePluginRoot(pair);
     if (root) process.stdout.write(`${root}\n`);
+    return 0;
+  }
+  if (subcommand === 'worktree-plan') {
+    const flags = {};
+    for (let i = 0; i < rest.length; i += 2) {
+      const name = rest[i];
+      if (!['--repo-root', '--task', '--base', '--args-file', '--host', '--format'].includes(name) || rest[i + 1] === undefined) {
+        process.stderr.write(`discover-runtime.mjs worktree-plan: unknown flag or missing value: ${name}\n`);
+        return 2;
+      }
+      flags[name.slice(2)] = rest[i + 1];
+    }
+    const format = flags.format ?? 'json';
+    if (!flags['repo-root'] || (flags.task === undefined) === (flags['args-file'] === undefined) || !['text', 'json'].includes(format)
+      || (flags['args-file'] !== undefined && flags.base !== undefined)) {
+      process.stderr.write('discover-runtime.mjs worktree-plan: give --repo-root and exactly one of --task [--base] or --args-file; --format text|json\n');
+      return 2;
+    }
+    let task = flags.task;
+    let base = flags.base ?? null;
+    let plan;
+    if (flags['args-file'] !== undefined) {
+      // The start's own grammar: with commit_surface, a description with an
+      // optional --base-branch <ref> (start-args.mjs); otherwise the request
+      // as written, which the start's create takes whole.
+      try {
+        const text = readArgsFile(flags['args-file']);
+        if (capabilityOn('commit_surface')) {
+          const { feature, baseBranch } = extractStartArguments(text);
+          task = feature;
+          base = baseBranch;
+        } else if (text.trim() === '') {
+          plan = { command: null, reason: 'arguments: the args file holds no request' };
+        } else {
+          task = text;
+        }
+      } catch (error) {
+        plan = { command: null, reason: error.message };
+      }
+    }
+    plan ??= await planWorktree({ repoRoot: flags['repo-root'], task, base });
+    process.stdout.write(format === 'text'
+      ? `${worktreePlanText(plan, { host: flags.host === 'codex' ? 'codex' : 'claude' })}\n`
+      : `${JSON.stringify(plan)}\n`);
     return 0;
   }
   process.stderr.write(`discover-runtime.mjs: unknown subcommand: ${subcommand}\n`);

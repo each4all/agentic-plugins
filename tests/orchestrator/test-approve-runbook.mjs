@@ -5,7 +5,8 @@
 // zsh. It resolves the macro, prints the table and hash it approves, and
 // approves exactly that hash. The /orchestrator:plan Phase 2 blocks (the
 // plan-set write with its verdict, then the note and ensemble commit) run the
-// same way.
+// same way, and so do the lane-advice lines both print (ADR-0067 Decision 8,
+// item 2).
 
 import { describe, it } from 'node:test';
 import { strictEqual, ok, deepStrictEqual, notStrictEqual } from 'node:assert/strict';
@@ -182,13 +183,23 @@ async function planPhase2Blocks() {
   const from = text.indexOf('## Phase 2 — State finalize');
   ok(from >= 0, 'plan.md carries Phase 2');
   const blocks = [...text.slice(from).matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]);
-  ok(blocks.length >= 2, 'Phase 2 has the plan-set block and the note + ensemble block');
-  return blocks;
+  // Each block by what it runs, not by its place: Phase 2 also carries the
+  // lane-advice block between the two writes.
+  const one = (what, token) => {
+    const found = blocks.filter((b) => b.includes(token));
+    strictEqual(found.length, 1, `Phase 2 has one ${what} block`);
+    return found[0];
+  };
+  return {
+    planSet: one('plan-set', 'state.mjs" plan-set'),
+    laneAdvice: one('lane-advice', 'state.mjs" lane-advice'),
+    finalize: one('note + ensemble', 'state.mjs" ensemble-commit'),
+  };
 }
 
 describe('/orchestrator:plan sets the gate in the plan write', () => {
   it('no later block sets a gate', async () => {
-    const [, finalize] = await planPhase2Blocks();
+    const { finalize } = await planPhase2Blocks();
     // Contract: the agent running /orchestrator:plan — a separate gate write leaves the
     // plan approvable between the two writes.
     ok(!finalize.includes('awaiting-owner-set'), 'the gate is not set in a separate write');
@@ -215,7 +226,7 @@ for (const shell of SHELLS) {
       delete env.CLAUDE_PLUGIN_ROOT;
       delete env.AGENTIC_AUTOPILOT;
       if (!('VERDICT' in extra)) delete env.VERDICT;
-      const [planSet] = await planPhase2Blocks();
+      const { planSet } = await planPhase2Blocks();
       return spawnSync(shell, ['-c', planSet], { cwd: dir, encoding: 'utf8', env });
     };
     const newMacro = async (dir) => (await createWorkflow({
@@ -260,7 +271,7 @@ for (const shell of SHELLS) {
       };
       delete env.CLAUDE_PLUGIN_ROOT;
       delete env.AGENTIC_AUTOPILOT;
-      const [, finalize] = await planPhase2Blocks();
+      const { finalize } = await planPhase2Blocks();
       return spawnSync(shell, ['-c', finalize], { cwd: dir, encoding: 'utf8', env });
     };
 
@@ -292,6 +303,64 @@ for (const shell of SHELLS) {
         notStrictEqual(r.status, 0);
         ok(r.stderr.includes('terminal macro is not revised'), r.stderr);
         strictEqual((await readWorkflow(filePath)).frontmatter.ensemble_results, undefined);
+      });
+    });
+  });
+}
+
+// ADR-0067 Decision 8, item 2 — the lane advice both runbooks print after the
+// plan is stored or approved: one `- lane_advice:` line when two lanes shorten
+// the plan, nothing otherwise. In a fresh repository shared creation is off,
+// so the line names the cutover instead of the command.
+async function sideBySideMacro(dir) {
+  const { filePath } = await createWorkflow({
+    repoRoot: dir, verb: 'plan', host: 'claude',
+    gitBaseline: { branch: 'main', head: '0'.repeat(40), status_digest: '' },
+    originalRequest: 'lane advice runbook fixture',
+  });
+  await setPlan({
+    workflowPath: filePath, host: 'claude',
+    subtasks: [
+      { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+      { id: 'B', verb: 'compose', branch: 'feat/b', blocked_by: [], status: 'pending' },
+      { id: 'C', verb: 'compose', branch: 'feat/c', blocked_by: ['A', 'B'], status: 'blocked' },
+    ],
+  });
+  return filePath;
+}
+const CUTOVER_LINE = '- lane_advice: A and B are independent, C waits on both (3 steps in one lane, 2 with 2); lanes need the state-root cutover first (shared creation is off): docs/runbooks/state-root-cutover.md';
+
+for (const shell of SHELLS) {
+  describe(`lane advice in the plan and approve runbooks (${shell})`, () => {
+    const runLaneAdvice = async (dir, active) => {
+      const env = { ...process.env, AGENTIC_ORCHESTRATOR_ROOT: ORCH_ROOT, ACTIVE: active, REPO_ROOT: dir };
+      delete env.CLAUDE_PLUGIN_ROOT;
+      delete env.AGENTIC_AUTOPILOT;
+      const { laneAdvice } = await planPhase2Blocks();
+      return spawnSync(shell, ['-c', laneAdvice], { cwd: dir, encoding: 'utf8', env });
+    };
+
+    it("plan's Phase 2 prints the line for side-by-side subtasks, and nothing for a chain", async () => {
+      await withRepo(async (dir) => {
+        let r = await runLaneAdvice(dir, await sideBySideMacro(dir));
+        strictEqual(r.status, 0, r.stderr);
+        strictEqual(r.stdout, `${CUTOVER_LINE}\n`);
+      });
+      await withRepo(async (dir) => {
+        const r = await runLaneAdvice(dir, await plannedMacro(dir));
+        strictEqual(r.status, 0, r.stderr);
+        strictEqual(r.stdout, '');
+      });
+    });
+
+    it('approve prints the line after the approval', async () => {
+      await withRepo(async (dir) => {
+        await sideBySideMacro(dir);
+        const r = await run(shell, dir);
+        strictEqual(r.status, 0, r.stderr);
+        const lines = r.stdout.trimEnd().split('\n');
+        ok(lines.at(-2).startsWith('workflow: '), r.stdout);
+        strictEqual(lines.at(-1), CUTOVER_LINE);
       });
     });
   });

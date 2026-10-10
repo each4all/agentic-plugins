@@ -688,13 +688,16 @@ test('the CLIs read the args file, and the text reaches them intact', async (t) 
 // memory; the lists of runbooks they apply to stay here.
 
 // The runbooks ADR-0059 counted, plus designer's start, whose Phase 1c
-// illustrates the decide call.
+// illustrates the decide call, and founder's start, whose resume region's
+// worktree block reads a new request from an args file (ADR-0067 Decision 8,
+// item 3; every persona start has it).
 const ARGS_FILE_RUNBOOKS = ([
   'plugins/designer/commands/decide.md',
   'plugins/designer/commands/start.md',
   'plugins/engineer/commands/decide.md',
   'plugins/engineer/commands/start.md',
   'plugins/founder/commands/decide.md',
+  'plugins/founder/commands/start.md',
   // Claude only (ADR-0063 D9): no Codex skill below.
   'plugins/orchestrator/commands/autopilot.md',
   ...['bootstrap', 'consensus', 'context', 'dashboard', 'doctor', 'migrate', 'retention', 'settings', 'worktree']
@@ -706,6 +709,7 @@ const ARGS_FILE_SKILLS = ([
   'plugins/engineer/core/skills/decide/SKILL.md',
   'plugins/engineer/core/skills/start/SKILL.md',
   'plugins/founder/core/skills/decide/SKILL.md',
+  'plugins/founder/core/skills/start/SKILL.md',
   ...['bootstrap', 'consensus', 'context', 'dashboard', 'doctor', 'migrate', 'retention', 'settings', 'worktree']
     .map((c) => `plugins/runtime/core/skills/${c}/SKILL.md`),
 ]).filter(inConverted);

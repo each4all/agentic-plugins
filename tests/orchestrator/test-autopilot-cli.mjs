@@ -17,6 +17,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { makeRepo, ORCH, ENG, RUNTIME } from './fixtures/autopilot-repo.mjs';
+import { installLikeRelease } from './fixtures/install-cache.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const AP = resolve(REPO_ROOT, 'plugins/orchestrator/adapters/claude/autopilot');
@@ -169,6 +170,65 @@ describe('preview is a dry run', () => {
       const broken = await main(['preview'], env, work);
       strictEqual(broken.code, 1);
       ok(/is not gitignored/.test(broken.out), broken.out);
+    });
+  });
+});
+
+// ADR-0067 Decision 8, item 4 — preview carries the launch proposals in its
+// report and its text; start refuses roots inside the repository with the
+// concrete setup.
+describe('launch proposals in preview and start', () => {
+  // Releases laid out as this repository's plugins are: runtime ships no
+  // scripts/state.mjs (fixtures/install-cache.mjs).
+  const installAll = (home) => Object.fromEntries([['orchestrator', '0.10.0'], ['engineer', '0.26.0'], ['runtime', '0.102.0']]
+    .map(([plugin, version]) => [plugin, installLikeRelease(home, plugin, version)]));
+
+  it('preview on the main checkout proposes the home worktree; from a linked worktree it proposes none', async () => {
+    await withRepo(async (fx, env, work) => {
+      const pins = installAll(env.HOME);
+      const r = await main(['preview', '--json'], env, work);
+      strictEqual(r.code, 0, r.err);
+      const report = JSON.parse(r.out);
+      strictEqual(report.proposals.length, 1, JSON.stringify(report.proposals));
+      const [p] = report.proposals;
+      strictEqual(p.kind, 'worktree');
+      ok(p.command.startsWith(`git -C ${work} worktree add -b autopilot/home `), p.command);
+      ok(p.command.includes(`AGENTIC_ENGINEER_ROOT=${pins.engineer} `), p.command);
+      ok(p.command.includes(` start --execute --macro ${fx.macroId} --repo `), p.command);
+      const text = await main(['preview'], env, work);
+      ok(/→ Proposed \(main-checkout\): this is the main checkout, whose branch a serial run switches at each dispatch/.test(text.out), text.out);
+      ok(!/A dedicated worktree is recommended/.test(text.out), 'the unconditional line is gone');
+
+      const linked = join(fx.dir, 'linked');
+      execFileSync('git', ['-C', work, 'worktree', 'add', '-q', '-b', 'feat/linked', linked]);
+      // The macro named, so the absence is the linked-worktree rule's and not
+      // a macro the linked worktree could not find by its branch.
+      const fromLinked = JSON.parse((await main(['preview', '--json', '--macro', fx.macroId], env, realpathSync(linked))).out);
+      strictEqual(fromLinked.view.macro.id, fx.macroId, 'the linked worktree found the macro');
+      deepStrictEqual(fromLinked.proposals, []);
+    });
+  });
+
+  it('start refuses an engineer root inside the repository, with the pinned setup and, on the main checkout, the home worktree', async () => {
+    await withRepo(async (fx, env, work) => {
+      const pins = installAll(env.HOME);
+      const inside = join(work, 'vendored-engineer');
+      cpSync(ENG, inside, { recursive: true });
+      const r = await main(['start', '--execute', '--models', 'sonnet'], { ...env, AGENTIC_ENGINEER_ROOT: inside }, work);
+      strictEqual(r.code, 1);
+      ok(/engineer root .* is inside the repository this run drives/.test(r.err), r.err);
+      ok(r.err.includes('→ Proposed (roots-in-repo): engineer root is inside the repository this run drives: pin every root to the installed release cache'), r.err);
+      ok(r.err.includes(`AGENTIC_ORCHESTRATOR_ROOT=${pins.orchestrator} AGENTIC_ENGINEER_ROOT=${pins.engineer} AGENTIC_RUNTIME_ROOT=${pins.runtime} node `), r.err);
+      // The pins alone do not move a directory marketplace here: the refusal
+      // says so, and judges the main-checkout trigger too, as preview does.
+      ok(r.err.includes('  (these pins move the scripts the runbooks run, not the commands and hooks Claude Code loads: '), r.err);
+      const lines = r.err.split('\n');
+      const home = lines.findIndex((l) => l.startsWith('→ Proposed (main-checkout): this is the main checkout'));
+      ok(home > 0 && lines[home + 1].startsWith(`    git -C ${work} worktree add -b autopilot/home `), r.err);
+      ok(lines[home + 1].includes(`AGENTIC_RUNTIME_ROOT=${pins.runtime} node `), lines[home + 1]);
+      // Started without --macro: the refusal looks the macro up, as preview
+      // does, and the home command names it (the home finds none by branch).
+      ok(lines[home + 1].includes(` start --execute --macro ${fx.macroId} --repo `), lines[home + 1]);
     });
   });
 });
