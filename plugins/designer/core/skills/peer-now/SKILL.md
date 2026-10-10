@@ -112,7 +112,9 @@ Parse the argument string for these flags:
   prompt. On Claude side, `claude` is forbidden (no self-dispatch); on Codex
   side, `codex` is forbidden.
 - `--prompt-text "..."` OR `--prompt-file <path>` — REQUIRED. One of the
-  two, not both. The verbatim (genericized) prompt to forward.
+  two, not both. The verbatim (genericized) prompt to forward. Either form is
+  forwarded as `prompt.xml`, a file Phase 1 writes with the file-writing
+  tool: neither the text nor the path is put on a command line.
 
 Reject with a one-line usage hint and stop on: `--peer` missing / not in
 `{claude, codex}` / set to the current host; neither or both of
@@ -135,17 +137,44 @@ With `--kind peer-now`, it does NOT touch `pending_ensemble` or
 the response path. Use `--output-format text` so the raw companion stdout
 stays verbatim in `stdout.log`.
 
+The prompt reaches the runner as a file you write, never in the block: in
+shell source a quote, `$`, backtick or line of it would be read as code, and
+so would a `--prompt-file` path (ADR-0059, amendment of 2026-10-10). Before
+the block:
+
+1. Create a private directory for it, and note the path it prints:
+
+   ```bash
+   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   ```
+
+2. With your file-writing tool, not the shell, write the prompt there as
+   `prompt.xml`: the `--prompt-text`, or the text of the `--prompt-file`,
+   which you read with your file-reading tool. Write it as given, or as the
+   privacy gate leaves it where the runbook has one. Nothing deletes it.
+
+Then run the block with `TEXT_DIR` set to that directory and `PEER` to the
+`--peer` value. A `prompt.xml` that is missing or blank stops it before the
+dispatch.
+
 ```bash
+TEXT_DIR='<directory from step 1>'
+PEER='<claude|codex, from --peer>'
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 HOST="${AGENTIC_HOST:-claude}"  # Codex-side command-invoked mode uses codex.
 RUN_ID="peer-now-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
 RUN_JSON="$(mktemp -t 'designer'-peer-now.XXXXXX).json"
 RUN_ERR="$(mktemp -t 'designer'-peer-now.XXXXXX).err"
 echo "peer-now run_id=$RUN_ID" >&2
+# The prompt is the file the agent wrote with its file tool (ADR-0059,
+# amendment of 2026-10-10), a --prompt-text or a --prompt-file's text: no
+# line or path of it is shell source. The runner reads it.
+PROMPT_FILE="$TEXT_DIR/prompt.xml"
+grep -q '[^[:space:]]' "$PROMPT_FILE" 2>/dev/null || { echo "✗ prompt.xml in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was dispatched." >&2; exit 1; }
 
 node "<plugin-root>/scripts/peer-runner.mjs" run \
   --repo-root "$REPO_ROOT" --run-id "$RUN_ID" --kind peer-now \
-  --peer "$PEER" $PROMPT_ARG --output-format text \
+  --peer "$PEER" --prompt-file "$PROMPT_FILE" --output-format text \
   --host "$HOST" --cwd "$REPO_ROOT" \
   > "$RUN_JSON" 2> "$RUN_ERR"
 RUN_RC=$?
@@ -179,11 +208,16 @@ Locate the active workflow with `state.mjs find-active`:
 - **Empty stdout** → no active workflow. Standalone mode: print the response
   from `$STDOUT_PATH` and skip the state mutation.
 - **Single path** → append a `[Peer]` label phase note via `state.mjs append
-  --phase-label "[Peer] $PEER consultation" --phase-note "<note>" --event
-  updated`. Do NOT pass `--current-phase` / `--next-action`. Include
-  `run_id: $RUN_ID` and `handle: $HANDLE_PATH` in the note; cap the appended
-  excerpt at 4000 chars (`head -c 4000` on `$STDOUT_PATH`); print the full
-  response to the user separately. Re-resolve `$STDOUT_PATH` / `$ACTIVE` if
+  --phase-label "[Peer] $PEER consultation" --phase-note-file <note file>
+  --event updated`. Do NOT pass `--current-phase` / `--next-action`. The
+  note holds the peer's words, so it reaches `state.mjs` as a file, never on
+  the command line (ADR-0059, amendment of 2026-10-10): with your
+  file-writing tool, not the shell, write it as `note.md` in a private
+  directory (`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`), ending with
+  one newline, and pass that file. Include `run_id: $RUN_ID` and `handle:
+  $HANDLE_PATH` in the note; cap the appended excerpt at 4000 chars (the
+  first 4000 of `$STDOUT_PATH`); print the full response to the user
+  separately. Re-resolve `$STDOUT_PATH` / `$ACTIVE` if
   Phase 1 and Phase 2 run in separate Bash calls.
 - **Per-branch duplicate error** → reject with a hint pointing at the
   `resume` meta skill. Do NOT pick a workflow yourself.

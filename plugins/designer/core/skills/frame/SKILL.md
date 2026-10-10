@@ -158,20 +158,27 @@ screenshot or image is included; do not request or assume one.
 </privacy_contract>
 ```
 
-Then write that prompt to a tempfile and dispatch:
+Then write that prompt as a file, never through the shell (ADR-0059,
+amendment of 2026-10-10): create a private directory with
+`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"` and note the path it
+prints; with your file-writing tool write the Frame XML prompt there as
+`prompt.xml` (the privacy gate must have passed; no screenshot bytes); then
+run the dispatch, in the foreground of a host background task, never behind a
+shell `&`:
 
 ```bash
-PROMPT_FILE="$(mktemp -t designer-frame-prompt.XXXXXX).xml"
+TEXT_DIR='<the directory mktemp printed>'
+PROMPT_FILE="$TEXT_DIR/prompt.xml"
+grep -q '[^[:space:]]' "$PROMPT_FILE" 2>/dev/null || { echo "✗ prompt.xml in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was dispatched." >&2; exit 1; }
 # ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch.
 RUN_ID="frame-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
-# ... LLM writes the Frame XML prompt to $PROMPT_FILE (privacy gate must have passed; no screenshot bytes) ...
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
   --repo-root "$REPO_ROOT" --kind ensemble \
   --peer codex --prompt-file "$PROMPT_FILE" --output-format json \
   --workflow-path "$ACTIVE" --phase frame \
   --host "${AGENTIC_HOST:-claude}" --cwd "$REPO_ROOT" \
   --ensemble-type frame --run-id "$RUN_ID" \
-  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err" &
+  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err"
 ```
 
 Graceful degradation: companion missing or exit code 3

@@ -223,8 +223,8 @@ type. The peer receives the **genericized** before→after of the changed
 elements — spec text and/or frontend code, or a verified-local screenshot path,
 **never image bytes** — and independently verifies the revision resolves the
 finding without introducing a new inconsistency or a new accessibility barrier.
-Build the Refine-verify prompt, write it to a tempfile, and dispatch in the
-background. The prompt template + synthesis contract land in
+Build the Refine-verify prompt, write it with the file-writing tool into a private directory (`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`) as `prompt.xml`, never through the shell (ADR-0059, amendment of 2026-10-10), and dispatch it with
+`--prompt-file` in the background. The prompt template + synthesis contract land in
 `../_shared/references/ensemble-protocol.md` § Refine-verify; the dispatch
 shape mirrors the reference-scan dispatch in
 `../investigate/references/design-brief-ensemble.md` (command-managed via
