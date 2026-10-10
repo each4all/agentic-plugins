@@ -192,7 +192,14 @@ both sources into one of four base synthesis categories.
 | AGREED     | Both orchestrator and peer reached same conclusion | Present with elevated confidence. Label: **[Both]** |
 | LOCAL-ONLY | Orchestrator found it, peer did not                | Present normally. Label: **[Local]**                |
 | PEER-ONLY  | Peer found it, orchestrator did not                | Present normally. Label: **[Peer]**                 |
-| CONFLICT   | Orchestrator and peer disagree                     | Present both with evidence. Ask the user to decide  |
+| CONFLICT   | Orchestrator and peer disagree                     | Present both with evidence. The owner decides       |
+
+A CONFLICT is the owner's to decide, never the orchestrator's. In decide,
+critique and investigate a synthesis verdict of `conflict` ends the verb on
+its conflict gate, with a bounded consensus round proposed before the owner
+decides (ADR-0067 Decision 8; `entry-routing-contract.md` § Active
+Next-Action Proposal); in compose, frame and refine the CONFLICT items are
+put to the user as they are.
 
 The four names — `AGREED`, `LOCAL-ONLY`, `PEER-ONLY`, `CONFLICT` — are
 the canonical public vocabulary of this protocol. Their semantics are
@@ -236,6 +243,17 @@ locations**, both through founder's `../../../../scripts/state.mjs`:
 Frontmatter is the machine-parsable retrospective surface; the body is
 the human-readable narrative. Both are written under the per-file lock
 and MAY be written in separate calls.
+
+**A conflict leaves a third record (ADR-0067 Decision 8).** When decide,
+critique or investigate settles a run whose synthesis verdict is
+`conflict`, the verb also writes the contested items, prepared as its peer
+prompt was, to the workflow's consensus task file,
+`<home>/consensus/<workflow-id>.<run-id>.md`
+(`../../../../scripts/state.mjs consensus-task`, which refuses unless
+`ensemble_results` holds the run with the verdict `conflict`), and its
+conflict gate records that run id. `runtime:consensus plan --task-file`
+reads the file when the owner runs the proposed round; once the gate leaves,
+the file is renamed `<workflow-id>.<run-id>.resolved.md` and kept.
 
 **Each attempt is settled from its run ledger.** A verb's finalize runs
 `../../../../scripts/peer-runner.mjs settle` with the run id its dispatch

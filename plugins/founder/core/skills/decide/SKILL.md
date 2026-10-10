@@ -395,7 +395,13 @@ settled, or an unresolved gate — the proposal's `selected_next` is
 `owner decision`, and `/founder:decide` ends with the `decide-conflict` owner
 gate instead of a terminal write; its Owner selection step records the
 owner's choice and clears the gate
-(`../_shared/references/entry-routing-contract.md` § Owner gates).
+(`../_shared/references/entry-routing-contract.md` § Owner gates). On a
+synthesis verdict of `conflict` the gate records its run id and the
+contested items are written as a consensus task file, so the proposal
+selects the owner's decision after a bounded consensus round,
+`/runtime:consensus plan --task-file <that file> --peers claude,codex
+--max-rounds 2`, with "the owner decides now" among the rejected
+alternatives (ADR-0067 Decision 8); the owner runs it, or selects at once.
 
 <!-- pipeline:begin decide-finish -->
 Run by `/founder:decide`, the command's last write, `state.mjs
