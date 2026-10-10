@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.2](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.9.1...plugin-founder-v0.9.2) (2026-10-10)
+
+
+### Bug Fixes
+
+* **plugin/founder:** pass agent-written text to the CLIs as files in the persona runbooks (ADR-0059 amendment j) ([3b1ec20](https://github.com/each4all/agentic-plugins/commit/3b1ec203ee2ff824bc9ca157d950f9b7fdaae5ee))
+
 ## [0.9.1](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.9.0...plugin-founder-v0.9.1) (2026-10-10)
 
 
