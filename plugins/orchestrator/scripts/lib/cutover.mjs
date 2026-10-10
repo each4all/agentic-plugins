@@ -67,8 +67,20 @@ export function homeStorage(root, plugin, home = 'canonical') {
     workflows: path.join(base, 'workflows'),
     archive: path.join(base, 'archive'),
     peerRuns: path.join(base, 'peer-runs'),
+    // ADR-0067 Decision 8 — a conflict gate's consensus task files.
+    consensus: path.join(base, 'consensus'),
     creationLock: path.join(base, '.creation-lock'),
   };
+}
+
+// ADR-0067 Decision 8 — the consensus task files of a workflow in a home, live
+// and retired: `<workflow-id>.<run-id>.md` and `<workflow-id>.<run-id>.resolved.md`.
+// A record moves with them, as with its peer-run ledgers (Decision 4, item 4).
+function consensusFilesOf(storage, workflowId) {
+  if (typeof workflowId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(workflowId)) return [];
+  return entriesOf(storage.consensus)
+    .filter((n) => n.startsWith(`${workflowId}.`) && /^[A-Za-z0-9][A-Za-z0-9_-]*(\.resolved)?\.md$/.test(n.slice(workflowId.length + 1)))
+    .sort();
 }
 
 function present(p) {
@@ -309,6 +321,16 @@ export function planCutover(checkout) {
         destination: path.join(destination.peerRuns, runId),
       });
     }
+    for (const name of consensusFilesOf(source, record.workflow_id)) {
+      addPair({
+        kind: 'consensus',
+        plugin: record.plugin,
+        workflow_id: record.workflow_id,
+        source_checkout: record.root,
+        source: path.join(source.consensus, name),
+        destination: path.join(destination.consensus, name),
+      });
+    }
   }
   for (const record of moving.filter((r) => r.dir === 'archive')) {
     const destination = homeStorage(root, record.plugin, 'canonical');
@@ -414,7 +436,7 @@ function renameInto(source, destination) {
 
 function pairProblem(pair) {
   if (!pair || typeof pair !== 'object') return 'not an object';
-  if (!['workflow', 'archive', 'peer-run'].includes(pair.kind)) return `kind ${JSON.stringify(pair.kind)}`;
+  if (!['workflow', 'archive', 'peer-run', 'consensus'].includes(pair.kind)) return `kind ${JSON.stringify(pair.kind)}`;
   if (!ALL_PLUGINS.includes(pair.plugin)) return `plugin ${JSON.stringify(pair.plugin)}`;
   for (const key of ['source', 'destination', 'source_checkout']) {
     if (typeof pair[key] !== 'string' || !path.isAbsolute(pair[key])) return `${key} is not an absolute path`;
@@ -688,7 +710,7 @@ export async function verifyCutover(checkout, { resolveMacroById, findMacroBySub
 
 export const ROLLBACK_PLAN_SCHEMA = 'agentic-state-rollback-plan-1.0';
 const SETTLED_SUBTASK = new Set(['completed', 'deferred', 'abandoned']);
-const KIND_ORDER = { 'peer-run': 0, archive: 1, workflow: 2 };
+const KIND_ORDER = { 'peer-run': 0, consensus: 0, archive: 1, workflow: 2 };
 
 // Every manifest under the default state root, oldest first. One that cannot
 // be read refuses: the rollback takes its destinations from all of them.
@@ -853,6 +875,12 @@ export async function planRollback(checkout, { readWorkflow }) {
       pairs.push({
         kind: 'peer-run', plugin: record.plugin, workflow_id: record.workflow_id, run_id: runId,
         source_checkout: root, destination_checkout: live, source: ledger, destination: path.join(to.peerRuns, runId),
+      });
+    }
+    for (const name of consensusFilesOf(from, record.workflow_id)) {
+      pairs.push({
+        kind: 'consensus', plugin: record.plugin, workflow_id: record.workflow_id,
+        source_checkout: root, destination_checkout: live, source: path.join(from.consensus, name), destination: path.join(to.consensus, name),
       });
     }
     pairs.push({

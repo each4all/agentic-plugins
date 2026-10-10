@@ -42,7 +42,7 @@ import { lanesHoldingWork, lanesRequirements } from './lanes.mjs';
 import { launchProposals, mainCheckoutProposal, proposalLines } from './launch-proposals.mjs';
 import { observe as defaultObserve } from './observe.mjs';
 import {
-  decide, fingerprint, modelFor, renderStep, verifyStep, STEP_KINDS,
+  decide, fingerprint, modelFor, proposalLines as haltProposalLines, renderStep, verifyStep, STEP_KINDS,
 } from './policy.mjs';
 import {
   appendStep, acquireLock, createRunDir, LockHeldError, macroLockPath, mainWorktreeRoot, newRunId,
@@ -284,6 +284,9 @@ function haltRecord({ runId, d, lastSessionId, repoRoot, macroId, lanes }) {
     subtask_id: d.subtaskId ?? null,
     waiting: d.waiting ?? null,
     merge_order: d.mergeOrder ?? null,
+    // ADR-0067 Decision 8, item 5 — display only, never acted on: each
+    // {kind, command, pointer}, built by the policy from checked parts.
+    proposals: d.proposals ?? [],
     last_session_id: lastSessionId,
     resume,
     // A run with lanes: the other halts its drain met, and one entry per lane.
@@ -311,6 +314,7 @@ function printHalt(out, d) {
     if (w.note) out(`      ${w.note}`);
   }
   if (d.mergeOrder) out(`  merge order: ${orderText(d.mergeOrder)}`);
+  for (const line of haltProposalLines(d.proposals)) out(line);
 }
 
 // The awaiting-landing halt lists what the landing-ready report holds for the

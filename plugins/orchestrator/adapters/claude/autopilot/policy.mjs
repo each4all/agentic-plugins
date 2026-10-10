@@ -24,7 +24,7 @@ export const VERBS = Object.freeze(['investigate', 'frame', 'decide', 'compose',
 export const NEXT_STEP_KINDS = Object.freeze(['verb', 'commit', 'owner-decision', 'done']);
 export const CONFIDENCES = Object.freeze(['HIGH', 'MEDIUM', 'LOW']);
 export const ENGINEER_OWNER_GATES = Object.freeze([
-  'scope-routing', 'decide-conflict', 'recurring-finding', 'staging-set', 'pr-handling',
+  'scope-routing', 'decide-conflict', 'peer-conflict', 'recurring-finding', 'staging-set', 'pr-handling',
 ]);
 // Engineer's TERMINAL_PHASES. commit-complete and close-complete are written
 // only by /engineer:commit, so they are outcomes; summary-complete and
@@ -440,7 +440,7 @@ function claimProblem(view, subtasks) {
  * @returns {{outcome:'step', step} | {outcome:'halt', reason, detail, pointer?, subtaskId?, waiting?}
  *          | {outcome:'completed', detail}}
  */
-export function decide(view, ctx = {}) {
+function decideStep(view, ctx = {}) {
   if (view.macroLookupError) return halt('owner-choice', `macro lookup failed: ${view.macroLookupError}`);
   const macro = view.macro;
   if (!macro) {
@@ -717,7 +717,7 @@ export function forcedForLanes(pairs, view) {
  *   waiting    — the subtasks committed and waiting to land, which hold no capacity;
  *   idle       — the halt to record when nothing can start and nothing is in flight.
  */
-export function decideLanes(view, ctx = {}) {
+function decideLanesStep(view, ctx = {}) {
   if (view.macroLookupError) return halt('owner-choice', `macro lookup failed: ${view.macroLookupError}`);
   const macro = view.macro;
   if (!macro) return halt('owner-choice', 'no macro was found: a run with lanes needs --macro <id>');
@@ -814,6 +814,142 @@ export function decideLanes(view, ctx = {}) {
     out.idle = halt('owner-choice', `nothing is dispatchable: ${facts.join('; ') || 'no facts'}`);
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Proposals (ADR-0067 Decision 8, items 1 and 5)
+//
+// A halt on a conflict gate carries the bounded consensus round proposed
+// before the owner decides: `{kind: 'consensus', command, pointer}` in its
+// `proposals`, with the checked subtask id (null for the macro's) and the gate
+// it is for, so a run with lanes names the lane of each. Display only — the
+// driver never runs it. The command is
+// rendered from closed parts: the gate, the record's home (an engineer or
+// orchestrator one, as the observer found the file), the checked workflow or
+// macro id, and the run id the gate records, checked against its alphabet. It
+// is given only while the task file is current: the gate records the run,
+// ensemble_results holds that run with the verdict conflict, and the file
+// exists. No stored text becomes a command (R5).
+
+const CONSENSUS_RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const CONSENSUS_HOMES = Object.freeze({
+  engineer: ['/.agentic-plugins/state/engineer/consensus/', '/.claude/agentic-engineer/consensus/'],
+  orchestrator: ['/.agentic-plugins/state/orchestrator/consensus/', '/.claude/agentic-orchestrator/consensus/'],
+});
+const pathWord = (p) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`);
+
+function consensusEntry({ id, idOk, facts, plugin, subtaskId, gate }) {
+  if (!idOk || !facts) return null;
+  const { run_id: runId, conflict_runs: runs, task } = facts;
+  if (typeof runId !== 'string' || !CONSENSUS_RUN_ID_RE.test(runId)) return null;
+  if (!Array.isArray(runs) || !runs.includes(runId)) return null;
+  if (!task || task.exists !== true || typeof task.path !== 'string' || !task.path.startsWith('/')) return null;
+  const name = `${id}.${runId}.md`;
+  if (!CONSENSUS_HOMES[plugin].some((home) => task.path.endsWith(`${home}${name}`))) return null;
+  return {
+    kind: 'consensus',
+    command: `/runtime:consensus plan --task-file ${pathWord(task.path)} --peers claude,codex --max-rounds 2`,
+    pointer: typeof task.relPath === 'string' ? task.relPath : task.path,
+    subtask_id: subtaskId,
+    gate,
+  };
+}
+
+/**
+ * The proposals a halt carries, from the view it was decided on: an engineer
+ * child's `decide-conflict` or `peer-conflict`, or the macro's
+ * `plan-conflict` (halted `plan-unapproved`). Empty otherwise.
+ */
+export function consensusProposals(view, d) {
+  if (d?.outcome !== 'halt') return [];
+  if (d.reason === 'awaiting-owner:decide-conflict' || d.reason === 'awaiting-owner:peer-conflict') {
+    const c = isSafeSubtaskId(d.subtaskId) ? view?.children?.[d.subtaskId] : null;
+    if (!c || c.location !== 'active' || `awaiting-owner:${c.awaiting_owner?.gate}` !== d.reason) return [];
+    const e = consensusEntry({
+      id: c.workflow_id, idOk: ENGINEER_ID_RE.test(c.workflow_id ?? ''), facts: c.consensus, plugin: 'engineer',
+      subtaskId: d.subtaskId, gate: c.awaiting_owner.gate,
+    });
+    return e ? [e] : [];
+  }
+  const m = view?.macro;
+  if ((d.reason === 'plan-unapproved' || d.reason === 'awaiting-owner:plan-conflict')
+    && m && !m.archived && m.fm?.awaiting_owner_gate === 'plan-conflict') {
+    const e = consensusEntry({ id: m.id, idOk: isSafeMacroId(m.id), facts: m.consensus, plugin: 'orchestrator', subtaskId: null, gate: 'plan-conflict' });
+    return e ? [e] : [];
+  }
+  return [];
+}
+
+export function withProposals(d, view) {
+  const proposals = consensusProposals(view, d);
+  return proposals.length > 0 ? { ...d, proposals } : d;
+}
+
+/**
+ * The proposals of `held` that are current in `view`: each judged again, as a
+ * halt on its gate would be. A run with lanes reports what it met only after
+ * this, from a look taken as it ends, so a gate cleared or a task file
+ * retired while the run drained proposes nothing.
+ */
+export function currentProposals(view, held) {
+  return (held ?? []).flatMap((p) => (p?.kind === 'consensus' && typeof p.gate === 'string'
+    ? consensusProposals(view, { outcome: 'halt', reason: `awaiting-owner:${p.gate}`, subtaskId: p.subtask_id })
+    : []));
+}
+
+/** Each proposal once, by its command: a run's halt and its lane carry the same one. */
+export function proposalsOnce(list) {
+  const seen = new Set();
+  return list.filter((p) => !seen.has(p.command) && seen.add(p.command));
+}
+
+/**
+ * What a run with lanes reports, as it ends, of the proposals it met: each
+ * lane's (`lanes`, the report's entries, rewritten in place) and, when the run
+ * halts (`d`), its halt's and every lane's, once each. Whether the run halts or
+ * completes, each is judged again from one look taken as it ends
+ * (`lookNow`, called only when a proposal is held): a gate cleared or a task
+ * file retired while the run went on proposes nothing, and a look that fails
+ * confirms nothing. Returns the halt with its proposals, or `d` unchanged.
+ */
+export async function proposalsAtEnd(lookNow, d, lanes) {
+  const held = [...(d?.proposals ?? []), ...lanes.flatMap((l) => l.proposals ?? [])];
+  if (held.length === 0) return d;
+  const fresh = await lookNow();
+  const current = (ps) => (fresh?.lookError ? [] : currentProposals(fresh, ps));
+  for (const l of lanes) if (l.proposals) l.proposals = current(l.proposals);
+  return d ? { ...d, proposals: proposalsOnce(current(held)) } : d;
+}
+
+// ADR-0067 Decision 8 — what the owner is proposed to run before deciding,
+// and for which subtask's gate or the macro's; the run never runs it.
+export function proposalLines(proposals) {
+  const lines = [];
+  for (const p of proposals ?? []) {
+    const what = p?.gate ? ` for ${p.subtask_id ? `subtask ${p.subtask_id}` : 'the macro'} (${p.gate})` : '';
+    if (p?.kind === 'consensus') lines.push(`  proposed${what}, for the owner to run before deciding: a bounded consensus round, ${p.command}`);
+    else lines.push(`  proposed${what} (${p?.kind}): ${p?.command}`);
+    if (p?.pointer) lines.push(`    pointer: ${p.pointer}`);
+  }
+  return lines;
+}
+
+/** ADR-0063 D4 — decide the next step (decideStep); a halt carries its proposals. */
+export function decide(view, ctx = {}) {
+  const d = decideStep(view, ctx);
+  return d.outcome === 'halt' ? withProposals(d, view) : d;
+}
+
+/** ADR-0067 Decision 6 — decide what lanes may start (decideLanesStep); each halt carries its proposals. */
+export function decideLanes(view, ctx = {}) {
+  const d = decideLanesStep(view, ctx);
+  if (d.outcome === 'halt') return withProposals(d, view);
+  if (d.outcome !== 'lanes') return d;
+  return {
+    ...d,
+    laneHalts: d.laneHalts.map((h) => withProposals(h, view)),
+    idle: d.idle ? withProposals(d.idle, view) : d.idle,
+  };
 }
 
 // ---------------------------------------------------------------------------

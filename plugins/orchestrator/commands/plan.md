@@ -145,19 +145,27 @@ SUBTASKS_JSON="$(mktemp -t orchestrator-subtasks.XXXXXX).json"
 # ... LLM writes the synthesized subtasks array (top-level JSON array
 # of subtask objects matching the ADR-0018 §sub-1 schema) to $SUBTASKS_JSON ...
 
+# ADR-0067 Decision 8 — a conflict records the Plan-verify run with its gate,
+# plan-conflict, in the plan's own write; any other verdict records none.
+PLAN_RUN_ID=''
+if [ "$VERDICT" = conflict ]; then PLAN_RUN_ID="${RUN_ID:-}"; fi
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" plan-set \
   --workflow-path "$ACTIVE" --host claude \
   --subtasks-json-file "$SUBTASKS_JSON" \
   --decision "<one-line decision rationale>" \
   --architecture "<one-line architecture summary>" \
-  --verdict "$VERDICT" \
+  --verdict "$VERDICT" --run-id "$PLAN_RUN_ID" \
   --event updated
 ```
 
 `$VERDICT` is the synthesized Plan-verify verdict (`pass`, `concerns` or
-`conflict`), the same value the ensemble commit below records. A LOCAL-ONLY
+`conflict`), the same value the ensemble commit below records, and `$RUN_ID`
+the run id the dispatch generated. A LOCAL-ONLY
 plan (no peer) still has one: the local synthesis's own `pass` or
-`concerns`. `plan-set` refuses an empty or unknown verdict. `plan-set`
+`concerns`. `plan-set` refuses an empty or unknown verdict. On `conflict` the
+gate records `$RUN_ID` (ADR-0067 Decision 8), and before the write every
+consensus task file the macro still has is retired: a re-plan never leaves the
+previous plan's proposal current. `plan-set`
 also returns the plan to **pending approval** under the same lock (ADR-0063
 D6): `plan_approval_status=pending`, with `awaiting_owner_gate=plan-conflict`
 when the verdict is `conflict` and `plan-approval` otherwise, pointing at the
@@ -227,8 +235,30 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
   --run-id "$RUN_ID" \
   --phase plan --ensemble-type plan-verify \
   --verdict "$VERDICT" --summary "$SUMMARY" \
-  --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 1
+
+# ADR-0067 Decision 8 — a conflict: the contested items become the macro's
+# consensus task file, now that the ensemble commit recorded the run; the
+# command prints the bounded round the proposal selects. Nothing runs it.
+if [ "$VERDICT" = conflict ]; then
+  # The contested items, from the file CONTESTED_FILE names, written with the
+  # file tool: the shell never reads them, so no line of them runs as a
+  # command. consensus-task refuses an empty file.
+  [ -n "${CONTESTED_FILE:-}" ] || { echo "✗ CONTESTED_FILE names no file of contested items; no task file was written." >&2; exit 1; }
+  PROPOSED="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" consensus-task \
+    --workflow-path "$ACTIVE" --host claude --run-id "$RUN_ID" \
+    --text-file "$CONTESTED_FILE")" || exit $?
+  echo "→ Proposed, for the owner to run before deciding: $PROPOSED" >&2
+fi
 ```
+
+On a `conflict`, before the block, write the contested items with the file
+tool to a new file and set `CONTESTED_FILE` to its path: each CONFLICT item,
+both positions and their evidence, prepared as the Plan-verify prompt was,
+since the consensus peers read the file. They come from the peer's positions,
+so never put them in the block, where the shell would read a line of them as
+a command. `consensus-task` refuses unless the ensemble commit recorded the run
+with the verdict `conflict`, and refuses empty text.
 
 **Note on auto-archive**: `/orchestrator:plan` does not set terminal markers. Macro auto-archive A1-A4 runs from the Stop hook/manual Codex helper after later lifecycle commands (`/orchestrator:done`, `/orchestrator:finalize`, or `/orchestrator:abort`) make the macro terminal.
 
@@ -242,7 +272,7 @@ After user approval of the synthesized plan, output the macro plan and one of:
 
 - `✓ Plan complete.` + path to the workflow file.
 - `✓ Plan complete (LOCAL-ONLY).` + note that Codex peer was unavailable; recommend re-running once `/codex:setup` is configured.
-- `✓ Plan paused (CONFLICT items surfaced).` — when synthesizer flagged disagreements that warrant user input before subtasks land. The macro is at `awaiting_owner_gate=plan-conflict`: the owner revises the plan (`/orchestrator:plan`), or decides the conflict, clears the gate with `state.mjs awaiting-owner-clear --gate plan-conflict`, and approves.
+- `✓ Plan paused (CONFLICT items surfaced).` — when synthesizer flagged disagreements that warrant user input before subtasks land. The macro is at `awaiting_owner_gate=plan-conflict`, with the Plan-verify run id and its consensus task file: a bounded consensus round is proposed first (the command the Phase 2 block printed), then the owner revises the plan (`/orchestrator:plan`), or decides the conflict, clears the gate with `state.mjs awaiting-owner-clear --gate plan-conflict`, and approves.
 
 Every completed plan is **pending approval** until the owner runs `/orchestrator:approve`.
 
@@ -286,6 +316,19 @@ subtasks that could run side by side and the
 `/orchestrator:autopilot start --execute --macro <id> --lanes 2` that would run
 them so, or says the state-root cutover comes first. It never replaces the
 selection.
+
+**The conflict branch (ADR-0067 Decision 8).** A Plan-verify verdict of
+`conflict` takes precedence over approval: `selected_next` is the owner's
+decision after a bounded consensus round; `next_command` is the command the
+Phase 2 block printed, `/runtime:consensus plan --task-file <the absolute
+path of the macro's task file> --peers claude,codex --max-rounds 2` (the
+phase note spells the file from the state root,
+`.agentic-plugins/state/orchestrator/consensus/<macro-id>.<run-id>.md`); and
+`rejected_alternatives` include "the owner decides now", with the reason for
+this case. The proposal is display only: the owner runs the round, then
+revises the plan or clears `plan-conflict` and approves. Clearing the gate,
+or a re-plan, retires the task file. Under autopilot the driver halts
+`plan-unapproved` and its report carries the same command.
 
 Append the runtime completion footer after the workflow path. Use the
 runtime footer helper when available, or render the same fields manually:
