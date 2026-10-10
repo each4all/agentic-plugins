@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.28.0...plugin-engineer-v0.28.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* **plugin/engineer:** read agent-written text from a file in state, settle and Phase 7 (--&lt;name&gt;-file, ADR-0059 amendment j) ([b94ff58](https://github.com/each4all/agentic-plugins/commit/b94ff58c8350a3a6f7ab186fdd60ace2c132d03a))
+
 ## [0.28.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.27.0...plugin-engineer-v0.28.0) (2026-10-10)
 
 

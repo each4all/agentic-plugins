@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.9.0...plugin-founder-v0.9.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* **plugin/founder:** read agent-written text from a file in state and settle (--&lt;name&gt;-file, ADR-0059 amendment j) ([ecdfcb0](https://github.com/each4all/agentic-plugins/commit/ecdfcb06d3afc0578ee147bba5f4cd14346fc44e))
+
 ## [0.9.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.8.0...plugin-founder-v0.9.0) (2026-10-10)
 
 
