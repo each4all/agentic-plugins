@@ -79,6 +79,21 @@ one-line genericized design topic; `AGENTIC_TOPIC` takes its place when it is se
 block sets the repository and branch itself: a shell variable does not outlive
 a Bash call.
 
+A dirty tree's refusal selects a worktree first (ADR-0067 Decision 8, item 3):
+`scripts/discover-runtime.mjs worktree-plan` prints the runtime:worktree
+planner's `git worktree add -b <branch> <path> <base>` for this request, to
+run before `/designer:start` again inside the new worktree; this checkout's
+changes stay where they are. It is the refusal's `selected_next`. Cleaning,
+stashing or accepting the tree here stay among the rejected alternatives: right
+when the changes are finished or belong to this request, wrong when they are
+other work. When no runtime with the planner resolves, or the planner blocks
+(an existing branch, an occupied path, an unresolved base), the line names the
+reason and `/runtime:worktree plan`.
+The request reaches the planner through an args file, never through the
+shell: the refusal names the worktree block in the active-workflow section
+below, which a new request beside an active workflow uses too; run it with the
+request in a new args file.
+
 ```bash
 ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
@@ -102,7 +117,10 @@ case "$STATUS" in
   clean|accepted) ;;  # proceed
   dirty)
     echo "✗ Working tree not clean — /${PERSONA}:start gates a clean baseline before bootstrapping a deliverable." >&2
-    echo "  Resolve, then re-run:" >&2
+    # ADR-0067 Decision 8, item 3 — a worktree first; the request reaches the
+    # planner through an args file, never through this block.
+    echo "→ Proposed: a new worktree first, which leaves this checkout's changes where they are: run the worktree block (the active-workflow section) with the request in an args file; it prints the git worktree add command." >&2
+    echo "  Or resolve it here, then re-run:" >&2
     echo "    • clean:  git restore . ; git clean -fd" >&2
     echo "    • stash:  git stash push --include-untracked  (re-run, then git stash pop)" >&2
     echo "    • accept: set ACCEPT_CURRENT_TREE=1 to acknowledge the dirty tree" >&2
@@ -131,6 +149,14 @@ space (state.mjs defaults non-start workflows to `verb-chain` and validates
 `start` as a separate discriminator):
 
 <!-- pipeline:begin start-resume -->
+When the arguments above are a new request that does not belong to the active
+workflow (its `original_request` says what it holds), do not run the first
+block below, whichever the workflow's type: a start never takes unrelated work
+into a workflow, and the block would resume it. Propose a worktree for the
+request instead, with the second block, and leave the active workflow as it is
+(ADR-0067 Decision 8, item 3). When the arguments are empty, or continue that
+workflow, the ordinary resume is the selection: run the first block.
+
 ```bash
 ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
@@ -152,9 +178,34 @@ if [ "$WF_TYPE" = start ]; then
 else
   echo "✗ The active workflow on this branch is workflow_type=${WF_TYPE}, not start: /${PERSONA}:start does not take a single-verb workflow into its lifecycle." >&2
   echo "  Active workflow: $ACTIVE" >&2
-  echo "  Continue it with its /${PERSONA}:<verb>, or archive it (/${PERSONA}:resume archive), or switch branch (git switch -c <new>); then re-run /${PERSONA}:start." >&2
+  echo "  If this request continues it: continue it with its /${PERSONA}:<verb>, or archive it (/${PERSONA}:resume archive), then re-run /${PERSONA}:start." >&2
+  echo "  If it is new work: a worktree first, which leaves this branch and its workflow as they are (the worktree block prints the command); switching this checkout's branch (git switch -c <new>) would carry its changes along." >&2
   exit 1
 fi
+```
+
+The worktree block, for a new request beside an active workflow and for the
+bootstrap's dirty refusal above, takes the arguments above through an args
+file, never through the shell:
+
+1. Create a private directory for the file, and note the path it prints:
+   `mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"`.
+2. With your file-writing tool, not the shell, create `args.json` in it
+   holding `{"agentic_args": 1, "text": "…"}`, with `text` set to the
+   arguments exactly as typed, as a JSON string.
+
+Then run the block with `ARGS_DIR` set to that directory. It prints the
+runtime:worktree planner's `git worktree add` command for the request,
+or why there is none, and writes nothing; the args file is removed once read.
+
+```bash
+ARGS_DIR='<directory from step 1>'
+ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'designer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+node "$CLAUDE_PLUGIN_ROOT/scripts/discover-runtime.mjs" worktree-plan --repo-root "$REPO_ROOT" \
+  --args-file "$ARGS_DIR/args.json" --host "${AGENTIC_HOST:-claude}" --format text
 ```
 <!-- pipeline:end start-resume -->
 
