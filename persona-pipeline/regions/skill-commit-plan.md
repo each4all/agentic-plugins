@@ -38,4 +38,4 @@ The plan is informational: execute and close re-derive everything.
     (default), specific `extras` opted in, or the whole working tree.
   - `requires_split: true` → the change spans release-please packages, so it
     becomes one commit per package (ADR-0016). A split needs one subject per
-    commit; `--subject` is refused.
+    commit; a single `--subject-file` is refused.

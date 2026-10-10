@@ -489,6 +489,10 @@
         "name": {
           "field": "name",
           "context": "shell"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
         }
       }
     },
@@ -792,7 +796,7 @@
         },
         "next_action": {
           "field": "verbs.compose.next_action",
-          "context": "shell"
+          "context": "text"
         },
         "persona": {
           "field": "name",
@@ -1036,7 +1040,7 @@
         },
         "next_action": {
           "field": "verbs.frame.next_action",
-          "context": "shell"
+          "context": "text"
         },
         "persona": {
           "field": "name",
@@ -1284,7 +1288,7 @@
         },
         "next_action": {
           "field": "verbs.investigate.next_action",
-          "context": "shell"
+          "context": "text"
         },
         "persona": {
           "field": "name",
@@ -1319,7 +1323,7 @@
           "context": "shell"
         },
         "owner_gates": {
-          "value": "- `peer-conflict` (the `Ensemble synthesis` heading, anchor\n  `ensemble-synthesis`): the synthesis verdict is `conflict`; the block's\n  conflict branch records it with the run id, and the owner rules on the\n  contested items, then clears it with `awaiting-owner-clear --gate\n  peer-conflict --resolution \"<the ruling>\"` and the next step.\n- `scope-routing` (heading `### Routing recommendation`, anchor\n  `routing-recommendation`): the request does not belong in this verb or\n  workflow; the owner picks the route, then clears the gate.",
+          "value": "- `peer-conflict` (the `Ensemble synthesis` heading, anchor\n  `ensemble-synthesis`): the synthesis verdict is `conflict`; the block's\n  conflict branch records it with the run id, and the owner rules on the\n  contested items, then clears it with `awaiting-owner-clear --gate\n  peer-conflict --resolution-file <the ruling's file>` and the next step,\n  the ruling written with the file-writing tool.\n- `scope-routing` (heading `### Routing recommendation`, anchor\n  `routing-recommendation`): the request does not belong in this verb or\n  workflow; the owner picks the route, then clears the gate.",
           "context": "markdown"
         },
         "skip_cause": {
@@ -1560,7 +1564,7 @@
         },
         "next_action": {
           "field": "verbs.decide.next_action",
-          "context": "shell"
+          "context": "text"
         },
         "persona": {
           "field": "name",
@@ -1853,7 +1857,7 @@
         },
         "next_action": {
           "field": "verbs.refine.next_action",
-          "context": "shell"
+          "context": "text"
         },
         "persona": {
           "field": "name",
@@ -1931,7 +1935,7 @@
         },
         "next_action": {
           "field": "verbs.refine.next_action",
-          "context": "shell"
+          "context": "text"
         },
         "persona": {
           "field": "name",
@@ -2242,7 +2246,7 @@
         },
         "next_action": {
           "field": "verbs.critique.next_action",
-          "context": "shell"
+          "context": "text"
         },
         "persona": {
           "field": "name",
@@ -2277,7 +2281,7 @@
           "context": "shell"
         },
         "owner_gates": {
-          "value": "- `peer-conflict` (the `Ensemble synthesis` heading, anchor\n  `ensemble-synthesis`): the synthesis verdict is `conflict`; the block's\n  conflict branch records it with the run id, and the owner rules on the\n  contested items, then clears it with `awaiting-owner-clear --gate\n  peer-conflict --resolution \"<the ruling>\"` and the next step.\n- `scope-routing` (heading `### Routing recommendation`, anchor\n  `routing-recommendation`): the request does not belong in this verb or\n  workflow; the owner picks the route, then clears the gate.",
+          "value": "- `peer-conflict` (the `Ensemble synthesis` heading, anchor\n  `ensemble-synthesis`): the synthesis verdict is `conflict`; the block's\n  conflict branch records it with the run id, and the owner rules on the\n  contested items, then clears it with `awaiting-owner-clear --gate\n  peer-conflict --resolution-file <the ruling's file>` and the next step,\n  the ruling written with the file-writing tool.\n- `scope-routing` (heading `### Routing recommendation`, anchor\n  `routing-recommendation`): the request does not belong in this verb or\n  workflow; the owner picks the route, then clears the gate.",
           "context": "markdown"
         },
         "skip_cause": {
@@ -2480,7 +2484,7 @@
         },
         "next_action": {
           "field": "verbs.start.next_action",
-          "context": "shell"
+          "context": "text"
         }
       }
     },
@@ -2510,7 +2514,7 @@
         },
         "next_action": {
           "field": "verbs.start.next_action",
-          "context": "shell"
+          "context": "text"
         }
       }
     },
@@ -3053,7 +3057,7 @@
         },
         "next_action": {
           "field": "verbs.start.next_action",
-          "context": "shell"
+          "context": "text"
         }
       }
     },
@@ -3075,7 +3079,7 @@
         },
         "next_action": {
           "field": "verbs.start.next_action",
-          "context": "shell"
+          "context": "text"
         }
       }
     },

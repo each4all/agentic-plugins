@@ -3,10 +3,13 @@
    (`AGENTIC_COMPANIONS_ROOT` env override honored, per ADR-0008). If
    discovery fails, the ensemble degrades to local-only.
 3. Construct the peer prompt per the type-specific template (see *Prompt
-   Construction Rules*). Write it to a per-dispatch UTF-8 tempfile and
-   pass it via `--prompt-file <path>` per `companions/contract.md` §2.2 —
-   never as a positional argument and never inlined into a shell command,
-   so the prompt never crosses shell parsing, process argv, or `ps aux`.
+   Construction Rules*). Write it with your file-writing tool, not the
+   shell, as `prompt.xml` in a private directory
+   (`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`), and pass that file
+   via `--prompt-file <path>` per `companions/contract.md` §2.2 — never as
+   a positional argument and never inlined into a shell command, so the
+   prompt never crosses shell parsing, process argv, or `ps aux` (ADR-0059,
+   amendment of 2026-10-10).
 4. Invoke the companion in **JSON envelope mode** through
    `../../../../scripts/peer-runner.mjs run`, which records the matching
    `pending_ensemble` row and writes raw stdout/stderr plus the parsed

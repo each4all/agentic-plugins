@@ -40,6 +40,11 @@
 //      by, dropped or loosened;
 //   N  engineer converges (PC3): a defect in a canonical capability-on path,
 //      regenerated into every target, fails an engineer contract test;
+//   F  the text-file transport (C130, ADR-0059's amendment of 2026-10-10):
+//      a finalize that reads the note through the shell again, skips the
+//      check that the agent wrote its files, drops the file-writing step,
+//      takes its text directory from the environment or leaves a file's path
+//      unquoted, each with the contract or guard that must catch it;
 //   C  a control: an innocuous canonical edit, regenerated everywhere, keeps
 //      the drift check clean (expect SURVIVED).
 //
@@ -78,6 +83,9 @@ const T_COMMIT_RB = 'tests/persona-pipeline/test-commit-runbook.mjs';
 // The verb runbooks' blocks, run for every persona (PC3b U4b: moved from
 // tests/engineer/test-verb-runbook-autopilot.mjs).
 const T_VERB_RB = 'tests/persona-pipeline/test-verb-runbook-runs.mjs';
+// The text-file transport guard (C130, ADR-0059's amendment of 2026-10-10).
+const T_GUARD = 'tests/plugin-shape/test-persona-text-file-transport.mjs';
+const GUARD_RULES = /^persona text-file transport \(C130, ADR-0059 amendment of 2026-10-10\) > no block splices agent text into shell source/;
 // orchestration-failure.md whole (N90 wraps it in two capability blocks).
 const ORCH_FAILURE = readFileSync(new URL('../../persona-pipeline/regions/orchestration-failure.md', import.meta.url), 'utf8');
 
@@ -142,7 +150,7 @@ const RESOLVER_TEMPLATES = [
   'regions/start-bootstrap.md', 'regions/start-commit.md', 'regions/start-resume.md', 'regions/start-terminal.md',
   'regions/start-terminal-convergent.md', 'regions/verb-bootstrap-profiled.md',
   'regions/verb-bootstrap.md', 'regions/verb-dispatch.md', 'regions/verb-finalize.md',
-  'regions/verb-finalize-convergent.md',
+  'regions/verb-finalize-consensus.md', 'regions/verb-finalize-convergent.md',
   'regions/verb-phase-0.md', 'regions/verb-resume-profiled.md', 'regions/verb-resume.md',
 ];
 {
@@ -167,7 +175,7 @@ const COMMIT_STEP = [
   'node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" settle \\',
   '  --repo-root "$REPO_ROOT" --workflow-path "$ACTIVE" \\',
   '  --host "${AGENTIC_HOST:-claude}" --phase {{verb}} --run-id "$RUN_ID" \\',
-  '  --verdict "$VERDICT" --summary "$SUMMARY" || exit $?',
+  '  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt" || exit $?',
   '',
   '',
 ].join('\n');
@@ -207,8 +215,17 @@ const inSuite = (suite, contract) => new RegExp(
 );
 const IDENTITY = /^identity: persona, verb, phase, ensemble type and run-id prefix/;
 const PRIVACY = /^privacy: the prohibition sentence precedes the dispatch/;
-// The finalize reads the phase note from a quoted heredoc (M11, M18, M21, M33).
-const HEREDOC = /^the phase note is read from a quoted heredoc and passed as "\$NOTE" \(PD2\)$/;
+// The finalize passes the agent's files (C130; the F group).
+const TEXT_FILES = /^the finalize passes the note, the summary and the next action as files the agent wrote, checked before any write$/;
+const SETTLE_FILE = '  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt" || exit $?\n';
+// The finalize holds each file to every reader's rule (C130 refine: `[ -s ]`
+// passed a newline, a check for blanks a BOM, and settle refused after the append).
+const READERS_RULE = 'node -e \'let t;try{t=new TextDecoder("utf-8",{fatal:true}).decode(require("fs").readFileSync(process.argv[1]))}catch{process.exit(1)}process.exit(t.includes("\\0")||t.trim()===""?1:0)\' "$TEXT_DIR/$TEXT_FILE" ||';
+const FILE_CHECK = `for TEXT_FILE in note.md summary.txt next-action.txt; do\n  ${READERS_RULE} { echo "✗ $TEXT_FILE in TEXT_DIR ($TEXT_DIR) is missing, blank or not UTF-8 text; write it with the file tool first. Nothing was written." >&2; exit 1; }\ndone\n`;
+// peer-now's prompt is the agent's prompt.xml (C130 refine: a --prompt-file
+// path was pasted into the block).
+const PEER_NOW_PROMPT = 'PROMPT_FILE="$TEXT_DIR/prompt.xml"\n';
+const PEER_NOW_RUN = /^dispatch, run: the run id is a peer-now- id/;
 const verbCaught = (contract, verbs = VERB_RUNBOOKS) => ['founder', 'designer'].flatMap((p) => verbs.map((v) => new RegExp(
   `(?:^| > )${`${p}/commands/${v}.md (committed)`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} > ${contract.source.replace(/^\^/, '')}`,
 )));
@@ -853,26 +870,26 @@ export const MUTATIONS = [
   // ---- G: PC2b U4b, the compose/frame/investigate/decide finalize ------------
   {
     id: 'G38', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '  --verdict "$VERDICT" --summary "$SUMMARY" || exit $?\n', to: '  --verdict "$VERDICT" --summary "$SUMMARY"\n' }),
-    killed_by: verbCaught(/^the finalize, run: a settle refusal stops the block before finish-verb/),
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: SETTLE_FILE, to: '  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt"\n' }),
+    killed_by: templateCaught(FINALIZE, /^the finalize, run: a settle refusal stops the block before finish-verb/),
     why: 'a refused settle no longer stops the block: the workflow closes with its ensemble attempt unsettled',
   },
   {
     id: 'G39', tests: [T_CONTRACT, T_CHAR],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '--phase {{verb}} --run-id "$RUN_ID" \\\n', to: "--phase {{verb}} --run-id '' \\\n" }),
-    killed_by: verbCaught(FINALIZE_ORDER),
+    killed_by: templateCaught(FINALIZE, FINALIZE_ORDER),
     why: 'settle is never given the run id, so every launched attempt is refused or, without a pending row, skipped',
   },
   {
     id: 'G40', tests: [T_CONTRACT, T_CHAR],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '  --next-step-kind verb --next-step-verb {{next_verb}} \\\n', to: '' }),
-    killed_by: verbCaught(FINALIZE_ORDER),
+    killed_by: templateCaught(FINALIZE, FINALIZE_ORDER),
     why: 'the terminal write records no closed-enum next step (finish-verb then refuses: the block fails at its last write)',
   },
   {
     id: 'G41', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '\n{{owner_gates}}\n', to: '\n' }),
-    killed_by: verbCaught(FINALIZE_ORDER),
+    killed_by: templateCaught(FINALIZE, FINALIZE_ORDER),
     why: 'the finalize no longer names the owner gates its verb may end with, nor their anchors',
   },
   {
@@ -951,7 +968,7 @@ export const MUTATIONS = [
   },
   {
     id: 'G50', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-finalize-convergent.md', from: '  --verdict "$VERDICT" --summary "$SUMMARY" || exit $?\n', to: '  --verdict "$VERDICT" --summary "$SUMMARY"\n' }),
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-finalize-convergent.md', from: SETTLE_FILE, to: '  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt"\n' }),
     killed_by: [/^verb-finalize-convergent\.md: rebuilt from verb-finalize\.md and the variant's own lines, it is byte for byte the variant$/],
     why: 'the convergent finalize drifts from the plain one in a line they share: its settle no longer stops the block (PC2b U5b)',
   },
@@ -1016,7 +1033,7 @@ export const MUTATIONS = [
   },
   {
     id: 'G70', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/refine-owner-decision-convergent.md', from: '    --resolution "$RESOLUTION" --next-action "<what the next step resolves, in a few words>" \\\n', to: '    --resolution "$RESOLUTION" \\\n' }),
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/refine-owner-decision-convergent.md', from: '    --resolution-file "$TEXT_DIR/resolution.txt" --next-action-file "$TEXT_DIR/next-action.txt" \\\n', to: '    --resolution-file "$TEXT_DIR/resolution.txt" \\\n' }),
     killed_by: templateCaught('regions/refine-owner-decision-convergent.md', /^Owner decision, run: fix now clears recurring-finding/),
     why: "the unconverged deferral's clear keeps the gate's \"Owner: …\" next action",
   },
@@ -1106,8 +1123,8 @@ export const MUTATIONS = [
     id: 'G2', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, {
       template: 'regions/peer-now-dispatch.md',
-      from: '  --peer "$PEER" $PROMPT_ARG --output-format text \\\n',
-      to: '  --peer "$PEER" $PROMPT_ARG --image "$SCREENSHOT" --output-format text \\\n',
+      from: '  --peer "$PEER" --prompt-file "$PROMPT_FILE" --output-format text \\\n',
+      to: '  --peer "$PEER" --prompt-file "$PROMPT_FILE" --image "$SCREENSHOT" --output-format text \\\n',
     }),
     why: 'peer-now passes a screenshot to a companion path that has no image channel (the no-image rule)',
   },
@@ -1197,8 +1214,8 @@ export const MUTATIONS = [
   },
   {
     id: 'D4', tests: [T_SYNC], file: 'plugins/founder/commands/checkpoint.md',
-    from: '--summary "$SUMMARY"',
-    to: '--summary "$SUMMARY" --force',
+    from: '--summary-file "$TEXT_DIR/summary.txt"',
+    to: '--summary "$SUMMARY"',
     why: 'a hand edit inside a generated runbook region (the PC2a acceptance: the drift check must fail)',
   },
 
@@ -1269,9 +1286,9 @@ export const MUTATIONS = [
   // Codex review of PC2a2: each of these passed the first version of the tests.
   {
     id: 'K3', tests: [T_CHAR], file: 'plugins/founder/commands/compose.md',
-    from: '  --phase-note "$NOTE" \\\n',
-    to: '  --phase-note $NOTE \\\n',
-    why: 'the phase note is passed unquoted, so the shell splits it into many arguments',
+    from: '  --phase-note-file "$TEXT_DIR/note.md" \\\n',
+    to: '  --phase-note-file $TEXT_DIR/note.md \\\n',
+    why: 'the phase note\'s file is passed unquoted, so a directory with a space in its name splits it into many arguments',
   },
   {
     id: 'K4', tests: [T_CHAR], file: 'plugins/founder/commands/compose.md',
@@ -1344,8 +1361,8 @@ export const MUTATIONS = [
   },
   {
     id: 'V8', tests: [T_VERBS], file: 'plugins/designer/commands/refine.md',
-    from: '  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \\\n    --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \\\n    --next-action \'<compact',
-    to: '  :; else\n  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \\\n    --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \\\n    --next-action \'<compact',
+    from: '  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \\\n    --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \\\n    --next-action-file "$TEXT_DIR/next-action.txt" \\\n    --next-step-kind verb',
+    to: '  :; else\n  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \\\n    --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \\\n    --next-action-file "$TEXT_DIR/next-action.txt" \\\n    --next-step-kind verb',
     why: 'designer refine\'s terminal write moves to the else branch: it runs when the re-critique did not converge',
   },
   {
@@ -1459,16 +1476,16 @@ export const MUTATIONS = [
       { from: COMMIT_STEP, to: '' },
       { from: '  --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?\n# The owner-decision form', to: `  --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?\n\n${COMMIT_STEP.trimEnd()}\n# The owner-decision form` },
     ] }),
-    killed_by: verbCaught(FINALIZE_ORDER),
+    killed_by: templateCaught(FINALIZE, FINALIZE_ORDER),
     why: 'the terminal write runs before settle: the workflow archives with its ensemble attempt still unsettled',
   },
   {
     id: 'M2', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, edits: [
       { from: COMMIT_STEP, to: '' },
-      { from: 'nothing was written." >&2; exit 1; }\n\nnode "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \\\n', to: `nothing was written." >&2; exit 1; }\n\n${COMMIT_STEP}node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \\\n` },
+      { from: `${FILE_CHECK}\nnode "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \\\n`, to: `${FILE_CHECK}\n${COMMIT_STEP}node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \\\n` },
     ] }),
-    killed_by: verbCaught(FINALIZE_ORDER),
+    killed_by: templateCaught(FINALIZE, FINALIZE_ORDER),
     why: 'settle runs before the phase note is written',
   },
   {
@@ -1496,7 +1513,7 @@ export const MUTATIONS = [
   {
     id: 'M5', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '  --event updated || exit $?\n', to: '  --event updated\n' }),
-    killed_by: [...verbCaught(FINALIZE_ORDER), /^bash: the finalize block hands a hostile note to state\.mjs byte for byte/],
+    killed_by: [...templateCaught(FINALIZE, FINALIZE_ORDER), /^bash: the finalize block hands hostile texts to the scripts byte for byte/],
     why: 'a failed phase-note append no longer stops the block, which goes on to commit and archive (PD6; the run case shows it)',
   },
   {
@@ -1524,13 +1541,6 @@ export const MUTATIONS = [
     why: 'the dispatch passes a screenshot to a companion path that has no image channel',
   },
   // Dropped with C1 (E1 rule 3): M10 — the phase note's wording, which no program reads (the characterization fixture records it, C3's to judge).
-  {
-    id: 'M11', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: "NOTE <<'PHASE_NOTE' || true", to: 'NOTE <<PHASE_NOTE || true' }),
-    // bash only: the suite runs the other shells only where they are installed.
-    killed_by: [/^bash: the finalize block hands a hostile note to state\.mjs byte for byte/, ...verbCaught(HEREDOC)],
-    why: 'the heredoc is unquoted: the shell expands $(…), backticks and $VARS in the note the agent wrote (the ADR-0059 class)',
-  },
   {
     id: 'M12', tests: [T_CONTRACT, T_CHAR],
     prepare: (copy) => {
@@ -1589,22 +1599,16 @@ export const MUTATIONS = [
   {
     id: 'M16', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '# ARCHIVE TIMING — on Claude the Stop hook fires at EVERY turn end, so the\n', to: '# On Claude the Stop hook fires when the session ends, so the\n' }),
-    killed_by: verbCaught(/^the shared runbook checks hold/),
+    killed_by: templateCaught(FINALIZE, /^the shared runbook checks hold/),
     why: 'the terminal write\'s archive-timing note says the gates wait for the session end (the disproved claim)',
   },
   {
     id: 'M17', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '- rationale:             <why best', to: '- reasoning:             <why best' }),
-    killed_by: verbCaught(/^the shared runbook checks hold/),
+    killed_by: templateCaught(FINALIZE, /^the shared runbook checks hold/),
     why: 'the phase note\'s next-action proposal loses its canonical rationale key',
   },
   // Codex review of PC2a2b: each of these passed the reviewed version of the tests.
-  {
-    id: 'M18', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '[ -n "$NOTE" ] || { echo "✗ No phase note was read; nothing was written." >&2; exit 1; }\n', to: '' }),
-    killed_by: [/^dash: a shell whose read has no -d stops the finalize block before any write/, ...verbCaught(HEREDOC)],
-    why: 'a shell whose read has no -d records an empty note and archives the workflow',
-  },
   {
     id: 'M19', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-phase-0.md', from: '  exit "$FIND_RC"\nfi\n', to: '  exit "$FIND_RC"\nfi\nACTIVE=""\n' }),
@@ -1616,12 +1620,6 @@ export const MUTATIONS = [
     from: 'Empty `$ACTIVE` → bootstrap with verb=compose:', to: 'Non-empty `$ACTIVE` → bootstrap with verb=compose:',
     killed_by: inSuite('founder/commands/compose.md (committed)', /^the authored conditions route an empty \$ACTIVE to the bootstrap/),
     why: 'founder compose bootstraps a new workflow over the one it found (authored text outside the regions)',
-  },
-  {
-    id: 'M21', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: 'so when the note itself holds\nsuch a line, replace both `PHASE_NOTE` delimiters with a word no line of the\nnote consists of.', to: 'so keep it short.' }),
-    killed_by: verbCaught(HEREDOC),
-    why: 'the agent is no longer told to rename a delimiter its note holds: such a note runs its tail as shell',
   },
 
   // ---- M: the investigate runbook regions (PC2a2c T8) ------------------------------
@@ -1701,12 +1699,6 @@ export const MUTATIONS = [
     why: 'an empty --preset= is treated as an unknown preset (flag and diagnostic), so the measured behavior no longer matches the prose',
   },
   // Codex review of PC2a2c: each of these passed the reviewed version of the tests.
-  {
-    id: 'M33', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '# value the shell inherited must not stand in for the note.\nunset NOTE\n', to: '# value the shell inherited must not stand in for the note.\n' }),
-    killed_by: [/^dash: a shell whose read has no -d stops the finalize block before any write/, ...verbCaught(HEREDOC)],
-    why: 'a NOTE the shell inherited stands in for the note a shell without read -d could not take, and is recorded and archived',
-  },
   {
     id: 'M34', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: RESOLVE, from: 'node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve', to: 'exec >/dev/null\nnode "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve' }),
@@ -1927,7 +1919,7 @@ export const MUTATIONS = [
   },
   {
     id: 'M66', tests: [T_SKILL],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-checkpoint-set.md', from: ' --summary "$SUMMARY"\n```', to: '\n```' }),
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-checkpoint-set.md', from: ' --summary-file "$TEXT_DIR/summary.txt"\n```', to: '\n```' }),
     killed_by: templateCaught('regions/skill-checkpoint-set.md', /^the checkpoint is written to the workflow Phase 1 found/),
     why: 'the checkpoint call loses the summary state.mjs requires',
   },
@@ -2540,9 +2532,9 @@ export const MUTATIONS = [
   {
     id: 'N23', tests: [T_CHAR],
     file: 'plugins/engineer/commands/compose.md',
-    // PC3 U7: compose is generated now, its literals single-quoted.
-    from: "  --next-action 'Critique the composed artifact' \\\n  --next-step-kind verb --next-step-verb 'critique' \\\n",
-    to: "  --next-action 'Run compose skill' \\\n  --next-step-kind verb --next-step-verb 'critique' \\\n",
+    // PC3 U7: compose is generated now; C130: its next action is a file.
+    from: '  --next-action-file "$TEXT_DIR/next-action.txt" \\\n  --next-step-kind verb --next-step-verb \'critique\' \\\n',
+    to: '  --next-action-file "$TEXT_DIR/summary.txt" \\\n  --next-step-kind verb --next-step-verb \'critique\' \\\n',
     killed_by: /verb runbook characterization \(PC2a2 T0\) > engineer\/compose > order: /,
     why: "engineer's compose closes with a next action that disagrees with the one its phase note records",
   },
@@ -2635,8 +2627,8 @@ export const MUTATIONS = [
     id: 'N32', tests: [T_ENG_AP],
     prepare: (copy, tools) => templateDefect(copy, tools, {
       template: 'regions/verb-finalize.md',
-      from: '  --verdict "$VERDICT" --summary "$SUMMARY" || exit $?\n',
-      to: '  --verdict "$VERDICT" --summary "$SUMMARY"\n',
+      from: SETTLE_FILE,
+      to: '  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt"\n',
     }),
     killed_by: /verb runbooks — Phase 2 \(ADR-0063 D3\) > compose: every write stops the block on failure; the last write is finish-verb with the next step$/,
     why: 'a refused settlement no longer stops the block, so engineer closes the verb with its ensemble attempt unsettled',
@@ -2872,7 +2864,7 @@ export const MUTATIONS = [
   },
   {
     id: 'N54', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/start-commit.md', from: '  --subject "$APPROVED_SUBJECT" \\\n', to: '' }),
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/start-commit.md', from: '  --subject-file "$TEXT_DIR/subject.txt" \\\n', to: '' }),
     killed_by: /(?:^| > )engineer\/commands\/start\.md \(committed\) > start commit \(commit_surface\), run/,
     why: 'the Phase 7 execute commits without the subject the user confirmed',
   },
@@ -2880,8 +2872,8 @@ export const MUTATIONS = [
     id: 'N55', tests: [T_S14, 'tests/persona-pipeline/test-autopilot-verbs.mjs'],
     prepare: (copy, tools) => canonicalDefect(copy, tools, {
       dest: 'scripts/state.mjs',
-      from: '--resolution "<the owner\'s decision>" ` +\n      `--next-action "<the next step\'s action>"\\n`,',
-      to: '--resolution "<the owner\'s decision>"\\n`,',
+      from: '--resolution-file <decision file> ` +\n      `--next-action-file <action file>\\n`,',
+      to: '--resolution-file <decision file>\\n`,',
     }),
     killed_by: [
       /^engineer: autopilot-preflight — a gate inside a start lifecycle \(PC3b U2\) > interactive, a gate on a start workflow/,
@@ -2889,6 +2881,66 @@ export const MUTATIONS = [
       /^designer: autopilot-preflight — a gate inside a start lifecycle \(PC3b U2\) > interactive, a gate on a start workflow/,
     ],
     why: "the preflight's clear recipe drops the next action, so a hand clear that follows it leaves the gate's \"Owner: …\" action behind",
+  },
+  // C130 (ADR-0059's amendment of 2026-10-10): the finalize's text-file
+  // transport, each defect regenerated into every enrolled persona. They
+  // replace M11, M18, M21 and M33, whose heredoc the files retired.
+  {
+    id: 'F1', tests: [T_CONTRACT, T_GUARD],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, edits: [
+      { from: `${FILE_CHECK}`, to: "unset NOTE\nIFS= read -r -d '' NOTE <<'PHASE_NOTE' || true\n<the phase note above, filled in>\nPHASE_NOTE\n" },
+      { from: '  --phase-note-file "$TEXT_DIR/note.md" \\\n', to: '  --phase-note "$NOTE" \\\n' },
+    ] }),
+    killed_by: [GUARD_RULES, ...templateCaught(FINALIZE, TEXT_FILES)],
+    why: 'the finalize reads the note back through a quoted heredoc: a line reading PHASE_NOTE ends it and the shell runs the rest',
+  },
+  {
+    id: 'F2', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: FILE_CHECK, to: '' }),
+    killed_by: [/^bash: the finalize block hands hostile texts to the scripts byte for byte/, ...templateCaught(FINALIZE, TEXT_FILES)],
+    why: 'a file the agent did not write no longer stops the block before any write: the append runs, and settle or the last write fails after it',
+  },
+  {
+    id: 'F3', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '2. With your file-writing tool, not the shell, create in that directory\n', to: '2. Create in that directory\n' }),
+    killed_by: templateCaught(FINALIZE, TEXT_FILES),
+    why: 'the agent is no longer told to write its files with the file-writing tool, so it may write them with the shell, which reads the text',
+  },
+  {
+    id: 'F4', tests: [T_CONTRACT, T_GUARD],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: "```bash\nTEXT_DIR='<directory from step 1>'\n", to: '```bash\n' }),
+    killed_by: [GUARD_RULES, ...templateCaught(FINALIZE, TEXT_FILES)],
+    why: 'the block no longer names its text directory, so a TEXT_DIR the shell inherited from another verb stands in for this one',
+  },
+  {
+    id: 'F5', tests: [T_CONTRACT, T_GUARD],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: SETTLE_FILE, to: '  --verdict "$VERDICT" --summary-file $TEXT_DIR/summary.txt || exit $?\n' }),
+    killed_by: [GUARD_RULES, /^bash: the finalize block hands hostile texts to the scripts byte for byte/],
+    why: "the summary file's path is unquoted: a text directory whose name holds a space splits it, and settle reads no file",
+  },
+  {
+    id: 'F6', tests: [T_CONTRACT, T_GUARD],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: READERS_RULE, to: '[ -s "$TEXT_DIR/$TEXT_FILE" ] ||' }),
+    killed_by: [GUARD_RULES, /^bash: the finalize block hands hostile texts to the scripts byte for byte/, ...templateCaught(FINALIZE, TEXT_FILES)],
+    why: 'the check passes a file holding only a newline, which the scripts refuse as empty: the append writes the note, then settle refuses the summary, and a rerun appends the note twice',
+  },
+  {
+    id: 'F9', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: READERS_RULE, to: 'grep -q \'[^[:space:]]\' "$TEXT_DIR/$TEXT_FILE" 2>/dev/null ||' }),
+    killed_by: [/^bash: the finalize block hands hostile texts to the scripts byte for byte/, ...templateCaught(FINALIZE, TEXT_FILES)],
+    why: 'the check only looks for more than blanks: a summary holding a BOM, a no-break space, a NUL byte or bytes that are not UTF-8 passes it, the append writes the note, and settle refuses the summary after it',
+  },
+  {
+    id: 'F7', tests: [T_CONTRACT, T_GUARD],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/peer-now-dispatch.md', from: PEER_NOW_PROMPT, to: "PROMPT_FILE='<the prompt file>'\n" }),
+    killed_by: [GUARD_RULES, ...templateCaught('regions/peer-now-dispatch.md', PEER_NOW_RUN)],
+    why: "peer-now has the agent paste the user's --prompt-file path into the block: an apostrophe in it ends the quote and the shell runs the rest, and the file goes out past the privacy gate",
+  },
+  {
+    id: 'F8', tests: [T_SKILL, T_GUARD],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-peer-now-dispatch.md', from: PEER_NOW_PROMPT, to: "PROMPT_FILE='<the prompt file>'\n" }),
+    killed_by: [GUARD_RULES, ...templateCaught('regions/skill-peer-now-dispatch.md', /^the dispatch is synchronous/)],
+    why: "the Codex peer-now skill has the agent paste the user's --prompt-file path into the block, where the shell reads it",
   },
 
   {

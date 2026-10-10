@@ -309,8 +309,13 @@ export function argsFileRunbookProblems(text, label) {
   if (!text.includes(MKTEMP_STEP)) problems.push(`${label}: no mktemp step`);
   if (!text.includes('{"agentic_args": 1, "text": "…"}')) problems.push(`${label}: no file-writing step`);
   // The shell would put the typed text back on a command line, where `;`,
-  // `$(…)` and `>` act on it: the file is written with the file tool.
-  if (!/with your file-(?:writing|editing) tool/i.test(text.replace(/\s+/g, ' '))) problems.push(`${label}: the file is not written with the file-writing tool`);
+  // `$(…)` and `>` act on it: the file is written with the file tool. The
+  // sentence that says so names the args file: a runbook also has the agent
+  // write other files with the tool (its text files, ADR-0059's amendment of
+  // 2026-10-10), and their sentence says nothing about this one.
+  const FILE_TOOL = 'with (?:your|the) file-(?:writing|editing) tool';
+  const ARGS_FILE = '(?:args\\.json|agentic_args)';
+  if (!new RegExp(`${FILE_TOOL}[^.]*?${ARGS_FILE}|${ARGS_FILE}[^.]*?${FILE_TOOL}`, 'i').test(text.replace(/\s+/g, ' '))) problems.push(`${label}: the file is not written with the file-writing tool`);
   if (!text.includes('--args-file "$ARGS_DIR/args.json"')) problems.push(`${label}: the CLI is not given the file`);
   return problems;
 }

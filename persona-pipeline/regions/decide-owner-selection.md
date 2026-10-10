@@ -28,14 +28,28 @@ Q2), in either of two ways:
   run the phases above as usual.
 {{/capability}}
 
-Once they choose, write the resolution in place of its placeholder line
-(between the two `OWNER_RESOLUTION` lines; a line reading `OWNER_RESOLUTION`
-alone would end it) and run the block. Inside a `/{{persona}}:start` lifecycle the
+Once they choose, write their selection as a file, never into the block: in
+shell source a quote, `$`, backtick or line of it would be read as code
+(ADR-0059, amendment of 2026-10-10).
+
+1. Create a private directory for it, and note the path it prints:
+
+   ```bash
+   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   ```
+
+2. With your file-writing tool, not the shell, create `resolution.txt` in
+   that directory, ending with one newline: `Owner selection: ` with the
+   direction the owner chose, and why. Nothing deletes it.
+
+Then run the block with `TEXT_DIR` set to that directory; a selection left
+unwritten stops it before any write. Inside a `/{{persona}}:start` lifecycle the
 block clears the gate and stops there: resume the lifecycle, which continues at
 its own phase after decide and makes its one terminal write; elsewhere it ends
 the verb:
 
 ```bash
+TEXT_DIR='<directory from step 1>'
 ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/{{name}} -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
@@ -51,13 +65,10 @@ WF_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$A
 WF_TYPE="$(printf '%s' "$WF_JSON" \
   | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).workflow_type||"verb-chain")}catch{process.exit(1)}})')" \
   || { echo "✗ Could not read the workflow type; nothing was written." >&2; exit 1; }
-# The owner's resolution, from a quoted heredoc: no quote, $, backtick or
-# backslash in it is read by the shell. An empty read stops the block.
-unset RESOLUTION
-IFS= read -r -d '' RESOLUTION <<'OWNER_RESOLUTION' || true
-<Owner selection: the direction the owner chose, and why>
-OWNER_RESOLUTION
-[ -n "$RESOLUTION" ] || { echo "✗ No resolution was read; nothing was written." >&2; exit 1; }
+# The owner's resolution, from the file the agent wrote with its file tool:
+# state.mjs reads it itself, so no line of it is shell source. A file left
+# unwritten stops the block before any write.
+grep -q '[^[:space:]]' "$TEXT_DIR/resolution.txt" 2>/dev/null || { echo "✗ resolution.txt in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was written." >&2; exit 1; }
 # Inside a /start lifecycle the lifecycle owns its phase order, so the clear
 # records no next step (the lifecycle's resume clears one anyway) and names the
 # resume as the next action; elsewhere the next step is compose. Either way the
@@ -74,7 +85,7 @@ fi
 # it; the block stops if it fails.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" awaiting-owner-clear \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --gate decide-conflict \
-  --resolution "$RESOLUTION" --next-action "$NEXT_ACTION" \
+  --resolution-file "$TEXT_DIR/resolution.txt" --next-action "$NEXT_ACTION" \
   "${NEXT_STEP[@]}" || exit $?
 if [ "$WF_TYPE" = start ]; then
   echo "→ Gate cleared. Resume the lifecycle with /${PERSONA}:start (\$${PERSONA}:start on Codex); it continues at its phase after decide." >&2

@@ -29,22 +29,44 @@ is local-only:
 {{/capability}}
 ```
 
-Then run the block with the filled-in note in place of its placeholder line,
-between the two `PHASE_NOTE` lines. The quoted heredoc hands the note to
-`state.mjs` as written: no quote, `$`, backtick or backslash in it is read by
-the shell. The first line that reads `PHASE_NOTE` alone ends the note, and
-the shell runs every line after it as a command, so when the note itself holds
-such a line, replace both `PHASE_NOTE` delimiters with a word no line of the
-note consists of.
+The note, and the two texts the block records with it, reach the scripts as
+files, never in the block: in shell source a quote, `$`, backtick or line of
+them would be read as code (ADR-0059, amendment of 2026-10-10). Before the
+block:
 
-Set `RUN_ID` to the run id the dispatch generated, empty when no run launched,
-and `VERDICT` and `SUMMARY` to the synthesis's verdict and a one-line résumé
-of its breakdown. `peer-runner.mjs settle` decides from the run ledger what the
-workflow records, not from these values alone: a run that never launched
-records nothing; a run that launched and failed, was cancelled or was
-abandoned records verdict `failed` with the ledger's `error_kind`; a run that
-completed records the synthesis verdict, or `degraded` when its answer was
-empty or unreadable. An answer that parses to nothing usable, only structural
+1. Create a private directory for them, and note the path it prints:
+
+   ```bash
+   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   ```
+
+2. With your file-writing tool, not the shell, create in that directory
+   `note.md`, the phase note above filled in; `summary.txt`, a one-line
+   résumé of its breakdown; and `next-action.txt`, the next action the
+   `append` and the last write record: the compact form of the proposal
+   (selected_next + one-line why + next_command). The typical-case default
+   is
+
+   ```text
+   {{next_action}}
+   ```
+
+   Write another when the verb's result selects a different next step, and
+   for an owner gate below `Owner: ` and the judgment in a few words. Each
+   file holds its text as written and ends with one newline, which the
+   scripts remove; nothing deletes the files.
+
+Then run the block with `TEXT_DIR` set to that directory, `RUN_ID` to the run
+id the dispatch generated (empty when no run launched), and `VERDICT` to the
+synthesis's verdict. A file left unwritten, blank, or not UTF-8 text stops the
+block before any write.
+
+`peer-runner.mjs settle` decides from the run ledger what the workflow
+records, not from these values alone: a run that never launched records
+nothing; a run that launched and failed, was cancelled or was abandoned
+records verdict `failed` with the ledger's `error_kind`; a run that completed
+records the synthesis verdict, or `degraded` when its answer was empty or
+unreadable. An answer that parses to nothing usable, only structural
 shell, reads to `settle` like any other, so set `VERDICT` to `degraded` then.
 It refuses, and the block stops before the last write, while a run is still
 live (collect it first) or when an empty `RUN_ID` would hide a run that
@@ -57,7 +79,8 @@ not converged. Converged, the last write is `finish-verb`. Not converged, the
 last write is an `append` that records the next step resolving the flagged
 item (`refine`, `decide` or `investigate`) and turns off a terminal marker an
 earlier verb left, so the workflow stays open and the Stop hook cannot
-archive it.
+archive it. Write `next-action.txt` for that case: the flagged item, and the
+next step that resolves it.
 
 The last write, `finish-verb`, records the proposal's next step in closed-enum
 {{^capability commit_surface}}
@@ -93,26 +116,28 @@ The owner-decision form below records the gate with the next step in one
 write and leaves the workflow open, not terminal, until the owner resolves it.
 
 ```bash
+TEXT_DIR='<directory from step 1>'
 ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/{{name}} -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 # The run ledger lives under the repository root, where the dispatch put it.
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
-# Where read takes no -d (dash) it assigns nothing, so clear NOTE first: a
-# value the shell inherited must not stand in for the note.
-unset NOTE
-IFS= read -r -d '' NOTE <<'PHASE_NOTE' || true
-<the phase note above, filled in>
-PHASE_NOTE
-# A shell whose read has no -d (dash) reads nothing: stop before any write.
-[ -n "$NOTE" ] || { echo "✗ No phase note was read; nothing was written." >&2; exit 1; }
+# The texts the agent wrote with its file tool (ADR-0059, amendment of
+# 2026-10-10): each script reads its file itself, so no line of the note is
+# shell source. settle reads the summary only after the append has written,
+# so each file is first held to every reader's rule: strict UTF-8, no NUL
+# byte, and text left once blanks are trimmed (settle's rule). A file a
+# script would refuse stops the block before any write.
+for TEXT_FILE in note.md summary.txt next-action.txt; do
+  node -e 'let t;try{t=new TextDecoder("utf-8",{fatal:true}).decode(require("fs").readFileSync(process.argv[1]))}catch{process.exit(1)}process.exit(t.includes("\0")||t.trim()===""?1:0)' "$TEXT_DIR/$TEXT_FILE" || { echo "✗ $TEXT_FILE in TEXT_DIR ($TEXT_DIR) is missing, blank or not UTF-8 text; write it with the file tool first. Nothing was written." >&2; exit 1; }
+done
 
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --phase-label {{phase_label}} \
-  --phase-note "$NOTE" \
+  --phase-note-file "$TEXT_DIR/note.md" \
   --current-phase phase-2-presented \
-  --next-action {{next_action}} \
+  --next-action-file "$TEXT_DIR/next-action.txt" \
   --event updated || exit $?
 
 # ADR-0066 PC2b — settle the ensemble attempt from its ledger (never launched,
@@ -121,7 +146,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" settle \
   --repo-root "$REPO_ROOT" --workflow-path "$ACTIVE" \
   --host "${AGENTIC_HOST:-claude}" --phase {{verb}} --run-id "$RUN_ID" \
-  --verdict "$VERDICT" --summary "$SUMMARY" || exit $?
+  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt" || exit $?
 
 # FAIL-CLOSED: shell state does not survive between Bash calls, so an unset
 # CONVERGED reads as not converged, never as success. Assign it here, from
@@ -163,7 +188,7 @@ if [ "${CONVERGED:-no}" = "yes" ]; then
   # core/skills/_shared/references/session-handoff.md § Archive timing.
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-    --next-action {{next_action}} \
+    --next-action-file "$TEXT_DIR/next-action.txt" \
     --next-step-kind verb --next-step-verb {{next_verb}} \
     --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?
 else
@@ -172,7 +197,7 @@ else
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
     --current-phase phase-2-presented \
-    --next-action '<Paused: the flagged item, and the next step that resolves it>' \
+    --next-action-file "$TEXT_DIR/next-action.txt" \
     --next-step-kind verb --next-step-verb "<refine|decide|investigate>" \
     --next-step-confidence "<HIGH|MEDIUM|LOW>" \
     --clear-terminal-marker true --event updated || exit $?
@@ -183,7 +208,7 @@ fi
 # open until the owner resolves the gate.
 # node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
 #   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-#   --next-action '<Owner: the judgment, in a few words>' \
+#   --next-action-file "$TEXT_DIR/next-action.txt" \
 #   --next-step-kind owner-decision --next-step-confidence "<HIGH|MEDIUM|LOW>" \
 #   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' || exit $?
 ```

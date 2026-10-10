@@ -5470,6 +5470,791 @@
         ]
       },
       "why": "CP (ADR-0067 Decision 8): on a recorded conflict, the verb ends on its conflict gate with the run id and the next step owner-decision, not on the typical terminal write"
+    },
+    {
+      "runbooks": [
+        "designer/compose",
+        "designer/critique",
+        "designer/decide",
+        "designer/frame",
+        "designer/investigate",
+        "designer/refine",
+        "designer/start",
+        "engineer/compose",
+        "engineer/critique",
+        "engineer/decide",
+        "engineer/frame",
+        "engineer/investigate",
+        "engineer/refine",
+        "founder/compose",
+        "founder/critique",
+        "founder/decide",
+        "founder/frame",
+        "founder/investigate",
+        "founder/refine",
+        "founder/start"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs create:--original-request",
+      "from": "${AGENTIC_TOPIC:-<the original request described above>}",
+      "to": [
+        "--original-request-file",
+        "$REQUEST_FILE"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the request reaches create as a file, request.txt the agent writes, or a file the block writes from AGENTIC_TOPIC or the parsed description (program data that could begin with --)."
+    },
+    {
+      "runbooks": [
+        "designer/compose",
+        "designer/critique",
+        "designer/decide",
+        "designer/frame",
+        "designer/investigate",
+        "designer/refine",
+        "engineer/compose",
+        "engineer/critique",
+        "engineer/decide",
+        "engineer/frame",
+        "engineer/investigate",
+        "engineer/refine",
+        "founder/compose",
+        "founder/critique",
+        "founder/decide",
+        "founder/frame",
+        "founder/investigate",
+        "founder/refine"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs append#2:--phase-note",
+      "from": "$NOTE",
+      "to": [
+        "--phase-note-file",
+        "<directory from step 1>/note.md"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the phase note is the file note.md the agent writes with its file tool, never a heredoc or a shell string; the block names the file."
+    },
+    {
+      "runbooks": [
+        "designer/compose"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs append#2:--next-action",
+      "from": "Critique the composed design spec, and the rendered screen once built (/designer:critique)",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "designer/compose",
+        "designer/critique",
+        "designer/decide",
+        "designer/frame",
+        "designer/investigate",
+        "designer/refine",
+        "engineer/compose",
+        "engineer/critique",
+        "engineer/decide",
+        "engineer/frame",
+        "engineer/investigate",
+        "engineer/refine",
+        "founder/compose",
+        "founder/critique",
+        "founder/decide",
+        "founder/frame",
+        "founder/investigate",
+        "founder/refine"
+      ],
+      "op": "file-flag",
+      "where": "call:peer-runner.mjs settle:--summary",
+      "from": "$SUMMARY",
+      "to": [
+        "--summary-file",
+        "<directory from step 1>/summary.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the synthesis summary is the file summary.txt the agent writes with its file tool; settle reads it."
+    },
+    {
+      "runbooks": [
+        "designer/compose"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs finish-verb:--next-action",
+      "from": "Critique the composed design spec, and the rendered screen once built (/designer:critique)",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "designer/compose",
+        "engineer/compose",
+        "founder/compose"
+      ],
+      "op": "remove-mktemp",
+      "where": "mktemp_templates",
+      "from": "{persona}-compose-prompt.XXXXXX",
+      "to": null,
+      "why": "C130 (ADR-0059 amendment j): the dispatch's prompt is the file prompt.xml the agent writes with its file tool before the block; the block allocates no path for the agent to fill."
+    },
+    {
+      "runbooks": [
+        "designer/critique"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs append#2:--next-action",
+      "from": "<compact selected_next + why + next_command — e.g. Address CRITICAL/MAJOR findings (/designer:refine), or proceed to commit when nothing blocks and the gate is not FAIL>",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "designer/critique"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs finish-verb#1:--next-action",
+      "from": "<compact selected_next + why + next_command — e.g. Address CRITICAL/MAJOR findings (/designer:refine), or proceed to commit when nothing blocks and the gate is not FAIL>",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "designer/critique",
+        "engineer/critique",
+        "founder/critique"
+      ],
+      "op": "remove-mktemp",
+      "where": "mktemp_templates",
+      "from": "{persona}-critique-prompt.XXXXXX",
+      "to": null,
+      "why": "C130 (ADR-0059 amendment j): the dispatch's prompt is the file prompt.xml the agent writes with its file tool before the block; the block allocates no path for the agent to fill."
+    },
+    {
+      "runbooks": [
+        "designer/decide"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs append#2:--next-action",
+      "from": "Compose the flows/specs for the chosen direction (/designer:compose)",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "designer/decide"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs finish-verb#1:--next-action",
+      "from": "Compose the flows/specs for the chosen direction (/designer:compose)",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "designer/decide",
+        "engineer/decide",
+        "founder/decide"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs awaiting-owner-clear:--resolution",
+      "from": "$RESOLUTION",
+      "to": [
+        "--resolution-file",
+        "<directory from step 1>/resolution.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the owner's decision is the file resolution.txt the agent writes with its file tool, never a heredoc."
+    },
+    {
+      "runbooks": [
+        "designer/decide",
+        "engineer/decide",
+        "founder/decide"
+      ],
+      "op": "remove-mktemp",
+      "where": "mktemp_templates",
+      "from": "{persona}-decide-prompt.XXXXXX",
+      "to": null,
+      "why": "C130 (ADR-0059 amendment j): the dispatch's prompt is the file prompt.xml the agent writes with its file tool before the block; the block allocates no path for the agent to fill."
+    },
+    {
+      "runbooks": [
+        "designer/frame"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs append#2:--next-action",
+      "from": "Decide on a design direction given this frame (/designer:decide)",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "designer/frame"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs finish-verb:--next-action",
+      "from": "Decide on a design direction given this frame (/designer:decide)",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "designer/frame",
+        "engineer/frame",
+        "founder/frame"
+      ],
+      "op": "remove-mktemp",
+      "where": "mktemp_templates",
+      "from": "{persona}-frame-prompt.XXXXXX",
+      "to": null,
+      "why": "C130 (ADR-0059 amendment j): the dispatch's prompt is the file prompt.xml the agent writes with its file tool before the block; the block allocates no path for the agent to fill."
+    },
+    {
+      "runbooks": [
+        "designer/investigate"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs append#2:--next-action",
+      "from": "<compact selected_next + why + next_command — e.g. Frame the UX problem from this cited brief (/designer:frame)>",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "designer/investigate"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs finish-verb#1:--next-action",
+      "from": "<compact selected_next + why + next_command — e.g. Frame the UX problem from this cited brief (/designer:frame)>",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "designer/investigate",
+        "engineer/investigate",
+        "founder/investigate"
+      ],
+      "op": "remove-mktemp",
+      "where": "mktemp_templates",
+      "from": "{persona}-investigate-prompt.XXXXXX",
+      "to": null,
+      "why": "C130 (ADR-0059 amendment j): the dispatch's prompt is the file prompt.xml the agent writes with its file tool before the block; the block allocates no path for the agent to fill."
+    },
+    {
+      "runbooks": [
+        "designer/refine"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs append#2:--next-action",
+      "from": "<compact selected_next + why + next_command — e.g. Re-critique the revised artifact to confirm convergence (/designer:critique), or proceed to commit when converged and the gate is not FAIL>",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "designer/refine"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs finish-verb#1:--next-action",
+      "from": "<compact selected_next + why + next_command — e.g. Re-critique the revised artifact to confirm convergence (/designer:critique), or proceed to commit when converged and the gate is not FAIL>",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "designer/refine"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs append#3:--next-action",
+      "from": "<Paused: the flagged item, and the next step that resolves it>",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "designer/refine",
+        "engineer/refine",
+        "founder/refine"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs awaiting-owner-clear#1:--resolution",
+      "from": "$RESOLUTION",
+      "to": [
+        "--resolution-file",
+        "<directory from step 1>/resolution.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the owner's decision is the file resolution.txt the agent writes with its file tool, never a heredoc."
+    },
+    {
+      "runbooks": [
+        "designer/refine",
+        "engineer/refine",
+        "founder/refine"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs awaiting-owner-clear#2:--resolution",
+      "from": "$RESOLUTION",
+      "to": [
+        "--resolution-file",
+        "<directory from step 1>/resolution.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the owner's decision is the file resolution.txt the agent writes with its file tool, never a heredoc."
+    },
+    {
+      "runbooks": [
+        "designer/refine"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs awaiting-owner-clear#3:--resolution",
+      "from": "$RESOLUTION",
+      "to": [
+        "--resolution-file",
+        "<directory from step 1>/resolution.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the owner's decision is the file resolution.txt the agent writes with its file tool, never a heredoc."
+    },
+    {
+      "runbooks": [
+        "designer/refine"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs awaiting-owner-clear#3:--next-action",
+      "from": "<what the next step resolves, in a few words>",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "designer/refine",
+        "engineer/refine",
+        "founder/refine"
+      ],
+      "op": "remove-mktemp",
+      "where": "mktemp_templates",
+      "from": "{persona}-refine-prompt.XXXXXX",
+      "to": null,
+      "why": "C130 (ADR-0059 amendment j): the dispatch's prompt is the file prompt.xml the agent writes with its file tool before the block; the block allocates no path for the agent to fill."
+    },
+    {
+      "runbooks": [
+        "designer/refine"
+      ],
+      "where": "guards.converged",
+      "from": "--next-action '<compact selected_next + why + next_command — e.g. Re-critique the revised artifact to confirm convergence (/designer:critique), or proceed to commit when converged and the gate is not FAIL>' \\",
+      "to": "--next-action-file \"$TEXT_DIR/next-action.txt\" \\",
+      "why": "C130 (ADR-0059 amendment j): inside the convergence check the next action is the file next-action.txt the agent writes, as in the rest of the block."
+    },
+    {
+      "runbooks": [
+        "designer/refine",
+        "designer/start"
+      ],
+      "where": "guards.converged",
+      "from": "--next-action '<Paused: the flagged item, and the next step that resolves it>' \\",
+      "to": "--next-action-file \"$TEXT_DIR/next-action.txt\" \\",
+      "why": "C130 (ADR-0059 amendment j): inside the convergence check the next action is the file next-action.txt the agent writes, as in the rest of the block."
+    },
+    {
+      "runbooks": [
+        "designer/start"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs finish-verb:--next-action",
+      "from": "Hand the spec to the frontend (/engineer:start or /orchestrator:plan); optionally /designer:start the next surface",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "designer/start"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs append#2:--next-action",
+      "from": "<Paused: the flagged item, and the next step that resolves it>",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "designer/start"
+      ],
+      "where": "guards.converged",
+      "from": "--next-action 'Hand the spec to the frontend (/engineer:start or /orchestrator:plan); optionally /designer:start the next surface' \\",
+      "to": "--next-action-file \"$TEXT_DIR/next-action.txt\" \\",
+      "why": "C130 (ADR-0059 amendment j): inside the convergence check the next action is the file next-action.txt the agent writes, as in the rest of the block."
+    },
+    {
+      "runbooks": [
+        "engineer/compose"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs append#2:--next-action",
+      "from": "Critique the composed artifact",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "engineer/compose"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs finish-verb:--next-action",
+      "from": "Critique the composed artifact",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "engineer/critique"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs append#2:--next-action",
+      "from": "Refine to address findings",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "engineer/critique"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs finish-verb#1:--next-action",
+      "from": "Refine to address findings",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "engineer/decide"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs append#2:--next-action",
+      "from": "Compose the artifact for the chosen direction",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "engineer/decide"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs finish-verb#1:--next-action",
+      "from": "Compose the artifact for the chosen direction",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "engineer/frame"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs append#2:--next-action",
+      "from": "Decide on a direction given this frame",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "engineer/frame"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs finish-verb:--next-action",
+      "from": "Decide on a direction given this frame",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "engineer/investigate",
+        "founder/investigate"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs append#2:--next-action",
+      "from": "<one-sentence imperative for next verb>",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "engineer/investigate",
+        "founder/investigate"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs finish-verb#1:--next-action",
+      "from": "<one-sentence imperative for next verb>",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "engineer/refine"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs append#2:--next-action",
+      "from": "Critique to verify, or investigate deeper if root cause is uncertain",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "engineer/refine"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs finish-verb#1:--next-action",
+      "from": "Critique to verify, or investigate deeper if root cause is uncertain",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs create:--original-request",
+      "from": "$FEATURE",
+      "to": [
+        "--original-request-file",
+        "$REQUEST_FILE"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the request reaches create as a file, request.txt the agent writes, or a file the block writes from AGENTIC_TOPIC or the parsed description (program data that could begin with --)."
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "op": "file-flag",
+      "where": "call:phase7-commit.mjs#2:--subject",
+      "from": "<the subject the user confirmed>",
+      "to": [
+        "--subject-file",
+        "<directory from step 1>/subject.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the confirmed commit subject is the file subject.txt the agent writes with its file tool; the driver reads it before anything is written."
+    },
+    {
+      "runbooks": [
+        "founder/compose"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs append#2:--next-action",
+      "from": "Critique the composed planning artifact",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "founder/compose"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs finish-verb:--next-action",
+      "from": "Critique the composed planning artifact",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "founder/critique"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs append#2:--next-action",
+      "from": "Refine the artifact to address the findings",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "founder/critique"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs finish-verb#1:--next-action",
+      "from": "Refine the artifact to address the findings",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "founder/decide"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs append#2:--next-action",
+      "from": "Compose the planning artifact for the chosen direction",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "founder/decide"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs finish-verb#1:--next-action",
+      "from": "Compose the planning artifact for the chosen direction",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "founder/frame"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs append#2:--next-action",
+      "from": "Decide on a business direction given this frame",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "founder/frame"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs finish-verb:--next-action",
+      "from": "Decide on a business direction given this frame",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "founder/refine"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs append#2:--next-action",
+      "from": "Re-critique the revised artifact",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "founder/refine"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs finish-verb#1:--next-action",
+      "from": "Re-critique the revised artifact",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "founder/start"
+      ],
+      "op": "file-flag",
+      "where": "call:state.mjs finish-verb:--next-action",
+      "from": "Save/commit the business deliverable; optionally /founder:start the next item",
+      "to": [
+        "--next-action-file",
+        "<directory from step 1>/next-action.txt"
+      ],
+      "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
     }
   ],
   "runbooks": {

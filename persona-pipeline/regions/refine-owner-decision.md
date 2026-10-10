@@ -22,8 +22,8 @@ Q2), in either of two ways:
 {{/capability}}
 
 Ask the owner: fix it now, or defer it. The clear records the owner's decision
-(`--resolution`, written in place of the placeholder line between the two
-`OWNER_RESOLUTION` lines) and the next step it implies in one write, so the
+(`--resolution-file`, the file below) and the next step it implies in one
+write, so the
 next step never becomes runnable without the decision behind it, and a failure
 never leaves the gate's `owner-decision` behind; the same write replaces the
 gate's next action. Inside a `/{{persona}}:start` lifecycle both blocks clear
@@ -31,11 +31,31 @@ the gate and stop there: resume the lifecycle, which fixes the finding in its
 refine phase or continues at its terminal step, and makes its one terminal
 write.
 
+The owner's decision reaches `state.mjs` as a file, never in a block: in
+shell source a quote, `$`, backtick or line of it would be read as code
+(ADR-0059, amendment of 2026-10-10). Before either block:
+
+1. Create a private directory for it, and note the path it prints:
+
+   ```bash
+   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   ```
+
+2. With your file-writing tool, not the shell, create `resolution.txt` in
+   that directory, ending with one newline: for Fix now, `Owner decision: fix
+   the finding now` with what the owner added; for Defer, `Owner decision:
+   defer the finding` with the reason and where it is tracked. Nothing
+   deletes it.
+
+Then run the block with `TEXT_DIR` set to that directory; a resolution left
+unwritten stops it before any write.
+
 **Fix now.** Clear the gate with this refine as the next step, then run the
 phases above on that finding, as usual (inside a `/{{persona}}:start`
 lifecycle, resume the lifecycle instead):
 
 ```bash
+TEXT_DIR='<directory from step 1>'
 ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/{{name}} -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
@@ -53,13 +73,10 @@ WF_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$A
 WF_TYPE="$(printf '%s' "$WF_JSON" \
   | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).workflow_type||"verb-chain")}catch{process.exit(1)}})')" \
   || { echo "✗ Could not read the workflow type; nothing was written." >&2; exit 1; }
-# The owner's resolution, from a quoted heredoc: no quote, $, backtick or
-# backslash in it is read by the shell. An empty read stops the block.
-unset RESOLUTION
-IFS= read -r -d '' RESOLUTION <<'OWNER_RESOLUTION' || true
-<Owner decision: fix the finding now>
-OWNER_RESOLUTION
-[ -n "$RESOLUTION" ] || { echo "✗ No resolution was read; nothing was written." >&2; exit 1; }
+# The owner's resolution, from the file the agent wrote with its file tool:
+# state.mjs reads it itself, so no line of it is shell source. A file left
+# unwritten stops the block before any write.
+grep -q '[^[:space:]]' "$TEXT_DIR/resolution.txt" 2>/dev/null || { echo "✗ resolution.txt in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was written." >&2; exit 1; }
 if [ "$WF_TYPE" = start ]; then
   NEXT_ACTION="Resume /${PERSONA}:start: its refine phase fixes the recurring finding"
 else
@@ -67,7 +84,7 @@ else
 fi
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" awaiting-owner-clear \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --gate recurring-finding \
-  --resolution "$RESOLUTION" --next-action "$NEXT_ACTION" \
+  --resolution-file "$TEXT_DIR/resolution.txt" --next-action "$NEXT_ACTION" \
   --next-step-kind verb --next-step-verb refine --next-step-confidence HIGH || exit $?
 if [ "$WF_TYPE" = start ]; then
   echo "→ Gate cleared. Resume the lifecycle with /${PERSONA}:start (\$${PERSONA}:start on Codex); its refine phase fixes the finding." >&2
@@ -87,6 +104,7 @@ none), then end the verb:
 {{/capability}}
 
 ```bash
+TEXT_DIR='<directory from step 1>'
 ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/{{name}} -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
@@ -102,13 +120,10 @@ WF_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$A
 WF_TYPE="$(printf '%s' "$WF_JSON" \
   | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).workflow_type||"verb-chain")}catch{process.exit(1)}})')" \
   || { echo "✗ Could not read the workflow type; nothing was written." >&2; exit 1; }
-# The owner's resolution, from a quoted heredoc: no quote, $, backtick or
-# backslash in it is read by the shell. An empty read stops the block.
-unset RESOLUTION
-IFS= read -r -d '' RESOLUTION <<'OWNER_RESOLUTION' || true
-<Owner decision: defer the finding, with the reason and where it is tracked>
-OWNER_RESOLUTION
-[ -n "$RESOLUTION" ] || { echo "✗ No resolution was read; nothing was written." >&2; exit 1; }
+# The owner's resolution, from the file the agent wrote with its file tool:
+# state.mjs reads it itself, so no line of it is shell source. A file left
+# unwritten stops the block before any write.
+grep -q '[^[:space:]]' "$TEXT_DIR/resolution.txt" 2>/dev/null || { echo "✗ resolution.txt in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was written." >&2; exit 1; }
 if [ "$WF_TYPE" = start ]; then
   NEXT_ACTION="Resume /${PERSONA}:start: the finding is deferred, and the lifecycle continues at its terminal step"
 else
@@ -121,7 +136,7 @@ else
 fi
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" awaiting-owner-clear \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --gate recurring-finding \
-  --resolution "$RESOLUTION" --next-action "$NEXT_ACTION" \
+  --resolution-file "$TEXT_DIR/resolution.txt" --next-action "$NEXT_ACTION" \
   --next-step-kind commit --next-step-confidence HIGH || exit $?
 if [ "$WF_TYPE" = start ]; then
   echo "→ Gate cleared. Resume the lifecycle with /${PERSONA}:start (\$${PERSONA}:start on Codex); it continues at its terminal step." >&2

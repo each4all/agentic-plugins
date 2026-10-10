@@ -9,7 +9,9 @@ locations**, both through {{persona}}'s `../../../../scripts/state.mjs`:
    `peer-runner.mjs run --kind ensemble` record the pending row before
    spawning the companion.
 2. **Markdown body** — human-readable phase notes appended via
-   `state.mjs append --phase-note ...`:
+   `state.mjs append --phase-note-file ...`, the note a file written with
+   the file-writing tool, never shell source (ADR-0059, amendment of
+   2026-10-10):
    - in-flight marker: `### Ensemble launched: <type> at <iso-utc>`
    - synthesis result: `### Ensemble synthesis: <type> verdict=<...>`
      followed by the AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown

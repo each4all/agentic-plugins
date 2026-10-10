@@ -144,17 +144,24 @@ const squash = (s) => s.replace(/\s+/g, ' ').trim();
 const mdFiles = (text) => [...text.matchAll(/(?<![\w.\/-])[\w.-]+\.md(?![\w.\/-])/g)].map((m) => m[0]);
 const plain = (s) => squash(s.replace(/[`"“”‘’'*]/g, ''));
 
+// The Markdown file an agent writes its phase note into before a block, in a
+// private directory it creates (ADR-0059's amendment of 2026-10-10): a file
+// it writes, not a document it reads.
+const TEXT_FILES = new Set(['note.md']);
+
 /**
  * The names a citation may carry that are not in-plugin documents: repository
  * paths outside the plugin (listed, not required to resolve), placeholders,
- * and the persona's own output file (an artifact the investigate verb writes,
- * named by its declaration), which is a file name, not a citation.
+ * the persona's own output file (an artifact the investigate verb writes,
+ * named by its declaration) and the agent's note file (TEXT_FILES), which are
+ * file names, not citations.
  */
 function notACitation(persona, target) {
   if (/[<>…*$]/.test(target) || target === '.md') return 'placeholder';
   if (/^(docs|plugins|companions|tests|kit|scripts|persona-pipeline)\//.test(target)) return 'repository';
   const artifact = (declaration(persona).verbs?.investigate?.artifact ?? []).join('\n');
   if (!target.includes('/') && mdFiles(artifact).includes(target)) return 'output file';
+  if (!target.includes('/') && TEXT_FILES.has(target)) return 'text file';
   return null;
 }
 
@@ -1078,6 +1085,12 @@ describe('reference contracts: the citation check catches what it exists for', (
     strictEqual(sections, 2);
     strictEqual(failures.length, 1, failures.join('\n'));
     ok(failures[0].includes('§ Missing heading'), failures[0]);
+  });
+
+  it('exempts the agent\'s note file by its whole name only, never a path or a name that contains it', () => {
+    const docs = new Map([[`${REFS}/a.md`, 'Write `note.md` there; see `sub/note.md` and `release-note.md`.\n']]);
+    const { failures } = checkCitations('founder', docs);
+    deepStrictEqual(failures.map((f) => f.split(': cites ')[1].split(',')[0]), ['sub/note.md', 'release-note.md']);
   });
 
   it('exempts only the declared brief file by its whole name, never a name it contains', () => {

@@ -66,6 +66,16 @@ function section(text, heading) {
   return text.slice(start, next < 0 ? undefined : next);
 }
 const blocks = (text) => [...text.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]);
+// A section's one block that runs a command, picked by the command and not by
+// position: a step a section gains (the private directory an edited subject
+// goes into, ADR-0059's amendment of 2026-10-10) moves no case onto another block.
+function blockWith(text, re) {
+  const found = blocks(text).filter((b) => re.test(b));
+  // Contract: each case runs the one block its command names — none, or two, would run nothing
+  // or the wrong one.
+  strictEqual(found.length, 1, `one block matches ${re}`);
+  return found[0];
+}
 
 describe('the commit runbook suite reaches every persona with the commit surface (guards a vacuous pass)', () => {
   it('the personas enrolled in the commit regions are exactly the ones that declare commit_surface on', () => {
@@ -140,13 +150,24 @@ for (const persona of PERSONAS) {
   for (const shell of SHELLS) {
     for (const [which, doc] of DOCUMENTS) {
       const commandBlocks = () => ({
-        phase0: blocks(section(doc.command, '## Phase 0'))[0],
-        autopilot: P.capabilities.dispatch_target ? blocks(section(doc.command, '## Autopilot — the whole step in one command'))[0] : null,
-        plan: blocks(section(doc.command, '## Phase 1 — Plan (interactive)'))[0],
-        clear: blocks(section(doc.command, '## Phase 2 — Commit (interactive)'))[0],
-        execute: blocks(section(doc.command, '## Phase 2 — Commit (interactive)'))[1],
-        close: blocks(section(doc.command, '## Phase 3 — Close without a commit (interactive)'))[0],
+        phase0: blockWith(section(doc.command, '## Phase 0'), /state\.mjs" autopilot-preflight /),
+        autopilot: P.capabilities.dispatch_target ? blockWith(section(doc.command, '## Autopilot — the whole step in one command'), /--mode autopilot\b/) : null,
+        plan: blockWith(section(doc.command, '## Phase 1 — Plan (interactive)'), /--mode plan\b/),
+        clear: blockWith(section(doc.command, '## Phase 2 — Commit (interactive)'), /state\.mjs" awaiting-owner-clear /),
+        execute: blockWith(section(doc.command, '## Phase 2 — Commit (interactive)'), /--mode execute\b/),
+        close: blockWith(section(doc.command, '## Phase 3 — Close without a commit (interactive)'), /--mode close\b/),
       });
+      // An edited subject, as the prose before the execute block says: the agent
+      // writes it into a private directory with its file tool, opens the block
+      // with TEXT_DIR, and passes --subject-file in place of --suggested-subjects.
+      const edited = async (execute, subject) => {
+        const text = await realpath(await mkdtemp(join(tmpdir(), `${persona} agentic text.`)));
+        await writeFile(join(text, 'subject.txt'), `${subject}\n`);
+        ok(execute.includes('  --suggested-subjects\n'), 'the execute block passes the accepted suggestions');
+        return { text, block: `TEXT_DIR='${text}'\n${execute.replace('  --suggested-subjects\n', '  --subject-file "$TEXT_DIR/subject.txt"\n')}` };
+      };
+      // A subject a shell would read if it were spliced into the command.
+      const HOSTILE_SUBJECT = 'feat(engineer): it\'s "done" $(touch pwned) `touch pwned2`';
       const optIn = (execute) => {
         // Contract: the test splices the owner's opt-in flags in at this line; a
         // block without it would run without them and fail for another reason.
@@ -240,6 +261,29 @@ for (const persona of PERSONAS) {
           });
         });
 
+        // ADR-0059's amendment of 2026-10-10: a subject the user edited is text;
+        // it reaches the driver as the file the agent wrote, never shell source.
+        it('interactively: an edited subject reaches the commit as the file the agent wrote, and nothing in it runs', async () => {
+          await withRepo(async (dir) => {
+            const wf = await readyWorkflow(dir);
+            const b = commandBlocks();
+            // Contract: the agent editing a subject — the prose before the block names the
+            // file transport, the steps and the flag.
+            const prose = section(doc.command, '## Phase 2 — Commit (interactive)').replace(/\s+/g, ' ');
+            for (const part of ['An edited subject reaches the driver as a file, never in the block', 'mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"', 'with your file-writing tool, not the shell, write each edited subject there', '--subject-file "$TEXT_DIR/subject.txt"']) ok(prose.includes(part), part);
+            const { text, block } = await edited(b.execute, HOSTILE_SUBJECT);
+            try {
+              const r = runBlock(shell, dir, block);
+              strictEqual(r.status, 0, r.stderr);
+              strictEqual(execFileSync('git', ['log', '-1', '--format=%s'], { cwd: dir, encoding: 'utf8' }).trim(), HOSTILE_SUBJECT);
+              strictEqual((await readWorkflow(wf)).frontmatter.current_phase, 'commit-complete');
+              for (const side of ['pwned', 'pwned2']) strictEqual(await exists(join(dir, side)), false, `${side}: nothing in the subject ran`);
+            } finally {
+              await rm(text, { recursive: true, force: true });
+            }
+          });
+        });
+
         it('Phase 0 refuses a /start workflow and a branch with none', async () => {
           await withRepo(async (dir) => {
             const b = commandBlocks();
@@ -262,10 +306,10 @@ for (const persona of PERSONAS) {
         const fill = (b) => b.replaceAll('<plugin-root>', P.root).replaceAll('<claude|codex>', 'codex');
         it('every Codex skill block runs on its own, in a separate shell (round-2 #5)', async () => {
           await withRepo(async (dir) => {
-            const phase0 = fill(blocks(section(doc.skill, '## Phase 0'))[0]);
-            const plan = fill(blocks(section(doc.skill, '## Phase 1 — Plan'))[0]);
-            const execute = fill(blocks(section(doc.skill, '## Phase 2 — Commit'))[1]);
-            const close = fill(blocks(section(doc.skill, '## Phase 3 — Close without a commit'))[0]);
+            const phase0 = fill(blockWith(section(doc.skill, '## Phase 0'), /state\.mjs" autopilot-preflight /));
+            const plan = fill(blockWith(section(doc.skill, '## Phase 1 — Plan'), /--mode plan\b/));
+            const execute = fill(blockWith(section(doc.skill, '## Phase 2 — Commit'), /--mode execute\b/));
+            const close = fill(blockWith(section(doc.skill, '## Phase 3 — Close without a commit'), /--mode close\b/));
             const wf = await readyWorkflow(dir, { host: 'codex' });
             await writeFile(join(dir, 'plugins', 'engineer', 'a.mjs'), 'export const a = 3;\n');
             let r = runBlock(shell, dir, phase0);
@@ -289,7 +333,7 @@ for (const persona of PERSONAS) {
 
         it('the Codex staging clear writes the owner\'s next step and its next action in one write', async () => {
           await withRepo(async (dir) => {
-            const clear = fill(blocks(section(doc.skill, '## Phase 2 — Commit'))[0]);
+            const clear = fill(blockWith(section(doc.skill, '## Phase 2 — Commit'), /state\.mjs" awaiting-owner-clear /));
             const wf = await readyWorkflow(dir, { stray: true, host: 'codex' });
             state('finish-verb', '--workflow-path', wf, '--host', 'codex', '--next-action', `Owner: confirm the staging set with /${persona}:commit`,
               '--next-step-kind', 'owner-decision', '--next-step-confidence', 'HIGH', '--owner-gate', 'staging-set', '--owner-gate-anchor', 'phase7-plan');

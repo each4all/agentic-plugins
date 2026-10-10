@@ -80,9 +80,11 @@ Anti-pattern (explicitly forbidden): **static lifecycle table** —
 ending a verb with a hardcoded "next: X" instead of reasoning about the
 best next action given the current result and state.
 
-The durable `state.mjs --next-action` write SHOULD carry the compact
-form (selected_next + one-line rationale + next_command); the fuller
-proposal (alternatives + evidence + confidence) belongs in the
+The durable next-action write SHOULD carry the compact form
+(selected_next + one-line rationale + next_command), as a file
+(`state.mjs --next-action-file`, written with the file-writing tool,
+never spliced into the command: ADR-0059, amendment of 2026-10-10); the
+fuller proposal (alternatives + evidence + confidence) belongs in the
 completion output and the phase note.
 
 **Closed-enum projection: `next_step` (ADR-0063 D6, amending ADR-0029

@@ -650,7 +650,11 @@ substitutions. A template holds only `{{name}}` placeholders and
   in the shell). `markdown` / `text`: verbatim, and never inside a shell
   block. A persona value that a double-quoted argument needs goes through a
   shell variable set from a literal first (`PERSONA='founder'`, then
-  `"${PERSONA}"`).
+  `"${PERSONA}"`). A declared value the agent fills in or replaces when it
+  runs the block (a verb's `next_action`, start's terminal next action) is
+  text, not shell source: it renders in the `text` scaffold of the file the
+  agent writes (`next-action.txt`, below), never in a shell context
+  (ADR-0066 Decision 4's note of 2026-10-10).
 - A `markdown` or `text` value may be a list of strings (a verb's `artifact`):
   its placeholder stands alone on its line, and each item renders on its own
   line with that line's indentation. A `shell` value is never a list, and an
@@ -681,27 +685,72 @@ text after them. The runbook and skill contracts do: the terminal block
 follows every marker, and each required extension holds the sentences it
 exists for.
 
-A verb runbook's phase note never passes through a shell string. The finalize
-region shows the note's scaffold in a `markdown` fence, persona text rendered
-verbatim; the agent fills it in and runs the block below it, which reads the
-filled note from a quoted heredoc (`IFS= read -r -d '' NOTE <<'PHASE_NOTE' ||
-true`), so a quote, `$`, backtick or backslash in it reaches `state.mjs` as
-written, under bash and zsh (and macOS sh), with the heredoc's final newline.
-Two limits, each stated where the agent acts: a line reading `PHASE_NOTE`
-alone would end the note and run the rest as commands, so the prose has the
-agent rename the delimiter when its note holds one; and a shell whose `read`
-has no `-d` (dash) reads nothing, so the block clears `NOTE` before the read
-(a value the shell inherited cannot stand in) and an empty note stops it
-before any write. The request placeholder works the same
-way: the region prose names it, and the block says
-`<the original request described above>`. The bootstrap `create`, the resume
-`append` and the finalize `append` stop the block when they fail
-(`|| exit $?`). The finalize then runs `peer-runner.mjs settle` for the
-ensemble attempt, which decides from the run ledger what the workflow
-records (nothing for a run that never launched, verdict `failed` with the
-ledger's `error_kind` for one that failed, the synthesis verdict or
-`degraded` for one that completed) and stops the block when it refuses, and
-ends with `finish-verb` (PC2b).
+### Text an agent writes reaches the scripts as a file
+
+No text an agent writes, or copies from a peer or the user, passes through
+shell source in a generated block (ADR-0059's amendment of 2026-10-10). The
+agent writes it with its file-writing tool, not the shell, into a private
+directory it creates first (`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`),
+and the block opens with `TEXT_DIR='<directory from step 1>'` and passes the
+`-file` form of each flag, which the script reads itself: strict UTF-8, one
+trailing newline removed, nothing else trimmed. So a quote, `$`, backtick,
+backslash, leading `--` or a line of any content reaches `state.mjs`,
+`peer-runner.mjs` or `phase7-commit.mjs` as written, under every shell the
+contracts run (bash, zsh, sh and dash). The files, one name each:
+
+| File | Written for | The block passes |
+|---|---|---|
+| `note.md` | a finalize's phase note (its scaffold is the region's `markdown` fence, persona text rendered verbatim), resume's drift note, a peer-now label note | `--phase-note-file` |
+| `summary.txt` | a finalize's one-line synthesis résumé, a checkpoint's summary | `settle --summary-file`, `checkpoint-set --summary-file` |
+| `next-action.txt` | the next action a finalize's `append` and last write record (its default the declared `next_action`, shown in a `text` fence), start's terminal next action, a paused write's | `--next-action-file` |
+| `request.txt` | a bootstrap's request (its placeholder the declared `request_placeholder`) | `create --original-request-file` |
+| `resolution.txt` | an owner's decision that clears a gate (decide's Owner selection, refine's Owner decision) | `awaiting-owner-clear --resolution-file` |
+| `subject.txt`, `subject-<n>.txt` | a commit subject the user edited | `phase7-commit.mjs --subject-file`, `--subject-pkg-file <package>=<file>` |
+| `prompt.xml` | a dispatch's peer prompt, a peer-now prompt (the `--prompt-text`, or the text of the `--prompt-file`, whose path never enters the block either) | `peer-runner.mjs run --prompt-file` |
+
+Each script refuses an empty, unreadable or non-UTF-8 file, or one holding a
+NUL byte, before it writes, and `settle` also refuses a summary that trims to
+nothing. That is enough where the first script a block runs reads every file
+it reads. A finalize is the exception: `settle` reads the summary only after
+the `append` has written the note. So a finalize first holds `note.md`,
+`summary.txt` and `next-action.txt` to every reader's rule, with a `node -e`
+check (strict UTF-8, no NUL byte, text left once blanks are trimmed);
+otherwise `settle` would refuse after the `append`, and running the block
+again would append the note twice. (The consensus variant's contested-claims
+file, which `consensus-task` reads after both, is not checked yet.) The other
+reading blocks in the Claude runbooks, and both peer-now dispatches, check
+that each file holds more than blanks (`grep -q '[^[:space:]]'
+"$TEXT_DIR/<file>"`) before their first write or dispatch. A Phase 7 commit
+block leaves it to `phase7-commit.mjs`, which reads its subject files before
+it stages anything. A file left unwritten or blank stops a checking block with
+nothing written. Program data a block has already read is not the
+agent's text but stays off the command line where a value beginning with
+`--` would read as a flag: a bootstrap writes the `AGENTIC_TOPIC` a
+dispatcher exports to `topic.txt` (`printf '%s\n'`) and records that file
+instead of `request.txt`; engineer's start writes the description its args
+file held to a file of its own. Fixed literals, enums (a verdict, a gate, a
+confidence, a profile), the run id and a quoted expansion of a value a
+program printed (`$PROPOSED`, `$RESPONSE`) stay inline. Nothing deletes the
+files: one `next-action.txt` feeds both the `append` and the last write, and
+a headless run can deny `rm`. The quoted heredoc this replaced
+(`<<'PHASE_NOTE'`, and `<<'OWNER_RESOLUTION'` for a resolution) ended at a
+line reading its delimiter and ran the rest as commands, and dash's `read`
+read nothing; the file forms have neither limit.
+
+The bootstrap `create`, the resume `append` and the finalize `append` stop
+the block when they fail (`|| exit $?`). The finalize then runs
+`peer-runner.mjs settle` for the ensemble attempt, which decides from the run
+ledger what the workflow records (nothing for a run that never launched,
+verdict `failed` with the ledger's `error_kind` for one that failed, the
+synthesis verdict or `degraded` for one that completed) and stops the block
+when it refuses, and ends with `finish-verb` (PC2b).
+`tests/plugin-shape/test-persona-text-file-transport.mjs` keeps the class out
+of the three personas' commands and skills, the canonical regions, the
+manifest's prose values and the peer-now agents: no heredoc carrying a note
+or a resolution, no `NOTE=`/`RESOLUTION=`/`APPROVED_SUBJECT=`-style
+assignment of agent text, and no free-text flag (`--phase-note`,
+`--summary`, `--next-action`, `--original-request`, `--resolution`,
+`--subject`, `--subject-pkg`) given a placeholder or the agent's words.
 
 decide's Phase 0.5 region (`decide-resolve.md`) holds the args-file steps
 (ADR-0059) and the resolver block, which opens with the `ARGS_DIR` the agent

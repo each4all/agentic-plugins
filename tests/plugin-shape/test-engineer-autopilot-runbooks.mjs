@@ -86,7 +86,9 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
       // Contract: the agent finishing a verb — a write that fails without stopping
       // lets finish-verb publish a next step for a verb that did not finish;
       // set-terminal instead of finish-verb ends an autopilot run's workflow.
-      const block = bashBlocks(phase2)[0];
+      // The block that writes, not the private-directory step before it
+      // (ADR-0059's amendment of 2026-10-10).
+      const block = bashBlocks(phase2).find((b) => b.includes('state.mjs" finish-verb'));
       ok(block, 'Phase 2 has its block');
       ok(!/state\.mjs" set-terminal/.test(block), 'no set-terminal call in a verb: finish-verb branches by mode');
       const gen = generated(text, verb);
@@ -95,14 +97,15 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
       const finish = block.indexOf('state.mjs" finish-verb');
       ok(append >= 0 && commit > append && finish > commit, gen ? 'append → settle → finish-verb' : 'append → ensemble-commit → finish-verb');
       ok(/--event updated \|\| exit \$\?\n/.test(block.slice(append, commit)), 'the append stops the block when it fails');
-      ok((gen ? /--summary "\$SUMMARY" \|\| exit \$\?\n/ : /--completed-at "[^\n]*" \|\| exit \$\?\n/).test(block.slice(commit, finish)), 'the ensemble write stops the block when it fails');
+      ok((gen ? /--summary-file "\$TEXT_DIR\/summary\.txt" \|\| exit \$\?\n/ : /--completed-at "[^\n]*" \|\| exit \$\?\n/).test(block.slice(commit, finish)), 'the ensemble write stops the block when it fails');
       // Contract: finish-verb's flags — the closed-enum next step the autopilot
       // driver reads; terminal flags here would close the workflow mid-run.
       // The call itself, up to its last continued line: in a block with a
       // conflict branch (ADR-0067 Decision 8) an indented comment follows it.
       const callLines = block.slice(finish).split('\n');
       const finishCall = callLines.slice(0, callLines.findIndex((l) => !l.endsWith('\\')) + 1).join('\n');
-      ok(/--next-action (?:"[^"\n]*"|'[^'\n]*') \\\n/.test(finishCall), finishCall);
+      // ADR-0059's amendment of 2026-10-10: the next action is the agent's file.
+      ok(/--next-action-file "\$TEXT_DIR\/next-action\.txt" \\\n/.test(finishCall), finishCall);
       ok(/--next-step-kind verb --next-step-verb (?:[a-z]+|'[a-z]+'|"<next verb>") \\\n/.test(finishCall), finishCall);
       ok(finishCall.includes('--next-step-confidence "<HIGH|MEDIUM|LOW>"'), 'confidence comes from the proposal');
       ok(!/--terminal-marker|--terminal-phase/.test(finishCall), finishCall);
@@ -165,8 +168,8 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
     // the decision, clears the gate and names the next step, and stops on
     // failure; a separate append could publish the step without the decision.
     const sel = section(text, '## Owner selection (decide-conflict)');
-    const [block] = bashBlocks(sel);
-    ok(/--gate decide-conflict \\\n\s+--resolution "[^"\n]+" --next-action "\$NEXT_ACTION" \\\n\s+"\$\{NEXT_STEP\[@\]\}" \|\| exit \$\?\n/.test(block),
+    const block = bashBlocks(sel).find((b) => b.includes('awaiting-owner-clear'));
+    ok(/--gate decide-conflict \\\n\s+--resolution-file "\$TEXT_DIR\/resolution\.txt" --next-action "\$NEXT_ACTION" \\\n\s+"\$\{NEXT_STEP\[@\]\}" \|\| exit \$\?\n/.test(block),
       'one write records the decision, clears the gate and names the next step, and stops the block on failure');
     ok(/^ {2}NEXT_STEP=\(--next-step-kind verb --next-step-verb compose --next-step-confidence HIGH\)$/m.test(block), 'outside the lifecycle the next step is compose');
     ok(/^ {2}NEXT_STEP=\(--clear-next-step true\)$/m.test(block), 'inside the lifecycle no next step');
@@ -188,9 +191,10 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
     // Contract: the agent running an Owner decision block — each resolution is one
     // write that names its next step (refine for fix now, commit for defer) and
     // stops on failure; a separate append could publish the step without it.
-    const blocks = bashBlocks(section(text, '## Owner decision (recurring-finding)'));
-    ok(blocks.some((b) => /--gate recurring-finding \\\n\s+--resolution "[^"\n]+" --next-action "\$NEXT_ACTION" \\\n\s+--next-step-kind verb --next-step-verb refine --next-step-confidence HIGH \|\| exit \$\?\n/.test(b)), 'fix now: one write, naming this refine, stopping the block on failure');
-    ok(blocks.some((b) => /--gate recurring-finding \\\n\s+--resolution "[^"\n]+" --next-action "\$NEXT_ACTION" \\\n\s+--next-step-kind commit --next-step-confidence HIGH \|\| exit \$\?\n/.test(b)), 'defer: one write naming commit, stopping the block on failure');
+    const blocks = bashBlocks(section(text, '## Owner decision (recurring-finding)')).filter((b) => b.includes('awaiting-owner-clear'));
+    strictEqual(blocks.length, 2, 'fix now and defer');
+    ok(blocks.some((b) => /--gate recurring-finding \\\n\s+--resolution-file "\$TEXT_DIR\/resolution\.txt" --next-action "\$NEXT_ACTION" \\\n\s+--next-step-kind verb --next-step-verb refine --next-step-confidence HIGH \|\| exit \$\?\n/.test(b)), 'fix now: one write, naming this refine, stopping the block on failure');
+    ok(blocks.some((b) => /--gate recurring-finding \\\n\s+--resolution-file "\$TEXT_DIR\/resolution\.txt" --next-action "\$NEXT_ACTION" \\\n\s+--next-step-kind commit --next-step-confidence HIGH \|\| exit \$\?\n/.test(b)), 'defer: one write naming commit, stopping the block on failure');
     for (const b of blocks) {
       ok(/ACTIVE="\$\(node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" find-active/.test(b), 'every resolution block resolves the workflow itself');
       ok(!b.includes('state.mjs" append'), 'no separate write can publish the next step without the decision');
