@@ -98,7 +98,10 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
       ok((gen ? /--summary "\$SUMMARY" \|\| exit \$\?\n/ : /--completed-at "[^\n]*" \|\| exit \$\?\n/).test(block.slice(commit, finish)), 'the ensemble write stops the block when it fails');
       // Contract: finish-verb's flags — the closed-enum next step the autopilot
       // driver reads; terminal flags here would close the workflow mid-run.
-      const finishCall = block.slice(finish).split('\n#')[0];
+      // The call itself, up to its last continued line: in a block with a
+      // conflict branch (ADR-0067 Decision 8) an indented comment follows it.
+      const callLines = block.slice(finish).split('\n');
+      const finishCall = callLines.slice(0, callLines.findIndex((l) => !l.endsWith('\\')) + 1).join('\n');
       ok(/--next-action (?:"[^"\n]*"|'[^'\n]*') \\\n/.test(finishCall), finishCall);
       ok(/--next-step-kind verb --next-step-verb (?:[a-z]+|'[a-z]+'|"<next verb>") \\\n/.test(finishCall), finishCall);
       ok(finishCall.includes('--next-step-confidence "<HIGH|MEDIUM|LOW>"'), 'confidence comes from the proposal');
@@ -211,6 +214,7 @@ describe('owner-gate anchors', () => {
       .map((m) => [m[1], m[2]]);
     deepStrictEqual(Object.fromEntries(rows), {
       'decide-conflict': 'ensemble-synthesis',
+      'peer-conflict': 'ensemble-synthesis',
       'recurring-finding': 'recurring-finding',
       'scope-routing': 'routing-recommendation',
       'staging-set': 'phase7-plan',
@@ -220,7 +224,8 @@ describe('owner-gate anchors', () => {
     // PC3 U7: a generated finalize names each gate it can end with in a bullet
     // above its block; each verb names exactly its own (the gate it owns, if
     // any, scope-routing, and pr-handling with dispatch_target on).
-    const OWN = { decide: ['decide-conflict'], refine: ['recurring-finding'] };
+    // ADR-0067 Decision 8: critique and investigate own peer-conflict.
+    const OWN = { decide: ['decide-conflict'], critique: ['peer-conflict'], investigate: ['peer-conflict'], refine: ['recurring-finding'] };
     for (const verb of VERBS) {
       const text = await read(`commands/${verb}.md`);
       for (const m of text.matchAll(/--owner-gate ([a-z-]+) --owner-gate-anchor ([a-z0-9-]+)/g)) used.push([m[1], m[2]]);

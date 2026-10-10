@@ -5269,6 +5269,207 @@
       "from": "case \"$STATUS\" in\n  clean|accepted) ;;\n  dirty)\n    echo \"✗ Working tree not clean — /${PERSONA}:start gates a clean baseline before bootstrapping a deliverable.\" >&2\n    echo \"  Resolve, then re-run:\" >&2\n    echo \"    • clean:  git restore . ; git clean -fd\" >&2\n    echo \"    • stash:  git stash push --include-untracked  (re-run, then git stash pop)\" >&2\n    echo \"    • accept: set ACCEPT_CURRENT_TREE=1 to acknowledge the dirty tree\" >&2\n    exit 1;;\n  *)\n    echo \"✗ clean-baseline check returned an unrecognized status ('$STATUS') — refusing to bootstrap (fail-closed).\" >&2\n    exit 1;;\nesac",
       "to": "case \"$STATUS\" in\n  clean|accepted) ;;\n  dirty)\n    echo \"✗ Working tree not clean — /${PERSONA}:start gates a clean baseline before bootstrapping a deliverable.\" >&2\n    echo \"→ Proposed: a new worktree first, which leaves this checkout's changes where they are: run the worktree block (the active-workflow section) with the request in an args file; it prints the git worktree add command.\" >&2\n    echo \"  Or resolve it here, then re-run:\" >&2\n    echo \"    • clean:  git restore . ; git clean -fd\" >&2\n    echo \"    • stash:  git stash push --include-untracked  (re-run, then git stash pop)\" >&2\n    echo \"    • accept: set ACCEPT_CURRENT_TREE=1 to acknowledge the dirty tree\" >&2\n    exit 1;;\n  *)\n    echo \"✗ clean-baseline check returned an unrecognized status ('$STATUS') — refusing to bootstrap (fail-closed).\" >&2\n    exit 1;;\nesac",
       "why": "ADR-0067-WP U4: the dirty arm selects a worktree first (the planner's command) and keeps clean, stash and accept as the alternatives; the worktree is no longer one option among them"
+    },
+    {
+      "runbooks": [
+        "designer/decide",
+        "designer/critique",
+        "designer/investigate",
+        "engineer/decide",
+        "engineer/critique",
+        "engineer/investigate",
+        "founder/decide",
+        "founder/critique",
+        "founder/investigate"
+      ],
+      "op": "insert-call",
+      "where": "call:peer-runner.mjs settle",
+      "from": "state.mjs finish-verb",
+      "to": {
+        "script": "state.mjs",
+        "sub": "ensemble-verdict",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ]
+        ]
+      },
+      "why": "CP (ADR-0067 Decision 8): after the settle, the finalize reads the verdict the settle recorded for the run, and branches on it, not on VERDICT alone"
+    },
+    {
+      "runbooks": [
+        "designer/decide",
+        "engineer/decide",
+        "founder/decide"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs finish-verb#1",
+      "from": "state.mjs find-active",
+      "to": {
+        "script": "state.mjs",
+        "sub": "consensus-task",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--text-file",
+            "$CONTESTED_FILE"
+          ]
+        ]
+      },
+      "why": "CP (ADR-0067 Decision 8): on a recorded conflict, the contested items are written as the consensus task file, which prints the bounded round proposed"
+    },
+    {
+      "runbooks": [
+        "designer/critique",
+        "designer/investigate",
+        "engineer/critique",
+        "engineer/investigate",
+        "founder/critique",
+        "founder/investigate"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs finish-verb#1",
+      "from": "",
+      "to": {
+        "script": "state.mjs",
+        "sub": "consensus-task",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--text-file",
+            "$CONTESTED_FILE"
+          ]
+        ]
+      },
+      "why": "CP (ADR-0067 Decision 8): on a recorded conflict, the contested items are written as the consensus task file, which prints the bounded round proposed"
+    },
+    {
+      "runbooks": [
+        "designer/decide",
+        "engineer/decide",
+        "founder/decide"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs consensus-task",
+      "from": "state.mjs find-active",
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--next-action",
+            "Owner decision, after a bounded consensus round: $PROPOSED"
+          ],
+          [
+            "--next-step-kind",
+            "owner-decision"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ],
+          [
+            "--owner-gate",
+            "decide-conflict"
+          ],
+          [
+            "--owner-gate-anchor",
+            "ensemble-synthesis"
+          ],
+          [
+            "--owner-gate-run-id",
+            "$RUN_ID"
+          ]
+        ]
+      },
+      "why": "CP (ADR-0067 Decision 8): on a recorded conflict, the verb ends on its conflict gate with the run id and the next step owner-decision, not on the typical terminal write"
+    },
+    {
+      "runbooks": [
+        "designer/critique",
+        "designer/investigate",
+        "engineer/critique",
+        "engineer/investigate",
+        "founder/critique",
+        "founder/investigate"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs consensus-task",
+      "from": "",
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--next-action",
+            "Owner decision, after a bounded consensus round: $PROPOSED"
+          ],
+          [
+            "--next-step-kind",
+            "owner-decision"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ],
+          [
+            "--owner-gate",
+            "peer-conflict"
+          ],
+          [
+            "--owner-gate-anchor",
+            "ensemble-synthesis"
+          ],
+          [
+            "--owner-gate-run-id",
+            "$RUN_ID"
+          ]
+        ]
+      },
+      "why": "CP (ADR-0067 Decision 8): on a recorded conflict, the verb ends on its conflict gate with the run id and the next step owner-decision, not on the typical terminal write"
     }
   ],
   "runbooks": {

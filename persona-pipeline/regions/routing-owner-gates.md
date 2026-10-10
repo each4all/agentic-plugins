@@ -11,7 +11,8 @@ the session handoff names the gate's resolving surface as the next action.
 
 | gate | set when | heading · anchor | resolved by |
 |---|---|---|---|
-| `decide-conflict` | `/{{persona}}:decide` leaves the decision to the owner: a CONFLICT remained or a veto gate is unresolved | `Ensemble synthesis` · `ensemble-synthesis` | the owner's selection in `/{{persona}}:decide` (its Owner selection step clears the gate) |
+| `decide-conflict` | `/{{persona}}:decide` leaves the decision to the owner: a CONFLICT remained (recorded with its run id) or a veto gate is unresolved | `Ensemble synthesis` · `ensemble-synthesis` | the owner's selection in `/{{persona}}:decide` (its Owner selection step clears the gate) |
+| `peer-conflict` | `/{{persona}}:critique` or `/{{persona}}:investigate`: the synthesis verdict is `conflict` (recorded with its run id) | `Ensemble synthesis` · `ensemble-synthesis` | the owner rules on the contested items, then `awaiting-owner-clear --gate peer-conflict --resolution "<the ruling>"` with the next step |
 | `recurring-finding` | `/{{persona}}:refine`: a finding an earlier refine pass on this workflow already addressed survives verification again | `Recurring finding` · `recurring-finding` | the owner's fix-now-or-defer in `/{{persona}}:refine` (its Owner decision step clears the gate) |
 | `scope-routing` | a verb concludes the request does not belong in this verb or workflow (another route in the Routing Recommendation fits) | `Routing recommendation` · `routing-recommendation` | the owner picks the route, then `awaiting-owner-clear` with the next step |
 {{#capability commit_surface}}
@@ -39,5 +40,24 @@ order.
 capability; an inherited `AGENTIC_AUTOPILOT` changes nothing a {{persona}}
 command writes (ADR-0066 Decision 3).
 {{/capability}}
-Reading a workflow file, `state.mjs` accepts all five gate names (ADR-0066
+Reading a workflow file, `state.mjs` accepts all six gate names (ADR-0066
 Decision 7 validates each schema 1.4 key on its own).
+
+**The conflict gates and their consensus task file (ADR-0067 Decision 8).**
+`decide-conflict` and `peer-conflict` are the conflict gates. On a synthesis
+verdict of `conflict` the verb writes the contested items to
+`.agentic-plugins/state/{{persona}}/consensus/<workflow id>.<run id>.md`, in
+the workflow's own home (`state.mjs consensus-task`, which refuses unless
+`ensemble_results` holds the run with the verdict `conflict`), and records the
+gate with that run id, `awaiting_owner_run_id` (`finish-verb
+--owner-gate-run-id`, or `awaiting-owner-set --run-id` inside a lifecycle).
+The file is current only while the gate names the run, `ensemble_results`
+holds that run with the verdict `conflict`, and the file exists
+(`state.mjs consensus-proposal`). A gate set without a run id (an owner
+selection, a veto) deletes the key; a gate set again over itself that names
+another run, or none, and every clear retire the file of the run they
+replace, renamed `<workflow id>.<run id>.resolved.md` and kept as evidence.
+The proposal selects the owner's decision after a bounded consensus round,
+`/runtime:consensus plan --task-file <the file's absolute path> --peers
+claude,codex --max-rounds 2`, which the owner runs; nothing runs it
+automatically.

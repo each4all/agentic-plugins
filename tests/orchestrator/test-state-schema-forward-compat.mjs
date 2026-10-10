@@ -522,7 +522,7 @@ async function importSchema11Reader(dir) {
     'the six keys must each appear once, one per line, in FRONTMATTER_KEY_ORDER');
   const emit = "export const SCHEMA_VERSION = '1.2';";
   ok(src.includes(emit), 'the build must emit 1.2');
-  const reset = '    resetPlanApproval(frontmatter, workflowPath, nowIso, { conflict });\n    validateSchema12Fields(frontmatter);\n';
+  const reset = '    resetPlanApproval(frontmatter, workflowPath, nowIso, { conflict, runId });\n    validateSchema12Fields(frontmatter);\n';
   strictEqual(src.split(reset).length, 2, 'plan-set resets approval in exactly one place');
   const reader = src
     .replace(keyOrderLine, '')

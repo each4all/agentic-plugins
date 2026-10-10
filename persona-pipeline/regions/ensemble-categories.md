@@ -3,7 +3,14 @@
 | AGREED     | Both orchestrator and peer reached same conclusion | Present with elevated confidence. Label: **[Both]** |
 | LOCAL-ONLY | Orchestrator found it, peer did not                | Present normally. Label: **[Local]**                |
 | PEER-ONLY  | Peer found it, orchestrator did not                | Present normally. Label: **[Peer]**                 |
-| CONFLICT   | Orchestrator and peer disagree                     | Present both with evidence. Ask the user to decide  |
+| CONFLICT   | Orchestrator and peer disagree                     | Present both with evidence. The owner decides       |
+
+A CONFLICT is the owner's to decide, never the orchestrator's. In decide,
+critique and investigate a synthesis verdict of `conflict` ends the verb on
+its conflict gate, with a bounded consensus round proposed before the owner
+decides (ADR-0067 Decision 8; `entry-routing-contract.md` § Active
+Next-Action Proposal); in compose, frame and refine the CONFLICT items are
+put to the user as they are.
 
 The four names — `AGREED`, `LOCAL-ONLY`, `PEER-ONLY`, `CONFLICT` — are
 the canonical public vocabulary of this protocol. Their semantics are

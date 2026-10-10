@@ -121,6 +121,13 @@ const covered = (dest) => FILES.has(dest);
 // with the verb each one runs.
 const VERB_DESTS = ['commands/compose.md', 'commands/frame.md', 'commands/investigate.md', 'commands/decide.md', 'commands/critique.md', 'commands/refine.md'];
 const PIPELINE_VERB_DESTS = VERB_DESTS;
+// ADR-0067 Decision 8 — the verbs whose finalize renders the consensus
+// variant, each with its conflict gate; compose, frame and refine keep the
+// plain finalize and never propose a consensus round.
+const CONFLICT_GATES = { decide: 'decide-conflict', critique: 'peer-conflict', investigate: 'peer-conflict' };
+const PROPOSED_ROUND = '/runtime:consensus plan --task-file /s/consensus/w.r.md --peers claude,codex --max-rounds 2';
+// The writes a finalize block makes on a verdict other than conflict.
+const typicalLog = (verb) => (Object.hasOwn(CONFLICT_GATES, verb) ? ['append', 'settle', 'ensemble-verdict', 'finish-verb'] : ['append', 'settle', 'finish-verb']);
 // The runbooks whose finalize sits under a generated finalize heading, after
 // every extension their slots hold (PC2a3 QD7, QD8).
 const HEADING_DESTS = ['commands/critique.md', 'commands/refine.md'];
@@ -253,7 +260,7 @@ function sentenceAt(text, sentence) {
  * by `delimiter` when given; `after` is appended to the block.
  * `inheritedNote` puts a NOTE in the shell's environment beforehand.
  */
-function runBlock(shell, block, persona, { note = '', failAppend = false, delimiter = null, active = '', findStatus = 0, resolveStatus = 0, inheritedNote = null, after = '', baseline = '', baselineStatus = 0, readOutput = '', readStatus = 0, preflightStatus = 0, settleStatus = 0, clearStatus = 0, argsText = null, diag = '', diagStatus = 0, phase7Status = 0 }) {
+function runBlock(shell, block, persona, { note = '', failAppend = false, delimiter = null, active = '', findStatus = 0, resolveStatus = 0, inheritedNote = null, after = '', baseline = '', baselineStatus = 0, readOutput = '', readStatus = 0, preflightStatus = 0, settleStatus = 0, clearStatus = 0, argsText = null, diag = '', diagStatus = 0, phase7Status = 0, recorded = '', proposed = PROPOSED_ROUND, taskStatus = 0 }) {
   const dir = mkdtempSync(join(tmpdir(), 'pc2a2b-finalize.'));
   try {
     mkdirSync(join(dir, 'bin'));
@@ -273,6 +280,10 @@ function runBlock(shell, block, persona, { note = '', failAppend = false, delimi
       'if [ "$2" = find-active ]; then printf \'%s\\n\' "$STUB_ACTIVE"; exit "$STUB_FIND_RC"; fi',
       'if [ "$2" = autopilot-preflight ]; then exit "$STUB_PREFLIGHT_RC"; fi',
       'if [ "$2" = settle ]; then exit "$STUB_SETTLE_RC"; fi',
+      // ADR-0067 Decision 8: the verdict a settle recorded, and the round a
+      // task file proposes.
+      'if [ "$2" = ensemble-verdict ]; then printf \'%s\\n\' "$STUB_RECORDED"; exit 0; fi',
+      'if [ "$2" = consensus-task ]; then printf \'%s\\n\' "$STUB_PROPOSED"; exit "$STUB_TASK_RC"; fi',
       'if [ "$2" = awaiting-owner-clear ]; then exit "$STUB_CLEAR_RC"; fi',
       'if [ "$2" = check-clean-baseline ]; then printf \'%s\' "$STUB_BASELINE"; exit "$STUB_BASELINE_RC"; fi',
       'if [ "$2" = diagnose-redundancy ]; then printf \'%s\' "$STUB_DIAG"; exit "$STUB_DIAG_RC"; fi',
@@ -318,6 +329,9 @@ function runBlock(shell, block, persona, { note = '', failAppend = false, delimi
       STUB_READ_RC: String(readStatus),
       STUB_PREFLIGHT_RC: String(preflightStatus),
       STUB_SETTLE_RC: String(settleStatus),
+      STUB_RECORDED: recorded,
+      STUB_PROPOSED: proposed,
+      STUB_TASK_RC: String(taskStatus),
       STUB_CLEAR_RC: String(clearStatus),
       STUB_DIAG: diag,
       STUB_DIAG_RC: String(diagStatus),
@@ -420,6 +434,46 @@ describe('each convergent variant is its plain template plus the convergence che
   }
 });
 
+// The consensus finalize (ADR-0067 Decision 8) is a variant of the plain one
+// as well: the conflict paragraph before the last-write paragraph, and the
+// plain terminal write, comment and call, indented in the first branch of the
+// recorded-verdict check. Its own lines (the paragraph, the check, the
+// mismatch and conflict branches) are bound by the conflict run above.
+// Contract: the sync renders it for decide, critique and investigate — a
+// shared line that drifts changes what those verbs' last write runs while
+// compose, frame and refine stay right.
+describe('the consensus variant is the plain finalize plus the conflict branch, nothing else', () => {
+  const read = (rel) => readFileSync(join(REPO_ROOT, 'persona-pipeline', rel), 'utf8');
+  it('verb-finalize-consensus.md: rebuilt from verb-finalize.md and the variant\'s own lines, it is byte for byte the variant', () => {
+    const plain = read('regions/verb-finalize.md');
+    const variant = read('regions/verb-finalize-consensus.md');
+    const LAST = 'The last write, `finish-verb`, records';
+    const opening = 'A synthesis verdict of `conflict` ends this verb on its conflict gate';
+    const para = variant.slice(variant.indexOf(opening), variant.indexOf(LAST));
+    ok(variant.indexOf(opening) >= 0 && para.endsWith('.\n\n'), 'the conflict paragraph, right before the last-write paragraph');
+    const terminalAt = plain.indexOf('# ADR-0029 §1 / completion-output contract §2');
+    const terminal = plain.slice(terminalAt, plain.indexOf('# The owner-decision form, for an owner gate'));
+    ok(terminalAt > 0 && /\nnode "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" finish-verb \\\n/.test(terminal), 'the plain terminal write, comment and call');
+    const indented = terminal.replace(/^(?=.)/gm, '  ');
+    const FIRST = 'if [ "$RECORDED" != conflict ] && [ "$VERDICT" != conflict ]; then\n';
+    const headAt = variant.indexOf('# ADR-0067 Decision 8 — the verdict the settle above recorded');
+    const thenEnd = variant.indexOf(FIRST, headAt) + FIRST.length;
+    ok(headAt > 0 && thenEnd > FIRST.length, 'the recorded-verdict check');
+    strictEqual(variant.slice(thenEnd, thenEnd + indented.length), indented, 'the first branch is the plain terminal write, indented');
+    const restAt = thenEnd + indented.length;
+    const rest = variant.slice(restAt, variant.indexOf('\nfi\n', restAt) + '\nfi\n'.length);
+    ok(rest.startsWith('elif '), 'the mismatch and conflict branches follow');
+    const rebuilt = plain.replace(LAST, () => `${para}${LAST}`).replace(terminal, () => `${variant.slice(headAt, thenEnd)}${indented}${rest}`);
+    strictEqual(variant, rebuilt);
+  });
+  it('the manifest renders it into exactly decide, critique and investigate, each with its conflict gate', () => {
+    const regions = JSON.parse(read('manifest.json')).regions.filter((r) => /^[a-z]+-finalize$/.test(r.id));
+    const variant = Object.fromEntries(regions.filter((r) => r.template === 'regions/verb-finalize-consensus.md')
+      .map((r) => [r.id.replace('-finalize', ''), [r.substitutions.conflict_gate?.value, r.substitutions.conflict_gate_word?.value]]));
+    deepStrictEqual(variant, Object.fromEntries(Object.entries(CONFLICT_GATES).map(([v, g]) => [v, [g, g]])));
+  });
+});
+
 // The runbooks whose regions every persona is enrolled into (commit.md follows
 // commit_surface instead).
 const ENGINEER_JOINED = new Set(['commands/checkpoint.md', 'commands/peer-now.md', 'commands/resume.md', 'commands/frame.md', 'commands/compose.md', 'commands/decide.md', 'commands/critique.md', 'commands/refine.md', 'commands/investigate.md', 'commands/start.md']);
@@ -477,7 +531,9 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               const timing = archiveTimingProblems(text, label);
               // decide's Owner selection step (PC2b DD7) and refine's Owner
               // decision (U5b) finish the verb a second way.
-              deepStrictEqual([timing.sites, timing.problems], [['commands/decide.md', 'commands/refine.md'].includes(dest) ? 2 : 1, []], 'each terminal write carries its archive-timing note');
+              // The consensus variant's conflict branch (ADR-0067 Decision 8) records
+              // its gate with one more finish-verb, which carries the note too.
+              deepStrictEqual([timing.sites, timing.problems], [(['commands/decide.md', 'commands/refine.md'].includes(dest) ? 2 : 1) + (Object.hasOwn(CONFLICT_GATES, verbOf(dest)) ? 1 : 0), []], 'each terminal write carries its archive-timing note');
             }
           });
 
@@ -1155,14 +1211,85 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               const gates = squash(text.slice(text.indexOf('<!-- pipeline:begin ' + verb + '-finalize'), text.indexOf(finalize.text)));
               ok(/- `scope-routing` \([^)]*anchor `routing-recommendation`\)/.test(gates), gates);
               strictEqual(/- `decide-conflict` \([^)]*anchor `ensemble-synthesis`\)/.test(gates), verb === 'decide', 'decide-conflict exactly in decide');
+              strictEqual(/- `peer-conflict` \([^)]*anchor `ensemble-synthesis`\)/.test(gates), verb === 'critique' || verb === 'investigate', 'peer-conflict exactly in critique and investigate');
               strictEqual(/- `recurring-finding` \([^)]*anchor `recurring-finding`\)/.test(gates), verb === 'refine', 'recurring-finding exactly in refine');
+            });
+
+            // Contract (ADR-0067 Decision 8): the agent ending decide, critique or
+            // investigate on a synthesis verdict of conflict — the block writes the
+            // contested items as the consensus task file and records the conflict
+            // gate with the run id, branching on the verdict the settle recorded;
+            // without it the verb closes over a conflict, or proposes a round for a
+            // run that recorded none.
+            if (Object.hasOwn(CONFLICT_GATES, verb)) it('the finalize, run: a recorded conflict writes the task file, then the conflict gate with the run id; a disagreeing verdict stops before the last write (ADR-0067 Decision 8)', () => {
+              const block = converged(blockWith(/peer-runner\.mjs" settle \\/).text, persona, verb);
+              const gate = CONFLICT_GATES[verb];
+              // The contested items come from the peers' positions: they reach
+              // consensus-task as a file the agent wrote, never as shell source,
+              // where a line reading as a delimiter would end a heredoc and run the
+              // rest as commands.
+              ok(!/<<\s*'?CONTESTED|<the contested items/.test(block), 'the block holds no contested items of its own');
+              const itemsDir = mkdtempSync(join(tmpdir(), 'contested.'));
+              const itemsFile = join(itemsDir, 'items.md');
+              writeFileSync(itemsFile, 'C1: keep "A" or $(touch pwned) `B`\nCONTESTED_ITEMS\nPHASE_NOTE\n');
+              const run = (verdict, opts, file = itemsFile) => runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='r'; VERDICT='${verdict}'; SUMMARY='s'${file === null ? '' : `; CONTESTED_FILE='${file}'`}\n${block}`, persona, { note: 'n', ...opts });
+              const conflict = run('conflict', { recorded: 'conflict' });
+              strictEqual(conflict.status, 0, conflict.stderr);
+              deepStrictEqual(conflict.log, ['append', 'settle', 'ensemble-verdict', 'consensus-task', 'finish-verb']);
+              ok(conflict.argv[2].includes(' ensemble-verdict --workflow-path /w/active.md --run-id r'), conflict.argv[2]);
+              ok(conflict.argv[3].includes(` consensus-task --workflow-path /w/active.md --host claude --run-id r --text-file ${itemsFile}`), `the contested items reach consensus-task as the file the agent wrote: ${conflict.argv[3]}`);
+              for (const part of [
+                ` --next-action Owner decision, after a bounded consensus round: ${PROPOSED_ROUND} `,
+                ' --next-step-kind owner-decision --next-step-confidence <HIGH|MEDIUM|LOW> ',
+                ` --owner-gate ${gate} --owner-gate-anchor ensemble-synthesis --owner-gate-run-id r`,
+              ]) ok(conflict.argv[4].includes(part), `${part}: ${conflict.argv[4]}`);
+              ok(conflict.stderr.includes(`→ Proposed, for the owner to run before deciding: ${PROPOSED_ROUND}`), conflict.stderr);
+              // Every other recorded verdict, and none, takes the typical last write.
+              for (const recorded of ['', 'agreed', 'concerns', 'failed', 'degraded']) {
+                const typical = run(recorded === 'failed' || recorded === 'degraded' || recorded === '' ? 'agreed' : recorded, { recorded });
+                deepStrictEqual([typical.status, typical.log], [0, typicalLog(verb)], `recorded ${recorded || 'nothing'}: the typical last write`);
+                ok(!typical.argv.some((a) => a.includes('--owner-gate')), 'no gate');
+              }
+              // The recorded verdict and VERDICT disagree: nothing more is written,
+              // and the one recovery named is the block again with the recorded
+              // verdict, whose conflict branch writes the task file before the gate
+              // (a gated finish-verb run by itself would leave no task file).
+              for (const [verdict, recorded] of [['concerns', 'conflict'], ['conflict', 'failed'], ['conflict', '']]) {
+                const mismatch = run(verdict, { recorded });
+                deepStrictEqual([mismatch.status, mismatch.log], [1, ['append', 'settle', 'ensemble-verdict']], `VERDICT ${verdict}, recorded ${recorded || 'nothing'}`);
+                ok(mismatch.stderr.includes(`✗ The synthesis verdict is ${verdict}, but run r is recorded with ${recorded || 'no verdict'}`), mismatch.stderr);
+                ok(mismatch.stderr.includes('Set VERDICT to the recorded verdict (and CONTESTED_FILE when that is conflict) and run this block again'), mismatch.stderr);
+                ok(mismatch.stderr.includes('consensus-task first on a conflict'), mismatch.stderr);
+                ok(!/the matching last write by itself/.test(mismatch.stderr), mismatch.stderr);
+                const again = run(recorded === 'conflict' ? 'conflict' : recorded || 'agreed', { recorded });
+                deepStrictEqual([again.status, again.log], [0, recorded === 'conflict' ? ['append', 'settle', 'ensemble-verdict', 'consensus-task', 'finish-verb'] : typicalLog(verb)], `the recovery for recorded ${recorded || 'nothing'}`);
+              }
+              const unnamed = run('conflict', { recorded: 'conflict' }, null);
+              deepStrictEqual([unnamed.status, unnamed.log], [1, ['append', 'settle', 'ensemble-verdict']], 'no contested-items file, no task file and no gate');
+              ok(unnamed.stderr.includes('✗ CONTESTED_FILE names no file of contested items; the gate was not recorded.'), unnamed.stderr);
+              const refusedTask = run('conflict', { recorded: 'conflict', taskStatus: 3 });
+              deepStrictEqual([refusedTask.status, refusedTask.log], [3, ['append', 'settle', 'ensemble-verdict', 'consensus-task']], 'a refused task file records no gate');
+              rmSync(itemsDir, { recursive: true, force: true });
+            });
+
+            // Contract: compose, frame and refine never propose a consensus round —
+            // their finalize holds no conflict branch (ADR-0067 Decision 8).
+            if (VERB_DESTS.includes(dest) && !Object.hasOwn(CONFLICT_GATES, verb)) it('the finalize has no conflict branch: no consensus task, no verdict read, no gate run id (ADR-0067 Decision 8)', () => {
+              const block = blockWith(/peer-runner\.mjs" settle \\/).text;
+              for (const marker of ['consensus-task', 'ensemble-verdict', '--owner-gate-run-id', 'CONTESTED_FILE', 'runtime:consensus']) {
+                ok(!block.includes(marker), `${marker} in ${verb}'s finalize`);
+              }
+              const region = text.slice(text.indexOf(`<!-- pipeline:begin ${verb}-finalize`), text.indexOf(`<!-- pipeline:end ${verb}-finalize`));
+              ok(region.length > 0 && !/consensus round|peer-conflict/.test(region), `${verb}'s finalize region proposes no consensus round`);
+              const conflict = runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='r'; VERDICT='conflict'; SUMMARY='s'\n${converged(block, persona, verb)}`, persona, { note: 'n', recorded: 'conflict' });
+              deepStrictEqual([conflict.status, conflict.log], [0, typicalLog(verb)], 'a conflict verdict takes the typical last write');
             });
 
             if (VERB_DESTS.includes(dest)) it('the finalize, run: a settle refusal stops the block before finish-verb, with its status (PC2b DD6)', () => {
               const block = converged(blockWith(/peer-runner\.mjs" settle \\/).text, persona, verb);
               const passed = runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='r'; VERDICT='agreed'; SUMMARY='s'\n${block}`, persona, { note: 'n' });
               strictEqual(passed.status, 0, passed.stderr);
-              deepStrictEqual(passed.log, ['append', 'settle', 'finish-verb']);
+              deepStrictEqual(passed.log, typicalLog(verb));
               ok(passed.argv[1].includes(' --run-id r --verdict agreed --summary s'), passed.argv[1]);
               ok(passed.argv.every((a) => a.includes(' --workflow-path /w/active.md ')), 'every call targets $ACTIVE');
               const refused = runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID=''\n${block}`, persona, { note: 'n', settleStatus: 1 });
@@ -1588,7 +1715,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 }
                 const ok_ = runBlock(shell, block, persona, { note: HOSTILE_NOTE });
                 strictEqual(ok_.status, 0, ok_.stderr);
-                deepStrictEqual(ok_.log, ['append', 'settle', 'finish-verb']);
+                deepStrictEqual(ok_.log, typicalLog(verb));
                 strictEqual(ok_.note, `${HOSTILE_NOTE}\n`, 'the note reached state.mjs unread by the shell');
                 const inherited = runBlock(shell, block, persona, { note: HOSTILE_NOTE, inheritedNote: 'a stale note' });
                 strictEqual(inherited.note, `${HOSTILE_NOTE}\n`, 'the note read, not one the shell inherited');
