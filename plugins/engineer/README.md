@@ -187,7 +187,10 @@ enabled = true
     # Starts by presenting an entry routing recommendation:
     # continue engineer:start, switch to orchestrator:plan,
     # plan a runtime:worktree, use runtime:* readiness/handoff tools,
-    # or drop to a single engineer verb.
+    # or drop to a single engineer verb. When a dirty tree, or another
+    # active workflow on the branch, blocks new work, it selects a
+    # worktree first and prints the runtime:worktree planner's
+    # git worktree add command (ADR-0067 Decision 8, item 3).
 ```
 
 Each slash command runs:
