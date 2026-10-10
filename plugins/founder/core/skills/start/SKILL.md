@@ -91,7 +91,9 @@ follows the same operational sequence inline, in this order, using the same
    `state.mjs append --workflow-path <found> --host codex --clear-next-step
    true --event resumed`; put an owner gate step 1 reported to the user
    first (once it is resolved, clear it with the phase the lifecycle
-   continues at and that phase's `--next-action`), then continue from its
+   continues at and that phase's next action, the owner's decision and the
+   action each a file written with the file-writing tool:
+   `--resolution-file`, `--next-action-file`), then continue from its
    `current_phase`; no description is needed. Any other workflow
    (`verb-chain`, or a legacy one without the field) → typed conflict:
    refuse, writing nothing, its owner gate included — `start` must not
@@ -108,8 +110,12 @@ follows the same operational sequence inline, in this order, using the same
    the request belongs to the workflow.
 3. **No active workflow.** The arguments are the description: the
    **clean-baseline gate** below, then `state.mjs create --workflow-type
-   start --verb investigate --persona founder --original-request <the
-   description>`.
+   start --verb investigate --persona founder --original-request-file
+   <the description's file>`. The description is text the user typed, so it
+   reaches `state.mjs` as a file, never on the command line (ADR-0059,
+   amendment of 2026-10-10): write it with the file-writing tool as
+   `request.txt` in a directory from
+   `mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`, ending with one newline.
 
 The **clean-baseline gate** runs on the bootstrap branch (when `find-active`
 returns empty and a new workflow is about to be created) before `state.mjs
@@ -258,7 +264,29 @@ lifecycle's default; when the result selects another, write the compact form
 of the proposal instead (selected_next, a one-line why, next_command), which
 the footer shows as recommended next work.
 
+The next action is text, so it reaches `state.mjs` as a file, never on the
+command line: in shell source a quote, `$` or backtick of it would be read as
+code (ADR-0059, amendment of 2026-10-10). Before the block:
+
+1. Create a private directory for it, and note the path it prints:
+
+   ```bash
+   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   ```
+
+2. With your file-writing tool, not the shell, create `next-action.txt` in
+   that directory, ending with one newline. The lifecycle's default is
+
+   ```text
+   Save/commit the business deliverable; optionally /founder:start the next item
+   ```
+
+   Nothing deletes the file.
+
+Then run the block with `TEXT_DIR` set to that directory.
+
 ```bash
+TEXT_DIR='<directory from step 1>'
 # ADR-0063 D3 — finish-verb is the lifecycle's last write: the ADR-0017
 # §sub-decision 5 atomic terminal write (summary-complete + terminal marker)
 # with the next step, kind commit (the owner saves and commits).
@@ -273,7 +301,7 @@ the footer shows as recommended next work.
 # core/skills/_shared/references/session-handoff.md § Archive timing.
 node "<plugin-root>/scripts/state.mjs" finish-verb \
   --workflow-path "$ACTIVE" --host <claude|codex> \
-  --next-action 'Save/commit the business deliverable; optionally /founder:start the next item' \
+  --next-action-file "$TEXT_DIR/next-action.txt" \
   --next-step-kind commit --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?
 ```
 

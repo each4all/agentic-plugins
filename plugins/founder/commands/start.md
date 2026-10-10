@@ -73,10 +73,25 @@ Empty `$ACTIVE` → **clean-baseline gate, then bootstrap** with
 `workflow_type=start`:
 
 <!-- pipeline:begin start-bootstrap -->
-In the block, replace `<the original request described above>` with a
-one-line genericized business topic; `AGENTIC_TOPIC` takes its place when it is set. The
-block sets the repository and branch itself: a shell variable does not outlive
-a Bash call.
+The request reaches `state.mjs` as a file, never in the block: in shell
+source a quote, `$`, backtick or line break of it would be read as code
+(ADR-0059, amendment of 2026-10-10). Before the block:
+
+1. Create a private directory for it, and note the path it prints:
+
+   ```bash
+   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   ```
+
+2. With your file-writing tool, not the shell, create `request.txt` in that
+   directory holding a one-line genericized business topic, ending with one newline.
+   Nothing deletes it.
+
+Then run the block with `TEXT_DIR` set to that directory; a request file left
+unwritten stops it before any write. When `AGENTIC_TOPIC` is set (a dispatched
+run), the block writes it to a file of its own and records that instead, and
+steps 1–2 are not needed. The block sets the repository and branch itself: a
+shell variable does not outlive a Bash call.
 
 A dirty tree's refusal selects a worktree first (ADR-0067 Decision 8, item 3):
 `scripts/discover-runtime.mjs worktree-plan` prints the runtime:worktree
@@ -94,6 +109,7 @@ below, which a new request beside an active workflow uses too; run it with the
 request in a new args file.
 
 ```bash
+TEXT_DIR='<directory from step 1>'
 ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
@@ -130,13 +146,23 @@ case "$STATUS" in
 esac
 GIT_HEAD="$(git rev-parse HEAD)"
 STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
+# The request, as a file (ADR-0059, amendment of 2026-10-10): the one the
+# agent wrote, or the AGENTIC_TOPIC a dispatcher exports, which is program data
+# the block writes to a private directory of its own, so no text flag is
+# inline and a dispatched run needs no file of the agent's.
+REQUEST_FILE="$TEXT_DIR/request.txt"
+if [ -n "${AGENTIC_TOPIC:-}" ]; then
+  REQUEST_FILE="$(mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX")/topic.txt" || exit 1
+  printf '%s\n' "$AGENTIC_TOPIC" > "$REQUEST_FILE" || exit 1
+fi
+grep -q '[^[:space:]]' "$REQUEST_FILE" 2>/dev/null || { echo "✗ request.txt in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was written." >&2; exit 1; }
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
   --repo-root "$REPO_ROOT" \
   --verb investigate --workflow-type start \
   --host "${AGENTIC_HOST:-claude}" --persona 'founder' \
   --git-baseline-branch "$GIT_BRANCH" --git-baseline-head "$GIT_HEAD" \
   --status-digest "$STATUS_DIGEST" \
-  --original-request "${AGENTIC_TOPIC:-<the original request described above>}" \
+  --original-request-file "$REQUEST_FILE" \
   --current-phase phase-1-discover \
   --next-action "Run Phase 1 discover+frame+decide composite")" || exit $?
 ```
@@ -260,16 +286,24 @@ Follow `${CLAUDE_PLUGIN_ROOT}/core/skills/start/SKILL.md` for the cognitive runb
 
 <!-- pipeline:begin start-phase-boundary -->
 Each phase boundary writes state via `state.mjs append --verb <verb>
---current-phase <phase> --next-action <...> --event updated` and dispatches
+--current-phase <phase> --next-action-file <file> --event updated` and
+dispatches
 the per-phase peer ensemble per
-`core/skills/_shared/references/ensemble-protocol.md` (always-max).
+`core/skills/_shared/references/ensemble-protocol.md` (always-max). Every text
+a write carries (a phase note, a next action, a summary, an owner's
+decision) reaches `state.mjs` and `peer-runner.mjs` as a file: write it with
+the file-writing tool into a private directory
+(`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`) and pass the `-file`
+form of its flag, never the text in a command (ADR-0059, amendment of
+2026-10-10).
 
 Inside the lifecycle each verb runs in place, so three rules hold at every
 phase (ADR-0066 PC2b):
 
 - **Each ensemble attempt is settled.** After its synthesis note, settle the
   phase's attempt from its run ledger with `peer-runner.mjs settle --phase
-  <verb> --run-id <that attempt's run id>` (empty when no run launched), before
+  <verb> --run-id <that attempt's run id>` (empty when no run launched) and
+  its `--summary-file`, before
   the next phase. A repeated phase (a second refine pass) dispatches under a
   new run id and settles each attempt.
 - **No phase closes the workflow.** A verb's own terminal write
@@ -280,9 +314,9 @@ phase (ADR-0066 PC2b):
   after the phase note with `state.mjs awaiting-owner-set --gate <gate>
   --anchor <anchor>`, a write that leaves the workflow open, and pause. Once
   the owner decides, clear it with `state.mjs awaiting-owner-clear --gate
-  <gate> --resolution <the owner's decision> --next-step-kind verb
+  <gate> --resolution-file <the owner's decision> --next-step-kind verb
   --next-step-verb <the next phase's verb> --next-step-confidence HIGH
-  --next-action <the next phase's action>`, and continue at that phase. The
+  --next-action-file <the next phase's action>`, and continue at that phase. The
   verb's own resolving step (decide's Owner selection, refine's Owner
   decision), run inside the lifecycle, clears the gate and stops instead of
   making the verb's terminal write; resume the lifecycle from it. A
@@ -317,10 +351,39 @@ closed-enum form, `--next-step-kind commit`: the owner saves and commits the
 deliverable (founder runs no commit itself). It closes the workflow
 `summary-complete`, and the code-emitted completion footer follows.
 
+Its next action reaches `state.mjs` as a file, never in the block: in shell
+source a quote, `$`, backtick or line of it would be read as code (ADR-0059,
+amendment of 2026-10-10). Before the block:
+
+1. Create a private directory for it, and note the path it prints:
+
+   ```bash
+   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   ```
+
+2. With your file-writing tool, not the shell, create `next-action.txt` in
+   that directory, ending with one newline: the compact form of the proposal
+   (selected_next + one-line why + next_command), which the footer surfaces
+   verbatim as "recommended next work". The lifecycle's default is
+
+   ```text
+   Save/commit the business deliverable; optionally /founder:start the next item
+   ```
+
+   Nothing deletes the file.
+
+Then run the block with `TEXT_DIR` set to that directory; a next action left
+unwritten stops it before any write.
+
 ```bash
+TEXT_DIR='<directory from step 1>'
 ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+# The next action the agent wrote with its file tool: state.mjs reads it
+# itself, so no line of it is shell source. A file left unwritten stops the
+# block before any write.
+grep -q '[^[:space:]]' "$TEXT_DIR/next-action.txt" 2>/dev/null || { echo "✗ next-action.txt in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was written." >&2; exit 1; }
 # ADR-0029 §1 / completion-output contract §2 — write the COMPACT form
 # (selected_next + one-line why + next_command) into --next-action; the
 # code-emitted footer surfaces it verbatim as "recommended next work".
@@ -339,7 +402,7 @@ CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 # core/skills/_shared/references/session-handoff.md § Archive timing.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-  --next-action 'Save/commit the business deliverable; optionally /founder:start the next item' \
+  --next-action-file "$TEXT_DIR/next-action.txt" \
   --next-step-kind commit --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?
 ```
 
