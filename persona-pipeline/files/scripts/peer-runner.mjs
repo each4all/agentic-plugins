@@ -39,6 +39,7 @@ import {
   assertWorkflowWritable,
   commitEnsemble,
   parseWorkflowFile,
+  readTextArgumentFile,
   recordPendingEnsemble,
   resolveWorkflowStorage,
   workflowStorage,
@@ -1759,6 +1760,11 @@ function parseCliArgs(argv) {
       case '--summary':
         opts.summary = rest[++i];
         break;
+      case '--summary-file':
+        // Given twice, the first file would go unread: refused.
+        if (Object.hasOwn(opts, 'summaryFile')) throw new Error('--summary-file is given more than once');
+        opts.summaryFile = rest[++i];
+        break;
       case '--apply':
         opts.apply = true;
         break;
@@ -1782,6 +1788,14 @@ function parseCliArgs(argv) {
         throw new Error(`Unknown argument: ${a}`);
     }
   }
+  // ADR-0059 amendment (j) — the synthesis summary an agent wrote reaches
+  // settle as a file, read here, before any subcommand runs: settle can
+  // commit a failed result before it looks at the summary, and a bad file
+  // must refuse before that write. One form or the other, never both.
+  if (Object.hasOwn(opts, 'summaryFile')) {
+    if (Object.hasOwn(opts, 'summary')) throw new Error('pass --summary or --summary-file, not both');
+    opts.summary = readTextArgumentFile(opts.summaryFile, '--summary-file');
+  }
   return opts;
 }
 
@@ -1801,10 +1815,14 @@ function printHelp() {
     '  sweep [--repo-root <path>] [--apply] [--stale-grace-ms <ms>]',
     '        [--retention-ttl-days <days>] [--retention-cap <n>]',
     "  settle --workflow-path <path> --phase <p> --run-id <id|''>",
-    '         [--verdict <v> --summary <s>] [--repo-root <path>] [--host claude|codex]',
-    '         [--stale-grace-ms <ms>]',
+    '         [--verdict <v> (--summary <s> | --summary-file <path>)]',
+    '         [--repo-root <path>] [--host claude|codex] [--stale-grace-ms <ms>]',
     '      Record what an ensemble attempt came to, decided from its ledger:',
     "      --run-id '' when no run launched. Exit 0 settled or skipped, 1 refused.",
+    '      --summary-file reads the summary an agent wrote with its file-writing',
+    '      tool (UTF-8, one trailing newline removed, the file kept), before',
+    '      anything is written: a runbook never puts it on the command line',
+    '      (ADR-0059 amendment (j)).',
     '',
   ].join('\n'));
 }

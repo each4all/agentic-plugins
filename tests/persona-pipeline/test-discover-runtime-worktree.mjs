@@ -124,7 +124,11 @@ for (const persona of personasFor('scripts/discover-runtime.mjs')) {
       }
       const none = plan(['--task', 'x', '--format', 'text'], { AGENTIC_RUNTIME_ROOT: join(dir, 'nowhere') });
       strictEqual(none.status, 0, none.stderr);
-      match(none.stdout, /^→ Proposed: a new worktree; \/runtime:worktree plan --task "<the request>" suggests its git worktree add command \(no runtime .* with scripts\/worktree\.mjs resolved\)\.\n$/);
+      // ADR-0059 amendment (j): the fallback names the runtime command, which
+      // takes the request through its own args file; no request text, and no
+      // placeholder for one, is spliced into the line.
+      match(none.stdout, /^→ Proposed: a new worktree; \/runtime:worktree plan with the request as its --task suggests its git worktree add command \(no runtime .* with scripts\/worktree\.mjs resolved\)\.\n$/);
+      ok(!/"<|'</.test(none.stdout), none.stdout);
       const unread = JSON.parse(plan(['--args-file', join(dir, 'missing.json')]).stdout);
       strictEqual(unread.command, null);
       match(unread.reason, /--args-file: no file at/);

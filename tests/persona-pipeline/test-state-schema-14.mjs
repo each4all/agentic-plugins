@@ -748,9 +748,14 @@ for (const persona of personasFor('scripts/state.mjs')) {
         strictEqual(r.status, 0, r.stderr);
         ok(r.stdout.includes(`the owner resolves it, then /${persona}:start resumes the lifecycle, clearing the gate with the phase it continues at`), r.stdout);
         const recipe = /node "[^"]+" (awaiting-owner-clear [^\n]+)\n/.exec(r.stdout)?.[1];
-        ok(recipe && recipe.endsWith(' --next-action "<the next step\'s action>"'), r.stdout);
-        // The recipe, filled in the way it says, clears the gate and the stale action.
-        const filled = cli(['awaiting-owner-clear', '--workflow-path', filePath, '--host', 'claude', '--gate', 'decide-conflict', '--next-step-kind', 'verb', '--next-step-confidence', 'HIGH', '--next-step-verb', 'compose', '--resolution', 'Owner selection: A', '--next-action', 'Run compose on direction A']);
+        ok(recipe && recipe.endsWith(' --resolution-file <decision file> --next-action-file <action file>'), r.stdout);
+        // The recipe, filled in the way it says (ADR-0059 amendment (j): the
+        // decision and the action in files), clears the gate and the stale action.
+        const decision = join(dir, 'decision.txt');
+        const action = join(dir, 'action.txt');
+        await writeFile(decision, 'Owner selection: A\n');
+        await writeFile(action, 'Run compose on direction A\n');
+        const filled = cli(['awaiting-owner-clear', '--workflow-path', filePath, '--host', 'claude', '--gate', 'decide-conflict', '--next-step-kind', 'verb', '--next-step-confidence', 'HIGH', '--next-step-verb', 'compose', '--resolution-file', decision, '--next-action-file', action]);
         strictEqual(filled.status, 0, filled.stderr);
         const fm = parseWorkflowFile(await readFile(filePath, 'utf8')).frontmatter;
         deepStrictEqual([fm.awaiting_owner_gate, fm.next_action, fm.workflow_type], [undefined, 'Run compose on direction A', 'start']);

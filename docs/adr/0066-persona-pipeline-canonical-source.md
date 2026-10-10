@@ -566,6 +566,19 @@ script is `sync:persona-pipeline`.
     block is emitted as a single-quoted literal with its quotes escaped, or is
     passed through an args file. It is never spliced into shell text where
     `$()`, backticks or a newline could change what runs.
+
+    *Note 2026-10-10:* this covers the values the generator substitutes:
+    declared fields, escaped once by the renderer. It does not cover text an
+    agent fills into a template's placeholder when it runs the block, such as
+    a phase note, a summary, a next action, an owner's resolution or a
+    request. No renderer sees that text, so no escaping can protect it.
+    [ADR-0059's amendment of 2026-10-10](0059-runbook-argument-transport.md#amendment-2026-10-10--text-an-agent-authors-reaches-the-cli-as-a-file-item-j)
+    decides that it reaches the CLI as a file the agent writes with its
+    file-writing tool (`--<name>-file`). The CLIs read that file from the
+    amendment's change on; the persona runbooks and pipeline regions still
+    splice the text until a later change moves them to it. A declared value
+    that the agent would edit into prose belongs in a Markdown scaffold for
+    that file, not in a shell context.
   - An unresolved placeholder fails the render.
   - Tests render values with quotes, `$()`, backticks, newlines and
     non-ASCII characters, and check them without running them.

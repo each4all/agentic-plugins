@@ -1623,6 +1623,163 @@ host_history:
     });
   });
 
+  // ADR-0059 amendment (j): text an agent authors reaches the CLI as a file it
+  // wrote with its file-writing tool, never as shell source. Each free-text
+  // flag has a --<name>-file twin, read before any subcommand runs.
+  describe(`${persona}: state.mjs CLI — --<name>-file text options (ADR-0059 amendment (j))`, () => {
+    // The child runs in the temporary repository, where the sentinels below
+    // look: --repo-root does not change a process's working directory.
+    function cli(args, cwd) {
+      return spawnSync(process.execPath, [STATE_PATH, ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    }
+    // Shell syntax, a leading --, a line that would end a PHASE_NOTE heredoc,
+    // CRLF inside, and non-ASCII text: all of it is content.
+    const HOSTILE = [
+      '--leading dashes, `touch pwned-tick` and $(touch pwned-sub)',
+      'PHASE_NOTE',
+      `"double" 'single' back\\slash ${'$'}HOME`,
+      'crlf inside\r\nand ü',
+    ].join('\n');
+
+    async function withWorkflowAndDir(fn) {
+      await withTmpRepo(async (repoRoot) => {
+        const { filePath } = await createWorkflow({
+          repoRoot, verb: 'investigate', host: 'claude', gitBaseline: MIN_BASELINE,
+          originalRequest: 'text files', currentPhase: 'phase-1', nextAction: 'before',
+        });
+        const dir = join(repoRoot, 'texts');
+        await mkdir(dir);
+        await fn({ repoRoot, filePath, dir, write: async (name, content) => {
+          const path = join(dir, name);
+          await writeFile(path, content);
+          return path;
+        } });
+      });
+    }
+
+    it('append takes the phase note and next action from files, byte for byte, one trailing newline removed; nothing in them runs and the files are kept', async () => {
+      await withWorkflowAndDir(async ({ repoRoot, filePath, write }) => {
+        const note = await write('note.md', `${HOSTILE}\n`);
+        const action = await write('next-action.txt', '--critique the `draft`\n');
+        const r = cli(['append', '--workflow-path', filePath, '--host', 'claude', '--phase-label', 'Phase 1: Files',
+          '--phase-note-file', note, '--next-action-file', action, '--event', 'updated'], repoRoot);
+        strictEqual(r.status, 0, r.stderr);
+        const { frontmatter, body } = await readWorkflow(filePath);
+        ok(body.includes(HOSTILE), `the note arrives as written:\n${body}`);
+        strictEqual(frontmatter.next_action, '--critique the `draft`');
+        strictEqual(await readFile(note, 'utf8'), `${HOSTILE}\n`, 'the file is kept');
+        for (const name of ['pwned-tick', 'pwned-sub']) {
+          await rejects(readFile(join(repoRoot, name)), { code: 'ENOENT' }, `${name}: nothing in the note ran`);
+        }
+      });
+    });
+
+    it('removes exactly one trailing LF or CRLF; a second newline, a lone CR and a BOM are content', async () => {
+      await withWorkflowAndDir(async ({ filePath, write }) => {
+        const cases = [
+          ['one', 'one'],
+          ['lf\n', 'lf'],
+          ['crlf\r\n', 'crlf'],
+          ['two\n\n', 'two\n'],
+          ['cr\r', 'cr\r'],
+          ['﻿bom\n', '﻿bom'],
+        ];
+        for (const [i, [content, expected]] of cases.entries()) {
+          const r = cli(['append', '--workflow-path', filePath, '--host', 'claude', '--phase-label', `L${i}`,
+            '--phase-note-file', await write('n.md', content), '--event', 'updated']);
+          strictEqual(r.status, 0, r.stderr);
+          // appendPhase writes `### <label>\n\n<note>\n\n` at the end of the body.
+          const text = await readFile(filePath, 'utf8');
+          ok(text.endsWith(`### L${i}\n\n${expected}\n\n`), `${JSON.stringify(content)} → ${JSON.stringify(expected)}: ${JSON.stringify(text.slice(-30))}`);
+        }
+      });
+    });
+
+    it('create, checkpoint-set, ensemble-commit, finish-verb and awaiting-owner-clear take their text from files; a required flag is met by the file form', async () => {
+      await withTmpRepo(async (repoRoot) => {
+        const dir = join(repoRoot, 'texts');
+        await mkdir(dir);
+        const file = async (name, content) => { const p = join(dir, name); await writeFile(p, content); return p; };
+        const created = cli(['create', '--repo-root', repoRoot, '--verb', 'investigate', '--host', 'claude',
+          '--git-baseline-branch', 'test', '--git-baseline-head', MIN_BASELINE.head,
+          '--original-request-file', await file('request.txt', '--a request with `ticks`\n'),
+          '--next-action-file', await file('first.txt', 'Run investigate skill\n')]);
+        strictEqual(created.status, 0, created.stderr);
+        const filePath = created.stdout.trim();
+        let fm = (await readWorkflow(filePath)).frontmatter;
+        deepStrictEqual([fm.original_request, fm.next_action], ['--a request with `ticks`', 'Run investigate skill']);
+
+        strictEqual(cli(['checkpoint-set', '--workflow-path', filePath, '--host', 'claude',
+          '--summary-file', await file('checkpoint.txt', 'half way: $(not run)\n')]).status, 0);
+        strictEqual((await readWorkflow(filePath)).frontmatter.latest_checkpoint.summary, 'half way: $(not run)');
+
+        const committed = cli(['ensemble-commit', '--workflow-path', filePath, '--run-id', 'r-1', '--phase', 'investigate',
+          '--ensemble-type', 'investigate', '--verdict', 'agreed', '--summary-file', await file('summary.txt', 'AGREED: `x`\n')]);
+        strictEqual(committed.status, 0, committed.stderr);
+        strictEqual((await readWorkflow(filePath)).frontmatter.ensemble_results.at(-1).summary, 'AGREED: `x`');
+
+        strictEqual(cli(['awaiting-owner-set', '--workflow-path', filePath, '--host', 'claude', '--gate', 'scope-routing', '--anchor', 'here']).status, 0);
+        const clear = cli(['awaiting-owner-clear', '--workflow-path', filePath, '--host', 'claude', '--gate', 'scope-routing',
+          '--resolution-file', await file('resolution.txt', 'Route to "decide" — it\'s the owner\'s call\n'),
+          '--next-action-file', await file('action.txt', 'Run decide\n')]);
+        strictEqual(clear.status, 0, clear.stderr);
+        const after = await readWorkflow(filePath);
+        ok(after.body.includes('Route to "decide" — it\'s the owner\'s call'), after.body);
+        strictEqual(after.frontmatter.next_action, 'Run decide');
+
+        const marked = cli(['set-terminal', '--workflow-path', filePath, '--host', 'claude', '--terminal-phase', 'summary-complete',
+          '--terminal-marker', 'false', '--next-action-file', await file('terminal.txt', 'Decide between `A` and B\n')]);
+        strictEqual(marked.status, 0, marked.stderr);
+        strictEqual((await readWorkflow(filePath)).frontmatter.next_action, 'Decide between `A` and B');
+
+        const finished = cli(['finish-verb', '--workflow-path', filePath, '--host', 'claude',
+          '--next-action-file', await file('finish.txt', 'Critique the brief\n'),
+          '--next-step-kind', 'verb', '--next-step-verb', 'critique', '--next-step-confidence', 'HIGH']);
+        strictEqual(finished.status, 0, finished.stderr);
+        fm = (await readWorkflow(filePath)).frontmatter;
+        deepStrictEqual([fm.next_action, fm.next_step_kind, fm.next_step_verb], ['Critique the brief', 'verb', 'critique']);
+      });
+    });
+
+    it('refuses, before anything is written: both forms (an empty inline value counts), a glued = spelling, a missing, empty, non-UTF-8 or NUL-holding file, and standard input', async () => {
+      await withWorkflowAndDir(async ({ filePath, dir, write }) => {
+        const good = await write('good.txt', 'fine\n');
+        const before = await readFile(filePath, 'utf8');
+        const cases = [
+          [['--phase-note', 'inline', '--phase-note-file', good], /pass --phase-note or --phase-note-file, not both/],
+          [['--next-action', '', '--next-action-file', good], /pass --next-action or --next-action-file, not both/],
+          [[`--phase-note-file=${good}`, 'x'], /--phase-note-file takes its value as the next argument/],
+          [['--phase-note-file', join(dir, 'missing.md')], /--phase-note-file: cannot read .*ENOENT/],
+          [['--phase-note-file', dir], /--phase-note-file: cannot read .*EISDIR/],
+          [['--phase-note-file', await write('empty.md', '')], /--phase-note-file: .* is empty/],
+          [['--phase-note-file', await write('newline.md', '\n')], /--phase-note-file: .* is empty/],
+          [['--phase-note-file', await write('latin1.md', Buffer.from([0x63, 0x61, 0x66, 0xe9]))], /is not valid UTF-8/],
+          [['--phase-note-file', await write('nul.md', 'a\0b')], /holds a NUL byte/],
+          [['--next-action-file', '-'], /standard input \(-\) is not read/],
+        ];
+        for (const [args, pattern] of cases) {
+          const r = cli(['append', '--workflow-path', filePath, '--host', 'claude', '--phase-label', 'L', ...args, '--event', 'updated']);
+          strictEqual(r.status, 1, `${args.join(' ')}: ${r.stderr}`);
+          ok(pattern.test(r.stderr), `${args.join(' ')}: ${r.stderr}`);
+          strictEqual(await readFile(filePath, 'utf8'), before, `${args.join(' ')}: nothing written`);
+        }
+        // A file flag given twice is a usage error (exit 2), whichever comes
+        // first: the last value would win and leave the other file unread.
+        for (const args of [['--phase-note-file', join(dir, 'missing.md'), '--phase-note-file', good],
+          ['--next-action-file', good, '--next-action-file', '-']]) {
+          const r = cli(['append', '--workflow-path', filePath, '--host', 'claude', '--phase-label', 'L', ...args, '--event', 'updated']);
+          strictEqual(r.status, 2, `${args.join(' ')}: ${r.stderr}`);
+          match(r.stderr, /is given more than once/);
+          strictEqual(await readFile(filePath, 'utf8'), before, `${args.join(' ')}: nothing written`);
+        }
+        // A required flag is still required: neither form is a refusal.
+        const missing = cli(['checkpoint-set', '--workflow-path', filePath, '--host', 'claude']);
+        strictEqual(missing.status, 1);
+        match(missing.stderr, /Missing required flags: --summary/);
+      });
+    });
+  });
+
   describe(`${persona}: state.mjs — gate helpers (ADR-0017 §sub-5)`, () => {
     it('terminalMarkerCheck — true only on explicit terminal_marker===true', () => {
       strictEqual(terminalMarkerCheck({ terminal_marker: true }), true);

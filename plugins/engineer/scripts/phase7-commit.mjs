@@ -78,6 +78,7 @@ import {
   autopilotMode as autopilotActivation,
   appendPhase,
   beginCommit,
+  readTextArgumentFile,
 } from './state.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -125,8 +126,9 @@ const VALID_CLASSIFICATIONS = new Set([
 // ADR-0028 PR4 A4 — `include-extra` is repeatable so the user can opt
 // specific entries from the plan-mode extras list back into the
 // execute-mode staging set without the all-or-nothing
-// `--accept-current-tree` bypass.
-const REPEATABLE_FLAGS = new Set(['subject-pkg', 'include-extra']);
+// `--accept-current-tree` bypass. `subject-pkg-file` is repeatable as
+// `subject-pkg` is (ADR-0059 amendment (j)).
+const REPEATABLE_FLAGS = new Set(['subject-pkg', 'subject-pkg-file', 'include-extra']);
 const BOOLEAN_FLAGS = new Set([
   'accept-current-tree',
   'non-interactive',
@@ -140,7 +142,7 @@ const BOOLEAN_FLAGS = new Set([
 ]);
 
 export function parseFlags(argv) {
-  const out = { 'subject-pkg': [], 'include-extra': [] };
+  const out = { 'subject-pkg': [], 'subject-pkg-file': [], 'include-extra': [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (!a.startsWith('--')) {
@@ -164,9 +166,55 @@ export function parseFlags(argv) {
     if (REPEATABLE_FLAGS.has(name)) {
       out[name].push(val);
     } else {
+      // Given twice, the first subject file would go unread: refused.
+      if (name === 'subject-file' && name in out) throw new Error('--subject-file is given more than once');
       out[name] = val;
     }
     i += 1;
+  }
+  return out;
+}
+
+/**
+ * ADR-0059 amendment (j) — a subject the agent edited reaches the driver as a
+ * file it wrote with its file-writing tool, never as shell source:
+ * `--subject-file <path>` for a single commit, a repeated
+ * `--subject-pkg-file <package>=<path>` for a split. Each file is read when
+ * the driver starts, before any mode runs, so a bad one refuses before
+ * anything is written (the recovery path's beginCommit included): one line,
+ * one trailing newline removed. The values then stand in for `--subject` and
+ * `--subject-pkg` and meet every rule those do; passing a file and the inline
+ * form for the same commit is refused. This parser takes each value as the
+ * next argument, so a `--subject…=` spelling, which it would keep as an
+ * unknown flag, is refused rather than ignored.
+ */
+export function resolveSubjectFiles(flags) {
+  const glued = Object.keys(flags).find((key) => /^subject(-file|-pkg|-pkg-file)?=/.test(key));
+  if (glued !== undefined) {
+    throw new Error(`--${glued.slice(0, glued.indexOf('='))} takes its value as the next argument, not after '='`);
+  }
+  const out = { ...flags, 'subject-pkg': [...flags['subject-pkg']] };
+  delete out['subject-file'];
+  delete out['subject-pkg-file'];
+  if ('subject-file' in flags) {
+    if (typeof flags.subject === 'string') throw new Error('pass --subject or --subject-file, not both');
+    out.subject = readTextArgumentFile(flags['subject-file'], '--subject-file');
+    assertSingleLineSubject(out.subject, '--subject-file');
+  }
+  const seen = new Set(flags['subject-pkg'].map((raw) => raw.slice(0, raw.indexOf('='))));
+  for (const raw of flags['subject-pkg-file']) {
+    const eq = raw.indexOf('=');
+    if (eq <= 0) {
+      throw new Error(`--subject-pkg-file expects '<pkg>=<path>' (got ${JSON.stringify(raw)})`);
+    }
+    const pkg = raw.slice(0, eq);
+    if (seen.has(pkg)) {
+      throw new Error(`commit '${pkg}' has more than one subject: pass one --subject-pkg or --subject-pkg-file for it`);
+    }
+    seen.add(pkg);
+    const subject = readTextArgumentFile(raw.slice(eq + 1), `--subject-pkg-file ${pkg}`);
+    assertSingleLineSubject(subject, `--subject-pkg-file ${pkg}`);
+    out['subject-pkg'].push(`${pkg}=${subject}`);
   }
   return out;
 }
@@ -736,9 +784,14 @@ async function planMode({ workflowPath, repoRoot, frontmatter, acceptCurrentTree
     commits: suggestedSubjects,
     strict_cc: phase7Config.strictCC,
     notes: [
+      // ADR-0059 amendment (j) — the subject never goes on a command line:
+      // the suggestion as it stands, or an edit in a file.
       shape.requiresSplit
-        ? 'shouldSplit=true — pass repeated --subject-pkg <pkg>=<subj> in execute mode (ADR-0028 §P8).'
-        : 'single-commit path — pass --subject "<text>" in execute mode.',
+        ? 'shouldSplit=true — in execute mode, pass --suggested-subjects to take every suggested subject as it is, ' +
+          'or for edited subjects a repeated --subject-pkg-file <pkg>=<file>, one per commit (docs for a ' +
+          'docs-only commit), each file holding the subject your file-writing tool wrote (ADR-0028 §P8).'
+        : 'single-commit path — in execute mode, pass --suggested-subjects to take the suggested subject as it is, ' +
+          'or for an edited subject --subject-file <file>, the file holding the subject your file-writing tool wrote.',
       branchDecision.askUser
         ? 'ask_user=true — confirm the staging set with the user before --mode execute.'
         : 'ask_user=false — staging set fully implied by manifest or accept-current-tree.',
@@ -781,7 +834,8 @@ export function pickSubjectForCommit({ commit, flags, requiresSplit }) {
     if (typeof flags.subject === 'string') {
       throw new Error(
         '--subject is not allowed when the staging set requires a split. ' +
-        'Use repeatable --subject-pkg <pkg>=<subj> instead (ADR-0028 §P8).',
+        'Use --suggested-subjects, or a repeated --subject-pkg-file <pkg>=<file> ' +
+        'per commit, instead (ADR-0028 §P8).',
       );
     }
     const map = new Map();
@@ -806,14 +860,18 @@ export function pickSubjectForCommit({ commit, flags, requiresSplit }) {
       throw new Error(
         `--subject-pkg missing for commit '${key}' ` +
         `(saw keys: ${[...map.keys()].join(', ') || 'none'}). ` +
-        `For docs-only commits use --subject-pkg docs=<text>.`,
+        `Pass --subject-pkg-file ${key}=<file> with the subject in the file, or ` +
+        '--suggested-subjects; a docs-only commit is keyed docs.',
       );
     }
     return map.get(key);
   }
   // Single commit
   if (typeof flags.subject !== 'string' || flags.subject.length === 0) {
-    throw new Error('--subject is required when the staging set is a single commit.');
+    throw new Error(
+      '--subject is required when the staging set is a single commit: pass --subject-file <file> ' +
+      'with the subject in the file, or --suggested-subjects.',
+    );
   }
   assertSingleLineSubject(flags.subject, '--subject');
   return flags.subject;
@@ -1413,7 +1471,7 @@ async function executeMode({
   const landed = [];
   const suggested = flags['suggested-subjects'] === true;
   if (suggested && (typeof flags.subject === 'string' || flags['subject-pkg'].length > 0)) {
-    throw new Error('--suggested-subjects excludes --subject and --subject-pkg.');
+    throw new Error('--suggested-subjects excludes --subject and --subject-pkg, and their -file forms.');
   }
   // Every subject is chosen and checked before anything is written, so a bad
   // subject flag leaves the workflow as it was.
@@ -1734,10 +1792,16 @@ Plan mode:
   intent with the user before --mode execute.
 
 Execute mode requires the user-confirmed subject:
-  --subject <text>                  Single-commit subject (rejected when shouldSplit).
-  --subject-pkg <pkg>=<subj>        Per-package subject (repeatable; required when shouldSplit).
   --suggested-subjects              Use plan mode's suggested subject for every commit,
-                                    single or split (ADR-0063 autopilot). Excludes the two above.
+                                    single or split (ADR-0063 autopilot). Excludes the forms below.
+  --subject-file <path>             Single-commit subject, read from a file (rejected when
+                                    shouldSplit).
+  --subject-pkg-file <pkg>=<path>   Per-package subject, read from a file (repeatable; one per
+                                    commit when shouldSplit, docs for a docs-only commit).
+  --subject <text>                  The inline forms of the two above, for programs; a runbook
+  --subject-pkg <pkg>=<subj>        passes an edited subject as a file (ADR-0059 amendment (j)).
+  A subject file holds one line, read as UTF-8 with one trailing newline removed; it is
+  read before anything is written, and kept.
   --confirm-non-interactive         Skip the staging-intent confirm gate.
   --non-interactive                 Alias for --confirm-non-interactive.
 
@@ -1801,6 +1865,14 @@ async function runMain(argv) {
   if (flags.help === true) {
     process.stdout.write(help());
     return 0;
+  }
+  // ADR-0059 amendment (j) — subject files are read before any mode runs, so
+  // a bad one refuses before anything is written.
+  try {
+    flags = resolveSubjectFiles(flags);
+  } catch (err) {
+    process.stderr.write(`✗ ${err.message}\n`);
+    return 2;
   }
   for (const required of ['mode', 'workflow-path', 'repo-root', 'host']) {
     if (!flags[required]) {

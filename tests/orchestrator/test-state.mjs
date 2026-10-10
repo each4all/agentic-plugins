@@ -1422,6 +1422,149 @@ describe('CLI subcommands', () => {
 });
 
 // ============================================================================
+// ADR-0059 amendment (j) — text an agent authors reaches the CLI as a file it
+// wrote with its file-writing tool, never as shell source: each free-text flag
+// has a --<name>-file twin, read before any subcommand runs.
+// ============================================================================
+
+describe('state.mjs CLI — --<name>-file text options (ADR-0059 amendment (j))', () => {
+  // A child given a cwd runs there, where the sentinels look: --repo-root does
+  // not change a process's working directory.
+  const cli = (args, cwd) => spawnSync(process.execPath, [STATE_MJS, ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  // Shell syntax, a leading --, a line that would end a PHASE_NOTE heredoc,
+  // and non-ASCII text: all of it is content.
+  const HOSTILE = [
+    '--leading dashes, `touch pwned-tick` and $(touch pwned-sub)',
+    'PHASE_NOTE',
+    `"double" 'single' back\\slash ${'$'}HOME ü`,
+  ].join('\n');
+
+  async function withMacro(name, fn) {
+    await withTmpRepo(name, async (root) => {
+      const texts = join(root, 'texts');
+      await mkdir(texts);
+      const file = async (fileName, content) => {
+        const path = join(texts, fileName);
+        await writeFile(path, content);
+        return path;
+      };
+      const created = cli([
+        'create', '--repo-root', root, '--verb', 'plan', '--host', 'claude',
+        '--git-baseline-branch', 'main', '--git-baseline-head', '0000000000000000000000000000000000000000',
+        '--original-request-file', await file('request.txt', '--a request with `ticks` and $(subshell)\n'),
+        '--next-action-file', await file('first.txt', 'Run plan\n'),
+      ]);
+      strictEqual(created.status, 0, created.stderr);
+      await fn({ root, filePath: created.stdout.trim(), file });
+    });
+  }
+
+  it('create, append, checkpoint-set, ensemble-commit, plan-set and set-terminal take their text from files, as written; nothing in them runs', async () => {
+    await withMacro('text-files', async ({ root, filePath, file }) => {
+      let { frontmatter, body } = await readWorkflow(filePath);
+      deepStrictEqual([frontmatter.original_request, frontmatter.next_action], ['--a request with `ticks` and $(subshell)', 'Run plan']);
+
+      // The `=` spelling this parser accepts works for the file form too.
+      const appended = cli(['append', '--workflow-path', filePath, '--host', 'claude', '--phase-label', 'Phase 1: Files',
+        `--phase-note-file=${await file('note.md', `${HOSTILE}\n`)}`, '--next-action-file', await file('next.txt', 'Approve the plan\n'),
+        '--event', 'updated'], root);
+      strictEqual(appended.status, 0, appended.stderr);
+      ({ frontmatter, body } = await readWorkflow(filePath));
+      ok(body.includes(`### Phase 1: Files\n\n${HOSTILE}\n\n`), body);
+      strictEqual(frontmatter.next_action, 'Approve the plan');
+
+      strictEqual(cli(['checkpoint-set', '--workflow-path', filePath, '--host', 'claude',
+        '--summary-file', await file('checkpoint.txt', 'S1 next: `dispatch`\n')]).status, 0);
+      strictEqual((await readWorkflow(filePath)).frontmatter.latest_checkpoint.summary, 'S1 next: `dispatch`');
+
+      const committed = cli(['ensemble-commit', '--workflow-path', filePath, '--run-id', 'r-1', '--phase', 'plan',
+        '--ensemble-type', 'plan-verify', '--verdict', 'pass', '--summary-file', await file('summary.txt', 'AGREED: $(x)\r\n')]);
+      strictEqual(committed.status, 0, committed.stderr);
+      strictEqual((await readWorkflow(filePath)).frontmatter.ensemble_results.at(-1).summary, 'AGREED: $(x)');
+
+      const subtasks = await file('subtasks.json', JSON.stringify([{ id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' }]));
+      const planned = cli(['plan-set', '--workflow-path', filePath, '--host', 'claude', '--subtasks-json-file', subtasks,
+        '--decision-file', await file('decision.txt', 'Option "B" — it\'s `safer`\n'),
+        '--architecture-file', await file('architecture.txt', 'S1 → S2 ∥ S3\n\nwith $(nothing) run\n')]);
+      strictEqual(planned.status, 0, planned.stderr);
+      const { plan } = (await readWorkflow(filePath)).frontmatter;
+      deepStrictEqual([plan.decision, plan.architecture], ['Option "B" — it\'s `safer`', 'S1 → S2 ∥ S3\n\nwith $(nothing) run']);
+
+      const terminal = cli(['set-terminal', '--workflow-path', filePath, '--host', 'claude', '--terminal-phase', 'finalized',
+        '--terminal-marker', 'false', '--next-action-file', await file('final.txt', 'Archive the macro\n')]);
+      strictEqual(terminal.status, 0, terminal.stderr);
+      strictEqual((await readWorkflow(filePath)).frontmatter.next_action, 'Archive the macro');
+
+      for (const name of ['pwned-tick', 'pwned-sub']) {
+        await rejects(readFile(join(root, name)), { code: 'ENOENT' }, `${name}: nothing in the text ran`);
+      }
+    });
+  });
+
+  // This reader is the orchestrator's own (ADR-0010 §5), so its rule is
+  // checked here as well as in the persona suite.
+  it('removes exactly one trailing LF or CRLF; a second newline, a lone CR and a BOM are content', async () => {
+    await withMacro('text-files-newlines', async ({ filePath, file }) => {
+      const cases = [
+        ['one', 'one'],
+        ['lf\n', 'lf'],
+        ['crlf\r\n', 'crlf'],
+        ['two\n\n', 'two\n'],
+        ['cr\r', 'cr\r'],
+        ['﻿bom\n', '﻿bom'],
+      ];
+      for (const [i, [content, expected]] of cases.entries()) {
+        const r = cli(['append', '--workflow-path', filePath, '--host', 'claude', '--phase-label', `L${i}`,
+          '--phase-note-file', await file('n.md', content), '--event', 'updated']);
+        strictEqual(r.status, 0, r.stderr);
+        // appendPhase writes `### <label>\n\n<note>\n\n` at the end of the body.
+        const text = await readFile(filePath, 'utf8');
+        ok(text.endsWith(`### L${i}\n\n${expected}\n\n`), `${JSON.stringify(content)} → ${JSON.stringify(expected)}: ${JSON.stringify(text.slice(-30))}`);
+      }
+    });
+  });
+
+  it('refuses, before anything is written: both forms by presence (an empty or = inline value counts), a missing, empty, non-UTF-8 or NUL-holding file, and standard input', async () => {
+    await withMacro('text-files-refused', async ({ root, filePath, file }) => {
+      const good = await file('good.txt', 'fine\n');
+      const before = await readFile(filePath, 'utf8');
+      const cases = [
+        [['--phase-note', 'inline', '--phase-note-file', good], /pass --phase-note or --phase-note-file, not both/],
+        [['--next-action=', `--next-action-file=${good}`], /pass --next-action or --next-action-file, not both/],
+        [['--phase-note-file', join(root, 'missing.md')], /--phase-note-file: cannot read .*ENOENT/],
+        [['--phase-note-file', await file('empty.md', '\r\n')], /--phase-note-file: .* is empty/],
+        [['--phase-note-file', await file('latin1.md', Buffer.from([0x63, 0x61, 0x66, 0xe9]))], /is not valid UTF-8/],
+        [['--phase-note-file', await file('nul.md', 'a\0b')], /holds a NUL byte/],
+        [['--phase-note-file', '-'], /standard input \(-\) is not read/],
+        // A flag left without its value here reads as empty: no path.
+        [['--phase-note-file', '--event', 'updated'], /--phase-note-file needs a path/],
+      ];
+      for (const [args, pattern] of cases) {
+        const r = cli(['append', '--workflow-path', filePath, '--host', 'claude', '--phase-label', 'L', ...args]);
+        strictEqual(r.status, 1, `${args.join(' ')}: ${r.stderr}`);
+        ok(pattern.test(r.stderr), `${args.join(' ')}: ${r.stderr}`);
+        strictEqual(await readFile(filePath, 'utf8'), before, `${args.join(' ')}: nothing written`);
+      }
+      // A file flag given twice, in either spelling, is a usage error (exit 2):
+      // the last value would win and leave the other file unread.
+      for (const args of [['--phase-note-file', join(root, 'missing.md'), `--phase-note-file=${good}`],
+        ['--summary-file', good, '--summary-file', '-']]) {
+        const r = cli(['append', '--workflow-path', filePath, '--host', 'claude', '--phase-label', 'L', ...args]);
+        strictEqual(r.status, 2, `${args.join(' ')}: ${r.stderr}`);
+        ok(/is given more than once/.test(r.stderr), r.stderr);
+        strictEqual(await readFile(filePath, 'utf8'), before, `${args.join(' ')}: nothing written`);
+      }
+      const subtasks = await file('subtasks.json', '[]');
+      const both = cli(['plan-set', '--workflow-path', filePath, '--host', 'claude', '--subtasks-json-file', subtasks,
+        '--decision', 'A', '--decision-file', good]);
+      strictEqual(both.status, 1);
+      ok(/pass --decision or --decision-file, not both/.test(both.stderr), both.stderr);
+      strictEqual(await readFile(filePath, 'utf8'), before, 'plan-set wrote nothing');
+    });
+  });
+});
+
+// ============================================================================
 // ADR-0019 PR-B — schema 1.1 bump + plan producers (atomic). Covers:
 //  - subtask schema 1.1 fields (verb / profile / topic) round-trip
 //  - new terminal-partial statuses (deferred / abandoned)
