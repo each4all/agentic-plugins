@@ -56,6 +56,19 @@ derived from the verb's actual result and the current workflow state:
   the owner rather than a command to run. There is no `/{{persona}}:commit`.
 {{/capability}}
 
+**A conflict verdict (ADR-0067 Decision 8, amending ADR-0029 §3).** When
+the synthesis verdict of `/{{persona}}:decide`, `/{{persona}}:critique` or
+`/{{persona}}:investigate` is `conflict`, `selected_next` is the owner's
+decision after a bounded consensus round, `next_command` is
+`/runtime:consensus plan --task-file <the verb's contested-items file>
+--peers claude,codex --max-rounds 2`, and "the owner decides now" is among
+the `rejected_alternatives`, with the reason for this case. The projection
+stays `owner-decision`, with decide's `decide-conflict` gate or the
+`peer-conflict` gate of critique and investigate (§ Owner gates). compose,
+frame and refine never propose it, and neither does any other verdict.
+Nothing runs the round: the owner does, then decides with its result as
+evidence.
+
 The default verb sequence (Routing Recommendation table above) remains
 the **fallback** when evidence is genuinely neutral — but a fixed
 literal is no longer the default output. When a verb surfaces 2+ viable

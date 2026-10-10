@@ -1258,7 +1258,7 @@
     },
     {
       "id": "investigate-finalize",
-      "template": "regions/verb-finalize.md",
+      "template": "regions/verb-finalize-consensus.md",
       "dest": "commands/investigate.md",
       "personas": [
         "designer",
@@ -1319,7 +1319,7 @@
           "context": "shell"
         },
         "owner_gates": {
-          "value": "- `scope-routing` (heading `### Routing recommendation`, anchor\n  `routing-recommendation`): the request does not belong in this verb or\n  workflow; the owner picks the route, then clears the gate.",
+          "value": "- `peer-conflict` (the `Ensemble synthesis` heading, anchor\n  `ensemble-synthesis`): the synthesis verdict is `conflict`; the block's\n  conflict branch records it with the run id, and the owner rules on the\n  contested items, then clears it with `awaiting-owner-clear --gate\n  peer-conflict --resolution \"<the ruling>\"` and the next step.\n- `scope-routing` (heading `### Routing recommendation`, anchor\n  `routing-recommendation`): the request does not belong in this verb or\n  workflow; the owner picks the route, then clears the gate.",
           "context": "markdown"
         },
         "skip_cause": {
@@ -1329,6 +1329,14 @@
         "skip_label": {
           "field": "derived.ensemble_skip_label",
           "context": "markdown"
+        },
+        "conflict_gate": {
+          "value": "peer-conflict",
+          "context": "markdown"
+        },
+        "conflict_gate_word": {
+          "value": "peer-conflict",
+          "context": "shell"
         }
       }
     },
@@ -1526,7 +1534,7 @@
     },
     {
       "id": "decide-finalize",
-      "template": "regions/verb-finalize.md",
+      "template": "regions/verb-finalize-consensus.md",
       "dest": "commands/decide.md",
       "personas": [
         "designer",
@@ -1587,7 +1595,7 @@
           "context": "shell"
         },
         "owner_gates": {
-          "value": "- `decide-conflict` (the `Ensemble synthesis` heading, anchor\n  `ensemble-synthesis`): the decision is left to the owner's selection, a\n  CONFLICT remained or a veto gate is unresolved; § Owner selection below\n  resolves it.\n- `scope-routing` (heading `### Routing recommendation`, anchor\n  `routing-recommendation`): the request does not belong in this verb or\n  workflow; the owner picks the route, then clears the gate.",
+          "value": "- `decide-conflict` (the `Ensemble synthesis` heading, anchor\n  `ensemble-synthesis`): the decision is left to the owner's selection, a\n  CONFLICT remained or a veto gate is unresolved; § Owner selection below\n  resolves it. A CONFLICT takes the block's conflict branch, which records\n  the gate with the run id; an owner selection or a veto uses the\n  owner-decision form, with none.\n- `scope-routing` (heading `### Routing recommendation`, anchor\n  `routing-recommendation`): the request does not belong in this verb or\n  workflow; the owner picks the route, then clears the gate.",
           "context": "markdown"
         },
         "skip_cause": {
@@ -1597,6 +1605,14 @@
         "skip_label": {
           "field": "derived.ensemble_skip_label",
           "context": "markdown"
+        },
+        "conflict_gate": {
+          "value": "decide-conflict",
+          "context": "markdown"
+        },
+        "conflict_gate_word": {
+          "value": "decide-conflict",
+          "context": "shell"
         }
       }
     },
@@ -2200,7 +2216,7 @@
     },
     {
       "id": "critique-finalize",
-      "template": "regions/verb-finalize.md",
+      "template": "regions/verb-finalize-consensus.md",
       "dest": "commands/critique.md",
       "personas": [
         "designer",
@@ -2261,7 +2277,7 @@
           "context": "shell"
         },
         "owner_gates": {
-          "value": "- `scope-routing` (heading `### Routing recommendation`, anchor\n  `routing-recommendation`): the request does not belong in this verb or\n  workflow; the owner picks the route, then clears the gate.",
+          "value": "- `peer-conflict` (the `Ensemble synthesis` heading, anchor\n  `ensemble-synthesis`): the synthesis verdict is `conflict`; the block's\n  conflict branch records it with the run id, and the owner rules on the\n  contested items, then clears it with `awaiting-owner-clear --gate\n  peer-conflict --resolution \"<the ruling>\"` and the next step.\n- `scope-routing` (heading `### Routing recommendation`, anchor\n  `routing-recommendation`): the request does not belong in this verb or\n  workflow; the owner picks the route, then clears the gate.",
           "context": "markdown"
         },
         "skip_cause": {
@@ -2271,6 +2287,14 @@
         "skip_label": {
           "field": "derived.ensemble_skip_label",
           "context": "markdown"
+        },
+        "conflict_gate": {
+          "value": "peer-conflict",
+          "context": "markdown"
+        },
+        "conflict_gate_word": {
+          "value": "peer-conflict",
+          "context": "shell"
         }
       }
     },

@@ -114,6 +114,40 @@ describe('the landing round trip (D23 = A)', () => {
 });
 
 describe('halts', () => {
+  // ADR-0067 Decision 8, items 1 and 5: the run never runs the consensus
+  // round; its halt record and its report carry the command, for the owner.
+  it('a step that ends on a conflict gate halts on it, and the halt record and report carry the bounded consensus round', async () => {
+    const t = await setup({ scenario: { A: { next: [COMMIT] }, B: { next: [DONE] }, actions: { 1: 'conflict-gate' } } });
+    try {
+      strictEqual(await t.run(), 2, t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual(r.steps.map((s) => [s.kind, s.outcome]), [['dispatch', 'ok']]);
+      strictEqual(r.halt.reason, 'awaiting-owner:peer-conflict');
+      const wf = (await t.fx.subtask('A')).engineer_workflow_id;
+      const rel = `.agentic-plugins/state/engineer/consensus/${wf}.review-20261001T000000Z-c0ffee.md`;
+      const command = `/runtime:consensus plan --task-file ${join(t.work, rel)} --peers claude,codex --max-rounds 2`;
+      deepStrictEqual(r.halt.proposals, [{ kind: 'consensus', command, pointer: rel, subtask_id: 'A', gate: 'peer-conflict' }]);
+      ok(t.lines.includes(`  proposed for subtask A (peer-conflict), for the owner to run before deciding: a bounded consensus round, ${command}`), t.lines.join('\n'));
+      ok(t.lines.includes(`    pointer: ${rel}`), t.lines.join('\n'));
+      strictEqual(readFileSync(join(t.work, rel), 'utf8'), 'C1: A or B?\n', 'the run left the task file as the verb wrote it');
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('a conflict gate whose task file is missing halts on it with no proposal', async () => {
+    const t = await setup({ scenario: { A: { next: [COMMIT] }, B: { next: [DONE] }, actions: { 1: 'conflict-gate-no-task' } } });
+    try {
+      strictEqual(await t.run(), 2, t.lines.join('\n'));
+      const r = t.latest();
+      strictEqual(r.halt.reason, 'awaiting-owner:peer-conflict');
+      deepStrictEqual(r.halt.proposals, []);
+      ok(!t.lines.some((l) => l.includes('runtime:consensus')), t.lines.join('\n'));
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
   it('a plan edited while a step runs halts plan-unapproved before the next step', async () => {
     const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [DONE] }, actions: { 1: 'edit-plan' } } });
     try {

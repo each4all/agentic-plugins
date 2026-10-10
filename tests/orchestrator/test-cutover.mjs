@@ -236,6 +236,35 @@ describe('state.mjs cutover (ADR-0067 Decision 4, item 4)', () => {
     }
   });
 
+  // ADR-0067 Decision 8 — a record moves with its consensus task files, live
+  // and retired, as with its ledgers; another workflow's stay.
+  it('a moving record takes its consensus task files, live and retired, with it', () => {
+    const r = setup();
+    try {
+      const dir = join(r.home, ENG_HOME, 'consensus');
+      mkdirSync(dir, { recursive: true });
+      const live = join(dir, `${r.childId}.review-1.md`);
+      const retired = join(dir, `${r.childId}.review-0.resolved.md`);
+      const other = join(dir, `${basename(r.unrelated, '.md')}.review-2.md`);
+      for (const f of [live, retired, other]) writeFileSync(f, 'C1\n');
+      const plan = cutover(r.main, 'plan');
+      strictEqual(plan.status, 0, plan.stderr);
+      deepStrictEqual(plan.json.pairs.filter((p) => p.kind === 'consensus').map((p) => [p.plugin, p.source, p.destination]), [
+        ['engineer', retired, dest(r, ENG_HOME, 'consensus', basename(retired))],
+        ['engineer', live, dest(r, ENG_HOME, 'consensus', basename(live))],
+      ]);
+      const moved = cutover(r.main, 'move');
+      strictEqual(moved.status, 0, moved.stderr);
+      for (const f of [live, retired]) {
+        ok(!existsSync(f), `${f} moved`);
+        strictEqual(readFileSync(dest(r, ENG_HOME, 'consensus', basename(f)), 'utf8'), 'C1\n');
+      }
+      ok(existsSync(other), 'a task file of a workflow that stays, stays');
+    } finally {
+      rmSync(r.dir, { recursive: true, force: true });
+    }
+  });
+
   it("a linked worktree's child of a macro already in the main checkout moves; the macro stays", () => {
     const r = setup({ macroAt: 'main', childAt: 'other' });
     try {
@@ -836,6 +865,34 @@ describe('state.mjs cutover (ADR-0067 Decision 4, item 4)', () => {
         strictEqual(verified.status, 0, verified.stderr);
         ok(verified.json.manifests.includes(second.json.manifest));
         deepStrictEqual(verified.json.manifests.filter((m) => doc.cutover_manifests.includes(m)), [], 'verify reads no reversed manifest');
+      } finally {
+        rmSync(r.dir, { recursive: true, force: true });
+      }
+    });
+
+    // ADR-0067 Decision 8 — a record sent back takes its consensus task files,
+    // live and retired, back with it, as the cutover brought them.
+    it('sends a moved record\'s consensus task files, live and retired, back with it', () => {
+      const r = setup();
+      try {
+        const dir = join(r.home, ENG_HOME, 'consensus');
+        mkdirSync(dir, { recursive: true });
+        const files = [join(dir, `${r.childId}.review-1.md`), join(dir, `${r.childId}.review-0.resolved.md`)];
+        for (const f of files) writeFileSync(f, 'C1\n');
+        cutoverAndEnable(r);
+        for (const f of files) ok(existsSync(dest(r, ENG_HOME, 'consensus', basename(f))), `${f} moved by the cutover`);
+        const plan = rollback(r.main, 'plan');
+        strictEqual(plan.status, 0, plan.stderr);
+        deepStrictEqual(
+          plan.json.pairs.filter((p) => p.kind === 'consensus').map((p) => [p.source, p.destination]).sort(),
+          files.map((f) => [dest(r, ENG_HOME, 'consensus', basename(f)), f]).sort(),
+        );
+        const moved = rollback(r.main, 'move');
+        strictEqual(moved.status, 0, moved.stderr);
+        for (const f of files) {
+          strictEqual(readFileSync(f, 'utf8'), 'C1\n', `${f} is back`);
+          ok(!existsSync(dest(r, ENG_HOME, 'consensus', basename(f))));
+        }
       } finally {
         rmSync(r.dir, { recursive: true, force: true });
       }

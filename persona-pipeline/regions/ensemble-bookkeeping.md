@@ -18,6 +18,17 @@ Frontmatter is the machine-parsable retrospective surface; the body is
 the human-readable narrative. Both are written under the per-file lock
 and MAY be written in separate calls.
 
+**A conflict leaves a third record (ADR-0067 Decision 8).** When decide,
+critique or investigate settles a run whose synthesis verdict is
+`conflict`, the verb also writes the contested items, prepared as its peer
+prompt was, to the workflow's consensus task file,
+`<home>/consensus/<workflow-id>.<run-id>.md`
+(`../../../../scripts/state.mjs consensus-task`, which refuses unless
+`ensemble_results` holds the run with the verdict `conflict`), and its
+conflict gate records that run id. `runtime:consensus plan --task-file`
+reads the file when the owner runs the proposed round; once the gate leaves,
+the file is renamed `<workflow-id>.<run-id>.resolved.md` and kept.
+
 **Each attempt is settled from its run ledger.** A verb's finalize runs
 `../../../../scripts/peer-runner.mjs settle` with the run id its dispatch
 generated (empty when no run launched) before its last write, and the

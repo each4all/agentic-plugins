@@ -168,10 +168,10 @@ for (const persona of personasFor('scripts/state.mjs')) {
       });
     });
 
-    it('the enums are engineer\'s: four kinds, three confidences, five workflow gates', () => {
+    it('the enums are engineer\'s: four kinds, three confidences, six workflow gates (ADR-0067 Decision 8 adds peer-conflict)', () => {
       deepStrictEqual([...VALID_NEXT_STEP_KINDS], ['verb', 'commit', 'owner-decision', 'done']);
       deepStrictEqual([...VALID_CONFIDENCE], ['HIGH', 'MEDIUM', 'LOW']);
-      deepStrictEqual([...VALID_WORKFLOW_OWNER_GATES].sort(), ['decide-conflict', 'pr-handling', 'recurring-finding', 'scope-routing', 'staging-set']);
+      deepStrictEqual([...VALID_WORKFLOW_OWNER_GATES].sort(), ['decide-conflict', 'peer-conflict', 'pr-handling', 'recurring-finding', 'scope-routing', 'staging-set']);
     });
   });
 
@@ -379,8 +379,8 @@ for (const persona of personasFor('scripts/state.mjs')) {
   });
 
   describe(`${persona}: schema 1.4 — owner gates (awaiting-owner-set / -clear)`, () => {
-    it('only the gates whose capability is on can be set: the three, and staging-set or pr-handling with its capability', () => {
-      const expected = ['decide-conflict', 'recurring-finding', 'scope-routing'];
+    it('only the gates whose capability is on can be set: the four, and staging-set or pr-handling with its capability', () => {
+      const expected = ['decide-conflict', 'peer-conflict', 'recurring-finding', 'scope-routing'];
       if (CAPS.commit_surface) expected.push('staging-set');
       if (CAPS.dispatch_target) expected.push('pr-handling');
       deepStrictEqual([...settableOwnerGates()].sort(), expected.sort());

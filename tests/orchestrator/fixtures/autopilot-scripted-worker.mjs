@@ -193,6 +193,20 @@ export async function perform({ prompt, cwd, env }) {
       await eng.recordComposedFile({ workflowPath: filePath, path: rel, op: 'create' });
     }
     const ns = nextFor(id);
+    if (action === 'conflict-gate' || action === 'conflict-gate-no-task') {
+      // ADR-0067 Decision 8: the verb's synthesis is a conflict — the settle
+      // records it, the task file is written (or not), and the conflict gate
+      // is recorded with the run id; the step ends there, as it should.
+      const runId = 'review-20261001T000000Z-c0ffee';
+      await eng.commitEnsemble({ workflowPath: filePath, run_id: runId, phase: 'critique', ensemble_type: 'review', verdict: 'conflict', summary: 'C1 contested' });
+      if (action === 'conflict-gate') await eng.writeConsensusTask({ workflowPath: filePath, runId, text: 'C1: A or B?' });
+      await eng.finishVerb({
+        workflowPath: filePath, host: 'claude', nextAction: 'Owner decision', nextStep: { kind: 'owner-decision', confidence: 'HIGH' },
+        ownerGate: { gate: 'peer-conflict', anchor: 'ensemble-synthesis', runId },
+      });
+      await stopHooks();
+      return finish({ report: { ...verbReport(wf, { kind: 'owner-decision', verb: null, confidence: 'HIGH' }), outcome: 'needs_owner', awaiting_owner: 'peer-conflict' } });
+    }
     await eng.finishVerb({ workflowPath: filePath, host: 'claude', nextAction: 'next', nextStep: ns });
     if (action === 'edit-plan') {
       const fm = (await orch.readWorkflow(macroPath)).frontmatter;

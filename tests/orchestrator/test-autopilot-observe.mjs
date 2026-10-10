@@ -331,3 +331,64 @@ describe('observe from a linked worktree (ADR-0067 Decision 1)', () => {
     });
   });
 });
+
+// ADR-0067 Decision 8 — what a consensus proposal is judged from, read from
+// records the plugins' own state APIs wrote: the run id the conflict gate
+// records, the runs ensemble_results holds as a conflict, and the task file
+// for that run in the record's own home (its existence only). The policy
+// then proposes the round only while that file is there.
+describe('the consensus facts (ADR-0067 Decision 8)', () => {
+  const PLAN_RUN = 'macro-plan-20261001T000000Z-0ff1ce';
+  const PEER_RUN = 'review-20261001T000000Z-c0ffee';
+  const round = (file) => `/runtime:consensus plan --task-file ${file} --peers claude,codex --max-rounds 2`;
+  const retire = (file) => renameSync(file, file.replace(/\.md$/, '.resolved.md'));
+
+  it('a macro on plan-conflict: its run, its recorded conflict and its task file in the orchestrator home; the round is proposed only while the file exists', async () => {
+    await withRepo(async (fx, look) => {
+      const subtasks = (await fx.readMacro()).plan.subtasks;
+      await fx.orch.setPlan({ workflowPath: fx.macroPath, host: 'claude', subtasks, verdict: 'conflict', runId: PLAN_RUN });
+      await fx.orch.commitEnsemble({ workflowPath: fx.macroPath, run_id: PLAN_RUN, phase: 'plan', ensemble_type: 'plan-verify', verdict: 'conflict', summary: 'C1 contested' });
+      const rel = `.agentic-plugins/state/orchestrator/consensus/${fx.macroId}.${PLAN_RUN}.md`;
+      // The gate and its result are recorded; the file is not written yet.
+      let v = look();
+      const file = join(dirname(dirname(v.macro.path)), 'consensus', `${fx.macroId}.${PLAN_RUN}.md`);
+      deepStrictEqual(v.macro.consensus, { run_id: PLAN_RUN, conflict_runs: [PLAN_RUN], task: { path: file, relPath: rel, exists: false } });
+      strictEqual(decide(v, { runId: RUN }).proposals, undefined, 'no file, no proposal');
+
+      await fx.orch.writeConsensusTask({ workflowPath: fx.macroPath, runId: PLAN_RUN, text: 'C1: split A?' });
+      v = look();
+      strictEqual(v.macro.consensus.task.exists, true);
+      strictEqual(realpathSync(v.macro.consensus.task.path), realpathSync(join(fx.work, rel)), 'the file the plan wrote');
+      const d = decide(v, { runId: RUN });
+      strictEqual(d.reason, 'plan-unapproved');
+      deepStrictEqual(d.proposals, [{ kind: 'consensus', command: round(file), pointer: rel, subtask_id: null, gate: 'plan-conflict' }]);
+
+      retire(join(fx.work, rel));
+      v = look();
+      strictEqual(v.macro.consensus.task.exists, false);
+      strictEqual(decide(v, { runId: RUN }).proposals, undefined, 'a retired file proposes nothing');
+    });
+  });
+
+  it('an engineer child on peer-conflict: its facts in the engineer home, and the round while its file exists', async () => {
+    await withRepo(async (fx, look) => {
+      const c = await fx.dispatch('A');
+      await fx.eng.commitEnsemble({ workflowPath: c.path, run_id: PEER_RUN, phase: 'critique', ensemble_type: 'review', verdict: 'conflict', summary: 'C1 contested' });
+      await fx.eng.writeConsensusTask({ workflowPath: c.path, runId: PEER_RUN, text: 'C1: A or B?' });
+      await fx.finish(c.path, { kind: 'owner-decision', verb: null, confidence: 'HIGH' }, { ownerGate: { gate: 'peer-conflict', anchor: 'ensemble-synthesis', runId: PEER_RUN } });
+      const rel = `.agentic-plugins/state/engineer/consensus/${c.id}.${PEER_RUN}.md`;
+      let v = look();
+      const file = join(dirname(dirname(v.children.A.path)), 'consensus', `${c.id}.${PEER_RUN}.md`);
+      deepStrictEqual(v.children.A.consensus, { run_id: PEER_RUN, conflict_runs: [PEER_RUN], task: { path: file, relPath: rel, exists: true } });
+      strictEqual(realpathSync(file), realpathSync(join(fx.work, rel)));
+      const d = decide(v, { runId: RUN });
+      strictEqual(d.reason, 'awaiting-owner:peer-conflict');
+      deepStrictEqual(d.proposals, [{ kind: 'consensus', command: round(file), pointer: rel, subtask_id: 'A', gate: 'peer-conflict' }]);
+
+      retire(join(fx.work, rel));
+      v = look();
+      strictEqual(v.children.A.consensus.task.exists, false);
+      strictEqual(decide(v, { runId: RUN }).proposals, undefined);
+    });
+  });
+});

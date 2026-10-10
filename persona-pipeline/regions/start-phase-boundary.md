@@ -24,4 +24,12 @@ phase (ADR-0066 PC2b):
   --next-action <the next phase's action>`, and continue at that phase. The
   verb's own resolving step (decide's Owner selection, refine's Owner
   decision), run inside the lifecycle, clears the gate and stops instead of
-  making the verb's terminal write; resume the lifecycle from it.
+  making the verb's terminal write; resume the lifecycle from it. A
+  synthesis verdict of `conflict` in decide, critique or investigate is such a
+  gate (ADR-0067 Decision 8): once the settle has recorded it, write the
+  contested items with the file tool to a new file, never into a command (they
+  come from the peers' positions), and pass that file to
+  `state.mjs consensus-task --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --run-id <that run id> --text-file <that file>`,
+  which prints the bounded consensus round to propose to the owner; then set
+  `decide-conflict` (decide) or `peer-conflict` (critique, investigate) with
+  `--anchor ensemble-synthesis --run-id <that run id>`.
