@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.2](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.28.1...plugin-engineer-v0.28.2) (2026-10-10)
+
+
+### Bug Fixes
+
+* **plugin/engineer:** pass agent-written text to the CLIs as files in the persona runbooks (ADR-0059 amendment j) ([e90bf1c](https://github.com/each4all/agentic-plugins/commit/e90bf1c8fbd7fc7fd60f35c8a0b7e17512d27b01))
+
 ## [0.28.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.28.0...plugin-engineer-v0.28.1) (2026-10-10)
 
 

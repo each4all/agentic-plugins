@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.2](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.8.1...plugin-designer-v0.8.2) (2026-10-10)
+
+
+### Bug Fixes
+
+* **plugin/designer:** pass agent-written text to the CLIs as files in the persona runbooks (ADR-0059 amendment j) ([92a2c01](https://github.com/each4all/agentic-plugins/commit/92a2c017ccf66e90d527197d36428d6d6647090f))
+
 ## [0.8.1](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.8.0...plugin-designer-v0.8.1) (2026-10-10)
 
 
