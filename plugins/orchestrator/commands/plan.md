@@ -168,6 +168,19 @@ which binds the approval to the plan's hash. Under ADR-0063's autopilot,
 `/orchestrator:next` dispatches only an approved plan whose hash still
 matches (`plan-unapproved` otherwise).
 
+Then compute the lane advice (ADR-0067 Decision 8, item 2) from the plan just
+stored. It prints one `- lane_advice:` line when running two subtasks at a time
+would shorten the plan, and nothing otherwise; the line goes after the six
+fields of the proposal, in the phase note below and in the Completion proposal.
+It is display only: nothing stores it, and no machine reads it.
+
+```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" lane-advice \
+  --workflow-path "$ACTIVE" --repo-root "$REPO_ROOT" --format line
+```
+
 Then record the phase note + ensemble result:
 
 ```bash
@@ -194,6 +207,7 @@ NOTE="### Ensemble launched: plan at <iso-utc>
 - evidence_pointers:     <subtask table / phase notes / artifacts — pointers only>
 - confidence:            <HIGH | MEDIUM | LOW>
 - next_command:          <exact next step: /orchestrator:next … (dispatch first ready subtask) or \$orchestrator:next on Codex; the finalize / owner-decision action otherwise>
+<the - lane_advice: line lane-advice printed above, verbatim, or nothing when it printed none>
 "
 
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
@@ -261,6 +275,17 @@ and for an approved plan it is
 but a zero-subtask plan or a surfaced CONFLICT routes to the honest next step (an
 owner decision on the conflict, or closing the empty plan), never a hardcoded
 literal.
+
+Plan's single proposal takes the first that applies (ADR-0067 Decision 8,
+item 2): conflict resolution, then approval. A plan pending approval selects
+`/orchestrator:approve`, rejecting `/orchestrator:next` (an autopilot dispatches
+only an approved plan, and an interactive one only warns); a plan whose approval
+still holds selects `/orchestrator:next`. The `- lane_advice:` line, when
+`lane-advice` printed one, follows the six fields of either: it names the
+subtasks that could run side by side and the
+`/orchestrator:autopilot start --execute --macro <id> --lanes 2` that would run
+them so, or says the state-root cutover comes first. It never replaces the
+selection.
 
 Append the runtime completion footer after the workflow path. Use the
 runtime footer helper when available, or render the same fields manually:

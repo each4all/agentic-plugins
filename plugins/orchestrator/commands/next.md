@@ -227,8 +227,14 @@ CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 # Step 1: clean-worktree check — BEFORE any git switch.
 if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=normal)" ]; then
-  echo "✗ Working tree not clean — commit, stash, or revert before /orchestrator:next dispatches." >&2
+  echo "✗ Working tree not clean — /orchestrator:next does not switch branches over uncommitted changes." >&2
   echo "  (engineer's Phase 0 status_digest capture is meaningful only on a clean tree.)" >&2
+  # ADR-0067 Decision 8, item 3 — a worktree first, from a fixed template,
+  # where the new worktree can find the macro; read-only.
+  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" worktree-proposal \
+    --workflow-path "$MACRO_PATH" --repo-root "$REPO_ROOT" --subtask-id "$SUBTASK_ID" \
+    --host claude --format text >&2 || true
+  echo "  Or, when these changes are this subtask's or are finished: commit, stash, or revert them here, then rerun /orchestrator:next." >&2
   exit 1
 fi
 
@@ -286,6 +292,22 @@ fi
 
 Phase 2 only reads: a refusal here leaves nothing behind. The switch is
 Phase 3b's, after the engineer preflight and the join.
+
+A dirty tree's refusal selects a worktree first (ADR-0067 Decision 8, item 3):
+`state.mjs worktree-proposal` prints the `git worktree add` command for the
+subtask's branch at `<parent>/<repo>-<slug>`, runtime:worktree's path, then the
+`/orchestrator:next` to run again inside the new worktree. Its proposal is the
+refusal's `selected_next`, with commit, stash or revert here among the rejected
+alternatives (right when the changes are this subtask's or finished; wrong when
+they are other work, which a switch would carry along). When the subtask's
+branch is checked out in this very checkout and the subtask is in progress, the
+changes are its engineer workflow's: the selection is the ordinary resume of
+that workflow on this branch (`/engineer:resume`), and no worktree is
+proposed. It proposes none, and says why, where a worktree cannot help
+otherwise: the macro is in a linked worktree's own home, which no other
+worktree reads (the state-root cutover, `docs/runbooks/state-root-cutover.md`,
+makes a second worktree usable), or the subtask's branch is checked out here
+for a subtask not yet in progress.
 
 ---
 
@@ -554,6 +576,7 @@ Report one of:
 - `✓ Subtask <id> auto-promoted: engineer Stop hook had already completed it; macro now terminal_marker=true.` (rare race; PR-C0 auto-terminal pass fired.)
 - `✗ Not dispatched: <holder>.` when Phase 3b's join was refused — an autopilot run or another session holds this checkout or the macro. Repeat the refusal's holder and the command it names (`/orchestrator:autopilot status` in the run's checkout, or the release command for a session the owner knows is gone); nothing was switched or written.
 - `✗ Not recorded: subtask <id> changed after its dispatch (<field>).` when Phase 5's writeback was refused — the plan was revised after Phase 1 read the subtask. Name the child's engineer workflow id, which stays unrecorded, and the choice Phase 5 leaves to the user.
+- `✗ Not dispatched: the working tree is not clean.` when Phase 2's first check refused. The proposal below selects the worktree `worktree-proposal` printed (its commands, then the `/orchestrator:next` inside it) and rejects commit, stash or revert here with their reason. When it printed no worktree because the subtask's branch is checked out here with the subtask in progress, select continuing that subtask's engineer workflow on this branch (`/engineer:resume`), and reject commit, stash or revert by hand and a new worktree; when it printed none for another reason, name the reason and select commit, stash or revert.
 
 When the Phase 1 approval gate printed its warning line, repeat that line
 under the report. A refused dispatch (`✗ plan-unapproved`) reports the gate's

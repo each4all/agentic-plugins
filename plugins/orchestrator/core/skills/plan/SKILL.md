@@ -45,6 +45,8 @@ The id is a short token unique within the plan (e.g., `PR1`, `PR2`, or thematic 
 
 Identify the dependency graph. If a subtask depends on others, mark its initial status as `blocked` and list its predecessors in `blocked_by`.
 
+**Shared numbers** (ADR-0067 Decision 8, item 2): subtasks with no path between them may run side by side, in lanes. Pre-assign in their topics any number two of them could both take — an ADR number, a port, a section number — so neither picks the same one; the topics are part of the plan the owner approves.
+
 ### Step 3: Present and confirm
 
 Follow the Presentation Mode Protocol (`../_shared/references/presentation-protocol.md`) before presenting. The full subtask list IS one decision item — present it as a macro plan, ask the user to confirm the decomposition + dependency graph before any work proceeds. Once a plan is written to a macro workflow, that confirmation is recorded with `orchestrator:approve` (`/orchestrator:approve` on Claude, `$orchestrator:approve` on Codex), which binds the approval to the plan's hash (ADR-0063 D6).
@@ -148,6 +150,15 @@ pending approval. For an approved plan it is `/orchestrator:next`
 `$orchestrator:next` on Codex — but a zero-subtask plan or a surfaced CONFLICT
 routes to the honest next step (closing the plan, or an owner decision), never a
 hardcoded literal.
+
+The proposal takes the first that applies: conflict resolution, then approval
+(ADR-0067 Decision 8, item 2). After its six fields, add the line
+`state.mjs lane-advice --workflow-path <macro> --repo-root <checkout> --format line`
+prints, when it prints one: the subtasks that could run side by side and the
+autopilot command that would run them so, or that the state-root cutover comes
+first. It is computed each time, display only, and never replaces the
+selection. The autopilot it names runs on Claude Code only (ADR-0063 D9); on
+Codex the subtasks stay manual, one `$orchestrator:next` per checkout.
 
 ## Anti-patterns (do not produce)
 

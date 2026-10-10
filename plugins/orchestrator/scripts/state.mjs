@@ -81,6 +81,8 @@ import {
 } from './lib/state-root.mjs';
 import { LockHeldError, checkAdmission, joinAdmission, releaseAdmission } from './lib/run-locks.mjs';
 import { moveCutover, moveRollback, planCutover, planRollback, verifyCutover } from './lib/cutover.mjs';
+import { laneAdvice, laneAdviceLine } from './lib/lane-advice.mjs';
+import { macroInDefaultRoot, nextWorktreeProposal, worktreeProposalText } from './lib/worktree-proposal.mjs';
 
 // -----------------------------------------------------------------------------
 // Constants — ADR-0018 §sub-decision-1 + §sub-decision-2
@@ -5295,6 +5297,22 @@ function cliPrintHelp() {
       '    ADR-0062 §Decision 5 — the same readiness object for one subtask',
       '    (the explicit-id path of /orchestrator:next). Exit 1 on unknown id.',
       '',
+      '  lane-advice --workflow-path <macro> --repo-root <checkout> [--format line]',
+      '    ADR-0067 Decision 8, item 2 — read-only: whether running the macro\'s',
+      '    subtasks two at a time shortens it (a simulation from blocked_by, each',
+      '    subtask one step), as JSON; with --format line, the `- lane_advice:` line',
+      '    /orchestrator:plan and /orchestrator:approve show, or nothing. Its command',
+      '    names the macro, and is given only with shared creation on and the macro',
+      '    in a home of the default state root; otherwise the line names the cutover.',
+      '',
+      '  worktree-proposal --workflow-path <macro> --repo-root <checkout> --subtask-id <id>',
+      '                    [--host claude|codex] [--format text]',
+      '    ADR-0067 Decision 8, item 3 — read-only: the git worktree add command',
+      '    /orchestrator:next proposes first when a dirty tree stops its dispatch,',
+      '    from a fixed template (runtime:worktree\'s path rule), as JSON; with',
+      '    --format text, the lines the runbook prints. Proposed only when the macro',
+      '    lies in a home of the default state root, which a new worktree reads.',
+      '',
       '  create --repo-root <path> --verb plan --host claude|codex',
       '         --git-baseline-branch <name> --git-baseline-head <sha>',
       '         [--status-digest <hex>] [--original-request <text>]',
@@ -5944,6 +5962,50 @@ async function cliRun(subcommand, flags) {
           throw new Error(`subtask id ${JSON.stringify(flags['subtask-id'])} not found in plan.subtasks[]`);
         }
         process.stdout.write(`${JSON.stringify(entry)}\n`);
+        return 0;
+      }
+
+      // ADR-0067 Decision 8, item 2 — the lane advice plan and approve show
+      // beside their proposal. Read-only; computed each time, never stored.
+      case 'lane-advice': {
+        cliRequire(flags, ['workflow-path', 'repo-root']);
+        const { frontmatter } = await readWorkflow(flags['workflow-path']);
+        const advice = laneAdvice({
+          subtasks: Array.isArray(frontmatter?.plan?.subtasks) ? frontmatter.plan.subtasks : [],
+          macroId: basename(flags['workflow-path'], '.md'),
+          sharedCreation: readSharedCreation(flags['repo-root']).state,
+          macroUnderDefaultRoot: macroInDefaultRoot(flags['repo-root'], flags['workflow-path']),
+        });
+        if (flags.format === 'line') {
+          const line = laneAdviceLine(advice);
+          if (line) process.stdout.write(`${line}\n`);
+          return 0;
+        }
+        if (flags.format !== undefined) throw new Error(`--format takes line (got ${JSON.stringify(flags.format)})`);
+        process.stdout.write(`${JSON.stringify(advice)}\n`);
+        return 0;
+      }
+
+      // ADR-0067 Decision 8, item 3 — the worktree /orchestrator:next selects
+      // first when a dirty tree stops its dispatch. Read-only.
+      case 'worktree-proposal': {
+        cliRequire(flags, ['workflow-path', 'repo-root', 'subtask-id']);
+        const host = flags.host ?? 'claude';
+        validateHost(host);
+        const { frontmatter } = await readWorkflow(flags['workflow-path']);
+        const subtask = (Array.isArray(frontmatter?.plan?.subtasks) ? frontmatter.plan.subtasks : [])
+          .find((s) => s?.id === flags['subtask-id']);
+        if (!subtask) throw new Error(`subtask id ${JSON.stringify(flags['subtask-id'])} not found in plan.subtasks[]`);
+        const proposal = nextWorktreeProposal({
+          repoRoot: flags['repo-root'], macroPath: flags['workflow-path'], macroId: basename(flags['workflow-path'], '.md'),
+          subtaskId: subtask.id, branch: subtask.branch, baseline: frontmatter?.git_baseline?.branch, status: subtask.status, host,
+        });
+        if (flags.format === 'text') {
+          process.stdout.write(`${worktreeProposalText(proposal)}\n`);
+          return 0;
+        }
+        if (flags.format !== undefined) throw new Error(`--format takes text (got ${JSON.stringify(flags.format)})`);
+        process.stdout.write(`${JSON.stringify(proposal)}\n`);
         return 0;
       }
 

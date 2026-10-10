@@ -36,6 +36,7 @@ import { MIN_STEP_BUDGET_USD } from './budget.mjs';
 import { cleanupDeadRuns } from './dead-runs.mjs';
 import { DEFAULTS, posture, preflight, startRun } from './driver.mjs';
 import { gatherLaneFacts, laneHome, lanePath, lanesRequirements, planReconciliation } from './lanes.mjs';
+import { launchProposals, proposalLines, reportEntries } from './launch-proposals.mjs';
 import { holderAlive, listLocks, listRuns, mainWorktreeRoot, provablySame, readOpenRun, readRun } from './ledger.mjs';
 import { resolveRoots } from './roots.mjs';
 import { observe } from './observe.mjs';
@@ -355,6 +356,8 @@ async function previewCmd(o, repoRoot, env, out) {
   }
   let command = null;
   if (decision?.outcome === 'step') command = previewCommand(decision.step, view.macro.id);
+  // ADR-0067 Decision 8, item 4: where to launch from, each trigger on its own.
+  const proposals = pre.roots ? launchProposals({ repoRoot, view, options: o, roots: pre.roots.roots, env, home: env.HOME || homedir() }) : [];
   const report = {
     dry_run: true,
     repo: repoRoot,
@@ -365,6 +368,7 @@ async function previewCmd(o, repoRoot, env, out) {
     lanes: lanesPreview,
     posture: p,
     launcher_install: pre.roots?.roots?.orchestrator ? launcherInstall(pre.roots.roots) : null,
+    proposals: reportEntries(proposals),
   };
   if (o.json) {
     out(JSON.stringify(report, null, 2));
@@ -400,9 +404,7 @@ async function previewCmd(o, repoRoot, env, out) {
     out(`  allowed: ${p.allowed_tools.join(' ')}`);
     out(`  denied: ${p.denied_tools.join(' ')} (+ ${p.denied_on_non_commit_steps.join(' ')} except on /engineer:commit)`);
     for (const w of pre.warnings) out(`⚠ ${w}`);
-    out(o.lanes >= 2
-      ? '⚠ Run lanes from a checkout no one works in: a done or finalize runs there, and work in it halts the run (ADR-0067 Decision 6).'
-      : '⚠ A dedicated worktree is recommended (the runtime:worktree planner): the run switches branches in this checkout.');
+    for (const line of proposalLines(proposals)) out(line);
     if (report.launcher_install) out(`launcher (optional, for runs longer than a session's 2-hour background limit): ${report.launcher_install}`);
     const lanesArg = o.lanes >= 2 ? `${view?.macro?.id ? ` --macro ${view.macro.id}` : ''} --lanes ${o.lanes}` : '';
     out(`to start: /orchestrator:autopilot start --execute${lanesArg}   (terminal: agentic-autopilot start --execute${lanesArg} --repo ${repoRoot})`);
