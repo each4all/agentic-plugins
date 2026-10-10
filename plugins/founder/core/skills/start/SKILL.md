@@ -98,7 +98,14 @@ follows the same operational sequence inline, in this order, using the same
    absorb a single-verb workflow into lifecycle phase space. The user
    continues it with its `$founder:<verb>`,
    archives it (`$founder:resume`) or switches branch, then runs
-   `$founder:start` again.
+   `$founder:start` again. Either type: when the arguments are a new
+   request that does not belong to the active workflow, nothing is written;
+   the proposal selects a worktree first (ADR-0067 Decision 8, item 3) —
+   write the arguments into an args file and run `scripts/discover-runtime.mjs
+   worktree-plan --repo-root <root> --args-file <path> --host codex --format
+   text`, which prints the runtime:worktree planner's `git worktree add`
+   command for the request — and the ordinary resume stays the selection when
+   the request belongs to the workflow.
 3. **No active workflow.** The arguments are the description: the
    **clean-baseline gate** below, then `state.mjs create --workflow-type
    start --verb investigate --persona founder --original-request <the
@@ -112,7 +119,16 @@ create`. It calls `state.mjs check-clean-baseline --repo-root <root>` (with
 `status` (`clean` / `dirty` / `accepted`). The gate fails closed: only an
 explicit `clean` / `accepted` status proceeds; a non-zero check, a `dirty`
 tree, or an unparseable status stops the bootstrap. On `dirty` the gate
-refuses to bootstrap and presents resolutions:
+refuses to bootstrap and selects a worktree first (ADR-0067 Decision 8,
+item 3): with the arguments in a new args file, never on a command line
+(`{"agentic_args": 1, "text": "…"}`, written with the file-editing tool into a
+directory from `mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"`; the reader
+removes it), `scripts/discover-runtime.mjs worktree-plan --repo-root <root>
+--args-file <path> --host codex --format text` prints the runtime:worktree
+planner's `git worktree add -b <branch> <path> <base>` for the request,
+to run before the start again inside the new worktree, or why there is none
+(no runtime with the planner, an existing branch, an occupied path, an
+unresolved base). The resolutions here stay the rejected alternatives:
 clean the tree, stash, or set `ACCEPT_CURRENT_TREE=1` to acknowledge the
 dirty tree. `.agentic-plugins/state/**` is excluded from the dirty check.
 
