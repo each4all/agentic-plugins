@@ -525,8 +525,8 @@ evidence-loop record `the-runbooks-that-run-as-written` carries both runs.
 
 ## Amendment 2026-10-10 — text an agent authors reaches the CLI as a file (item (j))
 
-*Status of this amendment: Proposed. It joins the decision when the owner
-accepts it, before the change that carries it merges.*
+*Status of this amendment: Accepted. The owner accepted it on 2026-10-10,
+before the change that carries it (PR #920) merged.*
 
 **What was found.** (j) left one case open: text the model writes into a
 runbook block. Docket item C130 found the same case at a worse site.
