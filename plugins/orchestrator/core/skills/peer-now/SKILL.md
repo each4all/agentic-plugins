@@ -45,16 +45,33 @@ Require:
 Reject self-dispatch, missing prompt, duplicate prompt forms, or an
 unreadable prompt file.
 
+The prompt reaches the runner as a file, never as shell source (ADR-0059,
+amendment of 2026-10-10): a prompt or a path spliced into a command line is
+cut at `;`, expanded at `$(…)` and run at a backtick. Create a private
+directory (`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`, noting the path
+it prints) and write one file there with your file-editing tool: for
+`--prompt-text`, `prompt.xml` holding the prompt exactly as given; for
+`--prompt-file <path>`, `prompt-path.txt` holding that path on one line, so
+the runner reads the user's file itself, byte for byte. Nothing deletes the
+files.
+
 ---
 
 ## Phase 1 — Dispatch
 
 ```bash
+TEXT_DIR='<directory from mktemp>'
+PEER='<claude|codex>'
+# The prompt: the file prompt-path.txt names (--prompt-file), or the
+# prompt.xml written for --prompt-text. The path is data cat read, never
+# shell source.
+PROMPT_FILE="$TEXT_DIR/prompt.xml"
+if [ -f "$TEXT_DIR/prompt-path.txt" ]; then PROMPT_FILE="$(cat "$TEXT_DIR/prompt-path.txt")"; fi
 node "<plugin-root>/scripts/peer-runner.mjs" run \
   --repo-root "$REPO_ROOT" \
   --run-id "$RUN_ID" \
   --kind peer-now \
-  --peer "$PEER" $PROMPT_ARG \
+  --peer "$PEER" --prompt-file "$PROMPT_FILE" \
   --output-format text \
   --host <claude|codex> \
   --cwd "$REPO_ROOT"
@@ -70,7 +87,13 @@ control.
 
 ## Phase 2 — Optional workflow note
 
-If `state.mjs find-active` finds one active macro, append a note:
+If `state.mjs find-active` finds one active macro, append a note. `$NOTE`
+is built as `commands/peer-now.md` Phase 2 builds it, from values programs
+read or printed only: `peer`, `run_id` and `handle` lines from the peer enum
+and the run's JSON, then the first 4000 bytes of the response as
+`head -c 4000 "$STDOUT_PATH"` reads them. Never write the response, or any
+other text, into the block yourself; an expansion's result is not evaluated
+again, a block's source is.
 
 ```bash
 node "<plugin-root>/scripts/state.mjs" append \

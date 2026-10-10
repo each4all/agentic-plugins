@@ -134,13 +134,33 @@ current plugin does not auto-reconcile macro workflows; review and decide [resum
 When the baseline commit object is available, append a resume marker.
 Do not mutate `current_phase` or `next_action`.
 
+The marker's note is text you write, so it reaches `state.mjs` as a file,
+never as shell source (ADR-0059, amendment of 2026-10-10): a backtick or
+`$(…)` in a block's source runs as a command.
+
+1. Create a private directory for the file, and note the path it prints:
+
+   ```bash
+   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   ```
+
+2. With your file-writing tool (Claude: the Write tool), not the shell,
+   write `note.md` in that directory: a one-paragraph macro drift summary,
+   ending with one newline.
+
+Then run the block with the path in its `TEXT_DIR` line and the drift class
+in its label. `state.mjs` reads the file itself, removes its final newline,
+and refuses an empty or missing file before it writes; nothing deletes the
+file (a headless run can deny `rm`).
+
 ```bash
+TEXT_DIR='<directory from step 1>'
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host claude \
   --phase-label "Resume: drift=<clean|dirty>" \
-  --phase-note "<one-paragraph macro drift summary>" \
+  --phase-note-file "$TEXT_DIR/note.md" \
   --event resumed
 ```
 

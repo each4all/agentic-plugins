@@ -57,9 +57,11 @@ Follow the Presentation Mode Protocol (`../_shared/references/presentation-proto
 
 Full macro composition with Plan-verify opposite-host peer ensemble + state-write.
 
+**Text you write travels as files** (ADR-0059, amendment of 2026-10-10). The feature description, the Plan-verify prompt, the subtasks, the decision, the architecture, the phase note and the ensemble summary are text you write, and the note and summary carry the peer's sentences: a backtick or `$(…)` spliced into a command line runs as a command. Create a private directory once (`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`, noting the path it prints), write each value there with your file-editing tool, never with the shell, ending the file with one newline, and pass the file's path: `--original-request-file`, `--prompt-file`, `--subtasks-json-file`, `--decision-file`, `--architecture-file`, `--phase-note-file`, `--summary-file`. `state.mjs` reads each file itself, removes its final newline, and refuses an empty or missing one before it writes. Nothing deletes the files.
+
 ### Step 1: Establish the active workflow
 
-Phase 0 of `commands/plan.md` resolves the active orchestrator workflow on the current git branch (per ADR-0018 §sub-2 — branch is the workflow context). If none exists, create one via `state.mjs create --verb plan ...`.
+Phase 0 of `commands/plan.md` resolves the active orchestrator workflow on the current git branch (per ADR-0018 §sub-2 — branch is the workflow context). If none exists, create one via `state.mjs create --verb plan ... --original-request-file <file>`, the file holding the feature description on one line, scrubbed of secrets.
 
 If one exists, pass `--require-open` on the resume append and on the post-plan append: a terminal macro is not revised (ADR-0062 §Decision 4), and the flag makes each append refuse a macro whose `terminal_marker` is set under the same lock as the write — a separate check first would race a finalize in another session. Both appends rewrite `current_phase`, which would otherwise leave the marker set with a phase the archive gate rejects. On refusal, stop before writing anything else and tell the user to archive it (`$orchestrator:resume archive`) and plan the new work afresh. `state.mjs plan-set` refuses a terminal macro as well.
 
@@ -73,7 +75,7 @@ Follow the auto-activated Step 1 (Decompose) and Step 2 (Order) above to produce
 
 Launch the peer ensemble per `../_shared/references/ensemble-protocol.md` using the **Plan-verify** ensemble point. The peer receives the orchestrator's draft plan as `<inputs><input name="feature_description">…</input><input name="draft_plan">…</input></inputs>` (the only Independence Rule exception — Plan-verify is the per-protocol exception). The peer returns gaps, ordering issues, risk areas, and edge cases on the macro plan.
 
-Resolve the peer from the current host: Claude invokes Codex; Codex invokes Claude. Ensemble dispatch is via `peer-runner.mjs run --kind ensemble --peer <opposite-host> --workflow-path <path> --phase plan --ensemble-type plan-verify --run-id macro-plan-<iso>-<rand>`. The runner preserves orchestrator's graceful-degradation order: if the opposite-host peer is unavailable, it returns kind `peer_cli_not_found` with no peer-run ledger and no pending entry; caller proceeds with a LOCAL-ONLY plan. If the companion resolves, the runner creates the peer-run ledger, records pending best-effort under the workflow file's per-file lock, and supervises stdout/stderr/envelope capture.
+Resolve the peer from the current host: Claude invokes Codex; Codex invokes Claude. Ensemble dispatch is via `peer-runner.mjs run --kind ensemble --peer <opposite-host> --prompt-file <the prompt file you wrote> --workflow-path <path> --phase plan --ensemble-type plan-verify --run-id macro-plan-<iso>-<rand>`. The runner preserves orchestrator's graceful-degradation order: if the opposite-host peer is unavailable, it returns kind `peer_cli_not_found` with no peer-run ledger and no pending entry; caller proceeds with a LOCAL-ONLY plan. If the companion resolves, the runner creates the peer-run ledger, records pending best-effort under the workflow file's per-file lock, and supervises stdout/stderr/envelope capture.
 
 ### Step 4: Synthesize
 
@@ -88,7 +90,7 @@ Incorporate valid PEER-ONLY additions. Adjust ordering for valid sequencing issu
 
 ### Step 5: Persist via setPlan
 
-Once the synthesized plan is ready, write it via `state.mjs plan-set --workflow-path <path> --host <current-host> --subtasks-json-file <tmp.json> --verdict <pass|concerns|conflict> [--run-id <the Plan-verify run id>] [--decision <text>] [--architecture <text>]`, where `<current-host>` is `claude` for `/orchestrator:plan` and `codex` for `$orchestrator:plan`. The CLI reads the JSON file (top-level array of subtask objects matching ADR-0018 §sub-1 + ADR-0019 §2 schema 1.1) and atomically writes the `plan` block under the per-file lock. The same write returns the plan to pending approval (`plan_approval_status=pending`, ADR-0063 D6): any plan write revokes an earlier approval. `--verdict` is the synthesized Plan-verify verdict, the value Step 6 records. With `conflict` the write opens `awaiting_owner_gate=plan-conflict` (pointer `<macro file>#ensemble-synthesis`), otherwise `plan-approval`, so a disputed plan is never approvable, not even between two writes. With `conflict`, `--run-id` names the Plan-verify run the gate records (ADR-0067 Decision 8), and the write retires every consensus task file the macro still has.
+Once the synthesized plan is ready, write it via `state.mjs plan-set --workflow-path <path> --host <current-host> --subtasks-json-file <subtasks file> --verdict <pass|concerns|conflict> [--run-id <the Plan-verify run id>] [--decision-file <file>] [--architecture-file <file>]`, where `<current-host>` is `claude` for `/orchestrator:plan` and `codex` for `$orchestrator:plan`, and the decision and architecture files each hold one line you wrote. The CLI reads the JSON file (top-level array of subtask objects matching ADR-0018 §sub-1 + ADR-0019 §2 schema 1.1) and atomically writes the `plan` block under the per-file lock. The same write returns the plan to pending approval (`plan_approval_status=pending`, ADR-0063 D6): any plan write revokes an earlier approval. `--verdict` is the synthesized Plan-verify verdict, the value Step 6 records. With `conflict` the write opens `awaiting_owner_gate=plan-conflict` (pointer `<macro file>#ensemble-synthesis`), otherwise `plan-approval`, so a disputed plan is never approvable, not even between two writes. With `conflict`, `--run-id` names the Plan-verify run the gate records (ADR-0067 Decision 8), and the write retires every consensus task file the macro still has.
 
 Subtask validation runs at the write boundary (schema 1.1):
 - `id` non-empty + unique within the plan
@@ -100,7 +102,30 @@ Subtask validation runs at the write boundary (schema 1.1):
 
 ### Step 6: Commit the ensemble result
 
-Invoke `state.mjs ensemble-commit --workflow-path <path> --run-id <macro-plan-…> --phase plan --ensemble-type plan-verify --verdict pass|concerns|conflict --summary <text>`. The three-step atomic mutation pops the matching pending_ensemble entry, appends the result, and prunes to retention cap 20 — all under one `withFileLock` window.
+Record the phase note, then commit the ensemble result. Write both files first, in the text directory: `note.md`, the phase note (`--phase-note-file <note file>`) shaped as `commands/plan.md` Phase 2 shows it, and `summary.txt`, a one-line résumé of the synthesis (`--summary-file <summary file>`). Set `ACTIVE` to the macro file's path, `VERDICT` to the synthesized verdict (`pass`, `concerns` or `conflict`) and `RUN_ID` to the Plan-verify run id, put the directory in the block's `TEXT_DIR` line, and run the block, `<plugin-root>` being the orchestrator plugin root (`../checkpoint/SKILL.md` § Command resolution).
+
+The block first reads both files with `state.mjs`'s own reader, as `commands/plan.md` Phase 2 does, and stops before either write when it refuses one (missing, empty, a newline alone, a NUL byte, not UTF-8): the append must not record a note whose ensemble result then cannot be committed. `ensemble-commit` is a three-step atomic mutation: it pops the matching pending_ensemble entry, appends the result, and prunes to retention cap 20 — all under one `withFileLock` window.
+
+```bash
+TEXT_DIR='<directory from mktemp>'
+# Both files, read by state.mjs's own reader, before either write. (The path to
+# state.mjs goes by the environment: as the first argument it would make the
+# import run state.mjs as a command.)
+STATE_MJS="<plugin-root>/scripts/state.mjs" node --input-type=module -e 'const { pathToFileURL } = await import("node:url"); const { readTextArgumentFile } = await import(pathToFileURL(process.env.STATE_MJS).href); const pairs = process.argv.slice(1); try { for (let i = 0; i < pairs.length; i += 2) readTextArgumentFile(pairs[i + 1], pairs[i]); } catch (err) { process.stderr.write(`✗ ${err.message}: write it with your file-writing tool first; nothing was written.\n`); process.exitCode = 1; }' \
+  -- --phase-note-file "$TEXT_DIR/note.md" --summary-file "$TEXT_DIR/summary.txt" || exit 1
+node "<plugin-root>/scripts/state.mjs" append \
+  --workflow-path "$ACTIVE" --host <claude|codex> \
+  --phase-label "Phase 1: Plan (synthesized)" \
+  --phase-note-file "$TEXT_DIR/note.md" \
+  --current-phase phase-2-presented \
+  --next-action 'Await approval of the macro plan by the owner ($orchestrator:approve); then $orchestrator:next dispatches the first ready subtask' \
+  --event updated --require-open || exit 1
+node "<plugin-root>/scripts/state.mjs" ensemble-commit \
+  --workflow-path "$ACTIVE" --run-id "$RUN_ID" \
+  --phase plan --ensemble-type plan-verify \
+  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt" \
+  --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 1
+```
 
 ### Step 7: Present and confirm
 

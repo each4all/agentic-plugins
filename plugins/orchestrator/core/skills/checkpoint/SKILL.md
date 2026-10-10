@@ -46,6 +46,15 @@ whitespace.
 If the summary is very long, warn that SessionStart metadata displays
 only a 256-character prefix while preserving the full on-disk value.
 
+The summary travels as a file, never as shell source (ADR-0059, amendment
+of 2026-10-10): typed text spliced into a command line is cut at `;`,
+expanded at `$(…)` and run at a backtick. Create a private directory
+(`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`, noting the path it
+prints), write `summary.txt` there with your file-editing tool, holding the
+trimmed summary and ending with one newline, and put the directory in Phase
+2's `TEXT_DIR` line. `state.mjs` reads the file itself and refuses an empty
+or missing one before it writes; nothing deletes it.
+
 ---
 
 ## Phase 1 — Locate active macro
@@ -68,8 +77,9 @@ and ask the user to resolve it with `orchestrator:resume`.
 ## Phase 2 — Set checkpoint
 
 ```bash
+TEXT_DIR='<directory from mktemp>'
 node "<plugin-root>/scripts/state.mjs" checkpoint-set \
-  --workflow-path "$ACTIVE" --host <claude|codex> --summary "$SUMMARY"
+  --workflow-path "$ACTIVE" --host <claude|codex> --summary-file "$TEXT_DIR/summary.txt"
 ```
 
 The state CLI writes under the per-file lock, sets

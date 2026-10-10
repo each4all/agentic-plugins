@@ -89,13 +89,21 @@ macro workflows.
 
 If `latest_checkpoint` exists, include `at` and `summary`.
 
-Append a resume marker with:
+Append a resume marker. Its note, a one-paragraph drift summary, is text
+you write, so it travels as a file, never as shell source (ADR-0059,
+amendment of 2026-10-10): create a private directory
+(`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`, noting the path it
+prints), write `note.md` there with your file-editing tool, ending with one
+newline, and put the directory in the block's `TEXT_DIR` line. `state.mjs`
+reads the file itself and refuses an empty or missing one before it writes;
+nothing deletes it.
 
 ```bash
+TEXT_DIR='<directory from mktemp>'
 node "<plugin-root>/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host <claude|codex> \
   --phase-label "Resume: drift=<clean|dirty>" \
-  --phase-note "<summary>" \
+  --phase-note-file "$TEXT_DIR/note.md" \
   --event resumed
 ```
 

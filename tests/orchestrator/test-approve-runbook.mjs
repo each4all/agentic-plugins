@@ -6,11 +6,15 @@
 // approves exactly that hash. The /orchestrator:plan Phase 2 blocks (the
 // plan-set write with its verdict, then the note and ensemble commit) run the
 // same way, and so do the lane-advice lines both print (ADR-0067 Decision 8,
-// item 2).
+// item 2). So do plan's bootstrap and Plan-verify dispatch blocks where they
+// take text: every value the agent writes — the request, the decision, the
+// architecture, the phase note, the summary — reaches state.mjs from a file in
+// the text directory, as written, and nothing in it runs (ADR-0059, amendment
+// of 2026-10-10).
 
 import { describe, it } from 'node:test';
 import { strictEqual, ok, deepStrictEqual, notStrictEqual } from 'node:assert/strict';
-import { mkdtemp, rm, readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve, basename } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -197,6 +201,91 @@ async function planPhase2Blocks() {
   };
 }
 
+// The Codex plan skill's Step 6 block, the same note and ensemble commit, with
+// its placeholders filled as a Codex agent fills them: the plugin root, the
+// host, and the text directory.
+async function codexPlanCommitBlock(textDir) {
+  const text = await readFile(resolve(ORCH_ROOT, 'core/skills/plan/SKILL.md'), 'utf8');
+  // Contract: this test slices the block it runs by this heading — a renamed
+  // heading must fail here, not run some other block.
+  const from = text.indexOf('### Step 6: Commit the ensemble result');
+  const to = text.indexOf('### Step 7');
+  ok(from >= 0 && to > from, 'the plan skill carries Step 6');
+  const blocks = [...text.slice(from, to).matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]);
+  strictEqual(blocks.length, 1, 'Step 6 has one block');
+  const line = "TEXT_DIR='<directory from mktemp>'";
+  // Contract: the Codex agent running $orchestrator:plan — a block that does
+  // not open with this line reads its files from nowhere the agent wrote them.
+  strictEqual(blocks[0].split('\n')[0], line, 'the block opens with its text directory');
+  return blocks[0].replace(line, () => `TEXT_DIR='${textDir}'`)
+    .replaceAll('<plugin-root>', ORCH_ROOT).replaceAll('<claude|codex>', 'codex');
+}
+
+// The blocks before Phase 2 that take text: Phase 0's bootstrap (indented
+// under its list item, which the shell does not mind) and Phase 1's dispatch.
+async function planTextBlocks() {
+  const text = await readFile(resolve(ORCH_ROOT, 'commands/plan.md'), 'utf8');
+  const to = text.indexOf('## Phase 2 — State finalize');
+  ok(to >= 0, 'plan.md carries Phase 2');
+  const blocks = [...text.slice(0, to).matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]);
+  const one = (what, token) => {
+    const found = blocks.filter((b) => b.includes(token));
+    strictEqual(found.length, 1, `plan.md has one ${what} block before Phase 2`);
+    return found[0];
+  };
+  return { bootstrap: one('bootstrap', 'state.mjs" create'), dispatch: one('dispatch', 'peer-runner.mjs" run') };
+}
+
+// Every block that reads a text file opens with the line that names the
+// directory; the agent puts the path mktemp printed there, and so does this.
+const TEXT_DIR_LINE = "TEXT_DIR='<directory from step 1>'";
+function withTextDir(block, textDir) {
+  // Contract: the agent running /orchestrator:plan — a block that does not
+  // open with this line reads its files from nowhere the agent wrote them.
+  strictEqual(block.split('\n').find((l) => l.trim() !== '').trim(), TEXT_DIR_LINE, 'the block opens with its text directory');
+  return block.replace(TEXT_DIR_LINE, () => `TEXT_DIR='${textDir}'`);
+}
+async function writeTexts(textDir, files) {
+  for (const [name, content] of Object.entries(files)) await writeFile(join(textDir, name), content);
+}
+const SUBTASKS_JSON = JSON.stringify([{ id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' }]);
+// What an agent writes, and what a peer's sentences in a note or summary can
+// hold: shell syntax that runs when it is source, a leading --, lines that
+// would end a heredoc or name a variable of the block, quotes, a backslash,
+// $orchestrator:next as the note's scaffold spells it, and non-ASCII text.
+const hostile = (tag) => [
+  `--${tag}: \`touch pwned-${tag}-tick\` and $(touch pwned-${tag}-sub); "double" 'single' back\\slash ü`,
+  'PHASE_NOTE',
+  'TEXT_DIR',
+  `next: $orchestrator:next and \${HOME}`,
+].join('\n');
+// The environment the blocks run in: no AGENTIC_* of an autopilot worker
+// (docket C88), and a NOTE and SUMMARY of its own, which the blocks must not
+// read.
+function blockEnv(extra) {
+  const env = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AGENTIC_'))),
+    AGENTIC_ORCHESTRATOR_ROOT: ORCH_ROOT, NOTE: 'NOTE from the environment', SUMMARY: 'SUMMARY from the environment', ...extra,
+  };
+  delete env.CLAUDE_PLUGIN_ROOT;
+  return env;
+}
+// The text directory's path holds a space: a block that passes a file path
+// unquoted splits it into two words.
+async function withTextRepo(fn) {
+  const textDir = await mkdtemp(join(tmpdir(), 'agentic text.'));
+  try {
+    return await withRepo((dir) => fn(dir, textDir));
+  } finally {
+    await rm(textDir, { recursive: true, force: true });
+  }
+}
+async function nothingRan(...dirs) {
+  for (const d of dirs) {
+    deepStrictEqual((await readdir(d)).filter((n) => n.startsWith('pwned')), [], `nothing in the text ran in ${d}`);
+  }
+}
+
 describe('/orchestrator:plan sets the gate in the plan write', () => {
   it('no later block sets a gate', async () => {
     const { finalize } = await planPhase2Blocks();
@@ -208,26 +297,14 @@ describe('/orchestrator:plan sets the gate in the plan write', () => {
 
 for (const shell of SHELLS) {
   describe(`/orchestrator:plan plan-set block (${shell})`, () => {
-    // The block makes its subtasks file with mktemp and has the model fill
-    // it; a mktemp shim hands it a file the test has already written.
-    const runPlanSet = async (dir, active, extra = {}) => {
-      const bin = join(dir, '.test-bin');
-      await mkdir(bin, { recursive: true });
-      await writeFile(join(bin, 'mktemp'), '#!/bin/sh\nprintf "%s\\n" "$FIXTURE_BASE"\n');
-      await chmod(join(bin, 'mktemp'), 0o755);
-      const base = join(dir, '.test-subtasks');
-      await writeFile(`${base}.json`, JSON.stringify([
-        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
-      ]));
-      const env = {
-        ...process.env, AGENTIC_ORCHESTRATOR_ROOT: ORCH_ROOT, PATH: `${bin}:${process.env.PATH}`,
-        ACTIVE: active, FIXTURE_BASE: base, ...extra,
-      };
-      delete env.CLAUDE_PLUGIN_ROOT;
-      delete env.AGENTIC_AUTOPILOT;
+    // The agent writes the subtasks, the decision and the architecture to the
+    // text directory before the block; so does this.
+    const runPlanSet = async (dir, textDir, active, extra = {}) => {
+      await writeTexts(textDir, { 'subtasks.json': SUBTASKS_JSON, 'decision.txt': 'Decide A\n', 'architecture.txt': 'One lane\n' });
+      const env = blockEnv({ ACTIVE: active, ...extra });
       if (!('VERDICT' in extra)) delete env.VERDICT;
       const { planSet } = await planPhase2Blocks();
-      return spawnSync(shell, ['-c', planSet], { cwd: dir, encoding: 'utf8', env });
+      return spawnSync(shell, ['-c', withTextDir(planSet, textDir)], { cwd: dir, encoding: 'utf8', env });
     };
     const newMacro = async (dir) => (await createWorkflow({
       repoRoot: dir, verb: 'plan', host: 'claude',
@@ -236,15 +313,15 @@ for (const shell of SHELLS) {
     })).filePath;
 
     it('a conflict verdict writes the plan at plan-conflict; another verdict at plan-approval', async () => {
-      await withRepo(async (dir) => {
+      await withTextRepo(async (dir, textDir) => {
         const filePath = await newMacro(dir);
-        let r = await runPlanSet(dir, filePath, { VERDICT: 'conflict' });
+        let r = await runPlanSet(dir, textDir, filePath, { VERDICT: 'conflict' });
         strictEqual(r.status, 0, r.stderr);
         let fm = (await readWorkflow(filePath)).frontmatter;
         strictEqual(fm.plan.subtasks[0].id, 'A');
         strictEqual(fm.awaiting_owner_gate, 'plan-conflict');
         strictEqual(fm.awaiting_owner_pointer, `.agentic-plugins/state/orchestrator/workflows/${basename(filePath)}#ensemble-synthesis`);
-        r = await runPlanSet(dir, filePath, { VERDICT: 'concerns' });
+        r = await runPlanSet(dir, textDir, filePath, { VERDICT: 'concerns' });
         strictEqual(r.status, 0, r.stderr);
         fm = (await readWorkflow(filePath)).frontmatter;
         strictEqual(fm.awaiting_owner_gate, 'plan-approval');
@@ -252,10 +329,10 @@ for (const shell of SHELLS) {
     });
 
     it('refuses to write the plan when no verdict was set', async () => {
-      await withRepo(async (dir) => {
+      await withTextRepo(async (dir, textDir) => {
         const filePath = await newMacro(dir);
         const before = await readFile(filePath, 'utf8');
-        const r = await runPlanSet(dir, filePath);
+        const r = await runPlanSet(dir, textDir, filePath);
         notStrictEqual(r.status, 0);
         ok(r.stderr.includes('verdict must be one of pass, concerns, conflict'), r.stderr);
         strictEqual(await readFile(filePath, 'utf8'), before);
@@ -264,21 +341,17 @@ for (const shell of SHELLS) {
   });
 
   describe(`/orchestrator:plan note + ensemble block (${shell})`, () => {
-    const runFinalize = async (dir, active, extra = {}) => {
-      const env = {
-        ...process.env, AGENTIC_ORCHESTRATOR_ROOT: ORCH_ROOT,
-        ACTIVE: active, RUN_ID: 'macro-plan-20260930T000000Z-abcdef', VERDICT: 'pass', SUMMARY: 's', ...extra,
-      };
-      delete env.CLAUDE_PLUGIN_ROOT;
-      delete env.AGENTIC_AUTOPILOT;
+    const runFinalize = async (dir, textDir, active, extra = {}, files = { 'note.md': 'The note\n', 'summary.txt': 'The summary\n' }) => {
+      await writeTexts(textDir, files);
+      const env = blockEnv({ ACTIVE: active, RUN_ID: 'macro-plan-20260930T000000Z-abcdef', VERDICT: 'pass', ...extra });
       const { finalize } = await planPhase2Blocks();
-      return spawnSync(shell, ['-c', finalize], { cwd: dir, encoding: 'utf8', env });
+      return spawnSync(shell, ['-c', withTextDir(finalize, textDir)], { cwd: dir, encoding: 'utf8', env });
     };
 
     it('records the note and the ensemble result', async () => {
-      await withRepo(async (dir) => {
+      await withTextRepo(async (dir, textDir) => {
         const filePath = await plannedMacro(dir);
-        const r = await runFinalize(dir, filePath, { VERDICT: 'concerns' });
+        const r = await runFinalize(dir, textDir, filePath, { VERDICT: 'concerns' });
         strictEqual(r.status, 0, r.stderr);
         const fm = (await readWorkflow(filePath)).frontmatter;
         strictEqual(fm.ensemble_results.at(-1).verdict, 'concerns');
@@ -287,22 +360,148 @@ for (const shell of SHELLS) {
     });
 
     it('fails when the ensemble commit fails', async () => {
-      await withRepo(async (dir) => {
+      await withTextRepo(async (dir, textDir) => {
         const filePath = await plannedMacro(dir);
-        const r = await runFinalize(dir, filePath, { RUN_ID: '' });
+        const r = await runFinalize(dir, textDir, filePath, { RUN_ID: '' });
         notStrictEqual(r.status, 0);
         ok(r.stderr.includes('run_id must be a non-empty string'), r.stderr);
       });
     });
 
     it('stops when the append refuses a terminal macro, before the ensemble commit', async () => {
-      await withRepo(async (dir) => {
+      await withTextRepo(async (dir, textDir) => {
         const filePath = await plannedMacro(dir);
         await setMacroTerminal({ workflowPath: filePath, host: 'claude', terminalPhase: 'aborted' });
-        const r = await runFinalize(dir, filePath);
+        const r = await runFinalize(dir, textDir, filePath);
         notStrictEqual(r.status, 0);
         ok(r.stderr.includes('terminal macro is not revised'), r.stderr);
         strictEqual((await readWorkflow(filePath)).frontmatter.ensemble_results, undefined);
+      });
+    });
+
+    it('a missing note or summary file stops the block before either write', async () => {
+      // Contract: the agent running /orchestrator:plan — a note recorded whose
+      // ensemble result then cannot be committed leaves the run pending under a
+      // phase that says it was synthesized. Every file the reader refuses
+      // stops the block, not only a missing one: a newline alone is empty to it
+      // (Review finding), and so are a NUL byte and text that is not UTF-8.
+      const note = 'The note\n';
+      const summary = 'The summary\n';
+      for (const [flag, files, why] of [
+        ['--summary-file', { 'note.md': note }, /cannot read .*ENOENT/],
+        ['--phase-note-file', { 'summary.txt': summary }, /cannot read .*ENOENT/],
+        ['--summary-file', { 'note.md': note, 'summary.txt': '\n' }, /is empty/],
+        ['--phase-note-file', { 'note.md': 'a\0b\n', 'summary.txt': summary }, /holds a NUL byte/],
+        ['--summary-file', { 'note.md': note, 'summary.txt': Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x0a]) }, /is not valid UTF-8/],
+      ]) {
+        await withTextRepo(async (dir, textDir) => {
+          const filePath = await plannedMacro(dir);
+          const before = await readFile(filePath, 'utf8');
+          const r = await runFinalize(dir, textDir, filePath, {}, files);
+          strictEqual(r.status, 1, r.stderr);
+          const line = r.stderr.trimEnd().split('\n').at(-1);
+          ok(line.startsWith(`✗ ${flag}: `) && why.test(line) && line.endsWith('nothing was written.'), r.stderr);
+          strictEqual(await readFile(filePath, 'utf8'), before, `${flag} ${why}: nothing was written`);
+        });
+      }
+    });
+  });
+
+  describe(`$orchestrator:plan Step 6 block, the Codex skill (${shell})`, () => {
+    const runCodexCommit = async (dir, textDir, active, files) => {
+      await writeTexts(textDir, files);
+      const env = blockEnv({ ACTIVE: active, RUN_ID: 'macro-plan-20261010T000000Z-c0de00', VERDICT: 'concerns' });
+      return spawnSync(shell, ['-c', await codexPlanCommitBlock(textDir)], { cwd: dir, encoding: 'utf8', env });
+    };
+
+    it('records the note and the ensemble result as written, and none of it runs', async () => {
+      await withTextRepo(async (dir, textDir) => {
+        const filePath = await plannedMacro(dir);
+        const r = await runCodexCommit(dir, textDir, filePath, { 'note.md': `${hostile('note')}\n`, 'summary.txt': `${hostile('summary')}\n` });
+        strictEqual(r.status, 0, r.stderr);
+        const { frontmatter, body } = await readWorkflow(filePath);
+        ok(body.includes(`### Phase 1: Plan (synthesized)\n\n${hostile('note')}\n\n`), body);
+        deepStrictEqual(
+          [frontmatter.current_phase, frontmatter.ensemble_results.at(-1).verdict, frontmatter.ensemble_results.at(-1).summary, frontmatter.host_history.at(-1).host],
+          ['phase-2-presented', 'concerns', hostile('summary'), 'codex'],
+        );
+        // The Codex spelling of the next commands, kept as written.
+        ok(frontmatter.next_action.includes('($orchestrator:approve); then $orchestrator:next'), frontmatter.next_action);
+        ok(!(await readFile(filePath, 'utf8')).includes('from the environment'), 'no NOTE or SUMMARY of the environment was recorded');
+        await nothingRan(dir, textDir);
+      });
+    });
+
+    it('a file the reader refuses stops the block before either write', async () => {
+      // Contract: the Codex agent running $orchestrator:plan — the same refusal
+      // as commands/plan.md Phase 2 (Critique finding): a note recorded whose
+      // ensemble result then cannot be committed leaves the run pending under a
+      // phase that says it was synthesized.
+      const note = 'The note\n';
+      const summary = 'The summary\n';
+      for (const [flag, files, why] of [
+        ['--summary-file', { 'note.md': note }, /cannot read .*ENOENT/],
+        ['--phase-note-file', { 'summary.txt': summary }, /cannot read .*ENOENT/],
+        ['--summary-file', { 'note.md': note, 'summary.txt': '\n' }, /is empty/],
+        ['--phase-note-file', { 'note.md': 'a\0b\n', 'summary.txt': summary }, /holds a NUL byte/],
+        ['--summary-file', { 'note.md': note, 'summary.txt': Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x0a]) }, /is not valid UTF-8/],
+      ]) {
+        await withTextRepo(async (dir, textDir) => {
+          const filePath = await plannedMacro(dir);
+          const before = await readFile(filePath, 'utf8');
+          const r = await runCodexCommit(dir, textDir, filePath, files);
+          strictEqual(r.status, 1, r.stderr);
+          const line = r.stderr.trimEnd().split('\n').at(-1);
+          ok(line.startsWith(`✗ ${flag}: `) && why.test(line) && line.endsWith('nothing was written.'), r.stderr);
+          strictEqual(await readFile(filePath, 'utf8'), before, `${flag} ${why}: nothing was written`);
+        });
+      }
+    });
+  });
+
+  describe(`/orchestrator:plan text files (${shell}) (ADR-0059, amendment of 2026-10-10)`, () => {
+    it('the request, decision, architecture, note and summary are recorded as written, none of it runs, and no NOTE or SUMMARY comes from the environment', async () => {
+      await withTextRepo(async (dir, textDir) => {
+        const { bootstrap } = await planTextBlocks();
+        const { planSet, finalize } = await planPhase2Blocks();
+        const texts = {
+          'request.txt': `${hostile('request')}\n`,
+          'subtasks.json': SUBTASKS_JSON,
+          'decision.txt': `${hostile('decision')}\n`,
+          // Two final newlines: the file's own is removed, the other is text.
+          'architecture.txt': `${hostile('architecture')}\n\n`,
+          'note.md': `${hostile('note')}\n`,
+          'summary.txt': `${hostile('summary')}\r\n`,
+        };
+        await writeTexts(textDir, texts);
+        const run = (block, extra) => spawnSync(shell, ['-c', withTextDir(block, textDir)], { cwd: dir, encoding: 'utf8', env: blockEnv(extra) });
+
+        let r = run(`${bootstrap}\nprintf '%s\\n' "$ACTIVE"\n`, { REPO_ROOT: dir, GIT_BRANCH: 'main' });
+        strictEqual(r.status, 0, r.stderr);
+        const filePath = r.stdout.trim();
+        // create scrubs the request to one line; nothing else changes it.
+        strictEqual((await readWorkflow(filePath)).frontmatter.original_request, hostile('request').split('\n').join(' '));
+        r = run(planSet, { ACTIVE: filePath, VERDICT: 'concerns', RUN_ID: 'macro-plan-20261010T000000Z-0c1300' });
+        strictEqual(r.status, 0, r.stderr);
+        r = run(finalize, { ACTIVE: filePath, VERDICT: 'concerns', RUN_ID: 'macro-plan-20261010T000000Z-0c1300' });
+        strictEqual(r.status, 0, r.stderr);
+
+        const { frontmatter, body } = await readWorkflow(filePath);
+        deepStrictEqual([frontmatter.plan.decision, frontmatter.plan.architecture], [hostile('decision'), `${hostile('architecture')}\n`]);
+        ok(body.includes(`### Phase 1: Plan (synthesized)\n\n${hostile('note')}\n\n`), body);
+        strictEqual(frontmatter.ensemble_results.at(-1).summary, hostile('summary'));
+        ok(!(await readFile(filePath, 'utf8')).includes('from the environment'), 'no NOTE or SUMMARY of the environment was recorded');
+        await nothingRan(dir, textDir);
+      });
+    });
+
+    it('the dispatch block refuses a missing prompt file before it dispatches', async () => {
+      await withTextRepo(async (dir, textDir) => {
+        const { dispatch } = await planTextBlocks();
+        const r = spawnSync(shell, ['-c', withTextDir(dispatch, textDir)], { cwd: dir, encoding: 'utf8', env: blockEnv({ REPO_ROOT: dir, ACTIVE: join(dir, 'no-macro.md') }) });
+        strictEqual(r.status, 1, r.stderr);
+        ok(r.stderr.includes(`✗ ${textDir}/prompt.xml is missing or empty`), r.stderr);
+        deepStrictEqual(await readdir(textDir), [], 'no run was started: no run JSON beside the prompt');
       });
     });
   });

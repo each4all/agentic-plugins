@@ -15,6 +15,31 @@ Claude Code writes into this command when it loads it, else from the newest
 version in the plugin cache. Keep that opening line when you run a block: a
 shell variable does not outlive a Bash call.
 
+Text you write reaches the CLIs as files, never as shell source (ADR-0059,
+amendment of 2026-10-10): a backtick or `$(…)` in a block's source runs as a
+command, and the Plan-verify note and summary carry the peer's sentences.
+Before Phase 0:
+
+1. Create a private directory for the files, and note the path it prints:
+
+   ```bash
+   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   ```
+
+2. Before a block that names a file in that directory, write the file with
+   your file-writing tool (Claude: the Write tool), not the shell: the text as
+   it is to be recorded, ending with one newline. Each such block opens with
+   `TEXT_DIR='<directory from step 1>'`; put the path there.
+
+The files are `request.txt` (Phase 0), `prompt.xml` (Phase 1),
+`subtasks.json`, `decision.txt` and `architecture.txt` (Phase 2's plan write),
+and `note.md`, `summary.txt` and, on a conflict, `contested.md` (Phase 2's note
+and ensemble commit). The CLIs
+read them themselves: `state.mjs` removes a file's final newline, keeps
+everything else as written, and refuses an empty or missing file before it
+writes anything. Nothing deletes them: a headless run can deny `rm`, and the
+directory is under `$TMPDIR`.
+
 ---
 
 ## Phase 0 — Workflow continuity (per ADR-0011 §5 + ADR-0018 §sub-2)
@@ -40,9 +65,11 @@ if [ "$FIND_RC" -ne 0 ]; then
 fi
 ```
 
-- Empty → bootstrap with verb=plan:
+- Empty → bootstrap with verb=plan. First write `request.txt`: the user's
+  feature description on one line, scrubbed of secrets.
 
   ```bash
+  TEXT_DIR='<directory from step 1>'
   CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
   [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
   GIT_HEAD="$(git rev-parse HEAD)"
@@ -52,7 +79,7 @@ fi
     --verb plan --host claude \
     --git-baseline-branch "$GIT_BRANCH" --git-baseline-head "$GIT_HEAD" \
     --status-digest "$STATUS_DIGEST" \
-    --original-request "<one-line scrubbed user feature description>" \
+    --original-request-file "$TEXT_DIR/request.txt" \
     --current-phase phase-0-bootstrap \
     --next-action "Run plan skill")"
   ```
@@ -103,15 +130,18 @@ Validation runs at the `state.mjs plan-set` boundary (id non-empty + unique, blo
 
 Build the Plan-verify prompt per `${CLAUDE_PLUGIN_ROOT}/core/skills/_shared/references/ensemble-protocol.md` § Plan-verify. The peer receives the orchestrator's draft plan as `<inputs><input name="feature_description">…</input><input name="draft_plan">…</input></inputs>` (Independence Rule exception per protocol). The `<grounding_rules>` section MUST include the schema 1.1 constraints so peer-emitted plan revisions don't bypass validation: every subtask requires `verb` (canonical 6-verb whitelist: investigate / frame / decide / compose / critique / refine) AND `branch` (git ref-format), plus `id` (unique) / `blocked_by` (array of existing ids forming a DAG — self-reference, mutual `A<->B`, and longer cycles are rejected) / `status` (`pending|blocked|in_progress|completed|deferred|abandoned`) per ADR-0019 §2.
 
+Write the prompt to `prompt.xml` in the text directory, then run:
+
 ```bash
+TEXT_DIR='<directory from step 1>'
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-PROMPT_FILE="$(mktemp -t orchestrator-plan-prompt.XXXXXX).xml"
+PROMPT_FILE="$TEXT_DIR/prompt.xml"
+[ -s "$PROMPT_FILE" ] || { echo "✗ $PROMPT_FILE is missing or empty: write the Plan-verify prompt there with your file-writing tool first; nothing was dispatched." >&2; exit 1; }
 # Generate a stable run-id BEFORE dispatch so the pending entry, the
 # peer's eventual result, and the ensemble-commit call all share the
 # same key.
 RUN_ID="macro-plan-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
-# ... LLM writes the Plan-verify XML prompt to $PROMPT_FILE ...
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
   --repo-root "$REPO_ROOT" --kind ensemble \
   --peer codex --prompt-file "$PROMPT_FILE" --output-format json \
@@ -136,24 +166,25 @@ Synthesize per AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT categories (host-agnos
 
 ## Phase 2 — State finalize (setPlan + ensemble-commit)
 
-Materialize the synthesized subtasks into a JSON file and call `plan-set`:
+Write three files in the text directory: `subtasks.json`, the synthesized
+subtasks as a top-level JSON array of subtask objects matching the ADR-0018
+§sub-1 schema; `decision.txt`, the decision rationale on one line; and
+`architecture.txt`, the architecture summary on one line. Then call
+`plan-set`:
 
 ```bash
+TEXT_DIR='<directory from step 1>'
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-SUBTASKS_JSON="$(mktemp -t orchestrator-subtasks.XXXXXX).json"
-# ... LLM writes the synthesized subtasks array (top-level JSON array
-# of subtask objects matching the ADR-0018 §sub-1 schema) to $SUBTASKS_JSON ...
-
 # ADR-0067 Decision 8 — a conflict records the Plan-verify run with its gate,
 # plan-conflict, in the plan's own write; any other verdict records none.
 PLAN_RUN_ID=''
 if [ "$VERDICT" = conflict ]; then PLAN_RUN_ID="${RUN_ID:-}"; fi
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" plan-set \
   --workflow-path "$ACTIVE" --host claude \
-  --subtasks-json-file "$SUBTASKS_JSON" \
-  --decision "<one-line decision rationale>" \
-  --architecture "<one-line architecture summary>" \
+  --subtasks-json-file "$TEXT_DIR/subtasks.json" \
+  --decision-file "$TEXT_DIR/decision.txt" \
+  --architecture-file "$TEXT_DIR/architecture.txt" \
   --verdict "$VERDICT" --run-id "$PLAN_RUN_ID" \
   --event updated
 ```
@@ -189,12 +220,11 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" lane-advice \
   --workflow-path "$ACTIVE" --repo-root "$REPO_ROOT" --format line
 ```
 
-Then record the phase note + ensemble result:
+Then record the phase note + ensemble result. Write two files in the text
+directory. `note.md` is the phase note, every `<…>` filled in:
 
-```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-NOTE="### Ensemble launched: plan at <iso-utc>
+```markdown
+### Ensemble launched: plan at <iso-utc>
 
 ### Ensemble synthesis: plan-verify verdict=<pass|concerns|conflict>
 
@@ -214,27 +244,40 @@ NOTE="### Ensemble launched: plan at <iso-utc>
 - rationale:             <why best — 본질/근본 (essence/foundation) + Standards/Root-Cause gate>
 - evidence_pointers:     <subtask table / phase notes / artifacts — pointers only>
 - confidence:            <HIGH | MEDIUM | LOW>
-- next_command:          <exact next step: /orchestrator:next … (dispatch first ready subtask) or \$orchestrator:next on Codex; the finalize / owner-decision action otherwise>
+- next_command:          <exact next step: /orchestrator:next … (dispatch first ready subtask) or $orchestrator:next on Codex; the finalize / owner-decision action otherwise>
 <the - lane_advice: line lane-advice printed above, verbatim, or nothing when it printed none>
-"
+```
 
+`summary.txt` is a one-line résumé of the AGREED / LOCAL-ONLY / PEER-ONLY /
+CONFLICT breakdown (about 200 characters), the summary the ensemble result
+records. Set `VERDICT` to the synthesized verdict (`pass`, `concerns` or
+`conflict`) and `RUN_ID` to the run id the dispatch generated, then run:
+
+```bash
+TEXT_DIR='<directory from step 1>'
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+# Both files, read by state.mjs's own reader, before either write: the append
+# must not record a note whose ensemble result then cannot be committed. (The
+# path to state.mjs goes by the environment: as the first argument it would
+# make the import run state.mjs as a command.)
+STATE_MJS="$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" node --input-type=module -e 'const { pathToFileURL } = await import("node:url"); const { readTextArgumentFile } = await import(pathToFileURL(process.env.STATE_MJS).href); const pairs = process.argv.slice(1); try { for (let i = 0; i < pairs.length; i += 2) readTextArgumentFile(pairs[i + 1], pairs[i]); } catch (err) { process.stderr.write(`✗ ${err.message}: write it with your file-writing tool first; nothing was written.\n`); process.exitCode = 1; }' \
+  -- --phase-note-file "$TEXT_DIR/note.md" --summary-file "$TEXT_DIR/summary.txt" || exit 1
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host claude \
   --phase-label "Phase 1: Plan (synthesized)" \
-  --phase-note "$NOTE" \
+  --phase-note-file "$TEXT_DIR/note.md" \
   --current-phase phase-2-presented \
   --next-action "Await the owner's approval of the macro plan (/orchestrator:approve); then /orchestrator:next dispatches the first ready subtask" \
   --event updated --require-open || exit 1
 
 # Atomic three-step ensemble-results commit (pop pending → append result
-# → prune). $VERDICT is one of pass | concerns | conflict; $SUMMARY is a
-# one-line résumé of the AGREED/LOCAL-ONLY/PEER-ONLY/CONFLICT breakdown
-# (~200 chars).
+# → prune).
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
   --workflow-path "$ACTIVE" \
   --run-id "$RUN_ID" \
   --phase plan --ensemble-type plan-verify \
-  --verdict "$VERDICT" --summary "$SUMMARY" \
+  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt" \
   --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 1
 
 # ADR-0067 Decision 8 — a conflict: the contested items become the macro's
@@ -253,12 +296,14 @@ fi
 ```
 
 On a `conflict`, before the block, write the contested items with the file
-tool to a new file and set `CONTESTED_FILE` to its path: each CONFLICT item,
-both positions and their evidence, prepared as the Plan-verify prompt was,
-since the consensus peers read the file. They come from the peer's positions,
-so never put them in the block, where the shell would read a line of them as
-a command. `consensus-task` refuses unless the ensemble commit recorded the run
-with the verdict `conflict`, and refuses empty text.
+tool to `contested.md` in the text directory and set
+`CONTESTED_FILE="$TEXT_DIR/contested.md"` below the block's `TEXT_DIR` line:
+each CONFLICT item, both positions and their evidence, prepared as the
+Plan-verify prompt was, since the consensus peers read the file. They come
+from the peer's positions, so never put them in the block, where the shell
+would read a line of them as a command. `consensus-task` refuses unless the
+ensemble commit recorded the run with the verdict `conflict`, and refuses
+empty text.
 
 **Note on auto-archive**: `/orchestrator:plan` does not set terminal markers. Macro auto-archive A1-A4 runs from the Stop hook/manual Codex helper after later lifecycle commands (`/orchestrator:done`, `/orchestrator:finalize`, or `/orchestrator:abort`) make the macro terminal.
 

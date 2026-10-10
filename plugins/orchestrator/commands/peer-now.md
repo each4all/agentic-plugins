@@ -33,14 +33,42 @@ Required:
 Reject missing peer, invalid peer, both prompt forms, no prompt form,
 or unreadable prompt file. Do not self-dispatch.
 
+The prompt reaches the runner as a file, never as shell source (ADR-0059,
+amendment of 2026-10-10): a prompt or a path spliced into a block is cut at
+`;`, expanded at `$(…)` and run at a backtick.
+
+1. Create a private directory, and note the path it prints:
+
+   ```bash
+   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   ```
+
+2. With your file-writing tool (Claude: the Write tool), not the shell, write
+   one file in that directory: for `--prompt-text`, `prompt.xml` holding the
+   prompt exactly as given; for `--prompt-file <path>`, `prompt-path.txt`
+   holding that path, as given, on one line. The runner then reads the
+   prompt from the user's file itself, byte for byte.
+
+Phase 1's block reads it from there: put the path in its `TEXT_DIR` line, and
+`claude` or `codex` in its `PEER` line. Nothing deletes the files (a headless
+run can deny `rm`).
+
 ---
 
 ## Phase 1 — Dispatch with operational tracking
 
 ```bash
+TEXT_DIR='<directory from step 1>'
+PEER='<claude|codex>'
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+# The prompt: the file prompt-path.txt names (--prompt-file), read by the
+# runner, or the prompt.xml written for --prompt-text. The path is data cat
+# read, never shell source.
+PROMPT_FILE="$TEXT_DIR/prompt.xml"
+if [ -f "$TEXT_DIR/prompt-path.txt" ]; then PROMPT_FILE="$(cat "$TEXT_DIR/prompt-path.txt")"; fi
+[ -s "$PROMPT_FILE" ] || { echo "✗ The prompt file ($PROMPT_FILE) is missing or empty; nothing was dispatched." >&2; exit 1; }
 RUN_ID="peer-now-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
 RUN_JSON="$(mktemp -t orchestrator-peer-now.XXXXXX).json"
 RUN_ERR="$(mktemp -t orchestrator-peer-now.XXXXXX).err"
@@ -49,7 +77,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
   --repo-root "$REPO_ROOT" \
   --run-id "$RUN_ID" \
   --kind peer-now \
-  --peer "$PEER" $PROMPT_ARG \
+  --peer "$PEER" --prompt-file "$PROMPT_FILE" \
   --output-format text \
   --host "${AGENTIC_HOST:-claude}" \
   --cwd "$REPO_ROOT" \
@@ -97,6 +125,10 @@ FIND_RC=$?
   ```bash
   CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
   [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+  # The note holds only values programs read or printed (the run's id and
+  # paths, head's read of the response) and the peer enum, no text written
+  # into this block: an expansion's result is not evaluated again (ADR-0059,
+  # amendment of 2026-10-10).
   RESPONSE="$(head -c 4000 "$STDOUT_PATH")"
   NOTE="peer: $PEER
   run_id: $RUN_ID
