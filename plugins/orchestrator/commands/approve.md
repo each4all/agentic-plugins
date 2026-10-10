@@ -96,6 +96,10 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" plan-approve \
   --workflow-path "$MACRO_PATH" --host claude \
   --expect-hash "$PLAN_HASH" || exit 1
 echo "workflow: $MACRO_PATH"
+# ADR-0067 Decision 8, item 2 — the lane advice, display only: one line, or
+# nothing when two lanes would not shorten the plan.
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" lane-advice \
+  --workflow-path "$MACRO_PATH" --repo-root "$REPO_ROOT" --format line
 ```
 
 `plan-approve` prints `{workflowPath, plan_hash, approved_at}`, with
@@ -142,3 +146,10 @@ For an approved plan the typical `selected_next` is `/orchestrator:next`, which
 dispatches the first ready subtask; for a refusal it is the recovery above.
 Derive it from the macro state (`state.mjs next-ready` reports readiness and
 approval together), not from a fixed table.
+
+After the six fields of an approved plan's proposal, repeat the `- lane_advice:`
+line the block printed, when it printed one (ADR-0067 Decision 8, item 2): the
+subtasks that could run side by side, and the
+`/orchestrator:autopilot start --execute --macro <id> --lanes 2` that would run
+them so, or that the state-root cutover comes first. It is beside the
+selection, never in place of it, and nothing stores it.

@@ -111,7 +111,12 @@ It exits 1 with the reason when:
 Report the approved hash (first 12 hex characters), the subtask count, and the
 workflow path, then the next step derived from the macro state — for an
 approved plan, typically `orchestrator:next` (`/orchestrator:next` on
-Claude, `$orchestrator:next` on Codex).
+Claude, `$orchestrator:next` on Codex). After it, add the line
+`state.mjs lane-advice --workflow-path "$MACRO_PATH" --repo-root "$REPO_ROOT" --format line`
+prints, when it prints one (ADR-0067 Decision 8, item 2): the subtasks that
+could run side by side and the autopilot command that would run them so, or
+that the state-root cutover comes first. Display only; the autopilot runs on
+Claude Code only (ADR-0063 D9).
 
 ---
 

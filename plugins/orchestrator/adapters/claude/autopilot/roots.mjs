@@ -34,6 +34,10 @@ import { locateRuntimePluginRoot } from '../../../scripts/discover-runtime.mjs';
 
 export const PLUGINS = Object.freeze(['orchestrator', 'engineer', 'runtime']);
 export const SELF_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+// The file each plugin's root must carry, as its resolver checks it: the
+// orchestrator override below, discover-engineer.mjs's ladder (state.mjs) and
+// discover-runtime.mjs's (footer.mjs; runtime has no state.mjs).
+export const ROOT_MARKERS = Object.freeze({ orchestrator: 'scripts/state.mjs', engineer: 'scripts/state.mjs', runtime: 'scripts/footer.mjs' });
 
 const canonical = (p) => {
   try { return realpathSync(p); } catch { return resolve(p); }
@@ -68,7 +72,7 @@ export async function resolveRoots({ env = process.env, home = homedir(), selfRo
 
   const override = env.AGENTIC_ORCHESTRATOR_ROOT;
   if (typeof override === 'string' && override.length > 0) {
-    if (isAbsolute(override) && existsSync(join(override, 'scripts', 'state.mjs'))) {
+    if (isAbsolute(override) && existsSync(join(override, ROOT_MARKERS.orchestrator))) {
       roots.orchestrator = canonical(override);
       sources.orchestrator = 'env';
     } else {

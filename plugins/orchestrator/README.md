@@ -118,7 +118,40 @@ the steps stay manual**, and the host-neutral state it reads (`next_step_*`,
   engineer carries ADR-0063 S3+S4 (0.24.0) and orchestrator S6 (0.16.0); the plugin
   code a worker loads must not live inside the repository the run drives (on a
   directory marketplace, drive a separate worktree), and it must be the version the
-  run pinned. A dedicated worktree is recommended.
+  run pinned. Launch from the home worktree (below).
+
+### The home worktree
+
+`preview` and `start` judge two launch triggers separately ([ADR-0067](../../docs/adr/0067-autopilot-worktree-lanes-and-proposals.md)
+Decision 8, item 4) and propose a concrete setup for each, as a `→ Proposed` line in
+the text and a `{kind: "worktree", command, pointer}` entry in `preview --json`'s
+`proposals`:
+
+- **Launched on the main checkout.** A serial run switches that checkout's branch at
+  each dispatch; with lanes, done and finalize run there, and work in it halts the
+  run. The proposal is the home worktree: `git worktree add -b autopilot/home
+  <parent>/<repo>-autopilot <base>` (from the macro's baseline as last fetched, or the
+  local branch without an `origin`; an existing home worktree is reused, found at that
+  path whatever branch a run left it on, or by its `autopilot/home` branch elsewhere),
+  then the start command in it with `AGENTIC_{ORCHESTRATOR,ENGINEER,RUNTIME}_ROOT`
+  pinned to the newest release in the Claude Code install cache that carries the file
+  each plugin's resolver checks, and `--macro` naming the macro found here (the home,
+  on `autopilot/home`, finds none by its branch; with none found, the proposal asks
+  for `--macro <id>` and names no command). The run on the main
+  checkout still starts; the proposal is for the next launch. A macro the home
+  worktree could not read (one in a linked worktree's own home) needs the state-root
+  cutover first, and the proposal says so instead.
+- **Plugin roots inside the repository.** The refusal stays, and so does the check of
+  the plugins each worker loads; the proposal pins every root to its installed cache
+  release, or, for a plugin with no install, to the same directory in a detached
+  snapshot worktree (`git worktree add --detach <parent>/<repo>-plugins-snapshot
+  <HEAD>`) that no run drives and no one updates. The pins move the scripts the
+  runbooks run, not the commands and hooks a worker loads: on a directory marketplace
+  in the driven checkout those come from that checkout, the first step still halts, and
+  the run must be driven from another checkout, the home worktree when this is the main
+  one. `start`'s refusal prints both triggers' proposals, as `preview` does.
+
+Nothing is run for you: each proposal is display only.
 
 ## Workflow file shape
 

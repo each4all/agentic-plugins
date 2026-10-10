@@ -32,12 +32,14 @@
 import { spawnSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 
 import { createBudget } from './budget.mjs';
 import { cleanupDeadRuns, summary as cleanupSummary } from './dead-runs.mjs';
 import { orderText, overlapText, reportLandingReady } from './landing-ready.mjs';
 import { lanesHoldingWork, lanesRequirements } from './lanes.mjs';
+import { launchProposals, mainCheckoutProposal, proposalLines } from './launch-proposals.mjs';
 import { observe as defaultObserve } from './observe.mjs';
 import {
   decide, fingerprint, modelFor, renderStep, verifyStep, STEP_KINDS,
@@ -360,6 +362,24 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
   if (pre.problems.length > 0) {
     err('✗ The autopilot cannot start:');
     for (const p of pre.problems) err(`  - ${p}`);
+    // ADR-0067 Decision 8, item 4: the refusal stays, with the concrete setup
+    // for each launch trigger, judged on its own as preview judges it: the
+    // pins for roots inside the repository, and, on the main checkout, the
+    // home worktree, the one setup a directory marketplace here leaves runnable.
+    // The macro is looked up read-only, as preview does, so the home command
+    // names it: a home worktree on autopilot/home finds none by its branch.
+    let refusedView = null;
+    if (pre.roots && pre.roots.problems.length === 0) {
+      try {
+        refusedView = observe({ repoRoot, roots: pre.roots.roots, macroId: options.macro ?? null, fetch: false, env });
+      } catch {
+        refusedView = null;
+      }
+    }
+    const proposals = pre.roots
+      ? launchProposals({ repoRoot, view: refusedView, options: { ...options, lanes }, roots: pre.roots.roots, env, home: env.HOME || homedir() })
+      : [];
+    for (const line of proposalLines(proposals)) err(line);
     return 1;
   }
   const pinned = pre.roots;
@@ -382,6 +402,10 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     for (const p of refusal) err(`  - ${p}`);
     return 1;
   }
+  // ADR-0067 Decision 8, item 4: launched on the main checkout, the run goes
+  // on, and proposes the home worktree to launch from next time.
+  const onMain = mainCheckoutProposal({ repoRoot, view, options: { ...options, lanes }, roots, env, home: env.HOME || homedir() });
+  for (const line of proposalLines(onMain ? [onMain] : [])) out(line);
   const runId = newRunId(new Date(now()));
   const runDir = createRunDir(repoRoot, runId);
   const startedAt = now();

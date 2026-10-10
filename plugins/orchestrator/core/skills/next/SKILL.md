@@ -134,7 +134,16 @@ behaves the same on both hosts.
 
 Before switching branches:
 
-1. Require a clean worktree.
+1. Require a clean worktree. A dirty one stops here, and its proposal selects
+   a worktree first (ADR-0067 Decision 8, item 3):
+   `state.mjs worktree-proposal --workflow-path "$MACRO_PATH" --repo-root "$REPO_ROOT" --subtask-id "$SUBTASK_ID" --host codex --format text`
+   prints the `git worktree add` command (runtime:worktree's path rule) and
+   the `$orchestrator:next` to run inside the new worktree, or why none helps
+   (the macro in a linked worktree's own home, or the subtask branch checked
+   out here). Commit, stash or revert here stay the rejected alternatives.
+   With the subtask branch checked out here and the subtask in progress, the
+   changes are its engineer workflow's: the selection is the ordinary resume
+   of that workflow on this branch (`$engineer:resume`), not a worktree.
 2. Resolve the engineer plugin with
    `scripts/discover-engineer.mjs discover`.
 3. Run `scripts/discover-engineer.mjs preflight --root "$ENGINEER_PLUGIN_ROOT"`.
