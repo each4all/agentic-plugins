@@ -267,10 +267,16 @@ describe('plugins/engineer — ADR-0019 PR-D Phase 0 parent-linkage env-var cont
 
       it('reads AGENTIC_TOPIC env var with fallback to LLM-provided original request', async () => {
         const text = await readFile(path, 'utf8');
-        // Contract: state.mjs create --original-request — without the variable, a
-        // dispatched subtask records the agent's wording instead of the subtask topic.
-        ok(text.includes('--original-request "${AGENTIC_TOPIC:-'),
-          `commands/${verb}.md --original-request must use \${AGENTIC_TOPIC:-...} env-var fallback`);
+        // Contract: state.mjs create's request — without the variable, a dispatched
+        // subtask records the agent's wording instead of the subtask topic. Since
+        // ADR-0059's amendment of 2026-10-10 the request is a file: the block writes
+        // a set AGENTIC_TOPIC (program data, never shell source) to topic.txt and
+        // records that file, else the request.txt the agent wrote.
+        const create = text.slice(text.indexOf('REQUEST_FILE="$TEXT_DIR/request.txt"'), text.indexOf('--original-request-file "$REQUEST_FILE"'));
+        ok(create.length > 0, `commands/${verb}.md must pass the request as --original-request-file "$REQUEST_FILE"`);
+        ok(create.includes(`if [ -n "\${AGENTIC_TOPIC:-}" ]; then\n  REQUEST_FILE="$(mktemp -d "\${TMPDIR:-/tmp}/agentic-text.XXXXXX")/topic.txt" || exit 1\n  printf '%s\\n' "$AGENTIC_TOPIC" > "$REQUEST_FILE" || exit 1\nfi\n`),
+          `commands/${verb}.md must take a set AGENTIC_TOPIC in place of the agent's request.txt`);
+        ok(!/--original-request "/.test(text), `commands/${verb}.md passes no inline request`);
       });
 
       if (['investigate', 'compose', 'critique'].includes(verb)) {

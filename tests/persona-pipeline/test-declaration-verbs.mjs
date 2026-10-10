@@ -205,12 +205,23 @@ for (const persona of ['founder', 'designer', 'engineer']) {
         const text = runbook(persona, verb);
         const v = verbs[verb];
         const listed = LISTED_CHANGES[`${persona}/${verb}/next_action`] ?? ((s) => s);
-        // Double-quoted as authored, single-quoted as generated (Decision 4).
-        const actions = [...text.matchAll(/--next-action (?:"([^"]*)"|'([^']*)') \\$/gm)].map((m) => listed(m[1] ?? m[2]));
+        // C130 (ADR-0059 amendment j): the finalize append and finish write read the next action
+        // from next-action.txt, which the agent writes with its file tool; the declared one is
+        // that file's default, its `text` scaffold, rendered verbatim (a `text` value).
+        const scaffolds = [...text.matchAll(/`next-action\.txt`[\s\S]*?\n( *)```text\n\1([^\n]*)\n\1```\n/g)].map((m) => listed(m[2]));
         // Contract: the --next-action state.mjs records, which SessionStart and the footer show —
-        // the finalize append and the finish write (and decide's Owner selection) record the
-        // declared one.
-        strictEqual(actions.filter((a) => a === v.next_action).length, verb === 'decide' ? 3 : 2, `the finalize append and finish write record ${JSON.stringify(v.next_action)}`);
+        // the finalize's next-action.txt holds the declared one unless the result selects another,
+        // and both of its writes read that file.
+        deepStrictEqual(scaffolds, [v.next_action], `the finalize's next-action.txt defaults to ${JSON.stringify(v.next_action)}`);
+        const finalize = text.slice(text.indexOf(`<!-- pipeline:begin ${verb}-finalize`));
+        strictEqual(finalize.split('--next-action-file "$TEXT_DIR/next-action.txt" \\\n').length - 1 >= 2, true, 'the append and the finish write read it');
+        if (verb === 'decide') {
+          // decide's Owner selection records the declared one itself, a literal the generator
+          // escapes (Decision 4): its clear and its finish write.
+          const owner = text.slice(text.indexOf('<!-- pipeline:begin decide-owner-selection -->'));
+          const inline = [...owner.matchAll(/(?:--next-action |NEXT_ACTION=)'([^']*)'/g)].map((m) => listed(m[1]));
+          strictEqual(inline.filter((a) => a === v.next_action).length, 2, `the Owner selection records ${JSON.stringify(v.next_action)}`);
+        }
       });
     }
   });

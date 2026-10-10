@@ -6,7 +6,29 @@ lifecycle's default; when the result selects another, write the compact form
 of the proposal instead (selected_next, a one-line why, next_command), which
 the footer shows as recommended next work.
 
+The next action is text, so it reaches `state.mjs` as a file, never on the
+command line: in shell source a quote, `$` or backtick of it would be read as
+code (ADR-0059, amendment of 2026-10-10). Before the block:
+
+1. Create a private directory for it, and note the path it prints:
+
+   ```bash
+   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   ```
+
+2. With your file-writing tool, not the shell, create `next-action.txt` in
+   that directory, ending with one newline. The lifecycle's default is
+
+   ```text
+   {{next_action}}
+   ```
+
+   Nothing deletes the file.
+
+Then run the block with `TEXT_DIR` set to that directory.
+
 ```bash
+TEXT_DIR='<directory from step 1>'
 # ADR-0063 D3 — finish-verb is the lifecycle's last write: the ADR-0017
 # §sub-decision 5 atomic terminal write (summary-complete + terminal marker)
 # with the next step, kind commit (the owner saves and commits).
@@ -21,7 +43,7 @@ the footer shows as recommended next work.
 # core/skills/_shared/references/session-handoff.md § Archive timing.
 node "<plugin-root>/scripts/state.mjs" finish-verb \
   --workflow-path "$ACTIVE" --host <claude|codex> \
-  --next-action {{next_action}} \
+  --next-action-file "$TEXT_DIR/next-action.txt" \
   --next-step-kind commit --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?
 ```
 

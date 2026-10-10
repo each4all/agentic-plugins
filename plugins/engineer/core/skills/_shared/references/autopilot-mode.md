@@ -115,9 +115,14 @@ history: it may still say `done`, `commit` or `owner-decision`.
 ## Owner gates
 
 A genuine owner judgment stops the step. A verb records it with the phase
-note the table names, then its last write:
+note the table names, then its last write. Its next action is `next-action.txt`,
+a file the verb wrote with its file-writing tool into the private directory its
+steps created (`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`, the block's
+`TEXT_DIR`), never text on the command line (ADR-0059, amendment of
+2026-10-10):
 
 ```bash
+TEXT_DIR='<the directory the verb steps created>'
 # ARCHIVE TIMING — with an owner gate this write is never terminal, so the
 # Stop hook, which fires at EVERY turn end on Claude, leaves the workflow
 # active (it also refuses to archive while a gate is pending); the
@@ -125,7 +130,7 @@ note the table names, then its last write:
 # only once the plugin hooks are trusted (`/hooks`).
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-  --next-action "<what the owner decides>" \
+  --next-action-file "$TEXT_DIR/next-action.txt" \
   --next-step-kind owner-decision --next-step-confidence "<HIGH|MEDIUM|LOW>" \
   --owner-gate <gate> --owner-gate-anchor <anchor>
 ```
@@ -147,9 +152,10 @@ verdict of `conflict`) records its run id beside a consensus task file; the
 driver's halt report carries the bounded consensus round it proposes, for the
 owner to run (ADR-0067 Decision 8). No step runs it.
 
-`awaiting-owner-clear --resolution "<the decision>" --next-step-kind …
---next-step-confidence … [--next-step-verb …] --next-action "<what comes next>"`
-records the owner's decision, clears the gate, names the next step and
+`awaiting-owner-clear --resolution-file <the decision's file> --next-step-kind …
+--next-step-confidence … [--next-step-verb …] --next-action-file <the next
+action's file>` records the owner's decision, each text a file written with
+the file-writing tool, clears the gate, names the next step and
 replaces the gate's `Owner: …` next action in one write. The next step is never
 runnable without the decision behind it, and the `owner-decision` the gate
 left does not stop the driver again. Every resolving block in these runbooks

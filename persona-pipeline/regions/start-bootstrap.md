@@ -79,10 +79,25 @@ current tree (`ACCEPT_CURRENT_TREE=1`), which stages all of it at Phase 7.
 `.agentic-plugins/state/**`, the workflow storage, never counts as dirty.
 {{/capability}}
 {{^capability commit_surface}}
-In the block, replace `<the original request described above>` with a
-{{request_placeholder}}; `AGENTIC_TOPIC` takes its place when it is set. The
-block sets the repository and branch itself: a shell variable does not outlive
-a Bash call.
+The request reaches `state.mjs` as a file, never in the block: in shell
+source a quote, `$`, backtick or line break of it would be read as code
+(ADR-0059, amendment of 2026-10-10). Before the block:
+
+1. Create a private directory for it, and note the path it prints:
+
+   ```bash
+   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   ```
+
+2. With your file-writing tool, not the shell, create `request.txt` in that
+   directory holding a {{request_placeholder}}, ending with one newline.
+   Nothing deletes it.
+
+Then run the block with `TEXT_DIR` set to that directory; a request file left
+unwritten stops it before any write. When `AGENTIC_TOPIC` is set (a dispatched
+run), the block writes it to a file of its own and records that instead, and
+steps 1–2 are not needed. The block sets the repository and branch itself: a
+shell variable does not outlive a Bash call.
 {{/capability}}
 
 A dirty tree's refusal selects a worktree first (ADR-0067 Decision 8, item 3):
@@ -108,6 +123,9 @@ request in a new args file.
 ```bash
 {{#capability commit_surface}}
 ARGS_DIR='<directory from step 1>'
+{{/capability}}
+{{^capability commit_surface}}
+TEXT_DIR='<directory from step 1>'
 {{/capability}}
 ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
@@ -168,18 +186,32 @@ case "$STATUS" in
 esac
 GIT_HEAD="$(git rev-parse HEAD)"
 STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
+{{#capability commit_surface}}
+# The description the extractor read reaches state.mjs as a file the block
+# writes (ADR-0059, amendment of 2026-10-10): program data, never shell source,
+# and a description that begins with `--` is not read as a flag.
+REQUEST_FILE="$(mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX")/request.txt" || exit 1
+printf '%s\n' "$FEATURE" > "$REQUEST_FILE" || exit 1
+{{/capability}}
+{{^capability commit_surface}}
+# The request, as a file (ADR-0059, amendment of 2026-10-10): the one the
+# agent wrote, or the AGENTIC_TOPIC a dispatcher exports, which is program data
+# the block writes to a private directory of its own, so no text flag is
+# inline and a dispatched run needs no file of the agent's.
+REQUEST_FILE="$TEXT_DIR/request.txt"
+if [ -n "${AGENTIC_TOPIC:-}" ]; then
+  REQUEST_FILE="$(mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX")/topic.txt" || exit 1
+  printf '%s\n' "$AGENTIC_TOPIC" > "$REQUEST_FILE" || exit 1
+fi
+grep -q '[^[:space:]]' "$REQUEST_FILE" 2>/dev/null || { echo "✗ request.txt in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was written." >&2; exit 1; }
+{{/capability}}
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
   --repo-root "$REPO_ROOT" \
   --verb investigate --workflow-type start \
   --host "${AGENTIC_HOST:-claude}" --persona {{name}} \
   --git-baseline-branch "$GIT_BRANCH" --git-baseline-head "$GIT_HEAD" \
   --status-digest "$STATUS_DIGEST" \
-{{#capability commit_surface}}
-  --original-request "$FEATURE" \
-{{/capability}}
-{{^capability commit_surface}}
-  --original-request "${AGENTIC_TOPIC:-<the original request described above>}" \
-{{/capability}}
+  --original-request-file "$REQUEST_FILE" \
   --current-phase phase-1-discover \
   --next-action "Run Phase 1 discover+frame+decide composite")" || exit $?
 ```

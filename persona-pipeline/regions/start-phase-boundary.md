@@ -1,14 +1,22 @@
 Each phase boundary writes state via `state.mjs append --verb <verb>
---current-phase <phase> --next-action <...> --event updated` and dispatches
+--current-phase <phase> --next-action-file <file> --event updated` and
+dispatches
 the per-phase peer ensemble per
-`core/skills/_shared/references/ensemble-protocol.md` (always-max).
+`core/skills/_shared/references/ensemble-protocol.md` (always-max). Every text
+a write carries (a phase note, a next action, a summary, an owner's
+decision) reaches `state.mjs` and `peer-runner.mjs` as a file: write it with
+the file-writing tool into a private directory
+(`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`) and pass the `-file`
+form of its flag, never the text in a command (ADR-0059, amendment of
+2026-10-10).
 
 Inside the lifecycle each verb runs in place, so three rules hold at every
 phase (ADR-0066 PC2b):
 
 - **Each ensemble attempt is settled.** After its synthesis note, settle the
   phase's attempt from its run ledger with `peer-runner.mjs settle --phase
-  <verb> --run-id <that attempt's run id>` (empty when no run launched), before
+  <verb> --run-id <that attempt's run id>` (empty when no run launched) and
+  its `--summary-file`, before
   the next phase. A repeated phase (a second refine pass) dispatches under a
   new run id and settles each attempt.
 - **No phase closes the workflow.** A verb's own terminal write
@@ -19,9 +27,9 @@ phase (ADR-0066 PC2b):
   after the phase note with `state.mjs awaiting-owner-set --gate <gate>
   --anchor <anchor>`, a write that leaves the workflow open, and pause. Once
   the owner decides, clear it with `state.mjs awaiting-owner-clear --gate
-  <gate> --resolution <the owner's decision> --next-step-kind verb
+  <gate> --resolution-file <the owner's decision> --next-step-kind verb
   --next-step-verb <the next phase's verb> --next-step-confidence HIGH
-  --next-action <the next phase's action>`, and continue at that phase. The
+  --next-action-file <the next phase's action>`, and continue at that phase. The
   verb's own resolving step (decide's Owner selection, refine's Owner
   decision), run inside the lifecycle, clears the gate and stops instead of
   making the verb's terminal write; resume the lifecycle from it. A

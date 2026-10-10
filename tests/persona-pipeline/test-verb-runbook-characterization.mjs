@@ -39,7 +39,8 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
       ok(d.runbooks.length > 0 && d.runbooks.every((k) => keys.includes(k)), `${d.where}: runbooks`);
       // ADR-0067-WP: the worktree-first start (ADR-0067 Decision 8, item 3).
       // CP: ADR-0067 Decision 8's conflict branch (macro f76033).
-      ok(/^(?:PC2(?:a[234]|b)|PC3b?|ADR-0067-WP|CP) /.test(d.why), `${d.where}: a change with its reason`);
+      // C130: ADR-0059's amendment of 2026-10-10, the agent's text as files.
+      ok(/^(?:PC2(?:a[234]|b)|PC3b?|ADR-0067-WP|CP|C130) /.test(d.why), `${d.where}: a change with its reason`);
       if (structural) ok(STRUCTURAL_OPS.includes(d.op), `${d.where}: a known op`);
       else ok(typeof d.from === 'string' && typeof d.to === 'string' && d.from !== d.to && d.from.length > 0, `${d.where}: a string change`);
     }
@@ -136,6 +137,27 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
       throws(() => apply({ op: 'set-guard', where: 'guards.unknown', from: null, to: 'x' }), /names no recorded guard/);
     });
 
+    // C130: a text flag whose value moved into a file the agent writes, and a
+    // prompt allocation that went with it.
+    it('file-flag swaps an inline text flag read as recorded for its -file twin in place, and refuses any other reading, name or shape', () => {
+      const r = apply({ op: 'file-flag', where: 'call:state.mjs append#2:--phase-note', from: '$NOTE', to: ['--phase-note-file', '$TEXT_DIR/note.md'] });
+      deepStrictEqual(r.calls[3].args, [['--workflow-path', '$ACTIVE'], ['--phase-note-file', '$TEXT_DIR/note.md']]);
+      deepStrictEqual(r.calls[2], record().calls[2], 'the other append is untouched');
+      throws(() => apply({ op: 'file-flag', where: 'call:state.mjs append#2:--phase-note', from: '$SUMMARY', to: ['--phase-note-file', 'x'] }), /finds the value as recorded/);
+      throws(() => apply({ op: 'file-flag', where: 'call:state.mjs append#2:--phase-note', from: '$NOTE', to: ['--summary-file', 'x'] }), /sets \[--phase-note-file, <path>\]/);
+      throws(() => apply({ op: 'file-flag', where: 'call:state.mjs append#2:--phase-note', from: '$NOTE', to: '--phase-note-file' }), /sets \[--phase-note-file, <path>\]/);
+      throws(() => apply({ op: 'file-flag', where: 'call:state.mjs append#1:--phase-note', from: '$NOTE', to: ['--phase-note-file', 'x'] }), /finds the flag once/);
+      throws(() => apply({ op: 'file-flag', where: 'call:state.mjs append:--phase-note', from: '$NOTE', to: ['--phase-note-file', 'x'] }), /one such call/);
+    });
+
+    it('remove-mktemp drops a template recorded once, and refuses another one, another place or a value left', () => {
+      const withTemplates = () => ({ ...record(), mktemp_templates: ['a-prompt.XXXXXX', 'b.XXXXXX'] });
+      deepStrictEqual(apply({ op: 'remove-mktemp', where: 'mktemp_templates', from: 'a-prompt.XXXXXX', to: null }, withTemplates()).mktemp_templates, ['b.XXXXXX']);
+      throws(() => apply({ op: 'remove-mktemp', where: 'mktemp_templates', from: 'c.XXXXXX', to: null }, withTemplates()), /finds "c\.XXXXXX" once/);
+      throws(() => apply({ op: 'remove-mktemp', where: 'note', from: 'a-prompt.XXXXXX', to: null }, withTemplates()), /names mktemp_templates/);
+      throws(() => apply({ op: 'remove-mktemp', where: 'mktemp_templates', from: 'a-prompt.XXXXXX', to: '' }, withTemplates()), /sets null/);
+    });
+
     it('an unknown op is refused; a string difference still needs its text exactly once', () => {
       throws(() => apply({ op: 'remove-everything', where: 'note', from: 'x', to: '' }), /unknown allowed-difference op/);
       strictEqual(apply({ where: 'call:state.mjs create:--verb', from: 'compose', to: 'frame' }).calls[1].args[0][1], 'frame');
@@ -165,7 +187,8 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
             // args file holds, clears the next step on resume, and commits
             // through the Phase 7 driver: plan, then the approved execute.
             strictEqual(arg(create, '--persona'), 'engineer');
-            deepStrictEqual([arg(create, '--verb'), arg(create, '--workflow-type'), arg(create, '--original-request')], ['investigate', 'start', '$FEATURE']);
+            // C130: the description reaches create as a file the block writes.
+            deepStrictEqual([arg(create, '--verb'), arg(create, '--workflow-type'), arg(create, '--original-request-file')], ['investigate', 'start', '$REQUEST_FILE']);
             deepStrictEqual([of('peer-runner.mjs', 'run').length, of('state.mjs', 'ensemble-commit').length], [0, 0]);
             const [[resume]] = of('state.mjs', 'append');
             deepStrictEqual([arg(resume, '--workflow-path'), arg(resume, '--clear-next-step')], ['$ACTIVE', 'true']);
@@ -214,7 +237,10 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
           // ENSEMBLE_TYPE, which the agent sets: the prefix is that symbol (its
           // critique did too until it joined the regions in PC3 U7).
           deepStrictEqual(got.run_id_prefixes, [type]);
-          deepStrictEqual(got.mktemp_templates.filter((t) => t.endsWith('-prompt.XXXXXX')), [`${persona}-${verb}-prompt.XXXXXX`]);
+          // C130: the prompt is the file the agent writes, prompt.xml in the text
+          // directory; the block allocates no path for it.
+          deepStrictEqual(got.mktemp_templates.filter((t) => t.endsWith('-prompt.XXXXXX')), []);
+          strictEqual(arg(run, '--prompt-file'), '$PROMPT_FILE');
         });
 
         it('order: find-active, then bootstrap or resume, the dispatch, the note, the settlement, the terminal write — every write on $ACTIVE', () => {
@@ -271,11 +297,15 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
           if (paused) {
             const last = calls[index('state.mjs', 'append', 2)];
             ok(last && index('state.mjs', 'append', 2) === terminal + 1, 'the paused append follows the converged finish-verb, its alternative');
-            deepStrictEqual([arg(last, '--workflow-path'), arg(last, '--clear-terminal-marker'), last.args.some(([f]) => f === '--phase-note')], ['$ACTIVE', 'true', false]);
+            deepStrictEqual([arg(last, '--workflow-path'), arg(last, '--clear-terminal-marker'), last.args.some(([f]) => f === '--phase-note' || f === '--phase-note-file')], ['$ACTIVE', 'true', false]);
           }
-          strictEqual(arg(calls[note], '--phase-note'), '$NOTE');
+          // C130 (ADR-0059 amendment j): the note, the summary and the next action
+          // are the files the agent wrote in the text directory.
+          strictEqual(arg(calls[note], '--phase-note-file'), '<directory from step 1>/note.md');
+          if (settled) strictEqual(arg(calls[commit], '--summary-file'), '<directory from step 1>/summary.txt');
           for (const c of [calls[resume], calls[run], calls[note], calls[commit], calls[terminal]]) strictEqual(arg(c, '--workflow-path'), '$ACTIVE');
-          strictEqual(arg(calls[terminal], '--next-action'), arg(calls[note], '--next-action'));
+          strictEqual(arg(calls[terminal], '--next-action-file'), arg(calls[note], '--next-action-file'));
+          strictEqual(arg(calls[note], '--next-action-file'), '<directory from step 1>/next-action.txt');
         });
 
         it('guards: detached HEAD and find-active failures exit; decide also exits on both resolver failures', () => {

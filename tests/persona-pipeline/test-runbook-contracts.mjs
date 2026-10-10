@@ -35,7 +35,7 @@ import {
   replaceRegionBodies,
 } from '../../scripts/lib/persona-pipeline.mjs';
 import { MANIFEST, REPO_ROOT, declaration, pluginRoot } from './_personas.mjs';
-import { FIXTURE, NOTE_READER, characterize } from './_verb-runbooks.mjs';
+import { FIXTURE, characterize } from './_verb-runbooks.mjs';
 import {
   archiveTimingProblems,
   argsFileRunbookProblems,
@@ -250,27 +250,66 @@ function sentenceAt(text, sentence) {
   return [...text.matchAll(re)].map((m) => m.index);
 }
 
+// ADR-0059's amendment of 2026-10-10: the texts an agent writes with its file
+// tool before a block, one file each, in the directory the block's first line
+// names. A block holds the placeholder line; the test fills it, as the agent
+// does, with the directory it wrote the files into.
+const TEXT_DIR_LINE = "TEXT_DIR='<directory from step 1>'";
+// What the agent writes when a case names nothing else: each file ends with
+// one newline, as the file-writing tool leaves it.
+const DEFAULT_TEXTS = Object.freeze({
+  'note.md': 'n\n',
+  'summary.txt': 's\n',
+  'next-action.txt': 'the next action\n',
+  'request.txt': 'the request\n',
+  'resolution.txt': 'the resolution\n',
+  'subject.txt': 'feat(x): the subject\n',
+  'prompt.xml': '<prompt/>\n',
+});
+// The flags whose file the stub reads back, as the scripts would.
+const TEXT_FILE_FLAGS = ['--phase-note-file', '--next-action-file', '--summary-file', '--original-request-file', '--resolution-file', '--subject-file', '--prompt-file'];
+// What a hostile text would leave behind if a shell read it.
+const SIDE_EFFECTS = ['pwned', 'pwned2', 'injected'];
+// The finalize's check of each file, by every reader's rule: strict UTF-8, no
+// NUL byte, text left once blanks are trimmed (settle's rule for the summary).
+const FINALIZE_CHECK = 'node -e \'let t;try{t=new TextDecoder("utf-8",{fatal:true}).decode(require("fs").readFileSync(process.argv[1]))}catch{process.exit(1)}process.exit(t.includes("\\0")||t.trim()===""?1:0)\' "$TEXT_DIR/$TEXT_FILE"';
+// The files a script would refuse (`null` leaves one unwritten).
+const REFUSED_TEXTS = [
+  ['left unwritten', null], ['holding a newline only', '\n'], ['holding blanks', ' \t\n\n'],
+  ['holding a BOM and a newline', '\uFEFF\n'], ['holding a no-break space', '\u00A0\n'],
+  ['holding a NUL byte', Buffer.from('a\0b\n')], ['holding bytes that are not UTF-8', Buffer.from([0xff, 0x0a])],
+];
+
 /**
  * Run a runbook block with `node` stubbed: the stub logs each script
- * subcommand, keeps the `--phase-note` it was handed, fails `append` when
+ * subcommand, keeps the phase note it was handed (`--phase-note`, or the file
+ * `--phase-note-file` names) and the contents of every text file a call
+ * names (`texts`, `[flag, content]` in call order), fails `append` when
  * asked to, answers `find-active` with `active` and `findStatus`, and
  * answers decide's `resolve` with `resolveStatus`, keeping the file it was
  * given and printing a context on stdout and a diagnostic on stderr. The
- * heredoc's placeholder line is replaced by `note` first, and its delimiter
- * by `delimiter` when given; `after` is appended to the block.
- * `inheritedNote` puts a NOTE in the shell's environment beforehand.
+ * agent's files (`DEFAULT_TEXTS`, `note` as `note.md`, then `texts`, where
+ * `null` leaves a file unwritten) go into a directory whose name holds a
+ * space, which the block's TEXT_DIR line is set to, and peer-now's prompt
+ * file and peer lines likewise; `after` is appended to the block.
  */
-function runBlock(shell, block, persona, { note = '', failAppend = false, delimiter = null, active = '', findStatus = 0, resolveStatus = 0, inheritedNote = null, after = '', baseline = '', baselineStatus = 0, readOutput = '', readStatus = 0, preflightStatus = 0, settleStatus = 0, clearStatus = 0, argsText = null, diag = '', diagStatus = 0, phase7Status = 0, recorded = '', proposed = PROPOSED_ROUND, taskStatus = 0 }) {
+function runBlock(shell, block, persona, { note = null, texts = {}, failAppend = false, active = '', findStatus = 0, resolveStatus = 0, after = '', baseline = '', baselineStatus = 0, readOutput = '', readStatus = 0, preflightStatus = 0, settleStatus = 0, clearStatus = 0, argsText = null, diag = '', diagStatus = 0, phase7Status = 0, recorded = '', proposed = PROPOSED_ROUND, taskStatus = 0 }) {
   const dir = mkdtempSync(join(tmpdir(), 'pc2a2b-finalize.'));
   try {
     mkdirSync(join(dir, 'bin'));
     mkdirSync(join(dir, 'root'));
     // Phase 0 reads the branch: a repository of its own, on a branch.
     strictEqual(spawnSync('git', ['init', '-q', '-b', 'pc2a2b', dir]).status, 0, 'git init');
+    const textDir = join(dir, 'agentic text.x');
+    mkdirSync(textDir);
+    const files = { ...DEFAULT_TEXTS, ...(note === null ? {} : { 'note.md': `${note}\n` }), ...texts };
+    for (const [name, content] of Object.entries(files)) if (content !== null) writeFileSync(join(textDir, name), content);
     writeFileSync(join(dir, 'bin', 'node'), [
       '#!/bin/sh',
       // An inline script (start's JSON reads) runs on the real node.
       'if [ "$1" = -e ]; then exec "$STUB_REAL_NODE" "$@"; fi',
+      // Each text file a call names, read back as the script would read it.
+      `prev=; for a in "$@"; do case "$prev" in ${TEXT_FILE_FLAGS.join('|')}) { printf '%s\\n' "$prev"; cat "$a"; printf '\\036\\n'; } >> "$STUB_TEXTS";; esac; prev="$a"; done`,
       // start's args file is read by the real extractor (PC3b U2); the Phase 7
       // driver is a script without a subcommand, logged by its mode.
       'case "$1" in */start-args.mjs) printf \'start-args\\n\' >> "$STUB_LOG"; shift; exec "$STUB_REAL_NODE" "$STUB_START_ARGS" "$@";; esac',
@@ -291,14 +330,14 @@ function runBlock(shell, block, persona, { note = '', failAppend = false, delimi
       'if [ "$2" = create ]; then printf \'%s\\n\' "$STUB_CREATED"; exit 0; fi',
       'if [ "$2" = resolve ]; then printf \'%s\\n\' "$4" > "$STUB_ARGS"; printf \'%s\\n\' "$STUB_CONTEXT"; printf \'%s\\n\' "$STUB_DIAGNOSTIC" >&2; exit "$STUB_RESOLVE_RC"; fi',
       'if [ "$2" = append ]; then',
-      '  while [ $# -gt 0 ]; do if [ "$1" = --phase-note ]; then printf \'%s\' "$2" > "$STUB_NOTE"; fi; shift; done',
+      '  while [ $# -gt 0 ]; do if [ "$1" = --phase-note ]; then printf \'%s\' "$2" > "$STUB_NOTE"; elif [ "$1" = --phase-note-file ]; then cat "$2" > "$STUB_NOTE"; fi; shift; done',
       '  if [ -n "$STUB_FAIL_APPEND" ]; then exit 7; fi',
       'fi',
       'exit 0',
       '',
     ].join('\n'), { mode: 0o755 });
-    // The delimiter first, then the note, which may hold the old delimiter.
-    let script = delimiter === null ? block : block.replace("<<'PHASE_NOTE'", () => `<<'${delimiter}'`).replace('\nPHASE_NOTE\n', () => `\n${delimiter}\n`);
+    let script = block.replace(TEXT_DIR_LINE, () => `TEXT_DIR='${textDir}'`)
+      .replace("PEER='<claude|codex, from --peer>'", () => "PEER='codex'");
     // A start block that reads an args file gets one, as the runbook's steps
     // write it (PC3b U2).
     if (argsText !== null) {
@@ -306,7 +345,6 @@ function runBlock(shell, block, persona, { note = '', failAppend = false, delimi
       writeFileSync(join(dir, 'start-args', 'args.json'), JSON.stringify({ agentic_args: 1, text: argsText }));
       script = script.replace("ARGS_DIR='<directory from step 1>'", () => `ARGS_DIR='${join(dir, 'start-args')}'`);
     }
-    script = script.replace('\n<the phase note above, filled in>\n', () => `\n${note}\n`);
     script += after;
     const env = {
       PATH: `${join(dir, 'bin')}:${process.env.PATH}`,
@@ -318,6 +356,7 @@ function runBlock(shell, block, persona, { note = '', failAppend = false, delimi
       STUB_LOG: join(dir, 'log'),
       STUB_ARGV: join(dir, 'argv'),
       STUB_NOTE: join(dir, 'note'),
+      STUB_TEXTS: join(dir, 'texts'),
       STUB_ACTIVE: active,
       STUB_FIND_RC: String(findStatus),
       STUB_ARGS: join(dir, 'args'),
@@ -339,12 +378,12 @@ function runBlock(shell, block, persona, { note = '', failAppend = false, delimi
       STUB_START_ARGS: join(pluginRoot(persona), 'scripts', 'start-args.mjs'),
       STUB_CONTEXT: RESOLVER_CONTEXT,
       STUB_DIAGNOSTIC: RESOLVER_DIAGNOSTIC,
-      ...(inheritedNote === null ? {} : { NOTE: inheritedNote }),
       ...(failAppend ? { STUB_FAIL_APPEND: '1' } : {}),
     };
     const r = spawnSync(shell, ['-c', script], { cwd: dir, env, encoding: 'utf8' });
     const read = (f) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), 'utf8') : null);
-    return { status: r.status, stdout: r.stdout, stderr: r.stderr, log: (read('log') ?? '').split('\n').filter(Boolean), argv: (read('argv') ?? '').split('\n').filter(Boolean), note: read('note'), out: read('out'), args: read('args') };
+    const textsRead = (read('texts') ?? '').split('\x1e\n').filter(Boolean).map((chunk) => [chunk.slice(0, chunk.indexOf('\n')), chunk.slice(chunk.indexOf('\n') + 1)]);
+    return { status: r.status, stdout: r.stdout, stderr: r.stderr, log: (read('log') ?? '').split('\n').filter(Boolean), argv: (read('argv') ?? '').split('\n').filter(Boolean), note: read('note'), out: read('out'), args: read('args'), texts: textsRead, textDir, sideEffects: SIDE_EFFECTS.filter((f) => existsSync(join(dir, f))) };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -371,21 +410,28 @@ function resolveWith(persona, text) {
 }
 
 const SHELLS = ['bash', 'zsh', 'sh', 'dash'].filter((s) => spawnSync(s, ['-c', 'exit 0']).status === 0);
-// Whether a shell's read takes -d: dash's does not, and there the block must
-// stop before any write instead of recording an empty note.
-const readsDelimited = (shell) => spawnSync(shell, ['-c', "IFS= read -r -d '' X <<'E' || true\nx\nE\n[ -n \"$X\" ]"]).status === 0;
 
 // Text a phase note may hold that a shell would read if it were spliced into
-// a double-quoted string: quotes, an expansion, a command substitution, a
-// backtick, an apostrophe, the persona's own skill mention and a trailing
-// backslash.
+// a command: quotes, an expansion, a command substitution, a backtick, an
+// apostrophe, the persona's own skill mention, a trailing backslash, a line
+// reading as the retired heredoc's delimiter with a command after it, a
+// leading `--`, a CRLF line end, non-ASCII text and a blank line at the end.
 const HOSTILE_NOTE = [
   '### Artifact',
   '',
   'He said "go"; it\'s $HOME and $(touch pwned) and `touch pwned2`',
   '- next_command:          /founder:frame … or $founder:frame for a verb',
   'ends with a backslash \\',
+  'PHASE_NOTE',
+  'printf INJECTED > injected',
+  '--looks-like-a-flag',
+  'a CRLF line\r',
+  '비ASCII: é ✓',
+  '',
 ].join('\n');
+// A summary and a next action as hostile, each on one line.
+const HOSTILE_SUMMARY = '--agreed: "A" $(touch pwned) `touch pwned2` it\'s \\ done';
+const HOSTILE_NEXT = 'Critique "it" — $(touch pwned) or `touch pwned2`; it\'s /founder:critique';
 
 // The convergent finalize is a variant of the plain one, not a second copy
 // that can drift: the plain template with the convergence paragraph before
@@ -502,7 +548,10 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             ok(blocks.length > 0, 'no shell block uses the plugin root');
             for (const b of blocks) {
               const lines = b.text.split('\n');
-              const at = lines[0] === ARGS_DIR_LINE ? 1 : 0;
+              // The directories and values the agent fills in come first: the
+              // args or text directory, peer-now's peer and prompt file.
+              let at = 0;
+              while (/^(ARGS_DIR|TEXT_DIR|PEER|PROMPT_FILE)='<[^'>]+>'$/.test(lines[at] ?? '')) at++;
               // Contract: the agent running a block in a fresh shell — without the
               // persona's own override and cache path the block runs another
               // plugin's scripts, or none. A block nested in a list item is indented.
@@ -568,6 +617,22 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               strictEqual(set.length, 1, 'checkpoint-set sites on $ACTIVE');
               ok(find[0] < set[0], 'find-active precedes checkpoint-set');
             });
+
+            // Contract (ADR-0059, amendment of 2026-10-10): the agent passing the
+            // summary the user typed — it reaches state.mjs as the file the agent
+            // wrote, and a summary left unwritten stops the block before the write.
+            it('the checkpoint summary is a file the agent wrote, read as written', () => {
+              const block = shellBlocks(region(text, 'checkpoint-set')).find((b) => b.text.includes('checkpoint-set'));
+              ok(block.text.startsWith(`${TEXT_DIR_LINE}\n`), 'the block names the text directory first');
+              ok(!/--summary "|SUMMARY=/.test(block.text), 'no inline summary');
+              const summary = { 'summary.txt': "it's \"done\": $(touch pwned) `touch pwned2`\n" };
+              const r = runBlock('bash', `ACTIVE='/w/active.md'\n${block.text}`, persona, { texts: summary });
+              deepStrictEqual([r.status, r.log], [0, ['checkpoint-set']], r.stderr);
+              ok(r.argv[0].includes(` --workflow-path /w/active.md --host claude --summary-file ${r.textDir}/summary.txt`), r.argv[0]);
+              deepStrictEqual([r.texts, r.sideEffects], [[['--summary-file', summary['summary.txt']]], []]);
+              const unwritten = runBlock('bash', `ACTIVE='/w/active.md'\n${block.text}`, persona, { texts: { 'summary.txt': null } });
+              deepStrictEqual([unwritten.status, unwritten.log], [1, []], 'nothing written');
+            });
           }
 
           if (dest === 'commands/resume.md') {
@@ -595,6 +660,13 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               const append = code.indexOf('state.mjs" append', otherwise);
               ok(read >= 0 && read < guard, 'the baseline head is re-read in the marker block');
               ok(guard >= 0 && otherwise > guard && append > otherwise && code.indexOf('\nfi', append) > append, code);
+              // Contract (ADR-0059, amendment of 2026-10-10): the drift summary is
+              // the agent's text — a file it wrote, checked before the append.
+              ok(code.startsWith(`${TEXT_DIR_LINE}\n`), 'the block names the text directory first');
+              const check = code.indexOf('grep -q \'[^[:space:]]\' "$TEXT_DIR/note.md" 2>/dev/null ||', otherwise);
+              ok(check > otherwise && check < append && code.includes('--phase-label "Resume" --phase-note-file "$TEXT_DIR/note.md" \\'), code);
+              ok(!/--phase-note "/.test(code), 'no inline note');
+              ok(text.includes(`   Re-entered via /${persona}:resume; drift=<clean|dirty>. <one-paragraph diff summary, or 'no changes since baseline'>\n`), 'the note scaffold names this persona\'s resume');
             });
 
             it('resume takes no argument or archive with an optional workflow id, and an argument starting with archive is routed to archive mode', () => {
@@ -646,17 +718,33 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             });
 
             it('dispatch, run: the run id is a peer-now- id, surfaced on stderr before the runner call, which keys the run with it', () => {
-              const [block] = shellBlocks(region(text, 'peer-now-dispatch'));
+              // The region's first block is the mktemp step; the dispatch is the runner's.
+              const block = shellBlocks(region(text, 'peer-now-dispatch')).find((b) => b.text.includes('/scripts/peer-runner.mjs" run'));
               ok(block, 'the dispatch block');
               // Contract: the agent collecting the run — the id is printed before the
               // runner call, so a dispatch that never returns still names its run.
               ok(block.text.indexOf('echo "peer-now run_id=$RUN_ID" >&2') >= 0 && block.text.indexOf('echo "peer-now run_id=$RUN_ID" >&2') < block.text.indexOf('peer-runner.mjs" run'), 'the run id is surfaced before the runner call');
-              const r = runBlock('bash', block.text, persona, {});
+              const r = runBlock('bash', block.text, persona, { texts: { 'prompt.xml': 'He said "go"; $(touch pwned) `touch pwned2`\n' } });
               strictEqual(r.status, 0, r.stderr);
               const id = /^peer-now run_id=(peer-now-\d{8}T\d{6}Z-[0-9a-f]{6})$/m.exec(r.stderr)?.[1];
               ok(id, `a peer-now run id on stderr: ${r.stderr}`);
               deepStrictEqual(r.log, ['run'], 'one runner call');
-              for (const part of [` --run-id ${id} `, ' --kind peer-now ', ' --output-format text ']) ok(r.argv[0].includes(part), `${part}: ${r.argv[0]}`);
+              for (const part of [` --run-id ${id} `, ' --kind peer-now ', ' --peer codex ', ` --prompt-file ${r.textDir}/prompt.xml `, ' --output-format text ']) ok(r.argv[0].includes(part), `${part}: ${r.argv[0]}`);
+              // Contract (ADR-0059, amendment of 2026-10-10): the agent forwarding
+              // a --prompt-text — it reaches the runner as the file the agent wrote,
+              // never as an argument the shell splits or runs.
+              deepStrictEqual([r.texts, r.sideEffects], [[['--prompt-file', 'He said "go"; $(touch pwned) `touch pwned2`\n']], []], 'the prompt file, read as written');
+              ok(!/--prompt-text|PROMPT_ARG/.test(block.text.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n')), 'no inline prompt form in the block');
+              // A --prompt-file's path is the user's text too: its text is
+              // written to prompt.xml, and no path reaches the block.
+              ok(block.text.startsWith(`${TEXT_DIR_LINE}\n`), 'the block names the text directory first');
+              deepStrictEqual(block.text.match(/^PROMPT_FILE=.*$/gm), ['PROMPT_FILE="$TEXT_DIR/prompt.xml"'], 'the prompt is the agent\'s prompt.xml, never a path the agent pastes');
+              ok(squash(between(text, '<!-- pipeline:begin peer-now-dispatch -->', '```bash\nTEXT_DIR=')).includes('write the prompt there as `prompt.xml`: the `--prompt-text`, or the text of the `--prompt-file`, which you read with your file-reading tool.'), 'the step writes either form to prompt.xml');
+              for (const [how, content] of [['left unwritten', null], ['blank', ' \n\n']]) {
+                const stopped = runBlock('bash', block.text, persona, { texts: { 'prompt.xml': content } });
+                deepStrictEqual([stopped.status, stopped.log], [1, []], `a prompt ${how}: nothing dispatched`);
+                ok(stopped.stderr.includes('prompt.xml in TEXT_DIR (') && stopped.stderr.includes('is missing or blank'), stopped.stderr);
+              }
             });
 
             it('after find-active, peer-now branches three ways (standalone, a single path, a per-branch duplicate sent to this persona\'s resume), and the note, run, is a [Peer] phase note on that workflow that leaves the phase alone', () => {
@@ -744,7 +832,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 deepStrictEqual(runBlock('bash', block, persona, { active: '' }).log, ['find-active'], `${id}: no workflow, no driver`);
                 if (mode === 'autopilot') {
                   const tokens = r.argv[1].split(' ');
-                  for (const flag of ['--confirm-non-interactive', '--non-interactive', '--include-extra', '--accept-current-tree', '--subject', '--subject-pkg', '--suggested-subjects']) ok(!tokens.includes(flag), `the autopilot block passes ${flag}`);
+                  for (const flag of ['--confirm-non-interactive', '--non-interactive', '--include-extra', '--accept-current-tree', '--subject', '--subject-pkg', '--subject-file', '--subject-pkg-file', '--suggested-subjects']) ok(!tokens.includes(flag), `the autopilot block passes ${flag}`);
                   // Contract: the agent running the autopilot block — reading
                   // ACCEPT_CURRENT_TREE there would bypass the owner's staging-set confirmation.
                   ok(!block.includes('ACCEPT_CURRENT_TREE'), 'the autopilot block reads no accept bypass');
@@ -845,12 +933,18 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                   // The block sets the repository and branch itself (a fresh shell has neither).
                   ok(/ --repo-root \/\S+( |$)/.test(r.argv[0]) && / --repo-root \/\S+ /.test(r.argv[1]), `${what}: an absolute repository root`);
                   ok(r.argv[1].includes(' --git-baseline-branch pc2a2b '), `${what}: the branch the shell is on`);
-                  // With commit_surface the description the args file held, the
-                  // embedded --base-branch removed and nothing in it run.
-                  if (commits) ok(r.argv[1].includes(` --original-request Fix it's "A"; $(id) > f --current-phase `), `${what}: the description: ${r.argv[1]}`);
-                  // Without commit_surface the create takes the request in place
-                  // of its placeholder, where the block always had it.
-                  else ok(r.argv[1].includes(' --original-request <the original request described above> --current-phase '), `${what}: the request: ${r.argv[1]}`);
+                  // ADR-0059, amendment of 2026-10-10: the request reaches create
+                  // as a file. With commit_surface the description the args file
+                  // held, the embedded --base-branch removed and nothing in it
+                  // run, written by the block to a file of its own; without it the
+                  // request the agent wrote.
+                  ok(/ --original-request-file \/\S+ --current-phase /.test(r.argv[1].replace(r.textDir, '/text')), `${what}: the request file: ${r.argv[1]}`);
+                  ok(!/ --original-request /.test(r.argv[1]), `${what}: no inline request: ${r.argv[1]}`);
+                  if (commits) deepStrictEqual(r.texts, [['--original-request-file', `Fix it's "A"; $(id) > f\n`]], `${what}: the description`);
+                  else {
+                    ok(r.argv[1].includes(` --original-request-file ${r.textDir}/request.txt `), `${what}: the request the agent wrote: ${r.argv[1]}`);
+                    deepStrictEqual(r.texts, [['--original-request-file', 'the request\n']], `${what}: the request`);
+                  }
                   strictEqual(r.out, '/w/created.md', `${what}: $ACTIVE holds the workflow create printed`);
                 } else if (baseline.startsWith('{"status":"dirty"')) {
                   // ADR-0067 Decision 8, item 3: the dirty refusal asks the
@@ -888,6 +982,18 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 // An args file outside the grammar stops the block before any write.
                 const refused = runBlock('bash', block, persona, { baseline: '{"status":"clean"}', argsText: '' });
                 deepStrictEqual([refused.status, refused.log], [2, ['start-args']], refused.stderr);
+              } else {
+                // A request the agent did not write stops the block before create;
+                // the AGENTIC_TOPIC a dispatcher exports is program data the block
+                // writes to a private directory of its own (so a dispatched run
+                // needs no agent file, its TEXT_DIR line left as it is) and records
+                // instead, a leading -- included.
+                const unwritten = runBlock('bash', block, persona, { baseline: '{"status":"clean"}', texts: { 'request.txt': null } });
+                deepStrictEqual([unwritten.status, unwritten.log], [1, ['check-clean-baseline']], unwritten.stderr);
+                const topic = runBlock('bash', `AGENTIC_TOPIC='--from the macro: it'\\''s "x" $(touch pwned)'\n${block.replace(TEXT_DIR_LINE, () => "TEXT_DIR='<never filled>'")}`, persona, { baseline: '{"status":"clean"}', texts: { 'request.txt': null } });
+                strictEqual(topic.status, 0, topic.stderr);
+                ok(/ --original-request-file \/\S*\/agentic-text\.[A-Za-z0-9]+\/topic\.txt /.test(topic.argv[1]), topic.argv[1]);
+                deepStrictEqual([topic.texts, topic.sideEffects], [[['--original-request-file', `--from the macro: it's "x" $(touch pwned)\n`]], []]);
               }
             });
 
@@ -979,8 +1085,11 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 strictEqual(r.status, 0, `${label}: ${r.stderr}`);
                 deepStrictEqual(r.log, [last], label);
                 ok(r.argv[0].includes(' --workflow-path /w/active.md '), `${label}: the workflow Phase 0 found`);
+                // ADR-0059, amendment of 2026-10-10: the next action is the file
+                // the agent wrote, whichever write it reaches.
+                ok(r.argv[0].includes(` --next-action-file ${r.textDir}/next-action.txt `) && !/ --next-action /.test(r.argv[0]), `${label}: the next action's file: ${r.argv[0]}`);
+                deepStrictEqual(r.texts, [['--next-action-file', 'the next action\n']], label);
                 if (last === 'finish-verb') {
-                  ok(r.argv[0].includes(` --next-action ${declaration(persona).verbs.start.next_action} `), `${label}: the declared next action: ${r.argv[0]}`);
                   ok(r.argv[0].trimEnd().endsWith(' --next-step-kind commit --next-step-confidence <HIGH|MEDIUM|LOW>'), `${label}: kind commit: ${r.argv[0]}`);
                 } else {
                   for (const part of [' --next-step-kind verb --next-step-verb <refine|decide|investigate> ', ' --clear-terminal-marker true ', ' --event updated']) ok(r.argv[0].includes(part), `${label}: ${part}: ${r.argv[0]}`);
@@ -988,6 +1097,12 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                   ok(/PAUSED/.test(r.stderr), `${label}: the pause is reported`);
                 }
               }
+              // A next action the agent did not write stops the block before any write.
+              const unwritten = runBlock('bash', `ACTIVE='/w/active.md'\n${waits ? converged(block, persona, 'start', 'yes') : block}`, persona, { texts: { 'next-action.txt': null } });
+              deepStrictEqual([unwritten.status, unwritten.log], [1, []], unwritten.stderr);
+              // Contract: the agent writing next-action.txt — its scaffold holds the
+              // lifecycle's declared default, which the footer shows.
+              strictEqual(text.split(`\n   \`\`\`text\n   ${declaration(persona).verbs.start.next_action}\n   \`\`\`\n`).length - 1, 1, 'the declared next action, in the next-action.txt scaffold');
             });
 
             // The Phase 7 commit, two blocks — plan (writes nothing), then execute
@@ -1006,13 +1121,18 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               ok(/ --mode plan --workflow-path \/w\/active\.md --repo-root \/\S+ --host claude/.test(p.argv[0]), p.argv[0]);
               const pFailed = runBlock('bash', `ACTIVE='/w/active.md'\n${plan}`, persona, { phase7Status: 5, after: '\nprintf ran > out\n' });
               deepStrictEqual([pFailed.status, pFailed.out], [5, null], 'a failed plan stops its block');
-              // Contract: the test fills this line to run the block, as the agent fills
-              // it with the subject the user confirmed.
-              ok(execute.includes("APPROVED_SUBJECT='<the subject the user confirmed>'"), 'the execute block assigns the confirmed subject');
-              const approved = execute.replace("APPROVED_SUBJECT='<the subject the user confirmed>'", () => "APPROVED_SUBJECT='feat(x): it'\\''s done'");
-              const e = runBlock('bash', `ACTIVE='/w/active.md'\n${approved}`, persona, { after: '\nprintf ran > out\n' });
+              // Contract (ADR-0059, amendment of 2026-10-10): the agent passing the
+              // subject the user confirmed — it reaches the driver as the file the
+              // agent wrote (the test fills the TEXT_DIR line, as the agent does),
+              // never as shell text.
+              ok(execute.startsWith(`${TEXT_DIR_LINE}\n`), 'the execute block names the text directory first');
+              ok(!/APPROVED_SUBJECT|--subject "|--subject '/.test(execute), 'no inline subject in the block');
+              const approved = execute;
+              const subject = { 'subject.txt': "feat(x): it's \"done\" $(touch pwned)\n" };
+              const e = runBlock('bash', `ACTIVE='/w/active.md'\n${approved}`, persona, { texts: subject, after: '\nprintf ran > out\n' });
               deepStrictEqual([e.status, e.log, e.out], [0, ['phase7 execute'], 'ran'], e.stderr);
-              ok(/ --mode execute --workflow-path \/w\/active\.md --repo-root \/\S+ --host claude --subject feat\(x\): it's done --confirm-non-interactive/.test(e.argv[0]), e.argv[0]);
+              ok(e.argv[0].includes(` --mode execute --workflow-path /w/active.md --repo-root `) && e.argv[0].includes(` --host claude --subject-file ${e.textDir}/subject.txt --confirm-non-interactive`), e.argv[0]);
+              deepStrictEqual([e.texts, e.sideEffects], [[['--subject-file', subject['subject.txt']]], []], 'the subject file, read as written');
               const eFailed = runBlock('bash', `ACTIVE='/w/active.md'\n${approved}`, persona, { phase7Status: 6, after: '\nprintf ran > out\n' });
               deepStrictEqual([eFailed.status, eFailed.out], [6, null], 'a failed execute stops its block, the workflow left open');
               // Plan-verify peer (MAJOR): a fresh shell has no ACTIVE; each
@@ -1066,19 +1186,22 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             // that a verb's own finish-verb never runs inside the lifecycle.
             it('start lifecycle: each phase boundary writes state and dispatches its ensemble, settles each attempt by run id, records and clears owner gates, and never runs a verb\'s finish-verb, before the terminal block', () => {
               const boundary = squash(region(text, 'start-phase-boundary'));
-              ok(boundary.includes('Each phase boundary writes state via `state.mjs append --verb <verb> --current-phase <phase> --next-action <...> --event updated`'), 'the state write at each boundary');
+              ok(boundary.includes('Each phase boundary writes state via `state.mjs append --verb <verb> --current-phase <phase> --next-action-file <file> --event updated`'), 'the state write at each boundary');
+              // Contract (ADR-0059, amendment of 2026-10-10): the agent writing at a
+              // boundary — every text a write carries is a file it wrote.
+              ok(boundary.includes('Every text a write carries (a phase note, a next action, a summary, an owner\'s decision) reaches `state.mjs` and `peer-runner.mjs` as a file: write it with the file-writing tool'), 'the boundary writes take files');
               ok(boundary.includes('and dispatches the per-phase peer ensemble'), 'the per-phase ensemble');
               for (const rule of [
                 '`peer-runner.mjs settle --phase <verb> --run-id <that attempt\'s run id>`',
                 'dispatches under a new run id and settles each attempt',
                 '(`finish-verb`) never runs inside the lifecycle',
                 '`state.mjs awaiting-owner-set --gate <gate> --anchor <anchor>`',
-                '`state.mjs awaiting-owner-clear --gate <gate> --resolution <the owner\'s decision> --next-step-kind verb --next-step-verb <the next phase\'s verb> --next-step-confidence HIGH --next-action <the next phase\'s action>`',
+                '`state.mjs awaiting-owner-clear --gate <gate> --resolution-file <the owner\'s decision> --next-step-kind verb --next-step-verb <the next phase\'s verb> --next-step-confidence HIGH --next-action-file <the next phase\'s action>`',
               ]) ok(boundary.includes(rule), rule);
               // Contract: the same agent — the order and stop point: an attempt
               // settled after the next phase starts is lost to it, and a gate
               // cleared without waiting takes the owner's decision.
-              ok(boundary.includes('(empty when no run launched), before the next phase'), 'settle precedes the next phase');
+              ok(boundary.includes('(empty when no run launched) and its `--summary-file`, before the next phase'), 'settle precedes the next phase');
               ok(boundary.includes('leaves the workflow open, and pause. Once the owner decides, clear it with'), 'an owner gate pauses until the owner decides');
               ok(text.indexOf('<!-- pipeline:end start-phase-boundary -->') < text.indexOf(terminalBlock().text), 'the rules precede the terminal block they name');
             });
@@ -1194,17 +1317,17 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               const code = logical(finalize.text);
               const at = (re) => { const m = re.exec(code); ok(m, `${key}: ${re}`); return m.index; };
               const repo = at(/^REPO_ROOT="\$\(git rev-parse --show-toplevel\)" \|\| exit 1$/m);
-              const note = at(/^node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" append --workflow-path "\$ACTIVE" [^\n]*--phase-note "\$NOTE" [^\n]*--event updated \|\| exit \$\?$/m);
-              const settle = at(new RegExp(`^node "\\$CLAUDE_PLUGIN_ROOT/scripts/peer-runner\\.mjs" settle --repo-root "\\$REPO_ROOT" --workflow-path "\\$ACTIVE" --host "\\$\\{AGENTIC_HOST:-claude\\}" --phase '${verb}' --run-id "\\$RUN_ID" --verdict "\\$VERDICT" --summary "\\$SUMMARY" \\|\\| exit \\$\\?$`, 'm'));
+              const note = at(/^node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" append --workflow-path "\$ACTIVE" [^\n]*--phase-note-file "\$TEXT_DIR\/note\.md" [^\n]*--next-action-file "\$TEXT_DIR\/next-action\.txt" --event updated \|\| exit \$\?$/m);
+              const settle = at(new RegExp(`^node "\\$CLAUDE_PLUGIN_ROOT/scripts/peer-runner\\.mjs" settle --repo-root "\\$REPO_ROOT" --workflow-path "\\$ACTIVE" --host "\\$\\{AGENTIC_HOST:-claude\\}" --phase '${verb}' --run-id "\\$RUN_ID" --verdict "\\$VERDICT" --summary-file "\\$TEXT_DIR/summary\\.txt" \\|\\| exit \\$\\?$`, 'm'));
               // Indented inside the convergence check in the convergent variant.
-              const terminal = at(/^[ \t]*node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" finish-verb --workflow-path "\$ACTIVE" [^\n]*--next-step-kind verb --next-step-verb '[a-z]+' --next-step-confidence "<HIGH\|MEDIUM\|LOW>" \|\| exit \$\?$/m);
+              const terminal = at(/^[ \t]*node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" finish-verb --workflow-path "\$ACTIVE" [^\n]*--next-action-file "\$TEXT_DIR\/next-action\.txt" --next-step-kind verb --next-step-verb '[a-z]+' --next-step-confidence "<HIGH\|MEDIUM\|LOW>" \|\| exit \$\?$/m);
               strictEqual(run.length, 1, 'one dispatch');
-              ok(run[0] < shellSites(text, /^IFS= read -r -d '' NOTE/m)[0], 'the dispatch precedes the finalize block');
+              ok(run[0] < shellSites(text, /^for TEXT_FILE in note\.md summary\.txt next-action\.txt; do$/m)[0], 'the dispatch precedes the finalize block');
               ok(repo < note && note < settle && settle < terminal, 'REPO_ROOT, append, settle, finish-verb in that order');
               strictEqual(shellSites(text, /state\.mjs" (set-terminal|ensemble-commit)\b/).length, 0, 'no set-terminal or ensemble-commit runs beside them');
               // Contract: the agent ending on an owner gate runs this commented form
               // in place of the typical finish — its flags record the gate in one write.
-              ok(/\n# node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" finish-verb \\\n#   --workflow-path "\$ACTIVE" --host "\$\{AGENTIC_HOST:-claude\}" \\\n#   --next-action '<Owner: the judgment, in a few words>' \\\n#   --next-step-kind owner-decision --next-step-confidence "<HIGH\|MEDIUM\|LOW>" \\\n#   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' \|\| exit \$\?\n```$/.test(finalize.text + '\n```'), 'the commented owner-decision form ends the block');
+              ok(/\n# node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" finish-verb \\\n#   --workflow-path "\$ACTIVE" --host "\$\{AGENTIC_HOST:-claude\}" \\\n#   --next-action-file "\$TEXT_DIR\/next-action\.txt" \\\n#   --next-step-kind owner-decision --next-step-confidence "<HIGH\|MEDIUM\|LOW>" \\\n#   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' \|\| exit \$\?\n```$/.test(finalize.text + '\n```'), 'the commented owner-decision form ends the block');
               // Contract: the --owner-gate and --owner-gate-anchor values that form
               // takes, which state.mjs validates — the gates this verb may end with,
               // each with its anchor, between the last-write paragraph and the block.
@@ -1290,7 +1413,8 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               const passed = runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='r'; VERDICT='agreed'; SUMMARY='s'\n${block}`, persona, { note: 'n' });
               strictEqual(passed.status, 0, passed.stderr);
               deepStrictEqual(passed.log, typicalLog(verb));
-              ok(passed.argv[1].includes(' --run-id r --verdict agreed --summary s'), passed.argv[1]);
+              ok(passed.argv[1].includes(` --run-id r --verdict agreed --summary-file ${passed.textDir}/summary.txt`), passed.argv[1]);
+              deepStrictEqual(passed.texts.map(([flag]) => flag), ['--phase-note-file', '--next-action-file', '--summary-file', '--next-action-file'], 'the append, settle and last write each read their file');
               ok(passed.argv.every((a) => a.includes(' --workflow-path /w/active.md ')), 'every call targets $ACTIVE');
               const refused = runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID=''\n${block}`, persona, { note: 'n', settleStatus: 1 });
               deepStrictEqual([refused.status, refused.log], [1, ['append', 'settle']], 'no finish-verb after a refused settle');
@@ -1322,29 +1446,35 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               }
               if (settled) strictEqual(one('peer-runner.mjs', 'settle').get('--phase'), verb);
               deepStrictEqual(got.run_id_prefixes, [type]);
-              deepStrictEqual(got.mktemp_templates, [`${persona}-${verb}-prompt.XXXXXX`]);
+              // ADR-0059, amendment of 2026-10-10: the prompt is the file the
+              // agent wrote, never a path the block allocates and the agent fills.
+              deepStrictEqual(got.mktemp_templates, []);
+              strictEqual(one('peer-runner.mjs', 'run').get('--prompt-file'), '$PROMPT_FILE');
+              strictEqual(blockWith(/peer-runner\.mjs" run \\/).text.split('PROMPT_FILE="$TEXT_DIR/prompt.xml"').length - 1, 1, 'the prompt file is the agent\'s prompt.xml');
             });
 
-            // Contract: the agent running the finalize — the note reaches state.mjs
-            // through a quoted heredoc, never through the shell; an unquoted one,
-            // a NOTE the shell inherited, or an empty read records the wrong note.
-            // The test fills the placeholder line to run the block.
-            if (VERB_DESTS.includes(dest)) it('the phase note is read from a quoted heredoc and passed as "$NOTE" (PD2)', () => {
+            // Contract (ADR-0059, amendment of 2026-10-10): the agent running the
+            // finalize — the note, the summary and the next action reach the
+            // scripts as files it wrote with its file tool, never as shell
+            // source; a block that read a heredoc or assigned the text would run
+            // a line of it. The test fills the TEXT_DIR line to run the block.
+            if (VERB_DESTS.includes(dest)) it('the finalize passes the note, the summary and the next action as files the agent wrote, checked before any write', () => {
               const finalize = blockWith(/peer-runner\.mjs" settle \\/);
               const lines = finalize.text.split('\n');
-              const reader = lines.indexOf(NOTE_READER);
-              ok(reader > 0, 'the block reads NOTE from a quoted heredoc');
-              strictEqual(lines[reader - 1], 'unset NOTE', 'NOTE is cleared right before it is read');
-              deepStrictEqual(lines.slice(reader + 1, reader + 3), ['<the phase note above, filled in>', 'PHASE_NOTE'], 'the heredoc holds only the placeholder line');
-              ok(/^\[ -n "\$NOTE" \] \|\| \{ .*exit 1; \}$/.test(lines[reader + 4]), 'an empty note stops the block before any write');
-              ok(lines.findIndex((l) => /state\.mjs" append \\$/.test(l)) > reader + 4, 'the guard precedes the append');
-              // Contract: the agent editing the block before it runs — a note that
-              // holds the delimiter line runs its tail as shell unless both
-              // delimiters are renamed, and the rule must come before the block.
-              const rule = sentenceAt(text, 'replace both `PHASE_NOTE` delimiters');
-              strictEqual(rule.length, 1, 'the delimiter rule');
-              ok(rule[0] < shellSites(text, /^IFS= read -r -d '' NOTE/m)[0], 'the delimiter rule precedes the block');
-              strictEqual(finalize.text.split('NOTE=').length - 1, 0, 'nothing else assigns NOTE');
+              strictEqual(lines[0], TEXT_DIR_LINE, 'the block names the text directory first');
+              const check = lines.indexOf('for TEXT_FILE in note.md summary.txt next-action.txt; do');
+              ok(check > 0 && lines[check + 1].startsWith(`  ${FINALIZE_CHECK} || { `) && /exit 1; \}$/.test(lines[check + 1]) && lines[check + 2] === 'done', 'each file is held to every reader\'s rule');
+              ok(lines.findIndex((l) => /state\.mjs" append \\$/.test(l)) > check + 2, 'the check precedes the first write');
+              // No text of the agent's is shell source in the block.
+              // The conflict branch's next action expands what consensus-task printed:
+              // program output, not the agent's text.
+              ok(!/<<\s*-?\s*'?[A-Z_]+'?|\bNOTE=|\bSUMMARY=|--phase-note "|--summary "|--next-action ['"](?!Owner decision, after a bounded consensus round: \$PROPOSED")/.test(finalize.text), 'no heredoc, assignment or inline text');
+              // The steps before the block: a private directory, and the files
+              // written with the file tool.
+              const region = text.slice(text.indexOf(`<!-- pipeline:begin ${verb}-finalize`), text.indexOf(finalize.text));
+              ok(region.includes('mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"'), 'the mktemp step');
+              ok(squash(region).includes('With your file-writing tool, not the shell, create in that directory `note.md`, the phase note above filled in; `summary.txt`, a one-line résumé of its breakdown; and `next-action.txt`'), 'the file-writing step');
+              ok(!/PHASE_NOTE|heredoc/.test(region), 'no heredoc rule left');
             });
 
             // Contract: the agent writing the peer prompt (and investigate's web
@@ -1513,17 +1643,23 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               const r = runBlock('bash', block, persona, CHAIN);
               strictEqual(r.status, 0, r.stderr);
               deepStrictEqual(r.log, ['find-active', 'read', 'awaiting-owner-clear', 'finish-verb']);
-              for (const part of [' --workflow-path /w/active.md ', ' --gate decide-conflict ', ' --resolution <Owner selection: the direction the owner chose, and why> ', ' --next-step-kind verb --next-step-verb compose --next-step-confidence HIGH']) ok(r.argv[2].includes(part), `${part}: ${r.argv[2]}`);
+              for (const part of [' --workflow-path /w/active.md ', ' --gate decide-conflict ', ` --resolution-file ${r.textDir}/resolution.txt `, ' --next-step-kind verb --next-step-verb compose --next-step-confidence HIGH']) ok(r.argv[2].includes(part), `${part}: ${r.argv[2]}`);
+              deepStrictEqual(r.texts, [['--resolution-file', 'the resolution\n']], 'the resolution the agent wrote');
               ok(r.argv[3].includes(' --workflow-path /w/active.md ') && r.argv[3].includes(' --next-step-kind verb --next-step-verb compose --next-step-confidence HIGH'), r.argv[3]);
               // PC3b U1 (PC3 step-7 peer finding 2): the clear replaces the
               // gate's next action with the one the verb then finishes with.
               const declaredNext = declaration(persona).verbs.decide.next_action;
               ok(r.argv[2].includes(` --next-action ${declaredNext} `), r.argv[2]);
               ok(r.argv[3].includes(` --next-action ${declaredNext} `), r.argv[3]);
-              // Review of code step 6: a resolution with a quote reaches state.mjs whole.
-              const quoted = runBlock('bash', block.replace('<Owner selection: the direction the owner chose, and why>', "keep the team's \"existing\" `nav` $HOME"), persona, CHAIN);
+              // Review of code step 6, then ADR-0059's amendment of 2026-10-10: a
+              // resolution with quotes, an expansion, a backtick and a line that
+              // read as the old heredoc's delimiter reaches state.mjs whole.
+              const hostile = "keep the team's \"existing\" `nav` $HOME $(touch pwned)\nOWNER_RESOLUTION\ntouch injected\n";
+              const quoted = runBlock('bash', block, persona, { ...CHAIN, texts: { 'resolution.txt': hostile } });
               strictEqual(quoted.status, 0, quoted.stderr);
-              ok(quoted.argv[2].includes(" --resolution keep the team's \"existing\" `nav` $HOME "), quoted.argv[2]);
+              deepStrictEqual([quoted.texts, quoted.sideEffects], [[['--resolution-file', hostile]], []]);
+              const unwritten = runBlock('bash', block, persona, { ...CHAIN, texts: { 'resolution.txt': null } });
+              deepStrictEqual([unwritten.status, unwritten.log], [1, ['find-active', 'read']], 'a resolution left unwritten stops the block before any write');
               // A gate met inside a start lifecycle: cleared, and the lifecycle resumes; no verb terminal write.
               const lifecycle = runBlock('bash', block, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
               deepStrictEqual([lifecycle.status, lifecycle.log], [0, ['find-active', 'read', 'awaiting-owner-clear']], 'inside start: no finish-verb');
@@ -1596,8 +1732,8 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 if (last === 'finish-verb') {
                   ok(r.argv[2].includes(' --next-step-kind verb --next-step-verb critique '), `${label}: ${r.argv[2]}`);
                 } else {
-                  for (const part of [' --current-phase phase-2-presented ', ' --next-step-kind verb --next-step-verb <refine|decide|investigate> ', ' --clear-terminal-marker true ', ' --event updated']) ok(r.argv[2].includes(part), `${label}: ${part}: ${r.argv[2]}`);
-                  ok(!r.argv[2].includes(' --phase-note '), `${label}: the paused write adds no second note`);
+                  for (const part of [' --current-phase phase-2-presented ', ` --next-action-file ${r.textDir}/next-action.txt `, ' --next-step-kind verb --next-step-verb <refine|decide|investigate> ', ' --clear-terminal-marker true ', ' --event updated']) ok(r.argv[2].includes(part), `${label}: ${part}: ${r.argv[2]}`);
+                  ok(!r.argv[2].includes(' --phase-note'), `${label}: the paused write adds no second note`);
                   ok(/PAUSED/.test(r.stderr), `${label}: the pause is reported`);
                 }
               }
@@ -1625,7 +1761,8 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               const f = runBlock('bash', fix, persona, CHAIN);
               strictEqual(f.status, 0, f.stderr);
               deepStrictEqual(f.log, ['find-active', 'read', 'awaiting-owner-clear']);
-              for (const part of [' --workflow-path /w/active.md ', ' --gate recurring-finding ', ' --resolution <Owner decision: fix the finding now> ', ' --next-action Fix the recurring finding in this refine, then re-critique ', ' --next-step-kind verb --next-step-verb refine --next-step-confidence HIGH']) ok(f.argv[2].includes(part), `${part}: ${f.argv[2]}`);
+              for (const part of [' --workflow-path /w/active.md ', ' --gate recurring-finding ', ` --resolution-file ${f.textDir}/resolution.txt `, ' --next-action Fix the recurring finding in this refine, then re-critique ', ' --next-step-kind verb --next-step-verb refine --next-step-confidence HIGH']) ok(f.argv[2].includes(part), `${part}: ${f.argv[2]}`);
+              deepStrictEqual(f.texts, [['--resolution-file', 'the resolution\n']], 'the resolution the agent wrote');
               // PC3b U1 (PC3 step-7 peer finding 1): inside a start lifecycle
               // Fix now clears the gate and stops, so this refine's own phases
               // (whose finalize is a terminal write) do not run before the
@@ -1675,17 +1812,28 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                     const paused = runBlock('bash', script, persona, { ...CHAIN, readOutput: `{"workflow_type":"${type}"}` });
                     strictEqual(paused.status, 0, `${label}, ${type}: ${paused.stderr}`);
                     deepStrictEqual(paused.log, ['find-active', 'read', 'awaiting-owner-clear'], `${label}, ${type}: no terminal write`);
-                    for (const part of [' --gate recurring-finding ', ' --next-action <what the next step resolves, in a few words> ', ' --next-step-kind verb --next-step-verb <refine|decide|investigate> --next-step-confidence <HIGH|MEDIUM|LOW>']) ok(paused.argv[2].includes(part), `${label}, ${type}: ${part}: ${paused.argv[2]}`);
+                    for (const part of [' --gate recurring-finding ', ` --next-action-file ${paused.textDir}/next-action.txt `, ' --next-step-kind verb --next-step-verb <refine|decide|investigate> --next-step-confidence <HIGH|MEDIUM|LOW>']) ok(paused.argv[2].includes(part), `${label}, ${type}: ${part}: ${paused.argv[2]}`);
+                    deepStrictEqual(paused.texts, [['--resolution-file', 'the resolution\n'], ['--next-action-file', 'the next action\n']], `${label}, ${type}: both files`);
                     ok(/PAUSED \(not converged\)/.test(paused.stderr), `${label}, ${type}: the pause is reported`);
                   }
                 }
+                const unwrittenNext = runBlock('bash', converged(deferAsCommitted, persona, verb, 'no'), persona, { ...CHAIN, texts: { 'next-action.txt': null } });
+                deepStrictEqual([unwrittenNext.status, unwrittenNext.log], [1, ['find-active', 'read']], 'unconverged: a next action left unwritten stops the block before the clear');
                 const refusedPause = runBlock('bash', converged(deferAsCommitted, persona, verb, 'no'), persona, { ...CHAIN, clearStatus: 3 });
                 deepStrictEqual([refusedPause.status, refusedPause.log], [3, ['find-active', 'read', 'awaiting-owner-clear']], 'unconverged: a refused clear stops the block');
                 ok(!/PAUSED/.test(refusedPause.stderr), 'no pause is reported for a clear that did not happen');
               }
-              const quoted = runBlock('bash', fix.replace('<Owner decision: fix the finding now>', "fix it: the team's call"), persona, CHAIN);
+              // ADR-0059, amendment of 2026-10-10: a resolution with a quote, an
+              // expansion and a line that read as the old heredoc's delimiter
+              // reaches state.mjs whole, and nothing in it runs.
+              const hostile = "fix it: the team's call `touch pwned2`\nOWNER_RESOLUTION\ntouch injected\n";
+              const quoted = runBlock('bash', fix, persona, { ...CHAIN, texts: { 'resolution.txt': hostile } });
               strictEqual(quoted.status, 0, quoted.stderr);
-              ok(quoted.argv[2].includes(" --resolution fix it: the team's call "), quoted.argv[2]);
+              deepStrictEqual([quoted.texts, quoted.sideEffects], [[['--resolution-file', hostile]], []]);
+              for (const [name, b] of [['fix now', fix], ['defer', defer]]) {
+                const unwritten = runBlock('bash', b, persona, { ...CHAIN, texts: { 'resolution.txt': null } });
+                deepStrictEqual([unwritten.status, unwritten.log], [1, ['find-active', 'read']], `${name}: a resolution left unwritten stops the block before any write`);
+              }
               for (const [name, block, ran] of [['fix now', fix, ['find-active', 'read', 'awaiting-owner-clear']], ['defer', defer, ['find-active', 'read', 'awaiting-owner-clear']]]) {
                 const failed = runBlock('bash', block, persona, { ...CHAIN, clearStatus: 3 });
                 deepStrictEqual([failed.status, failed.log], [3, ran], `${name}: a refused clear stops the block`);
@@ -1698,34 +1846,28 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             });
 
             if (VERB_DESTS.includes(dest)) for (const shell of SHELLS) {
-              const finalizeCase = readsDelimited(shell)
-                ? `${shell}: the finalize block hands a hostile note to state.mjs byte for byte (plus the heredoc's final newline), and a failed append stops it before settle and finish-verb`
-                : `${shell}: a shell whose read has no -d stops the finalize block before any write`;
-              it(finalizeCase, () => {
+              it(`${shell}: the finalize block hands hostile texts to the scripts byte for byte and runs nothing in them; a file left unwritten or blank stops it before any write, and a failed append before settle and finish-verb`, () => {
                 const block = converged(blockWith(/peer-runner\.mjs" settle \\/).text, persona, verb);
-                if (!readsDelimited(shell)) {
-                  // A NOTE the shell inherited must not stand in for the one
-                  // its read could not take (Codex review of PC2a2c).
-                  for (const inheritedNote of [null, 'a stale note']) {
-                    const refused = runBlock(shell, block, persona, { note: HOSTILE_NOTE, inheritedNote });
-                    strictEqual(refused.status, 1, refused.stderr);
-                    deepStrictEqual(refused.log, [], `nothing was written (inherited NOTE: ${inheritedNote})`);
-                  }
-                  return;
-                }
-                const ok_ = runBlock(shell, block, persona, { note: HOSTILE_NOTE });
+                const texts = { 'note.md': `${HOSTILE_NOTE}\n`, 'summary.txt': `${HOSTILE_SUMMARY}\n`, 'next-action.txt': `${HOSTILE_NEXT}\n` };
+                const ok_ = runBlock(shell, block, persona, { texts });
                 strictEqual(ok_.status, 0, ok_.stderr);
                 deepStrictEqual(ok_.log, typicalLog(verb));
-                strictEqual(ok_.note, `${HOSTILE_NOTE}\n`, 'the note reached state.mjs unread by the shell');
-                const inherited = runBlock(shell, block, persona, { note: HOSTILE_NOTE, inheritedNote: 'a stale note' });
-                strictEqual(inherited.note, `${HOSTILE_NOTE}\n`, 'the note read, not one the shell inherited');
-                // A note that holds the delimiter line, with the delimiter
-                // replaced as the prose above the block says.
-                const quoting = `${HOSTILE_NOTE}\nPHASE_NOTE\nprintf INJECTED > injected`;
-                const renamed = runBlock(shell, block, persona, { note: quoting, delimiter: 'NOTE_END_X' });
-                strictEqual(renamed.status, 0, renamed.stderr);
-                strictEqual(renamed.note, `${quoting}\n`, 'a renamed delimiter carries the delimiter line as text');
-                const failed = runBlock(shell, block, persona, { note: HOSTILE_NOTE, failAppend: true });
+                strictEqual(ok_.note, texts['note.md'], 'the note reached state.mjs unread by the shell');
+                deepStrictEqual(ok_.texts, [['--phase-note-file', texts['note.md']], ['--next-action-file', texts['next-action.txt']], ['--summary-file', texts['summary.txt']], ['--next-action-file', texts['next-action.txt']]], 'each script read the file the agent wrote');
+                deepStrictEqual(ok_.sideEffects, [], 'nothing in the texts ran');
+                ok(ok_.argv.every((a) => !a.includes('pwned') && !a.includes('INJECTED')), 'no text reached a command line');
+                // A file a script would refuse stops the block like a missing
+                // one: `[ -s ]` passed a newline, and a check for blanks passed a
+                // BOM, a NUL byte or bytes that are not UTF-8; the append wrote,
+                // and settle refused the summary after it.
+                for (const name of Object.keys(texts)) {
+                  for (const [how, content] of REFUSED_TEXTS) {
+                    const stopped = runBlock(shell, block, persona, { texts: { ...texts, [name]: content } });
+                    deepStrictEqual([stopped.status, stopped.log], [1, []], `${name} ${how}: nothing was written`);
+                    ok(stopped.stderr.includes(`${name} in TEXT_DIR (`) && stopped.stderr.includes('is missing, blank or not UTF-8 text'), stopped.stderr);
+                  }
+                }
+                const failed = runBlock(shell, block, persona, { texts, failAppend: true });
                 strictEqual(failed.status, 7, 'the block exits with the append\'s status');
                 deepStrictEqual(failed.log, ['append'], 'no later write ran');
               });

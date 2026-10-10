@@ -176,7 +176,8 @@ enabled = true
 /engineer:resume [archive [<workflow-id>]]   # Drift report / archive the active workflow
 /engineer:checkpoint <one-line summary>      # Record a progress checkpoint
 /engineer:peer-now --peer <claude|codex> --prompt-text "..."  # Ad-hoc side-channel peer consultation
-                                          # (or --prompt-file <path>; not an ensemble — no synthesis label)
+                                          # (or --prompt-file <path>; a --prompt-text is forwarded as a file;
+                                          # not an ensemble — no synthesis label)
 /engineer:commit                             # Commit a verb-chain workflow (Phase 7 driver), or close it
                                           # without a commit when the last verb recorded done (ADR-0063)
 
@@ -250,7 +251,7 @@ $engineer:start <feature description>
 # Meta skills (workflow-continuity ops on the active workflow)
 $engineer:resume [archive [<workflow-id>]]
 $engineer:checkpoint <one-line progress summary>
-$engineer:peer-now --peer <claude|codex> --prompt-text "..."   # or --prompt-file <path>
+$engineer:peer-now --peer <claude|codex> --prompt-text "..."   # or --prompt-file <path>; the text is forwarded as a file
 $engineer:commit                                                # commit or close a verb-chain workflow
 ```
 

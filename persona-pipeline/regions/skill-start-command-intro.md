@@ -20,7 +20,9 @@ follows the same operational sequence inline, in this order, using the same
    `state.mjs append --workflow-path <found> --host codex --clear-next-step
    true --event resumed`; put an owner gate step 1 reported to the user
    first (once it is resolved, clear it with the phase the lifecycle
-   continues at and that phase's `--next-action`), then continue from its
+   continues at and that phase's next action, the owner's decision and the
+   action each a file written with the file-writing tool:
+   `--resolution-file`, `--next-action-file`), then continue from its
    `current_phase`; no description is needed. Any other workflow
    (`verb-chain`, or a legacy one without the field) → typed conflict:
    refuse, writing nothing, its owner gate included — `start` must not
@@ -41,8 +43,12 @@ follows the same operational sequence inline, in this order, using the same
 {{^capability commit_surface}}
 3. **No active workflow.** The arguments are the description: the
    **clean-baseline gate** below, then `state.mjs create --workflow-type
-   start --verb investigate --persona {{persona}} --original-request <the
-   description>`.
+   start --verb investigate --persona {{persona}} --original-request-file
+   <the description's file>`. The description is text the user typed, so it
+   reaches `state.mjs` as a file, never on the command line (ADR-0059,
+   amendment of 2026-10-10): write it with the file-writing tool as
+   `request.txt` in a directory from
+   `mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`, ending with one newline.
 {{/capability}}
 {{#capability commit_surface}}
 3. **No active workflow.** The arguments are read from an args file, twice:
@@ -51,8 +57,12 @@ follows the same operational sequence inline, in this order, using the same
    never stops; a finding is put to the user for proceed or abort, and abort
    writes nothing), then, with a new args file, for the bootstrap: the
    **clean-baseline gate** below, then `state.mjs create --workflow-type
-   start --verb investigate --persona {{persona}} --original-request <the
-   description>`.
+   start --verb investigate --persona {{persona}} --original-request-file
+   <the description's file>`: the description the extractor read, program
+   data the block writes to a file (`printf '%s\n' "$FEATURE"`) in a
+   directory from `mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`, so a
+   description beginning with `--` is never read as a flag (ADR-0059,
+   amendment of 2026-10-10).
 
 Argument parsing is `scripts/start-args.mjs --args-file <path>` on both
 hosts (ADR-0059 Decision 7). The description, with any

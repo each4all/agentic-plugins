@@ -157,7 +157,7 @@ The plan is informational: execute and close re-derive everything.
     (default), specific `extras` opted in, or the whole working tree.
   - `requires_split: true` → the change spans release-please packages, so it
     becomes one commit per package (ADR-0016). A split needs one subject per
-    commit; `--subject` is refused.
+    commit; a single `--subject-file` is refused.
 <!-- pipeline:end commit-plan -->
 
 ---
@@ -185,7 +185,16 @@ neither the `owner-decision` the gate had recorded nor the gate's
 <!-- pipeline:end commit-staging-clear -->
 
 <!-- pipeline:begin commit-execute -->
-Then:
+Then commit.
+
+An edited subject reaches the driver as a file, never in the block: in shell
+source a quote, `$` or backtick of it would be read as code (ADR-0059,
+amendment of 2026-10-10). Create a private directory for it with
+`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`, note the path it prints,
+and with your file-writing tool, not the shell, write each edited subject
+there, one line ending with one newline: `subject.txt`, or `subject-<n>.txt`
+per commit of a split. Then add `TEXT_DIR='<that directory>'` at the top of
+the block. Nothing deletes the files.
 
 ```bash
 PERSONA='engineer'
@@ -194,8 +203,10 @@ ACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active --repo-root "$REPO_
 [ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
 # Subjects, one of:
 #   --suggested-subjects                   the user accepted every suggestion (single or split);
-#   --subject '<confirmed subject>'        one commit, edited;
-#   --subject-pkg '<package>=<subject>'    repeated, one per commit of a split
+#   --subject-file "$TEXT_DIR/subject.txt"
+#                                          one commit, edited;
+#   --subject-pkg-file '<package>'="$TEXT_DIR/subject-<n>.txt"
+#                                          repeated, one per commit of a split
 #                                          (the docs commit's key is `docs`).
 # Staging, only when the plan had ask_user=true and the user confirmed the set:
 #   --confirm-non-interactive, plus --include-extra <path> per extra they opted
@@ -207,9 +218,10 @@ node "<plugin-root>/scripts/phase7-commit.mjs" --mode execute \
 ```
 
 - Subject flags: `--suggested-subjects` when the user accepted every
-  suggestion; otherwise `--subject '<text>'` for one commit, or
-  `--subject-pkg '<package>=<text>'` once per commit of a split (the docs
-  commit's key is `docs`). A recovery needs none.
+  suggestion; otherwise `--subject-file "$TEXT_DIR/subject.txt"` for one
+  commit, or `--subject-pkg-file '<package>'="$TEXT_DIR/subject-<n>.txt"`
+  once per commit of a split (the docs commit's key is `docs`), each file
+  written as above. A recovery needs none.
 - Staging flags, only when the plan had `ask_user: true` and the user
   confirmed: `--confirm-non-interactive`, plus `--include-extra <path>` per
   opted-in extra or `--accept-current-tree`.

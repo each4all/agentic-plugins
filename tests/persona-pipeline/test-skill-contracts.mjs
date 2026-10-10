@@ -334,8 +334,12 @@ describe('skill regions: the contracts hold for every enrolled persona', () => {
               // Contract: the agent running checkpoint-set — any variable but $ACTIVE is one no step
               // set, so the summary goes to no workflow.
               strictEqual([...set.matchAll(/state\.mjs" checkpoint-set \\\n\s+--workflow-path "\$ACTIVE" /g)].length, 1, 'checkpoint-set on $ACTIVE');
-              // Contract: checkpoint-set requires --summary; unquoted, the shell splits it into words.
-              strictEqual([...set.matchAll(/ --summary "\$SUMMARY"\n```/g)].length, 1, 'the summary goes as one quoted argument, the call\'s last');
+              // Contract (ADR-0059, amendment of 2026-10-10): checkpoint-set requires a summary, the
+              // text the user typed — it goes as the file the agent wrote, never on the command line,
+              // where the shell would split or run it.
+              strictEqual([...set.matchAll(/ --summary-file "\$TEXT_DIR\/summary\.txt"\n```/g)].length, 1, 'the summary goes as the agent\'s file, the call\'s last');
+              ok(set.includes("TEXT_DIR='<directory from step 1>'\n") && set.includes('mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"') && squash(set).includes('With your file-writing tool, not the shell, create `summary.txt`'), 'the steps that write it');
+              ok(!/--summary "|single quoted argument/.test(set), 'no inline summary left');
               // Contract: hooks.json, read by both hosts — a SessionStart matcher other than compact
               // re-injects the checkpoint on every session start.
               for (const hooks of ['hooks/hooks.json', 'adapters/codex/hooks/hooks.json']) {
@@ -348,13 +352,19 @@ describe('skill regions: the contracts hold for every enrolled persona', () => {
           if (skill === 'peer-now') {
             it('the dispatch is synchronous, and a failed run stops before any phase note', () => {
               const dispatch = region(text, 'peer-now-dispatch');
-              const [block] = shellBlocks(dispatch);
+              // The region's first block is the mktemp step; the dispatch is the runner's.
+              const block = shellBlocks(dispatch).find((b) => b.includes('/scripts/peer-runner.mjs" run'));
               ok(block, 'the dispatch block');
               // Contract: the agent running the dispatch block — one runner call, its exit code read
               // in the foreground; backgrounded, RUN_RC is the launch's status, not the run's.
               strictEqual([...block.matchAll(/^node "<plugin-root>\/scripts\/peer-runner\.mjs" run \\$/gm)].length, 1, 'one runner call');
               ok(/ > "\$RUN_JSON" 2> "\$RUN_ERR"\nRUN_RC=\$\?\n/.test(block), 'the runner\'s exit code is read right after it, in the foreground');
               ok(!/&\s*$/m.test(block.replace(/&&|& 0x/g, '')), 'nothing runs in the background');
+              // Contract (ADR-0059, amendment of 2026-10-10): the agent passing either prompt
+              // form — both are the prompt.xml it wrote; a --prompt-file's path pasted into the
+              // block would be the user's text read as shell source.
+              ok(block.startsWith("TEXT_DIR='<directory from step 1>'\n"), 'the block names the text directory first');
+              deepStrictEqual(block.match(/^PROMPT_FILE=.*$/gm), ['PROMPT_FILE="$TEXT_DIR/prompt.xml"'], 'the prompt is the agent\'s prompt.xml');
               // Contract: the agent after a failed run — it stops, and appends no phase note for a
               // run that answered nothing.
               const after = squash(dispatch.slice(dispatch.indexOf('RUN_RC=$?')));
@@ -438,7 +448,7 @@ describe('skill regions: the contracts hold for every enrolled persona', () => {
                 at('--clear-next-step true --event resumed'),
                 at('typed conflict: refuse, writing nothing'),
                 ...(commitSurface ? [at('state.mjs diagnose-redundancy --repo-root <root> --base-branch <ref>'), at('then, with a new args file, for the bootstrap')] : []),
-                at('**clean-baseline gate** below, then `state.mjs create --workflow-type start --verb investigate --persona ' + persona + ' --original-request <the description>`'),
+                at('**clean-baseline gate** below, then `state.mjs create --workflow-type start --verb investigate --persona ' + persona + ' --original-request-file <the description\'s file>`'),
               ];
               deepStrictEqual(order, [...order].sort((a, b) => a - b), 'in the command\'s order');
               // Contract: the resume predicate — only a start workflow resumes into the lifecycle.
@@ -451,6 +461,11 @@ describe('skill regions: the contracts hold for every enrolled persona', () => {
               // Contract: args-file transport — the description reaches start-args.mjs in a file,
               // never on a command line.
               strictEqual(intro.includes('scripts/start-args.mjs --args-file <path>'), commitSurface, 'the args file, exactly where the persona has a commit surface');
+              // Contract (ADR-0059, amendment of 2026-10-10): the description reaches create as a
+              // file — the agent's request.txt, or with a commit surface a file the block writes from
+              // the extractor's output — never as an inline flag.
+              ok(!/--original-request </.test(intro), 'no inline request');
+              strictEqual(intro.includes('write it with the file-writing tool as `request.txt`'), !commitSurface, 'the agent writes the request file, exactly where no args file holds the description');
             });
 
             it('the finish paragraph names the lifecycle\'s last write, by declaration, and its citations resolve', () => {
@@ -483,9 +498,14 @@ describe('skill regions: the contracts hold for every enrolled persona', () => {
               strictEqual(calls.length, commitSurface ? 0 : 1, 'one finish-verb block, exactly where the lifecycle ends with it');
               strictEqual(runbookCalls.length, commitSurface ? 0 : 1, 'and the runbook\'s');
               if (!commitSurface) {
-                const nextAction = (block) => /--next-action ('(?:[^']|'\\'')*')/.exec(block)?.[1];
-                ok(nextAction(calls[0]), 'the skill block names its next action');
-                strictEqual(nextAction(calls[0]), nextAction(runbookCalls[0]), 'the skill shows the runbook\'s next action');
+                // ADR-0059, amendment of 2026-10-10: both read the next action from the agent's
+                // file, whose scaffold holds the lifecycle's declared default in each.
+                const nextAction = (block) => /--next-action-file ("\$TEXT_DIR\/next-action\.txt")/.exec(block)?.[1];
+                ok(nextAction(calls[0]), 'the skill block names its next action\'s file');
+                strictEqual(nextAction(calls[0]), nextAction(runbookCalls[0]), 'the skill reads the runbook\'s next-action file');
+                const declared = declaration(persona).verbs.start.next_action;
+                const scaffold = (doc) => doc.split(`\n   \`\`\`text\n   ${declared}\n   \`\`\`\n`).length - 1;
+                deepStrictEqual([scaffold(body), scaffold(runbook)], [1, 1], 'the declared next action, as the next-action.txt scaffold of each');
                 ok(/--next-step-kind commit --next-step-confidence "<HIGH\|MEDIUM\|LOW>" \|\| exit \$\?$/.test(calls[0].trim()), 'kind commit, and a failed write stops');
               }
               // Contract: the agent following a citation — each names a heading of a file this

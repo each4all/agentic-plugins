@@ -315,7 +315,9 @@ describe('PC1 acceptance: the drift check fails on a hand edit to a generated co
 
 describe('PC2a acceptance: the drift check fails on a hand edit inside a generated runbook region', () => {
   const cases = [
-    ['founder', 'commands/checkpoint.md', '--summary "$SUMMARY"', '--summary "$SUMMARY" --force', 'checkpoint-set'],
+    // The edit puts the summary back on the command line (the form ADR-0059's
+    // amendment of 2026-10-10 retired): the region's own text, edited by hand.
+    ['founder', 'commands/checkpoint.md', '--summary-file "$TEXT_DIR/summary.txt"', '--summary "$SUMMARY"', 'checkpoint-set'],
     ['designer', 'commands/peer-now.md', 'RUN_RC=$?', 'RUN_RC=0', 'peer-now-dispatch'],
   ];
   for (const [persona, rel, from, to, region] of cases) {

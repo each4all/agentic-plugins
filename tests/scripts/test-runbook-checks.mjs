@@ -256,7 +256,10 @@ test('the args-file checks pass a committed runbook and catch each pin broken in
     [`${DECIDE}: the CLI is not given the file`],
   );
   deepStrictEqual(
-    argsFileRunbookProblems(broken(decide, 'With your file-writing tool, not the shell', 'With the shell, not your file-writing tool'), DECIDE),
+    // The args file's own sentence: decide's text files have a sentence of
+    // their own that names the file-writing tool (ADR-0059's amendment of
+    // 2026-10-10), which must not stand in for it.
+    argsFileRunbookProblems(broken(decide, 'With your file-writing tool, not the shell, create `args.json`', 'With the shell, not your file-writing tool, create `args.json`'), DECIDE),
     [`${DECIDE}: the file is not written with the file-writing tool`],
   );
   deepStrictEqual(argsFileTypedTextProblems(broken(decide, '\n$ARGUMENTS\n', '\n'), DECIDE), [`${DECIDE}: the typed text is not shown before the steps`]);

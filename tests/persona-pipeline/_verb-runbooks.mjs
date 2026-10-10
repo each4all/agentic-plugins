@@ -261,30 +261,31 @@ export function scriptCalls(block) {
   return calls;
 }
 
-/** The line a generated finalize block reads the filled-in phase note with (PC2a2 PD2). */
-export const NOTE_READER = `IFS= read -r -d '' NOTE <<'PHASE_NOTE' || true`;
+/** The sentence a generated finalize region opens its phase-note scaffold with (PC2a2 PD2). */
+export const NOTE_SCAFFOLD_LEAD = 'The phase note this step records — fill in every `<…>`.';
+/** The flag a generated finalize block passes the agent's note file with (C130, ADR-0059 amendment j). */
+export const NOTE_FILE_FLAG = '--phase-note-file "$TEXT_DIR/note.md"';
 
 /**
  * The phase-note scaffold: the `NOTE="…"` literal, read as the shell reads it;
- * or, in a generated finalize region (PC2a2 PD2), the markdown fence nearest
- * above the block that reads the note from a quoted heredoc — the text the
- * agent fills in and the heredoc then carries unread.
+ * or, in a generated finalize region, the markdown fence the region names as
+ * the note's: the first one after the line that opens with NOTE_SCAFFOLD_LEAD,
+ * before the block that passes the note's file (C130: the agent writes the
+ * filled-in scaffold as `note.md` with its file tool, and the block hands the
+ * file to state.mjs; the PD2 quoted heredoc it replaced carried the same text).
  */
 export function noteScaffold(text) {
   const m = /^NOTE=("(?:[^"\\]|\\.)*")$/m.exec(text);
   if (m) return readWord(m[1], {});
   const lines = text.split('\n');
-  const reader = lines.indexOf(NOTE_READER);
-  if (reader < 0) return null;
-  let found = null;
-  for (let i = 0; i < reader; i++) {
-    if (lines[i] !== '```markdown') continue;
-    let e = i + 1;
-    while (e < lines.length && lines[e] !== '```') e++;
-    if (e < reader) found = `${lines.slice(i + 1, e).join('\n')}\n`;
-    i = e;
-  }
-  return found;
+  const lead = lines.findIndex((l) => l.startsWith(NOTE_SCAFFOLD_LEAD));
+  const passes = lines.findIndex((l, i) => i > lead && l.includes(NOTE_FILE_FLAG));
+  if (lead < 0 || passes < 0) return null;
+  const open = lines.indexOf('```markdown', lead);
+  if (open < 0 || open > passes) return null;
+  let e = open + 1;
+  while (e < lines.length && lines[e] !== '```') e++;
+  return e < passes ? `${lines.slice(open + 1, e).join('\n')}\n` : null;
 }
 
 /**
@@ -413,6 +414,15 @@ const callName = (c) => `${c.script} ${c.sub}`;
  *   set-guard     `where` names a guard the runbook did not have (null);
  *                 `from` null; `to`, its whole text (PC3b: a runbook that
  *                 adopts the shared guard).
+ *   file-flag     `where` names a call and the inline text flag it carries
+ *                 once; `from`, that flag's value as recorded; `to`, the
+ *                 `[<flag>-file, <path>]` pair that takes its place (C130,
+ *                 ADR-0059 amendment j: the text moved into a file the agent
+ *                 writes, which the call names).
+ *   remove-mktemp `where` is `mktemp_templates`; `from`, a template the
+ *                 runbook records once; `to` null, the allocation gone (C130:
+ *                 the prompt is a file the agent writes, not a path the block
+ *                 allocates).
  */
 const STRUCTURAL = {
   'insert-call'(record, d) {
@@ -453,6 +463,23 @@ const STRUCTURAL = {
     deepStrictEqual(record.calls[at], d.from, `${d.where}: remove-call finds the call as recorded`);
     strictEqual(d.to, null, `${d.where}: remove-call sets null`);
     record.calls.splice(at, 1);
+  },
+  'file-flag'(record, d) {
+    const m = FLAG_WHERE.exec(d.where);
+    if (!m) throw new Error(`file-flag names no call flag: ${d.where}`);
+    const { args } = record.calls[locateCall(record, d.where, m[1], m[2] ?? null, m[3])];
+    const at = args.map(([f], i) => [f, i]).filter(([f]) => f === m[4]);
+    strictEqual(at.length, 1, `${d.where}: file-flag finds the flag once`);
+    strictEqual(args[at[0][1]][1], d.from, `${d.where}: file-flag finds the value as recorded`);
+    ok(Array.isArray(d.to) && d.to.length === 2 && d.to[0] === `${m[4]}-file` && typeof d.to[1] === 'string', `${d.where}: file-flag sets [${m[4]}-file, <path>]`);
+    args[at[0][1]] = [...d.to];
+  },
+  'remove-mktemp'(record, d) {
+    strictEqual(d.where, 'mktemp_templates', 'remove-mktemp names mktemp_templates');
+    const at = record.mktemp_templates.map((x, i) => [x, i]).filter(([x]) => x === d.from);
+    strictEqual(at.length, 1, `remove-mktemp finds ${JSON.stringify(d.from)} once`);
+    strictEqual(d.to, null, 'remove-mktemp sets null');
+    record.mktemp_templates.splice(at[0][1], 1);
   },
   'set-guard'(record, d) {
     const m = /^guards\.([a-z_]+)$/.exec(d.where);

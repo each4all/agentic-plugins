@@ -29,7 +29,11 @@
 //   - decide's Owner selection and refine's Owner decision: the owner's words
 //     reach the resolved note as written, the clear writes the next step and
 //     its next action, and inside a /<persona>:start lifecycle the block
-//     clears the gate and leaves the terminal write to the lifecycle.
+//     clears the gate and leaves the terminal write to the lifecycle;
+//   - the texts the agent writes (ADR-0059's amendment of 2026-10-10): each
+//     block reads them from the files the agent wrote with its file tool, in
+//     the directory its TEXT_DIR line names, so hostile text reaches the
+//     workflow as written and nothing in it runs.
 
 import { describe, it } from 'node:test';
 import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
@@ -88,6 +92,25 @@ function section(text, heading) {
   return text.slice(start, next < 0 ? undefined : next);
 }
 const blocks = (text) => [...text.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]);
+// The blocks that write: the private-directory step before each (`mktemp -d`)
+// is the agent's, not one this file runs.
+const writing = (text) => blocks(text).filter((b) => !/^\s*mktemp -d /.test(b));
+// ADR-0059's amendment of 2026-10-10: the directory the agent wrote its text
+// files into, named on a block's first line; the test fills it as the agent does.
+const TEXT_DIR_LINE = "TEXT_DIR='<directory from step 1>'";
+// The `text` scaffold a runbook shows for one of the files, after the first
+// sentence that names it: what the agent writes when nothing else applies.
+function scaffold(text, file) {
+  const at = text.indexOf(`\`${file}\``);
+  ok(at >= 0, `the runbook names ${file}`);
+  const m = /\n( *)```text\n([\s\S]*?)\n\1```\n/.exec(text.slice(at));
+  ok(m, `a text scaffold for ${file}`);
+  return m[2].split('\n').map((l) => l.slice(m[1].length)).join('\n');
+}
+// Text the shell would read if it were spliced into a command: quotes, an
+// expansion, a command substitution, a backtick, a line reading as the
+// retired heredoc delimiters with a command after it, a leading --, non-ASCII.
+const HOSTILE = 'He said "go"; it\'s $HOME and $(touch pwned) and `touch pwned2`\nPHASE_NOTE\nOWNER_RESOLUTION\ntouch injected\n--looks-like-a-flag\n비ASCII é ✓';
 const dedent = (b) => {
   const lines = b.split('\n');
   const ind = Math.min(...lines.filter((l) => l.trim()).map((l) => l.match(/^ */)[0].length));
@@ -137,6 +160,17 @@ for (const persona of PERSONAS) {
 
   const state = (...args) => execFileSync('node', [STATE, ...args], { encoding: 'utf8', env: { ...process.env, AGENTIC_AUTOPILOT: '' } });
 
+  // The files the agent writes before a block, each ending with one newline as
+  // the file-writing tool leaves it, in a fresh directory whose name holds a
+  // space; the block's TEXT_DIR line is filled with it. withRepo removes it.
+  const TEXT_DIRS = [];
+  async function withTexts(block, files) {
+    const dir = await realpath(await mkdtemp(join(tmpdir(), `${persona} agentic text.`)));
+    TEXT_DIRS.push(dir);
+    for (const [name, content] of Object.entries(files)) await writeFile(join(dir, name), `${content}\n`);
+    return fill(block, TEXT_DIR_LINE, `TEXT_DIR='${dir}'`);
+  }
+
   async function withRepo(fn) {
     // realpath: the blocks resolve the repository through git, which reports
     // /private/var where mkdtemp said /var on macOS.
@@ -152,6 +186,7 @@ for (const persona of PERSONAS) {
       return await fn(dir);
     } finally {
       await rm(dir, { recursive: true, force: true });
+      for (const text of TEXT_DIRS.splice(0)) await rm(text, { recursive: true, force: true });
     }
   }
 
@@ -205,15 +240,19 @@ for (const persona of PERSONAS) {
         return {
           find: all0[0],
           resume: all0.find((b) => b.includes('state.mjs" append')),
-          phase2: blocks(section(text, '## Phase 2 — State finalize'))[0],
+          phase2: writing(section(text, '## Phase 2 — State finalize'))[0],
+          nextAction: scaffold(section(text, '## Phase 2 — State finalize'), 'next-action.txt'),
           type: /^ENSEMBLE_TYPE='([^']+)'$/m.exec(text)?.[1],
         };
       };
       // The finalize with the agent's choices made: confidence HIGH and, where
       // the verb closes only once it converged, the convergence and the step
-      // that resolves what is still open.
-      const finalize = (verb, { converged = true } = {}) => {
+      // that resolves what is still open; the note, the summary and the next
+      // action written as files (the scaffold's default next action, unless
+      // the case names another).
+      const finalize = async (verb, { converged = true, note = '### Ensemble synthesis: fixture', summary = 'fine', nextAction = verbBlocks(verb).nextAction } = {}) => {
         let b = fill(verbBlocks(verb).phase2, '--next-step-confidence "<HIGH|MEDIUM|LOW>"', '--next-step-confidence HIGH');
+        b = await withTexts(b, { 'note.md': note, 'summary.txt': summary, 'next-action.txt': nextAction });
         // Contract: the agent running the finalize — the convergence step it fills exists exactly
         // where the verb waits for convergence; elsewhere it would hold back the terminal write.
         if (convergent(verb)) {
@@ -329,7 +368,7 @@ for (const persona of PERSONAS) {
         it('Phase 2 under an autopilot run: the next step only with dispatch_target on, the interactive terminal write with it off', skip('critique'), async () => {
           await withRepo(async (dir) => {
             const wf = createWorkflow(dir, 'critique');
-            const r = runBlock(shell, dir, finalize('critique'), { ACTIVE: wf, RUN_ID: '', VERDICT: 'agreed', SUMMARY: 'fine', AGENTIC_AUTOPILOT: AUTOPILOT_RUN_ID });
+            const r = runBlock(shell, dir, await finalize('critique'), { ACTIVE: wf, RUN_ID: '', VERDICT: 'agreed', AGENTIC_AUTOPILOT: AUTOPILOT_RUN_ID });
             strictEqual(r.status, 0, r.stderr);
             const fm = (await readWorkflow(wf)).frontmatter;
             // On: the terminal marker is left for the commit; off: the run is
@@ -349,8 +388,8 @@ for (const persona of PERSONAS) {
                 // Contract: the dispatch's ENSEMBLE_TYPE, which this case launches the run under —
                 // unread, the launch below would book the run under no type.
                 ok(typeof type === 'string', 'the runbook names its ensemble type');
-                const phase2 = finalize(verb);
-                const vars = { VERDICT: 'agreed', SUMMARY: 'fine' };
+                const phase2 = await finalize(verb);
+                const vars = { VERDICT: 'agreed' };
                 const results = async (wf) => {
                   const fm = (await readWorkflow(wf)).frontmatter;
                   return { fm, results: fm.ensemble_results ?? [], pending: fm.pending_ensemble ?? [] };
@@ -393,12 +432,12 @@ for (const persona of PERSONAS) {
                   // verb's terminal marker turned off.
                   wf = createWorkflow(dir, verb);
                   state('set-terminal', '--workflow-path', wf, '--host', 'claude', '--terminal-phase', 'summary-complete', '--terminal-marker', 'true');
-                  r = runBlock(shell, dir, finalize(verb, { converged: false }), { ACTIVE: wf, RUN_ID: '', ...vars });
+                  r = runBlock(shell, dir, await finalize(verb, { converged: false, nextAction: 'Paused: the flagged item; refine resolves it' }), { ACTIVE: wf, RUN_ID: '', ...vars });
                   strictEqual(r.status, 0, r.stderr);
                   ok(r.stderr.includes('PAUSED (not converged)'), r.stderr);
                   got = await results(wf);
-                  deepStrictEqual([got.fm.current_phase, got.fm.terminal_marker === true, got.fm.next_step_kind, got.fm.next_step_verb],
-                    ['phase-2-presented', false, 'verb', 'refine']);
+                  deepStrictEqual([got.fm.current_phase, got.fm.terminal_marker === true, got.fm.next_step_kind, got.fm.next_step_verb, got.fm.next_action],
+                    ['phase-2-presented', false, 'verb', 'refine', 'Paused: the flagged item; refine resolves it']);
                   archive(dir, wf);
                 }
 
@@ -416,18 +455,65 @@ for (const persona of PERSONAS) {
               await rm(gone, { recursive: true, force: true });
             }
           });
+
+          // ADR-0059's amendment of 2026-10-10: the note, the summary and the
+          // next action are the agent's text; through the real scripts they
+          // reach the workflow as written, and a shell never reads a line.
+          it(`${verb}'s finalize: the note, the summary and the next action the agent wrote reach the workflow as written, nothing in them runs, and a file left unwritten or blank stops the block before any write`, skip(verb), async () => {
+            const ok_ = await stubCompanions();
+            try {
+              await withRepo(async (dir) => {
+                const { type } = verbBlocks(verb);
+                const wf = createWorkflow(dir, verb);
+                strictEqual(launch(dir, wf, verb, type, `${type}-hostile`, ok_).status, 0);
+                const summary = '--agreed: "A" $(touch pwned) `touch pwned2` it\'s done';
+                const nextAction = `Next: "${verb}" $(touch pwned) or \`touch pwned2\`, it's next`;
+                const r = runBlock(shell, dir, await finalize(verb, { note: HOSTILE, summary, nextAction }), { ACTIVE: wf, RUN_ID: `${type}-hostile`, VERDICT: 'agreed' });
+                strictEqual(r.status, 0, r.stderr);
+                const { frontmatter: fm, body } = await readWorkflow(wf);
+                ok(body.includes(HOSTILE), `the note, as written: ${body}`);
+                deepStrictEqual([fm.next_action, (fm.ensemble_results ?? []).map((e) => [e.verdict, e.summary])], [nextAction, [['agreed', summary]]]);
+                for (const side of ['pwned', 'pwned2', 'injected']) strictEqual(spawnSync('test', ['-e', join(dir, side)]).status, 1, `${side}: nothing in the texts ran`);
+                archive(dir, wf);
+                // Each file left unwritten, holding only the newline that the
+                // scripts remove (so they refuse it as empty), or a BOM and that
+                // newline (which settle trims to nothing), in turn: the block
+                // stops before any write — settle no longer refuses after the
+                // append has written the note.
+                for (const name of ['note.md', 'summary.txt', 'next-action.txt']) {
+                  for (const [how, content] of [['left unwritten', null], ['holding a newline only', ''], ['holding a BOM and a newline', '﻿']]) {
+                    const w = createWorkflow(dir, verb);
+                    const before = await readFile(w, 'utf8');
+                    let b = fill(verbBlocks(verb).phase2, '--next-step-confidence "<HIGH|MEDIUM|LOW>"', '--next-step-confidence HIGH');
+                    if (convergent(verb)) b = fill(b.replace(/CONVERGED="<yes\|no[^"\n]*>"/, 'CONVERGED="yes"'), '"<refine|decide|investigate>"', 'refine');
+                    const files = { 'note.md': 'n', 'summary.txt': 's', 'next-action.txt': 'a' };
+                    if (content === null) delete files[name];
+                    else files[name] = content;
+                    const left = runBlock(shell, dir, await withTexts(b, files), { ACTIVE: w, RUN_ID: '', VERDICT: 'agreed' });
+                    strictEqual(left.status, 1, `${name} ${how}: ${left.stderr}`);
+                    ok(left.stderr.includes(`${name} in TEXT_DIR (`) && left.stderr.includes('is missing, blank or not UTF-8 text'), left.stderr);
+                    strictEqual(await readFile(w, 'utf8'), before, `${name} ${how}: nothing was written`);
+                    archive(dir, w);
+                  }
+                }
+              });
+            } finally {
+              await rm(ok_, { recursive: true, force: true });
+            }
+          });
         }
 
         it('decide\'s Owner selection stops at a refused clear, writing no selection; it records the choice with its next step, and inside a start lifecycle clears the gate and stops (round-2 #7, PC3b U1)', skip('decide'), async () => {
           await withRepo(async (dir) => {
-            // The generated block reads the resolution from a quoted heredoc
-            // (PC3 U7); the owner's words go in place of its placeholder line.
-            const placeholder = '<Owner selection: the direction the owner chose, and why>';
-            const raw = blocks(section(docs.decide, '## Owner selection (decide-conflict)'))[0];
-            // Contract: the owner's words go into a quoted heredoc, which the shell does not expand;
-            // a placeholder elsewhere would let `$` and backticks in them run.
-            ok(raw.includes(`\n${placeholder}\nOWNER_RESOLUTION\n`), 'the resolution placeholder sits inside the heredoc');
-            const block = raw.replace(placeholder, 'Owner selection: option A, the $simplest `one`');
+            // The generated block reads the owner's words from the file the agent
+            // wrote (ADR-0059's amendment of 2026-10-10), as it read a quoted
+            // heredoc before (PC3 U7).
+            const raw = writing(section(docs.decide, '## Owner selection (decide-conflict)'))[0];
+            // Contract: the owner's words reach state.mjs as a file, never as shell text, where `$`,
+            // backticks and a delimiter-like line in them would run.
+            ok(raw.startsWith(`${TEXT_DIR_LINE}\n`) && raw.includes('--resolution-file "$TEXT_DIR/resolution.txt"') && !raw.includes('OWNER_RESOLUTION'), 'the resolution is the agent\'s file');
+            const words = `Owner selection: option A, the $simplest \`one\`\nOWNER_RESOLUTION\ntouch injected`;
+            const block = await withTexts(raw, { 'resolution.txt': words });
             const wf = createWorkflow(dir, 'decide');
             state('awaiting-owner-set', '--workflow-path', wf, '--host', 'claude', '--gate', 'scope-routing', '--anchor', 'routing-recommendation');
             const before = await readFile(wf, 'utf8');
@@ -444,7 +530,8 @@ for (const persona of PERSONAS) {
             const { frontmatter: fm, body } = await readWorkflow(wf);
             deepStrictEqual([fm.awaiting_owner_gate, fm.next_step_kind, fm.next_step_verb, fm.next_action, fm.current_phase, fm.terminal_marker],
               [undefined, 'verb', 'compose', P.declaration.verbs.decide.next_action, 'summary-complete', true]);
-            ok(/### Owner gate resolved: decide-conflict at [^\n]+\n\nOwner selection: option A, the \$simplest `one`/.test(body), 'the decision sits in the resolved note as written (round-3 F1)');
+            ok(body.includes(`\n\n${words}`) && /### Owner gate resolved: decide-conflict at [^\n]+\n\nOwner selection: option A, the \$simplest `one`\nOWNER_RESOLUTION\ntouch injected/.test(body), 'the decision sits in the resolved note as written (round-3 F1)');
+            strictEqual(spawnSync('test', ['-e', join(dir, 'injected')]).status, 1, 'nothing in the decision ran');
             archive(dir, wf);
 
             // Inside a /<persona>:start lifecycle the block clears the gate and
@@ -466,16 +553,17 @@ for (const persona of PERSONAS) {
 
         it('refine\'s Owner decision: each block resolves the workflow itself and records the decision with the next step and its next action in one write; inside a start lifecycle each clears the gate and stops (PC3b U1)', skip('refine'), async () => {
           await withRepo(async (dir) => {
-            // The generated blocks read the owner's resolution from a quoted
-            // heredoc (PC3 U7); the owner's words go in place of its placeholder.
-            const owner = (block, placeholder, words) => {
-              // Contract: the owner's words go into a quoted heredoc, which the shell does not expand.
-              ok(block.includes(`\n${placeholder}\nOWNER_RESOLUTION\n`), placeholder);
-              return block.replace(placeholder, words);
+            // The generated blocks read the owner's resolution from the file the
+            // agent wrote (ADR-0059's amendment of 2026-10-10), as they read a
+            // quoted heredoc before (PC3 U7).
+            const owner = async (block, words, files = {}) => {
+              // Contract: the owner's words reach state.mjs as a file, never as shell text.
+              ok(block.startsWith(`${TEXT_DIR_LINE}\n`) && block.includes('--resolution-file "$TEXT_DIR/resolution.txt"') && !block.includes('OWNER_RESOLUTION'), 'the resolution is the agent\'s file');
+              return withTexts(block, { 'resolution.txt': words, ...files });
             };
-            const [rawFix, rawDefer] = blocks(section(docs.refine, '## Owner decision (recurring-finding)')).map(dedent);
-            const fixNow = owner(rawFix, '<Owner decision: fix the finding now>', 'Owner decision: fix the cache key now');
-            const deferWords = owner(rawDefer, '<Owner decision: defer the finding, with the reason and where it is tracked>', 'Owner decision: defer the cache key — tracked in C99');
+            const [rawFix, rawDefer] = writing(section(docs.refine, '## Owner decision (recurring-finding)')).map(dedent);
+            const fixNow = await owner(rawFix, 'Owner decision: fix the cache key now');
+            const deferWords = await owner(rawDefer, 'Owner decision: defer the cache key — tracked in C99');
             // A refine that closes only once it converged sets the convergence
             // in the Defer block; converged, the deferral ends the verb.
             const defer = convergent('refine')
@@ -511,8 +599,7 @@ for (const persona of PERSONAS) {
               // with the step that resolves what is open, and no terminal write.
               const w2 = createWorkflow(dir, 'refine');
               gate(w2);
-              let open = deferWords.replace(/CONVERGED="<yes\|no[^"\n]*>"/, 'CONVERGED="no"');
-              open = fill(open, '"<what the next step resolves, in a few words>"', '"Re-critique the deferred finding"');
+              let open = (await owner(rawDefer, 'Owner decision: defer the cache key — tracked in C99', { 'next-action.txt': 'Re-critique the deferred finding' })).replace(/CONVERGED="<yes\|no[^"\n]*>"/, 'CONVERGED="no"');
               open = fill(open, '"<refine|decide|investigate>"', 'refine');
               open = fill(open, '"<HIGH|MEDIUM|LOW>"', 'HIGH');
               r = runBlock(shell, dir, open);
