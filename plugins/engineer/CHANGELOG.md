@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.27.0...plugin-engineer-v0.28.0) (2026-10-10)
+
+
+### Features
+
+* **plugin/engineer:** end decide, critique and investigate on a peer conflict with a consensus round proposed for the owner (ADR-0067 CP) ([8265e18](https://github.com/each4all/agentic-plugins/commit/8265e18bc9de8d3e57b8c765359f50bddb8f6d05))
+
 ## [0.27.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.26.0...plugin-engineer-v0.27.0) (2026-10-10)
 
 

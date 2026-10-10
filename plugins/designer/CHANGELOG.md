@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.7.0...plugin-designer-v0.8.0) (2026-10-10)
+
+
+### Features
+
+* **plugin/designer:** end decide, critique and investigate on a peer conflict with a consensus round proposed for the owner (ADR-0067 CP) ([e593e34](https://github.com/each4all/agentic-plugins/commit/e593e344962a3266d09b579bf65e5b26b6ac8fcc))
+
 ## [0.7.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.6.0...plugin-designer-v0.7.0) (2026-10-10)
 
 
