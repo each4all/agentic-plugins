@@ -141,6 +141,14 @@ another one. Records written before this decision stay as written.
 - The reason for `--correct` or `--no-commit` reaches the runbook as a file
   the agent wrote with its file-writing tool, never as shell text or a
   heredoc (ADR-0059).
+
+  *Note 2026-10-10:* that rule now covers every text an agent authors for a
+  CLI, not only this reason.
+  [ADR-0059's amendment of 2026-10-10](0059-runbook-argument-transport.md#amendment-2026-10-10--text-an-agent-authors-reaches-the-cli-as-a-file-item-j)
+  takes this reason file's shape, raw text with one trailing newline
+  removed, as the contract of the `--<name>-file` options it adds. Unlike
+  `--reason-file`, those options do not read standard input. `--reason-file`
+  is unchanged.
 - After a non-final completion, `next_action` names the next step (the
   subtask now ready, or the ones still to be recorded) instead of the
   engineer note's `/orchestrator:done` pointer.

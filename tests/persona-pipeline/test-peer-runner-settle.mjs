@@ -396,6 +396,71 @@ for (const persona of personasFor('scripts/peer-runner.mjs')) {
     });
   });
 
+  // ADR-0059 amendment (j): the synthesis summary an agent wrote reaches
+  // settle as a file it wrote with its file-writing tool, read when the CLI
+  // starts — before a failed run's result is committed.
+  describe(`${persona}: settle --summary-file (ADR-0059 amendment (j))`, () => {
+    // The child runs in the temporary repository, where the sentinels below
+    // look: --repo-root does not change a process's working directory.
+    const cliSettle = (ctx, runId, args) => spawnSync(process.execPath, [RUNNER, 'settle', '--repo-root', ctx.repoRoot,
+      '--workflow-path', ctx.workflowPath, '--host', 'claude', '--phase', 'compose', '--run-id', runId, ...args], { cwd: ctx.repoRoot, encoding: 'utf8' });
+    const HOSTILE = `--leading \`touch pwned-tick\` $(touch pwned-sub) "dq" 'sq' back\\slash ü`;
+
+    it('a completed run records the summary as the file holds it, one trailing newline removed and its lines joined as settle joins them; nothing in it runs, and the file is kept', async () => {
+      await withWorkflow(async (ctx) => {
+        strictEqual((await ensembleRun(ctx, 'plan-verify-file')).status, 'completed');
+        const file = join(ctx.repoRoot, 'summary.txt');
+        await writeFile(file, `${HOSTILE}\nsecond line\n`);
+        const r = cliSettle(ctx, 'plan-verify-file', ['--verdict', 'agree', '--summary-file', file]);
+        strictEqual(r.status, 0, r.stderr);
+        const [result] = await results(ctx.workflowPath);
+        deepStrictEqual([result.verdict, result.summary], ['agree', `${HOSTILE} second line`]);
+        strictEqual(await readFile(file, 'utf8'), `${HOSTILE}\nsecond line\n`, 'the file is kept as written');
+        for (const name of ['pwned-tick', 'pwned-sub']) {
+          await rejects(readFile(join(ctx.repoRoot, name)), { code: 'ENOENT' }, `${name}: nothing in the summary ran`);
+        }
+      });
+    });
+
+    it('both forms, or a file that cannot be used, refuse (exit 2) before the failed result of a launched run is committed', async () => {
+      await withWorkflow(async (ctx) => {
+        ctx.companions = await writeCompanions(ctx.repoRoot, { missing: true });
+        strictEqual((await ensembleRun(ctx, 'plan-verify-early')).status, 'failed');
+        const before = await readFile(ctx.workflowPath, 'utf8');
+        const good = join(ctx.repoRoot, 'good.txt');
+        const empty = join(ctx.repoRoot, 'empty.txt');
+        const notUtf8 = join(ctx.repoRoot, 'latin1.txt');
+        const nul = join(ctx.repoRoot, 'nul.txt');
+        await writeFile(good, 'local findings\n');
+        await writeFile(empty, '\n');
+        await writeFile(notUtf8, Buffer.from([0x66, 0xe9, 0x0a]));
+        await writeFile(nul, 'a\0b\n');
+        const cases = [
+          [['--summary', '', '--summary-file', good], /pass --summary or --summary-file, not both/],
+          [['--summary-file', join(ctx.repoRoot, 'missing.txt'), '--summary-file', good], /--summary-file is given more than once/],
+          [['--summary-file', join(ctx.repoRoot, 'missing.txt')], /--summary-file: cannot read .*ENOENT/],
+          [['--summary-file', empty], /--summary-file: .* is empty/],
+          [['--summary-file', notUtf8], /--summary-file: .* is not valid UTF-8/],
+          [['--summary-file', nul], /--summary-file: .* holds a NUL byte/],
+          [['--summary-file', '-'], /standard input/],
+        ];
+        const handle = peerRunPaths(ctx.repoRoot, 'plan-verify-early').handle;
+        const handleBefore = await readFile(handle, 'utf8');
+        for (const [args, pattern] of cases) {
+          const r = cliSettle(ctx, 'plan-verify-early', args);
+          strictEqual(r.status, 2, `${args.join(' ')}: ${r.stderr}`);
+          ok(pattern.test(r.stderr), `${args.join(' ')}: ${r.stderr}`);
+          strictEqual(await readFile(ctx.workflowPath, 'utf8'), before, `${args.join(' ')}: nothing written`);
+          strictEqual(await readFile(handle, 'utf8'), handleBefore, `${args.join(' ')}: the run ledger is untouched`);
+        }
+        // Control: the same settle with a usable file commits the failed result.
+        const r = cliSettle(ctx, 'plan-verify-early', ['--summary-file', good]);
+        strictEqual(r.status, 0, r.stderr);
+        deepStrictEqual((await results(ctx.workflowPath)).map((e) => e.verdict), ['failed']);
+      });
+    });
+  });
+
   describe(`${persona}: settle — identity and repetition`, () => {
     it('refuses a ledger that is not this attempt: a peer-now run, another workflow, another phase, another ensemble type', async () => {
       await withWorkflow(async (ctx) => {

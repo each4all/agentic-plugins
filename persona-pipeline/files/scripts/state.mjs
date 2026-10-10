@@ -58,7 +58,7 @@ import {
   open,
   lstat,
 } from 'node:fs/promises';
-import { lstatSync, realpathSync, statSync } from 'node:fs';
+import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, dirname, basename, isAbsolute, resolve as resolvePath } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { hrtime, pid } from 'node:process';
@@ -3879,11 +3879,13 @@ export async function autopilotPreflight({
         ? `Proposed first, for the owner to run: a bounded consensus round on the contested items, ${proposal.command}\n`
         : '') +
       `Clearing it by hand once it is resolved, with the next step the owner chose ` +
-      `and its action, which replaces the gate's (PC3b): ` +
+      `and its action, which replaces the gate's (PC3b); write the owner's decision ` +
+      `and the next step's action each to a file with your file-writing tool, never ` +
+      `on the command line (ADR-0059 amendment (j)): ` +
       `node "${scriptPath}" awaiting-owner-clear --workflow-path "${workflowPath}" ` +
       `--host ${host} --gate ${gate.gate} --next-step-kind <verb|commit|done> ` +
-      `--next-step-confidence HIGH [--next-step-verb <verb>] --resolution "<the owner's decision>" ` +
-      `--next-action "<the next step's action>"\n`,
+      `--next-step-confidence HIGH [--next-step-verb <verb>] --resolution-file <decision file> ` +
+      `--next-action-file <action file>\n`,
     stderr,
   };
 }
@@ -4765,6 +4767,60 @@ export function runCleanBaselineCheck({ repoRoot, acceptCurrentTree = false } = 
 // -----------------------------------------------------------------------------
 // CLI mode
 
+// ADR-0059 amendment (j) — text an agent authors, or copies from a peer or the
+// user, reaches a CLI as a file the agent wrote with its file-writing tool,
+// never as shell source. The file is read as written: strict UTF-8 (a BOM is
+// content), no NUL byte, and exactly one trailing LF or CRLF removed, the
+// file's own line end; nothing else is trimmed. A missing or unreadable file,
+// standard input ('-') and an empty value are refused. The file is never
+// deleted: one next-action file can feed both append and finish-verb.
+// peer-runner.mjs and phase7-commit.mjs read their text files with it too.
+export function readTextArgumentFile(path, flag) {
+  if (typeof path !== 'string' || path.length === 0) throw new Error(`${flag} needs a path`);
+  if (path === '-') throw new Error(`${flag} takes a file path; standard input (-) is not read`);
+  let bytes;
+  try {
+    bytes = readFileSync(path);
+  } catch (err) {
+    throw new Error(`${flag}: cannot read ${JSON.stringify(path)} (${err.code ?? err.message})`);
+  }
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    throw new Error(`${flag}: ${JSON.stringify(path)} is not valid UTF-8`);
+  }
+  if (text.includes('\0')) throw new Error(`${flag}: ${JSON.stringify(path)} holds a NUL byte`);
+  const value = text.replace(/\r?\n$/, '');
+  if (value.length === 0) throw new Error(`${flag}: ${JSON.stringify(path)} is empty`);
+  return value;
+}
+
+// The free-text flags that take a --<name>-file <path> twin. Other *-file
+// flags (--text-file, --args-file) keep their own readers.
+const TEXT_FILE_FLAGS = ['original-request', 'next-action', 'phase-note', 'summary', 'resolution'];
+
+// Every --<name>-file is read into --<name> before a subcommand runs, so a bad
+// file refuses before anything is written, and a required flag is met by
+// either form. Passing both forms is refused, even with an empty inline value.
+// This parser takes each value as the next argument: a `--<name>=…` spelling
+// of these flags is refused rather than ignored.
+function cliResolveTextFiles(flags) {
+  const out = { ...flags };
+  for (const name of TEXT_FILE_FLAGS) {
+    const fileFlag = `${name}-file`;
+    const glued = Object.keys(flags).find((key) => key.startsWith(`${name}=`) || key.startsWith(`${fileFlag}=`));
+    if (glued !== undefined) {
+      throw new Error(`--${glued.slice(0, glued.indexOf('='))} takes its value as the next argument, not after '='`);
+    }
+    if (!(fileFlag in flags)) continue;
+    if (name in flags) throw new Error(`pass --${name} or --${fileFlag}, not both`);
+    out[name] = readTextArgumentFile(flags[fileFlag], `--${fileFlag}`);
+    delete out[fileFlag];
+  }
+  return out;
+}
+
 function cliParseFlags(argv) {
   const flags = {};
   for (let i = 0; i < argv.length; i++) {
@@ -4776,6 +4832,11 @@ function cliParseFlags(argv) {
     const val = argv[i + 1];
     if (val === undefined || val.startsWith('--')) {
       throw new Error(`Missing value for flag --${name}`);
+    }
+    // A text file given twice would leave the first one unread (the last
+    // value wins): every file named is read, or the command refuses.
+    if (name in flags && TEXT_FILE_FLAGS.some((text) => name === `${text}-file`)) {
+      throw new Error(`--${name} is given more than once`);
     }
     flags[name] = val;
     i += 1;
@@ -5102,6 +5163,13 @@ function cliPrintHelp() {
       '    checks, appends the inventory to the cutover manifest and turns shared',
       '    creation on; --disable (rollback) is refused once lanes have run.',
       '',
+      'Text files (ADR-0059 amendment (j)): --original-request, --next-action,',
+      '--phase-note, --summary and --resolution each have a --<name>-file <path>',
+      'twin, read as UTF-8 with one trailing newline removed (an empty value, a NUL',
+      'byte and standard input are refused; the file is kept). Pass one form or the',
+      'other. A runbook passes text an agent wrote this way, never on a command',
+      'line; the inline form is for programs.',
+      '',
       'Verbs: investigate, frame, decide, compose, critique, refine.',
       'Hosts: claude, codex.',
       'Workflow types: verb-chain, start.',
@@ -5124,6 +5192,15 @@ async function cliMain(argv) {
   } catch (err) {
     process.stderr.write(`state.mjs: ${err.message}\n`);
     return 2;
+  }
+  // ADR-0059 amendment (j) — the text files, read before any subcommand runs
+  // (and before --repo-root changes where the command acts, so a relative path
+  // names a file where the caller is).
+  try {
+    flags = cliResolveTextFiles(flags);
+  } catch (err) {
+    process.stderr.write(`state.mjs ${subcommand}: ${err.message}\n`);
+    return 1;
   }
 
   // ADR-0067 Decision 1(a) — a subcommand given --repo-root acts in that

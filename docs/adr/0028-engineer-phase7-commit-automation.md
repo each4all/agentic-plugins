@@ -326,6 +326,22 @@ additional `=` characters (e.g., `feat(engineer): set FOO=bar`). When
 the user confirms interactively, Phase 7 presents one
 `package × subject` row per pending commit.
 
+*Note 2026-10-10:* the driver can take a subject the agent edits from a
+file, so that it need not travel on a command line. It also reads
+`--subject-file <path>` and a repeated `--subject-pkg-file <package>=<path>`,
+each file holding the subject the agent wrote with its file-writing tool.
+The engineer runbooks and skills still pass `--subject` inline until a later
+change moves them to the files. The driver reads the files when it starts,
+before anything is written, and the recovery path's `beginCommit` comes
+after that read too. A file's subject must be one line, and the rules above
+apply to it as to an inline subject. A file and an inline flag for the same
+commit are refused together. The plan's notes and the diagnostics name
+`--suggested-subjects` for a subject used as suggested and the subject files
+for an edited one. The inline flags stay for programs. The `--subject "<text>"`
+form in P6's non-interactive tests above is the inline one.
+[ADR-0059's amendment of 2026-10-10](0059-runbook-argument-transport.md#amendment-2026-10-10--text-an-agent-authors-reaches-the-cli-as-a-file-item-j)
+holds the rule and the file contract.
+
 #### P9 — Trailer allowlist policy
 
 Body composition (P1) MUST scan source 1 (`original_request`) and

@@ -508,7 +508,9 @@ export async function planWorktree({ repoRoot, task, base = null, env = process.
 /** The lines a start prints for a planWorktree result. */
 export function worktreePlanText(plan, { host = 'claude', persona = personaName() } = {}) {
   const start = `${host === 'codex' ? '$' : '/'}${persona}:start`;
-  if (!plan.command) return `→ Proposed: a new worktree; /runtime:worktree plan --task "<the request>" suggests its git worktree add command (${plan.reason}).`;
+  // The request is the runtime command's own argument, which it takes through
+  // its args file (ADR-0059): no request text is spliced into this line.
+  if (!plan.command) return `→ Proposed: a new worktree; /runtime:worktree plan with the request as its --task suggests its git worktree add command (${plan.reason}).`;
   return [
     '→ Proposed: start this in a new worktree, which leaves this checkout as it is:',
     `    ${plan.command}`,

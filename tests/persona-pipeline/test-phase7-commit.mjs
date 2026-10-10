@@ -69,6 +69,14 @@ for (const persona of personasFor('scripts/phase7-commit.mjs')) {
       ]);
     });
 
+    it('repeats --subject-pkg-file into an array, empty when absent (ADR-0059 amendment (j))', () => {
+      deepStrictEqual(parseFlags(['--mode', 'plan'])['subject-pkg-file'], []);
+      deepStrictEqual(parseFlags([
+        '--subject-pkg-file', 'plugins/engineer=/t/a.txt',
+        '--subject-pkg-file', 'docs=/t/b.txt',
+      ])['subject-pkg-file'], ['plugins/engineer=/t/a.txt', 'docs=/t/b.txt']);
+    });
+
     // ADR-0028 PR4 A4 — `--include-extra` is repeatable so the user can
     // opt specific extras back into the staging set after seeing the
     // plan-mode extras list.
@@ -900,6 +908,154 @@ for (const persona of personasFor('scripts/phase7-commit.mjs')) {
         });
       }
     }
+  });
+
+  // -----------------------------------------------------------------------------
+  // ADR-0059 amendment (j) — an edited subject reaches the driver as a file the
+  // agent wrote with its file-writing tool; the plan's notes and the
+  // diagnostics name that form, or --suggested-subjects, never a subject on a
+  // command line.
+
+  describe(`${persona}: phase7-commit — subject files (ADR-0059 amendment (j))`, () => {
+    const SPLIT_MANIFEST = [
+      { path: 'plugins/engineer/a.mjs', op: 'create' },
+      { path: 'plugins/runtime/b.mjs', op: 'create' },
+    ];
+    async function writeSplitChange(dir) {
+      await mkdir(join(dir, 'plugins', 'engineer'), { recursive: true });
+      await mkdir(join(dir, 'plugins', 'runtime'), { recursive: true });
+      await writeFile(join(dir, 'plugins', 'engineer', 'a.mjs'), 'export const a = 1;\n');
+      await writeFile(join(dir, 'plugins', 'runtime', 'b.mjs'), 'export const b = 2;\n');
+    }
+    const execute = (dir, wf, args) => runDriver(dir, [
+      '--mode', 'execute', '--workflow-path', wf, '--repo-root', dir, '--host', 'claude',
+      '--confirm-non-interactive', '--lenient-cc', ...args,
+    ]);
+
+    it('plan mode names --suggested-subjects and the subject files, and no subject on a command line', async () => {
+      const dir = await makeSandboxRepo();
+      try {
+        const single = bootstrapWorkflow(dir, { manifest: [{ path: 'README.md', op: 'edit' }] });
+        await writeFile(join(dir, 'README.md'), '# sandbox\nplan\n');
+        const plan = JSON.parse(runDriver(dir, ['--mode', 'plan', '--workflow-path', single, '--repo-root', dir, '--host', 'claude']).stdout);
+        ok(plan.notes[0].includes('--suggested-subjects') && plan.notes[0].includes('--subject-file <file>'), plan.notes[0]);
+        ok(!/--subject "|--subject-pkg </.test(plan.notes.join('\n')), plan.notes.join('\n'));
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+      const split = await makeSandboxRepo();
+      try {
+        const wf = bootstrapWorkflow(split, { manifest: SPLIT_MANIFEST });
+        await writeSplitChange(split);
+        const plan = JSON.parse(runDriver(split, ['--mode', 'plan', '--workflow-path', wf, '--repo-root', split, '--host', 'claude']).stdout);
+        strictEqual(plan.requires_split, true);
+        ok(plan.notes[0].includes('--suggested-subjects') && plan.notes[0].includes('--subject-pkg-file <pkg>=<file>'), plan.notes[0]);
+        ok(!/--subject "|--subject-pkg </.test(plan.notes.join('\n')), plan.notes.join('\n'));
+      } finally {
+        await rm(split, { recursive: true, force: true });
+      }
+    });
+
+    it('execute takes a single subject from --subject-file as the file holds it, one trailing newline removed; the file is kept', async () => {
+      const dir = await makeSandboxRepo();
+      const texts = await mkdtemp(join(tmpdir(), 'phase7-subjects-'));
+      try {
+        const wf = bootstrapWorkflow(dir, { manifest: [{ path: 'README.md', op: 'edit' }] });
+        await writeFile(join(dir, 'README.md'), '# sandbox\nfile subject\n');
+        const subject = 'docs: a `ticked` $(subject) "quoted" it\'s';
+        const file = join(texts, 'subject.txt');
+        await writeFile(file, `${subject}\n`);
+        const result = execute(dir, wf, ['--subject-file', file]);
+        strictEqual(result.code, 0, result.stderr);
+        strictEqual(shell(dir, 'git', ['log', '-1', '--format=%s']), subject);
+        strictEqual(await readFile(file, 'utf8'), `${subject}\n`, 'the file is kept');
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+        await rm(texts, { recursive: true, force: true });
+      }
+    });
+
+    it('execute takes each package\'s subject from a repeated --subject-pkg-file <pkg>=<path>', async () => {
+      const dir = await makeSandboxRepo();
+      const texts = await mkdtemp(join(tmpdir(), 'phase7-subjects-'));
+      try {
+        const wf = bootstrapWorkflow(dir, { manifest: SPLIT_MANIFEST });
+        await writeSplitChange(dir);
+        await writeFile(join(texts, 'engineer.txt'), 'feat(engineer): add a\n');
+        await writeFile(join(texts, 'runtime.txt'), 'feat(runtime): add b\r\n');
+        const result = execute(dir, wf, [
+          '--subject-pkg-file', `plugins/engineer=${join(texts, 'engineer.txt')}`,
+          '--subject-pkg-file', `plugins/runtime=${join(texts, 'runtime.txt')}`,
+        ]);
+        strictEqual(result.code, 0, result.stderr);
+        deepStrictEqual(shell(dir, 'git', ['log', '-2', '--format=%s']).split('\n').sort(), ['feat(engineer): add a', 'feat(runtime): add b']);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+        await rm(texts, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses (exit 2) before anything is written: both forms, a multiline, empty or missing file, a malformed or repeated package', async () => {
+      const dir = await makeSandboxRepo();
+      const texts = await mkdtemp(join(tmpdir(), 'phase7-subjects-'));
+      try {
+        const wf = bootstrapWorkflow(dir, { manifest: SPLIT_MANIFEST });
+        await writeSplitChange(dir);
+        const file = async (name, content) => { const p = join(texts, name); await writeFile(p, content); return p; };
+        const good = await file('good.txt', 'feat(engineer): add a\n');
+        const runtime = await file('runtime.txt', 'feat(runtime): add b\n');
+        const before = { head: shell(dir, 'git', ['rev-parse', 'HEAD']), wf: await readFile(wf, 'utf8') };
+        const cases = [
+          [['--subject', 'feat: x', '--subject-file', good], /pass --subject or --subject-file, not both/],
+          // The parser keeps a glued `=` spelling as an unknown flag; it is
+          // refused, not ignored, so neither the conflict nor the file escapes.
+          [['--subject=', 'ignored', '--subject-file', good], /--subject takes its value as the next argument/],
+          [['--subject-file=' + join(texts, 'missing.txt'), 'ignored', '--suggested-subjects'], /--subject-file takes its value as the next argument/],
+          [['--subject-file', join(texts, 'missing.txt'), '--subject-file', good], /--subject-file is given more than once/],
+          [['--subject-file', await file('two-lines.txt', 'feat: a\nCo-Authored-By: someone\n')], /--subject-file: multiline subject is not allowed/],
+          [['--subject-file', await file('empty.txt', '\n')], /--subject-file: .* is empty/],
+          [['--subject-file', join(texts, 'missing.txt')], /--subject-file: cannot read .*ENOENT/],
+          [['--subject-file', await file('latin1.txt', Buffer.from([0x66, 0x65, 0x61, 0x74, 0x3a, 0x20, 0xe9]))], /--subject-file: .* is not valid UTF-8/],
+          [['--subject-file', await file('nul.txt', 'feat: a\0b\n')], /--subject-file: .* holds a NUL byte/],
+          [['--subject-file', '-'], /standard input \(-\) is not read/],
+          [['--subject-pkg-file', good], /--subject-pkg-file expects '<pkg>=<path>'/],
+          [['--subject-pkg', 'plugins/engineer=feat(engineer): inline', '--subject-pkg-file', `plugins/engineer=${good}`], /commit 'plugins\/engineer' has more than one subject/],
+          [['--subject-pkg-file', `plugins/engineer=${good}`, '--subject-pkg-file', `plugins/engineer=${runtime}`], /more than one subject/],
+        ];
+        for (const [args, pattern] of cases) {
+          const result = execute(dir, wf, args);
+          strictEqual(result.code, 2, `${args.join(' ')}: ${result.stderr}`);
+          ok(pattern.test(result.stderr), `${args.join(' ')}: ${result.stderr}`);
+          strictEqual(shell(dir, 'git', ['rev-parse', 'HEAD']), before.head, `${args.join(' ')}: HEAD did not move`);
+          strictEqual(shell(dir, 'git', ['diff', '--cached', '--name-only']), '', `${args.join(' ')}: nothing staged`);
+          strictEqual(await readFile(wf, 'utf8'), before.wf, `${args.join(' ')}: the workflow is unchanged`);
+        }
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+        await rm(texts, { recursive: true, force: true });
+      }
+    });
+
+    it('the recovery path (commits already landed) refuses a bad subject file before it writes the workflow', async () => {
+      const dir = await makeSandboxRepo();
+      try {
+        const wf = bootstrapWorkflow(dir, { manifest: [{ path: 'README.md', op: 'edit' }] });
+        const workflowId = wf.split('/').pop().replace(/\.md$/, '');
+        await writeFile(join(dir, 'README.md'), '# sandbox\nlanded\n');
+        execFileSync('git', ['commit', '-qam', 'docs: landed by hand', '-m', `Workflow-ID: ${workflowId}`, '--no-verify'], { cwd: dir });
+        const before = await readFile(wf, 'utf8');
+        const refused = execute(dir, wf, ['--subject-file', join(dir, 'missing.txt')]);
+        strictEqual(refused.code, 2, refused.stderr);
+        strictEqual(await readFile(wf, 'utf8'), before, 'nothing written');
+        // Control: without the bad file the same run takes the recovery path,
+        // which writes the workflow.
+        const recovered = execute(dir, wf, []);
+        strictEqual(recovered.code, 0, recovered.stderr);
+        ok(/current_phase:\s*"?commit-complete/.test(await readFile(wf, 'utf8')), 'the recovery run closes the workflow');
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
   });
 
   // -----------------------------------------------------------------------------

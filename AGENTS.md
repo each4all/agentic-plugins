@@ -297,6 +297,20 @@ ADR-0001 final note.
   whose template is in `persona-pipeline/regions/`. A pipeline change
   releases every persona whose generated files it changes, one commit per
   package; `persona-pipeline/` is exempt and rides with the first.
+
+  **Writing a runbook or skill block:** text an agent writes, or copies from
+  a peer or the user, never becomes shell source. This covers a phase note, a
+  summary, a next action, a request, a resolution, a decision and a commit
+  subject. The agent writes the text with its file-writing tool into a file
+  in a `mktemp -d` directory, and the block passes `--<name>-file <path>`. A
+  user's command arguments go through the args file instead. Fixed literals,
+  enums, values the generator escapes, and the quoted expansion of data a
+  program has already read stay inline. Nothing in such a block deletes the
+  file. A CLI gains the `-file` form in a release before any runbook passes
+  it. Do not invent a file option a tool lacks: `gh pr merge --subject` takes
+  a variable a program filled. Contract:
+  [ADR-0059](docs/adr/0059-runbook-argument-transport.md), amendments of
+  2026-09-29 and 2026-10-10.
 - `npm run mutate -- <spec>` — run a mutation spec from
   `scripts/mutation-specs/`. A green suite is not evidence that it tests
   anything; the harness breaks the tree on purpose and scores each defect

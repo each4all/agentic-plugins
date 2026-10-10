@@ -403,6 +403,10 @@ Phase 0.5 reads the args file, so a malformed file fails after that write;
 parser errors already failed at the same point before this change. Both are
 left for a follow-up.
 
+*The first of these, with the wider class it belongs to, is decided by the
+amendment of 2026-10-10 at the end of this record. The `decide` ordering is
+not, and stays open.*
+
 ## Observation 2026-09-29 — after the release
 
 Not a decision. The post-release check ran one `engineer:decide` on each host
@@ -518,3 +522,164 @@ line assigning `REPO_ROOT`, which the runtime Codex skills use and do not
 define; that predates this ADR and is not about argument transport. This is
 evidence for those two runs. An interactive Codex session was not run. The
 evidence-loop record `the-runbooks-that-run-as-written` carries both runs.
+
+## Amendment 2026-10-10 — text an agent authors reaches the CLI as a file (item (j))
+
+*Status of this amendment: Proposed. It joins the decision when the owner
+accepts it, before the change that carries it merges.*
+
+**What was found.** (j) left one case open: text the model writes into a
+runbook block. Docket item C130 found the same case at a worse site.
+`orchestrator:plan` Phase 2 assigns the Plan-verify phase note as `NOTE="…"`.
+The note's breakdown carries the peer's sentences, so a backtick or `$(…)` in
+peer text ran as a command. A peer reproduced this under bash and zsh while
+reviewing PR #918; the assignment dates from PR #53. A survey of the four
+plugins that run such blocks (orchestrator, engineer, designer, founder) found
+the class wherever a block has the agent splice text it authors, or copies
+from a peer or the user, into shell source:
+
+- double-quoted placeholders: a request, a phase note, a summary, a decision,
+  an architecture, a next action, an owner's resolution;
+- single-quoted ones: a next action, a commit subject, where an apostrophe ends
+  the literal;
+- the persona phase-note heredoc.
+
+**The rule.** Text an agent authors, or copies from a peer or the user, never
+becomes shell source. The agent writes it with its file-writing tool into a
+file in a private directory, and the block passes the file's path to a
+`--<name>-file` option, which the CLI reads itself. This stays as it is:
+
+- fixed literals and enums;
+- values the persona generator substitutes, which it escapes (ADR-0066
+  Decision 4);
+- the quoted expansion of data a program has already read: a parsed
+  `$FEATURE`, the `AGENTIC_TOPIC` the orchestrator exports, a peer's
+  `$RESPONSE`. Expansion results are not evaluated again.
+
+**Why a file, and why not a heredoc.** Decision 1's reasoning applies to the
+model's own text as it does to the user's: the file is written by a tool, so
+no shell parses it. A quoted heredoc was measured against it on 2026-10-10, in
+bash and zsh, with one payload that held a line `PHASE_NOTE` followed by a
+command. The heredoc ended at that line and ran the command, truncating the
+note. The file delivered the payload byte for byte and ran nothing. This is
+the fixed-literal delimiter the Alternatives above already rejected. The
+persona finalize blocks use it, with a written duty to rename the delimiter
+when the note holds the line. That duty retires when those blocks pass the
+note as a file, in a later change (below: it does not migrate the
+producers).
+
+**Why raw text, not Decision 2's JSON envelope.** The owner chose raw text on
+2026-10-10, the shape the orchestrator already reads: `--reason-file`
+(ADR-0062) and `consensus-task --text-file`. Decision 2 needed JSON to tell
+an empty argument from a newline. None of these fields is empty, and none
+needs a trailing newline of its own, so raw text loses nothing here. A
+multi-paragraph Markdown note is then written as itself. Nothing in it needs
+escaping, so no escape that is valid JSON but wrong can change it.
+
+**The contract.** Each receiving CLI reads `--<name>-file <path>` as follows:
+
+- At most one of `--<name>` and `--<name>-file`, and exactly one where the
+  flag is required. Both is refused by presence, an empty inline value and an
+  `=` spelling included. A `-file` flag given twice is refused, since the last
+  value would leave the first file unread. Where a parser takes each value as
+  the next argument, a glued `=` spelling of these flags is refused rather
+  than kept as an unknown flag.
+- The file is strict UTF-8, and a byte-order mark is content. A NUL byte is
+  refused.
+- Exactly one trailing LF or CRLF is removed: the file's own line end, which
+  the writing tool adds. A second newline and a lone CR are content. Nothing
+  else is trimmed.
+- An empty value, a missing or unreadable file, and `-` (standard input) are
+  refused, naming the flag.
+- Every file named is read when the CLI starts, before any path that can
+  write: a file the CLI refuses leaves the workflow, a run ledger, the index
+  and HEAD as they were. What a command checks of the text afterwards keeps
+  its old place. `settle`, for one, still refuses a blank summary for a
+  completed run only after it has brought the run's handle up to date, as it
+  does for an inline summary.
+- The CLI never deletes the file, unlike the args file: one next-action file
+  can feed both `append` and `finish-verb`. A block does not delete it either,
+  since a headless run can deny `rm` (the amendment of 2026-09-29 above). The
+  file lives in a `mktemp -d` directory under `$TMPDIR`.
+- After transport each field keeps its existing treatment: a request is
+  scrubbed to one line, `settle` collapses a summary's whitespace, a
+  resolution is trimmed, and a subject must be one line, with the
+  Conventional Commit check applied as configured (ADR-0028 P13: refused
+  under strict, a warning under lenient).
+- The inline flags stay, for programs and cross-plugin callers: the
+  orchestrator still hands the topic to engineer as `AGENTIC_TOPIC`.
+
+**The receivers.**
+
+- Persona `scripts/state.mjs`: `--original-request-file`,
+  `--next-action-file`, `--phase-note-file`, `--summary-file` and
+  `--resolution-file`, wherever the inline flag is read.
+- Persona `scripts/peer-runner.mjs settle`: `--summary-file`.
+- Engineer `scripts/phase7-commit.mjs`: `--subject-file`, and a repeated
+  `--subject-pkg-file <package>=<path>` (ADR-0028 P8).
+- Orchestrator `scripts/state.mjs`: the persona list without
+  `--resolution-file`, plus `--decision-file` and `--architecture-file`
+  (`plan-set`).
+- The persona readers live in the generated `state.mjs`, which `peer-runner`
+  and `phase7-commit` import, so no shared module was added. The
+  orchestrator carries its own reader (ADR-0010 §5).
+- Prompts already travel as files (`--prompt-file`).
+
+**The rollout is receiver-first.** On Claude Code a runbook's text can come
+from a newer checkout than the scripts it runs. On Codex, a package edit
+reaches an installed plugin through a release and its pin, or through a
+deliberate local override (AGENTS.md § Release process). A CLI older than
+its receiver does not always refuse a `-file` option it cannot read. Measured
+on 2026-10-10 against the released engineer 0.28.0 CLIs and the
+orchestrator's `state.mjs` before this change. The `state.mjs` and Phase 7
+parsers keep an unknown flag, so where the inline flag is optional the
+command succeeds without the text, exit 0. In both `state.mjs` CLIs,
+`create --original-request-file` recorded an empty request,
+`append --phase-note-file` a phase with no note, and
+`append --next-action-file` kept the previous next action. Phase 7 needs no
+subject on its recovery path and takes its own with `--suggested-subjects`,
+so there it completes and the subject file goes unread. The command fails
+only where the inline flag is required: `checkpoint-set` and `finish-verb`
+name the missing flag, and Phase 7's ordinary commit a missing subject.
+`settle` alone refuses any argument it does not know, so it fails on
+`--summary-file` even where it needs no summary. A runbook that passed a
+`-file` option before its CLI could read it would mostly lose the text
+without a sign. So the receivers are released before any runbook passes the
+option. The change carrying this amendment does three things:
+
+- it adds the receivers;
+- it converts the instructions the CLIs print themselves, so no CLI tells an
+  agent to splice text: Phase 7's plan notes and diagnostics name
+  `--suggested-subjects` for a subject used as suggested and the subject files
+  for an edited one, `autopilot-preflight`'s clear recipe names
+  `--resolution-file` and `--next-action-file`, and the start's worktree
+  fallback names `/runtime:worktree plan`, which takes the request through its
+  own args file, with no request text in the line;
+- it records this decision.
+
+**It does not migrate the producers.** Until two later changes land, the
+persona runbooks, skills and pipeline regions, and the orchestrator's, still
+splice text as this amendment found them:
+
+- the persona producers, with the persona-pipeline README's phase-note
+  section;
+- the orchestrator producers, `plan.md`'s `NOTE="…"` among them.
+
+Each change replaces a form with the file transport and adds a guard against
+its return. Neither is claimed here.
+
+**Tests.**
+
+- The receivers' suites run the file forms with hostile text, as much of it
+  as each field can hold: a backtick, `$(…)`, both quotes, a backslash, a
+  leading `--`, a line `PHASE_NOTE`, CRLF and non-ASCII text. The text
+  arrives as written and nothing in it runs.
+- The same suites check the trailing-newline rule, the BOM, and each
+  refusal: both forms, an empty, missing, non-UTF-8 or NUL-holding file, and
+  standard input. Each refusal leaves the workflow file byte for byte.
+- For `settle` and Phase 7 the refusal comes before the write each would make
+  first: a launched run's failed result, and the recovery path's
+  `beginCommit`.
+
+**Still open.** (j)'s second finding, `decide` writing its workflow before it
+reads the args file, is not decided here.
