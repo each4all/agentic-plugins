@@ -65,10 +65,27 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" autopilot-preflight \
 Empty `$ACTIVE` → bootstrap with verb=refine (single-mode — **no `--profile`**):
 
 <!-- pipeline:begin refine-bootstrap -->
-In the block, replace `<the original request described above>` with a
-one-line genericized refine target; `AGENTIC_TOPIC` takes its place when it is set.
+The request reaches `state.mjs` as a file, never in the block: in shell
+source a quote, `$`, backtick or line break of it would be read as code
+(ADR-0059, amendment of 2026-10-10). Before the block:
+
+1. Create a private directory for it, and note the path it prints:
+
+   ```bash
+   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   ```
+
+2. With your file-writing tool, not the shell, create `request.txt` in that
+   directory holding a one-line genericized refine target, ending with one newline.
+   Nothing deletes it.
+
+Then run the block with `TEXT_DIR` set to that directory; a request file left
+unwritten stops it before any write. When `AGENTIC_TOPIC` is set (a dispatched
+run), the block writes it to a file of its own and records that instead, and
+steps 1–2 are not needed.
 
 ```bash
+TEXT_DIR='<directory from step 1>'
 ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'designer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
@@ -76,12 +93,22 @@ VERB='refine'
 GIT_BRANCH="$(git branch --show-current)"
 GIT_HEAD="$(git rev-parse HEAD)"
 STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
+# The request, as a file (ADR-0059, amendment of 2026-10-10): the one the
+# agent wrote, or the AGENTIC_TOPIC a dispatcher exports, which is program data
+# the block writes to a private directory of its own, so no text flag is
+# inline and a dispatched run needs no file of the agent's.
+REQUEST_FILE="$TEXT_DIR/request.txt"
+if [ -n "${AGENTIC_TOPIC:-}" ]; then
+  REQUEST_FILE="$(mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX")/topic.txt" || exit 1
+  printf '%s\n' "$AGENTIC_TOPIC" > "$REQUEST_FILE" || exit 1
+fi
+grep -q '[^[:space:]]' "$REQUEST_FILE" 2>/dev/null || { echo "✗ request.txt in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was written." >&2; exit 1; }
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
   --repo-root "$REPO_ROOT" \
   --verb 'refine' --host "${AGENTIC_HOST:-claude}" --persona 'designer' \
   --git-baseline-branch "$GIT_BRANCH" --git-baseline-head "$GIT_HEAD" \
   --status-digest "$STATUS_DIGEST" \
-  --original-request "${AGENTIC_TOPIC:-<the original request described above>}" \
+  --original-request-file "$REQUEST_FILE" \
   --current-phase phase-0-bootstrap \
   --next-action "Run ${VERB} skill")" || exit $?
 ```
@@ -172,24 +199,44 @@ Build the Refine-verify prompt (the peer receives the **genericized** before→a
 of the changed elements — spec text and/or frontend code, or a verified-local
 screenshot path, **never image bytes** — and verifies the revision resolves the
 finding without introducing a new inconsistency or a new accessibility barrier),
-write it to a tempfile, and dispatch in the background. The privacy gate must have
-passed first. The prompt template + synthesis contract land in
+write it as the block's `prompt.xml` (the steps below), and dispatch in the
+background. The privacy gate must have passed first. The prompt template + synthesis contract land in
 `core/skills/_shared/references/ensemble-protocol.md` § Refine-verify; the
 dispatch shape mirrors the reference-scan dispatch in
 `core/skills/investigate/references/design-brief-ensemble.md`:
 
 <!-- pipeline:begin refine-dispatch -->
+The prompt reaches the runner as a file the block never builds: it carries the
+artifact and the peer's instructions, and in shell source a quote, `$`,
+backtick or line of them would be read as code (ADR-0059, amendment of
+2026-10-10). Before the block:
+
+1. Create a private directory for it, and note the path it prints:
+
+   ```bash
+   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   ```
+
+2. With your file-writing tool, not the shell, create `prompt.xml` in that
+   directory holding the prompt (where this runbook has a privacy gate above,
+   it must have passed, and the prompt carries only genericized text).
+   Nothing deletes it.
+
+Then run the block with `TEXT_DIR` set to that directory; a prompt left
+unwritten stops it before the dispatch.
+
 ```bash
+TEXT_DIR='<directory from step 1>'
 ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'designer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 ENSEMBLE_TYPE='refine-verify'
-PROMPT_FILE="$(mktemp -t 'designer'-'refine'-prompt.XXXXXX).xml"
+# The prompt the agent wrote with its file tool: the runner reads it, so no
+# line of it is shell source. A prompt left unwritten stops the block here.
+PROMPT_FILE="$TEXT_DIR/prompt.xml"
+grep -q '[^[:space:]]' "$PROMPT_FILE" 2>/dev/null || { echo "✗ prompt.xml in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was dispatched." >&2; exit 1; }
 # ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch.
 RUN_ID="${ENSEMBLE_TYPE}-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
-# ... LLM writes the prompt to $PROMPT_FILE (where this runbook has a privacy
-#     gate above, it must have passed, and the prompt carries only genericized
-#     text) ...
 # Run this block as a host background task (on Claude, the Bash tool's
 # run_in_background), never with a trailing `&`: the host tracks the runner
 # and notifies you when it exits, where a shell `&` would detach it from both.
@@ -276,22 +323,44 @@ is local-only:
 - next_command:          <exact next step: /designer:<verb> … or $designer:<verb> for a verb; the owner's save and commit for commit; none for done; the owner's decision otherwise>
 ```
 
-Then run the block with the filled-in note in place of its placeholder line,
-between the two `PHASE_NOTE` lines. The quoted heredoc hands the note to
-`state.mjs` as written: no quote, `$`, backtick or backslash in it is read by
-the shell. The first line that reads `PHASE_NOTE` alone ends the note, and
-the shell runs every line after it as a command, so when the note itself holds
-such a line, replace both `PHASE_NOTE` delimiters with a word no line of the
-note consists of.
+The note, and the two texts the block records with it, reach the scripts as
+files, never in the block: in shell source a quote, `$`, backtick or line of
+them would be read as code (ADR-0059, amendment of 2026-10-10). Before the
+block:
 
-Set `RUN_ID` to the run id the dispatch generated, empty when no run launched,
-and `VERDICT` and `SUMMARY` to the synthesis's verdict and a one-line résumé
-of its breakdown. `peer-runner.mjs settle` decides from the run ledger what the
-workflow records, not from these values alone: a run that never launched
-records nothing; a run that launched and failed, was cancelled or was
-abandoned records verdict `failed` with the ledger's `error_kind`; a run that
-completed records the synthesis verdict, or `degraded` when its answer was
-empty or unreadable. An answer that parses to nothing usable, only structural
+1. Create a private directory for them, and note the path it prints:
+
+   ```bash
+   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   ```
+
+2. With your file-writing tool, not the shell, create in that directory
+   `note.md`, the phase note above filled in; `summary.txt`, a one-line
+   résumé of its breakdown; and `next-action.txt`, the next action the
+   `append` and the last write record: the compact form of the proposal
+   (selected_next + one-line why + next_command). The typical-case default
+   is
+
+   ```text
+   <compact selected_next + why + next_command — e.g. Re-critique the revised artifact to confirm convergence (/designer:critique), or proceed to commit when converged and the gate is not FAIL>
+   ```
+
+   Write another when the verb's result selects a different next step, and
+   for an owner gate below `Owner: ` and the judgment in a few words. Each
+   file holds its text as written and ends with one newline, which the
+   scripts remove; nothing deletes the files.
+
+Then run the block with `TEXT_DIR` set to that directory, `RUN_ID` to the run
+id the dispatch generated (empty when no run launched), and `VERDICT` to the
+synthesis's verdict. A file left unwritten, blank, or not UTF-8 text stops the
+block before any write.
+
+`peer-runner.mjs settle` decides from the run ledger what the workflow
+records, not from these values alone: a run that never launched records
+nothing; a run that launched and failed, was cancelled or was abandoned
+records verdict `failed` with the ledger's `error_kind`; a run that completed
+records the synthesis verdict, or `degraded` when its answer was empty or
+unreadable. An answer that parses to nothing usable, only structural
 shell, reads to `settle` like any other, so set `VERDICT` to `degraded` then.
 It refuses, and the block stops before the last write, while a run is still
 live (collect it first) or when an empty `RUN_ID` would hide a run that
@@ -304,7 +373,8 @@ not converged. Converged, the last write is `finish-verb`. Not converged, the
 last write is an `append` that records the next step resolving the flagged
 item (`refine`, `decide` or `investigate`) and turns off a terminal marker an
 earlier verb left, so the workflow stays open and the Stop hook cannot
-archive it.
+archive it. Write `next-action.txt` for that case: the flagged item, and the
+next step that resolves it.
 
 The last write, `finish-verb`, records the proposal's next step in closed-enum
 form: `--next-step-kind` `verb` (with `--next-step-verb`), `commit` (the owner
@@ -325,26 +395,28 @@ The owner-decision form below records the gate with the next step in one
 write and leaves the workflow open, not terminal, until the owner resolves it.
 
 ```bash
+TEXT_DIR='<directory from step 1>'
 ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'designer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 # The run ledger lives under the repository root, where the dispatch put it.
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
-# Where read takes no -d (dash) it assigns nothing, so clear NOTE first: a
-# value the shell inherited must not stand in for the note.
-unset NOTE
-IFS= read -r -d '' NOTE <<'PHASE_NOTE' || true
-<the phase note above, filled in>
-PHASE_NOTE
-# A shell whose read has no -d (dash) reads nothing: stop before any write.
-[ -n "$NOTE" ] || { echo "✗ No phase note was read; nothing was written." >&2; exit 1; }
+# The texts the agent wrote with its file tool (ADR-0059, amendment of
+# 2026-10-10): each script reads its file itself, so no line of the note is
+# shell source. settle reads the summary only after the append has written,
+# so each file is first held to every reader's rule: strict UTF-8, no NUL
+# byte, and text left once blanks are trimmed (settle's rule). A file a
+# script would refuse stops the block before any write.
+for TEXT_FILE in note.md summary.txt next-action.txt; do
+  node -e 'let t;try{t=new TextDecoder("utf-8",{fatal:true}).decode(require("fs").readFileSync(process.argv[1]))}catch{process.exit(1)}process.exit(t.includes("\0")||t.trim()===""?1:0)' "$TEXT_DIR/$TEXT_FILE" || { echo "✗ $TEXT_FILE in TEXT_DIR ($TEXT_DIR) is missing, blank or not UTF-8 text; write it with the file tool first. Nothing was written." >&2; exit 1; }
+done
 
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --phase-label 'Phase 1: Refine (synthesized)' \
-  --phase-note "$NOTE" \
+  --phase-note-file "$TEXT_DIR/note.md" \
   --current-phase phase-2-presented \
-  --next-action '<compact selected_next + why + next_command — e.g. Re-critique the revised artifact to confirm convergence (/designer:critique), or proceed to commit when converged and the gate is not FAIL>' \
+  --next-action-file "$TEXT_DIR/next-action.txt" \
   --event updated || exit $?
 
 # ADR-0066 PC2b — settle the ensemble attempt from its ledger (never launched,
@@ -353,7 +425,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" settle \
   --repo-root "$REPO_ROOT" --workflow-path "$ACTIVE" \
   --host "${AGENTIC_HOST:-claude}" --phase 'refine' --run-id "$RUN_ID" \
-  --verdict "$VERDICT" --summary "$SUMMARY" || exit $?
+  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt" || exit $?
 
 # FAIL-CLOSED: shell state does not survive between Bash calls, so an unset
 # CONVERGED reads as not converged, never as success. Assign it here, from
@@ -382,7 +454,7 @@ if [ "${CONVERGED:-no}" = "yes" ]; then
   # core/skills/_shared/references/session-handoff.md § Archive timing.
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-    --next-action '<compact selected_next + why + next_command — e.g. Re-critique the revised artifact to confirm convergence (/designer:critique), or proceed to commit when converged and the gate is not FAIL>' \
+    --next-action-file "$TEXT_DIR/next-action.txt" \
     --next-step-kind verb --next-step-verb 'critique' \
     --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?
 else
@@ -391,7 +463,7 @@ else
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
     --current-phase phase-2-presented \
-    --next-action '<Paused: the flagged item, and the next step that resolves it>' \
+    --next-action-file "$TEXT_DIR/next-action.txt" \
     --next-step-kind verb --next-step-verb "<refine|decide|investigate>" \
     --next-step-confidence "<HIGH|MEDIUM|LOW>" \
     --clear-terminal-marker true --event updated || exit $?
@@ -402,7 +474,7 @@ fi
 # open until the owner resolves the gate.
 # node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
 #   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-#   --next-action '<Owner: the judgment, in a few words>' \
+#   --next-action-file "$TEXT_DIR/next-action.txt" \
 #   --next-step-kind owner-decision --next-step-confidence "<HIGH|MEDIUM|LOW>" \
 #   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' || exit $?
 ```
@@ -435,14 +507,33 @@ ported by ADR-0066 Decision 9), in either of two ways:
   gate's pointer, the latest `Recurring finding` note.
 
 Ask the owner: fix it now, or defer it. The clear records the owner's decision
-(`--resolution`, written in place of the placeholder line between the two
-`OWNER_RESOLUTION` lines) and the next step it implies in one write, so the
+(`--resolution-file`, the file below) and the next step it implies in one
+write, so the
 next step never becomes runnable without the decision behind it, and a failure
 never leaves the gate's `owner-decision` behind; the same write replaces the
 gate's next action. Inside a `/designer:start` lifecycle both blocks clear
 the gate and stop there: resume the lifecycle, which fixes the finding in its
 refine phase or continues at its terminal step, and makes its one terminal
 write.
+
+The owner's decision reaches `state.mjs` as a file, never in a block: in
+shell source a quote, `$`, backtick or line of it would be read as code
+(ADR-0059, amendment of 2026-10-10). Before either block:
+
+1. Create a private directory for it, and note the path it prints:
+
+   ```bash
+   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   ```
+
+2. With your file-writing tool, not the shell, create `resolution.txt` in
+   that directory, ending with one newline: for Fix now, `Owner decision: fix
+   the finding now` with what the owner added; for Defer, `Owner decision:
+   defer the finding` with the reason and where it is tracked. Nothing
+   deletes it.
+
+Then run the block with `TEXT_DIR` set to that directory; a resolution left
+unwritten stops it before any write.
 
 This refine closes only once it converged (`terminal_requires_convergence`),
 and deferring a finding does not make it converge. In the Defer block, set
@@ -453,13 +544,15 @@ with `commit` next and ends the verb. Not converged, it clears the gate with
 the next step that resolves what is still open (`refine`, `decide` or
 `investigate`) and makes no terminal write: the gate's write turned the
 terminal marker off, so the workflow stays open and the Stop hook cannot
-archive it.
+archive it. For that case also write `next-action.txt` beside the resolution:
+what the next step resolves, in a few words.
 
 **Fix now.** Clear the gate with this refine as the next step, then run the
 phases above on that finding, as usual (inside a `/designer:start`
 lifecycle, resume the lifecycle instead):
 
 ```bash
+TEXT_DIR='<directory from step 1>'
 ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'designer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
@@ -477,13 +570,10 @@ WF_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$A
 WF_TYPE="$(printf '%s' "$WF_JSON" \
   | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).workflow_type||"verb-chain")}catch{process.exit(1)}})')" \
   || { echo "✗ Could not read the workflow type; nothing was written." >&2; exit 1; }
-# The owner's resolution, from a quoted heredoc: no quote, $, backtick or
-# backslash in it is read by the shell. An empty read stops the block.
-unset RESOLUTION
-IFS= read -r -d '' RESOLUTION <<'OWNER_RESOLUTION' || true
-<Owner decision: fix the finding now>
-OWNER_RESOLUTION
-[ -n "$RESOLUTION" ] || { echo "✗ No resolution was read; nothing was written." >&2; exit 1; }
+# The owner's resolution, from the file the agent wrote with its file tool:
+# state.mjs reads it itself, so no line of it is shell source. A file left
+# unwritten stops the block before any write.
+grep -q '[^[:space:]]' "$TEXT_DIR/resolution.txt" 2>/dev/null || { echo "✗ resolution.txt in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was written." >&2; exit 1; }
 if [ "$WF_TYPE" = start ]; then
   NEXT_ACTION="Resume /${PERSONA}:start: its refine phase fixes the recurring finding"
 else
@@ -491,7 +581,7 @@ else
 fi
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" awaiting-owner-clear \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --gate recurring-finding \
-  --resolution "$RESOLUTION" --next-action "$NEXT_ACTION" \
+  --resolution-file "$TEXT_DIR/resolution.txt" --next-action "$NEXT_ACTION" \
   --next-step-kind verb --next-step-verb refine --next-step-confidence HIGH || exit $?
 if [ "$WF_TYPE" = start ]; then
   echo "→ Gate cleared. Resume the lifecycle with /${PERSONA}:start (\$${PERSONA}:start on Codex); its refine phase fixes the finding." >&2
@@ -504,6 +594,7 @@ owner saves and commits the artifact; designer runs no commit itself), then
 end the verb:
 
 ```bash
+TEXT_DIR='<directory from step 1>'
 ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'designer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
@@ -519,13 +610,10 @@ WF_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$A
 WF_TYPE="$(printf '%s' "$WF_JSON" \
   | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).workflow_type||"verb-chain")}catch{process.exit(1)}})')" \
   || { echo "✗ Could not read the workflow type; nothing was written." >&2; exit 1; }
-# The owner's resolution, from a quoted heredoc: no quote, $, backtick or
-# backslash in it is read by the shell. An empty read stops the block.
-unset RESOLUTION
-IFS= read -r -d '' RESOLUTION <<'OWNER_RESOLUTION' || true
-<Owner decision: defer the finding, with the reason and where it is tracked>
-OWNER_RESOLUTION
-[ -n "$RESOLUTION" ] || { echo "✗ No resolution was read; nothing was written." >&2; exit 1; }
+# The owner's resolution, from the file the agent wrote with its file tool:
+# state.mjs reads it itself, so no line of it is shell source. A file left
+# unwritten stops the block before any write.
+grep -q '[^[:space:]]' "$TEXT_DIR/resolution.txt" 2>/dev/null || { echo "✗ resolution.txt in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was written." >&2; exit 1; }
 if [ "$WF_TYPE" = start ]; then
   NEXT_ACTION="Resume /${PERSONA}:start: the finding is deferred, and the lifecycle continues at its terminal step"
 else
@@ -538,7 +626,7 @@ CONVERGED="<yes|no — from the re-critique verdict with the finding deferred; u
 if [ "${CONVERGED:-no}" = "yes" ]; then
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" awaiting-owner-clear \
     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --gate recurring-finding \
-    --resolution "$RESOLUTION" --next-action "$NEXT_ACTION" \
+    --resolution-file "$TEXT_DIR/resolution.txt" --next-action "$NEXT_ACTION" \
     --next-step-kind commit --next-step-confidence HIGH || exit $?
   if [ "$WF_TYPE" = start ]; then
     echo "→ Gate cleared. Resume the lifecycle with /${PERSONA}:start (\$${PERSONA}:start on Codex); it continues at its terminal step." >&2
@@ -557,10 +645,12 @@ if [ "${CONVERGED:-no}" = "yes" ]; then
     --next-step-kind commit --next-step-confidence HIGH || exit $?
 else
   # Not converged: the gate is cleared with the next step that resolves what
-  # is still open, and no terminal write is made.
+  # is still open, and no terminal write is made. Its action is a file the
+  # agent wrote too; one left unwritten stops the block before the clear.
+  grep -q '[^[:space:]]' "$TEXT_DIR/next-action.txt" 2>/dev/null || { echo "✗ next-action.txt in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was written." >&2; exit 1; }
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" awaiting-owner-clear \
     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --gate recurring-finding \
-    --resolution "$RESOLUTION" --next-action "<what the next step resolves, in a few words>" \
+    --resolution-file "$TEXT_DIR/resolution.txt" --next-action-file "$TEXT_DIR/next-action.txt" \
     --next-step-kind verb --next-step-verb "<refine|decide|investigate>" \
     --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?
   echo "→ PAUSED (not converged): the gate is cleared and the workflow stays open, not terminal. Run the next step recorded above (inside a /${PERSONA}:start lifecycle, resume it with /${PERSONA}:start)." >&2

@@ -117,9 +117,11 @@ Anti-pattern (explicitly forbidden): **static lifecycle table** —
 ending a verb with a hardcoded "next: X" instead of reasoning about the
 best next action given the current result and state.
 
-The durable `state.mjs --next-action` write SHOULD carry the compact
-form (selected_next + one-line rationale + next_command); the fuller
-proposal (alternatives + evidence + confidence) belongs in the
+The durable next-action write SHOULD carry the compact form
+(selected_next + one-line rationale + next_command), as a file
+(`state.mjs --next-action-file`, written with the file-writing tool,
+never spliced into the command: ADR-0059, amendment of 2026-10-10); the
+fuller proposal (alternatives + evidence + confidence) belongs in the
 completion output and the phase note.
 
 **Closed-enum projection: `next_step` (ADR-0063 D6, amending ADR-0029
@@ -175,15 +177,19 @@ the session handoff names the gate's resolving surface as the next action.
 | gate | set when | heading · anchor | resolved by |
 |---|---|---|---|
 | `decide-conflict` | `/designer:decide` leaves the decision to the owner: a CONFLICT remained (recorded with its run id) or a veto gate is unresolved | `Ensemble synthesis` · `ensemble-synthesis` | the owner's selection in `/designer:decide` (its Owner selection step clears the gate) |
-| `peer-conflict` | `/designer:critique` or `/designer:investigate`: the synthesis verdict is `conflict` (recorded with its run id) | `Ensemble synthesis` · `ensemble-synthesis` | the owner rules on the contested items, then `awaiting-owner-clear --gate peer-conflict --resolution "<the ruling>"` with the next step |
+| `peer-conflict` | `/designer:critique` or `/designer:investigate`: the synthesis verdict is `conflict` (recorded with its run id) | `Ensemble synthesis` · `ensemble-synthesis` | the owner rules on the contested items, then `awaiting-owner-clear --gate peer-conflict --resolution-file <the ruling's file>` with the next step |
 | `recurring-finding` | `/designer:refine`: a finding an earlier refine pass on this workflow already addressed survives verification again | `Recurring finding` · `recurring-finding` | the owner's fix-now-or-defer in `/designer:refine` (its Owner decision step clears the gate) |
 | `scope-routing` | a verb concludes the request does not belong in this verb or workflow (another route in the Routing Recommendation fits) | `Routing recommendation` · `routing-recommendation` | the owner picks the route, then `awaiting-owner-clear` with the next step |
 
-`state.mjs awaiting-owner-clear --gate <gate> --resolution "<the decision>"
---next-step-kind … --next-step-confidence … [--next-step-verb …] --next-action
-"<what comes next>"` records the owner's decision, clears the gate, names the
-next step and replaces the gate's `Owner: …` next action in one write; it
-refuses, writing nothing, when the gate set on the workflow is another one.
+`state.mjs awaiting-owner-clear --gate <gate> --resolution-file <the decision's
+file> --next-step-kind … --next-step-confidence … [--next-step-verb …]
+--next-action-file <the next action's file>` records the owner's decision,
+clears the gate, names the next step and replaces the gate's `Owner: …` next
+action in one write; it refuses, writing nothing, when the gate set on the
+workflow is another one. The decision and the next action are text: each
+reaches `state.mjs` as a file written with the file-writing tool into a
+private `mktemp -d` directory, never on the command line (ADR-0059,
+amendment of 2026-10-10).
 Inside a `/designer:start` lifecycle, decide's Owner selection records no
 next step instead (`--clear-next-step true`): the lifecycle owns its phase
 order.

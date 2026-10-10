@@ -227,8 +227,8 @@ Launch the peer ensemble (always-max policy; never ask the user, never direct
 them to run companion CLIs manually). The peer receives the **genericized**
 artifact — spec text and/or frontend code, or a verified-local screenshot path,
 **never image bytes** — and returns an independent code/text critique across the
-lenses. Build the Review prompt, write it to a tempfile, and dispatch in the
-background. The prompt template + synthesis contract land in
+lenses. Build the Review prompt, write it with the file-writing tool into a private directory (`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`) as `prompt.xml`, never through the shell (ADR-0059, amendment of 2026-10-10), and dispatch it with
+`--prompt-file` in the background. The prompt template + synthesis contract land in
 `../_shared/references/ensemble-protocol.md` § Review; the dispatch shape
 mirrors the reference-scan dispatch in
 `../investigate/references/design-brief-ensemble.md` (command-managed via
