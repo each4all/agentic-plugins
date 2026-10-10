@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.8.0...plugin-designer-v0.8.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* **plugin/designer:** read agent-written text from a file in state and settle (--&lt;name&gt;-file, ADR-0059 amendment j) ([4e91847](https://github.com/each4all/agentic-plugins/commit/4e91847afb04e55d932da98a8e251534bf398de9))
+
 ## [0.8.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.7.0...plugin-designer-v0.8.0) (2026-10-10)
 
 
