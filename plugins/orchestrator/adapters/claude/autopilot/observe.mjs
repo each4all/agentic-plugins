@@ -93,6 +93,29 @@ function progressEvents(history) {
   return Array.isArray(history) ? history.filter((h) => h && h.event && h.event !== 'snapshot').length : 0;
 }
 
+// ADR-0067 Decision 8 — what a conflict gate's consensus proposal is judged
+// from: the run id the gate records, the runs ensemble_results holds with the
+// verdict conflict, and whether the task file for that run exists in the home
+// the record was found in (a stat; its content is never read). Only a live
+// record (in a home's workflows/) has one; the policy checks every part again.
+const CONSENSUS_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+function consensusFacts(fm, file, roots) {
+  const runId = typeof fm.awaiting_owner_run_id === 'string' ? fm.awaiting_owner_run_id : null;
+  const conflictRuns = Array.isArray(fm.ensemble_results)
+    ? fm.ensemble_results.filter((e) => e?.verdict === 'conflict' && typeof e?.run_id === 'string').map((e) => e.run_id)
+    : [];
+  const dir = path.dirname(file);
+  let task = null;
+  if (path.basename(dir) === 'workflows' && runId !== null && CONSENSUS_NAME_RE.test(runId)
+    && typeof fm.workflow_id === 'string' && CONSENSUS_NAME_RE.test(fm.workflow_id)) {
+    const p = path.join(path.dirname(dir), 'consensus', `${fm.workflow_id}.${runId}.md`);
+    let exists = false;
+    try { exists = fs.statSync(p).isFile(); } catch { exists = false; }
+    task = { path: p, relPath: relTo(roots, p), exists };
+  }
+  return { run_id: runId, conflict_runs: conflictRuns, task };
+}
+
 function summarizeChild(fm, location, file, roots) {
   return {
     location,
@@ -108,6 +131,7 @@ function summarizeChild(fm, location, file, roots) {
     awaiting_owner: fm.awaiting_owner_gate
       ? { gate: fm.awaiting_owner_gate, pointer: fm.awaiting_owner_pointer ?? null, since: fm.awaiting_owner_since ?? null }
       : null,
+    consensus: consensusFacts(fm, file, roots),
     workflow_type: fm.workflow_type ?? 'verb-chain',
     parent_detached: fm.parent_detached === true,
     pending_ensemble: Array.isArray(fm.pending_ensemble) ? fm.pending_ensemble.length : 0,
@@ -335,7 +359,10 @@ export function observe({ repoRoot, roots, macroId = null, fetch = true, env = p
     fm = r.fm;
   }
   const id = fm.workflow_id ?? path.basename(located.file, '.md');
-  view.macro = { id, path: located.file, relPath: relTo(stateRoots.scan, located.file), archived: located.archived, fm };
+  view.macro = {
+    id, path: located.file, relPath: relTo(stateRoots.scan, located.file), archived: located.archived, fm,
+    consensus: consensusFacts(fm, located.file, stateRoots.scan),
+  };
 
   // next-ready reads an archived file too: the approval facts decide whether
   // an archived macro counts as completed (a plan edited during the last step).

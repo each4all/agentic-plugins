@@ -61,6 +61,9 @@ the steps stay manual**, and the host-neutral state it reads (`next_step_*`,
 - **Halts** print the reason and its pointer, write
   `.agentic-plugins/runs/autopilot/<run-id>/halt.json` and exit 2;
   `--notify-local` adds one local macOS notification. There is no plugin notification.
+  A halt on a conflict gate carries `proposals[]`: the bounded consensus round
+  (`/runtime:consensus plan --task-file <file> --peers claude,codex --max-rounds 2`)
+  proposed before the owner decides, display only (ADR-0067 Decision 8).
 - **Locks, stop and peers.** A run holds its macro's lock, under the main worktree, and
   the lock of each checkout it drives. A worker group in flight may have an entry of its
   own in the macro lock (ADR-0067 Decision 6), so a driver that died while any group runs

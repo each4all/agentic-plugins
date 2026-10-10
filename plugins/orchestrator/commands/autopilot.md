@@ -20,7 +20,11 @@ approved, an owner gate, a next step below HIGH confidence, a subtask waiting
 for its pull request to merge (`awaiting-landing`), a step that changed
 nothing. A halt prints the reason, writes `halt.json` in the run's ledger
 (`.agentic-plugins/runs/autopilot/<run-id>/`) and exits 2; there is no plugin
-notification (`--notify-local` adds one local macOS notification).
+notification (`--notify-local` adds one local macOS notification). A halt on
+a conflict gate (`decide-conflict`, `peer-conflict`, or `plan-conflict` under
+`plan-unapproved`) carries its proposal in `halt.json`'s `proposals`: the
+bounded consensus round to run before the owner decides, with its task file
+(ADR-0067 Decision 8). The driver never runs it.
 
 The driver never pushes, opens or merges a pull request. Landing is the
 owner's. Once a subtask is committed, the run reports it and goes on with any

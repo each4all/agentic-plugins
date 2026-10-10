@@ -42,7 +42,7 @@ import { resolveRoots } from './roots.mjs';
 import { observe } from './observe.mjs';
 import { INTERRUPT_BOUND_MS } from './offloop.mjs';
 import {
-  decide, decideLanes, fingerprint, forcedForLanes, isSafeSubtaskId, MODEL_PLANS, parseForcedStep, renderStep,
+  decide, decideLanes, fingerprint, forcedForLanes, isSafeSubtaskId, MODEL_PLANS, parseForcedStep, proposalLines as haltProposalLines, proposalsOnce, renderStep,
 } from './policy.mjs';
 import { terminateGroup } from './worker.mjs';
 
@@ -257,7 +257,9 @@ const previewCommand = (step, macroId) => (step.kind === 'done-no-commit'
  * start conditions lanes add, the reconciliation plan from the facts as they
  * are (no fetch, no write: a prepared lane is judged against the last fetched
  * baseline), and the first wave decideLanes gives, up to N steps, each with
- * the lane it runs in.
+ * the lane it runs in. `proposals` holds those of every halt decideLanes
+ * gives, once each (ADR-0067 Decision 8, item 5): each lane's halt drains the
+ * run, and the run reports every lane's.
  */
 export function previewLanes(o, repoRoot, view, pre, env = process.env) {
   const n = o.lanes;
@@ -265,7 +267,7 @@ export function previewLanes(o, repoRoot, view, pre, env = process.env) {
   const problems = macroId
     ? lanesRequirements({ checkout: repoRoot, stateRoot: pre.stateRoot, macroPath: view.macro.path, view })
     : [`a run with lanes needs its macro${view.macroLookupError ? ` (${view.macroLookupError})` : ''}: name it with --macro <id>`];
-  const result = { n, problems, plan: null, first_wave: [], halt: null, idle: null };
+  const result = { n, problems, plan: null, first_wave: [], halt: null, idle: null, proposals: [] };
   const home = laneHome(repoRoot);
   if (home.problem || !macroId || view.macro.archived) return result;
   let facts;
@@ -294,6 +296,7 @@ export function previewLanes(o, repoRoot, view, pre, env = process.env) {
   const d = decideLanes(view, { lanes: held, forced });
   if (d.outcome === 'halt') {
     result.halt ??= d;
+    result.proposals = d.proposals ?? [];
     return result;
   }
   if (d.outcome === 'completed') return result;
@@ -316,6 +319,7 @@ export function previewLanes(o, repoRoot, view, pre, env = process.env) {
   }
   if (d.laneHalts.length > 0) result.halt ??= d.laneHalts[0];
   if (result.first_wave.length === 0) result.idle = d.idle;
+  result.proposals = proposalsOnce([...d.laneHalts, ...(result.idle ? [result.idle] : [])].flatMap((h) => h.proposals ?? []));
   return result;
 }
 
@@ -341,6 +345,7 @@ function printLanesPreview(lp, out) {
   }
   if (lp.halt) out(`  would halt: ${lp.halt.reason} — ${lp.halt.detail}`);
   else if (lp.idle) out(`  would halt: ${lp.idle.reason} — ${lp.idle.detail}`);
+  for (const line of haltProposalLines(lp.proposals)) out(line);
 }
 
 async function previewCmd(o, repoRoot, env, out) {
@@ -366,10 +371,14 @@ async function previewCmd(o, repoRoot, env, out) {
     view: view ? summarizeView(view) : null,
     decision: decision ? { ...decision, command } : null,
     lanes: lanesPreview,
+    // ADR-0067 Decision 8, item 5 — display only: what the would-be halt's
+    // owner is proposed to run before deciding (with lanes, every lane's).
+    proposals: decision?.proposals ?? lanesPreview?.proposals ?? [],
     posture: p,
     launcher_install: pre.roots?.roots?.orchestrator ? launcherInstall(pre.roots.roots) : null,
-    proposals: reportEntries(proposals),
   };
+  // Item 4's launch proposals join item 5's list beside the halt's.
+  report.proposals = [...report.proposals, ...reportEntries(proposals)];
   if (o.json) {
     out(JSON.stringify(report, null, 2));
   } else {
@@ -397,6 +406,7 @@ async function previewCmd(o, repoRoot, env, out) {
         out(`  · ${w.subtaskId} on ${w.branch} (${w.reason})`);
         for (const c of w.commands) out(`      ${c}`);
       }
+      for (const line of haltProposalLines(decision.proposals)) out(line);
     }
     if (lanesPreview) printLanesPreview(lanesPreview, out);
     out(`posture: --permission-mode manual · --permission-prompts none · model plan ${p.model_plan ?? '(asked at start)'}${p.model_override.model || p.model_override.effort ? ` · override ${p.model_override.model ?? '-'}/${p.model_override.effort ?? '-'}` : ''}`);

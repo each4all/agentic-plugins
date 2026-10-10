@@ -300,6 +300,18 @@ export const VALID_MACRO_OWNER_GATES = new Set(['plan-approval', 'plan-conflict'
 // refuses a leading `/` and any `..`. Same form as the engineer's pointer.
 const AWAITING_OWNER_POINTER_RE = /^[A-Za-z0-9._/-]+#[A-Za-z0-9._/-]+$/;
 const AWAITING_OWNER_KEYS = ['awaiting_owner_gate', 'awaiting_owner_since', 'awaiting_owner_pointer'];
+// ADR-0067 Decision 8 — plan-conflict records the run id of the Plan-verify
+// synthesis that set it, `awaiting_owner_run_id`, which binds the macro's
+// consensus task file to its gate. Optional, outside the all-or-none triple:
+// plan-approval, and a plan-conflict raised by hand, carry none.
+const AWAITING_OWNER_RUN_ID = 'awaiting_owner_run_id';
+// A run id as the gate records it and a task file's name carries it: no `.`,
+// so a live name never equals a retired `<id>.<run>.resolved.md` one.
+const CONSENSUS_RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+export function isSafeConsensusRunId(runId) {
+  return typeof runId === 'string' && CONSENSUS_RUN_ID_RE.test(runId);
+}
+const CONSENSUS_WORKFLOW_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 // sha256, lowercase hex — what computePlanHash returns.
 const PLAN_HASH_RE = /^[0-9a-f]{64}$/;
 // The subtask fields the plan hash covers: SUBTASK_KEYS minus the ones that
@@ -470,6 +482,8 @@ const STATE_HOMES = Object.freeze({
     archiveDirRel: ARCHIVE_DIR_REL,
     creationLockRel: CREATION_LOCK_REL,
     peerRunsDirRel: `${STATE_DIR_REL}/peer-runs`,
+    // ADR-0067 Decision 8 — the consensus task files of a plan-conflict.
+    consensusDirRel: `${STATE_DIR_REL}/consensus`,
   },
   legacy: {
     home: 'legacy',
@@ -478,6 +492,7 @@ const STATE_HOMES = Object.freeze({
     archiveDirRel: LEGACY_ARCHIVE_DIR_REL,
     creationLockRel: LEGACY_CREATION_LOCK_REL,
     peerRunsDirRel: `${LEGACY_STATE_DIR_REL}/peer-runs`,
+    consensusDirRel: `${LEGACY_STATE_DIR_REL}/consensus`,
   },
 });
 
@@ -501,6 +516,7 @@ function statePaths(repoRoot, home = 'canonical') {
     archive: join(repoRoot, spec.archiveDirRel),
     creationLock: join(repoRoot, spec.creationLockRel),
     peerRuns: join(repoRoot, spec.peerRunsDirRel),
+    consensus: join(repoRoot, spec.consensusDirRel),
   };
 }
 
@@ -1508,6 +1524,10 @@ const FRONTMATTER_KEY_ORDER = [
   'awaiting_owner_gate',
   'awaiting_owner_since',
   'awaiting_owner_pointer',
+  // ADR-0067 Decision 8 — the run id plan-conflict records. Last, for the
+  // same carrier reason: a reader that does not know it re-emits it after
+  // every key it knows, in place.
+  'awaiting_owner_run_id',
 ];
 
 // ADR-0028 §Forward-compat (PR5 #356 ported from engineer) — invisible
@@ -2243,6 +2263,17 @@ function validateSchema12Fields(fm) {
     validateEnumScalar('awaiting_owner_gate', fm.awaiting_owner_gate, VALID_MACRO_OWNER_GATES);
     validateIsoUtc('awaiting_owner_since', fm.awaiting_owner_since);
     validateAwaitingOwnerPointer(fm.awaiting_owner_pointer);
+  }
+  // ADR-0067 Decision 8 — only the run id's form is a read error. That it
+  // sits with plan-conflict is a writer's rule and decides whether the task
+  // file is current: a pre-CP script carries the key through its
+  // forward-compat carrier while it re-sets or clears the gate, and such a
+  // file must still read.
+  if (AWAITING_OWNER_RUN_ID in fm && !isSafeConsensusRunId(fm[AWAITING_OWNER_RUN_ID])) {
+    throw new Error(
+      'awaiting_owner_run_id must be a run id of [A-Za-z0-9_-] starting with a letter or digit, ' +
+        `at most 128 characters (got ${JSON.stringify(fm[AWAITING_OWNER_RUN_ID])}) (ADR-0067 Decision 8)`,
+    );
   }
 
   const pending = fm.plan_approval_status === 'pending';
@@ -3324,6 +3355,9 @@ export async function setPlan({
   // moment at which a disputed plan is approvable. Optional: a plan written
   // without a verdict opens plan-approval.
   verdict,
+  // ADR-0067 Decision 8 — with the verdict conflict, the run id of the
+  // Plan-verify synthesis, which the plan-conflict gate records.
+  runId,
 }) {
   validateHost(host);
   validateHookEvent(event);
@@ -3334,6 +3368,14 @@ export async function setPlan({
     throw new Error(
       `setPlan: verdict must be one of ${[...PLAN_VERIFY_VERDICTS].join(', ')} (got ${JSON.stringify(verdict)})`,
     );
+  }
+  if (runId !== undefined) {
+    if (verdict !== 'conflict') {
+      throw new Error('setPlan: a run id goes with the verdict conflict, which plan-conflict records it with (ADR-0067 Decision 8)');
+    }
+    if (!isSafeConsensusRunId(runId)) {
+      throw new Error(`setPlan: ${JSON.stringify(runId)} is not a run id of [A-Za-z0-9_-] (ADR-0067 Decision 8)`);
+    }
   }
   if (typeof correct !== 'boolean') {
     throw new Error('setPlan: correct must be a boolean');
@@ -3414,8 +3456,17 @@ export async function setPlan({
     // verified again, and its own verdict decides which gate it opens.
     const conflict = verdict === 'conflict';
     const approvalNote = describeApprovalReset(frontmatter, { conflict });
-    resetPlanApproval(frontmatter, workflowPath, nowIso, { conflict });
+    resetPlanApproval(frontmatter, workflowPath, nowIso, { conflict, runId });
     validateSchema12Fields(frontmatter);
+    // ADR-0067 Decision 8 — a re-plan replaces the gate without a clear, so
+    // every task file of the macro is retired before the write, once the new
+    // plan has passed every check: the previous plan's proposal is never
+    // current beside the new one. A write that fails after this leaves the
+    // previous gate with no current proposal, never a stale one.
+    const retired = [];
+    for (const old of await liveConsensusRuns(workflowPath, frontmatter.workflow_id)) {
+      retired.push(await retireConsensusTask(workflowPath, frontmatter.workflow_id, old, { lockPath, token }));
+    }
 
     const noteHeading = `### plan-set @ ${nowIso}\n\n`;
     const noteSummary =
@@ -3434,7 +3485,11 @@ export async function setPlan({
       assembleWorkflowFile(frontmatter, newBody),
       { lockPath, token },
     );
-    return { frontmatter, workflowPath, promoted, allTerminal };
+    return {
+      frontmatter, workflowPath, promoted, allTerminal,
+      retiredConsensus: retired.map((r) => r.retired).filter(Boolean),
+      warnings: retired.map((r) => r.warning).filter(Boolean),
+    };
   });
 }
 
@@ -3463,24 +3518,185 @@ function macroPointer(workflowPath, anchor) {
   return `${STATE_HOMES[home].workflowDirRel}/${basename(workflowPath)}#${anchor}`;
 }
 
-function setMacroGate(frontmatter, gate, { since, pointer }) {
+// ADR-0067 Decision 8 — every write that sets a gate sets the run id or
+// deletes it; it returns the run id it replaced, whose task file the caller
+// retires once the write has landed.
+function setMacroGate(frontmatter, gate, { since, pointer, runId }) {
+  const replaced = frontmatter[AWAITING_OWNER_RUN_ID];
   frontmatter.awaiting_owner_gate = gate;
   frontmatter.awaiting_owner_since = since;
   frontmatter.awaiting_owner_pointer = pointer;
+  if (runId === undefined) delete frontmatter[AWAITING_OWNER_RUN_ID];
+  else frontmatter[AWAITING_OWNER_RUN_ID] = runId;
+  return replaced !== undefined && replaced !== runId ? replaced : null;
 }
 
 function clearMacroGate(frontmatter) {
   for (const k of AWAITING_OWNER_KEYS) delete frontmatter[k];
+  delete frontmatter[AWAITING_OWNER_RUN_ID];
 }
 
-function resetPlanApproval(frontmatter, workflowPath, nowIso, { conflict = false } = {}) {
+function resetPlanApproval(frontmatter, workflowPath, nowIso, { conflict = false, runId } = {}) {
   frontmatter.plan_approval_status = 'pending';
   delete frontmatter.plan_approval_approved_at;
   delete frontmatter.plan_approval_plan_hash;
-  setMacroGate(frontmatter, conflict ? 'plan-conflict' : 'plan-approval', {
+  return setMacroGate(frontmatter, conflict ? 'plan-conflict' : 'plan-approval', {
     since: nowIso,
     pointer: macroPointer(workflowPath, conflict ? ENSEMBLE_SYNTHESIS_ANCHOR : MACRO_PLAN_ANCHOR),
+    runId: conflict ? runId : undefined,
   });
+}
+
+// -----------------------------------------------------------------------------
+// ADR-0067 Decision 8 — the macro's consensus task file
+//
+// A Plan-verify verdict of conflict sets plan-conflict with the run id of that
+// synthesis, and the plan runbook writes the contested items to
+// `<home>/consensus/<macro-id>.<run-id>.md`, in the macro's own home, where
+// `runtime:consensus plan --task-file` reads them. The file is current only
+// while plan-conflict names the run, ensemble_results holds the run with the
+// verdict conflict, and the file exists. Every way the gate leaves retires the
+// file (renamed `<macro-id>.<run-id>.resolved.md`, kept as evidence); plan-set
+// retires every task file of the macro before it writes. Nothing here runs the
+// consensus round: the owner does.
+
+function consensusTaskPaths(workflowPath, workflowId, runId) {
+  if (!isSafeConsensusRunId(runId) || typeof workflowId !== 'string' || !CONSENSUS_WORKFLOW_ID_RE.test(workflowId)) {
+    return null;
+  }
+  const storage = workflowStorage(workflowPath);
+  if (!storage) return null;
+  const { consensus, consensusDirRel } = statePaths(storage.stateRoot, storage.home);
+  const name = `${workflowId}.${runId}`;
+  if (dirname(join(consensus, `${name}.md`)) !== consensus) return null;
+  return {
+    dir: consensus,
+    file: join(consensus, `${name}.md`),
+    resolved: join(consensus, `${name}.resolved.md`),
+    pointer: `${consensusDirRel}/${name}.md`,
+  };
+}
+
+// Whether the macro's lock still holds this writer's token, read again just
+// before a task file is moved, as atomicWrite does before its commit: a writer
+// whose lock was reclaimed as stale never retires a file the new owner made
+// current.
+async function holdsLock({ lockPath, token }) {
+  return (await readFile(lockPath, 'utf8').catch(() => null)) === token;
+}
+
+// Rename a task file to its `.resolved.md` name, holding the macro's lock
+// (`ownership`, as withFileLock gives it). Absent is nothing to retire; a lost
+// lock or any other failure is a warning, since a file whose run the gate no
+// longer names is not current, whatever its name.
+export async function retireConsensusTask(workflowPath, workflowId, runId, ownership) {
+  const paths = consensusTaskPaths(workflowPath, workflowId, runId);
+  if (!paths) return { retired: null, warning: null };
+  if (!(await holdsLock(ownership))) {
+    return {
+      retired: null,
+      warning: `the consensus task file ${paths.file} was not retired: another writer reclaimed the lock on the macro`,
+    };
+  }
+  try {
+    await rename(paths.file, paths.resolved);
+    return { retired: paths.resolved, warning: null };
+  } catch (err) {
+    if (err.code === 'ENOENT') return { retired: null, warning: null };
+    return {
+      retired: null,
+      warning: `the consensus task file ${paths.file} could not be retired (${err.code ?? err.message}); its gate no longer names run ${runId}, so it is not current`,
+    };
+  }
+}
+
+// Every live task file of a macro, by run id: `<macro-id>.<run-id>.md`, not
+// the retired `.resolved.md` ones. The run-id alphabet has no `.`, so a name
+// splits one way only.
+async function liveConsensusRuns(workflowPath, workflowId) {
+  const storage = workflowStorage(workflowPath);
+  if (!storage || typeof workflowId !== 'string' || !CONSENSUS_WORKFLOW_ID_RE.test(workflowId)) return [];
+  let names;
+  try {
+    names = await readdir(statePaths(storage.stateRoot, storage.home).consensus);
+  } catch (err) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
+  }
+  const prefix = `${workflowId}.`;
+  return names
+    .filter((n) => n.startsWith(prefix) && n.endsWith('.md') && !n.endsWith('.resolved.md'))
+    .map((n) => n.slice(prefix.length, -'.md'.length))
+    .filter(isSafeConsensusRunId)
+    .sort();
+}
+
+const consensusPathWord = (text) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(text) ? text : `'${text.replace(/'/g, `'\\''`)}'`);
+// The bounded round ADR-0067 Decision 8 proposes, with the task file's
+// absolute path (consensus.mjs resolves a relative one against its cwd).
+function consensusCommand(taskFile, host) {
+  return `${host === 'codex' ? '$' : '/'}runtime:consensus plan --task-file ${consensusPathWord(taskFile)} --peers claude,codex --max-rounds 2`;
+}
+
+/**
+ * ADR-0067 Decision 8 — write the contested items of a Plan-verify conflict as
+ * the macro's consensus task file for that run, and return the round it
+ * proposes. Under the macro's lock, the run must be recorded in
+ * ensemble_results with the verdict conflict (ensemble-commit came first).
+ */
+export async function writeConsensusTask(args) {
+  ensureNotArchived(args.workflowPath, 'consensus-task');
+  return withFileLock(args.workflowPath, (ownership) => writeConsensusTaskUnderLock(args, ownership));
+}
+
+// writeConsensusTask's body, for a caller already holding the macro's lock:
+// the file is published with atomicWrite and the lock's token, so a writer
+// whose lock was reclaimed never overwrites the new owner's task file.
+export async function writeConsensusTaskUnderLock({ workflowPath, runId, text, host = 'claude' }, ownership) {
+  validateHost(host);
+  if (!isSafeConsensusRunId(runId)) {
+    throw new Error(`consensus-task: ${JSON.stringify(runId)} is not a run id (ADR-0067 Decision 8)`);
+  }
+  if (typeof text !== 'string' || text.trim().length === 0) {
+    throw new Error('consensus-task: the contested items are empty');
+  }
+  const { frontmatter } = parseWorkflowFile(await readFile(workflowPath, 'utf8'));
+  const result = (frontmatter.ensemble_results ?? []).find((e) => e?.run_id === runId);
+  if (!result) {
+    throw new Error(`consensus-task: run ${runId} has no ensemble result on this macro; commit it first (ensemble-commit) (ADR-0067 Decision 8)`);
+  }
+  if (result.verdict !== 'conflict') {
+    throw new Error(
+      `consensus-task: run ${runId} is recorded with verdict ${JSON.stringify(result.verdict)}, not conflict; only a conflict is put to a consensus round (ADR-0067 Decision 8)`,
+    );
+  }
+  const paths = consensusTaskPaths(workflowPath, frontmatter.workflow_id, runId);
+  if (!paths) throw new Error(`consensus-task: ${JSON.stringify(workflowPath)} is not a macro file under an orchestrator state home`);
+  await ensureDir(paths.dir, 0o700);
+  await atomicWrite(paths.file, `${scrubSecrets(text).trim()}\n`, ownership);
+  return { path: paths.file, pointer: paths.pointer, runId, command: consensusCommand(paths.file, host) };
+}
+
+/**
+ * ADR-0067 Decision 8 — the macro's consensus proposal, read-only: current
+ * only while plan-conflict names a run, ensemble_results holds that run with
+ * the verdict conflict, and its task file exists.
+ */
+export async function consensusProposal({ workflowPath, host = 'claude' }) {
+  validateHost(host);
+  const { frontmatter } = parseWorkflowFile(await readFile(workflowPath, 'utf8'));
+  const gate = frontmatter.awaiting_owner_gate ?? null;
+  const runId = frontmatter[AWAITING_OWNER_RUN_ID] ?? null;
+  const not = (reason) => ({ current: false, reason, gate, run_id: runId });
+  if (gate !== 'plan-conflict') return not(gate === null ? 'no owner gate is set' : `the owner gate ${gate} is not plan-conflict`);
+  if (runId === null) return not('the plan-conflict gate records no run id (raised by hand, or set before ADR-0067)');
+  const result = (frontmatter.ensemble_results ?? []).find((e) => e?.run_id === runId);
+  if (!result) return not(`run ${runId} has no ensemble result on this macro`);
+  if (result.verdict !== 'conflict') return not(`run ${runId} is recorded with verdict ${result.verdict}`);
+  const paths = consensusTaskPaths(workflowPath, frontmatter.workflow_id, runId);
+  if (!paths) return not('the macro file is under no state home');
+  if (!(await pathStat(paths.file))) return not(`the task file ${paths.pointer} does not exist`);
+  return { current: true, gate, run_id: runId, task_file: paths.file, pointer: paths.pointer, command: consensusCommand(paths.file, host) };
 }
 
 // The plan-set note's approval line, from the state before the reset.
@@ -3552,7 +3768,9 @@ export async function setAwaitingOwner({
       );
     }
     const nowIso = isoUtc(now);
-    setMacroGate(frontmatter, gate, {
+    // A gate set here records no run id (ADR-0067 Decision 8): the key is
+    // deleted, and the task file of the run it named is retired.
+    const replacedRunId = setMacroGate(frontmatter, gate, {
       since: fields.awaiting_owner_since,
       pointer: fields.awaiting_owner_pointer,
     });
@@ -3567,7 +3785,10 @@ export async function setAwaitingOwner({
       assembleWorkflowFile(frontmatter, body),
       { lockPath, token },
     );
-    return { frontmatter, workflowPath };
+    const retired = replacedRunId === null
+      ? { retired: null, warning: null }
+      : await retireConsensusTask(workflowPath, frontmatter.workflow_id, replacedRunId, { lockPath, token });
+    return { frontmatter, workflowPath, retired };
   });
 }
 
@@ -3607,11 +3828,14 @@ export async function clearAwaitingOwner({
       );
     }
     const nowIso = isoUtc(now);
+    const runId = frontmatter[AWAITING_OWNER_RUN_ID];
     const note =
       `### Owner gate resolved: ${gate} at ${nowIso}\n\n` +
       `Cleared awaiting_owner (since ${frontmatter.awaiting_owner_since}, ` +
-      `pointer ${frontmatter.awaiting_owner_pointer}). ` +
+      `pointer ${frontmatter.awaiting_owner_pointer}${runId !== undefined ? `, run ${runId}` : ''}). ` +
       'The plan is still pending approval (awaiting_owner_gate=plan-approval).\n\n';
+    // ADR-0067 Decision 8 — the run id goes with plan-conflict, and its task
+    // file is retired once this write has landed.
     setMacroGate(frontmatter, 'plan-approval', {
       since: nowIso,
       pointer: macroPointer(workflowPath, MACRO_PLAN_ANCHOR),
@@ -3627,7 +3851,10 @@ export async function clearAwaitingOwner({
       assembleWorkflowFile(frontmatter, `${body}${note}`),
       { lockPath, token },
     );
-    return { frontmatter, workflowPath };
+    const retired = runId === undefined
+      ? { retired: null, warning: null }
+      : await retireConsensusTask(workflowPath, frontmatter.workflow_id, runId, { lockPath, token });
+    return { frontmatter, workflowPath, retired };
   });
 }
 
@@ -5264,7 +5491,19 @@ function cliPrintHelp() {
       '    ADR-0063 D6 — the owner resolves plan-conflict; the plan returns to the',
       '    plan-approval gate and a phase note records the resolution. Exit 1 when',
       '    the gate named is not the one set, for plan-approval (approve instead),',
-      '    and when AGENTIC_AUTOPILOT names an autopilot run.',
+      '    and when AGENTIC_AUTOPILOT names an autopilot run. The run id goes with',
+      '    plan-conflict, and its task file is retired (ADR-0067 Decision 8).',
+      '',
+      '  consensus-task --workflow-path <path> --run-id <run id> [--host claude|codex]',
+      '                 (--text <contested items> | --text-file <path>)',
+      '    ADR-0067 Decision 8 — write the contested items of a Plan-verify conflict',
+      '    as <home>/consensus/<macro id>.<run id>.md and print the runtime:consensus',
+      '    command the proposal selects, with its absolute path. Exit 1 unless',
+      '    ensemble_results holds the run with the verdict conflict.',
+      '',
+      '  consensus-proposal --workflow-path <path> [--host claude|codex]',
+      '    Read-only. Whether plan-conflict has a current task file, and the command',
+      '    it proposes, as JSON {current, gate, run_id, task_file?, pointer?, command? | reason}.',
       '',
       '  subtask-engineer-terminal --workflow-path <path> --host claude|codex --subtask-id <id>',
       '                            --engineer-workflow-id <id> --branch-commit <sha>',
@@ -5352,7 +5591,7 @@ function cliPrintHelp() {
       '  plan-set --workflow-path <path> --host claude|codex',
       '           --subtasks-json-file <path>',
       '           [--decision <text>] [--architecture <text>]',
-      '           [--event updated|resumed] [--verdict pass|concerns|conflict]',
+      '           [--event updated|resumed] [--verdict pass|concerns|conflict [--run-id <run id>]]',
       '           [--correct (--reason-file <path> | --reason <text>)]',
       '    ADR-0018 §sub-1 + ADR-0019 §2 — atomic write of plan.{decision?, architecture?, subtasks[]}.',
       '    ADR-0062: refused on a terminal macro; runs the unblock pass; never',
@@ -5363,6 +5602,9 @@ function cliPrintHelp() {
       '    revoking an earlier approval. --verdict pass|concerns|conflict is the',
       '    plan\'s Plan-verify verdict: conflict opens awaiting_owner_gate=plan-conflict',
       '    in the same write; otherwise (or without --verdict) plan-approval.',
+      '    ADR-0067 Decision 8: --run-id (with --verdict conflict) is the Plan-verify',
+      '    run plan-conflict records; every live consensus task file of the macro is',
+      '    retired (renamed <id>.<run>.resolved.md) before the write.',
       '    --subtasks-json-file points at a UTF-8 JSON file whose top-level value',
       '    is the subtasks array. Schema 1.1 subtask shape:',
       '      {id, verb, branch, blocked_by[], status,                      (REQUIRED)',
@@ -5878,25 +6120,52 @@ async function cliRun(subcommand, flags) {
       // setAwaitingOwner / clearAwaitingOwner for the transitions allowed.
       case 'awaiting-owner-set': {
         cliRequire(flags, ['workflow-path', 'host', 'gate', 'pointer']);
-        await setAwaitingOwner({
+        const set = await setAwaitingOwner({
           workflowPath: flags['workflow-path'],
           host: flags.host,
           gate: flags.gate,
           pointer: flags.pointer,
           since: flags.since,
         });
+        if (set.retired.warning) process.stderr.write(`warning: ${set.retired.warning}\n`);
         process.stdout.write(`${flags['workflow-path']}\n`);
         return 0;
       }
 
       case 'awaiting-owner-clear': {
         cliRequire(flags, ['workflow-path', 'host', 'gate']);
-        await clearAwaitingOwner({
+        const cleared = await clearAwaitingOwner({
           workflowPath: flags['workflow-path'],
           host: flags.host,
           gate: flags.gate,
         });
+        if (cleared.retired.warning) process.stderr.write(`warning: ${cleared.retired.warning}\n`);
         process.stdout.write(`${flags['workflow-path']}\n`);
+        return 0;
+      }
+
+      // ADR-0067 Decision 8 — the macro's consensus task file, once the
+      // Plan-verify conflict is committed; it prints the round it proposes.
+      case 'consensus-task': {
+        cliRequire(flags, ['workflow-path', 'run-id']);
+        if (('text' in flags) === ('text-file' in flags)) {
+          throw new Error('consensus-task takes the contested items as --text <items> or --text-file <path>, one of them');
+        }
+        const written = await writeConsensusTask({
+          workflowPath: flags['workflow-path'],
+          runId: flags['run-id'],
+          text: 'text' in flags ? flags.text : await readFile(flags['text-file'], 'utf8'),
+          host: flags.host ?? 'claude',
+        });
+        process.stdout.write(`${written.command}\n`);
+        return 0;
+      }
+
+      // Read-only: whether plan-conflict has a current task file (JSON).
+      case 'consensus-proposal': {
+        cliRequire(flags, ['workflow-path']);
+        const proposal = await consensusProposal({ workflowPath: flags['workflow-path'], host: flags.host ?? 'claude' });
+        process.stdout.write(`${JSON.stringify(proposal)}\n`);
         return 0;
       }
 
@@ -6155,9 +6424,12 @@ async function cliRun(subcommand, flags) {
           correct: cliPresenceFlag(flags, 'correct'),
           reason: await cliReasonFlag(flags),
           verdict: flags.verdict,
+          // An empty --run-id is none: the runbook passes one on every verdict.
+          runId: flags['run-id'] === '' ? undefined : flags['run-id'],
         });
         // stdout stays the workflow path (the runbooks read it); the
         // advisory goes to stderr.
+        for (const w of planResult.warnings) process.stderr.write(`warning: ${w}\n`);
         if (planResult.allTerminal) {
           process.stderr.write(
             'plan-set: every subtask in the revised plan is terminal. setPlan does not close ' +

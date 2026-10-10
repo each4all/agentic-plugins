@@ -62,7 +62,8 @@ import { holdLane, laneHome, lanePath, reconcileLanes, stepPlacement } from './l
 import { appendStep, LockHeldError, processFingerprint, workerStreamPath, writeRun } from './ledger.mjs';
 import { createTaskRunner, offLoop as defaultOffLoop } from './offloop.mjs';
 import {
-  checkoutProblem, decideLanes, fingerprint, forcedForLanes, laneFingerprint, modelFor, renderStep, STEP_KINDS, verifyStep,
+  checkoutProblem, consensusProposals, decideLanes, fingerprint, forcedForLanes, laneFingerprint, modelFor,
+  proposalsAtEnd, renderStep, STEP_KINDS, verifyStep,
 } from './policy.mjs';
 import { driftOf, PLUGINS, resolveRoots } from './roots.mjs';
 import {
@@ -243,7 +244,10 @@ export async function runLanes(c) {
   const halted = (h) => {
     const hh = asHalt(h);
     halts.push(hh);
-    if (hh.subtaskId) lane(hh.subtaskId).halt = { reason: hh.reason, detail: hh.detail };
+    if (hh.subtaskId) {
+      lane(hh.subtaskId).halt = { reason: hh.reason, detail: hh.detail };
+      if (hh.proposals?.length) lane(hh.subtaskId).proposals = hh.proposals;
+    }
     if (!draining) {
       draining = hh;
       run.status = 'draining';
@@ -546,6 +550,14 @@ export async function runLanes(c) {
       halted({ ...verdict, subtaskId: verdict.subtaskId ?? id });
       return;
     }
+    // ADR-0067 Decision 8 — a step that ended on its conflict gate passed;
+    // the next look halts the lane on it, but a drain takes no next look, so
+    // the lane keeps the proposal now, and the run's end judges it again.
+    const ownerGate = id ? after.children?.[id]?.awaiting_owner?.gate : null;
+    if (ownerGate) {
+      const proposals = consensusProposals(after, { outcome: 'halt', reason: `awaiting-owner:${ownerGate}`, subtaskId: id });
+      if (proposals.length) lane(id).proposals = proposals;
+    }
     // An interrupted run keeps its lanes (Decision 6): the next one removes it.
     if (DONE_KINDS.has(s.kind) && lanes.has(id) && !c.interrupted()) await retire(id);
   }
@@ -662,6 +674,14 @@ export async function runLanes(c) {
     run.lanes = { n: N, lanes: lanesSummary() };
     run.rate_limit = throttleSnapshot(throttle, nowSec);
     if (d && halts.length > 1) d = { ...d, also: halts.filter((h) => h !== d).map((h) => ({ reason: h.reason, detail: h.detail, subtask_id: h.subtaskId ?? null })) };
+    // ADR-0067 Decision 8, items 1 and 5 — every proposal the run met, its
+    // lanes' included, once each, in the halt record and its report, each
+    // naming its subtask and gate. A proposal is printed only while its task
+    // file is current, and a gate may be cleared, or its file retired, while
+    // the run drains or goes on to complete: what the run met is judged again
+    // from one look (no fetch) as it ends, halted or not, and what that look
+    // cannot confirm is dropped.
+    d = await proposalsAtEnd(() => look(repoRoot, false), d, [...report.values()]);
     return c.finish(status, d, { lanes: run.lanes.lanes, rateLimit: throttleText(throttle, nowSec) });
   }
 
