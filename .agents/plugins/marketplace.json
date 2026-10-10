@@ -41,8 +41,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/designer",
-        "ref": "plugin-designer-v0.8.1",
-        "sha": "ca6df25459b61bc839d275710d4c78edc6cd6b06"
+        "ref": "plugin-designer-v0.8.2",
+        "sha": "10b7680a11e55c03d4474f19aaad0c63dc05489b"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -56,8 +56,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/engineer",
-        "ref": "plugin-engineer-v0.28.1",
-        "sha": "ca6df25459b61bc839d275710d4c78edc6cd6b06"
+        "ref": "plugin-engineer-v0.28.2",
+        "sha": "10b7680a11e55c03d4474f19aaad0c63dc05489b"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -71,8 +71,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/founder",
-        "ref": "plugin-founder-v0.9.1",
-        "sha": "ca6df25459b61bc839d275710d4c78edc6cd6b06"
+        "ref": "plugin-founder-v0.9.2",
+        "sha": "10b7680a11e55c03d4474f19aaad0c63dc05489b"
       },
       "policy": {
         "installation": "AVAILABLE",
