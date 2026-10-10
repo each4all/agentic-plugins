@@ -33,6 +33,7 @@ const WORKER = `${AP}/worker.mjs`;
 const LOCKS = 'plugins/orchestrator/scripts/lib/run-locks.mjs';
 const OBSERVE = `${AP}/observe.mjs`;
 const DRIVER = `${AP}/driver.mjs`;
+const BUDGET = `${AP}/budget.mjs`;
 const CLI = `${AP}/cli.mjs`;
 
 export const TESTS = [TP, TW, TL, TO, TD, TC];
@@ -83,8 +84,8 @@ export const MUTATIONS = [
   },
   {
     id: 'P8', file: POLICY, tests: [TP],
-    from: '      if (waitingOn.length) return nope(',
-    to: '      if (false) return nope(',
+    from: '\n      if (waitingOn.length) return nope(',
+    to: '\n      if (false) return nope(',
     why: '--next dispatches a subtask whose predecessors have not landed',
   },
   {
@@ -157,8 +158,8 @@ export const MUTATIONS = [
   },
   {
     id: 'V4', file: POLICY, tests: [TP, TD],
-    from: '  if (fingerprint(before) === fingerprint(after)) {',
-    to: '  if (false) {',
+    from: '    : fingerprint(before) === fingerprint(after);',
+    to: '    : false;',
     why: 'a step that changed nothing runs again and again',
   },
 
@@ -402,9 +403,9 @@ export const MUTATIONS = [
     why: 'a second run drives a macro a live run holds',
   },
   {
-    id: 'D4', file: DRIVER, tests: [TD],
-    from: '      const cost = w.costUsd ?? stepBudgetUsd;',
-    to: '      const cost = w.costUsd ?? 0;',
+    id: 'D4', file: BUDGET, tests: [TD],
+    from: '      const charged = reported ? costUsd : reservation.usd;',
+    to: '      const charged = reported ? costUsd : 0;',
     why: 'a killed step costs nothing, so the run cap is never reached',
   },
   {

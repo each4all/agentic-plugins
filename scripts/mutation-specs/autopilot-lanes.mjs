@@ -379,10 +379,10 @@ export const MUTATIONS = [
   },
   {
     id: 'D4', file: DEAD, tests: [TDR],
-    from: '      if (s.seq <= steps) continue;',
+    from: '      if (accounted ? accounted.has(s.seq) : s.seq <= steps) continue;',
     to: '',
     why: 'a second cleaner meeting the record counts the step again',
-    killed_by: [/cancels only the peers that name the dead run/, /counts what run\.json missed/],
+    killed_by: [/cancels only the peers that name the dead run/, /counts what run\.json missed/, /settles each step once by its seq/],
   },
   {
     id: 'D5', file: DEAD, tests: [TDR],
@@ -400,8 +400,8 @@ export const MUTATIONS = [
   },
   {
     id: 'D7', file: DEAD, tests: [TDR],
-    from: "    if (complete && run.status === 'running') {",
-    to: "    if (run.status === 'running') {",
+    from: "    if (complete && (run.status === 'running' || run.status === 'draining')) {",
+    to: "    if (run.status === 'running' || run.status === 'draining') {",
     why: 'a run is reported stopped before its cleanup finished',
     killed_by: /keeps one whose peer could not be cancelled/,
   },
@@ -456,15 +456,15 @@ export const MUTATIONS = [
   },
   {
     id: 'D15', file: DRIVER, tests: [TD],
-    from: '    if (!lingering) {\n      try {\n        removeOpenRun(mainRoot, runId);',
+    from: '    if (!lingering && !keepRecord) {\n      try {\n        removeOpenRun(mainRoot, runId);',
     to: '    if (false) {\n      try {\n        removeOpenRun(mainRoot, runId);',
     why: 'a run that ended leaves its record, and every later run and stop judges it again',
     killed_by: /dispatch → commit → awaiting-landing/,
   },
   {
     id: 'D16', file: DRIVER, tests: [TD],
-    from: '    if (!lingering) {\n      try {\n        removeOpenRun(mainRoot, runId);',
-    to: '    if (true) {\n      try {\n        removeOpenRun(mainRoot, runId);',
+    from: '    if (!lingering && !keepRecord) {\n      try {\n        removeOpenRun(mainRoot, runId);',
+    to: '    if (!keepRecord) {\n      try {\n        removeOpenRun(mainRoot, runId);',
     why: 'a run whose group outlived SIGKILL removes its record while that group runs',
     killed_by: /halts the run, which keeps its lock entries until the group is empty/,
   },

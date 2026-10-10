@@ -549,6 +549,185 @@ describe('verifyStep', () => {
   });
 });
 
+describe('lanes — ADR-0067 Decision 6', () => {
+  const { decideLanes, laneFingerprint, forcedForLanes, checkoutProblem } = P;
+  const approved = { status: 'approved', hash_ok: true };
+  // A and B independent, C waits on both.
+  const three = (a = 'pending', b = 'pending', extra = {}) => [
+    sub('A', a, a === 'in_progress' ? { engineer_workflow_id: ENG_A } : {}),
+    sub('B', b, b === 'in_progress' ? { engineer_workflow_id: ENG_B } : {}),
+    sub('C', 'blocked', { blocked_by: ['A', 'B'] }),
+    ...(extra.more ?? []),
+  ];
+  const lanesView = (over = {}) => view({ ready: { ready: null, reason: 'in_progress_or_blocked', readiness: [], approval: approved }, ...over });
+  const childB = (over = {}) => child(ENG_B, { branch: 'feat/b', originating_subtask: 'B', ...over });
+  const childA = (over = {}) => child(ENG_A, { branch: 'feat/a', ...over });
+
+  describe('laneFingerprint', () => {
+    const base = () => lanesView({ subtasks: three('in_progress', 'in_progress'), children: { A: childA(), B: childB() }, git: { branch: 'feat/a', head: 'a1' } });
+    it('another lane\'s progress, and the macro\'s own bookkeeping, leave a lane\'s fingerprint as it was', () => {
+      const before = base();
+      const after = lanesView({
+        subtasks: three('in_progress', 'in_progress'), git: { branch: 'feat/a', head: 'a1' },
+        children: { A: childA(), B: childB({ progress: 9, next_step: { kind: 'commit', verb: null, confidence: 'HIGH' } }) },
+        fm: { host_history: [{ event: 'updated' }] },
+      });
+      strictEqual(laneFingerprint(before, 'A'), laneFingerprint(after, 'A'));
+      ok(fingerprint(before) !== fingerprint(after), 'the run-wide fingerprint moves');
+    });
+    it('its own git, child and subtask fields move it', () => {
+      const before = base();
+      ok(laneFingerprint(before, 'A') !== laneFingerprint(lanesView({ subtasks: three('in_progress', 'in_progress'), children: { A: childA(), B: childB() }, git: { branch: 'feat/a', head: 'a2' } }), 'A'), 'HEAD');
+      ok(laneFingerprint(before, 'A') !== laneFingerprint(lanesView({ subtasks: three('in_progress', 'in_progress'), children: { A: childA({ progress: 4 }), B: childB() }, git: { branch: 'feat/a', head: 'a1' } }), 'A'), 'child');
+      const committed = three('in_progress', 'in_progress');
+      committed[0].commit = 'c0ffee';
+      ok(laneFingerprint(before, 'A') !== laneFingerprint(lanesView({ subtasks: committed, children: { A: childA(), B: childB() }, git: { branch: 'feat/a', head: 'a1' } }), 'A'), 'subtask commit');
+    });
+    it('verifyStep judges a lane step by its lane: another lane\'s progress during it is no progress', () => {
+      const before = base();
+      const after = lanesView({ subtasks: three('in_progress', 'in_progress'), children: { A: childA(), B: childB({ progress: 9 }) }, git: { branch: 'feat/a', head: 'a1' } });
+      const report = { outcome: 'completed', workflow: ENG_A, next_step: { kind: 'verb', verb: 'critique', confidence: 'HIGH' }, awaiting_owner: null, summary: 's' };
+      const worker = { exitCode: 0, lastResult: { is_error: false }, report, denials: [], peakPct: 0.1 };
+      strictEqual(verifyStep({ step: { kind: 'verb', verb: 'critique', subtaskId: 'A', lane: true }, worker, before, after, oversizePct: 0.25 })?.reason, 'no-progress');
+      strictEqual(verifyStep({ step: { kind: 'verb', verb: 'critique', subtaskId: 'A' }, worker, before, after, oversizePct: 0.25 }), null, 'a serial step keeps the run-wide fingerprint');
+    });
+    it('a lane step that reports an owner gate only another lane\'s child records is not taken at its word', () => {
+      const before = base();
+      const after = lanesView({
+        subtasks: three('in_progress', 'in_progress'), git: { branch: 'feat/a', head: 'a1' },
+        children: { A: childA({ next_step: { kind: 'owner-decision', verb: null, confidence: 'HIGH' }, progress: 4 }), B: childB({ awaiting_owner: { gate: 'scope-routing' } }) },
+      });
+      const report = { outcome: 'needs_owner', workflow: ENG_A, next_step: { kind: 'owner-decision', verb: null, confidence: 'HIGH' }, awaiting_owner: 'scope-routing', summary: 's' };
+      const worker = { exitCode: 0, lastResult: { is_error: false }, report, denials: [], peakPct: 0.1 };
+      const d = verifyStep({ step: { kind: 'verb', verb: 'critique', subtaskId: 'A', lane: true }, worker, before, after, oversizePct: 0.25 });
+      strictEqual(d?.reason, 'owner-choice');
+      ok(/records no owner gate/.test(d.detail), d.detail);
+      strictEqual(verifyStep({ step: { kind: 'verb', verb: 'critique', subtaskId: 'A' }, worker, before, after, oversizePct: 0.25 }), null, 'a serial step reads every gate, as before');
+    });
+  });
+
+  describe('decideLanes', () => {
+    it('two independent ready subtasks are two new lanes, in plan order; their successor waits', () => {
+      const d = decideLanes(lanesView({ subtasks: three() }));
+      strictEqual(d.outcome, 'lanes');
+      deepStrictEqual(d.laneSteps.map((s) => [s.kind, s.subtaskId, s.newLane, s.needsLane]), [['dispatch', 'A', true, true], ['dispatch', 'B', true, true]]);
+      deepStrictEqual(d.laneHalts, []);
+      strictEqual(d.driverStep, null);
+    });
+
+    it('more than one active child is allowed, each a step in its own lane', () => {
+      const lanes = new Map([['A', { branch: 'feat/a', path: '/l/A' }], ['B', { branch: 'feat/b', path: '/l/B' }]]);
+      const d = decideLanes(lanesView({ subtasks: three('in_progress', 'in_progress'), children: { A: childA(), B: childB({ next_step: { kind: 'commit', verb: null, confidence: 'HIGH' } }) } }), { lanes, started: new Set(['A']) });
+      deepStrictEqual(d.laneSteps.map((s) => [s.kind, s.subtaskId, s.newLane, s.needsLane]), [['verb', 'A', false, false], ['commit', 'B', true, false]]);
+      strictEqual(decide(lanesView({ subtasks: three('in_progress', 'in_progress'), children: { A: childA(), B: childB() } })).outcome, 'halt', 'a serial run keeps its single-child rule');
+    });
+
+    it('a subtask with a step in flight is left alone: a pending subtask claimed by its new child is not a claim problem then', () => {
+      const claimed = lanesView({ subtasks: three(), claims: [{ id: ENG_A, path: '/x', relPath: 'x', originating_subtask: 'A', branch: 'feat/a' }] });
+      strictEqual(decideLanes(claimed).outcome, 'halt', 'between steps it halts');
+      const d = decideLanes(claimed, { inFlight: new Set(['A']) });
+      strictEqual(d.outcome, 'lanes');
+      deepStrictEqual(d.laneSteps.map((s) => s.subtaskId), ['B']);
+    });
+
+    it('a pending peer ensemble or a commit phase in a lane with a step in flight is not judged until the step ends', () => {
+      const v = lanesView({ subtasks: three('in_progress', 'pending'), children: { A: childA({ pending_ensemble: 1, pending_runs: ['r1'] }) } });
+      ok(decideLanes(v).laneHalts.some((h) => /peer ensemble is still pending/.test(h.detail)));
+      deepStrictEqual(decideLanes(v, { inFlight: new Set(['A']) }).laneHalts, []);
+    });
+
+    it('a landed subtask\'s done runs in the driver\'s checkout beside the lanes, one at a time', () => {
+      const v = lanesView({
+        subtasks: three('in_progress', 'in_progress'),
+        children: { A: childA({ location: 'archived', current_phase: 'commit-complete', terminal_marker: true }), B: childB() },
+        claims: [{ id: ENG_B, path: childB().path, relPath: childB().relPath, originating_subtask: 'B', branch: 'feat/b' }],
+        landing: { A: { ok: true } },
+      });
+      const d = decideLanes(v, { lanes: new Map([['B', { branch: 'feat/b', path: '/l/B' }]]) });
+      deepStrictEqual(d.driverStep, { kind: 'done', subtaskId: 'A' });
+      deepStrictEqual(d.laneSteps.map((s) => s.subtaskId), ['B']);
+      strictEqual(decideLanes(v, { driverBusy: true }).driverStep, null);
+    });
+
+    it('a lane waiting to land holds no capacity: an independent subtask still gets a lane, and the successor waits for the landing', () => {
+      const v = lanesView({
+        subtasks: three('in_progress', 'pending'),
+        children: { A: childA({ location: 'archived', current_phase: 'commit-complete', terminal_marker: true }) },
+        claims: [],
+        landing: { A: { ok: false, reason: 'no_pr', detail: '' } },
+      });
+      const d = decideLanes(v);
+      deepStrictEqual(d.laneSteps.map((s) => [s.kind, s.subtaskId]), [['dispatch', 'B']]);
+      deepStrictEqual(d.waiting.map((w) => w.subtaskId), ['A']);
+      strictEqual(d.idle.reason, 'awaiting-landing');
+      ok(!d.laneSteps.some((s) => s.subtaskId === 'C'), 'C waits on A, which has not landed');
+    });
+
+    it('approval, macro gates and the terminal marker stay run-wide', () => {
+      strictEqual(decideLanes(lanesView({ subtasks: three(), ready: { ready: null, reason: 'x', approval: { status: 'approved', hash_ok: false } } })).reason, 'plan-unapproved');
+      strictEqual(decideLanes(lanesView({ subtasks: three(), fm: { awaiting_owner_gate: 'plan-approval' } })).reason, 'awaiting-owner:plan-approval');
+      strictEqual(decideLanes(lanesView({ subtasks: three(), fm: { terminal_marker: true } })).reason, 'owner-choice');
+    });
+
+    it('the macro\'s terminal marker is judged once no done or finalize is in flight: the last done writes it before its Stop hook archives the macro', () => {
+      const v = lanesView({
+        subtasks: [sub('A', 'completed'), sub('B', 'completed')],
+        ready: { ready: null, reason: 'all_terminal', readiness: [], approval: approved },
+        fm: { terminal_marker: true },
+      });
+      strictEqual(decideLanes(v).reason, 'owner-choice');
+      const d = decideLanes(v, { driverBusy: true, inFlight: new Set(['B']) });
+      deepStrictEqual([d.outcome, d.driverStep, d.laneSteps, d.laneHalts], ['lanes', null, [], []]);
+    });
+
+    it('a forced step replaces only its own lane\'s judgment halt, and starts first; another lane\'s judgment halt stands', () => {
+      const v = lanesView({
+        subtasks: three('in_progress', 'in_progress'),
+        children: { A: childA({ next_step: { kind: 'verb', verb: 'refine', confidence: 'MEDIUM' } }), B: childB({ next_step: { kind: 'verb', verb: 'critique', confidence: 'LOW' } }) },
+      });
+      const { forced } = forcedForLanes([{ lane: 'B', step: { kind: 'verb', verb: 'refine' } }], v);
+      const d = decideLanes(v, { forced });
+      deepStrictEqual(d.laneSteps.map((s) => [s.subtaskId, s.kind, s.verb, s.forced === true]), [['B', 'verb', 'refine', true]]);
+      deepStrictEqual(d.laneHalts.map((h) => [h.reason, h.subtaskId]), [['low-confidence', 'A']]);
+    });
+
+    it('finalize waits until nothing is in flight', () => {
+      const v = lanesView({ subtasks: [sub('A', 'completed'), sub('B', 'completed')], ready: { ready: null, reason: 'all_terminal', approval: approved } });
+      deepStrictEqual(decideLanes(v).driverStep, { kind: 'finalize' });
+      strictEqual(decideLanes(v, { inFlight: new Set(['B']) }).driverStep, null);
+    });
+  });
+
+  describe('forcedForLanes', () => {
+    const twoActive = () => lanesView({ subtasks: three('in_progress', 'in_progress'), children: { A: childA(), B: childB() } });
+    it('with more than one active child, --next needs --lane', () => {
+      ok(/--lane <subtask-id>/.test(forcedForLanes([{ lane: null, step: { kind: 'commit' } }], twoActive()).halt.detail));
+      deepStrictEqual([...forcedForLanes([{ lane: 'A', step: { kind: 'commit' } }], twoActive()).forced.keys()], ['A']);
+    });
+    it('is judged on the targeted lane alone: a verb needs that lane\'s child active, a dispatch none on that subtask', () => {
+      ok(/no active engineer workflow/.test(forcedForLanes([{ lane: 'C', step: { kind: 'verb', verb: 'critique' } }], twoActive()).halt.detail));
+      ok(/still has an active/.test(forcedForLanes([{ lane: 'A', step: { kind: 'dispatch', subtaskId: null } }], twoActive()).halt.detail));
+      const oneActive = lanesView({ subtasks: three('in_progress', 'pending'), children: { A: childA() } });
+      deepStrictEqual(forcedForLanes([{ lane: 'B', step: { kind: 'dispatch', subtaskId: null } }], oneActive).forced.get('B'), { kind: 'dispatch', subtaskId: 'B', verb: 'compose' });
+      ok(/C is blocked, not pending/.test(forcedForLanes([{ lane: 'C', step: { kind: 'dispatch', subtaskId: null } }], oneActive).halt.detail));
+      const pendingC = lanesView({ subtasks: [...three('in_progress', 'pending').slice(0, 2), sub('C', 'pending', { blocked_by: ['A', 'B'] })], children: { A: childA() } });
+      ok(/waits on A, B/.test(forcedForLanes([{ lane: 'C', step: { kind: 'dispatch', subtaskId: null } }], pendingC).halt.detail));
+    });
+    it('one pair per lane', () => {
+      ok(/more than one --next/.test(forcedForLanes([{ lane: 'A', step: { kind: 'commit' } }, { lane: 'A', step: { kind: 'verb', verb: 'refine' } }], twoActive()).halt.detail));
+    });
+  });
+
+  describe('checkoutProblem', () => {
+    it('reads the checkout a step runs in: its brief, its HEAD and a foreign workflow there', () => {
+      strictEqual(checkoutProblem(view()), null);
+      ok(/HEAD is detached in \/r/.test(checkoutProblem(view({ git: { detached: true, branch: '' } })).detail));
+      ok(/indeterminate/.test(checkoutProblem(view({ brief: { disposition: 'indeterminate' } })).detail));
+      ok(/does not belong/.test(checkoutProblem(view({ foreign: { id: ENG_B, detail: 'other', path: '/x' } })).detail));
+    });
+  });
+});
+
 describe('the closed reason set', () => {
   it('every D4 halt reason but the driver\'s budget is produced by the policy above', () => {
     const expected = HALT_REASONS.filter((r) => r !== 'budget');

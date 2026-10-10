@@ -18,7 +18,7 @@
 // tests/plugin-shape/test-autopilot-enum-parity.mjs holds the copies equal.
 
 import { createHash } from 'node:crypto';
-import { VALID_MACRO_OWNER_GATES } from '../../../scripts/state.mjs';
+import { subtaskReadiness, VALID_MACRO_OWNER_GATES } from '../../../scripts/state.mjs';
 
 export const VERBS = Object.freeze(['investigate', 'frame', 'decide', 'compose', 'critique', 'refine']);
 export const NEXT_STEP_KINDS = Object.freeze(['verb', 'commit', 'owner-decision', 'done']);
@@ -188,6 +188,32 @@ function progressEvents(history) {
   return Array.isArray(history) ? history.filter((h) => h && h.event && h.event !== 'snapshot').length : 0;
 }
 
+// The fields of an engineer child a step is meant to move.
+function childTuple(id, c) {
+  return [id, c.location, c.workflow_id ?? null, c.current_phase ?? null, c.terminal_marker === true,
+    c.next_step ? [c.next_step.kind, c.next_step.verb ?? null, c.next_step.confidence] : null,
+    c.awaiting_owner?.gate ?? null, c.pending_ensemble ?? 0, c.ensemble_results ?? 0,
+    c.commit_manifest ?? 0, c.progress ?? 0];
+}
+
+/**
+ * ADR-0067 Decision 6 — the per-lane fingerprint: the lane's git (branch,
+ * HEAD, porcelain; `view.git` is the lane's), its engineer child, and only its
+ * own subtask's fields (status, engineer_workflow_id, commit, pr_url,
+ * closed_at). Another lane's progress, and the macro's own bookkeeping, never
+ * satisfy this lane's no-progress check. Steps outside a lane keep
+ * `fingerprint`.
+ */
+export function laneFingerprint(view, subtaskId) {
+  const s = (view?.macro?.fm?.plan?.subtasks ?? []).find((x) => x?.id === subtaskId) ?? null;
+  const c = view?.children?.[subtaskId] ?? null;
+  return createHash('sha256').update(JSON.stringify({
+    git: [view?.git?.branch ?? null, view?.git?.head ?? null, view?.git?.porcelain ?? null],
+    subtask: s ? [s.id, s.status ?? null, s.engineer_workflow_id ?? null, s.commit ?? null, s.pr_url ?? null, s.closed_at ?? null] : null,
+    child: c ? childTuple(subtaskId, c) : null,
+  })).digest('hex');
+}
+
 /**
  * The semantic state the no-progress rule compares. Stop hooks snapshot every
  * turn end, so raw bytes and `updated_at` change without progress; only the
@@ -210,13 +236,7 @@ export function fingerprint(view) {
       events: progressEvents(m.fm?.host_history),
     }
     : null;
-  const children = Object.keys(view?.children ?? {}).sort().map((id) => {
-    const c = view.children[id];
-    return [id, c.location, c.workflow_id ?? null, c.current_phase ?? null, c.terminal_marker === true,
-      c.next_step ? [c.next_step.kind, c.next_step.verb ?? null, c.next_step.confidence] : null,
-      c.awaiting_owner?.gate ?? null, c.pending_ensemble ?? 0, c.ensemble_results ?? 0,
-      c.commit_manifest ?? 0, c.progress ?? 0];
-  });
+  const children = Object.keys(view?.children ?? {}).sort().map((id) => childTuple(id, view.children[id]));
   return createHash('sha256').update(JSON.stringify({
     git: [view?.git?.branch ?? null, view?.git?.head ?? null, view?.git?.porcelain ?? null],
     macro,
@@ -598,6 +618,205 @@ function finishForced(t, view) {
 }
 
 // ---------------------------------------------------------------------------
+// Lanes (ADR-0067 Decision 6)
+
+/**
+ * The checks that read a checkout, run on the checkout a step runs in: the
+ * entry-brief guard, the detached-HEAD halt and the foreign-workflow check.
+ * With lanes, a lane's view before each of its steps, and the driver's
+ * checkout's before each done or finalize, which run there. A halt, or null.
+ */
+export function checkoutProblem(view) {
+  const guard = briefGuard(view);
+  if (guard) return halt('owner-choice', `${view.repoRoot ? `${view.repoRoot}: ` : ''}${guard}`);
+  if (view.git?.detached || !view.git?.branch) return halt('owner-choice', `HEAD is detached${view.repoRoot ? ` in ${view.repoRoot}` : ''}; switch to a branch`);
+  if (view.foreign) {
+    return halt('owner-choice', `the engineer workflow active on ${view.git.branch} (${view.foreign.id}) does not belong to this macro's run (${view.foreign.detail})`, { pointer: view.foreign.relPath ?? view.foreign.path });
+  }
+  return null;
+}
+
+const activeChildren = (view, subtasks) => subtasks
+  .filter((s) => s?.status === 'in_progress' && view.children?.[s.id]?.location === 'active')
+  .map((s) => s.id);
+
+/**
+ * `--next` with lanes (Forced resume): each pair `{lane, step}` — `lane` the
+ * subtask id `--lane` named, or null — is judged on its lane alone. A verb or
+ * the commit needs that lane's child active; a dispatch needs no active child
+ * on that subtask, which is pending with every predecessor completed. With
+ * more than one active child, a pair without `--lane` is refused. Returns
+ * { forced: Map<subtaskId, step> } or { halt }.
+ */
+export function forcedForLanes(pairs, view) {
+  const subtasks = subtasksOf(view);
+  const active = activeChildren(view, subtasks);
+  const forced = new Map();
+  const nope = (why) => ({ halt: halt('owner-choice', `--next does not apply: ${why}`) });
+  for (const p of pairs ?? []) {
+    const f = p?.step;
+    let id = p?.lane ?? null;
+    if (id === null) {
+      if (active.length > 1) return nope(`${active.length} engineer workflows are active (${active.join(', ')}); name the lane with --lane <subtask-id>`);
+      if (f?.kind === 'dispatch') {
+        id = f.subtaskId ?? subtaskReadiness(subtasks).find((r) => r.ready)?.id ?? null;
+        if (!id) return nope('no subtask is ready and none was named');
+      } else {
+        if (active.length === 0) return nope(`/engineer:${f?.kind === 'commit' ? 'commit' : f?.verb} needs an active engineer workflow; there is none`);
+        id = active[0];
+      }
+    }
+    if (f?.kind === 'dispatch' && f.subtaskId && f.subtaskId !== id) return nope(`--lane ${id} and /orchestrator:next ${f.subtaskId} name different subtasks`);
+    if (forced.has(id)) return nope(`more than one --next names the lane ${id}`);
+    const s = subtasks.find((x) => x?.id === id);
+    if (!s) return nope(`subtask ${id} is not in the plan`);
+    switch (f?.kind) {
+      case 'verb':
+      case 'commit':
+        if (!active.includes(id)) return nope(`subtask ${id} has no active engineer workflow`);
+        forced.set(id, { kind: f.kind, ...(f.kind === 'verb' ? { verb: f.verb } : {}), subtaskId: id, branch: view.children[id].branch ?? s.branch });
+        break;
+      case 'dispatch': {
+        if (active.includes(id)) return nope(`subtask ${id} still has an active engineer workflow`);
+        if (s.status !== 'pending') return nope(`subtask ${id} is ${s.status}, not pending`);
+        const waitingOn = subtaskReadiness(subtasks).find((r) => r.id === id)?.waiting_on ?? [];
+        if (waitingOn.length) return nope(`subtask ${id} waits on ${waitingOn.join(', ')}, which have not landed`);
+        forced.set(id, { kind: 'dispatch', subtaskId: id, verb: s.verb ?? null });
+        break;
+      }
+      default:
+        return nope(`unknown step kind ${f?.kind}`);
+    }
+  }
+  return { forced };
+}
+
+/**
+ * ADR-0067 Decision 6 — what a run with lanes may start now, judged from the
+ * run-wide view (the macro, its children, claims and landing). The checks
+ * that read a checkout are the caller's (`checkoutProblem`, on the checkout
+ * each step runs in).
+ *
+ * ctx: { inFlight: Set<subtaskId> with a step in flight, a done's own
+ *        included (left alone until it ends: excluded from classification,
+ *        readiness and the claim check), driverBusy (a done or finalize in
+ *        flight: the macro's terminal marker waits for it), lanes: Map<subtaskId, lane>
+ *        the run holds, started: Set<subtaskId> whose lane stepped in this
+ *        run, forced: Map<subtaskId, step> (forcedForLanes), finalizeAttempted }
+ *
+ * Returns { outcome: 'completed' } | a run-wide halt (approval, a macro gate,
+ * the terminal marker, a claim, the plan) | { outcome: 'lanes', driverStep,
+ * laneSteps, laneHalts, waiting, idle }:
+ *   driverStep — a done, done-no-commit or finalize, in the driver's checkout, or null;
+ *   laneSteps  — dispatch, verb and commit steps, forced first, then in plan
+ *                order, each with `lane: true`, `newLane` (the lane's first
+ *                step in this run: the throttle gates it) and `needsLane` (no
+ *                lane is held for it: one is created once the step is admitted);
+ *   laneHalts  — one subtask's halt each (a gate, an error, a judgment halt):
+ *                each drains the run;
+ *   waiting    — the subtasks committed and waiting to land, which hold no capacity;
+ *   idle       — the halt to record when nothing can start and nothing is in flight.
+ */
+export function decideLanes(view, ctx = {}) {
+  if (view.macroLookupError) return halt('owner-choice', `macro lookup failed: ${view.macroLookupError}`);
+  const macro = view.macro;
+  if (!macro) return halt('owner-choice', 'no macro was found: a run with lanes needs --macro <id>');
+  if (!isSafeMacroId(macro.id)) return halt('owner-choice', `macro id ${JSON.stringify(macro.id)} is not a macro workflow id`);
+  // An archived macro is judged as a serial run judges it; decide() reads no
+  // checkout before that.
+  if (macro.archived) return decide(view, { finalizeAttempted: ctx.finalizeAttempted });
+  const inFlight = ctx.inFlight ?? new Set();
+  const lanes = ctx.lanes ?? new Map();
+  const started = ctx.started ?? new Set();
+  const forced = ctx.forced ?? new Map();
+  const subtasks = subtasksOf(view);
+  const macroPlan = `${macro.relPath ?? macro.path}#macro-plan`;
+
+  // Run-wide, before any lane's step.
+  if (view.readyError) return halt('owner-choice', `next-ready failed: ${view.readyError}`);
+  const approval = view.ready?.approval;
+  if (!(approval?.status === 'approved' && approval?.hash_ok === true)) {
+    const state = !approval ? 'no approval facts were read'
+      : approval.status === 'pending' ? `the plan is pending approval (${macro.fm?.awaiting_owner_gate ?? 'no gate'})`
+        : approval.status === 'approved' ? 'the plan changed since it was approved'
+          : 'the plan has no approval recorded';
+    return halt('plan-unapproved', `${state}; review it and approve it with /orchestrator:approve --workflow=${macro.id}`, { pointer: macro.fm?.awaiting_owner_pointer ?? macroPlan });
+  }
+  if (macro.fm?.awaiting_owner_gate) {
+    return halt(gateReason(macro.fm.awaiting_owner_gate) ?? 'owner-choice', `the macro waits for the owner (${macro.fm.awaiting_owner_gate})`, { pointer: macro.fm.awaiting_owner_pointer ?? macroPlan });
+  }
+  // The last done marks the macro terminal before its worker's Stop hook
+  // archives it: while a done or finalize is in flight the marker is that
+  // step's transient state, judged once the step has ended.
+  if (macro.fm?.terminal_marker === true && !ctx.driverBusy) {
+    return halt('owner-choice', `macro ${macro.id} is terminal but still active: a Stop archive gate kept it (for example an active engineer child); the driver never archives`, { pointer: macro.relPath ?? macro.path });
+  }
+  const claim = claimProblem({ ...view, claims: (view.claims ?? []).filter((c) => !inFlight.has(c?.originating_subtask)) }, subtasks);
+  if (claim) return halt('owner-choice', claim);
+
+  const order = new Map(subtasks.map((s, i) => [s?.id, i]));
+  const out = { outcome: 'lanes', driverStep: null, laneSteps: [], laneHalts: [], waiting: [], idle: null };
+  const laneStep = (st, id) => ({ ...st, lane: true, newLane: !started.has(id), needsLane: !lanes.has(id) });
+  const done = [];
+  const waiting = [];
+  for (const s of subtasks) {
+    if (s?.status !== 'in_progress' || inFlight.has(s.id)) continue;
+    const c = classify(s, view.children?.[s.id], view.landing?.[s.id]);
+    if (c.kind === 'halt') { out.laneHalts.push(c.halt); continue; }
+    if (c.kind === 'done' || c.kind === 'done-no-commit') { done.push(c.step); continue; }
+    if (c.kind === 'waiting') { waiting.push(c.waiting); continue; }
+    const f = forced.get(s.id);
+    if (f && f.kind !== 'dispatch') { out.laneSteps.push(laneStep({ ...f, forced: true }, s.id)); continue; }
+    if (c.halt) { out.laneHalts.push(c.halt); continue; }
+    const lane = lanes.get(s.id);
+    if (lane && c.step.branch !== lane.branch) {
+      out.laneHalts.push(halt('owner-choice', `subtask ${s.id}'s engineer workflow is on ${c.step.branch}, but its lane ${lane.path} holds ${lane.branch}`, { subtaskId: s.id }));
+      continue;
+    }
+    out.laneSteps.push(laneStep(c.step, s.id));
+  }
+  for (const r of subtaskReadiness(subtasks)) {
+    if (!r.ready || inFlight.has(r.id)) continue;
+    if (!isSafeSubtaskId(r.id)) {
+      out.laneHalts.push(halt('owner-choice', `the ready subtask id ${JSON.stringify(r.id)} holds characters outside [A-Za-z0-9._-]`));
+      continue;
+    }
+    const s = subtasks.find((x) => x?.id === r.id);
+    out.laneSteps.push(laneStep({ kind: 'dispatch', subtaskId: r.id, verb: s?.verb ?? null, ...(forced.get(r.id)?.kind === 'dispatch' ? { forced: true } : {}) }, r.id));
+  }
+  out.laneSteps.sort((a, b) => (a.forced === true ? 0 : 1) - (b.forced === true ? 0 : 1) || (order.get(a.subtaskId) ?? 0) - (order.get(b.subtaskId) ?? 0));
+  out.waiting = landingList(waiting, macro.fm?.git_baseline?.branch ?? null);
+
+  const quiet = inFlight.size === 0 && !ctx.driverBusy;
+  if (!ctx.driverBusy && done.length > 0) {
+    out.driverStep = done[0];
+  } else if (quiet && view.ready?.reason === 'all_terminal') {
+    const open = subtasks.filter((s) => s?.status !== 'completed');
+    if (open.length > 0) {
+      out.laneHalts.push(halt('owner-choice', `every subtask is terminal, but not all completed: ${open.map((s) => `${s.id}=${s.status}`).join(', ')}`));
+    } else if (ctx.finalizeAttempted) {
+      out.laneHalts.push(halt('owner-choice', `/orchestrator:finalize ran, but macro ${macro.id} is still active`, { pointer: macro.relPath ?? macro.path }));
+    } else {
+      out.driverStep = { kind: 'finalize' };
+    }
+  }
+
+  if (out.waiting.length > 0) {
+    const integration = macro.fm?.git_baseline?.branch ?? null;
+    out.idle = halt('awaiting-landing',
+      `${out.waiting.length} subtask(s) wait for their pull request to merge into ${integration}: ` +
+        `${out.waiting.map((w) => `${w.subtaskId} (${w.branch}, ${w.reason})`).join(', ')}`,
+      { waiting: out.waiting });
+  } else if (view.ready?.reason === 'empty_plan' || subtasks.length === 0) {
+    out.idle = halt('owner-choice', `macro ${macro.id} has no subtasks`);
+  } else {
+    const facts = subtaskReadiness(subtasks).map((r) => `${r.id}=${r.status}${r.waiting_on?.length ? ` waiting on ${r.waiting_on.join(',')}` : ''}`);
+    out.idle = halt('owner-choice', `nothing is dispatchable: ${facts.join('; ') || 'no facts'}`);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // verifyStep
 
 const STEP_REPORT_OUTCOMES = Object.freeze(['completed', 'needs_owner', 'failed']);
@@ -642,6 +861,14 @@ function stateGates(view) {
   const gates = new Set();
   if (view?.macro?.fm?.awaiting_owner_gate) gates.add(view.macro.fm.awaiting_owner_gate);
   for (const c of Object.values(view?.children ?? {})) if (c?.awaiting_owner?.gate) gates.add(c.awaiting_owner.gate);
+  return gates;
+}
+
+function laneGates(view, subtaskId) {
+  const gates = new Set();
+  if (view?.macro?.fm?.awaiting_owner_gate) gates.add(view.macro.fm.awaiting_owner_gate);
+  const gate = view?.children?.[subtaskId]?.awaiting_owner?.gate;
+  if (gate) gates.add(gate);
   return gates;
 }
 
@@ -709,7 +936,9 @@ export function verifyStep({ step: s, worker: w, before, after, oversizePct }) {
   const summary = String(r?.summary ?? '').slice(0, 300);
   if (!r || typeof r !== 'object') return halt('owner-choice', 'the worker returned no step report, so its result cannot be cross-checked');
   if (r.outcome === 'failed') return halt('worker-failed', `the worker reports failure: ${summary}`);
-  const gates = stateGates(after);
+  // A step in a lane answers for its lane: the macro's gate and its own
+  // child's, never another lane's (ADR-0067 Decision 6).
+  const gates = s.lane ? laneGates(after, s.subtaskId) : stateGates(after);
   if (r.awaiting_owner && !gates.has(r.awaiting_owner)) {
     return halt('owner-choice', `the worker reports ${r.awaiting_owner}, but the state records ${gates.size ? [...gates].join(', ') : 'no owner gate'}: ${summary}`, { subtaskId: s.subtaskId ?? null });
   }
@@ -730,7 +959,12 @@ export function verifyStep({ step: s, worker: w, before, after, oversizePct }) {
   const post = postcondition(s, before, after);
   if (post) return halt('owner-choice', post, { subtaskId: s.subtaskId ?? null });
 
-  if (fingerprint(before) === fingerprint(after)) {
+  // A step in a lane is judged by its lane's fingerprint, the views' `git`
+  // being the lane's (ADR-0067 Decision 6); any other by the run-wide one.
+  const unchanged = s.lane
+    ? laneFingerprint(before, s.subtaskId) === laneFingerprint(after, s.subtaskId)
+    : fingerprint(before) === fingerprint(after);
+  if (unchanged) {
     return w.denials?.length
       ? halt('permission-denied', `no state changed, and the worker was denied: ${[...new Set(w.denials.map((d) => d.tool))].join(', ')}`, { subtaskId: s.subtaskId ?? null })
       : halt('no-progress', 'the step exited 0 and changed no state', { subtaskId: s.subtaskId ?? null });

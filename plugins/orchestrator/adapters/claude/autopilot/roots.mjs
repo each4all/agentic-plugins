@@ -23,6 +23,7 @@
 //
 // The versions pinned here are compared before every step (`version-drift`).
 
+import { spawnSync } from 'node:child_process';
 import { realpathSync, readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -131,6 +132,48 @@ export async function capabilityProblems(roots) {
   if (roots.engineer) {
     const pre = await preflightEngineerCapability(roots.engineer);
     if (!pre.ok) problems.push(`engineer at ${roots.engineer}: ${pre.reason}`);
+  }
+  return problems;
+}
+
+// The report `state-root` prints (orchestrator's and engineer's
+// lib/state-root.mjs, STATE_ROOT_REPORT_SCHEMA).
+const STATE_ROOT_REPORT = 'agentic-state-root-1.0';
+
+/**
+ * ADR-0067 Decision 6 — the capability floor lanes add to S8's, the same two
+ * ways, never read from version numbers:
+ *   - the pinned engineer and orchestrator `state.mjs` answer
+ *     `state-root --repo-root <checkout>` (run, SR);
+ *   - the pinned engineer's `create` accepts `--parent-workflow-path` (token, PL);
+ *   - the pinned runtime's entry brief reads the shared state root (RR). The
+ *     brief RR shipped prints no field naming the root it read, so this one
+ *     is a token too: its reader takes the read set (`stateReadSet`).
+ * Problems; an empty list means the floor holds.
+ */
+export function lanesCapabilityProblems(roots, checkout, { env = process.env } = {}) {
+  const problems = [];
+  for (const plugin of ['orchestrator', 'engineer']) {
+    const root = roots[plugin];
+    if (!root) continue;
+    const r = spawnSync(process.execPath, [join(root, 'scripts', 'state.mjs'), 'state-root', '--repo-root', checkout], {
+      cwd: checkout, env, encoding: 'utf8', timeout: 30_000,
+    });
+    let report = null;
+    try { report = JSON.parse((r.stdout ?? '').trim()); } catch { /* not JSON */ }
+    if (r.status !== 0 || report?.schema !== STATE_ROOT_REPORT || !Array.isArray(report?.read_set)) {
+      problems.push(`${plugin} at ${root} does not answer state-root --repo-root (ADR-0067 SR), which lanes need`);
+    }
+  }
+  const tokens = [
+    ['engineer', 'scripts/state.mjs', 'parent-workflow-path', 'create --parent-workflow-path (ADR-0067 PL)'],
+    ['runtime', 'scripts/lib/entry-brief-readers.mjs', 'stateReadSet', 'an entry brief that reads the shared state root (ADR-0067 RR)'],
+  ];
+  for (const [plugin, file, token, what] of tokens) {
+    const root = roots[plugin];
+    if (!root) continue;
+    const text = read(join(root, file));
+    if (text === null || !text.includes(token)) problems.push(`${plugin} at ${root} lacks ${what} (${file}), which lanes need`);
   }
   return problems;
 }
