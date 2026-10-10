@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.8.0...plugin-founder-v0.9.0) (2026-10-10)
+
+
+### Features
+
+* **plugin/founder:** end decide, critique and investigate on a peer conflict with a consensus round proposed for the owner (ADR-0067 CP) ([1a44648](https://github.com/each4all/agentic-plugins/commit/1a44648e67d4186db6f54c50cb0bd79ccf497751))
+
 ## [0.8.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.7.0...plugin-founder-v0.8.0) (2026-10-10)
 
 
