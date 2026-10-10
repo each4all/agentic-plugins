@@ -32,6 +32,25 @@ If the summary is unusually long, warn that Claude SessionStart
 metadata displays only a 256-character prefix; the on-disk value is
 kept in full.
 
+The summary reaches `state.mjs` as a file, never as shell source (ADR-0059,
+amendment of 2026-10-10): typed text spliced into a block is cut at `;`,
+expanded at `$(…)` and run at a backtick.
+
+1. Create a private directory for the file, and note the path it prints:
+
+   ```bash
+   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   ```
+
+2. With your file-writing tool (Claude: the Write tool), not the shell,
+   write `summary.txt` in that directory: the trimmed summary, exactly as
+   typed otherwise, ending with one newline.
+
+Phase 2's block reads it from there: put the path in its `TEXT_DIR` line.
+`state.mjs` removes the file's final newline, keeps everything else, and
+refuses an empty or missing file before it writes; nothing deletes the file
+(a headless run can deny `rm`).
+
 ---
 
 ## Phase 1 — Locate active macro workflow
@@ -64,10 +83,11 @@ Branch on the result:
 ## Phase 2 — Set checkpoint
 
 ```bash
+TEXT_DIR='<directory from step 1>'
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" checkpoint-set \
-  --workflow-path "$ACTIVE" --host claude --summary "$SUMMARY"
+  --workflow-path "$ACTIVE" --host claude --summary-file "$TEXT_DIR/summary.txt"
 ```
 
 The CLI writes atomically under the per-file lock, preserves schema

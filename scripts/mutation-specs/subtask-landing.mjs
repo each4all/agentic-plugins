@@ -12,7 +12,9 @@
 // Groups: P the provenance guard (C14), U the plan revision rules (C22 and
 // the terminal refusal), R readiness, B the /next branch base, L landing
 // resolution, E the engineer terminal note, W the engineer side and the
-// version pairing, D the /done runbook, N the /plan runbook.
+// version pairing, D the /done runbook, N the /plan runbook and its Codex
+// skill (N3–N10: the text it records travels as files, ADR-0059 amendment of
+// 2026-10-10, C130 S3).
 
 const T_PROV = 'tests/orchestrator/test-subtask-provenance.mjs';
 const T_PLAN = 'tests/orchestrator/test-plan-revision.mjs';
@@ -27,6 +29,9 @@ const T_RB = 'tests/plugin-shape/test-orchestrator-landing-runbooks.mjs';
 const T_WB = 'tests/persona-pipeline/test-parent-writeback.mjs';
 const T_STOP = 'tests/persona-pipeline/test-stop-archive.mjs';
 const T_P7 = 'tests/persona-pipeline/test-phase7-commit.mjs';
+const T_PLAN_RUN = 'tests/orchestrator/test-approve-runbook.mjs';
+// The test that runs plan's blocks with hostile text files, in both shells.
+const K_TEXT = /the request, decision, architecture, note and summary are recorded as written/;
 
 const STATE = 'plugins/orchestrator/scripts/state.mjs';
 const LANDING = 'plugins/orchestrator/scripts/landing.mjs';
@@ -34,12 +39,13 @@ const PREFLIGHT = 'plugins/orchestrator/scripts/discover-engineer.mjs';
 const NEXT = 'plugins/orchestrator/commands/next.md';
 const DONE = 'plugins/orchestrator/commands/done.md';
 const PLAN = 'plugins/orchestrator/commands/plan.md';
+const PLAN_SKILL = 'plugins/orchestrator/core/skills/plan/SKILL.md';
 const WRITEBACK = 'plugins/engineer/scripts/parent-writeback.mjs';
 const PHASE7 = 'plugins/engineer/scripts/phase7-commit.mjs';
 const STOP = 'plugins/engineer/scripts/stop-archive.mjs';
 
 export const TESTS = [
-  T_PROV, T_PLAN, T_READY, T_NEXT_RB, T_BASE, T_LAND, T_TERM, T_DONE, T_PRE, T_RB, T_WB, T_STOP, T_P7,
+  T_PROV, T_PLAN, T_READY, T_NEXT_RB, T_BASE, T_LAND, T_TERM, T_DONE, T_PRE, T_RB, T_WB, T_STOP, T_P7, T_PLAN_RUN,
 ];
 
 export const MUTATIONS = [
@@ -373,5 +379,55 @@ export const MUTATIONS = [
     from: '  --event updated --require-open',
     to: '  --event updated',
     why: 'the post-plan append can land on a macro finalized in between (review finding)',
+  },
+  // The note back in shell source, as NOTE="…" had it: the agent's text,
+  // with the peer's sentences in it, inside a double-quoted assignment.
+  {
+    id: 'N3', file: PLAN, tests: [T_PLAN_RUN], killed_by: K_TEXT,
+    from: '  --phase-note-file "$TEXT_DIR/note.md" \\',
+    to: '  --phase-note "$(eval "NOTE=\\"$(cat "$TEXT_DIR/note.md")\\""; printf \'%s\' "$NOTE")" \\',
+    why: 'plan\'s phase note is shell source again: NOTE="…" restored (C130)',
+  },
+  {
+    id: 'N4', file: PLAN, tests: [T_PLAN_RUN], killed_by: K_TEXT,
+    from: '--verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt"',
+    to: '--verdict "$VERDICT" --summary "$SUMMARY"',
+    why: 'the ensemble summary comes from a SUMMARY nothing in the runbook sets (C130)',
+  },
+  {
+    id: 'N5', file: PLAN, tests: [T_PLAN_RUN], killed_by: K_TEXT,
+    from: '  --decision-file "$TEXT_DIR/decision.txt" \\',
+    to: '  --decision "$(eval "printf \'%s\' \\"$(cat "$TEXT_DIR/decision.txt")\\"")" \\',
+    why: 'the shell evaluates the decision text (C130)',
+  },
+  {
+    id: 'N6', file: PLAN, tests: [T_PLAN_RUN], killed_by: K_TEXT,
+    from: '  --architecture-file "$TEXT_DIR/architecture.txt" \\',
+    to: '  --architecture "$(eval "printf \'%s\' \\"$(cat "$TEXT_DIR/architecture.txt")\\"")" \\',
+    why: 'the shell evaluates the architecture text (C130)',
+  },
+  {
+    id: 'N7', file: PLAN, tests: [T_PLAN_RUN], killed_by: K_TEXT,
+    from: '    --original-request-file "$TEXT_DIR/request.txt" \\',
+    to: '    --original-request "$(eval "printf \'%s\' \\"$(cat "$TEXT_DIR/request.txt")\\"")" \\',
+    why: 'the shell evaluates the feature description (C130)',
+  },
+  {
+    id: 'N8', file: PLAN, tests: [T_PLAN_RUN], killed_by: /a missing note or summary file stops the block before either write/,
+    from: '-- --phase-note-file "$TEXT_DIR/note.md" --summary-file "$TEXT_DIR/summary.txt" || exit 1',
+    to: '-- --phase-note-file "$TEXT_DIR/note.md" || exit 1',
+    why: 'the note is recorded although its ensemble result cannot be committed',
+  },
+  {
+    id: 'N9', file: PLAN, tests: [T_PLAN_RUN], killed_by: /a missing note or summary file stops the block before either write/,
+    from: 'readTextArgumentFile(pairs[i + 1], pairs[i]);',
+    to: 'if (!(await import("node:fs")).statSync(pairs[i + 1]).size) throw new Error(`${pairs[i]}: empty`);',
+    why: 'the check before the writes asks only for a non-empty file, as `[ -s … ]` did: a newline alone passes it (Review finding)',
+  },
+  {
+    id: 'N10', file: PLAN_SKILL, tests: [T_PLAN_RUN], killed_by: /a file the reader refuses stops the block before either write/,
+    from: '-- --phase-note-file "$TEXT_DIR/note.md" --summary-file "$TEXT_DIR/summary.txt" || exit 1',
+    to: '-- --phase-note-file "$TEXT_DIR/note.md" || exit 1',
+    why: 'the Codex plan skill records the note before a summary the ensemble commit then refuses (Critique finding M1)',
   },
 ];

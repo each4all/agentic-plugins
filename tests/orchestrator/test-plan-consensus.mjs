@@ -16,11 +16,13 @@
 //   - a writer whose lock was reclaimed publishes and retires nothing;
 //   - plan.md's blocks, run: a conflict passes the run id to plan-set and
 //     writes the task file from the file the agent wrote the contested items
-//     to, after the ensemble commit; another verdict writes none.
+//     to, after the ensemble commit; another verdict writes none. The blocks
+//     read every other text they record from the text directory too (ADR-0059,
+//     amendment of 2026-10-10), and no SUMMARY from the environment.
 
 import { describe, it } from 'node:test';
 import { strictEqual, ok, deepStrictEqual, rejects } from 'node:assert/strict';
-import { mkdtemp, rm, readFile, writeFile, readdir, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, readFile, writeFile, readdir, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -181,20 +183,33 @@ async function planPhase2Blocks() {
   return [one('plan-set', 'state.mjs" plan-set'), one('note + ensemble', 'state.mjs" ensemble-commit')];
 }
 
+// Every block that reads a text file opens with the line that names the text
+// directory (commands/plan.md, before Phase 0); the test puts its own there,
+// as the agent puts the one mktemp printed.
+const TEXT_DIR_LINE = "TEXT_DIR='<directory from step 1>'";
+function withTextDir(block, textDir) {
+  ok(block.startsWith(`${TEXT_DIR_LINE}\n`), 'the block opens with its text directory');
+  return block.replace(TEXT_DIR_LINE, () => `TEXT_DIR='${textDir}'`);
+}
+
 for (const shell of SHELLS) {
   describe(`/orchestrator:plan conflict branch, run (${shell}) (ADR-0067 Decision 8)`, () => {
-    const runBlock = (dir, block, extra) => {
-      const e = { ...env(), AGENTIC_ORCHESTRATOR_ROOT: ORCH_ROOT, TMPDIR: dir, ...extra };
+    // The agent writes each file before the block that reads it; so does
+    // this. SUMMARY in the environment is not the summary: the block reads
+    // summary.txt.
+    const runBlock = async (dir, block, extra, files = {}) => {
+      const textDir = join(dir, 'texts');
+      await mkdir(textDir, { recursive: true });
+      for (const [name, content] of Object.entries(files)) await writeFile(join(textDir, name), content);
+      const e = { ...env(), AGENTIC_ORCHESTRATOR_ROOT: ORCH_ROOT, TMPDIR: dir, SUMMARY: 'SUMMARY from the environment', ...extra };
       delete e.CLAUDE_PLUGIN_ROOT;
-      return spawnSync(shell, ['-c', block], { cwd: dir, encoding: 'utf8', env: e });
+      return spawnSync(shell, ['-c', withTextDir(block, textDir)], { cwd: dir, encoding: 'utf8', env: e });
     };
+    const PLAN_FILES = { 'subtasks.json': JSON.stringify(SUBTASKS), 'decision.txt': 'Split A\n', 'architecture.txt': 'One lane\n' };
+    const NOTE_FILES = { 'note.md': 'The note\n', 'summary.txt': 'The summary\n' };
     it('a conflict passes the run id to plan-set, then writes the task file after the ensemble commit; another verdict writes none', () => withMacro(async ({ dir, macro, id }) => {
       const [planSet, finalize] = await planPhase2Blocks();
-      const subtasksBase = join(dir, 'subtasks');
-      await writeFile(`${subtasksBase}.json`, JSON.stringify(SUBTASKS));
-      const planSetBlock = planSet.replace('SUBTASKS_JSON="$(mktemp -t orchestrator-subtasks.XXXXXX).json"', `SUBTASKS_JSON='${subtasksBase}.json'`);
-      ok(planSetBlock !== planSet, 'the plan-set block makes its subtasks file where the test expects');
-      let r = runBlock(dir, planSetBlock, { ACTIVE: macro, VERDICT: 'conflict', RUN_ID: RUN });
+      let r = await runBlock(dir, planSet, { ACTIVE: macro, VERDICT: 'conflict', RUN_ID: RUN }, PLAN_FILES);
       strictEqual(r.status, 0, r.stderr);
       strictEqual((await readWorkflow(macro)).frontmatter.awaiting_owner_run_id, RUN);
       // The contested items come from the peer's positions: the agent writes
@@ -204,16 +219,17 @@ for (const shell of SHELLS) {
       const contested = '--force C1: split A or not; "quoted" $(touch pwned)\nCONTESTED_ITEMS\ntouch pwned2\n';
       const itemsFile = join(dir, 'items.md');
       await writeFile(itemsFile, contested);
-      r = runBlock(dir, finalize, { ACTIVE: macro, VERDICT: 'conflict', RUN_ID: RUN, SUMMARY: 's', CONTESTED_FILE: itemsFile });
+      r = await runBlock(dir, finalize, { ACTIVE: macro, VERDICT: 'conflict', RUN_ID: RUN, CONTESTED_FILE: itemsFile }, NOTE_FILES);
       strictEqual(r.status, 0, r.stderr);
       strictEqual(await readFile(task(dir, id, RUN), 'utf8'), contested, 'the contested items, unread by the shell');
       ok(!existsSync(join(dir, 'pwned')) && !existsSync(join(dir, 'pwned2')), 'no line of them ran');
       ok(r.stderr.includes(`→ Proposed, for the owner to run before deciding: /runtime:consensus plan --task-file ${task(dir, id, RUN)} --peers claude,codex --max-rounds 2`), r.stderr);
       strictEqual((await consensusProposal({ workflowPath: macro })).current, true);
+      strictEqual((await readWorkflow(macro)).frontmatter.ensemble_results.at(-1).summary, 'The summary', 'the summary is the file\'s, not the environment\'s');
       // A re-plan with concerns: no run id, no task file, the old one retired.
-      r = runBlock(dir, planSetBlock, { ACTIVE: macro, VERDICT: 'concerns', RUN_ID: 'macro-plan-20261001T000000Z-000005' });
+      r = await runBlock(dir, planSet, { ACTIVE: macro, VERDICT: 'concerns', RUN_ID: 'macro-plan-20261001T000000Z-000005' }, PLAN_FILES);
       strictEqual(r.status, 0, r.stderr);
-      r = runBlock(dir, finalize, { ACTIVE: macro, VERDICT: 'concerns', RUN_ID: 'macro-plan-20261001T000000Z-000005', SUMMARY: 's' });
+      r = await runBlock(dir, finalize, { ACTIVE: macro, VERDICT: 'concerns', RUN_ID: 'macro-plan-20261001T000000Z-000005' }, NOTE_FILES);
       strictEqual(r.status, 0, r.stderr);
       deepStrictEqual((await readdir(join(dir, '.agentic-plugins/state/orchestrator/consensus'))).sort(), [`${id}.${RUN}.resolved.md`]);
       ok(!r.stderr.includes('runtime:consensus'), r.stderr);
@@ -224,10 +240,10 @@ for (const shell of SHELLS) {
       await conflictPlan(macro);
       const itemsFile = join(dir, 'items.md');
       await writeFile(itemsFile, '\n');
-      let r = runBlock(dir, finalize, { ACTIVE: macro, VERDICT: 'conflict', RUN_ID: RUN, SUMMARY: 's', CONTESTED_FILE: itemsFile });
+      let r = await runBlock(dir, finalize, { ACTIVE: macro, VERDICT: 'conflict', RUN_ID: RUN, CONTESTED_FILE: itemsFile }, NOTE_FILES);
       strictEqual(r.status, 1);
       ok(/the contested items are empty/.test(r.stderr), r.stderr);
-      r = runBlock(dir, finalize, { ACTIVE: macro, VERDICT: 'conflict', RUN_ID: RUN, SUMMARY: 's' });
+      r = await runBlock(dir, finalize, { ACTIVE: macro, VERDICT: 'conflict', RUN_ID: RUN }, NOTE_FILES);
       strictEqual(r.status, 1);
       ok(r.stderr.includes('✗ CONTESTED_FILE names no file of contested items; no task file was written.'), r.stderr);
       ok(!existsSync(join(dir, '.agentic-plugins/state/orchestrator/consensus')), 'no task file');
