@@ -571,6 +571,8 @@ function blockedGateNextActions(phase) {
   const prefix = commandPrefix();
   const resolvingSurfaces = [
     `decide-conflict, the Owner selection step of ${prefix}decide`,
+    // ADR-0067 Decision 8 — critique's and investigate's conflict gate.
+    'peer-conflict, the owner rules on the contested items, then clears the gate with the ruling and the next step',
     `recurring-finding, the Owner decision step of ${prefix}refine`,
     'scope-routing, the owner picks the route the phase note recommends',
   ];

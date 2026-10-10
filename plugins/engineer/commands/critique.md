@@ -267,6 +267,37 @@ It refuses, and the block stops before the last write, while a run is still
 live (collect it first) or when an empty `RUN_ID` would hide a run that
 launched (set it to that run's id).
 
+A synthesis verdict of `conflict` ends this verb on its conflict gate,
+`peer-conflict`, with a bounded consensus round proposed before the
+owner decides (ADR-0067 Decision 8). The proposal's `selected_next` is the
+owner decision, after a bounded consensus round; its `rejected_alternatives`
+include "the owner decides now", with the reason for this case (what the two
+positions leave unweighed that a round between the peers would weigh); and its
+`next_command` is `/runtime:consensus plan --task-file <the task file> --peers
+claude,codex --max-rounds 2`, two rounds at most. In the phase note the task
+file is spelled from the state root,
+`.agentic-plugins/state/engineer/consensus/<workflow id>.<run id>.md`; the
+completion output gives the command the block prints, with its absolute
+path.
+
+The block branches on the verdict the settle recorded for the run, not on
+`VERDICT` alone. Recorded `conflict`, with `VERDICT` set to `conflict`, it
+writes the contested items to that task file (`consensus-task`), then records
+the gate with the run id in the same write as the next step `owner-decision`.
+Write the contested items only then, with the file tool, to a new file, and
+set `CONTESTED_FILE` to its path: each CONFLICT item with both positions and
+their evidence, prepared as the peer prompt was, since the consensus peers
+read it. They come from the peers' positions, so never put them in the block:
+there the shell would read a line of them as a command. When the recorded
+verdict and `VERDICT` disagree (a run recorded `failed`, or a conflict
+recorded by an earlier attempt), the block stops before the last write: set
+`VERDICT` to the recorded verdict, and `CONTESTED_FILE` too when that is
+`conflict`, and run the block again. Its settle does nothing for a run it
+already recorded, so the branch that matches runs: on a conflict,
+`consensus-task` first, then the gate. Nothing runs the consensus round: the
+owner does, then rules, and clearing the gate retires the task file. compose,
+frame and refine, and every other verdict, never take this branch.
+
 The last write, `finish-verb`, records the proposal's next step in closed-enum
 form: `--next-step-kind` `verb` (with `--next-step-verb`), `commit`
 (`/engineer:commit` commits the change, or closes the workflow when there is
@@ -277,6 +308,11 @@ there (`core/skills/_shared/references/autopilot-mode.md`).
 End instead with an owner gate when the owner must judge, with the judgment
 under the gate's heading in the note:
 
+- `peer-conflict` (the `Ensemble synthesis` heading, anchor
+  `ensemble-synthesis`): the synthesis verdict is `conflict`; the block's
+  conflict branch records it with the run id, and the owner rules on the
+  contested items, then clears it with `awaiting-owner-clear --gate
+  peer-conflict --resolution "<the ruling>"` and the next step.
 - `scope-routing` (heading `### Routing recommendation`, anchor
   `routing-recommendation`): the request does not belong in this verb or
   workflow; the owner picks the route, then clears the gate.
@@ -318,33 +354,70 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" settle \
   --host "${AGENTIC_HOST:-claude}" --phase 'critique' --run-id "$RUN_ID" \
   --verdict "$VERDICT" --summary "$SUMMARY" || exit $?
 
-# ADR-0029 §1 / completion-output contract §2 — set --next-action (the
-# append above and this terminal write) to the COMPACT form of the
-# proposal above (selected_next + one-line why + next_command) so the
-# durable state and the code-emitted completion footer agree with the
-# Active Next-Action Proposal. The value shown is the typical-case
-# default; override it, and the --next-step-* flags, when the verb's result
-# selects a different next step (e.g. commit).
-# ADR-0063 D3 — finish-verb is the verb's last write: the ADR-0017
-# §sub-decision 5 atomic terminal write (summary-complete + terminal marker)
-# with the next step, interactively. Under an autopilot run (ADR-0066
-# Decision 3: AGENTIC_AUTOPILOT names a run, on Claude) it writes the next step
-# only and leaves the terminal marker for the commit command, which alone
-# closes a workflow there.
-# ARCHIVE TIMING — on Claude the Stop hook fires at EVERY turn end, so the
-# archive gates are evaluated at the end of THIS turn, not at session close;
-# if a gate fails the workflow stays marked and a later Stop re-evaluates it.
-# Clearing the marker with `--terminal-marker false` works only before that
-# Stop fires, needs set-terminal's full flag set (--workflow-path, --host,
-# --terminal-phase), and does not restore the previous phase or next_action.
-# On Codex the Stop hook runs only once the operator has trusted the plugin
-# hooks (`/hooks`), so evaluation waits for that. Full contract:
-# core/skills/_shared/references/session-handoff.md § Archive timing.
-node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
-  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-  --next-action 'Refine to address findings' \
-  --next-step-kind verb --next-step-verb 'refine' \
-  --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?
+# ADR-0067 Decision 8 — the verdict the settle above recorded for the run
+# (empty when it recorded none). A recorded conflict does not close the
+# verb: it writes the contested items as the consensus task file and ends on
+# the conflict gate, bound to its run. Any other verdict makes the typical
+# last write.
+RECORDED="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-verdict \
+  --workflow-path "$ACTIVE" --run-id "$RUN_ID")" || exit $?
+if [ "$RECORDED" != conflict ] && [ "$VERDICT" != conflict ]; then
+  # ADR-0029 §1 / completion-output contract §2 — set --next-action (the
+  # append above and this terminal write) to the COMPACT form of the
+  # proposal above (selected_next + one-line why + next_command) so the
+  # durable state and the code-emitted completion footer agree with the
+  # Active Next-Action Proposal. The value shown is the typical-case
+  # default; override it, and the --next-step-* flags, when the verb's result
+  # selects a different next step (e.g. commit).
+  # ADR-0063 D3 — finish-verb is the verb's last write: the ADR-0017
+  # §sub-decision 5 atomic terminal write (summary-complete + terminal marker)
+  # with the next step, interactively. Under an autopilot run (ADR-0066
+  # Decision 3: AGENTIC_AUTOPILOT names a run, on Claude) it writes the next step
+  # only and leaves the terminal marker for the commit command, which alone
+  # closes a workflow there.
+  # ARCHIVE TIMING — on Claude the Stop hook fires at EVERY turn end, so the
+  # archive gates are evaluated at the end of THIS turn, not at session close;
+  # if a gate fails the workflow stays marked and a later Stop re-evaluates it.
+  # Clearing the marker with `--terminal-marker false` works only before that
+  # Stop fires, needs set-terminal's full flag set (--workflow-path, --host,
+  # --terminal-phase), and does not restore the previous phase or next_action.
+  # On Codex the Stop hook runs only once the operator has trusted the plugin
+  # hooks (`/hooks`), so evaluation waits for that. Full contract:
+  # core/skills/_shared/references/session-handoff.md § Archive timing.
+  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
+    --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+    --next-action 'Refine to address findings' \
+    --next-step-kind verb --next-step-verb 'refine' \
+    --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?
+elif [ "$RECORDED" != conflict ] || [ "$VERDICT" != conflict ]; then
+  echo "✗ The synthesis verdict is ${VERDICT:-unset}, but run ${RUN_ID:-<none>} is recorded with ${RECORDED:-no verdict}: a consensus round needs both to be conflict. Set VERDICT to the recorded verdict (and CONTESTED_FILE when that is conflict) and run this block again: its settle does nothing for a recorded run, and the matching branch runs, consensus-task first on a conflict. Nothing more was written." >&2
+  exit 1
+else
+  # The contested items, from the file CONTESTED_FILE names, written with the
+  # file tool: the shell never reads them, so no line of them runs as a
+  # command. No file named stops the block before the gate; consensus-task
+  # refuses an empty one.
+  [ -n "${CONTESTED_FILE:-}" ] || { echo "✗ CONTESTED_FILE names no file of contested items; the gate was not recorded." >&2; exit 1; }
+  # The task file, once the settle above recorded the run with the verdict
+  # conflict; it prints the consensus round the proposal selects.
+  PROPOSED="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" consensus-task \
+    --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --run-id "$RUN_ID" \
+    --text-file "$CONTESTED_FILE")" || exit $?
+  # The gate, bound to its run, and the next step owner-decision in one
+  # write: the workflow stays open until the owner rules.
+  # ARCHIVE TIMING — with an owner gate this write is never terminal, so the
+  # Stop hook, which fires at EVERY turn end on Claude, leaves the workflow
+  # active (it refuses to archive while a gate is pending); the
+  # `--terminal-marker false` escape is not needed. On Codex the Stop hook runs
+  # only once the plugin hooks are trusted (`/hooks`).
+  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
+    --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+    --next-action "Owner decision, after a bounded consensus round: $PROPOSED" \
+    --next-step-kind owner-decision --next-step-confidence "<HIGH|MEDIUM|LOW>" \
+    --owner-gate 'peer-conflict' --owner-gate-anchor ensemble-synthesis \
+    --owner-gate-run-id "$RUN_ID" || exit $?
+  echo "→ Proposed, for the owner to run before deciding: $PROPOSED" >&2
+fi
 # The owner-decision form, for an owner gate named above this block: it
 # records the gate with the next step in one write, and the workflow stays
 # open until the owner resolves the gate.
@@ -369,6 +442,13 @@ When Phase 0's preflight printed the autopilot banner, this command follows
   "Recommended: X. Proceed?".
 - **Refine carries CRITICAL and MAJOR findings only** — the default rule; the
   MINOR / SUGGESTION pick the user makes interactively is skipped.
+- **A CONFLICT is the owner's.** When the synthesis verdict is `conflict`, do
+  not pick a side: Phase 2's block takes its conflict branch, which writes the
+  contested items as the consensus task file and records the `peer-conflict`
+  gate (anchor `ensemble-synthesis`) with the run id; it does so
+  interactively too (ADR-0067 Decision 8). The driver halts on the gate, and
+  its report carries the bounded consensus round proposed for the owner;
+  nothing runs it.
 - **The last write is Phase 2's `finish-verb`**, which records the next step
   and leaves the terminal marker unset: under autopilot only
   `/engineer:commit` closes a workflow, and `set-terminal --terminal-marker

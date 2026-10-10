@@ -227,20 +227,34 @@ const VALID_SNAPSHOT_TRIGGERS = new Set(['pre-compact', 'stop']);
 // `awaiting_owner_*` scalars. `next_step_*` is the closed-enum durable
 // projection of the end-of-verb Active Next-Action Proposal (`next_action`
 // stays the free-text form for humans). The owner gates read here are the
-// workflow-file subset of ADR-0063 D4, the same five engineer stores
+// workflow-file subset of ADR-0063 D4, the same six engineer stores
 // (`plan-approval` and `plan-conflict` live on the orchestrator macro, and
 // `duplicate-workflow` has no single workflow file to live in). Which of them
 // a persona can set depends on its capabilities (ADR-0066 Decision 3); a
-// reader accepts all five, so a file is read the same by every persona.
+// reader accepts all six, so a file is read the same by every persona.
 export const VALID_NEXT_STEP_KINDS = new Set(['verb', 'commit', 'owner-decision', 'done']);
 export const VALID_CONFIDENCE = new Set(['HIGH', 'MEDIUM', 'LOW']);
 export const VALID_WORKFLOW_OWNER_GATES = new Set([
   'scope-routing',
   'decide-conflict',
+  'peer-conflict',
   'recurring-finding',
   'staging-set',
   'pr-handling',
 ]);
+// ADR-0067 Decision 8 — the conflict gates: a synthesis verdict of conflict
+// in decide (decide-conflict) or in critique and investigate (peer-conflict).
+// Only these record the run id of that synthesis, `awaiting_owner_run_id`,
+// which binds the consensus task file the verb wrote to its gate.
+export const CONFLICT_OWNER_GATES = new Set(['decide-conflict', 'peer-conflict']);
+// A run id as a gate records it and a task file's name carries it: the
+// peer-runner's alphabet without `:` and without `.`, so that the live name
+// `<workflow-id>.<run-id>.md` and the retired `<workflow-id>.<run-id>.resolved.md`
+// can never name the same file (a run id `r.resolved` would).
+const AWAITING_OWNER_RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+export function isSafeConsensusRunId(runId) {
+  return typeof runId === 'string' && AWAITING_OWNER_RUN_ID_RE.test(runId);
+}
 // A pointer is a repo-relative `path#anchor`, never free text: this fixes the
 // charset (no whitespace) and the shape. validateAwaitingOwnerPointer also
 // refuses a leading `/` and any `..`.
@@ -285,11 +299,11 @@ export function autopilotMode({ env = process.env, host = 'claude' } = {}) {
   };
 }
 
-// The owner gates a persona can set (ADR-0066 Decision 3, PC2b DD2): the three
+// The owner gates a persona can set (ADR-0066 Decision 3, PC2b DD2): the four
 // whose resolving surface every persona has, and the two that belong to a
 // capability — staging-set to commit_surface (the commit confirms the staging
 // set), pr-handling to dispatch_target (an autopilot step stops before an
-// outward action). A reader accepts all five; a setter accepts only these.
+// outward action). A reader accepts all six; a setter accepts only these.
 const CAPABILITY_OWNER_GATES = Object.freeze({
   'staging-set': 'commit_surface',
   'pr-handling': 'dispatch_target',
@@ -326,6 +340,8 @@ function stateHomes() {
       archiveDirRel: archiveDirRel(),
       creationLockRel: creationLockRel(),
       peerRunsDirRel: `${stateDirRel()}/peer-runs`,
+      // ADR-0067 Decision 8 — the consensus task files of a conflict gate.
+      consensusDirRel: `${stateDirRel()}/consensus`,
     },
   };
   if (capabilityOn('legacy_homes')) {
@@ -337,6 +353,7 @@ function stateHomes() {
       archiveDirRel: `${legacy}/archive`,
       creationLockRel: `${legacy}/.creation-lock`,
       peerRunsDirRel: `${legacy}/peer-runs`,
+      consensusDirRel: `${legacy}/consensus`,
     };
   }
   return homes;
@@ -363,6 +380,7 @@ function statePaths(repoRoot, home = 'canonical') {
     archive: join(repoRoot, spec.archiveDirRel),
     creationLock: join(repoRoot, spec.creationLockRel),
     peerRuns: join(repoRoot, spec.peerRunsDirRel),
+    consensus: join(repoRoot, spec.consensusDirRel),
   };
 }
 
@@ -1462,6 +1480,10 @@ function frontmatterKeyOrder() {
     // at the tail, as parent_workflow_path, for the same carrier reason.
     order.push(...DISPATCHED_KEYS);
   }
+  // ADR-0067 Decision 8 — the run id a conflict gate records. Last of all,
+  // for the same carrier reason: a reader that does not know it re-emits it
+  // after every key it knows, so its write leaves it in place.
+  order.push('awaiting_owner_run_id');
   keyOrderCache = Object.freeze(order);
   return keyOrderCache;
 }
@@ -2155,6 +2177,18 @@ function validateSchema14Fields(fm) {
     validateIsoUtc('awaiting_owner_since', fm.awaiting_owner_since);
     validateAwaitingOwnerPointer(fm.awaiting_owner_pointer);
   }
+  // ADR-0067 Decision 8 — the run id a conflict gate records. Only its form
+  // is a read error. That it sits with a conflict gate is a writer's rule
+  // and decides whether a consensus task file is current, never whether the
+  // file reads: a pre-CP script carries the key through its forward-compat
+  // carrier while it clears or re-sets the gate (ADR-0067 Decision 4,
+  // item 3), and such a file must still read.
+  if ('awaiting_owner_run_id' in fm && !isSafeConsensusRunId(fm.awaiting_owner_run_id)) {
+    throw new Error(
+      'awaiting_owner_run_id must be a run id of [A-Za-z0-9_-] starting with a letter or digit, ' +
+        `at most 128 characters (got ${JSON.stringify(fm.awaiting_owner_run_id)}) (ADR-0067 Decision 8)`,
+    );
+  }
 }
 
 function validateEnumScalar(key, value, allowed) {
@@ -2759,7 +2793,7 @@ export async function appendPhase({
     if (currentPhase !== undefined) frontmatter.current_phase = currentPhase;
     if (nextAction !== undefined) frontmatter.next_action = nextAction;
     applyNextStepWrite(frontmatter, nextStepWrite);
-    if (gateFields) applyOwnerGate(frontmatter, gateFields);
+    const replacedRunId = gateFields ? applyOwnerGate(frontmatter, gateFields) : null;
     if (clearTerminalMarker && frontmatter.terminal_marker === true) frontmatter.terminal_marker = false;
     frontmatter.updated_at = nowIso;
     frontmatter.host_history = [
@@ -2776,7 +2810,12 @@ export async function appendPhase({
       assembleWorkflowFile(frontmatter, newBody),
       { lockPath, token },
     );
-    return { frontmatter, workflowPath };
+    // ADR-0067 Decision 8 — a gate set again over itself that names another
+    // run, or none, retires the task file of the run it replaced.
+    const retired = replacedRunId === null
+      ? { retired: null, warning: null }
+      : await retireConsensusTask(workflowPath, frontmatter.workflow_id, replacedRunId, { lockPath, token });
+    return { frontmatter, workflowPath, retired };
   });
 }
 
@@ -3357,7 +3396,181 @@ export async function setTerminal({
   return result;
 }
 
-const AWAITING_OWNER_KEYS = ['awaiting_owner_gate', 'awaiting_owner_since', 'awaiting_owner_pointer'];
+// The keys a gate's clear removes: the three ADR-0063 D6 keys and the run id
+// a conflict gate records (ADR-0067 Decision 8).
+const AWAITING_OWNER_KEYS = ['awaiting_owner_gate', 'awaiting_owner_since', 'awaiting_owner_pointer', 'awaiting_owner_run_id'];
+
+// -----------------------------------------------------------------------------
+// ADR-0067 Decision 8 — the consensus task file of a conflict gate
+//
+// A synthesis verdict of conflict in decide, critique or investigate ends the
+// verb on its conflict gate with a bounded consensus round proposed before the
+// owner decides. The verb writes the contested items to
+// `<home>/consensus/<workflow-id>.<run-id>.md`, in the workflow's own home
+// (never a lane's), where `runtime:consensus plan --task-file` reads them. The
+// gate records the run id; the file is current only while the gate names that
+// run, the workflow's ensemble_results holds the run with verdict conflict,
+// and the file exists. Every way the gate leaves retires the file: it is
+// renamed `<workflow-id>.<run-id>.resolved.md` and kept as evidence. Nothing
+// here runs the consensus round: the owner does.
+
+// A workflow id as a task file's name carries it: a plain name, no `/` and
+// no `.` (generated ids hold neither), so the name stays in consensus/ and
+// splits one way only.
+const CONSENSUS_WORKFLOW_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+
+// Where a workflow's task file for a run lives, from the home the workflow
+// file sits in. Null when the path is under no state home or an id is not a
+// plain name.
+function consensusTaskPaths(workflowPath, workflowId, runId) {
+  if (!isSafeConsensusRunId(runId) || typeof workflowId !== 'string' || !CONSENSUS_WORKFLOW_ID_RE.test(workflowId)) {
+    return null;
+  }
+  const storage = inferStorageFromWorkflowPath(resolvePath(String(workflowPath)));
+  if (!storage || storage.stateRoot.length === 0) return null;
+  const { consensus, consensusDirRel } = statePaths(storage.stateRoot, storage.home);
+  const name = `${workflowId}.${runId}`;
+  // Containment, besides the alphabets: the file sits directly in consensus/.
+  if (dirname(join(consensus, `${name}.md`)) !== consensus) return null;
+  return {
+    dir: consensus,
+    file: join(consensus, `${name}.md`),
+    resolved: join(consensus, `${name}.resolved.md`),
+    // ADR-0067 Decision 1(c): a pointer is relative to the state root.
+    pointer: `${consensusDirRel}/${name}.md`,
+  };
+}
+
+// Whether the workflow's lock still holds this writer's token, read again just
+// before a task file is moved, as atomicWrite does before its commit: a writer
+// whose lock was reclaimed as stale never retires a file the new owner made
+// current.
+async function holdsLock({ lockPath, token }) {
+  return (await readFile(lockPath, 'utf8').catch(() => null)) === token;
+}
+
+// Rename a task file to its `.resolved.md` name, once the write that took its
+// gate away has landed, holding the workflow's lock (`ownership`, as
+// withFileLock gives it). Best effort: an absent file is nothing to retire,
+// and a lost lock or a failed rename is a warning, never an error — the gate
+// no longer names the run, so the file is no longer current whatever its name.
+export async function retireConsensusTask(workflowPath, workflowId, runId, ownership) {
+  const paths = consensusTaskPaths(workflowPath, workflowId, runId);
+  if (!paths) return { retired: null, warning: null };
+  if (!(await holdsLock(ownership))) {
+    return {
+      retired: null,
+      warning: `the consensus task file ${paths.file} was not retired: another writer reclaimed the lock on the workflow`,
+    };
+  }
+  try {
+    await rename(paths.file, paths.resolved);
+    return { retired: paths.resolved, warning: null };
+  } catch (err) {
+    if (err.code === 'ENOENT') return { retired: null, warning: null };
+    return {
+      retired: null,
+      warning: `the consensus task file ${paths.file} could not be retired (${err.code ?? err.message}); its gate no longer names run ${runId}, so it is not current`,
+    };
+  }
+}
+
+/**
+ * ADR-0067 Decision 8 — write the contested items of a conflict as the
+ * workflow's consensus task file for that run, and return its absolute path.
+ * Under the workflow's lock, the run must be recorded in `ensemble_results`
+ * with the verdict `conflict` (the settle came first): a run that failed,
+ * degraded or never launched has no conflict to put to a consensus round.
+ * The text is scrubbed and written as given, atomically. `command` is the
+ * consensus round the proposal selects, with the file's absolute path.
+ */
+export async function writeConsensusTask(args) {
+  return withFileLock(args.workflowPath, (ownership) => writeConsensusTaskUnderLock(args, ownership));
+}
+
+// writeConsensusTask's body, for a caller already holding the workflow's lock:
+// the file is published with atomicWrite and the lock's token, so a writer
+// whose lock was reclaimed never overwrites the new owner's task file.
+export async function writeConsensusTaskUnderLock({ workflowPath, runId, text, host = 'claude' }, ownership) {
+  validateHost(host);
+  if (!isSafeConsensusRunId(runId)) {
+    throw new Error(`consensus-task: ${JSON.stringify(runId)} is not a run id (ADR-0067 Decision 8)`);
+  }
+  if (typeof text !== 'string' || text.trim().length === 0) {
+    throw new Error('consensus-task: the contested items are empty');
+  }
+  const { frontmatter } = parseWorkflowFile(await readFile(workflowPath, 'utf8'));
+  const result = (frontmatter.ensemble_results ?? []).find((e) => e?.run_id === runId);
+  if (!result) {
+    throw new Error(
+      `consensus-task: run ${runId} has no ensemble result on this workflow; settle it first (peer-runner.mjs settle) (ADR-0067 Decision 8)`,
+    );
+  }
+  if (result.verdict !== 'conflict') {
+    throw new Error(
+      `consensus-task: run ${runId} is recorded with verdict ${JSON.stringify(result.verdict)}, not conflict; only a conflict is put to a consensus round (ADR-0067 Decision 8)`,
+    );
+  }
+  const paths = consensusTaskPaths(workflowPath, frontmatter.workflow_id, runId);
+  if (!paths) {
+    throw new Error(`consensus-task: ${JSON.stringify(workflowPath)} is not a workflow file under the ${personaName()} state home`);
+  }
+  await ensureDir(paths.dir, 0o700);
+  await atomicWrite(paths.file, `${scrubSecrets(text).trim()}\n`, ownership);
+  return {
+    path: paths.file,
+    pointer: paths.pointer,
+    workflowId: frontmatter.workflow_id,
+    runId,
+    command: consensusCommand(paths.file, host),
+  };
+}
+
+// A path as one shell word: as written when it holds only safe characters,
+// single-quoted otherwise.
+function shellWord(text) {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(text) ? text : `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
+// The bounded round ADR-0067 Decision 8 proposes: both peers, at most two
+// rounds, the task file by its absolute path (consensus.mjs resolves a
+// relative one against its working directory).
+function consensusCommand(taskFile, host) {
+  return `${host === 'codex' ? '$' : '/'}runtime:consensus plan --task-file ${shellWord(taskFile)} --peers claude,codex --max-rounds 2`;
+}
+
+/**
+ * ADR-0067 Decision 8 — the consensus proposal of a workflow's conflict gate,
+ * read-only. Current only while a conflict gate is set with a run id, the
+ * workflow's ensemble_results holds that run with the verdict conflict, and
+ * the task file for that run exists; judged from the frontmatter and the
+ * file's existence, never its content. `command` is the next step the
+ * proposal selects, with the file's absolute path; nothing runs it.
+ */
+export async function consensusProposal({ workflowPath, host = 'claude' }) {
+  validateHost(host);
+  const { frontmatter } = await readWorkflow(workflowPath);
+  const gate = frontmatter.awaiting_owner_gate ?? null;
+  const runId = frontmatter.awaiting_owner_run_id ?? null;
+  const not = (reason) => ({ current: false, reason, gate, run_id: runId });
+  if (gate === null) return not('no owner gate is set');
+  if (!CONFLICT_OWNER_GATES.has(gate)) return not(`the owner gate ${gate} is not a conflict gate`);
+  if (runId === null) return not(`the ${gate} gate records no run id (an owner selection, a veto, or a gate set before ADR-0067)`);
+  const result = (frontmatter.ensemble_results ?? []).find((e) => e?.run_id === runId);
+  if (!result) return not(`run ${runId} has no ensemble result on this workflow`);
+  if (result.verdict !== 'conflict') return not(`run ${runId} is recorded with verdict ${result.verdict}`);
+  const paths = consensusTaskPaths(workflowPath, frontmatter.workflow_id, runId);
+  if (!paths) return not('the workflow file is under no state home');
+  if (!(await pathStat(paths.file))) return not(`the task file ${paths.pointer} does not exist`);
+  return {
+    current: true,
+    gate,
+    run_id: runId,
+    task_file: paths.file,
+    pointer: paths.pointer,
+    command: consensusCommand(paths.file, host),
+  };
+}
 
 // ADR-0063 — the pointer of an owner gate a runbook sets names a section of
 // the workflow file itself, so the script derives it from the file's path
@@ -3379,11 +3592,12 @@ function resolveAwaitingOwnerPointer({ workflowPath, pointer, anchor }) {
   return `${absolute.slice(inferred.stateRoot.length + 1)}#${anchor}`;
 }
 
-// The three awaiting_owner_* keys for a gate, checked before any lock is
-// taken: a gate this persona cannot set is refused here (PC2b DD2).
+// The awaiting_owner_* keys for a gate, checked before any lock is taken: a
+// gate this persona cannot set is refused here (PC2b DD2), and so is a run id
+// on a gate that is not a conflict gate (ADR-0067 Decision 8).
 function resolveOwnerGateFields({ workflowPath, ownerGate, now }) {
   if (typeof ownerGate !== 'object' || ownerGate === null || Array.isArray(ownerGate)) {
-    throw new Error('ownerGate must be an object { gate, pointer | anchor, since? }');
+    throw new Error('ownerGate must be an object { gate, pointer | anchor, since?, runId? }');
   }
   assertSettableOwnerGate(ownerGate.gate);
   const fields = {
@@ -3393,6 +3607,15 @@ function resolveOwnerGateFields({ workflowPath, ownerGate, now }) {
       workflowPath, pointer: ownerGate.pointer, anchor: ownerGate.anchor,
     }),
   };
+  if (ownerGate.runId !== undefined) {
+    if (!CONFLICT_OWNER_GATES.has(ownerGate.gate)) {
+      throw new Error(
+        `only a conflict gate (${[...CONFLICT_OWNER_GATES].join(', ')}) records the run id of its synthesis; ` +
+          `${ownerGate.gate} does not (ADR-0067 Decision 8)`,
+      );
+    }
+    fields.awaiting_owner_run_id = ownerGate.runId;
+  }
   validateSchema14Fields(fields);
   return fields;
 }
@@ -3402,6 +3625,9 @@ function resolveOwnerGateFields({ workflowPath, ownerGate, now }) {
 // workflow waiting on its owner is not complete, so an inherited terminal
 // marker is turned off in the same write: otherwise the Stop hook could
 // archive it once HEAD moved, burying the gate (gate 5 refuses that too).
+// ADR-0067 Decision 8: every gate write sets the run id or deletes it, and
+// returns the run id it replaced, whose task file the caller retires once the
+// write has landed.
 function applyOwnerGate(frontmatter, fields) {
   const current = frontmatter.awaiting_owner_gate;
   if (current !== undefined && current !== fields.awaiting_owner_gate) {
@@ -3409,9 +3635,12 @@ function applyOwnerGate(frontmatter, fields) {
       `owner gate ${current} is already set on this workflow; it must be cleared before ${fields.awaiting_owner_gate} can be set`,
     );
   }
+  const replaced = frontmatter.awaiting_owner_run_id;
   Object.assign(frontmatter, fields);
+  if (!('awaiting_owner_run_id' in fields)) delete frontmatter.awaiting_owner_run_id;
   if (frontmatter.terminal_marker === true) frontmatter.terminal_marker = false;
   validateSchema14Fields(frontmatter);
+  return replaced !== undefined && replaced !== fields.awaiting_owner_run_id ? replaced : null;
 }
 
 /**
@@ -3419,7 +3648,11 @@ function applyOwnerGate(frontmatter, fields) {
  * surface that pauses sets the gate. Only one gate is modelled at a time:
  * setting a gate while a different one is set is refused; setting the gate
  * that is already set replaces its pointer and since. Only the gates this
- * persona can set are accepted (settableOwnerGates).
+ * persona can set are accepted (settableOwnerGates). A conflict gate may name
+ * the run whose synthesis set it (`runId`, ADR-0067 Decision 8: inside a
+ * start lifecycle, which sets its gates this way); a gate set without one
+ * deletes the key, and a re-set that names another run, or none, retires the
+ * task file of the run it replaces.
  */
 export async function setAwaitingOwner({
   workflowPath,
@@ -3430,15 +3663,16 @@ export async function setAwaitingOwner({
   // workflow's own path: `<path relative to its repo root>#<anchor>`.
   anchor,
   since,
+  runId,
   now = new Date(),
 }) {
   validateHost(host);
-  const fields = resolveOwnerGateFields({ workflowPath, ownerGate: { gate, pointer, anchor, since }, now });
+  const fields = resolveOwnerGateFields({ workflowPath, ownerGate: { gate, pointer, anchor, since, runId }, now });
   return withFileLock(workflowPath, async ({ lockPath, token }) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     const nowIso = isoUtc(now);
-    applyOwnerGate(frontmatter, fields);
+    const replacedRunId = applyOwnerGate(frontmatter, fields);
     frontmatter.updated_at = nowIso;
     frontmatter.host_history = [
       ...(frontmatter.host_history ?? []),
@@ -3449,7 +3683,10 @@ export async function setAwaitingOwner({
       assembleWorkflowFile(frontmatter, body),
       { lockPath, token },
     );
-    return { frontmatter, workflowPath };
+    const retired = replacedRunId === null
+      ? { retired: null, warning: null }
+      : await retireConsensusTask(workflowPath, frontmatter.workflow_id, replacedRunId, { lockPath, token });
+    return { frontmatter, workflowPath, retired };
   });
 }
 
@@ -3501,11 +3738,14 @@ export async function clearAwaitingOwner({
       throw new Error(`the owner gate set on this workflow is ${current}, not ${gate}`);
     }
     const nowIso = isoUtc(now);
+    // ADR-0067 Decision 8 — the run id goes with the gate's other keys, and
+    // the task file of that run is retired once this write has landed.
+    const runId = frontmatter.awaiting_owner_run_id;
     const note =
       `### Owner gate resolved: ${gate} at ${nowIso}\n\n` +
       (resolution !== undefined ? `${resolution.trim()}\n\n` : '') +
       `Cleared awaiting_owner (since ${frontmatter.awaiting_owner_since}, ` +
-      `pointer ${frontmatter.awaiting_owner_pointer}).\n\n`;
+      `pointer ${frontmatter.awaiting_owner_pointer}${runId !== undefined ? `, run ${runId}` : ''}).\n\n`;
     for (const k of AWAITING_OWNER_KEYS) delete frontmatter[k];
     applyNextStepWrite(frontmatter, nextStepWrite);
     if (nextAction !== undefined) frontmatter.next_action = nextAction;
@@ -3519,7 +3759,10 @@ export async function clearAwaitingOwner({
       assembleWorkflowFile(frontmatter, appendToBody(body, note)),
       { lockPath, token },
     );
-    return { frontmatter, workflowPath };
+    const retired = runId === undefined
+      ? { retired: null, warning: null }
+      : await retireConsensusTask(workflowPath, frontmatter.workflow_id, runId, { lockPath, token });
+    return { frontmatter, workflowPath, retired };
   });
 }
 
@@ -3527,6 +3770,8 @@ export async function clearAwaitingOwner({
 // command sigil. The resolving surface clears the gate.
 const OWNER_GATE_RESOLUTION = Object.freeze({
   'decide-conflict': (p) => `the owner selects a direction in ${p}decide, whose Owner selection step clears the gate`,
+  // ADR-0067 Decision 8: critique and investigate stop on it in either mode.
+  'peer-conflict': () => 'the owner rules on the contested items in the phase note (after the bounded consensus round proposed there, when it is run), then clears the gate with the ruling and the next step',
   'recurring-finding': (p) => `the owner decides to fix the finding now or defer it in ${p}refine, whose Owner decision step clears the gate`,
   // commit_surface and dispatch_target gates, settable only with those on.
   'staging-set': (p) => `the owner confirms the staging set in ${p}commit, which clears the gate and then commits`,
@@ -3622,6 +3867,9 @@ export async function autopilotPreflight({
   const how = gate.lifecycle
     ? `the owner resolves it, then ${prefix}start resumes the lifecycle, clearing the gate with the phase it continues at`
     : OWNER_GATE_RESOLUTION[gate.gate]?.(prefix) ?? 'the owner resolves it, then clears the gate';
+  // ADR-0067 Decision 8 — a conflict gate whose task file is current proposes
+  // a bounded consensus round before the owner decides. The owner runs it.
+  const proposal = CONFLICT_OWNER_GATES.has(gate.gate) ? await consensusProposal({ workflowPath, host }) : null;
   return {
     mode: 'interactive',
     ignored: mode.ignored,
@@ -3630,6 +3878,9 @@ export async function autopilotPreflight({
     stdout:
       `Owner gate ${gate.gate} is pending since ${gate.since}: ${gate.pointer}.\n` +
       `Put it to the user before this command continues: ${how}.\n` +
+      (proposal?.current
+        ? `Proposed first, for the owner to run: a bounded consensus round on the contested items, ${proposal.command}\n`
+        : '') +
       `Clearing it by hand once it is resolved, with the next step the owner chose ` +
       `and its action, which replaces the gate's (PC3b): ` +
       `node "${scriptPath}" awaiting-owner-clear --workflow-path "${workflowPath}" ` +
@@ -3660,7 +3911,9 @@ export async function finishVerb({
   host,
   nextAction,
   nextStep,
-  // `{ gate, anchor | pointer }`: the owner judgment this verb stops on.
+  // `{ gate, anchor | pointer, runId? }`: the owner judgment this verb stops
+  // on; a conflict gate names the run whose synthesis set it (ADR-0067
+  // Decision 8).
   ownerGate,
   env = process.env,
   now = new Date(),
@@ -4710,12 +4963,15 @@ function cliPrintHelp() {
       '  finish-verb --workflow-path <path> --host <host> --next-action <text>',
       '              --next-step-kind verb|commit|owner-decision|done',
       '              --next-step-confidence HIGH|MEDIUM|LOW [--next-step-verb <verb>]',
-      '              [--owner-gate <gate> --owner-gate-anchor <label>]',
+      '              [--owner-gate <gate> --owner-gate-anchor <label>',
+      '               [--owner-gate-run-id <run id>]]',
       "    ADR-0063 D3 — a verb's final write: set-terminal summary-complete with",
       '    the terminal marker, plus the next step (commit_surface off: kind commit',
       '    means the owner publishes). --owner-gate needs --next-step-kind',
       '    owner-decision; it is recorded with the next step in one write and the',
-      '    workflow stays open until the owner resolves it.',
+      '    workflow stays open until the owner resolves it. A conflict gate',
+      `    (${[...CONFLICT_OWNER_GATES].join(', ')}) records the run whose synthesis set it`,
+      '    with --owner-gate-run-id (ADR-0067 Decision 8).',
       ...(capabilityOn('dispatch_target')
         ? ['    Under an autopilot run: the next step only, terminal marker unset, and', '    a pending peer ensemble is refused.']
         : []),
@@ -4738,11 +4994,14 @@ function cliPrintHelp() {
       `  awaiting-owner-set --workflow-path <path> --host <host>`,
       `                     --gate ${[...VALID_WORKFLOW_OWNER_GATES].join('|')}`,
       '                     (--pointer <repo-relative path#anchor> | --anchor <label>)',
-      '                     [--since <YYYY-MM-DDTHH:MM:SSZ>]',
+      '                     [--since <YYYY-MM-DDTHH:MM:SSZ>] [--run-id <run id>]',
       '    ADR-0063 D6 — record the owner gate this workflow waits on. Default',
       "    --since is now. --anchor derives the pointer from the workflow's own",
       '    path. Exit 1 when a different gate is already set, or for a gate whose',
       `    capability is off (settable here: ${[...settableOwnerGates()].join(', ')}).`,
+      '    --run-id: a conflict gate names the run whose synthesis set it; a gate',
+      '    set without one deletes it, and a re-set that names another run, or',
+      '    none, retires the task file of the run it replaces (ADR-0067 Decision 8).',
       '',
       '  awaiting-owner-clear --workflow-path <path> --host <host> --gate <gate>',
       '                       [--next-step-kind <kind> --next-step-confidence <c>',
@@ -4752,7 +5011,25 @@ function cliPrintHelp() {
       '    append an "Owner gate resolved" phase note, with the next step the',
       '    owner chose (or none, --clear-next-step true), the next action that',
       '    replaces the gate\'s, and the decision in words in the same write. Exit 1 when',
-      `    the gate is not the one set${capabilityOn('dispatch_target') ? ', or under an autopilot run' : ''}.`,
+      `    the gate is not the one set${capabilityOn('dispatch_target') ? ', or under an autopilot run' : ''}. The run id goes with the`,
+      '    gate, and the task file of that run is retired (ADR-0067 Decision 8).',
+      '',
+      '  consensus-task --workflow-path <path> --run-id <run id> [--host <host>]',
+      '                 (--text <contested items> | --text-file <path>)',
+      '    ADR-0067 Decision 8 — write the contested items of a conflict as the',
+      "    workflow's consensus task file, <home>/consensus/<workflow id>.<run id>.md,",
+      '    and print the runtime:consensus command the proposal selects, with the',
+      "    file's absolute path. Exit 1 unless ensemble_results holds the run with",
+      '    the verdict conflict.',
+      '',
+      '  ensemble-verdict --workflow-path <path> --run-id <run id>',
+      '    Read-only (ADR-0067 Decision 8). Print the verdict ensemble_results',
+      '    records for the run, an empty line when it records none.',
+      '',
+      '  consensus-proposal --workflow-path <path> [--host <host>]',
+      "    Read-only (ADR-0067 Decision 8). Whether the workflow's conflict gate has",
+      '    a current task file, and the runtime:consensus command it proposes, as',
+      '    JSON {current, gate, run_id, task_file?, pointer?, command? | reason}.',
       '',
       '  archive --workflow-path <path> --host <host> --repo-root <path>',
       '    ADR-0017 sub-5 — move workflow file from workflows/ to archive/.',
@@ -5198,21 +5475,23 @@ async function cliRun(subcommand, flags) {
         if (!('pointer' in flags) && !('anchor' in flags)) {
           throw new Error('Missing required flags: --pointer or --anchor');
         }
-        await setAwaitingOwner({
+        const set = await setAwaitingOwner({
           workflowPath: flags['workflow-path'],
           host: flags.host,
           gate: flags.gate,
           pointer: flags.pointer,
           anchor: flags.anchor,
           since: flags.since,
+          runId: flags['run-id'],
         });
+        if (set.retired.warning) process.stderr.write(`warning: ${set.retired.warning}\n`);
         process.stdout.write(`${flags['workflow-path']}\n`);
         return 0;
       }
 
       case 'awaiting-owner-clear': {
         cliRequire(flags, ['workflow-path', 'host', 'gate']);
-        await clearAwaitingOwner({
+        const cleared = await clearAwaitingOwner({
           workflowPath: flags['workflow-path'],
           host: flags.host,
           gate: flags.gate,
@@ -5221,7 +5500,52 @@ async function cliRun(subcommand, flags) {
           nextAction: flags['next-action'],
           resolution: flags.resolution,
         });
+        if (cleared.retired.warning) process.stderr.write(`warning: ${cleared.retired.warning}\n`);
         process.stdout.write(`${flags['workflow-path']}\n`);
+        return 0;
+      }
+
+      // ADR-0067 Decision 8 — the consensus task file of a conflict: written
+      // once the run's conflict is settled, before the gate names it.
+      case 'consensus-task': {
+        cliRequire(flags, ['workflow-path', 'run-id']);
+        if (('text' in flags) === ('text-file' in flags)) {
+          throw new Error('consensus-task takes the contested items as --text <items> or --text-file <path>, one of them');
+        }
+        const text = 'text' in flags ? flags.text : await readFile(flags['text-file'], 'utf8');
+        const written = await writeConsensusTask({
+          workflowPath: flags['workflow-path'],
+          runId: flags['run-id'],
+          text,
+          host: flags.host ?? 'claude',
+        });
+        process.stdout.write(`${written.command}\n`);
+        return 0;
+      }
+
+      // Read-only (ADR-0067 Decision 8): the verdict ensemble_results records
+      // for a run, empty when it records none (or no run launched). A verb's
+      // finalize branches on it, the settled verdict, not on the agent's own.
+      case 'ensemble-verdict': {
+        cliRequire(flags, ['workflow-path']);
+        const runId = flags['run-id'] ?? '';
+        const { frontmatter } = await readWorkflow(flags['workflow-path']);
+        const result = runId === ''
+          ? null
+          : (frontmatter.ensemble_results ?? []).find((e) => e?.run_id === runId) ?? null;
+        process.stdout.write(`${result?.verdict ?? ''}\n`);
+        return 0;
+      }
+
+      // Read-only: whether the workflow's conflict gate has a current task
+      // file, and the consensus command it proposes (JSON, exit 0 either way).
+      case 'consensus-proposal': {
+        cliRequire(flags, ['workflow-path']);
+        const proposal = await consensusProposal({
+          workflowPath: flags['workflow-path'],
+          host: flags.host ?? 'claude',
+        });
+        process.stdout.write(`${JSON.stringify(proposal)}\n`);
         return 0;
       }
 
@@ -5245,13 +5569,16 @@ async function cliRun(subcommand, flags) {
         if (('owner-gate' in flags) !== ('owner-gate-anchor' in flags)) {
           throw new Error('--owner-gate and --owner-gate-anchor go together');
         }
+        if ('owner-gate-run-id' in flags && !('owner-gate' in flags)) {
+          throw new Error('--owner-gate-run-id goes with --owner-gate (ADR-0067 Decision 8)');
+        }
         const result = await finishVerb({
           workflowPath: flags['workflow-path'],
           host: flags.host,
           nextAction: flags['next-action'],
           nextStep: cliNextStep(flags),
           ownerGate: 'owner-gate' in flags
-            ? { gate: flags['owner-gate'], anchor: flags['owner-gate-anchor'] }
+            ? { gate: flags['owner-gate'], anchor: flags['owner-gate-anchor'], runId: flags['owner-gate-run-id'] }
             : undefined,
           // As for set-terminal: a verb completion fires the ADR-0031
           // session-handoff sidecar.
