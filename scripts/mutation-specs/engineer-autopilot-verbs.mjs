@@ -85,9 +85,9 @@ export const MUTATIONS = [
   },
   {
     id: 'S7', file: STATE, tests: [T_AV],
-    from: '    if (gateFields) applyOwnerGate(frontmatter, gateFields);',
-    to: '',
-    why: 'finish-verb --owner-gate records no gate, so the driver proceeds past the conflict',
+    from: '    const replacedRunId = gateFields ? applyOwnerGate(frontmatter, gateFields) : null;',
+    to: '    const replacedRunId = null;',
+    why: 'finish-verb --owner-gate records no gate: the owner-decision next step is written without the gate that names the judgment and how it is resolved',
   },
   {
     id: 'S8', file: STATE, tests: [T_AV],
@@ -263,9 +263,9 @@ export const MUTATIONS = [
   // ---- X: the Codex round-2 findings -------------------------------------------
   {
     id: 'X1', file: STATE, tests: [T_AV, T_EC],
-    from: '  Object.assign(frontmatter, fields);\n  if (frontmatter.terminal_marker === true) frontmatter.terminal_marker = false;\n  validateSchema14Fields(frontmatter);',
-    to: '  Object.assign(frontmatter, fields);\n  validateSchema14Fields(frontmatter);',
-    why: 'an owner gate is recorded on a terminal workflow, and a later refusal leaves it for the Stop hook to archive',
+    from: "  if (!('awaiting_owner_run_id' in fields)) delete frontmatter.awaiting_owner_run_id;\n  if (frontmatter.terminal_marker === true) frontmatter.terminal_marker = false;\n  validateSchema14Fields(frontmatter);",
+    to: "  if (!('awaiting_owner_run_id' in fields)) delete frontmatter.awaiting_owner_run_id;\n  validateSchema14Fields(frontmatter);",
+    why: 'an owner gate is recorded on a terminal workflow and its terminal marker stays on, so a workflow waiting on its owner reads as complete (the Stop hook\'s own gate check is what still keeps it)',
   },
   {
     id: 'X2', file: P7, tests: [T_EC],

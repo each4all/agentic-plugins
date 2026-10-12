@@ -67,13 +67,13 @@ export const MUTATIONS = [
   },
   {
     id: 'H5', tests: [T_HEADLESS], file: 'plugins/engineer/commands/refine.md',
-    from: `\`\`\`bash\n${generatedOpening('engineer')}\nENSEMBLE_TYPE='refine-verify'\n`,
-    to: `\`\`\`bash\nnode "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE"\n${generatedOpening('engineer')}\nENSEMBLE_TYPE='refine-verify'\n`,
+    from: `\`\`\`bash\nTEXT_DIR='<directory from step 1>'\n${generatedOpening('engineer')}\nENSEMBLE_TYPE='refine-verify'\n`,
+    to: `\`\`\`bash\nTEXT_DIR='<directory from step 1>'\nnode "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE"\n${generatedOpening('engineer')}\nENSEMBLE_TYPE='refine-verify'\n`,
     why: 'the root is used before the resolver sets it',
   },
   {
     id: 'H6', tests: [T_HEADLESS], file: 'plugins/founder/commands/refine.md',
-    from: 'AGENTIC_FOUNDER_ROOT', to: 'AGENTIC_ENGINEER_ROOT', count: 6,
+    from: "printenv 'AGENTIC_FOUNDER_ROOT'", to: "printenv 'AGENTIC_ENGINEER_ROOT'", count: 7,
     why: 'a founder runbook honours the engineer override — the driver would point it at the wrong plugin',
   },
   {

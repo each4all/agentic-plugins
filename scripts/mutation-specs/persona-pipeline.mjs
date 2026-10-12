@@ -401,7 +401,7 @@ export const MUTATIONS = [
     id: 'O26', tests: [T_STOP],
     prepare: (copy, tools) => {
       // The recheck runs on a read made before either lock.
-      tools.applyEdit(copy, { file: 'persona-pipeline/files/scripts/state.mjs', from: '  return withDirectoryLock(dirLockRoot, async () => {\n    const sourceStat = await pathStat(workflowPath);\n', to: "  const early = recheck ? recheck(parseWorkflowFile(await readFile(workflowPath, 'utf8')).frontmatter) : [];\n  if (early.length > 0) return { archived: false, reason: 'gate-not-met-under-lock', gateFailures: early, workflowPath };\n  return withDirectoryLock(dirLockRoot, async () => {\n    const sourceStat = await pathStat(workflowPath);\n" });
+      tools.applyEdit(copy, { file: 'persona-pipeline/files/scripts/state.mjs', from: '  return withCreationLocks(sourceStorage, async () => {\n    const sourceStat = await pathStat(workflowPath);\n', to: "  const early = recheck ? recheck(parseWorkflowFile(await readFile(workflowPath, 'utf8')).frontmatter) : [];\n  if (early.length > 0) return { archived: false, reason: 'gate-not-met-under-lock', gateFailures: early, workflowPath };\n  return withCreationLocks(sourceStorage, async () => {\n    const sourceStat = await pathStat(workflowPath);\n" });
       tools.applyEdit(copy, { file: 'persona-pipeline/files/scripts/state.mjs', from: '      if (recheck) {\n', to: '      if (false) {\n' });
       regenerate(copy);
     },
@@ -443,8 +443,8 @@ export const MUTATIONS = [
     id: 'O11', tests: [T_S14],
     prepare: (copy, tools) => canonicalDefect(copy, tools, {
       dest: 'scripts/state.mjs',
-      from: "  Object.assign(frontmatter, fields);\n  if (frontmatter.terminal_marker === true) frontmatter.terminal_marker = false;\n",
-      to: "  Object.assign(frontmatter, fields);\n",
+      from: "  if (!('awaiting_owner_run_id' in fields)) delete frontmatter.awaiting_owner_run_id;\n  if (frontmatter.terminal_marker === true) frontmatter.terminal_marker = false;\n",
+      to: "  if (!('awaiting_owner_run_id' in fields)) delete frontmatter.awaiting_owner_run_id;\n",
     }),
     why: "a gate set on a terminal workflow leaves its marker on, in front of the Stop hook",
   },
@@ -452,8 +452,8 @@ export const MUTATIONS = [
     id: 'O12', tests: [T_S14],
     prepare: (copy, tools) => canonicalDefect(copy, tools, {
       dest: 'scripts/state.mjs',
-      from: "  if (ownerGate !== undefined) {\n    const result = await appendPhase({\n",
-      to: "  if (false) {\n    const result = await appendPhase({\n",
+      from: "  if (autopilot || ownerGate !== undefined) {\n    const result = await appendPhase({\n",
+      to: "  if (autopilot) {\n    const result = await appendPhase({\n",
     }),
     why: "finish-verb with an owner gate makes the terminal write and records no gate",
   },
@@ -461,8 +461,8 @@ export const MUTATIONS = [
     id: 'O13', tests: [T_S14],
     prepare: (copy, tools) => canonicalDefect(copy, tools, {
       dest: 'scripts/state.mjs',
-      from: "  if (ownerGate !== undefined) {\n    const result = await appendPhase({\n",
-      to: "  if (ownerGate !== undefined || isAutopilotRun()) {\n    const result = await appendPhase({\n",
+      from: "  const autopilot = autopilotMode({ env, host }).active;\n  if (autopilot) {\n    const { frontmatter } = await readWorkflow(workflowPath);\n",
+      to: "  const autopilot = isAutopilotRun(env);\n  if (autopilot) {\n    const { frontmatter } = await readWorkflow(workflowPath);\n",
     }),
     why: "an inherited AGENTIC_AUTOPILOT suppresses a verb's terminal write (the acceptance case)",
   },
@@ -506,8 +506,8 @@ export const MUTATIONS = [
     id: 'O18', tests: [T_S14],
     prepare: (copy, tools) => canonicalDefect(copy, tools, {
       dest: 'scripts/state.mjs',
-      from: "          clearNextStep: cliBoolean(flags, 'clear-next-step', false),\n",
-      to: "          clearNextStep: false,\n",
+      from: "          clearNextStep: cliBoolean(flags, 'clear-next-step', false),\n          clearTerminalMarker: cliBoolean(flags, 'clear-terminal-marker', false),\n",
+      to: "          clearNextStep: false,\n          clearTerminalMarker: cliBoolean(flags, 'clear-terminal-marker', false),\n",
     }),
     why: "append ignores --clear-next-step, so a resumed verb keeps the previous verb's next step",
   },
@@ -581,7 +581,7 @@ export const MUTATIONS = [
     id: 'E5', tests: [T_SETTLE],
     prepare: (copy, tools) => canonicalDefect(copy, tools, {
       dest: 'scripts/peer-runner.mjs',
-      from: "  if (typeof handle.workflow_path !== 'string' || resolve(handle.workflow_path) !== wf) {\n",
+      from: "  if (typeof handle.workflow_path !== 'string' || !samePhysicalFile(handle.workflow_path, wf)) {\n",
       to: "  if (false) {\n",
     }),
     why: "another workflow's run is settled into this one",
@@ -667,8 +667,8 @@ export const MUTATIONS = [
     id: 'E15', tests: [T_SETTLE],
     prepare: (copy, tools) => canonicalDefect(copy, tools, {
       dest: 'scripts/peer-runner.mjs',
-      from: "      const next = await updateHandle(paths.handle, (h) => {\n        if (isTerminalStatus(h.status)) return h;\n        h.status = shape.ok",
-      to: "      const next = await updateHandle(paths.handle, (h) => {\n        h.status = shape.ok",
+      from: "    const next = await updateHandle(paths.handle, (h) => {\n      if (isTerminalStatus(h.status)) return h;\n      h.completed_at ??= now.toISOString();\n      if (envelope === null) {\n",
+      to: "    const next = await updateHandle(paths.handle, (h) => {\n      h.completed_at ??= now.toISOString();\n      if (envelope === null) {\n",
     }),
     killed_by: /reconcile through an envelope never replaces a terminal status already on disk \(re-review\)$/,
     why: 'a cancel that landed after the caller read the handle is overwritten as completed when an envelope exists',
@@ -697,7 +697,7 @@ export const MUTATIONS = [
     id: 'E11', tests: [T_SETTLE],
     prepare: (copy, tools) => canonicalDefect(copy, tools, {
       dest: 'scripts/peer-runner.mjs',
-      from: "      out.push(`${entry.name} (unreadable handle)`);\n",
+      from: "      out.push(`${runId} (unreadable handle)`);\n",
       to: "",
     }),
     why: "an empty run id skips beside a handle it cannot read, which could be the attempt",
@@ -935,7 +935,7 @@ export const MUTATIONS = [
   {
     id: 'G46', tests: ['tests/persona-pipeline/test-footer-activation.mjs'],
     prepare: (copy, tools) => {
-      tools.applyEdit(copy, { file: 'persona-pipeline/files/scripts/state.mjs', from: '          // session-handoff sidecar.\n          emitHandoff: true,\n        });\n        if (result.terminal === false) {', to: '          // session-handoff sidecar.\n          emitHandoff: false,\n        });\n        if (result.terminal === false) {' });
+      tools.applyEdit(copy, { file: 'persona-pipeline/files/scripts/state.mjs', from: "          // session-handoff sidecar.\n          emitHandoff: true,\n        });\n        if (result.mode === 'autopilot') {", to: "          // session-handoff sidecar.\n          emitHandoff: false,\n        });\n        if (result.mode === 'autopilot') {" });
       regenerate(copy);
     },
     killed_by: [/CLI finish-verb renders the footer on STDERR like set-terminal/],
@@ -2783,7 +2783,7 @@ export const MUTATIONS = [
   // G: a shared start template defect, regenerated into every persona.
   {
     id: 'G71', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/start-resume.md', from: 'then re-run /${PERSONA}:start." >&2\n  exit 1\n', to: 'then re-run /${PERSONA}:start." >&2\n' }),
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/start-resume.md', from: 'would carry its changes along." >&2\n  exit 1\n', to: 'would carry its changes along." >&2\n' }),
     killed_by: templateCaught('regions/start-resume.md', /^start resume, run: a start workflow is written/),
     why: 'the resume prints the typed conflict and falls through, so the lifecycle runs on in a single-verb workflow (ADR-0020 §Sub-decision 4)',
   },
@@ -2849,10 +2849,10 @@ export const MUTATIONS = [
   },
   {
     id: 'N52', tests: [T_CONTRACT, 'tests/plugin-shape/test-engineer-start.mjs'],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/start-bootstrap.md', from: '    echo "    • worktree: /runtime:worktree plan  (suggests a git worktree add command once its checks pass; re-run in the new worktree)" >&2\n', to: '' }),
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/start-bootstrap.md', from: '    node "$CLAUDE_PLUGIN_ROOT/scripts/discover-runtime.mjs" worktree-plan --repo-root "$REPO_ROOT" \\\n      --task "$FEATURE" --base "$BASE_BRANCH" --host "${AGENTIC_HOST:-claude}" --format text >&2\n', to: '' }),
     killed_by: [
       /(?:^| > )engineer\/commands\/start\.md \(committed\) > start bootstrap, run: only a clean or accepted baseline/,
-      /\/engineer:start — runtime:worktree routes name a subcommand the CLI accepts > the Layer 1 gate's worktree resolution/,
+      /\/engineer:start — runtime:worktree routes name a subcommand the CLI accepts > the Layer 1 gate selects a worktree first/,
     ],
     why: "engineer's dirty-tree refusal drops the worktree resolution (ADR-0028 §Layer-1)",
   },

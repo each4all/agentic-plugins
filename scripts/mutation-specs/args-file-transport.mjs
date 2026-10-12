@@ -227,8 +227,8 @@ export const MUTATIONS = [
   },
   {
     id: 'K5', tests: [T_ARGS], file: 'plugins/engineer/commands/start.md',
-    from: `FEATURE="$(printf '%s' "$START_ARGS" | jq -j .feature; printf x)"; FEATURE="\${FEATURE%x}"`,
-    to: `FEATURE="$(printf '%s' "$START_ARGS" | jq -r .feature)"`,
+    from: `FEATURE="$(printf '%s' "$START_ARGS" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>process.stdout.write(JSON.parse(s).feature))'; printf x)"; FEATURE="\${FEATURE%x}"`,
+    to: `FEATURE="$(printf '%s' "$START_ARGS" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>process.stdout.write(JSON.parse(s).feature))')"`,
     why: 'the start block reads FEATURE through a bare command substitution, which drops trailing newlines',
   },
 ];
