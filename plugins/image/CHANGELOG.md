@@ -2,6 +2,13 @@
 
 All notable changes to the `image` plugin are documented here.
 
+## [0.4.0](https://github.com/each4all/agentic-plugins/compare/plugin-image-v0.3.3...plugin-image-v0.4.0) (2026-10-12)
+
+
+### Features
+
+* **plugin/image:** disclose the Codex (OpenAI) send in the dispatch helpers instead of genericizing the request ([74a3678](https://github.com/each4all/agentic-plugins/commit/74a3678eb826248f2ea50672fea274bf8798253f))
+
 ## [0.3.3](https://github.com/each4all/agentic-plugins/compare/plugin-image-v0.3.2...plugin-image-v0.3.3) (2026-09-29)
 
 
