@@ -327,13 +327,14 @@ ADR-0001 final note.
   specs named after `--`), each to the tree as it is, and run no test: it
   reports each case a run would refuse (a drifted anchor, a `prepare` that
   fails, a test file that is gone) and exits 1 on any. About a minute for all
-  specs; run it after editing anchored source. Nothing in CI runs it yet.
+  specs; run it after editing anchored source. `validate.yml` runs it on
+  every push.
 
 GitHub Actions run on Node 24. `full-tests.yml` runs the full `npm test` once,
 with no path filter: it is the only workflow that runs tests, and the
 repo-level coverage authority (ADR-0033). `validate.yml` runs the non-test
-checks: `lint:plugin-shape`, the persona-pipeline drift check and the three
-validators, with `--base` set to
+checks: `lint:plugin-shape`, the persona-pipeline drift check, the static
+mutation anchor check and the three validators, with `--base` set to
 main's previous commit on a push to `main` and to the branch's fork point on
 `main` on a push to any other branch (a manual dispatch compares no
 baseline). Both run on a push to any branch and on `workflow_dispatch`,
