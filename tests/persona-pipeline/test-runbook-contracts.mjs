@@ -22,9 +22,9 @@
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { availableParallelism, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
@@ -280,6 +280,96 @@ const REFUSED_TEXTS = [
   ['holding a NUL byte', Buffer.from('a\0b\n')], ['holding bytes that are not UTF-8', Buffer.from([0xff, 0x0a])],
 ];
 
+// A block runs in well under a second. A run still going after this long is
+// stopped, so a test the runner timed out does not leave its child running
+// beside the suite's next test, and its directory is still removed.
+const CHILD_TIMEOUT_MS = 60000;
+// How long a stopped run's group has after each signal (see spawnAsync).
+const KILL_GRACE_MS = 1000;
+// spawnSync's default maxBuffer: a block that prints more fails, as it did.
+const CHILD_MAX_BUFFER = 1024 * 1024;
+
+/**
+ * What `spawnSync(command, args, { ...options, encoding: 'utf8' })` returns
+ * (`status`, `stdout`, `stderr`), without holding the event loop: stdin is
+ * closed at once, as spawnSync closes it with no input.
+ *
+ * The child leads a process group of its own (`detached`). The run is stopped
+ * past `timeoutMs` (it then resolves with status null) or once a stream holds
+ * more than `maxBuffer` bytes (it then rejects, as spawnSync's ENOBUFS, the
+ * error carrying the output kept as `output`). Stopping closes both streams,
+ * so nothing more is read or kept, and signals the whole group: on a timeout
+ * SIGTERM, then SIGKILL KILL_GRACE_MS later; on an overflow SIGKILL. The run
+ * settles once the child has exited and its group is empty, and at most
+ * 2 × KILL_GRACE_MS after the stop, so neither a descendant holding a stream
+ * open nor one that ignores SIGTERM can keep it waiting. A process that left
+ * the group (a session of its own) is not signalled; it only loses the
+ * streams.
+ */
+function spawnAsync(command, args, options = {}, { timeoutMs = CHILD_TIMEOUT_MS, maxBuffer = CHILD_MAX_BUFFER } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { ...options, detached: true });
+    const out = { stdout: '', stderr: '' };
+    // What stopped the run: 'timeout', or the overflow error.
+    let stopped = null;
+    let exited = false;
+    let settled = false;
+    let poll;
+    const timer = setTimeout(() => stop('timeout', 'SIGTERM'), timeoutMs);
+    const settle = (finish) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearInterval(poll);
+      finish();
+    };
+    // `kill(-pgid)`; ESRCH (the group is empty) and a child that never
+    // started (no pid) are not errors here.
+    const signalGroup = (signal) => {
+      try {
+        process.kill(-child.pid, signal);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const stop = (reason, signal) => {
+      if (stopped !== null || settled) return;
+      stopped = reason;
+      clearTimeout(timer);
+      child.stdout.destroy();
+      child.stderr.destroy();
+      signalGroup(signal);
+      const at = Date.now();
+      let killed = signal === 'SIGKILL';
+      poll = setInterval(() => {
+        const waited = Date.now() - at;
+        if (!killed && waited >= KILL_GRACE_MS) {
+          signalGroup('SIGKILL');
+          killed = true;
+        }
+        if ((exited && !signalGroup(0)) || waited >= 2 * KILL_GRACE_MS) {
+          settle(() => (stopped instanceof Error ? reject(stopped) : resolve({ status: null, ...out })));
+        }
+      }, 20);
+    };
+    for (const name of ['stdout', 'stderr']) {
+      child[name].setEncoding('utf8').on('data', (chunk) => {
+        out[name] += chunk;
+        if (Buffer.byteLength(out[name]) > maxBuffer) {
+          stop(Object.assign(new Error(`${command}: ${name} exceeded ${maxBuffer} bytes (ENOBUFS)`), { output: out }), 'SIGKILL');
+        }
+      });
+    }
+    child.on('error', (error) => settle(() => reject(error)));
+    child.on('exit', () => { exited = true; });
+    child.on('close', (status) => {
+      if (stopped === null) settle(() => resolve({ status, ...out }));
+    });
+    child.stdin.end();
+  });
+}
+
 /**
  * Run a runbook block with `node` stubbed: the stub logs each script
  * subcommand, keeps the phase note it was handed (`--phase-note`, or the file
@@ -292,14 +382,18 @@ const REFUSED_TEXTS = [
  * `null` leaves a file unwritten) go into a directory whose name holds a
  * space, which the block's TEXT_DIR line is set to, and peer-now's prompt
  * file and peer lines likewise; `after` is appended to the block.
+ *
+ * Asynchronous, so the per-runbook suites can run side by side (C135): each
+ * call has its own directory, and the block its own environment, so no two
+ * runs share a path or a variable.
  */
-function runBlock(shell, block, persona, { note = null, texts = {}, failAppend = false, active = '', findStatus = 0, resolveStatus = 0, after = '', baseline = '', baselineStatus = 0, readOutput = '', readStatus = 0, preflightStatus = 0, settleStatus = 0, clearStatus = 0, argsText = null, diag = '', diagStatus = 0, phase7Status = 0, recorded = '', proposed = PROPOSED_ROUND, taskStatus = 0 }) {
+async function runBlock(shell, block, persona, { note = null, texts = {}, failAppend = false, active = '', findStatus = 0, resolveStatus = 0, after = '', baseline = '', baselineStatus = 0, readOutput = '', readStatus = 0, preflightStatus = 0, settleStatus = 0, clearStatus = 0, argsText = null, diag = '', diagStatus = 0, phase7Status = 0, recorded = '', proposed = PROPOSED_ROUND, taskStatus = 0 }) {
   const dir = mkdtempSync(join(tmpdir(), 'pc2a2b-finalize.'));
   try {
     mkdirSync(join(dir, 'bin'));
     mkdirSync(join(dir, 'root'));
     // Phase 0 reads the branch: a repository of its own, on a branch.
-    strictEqual(spawnSync('git', ['init', '-q', '-b', 'pc2a2b', dir]).status, 0, 'git init');
+    strictEqual((await spawnAsync('git', ['init', '-q', '-b', 'pc2a2b', dir])).status, 0, 'git init');
     const textDir = join(dir, 'agentic text.x');
     mkdirSync(textDir);
     const files = { ...DEFAULT_TEXTS, ...(note === null ? {} : { 'note.md': `${note}\n` }), ...texts };
@@ -380,7 +474,7 @@ function runBlock(shell, block, persona, { note = null, texts = {}, failAppend =
       STUB_DIAGNOSTIC: RESOLVER_DIAGNOSTIC,
       ...(failAppend ? { STUB_FAIL_APPEND: '1' } : {}),
     };
-    const r = spawnSync(shell, ['-c', script], { cwd: dir, env, encoding: 'utf8' });
+    const r = await spawnAsync(shell, ['-c', script], { cwd: dir, env });
     const read = (f) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), 'utf8') : null);
     const textsRead = (read('texts') ?? '').split('\x1e\n').filter(Boolean).map((chunk) => [chunk.slice(0, chunk.indexOf('\n')), chunk.slice(chunk.indexOf('\n') + 1)]);
     return { status: r.status, stdout: r.stdout, stderr: r.stderr, log: (read('log') ?? '').split('\n').filter(Boolean), argv: (read('argv') ?? '').split('\n').filter(Boolean), note: read('note'), out: read('out'), args: read('args'), texts: textsRead, textDir, sideEffects: SIDE_EFFECTS.filter((f) => existsSync(join(dir, f))) };
@@ -388,6 +482,64 @@ function runBlock(shell, block, persona, { note = null, texts = {}, failAppend =
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
+// Contract: a stopped run settles in bounded time and leaves no process of its
+// group behind, even one that holds the output open and ignores SIGTERM; past
+// the output cap nothing more is kept, even while a process that left the
+// group still writes.
+describe("the block runner's child helper stops a run whole", () => {
+  /** Whether process `pid` still runs after up to `ms` of waiting for it to go. */
+  async function stillRunning(pid, ms) {
+    for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 20))) {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  it('settles past its time limit and kills its group, a background process holding stdout and ignoring SIGTERM included', async () => {
+    const timeoutMs = 300;
+    const started = Date.now();
+    const r = await spawnAsync('sh', ['-c', `(trap '' TERM; exec sleep 30) & echo "$!"`], {}, { timeoutMs });
+    const elapsed = Date.now() - started;
+    const pid = Number(r.stdout.trim());
+    try {
+      strictEqual(r.status, null, 'a stopped run has no exit status');
+      ok(pid > 0, `the sleeper's pid on stdout: ${JSON.stringify(r.stdout)}`);
+      ok(elapsed < timeoutMs + 2 * KILL_GRACE_MS + 1000, `settled ${elapsed} ms after the start`);
+      strictEqual(await stillRunning(pid, 3000), false, 'the sleeper was killed with its group');
+    } finally {
+      if (pid > 0) try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
+    }
+  });
+
+  it('keeps no output past its cap, while a writer that left the group still writes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'spawn-async.'));
+    const maxBuffer = 64 * 1024;
+    // A writer in a session of its own, which the group's SIGKILL misses: it
+    // records its pid, writes 8 MiB on the run's stdout, then marks that it
+    // finished.
+    const writer = "require('fs').writeFileSync(process.argv[2],String(process.pid));const c='x'.repeat(65536);let n=0;const w=()=>{while(n<128){n++;if(!process.stdout.write(c))return process.stdout.once('drain',w)}require('fs').writeFileSync(process.argv[1],'')};w()";
+    const launcher = `require('child_process').spawn(process.execPath,['-e',${JSON.stringify(writer)},process.argv[1],process.argv[2]],{detached:true,stdio:['ignore','inherit','ignore']}).unref()`;
+    let pid = 0;
+    try {
+      const error = await spawnAsync(process.execPath, ['-e', launcher, join(dir, 'finished'), join(dir, 'pid')], {}, { maxBuffer }).then(() => null, (e) => e);
+      ok(error?.output, `the run rejected with the output it kept: ${error}`);
+      pid = Number(readFileSync(join(dir, 'pid'), 'utf8'));
+      // Its stdout closed, the writer stops on EPIPE; it has its time either way.
+      await stillRunning(pid, 5000);
+      const kept = Buffer.byteLength(error.output.stdout);
+      ok(kept > maxBuffer && kept <= maxBuffer + 65536, `${kept} bytes kept`);
+      strictEqual(existsSync(join(dir, 'finished')), false, 'the writer lost its stdout before it wrote 8 MiB');
+    } finally {
+      if (pid > 0) try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 // What the stubbed resolver prints: the skill body reads the context from the
 // block's stdout, and the user sees the diagnostics on its stderr.
@@ -524,7 +676,11 @@ describe('the consensus variant is the plain finalize plus the conflict branch, 
 // commit_surface instead).
 const ENGINEER_JOINED = new Set(['commands/checkpoint.md', 'commands/peer-now.md', 'commands/resume.md', 'commands/frame.md', 'commands/compose.md', 'commands/decide.md', 'commands/critique.md', 'commands/refine.md', 'commands/investigate.md', 'commands/start.md']);
 
-describe('runbook regions: the contracts hold for every enrolled persona', () => {
+// The suites below, one per persona, runbook and document, run side by side,
+// as many at a time as the machine has cores; the tests inside each run one
+// after another, so a test's time is its own work, not a share of every
+// suite's (C135: run one after another, the file took 19 minutes).
+describe('runbook regions: the contracts hold for every enrolled persona', { concurrency: availableParallelism() }, () => {
   it('the contracts reach the region files they are about (guards a vacuous pass)', () => {
     for (const dest of ['commands/checkpoint.md', 'commands/resume.md', 'commands/peer-now.md', ...PIPELINE_VERB_DESTS, START]) {
       ok(covered(dest), `${dest} has no generated region`);
@@ -539,7 +695,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
   for (const [dest, personas] of FILES) {
     for (const persona of [...personas].sort()) {
       for (const [which] of documents(persona, dest)) {
-        describe(`${persona}/${dest} (${which})`, () => {
+        describe(`${persona}/${dest} (${which})`, { concurrency: false }, () => {
           const text = new Map(documents(persona, dest)).get(which);
           const env = renderingDeclaration(declaration(persona)).derived.root_env;
 
@@ -621,16 +777,16 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             // Contract (ADR-0059, amendment of 2026-10-10): the agent passing the
             // summary the user typed — it reaches state.mjs as the file the agent
             // wrote, and a summary left unwritten stops the block before the write.
-            it('the checkpoint summary is a file the agent wrote, read as written', () => {
+            it('the checkpoint summary is a file the agent wrote, read as written', async () => {
               const block = shellBlocks(region(text, 'checkpoint-set')).find((b) => b.text.includes('checkpoint-set'));
               ok(block.text.startsWith(`${TEXT_DIR_LINE}\n`), 'the block names the text directory first');
               ok(!/--summary "|SUMMARY=/.test(block.text), 'no inline summary');
               const summary = { 'summary.txt': "it's \"done\": $(touch pwned) `touch pwned2`\n" };
-              const r = runBlock('bash', `ACTIVE='/w/active.md'\n${block.text}`, persona, { texts: summary });
+              const r = await runBlock('bash', `ACTIVE='/w/active.md'\n${block.text}`, persona, { texts: summary });
               deepStrictEqual([r.status, r.log], [0, ['checkpoint-set']], r.stderr);
               ok(r.argv[0].includes(` --workflow-path /w/active.md --host claude --summary-file ${r.textDir}/summary.txt`), r.argv[0]);
               deepStrictEqual([r.texts, r.sideEffects], [[['--summary-file', summary['summary.txt']]], []]);
-              const unwritten = runBlock('bash', `ACTIVE='/w/active.md'\n${block.text}`, persona, { texts: { 'summary.txt': null } });
+              const unwritten = await runBlock('bash', `ACTIVE='/w/active.md'\n${block.text}`, persona, { texts: { 'summary.txt': null } });
               deepStrictEqual([unwritten.status, unwritten.log], [1, []], 'nothing written');
             });
           }
@@ -717,14 +873,14 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               ok(/^argument-hint: --peer <claude\|codex> \(--prompt-text "\.\.\." \| --prompt-file <path>\)$/m.test(frontmatterOf(text)), frontmatterOf(text));
             });
 
-            it('dispatch, run: the run id is a peer-now- id, surfaced on stderr before the runner call, which keys the run with it', () => {
+            it('dispatch, run: the run id is a peer-now- id, surfaced on stderr before the runner call, which keys the run with it', async () => {
               // The region's first block is the mktemp step; the dispatch is the runner's.
               const block = shellBlocks(region(text, 'peer-now-dispatch')).find((b) => b.text.includes('/scripts/peer-runner.mjs" run'));
               ok(block, 'the dispatch block');
               // Contract: the agent collecting the run — the id is printed before the
               // runner call, so a dispatch that never returns still names its run.
               ok(block.text.indexOf('echo "peer-now run_id=$RUN_ID" >&2') >= 0 && block.text.indexOf('echo "peer-now run_id=$RUN_ID" >&2') < block.text.indexOf('peer-runner.mjs" run'), 'the run id is surfaced before the runner call');
-              const r = runBlock('bash', block.text, persona, { texts: { 'prompt.xml': 'He said "go"; $(touch pwned) `touch pwned2`\n' } });
+              const r = await runBlock('bash', block.text, persona, { texts: { 'prompt.xml': 'He said "go"; $(touch pwned) `touch pwned2`\n' } });
               strictEqual(r.status, 0, r.stderr);
               const id = /^peer-now run_id=(peer-now-\d{8}T\d{6}Z-[0-9a-f]{6})$/m.exec(r.stderr)?.[1];
               ok(id, `a peer-now run id on stderr: ${r.stderr}`);
@@ -741,13 +897,13 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               deepStrictEqual(block.text.match(/^PROMPT_FILE=.*$/gm), ['PROMPT_FILE="$TEXT_DIR/prompt.xml"'], 'the prompt is the agent\'s prompt.xml, never a path the agent pastes');
               ok(squash(between(text, '<!-- pipeline:begin peer-now-dispatch -->', '```bash\nTEXT_DIR=')).includes('write the prompt there as `prompt.xml`: the `--prompt-text`, or the text of the `--prompt-file`, which you read with your file-reading tool.'), 'the step writes either form to prompt.xml');
               for (const [how, content] of [['left unwritten', null], ['blank', ' \n\n']]) {
-                const stopped = runBlock('bash', block.text, persona, { texts: { 'prompt.xml': content } });
+                const stopped = await runBlock('bash', block.text, persona, { texts: { 'prompt.xml': content } });
                 deepStrictEqual([stopped.status, stopped.log], [1, []], `a prompt ${how}: nothing dispatched`);
                 ok(stopped.stderr.includes('prompt.xml in TEXT_DIR (') && stopped.stderr.includes('is missing or blank'), stopped.stderr);
               }
             });
 
-            it('after find-active, peer-now branches three ways (standalone, a single path, a per-branch duplicate sent to this persona\'s resume), and the note, run, is a [Peer] phase note on that workflow that leaves the phase alone', () => {
+            it('after find-active, peer-now branches three ways (standalone, a single path, a per-branch duplicate sent to this persona\'s resume), and the note, run, is a [Peer] phase note on that workflow that leaves the phase alone', async () => {
               const branches = squash(between(text, '<!-- pipeline:end peer-now-locate -->', '<!-- pipeline:begin peer-now-note -->'));
               // Contract: the agent running /peer-now — the note block runs only on a
               // single path; a duplicate is handed off to this persona's resume.
@@ -756,7 +912,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               const [block] = shellBlocks(region(text, 'peer-now-note'));
               ok(block, 'the note block');
               const setup = ["ACTIVE='/w/active.md'", "PEER='codex'", "RUN_ID='peer-now-x'", "HANDLE_PATH='/h/handle.json'", "printf 'the peer said hi' > response", 'STDOUT_PATH=response'].join('\n');
-              const r = runBlock('bash', `${setup}\n${block.text}`, persona, {});
+              const r = await runBlock('bash', `${setup}\n${block.text}`, persona, {});
               strictEqual(r.status, 0, r.stderr);
               deepStrictEqual(r.log, ['append'], 'one append');
               for (const part of [' --workflow-path /w/active.md ', ' --phase-label [Peer] codex consultation ']) ok(r.argv[0].includes(part), `${part}: ${r.argv[0]}`);
@@ -777,7 +933,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             };
             const dispatch = declaration(persona).capabilities.dispatch_target === true;
 
-            it('commit Phase 0, run: find-active, a checked read and the /start refusal precede the commit preflight on $ACTIVE; each failure stops the block before the preflight (PC3b U4)', () => {
+            it('commit Phase 0, run: find-active, a checked read and the /start refusal precede the commit preflight on $ACTIVE; each failure stops the block before the preflight (PC3b U4)', async () => {
               const block = only('commit-phase-0');
               const cases = [
                 // [find output, find exit, read output, read exit, preflight exit] → [exit, calls]
@@ -793,43 +949,43 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               ];
               for (const [active, findStatus, readOutput, readStatus, preflightStatus, status, log] of cases) {
                 const what = `${JSON.stringify([active, findStatus, readOutput, readStatus, preflightStatus])}`;
-                const r = runBlock('bash', block, persona, { active, findStatus, readOutput, readStatus, preflightStatus });
+                const r = await runBlock('bash', block, persona, { active, findStatus, readOutput, readStatus, preflightStatus });
                 deepStrictEqual([r.status, r.log], [status, log], `${what}: ${r.stderr}`);
                 if (log.includes('read')) ok(r.argv[1].endsWith(' read --workflow-path /w/a.md'), `${what}: the read targets the found workflow: ${r.argv[1]}`);
                 if (log.includes('autopilot-preflight')) ok(/ autopilot-preflight --workflow-path \/w\/a\.md --host \S+ --surface commit$/.test(r.argv[2]), `${what}: the commit surface's preflight on $ACTIVE: ${r.argv[2]}`);
                 if (status === 0) strictEqual(r.stdout, 'Workflow: /w/a.md\n', what);
               }
-              const start = runBlock('bash', block, persona, { active: '/w/a.md', readOutput: '{"workflow_type":"start"}' });
+              const start = await runBlock('bash', block, persona, { active: '/w/a.md', readOutput: '{"workflow_type":"start"}' });
               ok(start.stderr.includes(`is an /${persona}:start workflow; its own Phase 7 commits it`), start.stderr);
-              const none = runBlock('bash', block, persona, { active: '' });
+              const none = await runBlock('bash', block, persona, { active: '' });
               ok(none.stderr.includes(`No active ${persona} workflow on pc2a2b — nothing for /${persona}:commit to commit or close.`), none.stderr);
             });
 
-            it('commit staging clear, run: one write on the workflow found — the gate, the next step commit and its next action; a refused clear stops the block (PC3b U4)', () => {
+            it('commit staging clear, run: one write on the workflow found — the gate, the next step commit and its next action; a refused clear stops the block (PC3b U4)', async () => {
               const block = only('commit-staging-clear');
-              const r = runBlock('bash', block, persona, { active: '/w/a.md', after: '\nprintf ran > out\n' });
+              const r = await runBlock('bash', block, persona, { active: '/w/a.md', after: '\nprintf ran > out\n' });
               deepStrictEqual([r.status, r.log, r.out], [0, ['find-active', 'awaiting-owner-clear'], 'ran'], r.stderr);
               for (const part of [' --workflow-path /w/a.md ', ' --gate staging-set ', ` --next-action Commit the confirmed staging set with /${persona}:commit `, ' --next-step-kind commit --next-step-confidence HIGH']) {
                 ok(r.argv[1].includes(part), `${part}: ${r.argv[1]}`);
               }
-              const refused = runBlock('bash', block, persona, { active: '/w/a.md', clearStatus: 6, after: '\nprintf ran > out\n' });
+              const refused = await runBlock('bash', block, persona, { active: '/w/a.md', clearStatus: 6, after: '\nprintf ran > out\n' });
               deepStrictEqual([refused.status, refused.out], [6, null], 'a refused clear stops the block');
-              const none = runBlock('bash', block, persona, { active: '' });
+              const none = await runBlock('bash', block, persona, { active: '' });
               deepStrictEqual([none.status, none.log], [1, ['find-active']], 'no workflow, no write');
             });
 
-            it('commit driver blocks, run: each finds the workflow, hands it to the driver in its own mode, propagates the driver\'s exit, and never reaches the driver without one; the autopilot block exactly where dispatch_target is on, with no bypass flag (PC3b U4)', () => {
+            it('commit driver blocks, run: each finds the workflow, hands it to the driver in its own mode, propagates the driver\'s exit, and never reaches the driver without one; the autopilot block exactly where dispatch_target is on, with no bypass flag (PC3b U4)', async () => {
               // Contract: the sync renders the autopilot block by dispatch_target — a
               // persona without it must not be handed a --mode autopilot call.
               strictEqual(parseRegions(text).regions.some((x) => x.id === 'commit-autopilot'), dispatch, 'the autopilot region');
               const modes = [['commit-plan', 'plan'], ['commit-execute', 'execute'], ['commit-close', 'close'], ...(dispatch ? [['commit-autopilot', 'autopilot']] : [])];
               for (const [id, mode] of modes) {
                 const block = only(id);
-                const r = runBlock('bash', block, persona, { active: '/w/a.md' });
+                const r = await runBlock('bash', block, persona, { active: '/w/a.md' });
                 deepStrictEqual([r.status, r.log], [0, ['find-active', `phase7 ${mode}`]], `${id}: ${r.stderr}`);
                 ok(r.argv[1].includes(` --mode ${mode} --workflow-path /w/a.md --repo-root /`), `${id}: ${r.argv[1]}`);
-                strictEqual(runBlock('bash', block, persona, { active: '/w/a.md', phase7Status: 3 }).status, 3, `${id}: the driver's exit`);
-                deepStrictEqual(runBlock('bash', block, persona, { active: '' }).log, ['find-active'], `${id}: no workflow, no driver`);
+                strictEqual((await runBlock('bash', block, persona, { active: '/w/a.md', phase7Status: 3 })).status, 3, `${id}: the driver's exit`);
+                deepStrictEqual((await runBlock('bash', block, persona, { active: '' })).log, ['find-active'], `${id}: no workflow, no driver`);
                 if (mode === 'autopilot') {
                   const tokens = r.argv[1].split(' ');
                   for (const flag of ['--confirm-non-interactive', '--non-interactive', '--include-extra', '--accept-current-tree', '--subject', '--subject-pkg', '--subject-file', '--subject-pkg-file', '--suggested-subjects']) ok(!tokens.includes(flag), `the autopilot block passes ${flag}`);
@@ -877,7 +1033,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               }
             });
 
-            it('start Phase 0 runs autopilot-preflight on $ACTIVE after the find guard and before the baseline check or any write; a refusal stops the block (PC2b DD5)', () => {
+            it('start Phase 0 runs autopilot-preflight on $ACTIVE after the find guard and before the baseline check or any write; a refusal stops the block (PC2b DD5)', async () => {
               const block = blockWith(/find-active --repo-root "\$REPO_ROOT"\)"$/m);
               // Contract: the agent running /start under autopilot — a preflight that
               // does not stop the block, or runs after a write, lets a step cross an owner gate.
@@ -886,17 +1042,17 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               const later = shellSites(text, /(state\.mjs" (check-clean-baseline|diagnose-redundancy|create|append|set-terminal|finish-verb)|phase7-commit\.mjs")/);
               strictEqual(pre.length, 1, 'one preflight');
               ok(later.length > 0 && later.every((w) => pre[0] < w), 'before the baseline check and every write');
-              const refused = runBlock('bash', block.text, persona, { active: '', preflightStatus: 4, after: '\nprintf ran > out\n' });
+              const refused = await runBlock('bash', block.text, persona, { active: '', preflightStatus: 4, after: '\nprintf ran > out\n' });
               deepStrictEqual([refused.status, refused.out, refused.log], [4, null, ['find-active', 'autopilot-preflight']]);
             });
 
             // ADR-0067 Decision 8, item 3 — a new request beside an active
             // workflow: the resume region's second block asks the runtime
             // planner for a worktree, from the args file, and writes nothing.
-            it('start resume, a new request: the worktree block reads the request from its args file and writes nothing', () => {
+            it('start resume, a new request: the worktree block reads the request from its args file and writes nothing', async () => {
               const block = blockWith(/discover-runtime\.mjs" worktree-plan --repo-root "\$REPO_ROOT" \\\n\s+--args-file /).text;
               ok(block.startsWith(`${ARGS_DIR_LINE}\n`), block);
-              const r = runBlock('bash', block, persona, { argsText: 'Another deliverable' });
+              const r = await runBlock('bash', block, persona, { argsText: 'Another deliverable' });
               strictEqual(r.status, 0, r.stderr);
               deepStrictEqual(r.log, ['worktree-plan']);
               ok(/ worktree-plan --repo-root \/\S+ --args-file \/\S+\/start-args\/args\.json --host claude --format text$/.test(r.argv[0].trimEnd()), r.argv[0]);
@@ -905,7 +1061,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               ok(resume.includes('the ordinary resume is the selection: run the first block'), `${persona}/start: the ordinary resume stays`);
             });
 
-            it('start bootstrap, run: only a clean or accepted baseline creates the workflow (investigate, workflow_type start); any other status, or a failed check, stops before any write', () => {
+            it('start bootstrap, run: only a clean or accepted baseline creates the workflow (investigate, workflow_type start); any other status, or a failed check, stops before any write', async () => {
               const block = blockWith(/state\.mjs" check-clean-baseline /).text;
               const reads = commits ? ['start-args'] : [];
               const cases = [
@@ -921,7 +1077,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 ['{"status":"clean"}', 4, 4],
               ];
               for (const [baseline, baselineStatus, status] of cases) {
-                const r = runBlock('bash', block, persona, { baseline, baselineStatus, argsText: commits ? FEATURE_TEXT : null, after: '\nprintf \'%s\' "$ACTIVE" > out\n' });
+                const r = await runBlock('bash', block, persona, { baseline, baselineStatus, argsText: commits ? FEATURE_TEXT : null, after: '\nprintf \'%s\' "$ACTIVE" > out\n' });
                 const what = `${JSON.stringify(baseline)} (check exit ${baselineStatus})`;
                 strictEqual(r.status, status, `${what}: ${r.stderr}`);
                 const check = r.argv[0];
@@ -975,12 +1131,12 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 }
               }
               // ACCEPT_CURRENT_TREE=1 set in the block, unexported, still reaches the check.
-              const accepted = runBlock('bash', `ACCEPT_CURRENT_TREE=1\n${block}`, persona, { baseline: '{"status":"accepted"}', argsText: commits ? FEATURE_TEXT : null });
+              const accepted = await runBlock('bash', `ACCEPT_CURRENT_TREE=1\n${block}`, persona, { baseline: '{"status":"accepted"}', argsText: commits ? FEATURE_TEXT : null });
               strictEqual(accepted.status, 0, accepted.stderr);
               ok(accepted.argv[0].trimEnd().endsWith(' --accept-current-tree true'), accepted.argv[0]);
               if (commits) {
                 // An args file outside the grammar stops the block before any write.
-                const refused = runBlock('bash', block, persona, { baseline: '{"status":"clean"}', argsText: '' });
+                const refused = await runBlock('bash', block, persona, { baseline: '{"status":"clean"}', argsText: '' });
                 deepStrictEqual([refused.status, refused.log], [2, ['start-args']], refused.stderr);
               } else {
                 // A request the agent did not write stops the block before create;
@@ -988,9 +1144,9 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 // writes to a private directory of its own (so a dispatched run
                 // needs no agent file, its TEXT_DIR line left as it is) and records
                 // instead, a leading -- included.
-                const unwritten = runBlock('bash', block, persona, { baseline: '{"status":"clean"}', texts: { 'request.txt': null } });
+                const unwritten = await runBlock('bash', block, persona, { baseline: '{"status":"clean"}', texts: { 'request.txt': null } });
                 deepStrictEqual([unwritten.status, unwritten.log], [1, ['check-clean-baseline']], unwritten.stderr);
-                const topic = runBlock('bash', `AGENTIC_TOPIC='--from the macro: it'\\''s "x" $(touch pwned)'\n${block.replace(TEXT_DIR_LINE, () => "TEXT_DIR='<never filled>'")}`, persona, { baseline: '{"status":"clean"}', texts: { 'request.txt': null } });
+                const topic = await runBlock('bash', `AGENTIC_TOPIC='--from the macro: it'\\''s "x" $(touch pwned)'\n${block.replace(TEXT_DIR_LINE, () => "TEXT_DIR='<never filled>'")}`, persona, { baseline: '{"status":"clean"}', texts: { 'request.txt': null } });
                 strictEqual(topic.status, 0, topic.stderr);
                 ok(/ --original-request-file \/\S*\/agentic-text\.[A-Za-z0-9]+\/topic\.txt /.test(topic.argv[1]), topic.argv[1]);
                 deepStrictEqual([topic.texts, topic.sideEffects], [[['--original-request-file', `--from the macro: it's "x" $(touch pwned)\n`]], []]);
@@ -998,7 +1154,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             });
 
             if (commits) {
-              it('start redundancy probe (commit_surface), run: it reads the base branch from its args file, writes nothing, pauses on a finding, and never stops on a failed probe (ADR-0020 §Sub-decision 7)', () => {
+              it('start redundancy probe (commit_surface), run: it reads the base branch from its args file, writes nothing, pauses on a finding, and never stops on a failed probe (ADR-0020 §Sub-decision 7)', async () => {
                 const block = blockWith(/state\.mjs" diagnose-redundancy /).text;
                 // Contract: the test fills this ARGS_DIR line to run the block, and the
                 // agent fills it with the directory it wrote — typed text never reaches the shell.
@@ -1011,7 +1167,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                   ['', 3, []],
                 ];
                 for (const [diag, diagStatus, says] of cases) {
-                  const r = runBlock('bash', block, persona, { diag, diagStatus, argsText: FEATURE_TEXT });
+                  const r = await runBlock('bash', block, persona, { diag, diagStatus, argsText: FEATURE_TEXT });
                   const what = `${JSON.stringify(diag)} (exit ${diagStatus})`;
                   strictEqual(r.status, 0, `${what}: ${r.stderr}`);
                   deepStrictEqual(r.log, ['start-args', 'diagnose-redundancy'], `${what}: nothing written`);
@@ -1020,7 +1176,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                   strictEqual(r.stdout.includes('PAUSED'), diag.startsWith('{"status":"redundancy"'), `${what}: the pause only on a finding`);
                   if (diagStatus !== 0) ok(r.stderr.includes('diagnose-redundancy failed (exit 3)'), r.stderr);
                 }
-                const refused = runBlock('bash', block, persona, { argsText: '' });
+                const refused = await runBlock('bash', block, persona, { argsText: '' });
                 deepStrictEqual([refused.status, refused.log], [2, ['start-args']], 'an args file outside the grammar stops the probe');
                 // Contract: the agent running /start — the probe block always exits 0,
                 // so only these instructions stop it on abort, keep it from archiving,
@@ -1031,7 +1187,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               });
             }
 
-            it('start resume, run: a start workflow is written — its next step cleared, its position kept; any other workflow, or a failed read, stops the block unwritten (PC2b RV4, PC3b U2)', () => {
+            it('start resume, run: a start workflow is written — its next step cleared, its position kept; any other workflow, or a failed read, stops the block unwritten (PC2b RV4, PC3b U2)', async () => {
               const block = blockWith(/state\.mjs" read --workflow-path "\$ACTIVE"/).text;
               const cases = [
                 ['{"workflow_type":"start"}', 0, 'start'],
@@ -1044,7 +1200,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 ['{"workflow_type":"start"}', 3, null],
               ];
               for (const [readOutput, readStatus, expected] of cases) {
-                const r = runBlock('bash', `ACTIVE='/w/active.md'\n${block}`, persona, { readOutput, readStatus, after: '\nprintf \'%s\' "$WF_TYPE" > out\n' });
+                const r = await runBlock('bash', `ACTIVE='/w/active.md'\n${block}`, persona, { readOutput, readStatus, after: '\nprintf \'%s\' "$WF_TYPE" > out\n' });
                 const what = `${JSON.stringify(readOutput)} (exit ${readStatus})`;
                 ok(r.argv[0].includes(' --workflow-path /w/active.md'), 'the workflow Phase 0 found');
                 if (expected === null) {
@@ -1061,7 +1217,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 ok(r.argv[1].includes(' --workflow-path /w/active.md ') && r.argv[1].includes(' --clear-next-step true '), r.argv[1]);
                 ok(!/--(current-phase|next-action|verb|phase-label|phase-note) /.test(r.argv[1]), `the position is kept: ${r.argv[1]}`);
               }
-              const failed = runBlock('bash', `ACTIVE='/w/active.md'\n${block}`, persona, { readOutput: '{"workflow_type":"start"}', failAppend: true, after: '\nprintf ran > out\n' });
+              const failed = await runBlock('bash', `ACTIVE='/w/active.md'\n${block}`, persona, { readOutput: '{"workflow_type":"start"}', failAppend: true, after: '\nprintf ran > out\n' });
               deepStrictEqual([failed.status, failed.out], [7, null], 'a failed clear stops the block with its status');
             });
 
@@ -1069,7 +1225,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             // saves and commits); a persona that waits for convergence makes it
             // only once Phase 4 converged, and otherwise records the next step,
             // turning an inherited marker off.
-            if (!commits) it('start terminal, run: finish-verb kind commit, only once converged where the persona waits for it (fail-closed); otherwise a non-terminal append with the next step (PC2b U5c)', () => {
+            if (!commits) it('start terminal, run: finish-verb kind commit, only once converged where the persona waits for it (fail-closed); otherwise a non-terminal append with the next step (PC2b U5c)', async () => {
               const block = blockWith(/state\.mjs" finish-verb \\/).text;
               const waits = convergent(persona, 'start');
               // Contract: the test sets this CONVERGED line to run each case, and the
@@ -1080,7 +1236,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 : [[null, 'finish-verb']];
               for (const [value, last] of cases) {
                 const script = value === null ? block : converged(block, persona, 'start', value);
-                const r = runBlock('bash', `ACTIVE='/w/active.md'\n${script}`, persona, {});
+                const r = await runBlock('bash', `ACTIVE='/w/active.md'\n${script}`, persona, {});
                 const label = `CONVERGED ${value === null ? 'as committed' : value === UNSET ? 'unset' : JSON.stringify(value)}`;
                 strictEqual(r.status, 0, `${label}: ${r.stderr}`);
                 deepStrictEqual(r.log, [last], label);
@@ -1098,7 +1254,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 }
               }
               // A next action the agent did not write stops the block before any write.
-              const unwritten = runBlock('bash', `ACTIVE='/w/active.md'\n${waits ? converged(block, persona, 'start', 'yes') : block}`, persona, { texts: { 'next-action.txt': null } });
+              const unwritten = await runBlock('bash', `ACTIVE='/w/active.md'\n${waits ? converged(block, persona, 'start', 'yes') : block}`, persona, { texts: { 'next-action.txt': null } });
               deepStrictEqual([unwritten.status, unwritten.log], [1, []], unwritten.stderr);
               // Contract: the agent writing next-action.txt — its scaffold holds the
               // lifecycle's declared default, which the footer shows.
@@ -1108,7 +1264,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             // The Phase 7 commit, two blocks — plan (writes nothing), then execute
             // with the subject the user confirmed — and no finish-verb anywhere
             // in the lifecycle's blocks.
-            if (commits) it('start commit (commit_surface), run: plan, then execute with the confirmed subject, each on $ACTIVE in the repository; a failure stops its block with its status; no finish-verb (PC3b U2)', () => {
+            if (commits) it('start commit (commit_surface), run: plan, then execute with the confirmed subject, each on $ACTIVE in the repository; a failure stops its block with its status; no finish-verb (PC3b U2)', async () => {
               const plan = blockWith(/phase7-commit\.mjs" \\\n\s+--mode plan/).text;
               const execute = blockWith(/phase7-commit\.mjs" \\\n\s+--mode execute/).text;
               // Contract: the agent running Phase 7 — execute before plan commits a
@@ -1116,10 +1272,10 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               // closes the lifecycle beside the driver's own terminal write.
               ok(text.indexOf(plan) < text.indexOf(execute), 'plan before execute');
               strictEqual(shellSites(text, /state\.mjs" (finish-verb|set-terminal)\b/).length, 0, 'the driver writes set-terminal; no block does');
-              const p = runBlock('bash', `ACTIVE='/w/active.md'\n${plan}`, persona, { after: '\nprintf ran > out\n' });
+              const p = await runBlock('bash', `ACTIVE='/w/active.md'\n${plan}`, persona, { after: '\nprintf ran > out\n' });
               deepStrictEqual([p.status, p.log, p.out], [0, ['phase7 plan'], 'ran'], p.stderr);
               ok(/ --mode plan --workflow-path \/w\/active\.md --repo-root \/\S+ --host claude/.test(p.argv[0]), p.argv[0]);
-              const pFailed = runBlock('bash', `ACTIVE='/w/active.md'\n${plan}`, persona, { phase7Status: 5, after: '\nprintf ran > out\n' });
+              const pFailed = await runBlock('bash', `ACTIVE='/w/active.md'\n${plan}`, persona, { phase7Status: 5, after: '\nprintf ran > out\n' });
               deepStrictEqual([pFailed.status, pFailed.out], [5, null], 'a failed plan stops its block');
               // Contract (ADR-0059, amendment of 2026-10-10): the agent passing the
               // subject the user confirmed — it reaches the driver as the file the
@@ -1129,22 +1285,22 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               ok(!/APPROVED_SUBJECT|--subject "|--subject '/.test(execute), 'no inline subject in the block');
               const approved = execute;
               const subject = { 'subject.txt': "feat(x): it's \"done\" $(touch pwned)\n" };
-              const e = runBlock('bash', `ACTIVE='/w/active.md'\n${approved}`, persona, { texts: subject, after: '\nprintf ran > out\n' });
+              const e = await runBlock('bash', `ACTIVE='/w/active.md'\n${approved}`, persona, { texts: subject, after: '\nprintf ran > out\n' });
               deepStrictEqual([e.status, e.log, e.out], [0, ['phase7 execute'], 'ran'], e.stderr);
               ok(e.argv[0].includes(` --mode execute --workflow-path /w/active.md --repo-root `) && e.argv[0].includes(` --host claude --subject-file ${e.textDir}/subject.txt --confirm-non-interactive`), e.argv[0]);
               deepStrictEqual([e.texts, e.sideEffects], [[['--subject-file', subject['subject.txt']]], []], 'the subject file, read as written');
-              const eFailed = runBlock('bash', `ACTIVE='/w/active.md'\n${approved}`, persona, { phase7Status: 6, after: '\nprintf ran > out\n' });
+              const eFailed = await runBlock('bash', `ACTIVE='/w/active.md'\n${approved}`, persona, { phase7Status: 6, after: '\nprintf ran > out\n' });
               deepStrictEqual([eFailed.status, eFailed.out], [6, null], 'a failed execute stops its block, the workflow left open');
               // Plan-verify peer (MAJOR): a fresh shell has no ACTIVE; each
               // block then binds the workflow find-active names on this branch,
               // and stops before the driver when there is none.
               for (const [name, block, mode] of [['plan', plan, 'plan'], ['execute', approved, 'execute']]) {
-                const fresh = runBlock('bash', block, persona, { active: '/w/found.md', after: '\nprintf ran > out\n' });
+                const fresh = await runBlock('bash', block, persona, { active: '/w/found.md', after: '\nprintf ran > out\n' });
                 deepStrictEqual([fresh.status, fresh.log, fresh.out], [0, ['find-active', `phase7 ${mode}`], 'ran'], `${name}: ${fresh.stderr}`);
                 ok(fresh.argv[1].includes(' --workflow-path /w/found.md '), `${name}: the workflow find-active named: ${fresh.argv[1]}`);
-                const none = runBlock('bash', block, persona, { active: '', after: '\nprintf ran > out\n' });
+                const none = await runBlock('bash', block, persona, { active: '', after: '\nprintf ran > out\n' });
                 deepStrictEqual([none.status, none.log, none.out], [1, ['find-active'], null], `${name}: no workflow, no driver: ${none.stderr}`);
-                const failed = runBlock('bash', block, persona, { active: '/w/found.md', findStatus: 5, after: '\nprintf ran > out\n' });
+                const failed = await runBlock('bash', block, persona, { active: '/w/found.md', findStatus: 5, after: '\nprintf ran > out\n' });
                 deepStrictEqual([failed.status, failed.log], [5, ['find-active']], `${name}: a failed find stops the block`);
               }
               // Contract: the agent running Phase 7 — execute's set-terminal is
@@ -1243,7 +1399,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               strictEqual(find.length, 1, 'find-active, then its status read and exited with');
             });
 
-            it('Phase 0 runs autopilot-preflight on $ACTIVE right after the find guard, before any write, and a refusal stops the block (PC2b DD5)', () => {
+            it('Phase 0 runs autopilot-preflight on $ACTIVE right after the find guard, before any write, and a refusal stops the block (PC2b DD5)', async () => {
               const block = blockWith(/find-active --repo-root "\$REPO_ROOT"\)"$/m);
               // Contract: the agent running the verb under autopilot — a preflight
               // that does not stop the block, or runs after a write, lets a step
@@ -1253,9 +1409,9 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               const writes = shellSites(text, /state\.mjs" (create|append|set-terminal|finish-verb|ensemble-commit)\b/);
               strictEqual(pre.length, 1, 'one preflight');
               ok(writes.length > 0 && writes.every((w) => pre[0] < w), 'before every write');
-              const refused = runBlock('bash', block.text, persona, { active: '/w/active.md', preflightStatus: 4, after: '\nprintf ran > out\n' });
+              const refused = await runBlock('bash', block.text, persona, { active: '/w/active.md', preflightStatus: 4, after: '\nprintf ran > out\n' });
               deepStrictEqual([refused.status, refused.out, refused.log], [4, null, ['find-active', 'autopilot-preflight']]);
-              const passed = runBlock('bash', block.text, persona, { active: '/w/active.md', after: '\nprintf ran > out\n' });
+              const passed = await runBlock('bash', block.text, persona, { active: '/w/active.md', after: '\nprintf ran > out\n' });
               deepStrictEqual([passed.status, passed.out], [0, 'ran'], passed.stderr);
               ok(passed.argv[1].includes(' --workflow-path /w/active.md '), passed.argv[1]);
             });
@@ -1267,13 +1423,13 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               ok(/^node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" append --workflow-path "\$ACTIVE" [^\n]*--current-phase phase-0-resume --clear-next-step true [^\n]*--event resumed \|\| exit \$\?$/m.test(logical(blockWith(/--event resumed/).text)), logical(blockWith(/--event resumed/).text));
             });
 
-            it('Phase 0, run: $ACTIVE holds what find-active printed, and a failed find stops the block with its status', () => {
+            it('Phase 0, run: $ACTIVE holds what find-active printed, and a failed find stops the block with its status', async () => {
               const block = blockWith(/find-active --repo-root "\$REPO_ROOT"\)"$/m).text;
               const after = '\nprintf \'%s\' "$ACTIVE" > out\n';
-              const found = runBlock('bash', block, persona, { active: '/w/active.md', after });
+              const found = await runBlock('bash', block, persona, { active: '/w/active.md', after });
               strictEqual(found.status, 0, found.stderr);
               strictEqual(found.out, '/w/active.md');
-              const failed = runBlock('bash', block, persona, { active: '', findStatus: 5, after });
+              const failed = await runBlock('bash', block, persona, { active: '', findStatus: 5, after });
               strictEqual(failed.status, 5, failed.stderr);
               strictEqual(failed.out, null, 'nothing after the guard ran');
             });
@@ -1344,7 +1500,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             // gate with the run id, branching on the verdict the settle recorded;
             // without it the verb closes over a conflict, or proposes a round for a
             // run that recorded none.
-            if (Object.hasOwn(CONFLICT_GATES, verb)) it('the finalize, run: a recorded conflict writes the task file, then the conflict gate with the run id; a disagreeing verdict stops before the last write (ADR-0067 Decision 8)', () => {
+            if (Object.hasOwn(CONFLICT_GATES, verb)) it('the finalize, run: a recorded conflict writes the task file, then the conflict gate with the run id; a disagreeing verdict stops before the last write (ADR-0067 Decision 8)', async () => {
               const block = converged(blockWith(/peer-runner\.mjs" settle \\/).text, persona, verb);
               const gate = CONFLICT_GATES[verb];
               // The contested items come from the peers' positions: they reach
@@ -1356,7 +1512,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               const itemsFile = join(itemsDir, 'items.md');
               writeFileSync(itemsFile, 'C1: keep "A" or $(touch pwned) `B`\nCONTESTED_ITEMS\nPHASE_NOTE\n');
               const run = (verdict, opts, file = itemsFile) => runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='r'; VERDICT='${verdict}'; SUMMARY='s'${file === null ? '' : `; CONTESTED_FILE='${file}'`}\n${block}`, persona, { note: 'n', ...opts });
-              const conflict = run('conflict', { recorded: 'conflict' });
+              const conflict = await run('conflict', { recorded: 'conflict' });
               strictEqual(conflict.status, 0, conflict.stderr);
               deepStrictEqual(conflict.log, ['append', 'settle', 'ensemble-verdict', 'consensus-task', 'finish-verb']);
               ok(conflict.argv[2].includes(' ensemble-verdict --workflow-path /w/active.md --run-id r'), conflict.argv[2]);
@@ -1369,7 +1525,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               ok(conflict.stderr.includes(`→ Proposed, for the owner to run before deciding: ${PROPOSED_ROUND}`), conflict.stderr);
               // Every other recorded verdict, and none, takes the typical last write.
               for (const recorded of ['', 'agreed', 'concerns', 'failed', 'degraded']) {
-                const typical = run(recorded === 'failed' || recorded === 'degraded' || recorded === '' ? 'agreed' : recorded, { recorded });
+                const typical = await run(recorded === 'failed' || recorded === 'degraded' || recorded === '' ? 'agreed' : recorded, { recorded });
                 deepStrictEqual([typical.status, typical.log], [0, typicalLog(verb)], `recorded ${recorded || 'nothing'}: the typical last write`);
                 ok(!typical.argv.some((a) => a.includes('--owner-gate')), 'no gate');
               }
@@ -1378,45 +1534,45 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               // verdict, whose conflict branch writes the task file before the gate
               // (a gated finish-verb run by itself would leave no task file).
               for (const [verdict, recorded] of [['concerns', 'conflict'], ['conflict', 'failed'], ['conflict', '']]) {
-                const mismatch = run(verdict, { recorded });
+                const mismatch = await run(verdict, { recorded });
                 deepStrictEqual([mismatch.status, mismatch.log], [1, ['append', 'settle', 'ensemble-verdict']], `VERDICT ${verdict}, recorded ${recorded || 'nothing'}`);
                 ok(mismatch.stderr.includes(`✗ The synthesis verdict is ${verdict}, but run r is recorded with ${recorded || 'no verdict'}`), mismatch.stderr);
                 ok(mismatch.stderr.includes('Set VERDICT to the recorded verdict (and CONTESTED_FILE when that is conflict) and run this block again'), mismatch.stderr);
                 ok(mismatch.stderr.includes('consensus-task first on a conflict'), mismatch.stderr);
                 ok(!/the matching last write by itself/.test(mismatch.stderr), mismatch.stderr);
-                const again = run(recorded === 'conflict' ? 'conflict' : recorded || 'agreed', { recorded });
+                const again = await run(recorded === 'conflict' ? 'conflict' : recorded || 'agreed', { recorded });
                 deepStrictEqual([again.status, again.log], [0, recorded === 'conflict' ? ['append', 'settle', 'ensemble-verdict', 'consensus-task', 'finish-verb'] : typicalLog(verb)], `the recovery for recorded ${recorded || 'nothing'}`);
               }
-              const unnamed = run('conflict', { recorded: 'conflict' }, null);
+              const unnamed = await run('conflict', { recorded: 'conflict' }, null);
               deepStrictEqual([unnamed.status, unnamed.log], [1, ['append', 'settle', 'ensemble-verdict']], 'no contested-items file, no task file and no gate');
               ok(unnamed.stderr.includes('✗ CONTESTED_FILE names no file of contested items; the gate was not recorded.'), unnamed.stderr);
-              const refusedTask = run('conflict', { recorded: 'conflict', taskStatus: 3 });
+              const refusedTask = await run('conflict', { recorded: 'conflict', taskStatus: 3 });
               deepStrictEqual([refusedTask.status, refusedTask.log], [3, ['append', 'settle', 'ensemble-verdict', 'consensus-task']], 'a refused task file records no gate');
               rmSync(itemsDir, { recursive: true, force: true });
             });
 
             // Contract: compose, frame and refine never propose a consensus round —
             // their finalize holds no conflict branch (ADR-0067 Decision 8).
-            if (VERB_DESTS.includes(dest) && !Object.hasOwn(CONFLICT_GATES, verb)) it('the finalize has no conflict branch: no consensus task, no verdict read, no gate run id (ADR-0067 Decision 8)', () => {
+            if (VERB_DESTS.includes(dest) && !Object.hasOwn(CONFLICT_GATES, verb)) it('the finalize has no conflict branch: no consensus task, no verdict read, no gate run id (ADR-0067 Decision 8)', async () => {
               const block = blockWith(/peer-runner\.mjs" settle \\/).text;
               for (const marker of ['consensus-task', 'ensemble-verdict', '--owner-gate-run-id', 'CONTESTED_FILE', 'runtime:consensus']) {
                 ok(!block.includes(marker), `${marker} in ${verb}'s finalize`);
               }
               const region = text.slice(text.indexOf(`<!-- pipeline:begin ${verb}-finalize`), text.indexOf(`<!-- pipeline:end ${verb}-finalize`));
               ok(region.length > 0 && !/consensus round|peer-conflict/.test(region), `${verb}'s finalize region proposes no consensus round`);
-              const conflict = runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='r'; VERDICT='conflict'; SUMMARY='s'\n${converged(block, persona, verb)}`, persona, { note: 'n', recorded: 'conflict' });
+              const conflict = await runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='r'; VERDICT='conflict'; SUMMARY='s'\n${converged(block, persona, verb)}`, persona, { note: 'n', recorded: 'conflict' });
               deepStrictEqual([conflict.status, conflict.log], [0, typicalLog(verb)], 'a conflict verdict takes the typical last write');
             });
 
-            if (VERB_DESTS.includes(dest)) it('the finalize, run: a settle refusal stops the block before finish-verb, with its status (PC2b DD6)', () => {
+            if (VERB_DESTS.includes(dest)) it('the finalize, run: a settle refusal stops the block before finish-verb, with its status (PC2b DD6)', async () => {
               const block = converged(blockWith(/peer-runner\.mjs" settle \\/).text, persona, verb);
-              const passed = runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='r'; VERDICT='agreed'; SUMMARY='s'\n${block}`, persona, { note: 'n' });
+              const passed = await runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='r'; VERDICT='agreed'; SUMMARY='s'\n${block}`, persona, { note: 'n' });
               strictEqual(passed.status, 0, passed.stderr);
               deepStrictEqual(passed.log, typicalLog(verb));
               ok(passed.argv[1].includes(` --run-id r --verdict agreed --summary-file ${passed.textDir}/summary.txt`), passed.argv[1]);
               deepStrictEqual(passed.texts.map(([flag]) => flag), ['--phase-note-file', '--next-action-file', '--summary-file', '--next-action-file'], 'the append, settle and last write each read their file');
               ok(passed.argv.every((a) => a.includes(' --workflow-path /w/active.md ')), 'every call targets $ACTIVE');
-              const refused = runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID=''\n${block}`, persona, { note: 'n', settleStatus: 1 });
+              const refused = await runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID=''\n${block}`, persona, { note: 'n', settleStatus: 1 });
               deepStrictEqual([refused.status, refused.log], [1, ['append', 'settle']], 'no finish-verb after a refused settle');
             });
 
@@ -1499,7 +1655,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             });
 
             if (verb === 'decide') {
-              it('Phase 0.5: between the resume and the dispatch, the resolver reads the args file the agent wrote, and either failure stops the block', () => {
+              it('Phase 0.5: between the resume and the dispatch, the resolver reads the args file the agent wrote, and either failure stops the block', async () => {
                 const block = blockWith(/decide-registry\.mjs" resolve /);
                 const lines = block.text.split('\n');
                 // Contract: the agent running Phase 0.5 — the typed arguments reach
@@ -1517,7 +1673,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 ok(resume[0] < resolve[0] && resolve[0] < run[0], 'resume, resolve, dispatch in that order');
                 const script = block.text.replace(ARGS_DIR_LINE, () => "ARGS_DIR='/agentic-args.x'");
                 const after = "\nprintf '%s' reached > out\n";
-                const passed = runBlock('bash', script, persona, { after });
+                const passed = await runBlock('bash', script, persona, { after });
                 strictEqual(passed.status, 0, passed.stderr);
                 deepStrictEqual(passed.log, ['resolve']);
                 strictEqual(passed.args, '/agentic-args.x/args.json\n', 'the file the agent wrote');
@@ -1526,7 +1682,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 strictEqual(passed.stdout, `${RESOLVER_CONTEXT}\n`, 'the context reaches the block\'s stdout');
                 ok(passed.stderr.includes(RESOLVER_DIAGNOSTIC), 'the diagnostics reach the block\'s stderr');
                 for (const status of [2, 3]) {
-                  const failed = runBlock('bash', script, persona, { resolveStatus: status, after });
+                  const failed = await runBlock('bash', script, persona, { resolveStatus: status, after });
                   strictEqual(failed.status, 1, `resolver exit ${status}: ${failed.stderr}`);
                   strictEqual(failed.out, null, `resolver exit ${status}: nothing after the guard ran`);
                 }
@@ -1565,7 +1721,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 prose: "for `--profile=full-codebase`, with or without a sub-focus, set `ENSEMBLE_TYPE='adversarial-scan'`",
               },
             };
-            if (verb === 'critique' && Object.hasOwn(ADVERSARIAL, persona)) it(`${persona} critique, instantiated per profile: ${ADVERSARIAL[persona].profile} dispatches adversarial-scan; default, unknown and missing review; settle names the same run (QD5, RV14)`, () => {
+            if (verb === 'critique' && Object.hasOwn(ADVERSARIAL, persona)) it(`${persona} critique, instantiated per profile: ${ADVERSARIAL[persona].profile} dispatches adversarial-scan; default, unknown and missing review; settle names the same run (QD5, RV14)`, async () => {
               const adv = ADVERSARIAL[persona];
               const dispatch = blockWith(/peer-runner\.mjs" run \\/).text;
               const finalize = blockWith(/peer-runner\.mjs" settle \\/).text;
@@ -1581,11 +1737,11 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               ok(flat.indexOf(adv.prose) < flat.indexOf('peer-runner.mjs" run'), 'the prose comes before the block it changes');
               for (const [profile, expected] of [['default', 'review'], [adv.profile, 'adversarial-scan'], ['unknown', 'review'], ['missing', 'review']]) {
                 const script = profile === adv.profile ? dispatch.replace(TYPE_LINE, "ENSEMBLE_TYPE='adversarial-scan'") : dispatch;
-                const sent = runBlock('bash', `ACTIVE='/w/active.md'\n${script}\nprintf '%s' "$RUN_ID" > out`, persona, {});
+                const sent = await runBlock('bash', `ACTIVE='/w/active.md'\n${script}\nprintf '%s' "$RUN_ID" > out`, persona, {});
                 strictEqual(sent.status, 0, sent.stderr);
                 ok(sent.argv.length === 1 && sent.argv[0].includes(` --ensemble-type ${expected} `), `${profile}: the dispatch names ${expected}`);
                 ok(sent.out.startsWith(`${expected}-`), `${profile}: the run id carries ${expected}`);
-                const done = runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='${sent.out}'; VERDICT='sound'; SUMMARY='s'\n${finalize}`, persona, { note: 'n' });
+                const done = await runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='${sent.out}'; VERDICT='sound'; SUMMARY='s'\n${finalize}`, persona, { note: 'n' });
                 ok(done.argv.find((a) => / settle /.test(a)).includes(` --phase critique --run-id ${sent.out} `), `${profile}: settle names the run the dispatch started`);
               }
             });
@@ -1603,7 +1759,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 },
               },
             };
-            if (verb === 'investigate' && Object.hasOwn(PROFILED_INVESTIGATE, persona)) it(`${persona} investigate, instantiated per profile: root-cause and cited-brief dispatch their own type; analysis, unknown and missing investigate; settle names the same run (PC3 U7)`, () => {
+            if (verb === 'investigate' && Object.hasOwn(PROFILED_INVESTIGATE, persona)) it(`${persona} investigate, instantiated per profile: root-cause and cited-brief dispatch their own type; analysis, unknown and missing investigate; settle names the same run (PC3 U7)`, async () => {
               const spec = PROFILED_INVESTIGATE[persona];
               const dispatch = blockWith(/peer-runner\.mjs" run \\/).text;
               const finalize = blockWith(/peer-runner\.mjs" settle \\/).text;
@@ -1622,11 +1778,11 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               const cases = [['analysis', spec.base], ...Object.keys(spec.profiles).map((p) => [p, p]), ['unknown', spec.base], ['missing', spec.base]];
               for (const [profile, expected] of cases) {
                 const script = Object.hasOwn(spec.profiles, profile) ? dispatch.replace(TYPE_LINE, `ENSEMBLE_TYPE='${expected}'`) : dispatch;
-                const sent = runBlock('bash', `ACTIVE='/w/active.md'\n${script}\nprintf '%s' "$RUN_ID" > out`, persona, {});
+                const sent = await runBlock('bash', `ACTIVE='/w/active.md'\n${script}\nprintf '%s' "$RUN_ID" > out`, persona, {});
                 strictEqual(sent.status, 0, sent.stderr);
                 ok(sent.argv.length === 1 && sent.argv[0].includes(` --ensemble-type ${expected} `), `${profile}: the dispatch names ${expected}`);
                 ok(sent.out.startsWith(`${expected}-`), `${profile}: the run id carries ${expected}`);
-                const done = runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='${sent.out}'; VERDICT='agreed'; SUMMARY='s'\n${finalize}`, persona, { note: 'n' });
+                const done = await runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='${sent.out}'; VERDICT='agreed'; SUMMARY='s'\n${finalize}`, persona, { note: 'n' });
                 ok(done.argv.find((a) => / settle /.test(a)).includes(` --phase investigate --run-id ${sent.out} `), `${profile}: settle names the run the dispatch started`);
               }
             });
@@ -1634,13 +1790,13 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             // A stop inside the lifecycle is an exit, not just a message: a write placed after the block is never
             // reached there, and is reached where the block falls through.
             const AFTER = '\nnode "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append --workflow-path "$ACTIVE" --host claude';
-            if (verb === 'decide') it('Owner selection, run: it finds the workflow, clears decide-conflict with the resolution and the next step, then finishes the verb; a failed find or clear, or no workflow, stops the block (PC2b DD7)', () => {
+            if (verb === 'decide') it('Owner selection, run: it finds the workflow, clears decide-conflict with the resolution and the next step, then finishes the verb; a failed find or clear, or no workflow, stops the block (PC2b DD7)', async () => {
               const block = blockWith(/state\.mjs" awaiting-owner-clear \\/).text;
               // Contract: the agent resolving the gate — the clear comes after the
               // finalize whose owner-decision form records it.
               ok(text.indexOf(block) > text.indexOf('<!-- pipeline:end decide-finalize -->'), 'after Phase 2, whose owner-decision form records the gate');
               const CHAIN = { active: '/w/active.md', readOutput: '{"workflow_type":"verb-chain"}' };
-              const r = runBlock('bash', block, persona, CHAIN);
+              const r = await runBlock('bash', block, persona, CHAIN);
               strictEqual(r.status, 0, r.stderr);
               deepStrictEqual(r.log, ['find-active', 'read', 'awaiting-owner-clear', 'finish-verb']);
               for (const part of [' --workflow-path /w/active.md ', ' --gate decide-conflict ', ` --resolution-file ${r.textDir}/resolution.txt `, ' --next-step-kind verb --next-step-verb compose --next-step-confidence HIGH']) ok(r.argv[2].includes(part), `${part}: ${r.argv[2]}`);
@@ -1655,13 +1811,13 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               // resolution with quotes, an expansion, a backtick and a line that
               // read as the old heredoc's delimiter reaches state.mjs whole.
               const hostile = "keep the team's \"existing\" `nav` $HOME $(touch pwned)\nOWNER_RESOLUTION\ntouch injected\n";
-              const quoted = runBlock('bash', block, persona, { ...CHAIN, texts: { 'resolution.txt': hostile } });
+              const quoted = await runBlock('bash', block, persona, { ...CHAIN, texts: { 'resolution.txt': hostile } });
               strictEqual(quoted.status, 0, quoted.stderr);
               deepStrictEqual([quoted.texts, quoted.sideEffects], [[['--resolution-file', hostile]], []]);
-              const unwritten = runBlock('bash', block, persona, { ...CHAIN, texts: { 'resolution.txt': null } });
+              const unwritten = await runBlock('bash', block, persona, { ...CHAIN, texts: { 'resolution.txt': null } });
               deepStrictEqual([unwritten.status, unwritten.log], [1, ['find-active', 'read']], 'a resolution left unwritten stops the block before any write');
               // A gate met inside a start lifecycle: cleared, and the lifecycle resumes; no verb terminal write.
-              const lifecycle = runBlock('bash', block, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
+              const lifecycle = await runBlock('bash', block, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
               deepStrictEqual([lifecycle.status, lifecycle.log], [0, ['find-active', 'read', 'awaiting-owner-clear']], 'inside start: no finish-verb');
               ok(lifecycle.stderr.includes(`Resume the lifecycle with /${persona}:start`), lifecycle.stderr);
               // PC3b U1 (PC3 step-7 peer findings 2 and 3): inside the lifecycle
@@ -1670,19 +1826,19 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               // follows decide in one persona's lifecycle, explore in another's).
               ok(lifecycle.argv[2].includes(` --next-action Resume /${persona}:start: the lifecycle continues after decide with the selected direction --clear-next-step true`), lifecycle.argv[2]);
               ok(!/ --next-step-(kind|verb|confidence) /.test(lifecycle.argv[2]), `no next step inside the lifecycle: ${lifecycle.argv[2]}`);
-              const stopped = runBlock('bash', block + AFTER, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
+              const stopped = await runBlock('bash', block + AFTER, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
               deepStrictEqual([stopped.status, stopped.log], [0, ['find-active', 'read', 'awaiting-owner-clear']], 'inside start the block exits: nothing after it runs');
-              const unread = runBlock('bash', block, persona, { active: '/w/active.md', readOutput: '', readStatus: 5 });
+              const unread = await runBlock('bash', block, persona, { active: '/w/active.md', readOutput: '', readStatus: 5 });
               deepStrictEqual([unread.status, unread.log], [1, ['find-active', 'read']], 'an unreadable type stops the block before any write');
               // A read that fails after printing a parsable type also stops it.
-              const failedRead = runBlock('bash', block, persona, { active: '/w/active.md', readOutput: '{"workflow_type":"verb-chain"}', readStatus: 5 });
+              const failedRead = await runBlock('bash', block, persona, { active: '/w/active.md', readOutput: '{"workflow_type":"verb-chain"}', readStatus: 5 });
               deepStrictEqual([failedRead.status, failedRead.log], [1, ['find-active', 'read']], 'a failed read stops the block, whatever it printed');
-              const failed = runBlock('bash', block, persona, { ...CHAIN, clearStatus: 3 });
+              const failed = await runBlock('bash', block, persona, { ...CHAIN, clearStatus: 3 });
               deepStrictEqual([failed.status, failed.log], [3, ['find-active', 'read', 'awaiting-owner-clear']], 'a refused clear stops the block');
-              const none = runBlock('bash', block, persona, { active: '' });
+              const none = await runBlock('bash', block, persona, { active: '' });
               deepStrictEqual([none.status, none.log], [1, ['find-active']], 'no workflow: nothing written');
               ok(none.stderr.includes(`✗ No active ${persona} workflow on this branch.`), none.stderr);
-              const lost = runBlock('bash', block, persona, { active: '/w/active.md', findStatus: 4 });
+              const lost = await runBlock('bash', block, persona, { active: '/w/active.md', findStatus: 4 });
               deepStrictEqual([lost.status, lost.log], [4, ['find-active']], 'a failed find stops the block with its status');
             });
 
@@ -1713,7 +1869,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             // closes it only once converged (fail-closed); otherwise the last
             // write records the next step, turns an inherited terminal marker
             // off and closes nothing. The other persona always closes.
-            if (verb === 'refine') it('refine finalize, run: closes only once converged where the persona waits for it (fail-closed), otherwise records the next step without a terminal write and turns an inherited marker off (PC2b U5b, DD5)', () => {
+            if (verb === 'refine') it('refine finalize, run: closes only once converged where the persona waits for it (fail-closed), otherwise records the next step without a terminal write and turns an inherited marker off (PC2b U5b, DD5)', async () => {
               const block = blockWith(/peer-runner\.mjs" settle \\/).text;
               const waits = convergent(persona, verb);
               // Contract: the test sets this CONVERGED line to run each case, and the
@@ -1724,7 +1880,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 : [[null, 'finish-verb']];
               for (const [value, last] of cases) {
                 const script = value === null ? block : converged(block, persona, verb, value);
-                const r = runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='r'; VERDICT='resolved'; SUMMARY='s'\n${script}`, persona, { note: 'n' });
+                const r = await runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='r'; VERDICT='resolved'; SUMMARY='s'\n${script}`, persona, { note: 'n' });
                 const label = `CONVERGED ${value === null ? 'as committed' : value === UNSET ? 'unset' : JSON.stringify(value)}`;
                 strictEqual(r.status, 0, `${label}: ${r.stderr}`);
                 deepStrictEqual(r.log, ['append', 'settle', last], label);
@@ -1738,11 +1894,11 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 }
               }
               // A refused settle stops the block before either last write.
-              const refused = runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='r'\n${converged(block, persona, verb, 'no')}`, persona, { note: 'n', settleStatus: 1 });
+              const refused = await runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='r'\n${converged(block, persona, verb, 'no')}`, persona, { note: 'n', settleStatus: 1 });
               deepStrictEqual([refused.status, refused.log], [1, ['append', 'settle']], 'no write after a refused settle');
             });
 
-            if (verb === 'refine') it('Owner decision, run: fix now clears recurring-finding with this refine next; defer clears it with commit next, then finishes the verb, where the persona waits for convergence only once converged (fail-closed); a failed find or clear, or no workflow, stops each block (PC2b U5b)', () => {
+            if (verb === 'refine') it('Owner decision, run: fix now clears recurring-finding with this refine next; defer clears it with commit next, then finishes the verb, where the persona waits for convergence only once converged (fail-closed); a failed find or clear, or no workflow, stops each block (PC2b U5b)', async () => {
               const found = blocks.filter((b) => /state\.mjs" awaiting-owner-clear \\/.test(b.text)).map((b) => b.text);
               strictEqual(found.length, 2, 'fix now and defer');
               const [fix, deferAsCommitted] = found;
@@ -1758,7 +1914,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               // finalize whose owner-decision form records it.
               ok(text.indexOf(fix) > text.indexOf(finalizeEnd) && text.indexOf(finalizeEnd) > 0, 'after Phase 2, whose owner-decision form records the gate');
               const CHAIN = { active: '/w/active.md', readOutput: '{"workflow_type":"verb-chain"}' };
-              const f = runBlock('bash', fix, persona, CHAIN);
+              const f = await runBlock('bash', fix, persona, CHAIN);
               strictEqual(f.status, 0, f.stderr);
               deepStrictEqual(f.log, ['find-active', 'read', 'awaiting-owner-clear']);
               for (const part of [' --workflow-path /w/active.md ', ' --gate recurring-finding ', ` --resolution-file ${f.textDir}/resolution.txt `, ' --next-action Fix the recurring finding in this refine, then re-critique ', ' --next-step-kind verb --next-step-verb refine --next-step-confidence HIGH']) ok(f.argv[2].includes(part), `${part}: ${f.argv[2]}`);
@@ -1767,23 +1923,23 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               // Fix now clears the gate and stops, so this refine's own phases
               // (whose finalize is a terminal write) do not run before the
               // lifecycle's terminal step; the lifecycle's refine phase fixes it.
-              const fixLifecycle = runBlock('bash', fix, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
+              const fixLifecycle = await runBlock('bash', fix, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
               deepStrictEqual([fixLifecycle.status, fixLifecycle.log], [0, ['find-active', 'read', 'awaiting-owner-clear']], 'inside start: fix now clears and stops');
               ok(fixLifecycle.argv[2].includes(` --next-action Resume /${persona}:start: its refine phase fixes the recurring finding --next-step-kind verb --next-step-verb refine --next-step-confidence HIGH`), fixLifecycle.argv[2]);
               ok(fixLifecycle.stderr.includes(`Resume the lifecycle with /${persona}:start`), fixLifecycle.stderr);
-              const fixUnread = runBlock('bash', fix, persona, { active: '/w/active.md', readOutput: '', readStatus: 5 });
+              const fixUnread = await runBlock('bash', fix, persona, { active: '/w/active.md', readOutput: '', readStatus: 5 });
               deepStrictEqual([fixUnread.status, fixUnread.log], [1, ['find-active', 'read']], 'fix now: an unreadable type stops the block before any write');
               // The stop is an exit: a write after the block runs on the
               // verb-chain path only.
-              const fixStopped = runBlock('bash', fix + AFTER, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
+              const fixStopped = await runBlock('bash', fix + AFTER, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
               deepStrictEqual([fixStopped.status, fixStopped.log], [0, ['find-active', 'read', 'awaiting-owner-clear']], 'fix now inside start exits: nothing after it runs');
-              const fixThrough = runBlock('bash', fix + AFTER, persona, CHAIN);
+              const fixThrough = await runBlock('bash', fix + AFTER, persona, CHAIN);
               deepStrictEqual([fixThrough.status, fixThrough.log], [0, ['find-active', 'read', 'awaiting-owner-clear', 'append']], 'outside start the block falls through (the sentinel is reachable)');
               for (const [name, b] of [['fix now', fix], ['defer', defer]]) {
-                const failedRead = runBlock('bash', b, persona, { active: '/w/active.md', readOutput: '{"workflow_type":"verb-chain"}', readStatus: 5 });
+                const failedRead = await runBlock('bash', b, persona, { active: '/w/active.md', readOutput: '{"workflow_type":"verb-chain"}', readStatus: 5 });
                 deepStrictEqual([failedRead.status, failedRead.log], [1, ['find-active', 'read']], `${name}: a failed read stops the block, whatever it printed`);
               }
-              const d = runBlock('bash', defer, persona, CHAIN);
+              const d = await runBlock('bash', defer, persona, CHAIN);
               strictEqual(d.status, 0, d.stderr);
               deepStrictEqual(d.log, ['find-active', 'read', 'awaiting-owner-clear', 'finish-verb']);
               for (const part of [' --workflow-path /w/active.md ', ' --gate recurring-finding ', ' --next-step-kind commit --next-step-confidence HIGH']) ok(d.argv[2].includes(part), `${part}: ${d.argv[2]}`);
@@ -1792,12 +1948,12 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               ok(deferNext && d.argv[2].includes(` --next-action ${deferNext} --next-step-kind commit `), `the clear and the finish name one next action: ${d.argv[2]}`);
               ok(d.argv[3].includes(' --workflow-path /w/active.md ') && d.argv[3].includes(' --next-step-kind commit --next-step-confidence HIGH'), d.argv[3]);
               // Review of code step 6: inside a start lifecycle the deferral is cleared and the lifecycle resumes.
-              const lifecycle = runBlock('bash', defer, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
+              const lifecycle = await runBlock('bash', defer, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
               deepStrictEqual([lifecycle.status, lifecycle.log], [0, ['find-active', 'read', 'awaiting-owner-clear']], 'inside start: no finish-verb');
               ok(lifecycle.argv[2].includes(` --next-action Resume /${persona}:start: the finding is deferred, and the lifecycle continues at its terminal step --next-step-kind commit `), lifecycle.argv[2]);
-              const deferStopped = runBlock('bash', defer + AFTER, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
+              const deferStopped = await runBlock('bash', defer + AFTER, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
               deepStrictEqual([deferStopped.status, deferStopped.log], [0, ['find-active', 'read', 'awaiting-owner-clear']], 'defer inside start exits: nothing after it runs');
-              const unread = runBlock('bash', defer, persona, { active: '/w/active.md', readOutput: '', readStatus: 5 });
+              const unread = await runBlock('bash', defer, persona, { active: '/w/active.md', readOutput: '', readStatus: 5 });
               deepStrictEqual([unread.status, unread.log], [1, ['find-active', 'read']], 'an unreadable type stops the block before any write');
               // Review of code step 6 (finding 3): deferring a finding does not
               // make a refine converge. Where the persona waits for convergence,
@@ -1809,7 +1965,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                   const label = `CONVERGED ${value === null ? 'as committed' : value === UNSET ? 'unset' : JSON.stringify(value)}`;
                   const script = value === null ? deferAsCommitted : converged(deferAsCommitted, persona, verb, value);
                   for (const type of ['verb-chain', 'start']) {
-                    const paused = runBlock('bash', script, persona, { ...CHAIN, readOutput: `{"workflow_type":"${type}"}` });
+                    const paused = await runBlock('bash', script, persona, { ...CHAIN, readOutput: `{"workflow_type":"${type}"}` });
                     strictEqual(paused.status, 0, `${label}, ${type}: ${paused.stderr}`);
                     deepStrictEqual(paused.log, ['find-active', 'read', 'awaiting-owner-clear'], `${label}, ${type}: no terminal write`);
                     for (const part of [' --gate recurring-finding ', ` --next-action-file ${paused.textDir}/next-action.txt `, ' --next-step-kind verb --next-step-verb <refine|decide|investigate> --next-step-confidence <HIGH|MEDIUM|LOW>']) ok(paused.argv[2].includes(part), `${label}, ${type}: ${part}: ${paused.argv[2]}`);
@@ -1817,9 +1973,9 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                     ok(/PAUSED \(not converged\)/.test(paused.stderr), `${label}, ${type}: the pause is reported`);
                   }
                 }
-                const unwrittenNext = runBlock('bash', converged(deferAsCommitted, persona, verb, 'no'), persona, { ...CHAIN, texts: { 'next-action.txt': null } });
+                const unwrittenNext = await runBlock('bash', converged(deferAsCommitted, persona, verb, 'no'), persona, { ...CHAIN, texts: { 'next-action.txt': null } });
                 deepStrictEqual([unwrittenNext.status, unwrittenNext.log], [1, ['find-active', 'read']], 'unconverged: a next action left unwritten stops the block before the clear');
-                const refusedPause = runBlock('bash', converged(deferAsCommitted, persona, verb, 'no'), persona, { ...CHAIN, clearStatus: 3 });
+                const refusedPause = await runBlock('bash', converged(deferAsCommitted, persona, verb, 'no'), persona, { ...CHAIN, clearStatus: 3 });
                 deepStrictEqual([refusedPause.status, refusedPause.log], [3, ['find-active', 'read', 'awaiting-owner-clear']], 'unconverged: a refused clear stops the block');
                 ok(!/PAUSED/.test(refusedPause.stderr), 'no pause is reported for a clear that did not happen');
               }
@@ -1827,29 +1983,29 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               // expansion and a line that read as the old heredoc's delimiter
               // reaches state.mjs whole, and nothing in it runs.
               const hostile = "fix it: the team's call `touch pwned2`\nOWNER_RESOLUTION\ntouch injected\n";
-              const quoted = runBlock('bash', fix, persona, { ...CHAIN, texts: { 'resolution.txt': hostile } });
+              const quoted = await runBlock('bash', fix, persona, { ...CHAIN, texts: { 'resolution.txt': hostile } });
               strictEqual(quoted.status, 0, quoted.stderr);
               deepStrictEqual([quoted.texts, quoted.sideEffects], [[['--resolution-file', hostile]], []]);
               for (const [name, b] of [['fix now', fix], ['defer', defer]]) {
-                const unwritten = runBlock('bash', b, persona, { ...CHAIN, texts: { 'resolution.txt': null } });
+                const unwritten = await runBlock('bash', b, persona, { ...CHAIN, texts: { 'resolution.txt': null } });
                 deepStrictEqual([unwritten.status, unwritten.log], [1, ['find-active', 'read']], `${name}: a resolution left unwritten stops the block before any write`);
               }
               for (const [name, block, ran] of [['fix now', fix, ['find-active', 'read', 'awaiting-owner-clear']], ['defer', defer, ['find-active', 'read', 'awaiting-owner-clear']]]) {
-                const failed = runBlock('bash', block, persona, { ...CHAIN, clearStatus: 3 });
+                const failed = await runBlock('bash', block, persona, { ...CHAIN, clearStatus: 3 });
                 deepStrictEqual([failed.status, failed.log], [3, ran], `${name}: a refused clear stops the block`);
-                const none = runBlock('bash', block, persona, { active: '' });
+                const none = await runBlock('bash', block, persona, { active: '' });
                 deepStrictEqual([none.status, none.log], [1, ['find-active']], `${name}: no workflow, nothing written`);
                 ok(none.stderr.includes(`✗ No active ${persona} workflow on this branch.`), none.stderr);
-                const lost = runBlock('bash', block, persona, { active: '/w/active.md', findStatus: 4 });
+                const lost = await runBlock('bash', block, persona, { active: '/w/active.md', findStatus: 4 });
                 deepStrictEqual([lost.status, lost.log], [4, ['find-active']], `${name}: a failed find stops the block with its status`);
               }
             });
 
             if (VERB_DESTS.includes(dest)) for (const shell of SHELLS) {
-              it(`${shell}: the finalize block hands hostile texts to the scripts byte for byte and runs nothing in them; a file left unwritten or blank stops it before any write, and a failed append before settle and finish-verb`, () => {
+              it(`${shell}: the finalize block hands hostile texts to the scripts byte for byte and runs nothing in them; a file left unwritten or blank stops it before any write, and a failed append before settle and finish-verb`, async () => {
                 const block = converged(blockWith(/peer-runner\.mjs" settle \\/).text, persona, verb);
                 const texts = { 'note.md': `${HOSTILE_NOTE}\n`, 'summary.txt': `${HOSTILE_SUMMARY}\n`, 'next-action.txt': `${HOSTILE_NEXT}\n` };
-                const ok_ = runBlock(shell, block, persona, { texts });
+                const ok_ = await runBlock(shell, block, persona, { texts });
                 strictEqual(ok_.status, 0, ok_.stderr);
                 deepStrictEqual(ok_.log, typicalLog(verb));
                 strictEqual(ok_.note, texts['note.md'], 'the note reached state.mjs unread by the shell');
@@ -1862,12 +2018,12 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 // and settle refused the summary after it.
                 for (const name of Object.keys(texts)) {
                   for (const [how, content] of REFUSED_TEXTS) {
-                    const stopped = runBlock(shell, block, persona, { texts: { ...texts, [name]: content } });
+                    const stopped = await runBlock(shell, block, persona, { texts: { ...texts, [name]: content } });
                     deepStrictEqual([stopped.status, stopped.log], [1, []], `${name} ${how}: nothing was written`);
                     ok(stopped.stderr.includes(`${name} in TEXT_DIR (`) && stopped.stderr.includes('is missing, blank or not UTF-8 text'), stopped.stderr);
                   }
                 }
-                const failed = runBlock(shell, block, persona, { texts, failAppend: true });
+                const failed = await runBlock(shell, block, persona, { texts, failAppend: true });
                 strictEqual(failed.status, 7, 'the block exits with the append\'s status');
                 deepStrictEqual(failed.log, ['append'], 'no later write ran');
               });
