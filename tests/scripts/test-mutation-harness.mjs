@@ -22,7 +22,7 @@
 import { describe, it } from 'node:test';
 import { ok, strictEqual, deepStrictEqual, throws, rejects } from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -33,6 +33,7 @@ import {
   TIMEOUT_ENV,
   acquireRunLock,
   applyEdit,
+  checkSpecs,
   childEnv,
   fileAt,
   makeDisposableCopy,
@@ -422,6 +423,15 @@ describe('parseArgs', () => {
     strictEqual(parseArgs([]).spec, undefined);
     strictEqual(parseArgs([]).timeout, undefined);
     strictEqual(parseArgs(['spec.mjs', '--timeout']).timeout, '', 'a --timeout with no value is kept, to be refused');
+  });
+
+  it('reads --static and every spec it names', () => {
+    const opts = parseArgs(['--static', 'a.mjs', 'b.mjs']);
+    strictEqual(opts.static, true);
+    deepStrictEqual(opts.specs, ['a.mjs', 'b.mjs']);
+    strictEqual(opts.spec, 'a.mjs');
+    strictEqual(parseArgs([]).static, false);
+    deepStrictEqual(parseArgs(['--static']).specs, []);
   });
 });
 
@@ -1318,6 +1328,272 @@ export const MUTATIONS = [
       cli.child.kill('SIGKILL');
       for (const pid of pidsIn(pidFile)) try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
       for (const file of [pidFile, preload, release]) rmSync(file, { force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The static check: does every mutation still apply? Anchor drift recurred four
+// times (C85, C97, C113, C129) because nothing applied the edits when the
+// anchored source changed; a full run per spec costs hours.
+
+describe('checkSpecs — every edit applied, no test run', () => {
+  it('reports each case that would not apply, and runs no test', async () => {
+    const root = makeScoringRepo();
+    const workDir = join(root, '..', `harness-static-${process.pid}`);
+    const ran = join(root, '..', `harness-static-ran-${process.pid}`);
+    write(root, 'tests/test-marker.mjs', `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(ran)}, 'ran');\n`);
+    write(root, 'spec.mjs', `
+export const TESTS = ['tests/test-marker.mjs'];
+export const MUTATIONS = [
+  { id: 'A', file: 'src/value.mjs', from: 'VALUE = 1', to: 'VALUE = 2', why: 'applies' },
+  { id: 'D', file: 'src/value.mjs', from: 'VALUE = 99', to: 'VALUE = 3', why: 'a drifted anchor' },
+  { id: 'N', file: 'src/value.mjs', from: 'VALUE = 1', to: 'VALUE = 1', why: 'changes nothing' },
+  { id: 'P', prepare: () => { throw new TypeError('the shape moved'); }, why: 'prepare fails outside the harness' },
+  { id: 'T', file: 'src/value.mjs', from: 'VALUE = 1', to: 'VALUE = 2', tests: ['tests/test-gone.mjs'], why: 'names a test file the tree lacks' },
+  { id: 'K', expect: 'SURVIVED', killed_by: /x/, file: 'src/value.mjs', from: 'VALUE = 1', to: 'VALUE = 2', why: 'refused as a run refuses it' },
+  { id: 'Z', prepare: () => { throw null; }, why: 'throws what is not an Error' },
+];
+`);
+    try {
+      const { specs, drift } = await checkSpecs([join(root, 'spec.mjs')], { repoRoot: root, workDir, log: () => {} });
+      strictEqual(specs.length, 1);
+      strictEqual(specs[0].cases, 7);
+      strictEqual(specs[0].error, undefined);
+      deepStrictEqual(specs[0].drift.map((d) => d.id), ['D', 'N', 'P', 'T', 'K', 'Z']);
+      strictEqual(drift, 6);
+      const detail = Object.fromEntries(specs[0].drift.map((d) => [d.id, d.detail]));
+      ok(/occurs 0x/.test(detail.D), detail.D);
+      ok(/changes nothing/.test(detail.N), detail.N);
+      ok(/TypeError: the shape moved/.test(detail.P), detail.P);
+      ok(/tests\/test-gone\.mjs/.test(detail.T), detail.T);
+      ok(/a survivor has none/.test(detail.K), detail.K);
+      strictEqual(detail.Z, 'prepare threw null');
+      ok(!existsSync(ran), 'no test file was run');
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+      rmSync(ran, { force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a spec that does not load, or names a test file the tree lacks, and goes on', async () => {
+    const root = makeScoringRepo();
+    const workDir = join(root, '..', `harness-static2-${process.pid}`);
+    write(root, 'dup.mjs', `${SPEC}\nMUTATIONS.push({ ...MUTATIONS[0] });\n`);
+    write(root, 'gone.mjs', SPEC.replace("'tests/test-value.mjs'", "'tests/test-gone.mjs'"));
+    write(root, 'none.mjs', SPEC.replace("export const TESTS = ['tests/test-value.mjs'];", ''));
+    write(root, 'spec.mjs', SPEC);
+    try {
+      const { specs, drift } = await checkSpecs(
+        [join(root, 'dup.mjs'), join(root, 'gone.mjs'), join(root, 'none.mjs'), join(root, 'spec.mjs')],
+        { repoRoot: root, workDir, log: () => {} },
+      );
+      ok(/repeats mutation id\(s\) K$/.test(specs[0].error), specs[0].error);
+      ok(/tests\/test-gone\.mjs/.test(specs[1].error), specs[1].error);
+      ok(/names no test files/.test(specs[2].error), specs[2].error);
+      strictEqual(specs[3].error, undefined);
+      deepStrictEqual(specs[3].drift.map((d) => d.id), ['H'], 'the spec after them is still checked');
+      strictEqual(drift, 4);
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('gives each case the copy as it was: what an earlier case added, removed or changed is undone', async () => {
+    const root = makeScoringRepo();
+    const workDir = join(root, '..', `harness-static3-${process.pid}`);
+    // What a link put where the copy was points to: nothing in it is touched.
+    const outside = join(root, '..', `harness-static3-outside-${process.pid}`);
+    mkdirSync(outside);
+    writeFileSync(join(outside, 'keep.txt'), 'keep\n');
+    writeFileSync(join(outside, 'committed.txt'), 'outside\n');
+    write(root, 'docs/readme.txt', 'read me\n');
+    write(root, 'lib/a.txt', 'a\n');
+    symlinkSync('committed.txt', join(root, 'link.txt'));
+    write(root, 'spec.mjs', `
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+const SOURCE = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8');
+let ROOT_MODE;
+const as_it_was = (copy) => {
+  const wrong = [];
+  if (!lstatSync(copy).isDirectory()) throw new Error('the copy is no directory');
+  if ((statSync(copy).mode & 0o7777) !== ROOT_MODE) wrong.push('the copy keeps its mode');
+  for (const rel of ['added.txt', 'newdir', 'lib-moved', 'dangling.txt', 'nowhere']) {
+    try { lstatSync(join(copy, rel)); wrong.push(rel + ' is still there'); } catch {}
+  }
+  for (const rel of ['committed.txt', 'modified.txt', 'untracked.txt', 'src/value.mjs', 'tests/test-value.mjs', 'docs/readme.txt', 'lib/a.txt']) {
+    let text = null;
+    try { text = readFileSync(join(copy, rel), 'utf8'); } catch {}
+    if (text !== SOURCE(rel)) wrong.push(rel + ' differs');
+    else if (!lstatSync(join(copy, rel)).isFile()) wrong.push(rel + ' is no file');
+  }
+  if ((statSync(join(copy, 'modified.txt')).mode & 0o777) === 0o600) wrong.push('modified.txt keeps its mode');
+  if ((statSync(join(copy, 'docs')).mode & 0o777) !== (statSync(new URL('docs', import.meta.url)).mode & 0o777)) wrong.push('docs keeps its mode');
+  if (!lstatSync(join(copy, 'link.txt')).isSymbolicLink() || readlinkSync(join(copy, 'link.txt')) !== 'committed.txt') wrong.push('link.txt is no link');
+  if (wrong.length > 0) throw new Error(wrong.join('; '));
+};
+export const TESTS = ['tests/test-value.mjs'];
+export const MUTATIONS = [
+  { id: 'W', why: 'adds, removes and changes paths', prepare: (copy) => {
+    ROOT_MODE = statSync(copy).mode & 0o7777;
+    renameSync(join(copy, 'lib'), join(copy, 'lib-moved'));
+    chmodSync(join(copy, 'docs'), 0o000);
+    rmSync(join(copy, 'link.txt'));
+    writeFileSync(join(copy, 'link.txt'), 'a file where a link was');
+    writeFileSync(join(copy, 'added.txt'), 'added');
+    mkdirSync(join(copy, 'newdir/sub'), { recursive: true });
+    writeFileSync(join(copy, 'newdir/sub/file.txt'), 'nested');
+    rmSync(join(copy, 'committed.txt'));
+    rmSync(join(copy, 'src'), { recursive: true });
+    writeFileSync(join(copy, 'src'), 'a file where a directory was');
+    chmodSync(join(copy, 'modified.txt'), 0o600);
+    // Same size and inode, times put back as far as node can: its size does
+    // not tell.
+    const test = join(copy, 'tests/test-value.mjs');
+    const before = statSync(test);
+    writeFileSync(test, 'X'.repeat(before.size));
+    utimesSync(test, before.atime, before.mtime);
+  } },
+  { id: 'X', why: 'changes a file, then fails', prepare: (copy) => {
+    writeFileSync(join(copy, 'untracked.txt'), 'changed by a failing case');
+    throw new Error('failed midway');
+  } },
+  { id: 'R1', why: 'sees the copy as it was', file: 'src/value.mjs', from: 'VALUE = 1', to: 'VALUE = 2', prepare: as_it_was },
+  // The copy itself removed: the restore cannot put it back, a new one replaces it.
+  { id: 'Y', why: 'removes the whole copy', prepare: (copy) => rmSync(copy, { recursive: true, force: true }) },
+  { id: 'R2', why: 'sees the copy as it was', file: 'src/value.mjs', from: 'VALUE = 1', to: 'VALUE = 2', prepare: as_it_was },
+  // The copy's own root: its mode is put back, so the next case can edit at
+  // the top, and the restore can put that back too.
+  { id: 'V', why: 'closes the copy itself to writes', prepare: (copy) => chmodSync(copy, 0o555) },
+  { id: 'B', why: 'edits a file at the top of the copy', prepare: (copy) => writeFileSync(join(copy, 'committed.txt'), 'edited at the top') },
+  { id: 'R3', why: 'sees the copy as it was', file: 'src/value.mjs', from: 'VALUE = 1', to: 'VALUE = 2', prepare: as_it_was },
+  // A link where the copy was: the restore does not follow it, a new copy replaces it.
+  { id: 'L', why: 'puts a link to another directory where the copy was', prepare: (copy) => {
+    rmSync(copy, { recursive: true, force: true });
+    symlinkSync(${JSON.stringify(outside)}, copy);
+  } },
+  { id: 'R4', why: 'sees the copy as it was', file: 'src/value.mjs', from: 'VALUE = 1', to: 'VALUE = 2', prepare: as_it_was },
+  // Links that point nowhere, which rmSync leaves in place on node before 24.13.1.
+  { id: 'G', why: 'adds a link that points nowhere, and puts one where a file was', prepare: (copy) => {
+    symlinkSync('nowhere', join(copy, 'dangling.txt'));
+    rmSync(join(copy, 'committed.txt'));
+    symlinkSync('nowhere', join(copy, 'committed.txt'));
+  } },
+  { id: 'R5', why: 'sees the copy as it was', file: 'src/value.mjs', from: 'VALUE = 1', to: 'VALUE = 2', prepare: as_it_was },
+];
+`);
+    try {
+      const lines = [];
+      const { specs } = await checkSpecs([join(root, 'spec.mjs')], { repoRoot: root, workDir, log: (l) => lines.push(l) });
+      deepStrictEqual(specs[0].drift.map((d) => [d.id, d.detail]), [['X', 'prepare threw Error: failed midway']]);
+      // Only the case that removed the copy needs a new one: a fallback for
+      // every case would hide a restore that fails.
+      deepStrictEqual(
+        lines.filter((l) => /the copy could not be put back .*; it is made again$/.test(l)).map((l) => l.split(/\s+/)[1]),
+        ['Y', 'L'],
+        lines.join('\n'),
+      );
+      deepStrictEqual(readdirSync(outside).sort(), ['committed.txt', 'keep.txt'], 'nothing is added to or removed from the directory the link pointed to');
+      strictEqual(readFileSync(join(outside, 'keep.txt'), 'utf8'), 'keep\n');
+      strictEqual(readFileSync(join(outside, 'committed.txt'), 'utf8'), 'outside\n');
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('replaces a copy whose root became a link that points nowhere, and goes on', BOUNDED, async () => {
+    // In a child process: on node 24 before 24.13.1 rmSync leaves such a link
+    // in place, and the copy made over it aborts the process.
+    const root = makeScoringRepo();
+    write(root, 'scripts/mutation-specs/dangling.mjs', `
+import { readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { join } from 'node:path';
+export const TESTS = ['tests/test-value.mjs'];
+export const MUTATIONS = [
+  { id: 'N', why: 'puts a link that points nowhere where the copy was', prepare: (copy) => {
+    rmSync(copy, { recursive: true, force: true });
+    symlinkSync(copy + '-nowhere', copy);
+  } },
+  { id: 'R', why: 'sees the copy as it was', prepare: (copy) => {
+    if (readFileSync(join(copy, 'src/value.mjs'), 'utf8') !== readFileSync(new URL('../../src/value.mjs', import.meta.url), 'utf8')) throw new Error('src/value.mjs differs');
+  } },
+];
+`);
+    try {
+      const run = await runCli(['--static', '--repo-root', root]).exited;
+      strictEqual(run.code, 0, run.out);
+      ok(/static: 1 specs, 2 cases, 0 drift/.test(run.out), run.out);
+      ok(/ N {2}the copy could not be put back .*; it is made again/.test(run.out), run.out);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('tells a same-size rewrite of a file just put back, on a filesystem whose times are coarse', async () => {
+    // A filesystem with one-second times (HFS+), or Linux before 6.13, whose
+    // change times move by the jiffy, cannot be made here: the check is given
+    // an lstat that floors both times to 2^20 seconds (some twelve days), which
+    // stands for one. A rewrite in the tick of the restore before it keeps
+    // every field but the modification time the copy fixed.
+    const root = makeScoringRepo();
+    const workDir = join(root, '..', `harness-static4-${process.pid}`);
+    const tick = 2n ** 20n * 1_000_000_000n;
+    const coarse = (abs) => {
+      const st = lstatSync(abs, { bigint: true });
+      return { mode: st.mode, size: st.size, ino: st.ino, mtimeNs: (st.mtimeNs / tick) * tick, ctimeNs: (st.ctimeNs / tick) * tick };
+    };
+    write(root, 'spec.mjs', `
+import { readFileSync, statSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+const TEST = 'tests/test-value.mjs';
+const rewrite = (fill) => (copy) => writeFileSync(join(copy, TEST), fill.repeat(statSync(join(copy, TEST)).size));
+export const TESTS = [TEST];
+export const MUTATIONS = [
+  { id: 'W1', why: 'rewrites a file of the first copy, same size', prepare: rewrite('X') },
+  { id: 'W2', why: 'rewrites the file the restore just put back, same size', prepare: rewrite('Y') },
+  { id: 'R', why: 'sees the file as it was', prepare: (copy) => {
+    if (readFileSync(join(copy, TEST), 'utf8') !== readFileSync(new URL(TEST, import.meta.url), 'utf8')) throw new Error(TEST + ' differs');
+  } },
+];
+`);
+    try {
+      const { specs } = await checkSpecs([join(root, 'spec.mjs')], { repoRoot: root, workDir, lstat: coarse, log: () => {} });
+      deepStrictEqual(specs[0].drift, []);
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('the CLI checks every spec in scripts/mutation-specs by default, and exits 1 on drift', BOUNDED, async () => {
+    const root = makeScoringRepo();
+    write(root, 'scripts/mutation-specs/good.mjs', SPEC.replace(/\n  \{ id: 'H'[^]*?\},\n/, '\n'));
+    write(root, 'scripts/mutation-specs/drifted.mjs', SPEC);
+    try {
+      const drifted = await runCli(['--static', '--repo-root', root]).exited;
+      strictEqual(drifted.code, 1, drifted.out);
+      ok(/drifted\.mjs/.test(drifted.out) && /\bH\b.*occurs 0x/.test(drifted.out), drifted.out);
+      ok(/good\.mjs/.test(drifted.out), `the other spec is checked too: ${drifted.out}`);
+      rmSync(join(root, 'scripts/mutation-specs/drifted.mjs'));
+      const clean = await runCli(['--static', '--repo-root', root]).exited;
+      strictEqual(clean.code, 0, clean.out);
+      ok(/static: 1 specs, 2 cases, 0 drift/.test(clean.out), clean.out);
+      const named = await runCli(['--static', '--repo-root', root, join(root, 'scripts/mutation-specs/good.mjs'), '--only', 'K']).exited;
+      strictEqual(named.code, 0, named.out);
+      const two = await runCli(['--static', '--repo-root', root, 'a.mjs', 'b.mjs', '--only', 'K']).exited;
+      strictEqual(two.code, 1, two.out);
+      ok(/--only takes one spec/.test(two.out), two.out);
+      rmSync(join(root, 'scripts/mutation-specs/good.mjs'));
+      const empty = await runCli(['--static', '--repo-root', root]).exited;
+      strictEqual(empty.code, 1, empty.out);
+      ok(/scripts\/mutation-specs holds no spec/.test(empty.out), empty.out);
+    } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });

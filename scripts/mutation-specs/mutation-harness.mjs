@@ -16,7 +16,8 @@
 // test result. Two defects have no mutation: a test run that leads no process
 // group of its own cannot be stopped at its timeout, so its test hangs instead
 // of failing; and a zombie holder is not a case a test can make, since node
-// reaps the children it spawns.
+// reaps the children it spawns. S is the static check (`--static`): the cases
+// it reports, the copy each case gets, and its CLI.
 
 import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -49,6 +50,12 @@ const T_TZ = /^judges a live holder running whatever time zone the waiter runs i
 const T_SCHEME = /^does not compare a start spelled in a scheme the reader does not use$/;
 const T_STOPPING = /^starts no test run once its runs are being stopped$/;
 const T_UNKILLABLE = /^a signal keeps the lock while a test run will not end, and releases it once it has$/;
+const T_STATIC_CASES = /^reports each case that would not apply, and runs no test$/;
+const T_STATIC_SPECS = /^reports a spec that does not load, or names a test file the tree lacks, and goes on$/;
+const T_STATIC_COPY = /^gives each case the copy as it was: what an earlier case added, removed or changed is undone$/;
+const T_STATIC_DANGLING = /^replaces a copy whose root became a link that points nowhere, and goes on$/;
+const T_STATIC_COARSE = /^tells a same-size rewrite of a file just put back, on a filesystem whose times are coarse$/;
+const T_STATIC_CLI = /^the CLI checks every spec in scripts\/mutation-specs by default, and exits 1 on drift$/;
 
 export const TESTS = [T];
 
@@ -293,5 +300,173 @@ export const MUTATIONS = [
     to: '      const again = readLock(join(guard, name));\n      judged();\n      if (again?.raw === reaper.raw) { rmSync(guard, { recursive: true, force: true }); log(`mutation-harness: removed the guard of a reaper that is not running (${guard})`); continue; }\n      const captured',
     why: 'the re-check, then remove, is back: a waiter re-reads the dead reaper\'s guard, then removes the guard by its name, and the guard a live reaper placed after that read goes with it (C101)',
     killed_by: T_GUARD_CAPTURE,
+  },
+
+  // ---- S: the static check ------------------------------------------------
+  {
+    id: 'S1', file: H,
+    from: '        states = restoreCopy(work, pristine, states, lstat);\n',
+    to: '',
+    why: 'one copy serves every case and nothing puts it back: a case sees what the cases before it did',
+    killed_by: T_STATIC_COPY,
+  },
+  {
+    id: 'S2', file: H,
+    from: '    if (!states.has(path)) removePath(join(work, path));\n',
+    to: '',
+    why: 'a path a case added stays for the cases after it',
+    killed_by: T_STATIC_COPY,
+  },
+  {
+    id: 'S3', file: H,
+    from: '`${st.mode}:${st.size}:${st.ino}:${st.mtimeNs}:${st.ctimeNs}`',
+    to: '`${st.size}`',
+    why: 'a change is told by the size alone: a same-size rewrite stays for the cases after it',
+    killed_by: T_STATIC_COPY,
+  },
+  {
+    id: 'S4', file: H,
+    from: "      if (current !== undefined && !current.startsWith('dir:')) removePath(abs);\n",
+    to: '',
+    why: 'a file a case put where a directory was is not removed, so the directory cannot be put back',
+    killed_by: T_STATIC_COPY,
+  },
+  {
+    id: 'S5', file: H,
+    from: "        lacking('tests', mutation.tests ?? []);\n",
+    to: '',
+    why: 'a case naming a test file the tree lacks passes the check, and its run fails at the control',
+    killed_by: T_STATIC_CASES,
+  },
+  {
+    id: 'S6', file: H,
+    from: "      lacking('TESTS', spec.TESTS ?? []);\n",
+    to: '',
+    why: 'a spec whose TESTS name a file the tree lacks passes the check',
+    killed_by: T_STATIC_SPECS,
+  },
+  {
+    id: 'S7', file: H,
+    from: '      } catch (err) {\n        const detail = ',
+    to: '      } catch (err) {\n        if (!(err instanceof MutationHarnessError)) throw err;\n        const detail = ',
+    why: 'a prepare that throws outside the harness stops the whole check instead of being reported',
+    killed_by: T_STATIC_CASES,
+  },
+  {
+    id: 'S8', file: H,
+    from: '    } catch (err) {\n      const error = ',
+    to: '    } catch (err) {\n      throw err;\n      const error = ',
+    why: 'a spec that does not load stops the check: the specs after it are never checked',
+    killed_by: T_STATIC_SPECS,
+  },
+  {
+    id: 'S9', file: H,
+    from: '      return drift === 0 ? 0 : 1;\n',
+    to: '      return 0;\n',
+    why: 'the CLI exits 0 whatever drifted',
+    killed_by: T_STATIC_CLI,
+  },
+  {
+    id: 'S10', file: H,
+    from: '      const specs = opts.specs.length > 0 ? opts.specs : listSpecs(repoRoot);\n',
+    to: '      const specs = opts.specs;\n',
+    why: 'with no spec named the CLI checks none, and reports no drift',
+    killed_by: T_STATIC_CLI,
+  },
+  {
+    id: 'S11', file: H,
+    from: '      if (opts.only.length > 0 && specs.length !== 1) {\n',
+    to: '      if (false) {\n',
+    why: '--only beside several specs is taken, though an id names a case of one spec',
+    killed_by: T_STATIC_CLI,
+  },
+  {
+    id: 'S12', file: H,
+    from: '      chmodSync(abs, Number(state.slice(4)) & 0o7777);\n',
+    to: '',
+    why: 'a directory\'s mode is not put back: a case sees the mode an earlier case left',
+    killed_by: T_STATIC_COPY,
+  },
+  {
+    id: 'S13', file: H,
+    from: '  if ((mode & 0o700) !== 0o700) chmodSync(abs, (mode & 0o7777) | 0o700);\n',
+    to: '',
+    why: 'a directory a case closed is not opened, so the restore cannot read it',
+    killed_by: T_STATIC_COPY,
+  },
+  {
+    id: 'S14', file: H,
+    from: "          log(`${specPath}  ${mutation.id}  the copy could not be put back (${thrown(err)}); it is made again`);\n          states = freshWork();\n",
+    to: '          throw err;\n',
+    why: 'a copy the restore cannot put back stops the whole check',
+    killed_by: T_STATIC_COPY,
+  },
+  {
+    id: 'S15', file: H,
+    from: '      controlTestsOf(specPath, spec, mutations);\n',
+    to: '',
+    why: 'a spec that names no test file passes the check, though a run refuses it',
+    killed_by: T_STATIC_SPECS,
+  },
+  {
+    id: 'S16', file: H,
+    from: '  if (err instanceof Error) return `${err.name}: ${err.message}`;\n',
+    to: '  return `${err.name}: ${err.message}`;\n',
+    why: 'a prepare that throws what is not an Error stops the whole check',
+    killed_by: T_STATIC_CASES,
+  },
+  {
+    id: 'S17', file: H,
+    from: '  if (specs.length === 0) throw new MutationHarnessError(`${SPEC_DIR} holds no spec`);\n',
+    to: '',
+    why: 'with no spec to check, the CLI reports no drift and exits 0',
+    killed_by: T_STATIC_CLI,
+  },
+  {
+    // Not dropping ctimeNs: on a filesystem with fine change times it tells
+    // too, so the modification time is tested where the change time is coarse.
+    id: 'S18', file: H,
+    from: '`${st.mode}:${st.size}:${st.ino}:${st.mtimeNs}:${st.ctimeNs}`',
+    to: '`${st.mode}:${st.size}:${st.ino}:${st.ctimeNs}`',
+    why: 'a change is told by the change time: where it is coarse, a same-size rewrite in the tick of the restore stays',
+    killed_by: T_STATIC_COARSE,
+  },
+  {
+    id: 'S19', file: H,
+    from: '    lutimesSync(abs, SETTLED, SETTLED);\n',
+    to: '',
+    why: 'a file the restore put back keeps the time it was written at: a same-size rewrite in that tick stays',
+    killed_by: T_STATIC_COARSE,
+  },
+  {
+    id: 'S20', file: H,
+    from: '    settleTimes(work);\n',
+    to: '',
+    why: 'the files of a new copy keep the time they were copied at: a same-size rewrite in that tick stays',
+    killed_by: T_STATIC_COARSE,
+  },
+  {
+    id: 'S21', file: H,
+    from: "    out.set('', dirState(root));\n",
+    to: '',
+    why: 'the copy\'s own mode is not put back: a case closes it, and the next one\'s edit at the top cannot be undone',
+    killed_by: T_STATIC_COPY,
+  },
+  {
+    id: 'S22', file: H,
+    from: '    if (!lstatSync(root).isDirectory()) throw new MutationHarnessError(`the work copy ${root} is no longer a directory`);\n',
+    to: '',
+    why: 'a link put where the copy was is followed: the restore empties the directory it points to and writes the copy there',
+    killed_by: T_STATIC_COPY,
+  },
+  {
+    // Killed on node 24 before 24.13.1 (measured on 24.11.1), whose rmSync
+    // leaves a link that points nowhere in place; on a fixed node it is an
+    // equivalent mutation. The isolation test fails too (case G).
+    id: 'S23', file: H,
+    from: '  else unlinkSync(abs);\n',
+    to: '  else rmSync(abs, { recursive: true, force: true });\n',
+    why: 'a link that points nowhere is left in place: it stays for the cases after it, and one where the copy was aborts the check',
+    killed_by: T_STATIC_DANGLING,
   },
 ];
