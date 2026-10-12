@@ -35,6 +35,13 @@
 // Usage:
 //   node scripts/mutation-harness.mjs <spec.mjs> [--only id,id] [--repo-root d]
 //                                     [--work-dir d] [--keep] [--timeout s]
+//   node scripts/mutation-harness.mjs --static [spec.mjs ...] [--only id,id]
+//                                     [--repo-root d] [--work-dir d] [--keep]
+//
+// `--static` (`npm run mutate:static`) runs no test: it applies every case's
+// edit, each to the copy as it was, and reports each one a run would refuse as
+// a harness error (an anchor that drifted, a test file that is gone). With no
+// spec named it checks every spec in scripts/mutation-specs. See `checkSpecs`.
 //
 // A spec module exports:
 //   TESTS      string[]   test files (repo-relative) run when a mutation names none
@@ -66,11 +73,11 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
-  linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, unlinkSync,
-  writeFileSync,
+  chmodSync, copyFileSync, cpSync, existsSync, linkSync, lstatSync, lutimesSync, mkdirSync, mkdtempSync, readdirSync,
+  readFileSync, readlinkSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { constants as osConstants, hostname, tmpdir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { isSessionVariable } from './lib/session-env.mjs';
@@ -470,6 +477,44 @@ export async function loadSpec(specPath, { repoRoot = process.cwd(), only = [] }
   return { spec, mutations };
 }
 
+// The tools a spec's `prepare` is handed.
+function specTools(repoRoot) {
+  return {
+    applyEdit,
+    readJson,
+    writeJson,
+    fileAt: (copy, ref, file) => fileAt(repoRoot, copy, ref, file),
+  };
+}
+
+// Every test file the selected cases are scored against, which the control
+// runs; a spec that names none is refused.
+function controlTestsOf(specPath, spec, mutations) {
+  const tests = [...new Set([
+    ...(spec.TESTS ?? []),
+    ...mutations.flatMap((m) => m.tests ?? []),
+  ])];
+  if (tests.length === 0) {
+    throw new MutationHarnessError(`${specPath} names no test files — there is nothing to score against`);
+  }
+  return tests;
+}
+
+// The checks a case must pass before its tests run, then its edit, in `dir`:
+// a refusal is a harness error, never a verdict. `runSpec` and `checkSpecs`
+// share it, so the static check refuses exactly what a run would. Returns the
+// case's killers.
+function applyMutation(dir, mutation, tools) {
+  const expect = mutation.expect ?? 'KILLED';
+  const killers = [mutation.killed_by ?? []].flat();
+  if (killers.some((re) => !(re instanceof RegExp))) throw new MutationHarnessError('killed_by takes a RegExp or a list of them');
+  if (killers.some((re) => re.global || re.sticky)) throw new MutationHarnessError('killed_by patterns carry no g or y flag (their lastIndex would carry over)');
+  if (killers.length > 0 && expect !== 'KILLED') throw new MutationHarnessError('killed_by names who catches a defect; a survivor has none');
+  if (mutation.prepare) mutation.prepare(dir, tools);
+  if (mutation.from !== undefined) applyEdit(dir, mutation);
+  return killers;
+}
+
 /**
  * Run one spec. Returns `{ results, unexpected, control }`.
  *
@@ -490,12 +535,7 @@ export async function runSpec(specPath, options = {}) {
   const noVerdict = `passed ${run.timeoutSeconds} s and was stopped — no verdict; `
     + `give it longer with --timeout <seconds> or ${TIMEOUT_ENV}`;
 
-  const tools = {
-    applyEdit,
-    readJson,
-    writeJson,
-    fileAt: (copy, ref, file) => fileAt(repoRoot, copy, ref, file),
-  };
+  const tools = specTools(repoRoot);
 
   mkdirSync(workDir, { recursive: true });
   const controlDir = join(workDir, 'control');
@@ -507,13 +547,7 @@ export async function runSpec(specPath, options = {}) {
   // verdicts — a kill credited to a mutation that changed nothing about it.
   // Scoring a set the control has not proven green is exactly the fabricated
   // verdict this harness exists to prevent.
-  const controlTests = [...new Set([
-    ...(spec.TESTS ?? []),
-    ...mutations.flatMap((m) => m.tests ?? []),
-  ])];
-  if (controlTests.length === 0) {
-    throw new MutationHarnessError(`${specPath} names no test files — there is nothing to score against`);
-  }
+  const controlTests = controlTestsOf(specPath, spec, mutations);
   const control = await runTests(controlDir, controlTests, run);
   if (control.timedOut) throw new MutationHarnessError(`the UNMUTATED copy's test run ${noVerdict}`);
   log(`CONTROL   exit=${control.status}  failing=${control.failing.length}  files=${controlTests.length}`);
@@ -529,13 +563,9 @@ export async function runSpec(specPath, options = {}) {
     const dir = join(workDir, mutation.id);
     makeDisposableCopy(repoRoot, dir);
     const expect = mutation.expect ?? 'KILLED';
-    const killers = [mutation.killed_by ?? []].flat();
+    let killers;
     try {
-      if (killers.some((re) => !(re instanceof RegExp))) throw new MutationHarnessError('killed_by takes a RegExp or a list of them');
-      if (killers.some((re) => re.global || re.sticky)) throw new MutationHarnessError('killed_by patterns carry no g or y flag (their lastIndex would carry over)');
-      if (killers.length > 0 && expect !== 'KILLED') throw new MutationHarnessError('killed_by names who catches a defect; a survivor has none');
-      if (mutation.prepare) mutation.prepare(dir, tools);
-      if (mutation.from !== undefined) applyEdit(dir, mutation);
+      killers = applyMutation(dir, mutation, tools);
     } catch (err) {
       if (!(err instanceof MutationHarnessError)) throw err;
       results.push({ id: mutation.id, verdict: 'HARNESS-ERROR', expect, agrees: false, detail: err.message });
@@ -568,6 +598,223 @@ export async function runSpec(specPath, options = {}) {
   const unexpected = results.filter((r) => !r.agrees);
   log(`\nas-expected ${results.length - unexpected.length} / unexpected ${unexpected.length}`);
   return { results, unexpected, control, workDir };
+}
+
+// ---------------------------------------------------------------------------
+// The static check (`--static`): does every case still apply? Anchor drift
+// recurred four times (C85, C97, C113, C129) because a spec runs only when
+// someone runs it, and a full run of every spec takes hours. This applies each
+// case's edit as `runSpec` does and runs no test. It takes no run lock: it
+// starts no test run, and only reads the repository.
+//
+// A fresh copy per case costs about 0.2 s, some nine minutes for the
+// repository's specs. So one copy serves every case: after each, every path
+// that differs from a pristine copy is put back from it, and every path the
+// case added is removed. A path differs when its lstat does — mode, size,
+// inode, modification or change time. The change time alone does not tell a
+// same-size rewrite on a filesystem with coarse times (one second on HFS+,
+// a jiffy on Linux before 6.13): a case that rewrites a file in the tick its
+// restore did keeps every field. So every file of the work copy carries one
+// fixed modification time, set when it is copied: a write sets it to the
+// present, which no clock tick reaches. A case that sets the time back itself
+// is not seen on such a filesystem; no spec does. A directory is judged by its
+// mode and its entries, the copy's own root among them, and a root that is no
+// longer a directory (a link to another, say) is not followed. What the
+// restore cannot put back (the copy itself removed or replaced), a new work
+// copy replaces.
+
+const SPEC_DIR = 'scripts/mutation-specs';
+
+/** The repository's specs, repo-relative and sorted. */
+export function listSpecs(repoRoot) {
+  let files;
+  try {
+    files = readdirSync(join(repoRoot, SPEC_DIR));
+  } catch (err) {
+    throw new MutationHarnessError(`cannot list the specs in ${SPEC_DIR}: ${err.message}`);
+  }
+  const specs = files.filter((f) => f.endsWith('.mjs')).sort().map((f) => `${SPEC_DIR}/${f}`);
+  if (specs.length === 0) throw new MutationHarnessError(`${SPEC_DIR} holds no spec`);
+  return specs;
+}
+
+// A thrown value as text: a spec may throw anything.
+function thrown(err) {
+  if (err instanceof Error) return `${err.name}: ${err.message}`;
+  try {
+    return String(err);
+  } catch {
+    return typeof err;
+  }
+}
+
+// The modification time every file of the work copy carries.
+const SETTLED = new Date('2000-01-01T00:00:00Z');
+
+function pathState(abs, lstat) {
+  const st = lstat(abs);
+  return `${st.mode}:${st.size}:${st.ino}:${st.mtimeNs}:${st.ctimeNs}`;
+}
+
+// Give every file under `root` the fixed modification time.
+function settleTimes(root, rel = '') {
+  for (const entry of readdirSync(join(root, rel), { withFileTypes: true })) {
+    const path = rel === '' ? entry.name : `${rel}/${entry.name}`;
+    if (entry.isDirectory()) settleTimes(root, path);
+    else lutimesSync(join(root, path), SETTLED, SETTLED);
+  }
+}
+
+// A directory's state. One a case left closed is opened to be read: its mode
+// then differs from the one recorded, and the restore puts that back.
+function dirState(abs) {
+  const { mode } = lstatSync(abs);
+  if ((mode & 0o700) !== 0o700) chmodSync(abs, (mode & 0o7777) | 0o700);
+  return `dir:${mode}`;
+}
+
+// Every path under `root`, each to its state, the root itself as ''. A root
+// that is no longer a directory is refused before anything is read through it.
+function pathStates(root, lstat, rel = '', out = new Map()) {
+  if (rel === '') {
+    if (!lstatSync(root).isDirectory()) throw new MutationHarnessError(`the work copy ${root} is no longer a directory`);
+    out.set('', dirState(root));
+  }
+  for (const entry of readdirSync(join(root, rel), { withFileTypes: true })) {
+    const path = rel === '' ? entry.name : `${rel}/${entry.name}`;
+    const abs = join(root, path);
+    if (entry.isDirectory()) {
+      out.set(path, dirState(abs));
+      pathStates(root, lstat, path, out);
+    } else {
+      out.set(path, pathState(abs, lstat));
+    }
+  }
+  return out;
+}
+
+// Remove what is at `abs`, if anything. A link is unlinked: rmSync leaves a
+// link that points nowhere in place, and reports nothing, on the node 24
+// releases before 24.13.1, which `engines` admits (measured on 24.11.1).
+function removePath(abs) {
+  let st;
+  try {
+    st = lstatSync(abs);
+  } catch (err) {
+    if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return;
+    throw err;
+  }
+  if (st.isDirectory()) rmSync(abs, { recursive: true, force: true });
+  else unlinkSync(abs);
+}
+
+// Put `work` back as `pristine` is, given the states its paths had then (a
+// parent before its entries); returns them as they are now.
+function restoreCopy(work, pristine, states, lstat) {
+  const now = pathStates(work, lstat);
+  for (const path of now.keys()) {
+    if (!states.has(path)) removePath(join(work, path));
+  }
+  for (const [path, state] of states) {
+    const current = now.get(path);
+    if (current === state) continue;
+    const abs = join(work, path);
+    if (state.startsWith('dir:')) {
+      if (current !== undefined && !current.startsWith('dir:')) removePath(abs);
+      mkdirSync(abs, { recursive: true });
+      chmodSync(abs, Number(state.slice(4)) & 0o7777);
+      continue;
+    }
+    removePath(abs);
+    mkdirSync(dirname(abs), { recursive: true });
+    const source = join(pristine, path);
+    if (lstatSync(source).isSymbolicLink()) symlinkSync(readlinkSync(source), abs);
+    else copyFileSync(source, abs);
+    lutimesSync(abs, SETTLED, SETTLED);
+    states.set(path, pathState(abs, lstat));
+  }
+  return states;
+}
+
+/**
+ * Apply every case of each spec, each to the copy as it was, and run no test.
+ * Resolves `{ specs, drift }`: per spec `{ spec, cases, drift: [{ id, detail }] }`,
+ * or `{ spec, error }` when it cannot be checked at all (it does not load, it
+ * names no test file, or its TESTS name a file the tree lacks). A case drifts when a run would score
+ * it HARNESS-ERROR, when it names a test file the tree lacks (the control would
+ * fail), or when its `prepare` throws (a run would stop there). `drift` counts
+ * drifted cases and specs that could not be checked. `lstat` is the bigint
+ * lstat the change key reads; a test passes a coarser one to stand for a
+ * filesystem with coarse times, which it cannot make.
+ */
+export async function checkSpecs(specPaths, options = {}) {
+  const {
+    repoRoot = process.cwd(),
+    workDir = mkdtempSync(join(tmpdir(), 'mutation-static-')),
+    only = [],
+    log = console.log,
+    lstat = (abs) => lstatSync(abs, { bigint: true }),
+  } = options;
+  const started = Date.now();
+  const tools = specTools(repoRoot);
+  const pristine = join(workDir, 'pristine');
+  const work = join(workDir, 'work');
+  mkdirSync(workDir, { recursive: true });
+  makeDisposableCopy(repoRoot, pristine);
+  const freshWork = () => {
+    removePath(work);
+    cpSync(pristine, work, { recursive: true, verbatimSymlinks: true });
+    settleTimes(work);
+    return pathStates(work, lstat);
+  };
+  let states = freshWork();
+  const lacking = (what, tests) => {
+    const gone = tests.filter((t) => !existsSync(join(pristine, t)));
+    if (gone.length > 0) throw new MutationHarnessError(`${what} names ${gone.join(', ')}, which the tree does not have`);
+  };
+
+  const specs = [];
+  let cases = 0;
+  let drift = 0;
+  for (const specPath of specPaths) {
+    let mutations;
+    try {
+      let spec;
+      ({ spec, mutations } = await loadSpec(specPath, { repoRoot, only }));
+      controlTestsOf(specPath, spec, mutations);
+      lacking('TESTS', spec.TESTS ?? []);
+    } catch (err) {
+      const error = err instanceof MutationHarnessError ? err.message : thrown(err);
+      specs.push({ spec: specPath, error });
+      drift += 1;
+      log(`${specPath}  ERROR  ${error}`);
+      continue;
+    }
+    const result = { spec: specPath, cases: mutations.length, drift: [] };
+    for (const mutation of mutations) {
+      try {
+        lacking('tests', mutation.tests ?? []);
+        applyMutation(work, mutation, tools);
+      } catch (err) {
+        const detail = err instanceof MutationHarnessError ? err.message : `prepare threw ${thrown(err)}`;
+        result.drift.push({ id: mutation.id, detail });
+        log(`${specPath}  ${mutation.id}  DRIFT  ${detail}`);
+      } finally {
+        try {
+          states = restoreCopy(work, pristine, states, lstat);
+        } catch (err) {
+          log(`${specPath}  ${mutation.id}  the copy could not be put back (${thrown(err)}); it is made again`);
+          states = freshWork();
+        }
+      }
+    }
+    specs.push(result);
+    cases += result.cases;
+    drift += result.drift.length;
+    log(`${specPath}  ${result.cases} cases  ${result.drift.length} drift`);
+  }
+  log(`\nstatic: ${specs.length} specs, ${cases} cases, ${drift} drift, ${Math.round((Date.now() - started) / 1000)} s`);
+  return { specs, drift, workDir };
 }
 
 // ---------------------------------------------------------------------------
@@ -836,11 +1083,12 @@ export async function acquireRunLock(repoRoot, { spec = '', log = console.log, p
 }
 
 function parseArgs(argv) {
-  const opts = { only: [], keep: false };
+  const opts = { only: [], keep: false, static: false };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === '--only') opts.only = (argv[++i] ?? '').split(',').filter(Boolean);
+    if (arg === '--static') opts.static = true;
+    else if (arg === '--only') opts.only = (argv[++i] ?? '').split(',').filter(Boolean);
     else if (arg === '--repo-root') opts.repoRoot = argv[++i];
     else if (arg === '--work-dir') opts.workDir = argv[++i];
     else if (arg === '--keep') opts.keep = true;
@@ -848,13 +1096,15 @@ function parseArgs(argv) {
     else rest.push(arg);
   }
   opts.spec = rest[0];
+  opts.specs = rest;
   return opts;
 }
 
 async function main(argv) {
   const opts = parseArgs(argv);
-  if (!opts.spec) {
+  if (!opts.spec && !opts.static) {
     console.error('Usage: node scripts/mutation-harness.mjs <spec.mjs> [--only id,id] [--repo-root d] [--work-dir d] [--keep] [--timeout s]');
+    console.error('       node scripts/mutation-harness.mjs --static [spec.mjs ...] [--only id,id] [--repo-root d] [--work-dir d] [--keep]');
     return 2;
   }
   const repoRoot = opts.repoRoot ?? process.cwd();
@@ -892,6 +1142,15 @@ async function main(argv) {
   const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
   for (const signal of signals) process.on(signal, onSignal);
   try {
+    if (opts.static) {
+      const specs = opts.specs.length > 0 ? opts.specs : listSpecs(repoRoot);
+      if (opts.only.length > 0 && specs.length !== 1) {
+        throw new MutationHarnessError(`--only takes one spec: an id names a case of one spec, and ${specs.length} were named`);
+      }
+      const { drift } = await checkSpecs(specs, { repoRoot, workDir, only: opts.only });
+      if (opts.keep) console.log(`\ncopies kept under ${workDir}`);
+      return drift === 0 ? 0 : 1;
+    }
     // Everything that can be refused is refused before the wait for the lock.
     const timeoutSeconds = resolveTimeoutSeconds(opts.timeout);
     await loadSpec(opts.spec, { repoRoot, only: opts.only });

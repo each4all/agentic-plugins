@@ -21,6 +21,7 @@
     "validate:versions": "node scripts/validate-versions.mjs",
     "validate:artifacts": "node scripts/validate-artifacts.mjs",
     "mutate": "node scripts/mutation-harness.mjs",
+    "mutate:static": "node scripts/mutation-harness.mjs --static",
     "sync:companions": "node scripts/sync-companion-bundles.mjs",
     "sync:marketplace": "node scripts/sync-marketplace-versions.mjs",
     "sync:persona-pipeline": "node scripts/sync-persona-pipeline.mjs"

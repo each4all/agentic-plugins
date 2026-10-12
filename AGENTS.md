@@ -323,6 +323,11 @@ ADR-0001 final note.
   (or `MUTATION_HARNESS_TIMEOUT`, default 900); a run past it is TIMEOUT, no
   verdict. Runs in worktrees of one repository take turns: a second run
   waits for the first.
+- `npm run mutate:static` — apply every mutation of every spec (or of the
+  specs named after `--`), each to the tree as it is, and run no test: it
+  reports each case a run would refuse (a drifted anchor, a `prepare` that
+  fails, a test file that is gone) and exits 1 on any. About a minute for all
+  specs; run it after editing anchored source. Nothing in CI runs it yet.
 
 GitHub Actions run on Node 24. `full-tests.yml` runs the full `npm test` once,
 with no path filter: it is the only workflow that runs tests, and the
