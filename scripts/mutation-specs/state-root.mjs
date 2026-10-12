@@ -941,8 +941,8 @@ export const MUTATIONS = [
   },
   {
     id: 'G4', file: OBSERVE, tests: [T_OBSERVE],
-    from: '  view.macro = { id, path: located.file, relPath: relTo(stateRoots.scan, located.file), archived: located.archived, fm };',
-    to: '  view.macro = { id, path: located.file, relPath: relTo([repoRoot], located.file), archived: located.archived, fm };',
+    from: '    id, path: located.file, relPath: relTo(stateRoots.scan, located.file), archived: located.archived, fm,',
+    to: '    id, path: located.file, relPath: relTo([repoRoot], located.file), archived: located.archived, fm,',
     why: "the macro's pointer is spelled against the checkout, absolute for a macro under the default state root",
     killed_by: /a macro in the main checkout, pinned by id, is found from a lane and pointed to relative to its root/,
   },
@@ -1770,7 +1770,7 @@ export const MUTATIONS = [
   },
   {
     id: 'B3', file: ENG_LIB, tests: [T_WRITERS],
-    from: "    fs.lstatSync(runDir);\n    return false;\n  } catch (error) {\n    if (error?.code !== 'ENOENT') return false;\n  }\n",
+    from: "  try {\n    fs.lstatSync(runDir);\n    return false;\n  } catch (error) {\n    if (error?.code !== 'ENOENT') return false;\n  }\n",
     to: "",
     why: "a claim is put back over an empty directory a runner made under the run id, replacing it",
     killed_by: /the claim is never put back over an empty directory/,
@@ -2875,12 +2875,12 @@ export const MUTATIONS = [
   // where a new record would be created (the default state root once shared
   // creation is on), not where it is.
   { id: 'RE17', file: ENG_RE, tests: [W_RE],
-    from: '    await atomicWrite(\n      workflowPath,\n      assembleWorkflowFile(frontmatter, newBody),\n      { lockPath, token },\n    );\n    return { frontmatter, workflowPath };',
-    to: "    const updateDir = join(creationRoot(resolvePath(workflowPath, '../../../../..')).root, stateDirRel(), 'workflows');\n    await ensureDir(updateDir, 0o700);\n    await atomicWrite(\n      join(updateDir, basename(workflowPath)),\n      assembleWorkflowFile(frontmatter, newBody),\n      { lockPath, token },\n    );\n    return { frontmatter, workflowPath };",
+    from: '    await atomicWrite(\n      workflowPath,\n      assembleWorkflowFile(frontmatter, newBody),\n      { lockPath, token },\n    );\n    // ADR-0067 Decision 8 — a gate set again over itself',
+    to: "    const updateDir = join(creationRoot(resolvePath(workflowPath, '../../../../..')).root, stateDirRel(), 'workflows');\n    await ensureDir(updateDir, 0o700);\n    await atomicWrite(\n      join(updateDir, basename(workflowPath)),\n      assembleWorkflowFile(frontmatter, newBody),\n      { lockPath, token },\n    );\n    // ADR-0067 Decision 8 — a gate set again over itself",
     why: 'append writes a local record under the creation root', killed_by: /updated in place, never copied/ },
   { id: 'RE18', file: ORCH_RE, tests: [O_RE],
-    from: '    await atomicWrite(\n      workflowPath,\n      assembleWorkflowFile(frontmatter, newBody),\n      { lockPath, token },\n    );\n    return { frontmatter, workflowPath, promoted, allTerminal };',
-    to: "    const updateDir = join(creationRoot(resolvePath(workflowPath, '../../../../..')).root, STATE_DIR_REL, 'workflows');\n    await ensureDir(updateDir, 0o700);\n    await atomicWrite(\n      join(updateDir, basename(workflowPath)),\n      assembleWorkflowFile(frontmatter, newBody),\n      { lockPath, token },\n    );\n    return { frontmatter, workflowPath, promoted, allTerminal };",
+    from: '    await atomicWrite(\n      workflowPath,\n      assembleWorkflowFile(frontmatter, newBody),\n      { lockPath, token },\n    );\n    return {\n      frontmatter, workflowPath, promoted, allTerminal,\n',
+    to: "    const updateDir = join(creationRoot(resolvePath(workflowPath, '../../../../..')).root, STATE_DIR_REL, 'workflows');\n    await ensureDir(updateDir, 0o700);\n    await atomicWrite(\n      join(updateDir, basename(workflowPath)),\n      assembleWorkflowFile(frontmatter, newBody),\n      { lockPath, token },\n    );\n    return {\n      frontmatter, workflowPath, promoted, allTerminal,\n",
     why: 'plan-set writes a local macro under the creation root', killed_by: /updated in place, never copied/ },
 
   // ---- DS: the dispatch selection the child records, compared by every binding
