@@ -21,20 +21,33 @@
 
 import { describe, it } from 'node:test';
 import { ok, strictEqual, deepStrictEqual, throws, rejects } from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { hostname, tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
+  DEFAULT_TIMEOUT_SECONDS,
   MutationHarnessError,
+  TIMEOUT_ENV,
+  acquireRunLock,
   applyEdit,
   childEnv,
   fileAt,
   makeDisposableCopy,
   parseArgs,
+  reapStale,
+  resolveTimeoutSeconds,
+  runLockPath,
   runSpec,
+  runTests,
+  selectMutations,
+  stopRuns,
 } from '../../scripts/mutation-harness.mjs';
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const HARNESS = join(REPO_ROOT, 'scripts', 'mutation-harness.mjs');
 
 const GIT_ENV = {
   ...process.env,
@@ -398,13 +411,914 @@ describe('childEnv — the nested runner must not inherit the test context', () 
 
 describe('parseArgs', () => {
   it('reads the flags the usage line documents', () => {
-    const opts = parseArgs(['spec.mjs', '--only', 'A1,B2', '--repo-root', '/r', '--work-dir', '/w', '--keep']);
+    const opts = parseArgs(['spec.mjs', '--only', 'A1,B2', '--repo-root', '/r', '--work-dir', '/w', '--keep', '--timeout', '3600']);
     strictEqual(opts.spec, 'spec.mjs');
     deepStrictEqual(opts.only, ['A1', 'B2']);
     strictEqual(opts.repoRoot, '/r');
     strictEqual(opts.workDir, '/w');
     strictEqual(opts.keep, true);
+    strictEqual(opts.timeout, '3600');
     deepStrictEqual(parseArgs([]).only, []);
     strictEqual(parseArgs([]).spec, undefined);
+    strictEqual(parseArgs([]).timeout, undefined);
+    strictEqual(parseArgs(['spec.mjs', '--timeout']).timeout, '', 'a --timeout with no value is kept, to be refused');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C135: the per-run timeout is the operator's, and a run that passes it is no
+// verdict. The fixed 900 s stopped the persona runbook suites and reported
+// them as "test run failed to start".
+
+const sleep = (ms) => new Promise((wake) => setTimeout(wake, ms));
+
+// Running, and not a zombie: an orphan's new parent may be slow to reap it.
+// Where ps cannot run (a sandbox may deny it), the signal check decides.
+function running(pid) {
+  try {
+    process.kill(pid, 0);
+  } catch (err) {
+    if (err.code === 'ESRCH') return false;
+  }
+  const ps = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' });
+  if (ps.error) return true;
+  const stat = (ps.stdout ?? '').trim();
+  return stat !== '' && !stat.startsWith('Z');
+}
+
+// Whether `condition` holds within `ms`.
+async function until(condition, ms = 5000) {
+  for (const end = Date.now() + ms; Date.now() < end; await sleep(50)) {
+    if (condition()) return true;
+  }
+  return condition();
+}
+
+const gone = (pid, ms) => until(() => !running(pid), ms);
+
+const pidsIn = (file) => (existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).map(Number) : []);
+
+// A value module that never finishes loading, after starting a process of its
+// own and noting both pids: the test that imports it hangs, as the runbook
+// suites ran past 900 s, and leaves something behind to clean up.
+const hangingSource = (pidFile) => [
+  "import { spawn } from 'node:child_process';",
+  "import { appendFileSync } from 'node:fs';",
+  "const sleeper = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+  `appendFileSync(${JSON.stringify(pidFile)}, process.pid + '\\n' + sleeper.pid + '\\n');`,
+  'await new Promise(() => setInterval(() => {}, 1000));',
+  'export const VALUE = 1;',
+  '',
+].join('\n');
+
+describe('timeout — configurable, refused when invalid (C135)', () => {
+  it('defaults to 900 s; the flag beats the environment', () => {
+    strictEqual(DEFAULT_TIMEOUT_SECONDS, 900);
+    strictEqual(resolveTimeoutSeconds(undefined, {}), 900);
+    strictEqual(resolveTimeoutSeconds(undefined, { [TIMEOUT_ENV]: '3600' }), 3600);
+    strictEqual(resolveTimeoutSeconds('60', { [TIMEOUT_ENV]: '3600' }), 60);
+  });
+
+  it('refuses a value that is not a whole number of seconds from 1, naming its source', () => {
+    for (const bad of ['0', '-5', '1.5', '10s', ' 10', '', 'abc', '1e3', '0900', '99999999999']) {
+      throws(
+        () => resolveTimeoutSeconds(bad, {}),
+        (err) => err instanceof MutationHarnessError && err.message.startsWith('--timeout takes a whole number'),
+        `--timeout ${JSON.stringify(bad)}`,
+      );
+      throws(
+        () => resolveTimeoutSeconds(undefined, { [TIMEOUT_ENV]: bad }),
+        (err) => err instanceof MutationHarnessError && err.message.startsWith(`${TIMEOUT_ENV} takes a whole number`),
+        `${TIMEOUT_ENV}=${JSON.stringify(bad)}`,
+      );
+    }
+    // The largest delay setTimeout honours; one more would fire at once.
+    strictEqual(resolveTimeoutSeconds('2147483', {}), 2147483);
+    throws(() => resolveTimeoutSeconds('2147484', {}), MutationHarnessError);
+  });
+});
+
+// A regression here would hang, not fail, so each test below carries a bound of
+// its own. On a test, not on its suite: a suite's timeout bounds the suite as a
+// whole, and its later tests would be cancelled once the earlier ones used it.
+const BOUNDED = { timeout: 60_000 };
+
+// Whether `pid` names a process, a zombie included.
+function exists(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === 'EPERM';
+  }
+}
+
+// A run's test result is what its runner reported, never how the supervisor
+// around it exited: a runner that could not start, or a supervisor that died,
+// used to read as a test that failed, and so as a kill.
+describe('runTests — only the runner\'s own exit is a test result', () => {
+  it('a runner that cannot start, or a supervisor that dies without a report, is no verdict', BOUNDED, async () => {
+    const root = makeScoringRepo();
+    const preload = join(root, '..', `harness-preload-${process.pid}.cjs`);
+    // Loaded by every node the run starts; it acts in the supervisor alone.
+    writeFileSync(preload, [
+      "if (process.execArgv[0] === '-e') {",
+      "  if (process.env.HARNESS_PRELOAD === 'no-start') process.execPath = '/nonexistent/node';",
+      "  else throw new Error('the supervisor crashed');",
+      '}',
+      '',
+    ].join('\n'));
+    const options = process.env.NODE_OPTIONS;
+    const restore = () => {
+      if (options === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = options;
+      delete process.env.HARNESS_PRELOAD;
+    };
+    try {
+      process.env.NODE_OPTIONS = `${options ?? ''} --require ${JSON.stringify(preload)}`.trim();
+      process.env.HARNESS_PRELOAD = 'no-start';
+      await rejects(
+        () => runTests(root, ['tests/test-value.mjs']),
+        (err) => err instanceof MutationHarnessError && /^test run failed to start: .*ENOENT/.test(err.message),
+      );
+      process.env.HARNESS_PRELOAD = 'crash';
+      await rejects(
+        () => runTests(root, ['tests/test-value.mjs']),
+        (err) => err instanceof MutationHarnessError
+          && /^test run ended without reporting how its runner exited/.test(err.message),
+      );
+      // Control: without the preload the same run passes, and a failing one fails.
+      restore();
+      strictEqual((await runTests(root, ['tests/test-value.mjs'])).status, 0);
+      write(root, 'src/value.mjs', 'export const VALUE = 2;\n');
+      strictEqual((await runTests(root, ['tests/test-value.mjs'])).status, 1);
+    } finally {
+      restore();
+      rmSync(preload, { force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('runSpec — a run past the timeout is no verdict (C135)', () => {
+  it('scores the hung mutation TIMEOUT, never a kill or a failure to start, stops what it started, and goes on', BOUNDED, async () => {
+    const root = makeScoringRepo();
+    const workDir = join(root, '..', `harness-work-timeout-${process.pid}`);
+    const pidFile = join(root, '..', `harness-sleepers-${process.pid}`);
+    write(root, 'spec.mjs', `
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+export const TESTS = ['tests/test-value.mjs'];
+export const MUTATIONS = [
+  { id: 'T', prepare: (copy) => writeFileSync(join(copy, 'src/value.mjs'), ${JSON.stringify(hangingSource(pidFile))}),
+    why: 'the test run hangs past the timeout' },
+  { id: 'K', file: 'src/value.mjs', from: 'VALUE = 1', to: 'VALUE = 2', why: 'breaks the asserted value' },
+];
+`);
+    const lines = [];
+    try {
+      const started = Date.now();
+      // The timeout bounds every run, the control and K included, and each
+      // run is three node startups: 5 s leaves them room under a loaded
+      // `npm test`, where 1 s stopped the control.
+      const { results, unexpected } = await runSpec(join(root, 'spec.mjs'), {
+        repoRoot: root, workDir, timeoutSeconds: 5, log: (l) => lines.push(l),
+      });
+      deepStrictEqual(results.map((r) => [r.id, r.verdict, r.agrees]), [['T', 'TIMEOUT', false], ['K', 'KILLED', true]]);
+      deepStrictEqual(unexpected.map((r) => r.id), ['T'], 'no verdict is not the expected verdict');
+      ok(/passed 5 s and was stopped — no verdict/.test(results[0].detail), results[0].detail);
+      ok(!/failed to start/.test(lines.join('\n')), lines.join('\n'));
+      ok(lines.some((l) => /^T\s+TIMEOUT\s/.test(l)), lines.join('\n'));
+      ok(Date.now() - started < 60_000, 'the run was stopped at the timeout');
+      const hung = pidsIn(pidFile);
+      strictEqual(hung.length, 2, 'the hung test file and the process it started');
+      for (const pid of hung) ok(await gone(pid), `pid ${pid} of the hung run was stopped with it`);
+    } finally {
+      for (const pid of pidsIn(pidFile)) try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
+      rmSync(pidFile, { force: true });
+      rmSync(workDir, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to score anything when the control passes the timeout', BOUNDED, async () => {
+    const root = makeScoringRepo();
+    const workDir = join(root, '..', `harness-work-timeout2-${process.pid}`);
+    const pidFile = join(root, '..', `harness-sleepers2-${process.pid}`);
+    write(root, 'src/value.mjs', hangingSource(pidFile));
+    write(root, 'spec.mjs', SPEC);
+    try {
+      const started = Date.now();
+      await rejects(
+        () => runSpec(join(root, 'spec.mjs'), { repoRoot: root, workDir, timeoutSeconds: 1, log: () => {} }),
+        (err) => err instanceof MutationHarnessError
+          && /^the UNMUTATED copy's test run passed 1 s and was stopped — no verdict/.test(err.message),
+      );
+      // One second, not ten: the timeout is read in seconds.
+      ok(Date.now() - started < 9000, `stopped after ${Date.now() - started} ms`);
+      await rejects(
+        () => runSpec(join(root, 'spec.mjs'), { repoRoot: root, workDir, timeoutSeconds: 0, log: () => {} }),
+        (err) => err instanceof MutationHarnessError && /^timeoutSeconds takes a whole number/.test(err.message),
+      );
+    } finally {
+      for (const pid of pidsIn(pidFile)) try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
+      rmSync(pidFile, { force: true });
+      rmSync(workDir, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('stops what a finished test run left running', BOUNDED, async () => {
+    const root = makeScoringRepo();
+    const workDir = join(root, '..', `harness-work-leftover-${process.pid}`);
+    const pidFile = join(root, '..', `harness-leftovers-${process.pid}`);
+    write(
+      root,
+      'tests/test-leaves.mjs',
+      "import { test } from 'node:test';\n"
+      + "import { spawn } from 'node:child_process';\n"
+      + "import { appendFileSync } from 'node:fs';\n"
+      + "test('leaves a process behind', () => {\n"
+      + "  const s = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });\n"
+      + '  s.unref();\n'
+      + `  appendFileSync(${JSON.stringify(pidFile)}, s.pid + '\\n');\n`
+      + '});\n',
+    );
+    write(root, 'spec.mjs', `
+export const TESTS = ['tests/test-leaves.mjs'];
+export const MUTATIONS = [
+  { id: 'S', expect: 'SURVIVED', file: 'src/value.mjs', from: 'a comment nobody asserts on', to: 'another',
+    why: 'a run that passes and leaves a process behind' },
+];
+`);
+    try {
+      const { unexpected } = await runSpec(join(root, 'spec.mjs'), { repoRoot: root, workDir, log: () => {} });
+      strictEqual(unexpected.length, 0);
+      const left = pidsIn(pidFile);
+      strictEqual(left.length, 2, 'the control and the mutation each left one');
+      for (const pid of left) ok(await gone(pid), `pid ${pid} outlived its test run`);
+    } finally {
+      for (const pid of pidsIn(pidFile)) try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
+      rmSync(pidFile, { force: true });
+      rmSync(workDir, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // A process that left the run's group with the output pipe open (a test run
+  // in the runner's own process, `--test-isolation=none`, hands it the pipe)
+  // used to hold the harness for ever: the deadline ended at the runner's exit.
+  it('bounds the output too: a process that left the group holding the pipe does not hold the harness', BOUNDED, async () => {
+    const root = makeScoringRepo();
+    const workDir = join(root, '..', `harness-work-escape-${process.pid}`);
+    const pidFile = join(root, '..', `harness-escaped-${process.pid}`);
+    write(
+      root,
+      'tests/test-escape.mjs',
+      "import { test } from 'node:test';\n"
+      + "import { spawn } from 'node:child_process';\n"
+      + "import { appendFileSync } from 'node:fs';\n"
+      + "test('leaves a process holding the output', () => {\n"
+      // It ends by itself after 20 s, so that a harness it holds still ends.
+      + "  const s = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)'], { detached: true, stdio: ['ignore', 'inherit', 'ignore'] });\n"
+      + '  s.unref();\n'
+      + `  appendFileSync(${JSON.stringify(pidFile)}, s.pid + '\\n');\n`
+      + '});\n',
+    );
+    write(root, 'spec.mjs', `
+export const TESTS = ['tests/test-escape.mjs'];
+export const MUTATIONS = [
+  { id: 'S', expect: 'SURVIVED', file: 'src/value.mjs', from: 'a comment nobody asserts on', to: 'another', why: 'unreached' },
+];
+`);
+    const options = process.env.NODE_OPTIONS;
+    process.env.NODE_OPTIONS = `${options ?? ''} --test-isolation=none`.trim();
+    try {
+      const started = Date.now();
+      await rejects(
+        () => runSpec(join(root, 'spec.mjs'), { repoRoot: root, workDir, timeoutSeconds: 2, log: () => {} }),
+        (err) => err instanceof MutationHarnessError && /passed 2 s and was stopped — no verdict/.test(err.message),
+      );
+      ok(Date.now() - started < 30_000, `stopped after ${Date.now() - started} ms`);
+      strictEqual(pidsIn(pidFile).length, 1, 'the run left one process holding the pipe');
+    } finally {
+      if (options === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = options;
+      for (const pid of pidsIn(pidFile)) try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
+      rmSync(pidFile, { force: true });
+      rmSync(workDir, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // The harness's own tests run harnesses: when the outer run stops a test
+  // process, the runs that process started end with it, though each leads a
+  // group of its own.
+  it('a nested harness\'s test run ends with the outer run that stopped it', BOUNDED, async () => {
+    const inner = makeScoringRepo();
+    const outer = makeRepo();
+    const workDir = join(outer, '..', `harness-work-outer-${process.pid}`);
+    const innerWork = join(inner, '..', `harness-work-inner-${process.pid}`);
+    const pidFile = join(inner, '..', `harness-nested-${process.pid}`);
+    write(inner, 'src/value.mjs', hangingSource(pidFile));
+    write(inner, 'spec.mjs', SPEC);
+    write(
+      outer,
+      'tests/test-nested.mjs',
+      "import { test } from 'node:test';\n"
+      + `import { runSpec } from ${JSON.stringify(pathToFileURL(HARNESS).href)};\n`
+      + "test('runs a harness', () => runSpec("
+      + `${JSON.stringify(join(inner, 'spec.mjs'))}, { repoRoot: ${JSON.stringify(inner)}, `
+      + `workDir: ${JSON.stringify(innerWork)}, timeoutSeconds: 600, log: () => {} }));\n`,
+    );
+    write(outer, 'spec.mjs', `
+export const TESTS = ['tests/test-nested.mjs'];
+export const MUTATIONS = [
+  { id: 'S', expect: 'SURVIVED', file: 'committed.txt', from: 'committed v1', to: 'v2', why: 'unreached' },
+];
+`);
+    try {
+      await rejects(
+        () => runSpec(join(outer, 'spec.mjs'), { repoRoot: outer, workDir, timeoutSeconds: 5, log: () => {} }),
+        (err) => err instanceof MutationHarnessError && /passed 5 s and was stopped — no verdict/.test(err.message),
+      );
+      const nested = pidsIn(pidFile);
+      strictEqual(nested.length, 2, 'the nested run had started its hanging test');
+      for (const pid of nested) ok(await gone(pid), `pid ${pid} of the nested run outlived the outer run`);
+    } finally {
+      for (const pid of pidsIn(pidFile)) try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
+      for (const dir of [pidFile, workDir, innerWork, inner, outer]) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('the CLI hands --timeout and the environment\'s timeout to its runs, and refuses a bad one without waiting', BOUNDED, async () => {
+    const root = makeScoringRepo();
+    const pidFile = join(root, '..', `harness-cli-timeout-${process.pid}`);
+    write(root, 'src/value.mjs', hangingSource(pidFile));
+    write(root, 'spec.mjs', SPEC);
+    const spec = join(root, 'spec.mjs');
+    try {
+      for (const [args, env] of [[['--timeout', '1'], {}], [[], { [TIMEOUT_ENV]: '1' }]]) {
+        const run = await runCli([spec, '--repo-root', root, ...args], env).exited;
+        strictEqual(run.code, 1, run.out);
+        ok(run.out.includes("the UNMUTATED copy's test run passed 1 s and was stopped — no verdict"), run.out);
+      }
+      // Held by another run: a bad timeout is refused at once, not after the wait.
+      const lock = await acquireRunLock(root, { log: () => {} });
+      try {
+        const run = await runCli([spec, '--repo-root', root, '--timeout', '0'], {}, 10_000).exited;
+        strictEqual(run.code, 1, run.out);
+        ok(run.out.includes('--timeout takes a whole number of seconds'), run.out);
+        ok(!run.out.includes('waiting for the run'), run.out);
+      } finally {
+        lock.release();
+      }
+    } finally {
+      for (const pid of pidsIn(pidFile)) try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
+      rmSync(pidFile, { force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C102: an id names one case, its copy and its verdict.
+
+describe('mutation ids (C102)', () => {
+  const m = (id) => ({ id, why: '' });
+
+  it('refuses a repeated or missing id, and an --only id the spec lacks even beside one it has', () => {
+    throws(
+      () => selectMutations([m('A'), m('B'), m('A')], [], 'spec.mjs'),
+      (err) => err instanceof MutationHarnessError && err.message === 'spec.mjs repeats mutation id(s) A',
+    );
+    throws(
+      () => selectMutations([m('A'), m(''), { why: '' }], [], 'spec.mjs'),
+      (err) => err instanceof MutationHarnessError && err.message === 'spec.mjs has 2 mutation(s) without an id',
+    );
+    throws(
+      () => selectMutations([m('A'), m('B')], ['A', 'Z'], 'spec.mjs'),
+      (err) => err instanceof MutationHarnessError && err.message === '--only names id(s) spec.mjs does not have: Z',
+    );
+    deepStrictEqual(selectMutations([m('A'), m('B'), m('C')], ['C', 'A']).map((x) => x.id), ['A', 'C']);
+    deepStrictEqual(selectMutations([m('A'), m('B')]).map((x) => x.id), ['A', 'B']);
+  });
+
+  it('runSpec refuses them before running anything', async () => {
+    const root = makeScoringRepo();
+    const workDir = join(root, '..', `harness-work-ids-${process.pid}`);
+    write(root, 'dup.mjs', `${SPEC}\nMUTATIONS.push({ ...MUTATIONS[0] });\n`);
+    write(root, 'spec.mjs', SPEC);
+    try {
+      await rejects(
+        () => runSpec(join(root, 'dup.mjs'), { repoRoot: root, workDir, log: () => {} }),
+        (err) => err instanceof MutationHarnessError && /repeats mutation id\(s\) K$/.test(err.message),
+      );
+      await rejects(
+        () => runSpec(join(root, 'spec.mjs'), { repoRoot: root, workDir, only: ['K', 'NOPE'], log: () => {} }),
+        (err) => err instanceof MutationHarnessError && /does not have: NOPE$/.test(err.message),
+      );
+      ok(!existsSync(join(workDir, 'control')), 'no copy was made, no control was run');
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('every spec in scripts/mutation-specs passes the id check', async () => {
+    const dir = join(REPO_ROOT, 'scripts', 'mutation-specs');
+    const files = readdirSync(dir).filter((f) => f.endsWith('.mjs')).sort();
+    // Named, not counted: the check must have read these.
+    for (const known of ['codex-cache-discovery.mjs', 'persona-pipeline.mjs', 'state-root.mjs']) {
+      ok(files.includes(known), `${known} is among the specs read`);
+    }
+    ok(files.length >= 28, `${files.length} specs`);
+    for (const file of files) {
+      const spec = await import(pathToFileURL(join(dir, file)).href);
+      ok((spec.MUTATIONS ?? []).length > 0, `${file} has mutations`);
+      selectMutations(spec.MUTATIONS, [], file);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C101: runs in worktrees of one repository take turns.
+
+function makeRepoWithLane() {
+  const root = makeScoringRepo();
+  const git = (...args) => execFileSync('git', ['-C', root, ...args], { env: GIT_ENV, stdio: 'ignore' });
+  git('add', '-A');
+  git('commit', '-q', '-m', 'fixture', '--no-gpg-sign');
+  const lane = `${root}-lane`;
+  git('worktree', 'add', '-q', '-b', 'lane', lane);
+  return { root, lane };
+}
+
+const removeRepoWithLane = ({ root, lane }) => {
+  rmSync(lane, { recursive: true, force: true });
+  rmSync(root, { recursive: true, force: true });
+};
+
+// A start this platform's reader spells, of a process that started long ago.
+const ANOTHER_START = process.platform === 'linux' ? 'boot:0' : 'utc:Thu Jan  1 00:00:00 1970';
+
+// A process that exited: its pid names no running process.
+function deadPid() {
+  return spawnSync(process.execPath, ['-e', '']).pid;
+}
+
+function writeLock(path, record) {
+  writeFileSync(path, `${JSON.stringify({
+    token: 'planted', started_at: '2026-10-11T00:00:00.000Z', worktree: '/elsewhere', spec: 'old.mjs',
+    ...record,
+  })}\n`);
+}
+
+// Place the reap guard of the lock `path` for the reaper `record`, as a reaper
+// does: a directory holding one entry, named by the reaper's token. A guard
+// already there is replaced.
+function writeGuard(path, record) {
+  const guard = `${path}.reap`;
+  rmSync(guard, { recursive: true, force: true });
+  mkdirSync(guard);
+  writeLock(join(guard, record.token), record);
+}
+
+// The environment for a harness under test: no inherited timeout.
+const cliEnv = () => {
+  const env = childEnv();
+  delete env[TIMEOUT_ENV];
+  return env;
+};
+
+// A node process killed at its deadline: a lock wait that never ends would
+// otherwise keep this file running past its test's timeout.
+function spawnNode(args, env = {}, deadlineMs = 30_000) {
+  const child = spawn(process.execPath, args, { env: { ...cliEnv(), ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let out = '';
+  child.stdout.on('data', (c) => { out += c; });
+  child.stderr.on('data', (c) => { out += c; });
+  const deadline = setTimeout(() => child.kill('SIGKILL'), deadlineMs);
+  const exited = new Promise((done) => child.on('close', (code, signal) => {
+    clearTimeout(deadline);
+    done({ code, signal, out });
+  }));
+  return { child, exited, output: () => out };
+}
+
+const runCli = (args, env, deadlineMs) => spawnNode([HARNESS, ...args], env, deadlineMs);
+
+// Take the lock of `root` and release it, in a process of its own.
+const acquireInChild = (root, env) => spawnNode([
+  '--input-type=module', '-e',
+  `import { acquireRunLock } from ${JSON.stringify(pathToFileURL(HARNESS).href)};\n`
+  + `(await acquireRunLock(${JSON.stringify(root)}, { pollMs: 20 })).release();\n`,
+], env);
+
+describe('run lock — one run at a time per repository (C101)', () => {
+  it('worktrees share one lock; the second waits until the first releases it', BOUNDED, async () => {
+    const repo = makeRepoWithLane();
+    try {
+      strictEqual(runLockPath(repo.lane), runLockPath(repo.root));
+      const first = await acquireRunLock(repo.root, { spec: 'first.mjs', log: () => {} });
+      const lines = [];
+      let second = null;
+      const waiting = acquireRunLock(repo.lane, { spec: 'second.mjs', log: (l) => lines.push(l), pollMs: 20 })
+        .then((lock) => { second = lock; return lock; });
+      const said = () => lines.some((l) => l.includes(`waiting for the run of first.mjs in ${repo.root} (pid ${process.pid}`));
+      ok(await until(said), lines.join('\n'));
+      await sleep(100);
+      strictEqual(second, null, 'the second run waits while the first holds the lock');
+      first.release();
+      const lock = await waiting;
+      ok(existsSync(lock.path));
+      ok(lines.some((l) => /the run lock is ours after \d+ s/.test(l)), lines.join('\n'));
+      first.release();
+      ok(existsSync(lock.path), 'a run releases only its own lock');
+      lock.release();
+      ok(!existsSync(lock.path));
+    } finally {
+      removeRepoWithLane(repo);
+    }
+  });
+
+  it('a CLI killed with SIGKILL: its test run ends with it, and the next run takes its lock', BOUNDED, async () => {
+    const root = makeScoringRepo();
+    const pidFile = join(root, '..', `harness-sigkill-${process.pid}`);
+    write(root, 'src/value.mjs', hangingSource(pidFile));
+    write(root, 'spec.mjs', SPEC);
+    const path = runLockPath(root);
+    const cli = runCli([join(root, 'spec.mjs'), '--repo-root', root, '--timeout', '600']);
+    try {
+      ok(await until(() => pidsIn(pidFile).length === 2, 30_000), 'the hung test run started');
+      const started = pidsIn(pidFile);
+      cli.child.kill('SIGKILL');
+      await cli.exited;
+      for (const pid of started) ok(await gone(pid), `pid ${pid} of its test run outlived the harness`);
+      ok(existsSync(path), 'a killed run cannot release its lock');
+      const run = await acquireInChild(root).exited;
+      strictEqual(run.code, 0, run.out);
+      ok(run.out.includes(`removed a stale run lock (pid ${cli.child.pid}, `), run.out);
+    } finally {
+      for (const pid of pidsIn(pidFile)) try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
+      rmSync(pidFile, { force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('takes over a lock whose holder is gone: dead, a reused pid, or no holder named', BOUNDED, async () => {
+    const root = makeRepo();
+    const path = runLockPath(root);
+    const stranger = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    try {
+      const dead = deadPid();
+      writeLock(path, { pid: dead, host: hostname() });
+      let run = await acquireInChild(root).exited;
+      strictEqual(run.code, 0, run.out);
+      ok(run.out.includes(`removed a stale run lock (pid ${dead}, /elsewhere, which is not running)`), run.out);
+
+      // The holder's pid now names a process that started at another time,
+      // spelled as this reader spells a start.
+      await sleep(100);
+      writeLock(path, { pid: stranger.pid, host: hostname(), started: ANOTHER_START });
+      run = await acquireInChild(root).exited;
+      strictEqual(run.code, 0, run.out);
+      ok(run.out.includes(`removed a stale run lock (pid ${stranger.pid}, `), run.out);
+
+      writeFileSync(path, 'not a record');
+      run = await acquireInChild(root).exited;
+      strictEqual(run.code, 0, run.out);
+      ok(run.out.includes('removed a stale run lock (unreadable)'), run.out);
+      ok(!existsSync(path));
+
+      // A record that names no holder is not waited for either.
+      writeFileSync(path, '{}\n');
+      run = await acquireInChild(root).exited;
+      strictEqual(run.code, 0, run.out);
+      ok(run.out.includes('removed a stale run lock (unreadable)'), run.out);
+    } finally {
+      stranger.kill('SIGKILL');
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // A reaper that pauses between its read and its removal is still reaping:
+  // its guard goes only once it has stopped running, never for its age.
+  it('leaves a stale lock to the reaper whose guard holds it until that reaper is gone', BOUNDED, async () => {
+    const root = makeRepo();
+    const path = runLockPath(root);
+    const reaper = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    try {
+      writeLock(path, { pid: deadPid(), host: hostname() });
+      writeGuard(path, { pid: reaper.pid, host: hostname(), token: 'paused-reaper' });
+      const waiter = acquireInChild(root);
+      await sleep(500);
+      strictEqual(waiter.child.exitCode, null, 'it waits while the guard\'s reaper runs');
+      ok(existsSync(path), 'the stale lock is the guard holder\'s to remove');
+      reaper.kill('SIGKILL');
+      const run = await waiter.exited;
+      strictEqual(run.code, 0, run.out);
+      ok(run.out.includes('removed the guard of a reaper that is not running'), run.out);
+      ok(!existsSync(`${path}.reap`));
+    } finally {
+      reaper.kill('SIGKILL');
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // Judging a guard takes a while; a waiter that judged a dead reaper's guard
+  // used to remove whatever guard was there by then, a live reaper's too.
+  it('removes a dead reaper\'s guard only while it is still the guard it judged', BOUNDED, () => {
+    const root = makeRepo();
+    const path = runLockPath(root);
+    const guard = `${path}.reap`;
+    const self = { pid: process.pid, host: hostname(), token: 'this-waiter' };
+    try {
+      writeLock(path, { pid: deadPid(), host: hostname() });
+      const raw = readFileSync(path, 'utf8');
+      const seen = { raw, record: JSON.parse(raw) };
+      writeGuard(path, { pid: deadPid(), host: hostname(), token: 'dead-reaper' });
+      const lines = [];
+      // While this waiter judges the dead reaper, another removes that guard
+      // and places its own.
+      const removed = reapStale(path, seen, self, (l) => lines.push(l), {
+        running: () => {
+          writeGuard(path, { pid: process.pid, host: hostname(), token: 'live-reaper' });
+          return false;
+        },
+      });
+      strictEqual(removed, false);
+      deepStrictEqual(readdirSync(guard), ['live-reaper'], 'the live reaper keeps its guard');
+      ok(existsSync(path), 'the stale lock is the live reaper\'s to remove');
+      deepStrictEqual(lines, []);
+      // Control: the guard judged, still in place, goes.
+      writeGuard(path, { pid: deadPid(), host: hostname(), token: 'dead-reaper' });
+      strictEqual(reapStale(path, seen, self, (l) => lines.push(l), { running: () => false }), false);
+      ok(!existsSync(guard), 'a dead reaper\'s guard is removed');
+      ok(lines.some((l) => l.includes('removed the guard of a reaper that is not running')), lines.join('\n'));
+      // An empty guard, left by a reaper killed as it took its entry out, is
+      // no reaper's: the next reaper replaces it and reaps.
+      mkdirSync(guard);
+      strictEqual(reapStale(path, seen, self, () => {}), true);
+      ok(!existsSync(path) && !existsSync(guard));
+      // A guard file from an older harness is named for the operator to remove.
+      writeLock(path, { pid: deadPid(), host: hostname() });
+      writeFileSync(guard, '{}\n');
+      throws(() => reapStale(path, { raw: readFileSync(path, 'utf8'), record: null }, self, () => {}),
+        (err) => err instanceof MutationHarnessError && err.message.includes('left by an older harness'));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // The window the re-check left open: after a waiter's last read of a dead
+  // reaper's guard, another waiter takes that guard and a live reaper places
+  // its own. A waiter that removed the guard by its name then removed the live
+  // one; it captures the entry it judged, by that entry's own name, instead.
+  it('captures only the dead reaper\'s guard it judged, whatever replaced it after its last read', BOUNDED, () => {
+    const root = makeRepo();
+    const path = runLockPath(root);
+    const guard = `${path}.reap`;
+    const self = { pid: process.pid, host: hostname(), token: 'this-waiter' };
+    try {
+      writeLock(path, { pid: deadPid(), host: hostname() });
+      const raw = readFileSync(path, 'utf8');
+      const seen = { raw, record: JSON.parse(raw) };
+      writeGuard(path, { pid: deadPid(), host: hostname(), token: 'dead-reaper' });
+      const lines = [];
+      let judged = 0;
+      const removed = reapStale(path, seen, self, (l) => lines.push(l), {
+        running: () => false,
+        judged: () => {
+          judged += 1;
+          writeGuard(path, { pid: process.pid, host: hostname(), token: 'live-reaper' });
+        },
+      });
+      strictEqual(judged, 1, 'the waiter judged the dead reaper\'s guard');
+      strictEqual(removed, false);
+      deepStrictEqual(readdirSync(guard), ['live-reaper'], 'the live reaper keeps its guard');
+      ok(existsSync(path), 'the stale lock is the live reaper\'s to remove');
+      deepStrictEqual(lines, [], 'nothing was taken');
+      deepStrictEqual(readdirSync(dirname(path)).filter((n) => n.startsWith('mutation-harness.lock.')), ['mutation-harness.lock.reap']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // ps prints a start time in local time: a waiter in another time zone used
+  // to read a live holder's start as another process's, and take its lock.
+  it('judges a live holder running whatever time zone the waiter runs in', BOUNDED, async () => {
+    const root = makeRepo();
+    const path = runLockPath(root);
+    const holder = spawnNode([
+      '--input-type=module', '-e',
+      `import { acquireRunLock } from ${JSON.stringify(pathToFileURL(HARNESS).href)};\n`
+      + `await acquireRunLock(${JSON.stringify(root)}, { log: () => {} });\n`
+      + 'setInterval(() => {}, 1000);\n',
+    ], { TZ: 'Pacific/Kiritimati' });
+    try {
+      ok(await until(() => existsSync(path), 10_000), 'the holder took the lock');
+      const held = JSON.parse(readFileSync(path, 'utf8'));
+      strictEqual(typeof held.started, 'string', 'the holder recorded its start, so a waiter compares it');
+      const waiter = acquireInChild(root, { TZ: 'America/Adak' });
+      // It says it waits only once it has judged the holder running.
+      ok(await until(() => waiter.output().includes('waiting for the run'), 10_000), waiter.output());
+      await sleep(200);
+      strictEqual(waiter.child.exitCode, null, 'a waiter in another time zone still waits');
+      strictEqual(JSON.parse(readFileSync(path, 'utf8')).token, held.token, 'the holder still holds its lock');
+      holder.child.kill('SIGKILL');
+      const run = await waiter.exited;
+      strictEqual(run.code, 0, run.out);
+      ok(run.out.includes(`removed a stale run lock (pid ${holder.child.pid}, `), run.out);
+    } finally {
+      holder.child.kill('SIGKILL');
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // A harness of another version may spell a start another way; unequal
+  // spellings of one start must not read as a reused pid.
+  it('does not compare a start spelled in a scheme the reader does not use', BOUNDED, async () => {
+    const root = makeRepo();
+    const path = runLockPath(root);
+    const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    try {
+      await sleep(100);
+      writeLock(path, { pid: holder.pid, host: hostname(), started: 'Thu Jan  1 00:00:00 1970' });
+      const waiter = acquireInChild(root);
+      ok(await until(() => waiter.output().includes('waiting for the run'), 10_000), waiter.output());
+      await sleep(200);
+      strictEqual(waiter.child.exitCode, null, 'it waits for the live holder');
+      holder.kill('SIGKILL');
+      const run = await waiter.exited;
+      strictEqual(run.code, 0, run.out);
+      ok(run.out.includes(`removed a stale run lock (pid ${holder.pid}, `), run.out);
+    } finally {
+      holder.kill('SIGKILL');
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('waits for a holder on another host instead of judging it', BOUNDED, async () => {
+    const root = makeRepo();
+    const path = runLockPath(root);
+    try {
+      writeLock(path, { pid: deadPid(), host: 'elsewhere.invalid' });
+      const waiter = acquireInChild(root);
+      await sleep(500);
+      strictEqual(waiter.child.exitCode, null, 'it is still waiting');
+      rmSync(path);
+      const run = await waiter.exited;
+      strictEqual(run.code, 0, run.out);
+      ok(run.out.includes('on elsewhere.invalid'), run.out);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('two CLI runs in two worktrees take turns: their test runs never overlap', BOUNDED, async () => {
+    const repo = makeRepoWithLane();
+    const turns = join(repo.root, '..', `harness-turns-${process.pid}.log`);
+    const spec = join(repo.root, '..', `harness-turns-spec-${process.pid}.mjs`);
+    const slow = "import { test } from 'node:test';\n"
+      + "import { appendFileSync } from 'node:fs';\n"
+      + "test('takes a while', async () => {\n"
+      + `  appendFileSync(${JSON.stringify(turns)}, 'start\\n');\n`
+      + '  await new Promise((wake) => setTimeout(wake, 300));\n'
+      + `  appendFileSync(${JSON.stringify(turns)}, 'end\\n');\n`
+      + '});\n';
+    write(repo.root, 'tests/test-slow.mjs', slow);
+    write(repo.lane, 'tests/test-slow.mjs', slow);
+    writeFileSync(spec, `
+export const TESTS = ['tests/test-slow.mjs'];
+export const MUTATIONS = [
+  { id: 'S', expect: 'SURVIVED', file: 'src/value.mjs', from: 'a comment nobody asserts on', to: 'another', why: 'takes a turn' },
+];
+`);
+    try {
+      const a = runCli([spec, '--repo-root', repo.root]);
+      const b = runCli([spec, '--repo-root', repo.lane]);
+      const [ra, rb] = await Promise.all([a.exited, b.exited]);
+      strictEqual(ra.code, 0, ra.out);
+      strictEqual(rb.code, 0, rb.out);
+      ok(/waiting for the run of /.test(ra.out + rb.out), `one run waited:\n${ra.out}\n${rb.out}`);
+      deepStrictEqual(
+        readFileSync(turns, 'utf8').trim().split('\n'),
+        ['start', 'end', 'start', 'end', 'start', 'end', 'start', 'end'],
+        'four test runs, one at a time',
+      );
+      ok(!existsSync(runLockPath(repo.root)), 'the lock is released');
+    } finally {
+      rmSync(turns, { force: true });
+      rmSync(spec, { force: true });
+      removeRepoWithLane(repo);
+    }
+  });
+
+  // The lock goes last: released while the run still ran, another harness
+  // could start beside it.
+  it('a signal to the CLI stops its test run, and only then releases the lock', BOUNDED, async () => {
+    const root = makeScoringRepo();
+    const pidFile = join(root, '..', `harness-signal-${process.pid}`);
+    write(root, 'src/value.mjs', hangingSource(pidFile));
+    write(root, 'spec.mjs', SPEC);
+    const path = runLockPath(root);
+    const cli = runCli([join(root, 'spec.mjs'), '--repo-root', root, '--timeout', '600']);
+    try {
+      ok(await until(() => pidsIn(pidFile).length === 2, 30_000), 'the test file and the process it started are running');
+      const started = pidsIn(pidFile);
+      ok(existsSync(path), 'the run holds the lock');
+      cli.child.kill('SIGTERM');
+      // The first moment the lock is gone or the CLI has exited.
+      let left = null;
+      while (left === null) {
+        if (!existsSync(path) || cli.child.exitCode !== null || cli.child.signalCode !== null) {
+          left = started.filter(exists);
+        }
+        await sleep(1);
+      }
+      deepStrictEqual(left, [], 'nothing of the run was left when the lock was released');
+      const { code } = await cli.exited;
+      strictEqual(code, 143);
+      ok(!existsSync(path), 'the lock is released');
+      for (const pid of started) ok(await gone(pid), `pid ${pid} of its test run was stopped`);
+    } finally {
+      cli.child.kill('SIGKILL');
+      for (const pid of pidsIn(pidFile)) try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
+      rmSync(pidFile, { force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // A run that a signal ended while the harness waited for another used to
+  // let runSpec start the next one, which nothing then stopped.
+  it('starts no test run once its runs are being stopped', BOUNDED, async () => {
+    const root = makeScoringRepo();
+    try {
+      const run = await spawnNode([
+        '--input-type=module', '-e',
+        `import { runTests, stopRuns } from ${JSON.stringify(pathToFileURL(HARNESS).href)};\n`
+        + `const tests = ['tests/test-value.mjs'];\n`
+        + `console.log('before', (await runTests(${JSON.stringify(root)}, tests)).status);\n`
+        + "console.log('stopped', await stopRuns());\n"
+        + `try { await runTests(${JSON.stringify(root)}, tests); console.log('ran'); }\n`
+        + "catch (err) { console.log('refused:', err.message); }\n",
+      ]).exited;
+      strictEqual(run.code, 0, run.out);
+      deepStrictEqual(run.out.trim().split('\n'), [
+        'before 0', 'stopped true', 'refused: the harness is stopping; no test run starts',
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // Released while the run still ran, the lock would let another harness start
+  // beside it; a run that will not end keeps the lock until it does.
+  it('a signal keeps the lock while a test run will not end, and releases it once it has', BOUNDED, async () => {
+    const root = makeScoringRepo();
+    const pidFile = join(root, '..', `harness-unkillable-${process.pid}`);
+    const preload = join(root, '..', `harness-unkillable-${process.pid}.cjs`);
+    const release = join(root, '..', `harness-unkillable-${process.pid}.release`);
+    write(root, 'src/value.mjs', hangingSource(pidFile));
+    write(root, 'spec.mjs', SPEC);
+    // In the CLI alone, a group may not be killed until the release file exists.
+    writeFileSync(preload, [
+      "if (process.argv[1] && process.argv[1].endsWith('/scripts/mutation-harness.mjs')) {",
+      '  const kill = process.kill.bind(process);',
+      '  process.kill = (pid, signal) => {',
+      `    if (pid < 0 && signal === 'SIGKILL' && !require('node:fs').existsSync(${JSON.stringify(release)})) {`,
+      "      throw Object.assign(new Error('kill EPERM'), { code: 'EPERM' });",
+      '    }',
+      '    return kill(pid, signal);',
+      '  };',
+      '}',
+      '',
+    ].join('\n'));
+    const path = runLockPath(root);
+    const cli = runCli(
+      [join(root, 'spec.mjs'), '--repo-root', root, '--timeout', '600'],
+      { NODE_OPTIONS: `--require ${JSON.stringify(preload)}` },
+    );
+    try {
+      ok(await until(() => pidsIn(pidFile).length === 2, 30_000), 'the test file and the process it started are running');
+      const started = pidsIn(pidFile);
+      cli.child.kill('SIGTERM');
+      ok(await until(() => cli.output().includes('a test run has not ended after SIGTERM'), 15_000), cli.output());
+      await sleep(1000);
+      strictEqual(cli.child.exitCode, null, 'the CLI waits for the run');
+      ok(existsSync(path), 'the lock is kept while the run runs');
+      ok(started.every(exists), 'the run is still running');
+      writeFileSync(release, '');
+      const { code } = await cli.exited;
+      strictEqual(code, 143);
+      ok(!existsSync(path), 'the lock is released once the run has ended');
+      for (const pid of started) ok(!exists(pid), `pid ${pid} of its test run was gone before the CLI exited`);
+    } finally {
+      cli.child.kill('SIGKILL');
+      for (const pid of pidsIn(pidFile)) try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
+      for (const file of [pidFile, preload, release]) rmSync(file, { force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
