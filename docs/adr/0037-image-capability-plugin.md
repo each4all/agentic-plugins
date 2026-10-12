@@ -299,9 +299,9 @@ prompt-rendered parameters Codex reliably honors.
 
 ### 2026-10-12 — a send disclosure replaces the privacy gate (Decision 5)
 
-*Status of this amendment: Proposed. The owner decided the change on
-2026-10-12 and accepts the amendment when the pull request that carries it
-merges.*
+*Status of this amendment: Accepted 2026-10-12. The owner decided the
+change and accepted the amendment at the merge of the pull request that
+carries it (#926).*
 
 **What changed.** Decision 5 had every image verb genericize what it sends
 to Codex before dispatch, by analogy with the persona plugins' peer-dispatch
