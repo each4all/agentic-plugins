@@ -23,9 +23,10 @@ the skill (Claude Code or Codex CLI). It dispatches the **peer** host's
 companion ensemble in parallel per `ensemble-protocol.md` (founder's own
 copy; the nine business-anchored point templates ship in
 `ensemble-protocol.md`, and its research-scan point cross-references
-`investigate`'s self-contained `references/business-brief-ensemble.md`
-contract). The orchestrator/peer assignment is symmetric — every
-`/founder:*` skill runs from either side.
+`investigate`'s self-contained contract,
+`../../investigate/references/business-brief-ensemble.md`). The
+orchestrator/peer assignment is symmetric — every `/founder:*` skill
+runs from either side.
 
 ---
 
