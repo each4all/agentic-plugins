@@ -24,9 +24,9 @@ the skill (Claude Code or Codex CLI). It dispatches the **peer** host's
 companion ensemble in parallel per `ensemble-protocol.md` (designer's own
 copy; the six design-anchored point templates ship there, and its
 reference-scan point cross-references `investigate`'s self-contained
-`references/design-brief-ensemble.md` contract). The orchestrator/peer
-assignment is symmetric — every `/designer:*` skill runs from either
-side.
+contract, `../../investigate/references/design-brief-ensemble.md`). The
+orchestrator/peer assignment is symmetric — every `/designer:*` skill
+runs from either side.
 
 ---
 
