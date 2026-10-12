@@ -86,8 +86,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/image",
-        "ref": "plugin-image-v0.3.3",
-        "sha": "f9dbeb173fea7e1b20b1edb74c97e59c52055ebb"
+        "ref": "plugin-image-v0.4.0",
+        "sha": "041e6f200fb9e60c36b704f39c508cdcaa1c00b4"
       },
       "policy": {
         "installation": "AVAILABLE",
