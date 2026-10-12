@@ -319,7 +319,10 @@ ADR-0001 final note.
   `import.meta.url`, so editing in place or changing cwd proves nothing). It
   refuses to score an edit whose anchor drifted, or anything when the
   unmutated control is not green. How the copy is made: the header of
-  `scripts/mutation-harness.mjs`.
+  `scripts/mutation-harness.mjs`. Each test run gets `--timeout <seconds>`
+  (or `MUTATION_HARNESS_TIMEOUT`, default 900); a run past it is TIMEOUT, no
+  verdict. Runs in worktrees of one repository take turns: a second run
+  waits for the first.
 
 GitHub Actions run on Node 24. `full-tests.yml` runs the full `npm test` once,
 with no path filter: it is the only workflow that runs tests, and the
