@@ -1548,6 +1548,10 @@ export function formatText(report) {
         }
       }
       lines.push(`dirty_count: ${report.brief.dirty_count === null ? 'null' : report.brief.dirty_count}; sources_skipped: ${report.brief.sources_skipped}; rows_dropped: ${report.brief.rows_dropped}`);
+      // Closed codes only (contract §15.1): the source, its persona, the reason.
+      for (const skipped of report.brief.skipped_sources ?? []) {
+        lines.push(`- skipped: ${skipped.source}${skipped.kind ? `/${skipped.kind}` : ''} (${skipped.reason ?? 'unclassified'})`);
+      }
       lines.push(`note: ${report.brief.note}`);
     }
     if (report.emitted_line) lines.push('', `emitted line: ${report.emitted_line}`);

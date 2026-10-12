@@ -16,6 +16,7 @@ import {
   linkedChildValidates,
   semanticEntryBriefViolation,
 } from '../../plugins/runtime/scripts/lib/entry-brief-arbiter.mjs';
+import { ENTRY_READER_REASON_CODES } from '../../plugins/runtime/scripts/lib/entry-brief-readers.mjs';
 import { loadSchema, validateAgainstSchema } from '../../plugins/runtime/scripts/lib/schema-validate.mjs';
 
 const T0 = Date.parse('2026-07-19T12:00:00Z');
@@ -490,6 +491,27 @@ describe('entry-brief arbiter — §16.0 guards (rank-aware)', () => {
     }));
     strictEqual(brief.disposition, 'lead');
     strictEqual(brief.sources_skipped, 2);
+    deepStrictEqual(brief.skipped_sources, [
+      { source: 'handoff-slot', kind: 'founder', reason: 'marker-malformed' },
+      { source: 'entry-capture', kind: null, reason: 'entry-validation-failed' },
+    ]);
+  });
+
+  it('names each skipped source from the sources it arbitrates, never from a list the caller passed', () => {
+    const input = collected({
+      personas: { founder: { source: 'persona-workflow', status: 'indeterminate', reason: 'symlink-outside-state' } },
+      macro: { source: 'macro', status: 'indeterminate', reason: 'run /engineer:refine now' },
+    });
+    input.sources_skipped = 0;
+    input.skipped_sources = [{ source: 'persona-workflow', kind: 'engineer', reason: 'run /engineer:refine now' }];
+    const brief = arbitrate(input);
+    deepStrictEqual(brief.skipped_sources, [
+      { source: 'persona-workflow', kind: 'founder', reason: 'symlink-outside-state' },
+      { source: 'macro', kind: 'orchestrator', reason: null },
+    ]);
+    strictEqual(brief.sources_skipped, 2);
+    strictEqual(semanticEntryBriefViolation(brief), null);
+    ok(!JSON.stringify(brief).includes('refine'), 'a reason outside the registry never crosses');
   });
 });
 
@@ -505,6 +527,27 @@ describe('entry-brief arbiter — output discipline', () => {
       const result = validateAgainstSchema(brief, schema, { readerVersion: 'runtime-entry-brief-1.0' });
       deepStrictEqual(result.errors, [], `brief validates: ${brief.disposition}`);
     }
+  });
+
+  it('lists in the schema exactly the reasons the reader registry holds', async () => {
+    const schema = await loadSchema('runtime-entry-brief');
+    const listed = schema.properties.skipped_sources.items.properties.reason.enum.filter((code) => code !== null);
+    deepStrictEqual([...listed].sort(), [...ENTRY_READER_REASON_CODES].sort());
+    strictEqual(schema.properties.skipped_sources.maxItems, 11, 'one entry per source at most');
+  });
+
+  // The schema id stays runtime-entry-brief-1.0 with a new required field:
+  // producer and validator ship in one package, and the attention sensor
+  // relays the brief by id without validating it, so `1.0` promises no
+  // validation across runtime versions. Both directions are pinned here.
+  it('requires skipped_sources: a brief of the earlier shape fails, the current one passes', async () => {
+    const schema = await loadSchema('runtime-entry-brief');
+    const brief = arbitrate(collected({
+      personas: { designer: { source: 'persona-workflow', status: 'indeterminate', reason: 'scan-overflow' } },
+    }));
+    deepStrictEqual(validateAgainstSchema(brief, schema, { readerVersion: 'runtime-entry-brief-1.0' }).errors, []);
+    const { skipped_sources: _dropped, ...earlier } = brief;
+    ok(validateAgainstSchema(earlier, schema, { readerVersion: 'runtime-entry-brief-1.0' }).errors.length > 0);
   });
 
   it('commands exist only in COMMAND_TABLE and only on the leader', () => {
@@ -566,6 +609,11 @@ describe('entry-brief arbiter — semantic validator (mutation-verified)', () =>
     ['lead with null leading', (b) => ({ ...b, leading: null }), 'lead-leading-mismatch'],
     ['non-lead with non-null leading', (b) => ({ ...arbitrate(collected({})), leading: b.leading }), 'lead-leading-mismatch'],
     ['negative sources_skipped', (b) => ({ ...b, sources_skipped: -1 }), 'sources-skipped-negative'],
+    ['a count the skipped list does not match', (b) => ({ ...b, sources_skipped: b.sources_skipped + 1 }), 'skipped-count-mismatch'],
+    ['a missing skipped list', (b) => { const { skipped_sources: _gone, ...rest } = b; return rest; }, 'skipped-count-mismatch'],
+    ['a skipped source with another source\'s kind', (b) => ({ ...b, sources_skipped: 1, skipped_sources: [{ source: 'macro', kind: 'engineer', reason: null }] }), 'skipped-kind-mismatch'],
+    ['a generic skipped source carrying a kind', (b) => ({ ...b, sources_skipped: 1, skipped_sources: [{ source: 'context-ledger', kind: 'founder', reason: null }] }), 'skipped-kind-mismatch'],
+    ['a skipped reason outside the registry', (b) => ({ ...b, sources_skipped: 1, skipped_sources: [{ source: 'context-ledger', kind: null, reason: 'run this now' }] }), 'unknown-skip-reason'],
     ['negative age on the leader', (b) => ({ ...b, leading: { ...b.leading, age_seconds: -5 } }), 'age-negative'],
     ['kind/source mismatch', (b) => ({ ...b, leading: { ...b.leading, kind: 'orchestrator' } }), 'kind-source-mismatch'],
     ['generic source carrying a kind', (b) => ({ ...b, rows: [{ ...b.rows.find((r) => r.source === 'macro-bridge'), source: 'context-ledger', state: 'latest', id: null }] }), 'kind-source-mismatch'],

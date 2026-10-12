@@ -23,8 +23,10 @@
 // only, and no `scripts/*.mjs` sibling import (cycle).
 
 import {
+  ENTRY_READER_REASON_CODES,
   MACRO_WORKFLOW_ID_RE,
   PERSONA_WORKFLOW_ID_RE,
+  skippedSourcesOf,
 } from './entry-brief-readers.mjs';
 import { localizePluginCommands } from './host-localization.mjs';
 
@@ -68,6 +70,15 @@ const SAFE_POINTER_RE = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._/-]{1,512}
 
 const PERSONA_KINDS = new Set(['engineer', 'founder', 'designer']);
 const ROW_SOURCES = new Set(['persona-workflow', 'macro-active', 'macro-bridge', 'entry-capture', 'handoff-slot', 'context-ledger', 'consensus-open']);
+// The kinds a skipped source may carry, by the reader source it names.
+const SKIPPED_KINDS = Object.freeze({
+  'persona-workflow': new Set(PERSONA_KINDS),
+  macro: new Set(['orchestrator']),
+  'handoff-slot': new Set([...PERSONA_KINDS, 'orchestrator']),
+  'entry-capture': new Set([null]),
+  'context-ledger': new Set([null]),
+  'consensus-open': new Set([null]),
+});
 const STATES_BY_SOURCE = Object.freeze({
   'persona-workflow': new Set(['active', 'terminal']),
   'macro-active': new Set(['active', 'terminal']),
@@ -163,6 +174,14 @@ export function semanticEntryBriefViolation(brief) {
       continue;
     }
     if (!Number.isInteger(value) || value < 0) return `${field.replace(/_/g, '-')}-negative`;
+  }
+  if (!Array.isArray(brief.skipped_sources) || brief.skipped_sources.length !== brief.sources_skipped) {
+    return 'skipped-count-mismatch';
+  }
+  for (const skipped of brief.skipped_sources) {
+    const kinds = SKIPPED_KINDS[skipped?.source];
+    if (!kinds || !kinds.has(skipped.kind)) return 'skipped-kind-mismatch';
+    if (skipped.reason !== null && !ENTRY_READER_REASON_CODES.has(skipped.reason)) return 'unknown-skip-reason';
   }
   const entries = brief.leading !== null ? [brief.leading, ...brief.rows] : [...brief.rows];
   for (const entry of entries) {
@@ -484,13 +503,19 @@ export function arbitrateEntryBrief({ collected, dirtyCount = null, host, nowMs 
     ? { ...stripInternal(leading), command: localizePluginCommands(COMMAND_TABLE[leadKey], host) }
     : null;
 
+  // Which sources degraded, and why, derived from the sources arbitrated
+  // here, never from a list the caller passed: each entry is closed codes
+  // only, and the count is the list's length.
+  const skippedSources = skippedSourcesOf(sources);
+
   return {
     schema: ENTRY_BRIEF_SCHEMA_ID,
     disposition,
     leading: leadingOut,
     rows: kept.map(stripInternal),
     dirty_count: Number.isInteger(dirtyCount) && dirtyCount >= 0 ? dirtyCount : null,
-    sources_skipped: collected.sources_skipped ?? 0,
+    sources_skipped: skippedSources.length,
+    skipped_sources: skippedSources,
     rows_dropped: rowsDropped,
     note: ENTRY_BRIEF_NOTE,
   };

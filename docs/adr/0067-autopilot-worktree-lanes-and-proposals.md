@@ -669,6 +669,19 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
      (ADR-0010 §5).
    - They already feed the serial driver's observer, so both layouts must
      read correctly before any writer moves.
+
+   > **Note (2026-10-13, docket C122):** the entry-brief readers take a
+   > symlinked workflow entry as the file it names only when that file's
+   > real path lies inside a home of the same persona in the read set,
+   > judged by device and inode before the open and again after it, and
+   > only when no home overlaps another persona's home or holds a state
+   > directory; a link out of the state homes degrades the
+   > source (`symlink-outside-state`), and a link to nothing is skipped as
+   > the owners skip it. A file listed by two homes of one state root is
+   > dual-home ambiguity, judged per state root before a file reached
+   > through both roots counts once. The dashboard and doctor readers
+   > (`state-readers.mjs`) still skip a symlinked entry. Contract:
+   > `plugins/runtime/docs/session-capture-contract.md` §14.1.
 2. **Writers (SR).** Three rules, for every resolver:
    - **Lookups search the read set.** Finding an existing record (by branch,
      by id, by parent) searches the default state root, then the checkout's

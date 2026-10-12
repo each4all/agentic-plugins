@@ -700,6 +700,7 @@ function renderEntryAdvisory(advisory, lines) {
     lines.push(`    → ${brief.leading.command} — ${briefEntryLabel(brief.leading)}`);
   }
   listCapped(brief.rows, (row) => `    · ${briefEntryLabel(row)}`, lines);
+  listCapped(brief.skipped_sources ?? [], (skipped) => `    ✗ skipped ${skipped.source}${skipped.kind ? `/${skipped.kind}` : ''} (${skipped.reason ?? 'unclassified'})`, lines);
 }
 
 export function renderDashboardText(report) {

@@ -365,6 +365,18 @@ Schema `runtime-entry-brief-1.0`, one marker pair:
 - Same hardening trio as every injected line: marker pair,
   control-char strip + caps, the fixed note.
 
+> **Note (2026-10-13, docket C124):** the brief gained a top-level
+> `skipped_sources` list beside `sources_skipped`: for each skipped source,
+> its reader source name, its persona and its fixed-code reason, closed
+> codes only, so an operator can tell which source degraded and why. The
+> schema id stays `runtime-entry-brief-1.0`, though the §5 amendment below
+> (ADR-0063) expects a schema change to take the next minor: the attention
+> sensor relays only a brief that declares exactly that id, so a bump in a
+> runtime release alone would silence the SessionStart brief until attention
+> accepts the new id. The first bump, ADR-0063's `1.1`, carries that
+> attention change. The field list and caps are in the packaged contract
+> (`session-capture-contract.md` §15.1).
+
 ### 5. The precedence lattice — a total order, and the normative command table
 
 Evaluation order (first match wins the `leading` slot; everything
