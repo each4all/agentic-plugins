@@ -20,8 +20,13 @@
 //                  this fixture exists to reach the "valid, but not inspected"
 //                  state, not to be a conformant Adam7 encoder.
 //   nofile       — reports success without writing anything
+//
+// A critique prompt (it names no output path) gets an assessment that ends in
+// "verdict: pass". When `FAKE_COMPANION_LOG` names a file, the fixture appends
+// one line to it as it starts, so a test can order what the dispatcher wrote
+// before the spawn against the spawn itself.
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { deflateSync } from 'node:zlib';
 
 const CRC_TABLE = (() => {
@@ -86,8 +91,13 @@ if (promptFileIdx < 0) {
   process.stdout.write(JSON.stringify({ status: 'error', error: { kind: 'misuse', message: 'no --prompt-file' } }));
   process.exit(2);
 }
+if (process.env.FAKE_COMPANION_LOG) appendFileSync(process.env.FAKE_COMPANION_LOG, 'companion ran\n');
 const prompt = readFileSync(process.argv[promptFileIdx + 1], 'utf8');
 const m = prompt.match(/EXACTLY this absolute path:\n(.+)/);
+if (!m && prompt.startsWith('You are evaluating an image.')) {
+  process.stdout.write(JSON.stringify({ status: 'success', stdout: 'A 2x2 square of dark blue. verdict: pass' }));
+  process.exit(0);
+}
 if (!m) {
   process.stdout.write(JSON.stringify({ status: 'error', error: { kind: 'misuse', message: 'no output path in prompt' } }));
   process.exit(2);

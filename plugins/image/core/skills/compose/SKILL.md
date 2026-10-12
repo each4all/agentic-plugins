@@ -20,18 +20,19 @@ tool and auth.
 
 ## When invoked (Claude host)
 
-1. **Privacy gate** (`docs/contracts.md` §9): genericize the prompt before
-   dispatch — only the genericized form leaves the local host.
-2. **Cost disclosure** (`docs/contracts.md` §7): surface the estimated
-   per-image cost (gpt-image-2 ≈ $0.005 low / $0.04 medium / $0.19 high)
-   **before** generating. Default to **one** image; a multi-variant run
-   needs an explicit cap + disclosure.
-3. **Dispatch** via the helper (it owns discovery, the generate+save
-   prompt, and return-validation):
+1. **Cost disclosure** (`docs/contracts.md` §7, §9): **before**
+   generating, surface the estimated per-image cost (gpt-image-2 ≈ $0.005
+   low / $0.04 medium / $0.19 high), and with it that the prompt text goes
+   to Codex (OpenAI), which runs in the repository and can read files
+   there; ask no confirmation. Default to **one** image; a multi-variant
+   run needs an explicit cap + disclosure.
+2. **Dispatch** via the helper (it owns discovery, the generate+save
+   prompt, and return-validation, and prints the same disclosure before it
+   sends):
 
    ```bash
    node "$CLAUDE_PLUGIN_ROOT/scripts/compose-dispatch.mjs" \
-     --prompt-file <genericized-prompt-file> \
+     --prompt-file <prompt-file> \
      --repo-root "$REPO_ROOT" \
      --format png --quality low|medium|high [--size <WxH>] [--slug <slug>]
    ```
@@ -43,11 +44,11 @@ tool and auth.
    the returned file** (exists / under the run root / non-empty / sniffs
    dimensions off the bytes) before recording success. It never trusts
    Codex stdout.
-4. **Result**: the image lands at
+3. **Result**: the image lands at
    `.agentic-plugins/runs/image/<run-id>/<slug>-1.png` with an
    `ImageResult` manifest (`docs/contracts.md` §4). Return the **path** +
    metadata; never inline raw bytes.
-5. **Errors** (`docs/contracts.md` §8): the dispatcher classifies failures
+4. **Errors** (`docs/contracts.md` §8): the dispatcher classifies failures
    (`moderation_blocked` / `quota_exhausted` / `peer_cli_not_found` /
    `peer_unauthenticated` / `tool_unavailable` / `write_failed` /
    `unsupported_parameters` / `background_not_honored`) — no blind

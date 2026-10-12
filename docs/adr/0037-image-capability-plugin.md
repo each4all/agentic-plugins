@@ -18,6 +18,9 @@ Superseded by [ADR-0055](0055-image-transparent-background-support.md) — Decis
 > with an inline note below; the original prose is preserved as
 > historical record.
 
+Decision 5 amended 2026-10-12: a send disclosure replaces the privacy
+gate (see [Amendments](#amendments)). The note above predates it.
+
 ## Context
 
 A real demand arrived (2026-06-23): the user wants an image-generation
@@ -132,6 +135,9 @@ Add **`plugins/image`** as a Layer-2 capability plugin
 5. **Privacy gate.** Cross-host image prompts go through the existing
    peer-dispatch privacy gate (genericize before dispatch), since the
    prompt text leaves the local host for Codex.
+
+   *Amended 2026-10-12: a disclosure that the request goes to Codex
+   (OpenAI) replaces this gate. See [Amendments](#amendments).*
 
 6. **Honest-scope failure mode.** Where neither native generation nor a
    reachable Codex bridge exists (e.g. Claude host with Codex
@@ -288,6 +294,67 @@ prompt-rendered parameters Codex reliably honors.
    posture, and duplicate auth Codex already holds. The prompt-mediated
    parameter limitation (Decision 7) is accepted as the cost of the
    integrated approach.
+
+## Amendments
+
+### 2026-10-12 — a send disclosure replaces the privacy gate (Decision 5)
+
+*Status of this amendment: Proposed. The owner decided the change on
+2026-10-12 and accepts the amendment when the pull request that carries it
+merges.*
+
+**What changed.** Decision 5 had every image verb genericize what it sends
+to Codex before dispatch, by analogy with the persona plugins' peer-dispatch
+gate. The owner decided that the image plugin need not: a user who makes
+images in Codex directly passes no such gate, and on the Codex host the
+request stays with Codex, the provider the user is already working with
+(compose generates in the session; refine and critique still run their
+helpers, which call Codex again). The one real difference is the
+Claude host, where the request goes to another provider without the user
+necessarily knowing. So on the Claude host the user is told, and the gate
+is gone:
+
+- **The code that sends discloses.** Every send to Codex on the Claude host
+  goes through `compose-dispatch.mjs` (which `refine-dispatch.mjs`
+  reuses) or `critique-dispatch.mjs`. Immediately before it spawns the
+  companion, the helper writes one line to stderr naming what it sends,
+  that it goes to Codex (OpenAI), and the directory Codex runs in, and it
+  records the same fact in its result (`send_disclosure`). A path that
+  sends nothing (a pre-flight rejection, no companion, a refused image,
+  `--estimate-only`) writes and records none.
+- **What goes is named as it is.** Compose sends the prompt it renders,
+  which carries the output file's absolute path; refine the base prompt and
+  the feedback; critique the criteria and the image, which Codex opens by
+  its absolute path. The helpers start Codex in the repository root
+  (`--cd`), so it can read files there as well, and the disclosure says
+  so.
+- **The surfaces repeat it for the user.** `image:compose` and
+  `image:refine` state it as part of the cost disclosure they already show
+  before a generation; `image:critique`, which has no cost step, as its
+  first step. None of them asks for confirmation, and none genericizes the
+  request.
+- `image:investigate` sends nothing to Codex and only loses the gate,
+  including the rule that held its web searches to genericized terms.
+
+`plugins/image/docs/contracts.md` §9 holds the disclosure.
+`tests/image/test-send-disclosure.mjs` runs each helper against a fixture
+companion and requires the disclosure to be written before the companion
+starts, recorded in the result, and absent on every path that sends
+nothing. `tests/plugin-shape/test-image-plugin.mjs` requires each
+Claude-host surface to carry the sentence. It does not check where the
+sentence falls in the markdown: a first version did, and three review
+rounds each found another markdown form its scanner misread. Following the
+surface's order is the model's part, and the guarantee is the helper's.
+
+**What it also fixes.** Docket item C116: the gate was out of order on two
+surfaces. The refine skill numbered it after the regenerate step, and the
+critique skill's introduction and command showed the dispatch call before
+it. The test checked the gate's wording only, so both passed.
+
+**Unchanged.** The persona plugins' peer-dispatch genericization
+(`ensemble-protocol.md`, `persona-pipeline/`) is a different case: there a
+verb sends the owner's working context to a peer the owner did not address.
+It stays as it is.
 
 ## References
 

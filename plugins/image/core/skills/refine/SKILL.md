@@ -11,9 +11,12 @@ critique/feedback and regenerates through Codex's integrated gpt-image — it
 
 ## When invoked
 
-1. **Cost gate** (`docs/contracts.md` §7): each refine is a **new generation** —
-   disclose the per-iteration cost **before** regenerating. The helper computes
-   it without spending:
+1. **Cost gate** (`docs/contracts.md` §7, §9): each refine is a **new
+   generation** — disclose the per-iteration cost **before** regenerating, and
+   with it, on the Claude host, that the base prompt and the feedback go to
+   Codex (OpenAI), which runs in the repository and can read files there;
+   ask no confirmation. The helper prints the same disclosure before it
+   sends, and computes the cost without spending:
 
    ```bash
    node "$CLAUDE_PLUGIN_ROOT/scripts/refine-dispatch.mjs" --estimate-only --quality low
@@ -45,10 +48,6 @@ critique/feedback and regenerates through Codex's integrated gpt-image — it
    `--estimate-only` cannot quote a price for a run that would be rejected
    (`docs/contracts.md` §5).
 
-3. **Privacy gate** (`docs/contracts.md` §9): genericize the revised prompt +
-   feedback before cross-host dispatch — only the genericized form leaves the
-   local host.
-
-4. **Loop**: critique the new image (`image:critique`); if it still fails,
+3. **Loop**: critique the new image (`image:critique`); if it still fails,
    refine again within the cap, or stop and report. Lean L2 — each iteration is
    a run manifest, not durable workflow state.

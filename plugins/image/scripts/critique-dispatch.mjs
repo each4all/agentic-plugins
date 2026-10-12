@@ -10,7 +10,8 @@
 //
 // CLI:
 //   node critique-dispatch.mjs --image <path> [--criteria-file <f>] [--repo-root <d>]
-//   stdout: { ok, image, verdict, assessment, error? } JSON
+//   stdout: { ok, image, verdict, assessment, send_disclosure, error? } JSON
+//   stderr: the send disclosure, written before the companion runs (contracts.md §9)
 //   exit 0 if evaluated, 1 on error, 2 on misuse.
 
 import { spawn } from 'node:child_process';
@@ -18,7 +19,7 @@ import { existsSync, lstatSync, statSync, realpathSync, openSync, readSync, clos
 import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseArgs } from 'node:util';
-import { findCodexCompanion, sniffImage, classifyError } from './compose-dispatch.mjs';
+import { findCodexCompanion, sniffImage, classifyError, sendDisclosure } from './compose-dispatch.mjs';
 
 const IMAGE_EXT_RE = /\.(?:png|jpe?g|webp)$/i;
 const MAX_IMAGE_BYTES = 64 * 1024 * 1024;
@@ -101,13 +102,16 @@ function runCompanion(companionPath, promptFile, cwd, env) {
   });
 }
 
-export async function critique({ imagePath, criteria = [], repoRoot = process.cwd(), env = process.env }) {
+// `findCompanion` and `stderr` are test seams, as in compose-dispatch: a
+// fixture companion stands in for codex-companion, and the disclosure can be
+// ordered against its run. Nothing in the plugin sets them.
+export async function critique({ imagePath, criteria = [], repoRoot = process.cwd(), env = process.env, findCompanion = findCodexCompanion, stderr = process.stderr }) {
   const v = verifyImage(imagePath);
-  if (!v.ok) return { ok: false, image: v.path || imagePath, verdict: null, assessment: null, error: { kind: v.kind, message: v.message } };
+  if (!v.ok) return { ok: false, image: v.path || imagePath, verdict: null, assessment: null, send_disclosure: null, error: { kind: v.kind, message: v.message } };
 
-  const companion = await findCodexCompanion(env);
+  const companion = await findCompanion(env);
   if (!companion) {
-    return { ok: false, image: v.path, verdict: null, assessment: null, error: { kind: 'peer_cli_not_found', message: 'codex-companion not found — Claude cannot run vision critique without the Codex bridge', detail: 'install Codex + the companions plugin' } };
+    return { ok: false, image: v.path, verdict: null, assessment: null, send_disclosure: null, error: { kind: 'peer_cli_not_found', message: 'codex-companion not found — Claude cannot run vision critique without the Codex bridge', detail: 'install Codex + the companions plugin' } };
   }
 
   const prompt = buildCritiquePrompt(v.path, criteria);
@@ -117,25 +121,29 @@ export async function critique({ imagePath, criteria = [], repoRoot = process.cw
     promptFile = join(dir, 'prompt.txt');
     writeFileSync(promptFile, prompt);
   } catch (err) {
-    return { ok: false, image: v.path, verdict: null, assessment: null, error: { kind: 'write_failed', message: String(err && err.message ? err.message : err) } };
+    return { ok: false, image: v.path, verdict: null, assessment: null, send_disclosure: null, error: { kind: 'write_failed', message: String(err && err.message ? err.message : err) } };
   }
 
-  const { code, stdout, stderr } = await runCompanion(companion, promptFile, repoRoot, env);
+  // Codex opens the image by its path, so the file itself goes too.
+  const disclosure = sendDisclosure(['the image file (by its path)', 'the criteria'], repoRoot);
+  stderr.write(`${disclosure.text}\n`);
+  const run = await runCompanion(companion, promptFile, repoRoot, env);
+  const { code, stdout } = run;
   let envelope;
   try { envelope = JSON.parse(stdout); } catch {
-    return { ok: false, image: v.path, verdict: null, assessment: null, error: { kind: 'malformed_envelope', message: 'codex-companion did not return a JSON envelope', detail: (stderr || stdout).slice(0, 300) } };
+    return { ok: false, image: v.path, verdict: null, assessment: null, send_disclosure: disclosure, error: { kind: 'malformed_envelope', message: 'codex-companion did not return a JSON envelope', detail: (run.stderr || stdout).slice(0, 300) } };
   }
   if (!(envelope.status === 'success' && code === 0)) {
     const kind = classifyError(envelope, code);
-    return { ok: false, image: v.path, verdict: null, assessment: null, error: { kind, message: (envelope.error && envelope.error.message) || 'vision critique failed', detail: String(envelope.stdout || '').slice(0, 300) } };
+    return { ok: false, image: v.path, verdict: null, assessment: null, send_disclosure: disclosure, error: { kind, message: (envelope.error && envelope.error.message) || 'vision critique failed', detail: String(envelope.stdout || '').slice(0, 300) } };
   }
 
   const assessment = String(envelope.stdout || '').trim();
   if (UNABLE_RE.test(assessment)) {
     // Codex itself reported it could not see the image → not a trustworthy verdict.
-    return { ok: false, image: v.path, verdict: null, assessment, error: { kind: 'tool_unavailable', message: 'Codex reported it could not visually inspect the image', detail: assessment.slice(0, 200) } };
+    return { ok: false, image: v.path, verdict: null, assessment, send_disclosure: disclosure, error: { kind: 'tool_unavailable', message: 'Codex reported it could not visually inspect the image', detail: assessment.slice(0, 200) } };
   }
-  return { ok: true, image: v.path, verdict: parseVerdict(assessment), assessment, criteria: Array.isArray(criteria) ? criteria.filter((c) => typeof c === 'string') : [] };
+  return { ok: true, image: v.path, verdict: parseVerdict(assessment), assessment, send_disclosure: disclosure, criteria: Array.isArray(criteria) ? criteria.filter((c) => typeof c === 'string') : [] };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

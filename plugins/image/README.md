@@ -39,15 +39,20 @@ transactional generation capability: the brief and result flow through **run
 manifests** under `.agentic-plugins/runs/image/` (gitignored), not a durable
 workflow file. See [`docs/contracts.md`](docs/contracts.md) for the shared
 contract surfaces (ImageBrief, ImageResult run manifest, gpt-image-2
-parameter limits, typed error taxonomy, retention policy, privacy gate).
+parameter limits, typed error taxonomy, retention policy, send disclosure).
 
-## Cost, privacy, honest scope
+## Cost, send disclosure, honest scope
 
 - **Cost**: gpt-image-2 has real per-image cost (~$0.005 low / $0.04 medium
   / $0.17–0.21 high, size-dependent). The capability surfaces cost — no
   hidden spend, no blind retry of user/moderation errors.
-- **Privacy gate**: cross-host prompts (and, for `image:critique`, attached
-  images and reference assets) are genericized before dispatch.
+- **Send disclosure**: on the Claude host, `image:compose`, `image:refine`
+  and `image:critique` tell you before they dispatch that the request text and
+  any image go to Codex (OpenAI), which runs in the repository and can read
+  files there. The dispatch helpers print the same line just before they
+  send and record it in their result (`send_disclosure`). They ask no
+  confirmation and do not genericize the request: Codex receives it as it
+  would from you directly (`docs/contracts.md` §9).
 - **Honest scope**: where neither native generation nor a reachable Codex
   bridge exists, `image:compose` reports the limitation explicitly.
 

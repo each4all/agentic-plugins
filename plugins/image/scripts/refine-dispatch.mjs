@@ -14,6 +14,8 @@
 //        [--background opaque|auto|transparent]
 //   --estimate-only prints the per-image cost estimate and generates nothing.
 //   stdout: { ok, iteration, maxIterations, cost, error?, manifest } JSON
+//   stderr: the send disclosure, written by compose-dispatch before the
+//   companion runs (contracts.md §9); --estimate-only sends nothing and writes none
 //   exit 0 on success, 1 on error, 2 on misuse.
 //
 // `--background` is NOT inherited from the previous iteration: each refine call
@@ -65,6 +67,12 @@ export async function refine(opts = {}) {
   const refinedPrompt = buildRefinedPrompt(basePrompt, feedback);
   const manifest = await composeDispatch({
     promptText: refinedPrompt,
+    // What the send disclosure names (contracts.md §9): compose-dispatch
+    // writes it before it spawns the companion.
+    sent: String(feedback || '').trim()
+      ? ['the base prompt', 'the revision feedback', 'the output file\'s path']
+      : ['the base prompt', 'the output file\'s path'],
+    stderr: opts.stderr,
     repoRoot: opts.repoRoot,
     env: opts.env,
     format: opts.format,

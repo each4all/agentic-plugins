@@ -17,13 +17,15 @@ retry of user or moderation errors (`docs/contracts.md` §8).
 > **Lean L2 — no workflow state.** Iterations append to the run manifest
 > (`docs/contracts.md` §4), not a durable workflow file.
 
-**Privacy gate**: genericize the revised prompt before cross-host dispatch.
-
 **Cost gate**: each refine is a NEW generation — disclose cost before
-regenerating (`--estimate-only --quality <q>` computes it without spending);
-HARD iteration cap (default 3, caller cannot raise — `--max-iterations` is
-clamped); no auto-retry of user/moderation errors. Regenerate with the feedback
-applied (reuses compose-dispatch):
+regenerating (`--estimate-only --quality <q>` computes it without spending),
+and with it that the base prompt and the feedback go to Codex (OpenAI),
+which runs in the repository and can read files there (`docs/contracts.md`
+§9); ask no confirmation. The helper prints the same disclosure before it
+sends. HARD iteration cap (default 3,
+caller cannot raise — `--max-iterations` is clamped); no auto-retry of
+user/moderation errors. Regenerate with the feedback applied (reuses
+compose-dispatch):
 
 ```bash
 CLAUDE_PLUGIN_ROOT="${AGENTIC_IMAGE_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
@@ -32,5 +34,4 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/refine-dispatch.mjs" --base-prompt-file <base.
 ```
 
 Renders base + feedback into a new generation (new run-id manifest, cost
-surfaced). Past the cap it returns `iteration_cap` (no generation). Genericize
-the prompt before dispatch (`docs/contracts.md` §9).
+surfaced). Past the cap it returns `iteration_cap` (no generation).

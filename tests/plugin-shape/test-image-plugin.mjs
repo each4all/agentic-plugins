@@ -5,9 +5,9 @@
 // (both plugin manifests; each verb's command, SKILL.md and agents/openai.yaml
 // fields; the catalog and release-please entries), that the continuity
 // machinery the L3 personas carry is absent, the two agent instructions that
-// bound what generation may run and how a failure is handled, the privacy gate
-// each verb that sends something off the host stops at, and that no code file
-// calls the OpenAI image API directly.
+// bound what generation may run and how a failure is handled, the disclosure
+// each verb that sends the request to Codex makes before it does, and that no
+// code file calls the OpenAI image API directly.
 //
 // Run via `node --test tests/plugin-shape/test-image-plugin.mjs`.
 
@@ -225,80 +225,84 @@ describe('plugins/image — agent instructions that bound generation', () => {
   });
 });
 
-describe('plugins/image — privacy gate before anything leaves the host (docs/contracts.md §9)', () => {
-  const flat = (text) => text.replace(/\*/g, '').replace(/\s+/g, ' ');
-
-  // What each verb sends off the host, and the gate it stops at first: web
-  // search and the Codex dispatch for investigate, the prompt for compose and
-  // refine, the image file itself for critique. frame and decide send nothing.
-  // Each gate names when it applies ("before ... dispatch"), except the
-  // critique skill's, which names no timing and is checked for presence with
-  // the confirmation a private image needs; no check here orders it against
-  // the skill's dispatch.
-  const GATES = {
-    investigate: /genericize (?:any proprietary subject, brand, or reference asset|the subject\/brand) before (?:any )?web search or cross-host dispatch/i,
-    compose: /genericize the prompt before (?:cross-host )?dispatch/i,
-    refine: /genericize the revised prompt(?: \+ feedback)? before cross-host dispatch/i,
-  };
-  const CRITIQUE_GATES = {
-    command: /the image path AND its visual contents leave the local host\. Genericize or gate non-public images before dispatch\./,
-    skill: /the image path AND its visual contents leave the local host[^.]{0,40}\. Genericize or gate non-public images — never critique a private\/proprietary image off-host without explicit confirmation\./,
+describe('plugins/image — send disclosure (docs/contracts.md §9)', () => {
+  // On the Claude host, compose, refine and critique send the request to Codex,
+  // a service of another provider (ADR-0037 Decision 5, amended 2026-10-12).
+  // The guarantee that the user learns this lives in the code that sends: the
+  // dispatch helpers write the disclosure immediately before they spawn the
+  // companion, and record it (tests/image/test-send-disclosure.mjs orders the
+  // two). Each surface repeats it as the instruction the agent follows, naming
+  // what is sent; this checks the sentence is there, not where it falls in the
+  // markdown, which is the model's to follow and no scanner can decide.
+  // investigate, frame and decide send nothing to Codex.
+  const DISCLOSURES = {
+    compose: 'the prompt text goes to Codex (OpenAI), which runs in the repository and can read files there',
+    refine: 'the base prompt and the feedback go to Codex (OpenAI), which runs in the repository and can read files there',
+    critique: 'the image and the criteria go to Codex (OpenAI), which reads the image by its path, runs in the repository and can read files there',
   };
   const surfaces = (verb) => [
-    ['command', `commands/${verb}.md`, resolve(PLUGIN_ROOT, 'commands', `${verb}.md`)],
-    ['skill', `${SKILLS_REL}/${verb}/SKILL.md`, skillsPath(PLUGIN_ROOT, verb, 'SKILL.md')],
+    [`commands/${verb}.md`, resolve(PLUGIN_ROOT, 'commands', `${verb}.md`)],
+    [`${SKILLS_REL}/${verb}/SKILL.md`, skillsPath(PLUGIN_ROOT, verb, 'SKILL.md')],
   ];
+  const flat = (text) => text.replace(/\*/g, '').replace(/\s+/g, ' ');
 
-  // Contract: the agent running a verb on Claude reads the command and the
-  // SKILL.md (Codex reads the SKILL.md; its compose generates natively and
-  // dispatches nothing) and genericizes before the web search or the Codex
-  // dispatch — a surface without the gate sends a proprietary subject, brand,
-  // prompt or image off the host as written. Rejects the gate sentence
-  // deleted, replaced, or moved after the dispatch on any of the eight
-  // surfaces, and the critique skill's confirmation dropped.
-  for (const verb of [...Object.keys(GATES), 'critique']) {
-    it(`${verb}'s command and skill genericize before anything leaves the host`, async () => {
-      for (const [kind, rel, abs] of surfaces(verb)) {
-        const gate = verb === 'critique' ? CRITIQUE_GATES[kind] : GATES[verb];
-        match(flat(await readFile(abs, 'utf8')), gate, `${rel} must state the privacy gate before its web search or dispatch`);
+  // Contract: the agent running a verb on Claude reads its command and its
+  // SKILL.md, and tells the user what goes to Codex (OpenAI) and that Codex
+  // can read the repository, asking no confirmation. Rejects, on each of the
+  // six surfaces, the disclosure deleted or reworded so it no longer names
+  // what is sent, its §9 pointer dropped, and a confirmation asked instead.
+  for (const [verb, words] of Object.entries(DISCLOSURES)) {
+    for (const [rel, abs] of surfaces(verb)) {
+      it(`${rel} tells the user what goes to Codex`, async () => {
+        const text = flat(await readFile(abs, 'utf8'));
+        ok(text.includes(words), `${rel} must say that ${words}`);
+        match(text, /`docs\/contracts\.md` §(?:\d+, §?)*9\b/, `${rel}: the disclosure must point at docs/contracts.md §9`);
+        match(text, /\bask no confirmation\b/, `${rel}: the disclosure must say that no confirmation is asked`);
+      });
+    }
+  }
+
+  // Contract: the verbs that disclose nothing send nothing — rejects a
+  // dispatch helper or the companion named on investigate's, frame's or
+  // decide's command or skill, where no disclosure precedes it.
+  for (const verb of VERB_SKILLS.filter((v) => !(v in DISCLOSURES))) {
+    it(`${verb}'s command and skill send nothing to Codex`, async () => {
+      for (const [rel, abs] of surfaces(verb)) {
+        ok(!/(?:compose|refine|critique)-dispatch\.mjs|codex-companion/.test(await readFile(abs, 'utf8')), `${rel} names a sender to Codex without a disclosure`);
       }
     });
   }
 
-  // Contract: compose-dispatch.mjs builds the prompt it sends to Codex from the
-  // text of the file --prompt-file names, and of a repeated flag (spaced or
-  // `=`, quoted or not) the last one wins — rejects a dispatch call that
-  // points it at the raw prompt rather than the genericized one, alone or
-  // after it, and a second call that does.
-  it('compose\'s dispatch calls pass the genericized prompt file, once', async () => {
-    for (const [, rel, abs] of surfaces('compose')) {
-      const lines = (await readFile(abs, 'utf8')).split('\n');
-      const calls = [];
-      for (let i = 0; i < lines.length; i += 1) {
-        if (!/\bnode\b.*compose-dispatch\.mjs/.test(lines[i])) continue;
-        const call = [lines[i]];
-        while (lines[i].trimEnd().endsWith('\\') && i + 1 < lines.length) call.push(lines[++i]);
-        calls.push(call.join('\n'));
+  // Contract: the gate the disclosure replaced is gone from every verb's
+  // command, skill and agent card — rejects a leftover instruction to
+  // genericize, which would have the agent rewrite the user's request where
+  // §9 says Codex receives it as the user wrote it.
+  it('no verb surface tells the agent to genericize the request', async () => {
+    const offenders = [];
+    for (const verb of VERB_SKILLS) {
+      for (const [rel, abs] of [...surfaces(verb), [`${SKILLS_REL}/${verb}/agents/openai.yaml`, skillsPath(PLUGIN_ROOT, verb, 'agents/openai.yaml')]]) {
+        if (/genericiz/i.test(await readFile(abs, 'utf8'))) offenders.push(rel);
       }
-      strictEqual(calls.length, 1, `${rel} makes one compose-dispatch.mjs call`);
-      const values = [...calls[0].matchAll(/["']?--prompt-file["']?(?:=|\s+)["']?([^\s"']+)/g)].map((m) => m[1]);
-      deepStrictEqual(values, ['<genericized-prompt-file>'],
-        `${rel} must dispatch the genericized prompt file and no other:\n${calls[0]}`);
     }
+    deepStrictEqual(offenders, [], 'the privacy gate was replaced by the send disclosure (docs/contracts.md §9)');
   });
 
-  // Contract: every gate above points the agent at docs/contracts.md §9 for
-  // what the gate covers and when — the prompt, and for critique the image file
-  // and any reference assets, genericized before dispatch. §9 is that one
-  // statement, so it is pinned whole: rejects the section deleted or
-  // renumbered, which leaves every pointer resolving to nothing, and any clause
-  // narrowed (an asset or a verb excepted, the gate moved after dispatch).
-  it('docs/contracts.md §9 holds the gate the skills point at', async () => {
+  // Contract: every disclosure above points the agent at docs/contracts.md §9
+  // for who sends what, that the helpers disclose before they send, and that
+  // no confirmation is asked. Rejects the section deleted or renumbered, which
+  // leaves every pointer resolving to nothing, a verb dropped from it, the
+  // helper's disclosure moved after the spawn, the repository access left
+  // out, and a confirmation or a genericizing step put back.
+  it('docs/contracts.md §9 holds the disclosure the surfaces point at', async () => {
     const text = (await readFile(resolve(PLUGIN_ROOT, 'docs/contracts.md'), 'utf8')).replace(/\*/g, '');
     const section = text.split(/^## /m).find((s) => /^9\.\s/.test(s));
-    ok(section, 'docs/contracts.md must keep the §9 the skills cite');
-    match(flat(section), /Cross-host image prompts pass an explicit privacy gate \(genericize before dispatch\) since the prompt text — and, for `image:critique`, the attached image file and any reference assets — leaves the local host for Codex\. Only the genericized form leaves the local host\./,
-      '§9 must gate the prompt, and for critique the image file and any reference assets, before dispatch');
+    ok(section, 'docs/contracts.md must keep the §9 the surfaces cite');
+    const body = flat(section);
+    match(body, /^9\. Send disclosure /);
+    match(body, /On the Claude host, `image:compose`, `image:refine` and `image:critique` send the request to Codex/);
+    match(body, /so Codex can read files there as well/);
+    match(body, /Immediately before it spawns the companion, the helper writes one line to stderr naming what it sends, that it goes to Codex \(OpenAI\), and the directory Codex runs in\./);
+    match(body, /It asks no confirmation, and the request is not genericized/);
   });
 });
 
