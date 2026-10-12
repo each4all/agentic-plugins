@@ -1,6 +1,6 @@
 # Repository-state checks that are not test files: kit/lint over every plugin,
-# the persona-pipeline drift check, and the catalog, version and artifact
-# validators. full-tests.yml runs the
+# the persona-pipeline drift check, the static mutation anchor check, and the
+# catalog, version and artifact validators. full-tests.yml runs the
 # test files, including the ones that assert these scripts' behavior.
 #
 # Same triggers as full-tests.yml, for the same reason (ADR-0033, 2026-10-03
@@ -53,6 +53,13 @@ jobs:
       # canonical source in persona-pipeline/, and the declarations pass.
       - name: Persona pipeline drift check
         run: npm run sync:persona-pipeline
+
+      # Every mutation case of every spec still applies to the tree as it is: a
+      # drifted anchor fails the push that moved the anchored source, instead of
+      # surfacing as a HARNESS ERROR the next time someone scores that spec.
+      # Runs no test (scripts/mutation-harness.mjs --static).
+      - name: Mutation anchor check (static)
+        run: npm run mutate:static
 
       - name: Validate both catalogs
         env:
