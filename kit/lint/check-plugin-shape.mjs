@@ -1163,10 +1163,47 @@ if (codexManifest && typeof codexManifest.skills === 'string' && codexManifest.s
   }
 }
 
+// The relocated root, core/skills/, must be the one the Codex manifest declares
+// (or lie under it) whenever it holds a skill: Codex loads only the declared
+// root. Reverting `skills` to "./skills/" with the tree left in core/skills/
+// passed (C25, measured on runtime 2026-09-23): the README-only conventional
+// root read as a plugin with no skills, and the relocated tree was never
+// scanned. Each relocated plugin's shape test pins the manifest value; this
+// rule holds every plugin linted here to it, a standalone copy included.
+// Roots are compared by real path, so a declared symlink to core/skills/
+// declares it. The skills counted are the ones collectSkillFiles finds, which
+// skips what Codex's own discovery skips (hidden directories, depth past 6):
+// those would not load from a declared root either.
+const relocatedSkillsRoot = resolve(PLUGIN_DIR, 'core', 'skills');
+const realRelocatedRoot = (await containedRealPath(relocatedSkillsRoot)) ?? relocatedSkillsRoot;
+const declaresRelocatedRoot = async (root) => {
+  const real = (await containedRealPath(root)) ?? root;
+  return real === realRelocatedRoot || !escapesDir(real, realRelocatedRoot);
+};
+let relocatedRootDeclared = false;
+for (const root of skillsRoots) relocatedRootDeclared ||= await declaresRelocatedRoot(root);
+if (codexManifest && !relocatedRootDeclared) {
+  let undeclared = [];
+  try {
+    undeclared = await collectSkillFiles(relocatedSkillsRoot, { dirs: 0, entries: 0 });
+  } catch (err) {
+    if (!(err instanceof SkillScanError)) throw err;
+    errors.push(`skills scan: ${err.message}`);
+  }
+  if (undeclared.length > 0) {
+    const declared = typeof codexManifest.skills === 'string' ? `declares skills "${codexManifest.skills}"` : 'declares no skills root';
+    errors.push(
+      `.codex-plugin/plugin.json ${declared}, but "core/skills/" holds ${undeclared.length} skill(s) the `
+      + 'manifest does not declare — Codex would load none of them. Declare "./core/skills/" '
+      + '(the relocated root, ADR-0006 Amendment).',
+    );
+  }
+}
+
 // --- Command skill pointers ----------------------------------------------
 //
 // A command runbook that names its skill does so by explicit path,
-// `$CLAUDE_PLUGIN_ROOT/<root>/<verb>/SKILL.md`. That is a file read rather
+// `${CLAUDE_PLUGIN_ROOT}/<root>/<verb>/SKILL.md`. That is a file read rather
 // than directory-convention registration, which is precisely what lets a
 // relocated skills root keep working — and nothing checked that the path
 // resolves. Measured on a relocated copy of plugins/image: pointing one
@@ -1174,12 +1211,22 @@ if (codexManifest && typeof codexManifest.skills === 'string' && codexManifest.s
 // linter and the plugin's shape test green while the target did not exist, so
 // a half-finished move ships a command that reads nothing.
 //
+// Both spellings of the root are matched, braced and unbraced. Every real
+// pointer has been braced since 2026-09-29, when the commands moved to the
+// braced form; the pattern then read only `$CLAUDE_PLUGIN_ROOT/`, so it
+// checked 0 of the 45 pointers, and its fixtures, unbraced too, stayed green.
+//
 // SCOPE, stated because it is narrower than it looks. Across this repository
-// the pattern matches 43 pointers, in designer, engineer, founder, image and
+// the pattern matches 45 pointers, in designer, engineer, founder, image and
 // orchestrator. `plugins/runtime` carries none — its command runbooks are
 // inline — so this rule does NOT cover runtime's own relocation, and
-// `attention` / `companions` ship no commands at all.
-const COMMAND_SKILL_POINTER = /\$CLAUDE_PLUGIN_ROOT\/([A-Za-z0-9_@./-]*SKILL\.md)/g;
+// `attention` / `companions` ship no commands at all. A command's references
+// to the skills tree's other documents are checked further down, with the
+// tree's own references.
+const COMMAND_SKILL_POINTER = /\$(?:\{CLAUDE_PLUGIN_ROOT\}|CLAUDE_PLUGIN_ROOT)\/([A-Za-z0-9_@./-]*SKILL\.md)/g;
+
+// Every command file read here, kept for the skills-tree reference check below.
+const commandTexts = [];
 
 async function checkCommandSkillPointers() {
   const commandsDir = resolve(PLUGIN_DIR, 'commands');
@@ -1204,12 +1251,13 @@ async function checkCommandSkillPointers() {
       errors.push(`commands/${entry.name}: cannot read it to check its skill pointers: ${err.message}`);
       continue;
     }
+    commandTexts.push({ file: abs, text });
     const seen = new Set();
     for (const match of text.matchAll(COMMAND_SKILL_POINTER)) {
       const pointer = match[1];
       if (seen.has(pointer)) continue;
       seen.add(pointer);
-      const label = `commands/${entry.name}: skill pointer "$CLAUDE_PLUGIN_ROOT/${pointer}"`;
+      const label = `commands/${entry.name}: skill pointer "${match[0]}"`;
       const target = resolve(PLUGIN_DIR, pointer);
       if (escapesPluginDir(target)) {
         errors.push(`${label} escapes the plugin directory`);
@@ -1274,6 +1322,53 @@ const SKILL_REF_ROOT_RELATIVE = /(?<![A-Za-z0-9_/.$-])(?:core\/)?skills\/[A-Za-z
 // while relocating designer: two of these had been dead since engineer moved,
 // one of them inside plugins/orchestrator, and nothing reported either.
 const SKILL_REF_REPO_RELATIVE = /(?<![A-Za-z0-9_@.-])plugins\/[a-z0-9-]+\/[A-Za-z0-9_@./-]+/g;
+// Two shapes that passed unread until C23 measured them on founder and
+// designer: a sibling-relative `./orchestration.md`, read from the file's own
+// directory, and a bare `references/…`, which the Agent Skills convention reads
+// from the skill's directory, wherever in the skill the file sits.
+const SKILL_REF_SIBLING_RELATIVE = /(?<![A-Za-z0-9_@./-])\.\/[A-Za-z0-9_@./-]+/g;
+const SKILL_REF_BARE_REFERENCES = /(?<![A-Za-z0-9_@./$-])references\/[A-Za-z0-9_@./-]+/g;
+
+// The directory a bare `references/…` is read from: the nearest one holding a
+// SKILL.md, else the skills root's top-level directory the file sits in, which
+// is what `_shared/` is to the references it holds (the root itself for a file
+// directly under it).
+async function skillDirOf(file, skillsRoot) {
+  for (let dir = dirname(file); dir === skillsRoot || !escapesDir(skillsRoot, dir); dir = dirname(dir)) {
+    if (await exists(resolve(dir, 'SKILL.md'))) return dir;
+  }
+  return resolve(skillsRoot, relative(skillsRoot, dirname(file)).split(sep)[0]);
+}
+
+// Check every reference `text` makes in the shapes `scans` lists, each
+// `[pattern, base, shape, skip?]`, the reference being the pattern's `ref`
+// group when it has one and the whole match otherwise; `skip` names references
+// another rule owns.
+async function checkFileReferences(file, text, scans) {
+  const seen = new Set();
+  for (const [pattern, base, shape, skip] of scans) {
+    for (const m of text.matchAll(pattern)) {
+      const ref = (m.groups?.ref ?? m[0]).replace(/[.,)`'"]+$/, '');
+      if (!SKILL_REF_MANAGED_EXT.test(ref) || skip?.(ref)) continue;
+      const key = `${shape}:${ref}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const target = resolve(base, ref);
+      // Outbound references are only decidable where the repository layout is
+      // present; see limit 2 in the header.
+      if (escapesPluginDir(target) && !repoLayoutPresent) continue;
+      // A file, as the command pointer rule requires: a directory named like
+      // a document is not one.
+      if (!(await stat(target).then((info) => info.isFile(), () => false))) {
+        errors.push(
+          `${rel(file)}: ${shape} reference "${ref}" does not resolve. After a skills-root `
+          + 'relocation a reference to a target that did NOT move needs one more "../", and a '
+          + 'plugin-root-relative "skills/..." reference needs the new root.',
+        );
+      }
+    }
+  }
+}
 
 async function checkSkillTreeReferences(skillsRoot) {
   let files;
@@ -1291,33 +1386,36 @@ async function checkSkillTreeReferences(skillsRoot) {
       errors.push(`${rel(file)}: cannot read it to check its references: ${err.message}`);
       continue;
     }
-    const seen = new Set();
-    const check = async (raw, base, shape) => {
-      const ref = raw.replace(/[.,)`'"]+$/, '');
-      if (!SKILL_REF_MANAGED_EXT.test(ref)) return;
-      const key = `${shape}:${ref}`;
-      if (seen.has(key)) return;
-      seen.add(key);
-      const target = resolve(base, ref);
-      // Outbound references are only decidable where the repository layout is
-      // present; see limit 2 in the header.
-      if (escapesPluginDir(target) && !repoLayoutPresent) return;
-      if (!(await exists(target))) {
-        errors.push(
-          `${rel(file)}: ${shape} reference "${ref}" does not resolve. After a skills-root `
-          + 'relocation a reference to a target that did NOT move needs one more "../", and a '
-          + 'plugin-root-relative "skills/..." reference needs the new root.',
-        );
-      }
-    };
-    for (const m of text.matchAll(SKILL_REF_RELATIVE)) await check(m[0], dirname(file), 'relative');
-    for (const m of text.matchAll(SKILL_REF_ROOT_RELATIVE)) await check(m[0], PLUGIN_DIR, 'plugin-root-relative');
+    const scans = [
+      [SKILL_REF_RELATIVE, dirname(file), 'relative'],
+      [SKILL_REF_SIBLING_RELATIVE, dirname(file), 'sibling-relative'],
+      [SKILL_REF_BARE_REFERENCES, await skillDirOf(file, skillsRoot), 'skill-relative'],
+      [SKILL_REF_ROOT_RELATIVE, PLUGIN_DIR, 'plugin-root-relative'],
+    ];
     // Repo-relative paths leave the plugin by construction, so they are only
     // decidable where the surrounding layout is present — same limit as above.
     if (repoLayoutPresent) {
-      const repoRoot = resolve(PLUGIN_DIR, '..', '..');
-      for (const m of text.matchAll(SKILL_REF_REPO_RELATIVE)) await check(m[0], repoRoot, 'repo-relative');
+      scans.push([SKILL_REF_REPO_RELATIVE, resolve(PLUGIN_DIR, '..', '..'), 'repo-relative']);
     }
+    await checkFileReferences(file, text, scans);
+  }
+}
+
+// A command cites the skills tree's other documents (shared references, specs,
+// the decide registry) as `${CLAUDE_PLUGIN_ROOT}/core/skills/…` or as a bare
+// `core/skills/…`, and a relocation breaks them as it breaks the skill
+// pointers. Reverting one to the pre-relocation `skills/…` passed (C23,
+// measured on founder and designer critique.md). A SKILL.md pointer is the
+// pointer rule's, above, so it is not reported twice.
+const COMMAND_SKILL_TREE_POINTER = /\$(?:\{CLAUDE_PLUGIN_ROOT\}|CLAUDE_PLUGIN_ROOT)\/(?<ref>(?:core\/)?skills\/[A-Za-z0-9_@./-]+)/g;
+const isSkillFile = (ref) => basename(ref) === 'SKILL.md';
+
+async function checkCommandSkillTreeReferences() {
+  for (const { file, text } of commandTexts) {
+    await checkFileReferences(file, text, [
+      [COMMAND_SKILL_TREE_POINTER, PLUGIN_DIR, 'plugin-root pointer', isSkillFile],
+      [SKILL_REF_ROOT_RELATIVE, PLUGIN_DIR, 'plugin-root-relative'],
+    ]);
   }
 }
 
@@ -1336,6 +1434,7 @@ async function collectTextFiles(dir, out = []) {
 for (const root of skillsRoots) {
   if (await exists(root)) await checkSkillTreeReferences(root);
 }
+await checkCommandSkillTreeReferences();
 
 
 const seenSkillFiles = new Set();

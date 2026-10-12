@@ -52,6 +52,16 @@ they are trigger-driven futures.
     a value it cannot read exactly would make the check vacuous.
     **Write skill descriptions as single-line quoted scalars** — the
     convention every packaged skill already follows.
+  - **Skills-root relocation and references** (ADR-0006 Amendment) — a
+    relocated plugin keeps an inert conventional `skills/` tombstone and a
+    silent Claude manifest; a `core/skills/` tree holding a skill must be
+    the Codex manifest's declared root; every command's
+    `${CLAUDE_PLUGIN_ROOT}/…/SKILL.md` pointer (braced or not) and
+    skills-tree document reference resolves; and references inside the
+    skills tree (`../`, `./`, bare `references/`, `core/skills/…`, and,
+    inside the repository layout, `plugins/<name>/…` and outbound paths)
+    resolve to a file. Mutation spec:
+    `scripts/mutation-specs/relocation-guards.mjs`.
   - Run locally via `npm run lint:plugin-shape`.
   - CI-gated once, by `validate.yml`. The linter's own tests
     (`lint/tests/`) run in `full-tests.yml` with the rest of `npm test`.

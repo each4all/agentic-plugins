@@ -966,12 +966,13 @@ describe('kit/lint/check-plugin-shape — relocated skills root (ADR-0006 Amendm
   // `declared` is written verbatim into the Codex manifest. `files` maps
   // plugin-relative paths to contents; `links` are [linkPath, target] pairs
   // created after the files exist. Passing conventional: false omits the
-  // skills/ directory entirely.
+  // skills/ directory entirely, and relocated: false the core/skills/ skill.
   async function makeRelocated({
     declared = './core/skills/',
     files = {},
     links = [],
     conventional = TOMBSTONE,
+    relocated = true,
   } = {}) {
     const dir = await mkdtemp(join(tmpdir(), 'kit-lint-relocated-'));
     tempDirs.push(dir);
@@ -982,7 +983,7 @@ describe('kit/lint/check-plugin-shape — relocated skills root (ADR-0006 Amendm
     await writeFile(join(dir, '.codex-plugin', 'plugin.json'), JSON.stringify({ ...manifest, skills: declared }, null, 2));
     // Valid content at the declared root, so a negative fixture fails on the
     // new rule alone rather than on frontmatter or a missing declared root.
-    const all = { 'core/skills/demo/SKILL.md': skill('demo'), ...files };
+    const all = { ...(relocated ? { 'core/skills/demo/SKILL.md': skill('demo') } : {}), ...files };
     if (conventional !== false) all['skills/README.md'] = conventional;
     for (const [rel, content] of Object.entries(all)) {
       const abs = join(dir, rel);
@@ -1111,10 +1112,12 @@ describe('kit/lint/check-plugin-shape — relocated skills root (ADR-0006 Amendm
       // All four spellings name the conventional root. Normalizing by resolved
       // path rather than raw string is what keeps the rule's antecedent false
       // for them — a raw-string comparison against any one spelling would fire
-      // on the other three.
+      // on the other three. The skill lives at the conventional root only: a
+      // core/skills/ skill beside it would be an undeclared tree (C25).
       const dir = await makeRelocated({
         declared: spelling,
         conventional: false,
+        relocated: false,
         files: { 'skills/demo/SKILL.md': skill('demo') },
       });
       const result = await runLint(dir);
@@ -1164,12 +1167,18 @@ describe('kit/lint/check-plugin-shape — relocated skills root (ADR-0006 Amendm
 //
 // Both fixtures keep one valid skill at the declared root, so a negative case
 // fails on the rule under test rather than on skill content.
+//
+// The fixture command spells the root `${CLAUDE_PLUGIN_ROOT}`, braced, the
+// way every real command has since 2026-09-29. The rule once matched only the
+// unbraced `$CLAUDE_PLUGIN_ROOT/`, which these fixtures also used, so it
+// checked none of the 45 real pointers while every case here stayed green.
+// The unbraced spelling keeps a case of its own below.
 describe('kit/lint/check-plugin-shape — command skill pointers (ADR-0006 Amendment)', () => {
   const tempDirs = [];
   after(() => Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true }))));
 
   const skill = (name) => `---\nname: ${name}\ndescription: "A conformant ${name} skill for the pointer fixture."\n---\n\n# ${name}\n`;
-  const command = (pointer) => `---\ndescription: "fixture command"\n---\n\nFollow the skill at \`$CLAUDE_PLUGIN_ROOT/${pointer}\`.\n`;
+  const command = (pointer, root = '${CLAUDE_PLUGIN_ROOT}') => `---\ndescription: "fixture command"\n---\n\nFollow the skill at \`${root}/${pointer}\`.\n`;
 
   /**
    * `declared` is the Codex manifest's skills value; `claudeSkills`, when
@@ -1227,6 +1236,18 @@ describe('kit/lint/check-plugin-shape — command skill pointers (ADR-0006 Amend
     ok(saysPointer(result), `stderr=${result.stderr}`);
     ok(result.stderr.includes('commands/demo.md'), `the diagnostic must name the command; stderr=${result.stderr}`);
     ok(result.stderr.includes('does not resolve'), `stderr=${result.stderr}`);
+    ok(result.stderr.includes('"${CLAUDE_PLUGIN_ROOT}/skills/demo/SKILL.md"'), `the diagnostic must quote the pointer as written; stderr=${result.stderr}`);
+  });
+
+  it('rejects a pointer left behind in the unbraced $CLAUDE_PLUGIN_ROOT spelling too', async () => {
+    const dir = await makeFixture({
+      declared: './core/skills/',
+      files: { 'commands/demo.md': command('skills/demo/SKILL.md', '$CLAUDE_PLUGIN_ROOT') },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `stderr=${result.stderr}`);
+    ok(saysPointer(result), `stderr=${result.stderr}`);
+    ok(result.stderr.includes('"$CLAUDE_PLUGIN_ROOT/skills/demo/SKILL.md"'), `stderr=${result.stderr}`);
   });
 
   it('rejects a pointer that dangles on a NOT-yet-relocated plugin', async () => {
@@ -1270,6 +1291,52 @@ describe('kit/lint/check-plugin-shape — command skill pointers (ADR-0006 Amend
     strictEqual(result.code, 0, `a scripts/ reference is not a skill pointer; stderr=${result.stderr}`);
   });
 
+  // A command also cites the skills tree's other documents, in two spellings:
+  // `${CLAUDE_PLUGIN_ROOT}/core/skills/_shared/references/…` and a bare
+  // `core/skills/_shared/references/…`. Reverting either to the pre-relocation
+  // `skills/…` passed (C23, measured on founder and designer critique.md).
+  const notes = { 'core/skills/_shared/references/notes.md': '# notes\n' };
+
+  it('accepts a command whose skills-tree document references resolve', async () => {
+    const dir = await makeFixture({
+      declared: './core/skills/',
+      files: {
+        ...notes,
+        'commands/demo.md': `${command('core/skills/demo/SKILL.md')}\nSee \`\${CLAUDE_PLUGIN_ROOT}/core/skills/_shared/references/notes.md\` and \`core/skills/_shared/references/notes.md\`.\n`,
+      },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+
+  it('rejects a bare skills-tree document reference reverted to the pre-relocation root', async () => {
+    const dir = await makeFixture({
+      declared: './core/skills/',
+      files: {
+        ...notes,
+        'commands/demo.md': `${command('core/skills/demo/SKILL.md')}\nSee \`skills/_shared/references/notes.md\` § Privacy.\n`,
+      },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `stderr=${result.stderr}`);
+    ok(result.stderr.includes('commands/demo.md: plugin-root-relative reference "skills/_shared/references/notes.md" does not resolve'), `stderr=${result.stderr}`);
+  });
+
+  for (const root of ['${CLAUDE_PLUGIN_ROOT}', '$CLAUDE_PLUGIN_ROOT']) {
+    it(`rejects a ${root}/ skills-tree document pointer reverted to the pre-relocation root`, async () => {
+      const dir = await makeFixture({
+        declared: './core/skills/',
+        files: {
+          ...notes,
+          'commands/demo.md': `${command('core/skills/demo/SKILL.md')}\nFollow \`${root}/skills/_shared/references/notes.md\`.\n`,
+        },
+      });
+      const result = await runLint(dir);
+      strictEqual(result.code, 1, `stderr=${result.stderr}`);
+      ok(result.stderr.includes('commands/demo.md: plugin-root pointer reference "skills/_shared/references/notes.md" does not resolve'), `stderr=${result.stderr}`);
+    });
+  }
+
   it('rejects a Claude manifest that declares the relocated root (clause 4)', async () => {
     const dir = await makeFixture({
       declared: './core/skills/',
@@ -1287,6 +1354,44 @@ describe('kit/lint/check-plugin-shape — command skill pointers (ADR-0006 Amend
     // declared root IS the conventional one the key changes nothing Claude
     // does, and firing here would condemn a shape no measurement faults.
     const dir = await makeFixture({ claudeSkills: './skills/' });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+
+  // C25: the Codex manifest reverted to `./skills/` while the skills stay in
+  // core/skills/. The README-only conventional root then looked like a plugin
+  // with no skills, and the lint passed (measured on runtime, 2026-09-23).
+  for (const declared of ['./skills/', undefined]) {
+    it(`rejects a core/skills/ tree the Codex manifest does not declare (skills ${declared === undefined ? 'absent' : `"${declared}"`})`, async () => {
+      const dir = await makeFixture({ files: { 'core/skills/demo/SKILL.md': skill('demo') } });
+      const manifest = { name: 'fixture-pointer', version: '0.0.1', description: 'command pointer fixture' };
+      if (declared !== undefined) manifest.skills = declared;
+      await writeFile(join(dir, '.codex-plugin', 'plugin.json'), JSON.stringify(manifest, null, 2));
+      await rm(join(dir, 'skills', 'demo'), { recursive: true });
+      await writeFile(join(dir, 'skills', 'README.md'), '# tombstone\n');
+      const result = await runLint(dir);
+      strictEqual(result.code, 1, `stderr=${result.stderr}`);
+      ok(result.stderr.includes('"core/skills/" holds 1 skill(s) the manifest does not declare'), `stderr=${result.stderr}`);
+    });
+  }
+
+  it('accepts a core/skills/ tree declared under any spelling of the same root', async () => {
+    const dir = await makeFixture({ declared: 'core/skills' });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+
+  it('accepts a core/skills/ tree under a declared root that contains it', async () => {
+    const dir = await makeFixture({ declared: './core/', files: { 'core/skills/demo/SKILL.md': skill('demo') } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+
+  it('accepts a core/skills/ tree declared through a symlink to it', async () => {
+    const dir = await makeFixture({ declared: './core/skills/' });
+    const manifest = { name: 'fixture-pointer', version: '0.0.1', description: 'command pointer fixture', skills: './loaded-skills/' };
+    await writeFile(join(dir, '.codex-plugin', 'plugin.json'), JSON.stringify(manifest, null, 2));
+    await symlink('core/skills', join(dir, 'loaded-skills'));
     const result = await runLint(dir);
     strictEqual(result.code, 0, `stderr=${result.stderr}`);
   });
@@ -1381,6 +1486,121 @@ describe('kit/lint/check-plugin-shape — references inside the skills tree', ()
     });
     const result = await runLint(dir);
     strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+
+  // Two more shapes a runbook inside the tree uses, both passed unread before
+  // (C23): a sibling-relative `./orchestration.md` (the shared
+  // ensemble-protocol references) and a bare `references/…`, which the Agent
+  // Skills convention reads from the skill's own directory.
+  it('accepts a sibling-relative ./ reference that resolves', async () => {
+    const dir = await makeTree({
+      files: { 'core/skills/_shared/references/protocol.md': 'See `./notes.md`.\n' },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+
+  it('rejects a sibling-relative ./ reference that does not resolve', async () => {
+    const dir = await makeTree({
+      files: { 'core/skills/_shared/references/protocol.md': 'See `./orchestration.md`.\n' },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `stderr=${result.stderr}`);
+    ok(result.stderr.includes('core/skills/_shared/references/protocol.md: sibling-relative reference "./orchestration.md" does not resolve'), `stderr=${result.stderr}`);
+  });
+
+  it('accepts a bare references/ reference read from the skill directory, in SKILL.md and below it', async () => {
+    // From references/guide.md, `references/spec.md` names the skill's own
+    // references/spec.md, not references/references/spec.md.
+    const dir = await makeTree({
+      files: {
+        'core/skills/demo/SKILL.md': skill('demo', 'See `references/spec.md`.'),
+        'core/skills/demo/references/spec.md': '# spec\n',
+        'core/skills/demo/references/guide.md': 'See `references/spec.md`.\n',
+      },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+
+  it('rejects a bare references/ reference the skill does not ship', async () => {
+    const dir = await makeTree({
+      files: { 'core/skills/demo/SKILL.md': skill('demo', 'See `references/spec.md`.') },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `stderr=${result.stderr}`);
+    ok(result.stderr.includes('core/skills/demo/SKILL.md: skill-relative reference "references/spec.md" does not resolve'), `stderr=${result.stderr}`);
+  });
+
+  it('accepts a bare references/ reference in _shared/ naming a file _shared/ ships', async () => {
+    // _shared/ holds no SKILL.md, so its references are read from _shared/
+    // itself, not from the citing file's own directory.
+    const dir = await makeTree({
+      files: { 'core/skills/_shared/references/protocol.md': 'See `references/notes.md`.\n' },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+
+  it('reads a nested skill’s bare references/ from that skill, not from the top-level directory', async () => {
+    const dir = await makeTree({
+      files: {
+        'core/skills/group/nested/SKILL.md': skill('nested'),
+        'core/skills/group/nested/references/spec.md': '# spec\n',
+        'core/skills/group/nested/references/guide.md': 'See `references/spec.md`.\n',
+      },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+
+  it('reads bare references/ from the skills root when the root itself holds a SKILL.md', async () => {
+    const dir = await makeTree({
+      files: {
+        'core/skills/SKILL.md': skill('root'),
+        'core/skills/references/notes.md': '# notes\n',
+        'core/skills/references/guide.md': 'See `references/notes.md`.\n',
+      },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+
+  it('rejects a reference that resolves to a directory, not a file', async () => {
+    const dir = await makeTree({
+      files: {
+        'core/skills/demo/SKILL.md': skill('demo', 'See `references/spec.md`.'),
+        'core/skills/demo/references/spec.md/.keep': '',
+      },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `stderr=${result.stderr}`);
+    ok(result.stderr.includes('skill-relative reference "references/spec.md" does not resolve'), `stderr=${result.stderr}`);
+  });
+
+  it('reads a bare references/ reference in a file directly under the skills root from the root', async () => {
+    const dir = await makeTree({
+      files: {
+        'core/skills/README.md': 'See `references/index.md`.\n',
+        'core/skills/references/index.md': '# index\n',
+      },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+
+  it('reads a bare references/ reference in _shared/ from _shared/, not from another skill', async () => {
+    // The shape fixed in designer and founder orchestration.md: a shared
+    // reference naming investigate's file as a bare `references/…`.
+    const dir = await makeTree({
+      files: {
+        'core/skills/demo/references/brief.md': '# brief\n',
+        'core/skills/_shared/references/protocol.md': 'See `references/brief.md`.\n',
+      },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `stderr=${result.stderr}`);
+    ok(result.stderr.includes('skill-relative reference "references/brief.md" does not resolve'), `stderr=${result.stderr}`);
   });
 
   it('skips an outbound reference when the repository layout is absent (limit 2)', async () => {
