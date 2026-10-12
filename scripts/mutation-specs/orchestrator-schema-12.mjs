@@ -129,7 +129,7 @@ export const MUTATIONS = [
   // ---- P: plan-set ---------------------------------------------------------------
   {
     id: 'P1', file: STATE, tests: [T12],
-    from: '    resetPlanApproval(frontmatter, workflowPath, nowIso, { conflict });\n    validateSchema12Fields(frontmatter);\n',
+    from: '    resetPlanApproval(frontmatter, workflowPath, nowIso, { conflict, runId });\n    validateSchema12Fields(frontmatter);\n',
     to: '',
     why: 'a plan write keeps the earlier approval',
   },
@@ -188,8 +188,8 @@ export const MUTATIONS = [
       });
       tools.applyEdit(copy, {
         file: STATE,
-        from: '      { lockPath, token },\n    );\n    return { frontmatter, workflowPath };\n  });\n}\n\n/**\n * ADR-0063 D6 — the owner approves',
-        to: '      null,\n    );\n    return { frontmatter, workflowPath };\n  });\n}\n\n/**\n * ADR-0063 D6 — the owner approves',
+        from: '      { lockPath, token },\n    );\n    const retired = runId === undefined',
+        to: '      null,\n    );\n    const retired = runId === undefined',
       });
     },
     why: 'awaiting-owner-clear writes without the macro lock',
@@ -292,9 +292,11 @@ export const MUTATIONS = [
   },
 
   // ---- R: the runbooks -------------------------------------------------------------
+  // R1 drops --run-id with --verdict: plan-set refuses a run id without the
+  // conflict verdict, so a kept --run-id would turn the defect into a refusal.
   {
     id: 'R1', file: PLAN_MD, tests: [TRB],
-    from: '  --verdict "$VERDICT" \\\n  --event updated\n',
+    from: '  --verdict "$VERDICT" --run-id "$PLAN_RUN_ID" \\\n  --event updated\n',
     to: '  --event updated\n',
     why: '/orchestrator:plan writes a disputed plan with the plan-approval gate, so it is approvable',
   },
@@ -341,8 +343,8 @@ export const MUTATIONS = [
       });
       tools.applyEdit(copy, {
         file: STATE,
-        from: "  'awaiting_owner_pointer',\n];",
-        to: "  'awaiting_owner_pointer',\n  'terminal_marker',\n];",
+        from: "  'awaiting_owner_run_id',\n];",
+        to: "  'awaiting_owner_run_id',\n  'terminal_marker',\n];",
       });
     },
     why: 'the 1.2 keys are not at the tail, so every 1.1 reader write reorders them',
