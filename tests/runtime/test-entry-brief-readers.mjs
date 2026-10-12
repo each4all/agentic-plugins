@@ -1,11 +1,13 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, rejects, strictEqual } from 'node:assert/strict';
-import { mkdir, mkdtemp, symlink, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
   ENTRY_READER_CAPS,
+  ENTRY_READER_IO,
+  ENTRY_READER_REASON_CODES,
   MACRO_WORKFLOW_ID_RE,
   PERSONA_WORKFLOW_ID_RE,
   collectEntrySources,
@@ -13,10 +15,13 @@ import {
   linkageToken,
   readContextLedgerSource,
   readEntryCaptureSource,
+  readFrontmatterHead,
   readHandoffSlotSource,
   readMacroSources,
   readOpenConsensusSource,
   readPersonaWorkflowSource,
+  skippedSourcesOf,
+  splitFrontmatterLines,
 } from '../../plugins/runtime/scripts/lib/entry-brief-readers.mjs';
 
 // ADR-0045 §2.1/§3 — macro S7a-brief-readers. The bounded, versioned, tolerant
@@ -283,26 +288,46 @@ describe('entry-brief readers — persona workflow source', () => {
     strictEqual(result.active, null);
   });
 
-  it('degrades to indeterminate on unparseable files, oversize, and symlink', async () => {
-    const cases = [];
-    {
-      const root = await makeRepo();
-      await writeWorkflowFile(root, { persona: 'engineer', file: 'a.md', body: 'no frontmatter at all' });
-      cases.push(await readPersonaWorkflowSource({ repoRoot: root, persona: 'engineer', branch: 'feat/x' }));
+  it('degrades on an unparseable file, and reads a long body and an in-home link (C124, C122)', async () => {
+    const unparseable = await makeRepo();
+    await writeWorkflowFile(unparseable, { persona: 'engineer', file: 'a.md', body: 'no frontmatter at all' });
+    const bad = await readPersonaWorkflowSource({ repoRoot: unparseable, persona: 'engineer', branch: 'feat/x' });
+    deepStrictEqual([bad.status, bad.reason], ['indeterminate', 'unparseable-workflow-frontmatter']);
+
+    // The body is never read: its size is no reason to refuse the workflow.
+    const long = await makeRepo();
+    const big = personaFm({ branch: 'feat/x' }) + '#'.repeat(4 * ENTRY_READER_CAPS.MAX_FRONTMATTER_BYTES);
+    await writeWorkflowFile(long, { persona: 'engineer', file: 'a.md', body: big });
+    const read = await readPersonaWorkflowSource({ repoRoot: long, persona: 'engineer', branch: 'feat/x' });
+    strictEqual(read.status, 'ok');
+    strictEqual(read.active.workflow_id, 'compose-20260719T090000Z-abc123');
+
+    // A link to a workflow file in its own home is that file, counted once,
+    // its pointer under the plain name whichever the listing yields first.
+    const linked = await makeRepo();
+    const real = await writeWorkflowFile(linked, { persona: 'engineer', file: 'real.md', body: personaFm({ branch: 'feat/x' }) });
+    await symlink(real, join(personaHome(linked, 'engineer'), 'workflows', 'link.md'));
+    for (const first of ['link.md', 'real.md']) {
+      const io = {
+        ...ENTRY_READER_IO,
+        listDir: async (dir, caps) => {
+          const listing = await ENTRY_READER_IO.listDir(dir, caps);
+          if (listing.state !== 'ok') return listing;
+          return { ...listing, entries: [...listing.entries].sort((a, b) => (a.name === first ? -1 : b.name === first ? 1 : 0)) };
+        },
+      };
+      const once = await readPersonaWorkflowSource({ repoRoot: linked, persona: 'engineer', branch: 'feat/x', io });
+      strictEqual(once.status, 'ok', `listed ${first} first`);
+      strictEqual(once.active.pointer, '.agentic-plugins/state/engineer/workflows/real.md', `listed ${first} first`);
     }
-    {
-      const root = await makeRepo();
-      const big = personaFm({ branch: 'feat/x' }) + '#'.repeat(ENTRY_READER_CAPS.MAX_FILE_BYTES + 1);
-      await writeWorkflowFile(root, { persona: 'engineer', file: 'a.md', body: big });
-      cases.push(await readPersonaWorkflowSource({ repoRoot: root, persona: 'engineer', branch: 'feat/x' }));
-    }
-    {
-      const root = await makeRepo();
-      const real = await writeWorkflowFile(root, { persona: 'engineer', file: 'real.md', body: personaFm({ branch: 'feat/x' }) });
-      await symlink(real, join(personaHome(root, 'engineer'), 'workflows', 'link.md'));
-      cases.push(await readPersonaWorkflowSource({ repoRoot: root, persona: 'engineer', branch: 'feat/x' }));
-    }
-    for (const result of cases) strictEqual(result.status, 'indeterminate');
+  });
+
+  it('refuses a frontmatter whose close does not end within the bound, named', async () => {
+    const root = await makeRepo();
+    const padded = personaFm({ branch: 'feat/x' }).replace('tasks: []', `tasks: []\npad: "${'p'.repeat(ENTRY_READER_CAPS.MAX_FRONTMATTER_BYTES)}"`);
+    await writeWorkflowFile(root, { persona: 'engineer', file: 'a.md', body: padded });
+    const result = await readPersonaWorkflowSource({ repoRoot: root, persona: 'engineer', branch: 'feat/x' });
+    deepStrictEqual([result.status, result.reason], ['indeterminate', 'frontmatter-over-read-bound']);
   });
 
   it('rejects unsupported schema on the MATCHING branch without quoting the stored value', async () => {
@@ -503,6 +528,16 @@ describe('entry-brief readers — macro sources', () => {
     strictEqual(result.status, 'ok');
     strictEqual(result.active_on_branch.workflow_id, 'macro-plan-20260718T111223Z-ccc3c7');
     strictEqual(result.bridge, null);
+  });
+
+  it('reads an active macro and a different macro bridging the same branch as no pair', async () => {
+    const root = await makeRepo();
+    await writeWorkflowFile(root, { persona: 'orchestrator', file: 'own.md', body: macroFm({ branch: 'feat/entry-brief-readers', subtasks: [] }) });
+    await writeWorkflowFile(root, { persona: 'orchestrator', file: 'parent.md', body: macroFm({ id: 'macro-plan-20260701T000000Z-ddd444', subtasks: SUBS }) });
+    const result = await readMacroSources({ repoRoot: root, branch: 'feat/entry-brief-readers' });
+    strictEqual(result.status, 'ok');
+    strictEqual(result.active_on_branch.workflow_id, 'macro-plan-20260718T111223Z-ccc3c7');
+    strictEqual(result.bridge.macro_id, 'macro-plan-20260701T000000Z-ddd444');
   });
 
   it('degrades to indeterminate when two macros reference the same subtask branch', async () => {
@@ -819,10 +854,642 @@ describe('entry-brief readers — id patterns and caps', () => {
     deepStrictEqual(ENTRY_READER_CAPS, Object.freeze({
       MAX_DIR_ENTRIES: 128,
       MAX_FILE_BYTES: 256 * 1024,
+      MAX_FRONTMATTER_BYTES: 256 * 1024,
+      FRONTMATTER_CHUNK_BYTES: 8 * 1024,
       MAX_HOME_TOTAL_BYTES: 2 * 1024 * 1024,
       MAX_SCAN_ATTEMPTS: 3,
       HANDOFF_FRESHNESS_MS: 10 * 60 * 1000,
       FUTURE_SKEW_MS: 60 * 1000,
     }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C124 — a workflow `.md` is read only as far as its frontmatter closes.
+
+// A handle over `bytes` that returns at most `maxRead` bytes per read, as a
+// short read from a pipe or a network filesystem would.
+function fakeHandle(bytes, { maxRead = Infinity } = {}) {
+  const reads = [];
+  return {
+    reads,
+    async read(buffer, offset, length, position) {
+      const n = Math.max(0, Math.min(length, maxRead, bytes.length - position));
+      bytes.copy(buffer, offset, position, position + n);
+      reads.push(n);
+      return { bytesRead: n, buffer };
+    },
+  };
+}
+
+const TINY = { ...ENTRY_READER_CAPS, MAX_FRONTMATTER_BYTES: 64, FRONTMATTER_CHUNK_BYTES: 4 };
+
+// A frontmatter of exactly `total` bytes through the end of its close (`tail`
+// is the close's line ending: '\n', '\r\n', or '' for a close at the end of
+// the file).
+function exactFrontmatter(total, tail = '\n') {
+  const fixed = '---\nk: ""\n---'.length + tail.length;
+  return `---\nk: "${'x'.repeat(total - fixed)}"\n---${tail}`;
+}
+
+async function head(text, caps = TINY, options = {}) {
+  return readFrontmatterHead(fakeHandle(Buffer.from(text), options), caps);
+}
+
+describe('entry-brief readers — frontmatter-only reads (C124)', () => {
+  it('finds a close split across reads, LF and CRLF, whatever the read size', async () => {
+    for (const eol of ['\n', '\r\n']) {
+      const text = ['---', 'k: "v"', '---', 'body body body'].join(eol);
+      const through = ['---', 'k: "v"', '---', ''].join(eol);
+      for (const maxRead of [1, 2, 3, Infinity]) {
+        const result = await head(text, TINY, { maxRead });
+        deepStrictEqual([result.state, result.text], ['ok', through], `eol=${JSON.stringify(eol)} maxRead=${maxRead}`);
+      }
+    }
+  });
+
+  it('accepts a close ending exactly at the bound and refuses one ending a byte past it', async () => {
+    const max = TINY.MAX_FRONTMATTER_BYTES;
+    strictEqual((await head(`${exactFrontmatter(max)}body`)).state, 'ok');
+    deepStrictEqual(
+      [(await head(`${exactFrontmatter(max + 1)}body`)).state, (await head(`${exactFrontmatter(max + 1)}body`)).reason],
+      ['refused', 'frontmatter-over-read-bound'],
+    );
+    // CRLF: the terminator's LF is the byte past the bound.
+    strictEqual((await head(`${exactFrontmatter(max, '\r\n')}body`)).state, 'ok');
+    strictEqual((await head(`${exactFrontmatter(max + 1, '\r\n')}body`)).state, 'refused');
+    // A close at the end of a file exactly the bound long, and one a byte longer.
+    strictEqual((await head(exactFrontmatter(max, ''))).state, 'ok');
+    strictEqual((await head(exactFrontmatter(max + 1, ''))).state, 'refused');
+    // An unterminated frontmatter longer than the bound is over the bound.
+    strictEqual((await head(`---\nk: "${'x'.repeat(2 * max)}"\n`)).reason, 'frontmatter-over-read-bound');
+  });
+
+  it('reads on after a short read: only a read of 0 bytes ends the file', async () => {
+    const text = `${exactFrontmatter(40)}body`;
+    const handle = fakeHandle(Buffer.from(text), { maxRead: 1 });
+    const result = await readFrontmatterHead(handle, TINY);
+    deepStrictEqual([result.state, result.text], ['ok', exactFrontmatter(40)]);
+    ok(handle.reads.length >= 40 && handle.reads.every((n) => n <= 1));
+  });
+
+  it('decodes a character split across reads whole', async () => {
+    const text = '---\nbranch: "feat/한글-ü"\n---\nbody';
+    for (const maxRead of [1, 2, 5]) {
+      const result = await head(text, TINY, { maxRead });
+      deepStrictEqual(splitFrontmatterLines(result.text), ['branch: "feat/한글-ü"']);
+    }
+  });
+
+  it('keeps the line semantics of the whole-file split: an empty frontmatter, an unterminated one, none', async () => {
+    deepStrictEqual(splitFrontmatterLines((await head('---\n---\nbody ---')).text), []);
+    for (const text of ['---\nk: v\n', 'k: v\n---\n', '---', '---\nk\n---\r', '', '﻿---\n---\n']) {
+      strictEqual((await head(text)).state, 'unparseable', JSON.stringify(text));
+    }
+  });
+
+  it('reads the lines the whole-file split reads, for every text and read size (differential)', async () => {
+    const texts = [
+      '---\nk: 1\n---\nbody', '---\r\nk: 1\r\n---\r\nbody', '---\nk: 1\n---\r\nbody', '---\nk: 1\n---',
+      '---\n----\nk\n---\n', '---\nk\n---x\n---\n', '---\nk\n ---\n---\n', '---\nk\n---\rX\n---\n',
+      '---\n---', '---\r\n---\r\n', '--- \n---\n', 'x\n---\n---\n', '---\nk\n', '---\r\r\nk\n---\n',
+      '---\na\n---\nb\n---\n', `---\n${'z'.repeat(70)}\n---\n`,
+    ];
+    for (const text of texts) {
+      for (const maxRead of [1, 3, Infinity]) {
+        const result = await head(text, { ...TINY, MAX_FRONTMATTER_BYTES: 1024 }, { maxRead });
+        const lines = result.state === 'ok' ? splitFrontmatterLines(result.text) : null;
+        deepStrictEqual(lines, splitFrontmatterLines(text), `${JSON.stringify(text)} maxRead=${maxRead}`);
+      }
+    }
+  });
+
+  it('reads no further into a long body than the chunk the close lies in', async () => {
+    const text = personaFm({ branch: 'feat/x' }) + '#'.repeat(1024 * 1024);
+    const handle = fakeHandle(Buffer.from(text));
+    const result = await readFrontmatterHead(handle);
+    strictEqual(result.state, 'ok');
+    strictEqual(result.bytes, ENTRY_READER_CAPS.FRONTMATTER_CHUNK_BYTES);
+  });
+
+  it('charges the home budget with bytes read: a file reached again through a link costs nothing', async () => {
+    const root = await makeRepo();
+    const body = personaFm({ branch: 'feat/x' });
+    const real = await writeWorkflowFile(root, { persona: 'engineer', file: 'real.md', body });
+    await symlink(real, join(personaHome(root, 'engineer'), 'workflows', 'alias.md'));
+    const caps = { ...ENTRY_READER_CAPS, MAX_HOME_TOTAL_BYTES: Buffer.byteLength(body) + 1 };
+    const result = await readPersonaWorkflowSource({ repoRoot: root, persona: 'engineer', branch: 'feat/x', caps });
+    strictEqual(result.status, 'ok');
+  });
+
+  it('charges what the reads took, not the frontmatter kept: a chunk read past the close counts', async () => {
+    const root = await makeRepo();
+    const fm = personaFm({ branch: 'feat/x' });
+    await writeWorkflowFile(root, { persona: 'engineer', file: 'a.md', body: fm + '#'.repeat(4 * ENTRY_READER_CAPS.FRONTMATTER_CHUNK_BYTES) });
+    const frontmatterBytes = Buffer.byteLength(fm) - Buffer.byteLength('\nbody');
+    const caps = { ...ENTRY_READER_CAPS, MAX_HOME_TOTAL_BYTES: frontmatterBytes + 64 };
+    ok(caps.MAX_HOME_TOTAL_BYTES < ENTRY_READER_CAPS.FRONTMATTER_CHUNK_BYTES, 'the first read alone exceeds the budget');
+    const result = await readPersonaWorkflowSource({ repoRoot: root, persona: 'engineer', branch: 'feat/x', caps });
+    deepStrictEqual([result.status, result.reason], ['indeterminate', 'read-budget-exceeded']);
+  });
+
+  it('reads a file again on a relist when it was rewritten in place since its first read', async () => {
+    const root = await makeRepo();
+    const file = await writeWorkflowFile(root, { persona: 'engineer', file: 'a.md', body: personaFm({ branch: 'feat/x', terminalLine: 'terminal_marker: false' }) });
+    let listings = 0;
+    const io = {
+      ...ENTRY_READER_IO,
+      listDir: async (dir, caps) => {
+        const listing = await ENTRY_READER_IO.listDir(dir, caps);
+        if (listing.state !== 'ok') return listing;
+        listings++;
+        if (listings === 2) {
+          // The same inode, rewritten, with a later mtime.
+          await writeFile(file, personaFm({ branch: 'feat/x', terminalLine: 'terminal_marker: true' }));
+          await utimes(file, new Date(T0 + 5_000), new Date(T0 + 5_000));
+        }
+        return { ...listing, entries: listings === 1 ? [{ name: 'a.md' }, { name: 'gone.md' }] : [{ name: 'a.md' }] };
+      },
+    };
+    await utimes(file, new Date(T0), new Date(T0));
+    const result = await readPersonaWorkflowSource({ repoRoot: root, persona: 'engineer', branch: 'feat/x', io });
+    strictEqual(listings, 2);
+    strictEqual(result.status, 'ok');
+    strictEqual(result.active.terminal_marker, true, 'the relist read the rewritten file, not the first read');
+  });
+
+  it('keeps one budget across the listings of a directory: a relist does not reset it (codex review MINOR)', async () => {
+    const root = await makeRepo();
+    const bodies = {
+      'a.md': personaFm({ id: 'compose-20260719T010000Z-aaa111', branch: 'other' }),
+      'b.md': personaFm({ id: 'compose-20260719T020000Z-bbb222', branch: 'other' }),
+      'd.md': personaFm({ id: 'compose-20260719T030000Z-ddd444', branch: 'feat/x' }),
+    };
+    for (const [file, body] of Object.entries(bodies)) await writeWorkflowFile(root, { persona: 'engineer', file, body });
+    const total = Object.values(bodies).reduce((sum, body) => sum + Buffer.byteLength(body), 0);
+    // The first listing names a.md, b.md and a file that is gone by its read;
+    // the second names a.md, b.md and d.md. Each listing alone fits.
+    let listings = 0;
+    const io = {
+      ...ENTRY_READER_IO,
+      listDir: async (dir, caps) => {
+        const listing = await ENTRY_READER_IO.listDir(dir, caps);
+        if (listing.state !== 'ok') return listing;
+        listings++;
+        const names = listings === 1 ? ['a.md', 'b.md', 'gone.md'] : ['a.md', 'b.md', 'd.md'];
+        return { ...listing, entries: names.map((name) => ({ name })) };
+      },
+    };
+    const fits = await readPersonaWorkflowSource({ repoRoot: root, persona: 'engineer', branch: 'feat/x', io, caps: { ...ENTRY_READER_CAPS, MAX_HOME_TOTAL_BYTES: total } });
+    strictEqual(fits.status, 'ok', 'control: the three files fit the budget');
+    strictEqual(fits.active.workflow_id, 'compose-20260719T030000Z-ddd444');
+    listings = 0;
+    const over = await readPersonaWorkflowSource({ repoRoot: root, persona: 'engineer', branch: 'feat/x', io, caps: { ...ENTRY_READER_CAPS, MAX_HOME_TOTAL_BYTES: total - 1 } });
+    deepStrictEqual([over.status, over.reason], ['indeterminate', 'read-budget-exceeded']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C122 — a link is followed only into a home of its persona in the read set.
+
+async function outsideFile(body) {
+  const dir = await mkdtemp(join(tmpdir(), 'entry-brief-outside-'));
+  const path = join(dir, 'outside.md');
+  await writeFile(path, body);
+  return path;
+}
+
+const OUTSIDE_ID = 'frame-20260719T080000Z-0ff51d';
+
+describe('entry-brief readers — workflow links and homes (C122)', () => {
+  it('refuses a link out of the state homes, named, and quotes nothing of what it names', async () => {
+    const root = await makeRepo();
+    await writeWorkflowFile(root, { persona: 'engineer', file: 'a.md', body: personaFm({ branch: 'feat/other' }) });
+    const target = await outsideFile(personaFm({ id: OUTSIDE_ID, branch: 'feat/x' }));
+    await symlink(target, join(personaHome(root, 'engineer'), 'workflows', 'out.md'));
+    // Judged before the open: what lies outside is never opened (a device
+    // or a FIFO there is not this reader's to touch).
+    const opened = [];
+    const io = { ...ENTRY_READER_IO, openReadOnly: async (path) => { opened.push(path); return ENTRY_READER_IO.openReadOnly(path); } };
+    const result = await readPersonaWorkflowSource({ repoRoot: root, persona: 'engineer', branch: 'feat/x', io });
+    deepStrictEqual([result.status, result.reason], ['indeterminate', 'symlink-outside-state']);
+    ok(!JSON.stringify(result).includes(OUTSIDE_ID));
+    ok(!opened.includes(await ENTRY_READER_IO.realpath(target)), 'the outside file was opened');
+  });
+
+  it('refuses a link into another persona\'s home, and a workflows directory linked out of its home', async () => {
+    const intoFounder = await makeRepo();
+    const founderFile = await writeWorkflowFile(intoFounder, { persona: 'founder', file: 'f.md', body: personaFm({ persona: 'founder', branch: 'feat/x' }) });
+    await mkdir(join(personaHome(intoFounder, 'engineer'), 'workflows'), { recursive: true });
+    await symlink(founderFile, join(personaHome(intoFounder, 'engineer'), 'workflows', 'f.md'));
+    const engineer = await readPersonaWorkflowSource({ repoRoot: intoFounder, persona: 'engineer', branch: 'feat/x' });
+    deepStrictEqual([engineer.status, engineer.reason], ['indeterminate', 'symlink-outside-state']);
+    strictEqual((await readPersonaWorkflowSource({ repoRoot: intoFounder, persona: 'founder', branch: 'feat/x' })).status, 'ok');
+
+    const linkedDir = await makeRepo();
+    const elsewhere = await mkdtemp(join(tmpdir(), 'entry-brief-elsewhere-'));
+    await writeFile(join(elsewhere, 'a.md'), personaFm({ branch: 'feat/x' }));
+    await mkdir(personaHome(linkedDir, 'engineer'), { recursive: true });
+    await symlink(elsewhere, join(personaHome(linkedDir, 'engineer'), 'workflows'));
+    const dir = await readPersonaWorkflowSource({ repoRoot: linkedDir, persona: 'engineer', branch: 'feat/x' });
+    deepStrictEqual([dir.status, dir.reason], ['indeterminate', 'symlink-outside-state']);
+  });
+
+  it('accepts a home that is itself a link (the lanes layout), its pointer spelled under the home', async () => {
+    const root = await makeRepo();
+    const target = await mkdtemp(join(tmpdir(), 'entry-brief-home-'));
+    await mkdir(join(target, 'workflows'));
+    await writeFile(join(target, 'workflows', 'a.md'), personaFm({ branch: 'feat/x' }));
+    await mkdir(join(root, '.agentic-plugins', 'state'), { recursive: true });
+    await symlink(target, personaHome(root, 'engineer'));
+    const result = await readPersonaWorkflowSource({ repoRoot: root, persona: 'engineer', branch: 'feat/x' });
+    strictEqual(result.status, 'ok');
+    strictEqual(result.active.pointer, '.agentic-plugins/state/engineer/workflows/a.md');
+  });
+
+  it('refuses a home that is another persona\'s home, for both personas', async () => {
+    const root = await makeRepo();
+    await writeWorkflowFile(root, { persona: 'founder', file: 'f.md', body: personaFm({ persona: 'founder', branch: 'feat/x' }) });
+    await symlink(personaHome(root, 'founder'), personaHome(root, 'designer'));
+    for (const persona of ['designer', 'founder']) {
+      const result = await readPersonaWorkflowSource({ repoRoot: root, persona, branch: 'feat/x' });
+      deepStrictEqual([result.status, result.reason], ['indeterminate', 'home-aliases-other-persona'], persona);
+    }
+  });
+
+  it('degrades on a home that exists and cannot be resolved (a link loop, a refused lookup), named', async () => {
+    const loop = await makeRepo();
+    await mkdir(join(loop, '.agentic-plugins', 'state'), { recursive: true });
+    await symlink(personaHome(loop, 'engineer'), personaHome(loop, 'engineer'));
+    const looped = await readPersonaWorkflowSource({ repoRoot: loop, persona: 'engineer', branch: 'feat/x' });
+    deepStrictEqual([looped.status, looped.reason], ['indeterminate', 'home-unresolvable']);
+
+    // The home's path refused, and a directory above it refused.
+    const denied = await makeRepo();
+    await writeWorkflowFile(denied, { persona: 'engineer', file: 'a.md', body: personaFm({ branch: 'feat/x' }) });
+    const deniedHome = personaHome(denied, 'engineer');
+    const deniedParent = join(await realpath(denied), '.agentic-plugins');
+    const refuse = () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); };
+    for (const io of [
+      { ...ENTRY_READER_IO, realpath: async (path) => (path === deniedHome ? refuse() : ENTRY_READER_IO.realpath(path)) },
+      { ...ENTRY_READER_IO, lstat: async (path, options) => (path === deniedParent ? refuse() : ENTRY_READER_IO.lstat(path, options)) },
+    ]) {
+      const result = await readPersonaWorkflowSource({ repoRoot: denied, persona: 'engineer', branch: 'feat/x', io });
+      deepStrictEqual([result.status, result.reason], ['indeterminate', 'home-unresolvable']);
+    }
+
+    // A broken `.claude` is the legacy homes' to report: founder has none
+    // (peer verify MINOR).
+    const broken = await makeRepo();
+    await writeWorkflowFile(broken, { persona: 'founder', file: 'f.md', body: personaFm({ persona: 'founder', branch: 'feat/x' }) });
+    await symlink(join(broken, '.claude'), join(broken, '.claude'));
+    strictEqual((await readPersonaWorkflowSource({ repoRoot: broken, persona: 'founder', branch: 'feat/x' })).status, 'ok');
+    const engineer = await readPersonaWorkflowSource({ repoRoot: broken, persona: 'engineer', branch: 'feat/x' });
+    deepStrictEqual([engineer.status, engineer.reason], ['indeterminate', 'home-unresolvable']);
+  });
+
+  it('refuses a home inside another persona\'s home or holding one, in both directions (critique MAJOR)', async () => {
+    // The orchestrator home linked to a directory inside the engineer home:
+    // each reader would take the other's files for its own.
+    const root = await makeRepo();
+    const engineerFile = await writeWorkflowFile(root, { persona: 'engineer', file: 'e.md', body: personaFm({ branch: 'feat/x' }) });
+    const sub = join(personaHome(root, 'engineer'), 'sub');
+    await mkdir(join(sub, 'workflows'), { recursive: true });
+    await symlink(sub, personaHome(root, 'orchestrator'));
+    await symlink(engineerFile, join(sub, 'workflows', 'm.md'));
+    const engineer = await readPersonaWorkflowSource({ repoRoot: root, persona: 'engineer', branch: 'feat/x' });
+    deepStrictEqual([engineer.status, engineer.reason], ['indeterminate', 'home-aliases-other-persona']);
+    const macro = await readMacroSources({ repoRoot: root, branch: 'feat/x' });
+    deepStrictEqual([macro.status, macro.reason], ['indeterminate', 'home-aliases-other-persona']);
+
+    // The engineer legacy home linked to the state directory: it holds the
+    // founder home, and a link in the canonical home reaches a founder file.
+    const holder = await makeRepo();
+    const founderFile = await writeWorkflowFile(holder, { persona: 'founder', file: 'f.md', body: personaFm({ persona: 'founder', branch: 'feat/x' }) });
+    await mkdir(join(personaHome(holder, 'engineer'), 'workflows'), { recursive: true });
+    await symlink(founderFile, join(personaHome(holder, 'engineer'), 'workflows', 'e.md'));
+    await mkdir(join(holder, '.claude'), { recursive: true });
+    await symlink(join(holder, '.agentic-plugins', 'state'), personaHome(holder, 'engineer', 'legacy'));
+    const held = await readPersonaWorkflowSource({ repoRoot: holder, persona: 'engineer', branch: 'feat/x' });
+    deepStrictEqual([held.status, held.reason], ['indeterminate', 'home-aliases-other-persona']);
+    strictEqual((await readPersonaWorkflowSource({ repoRoot: holder, persona: 'founder', branch: 'feat/x' })).reason, 'home-aliases-other-persona');
+  });
+
+  it('refuses a home that holds a state root or its state directory, even with no other home present', async () => {
+    const outside = await outsideFile(personaFm({ id: OUTSIDE_ID, branch: 'feat/x' }));
+    for (const target of [(root) => root, (root) => join(root, '.agentic-plugins', 'state'), () => '/']) {
+      const root = await makeRepo();
+      await mkdir(join(personaHome(root, 'engineer'), 'workflows'), { recursive: true });
+      await symlink(outside, join(personaHome(root, 'engineer'), 'workflows', 'x.md'));
+      await mkdir(join(root, '.claude'), { recursive: true });
+      await symlink(target(root), personaHome(root, 'engineer', 'legacy'));
+      const result = await readPersonaWorkflowSource({ repoRoot: root, persona: 'engineer', branch: 'feat/x' });
+      deepStrictEqual([result.status, result.reason], ['indeterminate', 'home-encloses-state'], target(root));
+      ok(!JSON.stringify(result).includes(OUTSIDE_ID));
+    }
+  });
+
+  it('refuses an entry whose directory the walk cannot describe (fail closed)', async () => {
+    const root = await makeRepo();
+    await writeWorkflowFile(root, { persona: 'engineer', file: 'a.md', body: personaFm({ branch: 'feat/x' }) });
+    const workflows = join(await realpath(personaHome(root, 'engineer')), 'workflows');
+    const io = {
+      ...ENTRY_READER_IO,
+      lstat: async (path, options) => {
+        if (path === workflows && options?.bigint) throw Object.assign(new Error('denied'), { code: 'EACCES' });
+        return ENTRY_READER_IO.lstat(path, options);
+      },
+    };
+    const result = await readPersonaWorkflowSource({ repoRoot: root, persona: 'engineer', branch: 'feat/x', io });
+    deepStrictEqual([result.status, result.reason], ['indeterminate', 'symlink-outside-state']);
+  });
+
+  it('resolves a link\'s identity as the owners do: a case variant of a name is another file to both', async (t) => {
+    const root = await makeRepo();
+    await writeWorkflowFile(root, { persona: 'engineer', file: 'inside.md', body: personaFm({ branch: 'feat/x' }) });
+    const caseInsensitive = await realpath(join(root, '.agentic-plugins', 'state', 'engineer', 'workflows', 'INSIDE.md')).then(() => true, () => false);
+    if (!caseInsensitive) {
+      t.skip('the volume is case-sensitive: no case variant names the file');
+      return;
+    }
+    await symlink(join(personaHome(root, 'engineer'), 'workflows', 'INSIDE.md'), join(personaHome(root, 'engineer'), 'workflows', 'alias.md'));
+    const owner = await import(new URL('../../plugins/engineer/scripts/state.mjs', import.meta.url));
+    await owner.findActiveWorkflowByBranch(root, 'feat/x').then(
+      () => { throw new Error('the engineer owner accepted a case-variant link as the file'); },
+      (error) => ok(/2 workflow files/.test(error.message), error.message),
+    );
+    const result = await readPersonaWorkflowSource({ repoRoot: root, persona: 'engineer', branch: 'feat/x' });
+    deepStrictEqual([result.status, result.reason], ['indeterminate', 'duplicate-active-workflows']);
+  });
+
+  it('skips a link to nothing as gone, as the owners do, and names an entry it cannot stat', async () => {
+    const root = await makeRepo();
+    await writeWorkflowFile(root, { persona: 'engineer', file: 'a.md', body: personaFm({ branch: 'feat/x' }) });
+    await symlink(join(root, 'nowhere.md'), join(personaHome(root, 'engineer'), 'workflows', 'dead.md'));
+    const result = await readPersonaWorkflowSource({ repoRoot: root, persona: 'engineer', branch: 'feat/x' });
+    strictEqual(result.status, 'ok');
+    strictEqual(result.active.workflow_id, 'compose-20260719T090000Z-abc123');
+
+    const io = {
+      ...ENTRY_READER_IO,
+      lstat: async (path) => {
+        if (path.endsWith('a.md')) throw Object.assign(new Error('denied'), { code: 'EACCES' });
+        return ENTRY_READER_IO.lstat(path);
+      },
+    };
+    const denied = await readPersonaWorkflowSource({ repoRoot: root, persona: 'engineer', branch: 'feat/x', io });
+    deepStrictEqual([denied.status, denied.reason], ['indeterminate', 'stat-failed']);
+  });
+
+  it('never yields outside content when a path is swapped between the containment check and the open', async () => {
+    const setup = async () => {
+      const root = await makeRepo();
+      const inside = await writeWorkflowFile(root, { persona: 'engineer', file: 'inside.md', body: personaFm({ branch: 'feat/x' }) });
+      const link = join(personaHome(root, 'engineer'), 'workflows', 'link.md');
+      await symlink(inside, link);
+      const outside = await outsideFile(personaFm({ id: OUTSIDE_ID, branch: 'feat/x' }));
+      return { root, inside, insideReal: await realpath(inside), link, outside };
+    };
+    const swapping = (target, swap) => ({
+      ...ENTRY_READER_IO,
+      openReadOnly: async (path) => {
+        if (path === target.insideReal && !target.swapped) {
+          target.swapped = true;
+          await swap(target);
+        }
+        return ENTRY_READER_IO.openReadOnly(path);
+      },
+    });
+    const read = (t, swap) => readPersonaWorkflowSource({ repoRoot: t.root, persona: 'engineer', branch: 'feat/x', io: swapping(t, swap) });
+
+    // The link re-aimed outside: the checked real path is what is opened.
+    const relinked = await setup();
+    const a = await read(relinked, async (t) => {
+      await symlink(t.outside, `${t.link}.new`);
+      await rename(`${t.link}.new`, t.link);
+    });
+    strictEqual(a.status, 'ok');
+    strictEqual(a.active.workflow_id, 'compose-20260719T090000Z-abc123');
+
+    // The checked file replaced by a link outside: O_NOFOLLOW refuses it.
+    const replaced = await setup();
+    const b = await read(replaced, async (t) => {
+      await symlink(t.outside, `${t.inside}.new`);
+      await rename(`${t.inside}.new`, t.inside);
+    });
+    deepStrictEqual([b.status, b.reason], ['indeterminate', 'symlink-refused']);
+
+    // Its directory swapped for a link outside: the opened file is not the
+    // one checked.
+    const ancestor = await setup();
+    const c = await read(ancestor, async (t) => {
+      const workflows = join(personaHome(t.root, 'engineer'), 'workflows');
+      const decoy = await mkdtemp(join(tmpdir(), 'entry-brief-decoy-'));
+      await writeFile(join(decoy, 'inside.md'), personaFm({ id: OUTSIDE_ID, branch: 'feat/x' }));
+      await rename(workflows, `${workflows}.moved`);
+      await symlink(decoy, workflows);
+    });
+    deepStrictEqual([c.status, c.reason], ['indeterminate', 'workflow-identity-changed']);
+
+    // Its directory swapped for a link outside right after the realpath, so
+    // the file's stat already follows it (one swap, codex review MAJOR): the
+    // containment walk sees the link.
+    const early = await setup();
+    // One entry only: a second name read after the swap would be refused on
+    // its own and hide whether the first was caught.
+    await rm(early.link);
+    const earlyIo = {
+      ...ENTRY_READER_IO,
+      realpath: async (path) => {
+        const real = await ENTRY_READER_IO.realpath(path);
+        if (real === early.insideReal && !early.swapped) {
+          early.swapped = true;
+          const workflows = join(personaHome(early.root, 'engineer'), 'workflows');
+          const decoy = await mkdtemp(join(tmpdir(), 'entry-brief-decoy-'));
+          await writeFile(join(decoy, 'inside.md'), personaFm({ id: OUTSIDE_ID, branch: 'feat/x' }));
+          await rename(workflows, `${workflows}.moved`);
+          await symlink(decoy, workflows);
+        }
+        return real;
+      },
+    };
+    const d = await readPersonaWorkflowSource({ repoRoot: early.root, persona: 'engineer', branch: 'feat/x', io: earlyIo });
+    ok(early.swapped, 'the swap happened');
+    deepStrictEqual([d.status, d.reason], ['indeterminate', 'symlink-outside-state']);
+    for (const result of [a, b, c, d]) ok(!JSON.stringify(result).includes(OUTSIDE_ID));
+  });
+
+  it('judges the path again after the open: one rename that moves the checked file out is refused (critique MAJOR)', async () => {
+    const setup = async () => {
+      const root = await makeRepo();
+      const inside = await writeWorkflowFile(root, { persona: 'engineer', file: 'inside.md', body: personaFm({ branch: 'feat/x' }) });
+      return { root, insideReal: await realpath(inside), workflows: join(personaHome(root, 'engineer'), 'workflows') };
+    };
+    const atOpen = (t, swap, { after = false } = {}) => ({
+      ...ENTRY_READER_IO,
+      openReadOnly: async (path) => {
+        if (path !== t.insideReal || t.swapped) return ENTRY_READER_IO.openReadOnly(path);
+        t.swapped = true;
+        if (after) {
+          const handle = await ENTRY_READER_IO.openReadOnly(path);
+          await swap(t);
+          return handle;
+        }
+        await swap(t);
+        return ENTRY_READER_IO.openReadOnly(path);
+      },
+    });
+    const read = (t, io) => readPersonaWorkflowSource({ repoRoot: t.root, persona: 'engineer', branch: 'feat/x', io });
+
+    // After the walk, before the open: `workflows/` moved out of every home
+    // and a link left in its place, so the open reaches the checked file,
+    // same inode, outside.
+    const moved = await setup();
+    const a = await read(moved, atOpen(moved, async (t) => {
+      const away = join(await mkdtemp(join(tmpdir(), 'entry-brief-away-')), 'workflows');
+      await rename(t.workflows, away);
+      await symlink(away, t.workflows);
+    }));
+    ok(moved.swapped, 'the swap happened');
+    deepStrictEqual([a.status, a.reason], ['indeterminate', 'symlink-outside-state']);
+
+    // After the open: another file renamed over the checked name, so the
+    // path no longer names the file the handle holds.
+    const replaced = await setup();
+    const b = await read(replaced, atOpen(replaced, async (t) => {
+      await writeFile(`${t.insideReal}.new`, personaFm({ id: OUTSIDE_ID, branch: 'feat/x' }));
+      await rename(`${t.insideReal}.new`, t.insideReal);
+    }, { after: true }));
+    ok(replaced.swapped, 'the swap happened');
+    deepStrictEqual([b.status, b.reason], ['indeterminate', 'workflow-identity-changed']);
+
+    // During the second walk, after it has passed `workflows/` (peer verify):
+    // the handle already holds the checked file, so a rename can only move it
+    // (read where it lies, the checked file still), and another file put in
+    // its place through a link fails the final identity check.
+    const duringWalk = async (swap) => {
+      const t = await setup();
+      const workflowsReal = await realpath(t.workflows);
+      let opened = false;
+      const io = {
+        ...ENTRY_READER_IO,
+        openReadOnly: async (path) => {
+          if (path === t.insideReal) opened = true;
+          return ENTRY_READER_IO.openReadOnly(path);
+        },
+        lstat: async (path, options) => {
+          const st = await ENTRY_READER_IO.lstat(path, options);
+          if (opened && !t.swapped && path === workflowsReal && options?.bigint) {
+            t.swapped = true;
+            await swap(t);
+          }
+          return st;
+        },
+      };
+      const result = await read(t, io);
+      ok(t.swapped, 'the swap happened');
+      return result;
+    };
+    const movedDuring = await duringWalk(async (t) => {
+      const away = join(await mkdtemp(join(tmpdir(), 'entry-brief-away-')), 'workflows');
+      await rename(t.workflows, away);
+      await symlink(away, t.workflows);
+    });
+    deepStrictEqual([movedDuring.status, movedDuring.active?.workflow_id], ['ok', 'compose-20260719T090000Z-abc123']);
+    const decoyDuring = await duringWalk(async (t) => {
+      const decoy = await mkdtemp(join(tmpdir(), 'entry-brief-decoy-'));
+      await writeFile(join(decoy, 'inside.md'), personaFm({ id: OUTSIDE_ID, branch: 'feat/x' }));
+      await rename(t.workflows, `${t.workflows}.moved`);
+      await symlink(decoy, t.workflows);
+    });
+    deepStrictEqual([decoyDuring.status, decoyDuring.reason], ['indeterminate', 'workflow-identity-changed']);
+    for (const result of [a, b, movedDuring, decoyDuring]) ok(!JSON.stringify(result).includes(OUTSIDE_ID));
+  });
+
+  it('compares identities as bigints: two inodes past 2^53 that round alike are two files', async () => {
+    const root = await makeRepo();
+    const file = await writeWorkflowFile(root, { persona: 'engineer', file: 'a.md', body: personaFm({ branch: 'feat/x' }) });
+    const real = await realpath(file);
+    const big = 2n ** 53n;
+    strictEqual(Number(big + 1n), Number(big), 'the fixture is two inodes a Number cannot tell apart');
+    // The fake honors the options: asked without bigint, it answers with
+    // Numbers, as Node does, so the reader must ask for bigints.
+    const inode = (value, options) => (options?.bigint ? value : Number(value));
+    const io = {
+      ...ENTRY_READER_IO,
+      stat: async (path, options) => {
+        const st = await ENTRY_READER_IO.stat(path, options);
+        return path === real ? { dev: st.dev, ino: inode(big + 1n, options), isFile: () => true } : st;
+      },
+      // After the open the path names the opened inode, so only the checked
+      // and opened identities differ (peer verify: a real inode here hid a
+      // Number comparison behind a different mismatch).
+      lstat: async (path, options) => {
+        const st = await ENTRY_READER_IO.lstat(path, options);
+        return path === real ? { dev: st.dev, ino: inode(big, options), isSymbolicLink: () => false } : st;
+      },
+      openReadOnly: async (path) => {
+        const handle = await ENTRY_READER_IO.openReadOnly(path);
+        return {
+          stat: async (options) => {
+            const st = await handle.stat(options);
+            return { dev: st.dev, ino: inode(big, options), isFile: () => st.isFile() };
+          },
+          read: (...args) => handle.read(...args),
+          close: () => handle.close(),
+        };
+      },
+    };
+    const result = await readPersonaWorkflowSource({ repoRoot: root, persona: 'engineer', branch: 'feat/x', io });
+    deepStrictEqual([result.status, result.reason], ['indeterminate', 'workflow-identity-changed']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('entry-brief readers — skipped sources and the reason registry', () => {
+  it('names every reason the source degrades with in the registry, and every registry code in use', async () => {
+    const source = await readFile(new URL('../../plugins/runtime/scripts/lib/entry-brief-readers.mjs', import.meta.url), 'utf8');
+    const found = new Set();
+    for (const call of source.matchAll(/indeterminate\(\s*\w+\s*,([^)]*)\)/g)) {
+      for (const quoted of call[1].matchAll(/'([a-z0-9]+(?:-[a-z0-9]+)+)'/g)) found.add(quoted[1]);
+    }
+    for (const field of source.matchAll(/reason:\s*'([a-z0-9-]+)'/g)) found.add(field[1]);
+    ok(found.size >= 30, `the extraction found ${found.size} codes`);
+    for (const code of found) ok(ENTRY_READER_REASON_CODES.has(code), `${code} is outside the registry`);
+    for (const code of ENTRY_READER_REASON_CODES) {
+      ok(source.split(`'${code}'`).length - 1 >= 2, `${code} is in the registry and never used`);
+    }
+  });
+
+  it('carries each degraded source with its name and reason through the collector', async () => {
+    const root = await makeRepo();
+    const target = await outsideFile(personaFm({ branch: 'feat/x' }));
+    await mkdir(join(personaHome(root, 'engineer'), 'workflows'), { recursive: true });
+    await symlink(target, join(personaHome(root, 'engineer'), 'workflows', 'out.md'));
+    await writeSlot(root, 'founder', slotProjection({ workflow_kind: 'designer' }), { mtimeMs: T0 - 60_000 });
+    await writeEntryCapture(root, entryDoc({ origin: 'not-a-hook' }));
+    const result = await collectEntrySources({ repoRoot: root, branchProbe: () => 'feat/x', now: T0 });
+    deepStrictEqual(result.skipped_sources, [
+      { source: 'persona-workflow', kind: 'engineer', reason: 'symlink-outside-state' },
+      { source: 'handoff-slot', kind: 'founder', reason: 'slot-kind-mismatch' },
+      { source: 'entry-capture', kind: null, reason: 'entry-validation-failed' },
+    ]);
+    strictEqual(result.sources_skipped, 3);
+  });
+
+  it('lists the sources in fixed order and withholds a reason outside the registry', () => {
+    const sources = {
+      personas: { designer: { status: 'indeterminate', reason: 'scan-overflow' }, engineer: { status: 'ok' } },
+      macro: { status: 'indeterminate', reason: `made-up ${IMPERATIVE}` },
+      handoff_slots: { orchestrator: { status: 'indeterminate', reason: 'marker-malformed' } },
+      consensus_open: { status: 'indeterminate', reason: 'unreadable-directory' },
+    };
+    deepStrictEqual(skippedSourcesOf(sources), [
+      { source: 'persona-workflow', kind: 'designer', reason: 'scan-overflow' },
+      { source: 'macro', kind: 'orchestrator', reason: null },
+      { source: 'handoff-slot', kind: 'orchestrator', reason: 'marker-malformed' },
+      { source: 'consensus-open', kind: null, reason: 'unreadable-directory' },
+    ]);
   });
 });

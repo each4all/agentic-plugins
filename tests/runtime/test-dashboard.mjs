@@ -709,6 +709,20 @@ describe('runtime dashboard entry advisory (ADR-0045 §7(ii))', () => {
     assert.ok(!JSON.stringify(report.tier1.entry_advisory).includes('IMPERATIVE'), 'stored free text must not reach the advisory report');
   });
 
+  it('lists each skipped source of the brief with its reason', async () => {
+    const root = makeAdvisoryRepo();
+    const home = makeHome();
+    // A designer home whose `workflows` is a regular file: that source degrades.
+    writeFileDeep(path.join(root, '.agentic-plugins', 'state', 'designer', 'workflows'), 'not a directory');
+    const report = await buildDashboardReport({ repoRoot: root, homeDir: home, entryAdvisory: { host: 'claude' } });
+    assert.deepEqual(report.tier1.entry_advisory.brief.skipped_sources, [
+      { source: 'persona-workflow', kind: 'designer', reason: 'not-a-directory' },
+    ]);
+    const text = renderDashboardText(report);
+    assert.match(text, /sources-skipped=1;/);
+    assert.match(text, /^ {4}✗ skipped persona-workflow\/designer \(not-a-directory\)$/m);
+  });
+
   it('report builder without the opt-in carries NO entry_advisory key at all', async () => {
     const root = makeAdvisoryRepo();
     const home = makeHome();

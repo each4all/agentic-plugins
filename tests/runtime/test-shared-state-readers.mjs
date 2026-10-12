@@ -13,7 +13,7 @@ import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, realpath, rm, symlink, utimes, writeFile } from 'node:fs/promises';
+import { link, mkdir, mkdtemp, realpath, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -386,9 +386,49 @@ describe('ADR-0067 RR — the entry brief from a linked worktree', () => {
     const persona = await readPersonaWorkflowSource({ repoRoot: main, persona: 'engineer', branch: 'main' });
     deepStrictEqual([persona.status, persona.reason], ['indeterminate', 'dual-home-ambiguity']);
     const active = await readMacroSources({ repoRoot: main, branch: 'main' });
-    deepStrictEqual([active.status, active.reason], ['indeterminate', 'duplicate-active-macros']);
+    deepStrictEqual([active.status, active.reason], ['indeterminate', 'dual-home-ambiguity']);
     const bridge = await readMacroSources({ repoRoot: main, branch: 'feat/lane' });
-    deepStrictEqual([bridge.status, bridge.reason], ['indeterminate', 'ambiguous-macro-bridge']);
+    deepStrictEqual([bridge.status, bridge.reason], ['indeterminate', 'dual-home-ambiguity']);
+  });
+
+  it('counts two hard-linked names as two files, as the owner does', async () => {
+    const { main } = await makeLinkedRepo();
+    const first = await writeWorkflow(main, 'engineer', 'a.md', personaFm({ id: ENG_MAIN, branch: 'main' }));
+    await link(first, join(workflowsDir(main, 'engineer'), 'b.md'));
+    const owner = await import(join(REPO_ROOT, 'plugins', 'engineer', 'scripts', 'state.mjs'));
+    await owner.findActiveWorkflowByBranch(main, 'main').then(
+      () => { throw new Error('the engineer owner accepted two hard-linked names'); },
+      (error) => ok(/2 workflow files/.test(error.message), error.message),
+    );
+    const persona = await readPersonaWorkflowSource({ repoRoot: main, persona: 'engineer', branch: 'main' });
+    deepStrictEqual([persona.status, persona.reason], ['indeterminate', 'duplicate-active-workflows']);
+  });
+
+  it('judges two homes per state root before deduplicating across roots: a lane whose both homes alias the main home is dual-home', async () => {
+    const { main, lane } = await makeLinkedRepo();
+    await writeWorkflow(main, 'engineer', 'a.md', personaFm({ id: ENG_MAIN, branch: 'feat/lane' }));
+    await writeWorkflow(main, 'orchestrator', `${MACRO}.md`, macroFm({
+      id: MACRO,
+      subtasks: [{ id: 'S1', branch: 'feat/lane', status: 'pending' }],
+    }));
+    // Both of the lane's homes name the main worktree's canonical home, so
+    // the lane holds the one file twice: the owner's lookup there refuses it.
+    await mkdir(join(lane, '.agentic-plugins', 'state'), { recursive: true });
+    await mkdir(join(lane, '.claude'), { recursive: true });
+    for (const plugin of ['engineer', 'orchestrator']) {
+      const mainHome = join(main, '.agentic-plugins', 'state', plugin);
+      await symlink(mainHome, join(lane, '.agentic-plugins', 'state', plugin));
+      await symlink(mainHome, join(lane, '.claude', `agentic-${plugin}`));
+    }
+    const owner = await import(join(REPO_ROOT, 'plugins', 'engineer', 'scripts', 'state.mjs'));
+    await owner.findActiveWorkflowByBranch(lane, 'feat/lane').then(
+      () => { throw new Error('the engineer owner accepted a lane whose both homes alias the main home'); },
+      (error) => ok(/Ambiguous .* workflow storage/.test(error.message), error.message),
+    );
+    const persona = await readPersonaWorkflowSource({ repoRoot: lane, persona: 'engineer', branch: 'feat/lane' });
+    deepStrictEqual([persona.status, persona.reason], ['indeterminate', 'dual-home-ambiguity']);
+    const bridge = await readMacroSources({ repoRoot: lane, branch: 'feat/lane' });
+    deepStrictEqual([bridge.status, bridge.reason], ['indeterminate', 'dual-home-ambiguity']);
   });
 
   it('lists a workflows directory again when a listed file vanishes, a bounded number of times', async () => {
@@ -397,21 +437,19 @@ describe('ADR-0067 RR — the entry brief from a linked worktree', () => {
     const archived = await writeWorkflow(lane, 'engineer', 'archived.md', personaFm({ id: ENG_MAIN, branch: 'feat/other' }));
 
     // Another checkout archives a file between the listing and its read.
-    const { listDir, readFile, realpath: realpathOf } = ENTRY_READER_IO;
+    const { listDir, openReadOnly } = ENTRY_READER_IO;
+    const enoent = () => Object.assign(new Error('gone'), { code: 'ENOENT' });
     let listings = 0;
     const racing = {
+      ...ENTRY_READER_IO,
       listDir: async (dir, caps) => {
         if (dir === workflowsDir(lane, 'engineer')) listings++;
         return listDir(dir, caps);
       },
-      readFile: async (path, max) => {
-        if (path === archived && existsSync(archived)) {
-          await rm(archived);
-          return { state: 'absent' };
-        }
-        return readFile(path, max);
+      openReadOnly: async (path) => {
+        if (path === archived && existsSync(archived)) await rm(archived);
+        return openReadOnly(path);
       },
-      realpath: realpathOf,
     };
     const raced = await readPersonaWorkflowSource({ repoRoot: lane, persona: 'engineer', branch: 'feat/lane', io: racing });
     strictEqual(raced.status, 'ok');
@@ -420,7 +458,7 @@ describe('ADR-0067 RR — the entry brief from a linked worktree', () => {
     // A file that keeps vanishing still fails closed, after the last listing.
     listings = 0;
     const gone = join(workflowsDir(lane, 'engineer'), 'a.md');
-    const persistent = { ...racing, readFile: async (path, max) => (path === gone ? { state: 'absent' } : readFile(path, max)) };
+    const persistent = { ...racing, openReadOnly: async (path) => { if (path === gone) throw enoent(); return openReadOnly(path); } };
     const stuck = await readPersonaWorkflowSource({ repoRoot: lane, persona: 'engineer', branch: 'feat/lane', io: persistent });
     strictEqual(stuck.status, 'indeterminate');
     strictEqual(stuck.reason, 'workflow-file-vanished');

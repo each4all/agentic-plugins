@@ -43,32 +43,43 @@ export const MUTATIONS = [
     killed_by: /finds a workflow stored under the main worktree and one stored in the linked worktree/,
   },
   {
-    id: 'E2', file: READERS, count: 2,
-    from: '      const pointer = toPointer(home.stateRoot, path);',
-    to: '      const pointer = toPointer(repoRoot, path);',
+    id: 'E2', file: READERS,
+    from: '      occurrences.push({ home, identity, link, pointer: toPointer(home.stateRoot, path) });',
+    to: '      occurrences.push({ home, identity, link, pointer: toPointer(repoRoot, path) });',
     why: 'a workflow pointer is spelled against the checkout (`../main/…`), and the arbiter nulls it',
     killed_by: /renders a pointer into the main worktree through the arbiter hardening/,
   },
   {
     id: 'E3', file: READERS,
-    from: "    return indeterminate(base, rootsHit.size === 1 ? 'dual-home-ambiguity' : 'cross-root-ambiguity');",
-    to: "    if (rootsHit.size === 1) return indeterminate(base, 'dual-home-ambiguity');",
-    why: 'two workflows for one branch across the two roots are not ambiguity, and the reader picks neither or one',
+    from: "  if (matches.size > 1) return indeterminate(base, 'cross-root-ambiguity');",
+    to: '  void 0;',
+    why: 'two workflows for one branch across the two roots are not ambiguity, and the reader picks one',
     killed_by: /reports two files for one branch across the roots/,
   },
   {
     id: 'E4', file: READERS,
-    from: "  if (matches.length === 1 && matches[0].rawId !== null && filesById.get(matches[0].rawId).size > 1) {",
+    from: '  if (match !== null && match.rawId !== null && filesById.get(match.rawId).size > 1) {',
     to: '  if (false) {',
     why: "this branch's workflow id held by a second file is read as one workflow",
     killed_by: /reports two files for one branch across the roots, or one workflow id in two files/,
   },
   {
-    id: 'E5', file: READERS, count: 2,
-    from: '      if (seen.has(real) && seen.get(real) !== home.location) continue;',
-    to: '      void 0;',
+    // The identity a file is known by is its spelling, not its device and
+    // inode: one file reached through both roots is two files.
+    id: 'E5', file: READERS,
+    from: '  const identity = real;',
+    to: '  const identity = path;',
     why: 'the same physical file reached through both roots counts twice, as a duplicate',
     killed_by: /counts the same physical file reached through both roots once/,
+  },
+  {
+    // The code-review verify of C122 (run plan-verify-20261012T223540Z-15fdd7f6):
+    // a file is known by its real path, as the owners count files.
+    id: 'H1', file: READERS,
+    from: '  const identity = real;',
+    to: '  const identity = identityOf(checked);',
+    why: 'two hard-linked names count as one workflow, where the owner refuses two files, so the brief leads a resume that fails',
+    killed_by: /counts two hard-linked names as two files, as the owner does/,
   },
   {
     id: 'E6', file: READERS,
@@ -129,7 +140,7 @@ export const MUTATIONS = [
   },
   {
     id: 'P2', file: READERS,
-    from: '  if (matches.length === 1 && filesByPointer.get(matches[0].summary.pointer).size > 1) {',
+    from: '  if (match !== null && filesByPointer.get(match.summary.pointer).size > 1) {',
     to: '  if (false) {',
     why: "the reader emits a pointer that, resolved default-root-first, names another workflow's file",
     killed_by: /one pointer spelling naming a different file under each root/,
@@ -175,14 +186,12 @@ export const MUTATIONS = [
   {
     id: 'A1', file: READERS,
     from: [
-      '      // so a second file under the same spelling is a pair (Decision 1(c)).',
-      '      const pointer = toPointer(home.stateRoot, path);',
-      '      addRealPath(filesByPointer, pointer, real);',
+      '  // second file under the same spelling is a pair (Decision 1(c)).',
+      '  for (const { pointer, identity } of scan.occurrences) addTo(filesByPointer, pointer, identity);',
     ].join('\n'),
     to: [
-      '      // so a second file under the same spelling is a pair (Decision 1(c)).',
-      '      const pointer = toPointer(home.stateRoot, path);',
-      '      if (!seen.has(real)) addRealPath(filesByPointer, pointer, real);',
+      '  // second file under the same spelling is a pair (Decision 1(c)).',
+      '  for (const { pointer, identity } of scan.occurrences.filter((o, i, all) => all.findIndex((p) => p.identity === o.identity) === i)) addTo(filesByPointer, pointer, identity);',
     ].join('\n'),
     why: "the persona reader indexes only a file's first spelling, so an alias's spelling naming another workflow goes unseen",
     killed_by: /counts the spelling of an alias: a lane file under a symlinked main home's spelling is ambiguity/,
@@ -190,46 +199,43 @@ export const MUTATIONS = [
   {
     id: 'A2', file: READERS,
     from: [
-      '      // the persona reader.',
-      '      const pointer = toPointer(home.stateRoot, path);',
-      '      addRealPath(filesByPointer, pointer, real);',
+      '  // Every spelling is indexed, as in the persona reader.',
+      '  for (const { pointer, identity } of scan.occurrences) addTo(filesByPointer, pointer, identity);',
     ].join('\n'),
     to: [
-      '      // the persona reader.',
-      '      const pointer = toPointer(home.stateRoot, path);',
-      '      if (!seen.has(real)) addRealPath(filesByPointer, pointer, real);',
+      '  // Every spelling is indexed, as in the persona reader.',
+      '  for (const { pointer, identity } of scan.occurrences.filter((o, i, all) => all.findIndex((p) => p.identity === o.identity) === i)) addTo(filesByPointer, pointer, identity);',
     ].join('\n'),
     why: "the macro reader indexes only a file's first spelling, and a bridge leads with a pointer that names another macro",
     killed_by: /counts the spelling of an alias: a lane file under a symlinked main home's spelling is ambiguity/,
   },
   // The third refine's verify (run refine-verify-20261008T115943Z-5648e5): the
-  // real-path dedupe must not merge two homes of one state root, which the
+  // physical-file dedupe must not merge two homes of one state root, which the
   // owners' lookups refuse.
   {
     id: 'W1', file: READERS,
-    from: [
-      '      // refuses that layout.',
-      '      if (seen.has(real) && seen.get(real) !== home.location) continue;',
-    ].join('\n'),
-    to: [
-      '      // refuses that layout.',
-      '      if (seen.has(real)) continue;',
-    ].join('\n'),
+    from: "  if (homes === 'two-homes') return indeterminate(base, 'dual-home-ambiguity');",
+    to: '  void homes;',
     why: 'the persona reader leads with a workflow under a legacy home aliasing the canonical one, which the owner refuses',
     killed_by: /keeps a legacy home aliasing the canonical home of one state root dual-home ambiguity/,
   },
   {
     id: 'W2', file: READERS,
-    from: [
-      '      // home: the owner refuses it), as in the persona reader.',
-      '      if (seen.has(real) && seen.get(real) !== home.location) continue;',
-    ].join('\n'),
-    to: [
-      '      // home: the owner refuses it), as in the persona reader.',
-      '      if (seen.has(real)) continue;',
-    ].join('\n'),
+    from: "    if (homeAmbiguity(scan.occurrences, new Set([identity])) !== null) return indeterminate(base, 'dual-home-ambiguity');",
+    to: '    void identity;',
     why: 'the macro reader leads, or bridges, with a macro under a legacy home aliasing the canonical one, which the owner refuses',
     killed_by: /keeps a legacy home aliasing the canonical home of one state root dual-home ambiguity/,
+  },
+  // C122 plan-verify (run plan-verify-20261012T215901Z-186b72b, R6): two
+  // homes are judged per state root before a file reached through both roots
+  // counts once. Judged after, a lane whose both homes alias the main home
+  // reads as one file, where the owner refuses the lane.
+  {
+    id: 'R6', file: READERS,
+    from: '  for (const { home, identity } of occurrences) {',
+    to: '  for (const { home, identity } of occurrences.filter((o, i, all) => all.findIndex((p) => p.identity === o.identity) === i)) {',
+    why: 'dual-home is judged after the cross-root dedupe, and a lane holding one main file under both its homes reads ok',
+    killed_by: /judges two homes per state root before deduplicating across roots/,
   },
   {
     id: 'A3', file: STATE_READERS,
