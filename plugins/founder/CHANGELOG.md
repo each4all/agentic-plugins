@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.3](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.9.2...plugin-founder-v0.9.3) (2026-10-12)
+
+
+### Bug Fixes
+
+* **plugin/founder:** cite investigate's ensemble contract by a path that resolves ([3327d74](https://github.com/each4all/agentic-plugins/commit/3327d74ed3d58619fbbc6dcb49ba863d04f53aae))
+
 ## [0.9.2](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.9.1...plugin-founder-v0.9.2) (2026-10-10)
 
 

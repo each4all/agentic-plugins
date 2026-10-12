@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.3](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.8.2...plugin-designer-v0.8.3) (2026-10-12)
+
+
+### Bug Fixes
+
+* **plugin/designer:** cite investigate's ensemble contract by a path that resolves ([92f563d](https://github.com/each4all/agentic-plugins/commit/92f563df845587b14d9c7470050b43b144ae12c9))
+
 ## [0.8.2](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.8.1...plugin-designer-v0.8.2) (2026-10-10)
 
 
