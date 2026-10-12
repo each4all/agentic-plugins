@@ -118,6 +118,7 @@ bytes:
     "note": "best-effort; some requested params may be silently ignored (§6)"
   },
   "generation_attempted": "boolean — false when a pre-flight rejection returned before the companion ran, so `cost` cannot be read as spend",
+  "send_disclosure": "{ recipient, sent[], codex_cwd, text } — what went to Codex (OpenAI), written to stderr before the companion ran (§9) | null when nothing was sent",
   "images": [
     {
       "path":       "absolute path under the run dir",
@@ -288,9 +289,41 @@ pretending a native capability.
 
 ---
 
-## 9. Privacy gate
+## 9. Send disclosure
 
-Cross-host image prompts pass an explicit privacy gate (genericize
-before dispatch) since the prompt text — and, for `image:critique`, the
-attached image file and any reference assets — leaves the local host for
-Codex. Only the genericized form leaves the local host.
+On the Claude host, `image:compose`, `image:refine` and `image:critique`
+send the request to Codex, a service of another provider. What goes:
+
+- compose: the prompt the helper renders (the image description, the
+  requested parameters and the output file's absolute path);
+- refine: the same, built from the base prompt and the feedback;
+- critique: the criteria and the image file, which Codex opens by its
+  absolute path.
+
+The helpers start Codex in the repository root (`codex exec --cd <repo
+root>`), so Codex can read files there as well.
+
+**The helper discloses.** Every send to Codex on the Claude host goes
+through `compose-dispatch.mjs` (which `refine-dispatch.mjs` reuses) or
+`critique-dispatch.mjs`. Immediately before it spawns the companion, the
+helper writes one line to stderr naming what it sends, that it goes to
+Codex (OpenAI), and the directory Codex runs in. It records the same fact
+in the result's `send_disclosure` field (`recipient`, `sent`,
+`codex_cwd`, `text`): the ImageResult manifest (§4) for compose and
+refine, the result JSON for critique. A path that sends nothing (a
+pre-flight rejection, no reachable companion, an image critique refuses,
+`--estimate-only`) writes no line and records `send_disclosure: null`.
+
+**The surface repeats it for the user.** Before the dispatch, the verb
+tells the user the same: compose and refine as part of the cost disclosure
+they already show, critique as its first step. It asks no confirmation,
+and the request is not genericized: it is sent as Codex would receive it
+from the user directly.
+
+On the Codex host the user is already working in Codex, so the surfaces
+add no disclosure; a helper a verb runs there still writes and records its
+own. `image:investigate`, `image:frame` and `image:decide` send
+nothing to Codex on either host.
+
+This disclosure replaced a privacy gate (genericize before dispatch) on
+2026-10-12, by the amendment of that date to ADR-0037 Decision 5.

@@ -14,11 +14,6 @@ Follow the investigate skill at `${CLAUDE_PLUGIN_ROOT}/core/skills/investigate/S
 > NOT a run manifest (`manifest.json` is compose/refine's `ImageResult`,
 > `docs/contracts.md` §4) and not durable workflow state.
 
-**Privacy gate**: genericize any proprietary subject, brand, or reference
-asset before web search or cross-host dispatch — only the genericized form
-leaves the local host. The gate covers attached reference assets, not just
-prompt text.
-
 **Gather** via web search: style exemplars, palette references, composition
 patterns, and any public brand/visual constraints — each cited. **Structure**
 them into the ImageBrief fields (`docs/contracts.md` §3:

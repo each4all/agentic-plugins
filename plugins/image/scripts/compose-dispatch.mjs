@@ -21,6 +21,7 @@
 //                             [--background opaque|auto|transparent]
 //   node compose-dispatch.mjs --prompt "<text>" ...
 //   stdout: the ImageResult manifest (JSON); also written to <run-dir>/manifest.json
+//   stderr: the send disclosure, written before the companion runs (contracts.md §9)
 //   exit 0 on success; exit 1 with a typed error.kind on failure; exit 2 on misuse.
 
 import { spawn } from 'node:child_process';
@@ -337,6 +338,26 @@ export function normalizeFormat(format) {
   return FORMATS.includes(f) ? f : null;
 }
 
+// The send disclosure (contracts.md §9, ADR-0037 Decision 5 as amended
+// 2026-10-12). On the Claude host every send to Codex goes through a helper,
+// so the helper says what it sends, on stderr, immediately before it spawns
+// the companion, and records the same fact in its result. `--cd <repoRoot>`
+// starts Codex in the repository, so it can read files there as well. A path
+// that sends nothing (a pre-flight rejection, no companion, --estimate-only)
+// says nothing and records null.
+export const SEND_RECIPIENT = 'Codex (OpenAI)';
+
+export function sendDisclosure(sent, repoRoot) {
+  const codexCwd = resolve(repoRoot);
+  const items = sent.length > 1 ? `${sent.slice(0, -1).join(', ')} and ${sent[sent.length - 1]}` : sent[0];
+  return {
+    recipient: SEND_RECIPIENT,
+    sent: [...sent],
+    codex_cwd: codexCwd,
+    text: `image: sending ${items} to ${SEND_RECIPIENT}, which runs in ${codexCwd} and can read files there`,
+  };
+}
+
 function isoStamp(now) {
   return now.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
 }
@@ -389,6 +410,7 @@ export async function dispatch(opts = {}) {
     // carries a cost ESTIMATE, and without this field that estimate reads as
     // money spent.
     generation_attempted: false,
+    send_disclosure: null,
     images: [],
     failed_outputs: [],
     cost: estimateCost(opts),
@@ -464,6 +486,7 @@ export async function dispatch(opts = {}) {
     return baseError('write_failed', 'could not create the run directory / prompt file', String(err && err.message ? err.message : err));
   }
 
+  const disclosure = sendDisclosure(opts.sent || ['the image prompt', 'the output file\'s path'], repoRoot);
   const base = {
     run_id: runId,
     host: 'claude',
@@ -471,6 +494,7 @@ export async function dispatch(opts = {}) {
     prompt,
     requested_parameters: { size: opts.size || null, quality: opts.quality || null, format, background, variants: 1 },
     generation_attempted: true,
+    send_disclosure: disclosure,
     failed_outputs: [],
     cost: estimateCost(opts),
     created_at: now.toISOString(),
@@ -480,6 +504,7 @@ export async function dispatch(opts = {}) {
     return manifest;
   };
 
+  (opts.stderr || process.stderr).write(`${disclosure.text}\n`);
   const { code, stdout, stderr } = await runCompanion(companion, promptFile, repoRoot, env);
 
   let envelope;

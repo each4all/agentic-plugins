@@ -20,20 +20,21 @@ inlined). agentic-plugins never calls the OpenAI image API directly
 > machinery; the brief/result flow through the run manifest
 > (`docs/contracts.md` §4), not a durable workflow file.
 
-**Privacy gate**: genericize the prompt before cross-host dispatch — only
-the genericized form leaves the local host. Surface per-image cost; never
-hide spend. Classify failures per the typed error taxonomy
-(`docs/contracts.md` §8); no blind retry.
+Surface per-image cost; never hide spend. Classify failures per the typed
+error taxonomy (`docs/contracts.md` §8); no blind retry.
 
-**Before dispatch**: pass the privacy gate (genericize the prompt) and
-disclose the estimated per-image cost (`docs/contracts.md` §7). Then run the
-helper (Claude host):
+**Before dispatch**: disclose the estimated per-image cost
+(`docs/contracts.md` §7), and with it that the prompt text goes to Codex
+(OpenAI), which runs in the repository and can read files there
+(`docs/contracts.md` §9); ask no confirmation. Then run the helper (Claude
+host), which prints the same disclosure before it sends and records it in the
+manifest:
 
 ```bash
 CLAUDE_PLUGIN_ROOT="${AGENTIC_IMAGE_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/image -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/compose-dispatch.mjs" \
-  --prompt-file <genericized-prompt-file> --repo-root "$REPO_ROOT" \
+  --prompt-file <prompt-file> --repo-root "$REPO_ROOT" \
   --format png --quality low|medium|high [--size <WxH>] [--slug <slug>] \
   [--background opaque|auto|transparent]
 ```
