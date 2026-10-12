@@ -92,8 +92,8 @@ export const MUTATIONS = [
   },
   {
     id: 'W3', file: STATE, tests: [T14],
-    from: "          clearNextStep: cliBoolean(flags, 'clear-next-step', false),",
-    to: '          clearNextStep: false,',
+    from: "          clearNextStep: cliBoolean(flags, 'clear-next-step', false),\n          clearTerminalMarker: cliBoolean(flags, 'clear-terminal-marker', false),",
+    to: "          clearNextStep: false,\n          clearTerminalMarker: cliBoolean(flags, 'clear-terminal-marker', false),",
     why: '--clear-next-step is accepted and ignored, so a crashed verb leaves the previous next step',
   },
   {
