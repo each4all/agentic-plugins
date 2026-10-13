@@ -1242,16 +1242,35 @@ describe('entry-brief readers — workflow links and homes (C122)', () => {
   });
 
   it('never yields outside content when a path is swapped between the containment check and the open', async () => {
-    const setup = async () => {
+    // `unlisted` keeps the link's target in the home but out of `workflows/`,
+    // so the link is the only name listed.
+    const setup = async ({ unlisted = false } = {}) => {
       const root = await makeRepo();
-      const inside = await writeWorkflowFile(root, { persona: 'engineer', file: 'inside.md', body: personaFm({ branch: 'feat/x' }) });
+      const body = personaFm({ branch: 'feat/x' });
+      let inside;
+      if (unlisted) {
+        const dir = join(personaHome(root, 'engineer'), 'archive');
+        await mkdir(dir, { recursive: true });
+        inside = join(dir, 'inside.md');
+        await writeFile(inside, body);
+      } else {
+        inside = await writeWorkflowFile(root, { persona: 'engineer', file: 'inside.md', body });
+      }
       const link = join(personaHome(root, 'engineer'), 'workflows', 'link.md');
+      await mkdir(join(personaHome(root, 'engineer'), 'workflows'), { recursive: true });
       await symlink(inside, link);
       const outside = await outsideFile(personaFm({ id: OUTSIDE_ID, branch: 'feat/x' }));
       return { root, inside, insideReal: await realpath(inside), link, outside };
     };
-    const swapping = (target, swap) => ({
+    // The listing order is the filesystem's (APFS and ext4 differ), so every
+    // case runs in both orders.
+    const swapping = (target, swap, order) => ({
       ...ENTRY_READER_IO,
+      listDir: async (dir, caps) => {
+        const listing = await ENTRY_READER_IO.listDir(dir, caps);
+        if (order === 'reversed' && listing.entries) listing.entries.reverse();
+        return listing;
+      },
       openReadOnly: async (path) => {
         if (path === target.insideReal && !target.swapped) {
           target.swapped = true;
@@ -1260,36 +1279,43 @@ describe('entry-brief readers — workflow links and homes (C122)', () => {
         return ENTRY_READER_IO.openReadOnly(path);
       },
     });
-    const read = (t, swap) => readPersonaWorkflowSource({ repoRoot: t.root, persona: 'engineer', branch: 'feat/x', io: swapping(t, swap) });
+    const results = [];
+    for (const order of ['listed', 'reversed']) {
+      const read = (t, swap) => readPersonaWorkflowSource({ repoRoot: t.root, persona: 'engineer', branch: 'feat/x', io: swapping(t, swap, order) });
 
-    // The link re-aimed outside: the checked real path is what is opened.
-    const relinked = await setup();
-    const a = await read(relinked, async (t) => {
-      await symlink(t.outside, `${t.link}.new`);
-      await rename(`${t.link}.new`, t.link);
-    });
-    strictEqual(a.status, 'ok');
-    strictEqual(a.active.workflow_id, 'compose-20260719T090000Z-abc123');
+      // The link re-aimed outside: the checked real path is what is opened.
+      // Its target is not listed: a listed target read before the link
+      // would re-aim the link first, and the link then lies outside.
+      const relinked = await setup({ unlisted: true });
+      const a = await read(relinked, async (t) => {
+        await symlink(t.outside, `${t.link}.new`);
+        await rename(`${t.link}.new`, t.link);
+      });
+      ok(relinked.swapped, `the swap happened (${order})`);
+      strictEqual(a.status, 'ok', order);
+      strictEqual(a.active.workflow_id, 'compose-20260719T090000Z-abc123', order);
 
-    // The checked file replaced by a link outside: O_NOFOLLOW refuses it.
-    const replaced = await setup();
-    const b = await read(replaced, async (t) => {
-      await symlink(t.outside, `${t.inside}.new`);
-      await rename(`${t.inside}.new`, t.inside);
-    });
-    deepStrictEqual([b.status, b.reason], ['indeterminate', 'symlink-refused']);
+      // The checked file replaced by a link outside: O_NOFOLLOW refuses it.
+      const replaced = await setup();
+      const b = await read(replaced, async (t) => {
+        await symlink(t.outside, `${t.inside}.new`);
+        await rename(`${t.inside}.new`, t.inside);
+      });
+      deepStrictEqual([b.status, b.reason], ['indeterminate', 'symlink-refused'], order);
 
-    // Its directory swapped for a link outside: the opened file is not the
-    // one checked.
-    const ancestor = await setup();
-    const c = await read(ancestor, async (t) => {
-      const workflows = join(personaHome(t.root, 'engineer'), 'workflows');
-      const decoy = await mkdtemp(join(tmpdir(), 'entry-brief-decoy-'));
-      await writeFile(join(decoy, 'inside.md'), personaFm({ id: OUTSIDE_ID, branch: 'feat/x' }));
-      await rename(workflows, `${workflows}.moved`);
-      await symlink(decoy, workflows);
-    });
-    deepStrictEqual([c.status, c.reason], ['indeterminate', 'workflow-identity-changed']);
+      // Its directory swapped for a link outside: the opened file is not the
+      // one checked.
+      const ancestor = await setup();
+      const c = await read(ancestor, async (t) => {
+        const workflows = join(personaHome(t.root, 'engineer'), 'workflows');
+        const decoy = await mkdtemp(join(tmpdir(), 'entry-brief-decoy-'));
+        await writeFile(join(decoy, 'inside.md'), personaFm({ id: OUTSIDE_ID, branch: 'feat/x' }));
+        await rename(workflows, `${workflows}.moved`);
+        await symlink(decoy, workflows);
+      });
+      deepStrictEqual([c.status, c.reason], ['indeterminate', 'workflow-identity-changed'], order);
+      results.push(a, b, c);
+    }
 
     // Its directory swapped for a link outside right after the realpath, so
     // the file's stat already follows it (one swap, codex review MAJOR): the
@@ -1316,7 +1342,7 @@ describe('entry-brief readers — workflow links and homes (C122)', () => {
     const d = await readPersonaWorkflowSource({ repoRoot: early.root, persona: 'engineer', branch: 'feat/x', io: earlyIo });
     ok(early.swapped, 'the swap happened');
     deepStrictEqual([d.status, d.reason], ['indeterminate', 'symlink-outside-state']);
-    for (const result of [a, b, c, d]) ok(!JSON.stringify(result).includes(OUTSIDE_ID));
+    for (const result of [...results, d]) ok(!JSON.stringify(result).includes(OUTSIDE_ID));
   });
 
   it('judges the path again after the open: one rename that moves the checked file out is refused (critique MAJOR)', async () => {
