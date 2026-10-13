@@ -76,10 +76,16 @@ the steps stay manual**, and the host-neutral state it reads (`next_step_*`,
   pending on its own subtask's engineer workflows.
 - **A dead run is cleaned up.** Each run keeps a record in the main worktree's
   `.agentic-plugins/runs/autopilot/open/<run-id>.json` from before its first step until
-  it ends with every worker group empty. Once nothing of a dead driver's run is left
+  it ends with every worker group empty, unless a step's peers are unaccounted for: the
+  look after the step could not read the macro, its readiness or the step's workflow, or
+  after a failed step could not list its peers, or a peer's cancellation did not go
+  through. The run, serial or with lanes, then keeps the record however it ends, and that
+  step's `finished` line records `peers_unaccounted: true`, so the cleanup below also
+  attributes a pending peer that names no run to it. Once nothing of a dead driver's run is left
   running, `stop`, or the next run of the macro before its first step, cancels the pending
   peer runs whose handle names that run, counts its unfinished step's whole budget as
-  spent, records it halted (`interrupted`), and removes the record. A pending peer that
+  spent, records it halted (`interrupted`) unless it had already ended (a run that
+  halted or completed keeps its status and reason), and removes the record. A pending peer that
   names no run is reported, never cancelled: peer-runner does not record the run yet, so
   until it does, `stop` and the next run print the command that cancels such a peer. A
   record whose ledger is gone, whose peer could not be cancelled, or one of whose peer-run
@@ -110,12 +116,15 @@ the steps stay manual**, and the host-neutral state it reads (`next_step_*`,
   creation on, the default state root, and the macro there; `preview --lanes 2` shows the
   reconciliation and the first wave. Absent or 1, the run is serial, and it refuses to
   start while a lane of the macro holds a subtask that is not completed.
-- **Bounds.** Steps, total cost, a run wall clock, and each step's budget and wall
-  clock (`--max-steps`, `--max-cost`, `--max-time`, `--step-budget`,
-  `--step-timeout`). A step started inside a Claude session runs as a background task,
-  which the host stops after two hours; longer runs belong in a terminal through the
-  optional launcher — `preview` prints the command that installs
-  `adapters/claude/autopilot/launcher.template.mjs` as
+- **Bounds.** Steps, total cost, and each step's budget and wall clock
+  (`--max-steps`, `--max-cost`, `--step-budget`, `--step-timeout`); a halt or `stop`
+  ends a run too. The run itself has no clock, so a step started late gets its whole
+  timeout. A step's peak context is recorded in the ledger, never a halt; a PreCompact
+  event in a worker still aborts its step. A run started inside a Claude session runs as
+  a background task, which the host stops after two hours, possibly leaving no halt
+  record and its workers at work: check `status`, then `stop` what remains, and relaunch.
+  Longer runs belong in a terminal through the optional launcher — `preview` prints the
+  command that installs `adapters/claude/autopilot/launcher.template.mjs` as
   `~/.agentic-plugins/bin/agentic-autopilot`.
 - **Requirements.** The repository ignores `.agentic-plugins/{runs,state,tmp,cache}/`;
   engineer carries ADR-0063 S3+S4 (0.24.0) and orchestrator S6 (0.16.0); the plugin

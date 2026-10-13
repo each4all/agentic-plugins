@@ -10,7 +10,7 @@
 // checks that the observer builds the same shapes from real state files.
 
 import { describe, it } from 'node:test';
-import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert/strict';
+import { deepStrictEqual, match, ok, strictEqual, throws } from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -475,7 +475,7 @@ describe('verifyStep', () => {
   const verbStep = { kind: 'verb', verb: 'critique', subtaskId: 'A', branch: 'feat/a' };
   const before = inProgressA();
   const after = inProgressA({ next_step: { kind: 'commit', verb: null, confidence: 'HIGH' }, progress: 4 });
-  const verify = (over = {}) => verifyStep({ step: verbStep, worker: okWorker(over.worker), before: over.before ?? before, after: over.after ?? after, oversizePct: 0.25 });
+  const verify = (over = {}) => verifyStep({ step: verbStep, worker: okWorker(over.worker), before: over.before ?? before, after: over.after ?? after });
 
   it('continues after a verb whose report matches the state it changed', () => {
     strictEqual(verify(), null);
@@ -505,7 +505,6 @@ describe('verifyStep', () => {
     ['a report about another workflow (the macro proposal)', { worker: { report: { outcome: 'completed', workflow: null, next_step: { kind: 'commit', verb: null, confidence: 'HIGH' }, awaiting_owner: null, summary: 'x' } } }, 'owner-choice'],
     ['no state change', { after: inProgressA(), worker: { report: { outcome: 'completed', workflow: ENG_A, next_step: { kind: 'verb', verb: 'critique', confidence: 'HIGH' }, awaiting_owner: null, summary: 'x' } } }, 'no-progress'],
     ['no state change with denials', { after: inProgressA(), worker: { denials: [{ tool: 'Bash' }], report: { outcome: 'completed', workflow: ENG_A, next_step: { kind: 'verb', verb: 'critique', confidence: 'HIGH' }, awaiting_owner: null, summary: 'x' } } }, 'permission-denied'],
-    ['an oversized step', { worker: { peakPct: 0.4 } }, 'step-oversized'],
   ];
   for (const [name, over, reason] of cases) {
     it(name, () => {
@@ -514,9 +513,49 @@ describe('verifyStep', () => {
     });
   }
 
+  it('records a step\'s size and never judges it: a peak of 90% of the window passes (ADR-0063 D7, amendment of 2026-10-13)', () => {
+    strictEqual(verify({ worker: { peakPct: 0.9 } }), null);
+    strictEqual(verifyStep({ step: verbStep, worker: okWorker({ peakPct: 0.9 }), before, after, oversizePct: 0.25 }), null, 'an older caller\'s threshold is not read');
+    ok(!HALT_REASONS.includes('step-oversized'));
+  });
+
+  describe('a look after the step that could not read what the checks compare (C92)', () => {
+    const report = (over = {}) => ({ outcome: 'completed', workflow: ENG_A, next_step: { kind: 'commit', verb: null, confidence: 'HIGH' }, awaiting_owner: null, summary: 's', ...over });
+    const unread = [
+      ['the macro', (v) => ({ ...v, macro: null, macroLookupError: 'two files hold it', ready: null }), /the look after the step could not read the macro \(two files hold it\)/],
+      ['its readiness', (v) => ({ ...v, ready: null, readyError: 'orchestrator next-ready exited 1' }), /the look after the step could not read the macro's readiness \(orchestrator next-ready exited 1\)/],
+      ['the step\'s own child', (v) => ({ ...v, children: { ...v.children, A: { location: 'error', detail: 'its frontmatter could not be read' } } }), /the look after the step could not read subtask A's engineer workflow \(its frontmatter could not be read\)/],
+    ];
+    for (const [what, broken, re] of unread) {
+      it(`${what}: halts owner-choice naming the read, before the gate and next-step cross-checks and the postcondition`, () => {
+        const d = verify({ after: broken(after) });
+        strictEqual(reasonOf(d), 'owner-choice');
+        match(d.detail, re);
+        match(d.detail, /so the step's result could not be verified: s$/);
+        strictEqual(d.subtaskId, 'A');
+        // A reported gate the broken look cannot confirm, a dispatch its
+        // postcondition would call a failure: the read is what is reported.
+        match(verify({ after: broken(after), worker: { report: report({ awaiting_owner: 'scope-routing' }) } }).detail, re);
+        const dispatch = verifyStep({ step: { kind: 'dispatch', subtaskId: 'A' }, worker: okWorker(), before: view(), after: broken(inProgressA({ next_step: { kind: 'commit', verb: null, confidence: 'HIGH' } })) });
+        match(dispatch.detail, re);
+        // The worker's own failure, and a missing or failed report, come first.
+        strictEqual(verify({ after: broken(after), worker: { exitCode: 1 } }).reason, 'worker-failed');
+        match(verify({ after: broken(after), worker: { report: null } }).detail, /no step report/);
+        strictEqual(verify({ after: broken(after), worker: { report: report({ outcome: 'failed' }) } }).reason, 'worker-failed');
+      });
+    }
+
+    it('another subtask\'s unreadable child is not the step\'s, and afterUnread reads nothing else', () => {
+      strictEqual(verify({ after: { ...after, children: { ...after.children, B: { location: 'error', detail: 'x' } } } }), null);
+      strictEqual(P.afterUnread(after, 'A'), null);
+      strictEqual(P.afterUnread({ ...after, claimsError: 'x' }, 'A'), null, 'the claims are the peers\' listing, judged by the scheduler');
+      strictEqual(P.afterUnread({ ...after, children: { A: { location: 'error', detail: 'x' } } }, null), null, 'a step with no subtask has no child');
+    });
+  });
+
   it('a reported gate the state does hold is consistent', () => {
     const gated = inProgressA({ next_step: { kind: 'owner-decision', verb: null, confidence: 'HIGH' }, awaiting_owner: { gate: 'decide-conflict', pointer: 'w#x' } });
-    strictEqual(verifyStep({ step: verbStep, before, after: gated, oversizePct: 0.25, worker: okWorker({ report: { outcome: 'needs_owner', workflow: ENG_A, next_step: { kind: 'owner-decision', verb: null, confidence: 'HIGH' }, awaiting_owner: 'decide-conflict', summary: 'x' } }) }), null);
+    strictEqual(verifyStep({ step: verbStep, before, after: gated, worker: okWorker({ report: { outcome: 'needs_owner', workflow: ENG_A, next_step: { kind: 'owner-decision', verb: null, confidence: 'HIGH' }, awaiting_owner: 'decide-conflict', summary: 'x' } }) }), null);
   });
 
   describe('postconditions', () => {
@@ -524,27 +563,27 @@ describe('verifyStep', () => {
     it('a dispatch must leave the subtask in progress with an active child', () => {
       const s = { kind: 'dispatch', subtaskId: 'A' };
       const dispatched = inProgressA();
-      strictEqual(verifyStep({ step: s, before: view(), after: dispatched, oversizePct: 0.25, worker: okWorker({ report: { ...report, workflow: ENG_A, next_step: dispatched.children.A.next_step } }) }), null);
+      strictEqual(verifyStep({ step: s, before: view(), after: dispatched, worker: okWorker({ report: { ...report, workflow: ENG_A, next_step: dispatched.children.A.next_step } }) }), null);
       const notRecorded = view({ git: { branch: 'feat/a' } });
-      ok(/left subtask A pending/.test(verifyStep({ step: s, before: view(), after: notRecorded, oversizePct: 0.25, worker: okWorker({ report }) }).detail));
+      ok(/left subtask A pending/.test(verifyStep({ step: s, before: view(), after: notRecorded, worker: okWorker({ report }) }).detail));
     });
     it('a commit must archive, commit or set a gate — a recovery that changed only bookkeeping halts', () => {
       const s = { kind: 'commit', subtaskId: 'A', recovery: true };
       const stuckBefore = inProgressA({ current_phase: 'commit-complete', terminal_marker: true });
       const stuckAfter = inProgressA({ current_phase: 'commit-complete', terminal_marker: true, progress: 9 });
-      const d = verifyStep({ step: s, before: stuckBefore, after: stuckAfter, oversizePct: 0.25, worker: okWorker({ report }) });
+      const d = verifyStep({ step: s, before: stuckBefore, after: stuckAfter, worker: okWorker({ report }) });
       strictEqual(reasonOf(d), 'owner-choice');
       ok(/archive the Stop hook should run did not run/.test(d.detail), d.detail);
-      strictEqual(verifyStep({ step: s, before: stuckBefore, after: archivedA({ ok: false, reason: 'no_pr' }), oversizePct: 0.25, worker: okWorker({ report }) }), null);
+      strictEqual(verifyStep({ step: s, before: stuckBefore, after: archivedA({ ok: false, reason: 'no_pr' }), worker: okWorker({ report }) }), null);
       const moved = inProgressA({ current_phase: 'phase-7-commit', progress: 9 }, { git: { branch: 'feat/a', head: 'h9' } });
-      strictEqual(verifyStep({ step: s, before: stuckBefore, after: moved, oversizePct: 0.25, worker: okWorker({ report }) }), null);
+      strictEqual(verifyStep({ step: s, before: stuckBefore, after: moved, worker: okWorker({ report }) }), null);
     });
     it('a done must complete the subtask; a finalize must archive the macro', () => {
       const done = { kind: 'done', subtaskId: 'A' };
-      ok(/left subtask A in_progress/.test(verifyStep({ step: done, before: archivedA({ ok: true }), after: archivedA({ ok: true }, { progress: 9 }), oversizePct: 0.25, worker: okWorker({ report }) }).detail));
+      ok(/left subtask A in_progress/.test(verifyStep({ step: done, before: archivedA({ ok: true }), after: archivedA({ ok: true }, { progress: 9 }), worker: okWorker({ report }) }).detail));
       const fin = { kind: 'finalize' };
       const active = view({ subtasks: [sub('A', 'completed')], fm: { host_history: [{ event: 'updated' }] } });
-      ok(/left macro .* active/.test(verifyStep({ step: fin, before: view({ subtasks: [sub('A', 'completed')] }), after: active, oversizePct: 0.25, worker: okWorker({ report }) }).detail));
+      ok(/left macro .* active/.test(verifyStep({ step: fin, before: view({ subtasks: [sub('A', 'completed')] }), after: active, worker: okWorker({ report }) }).detail));
     });
   });
 });
@@ -588,8 +627,8 @@ describe('lanes — ADR-0067 Decision 6', () => {
       const after = lanesView({ subtasks: three('in_progress', 'in_progress'), children: { A: childA(), B: childB({ progress: 9 }) }, git: { branch: 'feat/a', head: 'a1' } });
       const report = { outcome: 'completed', workflow: ENG_A, next_step: { kind: 'verb', verb: 'critique', confidence: 'HIGH' }, awaiting_owner: null, summary: 's' };
       const worker = { exitCode: 0, lastResult: { is_error: false }, report, denials: [], peakPct: 0.1 };
-      strictEqual(verifyStep({ step: { kind: 'verb', verb: 'critique', subtaskId: 'A', lane: true }, worker, before, after, oversizePct: 0.25 })?.reason, 'no-progress');
-      strictEqual(verifyStep({ step: { kind: 'verb', verb: 'critique', subtaskId: 'A' }, worker, before, after, oversizePct: 0.25 }), null, 'a serial step keeps the run-wide fingerprint');
+      strictEqual(verifyStep({ step: { kind: 'verb', verb: 'critique', subtaskId: 'A', lane: true }, worker, before, after })?.reason, 'no-progress');
+      strictEqual(verifyStep({ step: { kind: 'verb', verb: 'critique', subtaskId: 'A' }, worker, before, after }), null, 'a serial step keeps the run-wide fingerprint');
     });
     it('a lane step that reports an owner gate only another lane\'s child records is not taken at its word', () => {
       const before = base();
@@ -599,10 +638,10 @@ describe('lanes — ADR-0067 Decision 6', () => {
       });
       const report = { outcome: 'needs_owner', workflow: ENG_A, next_step: { kind: 'owner-decision', verb: null, confidence: 'HIGH' }, awaiting_owner: 'scope-routing', summary: 's' };
       const worker = { exitCode: 0, lastResult: { is_error: false }, report, denials: [], peakPct: 0.1 };
-      const d = verifyStep({ step: { kind: 'verb', verb: 'critique', subtaskId: 'A', lane: true }, worker, before, after, oversizePct: 0.25 });
+      const d = verifyStep({ step: { kind: 'verb', verb: 'critique', subtaskId: 'A', lane: true }, worker, before, after });
       strictEqual(d?.reason, 'owner-choice');
       ok(/records no owner gate/.test(d.detail), d.detail);
-      strictEqual(verifyStep({ step: { kind: 'verb', verb: 'critique', subtaskId: 'A' }, worker, before, after, oversizePct: 0.25 }), null, 'a serial step reads every gate, as before');
+      strictEqual(verifyStep({ step: { kind: 'verb', verb: 'critique', subtaskId: 'A' }, worker, before, after }), null, 'a serial step reads every gate, as before');
     });
   });
 
@@ -725,6 +764,32 @@ describe('lanes — ADR-0067 Decision 6', () => {
       ok(/indeterminate/.test(checkoutProblem(view({ brief: { disposition: 'indeterminate' } })).detail));
       ok(/does not belong/.test(checkoutProblem(view({ foreign: { id: ENG_B, detail: 'other', path: '/x' } })).detail));
     });
+  });
+});
+
+describe('an indeterminate entry-brief names what it skipped', () => {
+  const TODAY = 'entry-brief is indeterminate (the branch moved while it read, or a source it could not read could outrank the rest)';
+  const indeterminate = (extra) => view({ brief: { disposition: 'indeterminate', leading: null, rows: [], ...extra } });
+
+  it('relays each skipped source and its reason, a null kind and a null reason as runtime prints them', () => {
+    const d = decide(indeterminate({ sources_skipped: 2, skipped_sources: [{ source: 'persona-workflow', kind: 'engineer', reason: 'read-failed' }, { source: 'macro', kind: null, reason: null }] }), ctx());
+    strictEqual(reasonOf(d), 'owner-choice');
+    strictEqual(d.detail, `${TODAY}; skipped: persona-workflow/engineer: read-failed, macro: unclassified`);
+  });
+
+  it('keeps today\'s text when an older runtime names none, and drops an entry of any other shape', () => {
+    for (const extra of [{}, { skipped_sources: [] }, { skipped_sources: 'macro' }, { skipped_sources: [null, 7, ['macro'],
+      { source: 'macro; rm -rf /', kind: null, reason: null }, { source: 'macro', kind: 'Engineer', reason: null },
+      { source: 'macro', kind: null }, { source: 'macro', kind: null, reason: 'read failed' }] }]) {
+      strictEqual(decide(indeterminate(extra), ctx()).detail, TODAY, JSON.stringify(extra));
+    }
+    const mixed = decide(indeterminate({ skipped_sources: [{ source: 'macro', kind: null }, { source: 'handoff-slot', kind: null, reason: 'over-read-bound' }] }), ctx());
+    strictEqual(mixed.detail, `${TODAY}; skipped: handoff-slot: over-read-bound`, 'a malformed entry is dropped, the rest relayed');
+  });
+
+  it('relays at most the schema\'s eleven', () => {
+    const many = Array.from({ length: 20 }, (_, i) => ({ source: 'macro', kind: null, reason: `read-failed-${i}` }));
+    strictEqual(P.skippedSourcesText({ skipped_sources: many }).split(', ').length, 11);
   });
 });
 

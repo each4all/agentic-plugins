@@ -193,15 +193,20 @@ describe('budgets are reserved', () => {
 });
 
 describe('throttle', () => {
-  it('a five-hour window at 0.85 or more starts no new lane, while the started lane keeps stepping; with nothing to refresh it and a reset after the deadline, the run halts budget', async () => {
+  it('a five-hour window at 0.85 or more starts no new lane, while the started lane keeps stepping; with nothing to refresh it the run waits for the reset an hour off — no run deadline halts it — until SIGTERM', async () => {
     const throttled = { ...OPEN(), unifiedWindows: { five_hour: { utilization: 0.9, resetsAt: hour() }, seven_day: { utilization: 0.4, resetsAt: hour() + 86400 } } };
     const t = await setup({ scenario: { A: { next: [CRITIQUE, COMMIT], file: true }, B: { next: [COMMIT] } }, rateLimit: throttled });
+    const push = t.lines.push.bind(t.lines);
+    t.lines.push = (line) => {
+      if (/waiting for the reset at /.test(line)) setTimeout(() => t.signals.emit('SIGTERM'), 50);
+      return push(line);
+    };
     try {
-      strictEqual(await t.run({ maxTimeSec: 600 }), 2, t.lines.join('\n'));
+      strictEqual(await t.run(), 2, t.lines.join('\n'));
       const r = t.latest();
       deepStrictEqual(stepsOf(r).map((x) => [x[1], x[2]]), [['A', 'dispatch'], ['A', 'verb'], ['A', 'commit']], 'B never started');
-      strictEqual(r.halt.reason, 'budget');
-      match(r.halt.detail, /five-hour rate-limit window .* after the run's deadline/);
+      ok(t.lines.some((l) => /throttled \(five-hour utilization 0\.9 \(limit 0\.85\)\) with nothing running; waiting for the reset at /.test(l)), t.lines.join('\n'));
+      strictEqual(r.halt.reason, 'interrupted', 'the wait ended only at the signal');
       strictEqual(r.run.rate_limit.five_hour.utilization, 0.9);
       ok(!existsSync(t.lane('B')), 'a throttled run creates no lane');
     } finally {
@@ -414,6 +419,37 @@ describe('what changes while a step is admitted', () => {
       t.fx.cleanup();
     }
   });
+
+  // C92: a step that succeeded, judged from a look that could not read what
+  // verifyStep compares, halts on that read — not on a postcondition that
+  // read nothing — and, its peers unaccounted for, keeps the open-run record.
+  for (const [what, inject, re] of [
+    ['the macro', (v) => ({ ...v, macro: null, macroLookupError: 'injected' }), /the look after the step could not read the macro \(injected\)/],
+    ['its readiness', (v) => ({ ...v, ready: null, readyError: 'injected' }), /the look after the step could not read the macro's readiness \(injected\)/],
+    ['the step\'s own child', (v) => ({ ...v, children: { ...v.children, A: { location: 'error', detail: 'injected' } } }), /the look after the step could not read subtask A's engineer workflow \(injected\)/],
+  ]) {
+    it(`a step that succeeded, judged from a look that could not read ${what}, halts on that read and keeps the run's open-run record`, async () => {
+      const t = await setup({ subtasks: [{ id: 'A' }], scenario: { A: { next: [COMMIT], file: true }, actions: { 1: 'mark:break' } } });
+      try {
+        const code = await t.run({}, {
+          observeAsync: async (a, o) => {
+            const v = await observeInChild(a, o);
+            return existsSync(join(t.dir, 'break')) && a.repoRoot === t.lane('A') ? inject(v) : v;
+          },
+        });
+        strictEqual(code, 2, t.lines.join('\n'));
+        const r = t.latest();
+        deepStrictEqual(stepsOf(r).map((x) => [x[1], x[2], x[4]]), [['A', 'dispatch', 'owner-choice']]);
+        strictEqual(r.steps[0].peers_unaccounted, true, 'the finished line tells the cleanup to search this step');
+        match(r.halt.detail, re);
+        ok(!/left subtask A/.test(r.halt.detail), r.halt.detail);
+        deepStrictEqual(L.listOpenRuns(t.work).map((x) => x.runId), [r.run.run_id], 'the record is kept');
+        deepStrictEqual(L.readLockEntries(L.macroLockPath(t.work, t.fx.macroId)), [], 'the locks are released all the same');
+      } finally {
+        t.fx.cleanup();
+      }
+    });
+  }
 
   it('a prepared lane\'s dispatch is checked against the baseline as it is when the step is admitted', async () => {
     const t = await setup({ subtasks: [{ id: 'A' }], scenario: { A: { next: [COMMIT], file: true } } });

@@ -1,6 +1,6 @@
 ---
 description: Run an approved macro unattended — one fresh Claude worker per step, halting at owner judgment (ADR-0063, Claude only; dry-run by default)
-argument-hint: "[preview|start [--execute]|status|stop] [--macro <id>] [--models owner-default|mixed|sonnet] [--model <m>] [--effort <e>] [--max-steps <n>] [--max-cost <usd>] [--step-budget <usd>] [--step-timeout <s>] [--max-time <s>] [--lanes <n>] [--next \"<step>\"] [--lane <subtask> --next \"<step>\"] [--notify-local] [--json]"
+argument-hint: "[preview|start [--execute]|status|stop] [--macro <id>] [--models owner-default|mixed|sonnet] [--model <m>] [--effort <e>] [--max-steps <n>] [--max-cost <usd>] [--step-budget <usd>] [--step-timeout <s>] [--lanes <n>] [--next \"<step>\"] [--lane <subtask> --next \"<step>\"] [--notify-local] [--json]"
 ---
 
 # Orchestrator · Autopilot
@@ -143,11 +143,16 @@ it.
 
    When the arguments already name one of them, leave `MODELS` empty.
 2. **The two-hour limit.** A host background task is stopped after two hours.
-   Unless the arguments name `--max-time`, leave `MAX_TIME=7000` in the block,
-   so the run ends with a recorded `budget` halt before the host stops it; a
-   relaunch continues where it stopped. When the owner wants one run longer
-   than that, it belongs in a terminal: `preview` prints the command that
-   installs the `agentic-autopilot` launcher, and then
+   The run has no clock of its own: its steps, its cost, each step's timeout,
+   a halt or `stop` end it (ADR-0063 D1, amendment of 2026-10-13). Do not
+   count on a host stop to end it cleanly: it may leave no halt record and no
+   exit 2, and the workers, which run detached, may still be at work. After a
+   host stop, run `/orchestrator:autopilot status`; when it shows the run or
+   its worker groups still there, run `/orchestrator:autopilot stop`, which
+   ends them and cleans up after the run; then relaunch, which continues where
+   the state says. A run that may take longer than two hours belongs in a
+   terminal: `preview` prints the command that installs the
+   `agentic-autopilot` launcher, and then
    `~/.agentic-plugins/bin/agentic-autopilot start --execute --repo <repo> --models <plan>`.
 3. Run the block **as a host background task** — on Claude, the Bash tool's
    `run_in_background`, with its longest timeout (7200000 ms) — never with a
@@ -156,12 +161,10 @@ it.
 ```bash
 ARGS_DIR='<directory from step 1>'
 MODELS=''
-MAX_TIME='7000'
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 EXTRA=()
 [ -n "$MODELS" ] && EXTRA+=(--models "$MODELS")
-[ -n "$MAX_TIME" ] && EXTRA+=(--max-time "$MAX_TIME")
 node "$CLAUDE_PLUGIN_ROOT/adapters/claude/autopilot/cli.mjs" --args-file "$ARGS_DIR/args.json" "${EXTRA[@]}"
 ```
 

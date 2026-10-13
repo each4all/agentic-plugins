@@ -193,6 +193,31 @@ export function workerArgs({ sessionId, stepKind, runId, seq, stepBudgetUsd, mod
 }
 
 export const RAW_STREAM_MAX_BYTES = 64 * 1024 * 1024;
+// A model's context window in a result's `modelUsage`. Its keys may carry a
+// suffix the stream's model names lack (`claude-opus-4-7[1m]` for the
+// 1M-token window): the key as written decides first, then every key that is
+// the model once a bracketed suffix is dropped from both, the largest window
+// among them, so the answer does not depend on the keys' order. null when no
+// key gives a positive window.
+const baseModel = (m) => String(m).replace(/\[[^\]]*\]$/, '');
+const isWindow = (w) => typeof w === 'number' && Number.isFinite(w) && w > 0;
+export function contextWindowFor(usage, model) {
+  if (!usage || typeof usage !== 'object' || typeof model !== 'string') return null;
+  const exact = Object.hasOwn(usage, model) ? usage[model]?.contextWindow : undefined;
+  if (isWindow(exact)) return exact;
+  const base = baseModel(model);
+  if (base === '') return null;
+  let best = null;
+  for (const [key, entry] of Object.entries(usage)) {
+    const w = entry?.contextWindow;
+    if (baseModel(key) === base && isWindow(w) && (best === null || w > best)) best = w;
+  }
+  return best;
+}
+
+// The longest step timeout the host's timer holds: setTimeout keeps a delay in
+// 32 bits of milliseconds, and a longer one fires at once.
+export const MAX_STEP_TIMEOUT_SEC = Math.floor((2 ** 31 - 1) / 1000);
 const CLOSE_DEBOUNCE_MS = 2000;
 const KILL_GRACE_MS = 5000;
 // After the worker itself has exited, how long its output may stay open. A
@@ -424,7 +449,7 @@ export function startWorker(o) {
       let contextWindow = null;
       for (const [model, ctx] of st.peakByModel) {
         if (ctx > peakCtx) peakCtx = ctx;
-        const win = usage[model]?.contextWindow ?? (model === '' && st.model ? usage[st.model]?.contextWindow : undefined);
+        const win = contextWindowFor(usage, model) ?? (model === '' && st.model ? contextWindowFor(usage, st.model) : null);
         if (typeof win === 'number' && win > 0 && (peakPct === null || ctx / win > peakPct)) {
           peakPct = ctx / win;
           contextWindow = win;

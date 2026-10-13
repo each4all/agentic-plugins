@@ -8,35 +8,30 @@
 // was reported (nothing when nothing was spawned), and the reservation is
 // released.
 //
-// The run's budget is exhausted only when what is already spent, the steps
-// already taken or the elapsed time leaves too little; a start blocked only by
-// other steps' reservations waits for them to settle, then decides again. A
-// serial run holds one reservation at a time, so for it these are the checks
-// and the arithmetic the driver always made. Each worker's time is bounded by
-// the run's deadline.
+// The run's budget is exhausted only when what is already spent or the steps
+// already taken leave too little; a start blocked only by other steps'
+// reservations waits for them to settle, then decides again. A serial run
+// holds one reservation at a time, so for it these are the checks and the
+// arithmetic the driver always made. No run clock bounds a step (ADR-0063 D1,
+// amendment of 2026-10-13): each worker gets the whole per-step timeout,
+// however late in the run it starts.
 
 // A step with less than this left of the run's cost cap is not started.
 export const MIN_STEP_BUDGET_USD = 0.5;
-export const MIN_STEP_TIMEOUT_SEC = 60;
 
 /**
- * @param o.maxSteps, o.maxCostUsd, o.stepBudgetUsd, o.stepTimeoutSec, o.maxTimeSec  the run's caps
- * @param o.startedAt  the run's start (ms)
- * @param o.now        the clock (ms)
+ * @param o.maxSteps, o.maxCostUsd, o.stepBudgetUsd, o.stepTimeoutSec  the run's caps
  */
-export function createBudget({ maxSteps, maxCostUsd, stepBudgetUsd, stepTimeoutSec, maxTimeSec, startedAt, now = () => Date.now() }) {
+export function createBudget({ maxSteps, maxCostUsd, stepBudgetUsd, stepTimeoutSec }) {
   const open = new Map();
   let nextId = 1;
   const st = { spent: 0, taken: 0, costComplete: true, settled: new Set() };
   const reservedUsd = () => [...open.values()].reduce((a, r) => a + r.usd, 0);
-  const elapsedSec = () => (now() - startedAt) / 1000;
 
-  // What is spent, the steps taken or the time elapsed leave too little: the
-  // detail, or null.
+  // What is spent or the steps taken leave too little: the detail, or null.
   const exhausted = () => {
     if (st.taken >= maxSteps) return `the run reached its step cap (${maxSteps})`;
     if (maxCostUsd - st.spent < MIN_STEP_BUDGET_USD) return `the run spent $${st.spent.toFixed(2)} of its $${maxCostUsd} cap`;
-    if (maxTimeSec - elapsedSec() < MIN_STEP_TIMEOUT_SEC) return `the run reached its wall clock (${maxTimeSec} s)`;
     return null;
   };
 
@@ -49,7 +44,6 @@ export function createBudget({ maxSteps, maxCostUsd, stepBudgetUsd, stepTimeoutS
     reserve() {
       const spentOut = exhausted();
       if (spentOut) return { exhausted: true, detail: spentOut };
-      const elapsed = elapsedSec();
       if (st.taken + open.size >= maxSteps) {
         return { wait: true, why: `${open.size} step(s) in flight hold the rest of the step cap (${maxSteps})` };
       }
@@ -60,7 +54,7 @@ export function createBudget({ maxSteps, maxCostUsd, stepBudgetUsd, stepTimeoutS
       const reservation = {
         id: nextId,
         usd: Math.min(stepBudgetUsd, left),
-        timeoutSec: Math.floor(Math.min(stepTimeoutSec, maxTimeSec - elapsed)),
+        timeoutSec: stepTimeoutSec,
       };
       nextId += 1;
       open.set(reservation.id, reservation);
@@ -86,15 +80,6 @@ export function createBudget({ maxSteps, maxCostUsd, stepBudgetUsd, stepTimeoutS
       return charged;
     },
 
-    /**
-     * The wall clock a reserved step may run for, judged again at its spawn:
-     * the time a lane's creation took comes off it, so no worker outlives the
-     * run's deadline (each worker's time is bounded by it).
-     */
-    timeoutSecNow(reservation) {
-      return Math.floor(Math.min(reservation?.timeoutSec ?? stepTimeoutSec, maxTimeSec - elapsedSec()));
-    },
-
     /** Whether the run is exhausted whatever settles: its detail, or null. Reserves nothing. */
     exhausted,
 
@@ -103,7 +88,5 @@ export function createBudget({ maxSteps, maxCostUsd, stepBudgetUsd, stepTimeoutS
     get costComplete() { return st.costComplete; },
     get inFlight() { return open.size; },
     get reservedUsd() { return reservedUsd(); },
-    /** The run's deadline, in Unix seconds. */
-    deadlineSec() { return (startedAt / 1000) + maxTimeSec; },
   };
 }

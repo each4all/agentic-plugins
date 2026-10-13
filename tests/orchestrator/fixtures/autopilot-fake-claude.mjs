@@ -29,6 +29,9 @@
 //               `perform({prompt, cwd, env})` does the step with the real
 //               state CLIs and returns {report, cost})
 //
+// FAKE_MODEL_USAGE, a JSON object, replaces the result's `modelUsage` (the
+// real CLI keys it by model, a 1M-token window as `<model>[1m]`).
+//
 // Every start appends {argv, env, cwd, locks} to FAKE_CLAUDE_LOG when it is
 // set; `locks` holds the entries of the driven checkout's worktree lock as the
 // worker finds them.
@@ -71,7 +74,8 @@ const firstReport = process.env.FAKE_FIRST_REPORT ? JSON.parse(process.env.FAKE_
 const plugins = process.env.FAKE_PLUGINS ? JSON.parse(process.env.FAKE_PLUGINS) : [];
 const result = (cost, structured = report) => ({
   type: 'result', subtype: 'success', is_error: false, total_cost_usd: cost, num_turns: 1,
-  modelUsage: { [model]: { contextWindow: 1000000 }, 'fake-subagent-model': { contextWindow: 200000 } },
+  modelUsage: process.env.FAKE_MODEL_USAGE ? JSON.parse(process.env.FAKE_MODEL_USAGE)
+    : { [model]: { contextWindow: 1000000 }, 'fake-subagent-model': { contextWindow: 200000 } },
   permission_denials: [], structured_output: structured,
 });
 

@@ -107,12 +107,13 @@ function describePart(p) {
  *     decides the next);
  *   - throttled: no. With nothing to refresh it — no worker in flight and no
  *     started lane with a runnable step — wait until every throttling part has
- *     expired, or halt `budget` when one has no reset or resets after the
- *     run's deadline.
+ *     expired, however far off its reset (a run has no deadline, ADR-0067
+ *     Decision 6 amendment of 2026-10-13), or halt `budget` when one has no
+ *     reset, since no wait would end.
  * { start: true } | { start: false, why } | { start: false, waitUntilSec, why }
  * | { start: false, halt: {reason, detail} }.
  */
-export function gateNewLane(state, { nowSec, deadlineSec, inFlight = 0, refreshable = false }) {
+export function gateNewLane(state, { nowSec, inFlight = 0, refreshable = false }) {
   const j = judgeThrottle(state, nowSec);
   if (j.state === 'open') return { start: true, judgment: j };
   if (j.state === 'unknown') {
@@ -124,10 +125,6 @@ export function gateNewLane(state, { nowSec, deadlineSec, inFlight = 0, refresha
   const unbounded = j.throttling.find((p) => p.resetsAt === null);
   if (unbounded) {
     return { start: false, halt: { reason: 'budget', detail: `the rate limit throttles new lanes (${describePart(unbounded)}) with no reset time, and nothing is running to bring a newer event` }, judgment: j };
-  }
-  const late = j.throttling.find((p) => p.resetsAt > deadlineSec);
-  if (late) {
-    return { start: false, halt: { reason: 'budget', detail: `the ${late.window === 'five_hour' ? 'five-hour' : 'seven-day'} rate-limit window (${describePart(late)}) resets at ${iso(late.resetsAt)}, after the run's deadline ${iso(deadlineSec)}` }, judgment: j };
   }
   const waitUntilSec = Math.max(...j.throttling.map((p) => p.resetsAt));
   return { start: false, waitUntilSec, why: `throttled (${j.why}) with nothing running; waiting for the reset at ${iso(waitUntilSec)}`, judgment: j };

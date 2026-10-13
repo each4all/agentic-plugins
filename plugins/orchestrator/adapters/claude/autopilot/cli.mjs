@@ -44,7 +44,7 @@ import { INTERRUPT_BOUND_MS } from './offloop.mjs';
 import {
   decide, decideLanes, fingerprint, forcedForLanes, isSafeSubtaskId, MODEL_PLANS, parseForcedStep, proposalLines as haltProposalLines, proposalsOnce, renderStep,
 } from './policy.mjs';
-import { terminateGroup } from './worker.mjs';
+import { MAX_STEP_TIMEOUT_SEC, terminateGroup } from './worker.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const SUBCOMMANDS = ['preview', 'start', 'status', 'stop'];
@@ -68,9 +68,8 @@ Options:
   --max-steps <n>         default ${DEFAULTS.maxSteps}
   --max-cost <usd>        default ${DEFAULTS.maxCostUsd}
   --step-budget <usd>     default ${DEFAULTS.stepBudgetUsd}
-  --step-timeout <s>      default ${DEFAULTS.stepTimeoutSec} (at least 60)
-  --max-time <s>          default ${DEFAULTS.maxTimeSec} (at least 60)
-  --oversize-pct <p>      default ${DEFAULTS.oversizePct} (a fraction of the context window)
+  --step-timeout <s>      default ${DEFAULTS.stepTimeoutSec} (at least 60, at most ${MAX_STEP_TIMEOUT_SEC}); the run itself has
+                          no clock: steps, cost, this timeout, a halt or stop end it
   --lanes <n>             run up to n subtasks at once, each in its own git worktree (a lane); 1 or absent:
                           one subtask at a time in this checkout. The owner's default with lanes is 2
                           (ADR-0067 Decision 6); a larger n spends the rate limit faster
@@ -98,9 +97,10 @@ const positive = (name, raw, { integer = false, max = Infinity } = {}) => {
 // A step needs time to start a session and run a runbook; a bound below this
 // is refused rather than quietly raised.
 const MIN_SECONDS = 60;
-const atLeast = (name, raw, min) => {
+const atLeast = (name, raw, min, max = Infinity) => {
   const n = positive(name, raw, { integer: true });
   if (n < min) throw new UsageError(`${name} must be at least ${min} seconds (got ${n})`);
+  if (n > max) throw new UsageError(`${name} must be at most ${max} seconds, the longest timer the worker host holds (got ${n})`);
   return n;
 };
 
@@ -111,7 +111,7 @@ export function parseCli(argv) {
     sub: 'preview', execute: false, repo: null, macro: null, run: null,
     models: null, model: null, effort: null,
     maxSteps: DEFAULTS.maxSteps, maxCostUsd: DEFAULTS.maxCostUsd, stepBudgetUsd: DEFAULTS.stepBudgetUsd,
-    stepTimeoutSec: DEFAULTS.stepTimeoutSec, maxTimeSec: DEFAULTS.maxTimeSec, oversizePct: DEFAULTS.oversizePct,
+    stepTimeoutSec: DEFAULTS.stepTimeoutSec,
     forced: null, forcedText: null, forcedPairs: null, lanes: 1, notifyLocal: false, json: false, help: false,
   };
   // --lane <id> --next "<step>" pairs, in order; a --next with no --lane
@@ -156,9 +156,7 @@ export function parseCli(argv) {
         // never spawned, so a per-step cap below it could never run one.
         if (o.stepBudgetUsd < MIN_STEP_BUDGET_USD) throw new UsageError(`${name} must be at least ${MIN_STEP_BUDGET_USD} (got ${o.stepBudgetUsd})`);
         break;
-      case '--step-timeout': o.stepTimeoutSec = atLeast(name, value(), MIN_SECONDS); break;
-      case '--max-time': o.maxTimeSec = atLeast(name, value(), MIN_SECONDS); break;
-      case '--oversize-pct': o.oversizePct = positive(name, value(), { max: 1 }); break;
+      case '--step-timeout': o.stepTimeoutSec = atLeast(name, value(), MIN_SECONDS, MAX_STEP_TIMEOUT_SEC); break;
       case '--lanes': o.lanes = positive(name, value(), { integer: true }); break;
       case '--lane': {
         const id = value();
@@ -410,7 +408,7 @@ async function previewCmd(o, repoRoot, env, out) {
     }
     if (lanesPreview) printLanesPreview(lanesPreview, out);
     out(`posture: --permission-mode manual · --permission-prompts none · model plan ${p.model_plan ?? '(asked at start)'}${p.model_override.model || p.model_override.effort ? ` · override ${p.model_override.model ?? '-'}/${p.model_override.effort ?? '-'}` : ''}`);
-    out(`  budgets: ${o.maxSteps} steps · $${o.maxCostUsd} per run · $${o.stepBudgetUsd} and ${o.stepTimeoutSec} s per step · ${o.maxTimeSec} s per run · oversize ${o.oversizePct}${o.lanes >= 2 ? ` · each step's budget reserved before it spawns, up to ${o.lanes} at once` : ''}`);
+    out(`  budgets: ${o.maxSteps} steps · $${o.maxCostUsd} per run · $${o.stepBudgetUsd} and ${o.stepTimeoutSec} s per step${o.lanes >= 2 ? ` · each step's budget reserved before it spawns, up to ${o.lanes} at once` : ''}`);
     out(`  allowed: ${p.allowed_tools.join(' ')}`);
     out(`  denied: ${p.denied_tools.join(' ')} (+ ${p.denied_on_non_commit_steps.join(' ')} except on /engineer:commit)`);
     for (const w of pre.warnings) out(`⚠ ${w}`);

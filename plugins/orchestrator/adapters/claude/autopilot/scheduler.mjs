@@ -62,13 +62,21 @@ import { holdLane, laneHome, lanePath, reconcileLanes, stepPlacement } from './l
 import { appendStep, LockHeldError, processFingerprint, workerStreamPath, writeRun } from './ledger.mjs';
 import { createTaskRunner, offLoop as defaultOffLoop } from './offloop.mjs';
 import {
-  checkoutProblem, consensusProposals, decideLanes, fingerprint, forcedForLanes, laneFingerprint, modelFor,
+  afterUnread, checkoutProblem, consensusProposals, decideLanes, fingerprint, forcedForLanes, laneFingerprint, modelFor,
   proposalsAtEnd, renderStep, STEP_KINDS, verifyStep,
 } from './policy.mjs';
 import { driftOf, PLUGINS, resolveRoots } from './roots.mjs';
 import {
   applyRateLimitEvent, createThrottleState, gateNewLane, judgeThrottle, throttleSnapshot, throttleText,
 } from './throttle.mjs';
+
+// How long a wait for the throttle's reset at `sec` (Unix seconds) sleeps
+// before the run decides again: a second past the reset, and never past the
+// longest delay setTimeout holds (a longer one fires at once). A reset may be
+// days off (a seven-day window), and a run has no deadline: the wait is slept
+// in pieces, each wake-up deciding again.
+const MAX_TIMER_MS = 2 ** 31 - 1;
+export const resetDelayMs = (sec, nowMs) => Math.min(Math.max(0, sec * 1000 - nowMs) + 1000, MAX_TIMER_MS);
 
 const canonical = (p) => {
   try { return realpathSync(p); } catch { return resolve(p); }
@@ -128,6 +136,22 @@ export function ownChildOnly(view, id) {
   return { ...view, children };
 }
 
+// What a failed step's peer cancellation leaves, in the serial run and in a
+// lane alike: the verdict's detail names the peers cancelled, those whose
+// cancellation did not go through, and why the step's pending runs could not
+// be listed (`unlisted`, peersUnlisted's answer). `keep` is true when any of
+// them may still run: the run then keeps its open-run record, so the next
+// run's cleanup (or stop) cancels the peers that name it.
+export function peerCancellationOutcome(verdict, cancelled, unlisted) {
+  const done = cancelled.filter((x) => x.exit === 0).map((x) => x.run_id);
+  const open = cancelled.filter((x) => x.exit !== 0).map((x) => x.run_id);
+  let { detail } = verdict;
+  if (done.length) detail = `${detail}; cancelled the step's pending peer run(s) ${done.join(', ')}`;
+  if (open.length) detail = `${detail}; could not cancel the step's pending peer run(s) ${open.join(', ')}, so the run keeps its open-run record for the next run's cleanup`;
+  if (unlisted) detail = `${detail}; the step's pending peer runs could not be listed (${unlisted}), so the run keeps its open-run record for the next run's cleanup`;
+  return { verdict: { ...verdict, detail }, keep: open.length > 0 || Boolean(unlisted) };
+}
+
 /**
  * Run the macro with lanes until it completes, halts or is interrupted.
  * Resolves to the exit code `c.finish` returns.
@@ -150,7 +174,7 @@ export async function runLanes(c) {
   const protect = [repoRoot, runDir, stateRoot.root];
   const budget = createBudget({
     maxSteps: options.maxSteps, maxCostUsd: options.maxCostUsd, stepBudgetUsd: options.stepBudgetUsd,
-    stepTimeoutSec: options.stepTimeoutSec, maxTimeSec: options.maxTimeSec, startedAt: Date.parse(run.started_at), now,
+    stepTimeoutSec: options.stepTimeoutSec,
   });
   const throttle = createThrottleState();
   const lanes = new Map(); // subtask id → { path, laneId, branch, subtaskId, state, lock }
@@ -295,7 +319,7 @@ export async function runLanes(c) {
   // The throttle's answer for a new lane now, with the workers in flight now:
   // the turn asks it, and an admission asks it again before it creates the
   // lane and before it spawns.
-  const gate = (refreshable = false) => gateNewLane(throttle, { nowSec: now() / 1000, deadlineSec: budget.deadlineSec(), inFlight: inflight.size, refreshable });
+  const gate = (refreshable = false) => gateNewLane(throttle, { nowSec: now() / 1000, inFlight: inflight.size, refreshable });
   // Why a new lane waits, printed when it changes.
   const noteThrottle = (why) => {
     if (why && why !== throttleNote) out(`  ${why}`);
@@ -413,8 +437,9 @@ export async function runLanes(c) {
     }
     const place = stepPlacement(s, { lanes, checkout: repoRoot, stateRoot });
     if (place.problem) return refuse({ reason: 'owner-choice', detail: place.problem, subtaskId: id });
-    const timeoutSec = budget.timeoutSecNow(reservation);
-    if (timeoutSec < 1) return refuse({ reason: 'budget', detail: `the run reached its wall clock (${options.maxTimeSec} s)` });
+    // The whole per-step timeout, however long the lane took to prepare: no
+    // run clock takes from it (ADR-0063 D1, amendment of 2026-10-13).
+    const timeoutSec = reservation.timeoutSec;
 
     // Admitted.
     seq += 1;
@@ -500,16 +525,25 @@ export async function runLanes(c) {
     let after = await look(entry.cwd, !entry.lane);
     if (after.lookError || peersUnlisted(after, id)) after = await look(entry.cwd, !entry.lane);
     let verdict;
+    // Whether this step's peers are unaccounted for: the run keeps its
+    // open-run record, and the step's finished line says so, so the next
+    // run's cleanup searches this step for them (dead-runs.mjs).
+    let unaccounted = false;
+    const keep = () => { unaccounted = true; c.keepOpenRecord(); };
     if (after.lookError) {
       // Unverified, and its peers unknown: the run halts, and keeps its
       // open-run record, so the next run's cleanup cancels the peers that name
       // it (dead-runs.mjs).
-      c.keepOpenRecord();
+      keep();
       verdict = asHalt({ reason: 'owner-choice', detail: `the look at ${entry.cwd} after step ${entry.seq} failed (${after.lookError}); the step's result could not be verified` });
     } else {
       verdict = c.interrupted() && !w.aborted
         ? asHalt({ reason: 'interrupted', detail: 'the owner interrupted the run' })
-        : verifyStep({ step: s, worker: w, before: entry.before, after, oversizePct: options.oversizePct });
+        : verifyStep({ step: s, worker: w, before: entry.before, after });
+      // A look that could not read the macro, its readiness or the step's
+      // child cannot account for the step's peers: the run keeps its open-run
+      // record, as on a failed look, whatever the verdict says.
+      if (afterUnread(after, id)) keep();
     }
     let cancelled = [];
     if (verdict && (w.aborted || verdict.reason === 'worker-failed' || verdict.reason === 'interrupted')) {
@@ -521,13 +555,9 @@ export async function runLanes(c) {
       // A peer whose cancellation did not go through, or that the look could
       // not list, may still run: the run keeps its open-run record, so the
       // next run's cleanup (or stop) cancels it.
-      const done = cancelled.filter((x) => x.exit === 0).map((x) => x.run_id);
-      const open = cancelled.filter((x) => x.exit !== 0).map((x) => x.run_id);
-      const unlisted = after.lookError ? null : peersUnlisted(after, id);
-      if (open.length || unlisted) c.keepOpenRecord();
-      if (done.length) verdict = { ...verdict, detail: `${verdict.detail}; cancelled the step's pending peer run(s) ${done.join(', ')}` };
-      if (open.length) verdict = { ...verdict, detail: `${verdict.detail}; could not cancel the step's pending peer run(s) ${open.join(', ')}, so the run keeps its open-run record for the next run's cleanup` };
-      if (unlisted) verdict = { ...verdict, detail: `${verdict.detail}; the step's pending peer runs could not be listed (${unlisted}), so the run keeps its open-run record for the next run's cleanup` };
+      const settled = peerCancellationOutcome(verdict, cancelled, after.lookError ? null : peersUnlisted(after, id));
+      if (settled.keep) keep();
+      verdict = settled.verdict;
     }
     appendStep(runDir, {
       event: 'finished', seq: entry.seq, lane: entry.lane, ended_at: new Date(now()).toISOString(),
@@ -536,7 +566,8 @@ export async function runLanes(c) {
       turns: w.turns, cost_usd: w.costUsd, cost_charged_usd: cost, peak_ctx: w.peakCtx, peak_pct: w.peakPct,
       context_window: w.contextWindow, permission_denials: w.denials, report: w.report, raw_truncated: w.rawTruncated,
       group_teardown: w.groupTeardown, rate_limit: w.rateLimit ?? null,
-      peer_cancellations: cancelled, fingerprint_after: entry.lane ? laneFingerprint(after, id) : fingerprint(after),
+      peer_cancellations: cancelled, peers_unaccounted: unaccounted,
+      fingerprint_after: entry.lane ? laneFingerprint(after, id) : fingerprint(after),
       outcome: verdict ? verdict.reason : 'ok',
     });
     writeRun(runDir, run);
@@ -647,7 +678,7 @@ export async function runLanes(c) {
 
   const armReset = (sec) => {
     clearTimeout(resetTimer);
-    resetTimer = setTimeout(wake, Math.max(0, sec * 1000 - now()) + 1000);
+    resetTimer = setTimeout(wake, resetDelayMs(sec, now()));
   };
 
   function lanesSummary() {

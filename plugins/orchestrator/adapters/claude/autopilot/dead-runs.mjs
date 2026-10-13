@@ -6,9 +6,10 @@
 // would have cleaned up: the peer runs its steps started, which run detached
 // from the worker groups, and the budget of the step it had in flight. Each
 // run keeps an open-run record (ledger.mjs) from before its first spawn until
-// it ends with every worker group empty. `stop`, and every run at its start,
-// list the records of the macro, judge each driver by its pid and fingerprint
-// as a lock entry's is judged, and for a dead one whose worker groups are
+// it ends with every worker group empty and every step's peers accounted for.
+// `stop`, and every run at its start, list the records of the macro, judge
+// each driver by its pid and fingerprint as a lock entry's is judged, and for
+// a dead one whose worker groups are
 // empty (a starting run holds the macro lock; `stop` empties them first):
 //
 //   1. cancel, through engineer's fingerprint-checked `peer-runner cancel`,
@@ -17,7 +18,11 @@
 //      peer the owner started after the crash names none and is left alone. A
 //      pending peer that names no run, on the macro's workflow of an
 //      unfinished step's subtask and started since that step, came from a
-//      peer-runner that records none: it is reported, never cancelled;
+//      peer-runner that records none: it is reported, never cancelled. A
+//      finished step whose run could not account for its peers (its
+//      `finished` line says `peers_unaccounted`: the look after it failed
+//      or could not read them, or their cancellation did not go through) is
+//      searched as an unfinished one is;
 //   2. record each unfinished step (a `started` line with no `finished` line)
 //      as spent in the run's run.json, once, by its seq, and a finished step
 //      whose charge the driver had no time to write there;
@@ -177,8 +182,9 @@ function readStepsStrictly(runDir) {
   return { steps: [...bySeq.values()].sort((a, b) => a.seq - b.seq) };
 }
 
-// The unfinished step a peer that names no run may belong to: one on the
-// macro's workflow of that step's subtask, started since the step started.
+// The step a peer that names no run may belong to — an unfinished one, or a
+// finished one whose peers the run could not account for: one on the macro's
+// workflow of that step's subtask, started since the step started.
 function stepOfUnnamed(handle, unfinished, macroId) {
   const started = Date.parse(handle.started_at ?? '');
   let link;
@@ -308,6 +314,9 @@ async function cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, 
     }
     const run = r.run;
     const unfinished = strict.steps.filter((s) => s.event === 'started');
+    // Where a peer that names no run may come from: an unfinished step, or a
+    // finished one whose peers its run could not account for.
+    const unaccounted = strict.steps.filter((s) => s.event === 'started' || s.peers_unaccounted === true);
 
     const engineer = engineerFor(run, engineerRoot);
     const cancelled = [];
@@ -331,7 +340,7 @@ async function cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, 
       }
       // Another run's peer, or the owner's.
       if (names !== undefined && names !== null && names !== '') continue;
-      const step = stepOfUnnamed(handle, unfinished, record.macro_id);
+      const step = stepOfUnnamed(handle, unaccounted, record.macro_id);
       if (step) reported.push({ run_id: handle.run_id, root, workflow: handle.workflow_path ?? null, subtask_id: step.subtask_id, seq: step.seq, engineer });
     }
 

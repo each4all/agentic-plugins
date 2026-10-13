@@ -18,6 +18,16 @@ Proposed 2026-10-07.
   2026-10-08). The accepting commit applied
   [§Amendment cascade](#amendment-cascade-apply-verbatim-on-acceptance) and
   marked the index row Accepted.
+- Amended 2026-10-13 by the owner's review decision C105 (recorded outside
+  this repository): Decision 6's Budgets lose the elapsed time and the run
+  deadline, and its Throttle waits for a reset however far off, halting only
+  on a part with no reset time; the C105 follow-up under §Out of scope is
+  closed by that removal. Each place keeps its text and carries a dated note.
+- Amended 2026-10-13 by the owner's review decision C92 (recorded outside
+  this repository): Decision 6's open-run record outlives a run whose step's
+  peers are unaccounted for (a look that could not read or list them, a
+  cancellation that did not go through), and the cleanup searches that step.
+  Each place keeps its text and carries a dated note.
 - **On acceptance** it:
   - amends [ADR-0063](0063-autopilot-fresh-session-driver.md): R2's halt
     wording, D1's worktree-lanes clause (the held integration-merge clause is
@@ -1312,7 +1322,13 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
     run id, the macro id, the checkout and run directory of its ledger, and
     the driver's pid and fingerprint. No lock consumer lists that directory.
     - The run removes its record when it ends with every worker group
-      empty: completed, halted, interrupted.
+      empty: completed, halted, interrupted. *Amendment 2026-10-13 (C92):*
+      unless a step's peers are unaccounted for: the look after the step
+      could not read the macro, its readiness or the step's child, or after
+      a failed step could not list its peers, or a peer's cancellation did
+      not go through. The run then keeps its record however it ends, in a
+      lane and in the serial run alike, and that step's `finished` line
+      records `peers_unaccounted: true`.
     - `stop`, and every run at its start, list the records for this macro
       and judge each driver by its pid and fingerprint, as `holderAlive`
       judges a lock entry's. A dead driver's worker groups are empty by then:
@@ -1320,7 +1336,11 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
       `stop` empties them first. For a dead one they read its ledger, where
       every `started` line without its `finished` line is an unfinished step
       (`ledger.mjs:9`, `:99`), do the cleanup above, and only then remove
-      the record. Each part of the cleanup is idempotent (a step's
+      the record. *Amendment 2026-10-13 (C92):* a finished step whose line
+      records `peers_unaccounted: true` is, like an unfinished step, one a
+      pending peer that names no run may belong to (reported, never
+      cancelled); the peers that name the run are cancelled as before, and
+      that step's budget, already settled, is not counted again. Each part of the cleanup is idempotent (a step's
       reservation is settled once, by its `seq`; a cancelled peer run stays
       cancelled), so a `stop` and a starting run that meet the same record
       count nothing twice. A record whose ledger is gone (its checkout
@@ -1348,8 +1368,13 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
     settle, then decides again. The budget is exhausted only when what is
     already *spent*, the steps already *taken* or the elapsed time leaves
     too little: a $25 run whose first step reserved $25 is not exhausted, and
-    may continue once that step spends $1.
+    may continue once that step spends $1. *Amendment 2026-10-13 (C105):*
+    the elapsed time no longer counts; what is spent and the steps taken
+    decide.
   - Each worker's time is bounded by the run's deadline, as today.
+    *Amendment 2026-10-13 (C105):* a run has no deadline. Each worker gets its
+    whole per-step timeout, however late it starts and however long its lane
+    took to prepare.
 - **Drain (W2).** A halt in any lane or in a lane's creation (Decision 5),
   an invalidated plan approval, version drift, or an exhausted budget puts
   the run in `draining`:
@@ -1427,6 +1452,12 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
     its reset falls after the run's deadline, halt `budget`, naming the
     rate-limit window. A started lane with a runnable step is not
     "nothing": it steps, and its worker brings new events.
+    *Amendment 2026-10-13 (C105):* with no run deadline, a throttled new lane
+    with nothing to refresh it waits for the latest reset however far off (a
+    seven-day refusal, days away), slept in pieces no longer than a timer
+    holds, each wake-up deciding again. Only a part with no reset time halts
+    `budget`, since no wait would end. The owner ends a wait with `stop` or
+    Ctrl-C.
   - Lanes already started keep stepping: the throttle gates new lanes only,
     the owner's default.
 - **Forced resume.** `--next <step>` keeps its grammar, and with lanes it is
@@ -1812,6 +1843,8 @@ Not amended:
 - A shared-number allocator. The planner pre-assigns numbers instead.
 - Docket C105: a step-start guard based on recent step durations. Today the
   driver checks only `MIN_STEP_TIMEOUT_SEC` (`driver.mjs:50`).
+  *Closed 2026-10-13 (C105):* the owner removed the run clock instead, and
+  `MIN_STEP_TIMEOUT_SEC` with it, so no start is cut short.
 - A per-lane setup command (dependency installs). This repository needs none.
 
 ## Consequences

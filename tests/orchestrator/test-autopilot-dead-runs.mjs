@@ -170,6 +170,23 @@ describe('cleaning up after a dead run (ADR-0067 Decision 6, Locks)', () => {
     }
   });
 
+  it('searches a finished step whose run could not account for its peers as an unfinished one: its pending peer that names no run is reported; a finished step that accounted for them is not searched', { timeout: 60_000 }, async () => {
+    for (const [flag, expected] of [[true, 1], [false, 0]]) {
+      const t = await setup();
+      try {
+        await t.deadRun(DEAD, { steps: [{ seq: 2, subtask_id: 'A', step_budget_usd: 25, finished: { cost_usd: 1, peers_unaccounted: flag } }] });
+        const unnamed = await t.peer('plan-verify-20261009T010001Z-bbbb01');
+        const { lines, of } = await t.cleanup();
+        const r = of(DEAD);
+        strictEqual(r.outcome, 'cleaned', lines.join('\n'));
+        deepStrictEqual(r.reported.map((p) => [p.run_id, p.seq]), expected ? [[unnamed.id, 2]] : [], `peers_unaccounted: ${flag}`);
+        deepStrictEqual(r.settled.filter((s) => s.seq === 2).map((s) => s.finished), [true], 'a finished step is still counted as finished, not as spent whole');
+      } finally {
+        t.done();
+      }
+    }
+  });
+
   it('leaves a run whose driver or worker group still runs, keeps a record whose ledger is gone, and keeps one whose peer could not be cancelled', { timeout: 60_000 }, async () => {
     const t = await setup();
     const held = [];

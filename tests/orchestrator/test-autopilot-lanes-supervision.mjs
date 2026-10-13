@@ -18,7 +18,7 @@ import { AP, bySubtask, COMMIT, hour, L, LN, markOn, OPEN, setup, stepsOf } from
 
 const { startWorker: realStartWorker } = await import(resolve(AP, 'worker.mjs'));
 const { observeInChild, offLoop } = await import(resolve(AP, 'offloop.mjs'));
-const { ownChildOnly, peersUnlisted } = await import(resolve(AP, 'scheduler.mjs'));
+const { ownChildOnly, peersUnlisted, resetDelayMs } = await import(resolve(AP, 'scheduler.mjs'));
 const { newPendingRuns } = await import(resolve(AP, 'driver.mjs'));
 const alive = (pid) => {
   try { process.kill(pid, 0); return true; } catch { return false; }
@@ -48,6 +48,18 @@ const blockFirstLook = (b, then) => {
   };
 };
 const THROTTLED = () => ({ ...OPEN(), unifiedWindows: { five_hour: { utilization: 0.9, resetsAt: hour() }, seven_day: { utilization: 0.4, resetsAt: hour() + 86400 } } });
+// A five-hour refusal that names no reset: no wait would end.
+const NO_RESET = () => ({ status: 'rejected', rateLimitType: 'five_hour', unifiedWindows: { five_hour: { utilization: 1 }, seven_day: { utilization: 0.4 } } });
+// A seven-day refusal six days off: past any run clock a run ever had.
+const FAR = () => ({ ...OPEN(), status: 'rejected', rateLimitType: 'seven_day', resetsAt: Math.floor(Date.now() / 1000) + 6 * 86_400 });
+// Sends SIGTERM once the run prints that it waits for a reset.
+const stopWhenWaiting = (t) => {
+  const push = t.lines.push.bind(t.lines);
+  t.lines.push = (line) => {
+    if (/waiting for the reset at /.test(line)) setTimeout(() => t.signals.emit('SIGTERM'), 50);
+    return push(line);
+  };
+};
 // While B's lane is looked at, the clock passes the five-hour reset: the
 // part expires, and the rate limit is unknown with A in flight.
 const expireOnB = (t, clock) => async (a, o) => {
@@ -79,26 +91,77 @@ describe('two workers in flight', () => {
     }
   });
 
-  it('a forced new lane that is throttled waits while a started lane has a runnable step: that lane steps, and the run halts budget only once nothing can refresh the throttle', async () => {
-    const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT] } }, rateLimit: THROTTLED() });
+  it('a forced new lane that is throttled waits while a started lane has a runnable step: that lane steps, and with a refusal that names no reset the run halts budget only once nothing can refresh the throttle', async () => {
+    const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT] } }, rateLimit: NO_RESET() });
     try {
       const code = await t.run({
-        maxTimeSec: 600,
         forcedPairs: [{ lane: 'A', step: { kind: 'dispatch', subtaskId: 'A' } }, { lane: 'B', step: { kind: 'dispatch', subtaskId: 'B' } }],
       });
       strictEqual(code, 2, t.lines.join('\n'));
       const r = t.latest();
       deepStrictEqual(stepsOf(r).map((x) => [x[1], x[2], x[4]]), [['A', 'dispatch', 'ok'], ['A', 'commit', 'ok']], 'A\'s commit ran before the forced B halted the run');
       strictEqual(r.halt.reason, 'budget');
-      match(r.halt.detail, /five-hour rate-limit window .* after the run's deadline/);
+      match(r.halt.detail, /five-hour status rejected\) with no reset time, and nothing is running/);
       ok(!existsSync(t.lane('B')), 'a throttled run creates no lane');
     } finally {
       t.fx.cleanup();
     }
   });
+
+  it('with nothing to refresh it, a forced new lane throttled by a seven-day refusal days off waits for that reset — no run deadline halts it — until SIGTERM ends the run', async () => {
+    const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT] } }, rateLimit: FAR() });
+    stopWhenWaiting(t);
+    try {
+      const code = await t.run({
+        forcedPairs: [{ lane: 'A', step: { kind: 'dispatch', subtaskId: 'A' } }, { lane: 'B', step: { kind: 'dispatch', subtaskId: 'B' } }],
+      });
+      strictEqual(code, 2, t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual(stepsOf(r).map((x) => [x[1], x[2], x[4]]), [['A', 'dispatch', 'ok'], ['A', 'commit', 'ok']], 'the started lane stepped; B waited');
+      ok(t.lines.some((l) => /seven-day status rejected\) with nothing running; waiting for the reset at /.test(l)), t.lines.join('\n'));
+      strictEqual(r.halt.reason, 'interrupted');
+      ok(!existsSync(t.lane('B')), 'a throttled run creates no lane');
+      strictEqual(r.run.rate_limit.seven_day.status, 'rejected');
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('resetDelayMs: a second past the reset, never past the longest delay a timer holds', () => {
+    strictEqual(resetDelayMs(100, 40_000), 61_000);
+    strictEqual(resetDelayMs(100, 200_000), 1000, 'a reset already past wakes in a second');
+    strictEqual(resetDelayMs(30 * 86_400, 0), 2 ** 31 - 1, 'thirty days off: the wait is slept in pieces');
+  });
 });
 
 describe('what changes while a lane is admitted', () => {
+  it('a lane prepared three days into the run gets the whole step timeout: no run clock cuts a late start (ADR-0063 D1, amendment of 2026-10-13)', async () => {
+    const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT], file: 'b.txt' } } });
+    const clock = { offset: 0 };
+    const given = [];
+    try {
+      const code = await t.run({}, {
+        now: () => Date.now() + clock.offset,
+        // While B's lane is prepared the clock passes three days: past the
+        // former default run cap (86400 s) and the runbook's (7000 s).
+        observeAsync: async (a, o) => {
+          if (a.repoRoot === t.lane('B') && clock.offset === 0) clock.offset = 3 * 86_400 * 1000;
+          return observeInChild(a, o);
+        },
+        startWorker: (o) => { given.push(o.stepTimeoutSec); return realStartWorker(o); },
+      });
+      strictEqual(code, 2, t.lines.join('\n'));
+      ok(clock.offset > 0, 'B\'s lane was prepared');
+      const r = t.latest();
+      strictEqual(r.halt.reason, 'awaiting-landing', t.lines.join('\n'));
+      deepStrictEqual(stepsOf(r).map((x) => [x[1], x[2]]).sort(), [['A', 'commit'], ['A', 'dispatch'], ['B', 'commit'], ['B', 'dispatch']]);
+      for (const x of r.steps) strictEqual(x.step_timeout_sec, 3600, `step ${x.seq}'s started line`);
+      deepStrictEqual(given, r.steps.map(() => 3600), 'each worker got the whole timeout');
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
   it('a five-hour part that expires while a new lane is admitted leaves the rate limit unknown: the lane waits for the worker in flight, then starts once nothing runs', async () => {
     // A's dispatch ends only once B has been held back at its spawn.
     const t = await setup({
@@ -214,22 +277,24 @@ describe('a lane-layer failure is the lane\'s', () => {
     }
   });
 
-  it('after a failed step, a look that cannot read the macro cannot list the step\'s peers: the run keeps its open-run record, and the halt says why', async () => {
+  it('after a failed step, a look that cannot list the claims cannot list the step\'s peers: the run keeps its open-run record, and the halt says why', async () => {
     const t = await setup({ subtasks: [{ id: 'A' }], scenario: { A: { next: [COMMIT] }, actions: { 1: 'pending-sleep' } } });
     try {
-      // Once the step has recorded its peer, every look at A's lane reads no macro.
+      // Once the step has recorded its peer, every look at A's lane lists no
+      // claim and reads no child. (A look that cannot read the macro keeps the
+      // record on its own account: verifyStep's C92 check, below.)
       const code = await t.run({ stepTimeoutSec: 8 }, {
         observeAsync: async (a, o) => {
           const v = await observeInChild(a, o);
           return existsSync(join(t.dir, 'pending-ready')) && a.repoRoot === t.lane('A')
-            ? { ...v, macro: null, children: {}, claims: [], macroLookupError: 'injected: the macro moved' }
+            ? { ...v, children: {}, claims: [], claimsError: 'injected: the claims could not be listed' }
             : v;
         },
       });
       strictEqual(code, 2, t.lines.join('\n'));
       const r = t.latest();
       deepStrictEqual(r.steps.map((x) => [x.kind, x.aborted]), [['dispatch', 'timeout']]);
-      match(r.halt.detail, /the step's pending peer runs could not be listed \(the macro could not be read: injected: the macro moved\), so the run keeps its open-run record/);
+      match(r.halt.detail, /the step's pending peer runs could not be listed \(the engineer workflows that claim the macro could not be listed: injected: the claims could not be listed\), so the run keeps its open-run record/);
       deepStrictEqual(L.listOpenRuns(t.work).map((x) => x.runId), [r.run.run_id]);
     } finally {
       t.fx.cleanup();
