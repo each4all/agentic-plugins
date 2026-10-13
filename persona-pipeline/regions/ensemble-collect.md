@@ -7,9 +7,11 @@
    re-invokes the model when it completes, so wait for the notification
    exactly as written; never sleep-poll a file (`autopilot-mode.md` § Peer
    ensembles). The step report the host takes when you end a turn to wait
-   is provisional: on the notification, finish Synthesize, settle the
-   attempt (Phase 2's `peer-runner.mjs settle`) and make the verb's last
-   write, then report again.
+   is provisional (`waiting_on_background: true`): on the notification,
+   finish Synthesize, settle the attempt (Phase 2's `peer-runner.mjs
+   settle`) and make the verb's last write, then report again with
+   `waiting_on_background: false`, which ends the step and stops any
+   background task still running.
 
 {{/capability}}
 2. Read the peer-runner JSON first. Its `status` (`completed`, `failed`

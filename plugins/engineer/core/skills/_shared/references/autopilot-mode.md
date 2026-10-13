@@ -194,8 +194,17 @@ off: collect the peer, synthesize, record the ensemble result (Phase 2's
 `peer-runner.mjs settle`) and the verb's last write (`finish-verb`), then
 end with a new report.
 The driver judges the step by the last report only. A report you file
-while still waiting says `failed` and names what it waits for, so a step
-that never gets past it halts rather than passes. On the first two autopilot
-runs of a real macro
+while still waiting says `failed`, sets `waiting_on_background` to `true`
+and names what it waits for, so a step that never gets past it halts rather
+than passes. On the first two autopilot runs of a real macro
 (2026-10-04), workers took that first report as final and left the ensemble
 unsettled.
+
+**Your last report says you are finished.** Set `waiting_on_background` to
+`false` in it only once nothing you started is still needed: the host then
+ends the step after a short debounce, and stops every background task still
+running (a test run, a monitor) with the step's process group. A peer run you
+left pending is cancelled and settled `failed` from its ledger, or the step
+halts for the owner when the peer completed with an answer you never
+synthesized. A last report that still says `true` from a session that ends
+halts the run (ADR-0063 D5, amendment of 2026-10-13).
