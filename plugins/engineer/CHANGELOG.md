@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.4](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.28.3...plugin-engineer-v0.28.4) (2026-10-13)
+
+
+### Bug Fixes
+
+* **engineer:** tell an autopilot worker that its finished report ends the step (C127) ([391c471](https://github.com/each4all/agentic-plugins/commit/391c471cb0dac9d65873daaa0a469eb8bd05d0b3))
+
 ## [0.28.3](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.28.2...plugin-engineer-v0.28.3) (2026-10-13)
 
 
