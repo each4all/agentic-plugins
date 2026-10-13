@@ -25,7 +25,8 @@ import { installLikeRelease } from './fixtures/install-cache.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const AP = resolve(REPO_ROOT, 'plugins/orchestrator/adapters/claude/autopilot');
-const { startRun, DEFAULTS, effectiveStateRoot, newPendingRuns } = await import(resolve(AP, 'driver.mjs'));
+const D = await import(resolve(AP, 'driver.mjs'));
+const { startRun, DEFAULTS, effectiveStateRoot, newPendingRuns } = D;
 const L = await import(resolve(AP, 'ledger.mjs'));
 const { observe: realObserve } = await import(resolve(AP, 'observe.mjs'));
 const { startWorker: realStartWorker } = await import(resolve(AP, 'worker.mjs'));
@@ -422,11 +423,14 @@ describe('a killed step', () => {
     const engCopy = join(copy, 'engineer');
     cpSync(ENG, engCopy, { recursive: true });
     const log = join(copy, 'peer-runner.log');
-    // A stand-in for engineer's peer-runner: records the cancel it is asked for.
+    // A stand-in for engineer's peer-runner: records the cancel it is asked for
+    // (and has the settle the run's capability floor requires).
     writeFileSync(join(engCopy, 'scripts', 'peer-runner.mjs'), `#!/usr/bin/env node
 import fs from 'node:fs';
+const opts = { subcommand: process.argv[2] };
 fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + '\\n');
-process.stdout.write(JSON.stringify({ ok: true, run_id: process.argv[4], status: 'cancelled' }) + '\\n');
+if (opts.subcommand === 'settle') process.stdout.write(JSON.stringify({ ok: true, settlement: 'committed' }) + '\\n');
+else process.stdout.write(JSON.stringify({ ok: true, run_id: process.argv[4], status: 'cancelled' }) + '\\n');
 `);
     const t = await setup({ scenario: { A: { next: [COMMIT] }, B: { next: [DONE] }, actions: { 1: 'pending-sleep' } }, roots: { orchestrator: ORCH, engineer: engCopy, runtime: RUNTIME } });
     const signals = new EventEmitter();
@@ -529,8 +533,10 @@ describe('peer cancellation is the step\'s own (ADR-0067 Decision 6)', () => {
     const log = join(copy, 'peer-runner.log');
     writeFileSync(join(engCopy, 'scripts', 'peer-runner.mjs'), `#!/usr/bin/env node
 import fs from 'node:fs';
+const opts = { subcommand: process.argv[2] };
 fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + '\\n');
-process.stdout.write(JSON.stringify({ ok: true, run_id: process.argv[4], status: 'cancelled' }) + '\\n');
+if (opts.subcommand === 'settle') process.stdout.write(JSON.stringify({ ok: true, settlement: 'committed' }) + '\\n');
+else process.stdout.write(JSON.stringify({ ok: true, run_id: process.argv[4], status: 'cancelled' }) + '\\n');
 `);
     const t = await setup({
       scenario: { A: { next: [COMMIT] }, B: { next: [DONE] }, actions: { 1: 'pending-sleep' }, otherLane: { id: 'B', branch: 'feat/b' } },
@@ -573,6 +579,209 @@ process.stdout.write(JSON.stringify({ ok: true, run_id: process.argv[4], status:
     deepStrictEqual(newPendingRuns(before, after, 'A').sort(), ['a1', 'a2']);
     deepStrictEqual(newPendingRuns(before, after, 'B').sort(), ['b1', 'b2']);
     deepStrictEqual(newPendingRuns(before, after, null), [], 'a step with no subtask has none');
+  });
+});
+
+describe('C127: a step closed on its finished report settles the peers it left', () => {
+  const FEED04 = 'plan-verify-20261001T000000Z-feed04';
+
+  it('the step passes, its abandoned task is named, and its peer is cancelled and settled from its ledger before the next decision', async () => {
+    const t = await setup({ scenario: { A: { next: [COMMIT] }, B: { next: [DONE] }, actions: { 1: 'pending-finished' } } });
+    try {
+      // One step: the next decision reads the state the cleanup left, so it
+      // halts on the step cap, not on a pending peer (policy: pending_ensemble).
+      strictEqual(await t.run({ maxSteps: 1 }), 2, t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual([r.halt.reason, r.steps.length], ['budget', 1], r.halt.detail);
+      const s = r.steps[0];
+      deepStrictEqual([s.outcome, s.report_eof, s.closed_on_report, s.report_teardown, s.peers_unaccounted], ['ok', true, true, null, false]);
+      deepStrictEqual(s.abandoned_background, [{ task_id: 'bt4', task_type: 'local_bash', description: 'the peer and a monitor', run_id: 'r-bt4' }]);
+      deepStrictEqual(s.peer_settlements.map((x) => [x.run_id, x.phase, x.cancel.exit, x.settle.exit, x.command]), [[FEED04, 'compose', 0, 0, null]]);
+      const engState = await import(resolve(ENG, 'scripts', 'state.mjs'));
+      const fm = (await engState.readWorkflow(s.peer_settlements[0].workflow_path)).frontmatter;
+      deepStrictEqual(fm.pending_ensemble ?? [], [], 'no row left');
+      deepStrictEqual(fm.ensemble_results.filter((e) => e.run_id === FEED04).map((e) => e.verdict), ['failed']);
+      ok(t.lines.some((l) => /closed-on-report abandoned=bt4/.test(l)), t.lines.join('\n'));
+      deepStrictEqual(L.listOpenRuns(t.work), [], 'nothing unaccounted: the open-run record is gone');
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('a step whose only change is the peer it left halts no-progress once the peer is settled', async () => {
+    const CRITIQUE = { kind: 'verb', verb: 'critique', confidence: 'HIGH' };
+    const t = await setup({ scenario: { A: { next: [CRITIQUE] }, B: { next: [DONE] }, actions: { 2: 'peer-only' } } });
+    try {
+      strictEqual(await t.run({}), 2, t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual(r.steps.map((s) => [s.seq, s.outcome]), [[1, 'ok'], [2, 'no-progress']], r.halt.detail);
+      match(r.halt.detail, /changed nothing but a peer run it left pending, which the run settled/);
+      deepStrictEqual(r.steps[1].peer_settlements.map((x) => [x.run_id, x.settle.exit]), [[FEED04, 0]]);
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('a peer not settled (a completed answer no synthesis took) halts the step with the command; its row stays for the policy', async () => {
+    const t = await setup({ scenario: { A: { next: [COMMIT] }, B: { next: [DONE] }, actions: { 1: 'pending-finished' } } });
+    try {
+      const code = await t.run({}, {
+        settleAbandonedPeers: (targets) => targets.map((x) => ({
+          ...x, cancel: { exit: 0, result: { ok: true, reason: 'already_terminal' } },
+          settle: { exit: 1, result: { ok: false, settlement: 'refused', reason: `run ${x.run_id} completed: settle needs the synthesis --verdict` } },
+          command: `node peer-runner.mjs settle --run-id ${x.run_id}`,
+        })),
+      });
+      strictEqual(code, 2, t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual(r.steps.map((s) => [s.outcome, s.peers_unaccounted]), [['owner-choice', false]]);
+      strictEqual(r.halt.subtask_id, 'A');
+      match(r.halt.detail, /finished on its report and left peer runs it had not collected: peer run plan-verify-20261001T000000Z-feed04 on \S+ was not settled \(run plan-verify-20261001T000000Z-feed04 completed: settle needs the synthesis --verdict\); its pending row stays, and the run halts on it until it is settled: node peer-runner.mjs settle --run-id plan-verify-20261001T000000Z-feed04/);
+      deepStrictEqual(L.listOpenRuns(t.work), [], 'the peer is not running: no record kept');
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('a peer whose cancellation does not go through halts the step and keeps the open-run record', async () => {
+    const t = await setup({ scenario: { A: { next: [COMMIT] }, B: { next: [DONE] }, actions: { 1: 'pending-finished' } } });
+    try {
+      const code = await t.run({}, {
+        settleAbandonedPeers: (targets) => targets.map((x) => ({ ...x, cancel: { exit: 1, result: { ok: false, reason: 'fingerprint_mismatch' } }, settle: null, command: 'node peer-runner.mjs cancel' })),
+      });
+      strictEqual(code, 2, t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual(r.steps.map((s) => [s.outcome, s.peers_unaccounted]), [['owner-choice', true]]);
+      match(r.halt.detail, /peer run plan-verify-20261001T000000Z-feed04 could not be cancelled \(fingerprint_mismatch\), so the run keeps its open-run record for the next run's cleanup: node peer-runner.mjs cancel/);
+      deepStrictEqual(L.listOpenRuns(t.work).map((x) => x.runId), [r.run.run_id]);
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('newPendingTargets: each new run with its workflow and phase, once; a run listed two ways, or with no phase, is a conflict; another subtask\'s never', () => {
+    const { newPendingTargets } = D;
+    const child = { path: '/s/wf-a.md', workflow_id: 'wf-a', pending_runs: ['a0', 'a1'], pending_rows: [{ run_id: 'a0', phase: 'compose' }, { run_id: 'a1', phase: 'compose' }] };
+    const before = { children: { A: { ...child, pending_runs: ['a0'], pending_rows: [{ run_id: 'a0', phase: 'compose' }] } }, claims: [] };
+    const after = {
+      children: { A: child, B: { path: '/s/wf-b.md', workflow_id: 'wf-b', pending_runs: ['b1'], pending_rows: [{ run_id: 'b1', phase: 'compose' }] } },
+      claims: [
+        { id: 'wf-a', path: '/s/wf-a.md', originating_subtask: 'A', pending_runs: ['a0', 'a1'], pending_rows: child.pending_rows },
+        { id: 'wf-a2', path: '/s/wf-a2.md', originating_subtask: 'A', pending_runs: ['a2'], pending_rows: [{ run_id: 'a2', phase: 'critique' }] },
+        { id: 'wf-b', path: '/s/wf-b.md', originating_subtask: 'B', pending_runs: ['b1'], pending_rows: [{ run_id: 'b1', phase: 'compose' }] },
+      ],
+    };
+    deepStrictEqual(newPendingTargets(before, after, 'A'), {
+      targets: [
+        { run_id: 'a1', phase: 'compose', workflow_path: '/s/wf-a.md', workflow_id: 'wf-a' },
+        { run_id: 'a2', phase: 'critique', workflow_path: '/s/wf-a2.md', workflow_id: 'wf-a2' },
+      ],
+      conflicts: [],
+    });
+    const claimOnly = { children: {}, claims: [after.claims[1]] };
+    deepStrictEqual(newPendingTargets({ children: {}, claims: [] }, claimOnly, 'A').targets.map((x) => x.run_id), ['a2'], 'a dispatch killed before it recorded the subtask');
+    const twoWays = { children: { A: child }, claims: [{ ...after.claims[0], pending_rows: [{ run_id: 'a0', phase: 'compose' }, { run_id: 'a1', phase: 'refine' }] }] };
+    const c = newPendingTargets(before, twoWays, 'A');
+    deepStrictEqual(c.targets, []);
+    match(c.conflicts[0], /peer run a1 is pending on both wf-a \(phase compose\) and wf-a \(phase refine\)/);
+    const noPhase = { children: { A: { ...child, pending_rows: [{ run_id: 'a0', phase: 'compose' }, { run_id: 'a1', phase: null }] } }, claims: [] };
+    match(newPendingTargets(before, noPhase, 'A').conflicts[0], /peer run a1 is pending on wf-a \(phase none\) with no phase to settle it by/);
+    deepStrictEqual(newPendingTargets(before, after, null), { targets: [], conflicts: [] });
+  });
+
+  it('peerSettlementOutcome: settled runs pass; a cancellation that failed keeps the record; a refused settlement keeps the row; a conflict keeps the record', async () => {
+    const { peerSettlementOutcome } = await import(resolve(AP, 'scheduler.mjs'));
+    const base = { run_id: 'r1', phase: 'compose', workflow_path: '/s/wf.md', workflow_id: 'wf' };
+    deepStrictEqual(peerSettlementOutcome([{ ...base, cancel: { exit: 0 }, settle: { exit: 0 }, command: null }]), { verdict: null, keep: false });
+    deepStrictEqual(peerSettlementOutcome([]), { verdict: null, keep: false });
+    const cancelFailed = peerSettlementOutcome([{ ...base, cancel: { exit: 1, result: { reason: 'not_cancellable' } }, settle: null, command: 'c' }]);
+    deepStrictEqual([cancelFailed.verdict.reason, cancelFailed.keep], ['owner-choice', true]);
+    const settleFailed = peerSettlementOutcome([{ ...base, cancel: { exit: 0 }, settle: { exit: 1, result: 'boom' }, command: 's' }]);
+    deepStrictEqual([settleFailed.verdict.reason, settleFailed.keep], ['owner-choice', false]);
+    match(settleFailed.verdict.detail, /peer run r1 on wf was not settled \(boom\); its pending row stays/);
+    const conflict = peerSettlementOutcome([], ['peer run r2 is pending on both x and y']);
+    deepStrictEqual([conflict.verdict.reason, conflict.keep], ['owner-choice', true]);
+  });
+});
+
+describe('C123: a signal during the last await before a spawn', () => {
+  it('starts no worker and no step, releases the step\'s reservation, and ends the run interrupted', async () => {
+    const { resolveRoots } = await import(resolve(AP, 'roots.mjs'));
+    const { createBudget } = await import(resolve(AP, 'budget.mjs'));
+    const t = await setup({ scenario: { A: { next: [COMMIT] }, B: { next: [DONE] } } });
+    const signals = new EventEmitter();
+    const settles = [];
+    let budget = null;
+    let calls = 0;
+    try {
+      const code = await t.run({}, {
+        signals,
+        // The drift check between steps: the owner's Ctrl-C lands while it awaits.
+        resolveRoots: async (a) => {
+          calls += 1;
+          signals.emit('SIGINT');
+          return resolveRoots(a);
+        },
+        createBudget: (o) => {
+          budget = createBudget(o);
+          const settle = budget.settle.bind(budget);
+          budget.settle = (res, how) => { settles.push(how); return settle(res, how); };
+          return budget;
+        },
+      });
+      strictEqual(code, 2, t.lines.join('\n'));
+      strictEqual(calls, 1, 'the check before step 2');
+      const r = t.latest();
+      deepStrictEqual([r.halt.reason, r.steps.map((s) => s.seq)], ['interrupted', [1]], 'no started line for step 2');
+      deepStrictEqual(r.steps[0].event, 'finished');
+      strictEqual(readFileSync(join(t.fx.dir, 'claude.log'), 'utf8').trim().split('\n').length, 1, 'one worker only');
+      deepStrictEqual(settles.at(-1), { spawned: false }, 'step 2\'s reservation is released, unspent');
+      deepStrictEqual([budget.inFlight, budget.reservedUsd, budget.taken], [0, 0, 1]);
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+});
+
+describe('C123: an interrupt and a drift found by the same await', () => {
+  it('the interrupt wins: the owner stopped the run', async () => {
+    const { resolveRoots } = await import(resolve(AP, 'roots.mjs'));
+    const t = await setup({ scenario: { A: { next: [COMMIT] }, B: { next: [DONE] } } });
+    const signals = new EventEmitter();
+    try {
+      const code = await t.run({}, {
+        signals,
+        resolveRoots: async (a) => {
+          signals.emit('SIGINT');
+          const r = await resolveRoots(a);
+          return { ...r, versions: { ...r.versions, engineer: '99.0.0' } };
+        },
+      });
+      strictEqual(code, 2, t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual([r.halt.reason, r.steps.length], ['interrupted', 1], r.halt.detail);
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+});
+
+describe('C127: the capability floor', () => {
+  it('refuses a pinned engineer whose peer-runner has no settle, which the run settles abandoned peers with', async () => {
+    const { capabilityProblems } = await import(resolve(AP, 'roots.mjs'));
+    const copy = mkdtempSync(join(tmpdir(), 'autopilot-engineer-old-'));
+    try {
+      const old = join(copy, 'engineer');
+      cpSync(ENG, old, { recursive: true });
+      deepStrictEqual(await capabilityProblems({ engineer: old }), [], 'control: the current engineer passes');
+      const runner = join(old, 'scripts', 'peer-runner.mjs');
+      writeFileSync(runner, readFileSync(runner, 'utf8').split("opts.subcommand === 'settle'").join("opts.subcommand === 'settle-gone'"));
+      const problems = await capabilityProblems({ engineer: old });
+      strictEqual(problems.length, 1, problems.join('\n'));
+      match(problems[0], /lacks peer-runner settle, which settles the peers a step closed on its report left/);
+    } finally {
+      rmSync(copy, { recursive: true, force: true });
+    }
   });
 });
 

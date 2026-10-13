@@ -7,7 +7,7 @@
 //
 // FAKE_SCENARIO names a JSON file: { "<subtask>": { "next": [<next_step>…],
 // "file": true|false }, "actions": { "<seq>": "noop"|"edit-plan"|"sleep"|
-// "bump-engineer"|"report-failed"|"pending-sleep"|"peer-sleep" } } — `next` is the next step each verb of that subtask
+// "bump-engineer"|"report-failed"|"pending-sleep"|"peer-sleep"|"pending-finished"|"peer-only" } } — `next` is the next step each verb of that subtask
 // records, in order; `file` makes its first verb write a file to commit:
 // `<id>.txt` for true, or the path it names, holding `<id>` either way (two
 // subtasks naming one path conflict).
@@ -112,8 +112,28 @@ export async function perform({ prompt, cwd, env }) {
     fs.writeFileSync(file, JSON.stringify(n + 1));
     return s.next[Math.min(n, s.next.length - 1)];
   };
-  const verbReport = (wf, ns) => ({ outcome: 'completed', workflow: wf, next_step: ns, awaiting_owner: null, summary: 'scripted verb' });
-  const plainReport = { outcome: 'completed', workflow: null, next_step: null, awaiting_owner: null, summary: 'scripted step' };
+  // Each step's last report: nothing left to wait for (C127).
+  // C127: a peer run left pending on a workflow, its ledger ended
+  // `scenario.peerStatus` (default failed), and the background task the
+  // step leaves running.
+  const leavePeer = async (filePath) => {
+    const peerId = 'plan-verify-20261001T000000Z-feed04';
+    const at = new Date().toISOString();
+    const peerDir = path.join(path.dirname(path.dirname(filePath)), 'peer-runs', peerId);
+    fs.mkdirSync(peerDir, { recursive: true });
+    const status = scenario.peerStatus ?? 'failed';
+    fs.writeFileSync(path.join(peerDir, 'handle.json'), JSON.stringify({
+      schema_version: '1.0', run_id: peerId, plugin: 'engineer', kind: 'ensemble', workflow_path: filePath, phase: 'compose',
+      ensemble_type: 'plan-verify', host: 'claude', peer_host: 'codex', model: null, effort: null, cwd, output_format: 'json',
+      status, pid: null, pgid: null, process_fingerprint: { kind: 'none' },
+      started_at: at, updated_at: at, completed_at: at, last_output_at: null, stdout_bytes: 0, stderr_bytes: 0,
+      exit_code: 1, error_kind: status === 'failed' ? 'peer_exit_nonzero' : null, prompt_retained: false, autopilot_run: env.AGENTIC_AUTOPILOT,
+    }, null, 2));
+    await eng.recordPendingEnsemble({ workflowPath: filePath, phase: 'compose', ensemble_type: 'plan-verify', run_id: peerId });
+    return [{ task_id: 'bt4', run_id: 'r-bt4', task_type: 'local_bash', description: 'the peer and a monitor' }];
+  };
+  const verbReport = (wf, ns) => ({ outcome: 'completed', workflow: wf, next_step: ns, awaiting_owner: null, summary: 'scripted verb', waiting_on_background: false });
+  const plainReport = { outcome: 'completed', workflow: null, next_step: null, awaiting_owner: null, summary: 'scripted step', waiting_on_background: false };
 
   if (action === 'noop') {
     // Change nothing, and report the state as it is — the report agrees, so
@@ -208,6 +228,11 @@ export async function perform({ prompt, cwd, env }) {
       return finish({ report: { ...verbReport(wf, { kind: 'owner-decision', verb: null, confidence: 'HIGH' }), outcome: 'needs_owner', awaiting_owner: 'peer-conflict' } });
     }
     await eng.finishVerb({ workflowPath: filePath, host: 'claude', nextAction: 'next', nextStep: ns });
+    // C127: a peer run left pending after the verb's last write (finish-verb
+    // refuses one pending before it under autopilot), and the step ends on a
+    // finished report with a background task still pending. The peer's run
+    // ledger shows it ended `scenario.peerStatus` (default failed).
+    const background = action === 'pending-finished' ? await leavePeer(filePath) : null;
     if (action === 'edit-plan') {
       const fm = (await orch.readWorkflow(macroPath)).frontmatter;
       await orch.setPlan({ workflowPath: macroPath, host: 'claude', subtasks: fm.plan.subtasks.map((s) => (s.id === 'B' ? { ...s, topic: `${s.topic} (edited)` } : s)) });
@@ -219,13 +244,21 @@ export async function perform({ prompt, cwd, env }) {
       fs.writeFileSync(manifest, JSON.stringify(j));
     }
     await stopHooks();
-    return finish({ report: verbReport(wf, ns) });
+    return finish({ report: verbReport(wf, ns), ...(background ? { background } : {}) });
   }
 
   m = /^\/engineer:([a-z]+)$/.exec(prompt);
   if (m && m[1] !== 'commit') {
     const active = execFileSync(node, [engCli, 'find-active', '--repo-root', cwd], { env, encoding: 'utf8' }).trim();
     const fm = (await eng.readWorkflow(active)).frontmatter;
+    if (action === 'peer-only') {
+      // C127: the step only leaves a peer and a background task, and
+      // reports the next step the workflow already records.
+      const background = await leavePeer(active);
+      const ns = fm.next_step_kind ? { kind: fm.next_step_kind, verb: fm.next_step_verb ?? null, confidence: fm.next_step_confidence } : null;
+      await stopHooks();
+      return finish({ report: verbReport(fm.workflow_id, ns), background });
+    }
     await eng.appendPhase({ workflowPath: active, host: 'claude', verb: m[1], phaseLabel: `Phase 0: Resume into ${m[1]}`, currentPhase: 'phase-0-resume', clearNextStep: true, nextAction: 'run', event: 'resumed' });
     const ns = nextFor(fm.originating_subtask);
     await eng.finishVerb({ workflowPath: active, host: 'claude', nextAction: 'next', nextStep: ns });

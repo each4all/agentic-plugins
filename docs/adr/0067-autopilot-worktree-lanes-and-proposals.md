@@ -1355,6 +1355,11 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
   Today it cancels the runs that became pending during the step on any
   workflow of the macro (`driver.mjs:181-192`), which with lanes would reach
   another lane's peers.
+  *Amendment 2026-10-13 (C127):* the same scope serves a step that passes
+  after its host closed it on a finished report with background tasks
+  pending: those runs are cancelled, then settled from their ledgers, in the
+  lane's checkout and off the loop ([ADR-0063](0063-autopilot-fresh-session-driver.md)
+  D5, amendment of 2026-10-13).
 - **Budgets are reserved.**
   - Before a spawn, the driver reserves one step and
     `min(per-step cap, run cap − spent − reserved)` dollars. It does not spawn

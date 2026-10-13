@@ -10,6 +10,17 @@
 // so the host closes stdin only once a result has arrived, no background task
 // is pending, and no task notification still waits for its follow-up turn.
 //
+// Or once the last result's report says the worker is finished
+// (`waiting_on_background: false`, every field valid; C127, ADR-0063 D5
+// amendment of 2026-10-13), whatever background tasks are still pending: a
+// worker that has finished its runbook has nothing left to wait for, and a
+// task it left (a test run, a monitor) would otherwise hold the step open to
+// its timeout. That close is armed once per result and is not pushed back by
+// other stream events; a new result, a task notification or an abort
+// disarms it. After it, a worker that has not exited within the grace gets
+// SIGTERM on its group, then SIGKILL, and the group teardown below ends what
+// is left. The step's result names the tasks it abandoned.
+//
 // Posture (D5): argv only, never a shell string; `manual` mode with an exact
 // allowlist and denylist and `--permission-prompts none`, so nothing can wait
 // on a prompt; nothing the driver passes escalates (`assertNoEscalation`).
@@ -25,7 +36,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import readline from 'node:readline';
 
-import { STEP_REPORT_SCHEMA } from './policy.mjs';
+import { reportSaysFinished, STEP_REPORT_SCHEMA } from './policy.mjs';
 
 export const claudeBin = (env = process.env) => env.AUTOPILOT_CLAUDE_BIN || 'claude';
 
@@ -154,7 +165,7 @@ export function systemAppend({ runId, seq, stepKind }) {
     '3. Ceremony prompts resolve by default: take the recommendation, present in batch, use the suggested conventional subject.',
     '4. Run peer ensembles and other long work as host background tasks, wait for their notifications, and collect them before you finish. Never sleep-poll.',
     `5. ${commit} Never push, open, update or merge pull requests, and take no other outward action.`,
-    '6. End with the structured step report. A report the host takes when you end a turn to wait for a background task is provisional: when its notification re-invokes you, carry on with the runbook to its end and file a new report. Only the last report counts. workflow = the id of the engineer workflow this step worked in (null when it ran no engineer verb). next_step = that workflow\'s next_step_kind / next_step_verb / next_step_confidence exactly as the verb wrote them with finish-verb (null when it ran no verb) — not the macro-level proposal /orchestrator:next prints at its end. awaiting_owner = the owner gate this step recorded, or null. summary = one line.',
+    '6. End with the structured step report. A report the host takes when you end a turn to wait for a background task is provisional: set waiting_on_background = true in it, and when its notification re-invokes you, carry on with the runbook to its end and file a new report. Only the last report counts. In your last report set waiting_on_background = false: the host then ends the step and stops every background task still running, so set it only once nothing you started is still needed. workflow = the id of the engineer workflow this step worked in (null when it ran no engineer verb). next_step = that workflow\'s next_step_kind / next_step_verb / next_step_confidence exactly as the verb wrote them with finish-verb (null when it ran no verb) — not the macro-level proposal /orchestrator:next prints at its end. awaiting_owner = the owner gate this step recorded, or null. summary = one line.',
   ].join('\n');
 }
 
@@ -220,6 +231,9 @@ export function contextWindowFor(usage, model) {
 export const MAX_STEP_TIMEOUT_SEC = Math.floor((2 ** 31 - 1) / 1000);
 const CLOSE_DEBOUNCE_MS = 2000;
 const KILL_GRACE_MS = 5000;
+// After a close on a finished report, how long the worker may take to exit
+// before its group gets SIGTERM (C127).
+const REPORT_EXIT_GRACE_MS = 10_000;
 // After the worker itself has exited, how long its output may stay open. A
 // descendant that inherited the pipes (and left the process group) would
 // otherwise hold the step open forever.
@@ -311,9 +325,13 @@ export function terminateGroupsSync(pgids, { graceMs = KILL_GRACE_MS } = {}) {
  * @param o.remotes        {fetchUrls, pushUrls} of the repository's remotes (pushBlockConfig)
  * @param o.checkInit      (plugins) => null | {reason, detail}: refuse the loaded plugins
  * @param o.onRateLimit    (rate_limit_info) => void: each rate_limit_event, as it comes (throttle.mjs)
+ * @param o.timing         { closeDebounceMs, reportExitGraceMs, killGraceMs } (a test seam)
  */
 export function startWorker(o) {
   const env = o.env ?? process.env;
+  const timing = {
+    closeDebounceMs: CLOSE_DEBOUNCE_MS, reportExitGraceMs: REPORT_EXIT_GRACE_MS, killGraceMs: KILL_GRACE_MS, ...(o.timing ?? {}),
+  };
   const sessionId = o.sessionId ?? randomUUID();
   const args = workerArgs({
     sessionId, stepKind: o.stepKind, runId: o.runId, seq: o.seq,
@@ -352,35 +370,86 @@ export function startWorker(o) {
   };
 
   const st = {
-    pending: 0, awaitingFollowUp: false, results: [], model: null, plugins: null,
+    pending: 0, tasks: [], awaitingFollowUp: false, results: [], model: null, plugins: null,
     peakByModel: new Map(), denialEvents: [], aborted: null, abortReason: null, abortDetail: null,
-    closeTimer: null, stdinClosed: false, stderrTail: '', exit: null, abortedAt: null, rateLimit: null,
+    closeTimer: null, closeArm: null, stdinClosed: false, stderrTail: '', exit: null, abortedAt: null, rateLimit: null,
+    // C127: the result whose finished report closed stdin, the tasks pending
+    // then, and the shutdown that followed (null | 'signalled' | 'killed').
+    closeResult: null, abandoned: [], reportTimers: [], reportTeardown: null, reportSignalledAt: null,
   };
 
   const killGroup = (signal) => {
     try { process.kill(-child.pid, signal); } catch { try { child.kill(signal); } catch { /* gone */ } }
+  };
+  const clearReportTimers = () => {
+    for (const t of st.reportTimers) clearTimeout(t);
+    st.reportTimers = [];
   };
   const abort = (reason, detail = null) => {
     if (st.aborted) return;
     st.aborted = reason;
     st.abortedAt = Date.now();
     if (detail) { st.abortReason = detail.reason ?? null; st.abortDetail = detail.detail ?? null; }
+    // An abort outranks a close on a report: its own escalation runs.
+    clearTimeout(st.closeTimer);
+    st.closeArm = null;
+    clearReportTimers();
     killGroup('SIGTERM');
     // A worker that does not exit on SIGTERM is killed; what the group still
     // holds after the worker exits is emptied before the step finishes
     // (terminateGroup, awaited below).
-    setTimeout(() => { if (st.exit === null) killGroup('SIGKILL'); }, KILL_GRACE_MS).unref?.();
+    setTimeout(() => { if (st.exit === null) killGroup('SIGKILL'); }, timing.killGraceMs).unref?.();
   };
   const closeStdin = () => {
     if (st.stdinClosed) return;
     st.stdinClosed = true;
     try { child.stdin.end(); } catch { /* already closed */ }
   };
+  // The close on a finished report: EOF, then, if the worker has not exited
+  // within the grace, SIGTERM on its group and SIGKILL after the kill grace.
+  // Once, and never re-armed by what the stream says after it. A worker that
+  // has exited is not closed on its report: its exit is judged as it is.
+  const closeOnReport = (result) => {
+    if (st.stdinClosed || st.aborted || st.exit !== null) return;
+    st.closeResult = result;
+    st.abandoned = st.tasks.map((t) => ({
+      task_id: t?.task_id ?? null, task_type: t?.task_type ?? null, description: t?.description ?? null, run_id: t?.run_id ?? null,
+    }));
+    closeStdin();
+    st.reportTimers.push(setTimeout(() => {
+      if (st.exit !== null || st.aborted) return;
+      st.reportTeardown = 'signalled';
+      st.reportSignalledAt = Date.now();
+      killGroup('SIGTERM');
+      st.reportTimers.push(setTimeout(() => {
+        if (st.exit !== null || st.aborted) return;
+        st.reportTeardown = 'killed';
+        killGroup('SIGKILL');
+      }, timing.killGraceMs));
+    }, timing.reportExitGraceMs));
+  };
+  // Which close the stream allows now: 'idle' (a result, no task pending, no
+  // follow-up turn owed), 'report' (the last result's report says the worker
+  // is finished, with tasks still pending), or null.
+  const closeMode = () => {
+    if (st.stdinClosed || st.aborted || st.exit !== null || st.results.length === 0 || st.awaitingFollowUp) return null;
+    if (st.pending === 0) return 'idle';
+    const last = st.results.at(-1);
+    return last.is_error !== true && reportSaysFinished(last.structured_output) ? 'report' : null;
+  };
   const maybeClose = () => {
+    const mode = closeMode();
+    const last = st.results.at(-1) ?? null;
+    // A close armed on this result's finished report stays armed until a new
+    // result, a task notification, an abort or the worker's exit disarms it:
+    // neither other events nor the task list moving (to empty and back) push
+    // it back.
+    if (mode !== null && st.closeArm?.mode === 'report' && st.closeArm.result === last) return;
     clearTimeout(st.closeTimer);
-    if (st.results.length > 0 && st.pending === 0 && !st.awaitingFollowUp) {
-      st.closeTimer = setTimeout(closeStdin, CLOSE_DEBOUNCE_MS);
-    }
+    st.closeArm = null;
+    if (!mode) return;
+    st.closeArm = { mode, result: last };
+    st.closeTimer = setTimeout(mode === 'report' ? () => closeOnReport(last) : closeStdin, timing.closeDebounceMs);
   };
 
   const timer = setTimeout(() => abort('timeout'), o.stepTimeoutSec * 1000);
@@ -408,7 +477,10 @@ export function startWorker(o) {
         const problem = o.checkInit ? o.checkInit(st.plugins) : null;
         if (problem) abort('provenance', problem);
       }
-      if (ev.subtype === 'background_tasks_changed') st.pending = Array.isArray(ev.tasks) ? ev.tasks.length : 0;
+      if (ev.subtype === 'background_tasks_changed') {
+        st.tasks = Array.isArray(ev.tasks) ? ev.tasks : [];
+        st.pending = st.tasks.length;
+      }
       if (ev.subtype === 'task_notification') st.awaitingFollowUp = true;
       if (ev.subtype === 'permission_denied') st.denialEvents.push({ tool: ev.tool_name ?? null, reason: ev.decision_reason ?? null });
       const hookEvent = ev.hook_event ?? ev.hook_event_name ?? null;
@@ -437,6 +509,7 @@ export function startWorker(o) {
       settled = true;
       clearTimeout(timer);
       clearTimeout(st.closeTimer);
+      clearReportTimers();
       try { fs.closeSync(raw); } catch { /* already closed */ }
       // Output a descendant still holds is abandoned, not waited on.
       child.stdout.destroy();
@@ -458,10 +531,16 @@ export function startWorker(o) {
       const resultDenials = Array.isArray(last?.permission_denials)
         ? last.permission_denials.map((d) => ({ tool: d?.tool_name ?? null, reason: null }))
         : null;
-      // Nothing the step started outlives it in its process group.
+      // The close on a report holds only while its result is still the last:
+      // a result after it (the stream may go on past EOF) is judged as any.
+      const reportEof = st.closeResult !== null;
+      const closedOnReport = reportEof && st.closeResult === last;
+      // Nothing the step started outlives it in its process group: on a close
+      // on a report, the background tasks it abandoned included.
+      const signalled = st.aborted !== null || st.reportTeardown !== null;
       const groupTeardown = spawnError
         ? 'empty'
-        : await (o.terminateGroup ?? terminateGroup)(child.pid, { signalled: st.aborted !== null, signalledAt: st.abortedAt ?? Date.now() });
+        : await (o.terminateGroup ?? terminateGroup)(child.pid, { signalled, signalledAt: st.abortedAt ?? st.reportSignalledAt ?? Date.now() });
       resolve({
         sessionId,
         exitCode: code,
@@ -489,6 +568,15 @@ export function startWorker(o) {
         rawTruncated: rawCapped,
         // The stream's last rate_limit_info, or null when it carried none.
         rateLimit: st.rateLimit,
+        // C127: whether the host closed stdin on a finished report (history,
+        // whatever came after), whether that close still holds (its result is
+        // the last, which exempts the exit from judgment), the background
+        // tasks pending at that EOF ({task_id, task_type, description, run_id}
+        // each), and whether the worker had to be signalled after it.
+        reportEof,
+        closedOnReport,
+        abandonedBackground: reportEof ? st.abandoned : [],
+        reportTeardown: st.reportTeardown,
         groupTeardown,
         pgid: spawnError || process.platform === 'win32' ? null : child.pid,
       });

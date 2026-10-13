@@ -170,8 +170,8 @@ export const MUTATIONS = [
   // ---- L: the lanes policy --------------------------------------------------
   {
     id: 'L1', file: POLICY, tests: [TP],
-    from: "    subtask: s ? [s.id, s.status ?? null, s.engineer_workflow_id ?? null, s.commit ?? null, s.pr_url ?? null, s.closed_at ?? null] : null,\n    child: c ? childTuple(subtaskId, c) : null,",
-    to: "    subtask: s ? [s.id, s.status ?? null, s.engineer_workflow_id ?? null, s.commit ?? null, s.pr_url ?? null, s.closed_at ?? null] : null,\n    child: c ? childTuple(subtaskId, c) : null,\n    all: view?.children,",
+    from: "    subtask: s ? [s.id, s.status ?? null, s.engineer_workflow_id ?? null, s.commit ?? null, s.pr_url ?? null, s.closed_at ?? null] : null,\n    child: c ? childTuple(subtaskId, c, opts) : null,",
+    to: "    subtask: s ? [s.id, s.status ?? null, s.engineer_workflow_id ?? null, s.commit ?? null, s.pr_url ?? null, s.closed_at ?? null] : null,\n    child: c ? childTuple(subtaskId, c, opts) : null,\n    all: view?.children,",
     why: 'another lane\'s progress satisfies this lane\'s no-progress check',
     killed_by: /another lane's progress, and the macro's own bookkeeping/,
   },
@@ -470,8 +470,8 @@ export const MUTATIONS = [
   },
   {
     id: 'S20', file: SCHED, tests: [TS],
-    from: "      keep();\n",
-    to: "",
+    from: "      keep();\n      verdict = asHalt({ reason: 'owner-choice', detail: `the look at",
+    to: "      verdict = asHalt({ reason: 'owner-choice', detail: `the look at",
     why: "a run whose look after a step failed removes its open-run record: that step's peers are never cancelled",
     killed_by: /a look that fails after a step halts the run unverified/,
   },
@@ -677,8 +677,8 @@ export const MUTATIONS = [
   },
   {
     id: 'S51', file: SCHED, tests: [TS],
-    from: '      peer_cancellations: cancelled, peers_unaccounted: unaccounted,',
-    to: '      peer_cancellations: cancelled,',
+    from: '      peer_cancellations: cancelled, peer_settlements: settlements, peers_unaccounted: unaccounted,',
+    to: '      peer_cancellations: cancelled, peer_settlements: settlements,',
     why: 'a step whose peers the run could not account for is finished like any other in its log: the next run\'s cleanup does not search it for them',
     killed_by: /halts on that read and keeps the run's open-run record/,
   },
@@ -723,5 +723,19 @@ export const MUTATIONS = [
     to: '  if (false) {',
     why: 'a look that could not read the subtask\'s child counts the step\'s peers as listed',
     killed_by: /peersUnlisted:/,
+  },
+  {
+    id: 'S60', file: SCHED, tests: [TLS],
+    from: '    if (!verdict && w.reportEof === true) {',
+    to: '    if (false) {',
+    why: 'a lane step closed on its finished report leaves its peer pending, and the lane halts on it at the next decision (C127)',
+    killed_by: /a lane step closed on its finished report passes, and its peer is cancelled and settled in the lane/,
+  },
+  {
+    id: 'S61', file: SCHED, tests: [TLS],
+    from: '      keep = true;\n      parts.push(`peer run ${x.run_id} could not be cancelled',
+    to: '      parts.push(`peer run ${x.run_id} could not be cancelled',
+    why: 'a peer whose cancellation did not go through after a close on a report may still run, and the run drops its open-run record (C127)',
+    killed_by: /settlement task that fails halts the lane and keeps the open-run record/,
   },
 ];

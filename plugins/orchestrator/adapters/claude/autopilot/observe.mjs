@@ -116,6 +116,15 @@ function consensusFacts(fm, file, roots) {
   return { run_id: runId, conflict_runs: conflictRuns, task };
 }
 
+// Each pending ensemble row's run id and phase: what `peer-runner settle`
+// needs, beside the workflow's path, to settle a run a step left (C127).
+function pendingRows(fm) {
+  if (!Array.isArray(fm.pending_ensemble)) return [];
+  return fm.pending_ensemble
+    .filter((p) => typeof p?.run_id === 'string')
+    .map((p) => ({ run_id: p.run_id, phase: typeof p.phase === 'string' ? p.phase : null }));
+}
+
 function summarizeChild(fm, location, file, roots) {
   return {
     location,
@@ -138,6 +147,7 @@ function summarizeChild(fm, location, file, roots) {
     pending_runs: Array.isArray(fm.pending_ensemble)
       ? fm.pending_ensemble.map((p) => p?.run_id).filter((id) => typeof id === 'string')
       : [],
+    pending_rows: pendingRows(fm),
     ensemble_results: Array.isArray(fm.ensemble_results) ? fm.ensemble_results.length : 0,
     commit_manifest: Array.isArray(fm.commit_manifest) ? fm.commit_manifest.length : 0,
     progress: progressEvents(fm.host_history),
@@ -314,6 +324,7 @@ function listClaims({ engCli, roots, macroId, o }) {
         pending_runs: Array.isArray(r.fm.pending_ensemble)
           ? r.fm.pending_ensemble.map((p) => p?.run_id).filter((id) => typeof id === 'string')
           : [],
+        pending_rows: pendingRows(r.fm),
       });
     }
   }

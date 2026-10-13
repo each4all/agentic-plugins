@@ -465,6 +465,77 @@ claude -p --input-format stream-json --output-format stream-json --verbose
    terminal note to the macro (probe E8). Since ADR-0062 that note no longer
    completes the subtask (D3a).
 
+*Amendment 2026-10-13 (C127, C123):* a worker that has finished its runbook
+can leave a background task pending (a test run, a monitor), and item 3 then
+held the step open to its wall clock: of the 11 step timeouts the owner
+measured over the 264 steps run before this change, 8 ended that way. The step report gains a required boolean,
+`waiting_on_background`: `true` in a report the worker files while it still
+waits on a background task's notification (the provisional report, which also
+says `failed`), `false` in its last. The worker's appended rule 6 says both.
+- **Close on a finished report.** Item 3 stands, and one more close is added:
+  when the last `result` is not an error and its report is valid in every
+  required field with `waiting_on_background: false`, stdin closes after the
+  2 s debounce even with background tasks pending. That close is armed once
+  per result: other stream events, the task list moving included, do not
+  push it back, and a new result, a task notification or an abort disarms
+  it. A worker that exits before it fires is not closed on its report. A
+  report that says it waits, or that is missing the field or invalid in
+  another, keeps today's wait.
+- **Shutdown after it.** A worker that has not exited 10 s after that EOF gets
+  SIGTERM on its group, and SIGKILL 5 s later. Nothing after the EOF re-arms
+  the grace. The group teardown of item 4 then ends what is left: the
+  abandoned background tasks. An abort (timeout, PreCompact, interrupt,
+  provenance) keeps its precedence throughout: it disarms the close and runs
+  its own escalation.
+- **Judging it.** `verifyStep` does not judge the exit status of a step closed
+  on its report while that report is still the last result and is not an
+  error: a signal of the teardown is not the step's failure. A result that
+  arrives after the EOF ends that exception, never the record of the EOF. A failure report still halts
+  `worker-failed`, a lingering group still halts, and a last report that says
+  it still waits, from a worker that exited, halts `owner-choice` (or
+  `worker-failed` when it says `failed`).
+- **Ledger.** The step's `finished` line records `report_eof` (stdin was
+  closed on a finished report), `closed_on_report` (that close still holds),
+  `abandoned_background` (each `{task_id, task_type, description, run_id}`,
+  the tasks pending at the EOF), `report_teardown` (`null`, `signalled` or
+  `killed`) and `peer_settlements`.
+- **The step's peers.** A peer runs detached from the worker's group, so the
+  teardown does not reach a peer run the step left pending. `finish-verb`
+  already refuses under autopilot while a peer is pending on its workflow,
+  so such a run is one left after the verb's last write, or on another
+  workflow that claims the subtask. On this success
+  path (any step whose stdin was closed on its report) the driver cancels each run that became pending during the step on its
+  own subtask's engineer workflows (the same scope as after a failed step,
+  [ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decision 6), then
+  settles it from its ledger with `peer-runner settle` and no verdict: a run
+  that failed, was cancelled or was abandoned is recorded `failed`, one that
+  completed with no usable answer `degraded`. A run that completed with an
+  answer is not settled, since no synthesis took it: the step halts
+  `owner-choice` naming it. The step is judged before this cleanup, and the
+  next decision reads the state after it. A cancellation that does not go
+  through keeps the run's open-run record for the next run's cleanup; a
+  settlement that does not leaves the pending row, which the policy halts on
+  until it is settled. Either halts the step with the command to run. A
+  step that changed nothing but such a peer row then halts `no-progress`:
+  the row alone passed the progress check, and the next decision would run
+  the step again. With
+  lanes the work runs off the loop, in the lane's checkout. The run refuses
+  to start on an engineer without `peer-runner settle`.
+- **Known limits.** A peer whose pending row was never recorded is not
+  found, as after a failed step. `peer-runner cancel` signals the run's
+  verified process; a detached descendant that leaves its group is not
+  reached. A dead run's cleanup still cancels without settling.
+  `peer-runner cancel` reads the run's status before it verifies the
+  process, so a peer that completes in between is recorded cancelled, and
+  then settled `failed` though it had an answer; closing that race is the
+  engineer's.
+- **C123.** The serial driver checks for an interrupt once more after the
+  last await before a spawn (the drift check's root resolution), and an
+  interrupt there releases the step's reservation and ends the run
+  `interrupted` with no worker started and no `started` line, before any
+  drift the same resolution found. A run with lanes already yields at that
+  point.
+
 **Plugin-root hint.** Until runbooks prefer `AGENTIC_<PLUGIN>_ROOT` over their
 cache fallback, the driver appends a short hint naming the resolved roots
 (proven in E7/E8).
