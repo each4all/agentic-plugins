@@ -18,6 +18,13 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.24.4](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.24.3...plugin-orchestrator-v0.24.4) (2026-10-13)
+
+
+### Bug Fixes
+
+* **orchestrator:** end an autopilot step on its finished report, not on its last background task (C127, C123) ([81534e4](https://github.com/each4all/agentic-plugins/commit/81534e4343322f19bc5bd397d7b064a852c58b27))
+
 ## [0.24.3](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.24.2...plugin-orchestrator-v0.24.3) (2026-10-13)
 
 
