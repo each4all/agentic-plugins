@@ -480,3 +480,126 @@ background jobs, streaming, timeouts, and persistent threads. Those
 semantics require timing, lifecycle, and state guarantees that belong
 above the stateless wire adapter. A future ADR may expand the companion
 contract only after caller-side supervisor needs are proven insufficient.
+
+## Amendment 2026-10-13 — a codex peer runs in a snapshot of the checkout (C96)
+
+**Why.** A codex peer asked only to read a diff was measured tidying the
+working tree it was pointed at (`git checkout -- .`, `git clean`): the
+caller's uncommitted edits were reverted and its untracked files deleted.
+The peer's `--cwd` was the live checkout, and nothing between the runner
+and the peer stood in the way. The persona dispatchers that spawn a
+companion, `peer-runner.mjs` and `dispatch-peer.mjs`, now give a codex peer a
+snapshot instead (`scripts/lib/peer-snapshot.mjs`, generated from
+`persona-pipeline/`). A claude peer keeps the directory it is given: the
+measured behaviour is codex's.
+
+**Capture.** With the caller's git selectors removed (`GIT_DIR`,
+`GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY`,
+`GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_NAMESPACE`, `GIT_PREFIX`,
+`GIT_CEILING_DIRECTORIES`), hooks and fsmonitor off: HEAD is read; the
+worktree's own index is copied twice; tree I is written from the first copy
+(an unmerged index fails the snapshot); tree W is the second copy after
+`add -A` (`.gitignore` respected) with the state homes
+(`.agentic-plugins/state`, `.claude/agentic-*`) removed; HEAD is read again,
+and a capture HEAD moved under is taken once more, then fails. The live
+index and working tree are only read.
+
+**Materialize.** In a `mkdtemp` directory outside the checkout (the system
+temporary directory, or `/tmp` when that lies inside the checkout or its
+path holds a character XML escapes, `&<>"'`), an owner
+record is written first, then `git worktree add --detach --no-checkout
+--lock --reason "peer-snapshot v1 <dir>/owner.json" <dir>/tree <HEAD>` (an
+unborn HEAD, as in runtime doctor's proof repository, gets `--orphan` on a
+throwaway branch name, which needs git 2.42), `read-tree -u --reset W`,
+`read-tree I`, and the intent-to-add entries and assume-unchanged /
+skip-worktree flags are replayed, so `status`, `diff` and `diff --cached`
+there read as in the checkout. The peer's `--cwd` is the snapshot's copy of
+the directory it was given. The companion reads a private copy of the prompt
+in which every absolute path of the checkout's toplevel, in each spelling
+the caller used, raw or XML-escaped, is rewritten to the snapshot (whose
+root needs no escaping); outputs stay in the live
+ledger. The handle gains an additive `snapshot` record (isolation, reason,
+root, peer_cwd, head, index_tree, worktree_tree, owner_path, removed_at,
+cleanup_error, prompt_paths_rewritten); schema 1.0 is unchanged.
+
+**Lifecycle.** The snapshot is removed on every end — completed, failed,
+cancelled, thrown, a signal to the CLI (SIGINT, SIGTERM, SIGHUP: the peer's
+process group is stopped, the ledger records `cancelled`, the CLI exits
+128+n; a signal that comes after the run's terminal write leaves the run as
+it ended, and the exit code follows the ledger) — after anything left of the
+peer's process group is stopped, by `git worktree remove -f -f` (which takes
+a locked worktree and one whose directory is gone), the owner record last
+and only once the rest is gone, so a snapshot that could not be removed
+whole is found and retried by a later reclaim. A cleanup failure is
+recorded in `snapshot.cleanup_error` and reported, and never changes the
+run's status. A run that throws (an unreadable prompt, a ledger write that
+fails) ends its ledger `failed` with the error's code. Whether a run is
+cancelled is decided inside the serialized write of its terminal record,
+and its process control (the owner record, the cancellation, the exit watch)
+is armed by the update that records the running peer whether or not the
+ledger takes that write; once the run has ended, a cancellation signals
+nothing of it.
+`dispatch-peer.mjs` now spawns the companion in its own process group, so
+the signal runtime doctor's timeout sends the wrapper reaches the whole
+peer. A signal also stops a capture still running (each git call that can
+be cancelled runs in its own process group, which is stopped whole, filters
+included, before the call returns; what was made is removed), so a slow
+filter cannot hold a cancellation. Whatever the peer, nothing of its process group outlives the
+run: a child the companion leaves behind is stopped at the end, and one that
+holds the companion's stdout or stderr open — which would hold the run's
+wait for the pipes to close — is stopped a second after the companion
+itself exits. A codex peer never inherits the caller's git selectors, in a
+snapshot or not.
+
+**Reclaim.** Each isolated run, and `peer-runner sweep`, first removes this
+repository's snapshots whose owners are gone: a worktree locked with the
+`peer-snapshot v1` reason naming the owner record beside it, whose
+supervisor (the run that made it) and companion (pid, group and
+fingerprint, recorded once it runs) are both gone or replaced by another
+process. A live peer outliving a killed supervisor keeps its snapshot until
+it ends, and so does a live companion group whose leader has exited, however
+old the record (only a group under a pid another process now has is judged
+by age). A verdict to reclaim is checked against the owner record read
+again, since the supervisor may have written it before it died. The owner
+record marks the launch just before the companion is
+spawned, so a supervisor that dies between the spawn and the companion's
+record leaves a snapshot that is judged like an identity that cannot be
+told: it, an unreadable owner record, and any identity that cannot be told
+are reclaimed only after 24 hours. A snapshot directory an interrupted
+creation left (an owner record naming this repository by its common git
+directory, so from any of its worktrees; no worktree) is reclaimed the same
+way, with the throwaway branch its record names.
+
+**Failure.** A snapshot that cannot be made fails the run before a
+companion is spawned — running the peer in the live tree instead is the
+failure this prevents: the ledger ends `failed` with `error_kind:
+snapshot_failed`, `exit_code` null and `snapshot.reason`, and `settle`
+records verdict `failed`; `dispatchPeer` returns `{ ok: false, status:
+'companion_error', kind: 'snapshot_failed', exitCode: 3, envelope: null }`.
+A directory with no `.git` in any ancestor is no checkout and runs as before
+(`snapshot.isolation: none`).
+
+**The state guard.** The ADR-0067 write guard reads every worktree of the
+repository; a snapshot carries no state home, so it is no second copy of
+any record and a live workflow stays writable while one exists.
+
+**Limits.**
+
+- Ignored files (`node_modules`, build output) are not in the snapshot, so
+  a peer cannot run what needs them; submodules are not initialized there.
+- Clean and smudge filters (LFS) run when the snapshot is materialized.
+- A tracked absolute symlink into the checkout still points at it.
+- A host sandbox that grants the peer more writable roots, or full access,
+  can still write the live tree by absolute path; the snapshot removes the
+  default route, not every route.
+- Assume-unchanged and skip-worktree entries carry their index bytes, not
+  their working-tree bytes.
+- Shared refs (`main`) may move while a review runs; the snapshot pins
+  HEAD only.
+- A peer-now answer comes from the snapshot: files the peer writes are
+  discarded with it.
+- Image dispatch is not isolated (its peer writes the image output), and
+  the orchestrator's copies of both dispatchers follow in their own change.
+- The handle's updates are serialized within one runner process only: a
+  `cancel` from another process that lands between an update's read and
+  its rename can still be overwritten (C139, present before this change).

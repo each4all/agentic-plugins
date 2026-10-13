@@ -186,8 +186,8 @@ export const MUTATIONS = [
   // ---- P: the ledger records provenance -----------------------------------
   {
     id: 'P1', file: RUNNER, tests: [T_RUNNER],
-    from: '        h.companion = companionRecord(companion);\n',
-    to: '',
+    from: "        h.error_kind = 'peer_cli_not_found';\n        h.companion = companionRecord(companion);\n",
+    to: "        h.error_kind = 'peer_cli_not_found';\n",
     why: 'a failed resolution leaves no record of which candidate was tried',
   },
   {

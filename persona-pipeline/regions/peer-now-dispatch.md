@@ -1,3 +1,7 @@
+A codex peer answers from a snapshot of the checkout, removed when the
+run ends (C96): a file it writes is discarded with it. Ask it for an
+answer, not for files.
+
 The prompt reaches the runner as a file you write, never in the block: in
 shell source a quote, `$`, backtick or line of it would be read as code, and
 so would a `--prompt-file` path (ADR-0059, amendment of 2026-10-10). Before

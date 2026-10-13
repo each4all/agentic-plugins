@@ -1585,8 +1585,8 @@ export const MUTATIONS = [
   },
   {
     id: 'J18', file: RUNNER, tests: [T_WRITERS],
-    from: "  return runInCommandDirectory(args?.repoRoot ?? process.cwd(), () => runPeerInCheckout(args));",
-    to: "  return runPeerInCheckout(args);",
+    from: "  return runInCommandDirectory(args?.repoRoot ?? process.cwd(), async () => withSnapshotRecord(await runPeerInCheckout(args)));",
+    to: "  return withSnapshotRecord(await runPeerInCheckout(args));",
     why: "runPeer called as an API judges the storage root, not the checkout it names",
     killed_by: [/runPeer called as an API judges the checkout repoRoot names/, /a second workflow made after the precheck is refused by the locked registration/],
   },
