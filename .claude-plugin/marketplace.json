@@ -31,7 +31,7 @@
     {
       "name": "engineer",
       "source": "./plugins/engineer",
-      "version": "0.28.3",
+      "version": "0.28.4",
       "description": "Engineer workbench for AI-assisted engineering across Claude Code & Codex CLI — 6 cognitive verbs (investigate / frame / decide / compose / critique / refine), /engineer:start lifecycle macro, 3 workflow-continuity meta skills (resume / checkpoint / peer-now), the /engineer:commit verb-chain commit surface, and cited-brief research profile.",
       "category": "Development"
     },
@@ -52,7 +52,7 @@
     {
       "name": "orchestrator",
       "source": "./plugins/orchestrator",
-      "version": "0.24.3",
+      "version": "0.24.4",
       "description": "Macro orchestration capability — multi-deliverable plan + Plan-verify ensemble + same-host dispatch into engineer, lifecycle closure, and workflow-continuity meta surfaces for AI-assisted development across Claude Code & Codex CLI. L2 capability plugin per ADR-0010 4-layer composition (ADR-0018 §sub-decision-1, ADR-0019 cross-plugin invocation).",
       "category": "Productivity"
     },
