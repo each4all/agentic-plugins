@@ -73,7 +73,12 @@ the steps stay manual**, and the host-neutral state it reads (`next_step_*`,
   entries again while it waits, so a group left by a driver that died as it was stopped
   is emptied too, and it exits 1 while any part of the run still runs.
   After a killed or failed step, the driver cancels only the peer runs that step left
-  pending on its own subtask's engineer workflows.
+  pending on its own subtask's engineer workflows. A step whose worker's last report
+  says it is finished (`waiting_on_background: false`) ends then, even with background
+  tasks pending: its process group is torn down, its `finished` line names the tasks it
+  abandoned, and the peer runs it left pending on the same workflows are cancelled and
+  settled from their ledgers (`peer-runner settle`), or the step halts for the owner
+  with the command to run (ADR-0063 D5, amendment of 2026-10-13).
 - **A dead run is cleaned up.** Each run keeps a record in the main worktree's
   `.agentic-plugins/runs/autopilot/open/<run-id>.json` from before its first step until
   it ends with every worker group empty, unless a step's peers are unaccounted for: the

@@ -188,11 +188,12 @@ function progressEvents(history) {
   return Array.isArray(history) ? history.filter((h) => h && h.event && h.event !== 'snapshot').length : 0;
 }
 
-// The fields of an engineer child a step is meant to move.
-function childTuple(id, c) {
+// The fields of an engineer child a step is meant to move. `withoutPeers`
+// leaves out its peer bookkeeping (pending and settled ensemble counts).
+function childTuple(id, c, { withoutPeers = false } = {}) {
   return [id, c.location, c.workflow_id ?? null, c.current_phase ?? null, c.terminal_marker === true,
     c.next_step ? [c.next_step.kind, c.next_step.verb ?? null, c.next_step.confidence] : null,
-    c.awaiting_owner?.gate ?? null, c.pending_ensemble ?? 0, c.ensemble_results ?? 0,
+    c.awaiting_owner?.gate ?? null, withoutPeers ? null : (c.pending_ensemble ?? 0), withoutPeers ? null : (c.ensemble_results ?? 0),
     c.commit_manifest ?? 0, c.progress ?? 0];
 }
 
@@ -204,13 +205,13 @@ function childTuple(id, c) {
  * satisfy this lane's no-progress check. Steps outside a lane keep
  * `fingerprint`.
  */
-export function laneFingerprint(view, subtaskId) {
+export function laneFingerprint(view, subtaskId, opts = {}) {
   const s = (view?.macro?.fm?.plan?.subtasks ?? []).find((x) => x?.id === subtaskId) ?? null;
   const c = view?.children?.[subtaskId] ?? null;
   return createHash('sha256').update(JSON.stringify({
     git: [view?.git?.branch ?? null, view?.git?.head ?? null, view?.git?.porcelain ?? null],
     subtask: s ? [s.id, s.status ?? null, s.engineer_workflow_id ?? null, s.commit ?? null, s.pr_url ?? null, s.closed_at ?? null] : null,
-    child: c ? childTuple(subtaskId, c) : null,
+    child: c ? childTuple(subtaskId, c, opts) : null,
   })).digest('hex');
 }
 
@@ -220,7 +221,7 @@ export function laneFingerprint(view, subtaskId) {
  * fields a step is meant to move are hashed. Landing results are left out:
  * they come from the network, not from state.
  */
-export function fingerprint(view) {
+export function fingerprint(view, opts = {}) {
   const m = view?.macro;
   const macro = m
     ? {
@@ -236,7 +237,7 @@ export function fingerprint(view) {
       events: progressEvents(m.fm?.host_history),
     }
     : null;
-  const children = Object.keys(view?.children ?? {}).sort().map((id) => childTuple(id, view.children[id]));
+  const children = Object.keys(view?.children ?? {}).sort().map((id) => childTuple(id, view.children[id], opts));
   return createHash('sha256').update(JSON.stringify({
     git: [view?.git?.branch ?? null, view?.git?.head ?? null, view?.git?.porcelain ?? null],
     macro,
@@ -1006,10 +1007,47 @@ export const STEP_REPORT_SCHEMA = Object.freeze({
     },
     awaiting_owner: { enum: [...OWNER_GATES, 'duplicate-workflow', null] },
     summary: { type: 'string', maxLength: 400 },
+    // C127 (ADR-0063 D5, amendment of 2026-10-13): true while the worker
+    // still waits on a background task's notification, false once this
+    // report is its last. A finished report ends the step even with
+    // background tasks pending (worker.mjs).
+    waiting_on_background: { type: 'boolean' },
   },
-  required: ['outcome', 'workflow', 'next_step', 'awaiting_owner', 'summary'],
+  required: ['outcome', 'workflow', 'next_step', 'awaiting_owner', 'summary', 'waiting_on_background'],
   additionalProperties: false,
 });
+
+const NEXT_STEP_KEYS = new Set(['kind', 'verb', 'confidence']);
+const REPORT_KEYS = new Set(STEP_REPORT_SCHEMA.required);
+const isPlainObject = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
+
+/**
+ * What makes a step report fall short of STEP_REPORT_SCHEMA, or null: the
+ * schema's checks, field by field, at run time. The host closes a step on a
+ * report only when every required field is valid, so a partial or malformed
+ * report never ends a step early.
+ */
+export function stepReportProblem(r) {
+  if (!isPlainObject(r)) return 'not an object';
+  for (const k of Object.keys(r)) if (!REPORT_KEYS.has(k)) return `an unknown field ${k}`;
+  for (const k of REPORT_KEYS) if (!Object.hasOwn(r, k)) return `no ${k}`;
+  if (!STEP_REPORT_OUTCOMES.includes(r.outcome)) return 'outcome';
+  if (r.workflow !== null && typeof r.workflow !== 'string') return 'workflow';
+  if (r.next_step !== null) {
+    const ns = r.next_step;
+    if (!isPlainObject(ns) || Object.keys(ns).some((k) => !NEXT_STEP_KEYS.has(k)) || ![...NEXT_STEP_KEYS].every((k) => Object.hasOwn(ns, k))) return 'next_step';
+    if (!NEXT_STEP_KINDS.includes(ns.kind) || !(ns.verb === null || VERBS.includes(ns.verb)) || !CONFIDENCES.includes(ns.confidence)) return 'next_step';
+  }
+  if (!(r.awaiting_owner === null || r.awaiting_owner === 'duplicate-workflow' || OWNER_GATES.includes(r.awaiting_owner))) return 'awaiting_owner';
+  if (typeof r.summary !== 'string' || r.summary.length > 400) return 'summary';
+  if (typeof r.waiting_on_background !== 'boolean') return 'waiting_on_background';
+  return null;
+}
+
+/** Whether a step report is the worker's last: valid in every field, and not waiting on background work. */
+export function reportSaysFinished(r) {
+  return stepReportProblem(r) === null && r.waiting_on_background === false;
+}
 
 const RUNS_A_VERB = new Set(['dispatch', 'verb']);
 
@@ -1100,7 +1138,12 @@ export function verifyStep({ step: s, worker: w, before, after }) {
   if (w.aborted) return halt('worker-failed', `the step was aborted (${w.aborted})`);
   if (w.spawnError) return halt('worker-failed', `the worker could not start: ${w.spawnError}`);
   if (!w.lastResult) return halt('worker-failed', `the worker exited ${w.exitCode ?? w.signal ?? '?'} without a result${w.stderrTail ? `: ${w.stderrTail.slice(-200)}` : ''}`);
-  if (w.exitCode !== 0 || w.lastResult.is_error === true) {
+  // C127: a step the host closed on its finished report (still the last
+  // result) ended there, its leftovers torn down: how the worker then exited
+  // (a signal of that teardown, say) is not the step's failure. Only that
+  // close: the close after every task ended never sets closedOnReport.
+  const closedByReport = w.closedOnReport === true && w.lastResult.is_error !== true;
+  if ((w.exitCode !== 0 && !closedByReport) || w.lastResult.is_error === true) {
     return halt('worker-failed', `exit=${w.exitCode ?? w.signal} result=${w.lastResult.subtype ?? 'error'}${w.stderrTail ? ` ${w.stderrTail.slice(-200)}` : ''}`);
   }
 
@@ -1109,6 +1152,11 @@ export function verifyStep({ step: s, worker: w, before, after }) {
   const summary = String(r?.summary ?? '').slice(0, 300);
   if (!r || typeof r !== 'object') return halt('owner-choice', 'the worker returned no step report, so its result cannot be cross-checked');
   if (r.outcome === 'failed') return halt('worker-failed', `the worker reports failure: ${summary}`);
+  // A last report that still waits, from a worker that exited: the wait it
+  // names never ended in a report, so what the step did is not known (C127).
+  if (r.waiting_on_background === true) {
+    return halt('owner-choice', `the worker's last report says it still waits on background work, but the worker exited: ${summary}`, { subtaskId: s.subtaskId ?? null });
+  }
   // A look that could not read what the checks below compare is reported as
   // what it is, before a cross-check or a postcondition reports what it could
   // not see as the step's failure (C92).
@@ -1148,4 +1196,20 @@ export function verifyStep({ step: s, worker: w, before, after }) {
       : halt('no-progress', 'the step exited 0 and changed no state', { subtaskId: s.subtaskId ?? null });
   }
   return null;
+}
+
+/**
+ * C127 — after the driver settled the peer runs a step closed on its report
+ * left: whether the step changed nothing but that peer bookkeeping (a row
+ * pending, then settled). Such a step passed verifyStep on the row alone,
+ * and the next decision would repeat it. A halt, or null.
+ */
+export function peersOnlyProgress({ step: s, before, after }) {
+  const opts = { withoutPeers: true };
+  const unchanged = s.lane
+    ? laneFingerprint(before, s.subtaskId, opts) === laneFingerprint(after, s.subtaskId, opts)
+    : fingerprint(before, opts) === fingerprint(after, opts);
+  return unchanged
+    ? halt('no-progress', 'the step changed nothing but a peer run it left pending, which the run settled', { subtaskId: s.subtaskId ?? null })
+    : null;
 }

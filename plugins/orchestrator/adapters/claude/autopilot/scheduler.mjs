@@ -55,7 +55,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import { createBudget } from './budget.mjs';
 import { holdLane, laneHome, lanePath, reconcileLanes, stepPlacement } from './lanes.mjs';
@@ -63,7 +63,7 @@ import { appendStep, LockHeldError, processFingerprint, workerStreamPath, writeR
 import { createTaskRunner, offLoop as defaultOffLoop } from './offloop.mjs';
 import {
   afterUnread, checkoutProblem, consensusProposals, decideLanes, fingerprint, forcedForLanes, laneFingerprint, modelFor,
-  proposalsAtEnd, renderStep, STEP_KINDS, verifyStep,
+  peersOnlyProgress, proposalsAtEnd, renderStep, STEP_KINDS, verifyStep,
 } from './policy.mjs';
 import { driftOf, PLUGINS, resolveRoots } from './roots.mjs';
 import {
@@ -152,6 +152,55 @@ export function peerCancellationOutcome(verdict, cancelled, unlisted) {
   return { verdict: { ...verdict, detail }, keep: open.length > 0 || Boolean(unlisted) };
 }
 
+// C127 — what settling a step's abandoned peers leaves (driver.mjs
+// settleAbandonedPeers), in the serial run and in a lane alike. Settled runs
+// pass. A run whose cancellation did not go through may still run: the run
+// keeps its open-run record (`keep`), as on the failure path. A run that was
+// not settled (a completed answer no synthesis took, a refusal) keeps its
+// pending row, which the policy halts on until it is settled. Either halts
+// the step for the owner, with the command to run; so does a run the look
+// listed twice (`conflicts`), which was neither cancelled nor settled.
+// The engineer peer-runner command a halt names for the owner to run by hand.
+const shellWord = (x) => (/^[\w@%+=:,./-]+$/.test(x) ? x : `'${String(x).replace(/'/g, "'\\''")}'`);
+export function peerRunnerCommand(roots, args) {
+  return ['node', join(roots.engineer, 'scripts', 'peer-runner.mjs'), ...args].map(shellWord).join(' ');
+}
+
+const resultText = (r) => (r && typeof r === 'object' ? (r.reason ?? r.status ?? JSON.stringify(r)) : String(r ?? 'no answer'));
+export function peerSettlementOutcome(settlements, conflicts = []) {
+  const parts = [];
+  let keep = conflicts.length > 0;
+  for (const x of settlements) {
+    if (x.cancel?.exit !== 0) {
+      keep = true;
+      parts.push(`peer run ${x.run_id} could not be cancelled (${resultText(x.cancel?.result)}), so the run keeps its open-run record for the next run's cleanup${x.command ? `: ${x.command}` : ''}`);
+    } else if (x.settle?.exit !== 0) {
+      parts.push(`peer run ${x.run_id} on ${x.workflow_id ?? x.workflow_path} was not settled (${resultText(x.settle?.result)}); its pending row stays, and the run halts on it until it is settled${x.command ? `: ${x.command}` : ''}`);
+    }
+  }
+  if (conflicts.length) parts.push(`${conflicts.join('; ')}, so it was neither cancelled nor settled and the run keeps its open-run record`);
+  const verdict = parts.length
+    ? { outcome: 'halt', reason: 'owner-choice', detail: `the step finished on its report and left peer runs it had not collected: ${parts.join('; ')}` }
+    : null;
+  return { verdict, keep };
+}
+
+// A step closed on its report whose look cannot list its peers: they may be
+// among the tasks it abandoned, so the run halts and keeps its record.
+export function reportClosePeersUnlisted(unlisted, id) {
+  return {
+    outcome: 'halt', reason: 'owner-choice', subtaskId: id ?? null,
+    detail: `the step finished on its report with background tasks pending, and its peer runs could not be listed (${unlisted}), so the run keeps its open-run record for the next run's cleanup`,
+  };
+}
+
+// The step line's note of a close on a report: the tasks it abandoned.
+export function abandonedText(w) {
+  if (w.reportEof !== true) return '';
+  const names = (w.abandonedBackground ?? []).map((t) => t.task_id ?? '?');
+  return ` closed-on-report${names.length ? ` abandoned=${names.join(',')}` : ''}${w.reportTeardown ? ` (${w.reportTeardown})` : ''}`;
+}
+
 /**
  * Run the macro with lanes until it completes, halts or is interrupted.
  * Resolves to the exit code `c.finish` returns.
@@ -163,7 +212,7 @@ export function peerCancellationOutcome(verdict, cancelled, unlisted) {
  *           reportLanding(view, seq, runTask) (a promise: the report runs in a child, through runTask),
  *           landing(), interrupted(), onInterrupt(fn), groupsInFlight(fn) (fn lists the groups the
  *           driver's exit kills), observeAsync(args, { offLoop }), offLoop (offloop.mjs's, a test seam),
- *           startWorker, terminateGroup, helpers: { provenanceProblem, newPendingRuns } }
+ *           startWorker, terminateGroup, helpers: { provenanceProblem, newPendingRuns, newPendingTargets } }
  */
 export async function runLanes(c) {
   const { repoRoot, options, env, out, now, roots, pinned, stateRoot, runId, runDir, run, macroId, record } = c;
@@ -559,6 +608,31 @@ export async function runLanes(c) {
       if (settled.keep) keep();
       verdict = settled.verdict;
     }
+    // C127: a step that passed after its host closed stdin on its finished
+    // report (whatever came after): the peer runs it left on its own subtask's workflows are
+    // cancelled and settled, in the checkout it ran in (driver.mjs, as in the
+    // serial run). The loop's next look reads what that left.
+    let settlements = [];
+    if (!verdict && w.reportEof === true) {
+      const unlisted = peersUnlisted(after, id);
+      if (unlisted) {
+        keep();
+        verdict = asHalt(reportClosePeersUnlisted(unlisted, id));
+      } else {
+        const { targets, conflicts } = c.helpers.newPendingTargets(ownChildOnly(entry.before, id), ownChildOnly(after, id), id);
+        if (targets.length > 0) {
+          const r = await task('settlePeerRuns', { targets, roots, checkout: entry.cwd }, entry.cwd);
+          settlements = r.error
+            ? targets.map((t) => ({ ...t, cancel: { exit: null, result: r.error }, settle: null, command: peerRunnerCommand(roots, ['cancel', '--run-id', t.run_id, '--repo-root', entry.cwd]) }))
+            : r.value;
+        }
+        const o = peerSettlementOutcome(settlements, conflicts);
+        if (o.keep) keep();
+        if (o.verdict) verdict = asHalt({ ...o.verdict, subtaskId: id });
+        // A step whose only change was the peer it left: no progress.
+        else if (targets.length > 0) verdict = peersOnlyProgress({ step: s, before: entry.before, after });
+      }
+    }
     appendStep(runDir, {
       event: 'finished', seq: entry.seq, lane: entry.lane, ended_at: new Date(now()).toISOString(),
       exit: w.exitCode, signal: w.signal, aborted: w.aborted, abort_detail: w.abortDetail ?? null,
@@ -566,13 +640,14 @@ export async function runLanes(c) {
       turns: w.turns, cost_usd: w.costUsd, cost_charged_usd: cost, peak_ctx: w.peakCtx, peak_pct: w.peakPct,
       context_window: w.contextWindow, permission_denials: w.denials, report: w.report, raw_truncated: w.rawTruncated,
       group_teardown: w.groupTeardown, rate_limit: w.rateLimit ?? null,
-      peer_cancellations: cancelled, peers_unaccounted: unaccounted,
+      report_eof: w.reportEof === true, closed_on_report: w.closedOnReport === true, abandoned_background: w.abandonedBackground ?? [], report_teardown: w.reportTeardown ?? null,
+      peer_cancellations: cancelled, peer_settlements: settlements, peers_unaccounted: unaccounted,
       fingerprint_after: entry.lane ? laneFingerprint(after, id) : fingerprint(after),
       outcome: verdict ? verdict.reason : 'ok',
     });
     writeRun(runDir, run);
     const pct = w.peakPct == null ? '?' : `${(w.peakPct * 100).toFixed(1)}%`;
-    out(`    [${entry.seq}]${entry.lane ? ` lane ${id}` : ''} exit=${w.exitCode ?? w.signal} cost=$${(w.costUsd ?? cost).toFixed(2)}${w.costUsd === null ? ' (unreported; budget charged)' : ''} peak=${w.peakCtx} (${pct}) denials=${w.denials.length}${verdict ? ` → ${verdict.reason}` : ''}`);
+    out(`    [${entry.seq}]${entry.lane ? ` lane ${id}` : ''} exit=${w.exitCode ?? w.signal} cost=$${(w.costUsd ?? cost).toFixed(2)}${w.costUsd === null ? ' (unreported; budget charged)' : ''} peak=${w.peakCtx} (${pct}) denials=${w.denials.length}${abandonedText(w)}${verdict ? ` → ${verdict.reason}` : ''}`);
     if (id && report.get(id)?.last_step?.seq === entry.seq) report.get(id).last_step.outcome = verdict ? verdict.reason : 'ok';
     // A commit stands whatever the verdict on its step, and is reported; after
     // an interrupt the next run's first look reports it (Decision 7).

@@ -15,7 +15,7 @@
 //
 //   - the capability floor: source probes for the surfaces the run depends on
 //     (S0 root env, S2 approval, S3+S4 autopilot verbs and /engineer:commit,
-//     S6 approval gate, ADR-0062 landing). The released engineer 0.23.0
+//     S6 approval gate, ADR-0062 landing, C127 peer settlement). The released engineer 0.23.0
 //     scripts fail a verb's Phase 0 before any write (ADR-0063 S3+S4 note), so
 //     the driver refuses them up front instead of halting on the first step.
 //   - the frozen-input guard: a root inside the repository being driven would
@@ -115,6 +115,7 @@ const PROBES = Object.freeze({
     ['scripts/phase7-commit.mjs', "'autopilot'", 'phase7-commit --mode autopilot (S3+S4, engineer 0.24.0)'],
     ['commands/commit.md', '/engineer:commit', 'the /engineer:commit command (S3+S4, engineer 0.24.0)'],
     ['commands/compose.md', '${AGENTIC_ENGINEER_ROOT:-', 'runbooks that honor AGENTIC_ENGINEER_ROOT (S0)'],
+    ['scripts/peer-runner.mjs', "opts.subcommand === 'settle'", 'peer-runner settle, which settles the peers a step closed on its report left (C127; ADR-0066 PC2b)'],
   ],
   runtime: [
     ['scripts/context.mjs', "'entry-brief'", 'runtime:context entry-brief (ADR-0045)'],

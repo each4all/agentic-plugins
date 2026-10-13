@@ -192,6 +192,20 @@ export const MUTATIONS = [
     killed_by: /the step's own child: halts owner-choice naming the read/,
   },
   {
+    id: 'V10', file: POLICY, tests: [TP],
+    from: '  const closedByReport = w.closedOnReport === true && w.lastResult.is_error !== true;',
+    to: '  const closedByReport = w.lastResult.is_error !== true;',
+    why: 'any step that ended with a result is exempt from its exit status, not only one closed on its finished report (C127)',
+    killed_by: /is judged as any other when the close was not on its report/,
+  },
+  {
+    id: 'V11', file: POLICY, tests: [TP],
+    from: '  if (r.waiting_on_background === true) {',
+    to: '  if (false) {',
+    why: 'a last report that still waits, from a worker that exited, passes (C127)',
+    killed_by: /a last report that still waits, from a worker that exited/,
+  },
+  {
     id: 'P18', file: POLICY, tests: [TP],
     from: '  const named = list.slice(0, SKIPPED_MAX)',
     to: '  const named = list',
@@ -216,14 +230,14 @@ export const MUTATIONS = [
   // ---- W: the worker host -----------------------------------------------------
   {
     id: 'W1', file: WORKER, tests: [TW],
-    from: '    if (st.results.length > 0 && st.pending === 0 && !st.awaitingFollowUp) {',
-    to: '    if (st.results.length > 0 && !st.awaitingFollowUp) {',
+    from: "    if (st.pending === 0) return 'idle';",
+    to: "    if (true) return 'idle';",
     why: 'stdin closes while a background task (a peer) is still running, which kills it (probe D)',
   },
   {
     id: 'W2', file: WORKER, tests: [TW],
-    from: '    if (st.results.length > 0 && st.pending === 0 && !st.awaitingFollowUp) {',
-    to: '    if (st.results.length > 0 && st.pending === 0) {',
+    from: '    if (st.stdinClosed || st.aborted || st.exit !== null || st.results.length === 0 || st.awaitingFollowUp) return null;',
+    to: '    if (st.stdinClosed || st.aborted || st.exit !== null || st.results.length === 0) return null;',
     why: 'stdin closes before the turn a finished background task triggers (probe D2)',
   },
   {
@@ -277,7 +291,7 @@ export const MUTATIONS = [
 
   {
     id: 'W11', file: WORKER, tests: [TW, TD],
-    from: "        : await (o.terminateGroup ?? terminateGroup)(child.pid, { signalled: st.aborted !== null, signalledAt: st.abortedAt ?? Date.now() });",
+    from: "        : await (o.terminateGroup ?? terminateGroup)(child.pid, { signalled, signalledAt: st.abortedAt ?? st.reportSignalledAt ?? Date.now() });",
     to: "        : 'empty';",
     why: 'a group member that ignores SIGTERM outlives the step, and the driver releases its locks and exits before any escalation (round 3)',
   },
@@ -289,14 +303,14 @@ export const MUTATIONS = [
   },
   {
     id: 'W14', file: WORKER, tests: [TW],
-    from: "    setTimeout(() => { if (st.exit === null) killGroup('SIGKILL'); }, KILL_GRACE_MS).unref?.();",
+    from: "    setTimeout(() => { if (st.exit === null) killGroup('SIGKILL'); }, timing.killGraceMs).unref?.();",
     to: '',
     why: 'a worker that ignores SIGTERM never exits, so its step never ends',
   },
   {
     id: 'W15', file: WORKER, tests: [TW],
-    from: '{ signalled: st.aborted !== null, signalledAt:',
-    to: '{ signalled: true, signalledAt:',
+    from: '      const signalled = st.aborted !== null || st.reportTeardown !== null;',
+    to: '      const signalled = true;',
     why: 'what a step that ended normally left in its group gets no SIGTERM, only a SIGKILL after the grace',
   },
   {
@@ -318,6 +332,69 @@ export const MUTATIONS = [
     to: 'best === null) best = w;',
     why: 'two keys that are one model once their suffixes are dropped answer by the keys\' order, not the larger window',
     killed_by: /contextWindowFor:/,
+  },
+  {
+    id: 'W18', file: WORKER, tests: [TW],
+    from: "    return last.is_error !== true && reportSaysFinished(last.structured_output) ? 'report' : null;",
+    to: '    return null;',
+    why: 'a finished report with a background task pending holds the step open to its timeout (C127)',
+    killed_by: /a finished report with a never-ending background task ends the step ok/,
+  },
+  {
+    id: 'W20', file: POLICY, tests: [TP, TW],
+    from: "  if (typeof r.waiting_on_background !== 'boolean') return 'waiting_on_background';",
+    to: '',
+    why: 'a report with the field missing or mistyped counts as valid (C127)',
+    killed_by: /reportSaysFinished: only a report valid in every field/,
+  },
+  {
+    id: 'W21', file: WORKER, tests: [TW],
+    from: "    if (mode !== null && st.closeArm?.mode === 'report' && st.closeArm.result === last) return;",
+    to: '',
+    why: 'every stream event pushes the close on a report back, so a chatty worker is held open (C127)',
+    killed_by: /other stream events do not push the close back/,
+  },
+  {
+    id: 'W26', file: WORKER, tests: [TW],
+    from: "    if (mode !== null && st.closeArm?.mode === 'report' && st.closeArm.result === last) return;",
+    to: "    if (mode === 'report' && st.closeArm?.mode === 'report' && st.closeArm.result === last) return;",
+    why: 'the task list moving to empty and back re-arms the close on a report each time, so it can be put off for ever (C127)',
+    killed_by: /the task list moving to empty and back does not push an armed close back/,
+  },
+  {
+    id: 'W27', file: WORKER, tests: [TW],
+    from: '    if (st.stdinClosed || st.aborted || st.exit !== null) return;',
+    to: '    if (st.stdinClosed || st.aborted) return;',
+    why: 'a worker that exited before the debounce fired is closed on its report, and its failing exit goes unjudged (C127)',
+    killed_by: /a worker that exits before the debounce fires is never closed on its report/,
+  },
+  {
+    id: 'W22', file: WORKER, tests: [TW],
+    from: '        abandonedBackground: reportEof ? st.abandoned : [],',
+    to: '        abandonedBackground: [],',
+    why: 'the step record does not name the background tasks the close abandoned (C127)',
+    killed_by: /a finished report with a never-ending background task ends the step ok/,
+  },
+  {
+    id: 'W23', file: WORKER, tests: [TW],
+    from: "      st.reportSignalledAt = Date.now();\n      killGroup('SIGTERM');",
+    to: '      st.reportSignalledAt = Date.now();',
+    why: 'a host that ignores the EOF after a finished report is never signalled, so it runs to its timeout (C127)',
+    killed_by: /a host that ignores stdin closure is signalled after the grace/,
+  },
+  {
+    id: 'W24', file: WORKER, tests: [TW],
+    from: "        st.reportTeardown = 'killed';\n        killGroup('SIGKILL');",
+    to: "        st.reportTeardown = 'killed';",
+    why: 'a host that ignores the EOF and SIGTERM after a finished report is never killed (C127)',
+    killed_by: /a host that ignores stdin closure and SIGTERM is killed after the kill grace/,
+  },
+  {
+    id: 'W25', file: WORKER, tests: [TW],
+    from: '      const closedOnReport = reportEof && st.closeResult === last;',
+    to: '      const closedOnReport = reportEof;',
+    why: 'a result after the EOF still counts as closed on the earlier report, so its exit is not judged (C127)',
+    killed_by: /a result after EOF ends the exemption, never the history/,
   },
 
   // ---- L: the ledger and locks --------------------------------------------------
@@ -474,8 +551,8 @@ export const MUTATIONS = [
   },
   {
     id: 'D5', file: DRIVER, tests: [TD],
-    from: '        const drift = driftOf(pinned, await resolveRoots({ env }));',
-    to: '        const drift = [];',
+    from: '      const drift = seq > 1 ? driftOf(pinned, await resolveRootsNow({ env })) : [];',
+    to: '      const drift = [];',
     why: 'an install that changed mid-run is used without notice',
   },
   {
@@ -595,6 +672,62 @@ export const MUTATIONS = [
     to: '      const stepTimeoutSec = Math.floor(Math.min(reservation.timeoutSec, 7000 - (now() - startedAt) / 1000));',
     why: 'the run deadline comes back at the serial spawn: a late step gets what is left of the runbook\'s old two hours, here less than nothing',
     killed_by: /a step started three days into the run gets the whole step timeout/,
+  },
+  {
+    id: 'D23', file: DRIVER, tests: [TD],
+    from: '      if (!verdict && w.reportEof === true) {',
+    to: '      if (false) {',
+    why: 'a step closed on its finished report leaves its peer pending, and the run halts on it at the next decision (C127)',
+    killed_by: /the step passes, its abandoned task is named, and its peer is cancelled and settled/,
+  },
+  {
+    id: 'D29', file: DRIVER, tests: [TD],
+    from: '            else if (targets.length > 0) verdict = peersOnlyProgress({ step: s, before, after: view });',
+    to: '',
+    why: 'a step whose only change is the peer it left passes, and the next decision runs it again (C127)',
+    killed_by: /a step whose only change is the peer it left halts no-progress/,
+  },
+  {
+    id: 'V12', file: POLICY, tests: [TP, TD],
+    from: '  const opts = { withoutPeers: true };',
+    to: '  const opts = { withoutPeers: false };',
+    why: 'the progress check after the cleanup counts the settled peer row as progress (C127)',
+    killed_by: [/a step that changed nothing but a peer row/, /a step whose only change is the peer it left halts no-progress/],
+  },
+  {
+    id: 'D24', file: DRIVER, tests: [TD],
+    from: "    const settle = peerRunner(roots, ['settle',",
+    to: "    const settle = { exit: 0, result: null, command: null } ?? peerRunner(roots, ['settle',",
+    why: 'the abandoned peer is cancelled but never settled: its pending row stays (C127)',
+    killed_by: /the step passes, its abandoned task is named, and its peer is cancelled and settled/,
+  },
+  {
+    id: 'D25', file: DRIVER, tests: [TD],
+    from: '            else if (targets.length > 0) verdict = peersOnlyProgress({ step: s, before, after: view });\n            view = observe(',
+    to: '            else if (targets.length > 0) verdict = peersOnlyProgress({ step: s, before, after: view });\n            void (',
+    why: 'the next decision reads the look from before the cleanup, and halts on the row it settled (C127)',
+    killed_by: /the step passes, its abandoned task is named, and its peer is cancelled and settled/,
+  },
+  {
+    id: 'D26', file: DRIVER, tests: [TD],
+    from: "      if (interrupted) {\n        budget.settle(reservation, { spawned: false });\n        reservation = null;\n        return finish('halted', { reason: 'interrupted', detail: 'the owner interrupted the run' });\n      }\n      if (drift.length > 0) {",
+    to: '      if (drift.length > 0) {',
+    why: 'a signal during the drift check before a spawn starts the next worker anyway (C123)',
+    killed_by: /starts no worker and no step, releases the step's reservation/,
+  },
+  {
+    id: 'D27', file: DRIVER, tests: [TD],
+    from: "      if (interrupted) {\n        budget.settle(reservation, { spawned: false });\n        reservation = null;\n        return finish('halted', { reason: 'interrupted'",
+    to: "      if (interrupted) {\n        reservation = null;\n        return finish('halted', { reason: 'interrupted'",
+    why: 'the interrupted step\'s reservation is never released (C123)',
+    killed_by: /starts no worker and no step, releases the step's reservation/,
+  },
+  {
+    id: 'D28', file: 'plugins/orchestrator/adapters/claude/autopilot/roots.mjs', tests: [TD],
+    from: "    ['scripts/peer-runner.mjs', \"opts.subcommand === 'settle'\",",
+    to: "    ['scripts/peer-runner.mjs', 'peer-runner',",
+    why: 'a run starts on an engineer whose peer-runner cannot settle the peers a step closed on its report left (C127)',
+    killed_by: /refuses a pinned engineer whose peer-runner has no settle/,
   },
 
   // ---- C: the CLI -----------------------------------------------------------------------

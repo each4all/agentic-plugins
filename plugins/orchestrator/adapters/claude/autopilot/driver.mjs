@@ -43,7 +43,7 @@ import { lanesHoldingWork, lanesRequirements } from './lanes.mjs';
 import { launchProposals, mainCheckoutProposal, proposalLines } from './launch-proposals.mjs';
 import { observe as defaultObserve } from './observe.mjs';
 import {
-  afterUnread, decide, fingerprint, modelFor, proposalLines as haltProposalLines, renderStep, verifyStep, STEP_KINDS,
+  afterUnread, decide, fingerprint, modelFor, peersOnlyProgress, proposalLines as haltProposalLines, renderStep, verifyStep, STEP_KINDS,
 } from './policy.mjs';
 import {
   appendStep, acquireLock, createRunDir, LockHeldError, macroLockPath, mainWorktreeRoot, newRunId,
@@ -53,7 +53,10 @@ import {
   capabilityProblems, driftOf, frozenInputProblems, lanesCapabilityProblems, PLUGINS, resolveRoots,
 } from './roots.mjs';
 import { observeInChild, offLoop as defaultOffLoop } from './offloop.mjs';
-import { laneBlock, ownChildOnly, peerCancellationOutcome, peersUnlisted, runLanes } from './scheduler.mjs';
+import {
+  abandonedText, laneBlock, ownChildOnly, peerCancellationOutcome, peerRunnerCommand, peerSettlementOutcome, peersUnlisted, reportClosePeersUnlisted,
+  runLanes,
+} from './scheduler.mjs';
 import {
   ALLOWED_TOOLS, COMMIT_DENY, DENIED_TOOLS, claudeBin, startWorker as defaultStartWorker, terminateGroupsSync,
 } from './worker.mjs';
@@ -250,20 +253,85 @@ export function newPendingRuns(before, after, subtaskId) {
   return [...pendingRuns(after, subtaskId)].filter((id) => !had.has(id));
 }
 
+/**
+ * The pending rows behind newPendingRuns, each with what `peer-runner settle`
+ * needs: { run_id, phase, workflow_path, workflow_id } (C127). A run two
+ * workflows list differently, or one listed without a phase or a path, is a
+ * conflict, named and never settled: the run halts on it instead.
+ */
+export function newPendingTargets(before, after, subtaskId) {
+  const fresh = new Set(newPendingRuns(before, after, subtaskId));
+  const rows = [];
+  const add = (wf, pathOf, idOf) => {
+    for (const r of wf?.pending_rows ?? []) rows.push({ run_id: r.run_id, phase: r.phase ?? null, workflow_path: pathOf ?? null, workflow_id: idOf ?? null });
+  };
+  if (subtaskId) {
+    const child = after?.children?.[subtaskId];
+    if (child) add(child, child.path, child.workflow_id);
+    for (const c of after?.claims ?? []) if (c?.originating_subtask === subtaskId) add(c, c.path, c.id);
+  }
+  const byRun = new Map();
+  const conflicts = [];
+  const bad = new Set();
+  const label = (t) => `${t.workflow_id ?? t.workflow_path ?? 'no workflow'} (phase ${t.phase ?? 'none'})`;
+  for (const t of rows) {
+    if (!fresh.has(t.run_id) || bad.has(t.run_id)) continue;
+    if (!t.phase || !t.workflow_path) {
+      bad.add(t.run_id);
+      conflicts.push(`peer run ${t.run_id} is pending on ${label(t)} with no ${t.phase ? 'workflow path' : 'phase'} to settle it by`);
+      continue;
+    }
+    const key = `${canonical(t.workflow_path)}\0${t.workflow_id}\0${t.phase}`;
+    const seen = byRun.get(t.run_id);
+    if (!seen) byRun.set(t.run_id, { key, t });
+    else if (seen.key !== key) {
+      bad.add(t.run_id);
+      conflicts.push(`peer run ${t.run_id} is pending on both ${label(seen.t)} and ${label(t)}`);
+    }
+  }
+  for (const id of fresh) {
+    if (!byRun.has(id) && !bad.has(id)) conflicts.push(`peer run ${id} is pending, but no workflow's pending row names its phase`);
+  }
+  return { targets: [...byRun.values()].filter(({ t }) => !bad.has(t.run_id)).map(({ t }) => t), conflicts };
+}
+
+const peerRunner = (roots, args, checkout, env) => {
+  const cli = join(roots.engineer, 'scripts', 'peer-runner.mjs');
+  const r = spawnSync(process.execPath, [cli, ...args], { cwd: checkout, env, encoding: 'utf8', timeout: 60_000 });
+  let out = null;
+  try { out = JSON.parse((r.stdout ?? '').trim()); } catch { /* not JSON */ }
+  return { exit: r.status, result: out ?? (r.stderr ?? '').trim().slice(-300), command: peerRunnerCommand(roots, args) };
+};
+
 // A peer runs detached from the worker's process group, so killing the worker
 // leaves it running. Cancel it through engineer's supervisor, which verifies
 // the process fingerprint before it signals anything, from the checkout the
 // step ran in: its read set holds the workflow's home, where the run's ledger
 // is (ADR-0067 Decision 4, item 2).
 export function cancelPeerRuns(runIds, { roots, checkout, env }) {
-  const cli = join(roots.engineer, 'scripts', 'peer-runner.mjs');
   return runIds.map((runId) => {
-    const r = spawnSync(process.execPath, [cli, 'cancel', '--run-id', runId, '--repo-root', checkout], {
-      cwd: checkout, env, encoding: 'utf8', timeout: 60_000,
-    });
-    let out = null;
-    try { out = JSON.parse((r.stdout ?? '').trim()); } catch { /* not JSON */ }
-    return { run_id: runId, exit: r.status, result: out ?? (r.stderr ?? '').trim().slice(-300) };
+    const { exit, result } = peerRunner(roots, ['cancel', '--run-id', runId, '--repo-root', checkout], checkout, env);
+    return { run_id: runId, exit, result };
+  });
+}
+
+/**
+ * C127 — the peer runs a step left pending when it finished on its report
+ * with background tasks pending: each is cancelled (a run already ended is
+ * left as it is), then settled from its ledger by engineer's `peer-runner
+ * settle`, with no verdict: a run that failed, was cancelled or was abandoned
+ * is recorded `failed`, one that completed with no usable answer `degraded`,
+ * and one that completed with an answer is refused — no synthesis is
+ * invented for it, and the step halts naming it. Each entry is the target
+ * with { cancel, settle, command } — `command` the one to run by hand when
+ * a part did not go through.
+ */
+export function settleAbandonedPeers(targets, { roots, checkout, env }) {
+  return targets.map((t) => {
+    const cancel = peerRunner(roots, ['cancel', '--run-id', t.run_id, '--repo-root', checkout], checkout, env);
+    if (cancel.exit !== 0) return { ...t, cancel: { exit: cancel.exit, result: cancel.result }, settle: null, command: cancel.command };
+    const settle = peerRunner(roots, ['settle', '--workflow-path', t.workflow_path, '--phase', t.phase, '--run-id', t.run_id, '--repo-root', checkout], checkout, env);
+    return { ...t, cancel: { exit: cancel.exit, result: cancel.result }, settle: { exit: settle.exit, result: settle.result }, command: settle.exit === 0 ? null : settle.command };
   });
 }
 
@@ -352,7 +420,8 @@ function serialRefusal({ repoRoot, macroId, view, env }) {
  * @param a.options   parsed CLI options (budgets, models, macro, forced, notifyLocal)
  * @param a.env       the environment (workers inherit it, scrubbed)
  * @param a.out, a.err  line printers
- * @param a.deps      test seams: { observe, observeAsync, offLoop, startWorker, cancelPeerRuns, now, signals, checkClaude, terminateGroupsSync }
+ * @param a.deps      test seams: { observe, observeAsync, offLoop, startWorker, cancelPeerRuns, settleAbandonedPeers, now, signals,
+ *                    checkClaude, terminateGroupsSync, resolveRoots (the drift check between steps), createBudget }
  */
 export async function startRun({ repoRoot, options, env = process.env, out = console.log, err = console.error, deps = {} }) {
   const observe = deps.observe ?? defaultObserve;
@@ -619,16 +688,17 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         groupsInFlight: (fn) => { groupsInFlight = fn; },
         observeAsync: deps.observeAsync ?? (deps.observe ? async (a) => deps.observe(a) : observeInChild),
         offLoop, startWorker, terminateGroup: deps.terminateGroup ?? null,
-        helpers: { provenanceProblem, newPendingRuns },
+        helpers: { provenanceProblem, newPendingRuns, newPendingTargets },
       });
     }
 
     const loaded = {};
     const ctx = { runId, macroId, forced: options.forced ?? null, finalizeAttempted: false };
-    const budget = createBudget({
+    const budget = (deps.createBudget ?? createBudget)({
       maxSteps: options.maxSteps, maxCostUsd: options.maxCostUsd, stepBudgetUsd: options.stepBudgetUsd,
       stepTimeoutSec: options.stepTimeoutSec,
     });
+    const resolveRootsNow = deps.resolveRoots ?? resolveRoots;
     for (let seq = 1; ; seq += 1) {
       if (interrupted) return finish('halted', { reason: 'interrupted', detail: 'the owner interrupted the run' });
       // What the state says comes first: completion on the last step the
@@ -646,13 +716,21 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       const r = budget.reserve();
       if (!r.ok) return finish('halted', { reason: 'budget', detail: r.detail ?? r.why });
       reservation = r.reservation;
-      if (seq > 1) {
-        const drift = driftOf(pinned, await resolveRoots({ env }));
-        if (drift.length > 0) {
-          budget.settle(reservation, { spawned: false });
-          reservation = null;
-          return finish('halted', { reason: 'version-drift', detail: drift.join('; ') });
-        }
+      const drift = seq > 1 ? driftOf(pinned, await resolveRootsNow({ env })) : [];
+      // C123: a signal that came during the await above finds no worker to
+      // abort; the check at the loop's top has passed. Nothing awaits from
+      // here to the spawn, so this is the last point to see it (a run with
+      // lanes yields at the same point, scheduler.mjs mustYield). It comes
+      // before the drift the same await found: the owner stopped the run.
+      if (interrupted) {
+        budget.settle(reservation, { spawned: false });
+        reservation = null;
+        return finish('halted', { reason: 'interrupted', detail: 'the owner interrupted the run' });
+      }
+      if (drift.length > 0) {
+        budget.settle(reservation, { spawned: false });
+        reservation = null;
+        return finish('halted', { reason: 'version-drift', detail: drift.join('; ') });
       }
 
       const s = d.step;
@@ -734,6 +812,31 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         if (settled.keep) unaccounted = true;
         verdict = settled.verdict;
       }
+      // C127: a step that passed after the host closed stdin on its finished
+      // report (whatever came after) may have left peer runs among the tasks it abandoned. Judged
+      // first, on the look the verdict read; then each is cancelled and
+      // settled from its ledger, and the next decision reads the state that
+      // left (the policy halts on a pending row, and a cleanup must neither
+      // erase a halt nor make progress of its own).
+      let settlements = [];
+      if (!verdict && w.reportEof === true) {
+        const unlisted = peersUnlisted(view, id);
+        if (unlisted) {
+          unaccounted = true;
+          verdict = reportClosePeersUnlisted(unlisted, id);
+        } else {
+          const { targets, conflicts } = newPendingTargets(ownChildOnly(before, id), ownChildOnly(view, id), id);
+          if (targets.length > 0 || conflicts.length > 0) {
+            settlements = (deps.settleAbandonedPeers ?? settleAbandonedPeers)(targets, { roots, checkout: repoRoot, env });
+            const o = peerSettlementOutcome(settlements, conflicts);
+            if (o.keep) unaccounted = true;
+            if (o.verdict) verdict = { ...o.verdict, subtaskId: id };
+            // A step whose only change was the peer it left: no progress.
+            else if (targets.length > 0) verdict = peersOnlyProgress({ step: s, before, after: view });
+            view = observe({ repoRoot, roots, macroId: before.macro.id, fetch: true, env });
+          }
+        }
+      }
       if (unaccounted) keepRecord = true;
       appendStep(runDir, {
         event: 'finished', seq, ended_at: new Date(now()).toISOString(),
@@ -742,12 +845,13 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         turns: w.turns, cost_usd: w.costUsd, cost_charged_usd: cost, peak_ctx: w.peakCtx, peak_pct: w.peakPct,
         context_window: w.contextWindow, permission_denials: w.denials, report: w.report, raw_truncated: w.rawTruncated,
         group_teardown: w.groupTeardown,
-        peer_cancellations: cancelled, peers_unaccounted: unaccounted,
+        report_eof: w.reportEof === true, closed_on_report: w.closedOnReport === true, abandoned_background: w.abandonedBackground ?? [], report_teardown: w.reportTeardown ?? null,
+        peer_cancellations: cancelled, peer_settlements: settlements, peers_unaccounted: unaccounted,
         fingerprint_after: fingerprint(view), outcome: verdict ? verdict.reason : 'ok',
       });
       writeRun(runDir, run);
       const pct = w.peakPct == null ? '?' : `${(w.peakPct * 100).toFixed(1)}%`;
-      out(`    exit=${w.exitCode ?? w.signal} cost=$${(w.costUsd ?? cost).toFixed(2)}${w.costUsd === null ? ' (unreported; budget charged)' : ''} peak=${w.peakCtx} (${pct}) denials=${w.denials.length}`);
+      out(`    exit=${w.exitCode ?? w.signal} cost=$${(w.costUsd ?? cost).toFixed(2)}${w.costUsd === null ? ' (unreported; budget charged)' : ''} peak=${w.peakCtx} (${pct}) denials=${w.denials.length}${abandonedText(w)}`);
       // A commit stands whatever the verdict on its step.
       reportLanding(view, seq);
       if (verdict) return finish('halted', verdict);

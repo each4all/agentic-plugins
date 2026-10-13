@@ -301,6 +301,42 @@ describe('a lane-layer failure is the lane\'s', () => {
     }
   });
 
+  it('C127: a lane step closed on its finished report passes, and its peer is cancelled and settled in the lane, off the loop', async () => {
+    const t = await setup({ subtasks: [{ id: 'A' }], scenario: { A: { next: [COMMIT] }, actions: { 1: 'pending-finished' } } });
+    const tasksRun = [];
+    try {
+      const code = await t.run({ maxSteps: 1 }, {
+        offLoop: (task, args, o) => {
+          tasksRun.push([task, o.cwd]);
+          return offLoop(task, args, o);
+        },
+      });
+      strictEqual(code, 2, t.lines.join('\n'));
+      const r = t.latest();
+      strictEqual(r.halt.reason, 'budget', r.halt.detail);
+      const s = r.steps[0];
+      deepStrictEqual([s.lane, s.outcome, s.closed_on_report, s.abandoned_background.map((x) => x.task_id)], ['A', 'ok', true, ['bt4']]);
+      deepStrictEqual(s.peer_settlements.map((x) => [x.run_id, x.cancel.exit, x.settle.exit]), [['plan-verify-20261001T000000Z-feed04', 0, 0]]);
+      deepStrictEqual(tasksRun.filter(([task]) => task === 'settlePeerRuns'), [['settlePeerRuns', t.lane('A')]], 'in the lane\'s checkout');
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('C127: a lane step\'s settlement task that fails halts the lane and keeps the open-run record', async () => {
+    const t = await setup({ subtasks: [{ id: 'A' }], scenario: { A: { next: [COMMIT] }, actions: { 1: 'pending-finished' } } });
+    try {
+      const code = await t.run({}, { offLoop: failing('settlePeerRuns', 'injected: the settle task could not start') });
+      strictEqual(code, 2, t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual(r.steps.map((x) => [x.kind, x.outcome, x.peers_unaccounted]), [['dispatch', 'owner-choice', true]]);
+      match(r.halt.detail, /peer run plan-verify-20261001T000000Z-feed04 could not be cancelled \(injected: the settle task could not start\), so the run keeps its open-run record for the next run's cleanup: node \S+peer-runner\.mjs cancel --run-id plan-verify-20261001T000000Z-feed04 --repo-root /);
+      deepStrictEqual(L.listOpenRuns(t.work).map((x) => x.runId), [r.run.run_id]);
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
   it('peersUnlisted: a step\'s peers cannot be listed from a look that did not read the macro, the claims or the subtask\'s child', () => {
     const whole = { lookError: null, macroLookupError: null, claimsError: null, children: { A: { location: 'active' } } };
     strictEqual(peersUnlisted(whole, 'A'), null);

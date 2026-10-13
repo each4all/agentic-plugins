@@ -465,6 +465,48 @@ describe('fingerprint', () => {
   });
 });
 
+describe('the step report (C127)', () => {
+  const finished = { outcome: 'completed', workflow: 'compose-x', next_step: { kind: 'verb', verb: 'critique', confidence: 'HIGH' }, awaiting_owner: null, summary: 's', waiting_on_background: false };
+  it('the schema requires waiting_on_background, a boolean', () => {
+    ok(P.STEP_REPORT_SCHEMA.required.includes('waiting_on_background'));
+    deepStrictEqual(P.STEP_REPORT_SCHEMA.properties.waiting_on_background, { type: 'boolean' });
+  });
+  it('reportSaysFinished: only a report valid in every field, with waiting_on_background false', () => {
+    strictEqual(P.reportSaysFinished(finished), true);
+    strictEqual(P.reportSaysFinished({ ...finished, next_step: null, workflow: null, awaiting_owner: 'scope-routing', outcome: 'needs_owner' }), true);
+    const { waiting_on_background: _w, ...missing } = finished;
+    const { summary: _s, ...noSummary } = finished;
+    for (const [label, r] of [
+      ['waiting', { ...finished, waiting_on_background: true }],
+      ['missing', missing], ['a string', { ...finished, waiting_on_background: 'false' }], ['null', { ...finished, waiting_on_background: null }],
+      ['no summary', noSummary], ['a long summary', { ...finished, summary: 'x'.repeat(401) }],
+      ['a bad outcome', { ...finished, outcome: 'done' }], ['a numeric workflow', { ...finished, workflow: 7 }],
+      ['a bad next step', { ...finished, next_step: { kind: 'verb', verb: 'critique' } }],
+      ['a next step with an extra key', { ...finished, next_step: { ...finished.next_step, why: 'x' } }],
+      ['an unknown verb', { ...finished, next_step: { kind: 'verb', verb: 'ship', confidence: 'HIGH' } }],
+      ['an unknown gate', { ...finished, awaiting_owner: 'nobody' }], ['an extra field', { ...finished, extra: 1 }],
+      ['null', null], ['an array', [finished]], ['a string report', 'done'],
+    ]) strictEqual(P.reportSaysFinished(r), false, label);
+    strictEqual(P.stepReportProblem(missing), 'no waiting_on_background');
+    strictEqual(P.stepReportProblem({ ...finished, waiting_on_background: 'false' }), 'waiting_on_background', 'a mistyped value is invalid, not only not finished');
+    strictEqual(P.stepReportProblem(finished), null);
+  });
+});
+
+describe('peersOnlyProgress (C127)', () => {
+  it('a step that changed nothing but a peer row (pending, then settled) made no progress; any other change is progress', () => {
+    const s = { kind: 'verb', verb: 'critique', subtaskId: 'A', branch: 'feat/a' };
+    const before = inProgressA();
+    const peersOnly = inProgressA();
+    peersOnly.children.A = { ...peersOnly.children.A, pending_ensemble: 0, ensemble_results: (peersOnly.children.A.ensemble_results ?? 0) + 1 };
+    const d = P.peersOnlyProgress({ step: s, before, after: peersOnly });
+    strictEqual(reasonOf(d), 'no-progress');
+    strictEqual(P.peersOnlyProgress({ step: { ...s, lane: true }, before, after: peersOnly })?.reason, 'no-progress', 'a lane step, by its lane');
+    strictEqual(P.peersOnlyProgress({ step: s, before, after: inProgressA({ progress: 9 }) }), null);
+    ok(P.fingerprint(before) !== P.fingerprint(peersOnly), 'control: the plain fingerprint sees the peer rows');
+  });
+});
+
 describe('verifyStep', () => {
   const okWorker = (over = {}) => ({
     exitCode: 0, signal: null, aborted: null, spawnError: null,
@@ -512,6 +554,33 @@ describe('verifyStep', () => {
       strictEqual(reasonOf(d), reason, JSON.stringify(d));
     });
   }
+
+  describe('C127: a step closed on its finished report', () => {
+    const closed = { closedOnReport: true, exitCode: null, signal: 'SIGTERM', reportTeardown: 'signalled' };
+    it('passes whatever its exit after the teardown, when that report is still its last and not an error', () => {
+      strictEqual(verify({ worker: closed }), null);
+      strictEqual(verify({ worker: { ...closed, exitCode: 143, signal: null } }), null);
+    });
+    it('is judged as any other when the close was not on its report (the close after every task ended), or the result is an error', () => {
+      strictEqual(reasonOf(verify({ worker: { ...closed, closedOnReport: false } })), 'worker-failed', 'closedOnReport unset: the exit is judged');
+      strictEqual(reasonOf(verify({ worker: { exitCode: null, signal: 'SIGTERM' } })), 'worker-failed', 'an older worker result without the field');
+      strictEqual(reasonOf(verify({ worker: { ...closed, lastResult: { is_error: true, subtype: 'error_during_execution' } } })), 'worker-failed');
+    });
+    it('aborts and failure keep their precedence', () => {
+      strictEqual(reasonOf(verify({ worker: { ...closed, aborted: 'compaction-imminent' } })), 'compaction-imminent');
+      strictEqual(reasonOf(verify({ worker: { ...closed, aborted: 'timeout' } })), 'worker-failed');
+      strictEqual(reasonOf(verify({ worker: { ...closed, groupTeardown: 'lingering' } })), 'worker-failed');
+      strictEqual(reasonOf(verify({ worker: { ...closed, report: { outcome: 'failed', workflow: ENG_A, next_step: null, awaiting_owner: null, summary: 'x', waiting_on_background: false } } })), 'worker-failed');
+    });
+    it('a last report that still waits, from a worker that exited: failed is a failure, any other outcome the owner\'s', () => {
+      const base = { workflow: ENG_A, next_step: { kind: 'commit', verb: null, confidence: 'HIGH' }, awaiting_owner: null, summary: 'waiting for t1', waiting_on_background: true };
+      strictEqual(reasonOf(verify({ worker: { report: { ...base, outcome: 'failed' } } })), 'worker-failed', 'the provisional report a host exits on');
+      const d = verify({ worker: { report: { ...base, outcome: 'completed' } } });
+      strictEqual(reasonOf(d), 'owner-choice');
+      match(d.detail, /still waits on background work, but the worker exited: waiting for t1/);
+      strictEqual(verify({ worker: { report: { ...base, outcome: 'completed', waiting_on_background: false } } }), null);
+    });
+  });
 
   it('records a step\'s size and never judges it: a peak of 90% of the window passes (ADR-0063 D7, amendment of 2026-10-13)', () => {
     strictEqual(verify({ worker: { peakPct: 0.9 } }), null);

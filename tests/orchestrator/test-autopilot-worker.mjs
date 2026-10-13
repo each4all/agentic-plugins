@@ -265,6 +265,177 @@ describe('stream-json hosting', () => {
   });
 });
 
+describe('C127: a finished report ends the step, whatever background tasks are pending', () => {
+  // Short timings: the close debounce, the grace after EOF, the kill grace.
+  const timing = { closeDebounceMs: 300, reportExitGraceMs: 600, killGraceMs: 600 };
+  const finished = { outcome: 'completed', workflow: 'compose-x', next_step: null, awaiting_owner: null, summary: 'done', waiting_on_background: false };
+  const waiting = { ...finished, outcome: 'failed', summary: 'provisional', waiting_on_background: true };
+  const task = { task_id: 't9', run_id: 'r-t9', task_type: 'local_bash', description: 'a monitor' };
+  const tasks = (...ts) => ({ type: 'system', subtype: 'background_tasks_changed', tasks: ts });
+  const events = (list) => ({ FAKE_EVENTS: JSON.stringify(list) });
+  const closedAt = (lines) => lines.findIndex((e) => e.subtype === 'fake_stdin_closed');
+  const timed = async (...a) => {
+    const t0 = Date.now();
+    const r = await run(...a);
+    return { ...r, ms: Date.now() - t0 };
+  };
+
+  it('a finished report with a never-ending background task ends the step ok, tears its group down, and names the task', async () => {
+    const dir = scratch();
+    const pidfile = join(dir, 'task.pid');
+    try {
+      const { w, ms } = await timed('background-forever', { timing, stepTimeoutSec: 30 }, { FAKE_CLAUDE_PIDFILE: pidfile });
+      deepStrictEqual([w.aborted, w.exitCode, w.reportEof, w.closedOnReport, w.reportTeardown, w.costUsd], [null, 0, true, true, null, 0.12]);
+      deepStrictEqual(w.abandonedBackground, [{ task_id: 'bt1', task_type: 'local_bash', description: 'Run the full suite in background', run_id: 'r-bt1' }]);
+      strictEqual(w.groupTeardown, 'terminated', 'the background task was still in the group, and was ended');
+      const pid = Number(readFileSync(pidfile, 'utf8'));
+      ok(!alive(pid), `the background task ${pid} outlived its step`);
+      ok(ms < 10_000, `the step ended ${ms} ms after it started, not at its timeout`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a report that says it waits keeps the step open, as today, to its timeout', async () => {
+    const dir = scratch();
+    const pidfile = join(dir, 'task.pid');
+    try {
+      const { w, lines } = await run('background-forever', { timing, stepTimeoutSec: 2 }, { FAKE_CLAUDE_PIDFILE: pidfile, FAKE_REPORT: JSON.stringify(waiting) });
+      deepStrictEqual([w.aborted, w.closedOnReport, w.abandonedBackground], ['timeout', false, []]);
+      strictEqual(closedAt(lines), -1, 'stdin never closed');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a report with the field missing, mistyped, or another field invalid never closes the step early; nor does an error result', async () => {
+    const { waiting_on_background: _drop, ...missing } = finished;
+    const cases = [
+      ['missing', { result: missing }],
+      ['a string', { result: { ...finished, waiting_on_background: 'false' } }],
+      ['no summary', { result: (({ summary: _s, ...r }) => r)(finished) }],
+      ['a bad outcome', { result: { ...finished, outcome: 'done' } }],
+      ['an unknown field', { result: { ...finished, extra: 1 } }],
+      ['an error result', { type: 'result', subtype: 'error_during_execution', is_error: true, structured_output: finished }],
+    ];
+    for (const [label, ev] of cases) {
+      const { w, lines } = await run('events', { timing, stepTimeoutSec: 2 }, events([{ event: tasks(task) }, { event: ev }]));
+      strictEqual(w.aborted, 'timeout', label);
+      strictEqual(closedAt(lines), -1, `${label}: stdin never closed`);
+    }
+  });
+
+  it('true then false within the debounce: the later, waiting report disarms the close', async () => {
+    const { w, lines } = await run('events', { timing, stepTimeoutSec: 2 }, events([
+      { event: tasks(task) }, { event: { result: finished } }, { delay: 100, event: { result: waiting } },
+    ]));
+    deepStrictEqual([w.aborted, w.closedOnReport, closedAt(lines)], ['timeout', false, -1]);
+  });
+
+  it('false then true within the debounce: the later, finished report closes the step on itself', async () => {
+    const { w } = await run('events', { timing, stepTimeoutSec: 10 }, events([
+      { event: tasks(task) }, { event: { result: waiting } }, { delay: 100, event: { result: finished } },
+    ]));
+    deepStrictEqual([w.aborted, w.closedOnReport, w.turns, w.exitCode], [null, true, 2, 0]);
+    deepStrictEqual(w.report, finished);
+    deepStrictEqual(w.abandonedBackground.map((t) => t.task_id), ['t9']);
+  });
+
+  it('a task notification during the debounce disarms the close; the follow-up turn then ends the step the usual way', async () => {
+    const { w, lines } = await run('events', { timing, stepTimeoutSec: 10 }, events([
+      { event: tasks(task) }, { event: { result: finished } },
+      { delay: 100, event: { type: 'system', subtype: 'task_notification', task_id: 't9', status: 'completed' } },
+      { delay: 700, event: tasks() }, { event: { result: finished, cost: 0.2 } },
+    ]));
+    deepStrictEqual([w.aborted, w.closedOnReport, w.turns, w.costUsd], [null, false, 2, 0.2]);
+    ok(closedAt(lines) > lines.map((e) => e.type).lastIndexOf('result'), 'stdin closed after the follow-up result');
+  });
+
+  it('other stream events do not push the close back (armed once per result)', async () => {
+    const chatter = Array.from({ length: 40 }, () => ({ delay: 100, event: { type: 'system', subtype: 'hook_response', hook_event: 'Stop' } }));
+    const { w, ms } = await timed('events', { timing, stepTimeoutSec: 20 }, events([{ event: tasks(task) }, { event: { result: finished } }, ...chatter]));
+    deepStrictEqual([w.aborted, w.closedOnReport], [null, true]);
+    ok(ms < 2500, `the close waited for the chatter to stop (${ms} ms; 4 s of events)`);
+  });
+
+  it('a host that ignores stdin closure is signalled after the grace, and events after EOF do not re-arm it', async () => {
+    const { w, ms } = await timed('events', { timing, stepTimeoutSec: 20 }, {
+      ...events([
+        { event: tasks(task) }, { event: { result: finished } },
+        { delay: 500, event: { type: 'system', subtype: 'task_notification', task_id: 't9', status: 'completed' } },
+        { delay: 100, event: { type: 'system', subtype: 'hook_response', hook_event: 'Stop' } },
+      ]),
+      FAKE_IGNORE_STDIN_CLOSE: '1',
+    });
+    deepStrictEqual([w.aborted, w.closedOnReport, w.reportTeardown, w.signal], [null, true, 'signalled', 'SIGTERM']);
+    ok(ms < 5000, `bounded: ${ms} ms`);
+  });
+
+  it('a host that ignores stdin closure and SIGTERM is killed after the kill grace', async () => {
+    const dir = scratch();
+    const pidfile = join(dir, 'task.pid');
+    try {
+      const { w, ms } = await timed('background-forever', { timing, stepTimeoutSec: 20 }, { FAKE_CLAUDE_PIDFILE: pidfile, FAKE_IGNORE_STDIN_CLOSE: '1', FAKE_IGNORE_SIGTERM: '1' });
+      deepStrictEqual([w.aborted, w.closedOnReport, w.reportTeardown, w.signal], [null, true, 'killed', 'SIGKILL']);
+      ok(!alive(Number(readFileSync(pidfile, 'utf8'))), 'the background task is gone');
+      ok(ms < 8000, `bounded: ${ms} ms`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a result after EOF ends the exemption, never the history: the EOF, the abandoned tasks and the teardown stay on record', async () => {
+    const { w } = await run('events', { timing: { ...timing, reportExitGraceMs: 1500 }, stepTimeoutSec: 20 }, {
+      ...events([{ event: tasks(task) }, { event: { result: finished } }, { delay: 600, event: { result: { ...finished, summary: 'later' } } }]),
+      FAKE_IGNORE_STDIN_CLOSE: '1',
+    });
+    deepStrictEqual([w.reportEof, w.closedOnReport, w.abandonedBackground.map((t) => t.task_id), w.reportTeardown, w.report.summary], [true, false, ['t9'], 'signalled', 'later']);
+  });
+
+  it('a worker that exits before the debounce fires is never closed on its report: its exit is judged', async () => {
+    const dir = scratch();
+    const pidfile = join(dir, 'holder.pid');
+    try {
+      const { w } = await run('events', { timing: { ...timing, closeDebounceMs: 1500 }, stepTimeoutSec: 20 }, {
+        ...events([{ event: tasks(task) }, { event: { result: finished } }, { delay: 300, event: { exit: 1, holdPipes: true } }]),
+        FAKE_CLAUDE_PIDFILE: pidfile,
+      });
+      deepStrictEqual([w.exitCode, w.reportEof, w.closedOnReport], [1, false, false]);
+    } finally {
+      try { process.kill(Number(readFileSync(pidfile, 'utf8')), 'SIGKILL'); } catch { /* gone */ }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('the task list moving to empty and back does not push an armed close back', async () => {
+    const { w, lines } = await run('events', { timing: { ...timing, closeDebounceMs: 1000 }, stepTimeoutSec: 20 }, events([
+      { event: tasks(task) }, { event: { result: finished } },
+      { delay: 500, event: tasks() }, { delay: 700, event: tasks({ ...task, task_id: 't10' }) },
+    ]));
+    deepStrictEqual([w.aborted, w.closedOnReport], [null, true]);
+    strictEqual(lines.filter((e) => e.subtype === 'background_tasks_changed').length, 2, 'stdin closed at 1 s, before the task list moved back at 1.2 s');
+  });
+
+  it('a PreCompact event during the debounce, and a timeout during the grace, keep their abort', async () => {
+    const pre = await run('events', { timing, stepTimeoutSec: 10 }, events([
+      { event: tasks(task) }, { event: { result: finished } },
+      { delay: 100, event: { type: 'system', subtype: 'hook_started', hook_event: 'PreCompact' } },
+    ]));
+    deepStrictEqual([pre.w.aborted, pre.w.closedOnReport], ['compaction-imminent', false]);
+    const late = await run('events', { timing: { ...timing, reportExitGraceMs: 5000 }, stepTimeoutSec: 1 }, {
+      ...events([{ event: tasks(task) }, { event: { result: finished } }]), FAKE_IGNORE_STDIN_CLOSE: '1',
+    });
+    deepStrictEqual([late.w.aborted, late.w.reportTeardown], ['timeout', null]);
+  });
+
+  it('the cost of a step closed on its report: reported, zero, or missing (then the driver charges the budget)', async () => {
+    for (const [cost, want] of [[0.3, 0.3], [0, 0], [null, null]]) {
+      const { w } = await run('events', { timing, stepTimeoutSec: 10 }, events([{ event: tasks(task) }, { event: { result: finished, cost } }]));
+      deepStrictEqual([w.closedOnReport, w.costUsd], [true, want], String(cost));
+    }
+  });
+});
+
 describe('the context sensor (D7)', () => {
   it('divides each model\'s peak by that model\'s window', async () => {
     const { w } = await run('two-models');
@@ -337,6 +508,11 @@ describe('the posture (D5)', () => {
     // it ends the step on the report it gave while a background task was pending.
     ok(valueOf(verb, '--append-system-prompt').includes('A report the host takes when you end a turn to wait for a background task is provisional'), 'a report taken mid-wait does not end the step');
     ok(valueOf(verb, '--append-system-prompt').includes('Only the last report counts.'));
+    // C127: the report says whether the worker still waits, and the prompt
+    // says what each value does.
+    ok(JSON.parse(valueOf(verb, '--json-schema')).required.includes('waiting_on_background'));
+    ok(valueOf(verb, '--append-system-prompt').includes('set waiting_on_background = true'));
+    ok(valueOf(verb, '--append-system-prompt').includes('In your last report set waiting_on_background = false'));
   });
 
   it('refuses any escalation', () => {

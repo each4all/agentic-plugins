@@ -8,8 +8,8 @@
 // (observe() and its CLIs, a network call up to 120 s), a lane's creation (a
 // baseline fetch up to 120 s, then git per plan subtask), a prepared lane's
 // baseline check, a lane's removal, the landing-ready report (merge-tree
-// checks up to 120 s) and a peer run's cancellation (peer-runner, up to 60 s
-// each). Run in process while a worker is in flight, any of it would stop that
+// checks up to 120 s) and a peer run's cancellation or settlement (peer-runner,
+// up to 60 s each). Run in process while a worker is in flight, any of it would stop that
 // supervision for as long as it ran; the serial driver never had the problem,
 // since it does such work only between steps. So during the scheduler's loop
 // each one runs here, in a child, while the loop goes on serving its workers.
@@ -91,6 +91,11 @@ export const TASKS = {
     // here, in the child only, the cycle never runs at import.
     const { cancelPeerRuns } = await import(DRIVER);
     return cancelPeerRuns(a.runIds, { roots: a.roots, checkout: a.checkout, env });
+  },
+  // C127: a step closed on its report — its abandoned peers, cancelled and settled.
+  settlePeerRuns: async (a, env) => {
+    const { settleAbandonedPeers } = await import(DRIVER);
+    return settleAbandonedPeers(a.targets, { roots: a.roots, checkout: a.checkout, env });
   },
 };
 
@@ -252,7 +257,7 @@ export async function offLoop(task, args, {
 // SIGTERM do not drain, and every group in flight is aborted). A look, a
 // baseline fetch and the landing report only read, so one in flight is
 // killed at once: the next run reads again. A lane's creation or removal, and
-// a peer run's cancellation, change what the next run finds, so one already
+// a peer run's cancellation or settlement, change what the next run finds, so one already
 // under way gets INTERRUPT_BOUND_MS to finish, then is torn down, and the next
 // run's reconciliation and cleanup judge what it left. A task started after
 // the interrupt gets the same bound; the scheduler starts no lane's creation

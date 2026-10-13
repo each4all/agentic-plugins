@@ -28,6 +28,18 @@
 //   script      delegate the step to FAKE_WORKER_SCRIPT (a module whose
 //               `perform({prompt, cwd, env})` does the step with the real
 //               state CLIs and returns {report, cost})
+//   background-forever  a background task that never ends (a grandchild in
+//               this process group, its pid to FAKE_CLAUDE_PIDFILE, listed in
+//               background_tasks_changed), then a result with FAKE_REPORT
+//   events      FAKE_EVENTS, a JSON array of {delay, event} emitted in order,
+//               each `delay` ms after the one before; an event {result,
+//               cost} emits a result with that report (no cost when `cost`
+//               is null); an event {exit, holdPipes} exits with that code,
+//               first leaving a descendant in its own group that holds the
+//               output pipes (its pid to FAKE_CLAUDE_PIDFILE) when holdPipes
+//
+// FAKE_IGNORE_STDIN_CLOSE=1: stdin closing does not end this process.
+// FAKE_IGNORE_SIGTERM=1: this process ignores SIGTERM.
 //
 // FAKE_MODEL_USAGE, a JSON object, replaces the result's `modelUsage` (the
 // real CLI keys it by model, a 1M-token window as `<model>[1m]`).
@@ -65,19 +77,22 @@ const emit = (o) => process.stdout.write(`${JSON.stringify(o)}\n`);
 const model = 'fake-model';
 const usage = (n) => ({ input_tokens: 10, cache_creation_input_tokens: n, cache_read_input_tokens: 0, output_tokens: 5 });
 const defaultReport = {
-  outcome: 'completed', workflow: null, next_step: null, awaiting_owner: null, summary: 'fake step',
+  outcome: 'completed', workflow: null, next_step: null, awaiting_owner: null, summary: 'fake step', waiting_on_background: false,
 };
 const report = process.env.FAKE_REPORT ? JSON.parse(process.env.FAKE_REPORT) : defaultReport;
 // background modes: the report of the turn that ends while the task is
-// pending, when it differs from the follow-up turn's.
-const firstReport = process.env.FAKE_FIRST_REPORT ? JSON.parse(process.env.FAKE_FIRST_REPORT) : report;
+// pending — by default the provisional one the worker prompt asks for.
+const firstReport = process.env.FAKE_FIRST_REPORT
+  ? JSON.parse(process.env.FAKE_FIRST_REPORT)
+  : { ...defaultReport, outcome: 'failed', summary: 'provisional: waiting for t1', waiting_on_background: true };
 const plugins = process.env.FAKE_PLUGINS ? JSON.parse(process.env.FAKE_PLUGINS) : [];
 const result = (cost, structured = report) => ({
-  type: 'result', subtype: 'success', is_error: false, total_cost_usd: cost, num_turns: 1,
+  type: 'result', subtype: 'success', is_error: false, ...(cost === null ? {} : { total_cost_usd: cost }), num_turns: 1,
   modelUsage: process.env.FAKE_MODEL_USAGE ? JSON.parse(process.env.FAKE_MODEL_USAGE)
     : { [model]: { contextWindow: 1000000 }, 'fake-subagent-model': { contextWindow: 200000 } },
   permission_denials: [], structured_output: structured,
 });
+if (process.env.FAKE_IGNORE_SIGTERM === '1') process.on('SIGTERM', () => {});
 
 let started = false;
 readline.createInterface({ input: process.stdin })
@@ -107,6 +122,24 @@ readline.createInterface({ input: process.stdin })
           emit(result(0.15));
         }, slow ? 2500 : 300);
       }, slow ? 3000 : 500);
+    } else if (mode === 'background-forever') {
+      const task = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+      if (process.env.FAKE_CLAUDE_PIDFILE) fs.writeFileSync(process.env.FAKE_CLAUDE_PIDFILE, String(task.pid));
+      emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'bt1', run_id: 'r-bt1', task_type: 'local_bash', description: 'Run the full suite in background' }] });
+      emit(result(0.12));
+    } else if (mode === 'events') {
+      for (const { delay = 0, event } of JSON.parse(process.env.FAKE_EVENTS ?? '[]')) {
+        await new Promise((r) => { setTimeout(r, delay); });
+        if (event && Object.hasOwn(event, 'result')) emit(result(event.cost === undefined ? 0.05 : event.cost, event.result));
+        else if (event && Object.hasOwn(event, 'exit')) {
+          if (event.holdPipes) {
+            const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'inherit', 'inherit'], detached: true });
+            if (process.env.FAKE_CLAUDE_PIDFILE) fs.writeFileSync(process.env.FAKE_CLAUDE_PIDFILE, String(holder.pid));
+            holder.unref();
+          }
+          process.exit(event.exit);
+        } else emit(event);
+      }
     } else if (mode === 'precompact') {
       emit({ type: 'system', subtype: 'hook_started', hook_event: 'PreCompact', hook_name: 'PreCompact' });
       setInterval(() => {}, 1000);
@@ -141,6 +174,12 @@ readline.createInterface({ input: process.stdin })
       try {
         const m = await import(process.env.FAKE_WORKER_SCRIPT);
         const r = await m.perform({ prompt, cwd: process.cwd(), env: process.env });
+        // `background`: tasks still pending at the result, one of them a
+        // grandchild in this process group that never ends.
+        if (Array.isArray(r.background)) {
+          spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+          emit({ type: 'system', subtype: 'background_tasks_changed', tasks: r.background });
+        }
         emit(result(r.cost ?? 0.01, r.report ?? defaultReport));
       } catch (err) {
         process.stderr.write(`fake worker: ${err.stack ?? err}\n`);
@@ -152,5 +191,9 @@ readline.createInterface({ input: process.stdin })
   })
   .on('close', () => {
     emit({ type: 'system', subtype: 'fake_stdin_closed' });
+    if (process.env.FAKE_IGNORE_STDIN_CLOSE === '1') {
+      setInterval(() => {}, 1000);
+      return;
+    }
     setTimeout(() => process.exit(0), 20);
   });
