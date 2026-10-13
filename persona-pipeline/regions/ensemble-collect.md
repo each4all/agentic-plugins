@@ -18,8 +18,19 @@
    envelope to read, and the run degrades to local-only: `error_kind`
    says why — `peer_cli_not_found` (no companion resolved),
    `envelope_parse_error` (the companion's stdout was not JSON), or a
-   spawn, signal or cancel kind. Diagnose it from `stdout_path` /
-   `stderr_path`.
+   spawn, signal or cancel kind, or `snapshot_failed` (no snapshot of
+   the checkout could be made for a codex peer — an unmerged index, say —
+   so the peer was not run at all; the handle's `snapshot.reason` says
+   why). Diagnose it from `stdout_path` / `stderr_path`.
+
+   A path in the answer under the handle's `snapshot.root` names the
+   snapshot the peer read: map it back to the checkout by that prefix.
+   Collecting the peer stays notification-only. Other background work you
+   wait on without a notification (a test or mutation run) may be watched
+   with `pgrep`, but `pgrep -f <pattern>` also matches the waiting
+   shell, whose own command line holds the pattern, so the loop never
+   ends: bracket one character (`pgrep -f '[m]utation-harness'`) or wait
+   on a pid file (C127).
 3. Otherwise read `envelope_path` for the parsed companion envelope. Its
    keys are pinned by `companions/contract.md` §4.2:
    `{status, peer_host, peer_model, stdout, exit_code, [error, metadata]}`;

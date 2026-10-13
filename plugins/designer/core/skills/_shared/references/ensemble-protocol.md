@@ -172,6 +172,16 @@ dispatch. Genericize before constructing the prompt (step 3).
    runner runs in the foreground of that background task, never behind a
    shell `&`, which would detach it where the host can neither track it
    nor notify you when it exits.
+
+   A codex peer never works in the checkout: the runner gives it a
+   snapshot of HEAD plus the working tree and the index (untracked files
+   included, ignored files such as `node_modules` left out) in a temporary
+   worktree, and removes the snapshot when the run ends, so you may keep
+   editing while it runs. Its HEAD is detached at the branch's commit, so
+   name files repo-relatively and a review base by its commit id, never by
+   a branch it would read as of the snapshot. The runner rewrites the
+   checkout's absolute paths in the prompt to the snapshot's (C96;
+   ADR-0023, amendment of 2026-10-13).
 5. The orchestrator proceeds immediately to its own parallel analysis.
 <!-- pipeline:end ensemble-launch -->
 
@@ -189,8 +199,19 @@ peer cannot perform.
    envelope to read, and the run degrades to local-only: `error_kind`
    says why — `peer_cli_not_found` (no companion resolved),
    `envelope_parse_error` (the companion's stdout was not JSON), or a
-   spawn, signal or cancel kind. Diagnose it from `stdout_path` /
-   `stderr_path`.
+   spawn, signal or cancel kind, or `snapshot_failed` (no snapshot of
+   the checkout could be made for a codex peer — an unmerged index, say —
+   so the peer was not run at all; the handle's `snapshot.reason` says
+   why). Diagnose it from `stdout_path` / `stderr_path`.
+
+   A path in the answer under the handle's `snapshot.root` names the
+   snapshot the peer read: map it back to the checkout by that prefix.
+   Collecting the peer stays notification-only. Other background work you
+   wait on without a notification (a test or mutation run) may be watched
+   with `pgrep`, but `pgrep -f <pattern>` also matches the waiting
+   shell, whose own command line holds the pattern, so the loop never
+   ends: bracket one character (`pgrep -f '[m]utation-harness'`) or wait
+   on a pid file (C127).
 3. Otherwise read `envelope_path` for the parsed companion envelope. Its
    keys are pinned by `companions/contract.md` §4.2:
    `{status, peer_host, peer_model, stdout, exit_code, [error, metadata]}`;

@@ -40,6 +40,28 @@
       "requires": []
     },
     {
+      "id": "lib-process-identity",
+      "source": "files/scripts/lib/process-identity.mjs",
+      "dest": "scripts/lib/process-identity.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
+      "id": "lib-peer-snapshot",
+      "source": "files/scripts/lib/peer-snapshot.mjs",
+      "dest": "scripts/lib/peer-snapshot.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
       "id": "lib-yaml-mini",
       "source": "files/scripts/lib/yaml-mini.mjs",
       "dest": "scripts/lib/yaml-mini.mjs",

@@ -19,4 +19,14 @@
    runner runs in the foreground of that background task, never behind a
    shell `&`, which would detach it where the host can neither track it
    nor notify you when it exits.
+
+   A codex peer never works in the checkout: the runner gives it a
+   snapshot of HEAD plus the working tree and the index (untracked files
+   included, ignored files such as `node_modules` left out) in a temporary
+   worktree, and removes the snapshot when the run ends, so you may keep
+   editing while it runs. Its HEAD is detached at the branch's commit, so
+   name files repo-relatively and a review base by its commit id, never by
+   a branch it would read as of the snapshot. The runner rewrites the
+   checkout's absolute paths in the prompt to the snapshot's (C96;
+   ADR-0023, amendment of 2026-10-13).
 5. The orchestrator proceeds immediately to its own parallel analysis.
