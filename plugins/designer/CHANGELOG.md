@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.4](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.8.3...plugin-designer-v0.8.4) (2026-10-13)
+
+
+### Bug Fixes
+
+* **designer:** run each codex peer in a snapshot of the checkout (C96) ([21fe22d](https://github.com/each4all/agentic-plugins/commit/21fe22d68b7ebcaae10aa0683fd85734e86d46bd))
+
 ## [0.8.3](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.8.2...plugin-designer-v0.8.3) (2026-10-12)
 
 

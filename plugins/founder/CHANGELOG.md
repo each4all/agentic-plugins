@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.4](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.9.3...plugin-founder-v0.9.4) (2026-10-13)
+
+
+### Bug Fixes
+
+* **founder:** run each codex peer in a snapshot of the checkout (C96) ([0fef760](https://github.com/each4all/agentic-plugins/commit/0fef76092b813775cb2a92fe4c43355719f03d59))
+
 ## [0.9.3](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.9.2...plugin-founder-v0.9.3) (2026-10-12)
 
 

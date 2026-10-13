@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.3](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.28.2...plugin-engineer-v0.28.3) (2026-10-13)
+
+
+### Bug Fixes
+
+* **engineer:** run each codex peer in a snapshot of the checkout (C96) ([dd472a7](https://github.com/each4all/agentic-plugins/commit/dd472a7703eb440517c43fe9c50bfb4929ea802c))
+
 ## [0.28.2](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.28.1...plugin-engineer-v0.28.2) (2026-10-10)
 
 
