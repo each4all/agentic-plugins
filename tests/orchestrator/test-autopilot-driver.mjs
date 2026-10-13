@@ -27,6 +27,8 @@ const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const AP = resolve(REPO_ROOT, 'plugins/orchestrator/adapters/claude/autopilot');
 const { startRun, DEFAULTS, effectiveStateRoot, newPendingRuns } = await import(resolve(AP, 'driver.mjs'));
 const L = await import(resolve(AP, 'ledger.mjs'));
+const { observe: realObserve } = await import(resolve(AP, 'observe.mjs'));
+const { startWorker: realStartWorker } = await import(resolve(AP, 'worker.mjs'));
 const fingerprintForPid = L.processFingerprint;
 const FAKE = resolve(REPO_ROOT, 'tests/orchestrator/fixtures/autopilot-fake-claude.mjs');
 const SCRIPTED = resolve(REPO_ROOT, 'tests/orchestrator/fixtures/autopilot-scripted-worker.mjs');
@@ -339,6 +341,81 @@ describe('halts', () => {
   });
 });
 
+describe('no run clock (ADR-0063 D1, amendment of 2026-10-13)', () => {
+  it('a step started three days into the run gets the whole step timeout, and the run goes on', async () => {
+    const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [DONE] } } });
+    const clock = { offset: 0 };
+    const given = [];
+    try {
+      const code = await t.run({}, {
+        now: () => Date.now() + clock.offset,
+        // Between the steps the clock passes three days: past the former
+        // default run cap (86400 s) and the runbook's (7000 s).
+        startWorker: (o) => {
+          given.push(o.stepTimeoutSec);
+          const w = realStartWorker(o);
+          w.done.then(() => { clock.offset = 3 * 86_400 * 1000; });
+          return w;
+        },
+      });
+      strictEqual(code, 2, t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual(r.steps.map((s) => [s.kind, s.outcome, s.step_timeout_sec]), [['dispatch', 'ok', 3600], ['commit', 'ok', 3600]]);
+      strictEqual(r.halt.reason, 'awaiting-landing');
+      deepStrictEqual(given, [3600, 3600], 'each worker got the whole timeout');
+      ok(Date.parse(r.steps[1].started_at) - Date.parse(r.steps[0].started_at) > 3 * 86_400 * 1000, 'the second step started three days later');
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+});
+
+describe('a look after a step that could not read what verifyStep compares (C92)', () => {
+  for (const [what, inject, re] of [
+    ['the macro', (v) => ({ ...v, macro: null, macroLookupError: 'injected' }), /the look after the step could not read the macro \(injected\)/],
+    ['its readiness', (v) => ({ ...v, ready: null, readyError: 'injected' }), /the look after the step could not read the macro's readiness \(injected\)/],
+    ['the step\'s own child', (v) => ({ ...v, children: { ...v.children, A: { location: 'error', detail: 'injected' } } }), /the look after the step could not read subtask A's engineer workflow \(injected\)/],
+  ]) {
+    it(`a step that succeeded, judged from a look that could not read ${what}, halts on that read and keeps the run's open-run record`, async () => {
+      const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [DONE] }, actions: { 1: 'mark:break' } } });
+      try {
+        const code = await t.run({}, { observe: (a) => (existsSync(join(t.fx.dir, 'break')) ? inject(realObserve(a)) : realObserve(a)) });
+        strictEqual(code, 2, t.lines.join('\n'));
+        const r = t.latest();
+        deepStrictEqual(r.steps.map((s) => [s.kind, s.outcome, s.peers_unaccounted]), [['dispatch', 'owner-choice', true]], 'the finished line tells the cleanup to search this step');
+        match(r.halt.detail, re);
+        ok(!/left subtask A/.test(r.halt.detail), r.halt.detail);
+        deepStrictEqual(L.listOpenRuns(t.work).map((x) => x.runId), [r.run.run_id], 'the record is kept');
+        deepStrictEqual(L.readLockEntries(L.macroLockPath(t.work, t.fx.macroId)), [], 'the locks are released all the same');
+      } finally {
+        t.fx.cleanup();
+      }
+    });
+  }
+
+  it('a look that could not read the step\'s child once is taken again, as in a lane: a read that then succeeds judges the step, and the run goes on', async () => {
+    const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [DONE] }, actions: { 1: 'mark:break' } } });
+    const brk = join(t.fx.dir, 'break');
+    try {
+      const code = await t.run({}, {
+        observe: (a) => {
+          const v = realObserve(a);
+          if (!existsSync(brk)) return v;
+          rmSync(brk);
+          return { ...v, children: { ...v.children, A: { location: 'error', detail: 'injected: archived between the scan and its read' } } };
+        },
+      });
+      strictEqual(code, 2, t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual(r.steps.map((s) => [s.kind, s.outcome, s.peers_unaccounted]), [['dispatch', 'ok', false], ['commit', 'ok', false]]);
+      strictEqual(r.halt.reason, 'awaiting-landing');
+      deepStrictEqual(L.listOpenRuns(t.work), [], 'nothing kept');
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+});
+
 describe('a killed step', () => {
   it('cancels the peer runs it left pending — before its dispatch recorded the subtask — and halts interrupted', async () => {
     const copy = mkdtempSync(join(tmpdir(), 'autopilot-engineer-stub-'));
@@ -374,6 +451,72 @@ process.stdout.write(JSON.stringify({ ok: true, run_id: process.argv[4], status:
     } finally {
       t.fx.cleanup();
       rmSync(copy, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('a peer the serial run could not cancel', () => {
+  it('is named in the halt, never reported cancelled, and keeps the run\'s open-run record for the next run\'s cleanup', async () => {
+    const t = await setup({ scenario: { A: { next: [COMMIT] }, B: { next: [DONE] }, actions: { 1: 'pending-sleep' } } });
+    try {
+      const code = await t.run({ stepTimeoutSec: 8 }, { cancelPeerRuns: (ids) => ids.map((id) => ({ run_id: id, exit: 1, result: 'injected: the cancel failed' })) });
+      strictEqual(code, 2, t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual(r.steps.map((s) => [s.kind, s.aborted, s.outcome, s.peers_unaccounted]), [['dispatch', 'timeout', 'worker-failed', true]]);
+      match(r.halt.detail, /could not cancel the step's pending peer run\(s\) plan-verify-20261001T000000Z-feed01, so the run keeps its open-run record/);
+      ok(!/; cancelled the step's pending/.test(r.halt.detail), r.halt.detail);
+      deepStrictEqual(L.listOpenRuns(t.work).map((x) => x.runId), [r.run.run_id]);
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+});
+
+describe('a failed serial step whose peers the look could not list (as in a lane)', () => {
+  it('a look that cannot list the claims: nothing is cancelled, the run keeps its open-run record, and the halt says why', async () => {
+    const t = await setup({ scenario: { A: { next: [COMMIT] }, B: { next: [DONE] }, actions: { 1: 'pending-sleep' } } });
+    const asked = [];
+    try {
+      const code = await t.run({ stepTimeoutSec: 8 }, {
+        observe: (a) => {
+          const v = realObserve(a);
+          return existsSync(join(t.fx.dir, 'pending-ready')) ? { ...v, children: {}, claims: [], claimsError: 'injected: the claims could not be listed' } : v;
+        },
+        cancelPeerRuns: (ids) => { asked.push(...ids); return ids.map((id) => ({ run_id: id, exit: 0, result: 'cancelled' })); },
+      });
+      strictEqual(code, 2, t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual(r.steps.map((s) => [s.kind, s.aborted, s.outcome, s.peers_unaccounted]), [['dispatch', 'timeout', 'worker-failed', true]]);
+      match(r.halt.detail, /the step's pending peer runs could not be listed \(the engineer workflows that claim the macro could not be listed: injected: the claims could not be listed\), so the run keeps its open-run record/);
+      deepStrictEqual(asked, [], 'nothing listed, nothing cancelled');
+      deepStrictEqual(L.listOpenRuns(t.work).map((x) => x.runId), [r.run.run_id]);
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('a workflow read in place of the subtask\'s child: its peer is not cancelled, the claims\' is, and the run keeps its open-run record', async () => {
+    const t = await setup({ scenario: { A: { next: [COMMIT] }, B: { next: [DONE] }, actions: { 1: 'pending-sleep' } } });
+    const asked = [];
+    try {
+      const code = await t.run({ stepTimeoutSec: 8 }, {
+        observe: (a) => {
+          const v = realObserve(a);
+          return existsSync(join(t.fx.dir, 'pending-ready'))
+            ? { ...v, children: { ...v.children, A: { location: 'linkage-mismatch', detail: 'injected: workflow_id=foreign', pending_runs: ['plan-verify-foreign'] } } }
+            : v;
+        },
+        cancelPeerRuns: (ids) => { asked.push(...ids); return ids.map((id) => ({ run_id: id, exit: 0, result: 'cancelled' })); },
+      });
+      strictEqual(code, 2, t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual(r.steps.map((s) => [s.kind, s.aborted, s.outcome, s.peers_unaccounted]), [['dispatch', 'timeout', 'worker-failed', true]]);
+      deepStrictEqual(asked, ['plan-verify-20261001T000000Z-feed01'], 'the claims\' peer, never the foreign workflow\'s');
+      match(r.halt.detail, /cancelled the step's pending peer run\(s\) plan-verify-20261001T000000Z-feed01/);
+      match(r.halt.detail, /could not be listed \(subtask A's engineer workflow could not be read: the workflow read for it is not the child it records \(injected: workflow_id=foreign\)\), so the run keeps its open-run record/);
+      deepStrictEqual(L.listOpenRuns(t.work).map((x) => x.runId), [r.run.run_id]);
+    } finally {
+      t.fx.cleanup();
     }
   });
 });

@@ -281,6 +281,27 @@ describe('the context sensor (D7)', () => {
     strictEqual(w.contextWindow, 1000000);
     strictEqual(w.peakPct, 40010 / 1000000);
   });
+
+  it('records the share when the result keys the model with a window suffix (C136: `<model>[1m]`)', async () => {
+    const { w } = await run('simple', {}, { FAKE_MODEL_USAGE: JSON.stringify({ 'fake-model[1m]': { contextWindow: 1000000 } }) });
+    strictEqual(w.peakCtx, 40010);
+    strictEqual(w.contextWindow, 1000000);
+    strictEqual(w.peakPct, 40010 / 1000000);
+  });
+
+  it('contextWindowFor: the key as written first, then the model without its suffix, on both sides, the largest window whatever the keys\' order', () => {
+    const cw = (usage, model) => W.contextWindowFor(usage, model);
+    strictEqual(cw({ 'claude-opus-4-7[1m]': { contextWindow: 1_000_000 } }, 'claude-opus-4-7'), 1_000_000);
+    strictEqual(cw({ 'claude-opus-4-7': { contextWindow: 200_000 } }, 'claude-opus-4-7[1m]'), 200_000, 'a suffixed sample model finds its plain key');
+    strictEqual(cw({ m: { contextWindow: 200_000 }, 'm[1m]': { contextWindow: 1_000_000 } }, 'm'), 200_000, 'an exact key decides');
+    strictEqual(cw({ m: {}, 'm[1m]': { contextWindow: 1_000_000 } }, 'm'), 1_000_000, 'an exact key without a usable window falls to the normalized ones');
+    strictEqual(cw({ m: { contextWindow: 0 }, 'm[x]': { contextWindow: 'big' } }, 'm'), null);
+    strictEqual(cw({ 'm[a]': { contextWindow: 200_000 }, 'm[1m]': { contextWindow: 1_000_000 } }, 'm'), 1_000_000);
+    strictEqual(cw({ 'm[1m]': { contextWindow: 1_000_000 }, 'm[a]': { contextWindow: 200_000 } }, 'm'), 1_000_000, 'the same answer in the other order');
+    strictEqual(cw({ 'mm[1m]': { contextWindow: 1_000_000 }, 'other': { contextWindow: 5 } }, 'm'), null, 'another model is not this one');
+    strictEqual(cw({ '[1m]': { contextWindow: 1_000_000 } }, ''), null, 'no model names no window');
+    strictEqual(cw(null, 'm'), null);
+  });
 });
 
 describe('plugin provenance at init', () => {

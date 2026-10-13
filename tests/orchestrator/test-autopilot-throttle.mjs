@@ -4,8 +4,8 @@
 // (plugins/orchestrator/adapters/claude/autopilot/throttle.mjs): the state is
 // kept per window from the stream's rate_limit_event fields as observed, each
 // part expires with its own window, the three rules decide in order, and a
-// throttled run with nothing to refresh it waits for the reset or halts
-// `budget` when the window cannot reopen before the deadline.
+// throttled run with nothing to refresh it waits for the reset, however far
+// off (a run has no deadline), or halts `budget` when a part has no reset.
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
@@ -137,43 +137,47 @@ describe('expiry, per part', () => {
 });
 
 describe('the gate on a new lane', () => {
-  const deadlineSec = NOW + 2 * 3600;
-
   it('open starts a new lane', () => {
-    strictEqual(T.gateNewLane(withEvents(allowed(0.5)), { nowSec: NOW, deadlineSec, inFlight: 3 }).start, true);
+    strictEqual(T.gateNewLane(withEvents(allowed(0.5)), { nowSec: NOW, inFlight: 3 }).start, true);
   });
 
   it('unknown starts a new lane only while no worker is in flight', () => {
     const s = T.createThrottleState();
-    strictEqual(T.gateNewLane(s, { nowSec: NOW, deadlineSec, inFlight: 0 }).start, true);
-    const g = T.gateNewLane(s, { nowSec: NOW, deadlineSec, inFlight: 1 });
+    strictEqual(T.gateNewLane(s, { nowSec: NOW, inFlight: 0 }).start, true);
+    const g = T.gateNewLane(s, { nowSec: NOW, inFlight: 1 });
     strictEqual(g.start, false);
     ok(/first event/.test(g.why));
   });
 
   it('throttled with a worker in flight, or a started lane with a runnable step, waits for newer events', () => {
     const s = withEvents(allowed(0.9));
-    const a = T.gateNewLane(s, { nowSec: NOW, deadlineSec, inFlight: 1 });
+    const a = T.gateNewLane(s, { nowSec: NOW, inFlight: 1 });
     deepStrictEqual([a.start, a.waitUntilSec, a.halt], [false, undefined, undefined]);
-    const b = T.gateNewLane(s, { nowSec: NOW, deadlineSec, inFlight: 0, refreshable: true });
+    const b = T.gateNewLane(s, { nowSec: NOW, inFlight: 0, refreshable: true });
     deepStrictEqual([b.start, b.waitUntilSec, b.halt], [false, undefined, undefined]);
   });
 
   it('throttled with nothing to refresh it waits until every throttling part has expired', () => {
     const s = withEvents({ ...allowed(0.9), unifiedWindows: { five_hour: { utilization: 0.9, resetsAt: FIVE_RESET + 60 } } });
-    const g = T.gateNewLane(s, { nowSec: NOW, deadlineSec, inFlight: 0, refreshable: false });
+    const g = T.gateNewLane(s, { nowSec: NOW, inFlight: 0, refreshable: false });
     strictEqual(g.start, false);
-    strictEqual(g.waitUntilSec, FIVE_RESET + 60, 'the latest reset among the throttling parts');
+    strictEqual(g.waitUntilSec, FIVE_RESET + 60, 'the throttling part\'s reset, not the allowed status\'s');
+    // Two parts throttle, each with its own reset: the wait lasts until the later.
+    T.applyRateLimitEvent(s, { status: 'rejected', rateLimitType: 'seven_day', resetsAt: SEVEN_RESET });
+    strictEqual(T.gateNewLane(s, { nowSec: NOW, inFlight: 0 }).waitUntilSec, SEVEN_RESET, 'the latest reset among the throttling parts');
   });
 
-  it('halts budget, naming the window, when a throttling part resets after the run\'s deadline', () => {
-    const g = T.gateNewLane(withEvents(fiveRejected()), { nowSec: NOW, deadlineSec: FIVE_RESET - 1, inFlight: 0 });
-    strictEqual(g.halt.reason, 'budget');
-    ok(/five-hour rate-limit window/.test(g.halt.detail), g.halt.detail);
+  it('waits for a far reset — a seven-day refusal days off — rather than halting: a run has no deadline', () => {
+    const far = NOW + 6 * 86_400;
+    const g = T.gateNewLane(withEvents({ status: 'rejected', rateLimitType: 'seven_day', resetsAt: far }), { nowSec: NOW, inFlight: 0 });
+    deepStrictEqual([g.start, g.halt, g.waitUntilSec], [false, undefined, far]);
+    ok(/waiting for the reset at /.test(g.why), g.why);
+    const five = T.gateNewLane(withEvents(fiveRejected()), { nowSec: NOW, inFlight: 0 });
+    deepStrictEqual([five.halt, five.waitUntilSec], [undefined, FIVE_RESET]);
   });
 
   it('halts budget when a throttling part has no reset time', () => {
-    const g = T.gateNewLane(withEvents({ status: 'rejected', rateLimitType: 'seven_day' }), { nowSec: NOW, deadlineSec, inFlight: 0 });
+    const g = T.gateNewLane(withEvents({ status: 'rejected', rateLimitType: 'seven_day' }), { nowSec: NOW, inFlight: 0 });
     strictEqual(g.halt.reason, 'budget');
     ok(/no reset time/.test(g.halt.detail), g.halt.detail);
   });

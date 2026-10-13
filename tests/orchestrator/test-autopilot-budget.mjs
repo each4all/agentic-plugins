@@ -5,8 +5,9 @@
 // one step and min(per-step cap, run cap − spent − reserved) dollars before it
 // spawns, every end settles it once (the reported cost, the whole reservation
 // when none was reported, nothing when nothing spawned), a start blocked only
-// by other steps' reservations waits instead of halting, and each worker's
-// time is bounded by the run's deadline.
+// by other steps' reservations waits instead of halting, and no run clock
+// clips a step's timeout or exhausts the run (ADR-0063 D1, amendment of
+// 2026-10-13).
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
@@ -17,17 +18,13 @@ const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const B = await import(resolve(REPO_ROOT, 'plugins/orchestrator/adapters/claude/autopilot/budget.mjs'));
 
 const caps = (over = {}) => {
-  let t = 1_000_000;
-  const clock = { now: () => t, advance: (sec) => { t += sec * 1000; } };
-  const budget = B.createBudget({
-    maxSteps: 10, maxCostUsd: 25, stepBudgetUsd: 25, stepTimeoutSec: 3600, maxTimeSec: 86_400, startedAt: t, now: clock.now, ...over,
-  });
-  return { budget, clock };
+  const budget = B.createBudget({ maxSteps: 10, maxCostUsd: 25, stepBudgetUsd: 25, stepTimeoutSec: 3600, ...over });
+  return { budget };
 };
 
 describe('exhaustion, asked without reserving', () => {
-  it('exhausted() names what is spent, taken or elapsed, reserves nothing, and is null while only reservations block a start', () => {
-    const { budget, clock } = caps({ maxSteps: 2 });
+  it('exhausted() names what is spent or taken, reserves nothing, and is null while only reservations block a start', () => {
+    const { budget } = caps({ maxSteps: 2 });
     strictEqual(budget.exhausted(), null);
     const a = budget.reserve();
     strictEqual(budget.exhausted(), null, 'a reservation alone exhausts nothing');
@@ -35,10 +32,6 @@ describe('exhaustion, asked without reserving', () => {
     budget.settle(a.reservation, { spawned: true, costUsd: 1 });
     budget.settle(budget.reserve().reservation, { spawned: true, costUsd: 1 });
     strictEqual(budget.exhausted(), 'the run reached its step cap (2)');
-    const t = caps();
-    t.clock.advance(86_400 - 59);
-    strictEqual(t.budget.exhausted(), 'the run reached its wall clock (86400 s)');
-    ok(clock);
   });
 });
 
@@ -112,7 +105,7 @@ describe('settlement on every end', () => {
   });
 });
 
-describe('exhaustion and the deadline', () => {
+describe('exhaustion, and no run clock', () => {
   it('the run is exhausted when what is spent leaves less than the minimum step', () => {
     const { budget } = caps({ maxCostUsd: 1, stepBudgetUsd: 1 });
     budget.settle(budget.reserve().reservation, { spawned: true, costUsd: 0.6 });
@@ -121,21 +114,15 @@ describe('exhaustion and the deadline', () => {
     ok(/spent \$0\.60 of its \$1 cap/.test(r.detail));
   });
 
-  it('each worker\'s time is bounded by the run\'s deadline, and a run near it is exhausted', () => {
-    const { budget, clock } = caps({ maxTimeSec: 1000, stepTimeoutSec: 3600 });
-    clock.advance(400);
-    strictEqual(budget.reserve().reservation.timeoutSec, 600);
-    clock.advance(550);
-    const r = budget.reserve();
-    strictEqual(r.exhausted, true);
-    ok(/wall clock/.test(r.detail));
-  });
-
-  it('a reserved step\'s wall clock is judged again at its spawn: the time its lane took to create comes off it', () => {
-    const { budget, clock } = caps({ maxTimeSec: 1000, stepTimeoutSec: 3600 });
-    const r = budget.reserve().reservation;
-    strictEqual(r.timeoutSec, 1000);
-    clock.advance(120);
-    strictEqual(budget.timeoutSecNow(r), 880);
+  it('each reservation carries the whole per-step timeout, however long the run has gone on: no run clock clips it', () => {
+    const { budget } = caps({ stepTimeoutSec: 3 * 86_400, stepBudgetUsd: 1 });
+    for (let i = 0; i < 3; i += 1) {
+      const r = budget.reserve().reservation;
+      strictEqual(r.timeoutSec, 3 * 86_400);
+      budget.settle(r, { spawned: true, costUsd: 0.1 });
+    }
+    strictEqual(budget.exhausted(), null, 'steps and cost decide, nothing else');
+    // The run clock's API is gone with it.
+    deepStrictEqual(['timeoutSecNow', 'deadlineSec'].filter((k) => k in budget), []);
   });
 });

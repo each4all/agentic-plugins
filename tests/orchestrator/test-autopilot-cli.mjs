@@ -24,6 +24,7 @@ const AP = resolve(REPO_ROOT, 'plugins/orchestrator/adapters/claude/autopilot');
 const CLI = join(AP, 'cli.mjs');
 const C = await import(CLI);
 const L = await import(join(AP, 'ledger.mjs'));
+const { MAX_STEP_TIMEOUT_SEC } = await import(join(AP, 'worker.mjs'));
 const { encodeArgsFile } = await import(resolve(REPO_ROOT, 'plugins/orchestrator/scripts/lib/args-file.mjs'));
 const FAKE = resolve(REPO_ROOT, 'tests/orchestrator/fixtures/autopilot-fake-claude.mjs');
 chmodSync(FAKE, 0o755);
@@ -63,8 +64,10 @@ async function main(argv, env, cwd = process.cwd()) {
 describe('parseCli', () => {
   it('defaults to a dry-run preview with the D10 budgets', () => {
     const o = C.parseCli([]);
-    deepStrictEqual([o.sub, o.execute, o.models, o.maxSteps, o.maxCostUsd, o.stepBudgetUsd, o.stepTimeoutSec, o.maxTimeSec, o.oversizePct],
-      ['preview', false, null, 60, 250, 25, 3600, 86400, 0.25]);
+    deepStrictEqual([o.sub, o.execute, o.models, o.maxSteps, o.maxCostUsd, o.stepBudgetUsd, o.stepTimeoutSec],
+      ['preview', false, null, 60, 250, 25, 3600]);
+    // ADR-0063 D1/D7, amendment of 2026-10-13: no run clock, no size bound.
+    deepStrictEqual(['maxTimeSec', 'oversizePct'].filter((k) => k in o), []);
   });
 
   it('reads options as separate words or with =, and a closed --next', () => {
@@ -76,22 +79,34 @@ describe('parseCli', () => {
     for (const [argv, re] of [
       [['go'], /unknown subcommand/], [['--bogus'], /unknown option/], [['preview', '--execute'], /--execute applies only to start/],
       [['--models', 'cheap'], /--models must be one of/], [['--effort', 'huge'], /--effort must be one of/], [['--model', 'a b'], /not a model name/],
-      [['--macro', '../x'], /not a macro workflow id/], [['--max-steps', '0'], /positive integer/], [['--oversize-pct', '2'], /up to 1/],
+      [['--macro', '../x'], /not a macro workflow id/], [['--max-steps', '0'], /positive integer/],
       [['--next', 'Reply with OK'], /not a step command/], [['--run', 'x'], /--run applies only to status/], [['--json=yes'], /takes no value/],
-      [['--step-timeout', '5'], /at least 60 seconds/], [['--max-time', '30'], /at least 60 seconds/], [['--next', '/orchestrator:done A'], /not a step command/],
+      [['--step-timeout', '5'], /at least 60 seconds/], [['--next', '/orchestrator:done A'], /not a step command/],
+      // The run clock and the size bound are gone: their options are unknown.
+      [['--max-time', '7000'], /unknown option "--max-time"/], [['--oversize-pct', '0.5'], /unknown option "--oversize-pct"/],
+      [['--max-time=7000'], /unknown option "--max-time=7000"/],
+      // A timeout past the longest timer the worker host holds would fire at once.
+      [['--step-timeout', String(MAX_STEP_TIMEOUT_SEC + 1)], /--step-timeout must be at most 2147483 seconds/],
       // ADR-0067 Decision 6, Budgets: a step reserved below the minimum never spawns.
       [['--step-budget', '0.1'], /--step-budget must be at least 0\.5/],
     ]) throws(() => C.parseCli(argv), re, argv.join(' '));
     strictEqual(C.parseCli(['--step-budget', '0.5']).stepBudgetUsd, 0.5, 'the minimum itself is accepted');
+    strictEqual(C.parseCli(['--step-timeout', String(MAX_STEP_TIMEOUT_SEC)]).stepTimeoutSec, MAX_STEP_TIMEOUT_SEC, 'the longest timer itself is accepted');
   });
 
   it('reads an ADR-0059 args file, quoting and all, and removes it', () => {
     const dir = mkdtempSync(join(tmpdir(), 'agentic-args.'));
     const file = join(dir, 'args.json');
     writeFileSync(file, encodeArgsFile('start --next "/orchestrator:next S2" --models sonnet'));
-    const o = C.parseCli(['--args-file', file, '--max-time', '7000']);
-    deepStrictEqual([o.sub, o.forced, o.models, o.maxTimeSec], ['start', { kind: 'dispatch', subtaskId: 'S2' }, 'sonnet', 7000]);
+    const o = C.parseCli(['--args-file', file, '--step-timeout', '7000']);
+    deepStrictEqual([o.sub, o.forced, o.models, o.stepTimeoutSec], ['start', { kind: 'dispatch', subtaskId: 'S2' }, 'sonnet', 7000]);
     ok(!existsSync(dir), 'the reader removed what it read');
+    // An args file written for an older runbook, still passing the run clock,
+    // is refused as an unknown option rather than read.
+    const old = mkdtempSync(join(tmpdir(), 'agentic-args.'));
+    writeFileSync(join(old, 'args.json'), encodeArgsFile('start --execute --models sonnet --max-time 7000'));
+    throws(() => C.parseCli(['--args-file', join(old, 'args.json')]), /unknown option "--max-time"/);
+    rmSync(old, { recursive: true, force: true });
     const bad = mkdtempSync(join(tmpdir(), 'agentic-args.'));
     writeFileSync(join(bad, 'args.json'), encodeArgsFile('preview; rm -rf /'));
     throws(() => C.parseCli(['--args-file', join(bad, 'args.json')]), /arguments:/);
@@ -354,7 +369,7 @@ describe('the runbook, as written', () => {
 
   for (const shell of ['bash', 'zsh']) {
     const available = spawnSync(shell, ['-c', 'exit 0']).status === 0;
-    it(`${shell}: the preview block previews; the start block passes the model plan and the wall clock`, { skip: available ? false : `${shell} is not installed` }, async () => {
+    it(`${shell}: the preview block previews; the start block passes the model plan, and no run clock`, { skip: available ? false : `${shell} is not installed` }, async () => {
       await withRepo(async (fx, env, work) => {
         const argsDir = () => {
           const d = mkdtempSync(join(tmpdir(), 'agentic-args.'));
@@ -366,9 +381,9 @@ describe('the runbook, as written', () => {
         strictEqual(p.status, 0, p.stderr);
         strictEqual(JSON.parse(p.stdout).decision.step.kind, 'dispatch');
 
-        // The start block, with the model plan the owner chose and the
-        // two-hour guard. The worker loads a mismatched engineer, so the run
-        // stops at its first step's init.
+        // The start block, with the model plan the owner chose and no run
+        // clock (ADR-0063 D1, amendment of 2026-10-13). The worker loads a
+        // mismatched engineer, so the run stops at its first step's init.
         const d2 = argsDir();
         writeFileSync(join(d2, 'args.json'), encodeArgsFile('start --execute --max-steps 2'));
         const plugins = ['orchestrator', 'engineer', 'runtime'].map((name) => ({ name, path: { orchestrator: ORCH, engineer: ENG, runtime: RUNTIME }[name], source: `${name}@agentic-plugins`, version: name === 'engineer' ? '0.0.1' : version({ orchestrator: ORCH, runtime: RUNTIME }[name]) }));
@@ -376,7 +391,9 @@ describe('the runbook, as written', () => {
         const s = spawnSync(shell, ['-c', script], { cwd: work, env: { ...env, FAKE_CLAUDE_MODE: 'precompact', FAKE_PLUGINS: JSON.stringify(plugins) }, encoding: 'utf8' });
         strictEqual(s.status, 2, s.stderr + s.stdout);
         const run = L.readRun(work, L.listRuns(work).at(-1)).run;
-        deepStrictEqual([run.options.model_plan, run.options.max_time_sec, run.options.max_steps, run.halt.reason], ['sonnet', 7000, 2, 'version-drift']);
+        deepStrictEqual([run.options.model_plan, run.options.step_timeout_sec, run.options.max_steps, run.halt.reason], ['sonnet', 3600, 2, 'version-drift']);
+        deepStrictEqual(['max_time_sec', 'oversize_pct'].filter((k) => k in run.options), []);
+        ok(!/max-time|MAX_TIME/.test(start), 'the block passes no run clock');
         const argv = JSON.parse(readFileSync(join(fx.dir, 'claude.log'), 'utf8').trim().split('\n')[0]).argv;
         strictEqual(argv[argv.indexOf('--model') + 1], 'sonnet');
       });

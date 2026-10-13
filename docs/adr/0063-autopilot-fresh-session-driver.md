@@ -25,6 +25,11 @@ Accepted (2026-09-29, owner decision).
   D4's gate enum, its `version-drift` and `budget` halt rows and its Lanes
   paragraph; D5's Spawn paragraph and Env; D8's ledger location, run
   directory list and Lock bullet.
+- Amended 2026-10-13 by the owner's review decisions C105 and C136 (recorded
+  outside this repository): D1's Bounded property, D4's proceed rule 6 and
+  its `budget` row lose the run's wall clock; D7's guards and D4's
+  `step-oversized` row retire the size halt, a step's size being an
+  observation. Each place keeps its text and carries a dated note.
 
 <!--
 Adds one named effect domain — S1, owner-launched fresh-session spawn —
@@ -204,6 +209,11 @@ the owner's repo. The safety argument rests on seven properties:
 - **Bounded.** Max iterations, a total cost cap, a per-step `--max-budget-usd`,
   and a per-step wall clock. On timeout or abort the driver may kill **only the
   worker process group it spawned** (the ADR-0035 §4 child-only rule).
+  *Amendment 2026-10-13 (C105):* these, with a halt and `stop`, are the
+  bounds. No run wall clock bounds a run: a step that starts late gets its
+  whole per-step wall clock. The `--max-time` option that set one is
+  removed, and an args file that still passes it is refused as an unknown
+  option.
 - **No implicit retry loop.** A step never re-runs automatically. The loop
   advances only on an **observed state change** (fingerprint differs).
   `no-progress` halts.
@@ -347,7 +357,9 @@ view is:
    lane's fingerprint since that lane's previous step, while `/orchestrator:done`
    and `/orchestrator:finalize` keep the macro-wide one. The first iteration
    is exempt, and with lanes each lane's first step.
-6. Budgets remain: iterations, total cost, wall clock.
+6. Budgets remain: iterations, total cost, wall clock. *Amendment 2026-10-13
+   (C105):* the run's wall clock is removed. Iterations and total cost
+   remain, and each step's own wall clock (D1) still bounds that step.
 
 **Halt** reason codes (closed set):
 
@@ -364,8 +376,8 @@ view is:
 | `worker-failed` | non-zero exit, `is_error`, or timeout |
 | `permission-denied` | the worker hit a denied tool it needed (from `permission_denials`) and made no progress |
 | `compaction-imminent` | a PreCompact hook event appears in the worker stream (the step is aborted) |
-| `step-oversized` | the step's peak context exceeds the oversize threshold (D7) |
-| `budget` | iteration, cost or time cap reached, or a rate-limit window that cannot reopen before the deadline ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decision 6) |
+| `step-oversized` | the step's peak context exceeds the oversize threshold (D7). *Retired 2026-10-13 (C136):* never raised; a step's peak context is recorded, an observation (D7) |
+| `budget` | iteration, cost or time cap reached, or a rate-limit window that cannot reopen before the deadline ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decision 6). *Amendment 2026-10-13 (C105):* there is no time cap and no deadline: the iteration or cost cap, or a rate-limit window that throttles new lanes with no reset time while nothing runs to refresh it |
 | `version-drift` | installed plugin versions changed since the run started, or the content of a loaded plugin or a pinned script root did ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decision 8) |
 | `interrupted` | SIGINT/SIGTERM from the owner |
 
@@ -506,9 +518,20 @@ content lands with the implementing pull requests.
 - **Occupancy.** Per assistant message it is
   `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`.
   Percent is that divided by `result.modelUsage.<model>.contextWindow`.
+  *Amendment 2026-10-13 (C136):* a `modelUsage` key may carry a window
+  suffix the stream's model name lacks (`<model>[1m]`). The key as written
+  decides first, then every key that is the model once a bracketed suffix is
+  dropped from both, the largest window among them.
 - **Guards.**
   - `step-oversized`: halt after the step if the peak exceeds 25% of the window
     (configurable). The step or verb should be split.
+    *Amendment 2026-10-13 (C136):* retired, with its `--oversize-pct`
+    option. A step's size is an observation: the ledger records each step's
+    `peak_ctx`, `peak_pct` and `context_window`, and no halt reads them. Over
+    the 116 verb steps the owner measured, every size band ended normally 86%
+    of the time or more, and each abnormal end was a worker failure of
+    another cause. What a step's result shows (critique, a recurring finding,
+    a postcondition, the tests) is what halts.
   - `compaction-imminent`: a PreCompact event aborts the step immediately.
     Compaction never happens inside autopilot (R1).
 - **Scope.** The sensor is scoped to the driver's worker streams. It does not

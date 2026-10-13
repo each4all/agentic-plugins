@@ -29,8 +29,9 @@
 //
 // Beside the locks, outside every lock directory, each run keeps an open-run
 // record, `<main>/.agentic-plugins/runs/autopilot/open/<run-id>.json`, from
-// before its first spawn until it ends with every worker group empty
-// (ADR-0067 Decision 6, Locks). It points at the run's ledger, so a run whose
+// before its first spawn until it ends with every worker group empty and
+// every step's peers accounted for (ADR-0067 Decision 6, Locks; a step whose
+// peers are not records `peers_unaccounted` on its `finished` line). It points at the run's ledger, so a run whose
 // driver died is found and cleaned up after (dead-runs.mjs), from any
 // checkout: no lock consumer lists that directory, so no lock cleanup deletes
 // the pointer. Whoever cleans up after a run holds `open/<run-id>.cleanup.lock/`

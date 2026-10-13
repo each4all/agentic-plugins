@@ -163,6 +163,56 @@ export const MUTATIONS = [
     why: 'a step that changed nothing runs again and again',
   },
 
+  {
+    id: 'V6', file: POLICY, tests: [TP],
+    from: "      : halt('no-progress', 'the step exited 0 and changed no state', { subtaskId: s.subtaskId ?? null });\n  }\n  return null;",
+    to: "      : halt('no-progress', 'the step exited 0 and changed no state', { subtaskId: s.subtaskId ?? null });\n  }\n  if (typeof w.peakPct === 'number' && w.peakPct > 0.25) return halt('step-oversized', 'peak context over 25%', { subtaskId: s.subtaskId ?? null });\n  return null;",
+    why: 'the size halt comes back: a step that ended well halts on its peak context (ADR-0063 D7, amendment of 2026-10-13)',
+    killed_by: /records a step's size and never judges it/,
+  },
+  {
+    id: 'V7', file: POLICY, tests: [TP],
+    from: "  if (unread) return halt('owner-choice', ",
+    to: "  if (false) return halt('owner-choice', ",
+    why: 'a look that could not read what verifyStep compares is reported as the step\'s failure: a postcondition or cross-check over nothing (C92)',
+    killed_by: [/the macro: halts owner-choice naming the read/, /its readiness: halts owner-choice naming the read/, /the step's own child: halts owner-choice naming the read/],
+  },
+  {
+    id: 'V8', file: POLICY, tests: [TP],
+    from: '  if (after?.readyError) return',
+    to: '  if (false) return',
+    why: 'a look that could not read the macro\'s readiness passes as one that did (C92)',
+    killed_by: /its readiness: halts owner-choice naming the read/,
+  },
+  {
+    id: 'V9', file: POLICY, tests: [TP],
+    from: "  if (child?.location === 'error') return",
+    to: '  if (false) return',
+    why: 'a look that could not read the step\'s own engineer workflow passes as one that did (C92)',
+    killed_by: /the step's own child: halts owner-choice naming the read/,
+  },
+  {
+    id: 'P18', file: POLICY, tests: [TP],
+    from: '  const named = list.slice(0, SKIPPED_MAX)',
+    to: '  const named = list',
+    why: 'an indeterminate brief\'s skipped sources are relayed without a bound',
+    killed_by: /relays at most the schema's eleven/,
+  },
+  {
+    id: 'P16', file: POLICY, tests: [TP],
+    from: "    return `entry-brief is indeterminate (the branch moved while it read, or a source it could not read could outrank the rest)${skipped ? `; skipped: ${skipped}` : ''}`;",
+    to: "    return 'entry-brief is indeterminate (the branch moved while it read, or a source it could not read could outrank the rest)';",
+    why: 'an indeterminate entry-brief halt hides the sources runtime skipped and why',
+    killed_by: /relays each skipped source and its reason/,
+  },
+  {
+    id: 'P17', file: POLICY, tests: [TP],
+    from: '    .filter((x) => x && typeof x === \'object\' && code(x.source) && (x.kind === null || code(x.kind)) && (x.reason === null || code(x.reason)))',
+    to: '    .filter((x) => x && typeof x === \'object\')',
+    why: 'a skipped-source entry of any shape, shell text in its name included, reaches the halt text',
+    killed_by: /drops an entry of any other shape/,
+  },
+
   // ---- W: the worker host -----------------------------------------------------
   {
     id: 'W1', file: WORKER, tests: [TW],
@@ -180,7 +230,7 @@ export const MUTATIONS = [
     id: 'W3', file: WORKER, tests: [TW],
     from: '      if (!ev.parent_tool_use_id) {',
     to: '      if (true) {',
-    why: 'a subagent\'s context counts as the step\'s and trips step-oversized',
+    why: 'a subagent\'s context counts as the step\'s: the peak the ledger records is a subagent\'s, not the step\'s (an observation since ADR-0063 D7\'s amendment of 2026-10-13, no halt)',
   },
   {
     id: 'W4', file: WORKER, tests: [TW],
@@ -254,6 +304,20 @@ export const MUTATIONS = [
     from: '  return { sessionId, pid: child.pid, begin, abort, done };',
     to: '  begin();\n  return { sessionId, pid: child.pid, begin, abort, done };',
     why: 'a worker gets its prompt before the driver has recorded it',
+  },
+  {
+    id: 'W16', file: WORKER, tests: [TW],
+    from: '    if (baseModel(key) === base && isWindow(w)',
+    to: '    if (key === model && isWindow(w)',
+    why: 'a result that keys the model with a window suffix (`[1m]`) records no context window and no peak share (C136)',
+    killed_by: /records the share when the result keys the model with a window suffix/,
+  },
+  {
+    id: 'W17', file: WORKER, tests: [TW],
+    from: '(best === null || w > best)) best = w;',
+    to: 'best === null) best = w;',
+    why: 'two keys that are one model once their suffixes are dropped answer by the keys\' order, not the larger window',
+    killed_by: /contextWindowFor:/,
   },
 
   // ---- L: the ledger and locks --------------------------------------------------
@@ -416,7 +480,7 @@ export const MUTATIONS = [
   },
   {
     id: 'D6', file: DRIVER, tests: [TD],
-    from: '        cancelled = cancelPeerRuns(newPendingRuns(before, view, s.subtaskId), { roots, checkout: repoRoot, env });',
+    from: '        cancelled = (deps.cancelPeerRuns ?? cancelPeerRuns)(newPendingRuns(ownChildOnly(before, id), ownChildOnly(view, id), id), { roots, checkout: repoRoot, env });',
     to: '        cancelled = [];',
     why: 'a killed step\'s peer keeps running, detached from the worker\'s group',
   },
@@ -483,6 +547,56 @@ export const MUTATIONS = [
     why: 'a driver that dies after the spawn leaves a working worker no lock records',
   },
 
+  {
+    id: 'D16', file: DRIVER, tests: [TD],
+    from: '      let unaccounted = afterUnread(view, id) !== null;',
+    to: '      let unaccounted = false;',
+    why: 'a serial step judged from a look that could not read the macro, its readiness or its child halts, and the run drops its open-run record: the step\'s peers are never cancelled',
+    killed_by: /halts on that read and keeps the run's open-run record/,
+  },
+  {
+    id: 'D19', file: DRIVER, tests: [TD],
+    from: '        if (settled.keep) unaccounted = true;\n',
+    to: '',
+    why: 'a peer the serial run could not cancel, or could not list, is forgotten: the run removes its open-run record, so no later cleanup finds that peer',
+    killed_by: /a peer the serial run could not cancel/,
+  },
+  {
+    id: 'D20', file: DRIVER, tests: [TD],
+    from: '        const settled = peerCancellationOutcome(verdict, cancelled, peersUnlisted(view, id));',
+    to: '        const settled = peerCancellationOutcome(verdict, cancelled, null);',
+    why: 'a failed serial step judged from a look that could not list its peers finds none, and the run removes its open-run record: no later cleanup finds them (lanes keeps it)',
+    killed_by: /a look that cannot list the claims: nothing is cancelled/,
+  },
+  {
+    id: 'D21', file: DRIVER, tests: [TD],
+    from: 'newPendingRuns(ownChildOnly(before, id), ownChildOnly(view, id), id)',
+    to: 'newPendingRuns(before, view, id)',
+    why: 'a workflow read in place of the subtask\'s child is a source of the serial step\'s peer cancellations: a failed step cancels an unrelated workflow\'s peer',
+    killed_by: /a workflow read in place of the subtask's child: its peer is not cancelled/,
+  },
+  {
+    id: 'D22', file: DRIVER, tests: [TD],
+    from: '      if (peersUnlisted(view, id)) view = observe({ repoRoot, roots, macroId: before.macro.id, fetch: true, env });\n',
+    to: '',
+    why: 'a serial look that meets a child archived between its scan and its read is not taken again: the step halts owner-choice on a legitimate transition',
+    killed_by: /could not read the step's child once is taken again/,
+  },
+  {
+    id: 'D17', file: DRIVER, tests: [TD],
+    from: "      const r = budget.reserve();\n      if (!r.ok) return finish('halted', { reason: 'budget', detail: r.detail ?? r.why });",
+    to: "      const r = now() - startedAt > 86_400_000 ? { detail: 'the run reached its wall clock (86400 s)' } : budget.reserve();\n      if (!r.ok) return finish('halted', { reason: 'budget', detail: r.detail ?? r.why });",
+    why: 'a run clock comes back in the serial run: a run three days old halts budget though its steps and cost are far from their caps',
+    killed_by: /a step started three days into the run gets the whole step timeout/,
+  },
+  {
+    id: 'D18', file: DRIVER, tests: [TD],
+    from: '      const stepTimeoutSec = reservation.timeoutSec;',
+    to: '      const stepTimeoutSec = Math.floor(Math.min(reservation.timeoutSec, 7000 - (now() - startedAt) / 1000));',
+    why: 'the run deadline comes back at the serial spawn: a late step gets what is left of the runbook\'s old two hours, here less than nothing',
+    killed_by: /a step started three days into the run gets the whole step timeout/,
+  },
+
   // ---- C: the CLI -----------------------------------------------------------------------
   {
     id: 'C1', file: CLI, tests: [TC],
@@ -513,5 +627,26 @@ export const MUTATIONS = [
     from: '  if (n < min) throw new UsageError(',
     to: '  if (false) throw new UsageError(',
     why: 'a time bound under a minute is accepted, then quietly raised',
+  },
+  {
+    id: 'C6', file: CLI, tests: [TC],
+    from: "      case '--lanes':",
+    to: "      case '--max-time': o.maxTimeSec = Number(value()); break;\n      case '--lanes':",
+    why: 'an args file written for the old runbook passes --max-time and is read, not refused (ADR-0063 D1, amendment of 2026-10-13)',
+    killed_by: [/refuses what it does not know/, /reads an ADR-0059 args file/],
+  },
+  {
+    id: 'C7', file: CLI, tests: [TC],
+    from: "      case '--lanes':",
+    to: "      case '--oversize-pct': o.oversizePct = Number(value()); break;\n      case '--lanes':",
+    why: 'the retired size bound\'s option is read, not refused (ADR-0063 D7, amendment of 2026-10-13)',
+    killed_by: /refuses what it does not know/,
+  },
+  {
+    id: 'C8', file: CLI, tests: [TC],
+    from: '  if (n > max) throw new UsageError(',
+    to: '  if (false) throw new UsageError(',
+    why: 'a step timeout past the longest timer the worker host holds is accepted, and its timer fires at once',
+    killed_by: /refuses what it does not know/,
   },
 ];

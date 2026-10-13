@@ -43,7 +43,7 @@ export const OWNER_GATES = Object.freeze([...MACRO_OWNER_GATES, ...ENGINEER_OWNE
 export const HALT_REASONS = Object.freeze([
   'owner-choice', 'awaiting-owner', 'low-confidence', 'owner-decision', 'plan-unapproved',
   'awaiting-landing', 'dirty-tree', 'no-progress', 'worker-failed', 'permission-denied',
-  'compaction-imminent', 'step-oversized', 'budget', 'version-drift', 'interrupted',
+  'compaction-imminent', 'budget', 'version-drift', 'interrupted',
 ]);
 
 export const STEP_KINDS = Object.freeze(['dispatch', 'verb', 'commit', 'done', 'done-no-commit', 'finalize']);
@@ -255,11 +255,31 @@ const gateReason = (gate) => (OWNER_GATES.includes(gate) ? `awaiting-owner:${gat
 // carries no next_step rows (S7 has not shipped), so the driver composes the
 // step itself (D8 = a) and uses the brief only to refuse a branch whose
 // sources are uncertain or competing.
+// The sources an entry-brief skipped, as runtime names them
+// (runtime-entry-brief-1.0 `skipped_sources`: {source, kind, reason}, each a
+// closed code, `kind` null for a generic source and `reason` null for a code
+// outside the reader's registry, which runtime prints `unclassified`): one
+// `source[/kind]: reason` each, at most the schema's eleven. An entry of any
+// other shape is dropped; a brief from a runtime that names none yields ''.
+const BRIEF_CODE_RE = /^[a-z][a-z0-9-]{0,63}$/;
+const SKIPPED_MAX = 11;
+export function skippedSourcesText(brief) {
+  const list = Array.isArray(brief?.skipped_sources) ? brief.skipped_sources : [];
+  const code = (x) => typeof x === 'string' && BRIEF_CODE_RE.test(x);
+  const named = list.slice(0, SKIPPED_MAX)
+    .filter((x) => x && typeof x === 'object' && code(x.source) && (x.kind === null || code(x.kind)) && (x.reason === null || code(x.reason)))
+    .map((x) => `${x.source}${x.kind ? `/${x.kind}` : ''}: ${x.reason ?? 'unclassified'}`);
+  return named.join(', ');
+}
+
 function briefGuard(view) {
   if (view.briefError) return `entry-brief failed (${view.briefError}); refusing to run without it`;
   const brief = view.brief;
   if (!brief) return 'entry-brief returned no brief';
-  if (brief.disposition === 'indeterminate') return 'entry-brief is indeterminate (the branch moved while it read, or a source it could not read could outrank the rest)';
+  if (brief.disposition === 'indeterminate') {
+    const skipped = skippedSourcesText(brief);
+    return `entry-brief is indeterminate (the branch moved while it read, or a source it could not read could outrank the rest)${skipped ? `; skipped: ${skipped}` : ''}`;
+  }
   if (brief.disposition === 'no-branch-context') return 'entry-brief reports no branch context (detached HEAD)';
   if (brief.disposition === 'owner-choice-required') {
     const live = (brief.rows ?? []).filter((r) =>
@@ -1043,15 +1063,32 @@ function postcondition(s, before, after) {
 }
 
 /**
+ * What the look after a step could not read, of what verifyStep compares: the
+ * macro, its readiness, or the step's own subtask's engineer workflow (a child
+ * read as `{location: 'error', detail}`). A phrase, or null. Such a look cannot
+ * list the step's peer runs either, so a run that halts on it keeps its
+ * open-run record for the next run's cleanup (scheduler.mjs, driver.mjs).
+ */
+export function afterUnread(after, subtaskId) {
+  if (after?.macroLookupError) return `could not read the macro (${after.macroLookupError})`;
+  if (after?.readyError) return `could not read the macro's readiness (${after.readyError})`;
+  const child = subtaskId ? after?.children?.[subtaskId] : null;
+  if (child?.location === 'error') return `could not read subtask ${subtaskId}'s engineer workflow (${child.detail ?? 'no detail'})`;
+  return null;
+}
+
+/**
  * Judge a step that ran. Returns null to continue, or a halt.
  *
  * @param args.step     the step that ran
  * @param args.worker   the worker's result (worker.mjs)
  * @param args.before   the view the step was decided from
  * @param args.after    the view observed after it
- * @param args.oversizePct  the step-oversized threshold (fraction of the window)
+ *
+ * A step's peak context is recorded, never judged: a step's size is an
+ * observation (ADR-0063 D7, amendment of 2026-10-13).
  */
-export function verifyStep({ step: s, worker: w, before, after, oversizePct }) {
+export function verifyStep({ step: s, worker: w, before, after }) {
   // Before anything else: the run cannot go on beside what is left.
   if (w.groupTeardown === 'lingering') {
     return halt('worker-failed', `a process in the step's process group (${w.pgid ?? '?'}) is still there after SIGKILL; the run keeps its locks until that group is empty (ps -g ${w.pgid ?? '<pgid>'})`);
@@ -1072,6 +1109,11 @@ export function verifyStep({ step: s, worker: w, before, after, oversizePct }) {
   const summary = String(r?.summary ?? '').slice(0, 300);
   if (!r || typeof r !== 'object') return halt('owner-choice', 'the worker returned no step report, so its result cannot be cross-checked');
   if (r.outcome === 'failed') return halt('worker-failed', `the worker reports failure: ${summary}`);
+  // A look that could not read what the checks below compare is reported as
+  // what it is, before a cross-check or a postcondition reports what it could
+  // not see as the step's failure (C92).
+  const unread = afterUnread(after, s.subtaskId ?? null);
+  if (unread) return halt('owner-choice', `the look after the step ${unread}, so the step's result could not be verified: ${summary}`, { subtaskId: s.subtaskId ?? null });
   // A step in a lane answers for its lane: the macro's gate and its own
   // child's, never another lane's (ADR-0067 Decision 6).
   const gates = s.lane ? laneGates(after, s.subtaskId) : stateGates(after);
@@ -1104,9 +1146,6 @@ export function verifyStep({ step: s, worker: w, before, after, oversizePct }) {
     return w.denials?.length
       ? halt('permission-denied', `no state changed, and the worker was denied: ${[...new Set(w.denials.map((d) => d.tool))].join(', ')}`, { subtaskId: s.subtaskId ?? null })
       : halt('no-progress', 'the step exited 0 and changed no state', { subtaskId: s.subtaskId ?? null });
-  }
-  if (typeof w.peakPct === 'number' && typeof oversizePct === 'number' && w.peakPct > oversizePct) {
-    return halt('step-oversized', `peak context ${(w.peakPct * 100).toFixed(1)}% exceeded ${(oversizePct * 100).toFixed(0)}%; split the step or the verb`, { subtaskId: s.subtaskId ?? null });
   }
   return null;
 }

@@ -5,8 +5,9 @@
 //
 // The driver is stateless across runs: every iteration re-derives the view
 // from durable state, so relaunching after a halt continues where the state
-// says. It is bounded (steps, total cost, run wall clock, per-step budget and
-// wall clock), foreground, and exits on completion (0), on a halt (2), or on
+// says. It is bounded (steps, total cost, per-step budget and wall clock; no
+// run clock, ADR-0063 D1 amendment of 2026-10-13), foreground, and exits on
+// completion (0), on a halt (2), or on
 // an error that prevented a run (1). It never pushes, opens or merges a pull
 // request, never switches branches itself, never archives, and never resumes,
 // forks or compacts a session (D1). After each look under its locks it reports
@@ -42,7 +43,7 @@ import { lanesHoldingWork, lanesRequirements } from './lanes.mjs';
 import { launchProposals, mainCheckoutProposal, proposalLines } from './launch-proposals.mjs';
 import { observe as defaultObserve } from './observe.mjs';
 import {
-  decide, fingerprint, modelFor, proposalLines as haltProposalLines, renderStep, verifyStep, STEP_KINDS,
+  afterUnread, decide, fingerprint, modelFor, proposalLines as haltProposalLines, renderStep, verifyStep, STEP_KINDS,
 } from './policy.mjs';
 import {
   appendStep, acquireLock, createRunDir, LockHeldError, macroLockPath, mainWorktreeRoot, newRunId,
@@ -52,7 +53,7 @@ import {
   capabilityProblems, driftOf, frozenInputProblems, lanesCapabilityProblems, PLUGINS, resolveRoots,
 } from './roots.mjs';
 import { observeInChild, offLoop as defaultOffLoop } from './offloop.mjs';
-import { laneBlock, runLanes } from './scheduler.mjs';
+import { laneBlock, ownChildOnly, peerCancellationOutcome, peersUnlisted, runLanes } from './scheduler.mjs';
 import {
   ALLOWED_TOOLS, COMMIT_DENY, DENIED_TOOLS, claudeBin, startWorker as defaultStartWorker, terminateGroupsSync,
 } from './worker.mjs';
@@ -66,8 +67,6 @@ export const DEFAULTS = Object.freeze({
   maxCostUsd: 250,
   stepBudgetUsd: 25,
   stepTimeoutSec: 3600,
-  maxTimeSec: 86400,
-  oversizePct: 0.25,
 });
 // The Claude Code flags the worker host depends on (verified on 2.1.281 and
 // 2.1.286).
@@ -188,7 +187,7 @@ export function posture(options) {
     model_override: { model: options.model ?? null, effort: options.effort ?? null },
     budgets: {
       max_steps: options.maxSteps, max_cost_usd: options.maxCostUsd, step_budget_usd: options.stepBudgetUsd,
-      step_timeout_sec: options.stepTimeoutSec, max_time_sec: options.maxTimeSec, oversize_pct: options.oversizePct,
+      step_timeout_sec: options.stepTimeoutSec,
     },
   };
 }
@@ -353,7 +352,7 @@ function serialRefusal({ repoRoot, macroId, view, env }) {
  * @param a.options   parsed CLI options (budgets, models, macro, forced, notifyLocal)
  * @param a.env       the environment (workers inherit it, scrubbed)
  * @param a.out, a.err  line printers
- * @param a.deps      test seams: { observe, observeAsync, offLoop, startWorker, now, signals, checkClaude, terminateGroupsSync }
+ * @param a.deps      test seams: { observe, observeAsync, offLoop, startWorker, cancelPeerRuns, now, signals, checkClaude, terminateGroupsSync }
  */
 export async function startRun({ repoRoot, options, env = process.env, out = console.log, err = console.error, deps = {} }) {
   const observe = deps.observe ?? defaultObserve;
@@ -422,7 +421,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     status: 'running',
     options: {
       max_steps: options.maxSteps, max_cost_usd: options.maxCostUsd, step_budget_usd: options.stepBudgetUsd,
-      step_timeout_sec: options.stepTimeoutSec, max_time_sec: options.maxTimeSec, oversize_pct: options.oversizePct,
+      step_timeout_sec: options.stepTimeoutSec,
       model_plan: options.models, model_override: { model: options.model ?? null, effort: options.effort ?? null },
       forced: options.forcedText ?? null, notify_local: options.notifyLocal === true, lanes,
     },
@@ -451,9 +450,10 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
   // A step whose process group outlived SIGKILL leaves the run's entries in
   // place: they name the group, and holderAlive counts it while it has members.
   let lingering = false;
-  // A run with lanes whose look after a step failed keeps its open-run
-  // record: that step's peers are unknown, and the next run's cleanup
-  // cancels the ones that name it (scheduler.mjs).
+  // A run whose look after a step failed, or could not read the macro, its
+  // readiness or the step's child, keeps its open-run record: that step's
+  // peers are unknown, and the next run's cleanup cancels the ones that name
+  // it (scheduler.mjs, and the serial loop below).
   let keepRecord = false;
   const release = () => {
     if (lingering) locks.length = 0;
@@ -514,7 +514,8 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     release();
     // The run ended with every worker group empty, so nothing is left for a
     // cleanup to find. A group that outlived SIGKILL keeps the record, as it
-    // keeps the lock entries.
+    // keeps the lock entries, and so does a step whose peers the run could
+    // not account for (keepRecord).
     if (!lingering && !keepRecord) {
       try {
         removeOpenRun(mainRoot, runId);
@@ -626,7 +627,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     const ctx = { runId, macroId, forced: options.forced ?? null, finalizeAttempted: false };
     const budget = createBudget({
       maxSteps: options.maxSteps, maxCostUsd: options.maxCostUsd, stepBudgetUsd: options.stepBudgetUsd,
-      stepTimeoutSec: options.stepTimeoutSec, maxTimeSec: options.maxTimeSec, startedAt, now,
+      stepTimeoutSec: options.stepTimeoutSec,
     });
     for (let seq = 1; ; seq += 1) {
       if (interrupted) return finish('halted', { reason: 'interrupted', detail: 'the owner interrupted the run' });
@@ -640,8 +641,8 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       if (d.outcome === 'halt') return finish('halted', withLanding(d, landing));
 
       // ADR-0067 Decision 6, Budgets: the step is reserved before it spawns,
-      // and every end settles it. One reservation at a time: what is spent,
-      // the steps taken and the time elapsed decide, as they always did.
+      // and every end settles it. One reservation at a time: what is spent
+      // and the steps taken decide.
       const r = budget.reserve();
       if (!r.ok) return finish('halted', { reason: 'budget', detail: r.detail ?? r.why });
       reservation = r.reservation;
@@ -658,8 +659,8 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       if (!STEP_KINDS.includes(s.kind)) throw new Error(`policy returned an unknown step kind ${s.kind}`);
       const command = renderStep(s, { macroId: view.macro.id, runId });
       const { model, effort } = modelFor(s, { plan: options.models, override: { model: options.model, effort: options.effort } });
-      // The run's caps bound the step too: the step may spend only what is
-      // left, and may run only until the run's deadline.
+      // The run's cost cap bounds the step too: the step may spend only what
+      // is left. It runs for the whole per-step timeout, however late it starts.
       const stepBudgetUsd = reservation.usd;
       const stepTimeoutSec = reservation.timeoutSec;
       const sessionId = randomUUID();
@@ -709,17 +710,31 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       run.accounted_seqs.push(seq);
 
       const before = view;
+      const id = s.subtaskId ?? null;
       view = observe({ repoRoot, roots, macroId: view.macro.id, fetch: true, env });
+      // A look that could not read the step's peers, once more: a child
+      // archived between the scan and its read is a legitimate transition (as
+      // in a lane, scheduler.mjs).
+      if (peersUnlisted(view, id)) view = observe({ repoRoot, roots, macroId: before.macro.id, fetch: true, env });
       let verdict = interrupted && !w.aborted
         ? { outcome: 'halt', reason: 'interrupted', detail: 'the owner interrupted the run' }
-        : verifyStep({ step: s, worker: w, before, after: view, oversizePct: options.oversizePct });
+        : verifyStep({ step: s, worker: w, before, after: view });
+      // Whether this step's peers are unaccounted for: the run keeps its
+      // open-run record, and the step's finished line says so, so the next
+      // run's cleanup searches this step for them (dead-runs.mjs).
+      let unaccounted = afterUnread(view, id) !== null;
       let cancelled = [];
       if (verdict && (w.aborted || verdict.reason === 'worker-failed' || verdict.reason === 'interrupted')) {
-        cancelled = cancelPeerRuns(newPendingRuns(before, view, s.subtaskId), { roots, checkout: repoRoot, env });
-        if (cancelled.length) {
-          verdict = { ...verdict, detail: `${verdict.detail}; cancelled the step's pending peer run(s) ${cancelled.map((c) => c.run_id).join(', ')}` };
-        }
+        // The step's own peers only: a workflow read in place of its child is
+        // not the step's (ownChildOnly). A peer whose cancellation did not go
+        // through, or that the look could not list, may still run, as in a
+        // lane (scheduler.mjs).
+        cancelled = (deps.cancelPeerRuns ?? cancelPeerRuns)(newPendingRuns(ownChildOnly(before, id), ownChildOnly(view, id), id), { roots, checkout: repoRoot, env });
+        const settled = peerCancellationOutcome(verdict, cancelled, peersUnlisted(view, id));
+        if (settled.keep) unaccounted = true;
+        verdict = settled.verdict;
       }
+      if (unaccounted) keepRecord = true;
       appendStep(runDir, {
         event: 'finished', seq, ended_at: new Date(now()).toISOString(),
         exit: w.exitCode, signal: w.signal, aborted: w.aborted, abort_detail: w.abortDetail ?? null,
@@ -727,7 +742,8 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         turns: w.turns, cost_usd: w.costUsd, cost_charged_usd: cost, peak_ctx: w.peakCtx, peak_pct: w.peakPct,
         context_window: w.contextWindow, permission_denials: w.denials, report: w.report, raw_truncated: w.rawTruncated,
         group_teardown: w.groupTeardown,
-        peer_cancellations: cancelled, fingerprint_after: fingerprint(view), outcome: verdict ? verdict.reason : 'ok',
+        peer_cancellations: cancelled, peers_unaccounted: unaccounted,
+        fingerprint_after: fingerprint(view), outcome: verdict ? verdict.reason : 'ok',
       });
       writeRun(runDir, run);
       const pct = w.peakPct == null ? '?' : `${(w.peakPct * 100).toFixed(1)}%`;

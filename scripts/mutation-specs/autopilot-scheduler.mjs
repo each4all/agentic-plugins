@@ -37,7 +37,7 @@ const DRIVER = `${AP}/driver.mjs`;
 const LEDGER = `${AP}/ledger.mjs`;
 const ROOTS = `${AP}/roots.mjs`;
 const OFFLOOP = `${AP}/offloop.mjs`;
-const GATE = '  const gate = (refreshable = false) => gateNewLane(throttle, { nowSec: now() / 1000, deadlineSec: budget.deadlineSec(), inFlight: inflight.size, refreshable });';
+const GATE = '  const gate = (refreshable = false) => gateNewLane(throttle, { nowSec: now() / 1000, inFlight: inflight.size, refreshable });';
 const TERMINAL = '  if (macro.fm?.terminal_marker === true && !ctx.driverBusy) {';
 
 export const TESTS = [TT, TB, TP, TW, TC, TDR, TO, TS, TLS];
@@ -86,19 +86,23 @@ export const MUTATIONS = [
     why: 'an unknown rate limit starts a new lane beside a worker in flight',
     killed_by: /unknown starts a new lane only while no worker is in flight/,
   },
-  {
-    id: 'T7', file: THROTTLE, tests: [TT],
-    from: '  const late = j.throttling.find((p) => p.resetsAt > deadlineSec);',
-    to: '  const late = null;',
-    why: 'a run waits for a window that reopens only after its deadline',
-    killed_by: /resets after the run's deadline/,
-  },
+  // T7 (a run waits for a window that reopens only after its deadline) is
+  // retired with the run deadline (ADR-0067 Decision 6, amendment of
+  // 2026-10-13): waiting for a reset however far off is now the rule, and
+  // T11 restores the old halt to prove the tests notice.
   {
     id: 'T8', file: THROTTLE, tests: [TT],
     from: '  if (inFlight > 0 || refreshable) return',
     to: '  if (inFlight > 0) return',
     why: 'a throttled run with a started lane that can step halts or sleeps instead of stepping',
     killed_by: /a started lane with a runnable step, waits for newer events/,
+  },
+  {
+    id: 'T11', file: THROTTLE, tests: [TT],
+    from: '  const waitUntilSec = Math.max(...j.throttling.map((p) => p.resetsAt));',
+    to: "  if (j.throttling.some((p) => p.resetsAt > nowSec + 86_400)) return { start: false, halt: { reason: 'budget', detail: 'the window resets after the run\\'s deadline' }, judgment: j };\n  const waitUntilSec = Math.max(...j.throttling.map((p) => p.resetsAt));",
+    why: 'a run deadline comes back: a new lane throttled by a far reset halts the run instead of waiting for it',
+    killed_by: /waits for a far reset/,
   },
   {
     id: 'T9', file: WORKER, tests: [TW],
@@ -144,12 +148,16 @@ export const MUTATIONS = [
     why: 'a step settled twice is charged twice',
     killed_by: /a reservation is settled once/,
   },
+  // B5 (a worker whose lane took long to create runs past the run's
+  // deadline) is retired with the run clock (ADR-0063 D1, amendment of
+  // 2026-10-13): a late start now gets the whole timeout. B7, S47 and S48
+  // restore the clock where it was, to prove the tests notice.
   {
-    id: 'B5', file: BUDGET, tests: [TB],
-    from: "      return Math.floor(Math.min(reservation?.timeoutSec ?? stepTimeoutSec, maxTimeSec - elapsedSec()));",
-    to: "      return reservation?.timeoutSec ?? stepTimeoutSec;",
-    why: 'a worker whose lane took long to create runs past the run\'s deadline',
-    killed_by: /judged again at its spawn/,
+    id: 'B7', file: BUDGET, tests: [TB],
+    from: '        timeoutSec: stepTimeoutSec,',
+    to: '        timeoutSec: Math.min(stepTimeoutSec, 7000),',
+    why: 'a run clock comes back in the reservation: a step\'s timeout is cut to the runbook\'s old two-hour guard',
+    killed_by: /each reservation carries the whole per-step timeout/,
   },
   {
     id: 'B6', file: CLI, tests: [TC],
@@ -462,7 +470,7 @@ export const MUTATIONS = [
   },
   {
     id: 'S20', file: SCHED, tests: [TS],
-    from: "      c.keepOpenRecord();\n",
+    from: "      keep();\n",
     to: "",
     why: "a run whose look after a step failed removes its open-run record: that step's peers are never cancelled",
     killed_by: /a look that fails after a step halts the run unverified/,
@@ -506,7 +514,7 @@ export const MUTATIONS = [
     id: 'S26', file: SCHED, tests: [TLS],
     from: '    const refreshable = d.laneHalts.length > 0\n      ? d.laneSteps.some((x) => x.forced && !x.newLane)\n      : d.laneSteps.some((x) => !x.newLane) || d.driverStep !== null;',
     to: '    const refreshable = false;',
-    why: 'a forced new lane that is throttled halts the run budget while a started lane still has a runnable step',
+    why: 'a forced new lane throttled by a refusal that names no reset halts the run budget while a started lane still has a runnable step (with a reset the lane would only wait, so the case needs one without)',
     killed_by: /a forced new lane that is throttled waits while a started lane has a runnable step/,
   },
   {
@@ -546,8 +554,8 @@ export const MUTATIONS = [
   },
   {
     id: 'S32', file: SCHED, tests: [TLS],
-    from: '      if (open.length || unlisted) c.keepOpenRecord();\n',
-    to: '      if (unlisted) c.keepOpenRecord();\n',
+    from: '  return { verdict: { ...verdict, detail }, keep: open.length > 0 || Boolean(unlisted) };',
+    to: '  return { verdict: { ...verdict, detail }, keep: Boolean(unlisted) };',
     why: 'a peer run the run could not cancel after a failed step is forgotten: the run removes its open-run record, so no later cleanup finds that peer',
     killed_by: /a pending peer run the run could not cancel after a failed step keeps the run's open-run record/,
   },
@@ -571,10 +579,10 @@ export const MUTATIONS = [
   },
   {
     id: 'S36', file: SCHED, tests: [TLS],
-    from: '      if (open.length || unlisted) c.keepOpenRecord();\n',
-    to: '      if (open.length) c.keepOpenRecord();\n',
+    from: '  return { verdict: { ...verdict, detail }, keep: open.length > 0 || Boolean(unlisted) };',
+    to: '  return { verdict: { ...verdict, detail }, keep: open.length > 0 };',
     why: 'after a failed step, a look that could not list the step\'s peers finds none, and the run removes its open-run record: no later cleanup finds them',
-    killed_by: /a look that cannot read the macro cannot list the step's peers/,
+    killed_by: /a look that cannot list the claims cannot list the step's peers/,
   },
   {
     id: 'S37', file: SCHED, tests: [TLS],
@@ -645,6 +653,55 @@ export const MUTATIONS = [
     to: '  if (!child) return view;',
     why: 'a workflow read in place of the subtask\'s child is a source of the step\'s peer cancellations: a failed step cancels an unrelated workflow\'s peer',
     killed_by: /ownChildOnly:/,
+  },
+  {
+    id: 'S47', file: SCHED, tests: [TLS],
+    from: "    const r = budget.reserve();\n    if (r.exhausted) return { halt: asHalt({ reason: 'budget', detail: r.detail }) };",
+    to: "    const r = now() - Date.parse(run.started_at) > 86_400_000 ? { exhausted: true, detail: 'the run reached its wall clock (86400 s)' } : budget.reserve();\n    if (r.exhausted) return { halt: asHalt({ reason: 'budget', detail: r.detail }) };",
+    why: 'a run clock comes back in the lanes run: a run three days old halts budget though its steps and cost are far from their caps',
+    killed_by: /a lane prepared three days into the run gets the whole step timeout/,
+  },
+  {
+    id: 'S48', file: SCHED, tests: [TLS],
+    from: '    const timeoutSec = reservation.timeoutSec;',
+    to: '    const timeoutSec = Math.floor(Math.min(reservation.timeoutSec, 86_400 - (now() - Date.parse(run.started_at)) / 1000));',
+    why: 'the run deadline comes back at the spawn: a lane prepared late gets what is left of a day, here less than nothing',
+    killed_by: /a lane prepared three days into the run gets the whole step timeout/,
+  },
+  {
+    id: 'S49', file: SCHED, tests: [TS],
+    from: '      if (afterUnread(after, id)) keep();\n',
+    to: '',
+    why: 'a step judged from a look that could not read the macro, its readiness or its child halts, and the run drops its open-run record: the step\'s peers are never cancelled',
+    killed_by: /halts on that read and keeps the run's open-run record/,
+  },
+  {
+    id: 'S51', file: SCHED, tests: [TS],
+    from: '      peer_cancellations: cancelled, peers_unaccounted: unaccounted,',
+    to: '      peer_cancellations: cancelled,',
+    why: 'a step whose peers the run could not account for is finished like any other in its log: the next run\'s cleanup does not search it for them',
+    killed_by: /halts on that read and keeps the run's open-run record/,
+  },
+  {
+    id: 'A2', file: DEAD, tests: [TDR],
+    from: "    const unaccounted = strict.steps.filter((s) => s.event === 'started' || s.peers_unaccounted === true);",
+    to: '    const unaccounted = unfinished;',
+    why: 'a dead run\'s finished step whose peers it could not account for is never searched: its pending peer is neither reported nor cancelled, and the record goes',
+    killed_by: /searches a finished step whose run could not account for its peers/,
+  },
+  {
+    id: 'T12', file: THROTTLE, tests: [TT],
+    from: '  const waitUntilSec = Math.max(...j.throttling.map((p) => p.resetsAt));',
+    to: '  const waitUntilSec = Math.min(...j.throttling.map((p) => p.resetsAt));',
+    why: 'a run throttled by two parts wakes at the first reset, while the other still throttles',
+    killed_by: /waits until every throttling part has expired/,
+  },
+  {
+    id: 'S50', file: SCHED, tests: [TLS],
+    from: 'export const resetDelayMs = (sec, nowMs) => Math.min(Math.max(0, sec * 1000 - nowMs) + 1000, MAX_TIMER_MS);',
+    to: 'export const resetDelayMs = (sec, nowMs) => Math.max(0, sec * 1000 - nowMs) + 1000;',
+    why: 'a wait for a reset past the longest delay a timer holds fires at once, and the run spins on its looks instead of sleeping',
+    killed_by: /resetDelayMs:/,
   },
   {
     id: 'P1', file: SCHED, tests: [TLS],
