@@ -35,8 +35,9 @@ const COMMIT_MD = 'plugins/engineer/commands/commit.md';
 
 export const TESTS = [T_AV, T_EC, T_RB, T_SH, T_CR];
 
-const BEGIN_COMMIT_LOOP = '  await beginCommit({ workflowPath, host: flags.host });\n  for (let i = 0; i < shape.commits.length; i++) {';
-const LOOP_ONLY = '  for (let i = 0; i < shape.commits.length; i++) {';
+// beginCommit precedes the whole-set index check and the commit loop (C84).
+const BEGIN_COMMIT_LOOP = '  await beginCommit({ workflowPath, host: flags.host });\n  // C84 — the whole staging set is checked';
+const LOOP_ONLY = '  // C84 — the whole staging set is checked';
 // T_EC wraps its cases in a persona loop (ADR-0066 Stage 3), two spaces deeper.
 const PHASE_ASSERT = "        deepStrictEqual([fm.current_phase, fm.terminal_marker], ['phase-7-commit', false]);\n";
 const INHERITED_MARKER_SETUP =
@@ -44,6 +45,17 @@ const INHERITED_MARKER_SETUP =
   "        sh(dir, 'node', [STATE_BIN, 'finish-verb', '--workflow-path', wf, '--host', 'claude', '--next-action', 'commit',\n" +
   "          '--next-step-kind', 'commit', '--next-step-confidence', 'HIGH']);\n" +
   '        strictEqual((await readWorkflow(wf)).frontmatter.terminal_marker, true);\n';
+// The C84 case (h) inherits the marker too, and asserts it off after a refusal
+// made before any commit: without beginCommit and without its marker, Stop
+// cannot see the difference there either.
+const C84_MARKER_SETUP =
+  '        // Inherited from an interactive verb: summary-complete with the marker.\n' +
+  "        sh(dir, 'node', [STATE_BIN, 'finish-verb', '--workflow-path', wf, '--host', 'claude', '--next-action', 'commit',\n" +
+  "          '--next-step-kind', 'commit', '--next-step-confidence', 'HIGH']);\n" +
+  '        strictEqual((await readWorkflow(wf)).frontmatter.terminal_marker, true);\n';
+const C84_MARKER_OFF =
+  "        ok(r.stderr.includes('staged-deletion-recreated'), r.stderr);\n" +
+  '        strictEqual((await readWorkflow(wf)).frontmatter.terminal_marker, false);\n';
 
 export const MUTATIONS = [
   // ---- S: state.mjs ------------------------------------------------------------
@@ -269,8 +281,8 @@ export const MUTATIONS = [
   },
   {
     id: 'X2', file: P7, tests: [T_EC],
-    from: "      if (typeof parts[i] === 'string' && parts[i].length > 0) paths.push(parts[i]);\n",
-    to: '',
+    from: '(source === undefined ? [entry.slice(3)] : [entry.slice(3), source])',
+    to: '[entry.slice(3)]',
     why: 'a rename into workflow storage reads as a clean tree, and the workflow closes over a staged deletion',
   },
   {
@@ -349,6 +361,8 @@ export const MUTATIONS = [
       tools.applyEdit(copy, { file: P7, from: BEGIN_COMMIT_LOOP, to: LOOP_ONLY });
       tools.applyEdit(copy, { file: T_EC, from: PHASE_ASSERT, to: '' });
       tools.applyEdit(copy, { file: T_EC, from: INHERITED_MARKER_SETUP, to: '' });
+      tools.applyEdit(copy, { file: T_EC, from: C84_MARKER_SETUP, to: '' });
+      tools.applyEdit(copy, { file: T_EC, from: C84_MARKER_OFF, to: "        ok(r.stderr.includes('staged-deletion-recreated'), r.stderr);\n" });
     },
     why: 'without the inherited marker the Stop verdict cannot see a missing beginCommit',
     expect: 'SURVIVED',

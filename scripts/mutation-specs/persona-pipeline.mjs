@@ -53,13 +53,27 @@
 // error, never a verdict.
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { MutationHarnessError } from '../mutation-harness.mjs';
 
 const MANIFEST = JSON.parse(readFileSync(new URL('../../persona-pipeline/manifest.json', import.meta.url), 'utf8'));
 const enrolled = (dest) => MANIFEST.units.find((u) => u.dest === dest).personas;
+
+// Whether the filesystem the commit-surface sandboxes live on (the OS temp
+// directory) folds case, probed as test (n) probes it: (n) skips where it does
+// not, and the mutations only it can kill are equivalent there.
+const CASE_FOLDING_TMP = (() => {
+  const dir = mkdtempSync(join(tmpdir(), 'mutation-case-probe-'));
+  try {
+    writeFileSync(join(dir, 'case-probe'), '');
+    return existsSync(join(dir, 'CASE-PROBE'));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+})();
 
 const T_ENTRY = 'tests/persona-pipeline/test-cli-entry-guard.mjs';
 const T_STOP = 'tests/persona-pipeline/test-stop-archive.mjs';
@@ -80,6 +94,7 @@ const T_SETTLE = 'tests/persona-pipeline/test-peer-runner-settle.mjs';
 const T_ENG_AP = 'tests/plugin-shape/test-engineer-autopilot-runbooks.mjs';
 const T_ENG = 'tests/plugin-shape/test-engineer-plugin.mjs';
 const T_COMMIT_RB = 'tests/persona-pipeline/test-commit-runbook.mjs';
+const T_COMMIT = 'tests/persona-pipeline/test-commit-surface.mjs';
 // The verb runbooks' blocks, run for every persona (PC3b U4b: moved from
 // tests/engineer/test-verb-runbook-autopilot.mjs).
 const T_VERB_RB = 'tests/persona-pipeline/test-verb-runbook-runs.mjs';
@@ -3423,6 +3438,356 @@ export const MUTATIONS = [
   // Dropped with C1 (E1 rule 3): G95, G96, G97 — the footer's wording; the sidecar and footer.mjs are tested by what they print.
   // Dropped with C1 (E1 rule 3): G98 — the footer's wording; the sidecar and footer.mjs are tested by what they print.
   // Dropped with C1 (E1 rule 3): N99, N100, N101 — the footer's wording; the sidecar and footer.mjs are tested by what they print.
+  // C84/C90: staged deletions and renames in the commit driver. Each case
+  // drops one rule from the canonical phase7-commit.mjs (engineer only).
+  {
+    id: 'N102', tests: [T_COMMIT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/phase7-commit.mjs',
+      from: "['show', '--name-only', '--no-renames', '--ignore-submodules=none', '-z', '--pretty=format:', sha]",
+      to: "['show', '--name-only', '--ignore-submodules=none', '-z', '--pretty=format:', sha]",
+    }),
+    killed_by: /^engineer: staged deletions and renames \(C84, C90\) > \(c2\) /,
+    why: 'the recovery probe lists only a rename\'s new path, so a landed rename reads as partial-commit (C90)',
+  },
+  {
+    id: 'N103', tests: [T_COMMIT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/phase7-commit.mjs',
+      from: "    'diff', '--cached', '--name-only', '--no-renames', '--ignore-submodules=none', '-z',\n",
+      to: "    'diff', '--cached', '--name-only', '--ignore-submodules=none', '-z',\n",
+    }),
+    killed_by: /^engineer: staged deletions and renames \(C84, C90\) > \(e2\) /,
+    why: 'the staging guard sees a staged rename by its new path alone, so the old path\'s deletion rides into the commit unapproved',
+  },
+  {
+    id: 'N104', tests: [T_COMMIT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/phase7-commit.mjs',
+      from: "['diff', '--name-only', '--no-renames', ...extra, '-z', 'HEAD']",
+      to: "['diff', '--name-only', ...extra, '-z', 'HEAD']",
+    }),
+    killed_by: [/^engineer: staged deletions and renames \(C84, C90\) > \(c\) /, /^engineer: staged deletions and renames \(C84, C90\) > \(d\) /],
+    why: 'the change list drops a rename\'s old path, so a cross-package rename never splits and the guard refuses the unlisted endpoint',
+  },
+  {
+    id: 'N105', tests: [T_COMMIT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/phase7-commit.mjs',
+      from: '  const toAdd = paths.filter((p) => !deleted.has(p));\n',
+      to: '  const toAdd = paths;\n',
+    }),
+    killed_by: /^engineer: staged deletions and renames \(C84, C90\) > \(a\) a deletion-only commit/,
+    why: 'a `git rm`\'d path is given to `git add`, which fails "did not match any files" (C84)',
+  },
+  {
+    id: 'N106', tests: [T_COMMIT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/phase7-commit.mjs',
+      from: '  if (recreated.length > 0) {\n',
+      to: '  if (false) {\n',
+    }),
+    killed_by: /^engineer: staged deletions and renames \(C84, C90\) > \(b\) /,
+    why: 'a staged deletion whose path was recreated is committed while the new file is left untracked, instead of the user choosing',
+  },
+  {
+    id: 'N107', tests: [T_COMMIT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/phase7-commit.mjs',
+      from: '  const saved = saveLaterEntries({ repoRoot, commits: shape.commits });\n',
+      to: "  const saved = shape.commits.map(() => ({ paths: [], entries: '', deletions: [] }));\n",
+    }),
+    killed_by: [/^engineer: staged deletions and renames \(C84, C90\) > \(d\) /, /^engineer: staged deletions and renames \(C84, C90\) > \(f\) /],
+    why: 'a later package\'s pre-staged entry stays in the index for commit 1, which refuses it (or would carry it)',
+  },
+  {
+    id: 'N108', tests: [T_COMMIT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/phase7-commit.mjs',
+      from: "    gitSync(repoRoot, ['update-index', '-z', '--index-info'], { input: saved.entries });\n",
+      to: "    gitSync(repoRoot, ['add', '--', ...splitZ(saved.entries).map((e) => e.slice(e.indexOf('\\t') + 1))]);\n",
+    }),
+    killed_by: /^engineer: staged deletions and renames \(C84, C90\) > \(d2\) /,
+    why: 'a set-aside entry is re-added from the working tree: an ignored path is refused and the executable bit is lost under core.filemode=false',
+  },
+  {
+    id: 'N109', tests: [T_COMMIT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/phase7-commit.mjs',
+      from: '    const failHere = (result) => {\n      restorePending();\n',
+      to: '    const failHere = (result) => {\n',
+    }),
+    killed_by: /^engineer: staged deletions and renames \(C84, C90\) > \(f\) /,
+    why: 'a failure at commit 1 leaves a later package\'s staged deletion out of the index',
+  },
+  {
+    id: 'N110', tests: [T_COMMIT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/phase7-commit.mjs',
+      from: '  const checked = checkIndex({ repoRoot, paths, stderr });\n  if (!checked.ok) return checked;\n',
+      to: '  const checked = { ok: true, stagedDeletions: listStaged(repoRoot, { deletionsOnly: true }).filter((p) => paths.includes(p)) };\n',
+    }),
+    killed_by: /^engineer: staged deletions and renames \(C84, C90\) > \(k\) /,
+    why: 'without the per-commit guard a path a hook staged after commit 1 is swept into commit 2',
+  },
+  {
+    id: 'N111', tests: [T_COMMIT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/phase7-commit.mjs',
+      from: "  if (all.length > 0) gitSync(repoRoot, ['--literal-pathspecs', 'reset', '-q', '--', ...all]);\n",
+      to: "  gitSync(repoRoot, ['--literal-pathspecs', 'reset', '-q', '--', ...all]);\n",
+    }),
+    killed_by: /^engineer: staged deletions and renames \(C84, C90\) > \(e3\) /,
+    why: 'with nothing to set aside, `git reset -q --` resets the whole index and drops the first commit\'s approved entries',
+  },
+  {
+    id: 'N112', tests: [T_COMMIT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/phase7-commit.mjs',
+      from: '  const preflight = checkIndex({ repoRoot, paths: shape.commits.flatMap((c) => c.files), stderr });\n',
+      to: '  const preflight = { ok: true };\n',
+    }),
+    killed_by: /^engineer: staged deletions and renames \(C84, C90\) > \(g\) /,
+    why: 'a refusal in package 2\'s files is found only after package 1 committed',
+  },
+  {
+    id: 'N113', tests: [T_COMMIT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/phase7-commit.mjs',
+      from: '  if (unmerged.length > 0) {\n',
+      to: '  if (false) {\n',
+    }),
+    killed_by: /^engineer: staged deletions and renames \(C84, C90\) > \(m\) /,
+    why: 'an unmerged path is set aside as one record and put back without its conflict stages, after package 1 committed',
+  },
+  {
+    id: 'N114', tests: [T_COMMIT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/phase7-commit.mjs',
+      from: "    if (plain.length > 0) gitSync(repoRoot, ['--literal-pathspecs', 'add', '--', ...plain]);\n",
+      to: "    if (plain.length > 0) gitSync(repoRoot, ['add', '--', ...plain]);\n",
+    }),
+    killed_by: /^engineer: staged deletions and renames \(C84, C90\) > \(l\) /,
+    why: 'an approved path named like a glob makes `git add` stage an unapproved file it matches',
+  },
+  // The C84 review's MAJOR findings, one rule each.
+  {
+    id: 'N115', tests: [T_COMMIT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/phase7-commit.mjs',
+      from: '    if (found === undefined) return false;\n    at = join(at, found);\n',
+      to: '    try { lstatSync(join(at, parts[k])); } catch { return false; }\n    at = join(at, parts[k]);\n',
+    }),
+    // Equivalent on a case-sensitive filesystem, where (n) skips and lstat is
+    // exact.
+    ...(CASE_FOLDING_TMP
+      ? { killed_by: /^engineer: staged deletions and renames \(C84, C90\) > \(n\) / }
+      : { expect: 'SURVIVED' }),
+    why: 'presence by lstat alone: on a case-insensitive filesystem lstat("b.mjs") finds "B.mjs", so a case-only `git mv` is refused as a recreated path',
+  },
+  {
+    id: 'N116', tests: [T_COMMIT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/phase7-commit.mjs',
+      from: '    if (k < parts.length - 1 ? !isDir : isDir) return false;\n',
+      to: '    if (k < parts.length - 1 && !isDir) return false;\n',
+    }),
+    killed_by: /^engineer: staged deletions and renames \(C84, C90\) > \(o\) /,
+    why: 'a directory at a staged deletion\'s path reads as a recreated file, so the deletion is refused',
+  },
+  {
+    id: 'N117', tests: [T_COMMIT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/phase7-commit.mjs',
+      from: "  if (!gitDiffers(repoRoot, ['--literal-pathspecs', 'diff', '--cached', '--quiet', '--no-ext-diff', '--no-textconv', '--ignore-submodules=none', '--', path])) return false;\n" +
+        "  return gitDiffers(repoRoot, ['--literal-pathspecs', 'diff', '--quiet', '--no-ext-diff', '--no-textconv', ...SUBMODULE_MOVES, '--', path]);\n",
+      to: "  const row = (args) => { const l = (gitSync(repoRoot, args, { allowFailure: true }) ?? '').split('\\n').find((x) => x.length > 0); " +
+        "if (!l) return [0, 0]; const [a, d] = l.split('\\t'); return [Number.parseInt(a, 10) || 0, Number.parseInt(d, 10) || 0]; };\n" +
+        "  const c = row(['--literal-pathspecs', 'diff', '--cached', '--numstat', '--', path]);\n" +
+        "  const h = row(['--literal-pathspecs', 'diff', '--numstat', 'HEAD', '--', path]);\n" +
+        '  return (c[0] > 0 || c[1] > 0) && (c[0] < h[0] || c[1] < h[1]);\n',
+    }),
+    killed_by: /^engineer: staged deletions and renames \(C84, C90\) > \(p\) /,
+    why: 'the mixed-hunk check goes back to line counts: an edit of equal line count, or a binary, overwrites the staged content',
+  },
+  {
+    id: 'N118', tests: [T_COMMIT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/phase7-commit.mjs',
+      from: "  if (!gitDiffers(repoRoot, ['--literal-pathspecs', 'diff', '--cached', '--quiet', '--no-ext-diff', '--no-textconv', '--ignore-submodules=none', '--', path])) return false;\n",
+      to: "  if (!gitDiffers(repoRoot, ['diff', '--cached', '--quiet', '--no-ext-diff', '--no-textconv', '--ignore-submodules=none', '--', path])) return false;\n",
+    }),
+    killed_by: /^engineer: staged deletions and renames \(C84, C90\) > \(q2\) /,
+    why: 'a glob-named path reads as staged because a sibling it matches is, so its unstaged edit is refused as mixed',
+  },
+  {
+    id: 'N119', tests: [T_COMMIT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/phase7-commit.mjs',
+      from: "  return gitDiffers(repoRoot, ['--literal-pathspecs', 'diff', '--quiet', '--no-ext-diff', '--no-textconv', ...SUBMODULE_MOVES, '--', path]);\n",
+      to: "  return gitDiffers(repoRoot, ['diff', '--quiet', '--no-ext-diff', '--no-textconv', ...SUBMODULE_MOVES, '--', path]);\n",
+    }),
+    killed_by: /^engineer: staged deletions and renames \(C84, C90\) > \(q1\) /,
+    why: 'a staged glob-named path reads as differing from the working tree because a sibling it matches has an unstaged edit',
+  },
+  {
+    id: 'N120', tests: [T_COMMIT],
+    prepare: (copy, tools) => {
+      canonicalDefect(copy, tools, {
+        dest: 'scripts/phase7-commit.mjs',
+        from: '  try {\n    setAsideEntries({ repoRoot, saved });\n  } catch (err) {\n',
+        to: '  try {\n    // set aside in the loop\'s try below\n  } catch (err) {\n',
+      });
+      canonicalDefect(copy, tools, {
+        dest: 'scripts/phase7-commit.mjs',
+        from: '  try {\n    for (let i = 0; i < shape.commits.length; i++) {\n',
+        to: '  try {\n    setAsideEntries({ repoRoot, saved });\n    for (let i = 0; i < shape.commits.length; i++) {\n',
+      });
+    },
+    killed_by: /^engineer: staged deletions and renames \(C84, C90\) > \(r\) /,
+    why: 'a set-aside that failed before it wrote is followed by a restore, which hands the user entries to restore that never left the index',
+  },
+  {
+    id: 'N121', tests: [T_COMMIT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/phase7-commit.mjs',
+      from: '          `restore them by hand:\\n${describeSaved(saved[k], pending[k])}\\n`,\n',
+      to: '          `restore them by hand:\\n${describeSaved(saved[k], pendingOf(saved[k]))}\\n`,\n',
+    }),
+    killed_by: /^engineer: staged deletions and renames \(C84, C90\) > \(t\) /,
+    why: 'after a partial restore the by-hand text lists the entries already back too, so following it rewrites what is restored',
+  },
+  {
+    id: 'N122', tests: [T_COMMIT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/phase7-commit.mjs',
+      from: '  } catch (err) {\n    restorePending();\n    throw err;\n  }\n',
+      to: '  } catch (err) {\n    throw err;\n  }\n',
+    }),
+    killed_by: /^engineer: staged deletions and renames \(C84, C90\) > \(u\) /,
+    why: 'a failure thrown after the set-aside leaves a later commit\'s entries out of the index, so a rerun no longer sees them',
+  },
+  {
+    id: 'N123', tests: [T_COMMIT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/phase7-commit.mjs',
+      from: '  const sameName = precompose\n',
+      to: '  const sameName = false\n',
+    }),
+    // Equivalent off macOS, where git does not apply core.precomposeUnicode
+    // and (v) skips.
+    ...(process.platform === 'darwin'
+      ? { killed_by: /^engineer: staged deletions and renames \(C84, C90\) > \(v\) / }
+      : { expect: 'SURVIVED' }),
+    why: 'names compared byte for byte under core.precomposeUnicode: an NFD file at the NFC path git deleted reads as absent, and the deletion is committed past it',
+  },
+  {
+    id: 'N124', tests: [T_COMMIT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/phase7-commit.mjs',
+      from: "    lines.push('   staged deletions, each for `git --literal-pathspecs rm --cached -q -- <path>`:');\n",
+      to: "    lines.push('   staged deletions, each for `git rm --cached -q -- <path>`:');\n",
+    }),
+    killed_by: /^engineer: staged deletions and renames \(C84, C90\) > \(s\) /,
+    why: 'the by-hand deletion command globs: removing a deleted path named `*.mjs` unstages the sibling it matches',
+  },
+  // The second C84 review's MAJOR findings: the user's diff drivers, one case
+  // per site and flag, and the set-aside failure read again.
+  ...[
+    ['N125', 'cached', '--no-ext-diff', 'a trusted external diff driver calls the staged blob equal to HEAD'],
+    ['N126', 'cached', '--no-textconv', 'a textconv calls the staged blob equal to HEAD'],
+    ['N127', 'worktree', '--no-ext-diff', 'a trusted external diff driver calls the working tree equal to the staged blob'],
+    ['N128', 'worktree', '--no-textconv', 'a textconv calls the working tree equal to the staged blob'],
+  ].map(([id, site, flag, how]) => {
+    const line = site === 'cached'
+      ? "  if (!gitDiffers(repoRoot, ['--literal-pathspecs', 'diff', '--cached', '--quiet', '--no-ext-diff', '--no-textconv', '--ignore-submodules=none', '--', path])) return false;\n"
+      : "  return gitDiffers(repoRoot, ['--literal-pathspecs', 'diff', '--quiet', '--no-ext-diff', '--no-textconv', ...SUBMODULE_MOVES, '--', path]);\n";
+    return {
+      id, tests: [T_COMMIT],
+      prepare: (copy, tools) => canonicalDefect(copy, tools, {
+        dest: 'scripts/phase7-commit.mjs',
+        from: line,
+        to: line.replace(`'${flag}', `, ''),
+      }),
+      // Equivalent while `--no-ext-diff` stays: git (2.54, measured) then keeps
+      // a textconv out of `--quiet` too, so (w)'s textconv variant still passes.
+      ...(flag === '--no-textconv'
+        ? { expect: 'SURVIVED' }
+        : { killed_by: /^engineer: staged deletions and renames \(C84, C90\) > \(w\) / }),
+      why: `${how}, so a partly staged path reads as whole and \`git add\` overwrites the staged content`,
+    };
+  }),
+  // The refine-verify of that fix: a moved submodule hidden by
+  // diff.ignoreSubmodules=all, one case per site. The index lists take
+  // `--ignore-submodules=none`; the working-tree probes take SUBMODULE_MOVES
+  // (`=dirty`, beside the configured read where they union the two).
+  ...[
+    ['N130', "    'diff', '--cached', '--name-only', '--no-renames', '--ignore-submodules=none', '-z',\n", "'--ignore-submodules=none', ", 'unapproved',
+      'the pre-staged guard does not see a staged gitlink, so an unapproved submodule move rides into the commit'],
+    ['N131', '  const diffNames = [[], SUBMODULE_MOVES].flatMap((extra) =>\n', 'SUBMODULE_MOVES', 'approved',
+      'an approved submodule move is no change, so the workflow reads as having nothing to commit'],
+    ['N132', "['show', '--name-only', '--no-renames', '--ignore-submodules=none', '-z', '--pretty=format:', sha]", "'--ignore-submodules=none', ", 'recovery',
+      'a marked commit that moved a submodule does not list it, so the landed work reads as a partial commit'],
+    ['N133', "'diff', '--cached', '--quiet', '--no-ext-diff', '--no-textconv', '--ignore-submodules=none', '--', path]", "'--ignore-submodules=none', ", 'mixed',
+      'a staged submodule move reads as unstaged, so `git add` replaces the staged commit with the one checked out'],
+    ['N134', "'diff', '--quiet', '--no-ext-diff', '--no-textconv', ...SUBMODULE_MOVES, '--', path]", '...SUBMODULE_MOVES, ', 'mixed',
+      'a submodule moved on after it was staged reads as staged whole, so `git add` replaces the staged commit'],
+  ].map(([id, from, drop, variant, why]) => ({
+    id, tests: [T_COMMIT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/phase7-commit.mjs',
+      from,
+      to: from.replace(drop, ''),
+    }),
+    killed_by: /^engineer: staged deletions and renames \(C84, C90\) > \(y\) /,
+    why: `${why} ((y) '${variant}')`,
+  })),
+  // The third C84 review: a submodule set to `ignore` in .gitmodules. Under
+  // `all`, `git add` skips it and `git status` hides it ((z)); a user's
+  // `dirty` hides the submodule's own dirt, and with no setting the dirt still
+  // counts ((z2)). One case per site.
+  ...[
+    ['N135', 'z2', 'approved', "'diff', '--quiet', '--no-ext-diff', '--no-textconv', ...SUBMODULE_MOVES, '--', path]",
+      "'diff', '--quiet', '--no-ext-diff', '--no-textconv', '--ignore-submodules=none', '--', path]",
+      'a staged submodule move with dirt inside reads as a mixed hunk, though `git add` stages only the commit checked out'],
+    ['N136', 'z', 'approved', "add', '--force', '--', ...submodules]", "add', '--', ...submodules]",
+      'an approved submodule set to ignore=all is skipped by `git add`, which exits 0'],
+    ['N137', 'z', 'unstaged', '    if (unstaged.length > 0) {\n', '    if (false) {\n',
+      'a submodule `git add` left unstaged is not noticed, and the commit goes ahead without it'],
+    ['N138', 'z2', 'default extra', '  const diffNames = [[], SUBMODULE_MOVES].flatMap((extra) =>\n', '  const diffNames = [SUBMODULE_MOVES].flatMap((extra) =>\n',
+      'the dirt of a submodule with no ignore setting is no change, so a workflow leaving it there needs no confirmation'],
+    ['N139', 'z', 'extra', '    surfacedEntries = statusRecords(repoRoot).flat();\n',
+      "    surfacedEntries = gitSync(repoRoot, ['status', '--porcelain=v1', '-z', '--untracked-files=normal']).split('\\0').filter((s) => s.length > 0);\n",
+      'a submodule move left out of the commit is hidden from the clean gate, and the run reports success'],
+    ['N140', 'z2', 'default approved', '  for (const extra of [[], SUBMODULE_MOVES]) {\n', '  for (const extra of [SUBMODULE_MOVES]) {\n',
+      'the clean gate hides the dirt of a submodule with no ignore setting, so work left in it reads as committed'],
+    ['N141', 'z', 'unreadable', "  } catch (err) {\n    stderr.write(\n      `✗ could not read the working tree's status after commit; refusing set-terminal.\\n` +\n",
+      "  } catch (err) {\n    surfacedEntries = [];\n  }\n  if (false) {\n    stderr.write(\n      `✗ could not read the working tree's status after commit; refusing set-terminal.\\n` +\n",
+      'a status read that fails is taken as a clean tree, so the clean gate passes a move it never saw'],
+  ].map(([id, test, variant, from, to, why]) => ({
+    id, tests: [T_COMMIT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, { dest: 'scripts/phase7-commit.mjs', from, to }),
+    killed_by: new RegExp(`^engineer: staged deletions and renames \\(C84, C90\\) > \\(${test}\\) `),
+    why: `${why} ((${test}) '${variant}')`,
+  })),
+  // Not cased: dropping SUBMODULE_MOVES from listStatusPaths alone. The close
+  // and plan mode read it only when computeGitChanges, which takes the same
+  // union, found nothing, and a staged move hidden from the configured status
+  // is still in computeGitChanges' SUBMODULE_MOVES read (measured, git 2.54:
+  // .gitmodules ignore=all, a staged move the submodule checked out of). That
+  // holds while computeGitChanges' reads succeed: it drops a read that fails,
+  // and the close then rests on listStatusPaths' own SUBMODULE_MOVES read
+  // (peer-reproduced by failing that one diff). No test injects that failure.
+  {
+    id: 'N129', tests: [T_COMMIT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/phase7-commit.mjs',
+      from: '    if (!intact()) {\n',
+      to: '    if (false) {\n',
+    }),
+    killed_by: /^engineer: staged deletions and renames \(C84, C90\) > \(x\) /,
+    why: 'a set-aside that failed after its write is taken as no write: the index is reported as it was while a later commit\'s entries are out of it',
+  },
   // ---- C: control -------------------------------------------------------------------
   {
     id: 'C1', tests: [T_SYNC], expect: 'SURVIVED',

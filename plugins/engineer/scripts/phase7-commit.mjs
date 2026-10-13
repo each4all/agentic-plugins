@@ -56,6 +56,7 @@ import { capabilityOn, commandPrefix, personaOrRefuse } from './lib/persona.mjs'
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile, writeFile, mkdtemp, rm } from 'node:fs/promises';
+import { lstatSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -223,12 +224,12 @@ export function resolveSubjectFiles(flags) {
 // Git probe helpers
 // =============================================================================
 
-function gitSync(repoRoot, args, { allowFailure = false } = {}) {
+function gitSync(repoRoot, args, { allowFailure = false, input = null } = {}) {
   try {
     return execFileSync('git', args, {
       cwd: repoRoot,
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
+      ...(input === null ? { stdio: ['ignore', 'pipe', 'pipe'] } : { input, stdio: ['pipe', 'pipe', 'pipe'] }),
     }).replace(/\n$/, '');
   } catch (err) {
     if (allowFailure) return null;
@@ -238,6 +239,40 @@ function gitSync(repoRoot, args, { allowFailure = false } = {}) {
     );
   }
 }
+
+// A NUL-delimited path list (`-z`): a path git would otherwise quote (a space,
+// a non-ASCII byte) comes back as written, so it compares equal to the
+// manifest's. Never trimmed: a path may begin or end with a blank.
+function splitZ(raw) {
+  return (raw ?? '').split('\0').filter((p) => p.length > 0);
+}
+
+// C84/C90 — every path the index changes against HEAD. `--no-renames`
+// whatever diff.renames says: a rename is its two endpoints, a deletion and an
+// addition, so the old path is listed, routed and guarded like any other.
+// `--ignore-submodules=none` whatever diff.ignoreSubmodules or a
+// submodule's `ignore` (in .gitmodules or .git/config) says: under `all` a
+// staged gitlink is left out, and would ride into a commit unguarded. The
+// index holds no submodule dirt, so `none` shows nothing but gitlinks here.
+// Probes of the working tree read submodules differently (SUBMODULE_MOVES).
+// Throws when git fails: the staging guard cannot be proven from no output.
+function listStaged(repoRoot, { deletionsOnly = false } = {}) {
+  return splitZ(gitSync(repoRoot, [
+    'diff', '--cached', '--name-only', '--no-renames', '--ignore-submodules=none', '-z',
+    ...(deletionsOnly ? ['--diff-filter=D'] : []),
+  ]));
+}
+
+// A submodule's own dirt (edits and untracked files inside it) is work the
+// superproject cannot commit, and a user's ignore setting may hide it; a
+// gitlink move is what the superproject commits, and no setting may hide it.
+// So a probe that reads the working tree asks git twice, as configured and
+// with these flags (every move, no dirt), and takes the union: under `all`
+// the second adds the moves, under `dirty` or `untracked` it adds nothing, and
+// with no setting the first already shows both. `=none` alone would count the
+// dirt a user set `dirty` to hide; `=dirty` alone would hide the dirt of a
+// user who set nothing, and a working tree left with it would read as clean.
+const SUBMODULE_MOVES = ['--ignore-submodules=dirty'];
 
 function notWorkflowStorage(p) {
   return !p.startsWith(WORKFLOW_STORAGE_PREFIX);
@@ -254,24 +289,36 @@ const EMPTY_STATUS_DIGEST = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca49
  * and it throws when git fails: a clean tree has to be proven, not inferred
  * from empty output. `--untracked-files=normal` as everywhere else (the
  * drift-digest rule): an untracked directory is one entry, so a state home
- * that is not gitignored reads as not clean, which is the safe side.
+ * that is not gitignored reads as not clean, which is the safe side. A moved
+ * submodule counts whatever the user's ignore setting (statusRecords).
  */
 function listStatusPaths(repoRoot) {
-  const raw = gitSync(repoRoot, ['status', '--porcelain=v1', '-z', '--untracked-files=normal']);
-  const parts = raw.split('\0');
-  const paths = [];
-  for (let i = 0; i < parts.length; i++) {
-    const entry = parts[i];
-    if (entry.length < 4) continue;
-    paths.push(entry.slice(3));
-    // A rename or copy entry is followed by its source path, which counts
-    // too: a rename into workflow storage is a deletion outside it.
-    if (entry[0] === 'R' || entry[0] === 'C') {
-      i += 1;
-      if (typeof parts[i] === 'string' && parts[i].length > 0) paths.push(parts[i]);
+  const paths = statusRecords(repoRoot).flatMap(([entry, source]) => (source === undefined ? [entry.slice(3)] : [entry.slice(3), source]));
+  return [...new Set(paths)].filter(notWorkflowStorage);
+}
+
+// `git status --porcelain=v1 -z` as records, as configured and with
+// SUBMODULE_MOVES, one record per path (the configured one first). A rename
+// or copy entry is followed by its source path, which belongs to the record:
+// a rename into workflow storage is a deletion outside it. Throws when either
+// read fails: half of the union is not a clean tree.
+function statusRecords(repoRoot) {
+  const byPath = new Map();
+  for (const extra of [[], SUBMODULE_MOVES]) {
+    const raw = gitSync(repoRoot, ['status', '--porcelain=v1', '-z', '--untracked-files=normal', ...extra]);
+    const parts = raw.split('\0');
+    for (let i = 0; i < parts.length; i++) {
+      const entry = parts[i];
+      if (entry.length < 4) continue;
+      const record = [entry];
+      if (entry[0] === 'R' || entry[0] === 'C') {
+        i += 1;
+        if (typeof parts[i] === 'string' && parts[i].length > 0) record.push(parts[i]);
+      }
+      if (!byPath.has(entry.slice(3))) byPath.set(entry.slice(3), record);
     }
   }
-  return paths.filter(notWorkflowStorage);
+  return [...byPath.values()];
 }
 
 // =============================================================================
@@ -527,12 +574,15 @@ export async function isAgenticPluginsRepo(repoRoot) {
 
 function computeGitChanges(repoRoot) {
   // git_changes = (git diff --name-only HEAD) ∪ (git ls-files -o
-  // --exclude-standard) \ workflow storage
-  const diffNames = gitSync(repoRoot, ['diff', '--name-only', 'HEAD'], { allowFailure: true }) ?? '';
-  const untracked = gitSync(repoRoot, ['ls-files', '-o', '--exclude-standard'], { allowFailure: true }) ?? '';
-  const all = new Set();
-  for (const p of diffNames.split('\n').filter((l) => l.length > 0)) all.add(p);
-  for (const p of untracked.split('\n').filter((l) => l.length > 0)) all.add(p);
+  // --exclude-standard) \ workflow storage. `--no-renames` (C84/C90): a
+  // rename's old path is a change too, so it is staged and routed to its own
+  // package, and a rename into workflow storage is a deletion outside it.
+  // A moved submodule is a change whatever the user's ignore setting, and its
+  // dirt is one as the user configured it (SUBMODULE_MOVES).
+  const diffNames = [[], SUBMODULE_MOVES].flatMap((extra) =>
+    splitZ(gitSync(repoRoot, ['diff', '--name-only', '--no-renames', ...extra, '-z', 'HEAD'], { allowFailure: true })));
+  const untracked = gitSync(repoRoot, ['ls-files', '-o', '--exclude-standard', '-z'], { allowFailure: true });
+  const all = new Set([...diffNames, ...splitZ(untracked)]);
   return [...all].filter(notWorkflowStorage).sort();
 }
 
@@ -611,7 +661,7 @@ export function decideStagingBranch({
 }
 
 // =============================================================================
-// Mixed-hunk detection (ADR-0028 §Layer-3 cached-vs-HEAD predicate)
+// Mixed-hunk detection (ADR-0028 §Layer-3; exact since the C84 review)
 // =============================================================================
 
 export function detectMixedHunk({ repoRoot, path }) {
@@ -620,37 +670,44 @@ export function detectMixedHunk({ repoRoot, path }) {
   // `--patch`) stages everything in the working tree's delta and
   // collapses cached == HEAD trivially (Codex peer review A3).
   //
-  // The detection catches: user partially pre-staged file X via
-  // `git add --patch X` (some hunks staged, some not) before Phase 7
-  // ran. Phase 7's bulk `git add X` would then sweep the unstaged
-  // hunks — contrary to the user's pre-stage intent. We refuse the
+  // The detection catches: the user staged content for file X (`git add
+  // --patch X`, `git add X` then more edits) before Phase 7 ran. Phase 7's
+  // bulk `git add X` would then replace what the user staged with the
+  // working tree — contrary to the user's pre-stage intent. We refuse the
   // path so the user resolves via `git add --patch` interactively or
   // unstages first.
   //
-  // Predicate:
-  //   pre_cached > 0 AND pre_cached < HEAD delta
-  // The "pre_cached > 0" guard distinguishes "no pre-stage" (the
-  // normal Phase 7 flow) from "partial pre-stage" (the refuse case).
-  const cached =
-    gitSync(repoRoot, ['diff', '--cached', '--numstat', '--', path], { allowFailure: true }) ?? '';
-  const head =
-    gitSync(repoRoot, ['diff', '--numstat', 'HEAD', '--', path], { allowFailure: true }) ?? '';
-  const parseRow = (text) => {
-    const line = text.split('\n').find((l) => l.length > 0);
-    if (!line) return { add: 0, del: 0 };
-    const cols = line.split('\t');
-    const add = Number.parseInt(cols[0], 10);
-    const del = Number.parseInt(cols[1], 10);
-    return {
-      add: Number.isFinite(add) ? add : 0,
-      del: Number.isFinite(del) ? del : 0,
-    };
-  };
-  const c = parseRow(cached);
-  const h = parseRow(head);
-  const hasPreStage = c.add > 0 || c.del > 0;
-  const undercountsHead = c.add < h.add || c.del < h.del;
-  return hasPreStage && undercountsHead;
+  // Predicate: X is staged (the index differs from HEAD) AND the working
+  // tree differs from the index. Compared exactly (`git diff --quiet`), not
+  // by line counts: an edit of the same line count, or a binary, would
+  // otherwise pass and be overwritten (C84 review). A path the user did not
+  // stage (the normal Phase 7 flow) is never flagged. `--literal-pathspecs`
+  // keeps a path named like a glob from answering for the files it matches.
+  // `--no-ext-diff --no-textconv` keep the user's diff drivers out of it: a
+  // trusted external driver or a textconv can call two different blobs the
+  // same, and `git add` would then overwrite the staged one. (On git 2.54
+  // `--no-ext-diff` alone keeps a textconv out of `--quiet` too; `--no-textconv`
+  // is the documented switch for it, so it stays.) Submodules whatever the
+  // user's ignore setting, `all` included, which would hide a submodule staged
+  // at one commit and moved on to another: the index side with `=none`, as
+  // for the name lists (listStaged), and the working-tree side with `=dirty`,
+  // because for a submodule `git add` stages the commit it has checked out
+  // and nothing of its dirt, which therefore cannot be overwritten.
+  if (!gitDiffers(repoRoot, ['--literal-pathspecs', 'diff', '--cached', '--quiet', '--no-ext-diff', '--no-textconv', '--ignore-submodules=none', '--', path])) return false;
+  return gitDiffers(repoRoot, ['--literal-pathspecs', 'diff', '--quiet', '--no-ext-diff', '--no-textconv', ...SUBMODULE_MOVES, '--', path]);
+}
+
+// `git diff --quiet` answers by its exit status: 1 when there is a difference,
+// 0 when there is none. Anything else (a git that cannot read the index)
+// throws: an index check is never passed on no answer.
+function gitDiffers(repoRoot, args) {
+  try {
+    execFileSync('git', args, { cwd: repoRoot, stdio: ['ignore', 'ignore', 'pipe'] });
+    return false;
+  } catch (err) {
+    if (err.status === 1) return true;
+    throw new Error(`git ${args.join(' ')} failed: ${String(err.stderr ?? err.message).trim()}`);
+  }
 }
 
 // =============================================================================
@@ -912,8 +969,24 @@ export function checkSubjectAgainstCC({ subject, strictCC, stderr }) {
 // HEAD -- <paths>` AFTER stage but BEFORE commit, which is the only
 // point where the cache reflects exactly this commit's contribution.
 
-async function preflightAndStage({ repoRoot, paths, stderr }) {
+// The index checks, without a write: every staged path is in `paths`, no staged
+// deletion's path was recreated, no path is partly pre-staged. executeMode runs
+// them on the whole staging set before its first git write, and again on each
+// commit's own files before staging it. Returns the staged deletions among
+// `paths`, which `git add` must not be given.
+function checkIndex({ repoRoot, paths, stderr }) {
   for (const p of paths) assertSafePath(p);
+  // An unresolved conflict cannot be committed, and its stages (1, 2, 3) are
+  // not one entry that can be set aside and put back as it was.
+  const unmerged = [...new Set(splitZ(gitSync(repoRoot, ['ls-files', '--unmerged', '-z']))
+    .map((record) => record.slice(record.indexOf('\t') + 1)))];
+  if (unmerged.length > 0) {
+    stderr.write(
+      `⚠ unmerged path(s) in the index — resolve the conflict first:\n` +
+      unmerged.map((p) => `    ${p}`).join('\n') + '\n',
+    );
+    return { ok: false, reason: 'unmerged-entries', unmerged };
+  }
   // PR4 review C1 (Codex Phase 5): `commitStaged`'s `git commit -F` runs
   // without a pathspec, so anything already in the index — even files
   // outside this commit's planned set — would be swept into the commit.
@@ -925,12 +998,13 @@ async function preflightAndStage({ repoRoot, paths, stderr }) {
   // wants it in this commit).
   //
   // Uses `-z` to handle paths with spaces / tabs / quotes (PR4 N4-quoted
-  // pattern). Within executeMode's split-commit loop, this fires only at
-  // the first iteration because git clears the index after each commit;
-  // subsequent iterations see an empty pre-staged set.
-  const preStagedRaw =
-    gitSync(repoRoot, ['diff', '--cached', '--name-only', '-z'], { allowFailure: true }) ?? '';
-  const preStaged = preStagedRaw.split('\0').filter((s) => s.length > 0);
+  // pattern), and `--no-renames` so both ends of a staged rename must be
+  // approved (C90): a rename recorded by its new path alone would otherwise
+  // carry its old path's deletion into the commit unseen. In a split, the
+  // check per commit also catches a path a hook staged after an earlier
+  // commit; the later commits' own pre-staged entries are out of the index
+  // by then (saveLaterEntries, setAsideEntries).
+  const preStaged = listStaged(repoRoot);
   if (preStaged.length > 0) {
     const allowed = new Set(paths);
     const unapproved = preStaged.filter((p) => !allowed.has(p));
@@ -948,24 +1022,81 @@ async function preflightAndStage({ repoRoot, paths, stderr }) {
       return { ok: false, reason: 'unapproved-pre-staged', unapproved };
     }
   }
+  // C84 — a path the user deleted with `git rm` (or moved away with `git mv`)
+  // is committed as staged; `git add` would refuse it ("did not match any
+  // files"). When a file was written at the path since, the index and the
+  // working tree disagree on whether it exists, which only the user can
+  // settle, and the mixed-hunk check cannot see it (to `git diff` the file is
+  // untracked, not a difference). `git rm --cached` (stop tracking, keep the
+  // file) reads the same way. Presence is by exact name (pathPresent): a
+  // case-only `git mv` on a case-insensitive filesystem is a rename, not a
+  // recreated path.
+  const wanted = new Set(paths);
+  const stagedDeletions = listStaged(repoRoot, { deletionsOnly: true }).filter((p) => wanted.has(p));
+  // git applies core.precomposeUnicode only on macOS.
+  const precompose = process.platform === 'darwin' &&
+    gitSync(repoRoot, ['config', '--type=bool', 'core.precomposeunicode'], { allowFailure: true }) === 'true';
+  const recreated = stagedDeletions.filter((p) => pathPresent(repoRoot, p, { precompose }));
+  if (recreated.length > 0) {
+    stderr.write(
+      `⚠ staged deletion(s) whose path was recreated in the working tree — refusing to choose ` +
+      `between the deletion and the new file (C84):\n` +
+      recreated.map((p) => `    ${p}`).join('\n') +
+      `\n   Resolve with one of:\n` +
+      `     git add -- <path>   (commit the new file instead of the deletion)\n` +
+      `     move the new file away   (commit the deletion)\n` +
+      `   A \`git rm --cached\` (stop tracking a file you keep) is refused the same way:\n` +
+      `   move the file out of the repository for the commit, then put it back.\n`,
+    );
+    return { ok: false, reason: 'staged-deletion-recreated', recreated };
+  }
   const mixed = paths.filter((p) => detectMixedHunk({ repoRoot, path: p }));
   if (mixed.length > 0) {
     stderr.write(
-      `⚠ mixed-hunk paths detected (user pre-staged a partial subset against HEAD): ${mixed.join(', ')}\n` +
+      `⚠ mixed-hunk paths detected (staged content the working tree differs from, which Phase 7's \`git add\` would overwrite): ${mixed.join(', ')}\n` +
       `   Run \`git add --patch <path>\` to finish staging the intended hunks, ` +
+      `\`git add -- <path>\` to stage the working tree as it is, ` +
       `or \`git reset HEAD -- <path>\` to clear the pre-stage and let Phase 7 ` +
       `commit the full file delta.\n`,
     );
     return { ok: false, reason: 'mixed-hunk', mixed };
   }
+  return { ok: true, stagedDeletions };
+}
+
+async function preflightAndStage({ repoRoot, paths, stderr }) {
+  const checked = checkIndex({ repoRoot, paths, stderr });
+  if (!checked.ok) return checked;
+  // A staged deletion is already in the index as approved (C84); everything
+  // else is staged from the working tree.
+  const deleted = new Set(checked.stagedDeletions);
+  const toAdd = paths.filter((p) => !deleted.has(p));
+  if (toAdd.length === 0) return { ok: true };
   // Use `--` separator so any path that begins with `-` despite the
   // earlier assertion is still safe at the argv boundary. The catch
   // converts git-add failure into a structured refine-fallback row
   // rather than letting the throw escape (Phase 5 M2 — surface
   // stage-failed reason alongside the existing mixed-hunk /
-  // commit-failed reasons).
+  // commit-failed reasons). `--` does not stop glob matching:
+  // `--literal-pathspecs` does, so an approved path named `*.mjs` never
+  // stages an unapproved file it would match.
+  //
+  // A submodule set to `ignore=all` (in .gitmodules or .git/config) is skipped
+  // by `git add`, which still exits 0, so an approved move would stay out of
+  // the commit. Submodules are added with `--force`, which for one overrides
+  // that setting (git never adds files beneath a submodule, so no ignored file
+  // comes with it), and then checked: each must now hold the commit its
+  // submodule has checked out, which is what `git add` stages for one.
   try {
-    gitSync(repoRoot, ['add', '--', ...paths]);
+    const submodules = submodulePaths(repoRoot, toAdd);
+    const plain = toAdd.filter((p) => !submodules.includes(p));
+    if (plain.length > 0) gitSync(repoRoot, ['--literal-pathspecs', 'add', '--', ...plain]);
+    if (submodules.length > 0) gitSync(repoRoot, ['--literal-pathspecs', 'add', '--force', '--', ...submodules]);
+    const unstaged = submodules.filter((p) =>
+      gitDiffers(repoRoot, ['--literal-pathspecs', 'diff', '--quiet', '--no-ext-diff', ...SUBMODULE_MOVES, '--', p]));
+    if (unstaged.length > 0) {
+      throw new Error(`git add left submodule(s) unstaged, the commit each has checked out not in the index: ${unstaged.join(', ')}`);
+    }
   } catch (err) {
     return {
       ok: false,
@@ -974,6 +1105,160 @@ async function preflightAndStage({ repoRoot, paths, stderr }) {
     };
   }
   return { ok: true };
+}
+
+// The paths among `paths` that are submodules: the index holds a gitlink for
+// the path, and a repository is checked out at it. A gitlink whose path now
+// holds a file or a plain directory is not one: `git add` stages that as it is.
+function submodulePaths(repoRoot, paths) {
+  const wanted = new Set(paths);
+  return splitZ(gitSync(repoRoot, ['--literal-pathspecs', 'ls-files', '--stage', '-z', '--', ...paths]))
+    .filter((record) => record.startsWith('160000 '))
+    .map((record) => record.slice(record.indexOf('\t') + 1))
+    .filter((p) => wanted.has(p) && checkedOutRepository(join(repoRoot, p)));
+}
+
+function checkedOutRepository(dir) {
+  try {
+    if (!lstatSync(dir).isDirectory()) return false;
+    lstatSync(join(dir, '.git'));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Whether a file (or symlink) now sits at `p` under exactly that name. Each
+// component is looked up by its exact name in its parent's listing, not by
+// lstat alone: on a case-insensitive filesystem lstat("b.mjs") finds "B.mjs",
+// which made a case-only `git mv` read as a recreated path. A directory at
+// `p` is not a recreated file (git tracks no directory, and `git add` is not
+// given the path), and a component that is not a directory (a file, a
+// symlink, which git never tracks beneath) means `p` is absent. lstat, not
+// stat: a dangling symlink is still there. A missing component is absent;
+// any other error (a parent the user cannot read) throws rather than read as
+// absent. With `precompose` (core.precomposeUnicode on macOS, where git reads
+// every name it lists in NFC) a name matches in either Unicode normal form, as
+// git sees it: an NFD "café.mjs" on disk is the NFC path git deleted.
+function pathPresent(repoRoot, p, { precompose = false } = {}) {
+  const sameName = precompose
+    ? (name, part) => name.normalize('NFC') === part.normalize('NFC')
+    : (name, part) => name === part;
+  const parts = p.split('/');
+  let at = repoRoot;
+  for (let k = 0; k < parts.length; k++) {
+    const names = listDir(at);
+    const found = names === null ? undefined : names.find((name) => sameName(name, parts[k]));
+    if (found === undefined) return false;
+    at = join(at, found);
+    const isDir = lstatSync(at).isDirectory();
+    if (k < parts.length - 1 ? !isDir : isDir) return false;
+  }
+  return true;
+}
+
+function listDir(dir) {
+  try {
+    return readdirSync(dir);
+  } catch (err) {
+    if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) return null;
+    throw err;
+  }
+}
+
+/**
+ * C84 — `git commit` takes the whole index, so in a split commit a path the
+ * user staged before Phase 7 ran (a `git rm`, either end of a `git mv`) for a
+ * later package would ride into the first commit. Set every later commit's
+ * pre-staged entries aside before the first commit, exactly as staged, and put
+ * each commit's back (restoreEntries) when its turn comes.
+ *
+ * Saved as index entries (`ls-files --stage`: mode, blob, stage), and the
+ * staged deletions by path, not re-added from the working tree: re-adding
+ * loses what the index held, an executable bit under core.filemode=false, a
+ * path an ignore rule matches (which `git add` then refuses). Unmerged entries
+ * never get here (checkIndex refuses them), so one record per path is exact.
+ * `--literal-pathspecs` keeps a path with `*` or `?` from matching others.
+ *
+ * Saving writes nothing; setAsideEntries makes the one write. When it fails,
+ * the caller re-reads the saved paths (savedInIndex) before saying anything
+ * about the index, and puts back what it finds set aside; any failure after
+ * it puts the entries back too.
+ *
+ * Returns one { entries, deletions, paths } per commit (empty for the first).
+ */
+function saveLaterEntries({ repoRoot, commits }) {
+  const staged = new Set(listStaged(repoRoot));
+  const deferred = commits.map((commit, i) => (i === 0 ? [] : commit.files.filter((p) => staged.has(p))));
+  const all = deferred.flat();
+  const records = new Map();
+  if (all.length > 0) {
+    const raw = gitSync(repoRoot, ['--literal-pathspecs', 'ls-files', '--stage', '-z', '--', ...all]);
+    for (const record of splitZ(raw)) records.set(record.slice(record.indexOf('\t') + 1), record);
+  }
+  return deferred.map((paths) => ({
+    paths,
+    entries: paths.filter((p) => records.has(p)).map((p) => `${records.get(p)}\0`).join(''),
+    deletions: paths.filter((p) => !records.has(p)),
+  }));
+}
+
+// The saved paths back to HEAD in the index. Never with an empty list:
+// `git reset -q --` alone resets the whole index.
+function setAsideEntries({ repoRoot, saved }) {
+  const all = saved.flatMap((s) => s.paths);
+  if (all.length > 0) gitSync(repoRoot, ['--literal-pathspecs', 'reset', '-q', '--', ...all]);
+}
+
+// Whether the index holds every saved path as it was saved: each entry the
+// same record (mode, blob, stage), each staged deletion still absent. A git
+// that failed may have written the index first (killed after its write), so
+// its failure alone says nothing about what the index holds.
+function savedInIndex({ repoRoot, saved }) {
+  const all = saved.flatMap((s) => s.paths);
+  if (all.length === 0) return true;
+  const now = new Map();
+  const raw = gitSync(repoRoot, ['--literal-pathspecs', 'ls-files', '--stage', '-z', '--', ...all]);
+  for (const record of splitZ(raw)) now.set(record.slice(record.indexOf('\t') + 1), record);
+  return saved.every((s) =>
+    splitZ(s.entries).every((record) => now.get(record.slice(record.indexOf('\t') + 1)) === record) &&
+    s.deletions.every((p) => !now.has(p)));
+}
+
+// What of one commit's set-aside entries is still out of the index.
+function pendingOf(saved) {
+  return { entries: saved.entries.length > 0, deletions: saved.deletions.length > 0 };
+}
+
+// Puts back what is still pending, in two writes, marking each done once it
+// returns: a failure between them leaves `pending` naming exactly what is
+// still out. Each write is idempotent, so a retry is safe.
+function restoreEntries({ repoRoot, saved, pending }) {
+  if (pending.entries) {
+    gitSync(repoRoot, ['update-index', '-z', '--index-info'], { input: saved.entries });
+    pending.entries = false;
+  }
+  if (pending.deletions) {
+    gitSync(repoRoot, ['update-index', '--force-remove', '--', ...saved.deletions]);
+    pending.deletions = false;
+  }
+}
+
+// What is still pending, as text a user can restore by hand. `--literal-pathspecs`:
+// a deleted path named like a glob must not unstage the files it matches. A
+// path with a newline in it does not survive this line-based form (known
+// limit; such a path is refused nowhere else either).
+function describeSaved(saved, pending) {
+  const lines = [];
+  if (pending.entries) {
+    lines.push('   staged entries, one per line, for `git update-index --index-info`:');
+    for (const e of splitZ(saved.entries)) lines.push(`    ${e}`);
+  }
+  if (pending.deletions) {
+    lines.push('   staged deletions, each for `git --literal-pathspecs rm --cached -q -- <path>`:');
+    for (const p of saved.deletions) lines.push(`    ${p}`);
+  }
+  return lines.join('\n');
 }
 
 /**
@@ -1007,19 +1292,23 @@ function probeLandedRecovery({ repoRoot, baselineHead, workflowId, manifestPaths
   const shas = revList.split('\n').map((s) => s.trim()).filter((s) => s.length > 0);
 
   // Step 2 — per-sha touched-paths list. `git show --name-only
-  // --pretty=format:` emits the paths one per line.
+  // --pretty=format:` emits the paths, NUL-delimited under `-z` so a quoted
+  // path matches the manifest, and `--no-renames` so a rename counts both
+  // endpoints (C90): with rename detection on, only the new path is listed and
+  // a manifest that records the old one reads as partial-commit.
+  //
+  // Supported topology: Phase 7 makes only single-parent commits, and a root
+  // commit is never in baseline..HEAD. A marked merge commit (made by hand)
+  // shows a combined diff, which can omit paths it touched, so it reads as
+  // partial-commit, the safe side.
   const markedCommits = [];
   for (const sha of shas) {
     const paths = gitSync(
       repoRoot,
-      ['show', '--name-only', '--pretty=format:', sha],
+      ['show', '--name-only', '--no-renames', '--ignore-submodules=none', '-z', '--pretty=format:', sha],
       { allowFailure: true },
     );
-    const touched = (paths ?? '')
-      .split('\n')
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
-    markedCommits.push({ sha, touched });
+    markedCommits.push({ sha, touched: splitZ(paths) });
   }
 
   return evaluateLandedRecovery({ workflowId, manifestPaths, markedCommits });
@@ -1191,8 +1480,21 @@ async function runPostCommitGates({ workflowPath, repoRoot, flags, stderr, lande
   // `all` previously produced per-file entries, so the same tree digested
   // differently per machine. Dirty/clean is unaffected either way (both non-empty);
   // only listing granularity narrows for those users.
-  const afterCommit = gitSync(repoRoot, ['status', '--porcelain=v1', '-z', '--untracked-files=normal'], { allowFailure: true }) ?? '';
-  const surfacedEntries = afterCommit.split('\0').filter((s) => s.length > 0);
+  // A moved submodule is not clean whatever the user's ignore setting
+  // (SUBMODULE_MOVES): under `all` git status would hide one this commit left
+  // out, and the run would report success without it. A status git could not
+  // read is not a clean one: a clean tree has to be proven (listStatusPaths).
+  let surfacedEntries;
+  try {
+    surfacedEntries = statusRecords(repoRoot).flat();
+  } catch (err) {
+    stderr.write(
+      `✗ could not read the working tree's status after commit; refusing set-terminal.\n` +
+      `  ${err.message.split('\n').join('\n  ')}\n` +
+      `  Re-run once git can read it; the landed commits are kept.\n`,
+    );
+    return { ok: false, reason: 'unclean-after-commit', landed };
+  }
   if (surfacedEntries.length > 0) {
     stderr.write(
       `✗ working tree is not clean after commit; refusing set-terminal.\n` +
@@ -1494,11 +1796,75 @@ async function executeMode({
   // first split commit would let the Stop hook archive a half-committed
   // workflow. Phase 7's terminal write after the gates turns it back on.
   await beginCommit({ workflowPath, host: flags.host });
-  for (let i = 0; i < shape.commits.length; i++) {
+  // C84 — the whole staging set is checked before the first git write, so a
+  // refusal in a later package's files (an unapproved, recreated or partly
+  // staged path) commits nothing, and the index is left as it was.
+  const preflight = checkIndex({ repoRoot, paths: shape.commits.flatMap((c) => c.files), stderr });
+  if (!preflight.ok) {
+    stderr.write(
+      `\n✗ phase7-commit refused before any commit: ${preflight.reason}. Nothing was committed or staged.\n` +
+      `\nRecommended action: ${commandPrefix()}refine "${preflight.reason}" — resolve it as above and re-run.\n`,
+    );
+    return { ok: false, reason: preflight.reason, landed };
+  }
+  const saved = saveLaterEntries({ repoRoot, commits: shape.commits });
+  const pending = saved.map(pendingOf);
+  const isPending = (k) => pending[k].entries || pending[k].deletions;
+  // On any failure after the set-aside, a later commit's entries go back to
+  // the index (landed commits stay), so a rerun sees the same pending set.
+  // What cannot be put back is printed, and only that.
+  const restorePending = () => {
+    for (let k = 0; k < saved.length; k++) {
+      if (!isPending(k)) continue;
+      try {
+        restoreEntries({ repoRoot, saved: saved[k], pending: pending[k] });
+      } catch (err) {
+        stderr.write(
+          `✗ could not put back the staged entries set aside for commit ${k + 1} (${err.message.split('\n')[0]}); ` +
+          `restore them by hand:\n${describeSaved(saved[k], pending[k])}\n`,
+        );
+      }
+    }
+  };
+  // The set-aside is one `git reset`. Its failure does not show what the index
+  // holds (a git killed after its write fails too), so the saved paths are
+  // read again: the user is told the index is as it was only when it is, and
+  // otherwise the entries are put back first, and anything still out printed.
+  try {
+    setAsideEntries({ repoRoot, saved });
+  } catch (err) {
+    const intact = () => {
+      try {
+        return savedInIndex({ repoRoot, saved });
+      } catch {
+        return false;
+      }
+    };
+    let state = 'the index is as it was';
+    if (!intact()) {
+      restorePending();
+      if (saved.some((_, k) => isPending(k))) {
+        state = 'git changed the index before it failed, and the set-aside entries are not all back (see above)';
+      } else if (intact()) {
+        state = 'git changed the index before it failed; the set-aside entries were put back, and the index is as it was';
+      } else {
+        state = 'git changed the index before it failed; the set-aside entries were put back, but the saved paths do not read as they were saved';
+      }
+    }
+    stderr.write(
+      `\n✗ phase7-commit could not set the later commits' staged entries aside ` +
+      `(${err.message.split('\n')[0]}). Nothing was committed, and ${state}.\n` +
+      `\nRecommended action: resolve the git error (a stale .git/index.lock, for one) and re-run the commit.\n`,
+    );
+    return { ok: false, reason: 'index-set-aside-failed', landed };
+  }
+  // One commit of the split; null once it landed, else the failure.
+  const commitOne = async (i) => {
     const commit = shape.commits[i];
     const subject = subjects[i];
 
     const failHere = (result) => {
+      restorePending();
       // P2 + P4 refine fallback. Surface what landed and what failed.
       stderr.write(
         `\n✗ phase7-commit aborted at commit ${i + 1}/${shape.commits.length} ` +
@@ -1515,6 +1881,16 @@ async function executeMode({
       return { ok: false, reason: result.reason, landed };
     };
 
+    // This commit's set-aside entries go back first; the checks below then
+    // see the index as the user staged it for this package.
+    if (isPending(i)) {
+      try {
+        restoreEntries({ repoRoot, saved: saved[i], pending: pending[i] });
+      } catch (err) {
+        return failHere({ reason: 'index-restore-failed', message: err.message });
+      }
+    }
+
     const stageResult = await preflightAndStage({
       repoRoot,
       paths: commit.files,
@@ -1527,7 +1903,7 @@ async function executeMode({
     // to commit.files via `-- <paths>` so even if the user had unrelated
     // staged hunks pre-loop, this commit's body only documents its own.
     const diffStat =
-      gitSync(repoRoot, ['diff', '--cached', '--stat', '--', ...commit.files], { allowFailure: true }) ?? '';
+      gitSync(repoRoot, ['--literal-pathspecs', 'diff', '--cached', '--stat', '--', ...commit.files], { allowFailure: true }) ?? '';
     const body = composeBody({
       originalRequest: frontmatter.original_request,
       diffStat,
@@ -1548,6 +1924,16 @@ async function executeMode({
 
     const sha = gitSync(repoRoot, ['rev-parse', 'HEAD']);
     landed.push(`${sha} ${subject}`);
+    return null;
+  };
+  try {
+    for (let i = 0; i < shape.commits.length; i++) {
+      const result = await commitOne(i);
+      if (result !== null) return result;
+    }
+  } catch (err) {
+    restorePending();
+    throw err;
   }
 
   // Post-commit gates extracted into runPostCommitGates so the
@@ -1728,8 +2114,7 @@ async function autopilotMode({ workflowPath, repoRoot, frontmatter, flags, stder
   // hunks that are not this workflow's, which only the owner can tell apart
   // (the clean baseline /engineer:start Phase 7 relies on).
   const cleanBaseline = frontmatter.git_baseline?.status_digest === EMPTY_STATUS_DIGEST;
-  const preStaged = (gitSync(repoRoot, ['diff', '--cached', '--name-only'], { allowFailure: true }) ?? '')
-    .split('\n').filter((l) => l.length > 0);
+  const preStaged = listStaged(repoRoot);
   const whyOwner = [];
   if (plan.ask_user) whyOwner.push(`the staging branch is ${plan.branch}`);
   if (!cleanBaseline) whyOwner.push('the workflow did not begin on a clean working tree, so pre-existing changes in manifest paths cannot be told apart from its own');

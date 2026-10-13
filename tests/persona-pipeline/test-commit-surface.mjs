@@ -23,8 +23,8 @@
 // Run via `node --test tests/persona-pipeline/test-commit-surface.mjs`.
 
 import { describe, it } from 'node:test';
-import { strictEqual, ok, deepStrictEqual, match } from 'node:assert/strict';
-import { mkdtemp, rm, writeFile, mkdir, readFile, chmod, access, cp } from 'node:fs/promises';
+import { strictEqual, notStrictEqual, ok, deepStrictEqual, match } from 'node:assert/strict';
+import { mkdtemp, rm, writeFile, mkdir, readFile, readdir, chmod, access, cp, symlink } from 'node:fs/promises';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve, basename } from 'node:path';
@@ -338,6 +338,902 @@ for (const persona of personasFor('scripts/phase7-commit.mjs')) {
         fm = (await readWorkflow(wf)).frontmatter;
         deepStrictEqual([fm.current_phase, fm.terminal_marker], ['commit-complete', true]);
       });
+    });
+  });
+
+  // C84: a path the user staged before Phase 7 ran (a `git rm`, either end of
+  // a `git mv`) is committed as staged, routed to its own package, and never
+  // re-added from the working tree. C90: a rename counts as both endpoints
+  // wherever Phase 7 lists paths. Each sandbox turns rename detection on, so
+  // the cases do not depend on the user's git config.
+  describe(`${persona}: staged deletions and renames (C84, C90)`, () => {
+    // Every index entry, modes and blob ids included.
+    const indexState = (dir) => execFileSync('git', ['ls-files', '--stage', '-z'], { cwd: dir, encoding: 'utf8' });
+    const nameStatus = (dir, rev) => sh(dir, 'git', ['show', '--name-status', '--no-renames', '--format=', rev]);
+    const stagedStatus = (dir) => sh(dir, 'git', ['diff', '--cached', '--name-status', '--no-renames']);
+
+    async function withRenames(fn) {
+      await withSandbox(async (dir) => {
+        sh(dir, 'git', ['config', 'diff.renames', 'true']);
+        sh(dir, 'git', ['config', 'core.quotePath', 'true']);
+        await fn(dir);
+      });
+    }
+
+    // A pre-commit hook that logs what each commit takes from the index, as
+    // `git diff --cached --raw` (modes and full blob ids), one block per commit.
+    async function recordingHook(dir, block = '') {
+      const hook = join(dir, '.git', 'hooks', 'pre-commit');
+      await writeFile(hook, '#!/bin/sh\n{ echo "--"; git diff --cached --no-renames --raw --no-abbrev; } >> .git/hook-log\n' + block);
+      await chmod(hook, 0o755);
+      return async () => (await readFile(join(dir, '.git', 'hook-log'), 'utf8')).split('--\n').filter((b) => b.length > 0).map((b) => b.trimEnd());
+    }
+    const blockRuntime = 'if [ -f .block-runtime ] && git diff --cached --name-only | grep -q "^plugins/runtime/"; then echo blocked >&2; exit 1; fi\n';
+    const blockEngineer = 'if [ -f .block-engineer ] && git diff --cached --name-only | grep -q "^plugins/engineer/"; then echo blocked >&2; exit 1; fi\n';
+
+    it('(a) a deletion-only commit of a `git rm`: the deletion is committed, never re-added', async () => {
+      await withRenames(async (dir) => {
+        const wf = createWorkflow(dir, { verb: 'refine', profile: '', request: 'drop a' });
+        record(dir, wf, 'plugins/engineer/a.mjs');
+        sh(dir, 'git', ['rm', '-q', 'plugins/engineer/a.mjs']);
+        const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects', '--strict-cc'));
+        strictEqual(r.code, 0, r.stderr);
+        strictEqual(nameStatus(dir, 'HEAD'), 'D\tplugins/engineer/a.mjs');
+        strictEqual(sh(dir, 'git', ['log', '-1', '--format=%s']), 'fix(engineer): drop a');
+        deepStrictEqual((await readWorkflow(wf)).frontmatter.current_phase, 'commit-complete');
+      });
+    });
+
+    it('(a) control: a deletion only in the working tree is staged by `git add` and committed', async () => {
+      await withRenames(async (dir) => {
+        const wf = createWorkflow(dir, { verb: 'refine', profile: '', request: 'drop b' });
+        record(dir, wf, 'plugins/runtime/b.mjs');
+        await rm(join(dir, 'plugins', 'runtime', 'b.mjs'));
+        const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+        strictEqual(r.code, 0, r.stderr);
+        strictEqual(nameStatus(dir, 'HEAD'), 'D\tplugins/runtime/b.mjs');
+      });
+    });
+
+    it('(b) a staged deletion whose path was recreated is refused, leaving the index, HEAD and the marker as they were', async () => {
+      await withRenames(async (dir) => {
+        const wf = createWorkflow(dir);
+        record(dir, wf, 'plugins/engineer/a.mjs');
+        sh(dir, 'git', ['rm', '-q', 'plugins/engineer/a.mjs']);
+        await mkdir(join(dir, 'plugins', 'engineer'), { recursive: true });
+        // Recreated with its old content: the cached and HEAD counts are equal,
+        // so the mixed-hunk check alone cannot see it.
+        await writeFile(join(dir, 'plugins', 'engineer', 'a.mjs'), 'export const a = 0;\n');
+        const head = sh(dir, 'git', ['rev-parse', 'HEAD']);
+        const index = indexState(dir);
+        const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+        strictEqual(r.code, 1, r.stderr);
+        ok(r.stderr.includes('staged-deletion-recreated'), r.stderr);
+        ok(r.stderr.includes('    plugins/engineer/a.mjs'), r.stderr);
+        strictEqual(sh(dir, 'git', ['rev-parse', 'HEAD']), head);
+        strictEqual(indexState(dir), index);
+        ok((await readWorkflow(wf)).frontmatter.terminal_marker !== true);
+      });
+    });
+
+    it('(c) a rename inside one package: both endpoints are changes, staged and committed', async () => {
+      await withRenames(async (dir) => {
+        const wf = createWorkflow(dir, { request: 'rename a' });
+        record(dir, wf, 'plugins/engineer/a.mjs');
+        record(dir, wf, 'plugins/engineer/c.mjs', 'create');
+        sh(dir, 'git', ['mv', 'plugins/engineer/a.mjs', 'plugins/engineer/c.mjs']);
+        const p = plan(dir, wf);
+        deepStrictEqual([p.branch, p.git_changes, p.staging_set],
+          ['manifest-intersects-git', ['plugins/engineer/a.mjs', 'plugins/engineer/c.mjs'], ['plugins/engineer/a.mjs', 'plugins/engineer/c.mjs']]);
+        const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+        strictEqual(r.code, 0, r.stderr);
+        strictEqual(nameStatus(dir, 'HEAD'), 'D\tplugins/engineer/a.mjs\nA\tplugins/engineer/c.mjs');
+      });
+    });
+
+    it('(c2) C90: a marked rename commit covers both endpoints of the manifest, so a clean tree is recovery', async () => {
+      await withRenames(async (dir) => {
+        const wf = createWorkflow(dir);
+        record(dir, wf, 'plugins/engineer/a.mjs');
+        record(dir, wf, 'plugins/engineer/c.mjs', 'create');
+        sh(dir, 'git', ['mv', 'plugins/engineer/a.mjs', 'plugins/engineer/c.mjs']);
+        sh(dir, 'git', ['commit', '-qm', `feat(engineer): rename a\n\nWorkflow-ID: ${basename(wf, '.md')}`]);
+        const p = plan(dir, wf);
+        deepStrictEqual([p.branch, p.no_changes.path, p.no_changes.missing_manifest], ['no-changes', 'recovery', []]);
+      });
+    });
+
+    it('(d) a rename across packages: each endpoint lands in its own package commit, exactly as staged', async () => {
+      await withRenames(async (dir) => {
+        const wf = createWorkflow(dir, { verb: 'refine', profile: '', request: 'move a' });
+        record(dir, wf, 'plugins/engineer/a.mjs');
+        record(dir, wf, 'plugins/runtime/a.mjs', 'create');
+        sh(dir, 'git', ['mv', 'plugins/engineer/a.mjs', 'plugins/runtime/a.mjs']);
+        const approved = sh(dir, 'git', ['diff', '--cached', '--no-renames', '--raw', '--no-abbrev']).split('\n');
+        const hookLog = await recordingHook(dir);
+        const base = sh(dir, 'git', ['rev-parse', 'HEAD']);
+        const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects', '--strict-cc'));
+        strictEqual(r.code, 0, r.stderr);
+        deepStrictEqual(sh(dir, 'git', ['log', '--format=%s', `${base}..HEAD`]).split('\n').reverse(), ['fix(engineer): move a', 'fix(runtime): move a']);
+        strictEqual(nameStatus(dir, 'HEAD~1'), 'D\tplugins/engineer/a.mjs');
+        strictEqual(nameStatus(dir, 'HEAD'), 'A\tplugins/runtime/a.mjs');
+        deepStrictEqual(await hookLog(), approved, 'each commit took its endpoint\'s approved index entry, mode and blob');
+      });
+    });
+
+    it('(d2) under core.filemode=false an executable rename to an ignored path keeps its entry through a failure and a rerun', async () => {
+      await withRenames(async (dir) => {
+        sh(dir, 'git', ['config', 'core.filemode', 'false']);
+        await writeFile(join(dir, '.git', 'info', 'exclude'), '.block-runtime\n*.gen\n');
+        const wf = createWorkflow(dir, { verb: 'refine', profile: '', request: 'move a' });
+        record(dir, wf, 'plugins/engineer/a.mjs');
+        record(dir, wf, 'plugins/runtime/a.gen', 'create');
+        sh(dir, 'git', ['mv', 'plugins/engineer/a.mjs', 'plugins/runtime/a.gen']);
+        sh(dir, 'git', ['update-index', '--chmod=+x', 'plugins/runtime/a.gen']);
+        const approvedEntry = sh(dir, 'git', ['ls-files', '--stage', '--', 'plugins/runtime/a.gen']);
+        ok(approvedEntry.startsWith('100755 '), approvedEntry);
+        await recordingHook(dir, blockRuntime);
+        await writeFile(join(dir, '.block-runtime'), '');
+        const base = sh(dir, 'git', ['rev-parse', 'HEAD']);
+        let r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+        strictEqual(r.code, 4, r.stderr);
+        ok(r.stderr.includes('aborted at commit 2/2 (package=plugins/runtime): commit-failed'), r.stderr);
+        strictEqual(nameStatus(dir, 'HEAD'), 'D\tplugins/engineer/a.mjs');
+        strictEqual(sh(dir, 'git', ['ls-files', '--stage', '--', 'plugins/runtime/a.gen']), approvedEntry, 'the entry is staged as approved');
+
+        await rm(join(dir, '.block-runtime'));
+        r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+        strictEqual(r.code, 0, r.stderr);
+        strictEqual(sh(dir, 'git', ['rev-list', '--count', `${base}..HEAD`]), '2');
+        strictEqual(sh(dir, 'git', ['ls-tree', 'HEAD', '--', 'plugins/runtime/a.gen']).split(' ')[0], '100755');
+      });
+    });
+
+    it('(e1) control: a foreign staged file is refused as unapproved, leaving the index as it was', async () => {
+      await withRenames(async (dir) => {
+        const wf = createWorkflow(dir);
+        record(dir, wf, 'plugins/engineer/a.mjs');
+        await writeFile(join(dir, 'plugins', 'engineer', 'a.mjs'), 'export const a = 1;\n');
+        await writeFile(join(dir, 'README.md'), '# sandbox\nforeign\n');
+        sh(dir, 'git', ['add', 'README.md']);
+        const head = sh(dir, 'git', ['rev-parse', 'HEAD']);
+        const index = indexState(dir);
+        const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects', '--confirm-non-interactive'));
+        strictEqual(r.code, 1, r.stderr);
+        ok(r.stderr.includes('unapproved pre-staged path(s)') && r.stderr.includes('    README.md'), r.stderr);
+        strictEqual(sh(dir, 'git', ['rev-parse', 'HEAD']), head);
+        strictEqual(indexState(dir), index);
+      });
+    });
+
+    it('(e2) a foreign `git mv` recorded only by its new path: the old path is refused as unapproved', async () => {
+      await withRenames(async (dir) => {
+        const wf = createWorkflow(dir);
+        record(dir, wf, 'plugins/engineer/b.mjs', 'create');
+        sh(dir, 'git', ['mv', 'plugins/runtime/b.mjs', 'plugins/engineer/b.mjs']);
+        const head = sh(dir, 'git', ['rev-parse', 'HEAD']);
+        const index = indexState(dir);
+        const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects', '--confirm-non-interactive'));
+        strictEqual(r.code, 1, r.stderr);
+        ok(r.stderr.includes('unapproved pre-staged path(s)') && r.stderr.includes('    plugins/runtime/b.mjs'), r.stderr);
+        strictEqual(sh(dir, 'git', ['rev-parse', 'HEAD']), head);
+        strictEqual(indexState(dir), index);
+      });
+    });
+
+    it('(e3) a force-added ignored file stays staged as approved in a single commit', async () => {
+      await withRenames(async (dir) => {
+        await writeFile(join(dir, '.git', 'info', 'exclude'), '*.gen\n');
+        const wf = createWorkflow(dir);
+        record(dir, wf, 'plugins/engineer/x.gen', 'create');
+        record(dir, wf, 'plugins/engineer/a.mjs');
+        await writeFile(join(dir, 'plugins', 'engineer', 'x.gen'), 'generated\n');
+        sh(dir, 'git', ['add', '-f', 'plugins/engineer/x.gen']);
+        await writeFile(join(dir, 'plugins', 'engineer', 'a.mjs'), 'export const a = 1;\n');
+        const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+        strictEqual(r.code, 0, r.stderr);
+        strictEqual(nameStatus(dir, 'HEAD'), 'M\tplugins/engineer/a.mjs\nA\tplugins/engineer/x.gen');
+      });
+    });
+
+    it('(f) a staged deletion of a later package is set aside for commit 1 and still staged after a failure; a rerun commits it', async () => {
+      await withRenames(async (dir) => {
+        const wf = createWorkflow(dir, { verb: 'refine', profile: '', request: 'split' });
+        record(dir, wf, 'plugins/engineer/a.mjs');
+        record(dir, wf, 'plugins/runtime/b.mjs');
+        await writeFile(join(dir, 'plugins', 'engineer', 'a.mjs'), 'export const a = 4;\n');
+        sh(dir, 'git', ['rm', '-q', 'plugins/runtime/b.mjs']);
+        await recordingHook(dir, blockEngineer + blockRuntime);
+        await writeFile(join(dir, '.git', 'info', 'exclude'), '.block-*\n');
+        const base = sh(dir, 'git', ['rev-parse', 'HEAD']);
+
+        // Commit 1 fails: the later package's deletion goes back to the index.
+        await writeFile(join(dir, '.block-engineer'), '');
+        let r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+        strictEqual(r.code, 4, r.stderr);
+        ok(r.stderr.includes('aborted at commit 1/2 (package=plugins/engineer): commit-failed'), r.stderr);
+        strictEqual(sh(dir, 'git', ['rev-parse', 'HEAD']), base);
+        ok(stagedStatus(dir).split('\n').includes('D\tplugins/runtime/b.mjs'), stagedStatus(dir));
+
+        // Commit 2 fails: commit 1 holds only the engineer change.
+        await rm(join(dir, '.block-engineer'));
+        await writeFile(join(dir, '.block-runtime'), '');
+        r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+        strictEqual(r.code, 4, r.stderr);
+        strictEqual(nameStatus(dir, 'HEAD'), 'M\tplugins/engineer/a.mjs');
+        strictEqual(stagedStatus(dir), 'D\tplugins/runtime/b.mjs');
+
+        await rm(join(dir, '.block-runtime'));
+        r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+        strictEqual(r.code, 0, r.stderr);
+        strictEqual(nameStatus(dir, 'HEAD'), 'D\tplugins/runtime/b.mjs');
+        strictEqual(sh(dir, 'git', ['rev-list', '--count', `${base}..HEAD`]), '2');
+      });
+    });
+
+    it('(g) a mixed change or a recreated deletion in package 2 refuses before package 1 commits', async () => {
+      for (const variant of ['mixed', 'recreated']) {
+        await withRenames(async (dir) => {
+          const wf = createWorkflow(dir, { verb: 'refine', profile: '', request: 'split' });
+          record(dir, wf, 'plugins/engineer/a.mjs');
+          record(dir, wf, 'plugins/runtime/b.mjs');
+          await writeFile(join(dir, 'plugins', 'engineer', 'a.mjs'), 'export const a = 6;\n');
+          const b = join(dir, 'plugins', 'runtime', 'b.mjs');
+          if (variant === 'mixed') {
+            await writeFile(b, 'export const b = 6;\nstaged\n');
+            sh(dir, 'git', ['add', 'plugins/runtime/b.mjs']);
+            await writeFile(b, 'export const b = 6;\nstaged\nnot staged\n');
+          } else {
+            sh(dir, 'git', ['rm', '-q', 'plugins/runtime/b.mjs']);
+            await mkdir(join(dir, 'plugins', 'runtime'), { recursive: true });
+            await writeFile(b, 'export const b = 0;\n');
+          }
+          const head = sh(dir, 'git', ['rev-parse', 'HEAD']);
+          const index = indexState(dir);
+          const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+          strictEqual(r.code, variant === 'mixed' ? 3 : 1, `${variant}: ${r.stderr}`);
+          ok(r.stderr.includes(variant === 'mixed' ? 'mixed-hunk' : 'staged-deletion-recreated'), r.stderr);
+          strictEqual(sh(dir, 'git', ['rev-parse', 'HEAD']), head, `${variant}: nothing committed`);
+          strictEqual(indexState(dir), index, `${variant}: the index is as it was`);
+        });
+      }
+    });
+
+    it('(h) an inherited terminal marker is off before the whole-set refusal, so a moved HEAD cannot archive it', async () => {
+      await withRenames(async (dir) => {
+        const wf = createWorkflow(dir);
+        record(dir, wf, 'plugins/engineer/a.mjs');
+        // Inherited from an interactive verb: summary-complete with the marker.
+        sh(dir, 'node', [STATE_BIN, 'finish-verb', '--workflow-path', wf, '--host', 'claude', '--next-action', 'commit',
+          '--next-step-kind', 'commit', '--next-step-confidence', 'HIGH']);
+        strictEqual((await readWorkflow(wf)).frontmatter.terminal_marker, true);
+        await writeFile(join(dir, 'README.md'), '# sandbox\nsomeone\n');
+        sh(dir, 'git', ['commit', '-qm', 'docs: someone else', '--', 'README.md']);
+        sh(dir, 'git', ['rm', '-q', 'plugins/engineer/a.mjs']);
+        await mkdir(join(dir, 'plugins', 'engineer'), { recursive: true });
+        await writeFile(join(dir, 'plugins', 'engineer', 'a.mjs'), 'export const a = 8;\n');
+        const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+        strictEqual(r.code, 1, r.stderr);
+        ok(r.stderr.includes('staged-deletion-recreated'), r.stderr);
+        strictEqual((await readWorkflow(wf)).frontmatter.terminal_marker, false);
+        const stop = await runStopArchive({ workflowPath: wf, host: 'claude', repoRoot: dir,
+          headSha: sh(dir, 'git', ['rev-parse', 'HEAD']), headSubject: 'docs: someone else', stderr: { write() {} } });
+        strictEqual(stop.archived, false);
+        ok(stop.gateFailures.includes('terminal_marker'), JSON.stringify(stop));
+      });
+    });
+
+    it('(i) a rename to a path git would quote (a space, non-ASCII) matches the manifest', async () => {
+      await withRenames(async (dir) => {
+        const target = 'plugins/engineer/새 이름.mjs';
+        const wf = createWorkflow(dir);
+        record(dir, wf, 'plugins/engineer/a.mjs');
+        record(dir, wf, target, 'create');
+        sh(dir, 'git', ['mv', 'plugins/engineer/a.mjs', target]);
+        const p = plan(dir, wf);
+        deepStrictEqual([p.branch, p.staging_set], ['manifest-intersects-git', ['plugins/engineer/a.mjs', target]]);
+        const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+        strictEqual(r.code, 0, r.stderr);
+        const touched = execFileSync('git', ['show', '--name-only', '--no-renames', '-z', '--format=', 'HEAD'], { cwd: dir, encoding: 'utf8' });
+        deepStrictEqual(touched.split('\0').filter(Boolean), ['plugins/engineer/a.mjs', target]);
+        strictEqual(plan(dir, wf).no_changes.path, 'recovery', 'the probe reads the quoted endpoint too');
+      });
+    });
+
+    it('(k) a path a hook stages after commit 1 is refused at commit 2, not swept into it', async () => {
+      await withRenames(async (dir) => {
+        const wf = createWorkflow(dir, { verb: 'refine', profile: '', request: 'split' });
+        record(dir, wf, 'plugins/engineer/a.mjs');
+        record(dir, wf, 'plugins/runtime/b.mjs');
+        await writeFile(join(dir, 'plugins', 'engineer', 'a.mjs'), 'export const a = 7;\n');
+        await writeFile(join(dir, 'plugins', 'runtime', 'b.mjs'), 'export const b = 7;\n');
+        const hook = join(dir, '.git', 'hooks', 'post-commit');
+        await writeFile(hook, '#!/bin/sh\nif [ ! -f .git/staged-once ]; then touch .git/staged-once; echo stray > stray.md; git add stray.md; fi\n');
+        await chmod(hook, 0o755);
+        const base = sh(dir, 'git', ['rev-parse', 'HEAD']);
+        const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+        strictEqual(r.code, 1, r.stderr);
+        ok(r.stderr.includes('aborted at commit 2/2 (package=plugins/runtime): unapproved-pre-staged'), r.stderr);
+        ok(r.stderr.includes('    stray.md'), r.stderr);
+        strictEqual(sh(dir, 'git', ['rev-list', '--count', `${base}..HEAD`]), '1');
+        strictEqual(nameStatus(dir, 'HEAD'), 'M\tplugins/engineer/a.mjs');
+      });
+    });
+
+    it('(i2) a later package\'s pre-staged path with a tab in its name is set aside and put back exactly', async () => {
+      await withRenames(async (dir) => {
+        const target = 'plugins/runtime/a\tb.mjs';
+        const wf = createWorkflow(dir, { verb: 'refine', profile: '', request: 'move a' });
+        record(dir, wf, 'plugins/engineer/a.mjs');
+        record(dir, wf, target, 'create');
+        sh(dir, 'git', ['mv', 'plugins/engineer/a.mjs', target]);
+        const approved = sh(dir, 'git', ['diff', '--cached', '--no-renames', '--raw', '--no-abbrev']).split('\n');
+        const hookLog = await recordingHook(dir);
+        const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+        strictEqual(r.code, 0, r.stderr);
+        deepStrictEqual(await hookLog(), approved);
+      });
+    });
+
+    it('(l) an approved path named like a glob stages only itself, never a file it would match', async () => {
+      await withRenames(async (dir) => {
+        const glob = 'plugins/engineer/*.mjs';
+        const wf = createWorkflow(dir);
+        record(dir, wf, 'plugins/engineer/a.mjs');
+        record(dir, wf, glob, 'create');
+        sh(dir, 'git', ['mv', 'plugins/engineer/a.mjs', glob]);
+        await writeFile(join(dir, 'plugins', 'engineer', 'stray.mjs'), 'export const stray = 1;\n');
+        const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects', '--confirm-non-interactive'));
+        // The commit lands without the stray file, which then fails the
+        // clean-after-commit gate as the unapproved change it is.
+        strictEqual(r.code, 7, r.stderr);
+        strictEqual(nameStatus(dir, 'HEAD'), `A\t${glob}\nD\tplugins/engineer/a.mjs`);
+        strictEqual(sh(dir, 'git', ['status', '--porcelain=v1', '--', 'plugins/engineer/stray.mjs']), '?? plugins/engineer/stray.mjs');
+      });
+    });
+
+    it('(m) an unmerged path is refused before anything is set aside, leaving the index and HEAD as they were', async () => {
+      await withRenames(async (dir) => {
+        const wf = createWorkflow(dir, { verb: 'refine', profile: '', request: 'split' });
+        record(dir, wf, 'plugins/engineer/a.mjs');
+        record(dir, wf, 'plugins/runtime/b.mjs');
+        await writeFile(join(dir, 'plugins', 'engineer', 'a.mjs'), 'export const a = 9;\n');
+        // A conflict on package 2's path: stages 1, 2 and 3, no stage 0.
+        const blob = (text) => execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: dir, input: text, encoding: 'utf8' }).trim();
+        const p = 'plugins/runtime/b.mjs';
+        const info = `0 ${'0'.repeat(40)}\t${p}\n` +
+          [1, 2, 3].map((s) => `100644 ${blob(`export const b = ${s};\n`)} ${s}\t${p}`).join('\n') + '\n';
+        execFileSync('git', ['update-index', '--index-info'], { cwd: dir, input: info });
+        await writeFile(join(dir, p), 'export const b = 2;\n');
+        const head = sh(dir, 'git', ['rev-parse', 'HEAD']);
+        const index = indexState(dir);
+        const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+        strictEqual(r.code, 1, r.stderr);
+        ok(r.stderr.includes('unmerged-entries') && r.stderr.includes(`    ${p}`), r.stderr);
+        strictEqual(sh(dir, 'git', ['rev-parse', 'HEAD']), head);
+        strictEqual(indexState(dir), index);
+      });
+    });
+
+    it('(n) a case-only `git mv` on a case-insensitive filesystem is a rename, not a recreated path', async (t) => {
+      await withRenames(async (dir) => {
+        await writeFile(join(dir, 'case-probe'), '');
+        if (!(await exists(join(dir, 'CASE-PROBE')))) {
+          t.skip('the filesystem is case-sensitive: a case-only rename cannot meet a recreated path here');
+          return;
+        }
+        await rm(join(dir, 'case-probe'));
+        const wf = createWorkflow(dir, { verb: 'refine', profile: '', request: 'rename b' });
+        record(dir, wf, 'plugins/runtime/b.mjs');
+        record(dir, wf, 'plugins/runtime/B.mjs', 'create');
+        sh(dir, 'git', ['mv', 'plugins/runtime/b.mjs', 'plugins/runtime/B.mjs']);
+        const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+        strictEqual(r.code, 0, r.stderr);
+        strictEqual(nameStatus(dir, 'HEAD'), 'A\tplugins/runtime/B.mjs\nD\tplugins/runtime/b.mjs');
+      });
+    });
+
+    it('(o) a directory at a staged deletion\'s path is no recreated file; a dangling symlink there is', async () => {
+      for (const variant of ['directory', 'symlink']) {
+        await withRenames(async (dir) => {
+          const wf = createWorkflow(dir, { verb: 'refine', profile: '', request: 'drop b' });
+          record(dir, wf, 'plugins/runtime/b.mjs');
+          sh(dir, 'git', ['rm', '-q', 'plugins/runtime/b.mjs']);
+          await mkdir(join(dir, 'plugins', 'runtime'), { recursive: true });
+          if (variant === 'directory') await mkdir(join(dir, 'plugins', 'runtime', 'b.mjs'));
+          else await symlink('nowhere', join(dir, 'plugins', 'runtime', 'b.mjs'));
+          const index = indexState(dir);
+          const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+          if (variant === 'directory') {
+            strictEqual(r.code, 0, `${variant}: ${r.stderr}`);
+            strictEqual(nameStatus(dir, 'HEAD'), 'D\tplugins/runtime/b.mjs');
+          } else {
+            strictEqual(r.code, 1, `${variant}: ${r.stderr}`);
+            ok(r.stderr.includes('staged-deletion-recreated'), r.stderr);
+            strictEqual(indexState(dir), index);
+          }
+        });
+      }
+    });
+
+    it('(p) a staged change the working tree differs from at an equal line count (or a binary) is refused before any commit', async () => {
+      for (const variant of ['text', 'binary', 'single']) {
+        await withRenames(async (dir) => {
+          const wf = createWorkflow(dir, { verb: 'refine', profile: '', request: 'split' });
+          record(dir, wf, 'plugins/runtime/b.mjs');
+          if (variant !== 'single') {
+            record(dir, wf, 'plugins/engineer/a.mjs');
+            await writeFile(join(dir, 'plugins', 'engineer', 'a.mjs'), 'export const a = 10;\n');
+          }
+          const b = join(dir, 'plugins', 'runtime', 'b.mjs');
+          await writeFile(b, variant === 'binary' ? Buffer.from([0, 1, 2, 0]) : 'approved b\n');
+          sh(dir, 'git', ['add', 'plugins/runtime/b.mjs']);
+          await writeFile(b, variant === 'binary' ? Buffer.from([0, 1, 3, 0]) : 'unapproved b\n');
+          const head = sh(dir, 'git', ['rev-parse', 'HEAD']);
+          const index = indexState(dir);
+          const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+          strictEqual(r.code, 3, `${variant}: ${r.stderr}`);
+          ok(r.stderr.includes('mixed-hunk paths detected') && r.stderr.includes('plugins/runtime/b.mjs'), r.stderr);
+          strictEqual(sh(dir, 'git', ['rev-parse', 'HEAD']), head, `${variant}: nothing committed`);
+          strictEqual(indexState(dir), index, `${variant}: the staged content is kept`);
+        });
+      }
+    });
+
+    // A glob-named path and a sibling it would match: the mixed-hunk check asks
+    // about each path alone. (q1) the glob is staged as it is and the sibling has
+    // an unstaged edit; (q2) the glob has an unstaged edit and the sibling is
+    // staged as it is. Neither path is mixed, so both commit.
+    const glob = 'plugins/engineer/*.mjs';
+    it('(q1) a staged glob-named path is not mixed because of a sibling\'s unstaged edit', async () => {
+      await withRenames(async (dir) => {
+        const wf = createWorkflow(dir);
+        record(dir, wf, glob, 'create');
+        record(dir, wf, 'plugins/engineer/a.mjs');
+        await writeFile(join(dir, glob), 'export const g = 1;\n');
+        sh(dir, 'git', ['--literal-pathspecs', 'add', '--', glob]);
+        await writeFile(join(dir, 'plugins', 'engineer', 'a.mjs'), 'export const a = 11;\n');
+        const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+        strictEqual(r.code, 0, r.stderr);
+        strictEqual(nameStatus(dir, 'HEAD'), `A\t${glob}\nM\tplugins/engineer/a.mjs`);
+      });
+    });
+
+    it('(q2) an unstaged glob-named path is not mixed because a sibling is staged', async () => {
+      await withRenames(async (dir) => {
+        await writeFile(join(dir, glob), 'export const g = 0;\n');
+        sh(dir, 'git', ['--literal-pathspecs', 'add', '--', glob]);
+        sh(dir, 'git', ['commit', '-qm', 'chore: glob-named file', '--no-verify']);
+        const wf = createWorkflow(dir);
+        record(dir, wf, glob);
+        record(dir, wf, 'plugins/engineer/a.mjs');
+        await writeFile(join(dir, glob), 'export const g = 2;\n');
+        await writeFile(join(dir, 'plugins', 'engineer', 'a.mjs'), 'export const a = 12;\n');
+        sh(dir, 'git', ['add', 'plugins/engineer/a.mjs']);
+        const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+        strictEqual(r.code, 0, r.stderr);
+        strictEqual(nameStatus(dir, 'HEAD'), `M\t${glob}\nM\tplugins/engineer/a.mjs`);
+      });
+    });
+
+    // A split whose second commit holds an executable rename destination an
+    // ignore rule matches (only the exact index entry can put it back) and a
+    // staged deletion of a path named like a glob (removing it by hand must
+    // not unstage plugins/runtime/b.mjs, which it matches).
+    const globDeleted = 'plugins/runtime/*.mjs';
+    async function laterEntries(dir) {
+      sh(dir, 'git', ['config', 'core.filemode', 'false']);
+      await writeFile(join(dir, '.git', 'info', 'exclude'), '*.gen\n');
+      await writeFile(join(dir, globDeleted), 'export const g = 0;\n');
+      sh(dir, 'git', ['--literal-pathspecs', 'add', '--', globDeleted]);
+      sh(dir, 'git', ['commit', '-qm', 'chore: glob-named file', '--no-verify']);
+      const wf = createWorkflow(dir, { verb: 'refine', profile: '', request: 'move a' });
+      record(dir, wf, 'plugins/engineer/a.mjs');
+      record(dir, wf, 'plugins/runtime/a.gen', 'create');
+      record(dir, wf, globDeleted);
+      sh(dir, 'git', ['mv', 'plugins/engineer/a.mjs', 'plugins/runtime/a.gen']);
+      sh(dir, 'git', ['update-index', '--chmod=+x', 'plugins/runtime/a.gen']);
+      sh(dir, 'git', ['--literal-pathspecs', 'rm', '-q', '--', globDeleted]);
+      return { wf, approved: sh(dir, 'git', ['ls-files', '--stage', '--', 'plugins/runtime']) };
+    }
+    const runtimeIndex = (dir) => sh(dir, 'git', ['ls-files', '--stage', '--', 'plugins/runtime']);
+
+    // A `git` first on PATH that runs the real one: `before` runs ahead of it
+    // (and may fail the call), `after` once it succeeded. A fault between two
+    // of the driver's own git writes, which no hook reaches.
+    const REAL_GIT = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    async function gitShim(dir, { before = '', after = '' }) {
+      const bin = join(dir, '.git', 'shim');
+      await mkdir(bin, { recursive: true });
+      await writeFile(join(bin, 'git'), `#!/bin/sh\nD='${dir}'\n${before}\n'${REAL_GIT}' "$@"\nrc=$?\nif [ $rc -eq 0 ]; then\n:\n${after}\nfi\nexit $rc\n`);
+      await chmod(join(bin, 'git'), 0o755);
+      return { PATH: `${bin}:${process.env.PATH}` };
+    }
+
+    // The by-hand restore the driver printed, run as printed.
+    function restoreByHand(dir, stderr) {
+      const lines = stderr.split('\n');
+      const section = (header) => {
+        const at = lines.findIndex((l) => l.includes(header));
+        if (at < 0) return [];
+        const out = [];
+        for (let k = at + 1; k < lines.length && lines[k].startsWith('    '); k++) out.push(lines[k].slice(4));
+        return out;
+      };
+      const entries = section('for `git update-index --index-info`:');
+      if (entries.length > 0) execFileSync('git', ['update-index', '--index-info'], { cwd: dir, input: `${entries.join('\n')}\n` });
+      // The deletion command as printed, its `<path>` filled in.
+      const header = lines.find((l) => l.includes('staged deletions, each for `'));
+      const deletions = header ? section(header) : [];
+      const command = header ? header.slice(header.indexOf('`') + 1, header.lastIndexOf('`')).split(' ') : [];
+      for (const p of deletions) execFileSync(command[0], command.slice(1).map((a) => (a === '<path>' ? p : a)), { cwd: dir });
+      return { entries, deletions };
+    }
+
+    it('(r) a set-aside that fails reports the index as it was, with nothing to restore by hand', async () => {
+      await withRenames(async (dir) => {
+        const { wf } = await laterEntries(dir);
+        const head = sh(dir, 'git', ['rev-parse', 'HEAD']);
+        const index = indexState(dir);
+        await writeFile(join(dir, '.git', 'index.lock'), '');
+        const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+        strictEqual(r.code, 1, r.stderr);
+        ok(r.stderr.includes('could not set the later commits\' staged entries aside') && r.stderr.includes('the index is as it was'), r.stderr);
+        ok(!r.stderr.includes('restore them by hand'), r.stderr);
+        await rm(join(dir, '.git', 'index.lock'));
+        strictEqual(sh(dir, 'git', ['rev-parse', 'HEAD']), head);
+        strictEqual(indexState(dir), index);
+      });
+    });
+
+    it('(s) a restore that fails after commit 1 prints the set-aside entries, which put back by hand land on a rerun', async () => {
+      await withRenames(async (dir) => {
+        const { wf, approved } = await laterEntries(dir);
+        const hook = join(dir, '.git', 'hooks', 'post-commit');
+        await writeFile(hook, '#!/bin/sh\nif [ ! -f .git/locked-once ]; then touch .git/locked-once .git/index.lock; fi\n');
+        await chmod(hook, 0o755);
+        const base = sh(dir, 'git', ['rev-parse', 'HEAD']);
+        let r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+        strictEqual(r.code, 1, r.stderr);
+        ok(r.stderr.includes('aborted at commit 2/2 (package=plugins/runtime): index-restore-failed'), r.stderr);
+        strictEqual(nameStatus(dir, 'HEAD'), 'D\tplugins/engineer/a.mjs');
+        await rm(join(dir, '.git', 'index.lock'));
+        notStrictEqual(runtimeIndex(dir), approved, 'the entries are still set aside');
+        const byHand = restoreByHand(dir, r.stderr);
+        deepStrictEqual([byHand.entries.length, byHand.deletions], [1, [globDeleted]]);
+        strictEqual(runtimeIndex(dir), approved, 'the printed text restores the approved entries');
+        r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+        strictEqual(r.code, 0, r.stderr);
+        strictEqual(sh(dir, 'git', ['rev-list', '--count', `${base}..HEAD`]), '2');
+        strictEqual(nameStatus(dir, 'HEAD'), `D\t${globDeleted}\nA\tplugins/runtime/a.gen`);
+        strictEqual(sh(dir, 'git', ['ls-tree', 'HEAD', '--', 'plugins/runtime/a.gen']).split(' ')[0], '100755');
+      });
+    });
+
+    it('(t) a restore that fails between its two writes prints only what is still out', async () => {
+      await withRenames(async (dir) => {
+        const { wf, approved } = await laterEntries(dir);
+        const path = await gitShim(dir, {
+          after: 'if [ "$1 $2 $3" = "update-index -z --index-info" ] && [ ! -f "$D/.git/shim-done" ]; then touch "$D/.git/shim-done" "$D/.git/index.lock"; fi',
+        });
+        const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'), path);
+        strictEqual(r.code, 1, r.stderr);
+        ok(r.stderr.includes('aborted at commit 2/2 (package=plugins/runtime): index-restore-failed'), r.stderr);
+        await rm(join(dir, '.git', 'index.lock'));
+        const byHand = restoreByHand(dir, r.stderr);
+        deepStrictEqual([byHand.entries, byHand.deletions], [[], [globDeleted]], r.stderr);
+        strictEqual(runtimeIndex(dir), approved);
+      });
+    });
+
+    it('(u) a failure thrown after the set-aside puts the later commits\' entries back', async () => {
+      await withRenames(async (dir) => {
+        const { wf } = await laterEntries(dir);
+        const head = sh(dir, 'git', ['rev-parse', 'HEAD']);
+        const index = indexState(dir);
+        // The second index check (commit 1's, after the set-aside) fails.
+        const path = await gitShim(dir, {
+          before: 'if [ "$1 $2 $3" = "ls-files --unmerged -z" ]; then n=$(cat "$D/.git/shim-n" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$D/.git/shim-n"; if [ $n -eq 2 ]; then echo "shim: injected failure" >&2; exit 2; fi; fi',
+        });
+        const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'), path);
+        strictEqual(r.code, 1, r.stderr);
+        ok(r.stderr.includes('shim: injected failure'), r.stderr);
+        strictEqual(sh(dir, 'git', ['rev-parse', 'HEAD']), head);
+        strictEqual(indexState(dir), index);
+      });
+    });
+
+    it('(v) under core.precomposeUnicode an NFD name on disk is the NFC path git deleted: refused as recreated', async (t) => {
+      if (process.platform !== 'darwin') {
+        t.skip('git applies core.precomposeUnicode only on macOS');
+        return;
+      }
+      await withRenames(async (dir) => {
+        sh(dir, 'git', ['config', 'core.precomposeunicode', 'true']);
+        const nfc = 'plugins/runtime/caf\u00e9.mjs';
+        const nfd = 'plugins/runtime/cafe\u0301.mjs';
+        await writeFile(join(dir, nfc), 'export const c = 0;\n');
+        sh(dir, 'git', ['add', '--', nfc]);
+        sh(dir, 'git', ['commit', '-qm', 'chore: nfc name', '--no-verify']);
+        const wf = createWorkflow(dir, { verb: 'refine', profile: '', request: 'drop cafe' });
+        record(dir, wf, nfc);
+        sh(dir, 'git', ['rm', '-q', '--', nfc]);
+        await writeFile(join(dir, nfd), 'export const c = 1;\n');
+        ok((await readdir(join(dir, 'plugins', 'runtime'))).includes('cafe\u0301.mjs'), 'the name on disk is NFD');
+        const head = sh(dir, 'git', ['rev-parse', 'HEAD']);
+        const index = indexState(dir);
+        const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+        strictEqual(r.code, 1, r.stderr);
+        ok(r.stderr.includes('staged-deletion-recreated'), r.stderr);
+        strictEqual(sh(dir, 'git', ['rev-parse', 'HEAD']), head);
+        strictEqual(indexState(dir), index);
+      });
+    });
+
+    // The user's diff drivers call the staged blob and the working tree the
+    // same: a trusted external driver that always exits 0, or a textconv that
+    // maps every file to one text. The blobs still differ, so the path is mixed.
+    it('(w) a diff driver that hides a difference does not make a partly staged path look whole', async () => {
+      for (const variant of ['external', 'textconv']) {
+        await withRenames(async (dir) => {
+          if (variant === 'external') {
+            sh(dir, 'git', ['config', 'diff.external', 'true']);
+            sh(dir, 'git', ['config', 'diff.trustExitCode', 'true']);
+          } else {
+            await writeFile(join(dir, '.git', 'info', 'attributes'), '*.mjs diff=same\n');
+            sh(dir, 'git', ['config', 'diff.same.textconv', 'sh -c "echo same" --']);
+          }
+          const wf = createWorkflow(dir, { verb: 'refine', profile: '', request: 'edit b' });
+          record(dir, wf, 'plugins/runtime/b.mjs');
+          const b = join(dir, 'plugins', 'runtime', 'b.mjs');
+          await writeFile(b, 'approved b\n');
+          sh(dir, 'git', ['add', 'plugins/runtime/b.mjs']);
+          await writeFile(b, 'approved b \n');
+          const head = sh(dir, 'git', ['rev-parse', 'HEAD']);
+          const index = indexState(dir);
+          const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+          strictEqual(r.code, 3, `${variant}: ${r.stderr}`);
+          ok(r.stderr.includes('mixed-hunk paths detected') && r.stderr.includes('plugins/runtime/b.mjs'), r.stderr);
+          strictEqual(sh(dir, 'git', ['rev-parse', 'HEAD']), head, `${variant}: nothing committed`);
+          strictEqual(indexState(dir), index, `${variant}: the staged content is kept`);
+        });
+      }
+    });
+
+    // The set-aside's `git reset` writes the index and then fails (a git killed
+    // after its write): its failure alone does not say the index is as it was.
+    // 'put back': the driver finds the entries out and puts them back; 'by hand':
+    // a lock stops that too, and the printed text restores them.
+    it('(x) a set-aside that failed after its write is read again: the entries are put back, or printed', async () => {
+      for (const variant of ['put back', 'by hand']) {
+        await withRenames(async (dir) => {
+          const { wf, approved } = await laterEntries(dir);
+          const head = sh(dir, 'git', ['rev-parse', 'HEAD']);
+          const index = indexState(dir);
+          const lock = variant === 'by hand' ? 'touch "$D/.git/index.lock"; ' : '';
+          const path = await gitShim(dir, { after: `if [ "$1 $2" = "--literal-pathspecs reset" ]; then ${lock}rc=137; fi` });
+          const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'), path);
+          strictEqual(r.code, 1, `${variant}: ${r.stderr}`);
+          ok(r.stderr.includes('could not set the later commits\' staged entries aside'), r.stderr);
+          ok(!r.stderr.includes('Nothing was committed, and the index is as it was'), r.stderr);
+          strictEqual(sh(dir, 'git', ['rev-parse', 'HEAD']), head, `${variant}: nothing committed`);
+          if (variant === 'put back') {
+            ok(r.stderr.includes('the set-aside entries were put back, and the index is as it was'), r.stderr);
+            ok(!r.stderr.includes('restore them by hand'), r.stderr);
+          } else {
+            ok(r.stderr.includes('the set-aside entries are not all back') && r.stderr.includes('restore them by hand'), r.stderr);
+            await rm(join(dir, '.git', 'index.lock'));
+            notStrictEqual(runtimeIndex(dir), approved, 'the entries are still set aside');
+            restoreByHand(dir, r.stderr);
+          }
+          strictEqual(runtimeIndex(dir), approved, `${variant}: the approved entries are back`);
+          strictEqual(indexState(dir), index, `${variant}: the index is as it was`);
+        });
+      }
+    });
+
+    // A submodule moved to a new commit, under diff.ignoreSubmodules=all, which
+    // hides gitlink changes from every git command that does not override it.
+    // One variant per site: the pre-staged guard ('unapproved'), the changes
+    // Phase 7 stages ('approved'), a marked commit's paths ('recovery'), and
+    // the mixed-hunk check ('mixed': staged at one commit, moved on to
+    // another).
+    it('(y) a moved submodule is a change whatever diff.ignoreSubmodules says', async () => {
+      const vendor = 'plugins/runtime/vendor';
+      const ident = ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid'];
+      for (const variant of ['unapproved', 'approved', 'recovery', 'mixed']) {
+        const src = await mkdtemp(join(tmpdir(), 'engineer-commit-sub-'));
+        try {
+          execFileSync('git', ['init', '-q'], { cwd: src });
+          execFileSync('git', [...ident, 'commit', '-q', '--allow-empty', '-m', 'one'], { cwd: src });
+          await withRenames(async (dir) => {
+            sh(dir, 'git', ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', src, vendor]);
+            sh(dir, 'git', ['commit', '-qm', 'chore: vendor', '--no-verify']);
+            sh(dir, 'git', ['config', 'diff.ignoreSubmodules', 'all']);
+            const wf = createWorkflow(dir, { verb: 'refine', profile: '', request: 'move vendor' });
+            execFileSync('git', [...ident, 'commit', '-q', '--allow-empty', '-m', 'two'], { cwd: join(dir, vendor) });
+            const head = sh(dir, 'git', ['rev-parse', 'HEAD']);
+            if (variant === 'unapproved') {
+              record(dir, wf, 'plugins/engineer/a.mjs');
+              await writeFile(join(dir, 'plugins', 'engineer', 'a.mjs'), 'export const a = 1;\n');
+              sh(dir, 'git', ['add', '--', vendor]);
+              const index = indexState(dir);
+              const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects', '--confirm-non-interactive'));
+              strictEqual(r.code, 1, `${variant}: ${r.stderr}`);
+              ok(r.stderr.includes('unapproved pre-staged path(s)') && r.stderr.includes(`    ${vendor}`), r.stderr);
+              strictEqual(sh(dir, 'git', ['rev-parse', 'HEAD']), head);
+              strictEqual(indexState(dir), index);
+            } else if (variant === 'approved') {
+              record(dir, wf, vendor);
+              const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+              strictEqual(r.code, 0, `${variant}: ${r.stderr}`);
+              // nameStatus would hide the gitlink under the same setting.
+              strictEqual(sh(dir, 'git', ['show', '--name-status', '--no-renames', '--ignore-submodules=none', '--format=', 'HEAD']), `M\t${vendor}`);
+              strictEqual(sh(dir, 'git', ['rev-parse', `HEAD:${vendor}`]), sh(join(dir, vendor), 'git', ['rev-parse', 'HEAD']));
+            } else if (variant === 'recovery') {
+              record(dir, wf, vendor);
+              sh(dir, 'git', ['add', '--', vendor]);
+              sh(dir, 'git', ['commit', '-qm', `fix(runtime): move vendor\n\nWorkflow-ID: ${basename(wf, '.md')}`, '--no-verify']);
+              const p = plan(dir, wf);
+              deepStrictEqual([p.branch, p.no_changes.path, p.no_changes.missing_manifest], ['no-changes', 'recovery', []]);
+            } else {
+              record(dir, wf, vendor);
+              sh(dir, 'git', ['add', '--', vendor]);
+              execFileSync('git', [...ident, 'commit', '-q', '--allow-empty', '-m', 'three'], { cwd: join(dir, vendor) });
+              const index = indexState(dir);
+              const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+              strictEqual(r.code, 3, `${variant}: ${r.stderr}`);
+              ok(r.stderr.includes('mixed-hunk paths detected') && r.stderr.includes(vendor), r.stderr);
+              strictEqual(sh(dir, 'git', ['rev-parse', 'HEAD']), head);
+              strictEqual(indexState(dir), index, `${variant}: the staged commit is kept`);
+            }
+          });
+        } finally {
+          await rm(src, { recursive: true, force: true });
+        }
+      }
+    });
+
+    // A sandbox with a submodule at plugins/runtime/vendor (one tracked file,
+    // lib.c), its `ignore` set in .gitmodules when `ignore` is given, all
+    // committed before the workflow starts. `fn` gets the sandbox, the
+    // workflow, the submodule's directory and a function that commits in it.
+    const VENDOR = 'plugins/runtime/vendor';
+    async function withSubmodule(ignore, fn) {
+      const ident = ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid'];
+      const src = await mkdtemp(join(tmpdir(), 'engineer-commit-sub-'));
+      try {
+        execFileSync('git', ['init', '-q'], { cwd: src });
+        await writeFile(join(src, 'lib.c'), 'int lib;\n');
+        execFileSync('git', ['add', 'lib.c'], { cwd: src });
+        execFileSync('git', [...ident, 'commit', '-q', '-m', 'one'], { cwd: src });
+        await withRenames(async (dir) => {
+          sh(dir, 'git', ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', src, VENDOR]);
+          if (ignore) sh(dir, 'git', ['config', '-f', '.gitmodules', `submodule.${VENDOR}.ignore`, ignore]);
+          sh(dir, 'git', ['add', '.gitmodules']);
+          sh(dir, 'git', ['commit', '-qm', 'chore: vendor', '--no-verify']);
+          const wf = createWorkflow(dir, { verb: 'refine', profile: '', request: 'move vendor' });
+          const sub = join(dir, VENDOR);
+          const move = () => execFileSync('git', [...ident, 'commit', '-q', '--allow-empty', '-m', 'moved'], { cwd: sub });
+          await fn({ dir, wf, sub, move });
+        });
+      } finally {
+        await rm(src, { recursive: true, force: true });
+      }
+    }
+    // The commit a submodule has checked out, and the one HEAD records for it.
+    const subHead = (sub) => sh(sub, 'git', ['rev-parse', 'HEAD']);
+    const committedGitlink = (dir) => sh(dir, 'git', ['rev-parse', `HEAD:${VENDOR}`]);
+    // Edits and an untracked file inside the submodule: dirt the superproject
+    // cannot commit.
+    const dirty = async (sub) => {
+      await writeFile(join(sub, 'lib.c'), 'int lib = 1;\n');
+      await writeFile(join(sub, 'build.out'), 'output\n');
+    };
+
+    // `ignore=all` in .gitmodules makes `git add <submodule>` skip the path
+    // (exit 0) and `git status` hide it. One variant per site: the staging
+    // ('approved', with a plain file beside it), its check ('unstaged': a
+    // `git add --force` that stages nothing), the clean-after-commit gate
+    // ('extra': a move left out of the commit; 'unreadable': a status read
+    // that fails), and the close ('close': a
+    // staged move the submodule has since checked out of, which the diff as
+    // configured does not show).
+    it('(z) a submodule set to ignore=all in .gitmodules: an approved move is committed, one left out is not clean', async () => {
+      for (const variant of ['approved', 'unstaged', 'unreadable', 'extra', 'close']) {
+        await withSubmodule('all', async ({ dir, wf, sub, move }) => {
+          const head = sh(dir, 'git', ['rev-parse', 'HEAD']);
+          move();
+          if (variant === 'approved' || variant === 'unstaged' || variant === 'unreadable') {
+            record(dir, wf, VENDOR);
+            record(dir, wf, 'plugins/runtime/b.mjs');
+            await writeFile(join(dir, 'plugins', 'runtime', 'b.mjs'), 'export const b = 1;\n');
+            if (variant === 'approved') {
+              const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+              strictEqual(r.code, 0, `${variant}: ${r.stderr}`);
+              strictEqual(committedGitlink(dir), subHead(sub), `${variant}: the move is in the commit`);
+              strictEqual(sh(dir, 'git', ['show', '--name-status', '--no-renames', '--ignore-submodules=none', '--format=', 'HEAD']), `M\tplugins/runtime/b.mjs\nM\t${VENDOR}`);
+              strictEqual((await readWorkflow(wf)).frontmatter.terminal_marker, true, `${variant}: the workflow is done`);
+            } else if (variant === 'unreadable') {
+              // The gate's SUBMODULE_MOVES read fails, the configured one does
+              // not: half of the union is no clean tree.
+              const shim = await gitShim(dir, { before: 'case " $* " in *" status "*" --ignore-submodules=dirty "*) echo "fatal: injected" >&2; exit 128;; esac' });
+              const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'), shim);
+              strictEqual(r.code, 7, `${variant}: ${r.stderr}`);
+              ok(r.stderr.includes("could not read the working tree's status after commit") && r.stderr.includes('fatal: injected'), r.stderr);
+              strictEqual(committedGitlink(dir), subHead(sub), `${variant}: the commit landed`);
+              notStrictEqual((await readWorkflow(wf)).frontmatter.terminal_marker, true, `${variant}: the workflow is not done`);
+            } else {
+              const shim = await gitShim(dir, { before: 'case " $* " in *" add --force "*) exit 0;; esac' });
+              const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'), shim);
+              strictEqual(r.code, 8, `${variant}: ${r.stderr}`);
+              ok(r.stderr.includes('stage-failed') && r.stderr.includes(`left submodule(s) unstaged`) && r.stderr.includes(VENDOR), r.stderr);
+              strictEqual(sh(dir, 'git', ['rev-parse', 'HEAD']), head);
+            }
+          } else if (variant === 'extra') {
+            record(dir, wf, 'plugins/engineer/a.mjs');
+            await writeFile(join(dir, 'plugins', 'engineer', 'a.mjs'), 'export const a = 1;\n');
+            const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects', '--confirm-non-interactive'));
+            strictEqual(r.code, 7, `${variant}: ${r.stderr}`);
+            ok(r.stderr.includes('working tree is not clean after commit') && r.stderr.includes(VENDOR), r.stderr);
+            notStrictEqual(committedGitlink(dir), subHead(sub), `${variant}: the move was left out`);
+            notStrictEqual((await readWorkflow(wf)).frontmatter.terminal_marker, true, `${variant}: the workflow is not done`);
+          } else {
+            sh(dir, 'git', ['add', '--force', '--', VENDOR]);
+            execFileSync('git', ['checkout', '-q', 'HEAD~1'], { cwd: sub });
+            nextStep(dir, wf, 'done');
+            const r = run(dir, PHASE7_BIN, closeArgs(dir, wf));
+            strictEqual(r.code, 1, `${variant}: ${r.stderr}`);
+            ok(r.stderr.includes(`close-refused: the working tree has 1 path(s) to commit (${VENDOR})`), r.stderr);
+            notStrictEqual((await readWorkflow(wf)).frontmatter.terminal_marker, true, `${variant}: the workflow is not closed`);
+          }
+        });
+      }
+    });
+
+    // A submodule's dirt is work the superproject cannot commit. Under
+    // `ignore=dirty` it is no change, no mixed hunk and no unclean tree
+    // ('execute', 'approved', 'close'); with no setting it still counts, as
+    // the user's git shows it ('default extra': it is an extra to confirm;
+    // 'default approved': the move lands and the gate reports the dirt left).
+    it('(z2) a submodule\'s dirt counts as the user\'s ignore setting says, a move whatever it says', async () => {
+      for (const variant of ['execute', 'approved', 'close', 'default extra', 'default approved']) {
+        await withSubmodule(variant.startsWith('default') ? null : 'dirty', async ({ dir, wf, sub, move }) => {
+          const before = committedGitlink(dir);
+          if (variant === 'execute' || variant === 'default extra') {
+            record(dir, wf, 'plugins/engineer/a.mjs');
+            await writeFile(join(dir, 'plugins', 'engineer', 'a.mjs'), 'export const a = 1;\n');
+            await dirty(sub);
+            const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+            if (variant === 'execute') {
+              strictEqual(r.code, 0, `${variant}: ${r.stderr}`);
+              strictEqual(nameStatus(dir, 'HEAD'), 'M\tplugins/engineer/a.mjs');
+            } else {
+              strictEqual(r.code, 1, `${variant}: ${r.stderr}`);
+              ok(r.stderr.includes('ask-user-required'), r.stderr);
+            }
+            strictEqual(committedGitlink(dir), before);
+          } else if (variant === 'close') {
+            await dirty(sub);
+            nextStep(dir, wf, 'done');
+            const r = run(dir, PHASE7_BIN, closeArgs(dir, wf));
+            strictEqual(r.code, 0, `${variant}: ${r.stderr}`);
+          } else {
+            move();
+            sh(dir, 'git', ['add', '--', VENDOR]);
+            await dirty(sub);
+            record(dir, wf, VENDOR);
+            const r = run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects'));
+            strictEqual(committedGitlink(dir), subHead(sub), `${variant}: the move is in the commit`);
+            if (variant === 'approved') {
+              strictEqual(r.code, 0, `${variant}: ${r.stderr}`);
+            } else {
+              strictEqual(r.code, 7, `${variant}: ${r.stderr}`);
+              ok(r.stderr.includes('working tree is not clean after commit') && r.stderr.includes(VENDOR), r.stderr);
+            }
+          }
+        });
+      }
     });
   });
 
@@ -804,10 +1700,18 @@ for (const persona of personasFor('scripts/phase7-commit.mjs')) {
         sh(dir, 'git', ['mv', '-f', 'README.md', `${P.stateDirRel}/saved.md`]);
         const status = execFileSync('git', ['status', '--porcelain=v1'], { cwd: dir, encoding: 'utf8' });
         ok(status.split('\n').includes(`R  README.md -> ${P.stateDirRel}/saved.md`), status);
+        // The change list counts a rename's two endpoints (C90), so the
+        // deletion outside workflow storage is a change to commit ...
         const p = plan(dir, wf);
-        deepStrictEqual([p.no_changes?.path, p.no_changes?.reason], ['blocked', 'status-not-clean'], JSON.stringify(p.no_changes));
+        deepStrictEqual([p.branch, p.git_changes, p.no_changes], ['empty-manifest', ['README.md'], null]);
+        // ... and the clean-tree classifier, which reads git status, refuses
+        // it on its own.
+        const { classifyNoChanges } = await import(pathToFileURL(PHASE7_BIN).href);
+        const c = classifyNoChanges({ repoRoot: dir, frontmatter: (await readWorkflow(wf)).frontmatter, manifestPaths: [] });
+        deepStrictEqual([c.path, c.reason, c.status_paths], ['blocked', 'status-not-clean', ['README.md']]);
         const r = run(dir, PHASE7_BIN, closeArgs(dir, wf));
         strictEqual(r.code, 1, r.stderr);
+        ok(r.stderr.includes('close-refused: the working tree has 1 path(s) to commit (README.md)'), r.stderr);
         ok(await exists(wf));
       });
     });
