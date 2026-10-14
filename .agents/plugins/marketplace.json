@@ -56,8 +56,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/engineer",
-        "ref": "plugin-engineer-v0.28.4",
-        "sha": "fc8c609bfed7217c8967108d5e2835af2a91307f"
+        "ref": "plugin-engineer-v0.28.5",
+        "sha": "84333737a0a22fc1ae464f5f3f337c41fce0b8f0"
       },
       "policy": {
         "installation": "AVAILABLE",
