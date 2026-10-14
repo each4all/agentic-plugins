@@ -344,8 +344,8 @@ export const MUTATIONS = [
   },
   {
     id: 'S2', file: SCHED, tests: [TS],
-    from: "      if (draining) {\n        if (inflight.size > 0) { await nextEvent(); continue; }\n        return await end('halted', draining);",
-    to: "      if (draining) {\n        return await end('halted', draining);",
+    from: "      if (draining) {\n        if (inflight.size > 0) { await nextEvent(); continue; }",
+    to: "      if (draining) {",
     why: "a drain ends the run with a step still in flight, never verified or recorded",
     killed_by: /a halt in one lane drains the run/,
   },

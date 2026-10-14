@@ -1532,13 +1532,183 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
     run directory. It moves here because deduplication has to outlive a run,
     and a stable path is what a watcher tails across relaunches.
 - **Deduplication.** The key is (subtask id, engineer workflow id, captured
-  sha).
+  sha). (Replaced by transitions in the note of 2026-10-14 below.)
   - A waiting subtask found unreported at run start is reported then.
   - A reported one is not repeated.
   - A new sha, such as a fix the owner pushed, is a new event.
 - **Limits.** The event never pushes, opens a pull request or writes a ref.
   It adds no gate and no halt reason. The `awaiting-landing` halt lists the
   same facts per branch, with the overlap report and the order.
+
+Note, 2026-10-14 (dockets C128 and C123): readiness, and the records that
+carry it.
+
+- **Ready means up to date.** A branch is ready to land only when it contains
+  `refs/remotes/origin/<baseline>` as the look fetched it, so the CI its push
+  runs (`full-tests.yml`) checked the tree that lands, another lane's landing
+  included. Each record carries `sync: {state, base_commit, detail, commands,
+  note}` and `ready`:
+  - `ready`: the look's fetch succeeded and
+    `git merge-base --is-ancestor <tip> <commit>` exits 0;
+  - `needs-sync`: it exits 1 in a full clone. `commands` fetch the tip into
+    its ref by name (as below), merge `refs/remotes/origin/<baseline>` (the
+    full name: a tag or local branch named `origin/<baseline>` would shadow
+    the short one) and, when a pull
+    request is open, push, with `git -C <worktree>` for the worktree that has
+    the branch, or a `git switch <branch>` first when none has. The terminal
+    line is `◆ landing-sync`: merge or rebase onto the tip and push;
+  - `unknown`, never ready: the fetch failed, the clone is shallow and the
+    answer was 1, a commit or the tip does not resolve, the check could not
+    run, or the look's time ran out. The terminal line is `◆ landing-unknown`.
+
+  Readiness is the local branch's. A branch synced here and not pushed is
+  ready while its pull request's head, and the CI on it, is still behind, so
+  a ready branch whose pull request is open carries the push in `commands`
+  (a no-op when the pull request has the commit). The check runs in the
+  scratch repository, before the overlap checks, so
+  they cannot spend its time. A branch behind the last fetched tip is behind
+  the newer one too, so `needs-sync` stands on a look whose fetch failed or did
+  not run. A look that did not fetch (a lane's look after its step) calls
+  nothing ready: what the stale tip calls up to date is held back from the
+  logs, and the run's next look, which fetches, reports it. A drain takes no
+  next look, so it takes one, with the fetch, before the run ends, and its
+  lane report (`run.json` and `halt.json` lanes, each lane's line in
+  `status`) lists what waits as that look found it. What that look could not
+  read leaves no freshness standing (`scheduler.mjs` `reconcileWaiting`).
+  Every look the run takes feeds the run's list of waiting lanes, by one
+  rule: the first look's report, each look of the run's loop (joined before
+  anything it decides can halt the run, a lane whose step is still in flight
+  included), each step's own look as it settles (after an interrupt too;
+  this is how a lane that committed during the drain is known), the drain's
+  last look, and the look the run's end takes to judge its proposals again.
+  A look that found a lane waiting gives it what its report found; one whose
+  report held it back (not fetched in that look) leaves the freshness it had
+  at the same commit. A look with no report of its own (the end's look for
+  its proposals, a look an interrupt or an error cut off before its report)
+  adds nothing to what it could not judge: each lane it finds listed keeps
+  what it had (a `ready` excepted when the same look saw a lane land; see
+  "A landing ends a kept ready" below), one it newly finds is `unknown`, and
+  another look's report never speaks for it. A lane leaves the list only when a look reads that it
+  stopped waiting: its subtask no longer in progress, its engineer workflow
+  active again or closed with no commit, its pull request merged. Otherwise
+  it stays listed, `unknown`: the look failed or could not read the macro,
+  or the lane's engineer workflow could not be read, or its landing check
+  failed or refused (`gh` unavailable, for one). A lane the look found
+  waiting whose report did not complete is `unknown` too. A failed look
+  observes nothing, so nothing reaches the logs: their last record stands
+  until a look reads the branch again. A reader that takes a log's latest
+  record for a lane as its current readiness reads the observation of an
+  earlier look; the run's last word on the lane is its lane report.
+- **Every end reconciles before its report.** *Amendment 2026-10-14 (the
+  owner's decision on a recurring finding):* each end of a run with lanes
+  builds its lane report from the run's list after the latest observation
+  it holds. Every look feeds the list as it returns, before its report
+  (a failed one too, below), so the end's own look for proposals, and a look an
+  interrupt, an error or a retry cut off, are never lost; the report, when
+  one runs for that look, then gives each lane its facts. A run that ends
+  without its last
+  look, interrupted (before or during the drain's look, or while a step
+  settles) or stopped by an error, confirms nothing: every lane it lists is
+  `unknown`, "the run ended before its last look", and the next run's first
+  look reports each again. An error after the halt was recorded (while it was
+  printed, for one) leaves each branch the halt lists waiting `unknown`, and
+  `halt.json` is written again. A lane whose step's looks all failed
+  is not known to wait, and is not listed: its step halts unverified, and
+  its lane line says so. A serial run carries the same list: every halt,
+  whatever its reason, lists what its looks found waiting in
+  `halt.json` `waiting`, with the freshness its report found (`unknown` when
+  the report did not complete). A serial run's first look, taken before its
+  locks, has no report: what it finds waiting is listed `unknown` until the
+  first report, so a halt before that report (the locks are held) still
+  names it.
+- **The rule at its chokepoints.** *Amendment 2026-10-14, later the same day
+  (the owner's decision on the third recurrence of the finding above):* the
+  rule lives where every look and every end pass, not at each call site.
+  - Every look feeds the list as it returns, before its report: a run with
+    lanes through the scheduler's `look`, a serial run through the driver's
+    `look`, which its first look, its look under the locks, the look after
+    each step, that look's retry and the look after a step's abandoned peers
+    are settled all take. A look a later look or a retry replaces is fed
+    first. A run has one list: a run with lanes' scheduler takes the one the
+    driver's looks before it (before the locks, under them, the first
+    report) have fed, and starts none of its own.
+  - A failed look feeds the list too, the end's own look included: it reads
+    nothing, so every lane the list holds becomes `unknown`, "the run's last
+    look failed", until a later look's report gives it facts again.
+  - Only an end builds a halt's list, after it has reconciled: a serial run's
+    `finish`, for every halt, and a run with lanes' `end`, for its
+    `awaiting-landing` halt (each lane's report lists the rest). Either one
+    applies the interrupt rule first, so a run the owner interrupted lists
+    every branch `unknown`. The `awaiting-landing` halt lists the run's list,
+    not the list of the look that decided it, so a branch that landed while
+    the run ended is not listed, and its count in the halt's detail may be
+    higher than the list.
+  - An error ends a run without its last look, so each entry becomes
+    `unknown` wherever the list is recorded: the lanes in `run.json` (the
+    scheduler's catch), the halt already written (`halt.json`, written
+    again), or, when the run stopped before any halt and before a run with
+    lanes reported its lanes, `run.json` `waiting`, which `status` prints.
+- **A landing ends a kept ready.** *Amendment 2026-10-14, after the
+  critique of the chokepoint form:* a look that did not fetch keeps an
+  earlier look's freshness (one with no report of its own, the end's look
+  for its proposals among them, and one whose report held a lane back). When
+  that same look reads a landing (a subtask whose pull request merged and
+  that is not yet recorded completed, whether the list held it or not, since
+  its landing check may have failed until then; or a lane that waited and
+  leaves recorded completed with its commit), the integration branch has
+  moved past the tip every kept `ready` was judged against, so none is kept:
+  each becomes `unknown`, "subtask A landed after the look that judged it
+  ready, and this look did not fetch", and the next look that fetches judges
+  it again. A `needs-sync` stands, with its commands: a branch behind the old
+  tip is behind the new one too. A lane that stops waiting without landing
+  (a new attempt, a close or a completion with no commit) moves no tip, and
+  the rest keep what they had. A merged pull request that a fetched look
+  already judged against, and that is still not recorded completed when a
+  later look does not fetch, turns that `ready` `unknown` as well: the list
+  holds no record of which landings a judgment saw, and `unknown` is the
+  safe side. This is the A-lands-then-B sequence at the run's own end: A
+  lands during the end's look, and B, reported ready before, is listed
+  `unknown` in `halt.json` `waiting`, the halt block and its lane report.
+- **The fetch names its ref.** The observer fetches
+  `+refs/heads/<baseline>:refs/remotes/origin/<baseline>` with `--no-tags
+  --refmap=`, as `fetchBaseline` does: under a configured mapping that does
+  not cover the branch, `git fetch origin <baseline>` succeeds and leaves the
+  ref stale.
+- **Deduplication is by transition.** The subject is (subtask id, engineer
+  workflow id), the observation (captured sha, integration branch,
+  `base_commit`, state). A record is published when the latest one the
+  macro's log holds for its subject observed something else, so a new sha,
+  the baseline moving (another lane landed) or renamed, and a fetch that fails
+  or recovers are each reported, and an observation is not reported again
+  while it stays the latest one the macro's log holds for its subject. It can
+  repeat otherwise: a state that changes and changes back (ready, unknown,
+  ready) is reported each time; while the macro's log cannot be written,
+  every look prints the block and appends `landing.jsonl` again; a driver
+  that dies between the two appends reports it again. A record written
+  before this note has no `sync`, so its subject is reported once more.
+- **What decides readiness.** Every record keeps `event: "landing-ready"`,
+  whatever its state, so a reader that tails either log reads `ready` (or
+  `sync.state`), never the event name, to decide whether a branch can land.
+- **A missing integration ref.** Through the observer it never reaches the
+  report: `resolve-landing` answers `no_integration_ref`, an owner-choice
+  halt. The report's own `unknown` covers callers that hand it a view.
+- **Recording.** A failure to read or write the logs is printed once, and
+  again only after a record has been written to both; an off-loop report
+  takes that state in and gives it back. The run ledger's `landing.jsonl` is
+  appended as the macro's log is (`ledger.mjs` `appendLine`): a torn last line
+  ended first, a short write continued. `halt.json` keeps `merge_order` in
+  snake case, as `landing.jsonl` does; its `waiting` entries carry `sync`,
+  which `status` prints, so a run that published nothing new still shows
+  each waiting branch's readiness.
+- **Downgrade.** A CLI older than this note labels every record in `status`
+  landing-ready, whatever its state.
+- **Known limits**, recorded, not fixed:
+  - a submodule moved on one side reads as a conflict to merge-tree (F2);
+  - in a blob-filtered partial clone, or for objects the repository reaches
+    only through `GIT_ALTERNATE_OBJECT_DIRECTORIES`, the scratch cannot read
+    what it needs, and the overlap answer is unavailable;
+  - an unavailable pair is not cached, so a look checks it in both
+    directions, twice.
 
 ### Decision 8. Proposals: where worktree, lane and consensus advice appears
 

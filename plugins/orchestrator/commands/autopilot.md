@@ -28,7 +28,8 @@ bounded consensus round to run before the owner decides, with its task file
 
 The driver never pushes, opens or merges a pull request. Landing is the
 owner's. Once a subtask is committed, the run reports it and goes on with any
-other ready subtask (ADR-0067 Decision 7): a `◆ landing-ready` line, a record
+other ready subtask (ADR-0067 Decision 7): a `◆ landing-ready` line (or one
+of the two below), a record
 in the run's ledger, and a line appended to
 `.agentic-plugins/runs/autopilot/landing/<macro-id>.jsonl` under the main
 worktree, which a watcher can tail across relaunches. Each names the branch,
@@ -37,10 +38,23 @@ its commit, the push and pull-request commands, a read-only overlap check
 waiting to land, and an advisory merge order. The check runs in a scratch
 repository that borrows only the objects, so no merge driver, config or
 attribute of the checkout applies: its answer is git's own merge of the two
-commits. A commit is reported once, and a commit that no run reported is
-reported when the next run starts. At an `awaiting-landing`
-halt it lists each branch the same way; after the merge, relaunch, and it
-records the landing with `/orchestrator:done` and goes on (ADR-0062, D3a).
+commits. Each also says whether the branch is ready to land: only when it
+contains the integration branch's tip as the run fetched it, so the CI its push
+runs checks the tree that lands. A branch behind it, another lane's landing for
+instance, is reported `◆ landing-sync` with the commands that merge the tip in
+and push; one whose freshness could not be told (a failed fetch, a shallow
+clone) is `◆ landing-unknown`, and neither is ready. Every record keeps the
+event name `landing-ready`: read its `ready` field to tell. A branch is reported
+again when its commit, the tip or its readiness changes, not while what it
+reports stays the latest record, and a commit that no run reported is reported
+when the next run starts. However a run with lanes ends, it lists each lane
+still waiting with its readiness in its lane report and in `status`:
+`unknown` when its last look failed or could not read it, or when the run ended
+without that look (interrupted, or stopped by an error). A serial run's halt
+lists each waiting branch the same way, whatever its reason, and an
+`awaiting-landing` halt does too: what waits as the run ended, so a branch that
+landed meanwhile is not listed. After the merge, relaunch, and it records the
+landing with `/orchestrator:done` and goes on (ADR-0062, D3a).
 
 **Lanes.** With `--lanes N` (2 or more; the owner's default is 2, and a larger N
 spends the rate limit faster) the run drives up to N subtasks at once, each in
@@ -174,9 +188,10 @@ node "$CLAUDE_PLUGIN_ROOT/adapters/claude/autopilot/cli.mjs" --args-file "$ARGS_
    when it ends. Do not poll it.
 5. When the task ends, read its output and report, without adding to it:
    - exit 0 — the macro completed (it is archived);
-   - exit 2 — the halt: its reason, detail and pointer, and for
-     `awaiting-landing` each branch with its commit, overlap, and push and
-     pull-request commands, and the merge order;
+   - exit 2 — the halt: its reason, detail and pointer, and each branch it
+     lists waiting to land (an `awaiting-landing` halt, and a serial run's
+     halt for any reason) with its commit, its readiness and sync commands,
+     overlap, and push and pull-request commands, and the merge order;
      then the resume hints it printed (`claude --resume <session>` to inspect
      the last step, and the relaunch command);
    - exit 1 — the start condition or error it printed.

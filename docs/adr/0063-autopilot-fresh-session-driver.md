@@ -628,8 +628,18 @@ landing log, the lane removal intents and the open-run records
 - `lanes.jsonl`: with lanes, one line per lane event — created, adopted,
   removed, kept, reconciled ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md)
   Decision 6).
+- `landing.jsonl` (listed 2026-10-14, docket C123): one line per landing
+  report the run published, each a subtask committed and not landed with its
+  commit, its readiness (`sync`: ready, needs-sync or unknown), its overlap and
+  the merge order. The macro's landing log under the main worktree holds the
+  same records across runs ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md)
+  Decision 7 and its note of that date).
 
 Other rules:
+- **Status** (listed 2026-10-14, docket C123): `agentic-autopilot status`
+  reads these files, a run's landing records among them, one line each with
+  its readiness; `status --json` prints them as `landing`, beside `run`,
+  `steps`, `lanes` and `halt`.
 - **Lock.** One run per macro: `<main>/.agentic-plugins/runs/autopilot/locks/<macro-id>.lock`,
   with a pid + start-time fingerprint. A run also holds the worktree lock of
   every checkout it drives, `<checkout>/.agentic-plugins/runs/autopilot/worktree.lock`:

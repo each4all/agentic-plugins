@@ -3,6 +3,15 @@
 // ignores the agentic state, an approved macro, and helpers that put engineer
 // children in the states the driver reads. `gh` is a fake on PATH that answers
 // `pr list` from a JSON file the test writes.
+//
+// No git config of the caller's reaches it (C123 F3): importing this module
+// drops every inherited GIT_* variable (a hook's GIT_DIR or GIT_INDEX_FILE,
+// GIT_CONFIG_COUNT) from process.env, switches the system config off, and
+// points the global config at an empty file and XDG_CONFIG_HOME at a
+// directory the module owns. process.env, not only the fixture's env: the
+// state helpers this process calls in place spawn git with process.env
+// (state-root.mjs). HOME is left alone; a test that wants a global config of
+// its own sets HOME and drops GIT_CONFIG_GLOBAL from the env it passes.
 
 import { execFileSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -14,12 +23,24 @@ export const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../../..');
 export const ORCH = resolve(REPO_ROOT, 'plugins/orchestrator');
 export const ENG = resolve(REPO_ROOT, 'plugins/engineer');
 export const RUNTIME = resolve(REPO_ROOT, 'plugins/runtime');
+
+const gitHome = mkdtempSync(join(tmpdir(), 'autopilot-git-home-'));
+writeFileSync(join(gitHome, 'gitconfig'), '');
+mkdirSync(join(gitHome, 'xdg'));
+process.on('exit', () => rmSync(gitHome, { recursive: true, force: true }));
+/** The git isolation every fixture env and this process carry. */
+export const GIT_ISOLATION = {
+  GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(gitHome, 'gitconfig'), XDG_CONFIG_HOME: join(gitHome, 'xdg'),
+};
+for (const k of Object.keys(process.env)) if (k.startsWith('GIT_')) delete process.env[k];
+Object.assign(process.env, GIT_ISOLATION);
+
 const orch = await import(resolve(ORCH, 'scripts/state.mjs'));
 const eng = await import(resolve(ENG, 'scripts/state.mjs'));
 
 export const GIT_ENV = {
   GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@t.local', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@t.local',
-  GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0',
+  ...GIT_ISOLATION, GIT_TERMINAL_PROMPT: '0',
 };
 
 const FAKE_GH = `#!/usr/bin/env node
@@ -47,8 +68,9 @@ export async function makeRepo({ subtasks = [{ id: 'A' }, { id: 'B', blocked_by:
   const origin = join(dir, 'origin.git');
   const work = join(dir, 'work');
   const main = linked ? join(dir, 'main') : work;
-  const env = { ...process.env, ...GIT_ENV };
-  for (const k of Object.keys(env)) if (k.startsWith('AGENTIC_') || k.startsWith('CLAUDE')) delete env[k];
+  const env = { ...process.env };
+  for (const k of Object.keys(env)) if (k.startsWith('AGENTIC_') || k.startsWith('CLAUDE') || k.startsWith('GIT_')) delete env[k];
+  Object.assign(env, GIT_ENV);
   const gitIn = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { env, encoding: 'utf8' }).trim();
   const git = (...args) => gitIn(work, ...args);
   execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin], { env });

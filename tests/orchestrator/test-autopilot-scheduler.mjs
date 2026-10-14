@@ -10,7 +10,7 @@
 // default state root, and each lane is a real git worktree beside it.
 
 import { describe, it } from 'node:test';
-import { deepStrictEqual, match, ok, strictEqual } from 'node:assert/strict';
+import { deepStrictEqual, match, ok, rejects, strictEqual } from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -54,7 +54,12 @@ describe('two lanes', () => {
         strictEqual(t.git(t.lane(id), 'log', '-1', '--format=%s').length > 0, true);
       }
       strictEqual(t.git(t.work, 'branch', '--show-current'), 'main', 'the driver\'s checkout never switches');
-      strictEqual(r.landing.length, 2, 'each commit reported landing-ready');
+      // Each commit reported once, ready: a lane's look does not fetch, and
+      // the run's next look, which does, published it.
+      const base = t.git(t.work, 'rev-parse', 'refs/remotes/origin/main');
+      deepStrictEqual(r.landing.map((x) => [x.subtask_id, x.sync.state, x.sync.base_commit]).sort(), [['A', 'ready', base], ['B', 'ready', base]]);
+      deepStrictEqual(['A', 'B'].map((id) => bySubtask(r)[id].waiting?.sync?.state), ['ready', 'ready'], 'the lane report carries the freshness');
+      deepStrictEqual(r.halt.waiting.map((w) => w.sync.state), ['ready', 'ready'], 'and so does the halt');
       deepStrictEqual(L.readLockEntries(L.macroLockPath(t.work, t.fx.macroId)), [], 'the macro lock is released');
       deepStrictEqual(L.readLockEntries(L.worktreeLockPath(t.lane('A'))), [], 'each lane lock is released');
       deepStrictEqual(L.listOpenRuns(t.work), []);
@@ -289,6 +294,681 @@ describe('landing order and the serial driver', () => {
       strictEqual(r.halt.lanes, undefined);
       ok(!existsSync(t.lane('A')));
       strictEqual(t.git(t.work, 'branch', '--show-current'), 'feat/a', 'the serial driver works in its own checkout');
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('a serial run\'s halt for another reason lists the branch that waits to land, with its freshness (C128)', async () => {
+    // A commits and waits; B, which does not depend on it, is dispatched and
+    // makes no progress, which halts the run owner-choice.
+    const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT] }, actions: { 3: 'noop' } } });
+    try {
+      strictEqual(await t.run({ lanes: 1 }), 2, t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual(r.steps.map((x) => [x.kind, x.subtask_id, x.outcome]), [['dispatch', 'A', 'ok'], ['commit', 'A', 'ok'], ['dispatch', 'B', 'owner-choice']]);
+      strictEqual(r.halt.reason, 'owner-choice', r.halt.detail);
+      deepStrictEqual(r.halt.waiting?.map((w) => [w.subtaskId, w.branch, w.commit, w.sync?.state]), [['A', 'feat/a', t.git(t.work, 'rev-parse', 'refs/heads/feat/a'), 'ready']], JSON.stringify(r.halt));
+      ok(t.lines.some((l) => /^ {2}· A on feat\/a /.test(l)), t.lines.join('\n'));
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('a serial run that halts before its first report (the macro lock is held) still lists the branch its first look found waiting, unknown (C128)', async () => {
+    const t = await setup({ subtasks: [{ id: 'A' }, { id: 'B', blocked_by: ['A'] }], scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT] } } });
+    let held = null;
+    try {
+      strictEqual(await t.run({ lanes: 1 }), 2, t.lines.join('\n'));
+      strictEqual(t.latest().halt.reason, 'awaiting-landing');
+      held = await L.acquireLock(L.macroLockPath(t.work, t.fx.macroId), { record: { run_id: 'autopilot-20261001T000000Z-eeeeee' } });
+      t.lines.length = 0;
+      strictEqual(await t.run({ lanes: 1 }), 2, t.lines.join('\n'));
+      const r = t.latest();
+      strictEqual(r.halt.reason, 'owner-choice', r.halt.detail);
+      deepStrictEqual(r.halt.waiting?.map((w) => [w.subtaskId, w.branch, w.sync?.state, w.sync?.detail]), [['A', 'feat/a', 'unknown', 'no report was made for the look that found it']], JSON.stringify(r.halt));
+      ok(t.lines.some((l) => /^ {2}· A on feat\/a /.test(l)), t.lines.join('\n'));
+    } finally {
+      held?.release();
+      t.fx.cleanup();
+    }
+  });
+
+  // C128 — every look of a serial run feeds its list as it returns, and its
+  // `finish` builds every halt's list from it.
+  it('a serial look a retry replaces still lists what it found waiting: the retry fails, and the halt lists the branch unknown (C128)', async () => {
+    // The look after A's commit finds A waiting but cannot list the claims,
+    // so it is taken again; the retry fails.
+    const t = await setup({ subtasks: [{ id: 'A' }, { id: 'B', blocked_by: ['A'] }], scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT] } } });
+    const { observe } = await import(resolve(AP, 'observe.mjs'));
+    const { failedView } = await import(resolve(AP, 'offloop.mjs'));
+    let stage = 0;
+    const look = (a) => {
+      if (stage === 1) {
+        stage = 2;
+        return failedView(a.repoRoot, 'simulated: the look failed');
+      }
+      const v = observe(a);
+      if (stage === 0 && v.children?.A?.location === 'archived') {
+        stage = 1;
+        return { ...v, claimsError: 'simulated: a claim moved' };
+      }
+      return v;
+    };
+    try {
+      strictEqual(await t.run({ lanes: 1 }, { observe: look }), 2, t.lines.join('\n'));
+      strictEqual(stage, 2, t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual(r.steps.map((x) => [x.kind, x.subtask_id]), [['dispatch', 'A'], ['commit', 'A']]);
+      deepStrictEqual(r.halt.waiting?.map((w) => [w.subtaskId, w.branch, w.sync?.state, w.sync?.detail]), [['A', 'feat/a', 'unknown', "the run's last look failed (simulated: the look failed)"]], JSON.stringify(r.halt));
+      ok(t.lines.some((l) => /^ {2}· A on feat\/a /.test(l)), t.lines.join('\n'));
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('a serial run the owner interrupts before its next step confirms nothing its halt lists (C128)', async () => {
+    // A commits and is reported ready; as the run checks its roots before
+    // B's dispatch, the owner interrupts it.
+    const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT] } } });
+    let interrupted = false;
+    const resolveRoots = async (a) => {
+      const roots = await RT.resolveRoots(a);
+      if (!interrupted && t.lines.some((l) => l.startsWith('◆ landing-ready: A on feat/a '))) {
+        interrupted = true;
+        t.signals.emit('SIGINT');
+      }
+      return roots;
+    };
+    try {
+      strictEqual(await t.run({ lanes: 1 }, { resolveRoots }), 2, t.lines.join('\n'));
+      ok(interrupted, t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual(r.steps.map((x) => [x.kind, x.subtask_id, x.outcome]), [['dispatch', 'A', 'ok'], ['commit', 'A', 'ok']]);
+      strictEqual(r.halt.reason, 'interrupted');
+      deepStrictEqual(r.landing.map((x) => [x.subtask_id, x.sync.state]), [['A', 'ready']], 'the report said ready before the interrupt');
+      deepStrictEqual(r.halt.waiting?.map((w) => [w.subtaskId, w.sync?.state, w.sync?.detail]), [['A', 'unknown', 'the run ended before its last look (the owner interrupted the run)']], JSON.stringify(r.halt));
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('a serial run that stops on an error before any halt records what waited, unknown, and status shows it (C128)', async () => {
+    // A commits and is reported ready; the roots check before B's dispatch throws.
+    const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT] } } });
+    const resolveRoots = async (a) => {
+      if (t.lines.some((l) => l.startsWith('◆ landing-ready: A on feat/a '))) throw new Error('simulated: the roots check threw');
+      return RT.resolveRoots(a);
+    };
+    try {
+      await rejects(t.run({ lanes: 1 }, { resolveRoots }), /simulated: the roots check threw/);
+      const r = t.latest();
+      strictEqual(r.run.status, 'error');
+      strictEqual(r.halt ?? null, null);
+      deepStrictEqual(r.landing.map((x) => [x.subtask_id, x.sync.state]), [['A', 'ready']], 'the report said ready before the error');
+      const why = 'the run ended before its last look (the run stopped on an error: simulated: the roots check threw)';
+      deepStrictEqual(r.run.waiting?.map((w) => [w.subtaskId, w.sync?.state, w.sync?.detail]), [['A', 'unknown', why]], JSON.stringify(r.run));
+      const C = await import(resolve(AP, 'cli.mjs'));
+      const said = [];
+      strictEqual(await C.main(['status', '--repo', t.work], { env: t.env, out: (s) => said.push(s), err: (s) => said.push(`ERR ${s}`) }), 0, said.join('\n'));
+      ok(said.some((l) => l === `    · A on feat/a: landing-unknown (${why})`), said.join('\n'));
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+});
+
+// ADR-0067 Decision 7, docket C128 and C123 — the landing report of a run
+// with lanes.
+describe('landing reports with lanes', () => {
+  it('a commit made while the run drains is reported ready by a last look that fetches, before the run ends', async () => {
+    // A's dispatch makes no progress once B's commit has started, which
+    // drains the run; B's commit goes on once the drain has begun. A lane's
+    // look after its step does not fetch, so only a later look reports B ready.
+    const t = await setup({
+      scenario: {
+        A: { next: [COMMIT] }, B: { next: [COMMIT], file: 'b.txt' },
+        actions: { 1: ['wait:b-committing', 'noop'], 3: ['mark-start:b-committing', 'wait:drained'] },
+      },
+    });
+    markOn(t, /^■ lane A: owner-choice/, 'drained');
+    try {
+      strictEqual(await t.run(), 2, t.lines.join('\n'));
+      ok(!existsSync(join(t.dir, 'drained.timeout')) && !existsSync(join(t.dir, 'b-committing.timeout')), t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual(stepsOf(r).map((x) => [x[0], x[1], x[2], x[4]]), [[1, 'A', 'dispatch', 'owner-choice'], [2, 'B', 'dispatch', 'ok'], [3, 'B', 'commit', 'ok']]);
+      strictEqual(r.halt.reason, 'owner-choice');
+      const base = t.git(t.work, 'rev-parse', 'refs/remotes/origin/main');
+      deepStrictEqual(r.landing.map((x) => [x.subtask_id, x.after_seq, x.sync.state, x.sync.base_commit]), [['B', 3, 'ready', base]]);
+      const drained = t.lines.findIndex((l) => /draining: 1 step\(s\) in flight/.test(l));
+      const reported = t.lines.findIndex((l) => l.startsWith('◆ landing-ready: B on feat/b at '));
+      ok(drained >= 0 && reported > drained, t.lines.join('\n'));
+      // The lane report lists B waiting, as the last look found it.
+      deepStrictEqual([bySubtask(r).B.waiting?.commit, bySubtask(r).B.waiting?.sync?.state], [t.git(t.work, 'rev-parse', 'refs/heads/feat/b'), 'ready']);
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('a commit made while the run drains is still listed, unknown, when the drain\'s last look fails', async () => {
+    // As above, but every look after the drain begins fails except B's own
+    // look after its commit, in its lane.
+    const t = await setup({
+      scenario: {
+        A: { next: [COMMIT] }, B: { next: [COMMIT], file: 'b.txt' },
+        actions: { 1: ['wait:b-committing', 'noop'], 3: ['mark-start:b-committing', 'wait:drained'] },
+      },
+    });
+    markOn(t, /^■ lane A: owner-choice/, 'drained');
+    const { failedView } = await import(resolve(AP, 'offloop.mjs'));
+    const observeAsync = async (a, o) => {
+      if (existsSync(join(t.dir, 'drained')) && a.repoRoot !== t.lane('B')) return failedView(a.repoRoot, 'simulated: the look failed');
+      return observeInChild(a, o);
+    };
+    try {
+      strictEqual(await t.run({}, { observeAsync }), 2, t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual(stepsOf(r).map((x) => [x[0], x[1], x[2], x[4]]), [[1, 'A', 'dispatch', 'owner-choice'], [2, 'B', 'dispatch', 'ok'], [3, 'B', 'commit', 'ok']]);
+      const b = bySubtask(r).B.waiting;
+      ok(b, `lane B is listed waiting: ${JSON.stringify(bySubtask(r).B)}`);
+      deepStrictEqual([b.branch, b.commit, b.sync?.state, b.sync?.detail], ['feat/b', t.git(t.work, 'rev-parse', 'refs/heads/feat/b'), 'unknown', "the run's last look failed (simulated: the look failed)"]);
+      deepStrictEqual(r.landing, [], 'B was never reported ready: its own look did not fetch, and the last one failed');
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  // Run 1 halts awaiting-landing with A and B ready. The relaunch's looks are
+  // doctored: `startup` the driver's own (synchronous) looks before the
+  // scheduler, `first` the first look of the scheduler's loop; every look
+  // after that fails. Whatever the run knew of A and B, and no later look
+  // confirmed, stands as unknown at the end.
+  const refused = { ok: false, reason: 'gh_unavailable', detail: 'simulated: gh is unavailable' };
+  const relaunchFailing = async ({ startup = (v) => v, first, deps = () => ({}) }) => {
+    const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT], file: 'b.txt' } } });
+    strictEqual(await t.run(), 2, t.lines.join('\n'));
+    deepStrictEqual(t.latest().halt.waiting.map((w) => [w.subtaskId, w.sync.state]), [['A', 'ready'], ['B', 'ready']]);
+    const { failedView } = await import(resolve(AP, 'offloop.mjs'));
+    const { observe } = await import(resolve(AP, 'observe.mjs'));
+    let looks = 0;
+    const observeAsync = async (a, o) => {
+      looks += 1;
+      if (looks > 1) return failedView(a.repoRoot, 'simulated: the look failed');
+      return first(await observeInChild(a, o), t);
+    };
+    let code;
+    try {
+      code = await t.run({}, { observe: (a) => startup(observe(a)), observeAsync, ...deps(t) });
+    } catch (e) {
+      code = e;
+    }
+    return { t, code, r: t.latest() };
+  };
+  const bothUnknown = (r) => {
+    deepStrictEqual(['A', 'B'].map((id) => [bySubtask(r)[id].waiting?.sync?.state, bySubtask(r)[id].waiting?.sync?.detail]), [
+      ['unknown', "the run's last look failed (simulated: the look failed)"], ['unknown', "the run's last look failed (simulated: the look failed)"],
+    ], JSON.stringify(bySubtask(r)));
+  };
+
+  it('a lane reported ready keeps its place, unknown, through a look whose landing check refuses and a last look that fails', async () => {
+    // Known from the start; the loop's first look finds gh unavailable for
+    // both, which halts them.
+    const { t, code, r } = await relaunchFailing({ first: (v) => ({ ...v, landing: { ...v.landing, A: refused, B: refused } }) });
+    try {
+      strictEqual(code, 2, t.lines.join('\n'));
+      strictEqual(r.halt.reason, 'owner-choice', r.halt.detail);
+      match(r.halt.detail, /gh_unavailable/);
+      bothUnknown(r);
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('a lane a look reports waiting joins the run\'s list before that look halts the run', async () => {
+    // Unknown at the start (its landing check refused there); the loop's
+    // first look finds both waiting, and cannot read the macro's readiness,
+    // which halts the run before any lane is scheduled.
+    const { t, code, r } = await relaunchFailing({
+      startup: (v) => ({ ...v, landing: { ...v.landing, A: refused, B: refused } }),
+      first: (v) => ({ ...v, readyError: 'simulated: next-ready failed' }),
+    });
+    try {
+      strictEqual(code, 2, t.lines.join('\n'));
+      strictEqual(r.halt.reason, 'owner-choice', r.halt.detail);
+      match(r.halt.detail, /next-ready failed: simulated/);
+      bothUnknown(r);
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('the scheduler takes the driver\'s list: a lane only the look before the locks could read stays listed, unknown', async () => {
+    // Run 1 halts awaiting-landing with A and B ready. In the relaunch only
+    // the driver's first look (before the locks) reads A's engineer workflow;
+    // every later look finds it unreadable.
+    const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT], file: 'b.txt' } } });
+    const { observe } = await import(resolve(AP, 'observe.mjs'));
+    const unreadable = (v) => ({ ...v, children: { ...v.children, A: { location: 'error', detail: 'simulated: unreadable' } } });
+    let looks = 0;
+    const look = (a) => {
+      looks += 1;
+      const v = observe(a);
+      return looks === 1 ? v : unreadable(v);
+    };
+    try {
+      strictEqual(await t.run(), 2, t.lines.join('\n'));
+      deepStrictEqual(t.latest().halt.waiting.map((w) => [w.subtaskId, w.sync.state]), [['A', 'ready'], ['B', 'ready']]);
+      t.lines.length = 0;
+      strictEqual(await t.run({}, { observe: look }), 2, t.lines.join('\n'));
+      ok(looks > 2, t.lines.join('\n'));
+      const r = t.latest();
+      const a = bySubtask(r).A?.waiting;
+      deepStrictEqual([a?.branch, a?.sync?.state], ['feat/a', 'unknown'], JSON.stringify(bySubtask(r)));
+      match(a.sync.detail, /subtask A's engineer workflow could not be read \(simulated: unreadable\)/);
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  // Unknown at the start (their landing checks refused there), so the run's
+  // list starts empty; the loop's first look then finds both waiting, and is
+  // cut off before it feeds the list.
+  const cutOff = (why) => [['unknown', why], ['unknown', why]];
+  const states = (r) => ['A', 'B'].map((id) => [bySubtask(r)[id]?.waiting?.sync?.state, bySubtask(r)[id]?.waiting?.sync?.detail]);
+
+  it('an interrupt that cuts off a look of the loop still lists what that look found waiting, unknown', async () => {
+    const { t, code, r } = await relaunchFailing({
+      startup: (v) => ({ ...v, landing: { ...v.landing, A: refused, B: refused } }),
+      first: (v, tt) => { tt.signals.emit('SIGINT'); return v; },
+    });
+    try {
+      strictEqual(code, 2, t.lines.join('\n'));
+      strictEqual(r.halt.reason, 'interrupted', r.halt.detail);
+      deepStrictEqual(states(r), cutOff('the run ended before its last look (the owner interrupted the run)'), JSON.stringify(bySubtask(r)));
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('a look a later look replaces still lists what it found waiting: a retry that fails after an interrupt keeps it, unknown', async () => {
+    // The loop's first look found both waiting but could not list the
+    // claims, so it is taken again; the owner interrupted meanwhile, and the
+    // retry fails.
+    const { t, code, r } = await relaunchFailing({
+      startup: (v) => ({ ...v, landing: { ...v.landing, A: refused, B: refused } }),
+      first: (v, tt) => { tt.signals.emit('SIGINT'); return { ...v, claimsError: 'simulated: a claim moved' }; },
+    });
+    try {
+      strictEqual(code, 2, t.lines.join('\n'));
+      strictEqual(r.halt.reason, 'interrupted', r.halt.detail);
+      deepStrictEqual(states(r), cutOff('the run ended before its last look (the owner interrupted the run)'), JSON.stringify(bySubtask(r)));
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('an error before the run\'s first look of its own still lists what the first report found, unknown', async () => {
+    // Run 1 halts awaiting-landing with A and B ready; the relaunch fails as
+    // it prints its first line with lanes.
+    const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT], file: 'b.txt' } } });
+    try {
+      strictEqual(await t.run(), 2, t.lines.join('\n'));
+      const push = t.lines.push.bind(t.lines);
+      t.lines.push = (l) => {
+        if (/^ {2}lanes: up to /.test(l)) throw new Error('simulated: the terminal went away');
+        return push(l);
+      };
+      await rejects(t.run(), /simulated: the terminal went away/);
+      const r = t.latest();
+      strictEqual(r.run.status, 'error');
+      deepStrictEqual(states(r), cutOff('the run ended before its last look (the run stopped on an error: simulated: the terminal went away)'), JSON.stringify(bySubtask(r)));
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('an error that cuts off a look of the loop before its report still lists what that look found waiting, unknown', async () => {
+    const { offLoop: defaultOffLoop } = await import(resolve(AP, 'offloop.mjs'));
+    const { t, code, r } = await relaunchFailing({
+      startup: (v) => ({ ...v, landing: { ...v.landing, A: refused, B: refused } }),
+      first: (v) => v,
+      deps: () => ({
+        offLoop: (task, args, o) => (task === 'reportLanding' ? Promise.reject(new Error('simulated: the report threw')) : defaultOffLoop(task, args, o)),
+      }),
+    });
+    try {
+      match(String(code?.message), /simulated: the report threw/);
+      strictEqual(r.run.status, 'error');
+      deepStrictEqual(states(r), cutOff('the run ended before its last look (the run stopped on an error: simulated: the report threw)'), JSON.stringify(bySubtask(r)));
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('an error after the halt was recorded leaves no readiness standing in it', async () => {
+    // Run 1 halts awaiting-landing with A and B ready, and fails as it prints
+    // the halt, after halt.json was written.
+    const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT], file: 'b.txt' } } });
+    const push = t.lines.push.bind(t.lines);
+    t.lines.push = (l) => {
+      if (/^■ halted: awaiting-landing/.test(l)) throw new Error('simulated: the terminal went away');
+      return push(l);
+    };
+    try {
+      await rejects(t.run(), /simulated: the terminal went away/);
+      const r = t.latest();
+      strictEqual(r.run.status, 'error');
+      const why = 'the run ended before its last look (the run stopped on an error: simulated: the terminal went away)';
+      deepStrictEqual(r.halt.waiting.map((w) => [w.subtaskId, w.sync.state, w.sync.detail]), [['A', 'unknown', why], ['B', 'unknown', why]]);
+      deepStrictEqual(r.halt.lanes.map((l) => [l.subtask_id, l.waiting?.sync?.state]), [['A', 'unknown'], ['B', 'unknown']]);
+      deepStrictEqual(states(r), cutOff(why));
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  // A reported ready, then B's dispatch makes no progress, which drains the
+  // run; the drain's last look fails, or the owner interrupts it.
+  const lastLook = async (mode) => {
+    const t = await setup({
+      scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT] }, actions: { 2: ['wait:a-reported', 'noop'] } },
+    });
+    markOn(t, /^◆ landing-ready: A on feat\/a /, 'a-reported');
+    markOn(t, /^■ lane B: owner-choice/, 'drained');
+    const { failedView } = await import(resolve(AP, 'offloop.mjs'));
+    const observeAsync = async (a, o) => {
+      if (existsSync(join(t.dir, 'drained'))) {
+        if (mode === 'fail') return failedView(a.repoRoot, 'simulated: the look failed');
+        if (mode === 'macro') {
+          // The look runs, but cannot read the macro: it lists nothing waiting.
+          return { ...(await observeInChild(a, o)), macro: null, macroLookupError: 'simulated: the macro could not be read', children: {}, landing: {} };
+        }
+        t.signals.emit('SIGINT');
+      }
+      return observeInChild(a, o);
+    };
+    const code = await t.run({}, { observeAsync });
+    return { t, code, r: t.latest() };
+  };
+  const statusText = async (t) => {
+    const C = await import(resolve(AP, 'cli.mjs'));
+    const said = [];
+    strictEqual(await C.main(['status', '--repo', t.work], { env: t.env, out: (s) => said.push(s), err: (s) => said.push(`ERR ${s}`) }), 0, said.join('\n'));
+    return said.join('\n');
+  };
+
+  it('a drain whose last look fails leaves no freshness standing: a lane reported ready is unknown', async () => {
+    const { t, code, r } = await lastLook('fail');
+    try {
+      strictEqual(code, 2, t.lines.join('\n'));
+      ok(!existsSync(join(t.dir, 'a-reported.timeout')), t.lines.join('\n'));
+      strictEqual(r.halt.reason, 'owner-choice');
+      strictEqual(r.halt.waiting, null, 'a halt for another reason lists no waiting branch');
+      deepStrictEqual(r.landing.map((x) => [x.subtask_id, x.sync.state]), [['A', 'ready']]);
+      const a = bySubtask(r).A.waiting;
+      deepStrictEqual([a.sync.state, a.sync.detail], ['unknown', "the run's last look failed (simulated: the look failed)"]);
+      ok(t.lines.some((l) => /waiting to land: feat\/a .* · freshness unknown$/.test(l)), t.lines.join('\n'));
+      // The logs keep what was observed (a failed look observes nothing);
+      // status shows the lane as the run left it, after the earlier record.
+      const { landingLogPath, readLandingLog } = await import(resolve(AP, 'landing-ready.mjs'));
+      deepStrictEqual(readLandingLog(landingLogPath(t.work, t.fx.macroId)).map((x) => [x.subtask_id, x.sync.state]), [['A', 'ready']]);
+      const said = await statusText(t);
+      match(said, /◆ landing-ready after \[\d+\]: A on feat\/a /);
+      match(said, /\n {2}lane A · [^\n]* · landing-unknown \(the run's last look failed \(simulated: the look failed\)\)/);
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('a drain whose last look cannot read the macro keeps each waiting lane, unknown, instead of dropping it', async () => {
+    const { t, code, r } = await lastLook('macro');
+    try {
+      strictEqual(code, 2, t.lines.join('\n'));
+      strictEqual(r.halt.reason, 'owner-choice');
+      const a = bySubtask(r).A.waiting;
+      ok(a, `lane A is still listed waiting: ${JSON.stringify(bySubtask(r).A)}`);
+      deepStrictEqual([a.branch, a.sync.state, a.sync.detail], ['feat/a', 'unknown', "the run's last look failed (the macro could not be read: simulated: the macro could not be read)"]);
+      deepStrictEqual(r.halt.lanes.find((l) => l.subtask_id === 'A')?.waiting?.sync?.state, 'unknown', 'halt.json carries it too');
+      match(await statusText(t), /\n {2}lane A · [^\n]* · landing-unknown \(the run's last look failed \(the macro could not be read/);
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('an interrupt during the drain\'s last look ends the run interrupted, and confirms nothing: a lane reported ready is unknown', async () => {
+    const { t, code, r } = await lastLook('interrupt');
+    try {
+      strictEqual(code, 2, t.lines.join('\n'));
+      strictEqual(r.halt.reason, 'interrupted', t.lines.join('\n'));
+      ok(/while it drained after owner-choice/.test(r.halt.detail), r.halt.detail);
+      deepStrictEqual(r.landing.map((x) => [x.subtask_id, x.sync.state]), [['A', 'ready']]);
+      const unlooked = "the run ended before its last look (the owner interrupted the run)";
+      deepStrictEqual([bySubtask(r).A.waiting?.sync?.state, bySubtask(r).A.waiting?.sync?.detail], ['unknown', unlooked], JSON.stringify(bySubtask(r).A));
+      deepStrictEqual(r.halt.lanes.find((l) => l.subtask_id === 'A')?.waiting?.sync?.state, 'unknown', 'halt.json carries it too');
+      ok(t.lines.some((l) => /waiting to land: feat\/a .* · freshness unknown$/.test(l)), t.lines.join('\n'));
+      match(await statusText(t), /\n {2}lane A · [^\n]* · landing-unknown \(the run ended before its last look/);
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  // C128 — every end of a run reconciles the run's list with the latest
+  // observation it holds before its report is built.
+  it('an interrupt while a step settles: the lane it committed is listed unknown, and a lane that landed meanwhile is not listed', async () => {
+    // A commits and is reported ready; B's dispatch starts then. As B's
+    // commit settles, A lands and the owner interrupts the run: the settling
+    // look is the run's last.
+    const t = await setup({
+      scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT], file: 'b.txt' }, actions: { 2: ['wait:a-reported'] } },
+    });
+    markOn(t, /^◆ landing-ready: A on feat\/a /, 'a-reported');
+    let interrupted = false;
+    const observeAsync = async (a, o) => {
+      const v = await observeInChild(a, o);
+      if (interrupted || a.repoRoot !== t.lane('B') || v.children?.B?.location !== 'archived') return v;
+      interrupted = true;
+      t.fx.setPrs([t.fx.land('A', 'feat/a', { number: 7 })]);
+      t.signals.emit('SIGINT');
+      return observeInChild(a, o);
+    };
+    try {
+      strictEqual(await t.run({}, { observeAsync }), 2, t.lines.join('\n'));
+      ok(interrupted && !existsSync(join(t.dir, 'a-reported.timeout')), t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual(stepsOf(r).map((x) => [x[1], x[2], x[4]]), [['A', 'dispatch', 'ok'], ['B', 'dispatch', 'ok'], ['A', 'commit', 'ok'], ['B', 'commit', 'interrupted']]);
+      strictEqual(r.halt.reason, 'interrupted');
+      deepStrictEqual(r.landing.map((x) => [x.subtask_id, x.sync.state]), [['A', 'ready']], 'B was never reported: the run was interrupted first');
+      strictEqual(bySubtask(r).A.waiting, undefined, `A landed: ${JSON.stringify(bySubtask(r).A)}`);
+      const b = bySubtask(r).B.waiting;
+      deepStrictEqual([b?.branch, b?.sync?.state, b?.sync?.detail], ['feat/b', 'unknown', 'the run ended before its last look (the owner interrupted the run)'], JSON.stringify(bySubtask(r).B));
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('a run that stops on an error confirms nothing it lists', async () => {
+    // Run 1 halts awaiting-landing with A and B ready; the relaunch's first
+    // look throws.
+    const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT], file: 'b.txt' } } });
+    try {
+      strictEqual(await t.run(), 2, t.lines.join('\n'));
+      deepStrictEqual(t.latest().halt.waiting.map((w) => [w.subtaskId, w.sync.state]), [['A', 'ready'], ['B', 'ready']]);
+      const observeAsync = async () => { throw new Error('simulated: the look threw'); };
+      await rejects(t.run({}, { observeAsync }), /simulated: the look threw/);
+      const r = t.latest();
+      strictEqual(r.run.status, 'error');
+      const why = 'the run ended before its last look (the run stopped on an error: simulated: the look threw)';
+      deepStrictEqual(['A', 'B'].map((id) => [bySubtask(r)[id]?.waiting?.sync?.state, bySubtask(r)[id]?.waiting?.sync?.detail]), [['unknown', why], ['unknown', why]], JSON.stringify(bySubtask(r)));
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('the look a run\'s end takes for its proposals feeds its list: a lane that landed before it is not listed', async () => {
+    // A commits and is reported ready; B's dispatch then ends on its conflict
+    // gate, which drains the run. A lands just before the end's own look.
+    const t = await setup({
+      scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT] }, actions: { 2: ['wait:a-reported', 'conflict-gate'] } },
+    });
+    markOn(t, /^◆ landing-ready: A on feat\/a /, 'a-reported');
+    let landed = false;
+    const observeAsync = async (a, o) => {
+      // The only look without a fetch in the driver's checkout is the end's.
+      if (!landed && a.repoRoot === t.work && a.fetch === false) {
+        landed = true;
+        t.fx.setPrs([t.fx.land('A', 'feat/a', { number: 7 })]);
+      }
+      return observeInChild(a, o);
+    };
+    try {
+      strictEqual(await t.run({}, { observeAsync }), 2, t.lines.join('\n'));
+      ok(landed && !existsSync(join(t.dir, 'a-reported.timeout')), t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual([r.halt.reason, r.halt.subtask_id, r.halt.proposals.map((p) => p.subtask_id)], ['awaiting-owner:peer-conflict', 'B', ['B']]);
+      deepStrictEqual(r.landing.map((x) => [x.subtask_id, x.sync.state]), [['A', 'ready']]);
+      strictEqual(bySubtask(r).A.waiting, undefined, `A landed: ${JSON.stringify(bySubtask(r).A)}`);
+      strictEqual(r.halt.lanes.find((l) => l.subtask_id === 'A')?.waiting, undefined);
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('a failed look feeds the run\'s list too: when the end\'s own look fails, a lane reported ready is unknown', async () => {
+    // As above, but the end's own look fails instead.
+    const t = await setup({
+      scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT] }, actions: { 2: ['wait:a-reported', 'conflict-gate'] } },
+    });
+    markOn(t, /^◆ landing-ready: A on feat\/a /, 'a-reported');
+    const { failedView } = await import(resolve(AP, 'offloop.mjs'));
+    let failed = false;
+    const observeAsync = async (a, o) => {
+      if (!failed && a.repoRoot === t.work && a.fetch === false) {
+        failed = true;
+        return failedView(a.repoRoot, 'simulated: the look failed');
+      }
+      return observeInChild(a, o);
+    };
+    try {
+      strictEqual(await t.run({}, { observeAsync }), 2, t.lines.join('\n'));
+      ok(failed && !existsSync(join(t.dir, 'a-reported.timeout')), t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual([r.halt.reason, r.halt.subtask_id], ['awaiting-owner:peer-conflict', 'B']);
+      deepStrictEqual(r.landing.map((x) => [x.subtask_id, x.sync.state]), [['A', 'ready']]);
+      const a = bySubtask(r).A.waiting;
+      deepStrictEqual([a?.sync?.state, a?.sync?.detail], ['unknown', "the run's last look failed (simulated: the look failed)"], JSON.stringify(bySubtask(r).A));
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  // A commits and is reported ready while B's dispatch ends on its conflict
+  // gate, whose proposal B's lane keeps; the owner clears the gate before the
+  // next look, so B goes on to commit, and the run halts awaiting-landing with
+  // nothing left to start. The end's own look (for the proposal) is where A
+  // lands, or where the owner interrupts the run.
+  const idleEnd = async (mode) => {
+    const t = await setup({
+      scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT], file: 'b.txt' }, actions: { 2: ['wait:a-reported', 'conflict-gate'] } },
+    });
+    markOn(t, /^◆ landing-ready: A on feat\/a /, 'a-reported');
+    const ENG = await import(join(ROOTS.engineer, 'scripts', 'state.mjs'));
+    let cleared = false;
+    let ended = false;
+    const observeAsync = async (a, o) => {
+      if (!ended && a.repoRoot === t.work && a.fetch === false) {
+        ended = true;
+        if (mode === 'land') t.fx.setPrs([t.fx.land('A', 'feat/a', { number: 7 })]);
+        else t.signals.emit('SIGINT');
+      }
+      const v = await observeInChild(a, o);
+      if (!cleared && a.repoRoot === t.lane('B') && v.children?.B?.awaiting_owner?.gate === 'peer-conflict') {
+        cleared = true;
+        await ENG.clearAwaitingOwner({
+          workflowPath: v.children.B.path, host: 'claude', gate: 'peer-conflict', nextStep: COMMIT,
+          nextAction: 'Commit', resolution: 'simulated: the owner decided', env: {},
+        });
+      }
+      return v;
+    };
+    const code = await t.run({}, { observeAsync });
+    ok(cleared && ended && !existsSync(join(t.dir, 'a-reported.timeout')), t.lines.join('\n'));
+    return { t, code, r: t.latest() };
+  };
+
+  // The end's look does not fetch, so the B it keeps was judged ready against
+  // the tip before A landed: it is unknown, never ready (C128, the
+  // A-lands-then-B sequence).
+  it('an awaiting-landing halt lists what the run\'s list holds as it ends: a lane that landed during the end\'s own look is not listed, and the other keeps no ready', async () => {
+    const { t, code, r } = await idleEnd('land');
+    try {
+      strictEqual(code, 2, t.lines.join('\n'));
+      deepStrictEqual(stepsOf(r).map((x) => [x[1], x[2], x[4]]), [['A', 'dispatch', 'ok'], ['B', 'dispatch', 'ok'], ['A', 'commit', 'ok'], ['B', 'commit', 'ok']]);
+      strictEqual(r.halt.reason, 'awaiting-landing', r.halt.detail);
+      const why = 'subtask A landed after the look that judged it ready, and this look did not fetch';
+      deepStrictEqual(r.halt.waiting?.map((w) => [w.subtaskId, w.sync?.state, w.sync?.detail]), [['B', 'unknown', why]], JSON.stringify(r.halt.waiting));
+      deepStrictEqual(bySubtask(r).B.waiting?.sync?.state, 'unknown', JSON.stringify(bySubtask(r).B));
+      strictEqual(bySubtask(r).A.waiting, undefined, `A landed: ${JSON.stringify(bySubtask(r).A)}`);
+      ok(!t.lines.some((l) => /^ {2}· A on feat\/a /.test(l)), t.lines.join('\n'));
+      ok(t.lines.some((l) => /^ {2}· B on feat\/b /.test(l)), t.lines.join('\n'));
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('an awaiting-landing halt the owner interrupts as the run ends confirms nothing it lists', async () => {
+    const { t, code, r } = await idleEnd('interrupt');
+    try {
+      strictEqual(code, 2, t.lines.join('\n'));
+      strictEqual(r.halt.reason, 'awaiting-landing', r.halt.detail);
+      const why = 'the run ended before its last look (the owner interrupted the run)';
+      deepStrictEqual(r.halt.waiting?.map((w) => [w.subtaskId, w.sync?.state, w.sync?.detail]), [['A', 'unknown', why], ['B', 'unknown', why]], JSON.stringify(r.halt.waiting));
+      deepStrictEqual(['A', 'B'].map((id) => bySubtask(r)[id]?.waiting?.sync?.state), ['unknown', 'unknown']);
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('the end\'s own look, which has no report, never restores a readiness a later look took away', async () => {
+    // As above, but A does not land: the drain's last look fails, and the
+    // end's look succeeds without a fetch or a report of its own.
+    const t = await setup({
+      scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT] }, actions: { 2: ['wait:a-reported', 'conflict-gate'] } },
+    });
+    markOn(t, /^◆ landing-ready: A on feat\/a /, 'a-reported');
+    markOn(t, /^■ lane B: awaiting-owner:peer-conflict/, 'drained');
+    const { failedView } = await import(resolve(AP, 'offloop.mjs'));
+    let endLooks = 0;
+    const observeAsync = async (a, o) => {
+      if (existsSync(join(t.dir, 'drained')) && a.repoRoot === t.work) {
+        if (a.fetch !== false) return failedView(a.repoRoot, 'simulated: the look failed');
+        endLooks += 1;
+      }
+      return observeInChild(a, o);
+    };
+    try {
+      strictEqual(await t.run({}, { observeAsync }), 2, t.lines.join('\n'));
+      strictEqual(endLooks, 1, t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual(r.landing.map((x) => [x.subtask_id, x.sync.state]), [['A', 'ready']]);
+      const a = bySubtask(r).A.waiting;
+      deepStrictEqual([a?.sync?.state, a?.sync?.detail], ['unknown', "the run's last look failed (simulated: the look failed)"], JSON.stringify(bySubtask(r).A));
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('a log that cannot be read or written is reported once across the run\'s looks, its off-loop reports included', async () => {
+    const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT], file: 'b.txt' } } });
+    try {
+      const { landingLogPath } = await import(resolve(AP, 'landing-ready.mjs'));
+      mkdirSync(landingLogPath(t.work, t.fx.macroId), { recursive: true });
+      strictEqual(await t.run(), 2, t.lines.join('\n'));
+      const r = t.latest();
+      strictEqual(r.halt.reason, 'awaiting-landing');
+      deepStrictEqual(r.landing, []);
+      strictEqual(t.lines.filter((l) => l.startsWith('⚠ landing-ready')).length, 1, t.lines.join('\n'));
+      // The report stood: the halt lists what it found.
+      deepStrictEqual(r.halt.waiting.map((w) => w.sync.state), ['ready', 'ready']);
     } finally {
       t.fx.cleanup();
     }
