@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.5](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.28.4...plugin-engineer-v0.28.5) (2026-10-14)
+
+
+### Bug Fixes
+
+* **engineer:** commit staged deletions, renames and submodule moves in Phase 7 (C84, C90) ([032c910](https://github.com/each4all/agentic-plugins/commit/032c910a50e03537eab0aa8494b3f37656531f27))
+
 ## [0.28.4](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.28.3...plugin-engineer-v0.28.4) (2026-10-13)
 
 
