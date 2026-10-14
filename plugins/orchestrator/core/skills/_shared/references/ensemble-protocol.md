@@ -28,11 +28,15 @@ Every ensemble point follows three steps: Launch, Collect, Synthesize.
 2. Build the peer prompt per the per-type template below (Plan-verify is the only template shipped in this MVP).
 3. Resolve the companion script and dispatch via `plugins/orchestrator/scripts/peer-runner.mjs run`. The graceful-degradation contract: companion missing → the runner returns `kind: 'peer_cli_not_found'` without creating a peer-run ledger or `pending_ensemble` row, and the orchestrator side proceeds with a **LOCAL-ONLY** synthesis. If the companion resolves, the runner creates `.agentic-plugins/state/orchestrator/peer-runs/<run_id>/` for new repos (or the legacy peer-run home until explicit migration), records `pending_ensemble`, supervises the child process, tees stdout/stderr to ledger files, and writes the final JSON envelope to `envelope.json`.
 
+   A codex peer never works in the checkout: the runner gives it a snapshot of HEAD plus the working tree and the index (untracked files included, ignored files such as `node_modules` left out) in a temporary worktree, and removes the snapshot when the run ends, so you may keep editing while it runs. Its HEAD is detached at the branch's commit, so name files repo-relatively and a review base by its commit id, never by a branch it would read as of the snapshot. The runner rewrites the checkout's absolute paths in the prompt to the snapshot's (C96; ADR-0023, amendment of 2026-10-14). The snapshot comes after the companion resolves: a missing companion still leaves no ledger, no `pending_ensemble` row and no snapshot.
+
 ### Step 2: Collect
 
 1. The orchestrator side performs its own analysis in parallel.
 2. Read the peer envelope (per `companions/contract.md` §4.2). The dispatch wrapper validates envelope shape + the joint triple `(status, exit_code, error.kind)` per §5.3.
-3. If the peer failed, returned malformed output, or was unavailable, proceed with **LOCAL-ONLY** synthesis. Ensemble failure must never block the workflow.
+3. If the peer failed, returned malformed output, or was unavailable, proceed with **LOCAL-ONLY** synthesis. Ensemble failure must never block the workflow. A run that failed says why in its `error_kind`: among the runner's own kinds, `snapshot_failed` (no snapshot of the checkout could be made for a codex peer — an unmerged index, say — so the peer was not run at all; the handle's `snapshot.reason` says why, and its `pending_ensemble` row is recorded, so the ensemble commit settles it).
+
+   A path in the answer under the handle's `snapshot.root` names the snapshot the peer read: map it back to the checkout by that prefix. Collecting the peer stays notification-only. Other background work you wait on without a notification (a test or mutation run) may be watched with `pgrep`, but `pgrep -f <pattern>` also matches the waiting shell, whose own command line holds the pattern, so the loop never ends: bracket one character (`pgrep -f '[m]utation-harness'`) or wait on a pid file (C127).
 
 ### Step 3: Synthesize
 

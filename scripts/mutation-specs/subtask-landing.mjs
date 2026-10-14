@@ -390,8 +390,8 @@ export const MUTATIONS = [
   },
   {
     id: 'N4', file: PLAN, tests: [T_PLAN_RUN], killed_by: K_TEXT,
-    from: '--verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt"',
-    to: '--verdict "$VERDICT" --summary "$SUMMARY"',
+    from: '--verdict "${ENSEMBLE_VERDICT:-$VERDICT}" --summary-file "$TEXT_DIR/summary.txt"',
+    to: '--verdict "${ENSEMBLE_VERDICT:-$VERDICT}" --summary "$SUMMARY"',
     why: 'the ensemble summary comes from a SUMMARY nothing in the runbook sets (C130)',
   },
   {

@@ -26,12 +26,31 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { constants as osConstants, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 
 import { resolveCompanion, validateEnvelopeShape } from './dispatch-peer.mjs';
 import { assertWorkflowWritable, recordPendingEnsemble, resolveWorkflowStorage, workflowStorage } from './state.mjs';
-import { fingerprintsMatch, isProcessAlive } from './lib/run-locks.mjs';
+import {
+  createRunCancellation,
+  fingerprintForPid,
+  fingerprintsMatch,
+  isProcessAlive,
+  stopProcessGroup,
+} from './lib/process-identity.mjs';
+// How long a peer's group may outlive the companion's own exit before it is
+// stopped (C96): the close barrier waits on pipes a child may hold.
+const EXIT_LINGER_MS = 1000;
+import {
+  createPeerSnapshot,
+  peerSnapshotRecord,
+  reclaimPeerSnapshots,
+  recordSnapshotCompanion,
+  recordSnapshotLaunch,
+  removePeerSnapshot,
+  scrubGitSelectors,
+  writeSnapshotPrompt,
+} from './lib/peer-snapshot.mjs';
 import {
   absentAt,
   claimName,
@@ -67,6 +86,11 @@ function companionRecord(resolved) {
   };
 }
 
+// Moved to lib/process-identity.mjs (C96: the peer snapshot judges its owner
+// processes the same way); still exported here for the callers that import
+// them from this script.
+export { createRunCancellation, fingerprintForPid, fingerprintsMatch, isProcessAlive };
+
 export const HANDLE_SCHEMA_VERSION = '1.0';
 export const VALID_PEERS = new Set(['claude', 'codex']);
 export const VALID_KINDS = new Set(['ensemble', 'peer-now', 'manual']);
@@ -89,6 +113,7 @@ export const DEFAULT_STALE_GRACE_MS = 60000;
 export const DEFAULT_RETENTION_TTL_DAYS = 14;
 export const DEFAULT_RETENTION_CAP = 200;
 
+const RUN_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 const HANDLE_FILE = 'handle.json';
 const STDOUT_FILE = 'stdout.log';
 const STDERR_FILE = 'stderr.log';
@@ -353,12 +378,52 @@ export async function writeHandle(handlePath, handle, { guard = null } = {}) {
 
 let atomicWriteCounter = 0;
 
+// Updates of one handle in this process run one at a time: a cancel a signal
+// asks for (C96) must not be lost to an output note's read-modify-write.
+// The hook a run registers for its own handle, if any, sees each update of it
+// after the mutation and before the write, with the status the write
+// replaces: what it decides is decided inside the serialized write, and what
+// it arms is armed whether or not the ledger takes the write. It never awaits
+// another update of the handle.
+const handleQueues = new Map();
+const handleHooks = new Map();
+
+function updateHandle(handlePath, mutator, options = {}) {
+  const prev = handleQueues.get(handlePath) ?? Promise.resolve();
+  const run = prev.then(() => updateHandleNow(handlePath, mutator, options));
+  const tail = run.then(() => {}, () => {});
+  handleQueues.set(handlePath, tail);
+  void tail.then(() => {
+    if (handleQueues.get(handlePath) === tail) handleQueues.delete(handlePath);
+  });
+  return run;
+}
+
 // null when the write was refused: `expect`, asked of the handle re-read
 // here, says it is not the ledger the caller read, or the guard refused.
-async function updateHandle(handlePath, mutator, { guard = null, expect = null } = {}) {
-  const handle = await readHandle(handlePath);
+async function updateHandleNow(handlePath, mutator, { guard = null, expect = null } = {}) {
+  const hook = handleHooks.get(handlePath);
+  let handle;
+  try {
+    handle = await readHandle(handlePath);
+  } catch (err) {
+    // A ledger that cannot be read: the hook still sees what the update asked
+    // for, so a spawned peer stays under its run's control.
+    if (hook) {
+      const asked = {};
+      try {
+        await mutator(asked);
+        hook(asked, null);
+      } catch {
+        /* the read error is the one reported */
+      }
+    }
+    throw err;
+  }
   if (expect !== null && !expect(handle)) return null;
+  const before = handle.status;
   const next = await mutator(handle) ?? handle;
+  hook?.(next, before);
   next.updated_at = new Date().toISOString();
   return await writeHandle(handlePath, next, { guard }) ? next : null;
 }
@@ -503,51 +568,6 @@ async function recordPendingIfEnsemble(handle) {
   }
 }
 
-export async function fingerprintForPid(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return { kind: 'none' };
-
-  if (process.platform === 'linux') {
-    try {
-      const statText = await readFile(`/proc/${pid}/stat`, 'utf8');
-      const end = statText.lastIndexOf(')');
-      const rest = statText.slice(end + 2).trim().split(/\s+/);
-      const starttime = rest[19]; // proc_pid_stat(5): field 22 after comm/state offset.
-      const cmdline = await readFile(`/proc/${pid}/cmdline`, 'utf8').catch(() => '');
-      return {
-        kind: 'linux_proc_starttime',
-        starttime,
-        command: cmdline.replace(/\0/g, ' ').trim(),
-      };
-    } catch {
-      return { kind: 'none' };
-    }
-  }
-
-  if (process.platform === 'darwin') {
-    try {
-      const { execFileSync } = await import('node:child_process');
-      const out = execFileSync('ps', ['-p', String(pid), '-o', 'lstart=', '-o', 'command='], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim();
-      if (!out) return { kind: 'none' };
-      const m = out.match(/^(\S+\s+\S+\s+\d+\s+\d+:\d+:\d+\s+\d+)\s+([\s\S]*)$/);
-      return {
-        kind: 'macos_lstart_command',
-        lstart: m ? m[1] : out,
-        command: m ? m[2] : '',
-      };
-    } catch {
-      return { kind: 'none' };
-    }
-  }
-
-  return { kind: 'none' };
-}
-
-// One definition with the run locks, which use them too.
-export { fingerprintsMatch, isProcessAlive };
-
 async function verifiedProcessForHandle(handle) {
   if (!Number.isInteger(handle.pid) || handle.pid <= 0) {
     return { ok: false, reason: 'no_pid' };
@@ -571,10 +591,12 @@ async function originalProcessAliveForHandle(handle) {
   return fingerprintsMatch(handle.process_fingerprint, current);
 }
 
-async function sendSignal(handle, signal) {
+// `groupOnly`: the group alone, never the pid, which may have been reused once
+// the process exited (a timer that fires after the run).
+async function sendSignal(handle, signal, { groupOnly = false } = {}) {
   const targets = [];
   if (Number.isInteger(handle.pgid) && handle.pgid > 0) targets.push(-handle.pgid);
-  if (Number.isInteger(handle.pid) && handle.pid > 0) targets.push(handle.pid);
+  if (!groupOnly && Number.isInteger(handle.pid) && handle.pid > 0) targets.push(handle.pid);
 
   let delivered = false;
   let lastError = null;
@@ -624,7 +646,18 @@ async function writeEnvelopeIfValid({ paths, stdout, outputFormat }) {
 // the CLI's does, whatever this process's working directory: the write guard
 // before the run and the registration under the lock judge that checkout.
 export async function runPeer(args) {
-  return runInCommandDirectory(args?.repoRoot ?? process.cwd(), () => runPeerInCheckout(args));
+  return runInCommandDirectory(args?.repoRoot ?? process.cwd(), async () => withSnapshotRecord(await runPeerInCheckout(args)));
+}
+
+// The result carries the handle's `snapshot` record as the run left it (C96):
+// read after the run's cleanup, so it says whether the snapshot was removed.
+async function withSnapshotRecord(result) {
+  try {
+    result.snapshot = (await readHandle(result.handle_path)).snapshot ?? null;
+  } catch {
+    result.snapshot = null;
+  }
+  return result;
 }
 
 async function runPeerInCheckout(args) {
@@ -697,6 +730,16 @@ async function runPeerInCheckout(args) {
   await writeHandle(paths.handle, handle);
 
   let promptCleanup = null;
+  // C96 — a codex peer's snapshot of the checkout, the peer's process once it
+  // runs, and the cancellation a signal to the CLI requests.
+  let snapshot = null;
+  let peerProcess = null;
+  let ownerWrite = null;
+  let killTimer = null;
+  let exitWatch = null;
+  let retireCancel = null;
+  const cancellation = options.cancellation ?? null;
+  const graceMs = Number.isInteger(options.cancelGraceMs) ? options.cancelGraceMs : DEFAULT_CANCEL_GRACE_MS;
   try {
     const prompt = await materializePrompt({
       paths,
@@ -708,15 +751,87 @@ async function runPeerInCheckout(args) {
 
     await recordPendingIfEnsemble(await readHandle(paths.handle));
 
+    const isolation = await isolatePeer({ options, runId, paths, companion, cancellation });
+    if (isolation.failed) return runResult(paths, isolation.failed, { ok: false, companionPath });
+    snapshot = isolation.snapshot;
+    // A codex peer never inherits a git selector, snapshot or not: one naming
+    // the live repository would send its git commands there.
+    if (options.peer === 'codex') options.env = scrubGitSelectors(options.env);
+    let companionPromptFile = prompt.promptFile;
+    if (snapshot) {
+      // The companion reads a private copy of the prompt, its live-checkout
+      // paths rewritten to the snapshot; the caller's file is left as it is.
+      const copy = await writeSnapshotPrompt(snapshot, await readFile(prompt.promptFile, 'utf8'), [options.cwd, options.repoRoot]);
+      companionPromptFile = copy.path;
+      await updateHandle(paths.handle, (h) => {
+        h.snapshot = peerSnapshotRecord(snapshot, { prompt_paths_rewritten: copy.count });
+      });
+    }
+    if (cancellation?.signal) {
+      const cancelled = await updateHandle(paths.handle, (h) => {
+        h.status = 'cancelled';
+        h.completed_at = nowIso();
+        h.error_kind = 'cancelled';
+        h.companion = companionRecord(companion);
+      });
+      return runResult(paths, cancelled, { ok: false, companionPath });
+    }
+    // Shown each update of the handle before it is written (handleHooks).
+    // A cancellation this run was asked for, or one the handle recorded before
+    // the update — requested, or already carried out by a `cancel` that ended
+    // as the peer exited on its own — makes a terminal record cancelled:
+    // decided here, in the serialized write, so the status the terminal write
+    // computed from its earlier read does not overwrite it. (That read sits in
+    // the spawn section the four peer-runner copies keep byte-identical, so the
+    // decision is made here instead.) And on the update that records the
+    // running peer, the peer's process goes into the snapshot's owner record
+    // and a cancellation signals its group, whether or not that write reaches
+    // the ledger.
+    handleHooks.set(paths.handle, (h, before) => {
+      options.hooks?.beforeHandleWrite?.(h, before);
+      if (isTerminalStatus(h.status) && h.status !== 'cancelled' && (cancellation?.signal || before === 'cancel_requested' || before === 'cancelled')) {
+        h.status = 'cancelled';
+        h.error_kind = 'cancelled';
+      }
+      if (peerProcess !== null || h.status !== 'running' || !Number.isInteger(h.pid)) return;
+      peerProcess = { pid: h.pid, pgid: h.pgid, fingerprint: h.process_fingerprint };
+      if (snapshot) ownerWrite = recordSnapshotCompanion(snapshot, peerProcess).catch(() => {});
+      // A child the companion leaves behind with its stdout or stderr keeps
+      // the pipes, and so the close barrier, open: once the companion itself
+      // has exited, what is left of its group gets a moment, then is stopped.
+      if (Number.isInteger(peerProcess.pgid)) {
+        let goneSince = null;
+        exitWatch = setInterval(() => {
+          void isProcessAlive(peerProcess.pid).then((alive) => {
+            if (alive || exitWatch === null) return;
+            goneSince ??= Date.now();
+            if (Date.now() - goneSince < EXIT_LINGER_MS) return;
+            clearInterval(exitWatch);
+            void stopProcessGroup(peerProcess.pgid, graceMs);
+          });
+        }, 100);
+        exitWatch.unref?.();
+      }
+      retireCancel = cancellation?.onRequest(() => {
+        void cancelOwnPeer(paths, peerProcess);
+        killTimer ??= setTimeout(() => {
+          void sendSignal({ pid: peerProcess.pid, pgid: peerProcess.pgid }, 'SIGKILL', { groupOnly: true });
+        }, graceMs);
+        killTimer.unref?.();
+      });
+    });
+
     await updateHandle(paths.handle, (h) => {
       h.status = 'spawning';
       h.companion = companionRecord(companion);
     });
+    if (snapshot) await recordSnapshotLaunch(snapshot);
 
-    const childArgs = ['task', '--prompt-file', prompt.promptFile, '--output-format', options.outputFormat];
+    const childArgs = ['task', '--prompt-file', companionPromptFile, '--output-format', options.outputFormat];
     if (options.model) childArgs.push('--model', options.model);
     if (options.effort) childArgs.push('--effort', options.effort);
-    if (options.cwd) childArgs.push('--cwd', resolve(options.cwd));
+    const peerCwd = snapshot?.peer_cwd ?? options.cwd;
+    if (peerCwd) childArgs.push('--cwd', resolve(peerCwd));
 
     const detached = process.platform !== 'win32';
 
@@ -887,11 +1002,118 @@ async function runPeerInCheckout(args) {
       companionPath,
       envelope: envelopeResult.envelope,
     });
+  } catch (err) {
+    // Whatever threw (the prompt copy, the launch record, a ledger write),
+    // the ledger ends terminal: a run left queued or spawning reads as live
+    // to every reader, and its pending ensemble never settles.
+    await updateHandle(paths.handle, (h) => {
+      if (isTerminalStatus(h.status)) return h;
+      h.status = 'failed';
+      h.completed_at = nowIso();
+      h.exit_code = null;
+      h.error_kind = err?.code ?? 'runner_error';
+    }).catch(() => {});
+    throw err;
   } finally {
+    // An ended run answers no later cancellation: its peer's pid and group
+    // may by then be another process's.
+    retireCancel?.();
+    handleHooks.delete(paths.handle);
+    if (killTimer) clearTimeout(killTimer);
+    if (exitWatch) clearInterval(exitWatch);
+    exitWatch = null;
+    // Nothing of the peer's group outlives the run, whatever its peer: a
+    // child left behind would run on unseen (and, for a codex peer, in a
+    // snapshot about to be removed).
+    await stopProcessGroup(peerProcess?.pgid, graceMs);
+    if (snapshot) {
+      // Every end — completed, failed, cancelled, thrown — removes the
+      // snapshot. A cleanup failure is recorded and reported; it never
+      // changes the run's status.
+      await ownerWrite;
+      const removed = await removePeerSnapshot(snapshot, { env: options.env });
+      if (removed.error) process.stderr.write(`peer-runner: snapshot cleanup failed: ${removed.error}\n`);
+      await updateHandle(paths.handle, (h) => {
+        // A run that threw before the record was written gets it here.
+        h.snapshot = { ...(h.snapshot ?? peerSnapshotRecord(snapshot)), removed_at: removed.removed ? nowIso() : null, cleanup_error: removed.error };
+      }).catch(() => {});
+    }
     if (promptCleanup) {
       await rm(promptCleanup, { recursive: true, force: true });
     }
   }
+}
+
+// C96 — where a peer runs. A codex peer runs in a snapshot of the checkout
+// (lib/peer-snapshot.mjs), made after reclaiming the snapshots of this
+// repository whose owners are gone; a directory that is no checkout, or a
+// claude peer, runs as before, recorded. A snapshot that cannot be made fails
+// the run (error_kind snapshot_failed) before any companion is spawned:
+// running the peer in the live tree instead is the failure this prevents.
+async function isolatePeer({ options, runId, paths, companion, cancellation }) {
+  const record = async (fields) => updateHandle(paths.handle, (h) => {
+    h.snapshot = peerSnapshotRecord(fields);
+  });
+  if (options.peer !== 'codex') {
+    await record({ isolation: 'none', reason: 'peer-not-isolated' });
+    return { snapshot: null };
+  }
+  await reclaimPeerSnapshots({ cwd: options.cwd, env: options.env }).catch(() => {});
+  let snapshot;
+  // A cancellation stops the capture, not only what follows it.
+  const abort = new AbortController();
+  const retireAbort = cancellation?.onRequest(() => abort.abort());
+  try {
+    snapshot = await createPeerSnapshot({ cwd: options.cwd, runId, persona: 'orchestrator', env: options.env, signal: abort.signal });
+    retireAbort?.();
+  } catch (err) {
+    retireAbort?.();
+    const reason = err?.reason ?? 'snapshot-error';
+    if (reason === 'cancelled' && cancellation?.signal) {
+      const cancelled = await updateHandle(paths.handle, (h) => {
+        h.status = 'cancelled';
+        h.completed_at = nowIso();
+        h.error_kind = 'cancelled';
+        h.companion = companionRecord(companion);
+        h.snapshot = peerSnapshotRecord({ isolation: 'failed', reason });
+      });
+      return { failed: cancelled };
+    }
+    process.stderr.write(`peer-runner: no snapshot for the peer (${reason}): ${err?.message ?? err}\n`);
+    const failed = await updateHandle(paths.handle, (h) => {
+      h.status = 'failed';
+      h.completed_at = nowIso();
+      h.exit_code = null;
+      h.error_kind = 'snapshot_failed';
+      h.companion = companionRecord(companion);
+      h.snapshot = peerSnapshotRecord({ isolation: 'failed', reason });
+    });
+    return { failed };
+  }
+  if (snapshot.isolation !== 'snapshot') {
+    await record(snapshot);
+    return { snapshot: null };
+  }
+  // Recorded by the caller, which owns (and so removes) the snapshot first.
+  return { snapshot };
+}
+
+// A cancellation of this process's own run (a signal to the CLI): recorded,
+// then the peer's group is asked to stop; the close barrier and the finally
+// do the rest. A run already ended keeps its status.
+async function cancelOwnPeer(paths, proc) {
+  // A handle the ledger shows ended is not signalled; one whose update failed
+  // still is (its peer may be running).
+  let ended = false;
+  await updateHandle(paths.handle, (h) => {
+    if (isTerminalStatus(h.status)) {
+      ended = true;
+      return h;
+    }
+    h.status = 'cancel_requested';
+    h.error_kind = 'cancelled';
+  }).catch(() => {});
+  if (!ended) await sendSignal({ pid: proc.pid, pgid: proc.pgid }, 'SIGTERM');
 }
 
 async function runResult(paths, handle, extra = {}) {
@@ -1042,6 +1264,10 @@ export async function cancelPeerRun({
 // (Decision 4, item 2). `root` is the checkout's own directory, `roots`
 // every directory read, and the lists are all of theirs.
 export async function sweepPeerRuns({ repoRoot = process.cwd(), applyRetention = false, ...options } = {}) {
+  // C96 — the peer snapshots of this repository whose owners are gone,
+  // reclaimed first: they are no ledger, and a scan below that refuses (two
+  // homes holding ledgers) must not keep them.
+  const snapshots = await reclaimPeerSnapshots({ cwd: repoRoot }).catch((error) => ({ reclaimed: [], kept: [], errors: [String(error?.message ?? error)] }));
   // The checkout's own directory, found apart from the scans (when it is
   // linked to another root's, the scans hold that root's spelling only), and
   // before any of them changes a home: a prune must not move it.
@@ -1077,6 +1303,7 @@ export async function sweepPeerRuns({ repoRoot = process.cwd(), applyRetention =
   merged.retention_applied = applyRetention;
   merged.ambiguous = [...ambiguous].map(([run_id, dirs]) => ({ run_id, dirs }));
   merged.claims = claims;
+  merged.snapshots = snapshots;
   return merged;
 }
 
@@ -1306,7 +1533,14 @@ async function pruneClaimed({ planned, paths, identity, dirs, ambiguous }) {
   return { run_id: runId, reason, kept: claim };
 }
 
-// Exported for the guard's tests (ADR-0067 Decision 4, item 2).
+// A non-terminal handle whose run is over: the envelope decides when there is
+// one; otherwise a run whose process is gone and whose handle has not moved
+// for `staleGraceMs` is orphaned. `queued` is judged by staleness alone (the
+// persona runners' PC2b RV1 rule): no process is recorded before the spawn,
+// and the PID recorded after it is the companion's, never the runner's. A run
+// is `queued` while its snapshot is captured (C96), so a runner killed then
+// leaves a ledger only this rule ends. Exported for the guard's tests (ADR-0067
+// Decision 4, item 2).
 export async function reconcileOne(paths, handle, { staleGraceMs, now, guard = null }) {
   if (isTerminalStatus(handle.status)) return handle;
   // A caller's check (a sweep's: is this still the only ledger of its run
@@ -1347,14 +1581,19 @@ export async function reconcileOne(paths, handle, { staleGraceMs, now, guard = n
     return next ?? handle;
   }
 
-  if (['spawning', 'running', 'cancel_requested'].includes(handle.status)) {
+  if (['queued', 'spawning', 'running', 'cancel_requested'].includes(handle.status)) {
     const live = await originalProcessAliveForHandle(handle);
     const refMs = Date.parse(handle.updated_at ?? handle.started_at);
     const stale = Number.isFinite(refMs) && now.getTime() - refMs > staleGraceMs;
     if (!live && stale) {
+      // The runner may have finished between the reads above and this write:
+      // an envelope that appeared is reconciled as such, and the handle is
+      // re-read so a terminal status the runner wrote is never replaced (the
+      // persona runners' PC2b Review of code step 6).
+      if (await exists(paths.envelope)) return reconcileOne(paths, await readHandle(paths.handle), { staleGraceMs, now, guard });
       if (!allowed()) return handle;
       const next = await updateHandle(paths.handle, (h) => {
-        if (!['spawning', 'running', 'cancel_requested'].includes(h.status)) return h;
+        if (!['queued', 'spawning', 'running', 'cancel_requested'].includes(h.status)) return h;
         h.status = 'orphaned';
         h.completed_at ??= now.toISOString();
         h.pid = null;
@@ -1494,6 +1733,10 @@ function printHelp() {
     '      [--workflow-path <path> --phase <p> --ensemble-type <t>]',
     '      [--host claude|codex] [--model <id>] [--effort <level>]',
     '      [--cwd <dir>] [--output-format text|json] [--retain-prompt]',
+    '      [--cancel-grace-ms <ms>]',
+    '      A codex peer runs in a snapshot of the checkout --cwd names (HEAD,',
+    '      the index and the working tree, in a temporary worktree removed when',
+    '      the run ends): the live tree is never its directory (C96).',
     '',
     '  status --run-id <id> [--repo-root <path>] [--json]',
     '  cancel --run-id <id> [--repo-root <path>] [--cancel-grace-ms <ms>]',
@@ -1525,25 +1768,43 @@ async function cliMain(argv) {
 async function cliRun(opts) {
   try {
     if (opts.subcommand === 'run') {
-      const result = await runPeer({
-        repoRoot: opts.repoRoot,
-        runId: opts.runId,
-        kind: opts.kind,
-        workflowPath: opts.workflowPath,
-        phase: opts.phase,
-        ensembleType: opts.ensembleType,
-        host: opts.host,
-        peer: opts.peer,
-        promptFile: opts.promptFile,
-        promptText: opts.promptText,
-        model: opts.model,
-        effort: opts.effort,
-        cwd: opts.cwd,
-        outputFormat: opts.outputFormat,
-        retainPrompt: opts.retainPrompt,
-        env: process.env,
-      });
+      // C96 — a signal ends the run the way a cancel does: the peer's group is
+      // stopped, the ledger records the cancellation, the snapshot is removed,
+      // and the CLI exits 128+n. Installed before the snapshot is made.
+      const cancellation = createRunCancellation();
+      const handlers = new Map(RUN_SIGNALS.map((sig) => [sig, () => cancellation.request(sig)]));
+      for (const [sig, fn] of handlers) process.on(sig, fn);
+      let result;
+      try {
+        result = await runPeer({
+          cancellation,
+          cancelGraceMs: Number.isInteger(opts.cancelGraceMs)
+            ? opts.cancelGraceMs
+            : parsePositiveInt(process.env.PEER_RUN_CANCEL_GRACE_MS, DEFAULT_CANCEL_GRACE_MS),
+          repoRoot: opts.repoRoot,
+          runId: opts.runId,
+          kind: opts.kind,
+          workflowPath: opts.workflowPath,
+          phase: opts.phase,
+          ensembleType: opts.ensembleType,
+          host: opts.host,
+          peer: opts.peer,
+          promptFile: opts.promptFile,
+          promptText: opts.promptText,
+          model: opts.model,
+          effort: opts.effort,
+          cwd: opts.cwd,
+          outputFormat: opts.outputFormat,
+          retainPrompt: opts.retainPrompt,
+          env: process.env,
+        });
+      } finally {
+        for (const [sig, fn] of handlers) process.off(sig, fn);
+      }
       process.stdout.write(`${JSON.stringify(result)}\n`);
+      // The exit code follows the ledger: a signal that came after the run's
+      // terminal write leaves the run as it ended.
+      if (cancellation.signal && result.status === 'cancelled') return 128 + osConstants.signals[cancellation.signal];
       return result.ok ? 0 : (result.exit_code ?? 1);
     }
 

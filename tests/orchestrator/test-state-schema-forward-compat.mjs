@@ -532,7 +532,7 @@ async function importSchema11Reader(dir) {
   await copyFile(resolve(REPO_ROOT, 'plugins/orchestrator/scripts/landing.mjs'), join(dir, 'landing.mjs'));
   // The state root, run locks, cutover and proposals (ADR-0067) the script imports beside it.
   await mkdir(join(dir, 'lib'), { recursive: true });
-  for (const lib of ['state-root.mjs', 'run-locks.mjs', 'cutover.mjs', 'lane-advice.mjs', 'worktree-proposal.mjs']) {
+  for (const lib of ['state-root.mjs', 'run-locks.mjs', 'process-identity.mjs', 'cutover.mjs', 'lane-advice.mjs', 'worktree-proposal.mjs']) {
     await copyFile(resolve(REPO_ROOT, 'plugins/orchestrator/scripts/lib', lib), join(dir, 'lib', lib));
   }
   return import(pathToFileURL(join(dir, 'state.mjs')).href);

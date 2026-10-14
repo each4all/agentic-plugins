@@ -12,6 +12,8 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { fingerprintsMatch, isProcessAlive } from './process-identity.mjs';
+
 export const AUTOPILOT_DIR_REL = '.agentic-plugins/runs/autopilot';
 
 // The worktree that holds the repository's common git dir: the place every
@@ -29,29 +31,11 @@ export function mainWorktreeRoot(repoRoot) {
 }
 
 
-// Whether a pid is running (EPERM: running, as another user's).
-export async function isProcessAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return err?.code === 'EPERM';
-  }
-}
-
-// Whether two fingerprints name one process (peer-runner's rule).
-export function fingerprintsMatch(recorded, current) {
-  if (!recorded || recorded.kind === 'none') return false;
-  if (!current || current.kind !== recorded.kind) return false;
-  if (recorded.kind === 'linux_proc_starttime') {
-    return recorded.starttime === current.starttime;
-  }
-  if (recorded.kind === 'macos_lstart_command') {
-    return recorded.lstart === current.lstart && recorded.command === current.command;
-  }
-  return false;
-}
+// Whether a pid is running (EPERM: running, as another user's), and whether
+// two fingerprints name one process: the peer runner's rule, one definition
+// in lib/process-identity.mjs (C96), which the peer snapshot's owner record
+// is judged by too. Re-exported for the callers that import them from here.
+export { fingerprintsMatch, isProcessAlive };
 
 // ---------------------------------------------------------------------------
 // Locks

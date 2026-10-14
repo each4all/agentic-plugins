@@ -406,8 +406,8 @@ test('a violation planted in each corpus class is reported, with its line', () =
   ]);
   // The persona heredoc form, which a delimiter line in the text ends.
   deepStrictEqual(plant(PLAN, '--summary-file "$TEXT_DIR/summary.txt" \\', "--summary \"$(cat <<'PHASE_NOTE'\n)\" \\"), [
-    ['--summary takes an expansion', '--verdict "$VERDICT" --summary "$(cat <<\'PHASE_NOTE\''],
-    ['a heredoc', '--verdict "$VERDICT" --summary "$(cat <<\'PHASE_NOTE\''],
+    ['--summary takes an expansion', '--verdict "${ENSEMBLE_VERDICT:-$VERDICT}" --summary "$(cat <<\'PHASE_NOTE\''],
+    ['a heredoc', '--verdict "${ENSEMBLE_VERDICT:-$VERDICT}" --summary "$(cat <<\'PHASE_NOTE\''],
   ]);
   // Single quotes, the glued = spelling, and a bare placeholder.
   deepStrictEqual(plant(PLAN, '  --decision-file "$TEXT_DIR/decision.txt" \\', "  --decision '<one-line decision rationale>' --architecture=<summary> \\"), [
