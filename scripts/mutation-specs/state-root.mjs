@@ -1592,8 +1592,8 @@ export const MUTATIONS = [
   },
   {
     id: 'J19', file: ORCH_RUNNER, tests: [T_ORCH],
-    from: "  return runInCommandDirectory(args?.repoRoot ?? process.cwd(), () => runPeerInCheckout(args));",
-    to: "  return runPeerInCheckout(args);",
+    from: "  return runInCommandDirectory(args?.repoRoot ?? process.cwd(), async () => withSnapshotRecord(await runPeerInCheckout(args)));",
+    to: "  return withSnapshotRecord(await runPeerInCheckout(args));",
     why: "orchestrator's runPeer called as an API judges the storage root",
     killed_by: /runPeer called as an API judges the checkout repoRoot names/,
   },
@@ -2184,7 +2184,7 @@ export const MUTATIONS = [
   },
   {
     id: 'M18', file: ORCH_RUNNER, tests: [T_ORCH],
-    from: "        if (!['spawning', 'running', 'cancel_requested'].includes(h.status)) return h;\n        h.status = 'orphaned';",
+    from: "        if (!['queued', 'spawning', 'running', 'cancel_requested'].includes(h.status)) return h;\n        h.status = 'orphaned';",
     to: "        h.status = 'orphaned';",
     why: "orchestrator's orphan write replaces a cancel written after the caller's read",
     killed_by: /keeps a terminal status a cancel wrote after the caller's read \(orphan branch\)/,

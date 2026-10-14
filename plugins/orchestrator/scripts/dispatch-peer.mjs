@@ -50,12 +50,26 @@ import { readFile, writeFile, stat, readdir, mkdtemp, rm } from 'node:fs/promise
 import { realpathSync } from 'node:fs';
 import { join, isAbsolute, resolve, dirname, relative, basename } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { homedir, tmpdir } from 'node:os';
+import { constants as osConstants, homedir, tmpdir } from 'node:os';
 import { recordPendingEnsemble } from './state.mjs';
+import { createRunCancellation, fingerprintForPid, stopProcessGroup } from './lib/process-identity.mjs';
+import {
+  createPeerSnapshot,
+  reclaimPeerSnapshots,
+  recordSnapshotCompanion,
+  recordSnapshotLaunch,
+  removePeerSnapshot,
+  scrubGitSelectors,
+  writeSnapshotPrompt,
+} from './lib/peer-snapshot.mjs';
 
 const ENV_OVERRIDE = 'AGENTIC_COMPANIONS_ROOT';
 const VALID_PEERS = new Set(['claude', 'codex']);
 const VALID_OUTPUT_FORMATS = new Set(['text', 'json']);
+const DEFAULT_CANCEL_GRACE_MS = 10000;
+// How long a peer's group may outlive the companion's own exit (C96).
+const EXIT_LINGER_MS = 1000;
+const DISPATCH_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 
 // -----------------------------------------------------------------------------
 // Companion path resolution
@@ -488,6 +502,9 @@ export function validateEnvelopeShape(env) {
 //   first, before resolving the companion — engineer relies on the
 //   resume command's Step 5b to scrub orphans, a path orchestrator MVP
 //   doesn't yet have).
+//   A codex peer's snapshot of the checkout (C96), and the reclaim of
+//   abandoned ones, come after the resolution too: a missing companion
+//   leaves no snapshot and reclaims none.
 
 export async function dispatchPeer({
   peer,
@@ -499,6 +516,10 @@ export async function dispatchPeer({
   outputFormat = 'json',
   env = process.env,
   ensembleBookkeeping = null,
+  // C96 — a cancellation a signal to the CLI requests (createRunCancellation),
+  // and how long the peer's group gets to stop before SIGKILL.
+  cancellation = null,
+  cancelGraceMs = DEFAULT_CANCEL_GRACE_MS,
   // Test seams for companion resolution (see resolveCompanion).
   home,
   selfPath,
@@ -570,36 +591,150 @@ export async function dispatchPeer({
     }
   }
 
-  // Materialize promptText to a temp file so the companion sees a stable path.
   let cleanupTmpDir = null;
-  let resolvedPromptFile = promptFile;
-  if (promptText !== undefined) {
-    const dir = await mkdtemp(join(tmpdir(), 'orchestrator-prompt-'));
-    cleanupTmpDir = dir;
-    resolvedPromptFile = join(dir, 'mission.xml');
-    await writeFile(resolvedPromptFile, promptText, 'utf8');
-  }
-
-  const args = ['task', '--prompt-file', resolvedPromptFile, '--output-format', outputFormat];
-  if (model) args.push('--model', model);
-  if (effort) args.push('--effort', effort);
-  if (cwd) args.push('--cwd', cwd);
-
+  // C96 — a codex peer's snapshot of the checkout, and the peer's process.
+  let snapshot = null;
+  let peerProcess = null;
+  let ownerWrite = null;
+  let killTimer = null;
+  let lingerTimer = null;
+  let retireCancel = null;
   try {
+    // Materialize promptText to a temp file so the companion sees a stable path.
+    let resolvedPromptFile = promptFile;
+    if (promptText !== undefined) {
+      const dir = await mkdtemp(join(tmpdir(), 'orchestrator-prompt-'));
+      cleanupTmpDir = dir;
+      resolvedPromptFile = join(dir, 'mission.xml');
+      await writeFile(resolvedPromptFile, promptText, 'utf8');
+    }
+
+    // A codex peer runs in a snapshot of the checkout (lib/peer-snapshot.mjs),
+    // with a private copy of the prompt whose live-checkout paths name the
+    // snapshot; a directory that is no checkout, or a claude peer, runs as
+    // before. A snapshot that cannot be made fails the dispatch before any
+    // companion runs.
+    let peerCwd = cwd;
+    let spawnEnv = env;
+    if (peer === 'codex') {
+      const base = cwd ?? process.cwd();
+      // A codex peer never inherits a git selector, snapshot or not.
+      spawnEnv = scrubGitSelectors(env);
+      await reclaimPeerSnapshots({ cwd: base, env }).catch(() => {});
+      // A cancellation stops the capture, not only what follows it.
+      const abort = new AbortController();
+      const retireAbort = cancellation?.onRequest(() => abort.abort());
+      try {
+        snapshot = await createPeerSnapshot({ cwd: base, runId: ensembleBookkeeping?.runId ?? null, persona: 'orchestrator', env, signal: abort.signal });
+        retireAbort?.();
+      } catch (err) {
+        retireAbort?.();
+        if (err?.reason === 'cancelled' && cancellation?.signal) {
+          return {
+            ok: false,
+            status: 'companion_error',
+            exitCode: 128 + (osConstants.signals[cancellation.signal] ?? 15),
+            stdout: '',
+            stderr: `dispatch-peer: cancelled by ${cancellation.signal} while the snapshot was made`,
+            envelope: null,
+            kind: 'cancelled',
+            companionPath,
+          };
+        }
+        return {
+          ok: false,
+          status: 'companion_error',
+          exitCode: 3,
+          stdout: '',
+          stderr: `dispatch-peer: no snapshot for the peer (${err?.reason ?? 'snapshot-error'}): ${err?.message ?? err}`,
+          envelope: null,
+          kind: 'snapshot_failed',
+          companionPath,
+        };
+      }
+      if (snapshot.isolation === 'snapshot') {
+        const copy = await writeSnapshotPrompt(snapshot, await readFile(resolvedPromptFile, 'utf8'), [base]);
+        resolvedPromptFile = copy.path;
+        peerCwd = snapshot.peer_cwd;
+      } else {
+        snapshot = null;
+      }
+    }
+    if (cancellation?.signal) {
+      return {
+        ok: false,
+        status: 'companion_error',
+        exitCode: 128 + (osConstants.signals[cancellation.signal] ?? 15),
+        stdout: '',
+        stderr: `dispatch-peer: cancelled by ${cancellation.signal} before the companion ran`,
+        envelope: null,
+        kind: 'cancelled',
+        companionPath,
+      };
+    }
+
+    const args = ['task', '--prompt-file', resolvedPromptFile, '--output-format', outputFormat];
+    if (model) args.push('--model', model);
+    if (effort) args.push('--effort', effort);
+    if (peerCwd) args.push('--cwd', peerCwd);
+
+    // The companion gets its own process group, so a signal to this wrapper
+    // (doctor's timeout, a host cancelling its task) is forwarded to the whole
+    // peer, and what the peer leaves running is stopped before the snapshot
+    // is removed.
+    const detached = process.platform !== 'win32';
+    if (snapshot) await recordSnapshotLaunch(snapshot);
     const child = spawn('node', [companionPath, ...args], {
-      env,
+      env: spawnEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached,
     });
 
     const stdoutChunks = [];
     const stderrChunks = [];
     child.stdout.on('data', (c) => stdoutChunks.push(c));
     child.stderr.on('data', (c) => stderrChunks.push(c));
+    child.once('spawn', () => {
+      peerProcess = { pid: child.pid, pgid: detached ? child.pid : null };
+      ownerWrite = fingerprintForPid(child.pid)
+        .then((fingerprint) => (snapshot ? recordSnapshotCompanion(snapshot, { ...peerProcess, fingerprint }) : null))
+        .catch(() => {});
+      retireCancel = cancellation?.onRequest(() => {
+        try {
+          process.kill(detached ? -child.pid : child.pid, 'SIGTERM');
+        } catch {
+          /* already gone */
+        }
+        killTimer ??= setTimeout(() => {
+          try {
+            if (detached) process.kill(-child.pid, 'SIGKILL');
+          } catch {
+            /* already gone */
+          }
+        }, cancelGraceMs);
+        killTimer.unref?.();
+      });
+    });
+
+    // A child the companion leaves behind holding its stdout or stderr keeps
+    // the pipes, and so 'close', open: once the companion itself has exited,
+    // what is left of its group gets a moment, then is stopped.
+    child.once('exit', () => {
+      if (!detached) return;
+      lingerTimer = setTimeout(() => {
+        void stopProcessGroup(child.pid, cancelGraceMs);
+      }, EXIT_LINGER_MS);
+      lingerTimer.unref?.();
+    });
 
     const exitCode = await new Promise((resolveP, rejectP) => {
       child.once('error', rejectP);
       child.once('close', (code) => resolveP(code ?? -1));
     });
+    // The companion has exited: a later cancellation signals nothing of it,
+    // its pid may be another process's (the finally stops what is left of its
+    // group).
+    retireCancel?.();
 
     const stdout = Buffer.concat(stdoutChunks).toString('utf8');
     const stderr = Buffer.concat(stderrChunks).toString('utf8');
@@ -665,6 +800,18 @@ export async function dispatchPeer({
       companionPath,
     };
   } finally {
+    retireCancel?.();
+    if (killTimer) clearTimeout(killTimer);
+    if (lingerTimer) clearTimeout(lingerTimer);
+    // Nothing of the peer's group outlives the dispatch, whatever its peer.
+    await stopProcessGroup(peerProcess?.pgid, cancelGraceMs);
+    if (snapshot) {
+      // Every end removes the snapshot; a failure to is reported, never a
+      // changed result.
+      await ownerWrite;
+      const removed = await removePeerSnapshot(snapshot, { env });
+      if (removed.error) process.stderr.write(`dispatch-peer: snapshot cleanup failed: ${removed.error}\n`);
+    }
     if (cleanupTmpDir) {
       try {
         await rm(cleanupTmpDir, { recursive: true, force: true });
@@ -755,11 +902,17 @@ function printHelp() {
       'after synthesis to pop the pending entry and append the result',
       '(three-step atomic mutation).',
       '',
+      'A codex peer runs in a snapshot of the checkout --cwd (or the current',
+      'directory) names: HEAD, the index and the working tree in a temporary',
+      'worktree removed when the dispatch ends, never the live tree (C96).',
+      '',
       'Exit codes (per companions/contract.md §5.1):',
       '  0 — success',
       '  1 — peer_run_error',
       '  2 — companion_misuse (this wrapper or downstream companion)',
-      '  3 — peer CLI / infrastructure failure (graceful — caller may proceed LOCAL-ONLY)',
+      '  3 — peer CLI / infrastructure failure (graceful — caller may proceed LOCAL-ONLY),',
+      '      or a snapshot that cannot be made',
+      '  128+n — stopped by signal n',
       '',
     ].join('\n'),
   );
@@ -811,7 +964,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     };
   }
 
-  const result = await dispatchPeer({ ...opts, ensembleBookkeeping });
+  // C96 — a signal stops the peer's group and removes its snapshot before
+  // the CLI exits 128+n; the handlers are installed before the snapshot.
+  const cancellation = createRunCancellation();
+  for (const sig of DISPATCH_SIGNALS) process.on(sig, () => cancellation.request(sig));
+  const result = await dispatchPeer({ ...opts, ensembleBookkeeping, cancellation });
 
   if (opts.outputFormat === 'json' && result.envelope) {
     process.stdout.write(JSON.stringify(result.envelope) + '\n');
@@ -821,5 +978,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   if (result.stderr) {
     process.stderr.write(result.stderr.endsWith('\n') ? result.stderr : result.stderr + '\n');
   }
+  if (cancellation.signal) process.exit(128 + osConstants.signals[cancellation.signal]);
   process.exit(result.exitCode ?? 1);
 }

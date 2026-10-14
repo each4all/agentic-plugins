@@ -155,7 +155,7 @@ The four bookkeeping flags (`--workflow-path`, `--phase`, `--ensemble-type`, `--
 
 1. Resolve the companion script (`peer codex`) via `companions/discover-peer.mjs`.
 2. **If companion missing** → return `peer_cli_not_found`, create no peer-run ledger, and record NO `pending_ensemble` entry (orchestrator-specific graceful-degradation order). Caller proceeds with a LOCAL-ONLY plan.
-3. **If companion present** → create `.agentic-plugins/state/orchestrator/peer-runs/<run_id>/` for new repos (or the legacy peer-run home until explicit migration), record a `pending_ensemble` entry under the workflow file's per-file lock, then spawn the companion.
+3. **If companion present** → create `.agentic-plugins/state/orchestrator/peer-runs/<run_id>/` for new repos (or the legacy peer-run home until explicit migration), record a `pending_ensemble` entry under the workflow file's per-file lock, then, for a codex peer, make a snapshot of HEAD plus the working tree and the index in a temporary worktree (C96), and spawn the companion there, its `--cwd` and the prompt's absolute checkout paths pointing into the snapshot. A snapshot that cannot be made ends the run `failed` with `error_kind: snapshot_failed`, its pending entry recorded and no companion run. The snapshot is removed when the run ends, whatever its end.
 4. Tee stdout/stderr to bounded ledger files, write the final JSON envelope to `envelope.json`, and print machine-readable run metadata to `$PROMPT_FILE.run.json`.
 
 After synthesis, Phase 2 invokes `state.mjs ensemble-commit` with the same `--run-id` to atomically pop the pending entry (no-op if companion was missing), append the result to `ensemble_results`, and prune to the retention cap.
@@ -251,7 +251,13 @@ directory. `note.md` is the phase note, every `<…>` filled in:
 `summary.txt` is a one-line résumé of the AGREED / LOCAL-ONLY / PEER-ONLY /
 CONFLICT breakdown (about 200 characters), the summary the ensemble result
 records. Set `VERDICT` to the synthesized verdict (`pass`, `concerns` or
-`conflict`) and `RUN_ID` to the run id the dispatch generated, then run:
+`conflict`) and `RUN_ID` to the run id the dispatch generated. When the run
+launched and did not complete (`status` in `$PROMPT_FILE.run.json` is `failed`,
+`cancelled` or `orphaned`, whatever its `error_kind`, `snapshot_failed`
+included), the plan is LOCAL-ONLY: `VERDICT`
+stays the local synthesis's, which `plan-set` recorded, and the ensemble
+result records the run as failed: also set `ENSEMBLE_VERDICT=failed` and name
+the `error_kind` in `summary.txt`. Then run:
 
 ```bash
 TEXT_DIR='<directory from step 1>'
@@ -277,7 +283,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
   --workflow-path "$ACTIVE" \
   --run-id "$RUN_ID" \
   --phase plan --ensemble-type plan-verify \
-  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt" \
+  --verdict "${ENSEMBLE_VERDICT:-$VERDICT}" --summary-file "$TEXT_DIR/summary.txt" \
   --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 1
 
 # ADR-0067 Decision 8 — a conflict: the contested items become the macro's

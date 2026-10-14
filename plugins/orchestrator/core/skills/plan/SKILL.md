@@ -75,7 +75,7 @@ Follow the auto-activated Step 1 (Decompose) and Step 2 (Order) above to produce
 
 Launch the peer ensemble per `../_shared/references/ensemble-protocol.md` using the **Plan-verify** ensemble point. The peer receives the orchestrator's draft plan as `<inputs><input name="feature_description">…</input><input name="draft_plan">…</input></inputs>` (the only Independence Rule exception — Plan-verify is the per-protocol exception). The peer returns gaps, ordering issues, risk areas, and edge cases on the macro plan.
 
-Resolve the peer from the current host: Claude invokes Codex; Codex invokes Claude. Ensemble dispatch is via `peer-runner.mjs run --kind ensemble --peer <opposite-host> --prompt-file <the prompt file you wrote> --workflow-path <path> --phase plan --ensemble-type plan-verify --run-id macro-plan-<iso>-<rand>`. The runner preserves orchestrator's graceful-degradation order: if the opposite-host peer is unavailable, it returns kind `peer_cli_not_found` with no peer-run ledger and no pending entry; caller proceeds with a LOCAL-ONLY plan. If the companion resolves, the runner creates the peer-run ledger, records pending best-effort under the workflow file's per-file lock, and supervises stdout/stderr/envelope capture.
+Resolve the peer from the current host: Claude invokes Codex; Codex invokes Claude. Ensemble dispatch is via `peer-runner.mjs run --kind ensemble --peer <opposite-host> --prompt-file <the prompt file you wrote> --workflow-path <path> --phase plan --ensemble-type plan-verify --run-id macro-plan-<iso>-<rand>`. The runner preserves orchestrator's graceful-degradation order: if the opposite-host peer is unavailable, it returns kind `peer_cli_not_found` with no peer-run ledger and no pending entry; caller proceeds with a LOCAL-ONLY plan. If the companion resolves, the runner creates the peer-run ledger, records pending best-effort under the workflow file's per-file lock, and supervises stdout/stderr/envelope capture. A codex peer runs in a snapshot of HEAD plus the working tree and the index (C96), never the checkout, made after the pending entry and removed when the run ends; a snapshot that cannot be made ends the run `failed` with `error_kind: snapshot_failed` and no peer run (`../_shared/references/ensemble-protocol.md` § Step 1 and § Step 2).
 
 ### Step 4: Synthesize
 
@@ -102,7 +102,7 @@ Subtask validation runs at the write boundary (schema 1.1):
 
 ### Step 6: Commit the ensemble result
 
-Record the phase note, then commit the ensemble result. Write both files first, in the text directory: `note.md`, the phase note (`--phase-note-file <note file>`) shaped as `commands/plan.md` Phase 2 shows it, and `summary.txt`, a one-line résumé of the synthesis (`--summary-file <summary file>`). Set `ACTIVE` to the macro file's path, `VERDICT` to the synthesized verdict (`pass`, `concerns` or `conflict`) and `RUN_ID` to the Plan-verify run id, put the directory in the block's `TEXT_DIR` line, and run the block, `<plugin-root>` being the orchestrator plugin root (`../checkpoint/SKILL.md` § Command resolution).
+Record the phase note, then commit the ensemble result. Write both files first, in the text directory: `note.md`, the phase note (`--phase-note-file <note file>`) shaped as `commands/plan.md` Phase 2 shows it, and `summary.txt`, a one-line résumé of the synthesis (`--summary-file <summary file>`). Set `ACTIVE` to the macro file's path, `VERDICT` to the synthesized verdict (`pass`, `concerns` or `conflict`) and `RUN_ID` to the Plan-verify run id; when the run launched and did not complete (`status` is `failed`, `cancelled` or `orphaned`, whatever its `error_kind`, `snapshot_failed` included), the plan is LOCAL-ONLY, `VERDICT` stays the local synthesis's that Step 5 recorded, and you also set `ENSEMBLE_VERDICT=failed` and name the `error_kind` in `summary.txt`, so the ensemble result records the run as failed; put the directory in the block's `TEXT_DIR` line, and run the block, `<plugin-root>` being the orchestrator plugin root (`../checkpoint/SKILL.md` § Command resolution).
 
 The block first reads both files with `state.mjs`'s own reader, as `commands/plan.md` Phase 2 does, and stops before either write when it refuses one (missing, empty, a newline alone, a NUL byte, not UTF-8): the append must not record a note whose ensemble result then cannot be committed. `ensemble-commit` is a three-step atomic mutation: it pops the matching pending_ensemble entry, appends the result, and prunes to retention cap 20 — all under one `withFileLock` window.
 
@@ -123,7 +123,7 @@ node "<plugin-root>/scripts/state.mjs" append \
 node "<plugin-root>/scripts/state.mjs" ensemble-commit \
   --workflow-path "$ACTIVE" --run-id "$RUN_ID" \
   --phase plan --ensemble-type plan-verify \
-  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt" \
+  --verdict "${ENSEMBLE_VERDICT:-$VERDICT}" --summary-file "$TEXT_DIR/summary.txt" \
   --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 1
 ```
 

@@ -57,6 +57,10 @@ run can deny `rm`).
 
 ## Phase 1 — Dispatch with operational tracking
 
+A codex peer answers from a snapshot of the checkout, removed when the
+run ends (C96): a file it writes is discarded with it. Ask it for an
+answer, not for files.
+
 ```bash
 TEXT_DIR='<directory from step 1>'
 PEER='<claude|codex>'

@@ -599,7 +599,75 @@ any record and a live workflow stays writable while one exists.
 - A peer-now answer comes from the snapshot: files the peer writes are
   discarded with it.
 - Image dispatch is not isolated (its peer writes the image output), and
-  the orchestrator's copies of both dispatchers follow in their own change.
+  the orchestrator's copies of both dispatchers follow in their own change
+  (2026-10-14: they did; see the next amendment).
 - The handle's updates are serialized within one runner process only: a
   `cancel` from another process that lands between an update's read and
   its rename can still be overwritten (C139, present before this change).
+
+## Amendment 2026-10-14 — the orchestrator's peers run in a snapshot too (C96)
+
+**What.** `plugins/orchestrator/scripts/peer-runner.mjs` and
+`dispatch-peer.mjs` take the 2026-10-13 change as the persona copies have
+it: the same capture, materialization, prompt rewrite, lifecycle, reclaim,
+`snapshot_failed` outcome, cancellation and exit-linger rules, the CLI
+signal handling (128+n) and `--cancel-grace-ms`, and the `queued` rule
+of reconcile (a `queued` ledger whose handle has not moved for the stale
+grace is orphaned: a run is `queued` while its snapshot is captured, so a
+runner killed then leaves a ledger only this rule ends). The libraries are
+copies, not imports (ADR-0010 §5): `plugins/orchestrator/scripts/lib/`
+holds `peer-snapshot.mjs` and `process-identity.mjs`, each the
+`persona-pipeline/` source byte for byte under a three-line copy notice,
+and `tests/scripts/test-orchestrator-peer-snapshot-parity.mjs` fails when a
+copy drifts. So one owner-record schema, worktree lock reason and reclaim
+rule hold across the four plugins, and a reclaim run by any of them judges
+the others' snapshots the same way. `lib/run-locks.mjs` imports
+`isProcessAlive` and `fingerprintsMatch` from `process-identity.mjs`
+and re-exports them: one definition for the run locks, the runner and the
+snapshot's owner record.
+
+**The orchestrator's order is kept.** Both dispatchers still resolve the
+companion before anything is recorded. With no companion, `run` returns
+`peer_cli_not_found` with every path null and writes no ledger, no
+`pending_ensemble` row and no snapshot, and reclaims none: the reclaim, like
+the capture, comes after the resolution. With one, the order is the
+persona's from the ledger on (ledger, handle, prompt, pending row, snapshot,
+spawn). A `snapshot_failed` run therefore has its pending row recorded; the
+plan runbooks (`commands/plan.md`, `core/skills/plan/SKILL.md`) commit
+the ensemble result of any run that launched and did not complete
+(`failed`, `cancelled` or `orphaned`) as `failed`, its `error_kind` in
+the summary, while `plan-set` keeps the local synthesis's verdict. The
+orchestrator has no `settle`. `peer-runner sweep` reclaims snapshots
+before it scans the ledgers, so a scan that refuses (two homes holding
+ledgers) does not keep them.
+
+**Limits**, beyond those of the 2026-10-13 amendment:
+
+- A state home that is tracked or staged would be restored into the
+  snapshot by `read-tree I` (or by a peer's `checkout -- .`), and the
+  ADR-0067 write guard would then read it as a second copy. This repository
+  ignores `.agentic-plugins/state/`; a repository that tracks it is not
+  covered.
+- A run is `queued` while its snapshot is captured, and the `queued` rule
+  judges it by staleness alone: a capture that takes longer than the stale
+  grace (a slow clean filter, say) is orphaned by a concurrent sweep, and a
+  retention that then prunes the ledger fails the run. The persona runners
+  have the same rule; a capture heartbeat, or a supervisor recorded on the
+  queued handle, belongs in the shared source and in both copies at once.
+- The capture's own git processes, and the filters they run, are in no
+  owner record, and a runner killed outright (SIGKILL) while it captures
+  does not take them with it (a cancellable call runs in a process group of
+  its own, which only the runner stops): they keep running, and a
+  reclaim, finding the supervisor gone and no companion recorded, removes
+  the snapshot directory, an unfinished one included (its temporary
+  indexes, before the worktree exists), while they still use it. The
+  persona runners have the same rule; recording the capture's process
+  group in the owner record belongs in the shared source, and the
+  orchestrator copy then follows it.
+- On macOS a process's fingerprint is its `ps -o lstart=` text, which
+  follows the caller's locale (measured: one process reads
+  `Wed Oct 14 10:31:38 2026` under `LC_ALL=C` and a Korean date under
+  `ko_KR.UTF-8`): a reclaimer running under another locale
+  than the run that recorded it would read a live supervisor as replaced.
+  The fix belongs in the shared source, `persona-pipeline/`, with the
+  persona releases it brings; the orchestrator copy then follows it.
