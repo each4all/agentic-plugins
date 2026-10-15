@@ -127,7 +127,7 @@ that canonicalizes to `/orchestrator:plan`.
   Return:
   1. Gaps: missing subtasks or considerations
   2. Ordering issues: subtasks that should come earlier/later, missing blocked_by edges, cycles
-  3. Risk areas: subtasks with underestimated scope (likely to overflow a single engineer workflow)
+  3. Risk areas: subtasks with underestimated scope (likely to overflow a single engineer workflow), including a document subtask (an ADR or other prose deliverable) that would settle more than two decisions and could be split into chained slices of one or two
   4. Edge cases: scenarios the plan does not handle (rollback path, partial-completion, dependency change)
   </structured_output_contract>
 
