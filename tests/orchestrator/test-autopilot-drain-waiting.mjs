@@ -5,7 +5,7 @@
 // `reconcileWaiting`, `endedUnlooked`, `landingFactsOf`) and what a serial
 // run's halt lists (driver.mjs `withLanding`), on hand-built views. The driven
 // cases (a failed look, a look that cannot read the macro, an interrupt, an
-// error, the end's own look) are in test-autopilot-scheduler.mjs.
+// error, the end's own look) are in test-autopilot-scheduler-landing-*.mjs.
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, strictEqual } from 'node:assert/strict';

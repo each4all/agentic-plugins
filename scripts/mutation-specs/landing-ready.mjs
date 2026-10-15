@@ -28,7 +28,14 @@
 
 const T = 'tests/orchestrator/test-autopilot-landing-ready.mjs';
 const T_LEDGER = 'tests/orchestrator/test-autopilot-ledger.mjs';
-const T_SCHED = 'tests/orchestrator/test-autopilot-scheduler.mjs';
+// The scheduler tests, split across files so node --test runs them in parallel.
+const T_SCHED = [
+  'tests/orchestrator/test-autopilot-scheduler.mjs',
+  'tests/orchestrator/test-autopilot-scheduler-serial.mjs',
+  'tests/orchestrator/test-autopilot-scheduler-landing-looks.mjs',
+  'tests/orchestrator/test-autopilot-scheduler-landing-ends.mjs',
+  'tests/orchestrator/test-autopilot-scheduler-landing-halts.mjs',
+];
 const T_DRAIN_FILE = 'tests/orchestrator/test-autopilot-drain-waiting.mjs';
 const T_OBS = 'tests/orchestrator/test-autopilot-observe.mjs';
 
@@ -394,7 +401,7 @@ export const MUTATIONS = [
     killed_by: T_TRANSITIONS,
   },
   {
-    id: 'F9', file: SCHEDULER, tests: [T_SCHED],
+    id: 'F9', file: SCHEDULER, tests: T_SCHED,
     from: DRAIN_LOOK,
     to: '',
     why: 'a commit a lane made while the run drained is held back by its look, which did not fetch, and never reported',
@@ -430,14 +437,14 @@ export const MUTATIONS = [
     killed_by: [T_FRESH, T_A_THEN_B],
   },
   {
-    id: 'F14', file: SCHEDULER, tests: [T_SCHED],
+    id: 'F14', file: SCHEDULER, tests: T_SCHED,
     from: DRAIN_RECONCILE,
     to: '        if (v.lookError || v.macroLookupError) void 0; else feed(v, reported);',
     why: 'a drain whose last look failed keeps a lane ready from an older look, after the integration branch may have moved, and one that cannot read the macro drops every waiting lane',
     killed_by: [T_DRAIN_FAILS, T_DRAIN_MACRO],
   },
   {
-    id: 'F15', file: SCHEDULER, tests: [T_SCHED],
+    id: 'F15', file: SCHEDULER, tests: T_SCHED,
     // Both re-checks go: either alone ends the run interrupted (the one after
     // the look also keeps an interrupted look from publishing).
     from: `${DRAIN_GUARD}\n${DRAIN_LOOK}\n${DRAIN_RECONCILE}\n        if (c.interrupted()) continue;`,
@@ -450,14 +457,14 @@ export const MUTATIONS = [
   // during the drain, so the two lists differ only when a lane stops waiting
   // during the drain, which the driven fixture cannot time.
   {
-    id: 'F29', file: SCHEDULER, tests: [T_SCHED],
+    id: 'F29', file: SCHEDULER, tests: T_SCHED,
     from: LOOP_RECONCILE,
     to: '      waiting = landingFactsOf(view.lookError || view.macroLookupError ? [] : waitingToLand(view), c.landing());',
     why: 'a look of the run\'s loop whose landing check refuses drops a lane known to wait, and a drain whose last look fails then lists nothing for it',
     killed_by: T_REFUSED_THEN_FAILS,
   },
   {
-    id: 'F31', file: SCHEDULER, tests: [T_SCHED],
+    id: 'F31', file: SCHEDULER, tests: T_SCHED,
     from: LOOP_RECONCILE,
     to: '',
     // The look already listed what it found as it returned (unreported), so
@@ -528,7 +535,7 @@ export const MUTATIONS = [
     killed_by: T_DRAIN_UNIT,
   },
   {
-    id: 'F28', file: SCHEDULER, tests: [T_SCHED],
+    id: 'F28', file: SCHEDULER, tests: T_SCHED,
     from: SETTLE_RECONCILE,
     to: '',
     why: 'a lane that committed while the run drains drops out of the lane report when the drain\'s last look fails',
@@ -544,21 +551,21 @@ export const MUTATIONS = [
   // only after an interrupt, whose end leaves every lane unknown anyway; it is
   // equivalent.
   {
-    id: 'F33', file: SCHEDULER, tests: [T_SCHED],
+    id: 'F33', file: SCHEDULER, tests: T_SCHED,
     from: SETTLE_RECONCILE,
     to: '    { const known = new Set(waiting.map((x) => x.subtaskId)); waiting = [...waiting, ...foundWaiting(after, reported, c.landing()).filter((x) => !known.has(x.subtaskId))]; }',
     why: 'a step\'s settling look only adds: the lane its own look listed takes none of its report\'s facts, and a drain whose last look fails lists it without its commit',
     killed_by: T_DRAIN_COMMIT_FAILS,
   },
   {
-    id: 'F34', file: SCHEDULER, tests: [T_SCHED],
+    id: 'F34', file: SCHEDULER, tests: T_SCHED,
     from: "    if (c.interrupted()) waiting = endedUnlooked(waiting, 'the owner interrupted the run');",
     to: '',
     why: 'an interrupted run reports a lane ready that its last look never confirmed',
     killed_by: [T_INTERRUPT_DRAIN, T_SETTLE_INTERRUPT, T_IDLE_INTERRUPT],
   },
   {
-    id: 'F36', file: SCHEDULER, tests: [T_SCHED],
+    id: 'F36', file: SCHEDULER, tests: T_SCHED,
     from: '    waiting = endedUnlooked(waiting, `the run stopped on an error: ${e?.message ?? e}`);',
     to: '',
     why: 'a run that stops on an error keeps a lane ready in run.json that no look confirmed',
@@ -593,14 +600,14 @@ export const MUTATIONS = [
     killed_by: T_NO_REPORT_UNIT,
   },
   {
-    id: 'F42', file: SCHEDULER, tests: [T_SCHED],
+    id: 'F42', file: SCHEDULER, tests: T_SCHED,
     from: '  return reported ? landingFactsOf(found, report) : found.map((w) => ({ ...w, unreported: true }));',
     to: '  return landingFactsOf(found, report);',
     why: 'the end\'s look takes an older look\'s report as its own, and restores a readiness the drain\'s failed look took away',
     killed_by: T_NO_REPORT_RESTORE,
   },
   {
-    id: 'F43', file: SCHEDULER, tests: [T_SCHED],
+    id: 'F43', file: SCHEDULER, tests: T_SCHED,
     from: LOOK_FEED,
     to: '    return v;',
     why: 'a look an interrupt, an error or a retry cuts off never reaches the run\'s list, nor does the end\'s own look',
@@ -610,21 +617,21 @@ export const MUTATIONS = [
   // 2026-10-14 on the third recurrence): every look feeds the list as it
   // returns, a failed one too, and only an end builds a halt's list.
   {
-    id: 'F45', file: SCHEDULER, tests: [T_SCHED],
+    id: 'F45', file: SCHEDULER, tests: T_SCHED,
     from: LOOK_FEED,
     to: '    if (!v.lookError && !v.macroLookupError) feed(v, false);\n    return v;',
     why: 'a failed look feeds nothing: when the end\'s own look fails, a lane reported ready by an older look ends the run ready',
     killed_by: T_END_LOOK_FAILS,
   },
   {
-    id: 'F46', file: SCHEDULER, tests: [T_SCHED],
+    id: 'F46', file: SCHEDULER, tests: T_SCHED,
     from: END_BUILD,
     to: "    if (d?.reason === 'awaiting-landing' && c.withLanding) d = c.withLanding(d, waiting);\n    d = await proposalsAtEnd(() => look(repoRoot, false), d, [...report.values()]);\n    if (c.interrupted()) waiting = endedUnlooked(waiting, 'the owner interrupted the run');",
     why: 'an awaiting-landing halt is built before its end reconciles: it lists a lane that landed during the end\'s own look, and one the owner interrupted the run on, ready',
     killed_by: [T_IDLE_LANDED, T_IDLE_INTERRUPT],
   },
   {
-    id: 'F47', file: SCHEDULER, tests: [T_SCHED],
+    id: 'F47', file: SCHEDULER, tests: T_SCHED,
     from: '  let waiting = c.waiting?.() ?? [];',
     to: '  let waiting = [];',
     why: 'the scheduler starts a list of its own: what the driver\'s looks before it found waiting (before the locks, under them, the first report) is dropped, by an error at the banner, a look whose landing check refuses, or a lane later looks cannot read',
@@ -634,7 +641,7 @@ export const MUTATIONS = [
   // saw (the A-lands-then-B sequence, critique of 2026-10-14 12:51, MAJOR 1;
   // F53-F55 from its refine-verify).
   {
-    id: 'F48', file: SCHEDULER, tests: [T_DRAIN_FILE, T_SCHED],
+    id: 'F48', file: SCHEDULER, tests: [T_DRAIN_FILE, ...T_SCHED],
     from: '  const landed = landingsSeen(view, departed);',
     to: '  const landed = [];',
     why: 'a look that did not fetch sees A land and keeps B ready against the tip before it: the end\'s halt lists B ready',
@@ -690,7 +697,7 @@ export const MUTATIONS = [
     killed_by: T_LANDED_UNIT,
   },
   {
-    id: 'F22', file: CLI, tests: [T_SCHED],
+    id: 'F22', file: CLI, tests: T_SCHED,
     from: "      `${sync ? ` · ${landingLabel(sync)}${sync.detail ? ` (${sync.detail})` : ''}` : ''}`);",
     to: "      '');",
     why: 'status of a run halted for another reason shows a lane it left unknown with nothing after its earlier landing-ready record',
@@ -727,21 +734,21 @@ export const MUTATIONS = [
     killed_by: T_ONCE,
   },
   {
-    id: 'P4', file: OFFLOOP, tests: [T, T_SCHED],
+    id: 'P4', file: OFFLOOP, tests: [T, ...T_SCHED],
     from: '    const notice = { warned: a.warned === true };',
     to: '    const notice = { warned: false };',
     why: 'an off-loop report does not know the run printed the failure, and prints it again',
     killed_by: [T_ONCE, T_LANES_ONCE],
   },
   {
-    id: 'P5', file: DRIVER, tests: [T_SCHED],
+    id: 'P5', file: DRIVER, tests: T_SCHED,
     from: 'cache: [...mergeChecks], warned: notice.warned }',
     to: 'cache: [...mergeChecks] }',
     why: 'the run does not pass its notice to an off-loop report',
     killed_by: T_LANES_ONCE,
   },
   {
-    id: 'P6', file: DRIVER, tests: [T_SCHED],
+    id: 'P6', file: DRIVER, tests: T_SCHED,
     from: '        notice.warned = r.value.warned === true;',
     to: '        void r.value.warned;',
     why: 'the run does not take the notice back from an off-loop report',
@@ -780,14 +787,14 @@ export const MUTATIONS = [
     killed_by: T_PAIRS,
   },
   {
-    id: 'S2', file: DRIVER, tests: [T, T_DRAIN_FILE, T_SCHED],
+    id: 'S2', file: DRIVER, tests: [T, T_DRAIN_FILE, ...T_SCHED],
     from: '  return { ...d, waiting, ...facts };',
     to: '  return { ...d, ...facts };',
     why: 'the awaiting-landing halt lists the decision\'s branches, without their freshness and sync commands, and one that landed as the run ended',
     killed_by: [T_PAIRS, T_A_THEN_B, T_HALT_UNIT, T_IDLE_LANDED],
   },
   {
-    id: 'S3', file: SCHEDULER, tests: [T_SCHED],
+    id: 'S3', file: SCHEDULER, tests: T_SCHED,
     from: 'commit: w.commit ?? null, sync: w.sync ?? null };',
     to: 'commit: w.commit ?? null };',
     why: 'a run with lanes reports each waiting lane without its freshness',
@@ -816,14 +823,14 @@ export const MUTATIONS = [
     killed_by: T_A_THEN_B,
   },
   {
-    id: 'S7', file: DRIVER, tests: [T_SCHED],
+    id: 'S7', file: DRIVER, tests: T_SCHED,
     from: SERIAL_HALT,
     to: "      if (d.reason === 'awaiting-landing') d = withLanding(d, landing, waiting);",
     why: 'a serial run that halts for another reason while a branch waits to land lists nothing of it (C128)',
     killed_by: [T_SERIAL_WAITING, T_SERIAL_RETRY, T_SERIAL_INTERRUPT],
   },
   {
-    id: 'S8', file: DRIVER, tests: [T_SCHED],
+    id: 'S8', file: DRIVER, tests: T_SCHED,
     from: '      waiting = reconcileWaiting(waiting, v, foundWaiting(v, true, landing));',
     to: '',
     why: 'a serial run\'s looks never feed its list, so its halt for another reason lists nothing',
@@ -833,49 +840,49 @@ export const MUTATIONS = [
   // retired: the halt lists the run's list, where reconcileWaiting marks that
   // branch (F21, killed by the same unit test).
   {
-    id: 'S10', file: DRIVER, tests: [T_SCHED],
+    id: 'S10', file: DRIVER, tests: T_SCHED,
     from: '      if (run.halt.waiting) run.halt = { ...run.halt, waiting: endedUnlooked(run.halt.waiting, why) };',
     to: '      void why;',
     why: 'an error after the halt was recorded leaves its waiting branches ready in halt.json',
     killed_by: T_HALT_AFTER_ERROR,
   },
   {
-    id: 'S12', file: DRIVER, tests: [T_SCHED],
+    id: 'S12', file: DRIVER, tests: T_SCHED,
     from: '    waiting = reconcileWaiting(waiting, v, foundWaiting(v, false, null));',
     to: '',
     why: 'a serial look never feeds the list as it returns: a halt before the first report (the locks are held) lists nothing of a branch the first look found waiting, and a look a failed retry replaces drops what it found',
     killed_by: [T_SERIAL_LOCKED, T_SERIAL_RETRY],
   },
   {
-    id: 'S16', file: DRIVER, tests: [T_SCHED],
+    id: 'S16', file: DRIVER, tests: T_SCHED,
     from: '      run.waiting = endedUnlooked(waiting, why);',
     to: '',
     why: 'a serial run that stops on an error before any halt records nothing of what waited, and status shows the log\'s last ready',
     killed_by: T_SERIAL_ERROR,
   },
   {
-    id: 'S17', file: CLI, tests: [T_SCHED],
+    id: 'S17', file: CLI, tests: T_SCHED,
     from: '  for (const w of r.run.waiting ?? []) {',
     to: '  for (const w of []) {',
     why: 'status of a serial run that stopped on an error does not show what waited, unknown',
     killed_by: T_SERIAL_ERROR,
   },
   {
-    id: 'S13', file: DRIVER, tests: [T_SCHED],
+    id: 'S13', file: DRIVER, tests: T_SCHED,
     from: '      view = look(view.macro.id);',
     to: '      view = observe({ repoRoot, roots, macroId: view.macro.id, fetch: true, env });',
     why: 'the look after a step bypasses the serial look: a branch it found waiting is lost when a retry that fails replaces it (C128 serial mirror of F43)',
     killed_by: T_SERIAL_RETRY,
   },
   {
-    id: 'S14', file: DRIVER, tests: [T_SCHED],
+    id: 'S14', file: DRIVER, tests: T_SCHED,
     from: "      if (interrupted) waiting = endedUnlooked(waiting, 'the owner interrupted the run');",
     to: '',
     why: 'a serial run the owner interrupts lists a branch ready that no look after the interrupt confirmed',
     killed_by: T_SERIAL_INTERRUPT,
   },
   {
-    id: 'S11', file: DRIVER, tests: [T_SCHED],
+    id: 'S11', file: DRIVER, tests: T_SCHED,
     from: '      try {\n        writeHalt(runDir, run.halt);\n      } catch { /* run.json carries it */ }',
     to: '',
     why: 'an error after the halt was recorded leaves halt.json as it was written, its lanes ready',

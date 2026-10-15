@@ -21,7 +21,14 @@ const TP = 'tests/orchestrator/test-autopilot-policy.mjs';
 const TW = 'tests/orchestrator/test-autopilot-worker.mjs';
 const TC = 'tests/orchestrator/test-autopilot-cli.mjs';
 const TDR = 'tests/orchestrator/test-autopilot-dead-runs.mjs';
-const TS = 'tests/orchestrator/test-autopilot-scheduler.mjs';
+// The scheduler tests, split across files so node --test runs them in parallel.
+const TS = [
+  'tests/orchestrator/test-autopilot-scheduler.mjs',
+  'tests/orchestrator/test-autopilot-scheduler-serial.mjs',
+  'tests/orchestrator/test-autopilot-scheduler-landing-looks.mjs',
+  'tests/orchestrator/test-autopilot-scheduler-landing-ends.mjs',
+  'tests/orchestrator/test-autopilot-scheduler-landing-halts.mjs',
+];
 const TO = 'tests/orchestrator/test-autopilot-offloop.mjs';
 const TLS = 'tests/orchestrator/test-autopilot-lanes-supervision.mjs';
 
@@ -40,7 +47,7 @@ const OFFLOOP = `${AP}/offloop.mjs`;
 const GATE = '  const gate = (refreshable = false) => gateNewLane(throttle, { nowSec: now() / 1000, inFlight: inflight.size, refreshable });';
 const TERMINAL = '  if (macro.fm?.terminal_marker === true && !ctx.driverBusy) {';
 
-export const TESTS = [TT, TB, TP, TW, TC, TDR, TO, TS, TLS];
+export const TESTS = [TT, TB, TP, TW, TC, TDR, TO, ...TS, TLS];
 
 export const MUTATIONS = [
   // ---- T: the throttle ------------------------------------------------------
@@ -336,112 +343,112 @@ export const MUTATIONS = [
 
   // ---- S: the scheduler, end to end ------------------------------------------
   {
-    id: 'S1', file: SCHED, tests: [TS],
+    id: 'S1', file: SCHED, tests: TS,
     from: "    if (!draining) {\n      draining = hh;",
     to: "    if (!draining && !hh.subtaskId) {\n      draining = hh;",
     why: "a halt in one lane does not drain the run: the other lane goes on starting steps",
     killed_by: /a halt in one lane drains the run/,
   },
   {
-    id: 'S2', file: SCHED, tests: [TS],
+    id: 'S2', file: SCHED, tests: TS,
     from: "      if (draining) {\n        if (inflight.size > 0) { await nextEvent(); continue; }",
     to: "      if (draining) {",
     why: "a drain ends the run with a step still in flight, never verified or recorded",
     killed_by: /a halt in one lane drains the run/,
   },
   {
-    id: 'S3', file: SCHED, tests: [TS],
+    id: 'S3', file: SCHED, tests: TS,
     from: "    for (const e of inflight.values()) if (running(e)) e.worker?.abort('interrupted');\n    tasks.interrupt();",
     to: "    tasks.interrupt();",
     why: "SIGTERM during a drain waits for the steps in flight instead of aborting them",
     killed_by: /SIGTERM during a drain aborts the step still in flight/,
   },
   {
-    id: 'S4', file: SCHED, tests: [TS],
+    id: 'S4', file: SCHED, tests: TS,
     from: "    if (r.wait) return { stop: true, why: r.why };",
     to: "    if (r.wait) return { halt: asHalt({ reason: 'budget', detail: r.why }) };",
     why: "a start blocked only by other steps' reservations halts the run as exhausted instead of waiting",
     killed_by: /waits for them to settle, then runs/,
   },
   {
-    id: 'S5', file: SCHED, tests: [TS],
+    id: 'S5', file: SCHED, tests: TS,
     from: GATE,
     to: '  const gate = () => ({ start: true });',
     why: "a new lane starts into a throttled five-hour window",
     killed_by: /a five-hour window at 0\.85 or more starts no new lane/,
   },
   {
-    id: 'S6', file: SCHED, tests: [TS],
+    id: 'S6', file: SCHED, tests: TS,
     from: "      if (r.waitUntilSec) {\n        armReset(r.waitUntilSec);\n        await nextEvent();\n        continue;\n      }\n",
     to: "",
     why: "throttled with nothing running, the run halts idle instead of waiting for the reset",
     killed_by: /waits for the reset, then starts the new lane/,
   },
   {
-    id: 'S7', file: SCHED, tests: [TS],
+    id: 'S7', file: SCHED, tests: TS,
     from: "    if (judgeThrottle(throttle, nowSec).state !== was) wake();",
     to: "",
     why: "a rate-limit event that opens the throttle wakes nothing: a second lane waits for the first lane's step to end",
     killed_by: /progress independently, each in its own worktree/,
   },
   {
-    id: 'S8', file: SCHED, tests: [TS],
+    id: 'S8', file: SCHED, tests: TS,
     from: GATE,
     to: GATE.replace('inFlight: inflight.size', 'inFlight: 0'),
     why: "before the first rate-limit event a new lane starts beside a worker in flight",
     killed_by: /before the first rate-limit event a new lane starts only while no worker is in flight/,
   },
   {
-    id: 'S9', file: SCHED, tests: [TS],
+    id: 'S9', file: SCHED, tests: TS,
     from: "      for (const l of [c.macroLock, inLane ? held.lock : c.driverLock]) entry.groups.push(l.addWorkerGroup(group));",
     to: "      for (const l of [c.macroLock, c.driverLock]) entry.groups.push(l.addWorkerGroup(group));",
     why: "a lane's worker group is recorded in the driver checkout's lock, not in the lock of the lane it runs in",
     killed_by: /progress independently, each in its own worktree/,
   },
   {
-    id: 'S10', file: SCHED, tests: [TS],
+    id: 'S10', file: SCHED, tests: TS,
     from: "    if (DONE_KINDS.has(s.kind) && lanes.has(id) && !c.interrupted()) await retire(id);",
     to: "",
     why: "a lane outlives its subtask's done",
     killed_by: /progress independently, each in its own worktree/,
   },
   {
-    id: 'S11', file: SCHED, tests: [TS],
+    id: 'S11', file: SCHED, tests: TS,
     from: "      forced = f.forced;",
     to: "      forced = new Map();",
     why: "--lane A --next is ignored: A's judgment halt drains the run again",
     killed_by: /--lane A --next replaces only A's judgment halt/,
   },
   {
-    id: 'S12', file: DRIVER, tests: [TS],
+    id: 'S12', file: DRIVER, tests: TS,
     from: "    : serialRefusal({ repoRoot, macroId, view, env });",
     to: "    : [];",
     why: "a serial run starts beside a lane that holds an unfinished subtask",
     killed_by: /a serial run refuses beside the waiting lane/,
   },
   {
-    id: 'S13', file: LEDGER, tests: [TS],
+    id: 'S13', file: LEDGER, tests: TS,
     from: "  if (Number.isInteger(lanes) && lanes >= 2) args.push(`--lanes ${lanes}`);",
     to: "",
     why: "the relaunch command drops the run's lanes, so the relaunch is serial and refuses",
     killed_by: /progress independently, each in its own worktree/,
   },
   {
-    id: 'S14', file: CLI, tests: [TS],
+    id: 'S14', file: CLI, tests: TS,
     from: "      waits_for_rate_limit_event: st.newLane === true && result.first_wave.length > 0,",
     to: "      waits_for_rate_limit_event: false,",
     why: "the preview shows a new lane starting at once beside a worker in flight, before the first rate-limit event",
     killed_by: /shows the reconciliation plan and the first wave/,
   },
   {
-    id: 'S15', file: ROOTS, tests: [TS],
+    id: 'S15', file: ROOTS, tests: TS,
     from: "    if (r.status !== 0 || report?.schema !== STATE_ROOT_REPORT || !Array.isArray(report?.read_set)) {",
     to: "    if (false) {",
     why: "a pinned engineer without state-root passes the lanes capability floor",
     killed_by: /the capability floor runs state-root/,
   },
   {
-    id: 'S16', file: DRIVER, tests: [TS],
+    id: 'S16', file: DRIVER, tests: TS,
     from: "      ? lanesRequirements({ checkout: repoRoot, stateRoot, macroPath: view.macro.path, view })",
     to: "      ? []",
     why: "a run with lanes starts while shared creation is off",
@@ -455,28 +462,28 @@ export const MUTATIONS = [
     killed_by: /reads --lanes, and --lane <subtask> --next/,
   },
   {
-    id: 'S18', file: SCHED, tests: [TS],
+    id: 'S18', file: SCHED, tests: TS,
     from: "  const mustYield = () => c.interrupted() || draining || ended.length > 0;",
     to: "  const mustYield = () => c.interrupted() || draining;",
     why: "a step that ended while another lane's admission awaited is settled only after that lane spawns",
     killed_by: /a step that ended while another lane's admission awaited is settled first/,
   },
   {
-    id: 'S19', file: SCHED, tests: [TS],
+    id: 'S19', file: SCHED, tests: TS,
     from: "    if (after.lookError) {",
     to: "    if (false) {",
     why: "a failed look after a step passes as progress: the step is never verified",
     killed_by: /a look that fails after a step halts the run unverified/,
   },
   {
-    id: 'S20', file: SCHED, tests: [TS],
+    id: 'S20', file: SCHED, tests: TS,
     from: "      keep();\n      verdict = asHalt({ reason: 'owner-choice', detail: `the look at",
     to: "      verdict = asHalt({ reason: 'owner-choice', detail: `the look at",
     why: "a run whose look after a step failed removes its open-run record: that step's peers are never cancelled",
     killed_by: /a look that fails after a step halts the run unverified/,
   },
   {
-    id: 'S21', file: SCHED, tests: [TS],
+    id: 'S21', file: SCHED, tests: TS,
     from: "      if (before.git.head !== f.tip) {",
     to: "      if (false) {",
     why: "a prepared lane cut from an old baseline is dispatched into",
@@ -490,21 +497,21 @@ export const MUTATIONS = [
     killed_by: /two steps in flight hold two reservations/,
   },
   {
-    id: 'S23', file: SCHED, tests: [TS],
+    id: 'S23', file: SCHED, tests: TS,
     from: '    if (d && halts.length > 1) d = { ...d, also:',
     to: '    if (false) d = { ...d, also:',
     why: 'a second lane\'s halt met during the drain is missing from halt.json',
     killed_by: /simultaneous halts/,
   },
   {
-    id: 'S24', file: SCHED, tests: [TS],
+    id: 'S24', file: SCHED, tests: TS,
     from: "    if (r.exhausted) return { halt: asHalt({ reason: 'budget', detail: r.detail }) };",
     to: '    if (r.exhausted) return { stop: true };',
     why: 'an exhausted step cap ends the run as if nothing were dispatchable, not as a budget halt',
     killed_by: /a step cap held by a step in flight/,
   },
   {
-    id: 'S25', file: DRIVER, tests: [TS],
+    id: 'S25', file: DRIVER, tests: TS,
     from: '    if (lanes >= 2) {\n      // With lanes the report runs in a child',
     to: '    if (lanes >= 1) {\n      // With lanes the report runs in a child',
     why: '--lanes 1 runs the scheduler, in lanes, instead of the serial driver in the driven checkout',
@@ -669,14 +676,14 @@ export const MUTATIONS = [
     killed_by: /a lane prepared three days into the run gets the whole step timeout/,
   },
   {
-    id: 'S49', file: SCHED, tests: [TS],
+    id: 'S49', file: SCHED, tests: TS,
     from: '      if (afterUnread(after, id)) keep();\n',
     to: '',
     why: 'a step judged from a look that could not read the macro, its readiness or its child halts, and the run drops its open-run record: the step\'s peers are never cancelled',
     killed_by: /halts on that read and keeps the run's open-run record/,
   },
   {
-    id: 'S51', file: SCHED, tests: [TS],
+    id: 'S51', file: SCHED, tests: TS,
     from: '      peer_cancellations: cancelled, peer_settlements: settlements, peers_unaccounted: unaccounted,',
     to: '      peer_cancellations: cancelled, peer_settlements: settlements,',
     why: 'a step whose peers the run could not account for is finished like any other in its log: the next run\'s cleanup does not search it for them',

@@ -1,7 +1,7 @@
 // tests/orchestrator/fixtures/autopilot-lanes-run.mjs
 //
 // A run with lanes against the fake claude, for the scheduler's end-to-end
-// tests (test-autopilot-scheduler.mjs, test-autopilot-lanes-supervision.mjs):
+// tests (test-autopilot-scheduler*.mjs, test-autopilot-lanes-supervision.mjs):
 // a clone with a bare origin and a fake `gh`, shared creation on, the
 // scripted worker (autopilot-scripted-worker.mjs) doing each step through the
 // real state CLIs, and `run(options, deps)` starting the driver with --lanes 2.
