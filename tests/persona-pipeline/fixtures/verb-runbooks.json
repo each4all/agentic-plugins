@@ -6255,6 +6255,122 @@
         "<directory from step 1>/next-action.txt"
       ],
       "why": "C130 (ADR-0059 amendment j): the next action is the file next-action.txt the agent writes with its file tool (the declared default is its scaffold), never a shell literal; append, the last write and a paused write all read it."
+    },
+    {
+      "runbooks": [
+        "designer/critique",
+        "engineer/critique",
+        "founder/critique"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs append#1",
+      "from": "peer-runner.mjs run",
+      "to": {
+        "script": "state.mjs",
+        "sub": "critique-scope",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--profile",
+            "<profile, empty for the default>"
+          ]
+        ]
+      },
+      "why": "C120 (ADR-0063, amendment of 2026-10-14): before the prompt is built, the critique opens its generation in the review ledger and reads its scope (a document deliverable re-checks what the refine changed and the findings it targeted)"
+    },
+    {
+      "runbooks": [
+        "designer/critique",
+        "engineer/critique",
+        "founder/critique"
+      ],
+      "op": "insert-call",
+      "where": "call:peer-runner.mjs run",
+      "from": "state.mjs append",
+      "to": {
+        "script": "state.mjs",
+        "sub": "critique-close",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--ledger",
+            "<ledger from critique-scope>"
+          ],
+          [
+            "--generation",
+            "<generation from critique-scope>"
+          ],
+          [
+            "--findings-file",
+            "<directory holding findings.json>/findings.json"
+          ]
+        ]
+      },
+      "why": "C120 (ADR-0063, amendment of 2026-10-14): after the synthesis, the critique closes its generation with the findings, and the ledger computes the disposition Phase 2 follows (converged, carry, left open, recurring)"
+    },
+    {
+      "runbooks": [
+        "designer/refine",
+        "engineer/refine",
+        "founder/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs append#1",
+      "from": "peer-runner.mjs run",
+      "to": {
+        "script": "state.mjs",
+        "sub": "review-status",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ]
+        ]
+      },
+      "why": "C120 (ADR-0063, amendment of 2026-10-14): before the fix, refine reads the review ledger: its work is the open CRITICAL and MAJOR findings, and the recurring ones end it on the recurring-finding gate"
+    },
+    {
+      "runbooks": [
+        "designer/refine",
+        "engineer/refine",
+        "founder/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs review-status",
+      "from": "peer-runner.mjs run",
+      "to": {
+        "script": "state.mjs",
+        "sub": "refine-record",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--targets-file",
+            "<directory holding targets.txt>/targets.txt"
+          ]
+        ]
+      },
+      "why": "C120 (ADR-0063, amendment of 2026-10-14): after the fix and before Refine-verify, refine records the findings it targeted and the tree it left, which the next critique is scoped to"
     }
   ],
   "runbooks": {

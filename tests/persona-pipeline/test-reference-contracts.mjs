@@ -1017,8 +1017,8 @@ describe('reference contracts: the ensemble templates keep each claim under its 
   const AUTOPILOT = /\n\n {3}\*\*Autopilot \(ADR-0063, Claude only\):\*\*[^]*?\n\n(?=2\. )/g;
   const COMMIT = /^- The commit command \(`\/engineer:commit`\)[^]*?\n(?=- )/gm;
   const neutral = render({ dispatch_target: false, commit_surface: false, legacy_homes: false });
-  it('renders the seventeen ensemble regions engineer holds, none empty', () => {
-    strictEqual(regions.length, 17);
+  it('renders the eighteen ensemble regions engineer holds, none empty', () => {
+    strictEqual(regions.length, 18);
     deepStrictEqual(regions.filter((r) => PRIVACY_REGIONS.includes(r.id)), []);
     for (const [id, text] of Object.entries(neutral)) ok(text.trim().length > 0, `${id}: renders empty with every capability off`);
   });

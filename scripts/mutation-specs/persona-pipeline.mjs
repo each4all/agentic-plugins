@@ -158,7 +158,8 @@ function templateDefect(copy, tools, { template, from, to, edits = [{ from, to }
 // would keep the errexit-safe form while the case reports a kill.
 const RESOLVER_TEMPLATES = [
   'regions/checkpoint-set.md', 'regions/commit-autopilot.md', 'regions/commit-close.md', 'regions/commit-execute.md',
-  'regions/commit-phase-0.md', 'regions/commit-plan.md', 'regions/commit-staging-clear.md', 'regions/decide-owner-selection.md', 'regions/decide-resolve.md', 'regions/locate-active.md',
+  'regions/commit-phase-0.md', 'regions/commit-plan.md', 'regions/commit-staging-clear.md', 'regions/critique-scope-close.md', 'regions/critique-scope-prepare.md',
+  'regions/decide-owner-selection.md', 'regions/decide-resolve.md', 'regions/locate-active.md', 'regions/refine-scope-record.md',
   'regions/peer-now-dispatch.md', 'regions/peer-now-locate.md', 'regions/peer-now-note.md',
   'regions/refine-owner-decision.md', 'regions/refine-owner-decision-convergent.md',
   'regions/resume-archive.md', 'regions/resume-archive-resolve.md', 'regions/resume-marker.md', 'regions/resume-read.md',

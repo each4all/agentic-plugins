@@ -73,7 +73,7 @@ export const MUTATIONS = [
   },
   {
     id: 'H6', tests: [T_HEADLESS], file: 'plugins/founder/commands/refine.md',
-    from: "printenv 'AGENTIC_FOUNDER_ROOT'", to: "printenv 'AGENTIC_ENGINEER_ROOT'", count: 7,
+    from: "printenv 'AGENTIC_FOUNDER_ROOT'", to: "printenv 'AGENTIC_ENGINEER_ROOT'", count: 9,
     why: 'a founder runbook honours the engineer override — the driver would point it at the wrong plugin',
   },
   {

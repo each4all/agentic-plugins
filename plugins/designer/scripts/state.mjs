@@ -76,7 +76,28 @@ import { execFileSync } from 'node:child_process';
 // per PR1 deferral.
 import { assertSafePath } from './validate-commit.mjs';
 import { isCliEntry } from './lib/cli-entry.mjs';
-import { capabilityOn, commandPrefix, personaName, personaOrRefuse, stateDirRel } from './lib/persona.mjs';
+import { capabilityOn, commandPrefix, loadPersona, personaName, personaOrRefuse, stateDirRel } from './lib/persona.mjs';
+import { captureWorkingTree } from './lib/peer-snapshot.mjs';
+import {
+  CRITIQUE_RUN_MARKER,
+  ReviewScopeError,
+  artifactChanges,
+  baselineCommit,
+  changedPassages,
+  classifyDeliverable,
+  closeGeneration,
+  critiqueEntries,
+  currentBranch,
+  decideScope,
+  emptyLedger,
+  openGeneration,
+  operationInProgress,
+  recordRefine,
+  reviewStatus,
+  unclosedCritique,
+  unrecordedCritique,
+  validateLedger,
+} from './lib/review-scope.mjs';
 import {
   aliasedComponent,
   commandCheckout,
@@ -2803,7 +2824,11 @@ export async function appendPhase({
 
     const heading = phaseLabel ? `### ${phaseLabel}\n\n` : '';
     const note = phaseNote ? `${phaseNote}\n\n` : '';
-    const newBody = appendToBody(body, `${heading}${note}`);
+    // C120 — a write that names the critique verb starts a critique run, and
+    // the review ledger counts the runs from this line (lib/review-scope.mjs
+    // critiqueEntries), whether or not the run reached critique-scope.
+    const run = verb === 'critique' ? `${CRITIQUE_RUN_MARKER}\n${heading === '' && note === '' ? '\n' : ''}` : '';
+    const newBody = appendToBody(body, `${run}${heading}${note}`);
 
     await atomicWrite(
       workflowPath,
@@ -3570,6 +3595,326 @@ export async function consensusProposal({ workflowPath, host = 'claude' }) {
     pointer: paths.pointer,
     command: consensusCommand(paths.file, host),
   };
+}
+
+// -----------------------------------------------------------------------------
+// C120 — the review ledger of a document deliverable (lib/review-scope.mjs;
+// ADR-0063, amendment of 2026-10-14). One JSON file per workflow in the home
+// the workflow file sits in, `<home>/reviews/<workflow id>.json`, written
+// holding the workflow's lock. No frontmatter key points at it: its name
+// derives from the workflow's, so an older release, which never reads it,
+// carries nothing it could drop. It is never archived with the workflow, so a
+// later workflow starts with a full critique.
+
+function reviewLedgerPaths(workflowPath, workflowId) {
+  if (typeof workflowId !== 'string' || !CONSENSUS_WORKFLOW_ID_RE.test(workflowId)) return null;
+  const storage = inferStorageFromWorkflowPath(resolvePath(String(workflowPath)));
+  if (!storage || storage.stateRoot.length === 0) return null;
+  const dir = join(statePaths(storage.stateRoot, storage.home).root, 'reviews');
+  return { dir, file: join(dir, `${workflowId}.json`) };
+}
+
+async function readReviewLedger(paths, workflowId) {
+  let text;
+  try {
+    text = await readFile(paths.file, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new ReviewScopeError(`the review ledger ${paths.file} is not JSON`);
+  }
+  return validateLedger(parsed, workflowId);
+}
+
+async function writeReviewLedger(paths, ledger, ownership) {
+  await ensureDir(dirname(paths.file), 0o700);
+  await atomicWrite(paths.file, `${JSON.stringify(ledger, null, 2)}\n`, ownership);
+}
+
+// The workflow under its lock, the ledger's paths, and the critique runs its
+// notes count; refuses a workflow file outside a state home.
+async function reviewContext(workflowPath, what) {
+  const { frontmatter, body } = parseWorkflowFile(await readFile(workflowPath, 'utf8'));
+  const paths = reviewLedgerPaths(workflowPath, frontmatter.workflow_id);
+  if (!paths) throw new Error(`${what}: ${JSON.stringify(workflowPath)} is not a workflow file under the ${personaName()} state home`);
+  return { frontmatter, paths, entries: critiqueEntries(body) };
+}
+
+// The checkout a review is held to: its working tree as a tree object and
+// HEAD, on the workflow's branch, or `{ ok: false, reason, message }` when it
+// cannot be read (no checkout, a conflicted index, HEAD moving, an index entry
+// marked assume-unchanged or skip-worktree, whose edits the tree leaves out) or is on
+// another branch (`otherBranch`): a worktree sharing the state root never
+// reads or writes another branch's ledger. It never throws for the checkout's
+// state, so a critique or refine it cannot vouch for falls back to today's,
+// never aborts.
+async function workflowCheckout(repoRoot, frontmatter) {
+  const expected = frontmatter.git_baseline?.branch;
+  const onAnotherBranch = (top, branch) => ({
+    ok: false,
+    otherBranch: true,
+    reason: `other-branch:${branch || 'detached-head'}`,
+    message: `the checkout ${top} is on ${branch || 'a detached HEAD'}, not the workflow's branch ${expected}`,
+  });
+  // The branch first: a checkout of another branch is not this workflow's,
+  // whatever state its working tree is in, so it never touches the ledger. A
+  // branch git cannot name is no evidence either way; the capture decides.
+  const bound = typeof expected === 'string' && expected !== '';
+  const early = bound ? currentBranch(repoRoot) : null;
+  if (early !== null && early !== expected) return onAnotherBranch(repoRoot, early);
+  let captured;
+  try {
+    captured = await captureWorkingTree({ cwd: repoRoot });
+  } catch (err) {
+    return { ok: false, reason: `checkout-unreadable:${err?.reason ?? err?.code ?? 'error'}`, message: String(err?.message ?? err) };
+  }
+  if (captured === null) return { ok: false, reason: 'not-a-git-checkout', message: `${repoRoot} is not a git checkout` };
+  if (captured.flagged.length > 0) {
+    return {
+      ok: false,
+      reason: 'checkout-unreadable:index-flags',
+      message: `${captured.flagged.length} index entr${captured.flagged.length === 1 ? 'y is' : 'ies are'} marked assume-unchanged or skip-worktree in ${captured.top} (${captured.flagged.slice(0, 3).join(', ')}${captured.flagged.length > 3 ? ', …' : ''}): an edit to such a file is not in the captured tree`,
+    };
+  }
+  const branch = bound ? currentBranch(captured.top) : expected;
+  if (branch === null) return { ok: false, reason: 'checkout-unreadable:branch', message: `git cannot name the branch ${captured.top} has checked out` };
+  if (branch !== expected) return onAnotherBranch(captured.top, branch);
+  return { ok: true, ...captured };
+}
+
+// The rest of what a review is held to: the workflow's baseline as a commit,
+// the artifact set and whether it is a document. A baseline that names no
+// commit, or a change git cannot read, is no document: the critique keeps
+// today's full review.
+function reviewFacts(checkout, frontmatter) {
+  const facts = { top: checkout.top, tree: checkout.tree, head: checkout.head, base: null, artifact: [], document: false, operation: null };
+  const base = baselineCommit(checkout.top, frontmatter.git_baseline?.head);
+  if (base === null) return { ...facts, documentReason: 'no-baseline-commit' };
+  try {
+    const changes = artifactChanges(checkout.top, base, checkout.tree);
+    const kind = classifyDeliverable(checkout.top, base, checkout.tree, changes);
+    return {
+      ...facts,
+      base,
+      artifact: changes.map((c) => c.path),
+      document: kind.document,
+      documentReason: kind.reason,
+      operation: operationInProgress(checkout.top),
+    };
+  } catch (err) {
+    return { ...facts, base, documentReason: `change-unreadable:${String(err?.message ?? err).split('\n')[0]}` };
+  }
+}
+
+/**
+ * Open the next critique of a document deliverable and return its scope:
+ * `{ recorded, generation, mode, reason, document, tree, artifact, passages,
+ * targets, findings }`. A deliverable that is not a document, or a checkout
+ * this cannot read, records nothing (`recorded: false`, mode full): it keeps
+ * today's critique, and a ledger an earlier critique left is moved aside. A
+ * checkout on another branch records nothing and leaves the ledger alone. A
+ * ledger that cannot be read is moved aside and a new one starts, with a full
+ * critique.
+ */
+export async function openCritiqueScope({ workflowPath, repoRoot, profile = '', now = isoUtc() }) {
+  return withFileLock(workflowPath, async (ownership) => {
+    const { frontmatter, paths, entries } = await reviewContext(workflowPath, 'critique-scope');
+    const checkout = await workflowCheckout(repoRoot, frontmatter);
+    const facts = checkout.ok
+      ? reviewFacts(checkout, frontmatter)
+      : { tree: null, head: null, artifact: [], document: false, documentReason: checkout.reason };
+    const declared = loadPersona().verbs?.critique?.default_profile;
+    const defaultProfile = profile === '' || profile === declared;
+    const summary = {
+      document: facts.document,
+      document_reason: facts.documentReason,
+      tree: facts.tree,
+      head: facts.head,
+      artifact: facts.artifact,
+      ...(checkout.ok ? {} : { detail: checkout.message }),
+    };
+    const unrecorded = { recorded: false, generation: null, mode: 'full', reason: facts.documentReason, ...summary, passages: [], targets: [], findings: [] };
+    if (!checkout.ok && checkout.otherBranch) return unrecorded;
+    if (!facts.document) {
+      // A ledger a document critique left would hand refine findings this
+      // critique, which records nothing, never judged: it is moved aside, and
+      // the workflow is one with no ledger again.
+      let superseded = null;
+      try {
+        superseded = `${paths.file}.superseded-${Date.now()}`;
+        await rename(paths.file, superseded);
+      } catch (err) {
+        if (err.code !== 'ENOENT') throw err;
+        superseded = null;
+      }
+      return { ...unrecorded, ...(superseded === null ? {} : { ledger_moved_aside: superseded }) };
+    }
+    let ledger;
+    let reset = null;
+    let resetReason = null;
+    try {
+      ledger = (await readReviewLedger(paths, frontmatter.workflow_id)) ?? emptyLedger(frontmatter.workflow_id);
+    } catch (err) {
+      if (!(err instanceof ReviewScopeError)) throw err;
+      reset = `${paths.file}.unreadable-${Date.now()}`;
+      await rename(paths.file, reset);
+      ledger = emptyLedger(frontmatter.workflow_id);
+    }
+    // A critique ran that the ledger never recorded (its critique-scope
+    // failed, an older state.mjs ran it, its checkout could not be vouched
+    // for): its findings are only in the notes, so the ledger is moved aside
+    // and this critique starts a new one, full.
+    if (unrecordedCritique(ledger, entries, 1)) {
+      reset = `${paths.file}.superseded-${Date.now()}`;
+      await rename(paths.file, reset);
+      ledger = emptyLedger(frontmatter.workflow_id);
+      resetReason = 'unrecorded-critique';
+    }
+    let decision = decideScope(ledger, { ...facts, defaultProfile });
+    if (resetReason !== null && decision.mode === 'full') decision = { ...decision, reason: resetReason };
+    let passages = [];
+    if (decision.mode === 'scoped') {
+      try {
+        passages = changedPassages(facts.top, decision.from, facts.tree, facts.artifact);
+      } catch (err) {
+        // The tree the last critique reviewed is gone (`git gc` pruned it) or
+        // unreadable: no passage can be shown, so the critique is full.
+        decision = { mode: 'full', reason: `passages-unreadable:${String(err?.message ?? err).split('\n')[0]}`, from: null, targets: [] };
+      }
+    }
+    const opened = openGeneration(ledger, { ...decision, ...facts, passages, critiqueEntries: entries }, now);
+    await writeReviewLedger(paths, opened.ledger, ownership);
+    const status = reviewStatus(opened.ledger);
+    return {
+      recorded: true,
+      ledger: opened.ledger.ledger_id,
+      generation: opened.generation,
+      mode: decision.mode,
+      reason: decision.reason,
+      ...summary,
+      passages,
+      targets: decision.targets,
+      // A resolved finding the refine targeted again is the critique's to
+      // judge, so its entry goes with the rest.
+      findings: status.findings.filter((f) => f.disposition !== 'resolved' || decision.targets.includes(f.id)),
+      ...(reset === null ? {} : { ledger_moved_aside: reset }),
+    };
+  });
+}
+
+/**
+ * Close the open critique `generation` of ledger `ledgerId` with the findings
+ * the synthesis wrote (`input`, `{ findings: [...] }`) and return the
+ * disposition. Refuses when the ledger is another than the critique opened in,
+ * or the checkout no longer holds the tree the critique reviewed: the findings
+ * would be held to text nobody reviewed.
+ */
+export async function closeCritiqueScope({ workflowPath, repoRoot, ledgerId, generation, input, now = isoUtc() }) {
+  return withFileLock(workflowPath, async (ownership) => {
+    const { frontmatter, paths } = await reviewContext(workflowPath, 'critique-close');
+    const ledger = await readReviewLedger(paths, frontmatter.workflow_id);
+    if (ledger === null) throw new ReviewScopeError('critique-close: this workflow has no review ledger; critique-scope opens one');
+    // Generation and finding ids restart in a ledger that replaced another, so
+    // a close names the ledger its critique opened in.
+    if (ledger.ledger_id !== ledgerId) {
+      throw new ReviewScopeError(
+        `critique-close: ledger ${JSON.stringify(ledgerId)} is not this workflow's review ledger now (${ledger.ledger_id}); ` +
+          'it was replaced since the critique opened: run critique-scope again',
+      );
+    }
+    const gen = ledger.generations.find((g) => g.id === generation);
+    if (!gen || gen.state !== 'open') {
+      throw new ReviewScopeError(`critique-close: generation ${generation} is not the open critique of this workflow; run critique-scope again`);
+    }
+    const checkout = await workflowCheckout(repoRoot, frontmatter);
+    if (!checkout.ok) throw new ReviewScopeError(`critique-close: ${checkout.message}`);
+    if (checkout.tree !== gen.tree || checkout.head !== gen.head) {
+      throw new ReviewScopeError(
+        `critique-close: the checkout changed since generation ${generation} was opened (it reviewed tree ${gen.tree}); ` +
+          'run critique-scope again and review what is there now',
+      );
+    }
+    const closed = closeGeneration(ledger, generation, input, now);
+    await writeReviewLedger(paths, closed.ledger, ownership);
+    return closed.result;
+  });
+}
+
+/**
+ * Record what a refine targeted and the tree it left, after the fix and
+ * before Refine-verify, and say how Refine-verify runs (`verify`: scoped only
+ * when the next critique would be, on the tree just recorded). Nothing is
+ * recorded when the workflow has no readable review ledger (its deliverable
+ * was never critiqued as a document) or the checkout cannot be read or is on
+ * another branch: the next critique is full.
+ */
+export async function recordRefineScope({ workflowPath, repoRoot, targets, now = isoUtc() }) {
+  return withFileLock(workflowPath, async (ownership) => {
+    const { frontmatter, paths, entries } = await reviewContext(workflowPath, 'refine-record');
+    const unrecorded = (reason, extra = {}) => ({ recorded: false, reason, ...extra, verify: { mode: 'full', reason } });
+    let ledger;
+    try {
+      ledger = await readReviewLedger(paths, frontmatter.workflow_id);
+    } catch (err) {
+      if (!(err instanceof ReviewScopeError)) throw err;
+      return unrecorded('unreadable-ledger');
+    }
+    if (ledger === null) return unrecorded('no-review-ledger');
+    if (unclosedCritique(ledger)) return unrecorded('unclosed-critique');
+    if (unrecordedCritique(ledger, entries, 0)) return unrecorded('unrecorded-critique');
+    const checkout = await workflowCheckout(repoRoot, frontmatter);
+    if (!checkout.ok) return unrecorded(checkout.reason, { detail: checkout.message });
+    const done = recordRefine(ledger, { targets, treeAfter: checkout.tree }, now);
+    await writeReviewLedger(paths, done.ledger, ownership);
+    const facts = reviewFacts(checkout, frontmatter);
+    let verify = decideScope(done.ledger, { ...facts, defaultProfile: true });
+    // The same passage check the next critique makes: a tree it cannot read
+    // makes that critique full, so Refine-verify is full too.
+    if (verify.mode === 'scoped') {
+      try {
+        changedPassages(facts.top, verify.from, facts.tree, facts.artifact);
+      } catch (err) {
+        verify = { mode: 'full', reason: `passages-unreadable:${String(err?.message ?? err).split('\n')[0]}` };
+      }
+    }
+    return { recorded: true, ...done.attempt, verify: { mode: verify.mode, reason: verify.reason } };
+  });
+}
+
+/** Read-only: what the review ledger says, or `{ ledger: false }`. */
+export async function readReviewStatus({ workflowPath }) {
+  const { frontmatter, paths, entries } = await reviewContext(workflowPath, 'review-status');
+  let ledger;
+  try {
+    ledger = await readReviewLedger(paths, frontmatter.workflow_id);
+  } catch (err) {
+    if (!(err instanceof ReviewScopeError)) throw err;
+    return { ledger: false, reason: 'unreadable-ledger' };
+  }
+  if (ledger === null) return { ledger: false };
+  // A critique since the last close that never closed: its findings are only
+  // in the notes, so refine works from those, as it always has.
+  if (unclosedCritique(ledger)) return { ledger: false, reason: 'unclosed-critique' };
+  // A critique ran that the ledger holds no generation for: the same.
+  if (unrecordedCritique(ledger, entries, 0)) return { ledger: false, reason: 'unrecorded-critique' };
+  return { ledger: true, ...reviewStatus(ledger) };
+}
+
+// A file of finding ids: a JSON array, or one id per line.
+function readIdList(text) {
+  const trimmed = text.trim();
+  if (trimmed === '') return [];
+  if (trimmed.startsWith('[')) {
+    const parsed = JSON.parse(trimmed);
+    if (!Array.isArray(parsed)) throw new Error('the targets file is not a list');
+    return parsed;
+  }
+  return trimmed.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== '');
 }
 
 // ADR-0063 — the pointer of an owner gate a runbook sets names a section of
@@ -5083,6 +5428,34 @@ function cliPrintHelp() {
       "    file's absolute path. Exit 1 unless ensemble_results holds the run with",
       '    the verdict conflict.',
       '',
+      '  critique-scope --workflow-path <path> --repo-root <path> [--profile <name>]',
+      '    C120 — for a document deliverable, open the next critique in the',
+      '    review ledger (<home>/reviews/<workflow id>.json) and print its scope',
+      '    as JSON {recorded, ledger, generation, mode, reason, document, tree,',
+      '    artifact,',
+      '    passages, targets, findings}. mode is scoped only after a full critique',
+      '    and a recorded refine whose tree the checkout still holds; any doubt is',
+      '    full, and a profile other than the default is partial. A deliverable',
+      '    that is not a document, or a checkout it cannot read, records nothing.',
+      '',
+      '  critique-close --workflow-path <path> --repo-root <path> --ledger <id>',
+      '                 --generation <n> --findings-file <path>',
+      '    C120 — close the open critique with the synthesis\'s findings',
+      '    ({"findings": [{id, severity, location, text, verdict, scope}]}) and',
+      '    print the disposition {converged, carry, left_open, recurring, ...}.',
+      '    Exit 1 when the ledger is not the one critique-scope named, or the',
+      '    checkout no longer holds the tree it reviewed.',
+      '',
+      '  refine-record --workflow-path <path> --repo-root <path> --targets-file <path>',
+      '    C120 — record the ledger findings a refine targeted and the tree it',
+      '    left, before Refine-verify, and print verify {mode, reason}: scoped',
+      '    only when the next critique would be. Records nothing without a',
+      '    readable review ledger or a readable checkout on the workflow\'s branch.',
+      '',
+      '  review-status --workflow-path <path>',
+      '    Read-only (C120). The review ledger as JSON {ledger, carry, recurring,',
+      '    left_open, findings, ...}, or {ledger: false}.',
+      '',
       '  ensemble-verdict --workflow-path <path> --run-id <run id>',
       '    Read-only (ADR-0067 Decision 8). Print the verdict ensemble_results',
       '    records for the run, an empty line when it records none.',
@@ -5597,6 +5970,60 @@ async function cliRun(subcommand, flags) {
           host: flags.host ?? 'claude',
         });
         process.stdout.write(`${written.command}\n`);
+        return 0;
+      }
+
+      // C120 — the review ledger of a document deliverable: open a critique
+      // and print its scope, close it with the synthesis's findings, record
+      // what a refine targeted, and read the ledger.
+      case 'critique-scope': {
+        cliRequire(flags, ['workflow-path', 'repo-root']);
+        const scope = await openCritiqueScope({
+          workflowPath: flags['workflow-path'],
+          repoRoot: flags['repo-root'],
+          profile: flags.profile ?? '',
+        });
+        process.stdout.write(`${JSON.stringify(scope, null, 2)}\n`);
+        return 0;
+      }
+
+      case 'critique-close': {
+        cliRequire(flags, ['workflow-path', 'repo-root', 'ledger', 'generation', 'findings-file']);
+        const generation = Number(flags.generation);
+        if (!Number.isInteger(generation) || generation < 1) throw new Error(`--generation must be a generation id (got '${flags.generation}')`);
+        let input;
+        try {
+          input = JSON.parse(await readFile(flags['findings-file'], 'utf8'));
+        } catch (err) {
+          throw new Error(`--findings-file ${flags['findings-file']} is not a readable JSON file (${err.code ?? err.message})`);
+        }
+        const result = await closeCritiqueScope({
+          workflowPath: flags['workflow-path'],
+          repoRoot: flags['repo-root'],
+          ledgerId: flags.ledger,
+          generation,
+          input,
+        });
+        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+        return 0;
+      }
+
+      case 'refine-record': {
+        cliRequire(flags, ['workflow-path', 'repo-root', 'targets-file']);
+        const targets = readIdList(await readFile(flags['targets-file'], 'utf8'));
+        const attempt = await recordRefineScope({
+          workflowPath: flags['workflow-path'],
+          repoRoot: flags['repo-root'],
+          targets,
+        });
+        process.stdout.write(`${JSON.stringify(attempt, null, 2)}\n`);
+        return 0;
+      }
+
+      case 'review-status': {
+        cliRequire(flags, ['workflow-path']);
+        const status = await readReviewStatus({ workflowPath: flags['workflow-path'] });
+        process.stdout.write(`${JSON.stringify(status, null, 2)}\n`);
         return 0;
       }
 
