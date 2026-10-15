@@ -600,7 +600,7 @@ export const MUTATIONS = [
   },
   {
     id: 'D14', file: DRIVER, tests: [TD],
-    from: '    view = observe({ repoRoot, roots, macroId, fetch: true, env });\n    if ((view.macro?.id ?? null) !== macroId) {',
+    from: '    view = look(macroId);\n    if ((view.macro?.id ?? null) !== macroId) {',
     to: '    if ((view.macro?.id ?? null) !== macroId) {',
     why: 'the first step is decided from a look taken before the locks, so a halt another run set in between is stepped past (round 6)',
   },
@@ -610,7 +610,7 @@ export const MUTATIONS = [
       // Take the second look before the locks instead of after them.
       const file = join(copy, DRIVER);
       const t = readFileSync(file, 'utf8');
-      const look = '    view = observe({ repoRoot, roots, macroId, fetch: true, env });\n';
+      const look = '    view = look(macroId);\n';
       const locks = '    const record = { run_id: runId, repo: repoRoot, macro_id: macroId, started_at: run.started_at, token_digest: tokenDigest(token) };\n';
       if (t.split(look).length !== 2 || t.split(locks).length !== 2) throw new Error('D15: anchors moved');
       writeFileSync(file, t.replace(look, '').replace(locks, `${look}${locks}`));
@@ -654,7 +654,7 @@ export const MUTATIONS = [
   },
   {
     id: 'D22', file: DRIVER, tests: [TD],
-    from: '      if (peersUnlisted(view, id)) view = observe({ repoRoot, roots, macroId: before.macro.id, fetch: true, env });\n',
+    from: '      if (peersUnlisted(view, id)) view = look(before.macro.id);\n',
     to: '',
     why: 'a serial look that meets a child archived between its scan and its read is not taken again: the step halts owner-choice on a legitimate transition',
     killed_by: /could not read the step's child once is taken again/,
@@ -703,7 +703,7 @@ export const MUTATIONS = [
   },
   {
     id: 'D25', file: DRIVER, tests: [TD],
-    from: '            else if (targets.length > 0) verdict = peersOnlyProgress({ step: s, before, after: view });\n            view = observe(',
+    from: '            else if (targets.length > 0) verdict = peersOnlyProgress({ step: s, before, after: view });\n            view = look(',
     to: '            else if (targets.length > 0) verdict = peersOnlyProgress({ step: s, before, after: view });\n            void (',
     why: 'the next decision reads the look from before the cleanup, and halts on the row it settled (C127)',
     killed_by: /the step passes, its abandoned task is named, and its peer is cancelled and settled/,

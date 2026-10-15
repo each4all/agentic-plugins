@@ -35,6 +35,7 @@ import { isAutopilotRun } from '../../../scripts/state.mjs';
 import { MIN_STEP_BUDGET_USD } from './budget.mjs';
 import { cleanupDeadRuns } from './dead-runs.mjs';
 import { DEFAULTS, posture, preflight, startRun } from './driver.mjs';
+import { landingLabel } from './landing-ready.mjs';
 import { gatherLaneFacts, laneHome, lanePath, lanesRequirements, planReconciliation } from './lanes.mjs';
 import { launchProposals, proposalLines, reportEntries } from './launch-proposals.mjs';
 import { holderAlive, listLocks, listRuns, mainWorktreeRoot, provablySame, readOpenRun, readRun } from './ledger.mjs';
@@ -537,19 +538,35 @@ async function statusCmd(o, repoRoot, out, err) {
     const pct = typeof s.peak_pct === 'number' ? ` ${(s.peak_pct * 100).toFixed(1)}%` : '';
     out(`  [${s.seq}] ${s.lane ? `lane ${s.lane}: ` : ''}${s.command} → ${s.outcome ?? (s.event === 'started' ? 'running or interrupted' : '?')}${typeof s.cost_usd === 'number' ? ` · $${s.cost_usd.toFixed(2)}` : ''}${pct} · session ${s.session_id}`);
   }
+  // A record from before freshness (no sync) reads as landing-ready, as it was written.
   for (const l of r.landing) {
-    out(`  ◆ landing-ready after [${l.after_seq}]: ${l.subtask_id} on ${l.branch} at ${l.commit ?? 'no commit'} (${l.reason})`);
+    const base = l.sync?.base_commit ? ` · origin/${l.integration_branch ?? '?'} at ${l.sync.base_commit}` : '';
+    out(`  ◆ ${landingLabel(l.sync)} after [${l.after_seq}]: ${l.subtask_id} on ${l.branch} at ${l.commit ?? 'no commit'} (${l.reason})${base}${l.sync?.detail ? `: ${l.sync.detail}` : ''}`);
   }
   if (r.halt) {
     out(`  halt: ${r.halt.reason} — ${r.halt.detail}`);
     if (r.halt.pointer) out(`    pointer: ${r.halt.pointer}`);
+    // Each branch the halt lists with its readiness as the run last saw it,
+    // published in this run or before it (a report is not repeated).
+    for (const w of r.halt.waiting ?? []) {
+      if (w.sync) out(`    · ${w.subtaskId} on ${w.branch}: ${landingLabel(w.sync)}${w.sync.detail ? ` (${w.sync.detail})` : ''}`);
+    }
     for (const line of r.halt.resume ?? []) out(`    ${line}`);
   }
-  // A run with lanes: one line per lane it met (ADR-0067 Decision 6).
+  // A run with lanes: one line per lane it met (ADR-0067 Decision 6), with
+  // the readiness its last look left a waiting one in, which a halt for
+  // another reason does not list (C128).
   for (const l of r.run.lanes?.lanes ?? []) {
-    out(`  lane ${l.subtask_id} · ${l.state ?? '?'}${l.path ? ` · ${l.path}` : ''}${l.last_step ? ` · last [${l.last_step.seq}] ${l.last_step.outcome}` : ''}${l.halt ? ` · halted: ${l.halt.reason}` : ''}`);
+    const sync = l.waiting?.sync;
+    out(`  lane ${l.subtask_id} · ${l.state ?? '?'}${l.path ? ` · ${l.path}` : ''}${l.last_step ? ` · last [${l.last_step.seq}] ${l.last_step.outcome}` : ''}${l.halt ? ` · halted: ${l.halt.reason}` : ''}` +
+      `${sync ? ` · ${landingLabel(sync)}${sync.detail ? ` (${sync.detail})` : ''}` : ''}`);
   }
   if (r.run.error) out(`  error: ${r.run.error}`);
+  // A run that stopped on an error before any halt: what waited as it stopped,
+  // none of it confirmed (C128).
+  for (const w of r.run.waiting ?? []) {
+    if (w.sync) out(`    · ${w.subtaskId} on ${w.branch}: ${landingLabel(w.sync)}${w.sync.detail ? ` (${w.sync.detail})` : ''}`);
+  }
   printAdmissions(admissions, out);
   return 0;
 }

@@ -80,11 +80,13 @@ export const TASKS = {
   reportLanding: (a, env) => {
     const lines = [];
     const cache = new Map(a.cache ?? []);
+    // Whether the run has printed a failure to record the report: in, and back.
+    const notice = { warned: a.warned === true };
     const report = reportLandingReady({
       repoRoot: a.repoRoot, mainRoot: a.mainRoot, runDir: a.runDir, runId: a.runId, seq: a.seq, view: a.view,
-      out: (x) => lines.push(String(x)), now: () => a.nowMs, cache, env,
+      out: (x) => lines.push(String(x)), now: () => a.nowMs, cache, env, notice,
     });
-    return { report, lines, cache: [...cache] };
+    return { report, lines, cache: [...cache], warned: notice.warned };
   },
   cancelPeerRuns: async (a, env) => {
     // driver.mjs imports the scheduler, which imports this module: loaded

@@ -9,8 +9,11 @@
 //   steps.jsonl         a `started` line written BEFORE the worker is spawned
 //                       (D1: every spawn is on record before it starts), then a
 //                       `finished` line after it
-//   landing.jsonl       a `landing-ready` line for each committed subtask the
-//                       run reported (landing-ready.mjs, ADR-0067 Decision 7)
+//   landing.jsonl       a `landing-ready` line for each observation of a
+//                       committed subtask the run reported, whatever its
+//                       readiness: its `ready` field, not the event name, says
+//                       whether it can land (landing-ready.mjs, ADR-0067
+//                       Decision 7)
 //   lanes.jsonl         the lane events of a run with lanes: created, adopted,
 //                       removed, kept, reconciled, reported, identity-assigned,
 //                       lanes-first-run, fetch-warning
@@ -109,8 +112,37 @@ export function appendStep(runDir, record) {
   fs.appendFileSync(path.join(runDir, 'steps.jsonl'), `${JSON.stringify(record)}\n`);
 }
 
-export function appendLanding(runDir, record) {
-  fs.appendFileSync(path.join(runDir, 'landing.jsonl'), `${JSON.stringify(record)}\n`);
+/**
+ * Append one line to a JSONL file, creating it and its directory. A torn last
+ * line (a writer that died mid-line) is ended first, so the two never join
+ * and the next record still parses. A short write is continued from the byte
+ * it stopped at; a write that makes no progress throws. `writeSync` is a test
+ * seam.
+ */
+export function appendLine(file, line, { writeSync = fs.writeSync } = {}) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const fd = fs.openSync(file, 'a+');
+  try {
+    const { size } = fs.fstatSync(fd);
+    let lead = '';
+    if (size > 0) {
+      const last = Buffer.alloc(1);
+      fs.readSync(fd, last, 0, 1, size - 1);
+      if (last[0] !== 0x0a) lead = '\n';
+    }
+    const bytes = Buffer.from(`${lead}${line}\n`, 'utf8');
+    for (let at = 0; at < bytes.length;) {
+      const n = writeSync(fd, bytes, at, bytes.length - at);
+      if (!(n > 0)) throw new Error(`could not append to ${file}: a write made no progress`);
+      at += n;
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+export function appendLanding(runDir, record, o) {
+  appendLine(path.join(runDir, 'landing.jsonl'), JSON.stringify(record), o);
 }
 
 export function appendLaneEvent(runDir, record) {

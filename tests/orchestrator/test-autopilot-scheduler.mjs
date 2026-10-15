@@ -8,9 +8,13 @@
 // gave it. The repository is a clone with a bare origin and a fake `gh`;
 // shared creation is on in it, so the macro and every child live in its
 // default state root, and each lane is a real git worktree beside it.
+//
+// This file: two lanes, the drain, budgets, forced resume, preview, start conditions and admission.
+// The scheduler tests are split across test-autopilot-scheduler*.mjs so
+// node --test runs them in parallel; each file sets up its own repositories.
 
 import { describe, it } from 'node:test';
-import { deepStrictEqual, match, ok, strictEqual } from 'node:assert/strict';
+import { deepStrictEqual, match, ok, rejects, strictEqual } from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -54,7 +58,12 @@ describe('two lanes', () => {
         strictEqual(t.git(t.lane(id), 'log', '-1', '--format=%s').length > 0, true);
       }
       strictEqual(t.git(t.work, 'branch', '--show-current'), 'main', 'the driver\'s checkout never switches');
-      strictEqual(r.landing.length, 2, 'each commit reported landing-ready');
+      // Each commit reported once, ready: a lane's look does not fetch, and
+      // the run's next look, which does, published it.
+      const base = t.git(t.work, 'rev-parse', 'refs/remotes/origin/main');
+      deepStrictEqual(r.landing.map((x) => [x.subtask_id, x.sync.state, x.sync.base_commit]).sort(), [['A', 'ready', base], ['B', 'ready', base]]);
+      deepStrictEqual(['A', 'B'].map((id) => bySubtask(r)[id].waiting?.sync?.state), ['ready', 'ready'], 'the lane report carries the freshness');
+      deepStrictEqual(r.halt.waiting.map((w) => w.sync.state), ['ready', 'ready'], 'and so does the halt');
       deepStrictEqual(L.readLockEntries(L.macroLockPath(t.work, t.fx.macroId)), [], 'the macro lock is released');
       deepStrictEqual(L.readLockEntries(L.worktreeLockPath(t.lane('A'))), [], 'each lane lock is released');
       deepStrictEqual(L.listOpenRuns(t.work), []);
@@ -186,109 +195,6 @@ describe('budgets are reserved', () => {
       deepStrictEqual(stepsOf(r).map((x) => [x[1], x[2]]), [['A', 'dispatch']]);
       strictEqual(r.halt.reason, 'budget');
       match(r.halt.detail, /step cap \(1\)/);
-    } finally {
-      t.fx.cleanup();
-    }
-  });
-});
-
-describe('throttle', () => {
-  it('a five-hour window at 0.85 or more starts no new lane, while the started lane keeps stepping; with nothing to refresh it the run waits for the reset an hour off — no run deadline halts it — until SIGTERM', async () => {
-    const throttled = { ...OPEN(), unifiedWindows: { five_hour: { utilization: 0.9, resetsAt: hour() }, seven_day: { utilization: 0.4, resetsAt: hour() + 86400 } } };
-    const t = await setup({ scenario: { A: { next: [CRITIQUE, COMMIT], file: true }, B: { next: [COMMIT] } }, rateLimit: throttled });
-    const push = t.lines.push.bind(t.lines);
-    t.lines.push = (line) => {
-      if (/waiting for the reset at /.test(line)) setTimeout(() => t.signals.emit('SIGTERM'), 50);
-      return push(line);
-    };
-    try {
-      strictEqual(await t.run(), 2, t.lines.join('\n'));
-      const r = t.latest();
-      deepStrictEqual(stepsOf(r).map((x) => [x[1], x[2]]), [['A', 'dispatch'], ['A', 'verb'], ['A', 'commit']], 'B never started');
-      ok(t.lines.some((l) => /throttled \(five-hour utilization 0\.9 \(limit 0\.85\)\) with nothing running; waiting for the reset at /.test(l)), t.lines.join('\n'));
-      strictEqual(r.halt.reason, 'interrupted', 'the wait ended only at the signal');
-      strictEqual(r.run.rate_limit.five_hour.utilization, 0.9);
-      ok(!existsSync(t.lane('B')), 'a throttled run creates no lane');
-    } finally {
-      t.fx.cleanup();
-    }
-  });
-
-  it('throttled with nothing running waits for the reset, then starts the new lane', async () => {
-    // Far enough off that A's two steps end before it: B then waits with
-    // nothing in flight.
-    const soon = Math.floor(Date.now() / 1000) + 30;
-    const throttled = { ...OPEN(), unifiedWindows: { five_hour: { utilization: 0.95, resetsAt: soon }, seven_day: { utilization: 0.4, resetsAt: hour() + 86400 } } };
-    const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT], file: 'b.txt' } }, rateLimit: throttled });
-    try {
-      strictEqual(await t.run(), 2, t.lines.join('\n'));
-      const r = t.latest();
-      const b = r.steps.find((x) => x.lane === 'B');
-      ok(b, t.lines.join('\n'));
-      ok(Date.parse(b.started_at) >= soon * 1000, 'B started after the reset');
-      // When A's steps ended before the reset (they take seconds), nothing
-      // ran while B was throttled, and the run waited for the reset.
-      const aEnded = Math.max(...r.steps.filter((x) => x.lane === 'A').map((x) => Date.parse(x.ended_at)));
-      if (aEnded < soon * 1000) ok(t.lines.some((l) => /waiting for the reset/.test(l)), t.lines.join('\n'));
-      strictEqual(r.halt.reason, 'awaiting-landing');
-    } finally {
-      t.fx.cleanup();
-    }
-  });
-
-  it('before the first rate-limit event a new lane starts only while no worker is in flight', async () => {
-    const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT], file: 'b.txt' } }, rateLimit: null });
-    try {
-      strictEqual(await t.run(), 2, t.lines.join('\n'));
-      const r = t.latest();
-      const b = r.steps.find((x) => x.lane === 'B' && x.kind === 'dispatch');
-      const a = r.steps.filter((x) => x.lane === 'A');
-      ok(a.length > 0 && b, t.lines.join('\n'));
-      ok(r.steps.filter((x) => x.seq < b.seq).every((x) => Date.parse(x.ended_at) <= Date.parse(b.started_at)), 'B started with nothing in flight');
-      strictEqual(r.run.rate_limit.state, 'unknown');
-    } finally {
-      t.fx.cleanup();
-    }
-  });
-});
-
-describe('landing order and the serial driver', () => {
-  it('a successor waits for its predecessor\'s landing; a serial run refuses beside the waiting lane; after the merge the successor gets a lane cut from the new baseline', async () => {
-    const t = await setup({ subtasks: [{ id: 'A' }, { id: 'B', blocked_by: ['A'] }], scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT], file: 'b.txt' } } });
-    try {
-      strictEqual(await t.run(), 2, t.lines.join('\n'));
-      let r = t.latest();
-      deepStrictEqual(stepsOf(r).map((x) => [x[1], x[2]]), [['A', 'dispatch'], ['A', 'commit']]);
-      strictEqual(r.halt.reason, 'awaiting-landing');
-      ok(!existsSync(t.lane('B')));
-
-      t.lines.length = 0;
-      strictEqual(await t.run({ lanes: 1 }), 1, 'a serial run refuses while a lane holds unfinished work');
-      ok(t.lines.some((l) => l.includes(`--macro ${t.fx.macroId} --lanes 2`)), t.lines.join('\n'));
-
-      const pr = t.fx.land('A', 'feat/a');
-      t.fx.setPrs([pr]);
-      strictEqual(await t.run(), 2, t.lines.join('\n'));
-      r = t.latest();
-      deepStrictEqual(stepsOf(r).map((x) => [x[1], x[2], x[3]]), [[null, 'done', 'A'], ['B', 'dispatch', 'B'], ['B', 'commit', 'B']]);
-      ok(!existsSync(t.lane('A')), 'A\'s lane went once A was done');
-      strictEqual(t.git(t.lane('B'), 'merge-base', '--is-ancestor', pr.mergeCommit.oid, 'HEAD'), '', 'B was cut from the baseline that carries A');
-    } finally {
-      t.fx.cleanup();
-    }
-  });
-
-  it('--lanes 1 is the serial driver: one subtask at a time, in the driven checkout, no lane', async () => {
-    const t = await setup({ subtasks: [{ id: 'A' }, { id: 'B', blocked_by: ['A'] }], scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT] } } });
-    try {
-      strictEqual(await t.run({ lanes: 1 }), 2, t.lines.join('\n'));
-      const r = t.latest();
-      deepStrictEqual(r.steps.map((x) => [x.kind, x.subtask_id, x.outcome, x.lane]), [['dispatch', 'A', 'ok', undefined], ['commit', 'A', 'ok', undefined]]);
-      strictEqual(r.halt.reason, 'awaiting-landing');
-      strictEqual(r.run.lanes, undefined);
-      strictEqual(r.halt.lanes, undefined);
-      ok(!existsSync(t.lane('A')));
-      strictEqual(t.git(t.work, 'branch', '--show-current'), 'feat/a', 'the serial driver works in its own checkout');
     } finally {
       t.fx.cleanup();
     }

@@ -18,9 +18,9 @@
 // macro, in the engineer homes of the repository-wide scan set (the read set,
 // then every other worktree), each physical file once. A pointer into a record
 // is spelled relative to the state root holding it (Decision 1(c)).
-//   - `git fetch origin <integration branch>` before a landing check, as
-//     /orchestrator:done does (it updates remote-tracking refs only). Preview
-//     skips it.
+//   - a fetch of origin's integration branch into its remote-tracking ref,
+//     named outright, before a landing check (it updates that ref only), as
+//     lanes.mjs `fetchBaseline` does. Preview skips it.
 //
 // "Waiting to land" is derived from these facts (an in_progress subtask whose
 // engineer workflow is archived terminal, and resolve-landing's answer), never
@@ -427,7 +427,11 @@ export function observe({ repoRoot, roots, macroId = null, fetch = true, env = p
   if (toLand.length > 0) {
     const integration = fm.git_baseline?.branch ?? null;
     if (fetch && integration) {
-      const f = run('git', ['-C', repoRoot, 'fetch', '--quiet', 'origin', integration], { ...o, timeout: NETWORK_TIMEOUT_MS });
+      // The ref the landing checks read, named outright (lanes.mjs
+      // fetchBaseline): under a configured mapping that does not cover the
+      // branch, `git fetch origin <branch>` succeeds and leaves it stale.
+      const f = run('git', ['-C', repoRoot, 'fetch', '--quiet', '--no-tags', '--refmap=', 'origin',
+        `+refs/heads/${integration}:refs/remotes/origin/${integration}`], { ...o, timeout: NETWORK_TIMEOUT_MS });
       view.fetch = { attempted: true, ok: f.code === 0, detail: f.code === 0 ? null : failure(f, `git fetch origin ${integration}`) };
     }
     for (const s of toLand) {

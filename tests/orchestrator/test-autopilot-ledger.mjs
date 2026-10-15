@@ -11,7 +11,7 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -58,6 +58,48 @@ describe('run ids and records', () => {
       deepStrictEqual([r.steps[0].command, r.steps[0].outcome, r.steps[0].session_id], ['/engineer:critique', 'ok', 's1']);
       deepStrictEqual([r.steps[1].command, r.steps[1].event, r.steps[1].outcome], ['/engineer:commit', 'started', undefined]);
       deepStrictEqual(L.listRuns(repo), [id]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  // C123: a landing record is appended as the macro's log is — a torn last
+  // line ended first, a short write continued, one with no progress refused.
+  it('appends a landing record after a torn last line without joining them', () => {
+    const repo = scratch();
+    try {
+      const id = L.newRunId();
+      const dir = L.createRunDir(repo, id);
+      writeFileSync(join(dir, 'landing.jsonl'), '{"event":"landing-ready","subtask_id":"A"');
+      L.appendLanding(dir, { event: 'landing-ready', subtask_id: 'B' });
+      L.appendLanding(dir, { event: 'landing-ready', subtask_id: 'C' });
+      L.writeRun(dir, { run_id: id, status: 'running' });
+      deepStrictEqual(L.readRun(repo, id).landing.map((x) => x.subtask_id), ['B', 'C']);
+      deepStrictEqual(readFileSync(join(dir, 'landing.jsonl'), 'utf8').split('\n'),
+        ['{"event":"landing-ready","subtask_id":"A"', '{"event":"landing-ready","subtask_id":"B"}', '{"event":"landing-ready","subtask_id":"C"}', '']);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('continues a short write from the byte it stopped at, and refuses a write that makes no progress', () => {
+    const repo = scratch();
+    try {
+      const file = join(repo, 'deep', 'log.jsonl');
+      const line = JSON.stringify({ note: 'café → 着陸 ✓' });
+      const writes = [];
+      // One byte at a time, splitting every multibyte character.
+      const oneByte = (fd, buf, off, len) => { writes.push(len); return fs.writeSync(fd, buf, off, Math.min(1, len)); };
+      L.appendLine(file, line, { writeSync: oneByte });
+      L.appendLine(file, line, { writeSync: oneByte });
+      strictEqual(readFileSync(file, 'utf8'), `${line}\n${line}\n`);
+      strictEqual(writes.length, 2 * Buffer.byteLength(`${line}\n`));
+      // Bounded, so a loop with no guard fails here rather than spinning.
+      let calls = 0;
+      const stuck = () => { calls += 1; if (calls > 100) throw new Error('kept writing with no progress'); return 0; };
+      throws(() => L.appendLine(file, line, { writeSync: stuck }), /a write made no progress/);
+      strictEqual(calls, 1);
+      strictEqual(readFileSync(file, 'utf8'), `${line}\n${line}\n`, 'a refused write adds nothing');
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }

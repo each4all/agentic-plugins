@@ -11,8 +11,10 @@
 // an error that prevented a run (1). It never pushes, opens or merges a pull
 // request, never switches branches itself, never archives, and never resumes,
 // forks or compacts a session (D1). After each look under its locks it reports
-// every subtask newly committed and not landed (landing-ready.mjs, ADR-0067
-// Decision 7), and goes on.
+// every subtask committed and not landed whose commit, integration tip or
+// readiness (ready, needing a sync with the integration branch, or unknown)
+// changed since its last report (landing-ready.mjs, ADR-0067 Decision 7), and
+// goes on.
 //
 // What it kills is only what its steps started: a worker's process group on
 // timeout or abort (with lanes, an off-loop task's too, offloop.mjs), and,
@@ -38,7 +40,7 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 
 import { createBudget } from './budget.mjs';
 import { cleanupDeadRuns, summary as cleanupSummary } from './dead-runs.mjs';
-import { orderText, overlapText, reportLandingReady } from './landing-ready.mjs';
+import { mergeOrderRecord, orderText, overlapText, reportLandingReady, syncText } from './landing-ready.mjs';
 import { lanesHoldingWork, lanesRequirements } from './lanes.mjs';
 import { launchProposals, mainCheckoutProposal, proposalLines } from './launch-proposals.mjs';
 import { observe as defaultObserve } from './observe.mjs';
@@ -54,8 +56,8 @@ import {
 } from './roots.mjs';
 import { observeInChild, offLoop as defaultOffLoop } from './offloop.mjs';
 import {
-  abandonedText, laneBlock, ownChildOnly, peerCancellationOutcome, peerRunnerCommand, peerSettlementOutcome, peersUnlisted, reportClosePeersUnlisted,
-  runLanes,
+  abandonedText, endedUnlooked, foundWaiting, laneBlock, ownChildOnly, peerCancellationOutcome, peerRunnerCommand, peerSettlementOutcome, peersUnlisted,
+  reconcileWaiting, reportClosePeersUnlisted, runLanes,
 } from './scheduler.mjs';
 import {
   ALLOWED_TOOLS, COMMIT_DENY, DENIED_TOOLS, claudeBin, startWorker as defaultStartWorker, terminateGroupsSync,
@@ -339,7 +341,7 @@ function haltRecord({ runId, d, lastSessionId, repoRoot, macroId, lanes }) {
   const resume = [];
   if (lastSessionId) resume.push(`claude --resume ${lastSessionId}   # inspect the last step interactively`);
   resume.push(d.reason === 'awaiting-landing'
-    ? 'Push each branch listed, open and review its pull request, merge it, then relaunch:'
+    ? `Bring each branch that needs a sync up to date with ${d.integration ? `origin/${d.integration}` : 'the integration branch'} (merge or rebase, then push), push the others, open and review each pull request, merge it once its CI passes on the merged tree, then relaunch:`
     : 'Resolve what the reason names, then relaunch:');
   // ADR-0067 Decision 6: the relaunch repeats the run's macro and lanes.
   resume.push(relaunchCommand({ macroId, lanes, repoRoot }));
@@ -350,7 +352,8 @@ function haltRecord({ runId, d, lastSessionId, repoRoot, macroId, lanes }) {
     pointer: d.pointer ?? null,
     subtask_id: d.subtaskId ?? null,
     waiting: d.waiting ?? null,
-    merge_order: d.mergeOrder ?? null,
+    // Snake case, as landing.jsonl keeps it (C123).
+    merge_order: d.mergeOrder ? mergeOrderRecord(d.mergeOrder) : null,
     // ADR-0067 Decision 8, item 5 — display only, never acted on: each
     // {kind, command, pointer}, built by the policy from checked parts.
     proposals: d.proposals ?? [],
@@ -376,27 +379,29 @@ function printHalt(out, d) {
   if (d.pointer) out(`  pointer: ${d.pointer}`);
   for (const w of d.waiting ?? []) {
     out(`  · ${w.subtaskId} on ${w.branch} (${w.reason})${w.detail ? `: ${w.detail}` : ''}`);
+    if (w.sync) out(`      ${syncText(w.sync, d.integration ? `refs/remotes/origin/${d.integration}` : null)}`);
     if (w.overlap) out(`      at ${w.commit ?? 'no commit'} · overlap: ${overlapText(w.overlap)}`);
-    for (const c of w.commands ?? []) out(`      ${c}`);
-    if (w.note) out(`      ${w.note}`);
+    for (const c of [...(w.sync?.commands ?? []), ...(w.commands ?? [])]) out(`      ${c}`);
+    for (const n of [w.sync?.note, w.note]) if (n) out(`      ${n}`);
   }
   if (d.mergeOrder) out(`  merge order: ${orderText(d.mergeOrder)}`);
   for (const line of haltProposalLines(d.proposals)) out(line);
 }
 
-// The awaiting-landing halt lists what the landing-ready report holds for the
-// same look: each branch's commit and overlap, and the merge order.
-function withLanding(d, report) {
-  if (d.reason !== 'awaiting-landing' || !report) return d;
-  const byId = new Map(report.entries.map((e) => [e.subtaskId, e]));
-  return {
-    ...d,
-    waiting: (d.waiting ?? []).map((w) => {
-      const e = byId.get(w.subtaskId);
-      return e ? { ...w, commit: e.commit, overlap: e.overlap } : w;
-    }),
-    mergeOrder: report.mergeOrder,
-  };
+// A halt's list of what waits to land is the run's list (C128, scheduler.mjs
+// `reconcileWaiting`), reconciled by the end that builds it: each branch's
+// commit, freshness (with its sync commands) and overlap as the latest look
+// that judged it found them, unknown where no look could, never the list of
+// the decision's own look. The policy's push commands and notes stay, and the
+// last report's integration branch and merge order. An awaiting-landing halt
+// carries the list even when it is empty (every branch landed while the run
+// ended); a halt for any other reason carries it when something waits. A
+// serial run's `finish` and a run with lanes' `end` (for its awaiting-landing
+// halt; each lane's report lists the rest) are the only callers.
+export function withLanding(d, report, waiting) {
+  if (d.reason !== 'awaiting-landing' && waiting.length === 0) return d;
+  const facts = report ? { integration: report.integration, mergeOrder: report.mergeOrder } : {};
+  return { ...d, waiting, ...facts };
 }
 
 // ADR-0067 Decision 6: a serial run does not reconcile lanes, and would halt
@@ -459,7 +464,22 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
   const remotes = remoteUrls(repoRoot);
   const stateRoot = pre.stateRoot;
 
-  let view = observe({ repoRoot, roots, macroId: options.macro ?? null, fetch: true, env });
+  // What the run's looks found waiting to land (C128, scheduler.mjs
+  // `reconcileWaiting`). Every look of the serial run goes through `look`,
+  // which feeds the list as the look returns, before its report and whether
+  // or not it failed: a later look, a retry or an end can then no longer keep
+  // what it found from the list. A look's report feeds it again with the
+  // report's facts (`reportLanding`); until then what a look newly found is
+  // unknown, so a halt before the first report (the locks are held) still
+  // names it.
+  let waiting = [];
+  const look = (id) => {
+    const v = observe({ repoRoot, roots, macroId: id, fetch: true, env });
+    waiting = reconcileWaiting(waiting, v, foundWaiting(v, false, null));
+    return v;
+  };
+
+  let view = look(options.macro ?? null);
   const macroId = view.macro?.id ?? null;
   // Lanes require shared creation, the default state root and the macro
   // there (Decision 2); a serial run refuses beside a lane of the macro that
@@ -533,6 +553,8 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
   let current = null;
   // The step's reservation while it is open (budget.mjs).
   let reservation = null;
+  // The last landing-ready report.
+  let landing = null;
   let interrupted = false;
   // A run with lanes aborts every worker group it has in flight, and lists
   // them with its tasks' groups (scheduler.mjs).
@@ -567,6 +589,15 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
   // A run with lanes passes its lanes (one report block each) and its
   // rate-limit line (scheduler.mjs).
   const finish = (status, d = null, laneReport = null) => {
+    // A run with lanes reports what waits per lane, and its end builds its
+    // halt's list (scheduler.mjs). A serial run's halt is built here and
+    // nowhere else, whatever ended it (C128): from the run's list, which every
+    // look has fed as it returned, and, when the owner interrupted the run,
+    // with nothing on it confirmed.
+    if (d && !laneReport) {
+      if (interrupted) waiting = endedUnlooked(waiting, 'the owner interrupted the run');
+      d = withLanding(d, landing, waiting);
+    }
     run.status = status;
     run.ended_at = new Date(now()).toISOString();
     if (d) {
@@ -618,7 +649,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     // The view above was taken before the locks. Another run may have changed
     // the state and released its locks in between, so the first step is
     // decided from what the state says now, under the locks (round 6).
-    view = observe({ repoRoot, roots, macroId, fetch: true, env });
+    view = look(macroId);
     if ((view.macro?.id ?? null) !== macroId) {
       return finish('halted', { reason: 'owner-choice', detail: `the macro changed while the run took its locks (${macroId ?? 'none'} → ${view.macro?.id ?? 'none'})` });
     }
@@ -643,18 +674,25 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     });
 
     // ADR-0067 Decision 7: after each look under the locks, every subtask
-    // newly committed and not landed is reported, a waiting one found at the
-    // start included. The report is never a gate: a failure is printed, and
-    // the next look reports what it missed.
+    // committed and not landed whose observation changed is reported, a
+    // waiting one found at the start included. The report is never a gate: a
+    // failure is printed, and the next look reports what it missed.
     const mergeChecks = new Map();
-    let landing = null;
+    // C123: a failure to record or make the report is printed once, until a
+    // report is recorded in full (landing-ready.mjs `reportLandingReady`).
+    const notice = { warned: false };
+    const reportFailed = (why) => {
+      landing = null;
+      if (!notice.warned) out(`⚠ landing-ready: the report failed (${why}); the run goes on, the next look reports it, and this is not printed again until a report is recorded`);
+      notice.warned = true;
+    };
     const reportLanding = (v, seq) => {
       try {
-        landing = reportLandingReady({ repoRoot, mainRoot, runDir, runId, seq, view: v, out, now, cache: mergeChecks, env });
+        landing = reportLandingReady({ repoRoot, mainRoot, runDir, runId, seq, view: v, out, now, cache: mergeChecks, env, notice });
       } catch (e) {
-        landing = null;
-        out(`⚠ landing-ready: the report failed (${e?.message ?? e}); the run goes on, and the next look reports it`);
+        reportFailed(e?.message ?? e);
       }
+      waiting = reconcileWaiting(waiting, v, foundWaiting(v, true, landing));
     };
     reportLanding(view, 0);
 
@@ -665,13 +703,14 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       // pair come back with it, for the next look.
       const offLoop = deps.offLoop ?? defaultOffLoop;
       const reportLandingOffLoop = async (v, seq, runTask = offLoop) => {
-        const r = await runTask('reportLanding', { repoRoot, mainRoot, runDir, runId, seq, view: v, nowMs: now(), cache: [...mergeChecks] }, { env, cwd: repoRoot });
+        const r = await runTask('reportLanding', { repoRoot, mainRoot, runDir, runId, seq, view: v, nowMs: now(), cache: [...mergeChecks], warned: notice.warned }, { env, cwd: repoRoot });
         for (const line of r.value?.lines ?? []) out(line);
         if (r.error) {
-          landing = null;
-          out(`⚠ landing-ready: the report failed (${r.error}); the run goes on, and the next look reports it`);
+          reportFailed(r.error);
           return;
         }
+        // The child's notice comes back: a failure it printed, or a report it recorded.
+        notice.warned = r.value.warned === true;
         mergeChecks.clear();
         for (const [k, a] of r.value.cache) mergeChecks.set(k, a);
         landing = r.value.report;
@@ -679,7 +718,8 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       return await runLanes({
         repoRoot, options: { ...options, lanes }, env, out, now, roots, pinned, remotes, stateRoot, token, record,
         runId, runDir, run, mainRoot, macroId, view, locks, driverLock: locks[0], macroLock: locks[1],
-        finish, reportLanding: reportLandingOffLoop, landing: () => landing, withLanding: (d) => withLanding(d, landing),
+        finish, reportLanding: reportLandingOffLoop, landing: () => landing, withLanding: (d, w) => withLanding(d, landing, w),
+        waiting: () => waiting,
         markLingering: () => { lingering = true; },
         keepOpenRecord: () => { keepRecord = true; },
         setLastSessionId: (id) => { lastSessionId = id ?? lastSessionId; },
@@ -708,7 +748,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         out(`[${seq}] ${d.detail}`);
         return finish('completed');
       }
-      if (d.outcome === 'halt') return finish('halted', withLanding(d, landing));
+      if (d.outcome === 'halt') return finish('halted', d);
 
       // ADR-0067 Decision 6, Budgets: the step is reserved before it spawns,
       // and every end settles it. One reservation at a time: what is spent
@@ -789,11 +829,11 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
 
       const before = view;
       const id = s.subtaskId ?? null;
-      view = observe({ repoRoot, roots, macroId: view.macro.id, fetch: true, env });
+      view = look(view.macro.id);
       // A look that could not read the step's peers, once more: a child
       // archived between the scan and its read is a legitimate transition (as
       // in a lane, scheduler.mjs).
-      if (peersUnlisted(view, id)) view = observe({ repoRoot, roots, macroId: before.macro.id, fetch: true, env });
+      if (peersUnlisted(view, id)) view = look(before.macro.id);
       let verdict = interrupted && !w.aborted
         ? { outcome: 'halt', reason: 'interrupted', detail: 'the owner interrupted the run' }
         : verifyStep({ step: s, worker: w, before, after: view });
@@ -833,7 +873,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
             if (o.verdict) verdict = { ...o.verdict, subtaskId: id };
             // A step whose only change was the peer it left: no progress.
             else if (targets.length > 0) verdict = peersOnlyProgress({ step: s, before, after: view });
-            view = observe({ repoRoot, roots, macroId: before.macro.id, fetch: true, env });
+            view = look(before.macro.id);
           }
         }
       }
@@ -871,6 +911,23 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     run.status = 'error';
     run.ended_at = new Date(now()).toISOString();
     run.error = e?.message ?? String(e);
+    // C128 — an error after the halt was recorded (while it was printed, for
+    // one): the run ended without confirming what the halt lists, so each
+    // branch it lists waiting is unknown, and halt.json is written again. Its
+    // lanes are the run's own lane entries, which the scheduler's error path
+    // has already left unknown.
+    const why = `the run stopped on an error: ${run.error}`;
+    if (run.halt) {
+      if (run.halt.waiting) run.halt = { ...run.halt, waiting: endedUnlooked(run.halt.waiting, why) };
+      try {
+        writeHalt(runDir, run.halt);
+      } catch { /* run.json carries it */ }
+    } else if (!run.lanes && waiting.length > 0) {
+      // An error before any halt (and before a run with lanes' scheduler
+      // reported its lanes): the run's list is recorded nowhere else, so
+      // run.json carries it, every entry unknown, for status to show (C128).
+      run.waiting = endedUnlooked(waiting, why);
+    }
     writeRun(runDir, run);
     release();
     detach();

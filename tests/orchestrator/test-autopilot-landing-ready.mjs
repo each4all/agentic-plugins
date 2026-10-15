@@ -15,11 +15,11 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, notStrictEqual, ok, strictEqual } from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { makeRepo, ORCH, ENG, RUNTIME } from './fixtures/autopilot-repo.mjs';
 
@@ -71,7 +71,7 @@ async function setup({ scenario, subtasks, linked = false }) {
   const logFile = landingLog(realpathSync(fx.main), fx.macroId);
   const log = () => readLandingLog(logFile);
   const sha = (branch) => fx.git('rev-parse', `refs/heads/${branch}`);
-  return { fx, work, run, lines, log, logFile, sha };
+  return { fx, work, env, run, lines, log, logFile, sha };
 }
 
 // /engineer:commit's effect, by hand: one file committed on the subtask's
@@ -171,12 +171,16 @@ describe('the landing-ready event, driven (ADR-0067 Decision 7)', () => {
       strictEqual(c.commit, shaC);
 
       strictEqual(r.halt.reason, 'awaiting-landing');
-      deepStrictEqual(r.halt.waiting.map((w) => [w.subtaskId, w.commit, w.overlap.base.result, w.overlap.pairs.map((p) => `${p.subtaskId}:${p.result}`)]), [
+      deepStrictEqual(r.halt.waiting?.map((w) => [w.subtaskId, w.commit, w.overlap?.base.result, w.overlap?.pairs.map((p) => `${p.subtaskId}:${p.result}`)]), [
         ['A', shaA, 'clean', ['B:clean', 'C:conflict']],
         ['B', shaB, 'clean', ['A:clean', 'C:clean']],
         ['C', shaC, 'clean', ['A:conflict', 'B:clean']],
       ]);
-      deepStrictEqual(r.halt.merge_order.map((m) => [m.subtaskId, m.rebaseAfter]), [['A', []], ['B', []], ['C', ['A']]]);
+      // halt.json keeps the merge order in snake case, as landing.jsonl does (C123).
+      deepStrictEqual(r.halt.merge_order, c.merge_order);
+      // Each branch was cut from origin/main, which has not moved: ready.
+      deepStrictEqual(r.halt.waiting.map((w) => [w.subtaskId, w.sync.state, w.sync.base_commit]), [['A', 'ready', base], ['B', 'ready', base], ['C', 'ready', base]]);
+      deepStrictEqual(r.landing.map((x) => [x.subtask_id, x.ready, x.sync.state]), [['A', true, 'ready'], ['B', true, 'ready'], ['C', true, 'ready']]);
       ok(t.lines.includes('  merge order: A → B → C (advisory; C rebases once A lands)'), t.lines.join('\n'));
       ok(t.lines.includes(`      at ${shaC} · overlap: origin/main clean; A (feat/a) conflict: shared.txt; B (feat/b) clean`), t.lines.join('\n'));
     } finally {
@@ -184,34 +188,32 @@ describe('the landing-ready event, driven (ADR-0067 Decision 7)', () => {
     }
   });
 
-  it('recovers an unrecorded commit when a run starts, reports it once across restarts, and a new commit again', {
-    skip: process.getuid?.() === 0 ? 'root ignores file modes' : false,
-  }, async () => {
+  // No file mode in this test: root ignores them, and the test must bite as
+  // root too (C123). A directory where the log goes fails as anyone.
+  it('recovers an unrecorded commit when a run starts, reports it once across restarts, and a new commit again', async () => {
     const t = await setup({ scenario: { A: { next: [COMMIT] }, B: { next: [COMMIT] } } });
     try {
       // Committed with no run watching: by hand, or by a run that died first.
       await commitByHand(t.fx, 'A', 'a.txt', 'A\n');
       const first = t.sha('feat/a');
-      // An earlier driver died mid-append, leaving a torn line, and the log
-      // cannot be written now.
-      mkdirSync(dirname(t.logFile), { recursive: true });
-      writeFileSync(t.logFile, '{"event":"landing-ready","subtask_id":"A"');
-      chmodSync(t.logFile, 0o444);
+      // The log cannot be read or written now: a directory stands in its place.
+      mkdirSync(t.logFile, { recursive: true });
 
       let { code, r } = await t.run();
       strictEqual(code, 2, t.lines.join('\n'));
       deepStrictEqual([r.steps.length, r.halt.reason], [0, 'awaiting-landing']);
-      deepStrictEqual(r.landing.map((x) => [x.subtask_id, x.after_seq, x.commit]), [['A', 0, first]], 'reported when the run starts');
-      ok(t.lines.some((l) => l.startsWith('⚠ landing-ready: could not record the report')), t.lines.join('\n'));
-      deepStrictEqual(t.log(), [], 'the log was not written');
+      deepStrictEqual(r.landing, [], 'nothing was published: the log could not be read');
+      strictEqual(t.lines.filter((l) => l.startsWith('⚠ landing-ready: could not record the report')).length, 1, t.lines.join('\n'));
       // The halt still lists what the report found.
-      deepStrictEqual([r.halt.waiting[0].commit, r.halt.waiting[0].overlap.base.result], [first, 'clean']);
+      deepStrictEqual([r.halt.waiting[0].commit, r.halt.waiting[0].overlap.base.result, r.halt.waiting[0].sync.state], [first, 'clean', 'ready']);
 
-      // The next start reports it again, since the log does not hold it.
-      chmodSync(t.logFile, 0o644);
+      // An earlier driver died mid-append, leaving a torn line. The next start
+      // reports the commit, since the log does not hold it.
+      rmSync(t.logFile, { recursive: true });
+      writeFileSync(t.logFile, '{"event":"landing-ready","subtask_id":"A"');
       ({ code, r } = await t.run());
       strictEqual(code, 2);
-      deepStrictEqual(r.landing.map((x) => [x.subtask_id, x.commit]), [['A', first]]);
+      deepStrictEqual(r.landing.map((x) => [x.subtask_id, x.after_seq, x.commit]), [['A', 0, first]], 'reported when the run starts');
       deepStrictEqual(t.log().map((x) => [x.subtask_id, x.commit]), [['A', first]], 'the torn line did not swallow the record');
 
       ({ code, r } = await t.run());
@@ -267,23 +269,91 @@ describe('the landing-ready event, driven (ADR-0067 Decision 7)', () => {
       t.fx.cleanup();
     }
   });
+
+  // C128: the second branch to land must contain the first one's landing, so
+  // the CI its push runs checks the tree that lands.
+  it('A lands, then B: B, reported ready before, is reported again as needing a sync, in the terminal, the logs, the halt and status', async () => {
+    const t = await setup({
+      subtasks: INDEPENDENT('A', 'B'),
+      scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT], file: true } },
+    });
+    try {
+      let { code, r } = await t.run();
+      strictEqual(code, 2, t.lines.join('\n'));
+      const shaB = t.sha('feat/b');
+      const before = t.fx.git('rev-parse', 'refs/remotes/origin/main');
+      deepStrictEqual(r.landing.map((x) => [x.subtask_id, x.sync.state, x.sync.base_commit]), [['A', 'ready', before], ['B', 'ready', before]]);
+
+      // The owner lands A; B is untouched.
+      t.fx.setPrs([t.fx.land('A', 'feat/a')]);
+      const landed = t.fx.git('rev-parse', 'refs/remotes/origin/main');
+      notStrictEqual(landed, before);
+      ({ code, r } = await t.run());
+      strictEqual(code, 2, t.lines.join('\n'));
+      deepStrictEqual(r.steps.map((s) => [s.kind, s.subtask_id, s.outcome]), [['done', 'A', 'ok']]);
+      // Reported when the run starts, and not again after the done step.
+      deepStrictEqual(r.landing.map((x) => [x.subtask_id, x.after_seq, x.commit, x.ready, x.sync.state, x.sync.base_commit]),
+        [['B', 0, shaB, false, 'needs-sync', landed]]);
+      const work = realpathSync(t.fx.work);
+      const commands = [`git -C ${work} fetch origin +refs/heads/main:refs/remotes/origin/main`, `git -C ${work} merge refs/remotes/origin/main`];
+      deepStrictEqual(r.landing[0].sync.commands, commands);
+      deepStrictEqual(t.log().map((x) => [x.subtask_id, x.sync.state, x.sync.base_commit]),
+        [['A', 'ready', before], ['B', 'ready', before], ['B', 'needs-sync', landed]]);
+      const head = t.lines.findIndex((l) => l.startsWith(`◆ landing-sync: B on feat/b at ${shaB.slice(0, 10)} (no pull request yet) does not contain origin/main at ${landed.slice(0, 10)}: merge or rebase it onto origin/main and push`));
+      ok(head >= 0, t.lines.join('\n'));
+      strictEqual(t.lines.filter((l) => l.startsWith('◆ landing-')).length, 1, 'one report in the run');
+      ok(t.lines.indexOf(`    ${commands[1]}`) > head, t.lines.join('\n'));
+
+      strictEqual(r.halt.reason, 'awaiting-landing');
+      deepStrictEqual(r.halt.waiting?.map((w) => [w.subtaskId, w.commit, w.sync?.state, w.sync?.commands, w.commands]),
+        [['B', shaB, 'needs-sync', commands, ['git push -u origin feat/b', 'gh pr create --base main --head feat/b --fill']]]);
+      ok(t.lines.some((l) => l.startsWith('      needs sync: it does not contain origin/main at')), t.lines.join('\n'));
+      ok(/up to date with origin\/main \(merge or rebase, then push\)/.test(r.halt.resume.join('\n')), r.halt.resume.join('\n'));
+
+      const C = await import(resolve(AP, 'cli.mjs'));
+      const statusOf = async (runId) => {
+        const status = [];
+        strictEqual(await C.main(['status', '--repo', work, '--run', runId], {
+          env: t.env, io: { stdin: { isTTY: false }, stderr: process.stderr }, out: (s) => status.push(s), err: (s) => status.push(s),
+        }), 0, status.join('\n'));
+        return status;
+      };
+      const syncDetail = `it does not contain origin/main at ${landed.slice(0, 10)}`;
+      let status = await statusOf(r.run.run_id);
+      ok(status.includes(`  ◆ landing-sync after [0]: B on feat/b at ${shaB} (no_pr) · origin/main at ${landed}: ${syncDetail}`), status.join('\n'));
+      ok(status.includes(`    · B on feat/b: landing-sync (${syncDetail})`), status.join('\n'));
+
+      // The next run publishes nothing (the same observation); its status still
+      // says, from the halt, that B needs a sync.
+      ({ code, r } = await t.run());
+      strictEqual(code, 2, t.lines.join('\n'));
+      deepStrictEqual(r.landing, []);
+      status = await statusOf(r.run.run_id);
+      ok(status.includes(`    · B on feat/b: landing-sync (${syncDetail})`), status.join('\n'));
+    } finally {
+      t.fx.cleanup();
+    }
+  });
 });
 
 // A view as observe.mjs builds it, for subtasks committed (commit-complete,
-// archived) and waiting: each {id, branch, wf, blocked_by?}.
-function waitingView(fx, subtasks) {
+// archived) and waiting: each {id, branch, wf, blocked_by?, reason?}; the
+// look fetched the integration branch unless `fetch` says otherwise.
+const FETCHED = { attempted: true, ok: true, detail: null };
+function waitingView(fx, subtasks, { fetch = FETCHED, integration = 'main' } = {}) {
   return {
     macro: {
       id: fx.macroId, archived: false,
       fm: {
-        git_baseline: { branch: 'main' },
+        git_baseline: { branch: integration },
         plan: { subtasks: subtasks.map((s) => ({ id: s.id, status: 'in_progress', branch: s.branch, blocked_by: s.blocked_by ?? [], engineer_workflow_id: s.wf })) },
       },
     },
     children: Object.fromEntries(subtasks.map((s) => [s.id, {
       location: 'archived', terminal_marker: true, current_phase: 'commit-complete', workflow_id: s.wf, branch: s.branch,
     }])),
-    landing: Object.fromEntries(subtasks.map((s) => [s.id, { ok: false, reason: 'no_pr', detail: '' }])),
+    landing: Object.fromEntries(subtasks.map((s) => [s.id, { ok: false, reason: s.reason ?? 'no_pr', detail: '' }])),
+    fetch,
   };
 }
 
@@ -295,12 +365,13 @@ describe('the landing-ready report', () => {
     fx.git('commit', '-q', '-m', `feat: ${branch}`);
     return fx.git('rev-parse', 'HEAD');
   };
-  // The fixture's own home for git, so neither the user's global config nor
-  // their XDG attributes reach a test that writes its own.
+  // A home for git of the test's own, whose global config and XDG attributes
+  // the test writes: its ~/.gitconfig is the global config of fx.env.
   const isolate = (fx) => {
     const home = join(fx.dir, 'home');
     mkdirSync(home, { recursive: true });
     Object.assign(fx.env, { HOME: home, XDG_CONFIG_HOME: join(home, '.config') });
+    delete fx.env.GIT_CONFIG_GLOBAL;
     return home;
   };
   const AC = [
@@ -510,6 +581,268 @@ describe('the landing-ready report', () => {
       strictEqual(count(), 6);
     } finally {
       fx.cleanup();
+    }
+  });
+
+  // The integration branch moves on: a commit pushed to origin/main from a
+  // detached HEAD, then fetched. Returns the new tip.
+  const advance = (fx, rel) => {
+    fx.git('switch', '-q', '--detach', 'refs/remotes/origin/main');
+    writeFileSync(join(fx.work, rel), `${rel}\n`);
+    fx.git('add', rel);
+    fx.git('commit', '-q', '-m', `feat: main moves (${rel})`);
+    fx.git('push', '-q', 'origin', 'HEAD:main');
+    fx.git('fetch', '-q', 'origin');
+    return fx.git('rev-parse', 'refs/remotes/origin/main');
+  };
+  const WF = { A: 'compose-20261001T000000Z-aaaaaa', B: 'compose-20261001T000000Z-bbbbbb', C: 'compose-20261001T000000Z-cccccc' };
+  const sub = (id, extra = {}) => ({ id, branch: `feat/${id.toLowerCase()}`, wf: WF[id], ...extra });
+
+  it('is ready only when the branch contains the fetched integration tip; one behind it needs a sync, with the commands for the worktree that has it', async () => {
+    const fx = await makeRepo();
+    try {
+      // A and C are cut before the integration branch moves, B after. Main's
+      // move touches no file of theirs: A merges clean, and is still behind.
+      branchWith(fx, 'feat/a', 'a.txt', 'A\n');
+      branchWith(fx, 'feat/c', 'c.txt', 'C\n');
+      const base = advance(fx, 'm.txt');
+      branchWith(fx, 'feat/d', 'd.txt', 'D\n');
+      branchWith(fx, 'feat/b', 'b.txt', 'B\n');
+      // C is checked out in a worktree of its own, B in the fixture's, A in none.
+      const other = join(fx.dir, 'c-tree');
+      fx.git('worktree', 'add', '-q', other, 'feat/c');
+      const view = waitingView(fx, [sub('A'), sub('B'), sub('C', { reason: 'not_merged' }), { id: 'D', branch: 'feat/d', wf: 'compose-20261001T000000Z-dddddd', reason: 'not_merged' }]);
+      const cache = new Map();
+      const states = (r) => r.entries.map((e) => [e.subtaskId, e.sync.state, e.sync.base_commit, e.overlap.base.result, e.withheld]);
+      const expected = [['A', 'needs-sync', base, 'clean', false], ['B', 'ready', base, 'clean', false], ['C', 'needs-sync', base, 'clean', false], ['D', 'ready', base, 'clean', false]];
+      const report = landingReport({ repoRoot: fx.work, env: fx.env, view, cache });
+      deepStrictEqual(states(report), expected);
+      // The tip is fetched into its ref by name, as the observer does.
+      deepStrictEqual(report.entries[0].sync.commands, ['git switch feat/a', 'git fetch origin +refs/heads/main:refs/remotes/origin/main', 'git merge refs/remotes/origin/main']);
+      deepStrictEqual([report.entries[1].sync.commands, report.entries[1].sync.detail], [[], null]);
+      const c = realpathSync(other);
+      deepStrictEqual(report.entries[2].sync.commands, [`git -C ${c} fetch origin +refs/heads/main:refs/remotes/origin/main`, `git -C ${c} merge refs/remotes/origin/main`, `git -C ${c} push origin feat/c`]);
+      // Ready, with a pull request open: a sync made here reaches it only by a push.
+      deepStrictEqual(report.entries[3].sync.commands, ['git push origin feat/d']);
+      ok(report.entries[0].sync.detail.startsWith(`it does not contain origin/main at ${base.slice(0, 10)}`), report.entries[0].sync.detail);
+      // The next look, from the cache: the ancestry and merge answers of one
+      // pair are kept apart, so it says the same.
+      ok([...cache.keys()].some((k) => k.startsWith('anc:')) && [...cache.keys()].some((k) => k.startsWith('merge:')), [...cache.keys()].join(' '));
+      deepStrictEqual(states(landingReport({ repoRoot: fx.work, env: fx.env, view, cache })), expected);
+      // The printed commands bring C up to date, even with a tag named
+      // origin/main at the old tip, which the short name would resolve to.
+      fx.git('tag', 'origin/main', fx.git('rev-parse', 'feat/c~1'));
+      for (const cmd of report.entries[2].sync.commands.filter((x) => !/ push /.test(x))) {
+        execFileSync('git', cmd.split(' ').slice(1), { env: fx.env, encoding: 'utf8', stdio: 'pipe' });
+      }
+      strictEqual(spawnSync('git', ['-C', fx.work, 'merge-base', '--is-ancestor', base, 'refs/heads/feat/c'], { env: fx.env }).status, 0, 'feat/c contains the tip');
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  it('never calls a branch ready when its freshness is unknown: a failed fetch, a look that did not fetch, a shallow clone, an integration branch that does not resolve, a check past its time', async () => {
+    const fx = await makeRepo();
+    try {
+      branchWith(fx, 'feat/a', 'a.txt', 'A\n');
+      const base = advance(fx, 'm.txt');
+      branchWith(fx, 'feat/b', 'b.txt', 'B\n');
+      const AB = [sub('A'), sub('B')];
+      const states = (r) => r.entries.map((e) => [e.subtaskId, e.sync.state, e.withheld]);
+
+      const failed = landingReport({ repoRoot: fx.work, env: fx.env, view: waitingView(fx, AB, { fetch: { attempted: true, ok: false, detail: 'git fetch origin main exited 128: fatal: simulated' } }) });
+      // Behind the last fetched tip is behind the newer one too: needs a sync.
+      deepStrictEqual(states(failed), [['A', 'needs-sync', false], ['B', 'unknown', false]]);
+      ok(/the fetch of origin\/main failed in this look \(git fetch origin main exited 128: fatal: simulated\)/.test(failed.entries[1].sync.detail), failed.entries[1].sync.detail);
+      strictEqual(failed.entries[1].sync.base_commit, base);
+
+      const unfetched = landingReport({ repoRoot: fx.work, env: fx.env, view: waitingView(fx, AB, { fetch: { attempted: false, ok: null, detail: null } }) });
+      deepStrictEqual(states(unfetched), [['A', 'needs-sync', false], ['B', 'unknown', true]]);
+      ok(/origin\/main was not fetched in this look/.test(unfetched.entries[1].sync.detail), unfetched.entries[1].sync.detail);
+
+      const spent = landingReport({ repoRoot: fx.work, env: fx.env, view: waitingView(fx, AB), budgetMs: 0 });
+      deepStrictEqual(states(spent), [['A', 'unknown', false], ['B', 'unknown', false]]);
+      ok(/ran out/.test(spent.entries[0].sync.detail), spent.entries[0].sync.detail);
+
+      // An ancestry check git refuses: unknown, and not kept, so the next look asks again.
+      const bin = join(fx.dir, 'failing-merge-base');
+      mkdirSync(bin);
+      writeFileSync(join(bin, 'git'), '#!/bin/sh\nfor a in "$@"; do [ "$a" = merge-base ] && { echo "fatal: simulated" >&2; exit 128; }; done\nPATH="$REAL_PATH" exec git "$@"\n');
+      chmodSync(join(bin, 'git'), 0o755);
+      const cache = new Map();
+      const refused = landingReport({ repoRoot: fx.work, cache, env: { ...fx.env, PATH: `${bin}:${fx.env.PATH}`, REAL_PATH: fx.env.PATH }, view: waitingView(fx, AB) });
+      deepStrictEqual(states(refused), [['A', 'unknown', false], ['B', 'unknown', false]]);
+      ok(/git merge-base --is-ancestor exited 128: fatal: simulated/.test(refused.entries[0].sync.detail), refused.entries[0].sync.detail);
+      deepStrictEqual(states(landingReport({ repoRoot: fx.work, cache, env: fx.env, view: waitingView(fx, AB) })), [['A', 'needs-sync', false], ['B', 'ready', false]]);
+
+      const nowhere = landingReport({ repoRoot: fx.work, env: fx.env, view: waitingView(fx, AB, { integration: 'nope' }) });
+      deepStrictEqual(nowhere.entries.map((e) => [e.sync.state, e.sync.base_commit, e.sync.detail]),
+        [['unknown', null, 'refs/remotes/origin/nope does not resolve here'], ['unknown', null, 'refs/remotes/origin/nope does not resolve here']]);
+
+      // A shallow clone: a branch cut before main moved, then a fetch; is it
+      // behind, or does the boundary hide the path? Unknown. One cut after is ready.
+      const shallow = join(fx.dir, 'shallow');
+      execFileSync('git', ['clone', '-q', '--depth', '1', `file://${fx.origin}`, shallow], { env: fx.env });
+      const inShallow = { work: shallow, git: (...args) => execFileSync('git', ['-C', shallow, ...args], { env: fx.env, encoding: 'utf8' }).trim() };
+      branchWith(inShallow, 'feat/a', 'a.txt', 'A\n');
+      advance(fx, 'n.txt');
+      inShallow.git('fetch', '-q', 'origin');
+      branchWith(inShallow, 'feat/b', 'b.txt', 'B\n');
+      ok(existsSync(join(shallow, '.git', 'shallow')), 'the clone is shallow');
+      const inClone = landingReport({ repoRoot: shallow, env: fx.env, view: waitingView(fx, AB) });
+      deepStrictEqual(states(inClone), [['A', 'unknown', false], ['B', 'ready', false]]);
+      ok(/as far as this shallow clone can see/.test(inClone.entries[0].sync.detail), inClone.entries[0].sync.detail);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  it('reports again on each change of commit, integration tip or state, never the same observation twice, across report calls as across runs', async () => {
+    const fx = await makeRepo();
+    const runDir = mkdtempSync(join(tmpdir(), 'landing-run-'));
+    try {
+      branchWith(fx, 'feat/a', 'a.txt', 'A\n');
+      const FAILED = { attempted: true, ok: false, detail: 'simulated' };
+      const UNFETCHED = { attempted: false, ok: null, detail: null };
+      const lines = [];
+      // Each call reads the log afresh, as a new run's first look does.
+      const report = (subs, fetch = FETCHED) => reportLandingReady({
+        repoRoot: fx.work, mainRoot: fx.work, runDir, runId: RUN_ID, seq: 0, view: waitingView(fx, subs, { fetch }), out: (s) => lines.push(s), env: fx.env,
+      });
+      const log = (id) => readLandingLog(landingLog(fx.work, fx.macroId)).filter((x) => x.subtask_id === id).map((x) => [x.sync.state, x.sync.base_commit]);
+      const first = fx.git('rev-parse', 'refs/remotes/origin/main');
+
+      report([sub('A')]);
+      report([sub('A')]);
+      deepStrictEqual(log('A'), [['ready', first]], 'the same observation is not repeated');
+      report([sub('A')], FAILED);
+      report([sub('A')], FAILED);
+      deepStrictEqual(log('A').map((x) => x[0]), ['ready', 'unknown'], 'ready, then unknown once');
+      report([sub('A')]);
+      deepStrictEqual(log('A').map((x) => x[0]), ['ready', 'unknown', 'ready'], 'ready again once the fetch recovers');
+      report([sub('A')], UNFETCHED);
+      report([sub('A')]);
+      deepStrictEqual(log('A').map((x) => x[0]), ['ready', 'unknown', 'ready'], 'a look that did not fetch publishes no unknown for the next fetching look to turn ready again');
+      report([sub('A')], FAILED);
+      deepStrictEqual(log('A').map((x) => x[0]), ['ready', 'unknown', 'ready', 'unknown'], 'and unknown again');
+      report([sub('A')], UNFETCHED);
+      deepStrictEqual(log('A').length, 4, 'a look that did not fetch publishes no ready');
+      ok(lines.some((l) => l.startsWith('◆ landing-unknown: A on feat/a at ')), lines.join('\n'));
+
+      // B is behind, and the integration branch moves twice: each move is reported.
+      const b = branchWith(fx, 'feat/b', 'b.txt', 'B\n');
+      const second = advance(fx, 'm1.txt');
+      report([sub('B')]);
+      const third = advance(fx, 'm2.txt');
+      report([sub('B')], UNFETCHED);
+      report([sub('B')]);
+      deepStrictEqual(log('B'), [['needs-sync', second], ['needs-sync', third]]);
+      strictEqual(fx.git('rev-parse', 'refs/heads/feat/b'), b, 'the branch did not move');
+      // The macro's baseline renamed, at the same commit: reported once, under its new name.
+      fx.git('push', '-q', 'origin', 'refs/remotes/origin/main:refs/heads/trunk');
+      fx.git('fetch', '-q', 'origin');
+      const view = (subs) => waitingView(fx, subs, { integration: 'trunk' });
+      for (let i = 0; i < 2; i += 1) {
+        reportLandingReady({ repoRoot: fx.work, mainRoot: fx.work, runDir, runId: RUN_ID, seq: 0, view: view([sub('B')]), out: (s) => lines.push(s), env: fx.env });
+      }
+      deepStrictEqual(readLandingLog(landingLog(fx.work, fx.macroId)).filter((x) => x.subtask_id === 'B').map((x) => [x.integration_branch, x.sync.base_commit]),
+        [['main', second], ['main', third], ['trunk', third]]);
+    } finally {
+      fx.cleanup();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it('prints a failure to record once until a report is recorded in full; a record whose log line failed is published again', async () => {
+    const fx = await makeRepo();
+    const runDir = mkdtempSync(join(tmpdir(), 'landing-run-'));
+    try {
+      branchWith(fx, 'feat/a', 'a.txt', 'A\n');
+      const lines = [];
+      const notice = { warned: false };
+      const failing = () => { throw new Error('simulated: the log cannot be written'); };
+      const report = (o = {}) => reportLandingReady({
+        repoRoot: fx.work, mainRoot: fx.work, runDir, runId: RUN_ID, seq: 0, view: waitingView(fx, [sub('A')]), out: (s) => lines.push(s), env: fx.env, notice, ...o,
+      });
+      const logFile = landingLog(fx.work, fx.macroId);
+      const facts = () => [readLandingLog(join(runDir, 'landing.jsonl')).length, readLandingLog(logFile).length,
+        lines.filter((l) => l.startsWith('⚠ landing-ready: could not record the report')).length, notice.warned];
+
+      // The run's ledger takes the record, the macro's log does not: published in part.
+      const partial = report({ appendLog: failing });
+      deepStrictEqual(facts(), [1, 0, 1, true]);
+      ok(/simulated: the log cannot be written/.test(partial.publishError), partial.publishError);
+      // The next look publishes it again (the log does not hold it), and does not print the failure again.
+      report({ appendLog: failing });
+      deepStrictEqual(facts(), [2, 0, 1, true]);
+      // Recorded in full: the notice clears.
+      report();
+      deepStrictEqual(facts(), [3, 1, 1, false]);
+      // A new failure is printed again.
+      writeFileSync(join(fx.work, 'fix.txt'), 'fix\n');
+      fx.git('add', 'fix.txt');
+      fx.git('commit', '-q', '-m', 'fix: A');
+      report({ appendLog: failing });
+      deepStrictEqual(facts(), [4, 1, 2, true]);
+      report();
+      deepStrictEqual(facts(), [5, 2, 2, false]);
+      // A look that publishes nothing (the same observation logged) leaves the notice as it is.
+      notice.warned = true;
+      report();
+      deepStrictEqual(facts(), [5, 2, 2, true]);
+
+      // An off-loop report takes the notice in, and gives it back.
+      const { TASKS } = await import(resolve(AP, 'offloop.mjs'));
+      rmSync(logFile);
+      mkdirSync(logFile);
+      const a = { repoRoot: fx.work, mainRoot: fx.work, runDir, runId: RUN_ID, seq: 0, view: waitingView(fx, [sub('A')]), nowMs: Date.now(), cache: [] };
+      const warnedIn = (v) => [v.warned, v.lines.filter((l) => l.startsWith('⚠ landing-ready')).length];
+      deepStrictEqual(warnedIn(await TASKS.reportLanding({ ...a, warned: false }, fx.env)), [true, 1]);
+      deepStrictEqual(warnedIn(await TASKS.reportLanding({ ...a, warned: true }, fx.env)), [true, 0]);
+      rmSync(logFile, { recursive: true });
+      deepStrictEqual(warnedIn(await TASKS.reportLanding({ ...a, warned: true }, fx.env)), [false, 0]);
+    } finally {
+      fx.cleanup();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it('the fixture takes no git config and no GIT_* variable of the caller\'s, in its repositories or in the state helpers it calls in place (C123 F3)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'caller-home-'));
+    try {
+      // The caller's: commits signed with a program that fails, a hooks path
+      // whose pre-commit refuses, and a GIT_DIR left over from a hook.
+      const hooks = join(home, 'hooks');
+      mkdirSync(hooks);
+      writeFileSync(join(hooks, 'pre-commit'), '#!/bin/sh\necho "the caller\'s hook ran" >&2\nexit 1\n');
+      chmodSync(join(hooks, 'pre-commit'), 0o755);
+      writeFileSync(join(home, '.gitconfig'), `[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = false\n[core]\n\thooksPath = ${hooks}\n`);
+      const env = { PATH: process.env.PATH, HOME: home, TMPDIR: process.env.TMPDIR ?? tmpdir() };
+      const ident = ['-c', 'user.name=T', '-c', 'user.email=t@t.local'];
+      // The controls: in that environment a commit fails, and GIT_DIR points nowhere.
+      const repo = join(home, 'repo');
+      execFileSync('git', ['init', '-q', repo], { env });
+      const commit = spawnSync('git', ['-C', repo, ...ident, 'commit', '-q', '--allow-empty', '-m', 'x'], { env, encoding: 'utf8' });
+      notStrictEqual(commit.status, 0, 'the caller\'s config makes a commit fail');
+      const gitDir = join(home, 'nowhere.git');
+      notStrictEqual(spawnSync('git', ['-C', repo, 'rev-parse', '--git-dir'], { env: { ...env, GIT_DIR: gitDir } }).status, 0, 'GIT_DIR points nowhere');
+
+      const script = join(home, 'child.mjs');
+      writeFileSync(script, [
+        `const { makeRepo } = await import(${JSON.stringify(pathToFileURL(resolve(REPO_ROOT, 'tests/orchestrator/fixtures/autopilot-repo.mjs')).href)});`,
+        'const fx = await makeRepo();',
+        // git spawned with process.env, as the state helpers called in place spawn it.
+        "(await import('node:child_process')).execFileSync('git', ['-C', fx.work, 'rev-parse', 'HEAD'], { stdio: 'ignore' });",
+        "const child = await fx.dispatch('A');",
+        "await fx.commitAndArchive(child.path);",
+        "process.stdout.write(fx.git('log', '-1', '--format=%s'));",
+        'fx.cleanup();',
+      ].join('\n'));
+      const r = spawnSync(process.execPath, [script], { env: { ...env, GIT_DIR: gitDir }, encoding: 'utf8', timeout: 120_000 });
+      strictEqual(r.status, 0, r.stderr);
+      strictEqual(r.stdout, 'feat: work.txt');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
     }
   });
 

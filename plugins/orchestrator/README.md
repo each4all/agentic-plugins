@@ -49,15 +49,24 @@ the steps stay manual**, and the host-neutral state it reads (`next_step_*`,
   continues from the state a halt left.
 - **Landing stays the owner's** (ADR-0062, owner decision D23). Workers never push or
   open a pull request — the denylist forbids it, and network pushes fail at the git
-  level in every worker. Each commit is reported once while the run goes on
+  level in every worker. Each commit is reported while the run goes on
   (ADR-0067 Decision 7): a `◆ landing-ready` line, a ledger record and a line in
   the main worktree's `.agentic-plugins/runs/autopilot/landing/<macro-id>.jsonl`,
   with the branch, its commit, the push and pull-request commands, a read-only
   `git merge-tree` overlap check against the integration branch and the other
   waiting branches (run in a scratch repository, so no merge driver or
-  attribute of the checkout applies), and an advisory merge order. At an `awaiting-landing` halt
+  attribute of the checkout applies), and an advisory merge order. A branch is
+  ready only when it contains the integration branch's tip as the run fetched it,
+  so its CI checks the tree that lands; one behind it (another lane landed) is
+  reported `◆ landing-sync` with the commands that merge the tip in and push, and
+  one whose freshness is unknown `◆ landing-unknown`; every record's `ready`
+  field, not its `landing-ready` event name, says which. A branch is reported again
+  when its commit, the tip or its readiness changes. At an `awaiting-landing` halt
   the run lists each branch the same way; after the merge, a relaunch records the
-  landing and goes on.
+  landing and goes on. Every end lists what still waits as it ended (per lane, in
+  an `awaiting-landing` halt, and in a serial run's halt for any reason),
+  `unknown` when the run could not confirm it (a failed look, an interrupt, an
+  error), and not a branch that landed as the run ended.
 - **Halts** print the reason and its pointer, write
   `.agentic-plugins/runs/autopilot/<run-id>/halt.json` and exit 2;
   `--notify-local` adds one local macOS notification. There is no plugin notification.

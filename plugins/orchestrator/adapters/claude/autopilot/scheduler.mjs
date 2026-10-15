@@ -63,7 +63,7 @@ import { appendStep, LockHeldError, processFingerprint, workerStreamPath, writeR
 import { createTaskRunner, offLoop as defaultOffLoop } from './offloop.mjs';
 import {
   afterUnread, checkoutProblem, consensusProposals, decideLanes, fingerprint, forcedForLanes, laneFingerprint, modelFor,
-  peersOnlyProgress, proposalsAtEnd, renderStep, STEP_KINDS, verifyStep,
+  peersOnlyProgress, proposalsAtEnd, renderStep, STEP_KINDS, verifyStep, waitingToLand,
 } from './policy.mjs';
 import { driftOf, PLUGINS, resolveRoots } from './roots.mjs';
 import {
@@ -121,6 +121,131 @@ export function peersUnlisted(view, id) {
     return `subtask ${id}'s engineer workflow could not be read: ${why}`;
   }
   return null;
+}
+
+// Why a look that does not list a subtask that waited cannot say it stopped
+// waiting, or null when it reads that it did: the subtask is no longer in
+// progress, its engineer workflow is active again (a new attempt) or closed
+// with no commit, or its pull request merged. Anything else — a workflow that
+// could not be read, a landing check that failed or refused (gh unavailable,
+// for one) — is no answer, and the subtask keeps its place.
+function waitingUnread(view, id) {
+  const s = (view.macro?.fm?.plan?.subtasks ?? []).find((x) => x?.id === id);
+  if (s?.status !== 'in_progress') return null;
+  const child = view.children?.[id];
+  if (child?.location === 'active') return null;
+  if (child?.location !== 'archived') return `subtask ${id}'s engineer workflow could not be read${child?.detail ? ` (${child.detail})` : ''}`;
+  if (child.current_phase === 'close-complete') return null;
+  const landing = view.landing?.[id];
+  if (landing?.ok === true) return null;
+  if (!landing || landing.error) return `subtask ${id}'s landing could not be checked${landing?.error ? ` (${landing.error})` : ''}`;
+  return `subtask ${id}'s landing check answered ${landing.reason ?? 'no reason'}${landing.detail ? ` (${landing.detail})` : ''}`;
+}
+
+// The subtasks a look reads as landed since a lane it keeps was judged: any
+// whose pull request merged and that is not yet recorded completed, listed
+// before or not (its landing check may have failed until now), and one that
+// waited (`departed`) and leaves recorded completed with its commit. The
+// integration branch has moved past the tip an earlier look judged a branch
+// against. A completion with no commit lands nothing.
+function landingsSeen(view, departed) {
+  return (view.macro?.fm?.plan?.subtasks ?? []).filter((s) => s?.id != null && (
+    (s.status === 'in_progress' && view.landing?.[s.id]?.ok === true)
+    || (departed.has(s.id) && s.status === 'completed' && typeof s.commit === 'string' && s.commit !== '')
+  )).map((s) => s.id);
+}
+
+// A waiting subtask whose freshness the run cannot confirm: the tip it was
+// judged against stays, its commands go.
+const unknownSync = (w, detail) => ({ ...w, sync: { state: 'unknown', base_commit: w.sync?.base_commit ?? null, detail, commands: [], note: null } });
+
+/**
+ * The waiting subtasks a look lists, with the commit, freshness and overlap
+ * `report` (the landing-ready report, or null) found for each: `withheld`
+ * marks one an unfetched look could not call ready. One the report does not
+ * list keeps no freshness.
+ */
+export function landingFactsOf(list, report) {
+  if (!report || list.length === 0) return list;
+  return list.map((w) => {
+    const e = report.entries.find((x) => x.subtaskId === w.subtaskId);
+    return { ...w, commit: e?.commit ?? null, sync: e?.sync ?? null, ...(e?.overlap ? { overlap: e.overlap } : {}), ...(e?.withheld ? { withheld: true } : {}) };
+  });
+}
+
+/**
+ * What a look lists waiting, for `reconcileWaiting` (C128): nothing when it
+ * failed or could not read the macro; with `report`'s facts when that report
+ * was made from this look (`reported`); otherwise marked `unreported`, since
+ * another look's report does not speak for it.
+ */
+export function foundWaiting(view, reported, report) {
+  const found = view.lookError || view.macroLookupError ? [] : waitingToLand(view);
+  return reported ? landingFactsOf(found, report) : found.map((w) => ({ ...w, unreported: true }));
+}
+
+/**
+ * The subtasks waiting to land after a look (docket C128), each with a
+ * freshness: the report the run ends with lists them, and the owner acts on
+ * it. Every look the run takes goes through here — the first look's report,
+ * each look of the run's loop, each step's look as it settles, a drain's last
+ * look, the look the run's end takes for its proposals — so the list is
+ * always the latest observation the run holds, and a subtask once known to
+ * wait is never dropped by a look that could not read it. `found` is what the
+ * look lists waiting, with the report's facts (empty when the look failed). A
+ * subtask that waited before leaves only when the look reads that it stopped
+ * waiting (`waitingUnread`); otherwise — the whole look failed, the macro,
+ * its engineer workflow or its landing check could not be read — it keeps
+ * its place, `unknown`. One the look found with no freshness (its report
+ * failed) is `unknown` too. A look adds nothing to what it could not judge:
+ * one its report withheld (not fetched in that look) keeps the freshness it
+ * had at the same commit, and a look that had no report of its own
+ * (`unreported`: the end's look for its proposals, a look an interrupt or an
+ * error cut off before its report) keeps every entry as it was listed, and
+ * lists what it newly found waiting `unknown` — another look's report never
+ * speaks for it. Neither keeps a `ready` past a landing it saw itself
+ * (`landingsSeen`: a merged pull request not yet recorded completed, or a
+ * subtask that waited and leaves completed with its commit): the integration
+ * branch has moved past the tip that `ready` was judged against, so each
+ * `ready` such a look would keep is `unknown` instead, and a look that fetches
+ * judges it again; a `needs-sync` stands, since a branch behind the old tip is
+ * behind the new one too. A failure to read the macro's readiness is none of these:
+ * the look still reads every subtask.
+ */
+export function reconcileWaiting(previous, view, found) {
+  const whole = view.lookError ?? (view.macroLookupError ? `the macro could not be read: ${view.macroLookupError}` : null);
+  const failed = (w, why) => unknownSync(w, `the run's last look failed (${why})`);
+  const before = new Map(previous.map((w) => [w.subtaskId, w]));
+  const listed = new Set(found.map((w) => w.subtaskId));
+  const kept = [];
+  const departed = new Set();
+  for (const w of previous) {
+    if (listed.has(w.subtaskId)) continue;
+    const why = whole ?? waitingUnread(view, w.subtaskId);
+    if (why) kept.push(failed(w, why));
+    else departed.add(w.subtaskId);
+  }
+  const landed = landingsSeen(view, departed);
+  // What this look keeps from an earlier one (it judged nothing new itself).
+  const keep = (w) => (landed.length && w.sync?.state === 'ready'
+    ? unknownSync(w, `subtask${landed.length > 1 ? 's' : ''} ${landed.join(', ')} landed after the look that judged it ready, and this look did not fetch`)
+    : w);
+  const now = found.map(({ withheld, unreported, ...w }) => {
+    const p = before.get(w.subtaskId);
+    if (unreported) return p ? keep(p) : unknownSync(w, 'no report was made for the look that found it');
+    if (withheld && p?.sync && w.commit && p.commit === w.commit) return keep({ ...w, sync: p.sync });
+    return w.sync ? w : failed(w, 'its landing report did not complete');
+  });
+  return [...now, ...kept];
+}
+
+/**
+ * C128 — the list a run ends with when it ends without its last look (an
+ * interrupt, an error): nothing it lists can be confirmed, so every entry is
+ * `unknown`, and the next run's first look reports each again.
+ */
+export function endedUnlooked(waiting, why) {
+  return waiting.map((w) => unknownSync(w, `the run ended before its last look (${why})`));
 }
 
 // The look's view with the subtask's child kept only when it was read as the
@@ -238,7 +363,10 @@ export async function runLanes(c) {
   let draining = null;
   let seq = 0;
   let finalizeAttempted = false;
-  let waiting = [];
+  // C128 — the run's one list of waiting subtasks: the driver's, which its
+  // looks before the scheduler (before the locks, under them, and the first
+  // report) have fed, so nothing they found is lost here.
+  let waiting = c.waiting?.() ?? [];
   let throttleNote = null;
   let resetTimer = null;
 
@@ -285,8 +413,16 @@ export async function runLanes(c) {
   };
   const runAt = (at) => (name, args, o = {}) => tasks.run(name, args, { ...o, hold: holdAt(at) });
   const task = (name, args, at = repoRoot) => runAt(at)(name, args, { env, cwd: at });
-  // After an interrupt a look reads what is here, without the fetch.
-  const look = (checkout, fetch) => c.observeAsync({ repoRoot: checkout, roots, macroId, fetch: fetch && !c.interrupted(), env }, { offLoop: runAt(checkout) });
+  // After an interrupt a look reads what is here, without the fetch. Every
+  // look feeds the run's list of waiting subtasks as it returns, before its
+  // report (C128): an interrupt, an error or a later look can then no longer
+  // keep what it found from the list, and one that failed leaves what the
+  // list holds unknown (`reconcileWaiting`).
+  const look = async (checkout, fetch) => {
+    const v = await c.observeAsync({ repoRoot: checkout, roots, macroId, fetch: fetch && !c.interrupted(), env }, { offLoop: runAt(checkout) });
+    feed(v, false);
+    return v;
+  };
   // A worker whose host has returned its result (`e.w`) has had its group
   // emptied, and the loop has not settled it yet: nothing signals that group
   // id again, which may be another process's group by then. One that outlived
@@ -651,7 +787,12 @@ export async function runLanes(c) {
     if (id && report.get(id)?.last_step?.seq === entry.seq) report.get(id).last_step.outcome = verdict ? verdict.reason : 'ok';
     // A commit stands whatever the verdict on its step, and is reported; after
     // an interrupt the next run's first look reports it (Decision 7).
-    if (!c.interrupted()) await c.reportLanding(after, entry.seq, runAt(repoRoot));
+    const reported = !c.interrupted();
+    if (reported) await c.reportLanding(after, entry.seq, runAt(repoRoot));
+    // This look feeds the run's list as every look does, after an interrupt
+    // too: a lane that committed while the run drains joins it, and one
+    // already listed takes what this look found (C128, `reconcileWaiting`).
+    feed(after, reported);
     if (verdict) {
       halted({ ...verdict, subtaskId: verdict.subtaskId ?? id });
       return;
@@ -756,12 +897,22 @@ export async function runLanes(c) {
     resetTimer = setTimeout(wake, resetDelayMs(sec, now()));
   };
 
+  // A look's observation feeds the run's list (C128, `reconcileWaiting`,
+  // `foundWaiting`): with the facts of its own report when one just ran
+  // (`reported`), and otherwise with none.
+  function feed(v, reported) {
+    waiting = reconcileWaiting(waiting, v, foundWaiting(v, reported, c.landing()));
+  }
+
+  // The lane report, from the run's list as it stands: a lane the list no
+  // longer holds waits no more.
   function lanesSummary() {
     for (const [id, l] of lanes) {
       const r = lane(id);
       if (!r.path) Object.assign(r, { path: l.path, branch: l.branch, state: l.state });
     }
-    for (const w of waiting) lane(w.subtaskId).waiting = { branch: w.branch, reason: w.reason, commit: w.commit ?? null };
+    for (const r of report.values()) delete r.waiting;
+    for (const w of waiting) lane(w.subtaskId).waiting = { branch: w.branch, reason: w.reason, commit: w.commit ?? null, sync: w.sync ?? null };
     return [...report.values()].sort((a, b) => String(a.subtask_id).localeCompare(String(b.subtask_id)));
   }
 
@@ -777,8 +928,6 @@ export async function runLanes(c) {
       await removeUnused(id);
     }
     const nowSec = now() / 1000;
-    run.lanes = { n: N, lanes: lanesSummary() };
-    run.rate_limit = throttleSnapshot(throttle, nowSec);
     if (d && halts.length > 1) d = { ...d, also: halts.filter((h) => h !== d).map((h) => ({ reason: h.reason, detail: h.detail, subtask_id: h.subtaskId ?? null })) };
     // ADR-0067 Decision 8, items 1 and 5 — every proposal the run met, its
     // lanes' included, once each, in the halt record and its report, each
@@ -787,7 +936,17 @@ export async function runLanes(c) {
     // the run drains or goes on to complete: what the run met is judged again
     // from one look (no fetch) as it ends, halted or not, and what that look
     // cannot confirm is dropped.
+    // C128 — every end, before its report is built: the run's list holds the
+    // latest observation (every look feeds it as it returns, that one
+    // included), and an interrupted run, which took no last look of its own,
+    // confirms nothing. The halt's list is built here, from it, and nowhere
+    // else: an awaiting-landing halt lists what the run's list holds, not what
+    // its decision's look found.
     d = await proposalsAtEnd(() => look(repoRoot, false), d, [...report.values()]);
+    if (c.interrupted()) waiting = endedUnlooked(waiting, 'the owner interrupted the run');
+    if (d?.reason === 'awaiting-landing' && c.withLanding) d = c.withLanding(d, waiting);
+    run.lanes = { n: N, lanes: lanesSummary() };
+    run.rate_limit = throttleSnapshot(throttle, nowSec);
     return c.finish(status, d, { lanes: run.lanes.lanes, rateLimit: throttleText(throttle, nowSec) });
   }
 
@@ -831,9 +990,25 @@ export async function runLanes(c) {
       }
       if (draining) {
         if (inflight.size > 0) { await nextEvent(); continue; }
+        // A lane's look after its step does not fetch, so the report holds
+        // back a commit the stale tip calls ready (landing-ready.mjs), for a
+        // later look that fetches; a drain takes no later look, so it takes
+        // one here and reports before the run ends (C128), and the lanes it
+        // reports wait as that look found them. Not after an interrupt (the
+        // loop's top ends the run on it; the next run's first look reports).
+        // What that look could not read leaves no freshness standing
+        // (`reconcileWaiting`); an interrupt during it still leaves the run's
+        // list as the look found it, for the interrupted end to judge.
+        const v = await lookGlobal();
+        const reported = !c.interrupted() && !v.lookError && !v.macroLookupError;
+        if (reported) await c.reportLanding(v, seq, runAt(repoRoot));
+        feed(v, reported);
+        if (c.interrupted()) continue;
         return await end('halted', draining);
       }
 
+      // A look the loop sets aside here (an interrupt, a step that ended) has
+      // already fed the run's list, as every look does when it returns.
       const view = await lookGlobal();
       if (c.interrupted() || ended.length > 0) continue;
       // While a done or finalize is in flight the macro is that step's to
@@ -842,6 +1017,10 @@ export async function runLanes(c) {
       // has ended (transient states are not halts).
       if ((view.macroLookupError || view.readyError) && driverBusy()) { await nextEvent(); continue; }
       await c.reportLanding(view, seq, runAt(repoRoot));
+      // What this look reported waiting, before any branch below can halt or
+      // end the run: what waits is the look's to say, not the decision's,
+      // which leaves out a subtask whose step is still in flight (C128).
+      feed(view, true);
       const drift = await driftNow();
       if (drift.length > 0) { halted({ reason: 'version-drift', detail: drift.join('; ') }); continue; }
       const d = decideLanes(view, { inFlight: subtasksInFlight(), driverBusy: driverBusy(), lanes, started, forced, finalizeAttempted });
@@ -851,7 +1030,6 @@ export async function runLanes(c) {
         return await end('completed');
       }
       if (d.outcome === 'halt') { halted(d); continue; }
-      waiting = (c.landing() && d.waiting.length) ? d.waiting.map((w) => ({ ...w, commit: c.landing().entries.find((e) => e.subtaskId === w.subtaskId)?.commit ?? null })) : d.waiting;
 
       const r = await startWhatMay(d, view);
       if (draining || c.interrupted()) continue;
@@ -862,8 +1040,8 @@ export async function runLanes(c) {
         continue;
       }
       if (r.again) continue;
-      // Nothing runs and nothing can start.
-      return await end('halted', c.withLanding ? c.withLanding(d.idle) : d.idle);
+      // Nothing runs and nothing can start. The end lists what waits.
+      return await end('halted', d.idle);
     }
   } catch (e) {
     // The run cannot go on: every step in flight is torn down and settled,
@@ -885,6 +1063,8 @@ export async function runLanes(c) {
     run.steps = budget.taken;
     run.cost_usd = budget.spent;
     run.cost_complete = budget.costComplete;
+    // C128 — the run ends without its last look: what it lists is unknown.
+    waiting = endedUnlooked(waiting, `the run stopped on an error: ${e?.message ?? e}`);
     run.lanes = { n: N, lanes: lanesSummary() };
     throw e;
   }
@@ -894,7 +1074,10 @@ export async function runLanes(c) {
 export function laneBlock(l) {
   const lines = [`  lane ${l.subtask_id}${l.branch ? ` · ${l.branch}` : ''}${l.path ? ` · ${l.path}` : ''} · ${l.state ?? 'not created'}`];
   if (l.last_step) lines.push(`      last [${l.last_step.seq}] ${l.last_step.command} → ${l.last_step.outcome}`);
-  if (l.waiting) lines.push(`      waiting to land: ${l.waiting.branch} (${l.waiting.reason})${l.waiting.commit ? ` at ${l.waiting.commit}` : ''}`);
+  if (l.waiting) {
+    const state = { ready: 'ready', 'needs-sync': 'needs a sync with the integration branch', unknown: 'freshness unknown' }[l.waiting.sync?.state];
+    lines.push(`      waiting to land: ${l.waiting.branch} (${l.waiting.reason})${l.waiting.commit ? ` at ${l.waiting.commit}` : ''}${state ? ` · ${state}` : ''}`);
+  }
   if (l.halt) lines.push(`      halted: ${l.halt.reason} — ${l.halt.detail}`);
   if (l.removal) lines.push(`      ${l.removal}`);
   return lines;

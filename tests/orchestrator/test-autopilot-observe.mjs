@@ -121,6 +121,26 @@ describe('observe → decide on real state', () => {
     });
   });
 
+  it('fetches the integration branch into its remote-tracking ref under a mapping that does not cover it', async () => {
+    await withRepo(async (fx, look) => {
+      const c = await fx.dispatch('A');
+      await fx.finish(c.path, { kind: 'commit', verb: null, confidence: 'HIGH' });
+      await fx.commitAndArchive(c.path);
+      const pr = fx.land('A', 'feat/a');
+      fx.setPrs([pr]);
+      fx.git('config', 'remote.origin.fetch', '+refs/heads/other:refs/remotes/origin/other');
+      const stale = `${pr.mergeCommit.oid}~1`;
+      // The control: a bare `git fetch origin main` succeeds and leaves the ref stale.
+      fx.git('update-ref', 'refs/remotes/origin/main', stale);
+      fx.git('fetch', '-q', 'origin', 'main');
+      strictEqual(fx.git('rev-parse', 'refs/remotes/origin/main'), fx.git('rev-parse', stale));
+      const v = look();
+      deepStrictEqual([v.fetch.attempted, v.fetch.ok], [true, true]);
+      strictEqual(fx.git('rev-parse', 'refs/remotes/origin/main'), pr.mergeCommit.oid);
+      strictEqual(v.landing.A.ok, true);
+    });
+  });
+
   it('a child closed without a commit: done --no-commit', async () => {
     await withRepo(async (fx, look) => {
       const c = await fx.dispatch('A');
