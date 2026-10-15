@@ -567,7 +567,8 @@ for (const persona of personasFor('scripts/state.mjs')) {
     await mkdir(join(dir, '.claude-plugin'));
     await writeFile(join(scripts, 'state.mjs'), reader);
     await copyFile(P.path('scripts/validate-commit.mjs'), join(scripts, 'validate-commit.mjs'));
-    for (const lib of ['cli-entry.mjs', 'persona.mjs', 'state-root.mjs']) {
+    // C120: the review ledger's library and the capture it reads the tree with.
+    for (const lib of ['cli-entry.mjs', 'persona.mjs', 'state-root.mjs', 'review-scope.mjs', 'peer-snapshot.mjs', 'process-identity.mjs']) {
       await copyFile(P.path(`scripts/lib/${lib}`), join(scripts, 'lib', lib));
     }
     await copyFile(P.path('persona.json'), join(dir, 'persona.json'));
@@ -671,7 +672,8 @@ for (const persona of personasFor('scripts/state.mjs')) {
     await mkdir(join(dir, '.claude-plugin'));
     await writeFile(join(scripts, 'state.mjs'), src.replace(PATH_KEY_LINE, ''));
     await copyFile(P.path('scripts/validate-commit.mjs'), join(scripts, 'validate-commit.mjs'));
-    for (const lib of ['cli-entry.mjs', 'persona.mjs', 'state-root.mjs']) {
+    // C120: the review ledger's library and the capture it reads the tree with.
+    for (const lib of ['cli-entry.mjs', 'persona.mjs', 'state-root.mjs', 'review-scope.mjs', 'peer-snapshot.mjs', 'process-identity.mjs']) {
       await copyFile(P.path(`scripts/lib/${lib}`), join(scripts, 'lib', lib));
     }
     await copyFile(P.path('persona.json'), join(dir, 'persona.json'));

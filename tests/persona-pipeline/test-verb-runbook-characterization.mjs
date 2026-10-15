@@ -40,7 +40,8 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
       // ADR-0067-WP: the worktree-first start (ADR-0067 Decision 8, item 3).
       // CP: ADR-0067 Decision 8's conflict branch (macro f76033).
       // C130: ADR-0059's amendment of 2026-10-10, the agent's text as files.
-      ok(/^(?:PC2(?:a[234]|b)|PC3b?|ADR-0067-WP|CP|C130) /.test(d.why), `${d.where}: a change with its reason`);
+      // C120: the review ledger of a document deliverable (ADR-0063, amendment of 2026-10-14).
+      ok(/^(?:PC2(?:a[234]|b)|PC3b?|ADR-0067-WP|CP|C130|C120) /.test(d.why), `${d.where}: a change with its reason`);
       if (structural) ok(STRUCTURAL_OPS.includes(d.op), `${d.where}: a known op`);
       else ok(typeof d.from === 'string' && typeof d.to === 'string' && d.from !== d.to && d.from.length > 0, `${d.where}: a string change`);
     }

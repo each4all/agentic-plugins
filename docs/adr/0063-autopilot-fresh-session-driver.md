@@ -30,6 +30,11 @@ Accepted (2026-09-29, owner decision).
   its `budget` row lose the run's wall clock; D7's guards and D4's
   `step-oversized` row retire the size halt, a step's size being an
   observation. Each place keeps its text and carries a dated note.
+- Amended 2026-10-14 by the owner's review decision C120 (recorded outside
+  this repository): a document deliverable is critiqued in full once, then
+  re-checked only where a refine changed it, and its recurring findings come
+  from a review ledger. D4's ceremony gates carry a dated note; the contract
+  is § Amendment 2026-10-14 — document deliverables converge (C120).
 
 <!--
 Adds one named effect domain — S1, owner-launched fresh-session spawn —
@@ -396,6 +401,14 @@ source of each gate is mapped in DESIGN §6.3.
 - **End-of-verb Active Next-Action Proposal:** persisted as `next_step`; the driver decides from it.
 
 The same gates stay interactive when a human drives.
+
+*Amendment 2026-10-14 (C120):* for a document deliverable, "CRITICAL + MAJOR"
+is the open CRITICAL and MAJOR findings of the workflow's review ledger, a
+scoped re-critique leaves a new non-CRITICAL finding outside the passages a
+refine changed open for the owner instead of carrying it, and the
+`recurring-finding` gate fires on the ledger's recurring findings only. Code
+deliverables keep the rule above. § Amendment 2026-10-14 — document
+deliverables converge (C120).
 
 **`decide` (R4):**
 - ensemble verdict CONFLICT → `awaiting_owner.gate=decide-conflict` → halt;
@@ -1545,6 +1558,268 @@ roots, `driver.mjs` runs the loop, and `cli.mjs` is the entry of
   of the engineer enums and the D4 reason set).
   `scripts/mutation-specs/orchestrator-autopilot-driver.mjs` shows each check
   fails on the defect it guards.
+
+## Amendment 2026-10-14 — document deliverables converge (C120)
+
+**The problem.** A document subtask (an ADR, a runbook, other prose as the
+main artifact) under autopilot did not converge. Every critique reviewed the
+whole document again, so each round found new MINOR or MAJOR points in text
+no refine had touched; refine fixed them, the next full critique found more,
+and the model-judged recurring-finding rule could not tell a finding that
+survived a fix from a new one in unchanged text. Code does not show this: its
+review is held to the change set, and tests decide most findings.
+
+**The rule.** A document deliverable gets one full critique. After a refine,
+the next critique reviews the passages the refine changed and the findings it
+targeted (a *scoped* critique). A new finding outside those passages is left
+open for the owner (`### Left open` in the note), unless it is CRITICAL, which
+refine carries. Every CRITICAL and MAJOR finding open in the ledger is
+refine's work, targeted before or not, so a prior finding a refine skipped
+still blocks. A finding a refine targeted that a critique leaves open is
+*recurring*, and fixing it again is the owner's call (`recurring-finding`). A
+code deliverable keeps the full critique and the judged recurring rule.
+
+**What is a document.** The artifact set is every path that differs between
+the workflow's `git_baseline.head` and the working tree (the state homes left
+out). The deliverable is a document only when that set is not empty, every
+path is a regular Markdown file ending in `.md` or `.markdown` (`.mdx`
+carries code), no changed line, on either side, blank lines included, is or
+may be code, and no path's code is changed by its prose: the sequence of
+CommonMark code blocks and HTML blocks in the old text, each block's kind,
+info string and content, is the one in the new text. A line is code when
+either of two readers says so:
+
+- *Reader 1*, a stateless over-reading with no fence pairing and no container
+  tracking, so nothing in it can be paired or tracked wrong: every line from
+  the file's first fence-like line (one holding three or more backticks or
+  tildes, wherever they sit) to its last; every line whose leading white
+  space reaches column 4 at the line start, or five columns past a
+  block-quote or list marker in its prefix (tabs to the next multiple of
+  four), with no paragraph exception; each blank run between two such lines;
+  and each such line's neighbours.
+- *Reader 2*, the CommonMark reference parser (commonmark.js): every line a
+  code block spans, fenced or indented, fence lines included, and every line
+  an HTML block spans, whatever its tags (a `<pre><code>` block carries a
+  command as text, and a list of tags would pass one it does not name). CommonMark also
+  ends a line at a bare CR, which git does not, so a text holding one is read
+  as code throughout (its parser lines are not git's).
+
+Reader 2 settles where an unclosed or mis-paired fence ends, which reader 1
+cannot without pairing; reader 1 covers what the specification reads as text
+but an agent may run (an indented line CommonMark joins to a link definition's
+title or a paragraph). Markdown can execute, and a runbook's shell block is
+code. Other prose formats stay full: a `.txt` name is no evidence
+(`CMakeLists.txt`, `requirements.txt`), and reStructuredText and AsciiDoc have
+code block forms the test does not read.
+
+*Note 2026-10-15 (the owner's ruling on the recurring M3 finding).* Three
+refine rounds each fixed the reported cases of a hand-written classifier that
+paired fences and tracked containers, and each Refine-verify found new
+CommonMark cases where a command edit read as prose (a quoted fence closed
+early, a rejected closer that desynchronized later fences, code characters
+read as container markers, a paragraph exception that trusted a link title,
+a blank line inside indented code). The union above replaces that classifier.
+On the owner's prototype measurement (not peer-verified), of 204 all-Markdown
+commits on `main` the earlier classifier called documents, the union keeps
+183, and it only ever moves a change from document to code. Reader 2 is the
+persona scripts' first third-party code: commonmark.js 0.31.2 (BSD-2-Clause,
+with the MIT notice of one derived file), its self-contained
+`dist/commonmark.min.js` vendored byte for byte as
+`persona-pipeline/files/scripts/lib/vendor/commonmark.min.cjs` under a copy
+notice that carries its LICENSE, the npm tarball's shasum and the sha256 of
+the upstream bytes, which a test checks; `review-scope.mjs` loads it with
+`createRequire` on first use. It is a parser of a frozen specification, read
+for its code blocks and HTML blocks only (their positions, and the kind, info
+string and content the block-sequence rule compares), so it is updated only
+for a CommonMark release or a parser fix that changes those, by replacing
+the bytes, the LICENSE and the two hashes together. Refine-verify of the union
+found one more shape: an explicit HTML code block (`<pre><code
+class="language-sh">` with a command inside) is an HTML block to CommonMark,
+not a code block, and reader 1 has no rule for it, so a changed command there
+read as prose. The owner widened reader 2 to every HTML block, with no tag
+list: on `main` it moves 7 of the union's 183 documents to code (176 kept),
+where counting only blocks that name `<pre>`, `<code>`, `<script>`,
+`<textarea>` or `<style>` moved none but would pass a tag it does not name.
+The closing critique then found that a change can leave every changed line
+prose and still change code (its M1): dropping a list marker four lines above
+a fence pulls an unchanged, unindented `rm -rf ~/work` into the fence, the
+passage is only the edited line, and a new MAJOR at the command could be left
+open. A fuzzer found 25 of 1,187 document verdicts whose code or HTML block
+contents differed between the two texts. The owner ruled for the
+block-sequence rule above, beside the union: it reads what the blocks hold,
+not where, so prose that only moves a block changes nothing, and it only ever
+moves a change from document to code. On `main` it moves none of the 176
+documents.
+
+**The evidence a fresh worker reads** is the review ledger,
+`<state home>/reviews/<workflow id>.json`, written by `state.mjs` holding the
+workflow's lock; no plan field and no frontmatter key is added (the plan's
+field set is closed and hashed, and the ledger's name derives from the
+workflow's). It holds one *generation* per critique (mode, reason, the
+working tree it reviewed as a tree object, HEAD, the baseline, the artifact
+set, the passages of a scoped one, its targets, the critique runs the
+workflow had noted when it opened, open / closed / abandoned),
+every finding with a workflow-wide id (`G<generation>-F<n>`), severity,
+location, text, disposition (open / resolved / left-open) and the refine
+attempts that targeted it, and one refine attempt per critique (`R<generation>`:
+its targets and the tree it left). Each ledger has an id of its own, which
+`critique-scope` prints and `critique-close` must name: ids restart in a
+ledger that replaced another, so a close from before the reset is refused,
+never applied to findings it did not see.
+
+- `critique-scope` opens generation g at the working tree T, captured as
+  `peer-snapshot.mjs` captures a snapshot, without materializing it, and
+  prints the scope. A deliverable that is not a document records nothing,
+  and a ledger an earlier critique left is moved aside, so a document that
+  turned into code hands refine no findings its last critique never judged.
+  So does a checkout the ledger cannot vouch for: a baseline that is not a
+  full commit id resolving to a commit (a symbolic `HEAD` or branch moves
+  with the checkout), or a working tree the capture cannot read (a conflicted
+  merge, HEAD moving) or cannot vouch for (an index entry marked
+  assume-unchanged or skip-worktree: `git add -A` keeps its staged blob, so
+  an edit to that file would not be in T).
+- `refine-record` (after the fix, before Refine-verify) records the targets
+  and the tree the refine left; a later edit in the same refine re-records.
+  It also prints `verify`, the mode the next critique would have on that
+  tree: Refine-verify is scoped only when that is `scoped`, so it is held to
+  the same conditions.
+- `critique-close --ledger <id> --generation g` records the synthesis's
+  findings and prints the disposition (`converged`, `carry`, `left_open`,
+  `recurring`). It refuses when the checkout no longer holds T, or the
+  ledger is not the one `critique-scope` named: findings are never held to
+  text nobody reviewed. A generation a crashed run left open is abandoned by the next
+  `critique-scope`.
+- `review-status` prints the ledger for refine: its work (`carry`) and the
+  recurring findings (a refine targeted it, and a critique closed since
+  judged it unresolved; a target no critique has judged since its refine,
+  such as one a partial critique did not report, is not one),
+  which end it on the gate before any fix, unless the owner already cleared
+  that gate with Fix now after the last critique's notes (the resume note a
+  fresh worker writes after it does not count against the ruling).
+- From a checkout that is not on the workflow's branch, whatever state its
+  working tree is in, `critique-scope` and `refine-record` record nothing
+  and leave the ledger alone, and `critique-close` refuses: a worktree sharing the state root never writes
+  another branch's ledger. A ledger whose entries are malformed is moved
+  aside and the critique is full; `review-status` reads it as no ledger. So
+  is one whose stored passages are not line ranges on its artifact paths, or
+  whose generation ids do not run 1, 2, 3 in order. A checkout whose HEAD git
+  cannot read reaches the script all the same, which falls back.
+- None of this stops a verb. The runbook blocks fall back when the script
+  fails (an older release without the subcommands answers `unknown
+  subcommand`): the critique runs unrecorded and full, refine reads no
+  ledger, and a missing refine record makes the next critique full unless an
+  earlier record of the refine saw the same tree. A critique whose close
+  refuses counts as a full one the ledger did not record, and until a later
+  critique closes the ledger vouches for nothing: `review-status` reads no
+  ledger, `refine-record` records nothing and the next critique is full.
+- A critique the ledger never opened a generation for (its `critique-scope`
+  failed, an older release ran it, the checkout was on another branch or
+  mid-rebase, a `/<persona>:start` lifecycle ran it in its own phase) is
+  caught from the workflow file, which the critique writes in any case:
+  `state.mjs append --verb critique`, which the critique command's resume and
+  each critique phase of a lifecycle run, notes a marker line
+  (`<!-- agentic: critique run -->`) before the phase note, and each
+  generation counts those notes when it opens. An older release noted only
+  the critique command's `Phase 0: Resume into critique` heading, which
+  counts when no marker stands on the line before it; a critique an older
+  release runs inside a lifecycle notes nothing and is not caught. A run
+  that names no verb in its writes (a host skill used outside the commands)
+  is not caught either, and its findings are not in the notes refine reads. More runs noted than the last generation counted (plus the caller's
+  own run, for `critique-scope`) means a critique the ledger did not see:
+  `review-status` and `refine-record` read no ledger, and `critique-scope`
+  moves it aside and opens a full one. A run stopped before it reached
+  `critique-scope` counts too, which costs only the scope.
+
+**Scoped, or full.** A critique is scoped only when all of these hold, and
+full otherwise, with the first that failed as its reason: the default review
+profile (another profile is `partial`, below); no merge, rebase, cherry-pick
+or revert in progress; a non-empty
+document artifact set; a full generation closed in the ledger; a last closed
+generation that is not partial; a refine recorded after it whose tree the checkout still holds
+(nothing was edited after the record, and an older release's refine, which
+records nothing, falls back); HEAD and the baseline unchanged since that
+generation (no commit and no merge); the same artifact set (no path added,
+removed or renamed); every target a ledger finding; and the tree the last
+critique reviewed still readable (it is unreferenced, so `git gc` may prune
+it, and a lost file is not an absent one). A full critique never
+takes the left-open route: every CRITICAL and MAJOR it finds is carried, and
+a prior finding it does not report again is resolved. A *partial* critique (a
+profile other than the default, such as a single lens) judges only what it
+reports: it resolves no finding it does not, leaves nothing open by scope,
+and is never the full critique a scoped one starts from. A refine's targets
+stay targets until a critique judges them (a full one judges them all, the
+ones it does not report included): one a partial critique does not
+report is open, it stays a target of the next partial critique, and since the
+lens may not cover it, the omission is no judgment the recurring rule counts. A finding's severity
+follows the latest judgment, except that a scoped or partial critique never
+lowers a CRITICAL or MAJOR one, and references that disagree take the
+highest. A scoped critique resolves a finding the refine did not target only
+when the critique places it in a passage, in the current text (the ledger's
+location is in the coordinates of the text it was found in, which the refine
+may have shifted): elsewhere it read no text, so the verdict is noted and the
+finding stays.
+
+**Passages.** The diff from the last critique's tree to the current one, per
+artifact path, at Markdown block level in the current text: a code or HTML
+block as CommonMark reads it, a list or a table with no blank line in it, and a heading
+are each one block. A
+deletion anchors to the blocks just before and after it, with the deleted text
+shown as before; a change that leaves a file with no block makes the whole
+file the passage. A finding is in scope when its location overlaps a passage,
+whatever scope the peer claimed, and when the review marks it in; a location
+with no line range on a passage path counts in scope unless marked outside,
+and a finding with no location cannot be shown outside. A location is read
+the ways reviewers write it (`path:12`, `path:12-20`, `path:12:3`,
+`path#L12`, `./path`, an absolute path ending in an artifact path); one on
+a path the artifact set does not hold (a relative path that only ends in an
+artifact path is another file) cannot be placed, and counts in scope.
+A reversed line range is refused. A left-open finding reported again, not
+CRITICAL, stays left open only when every report of it places it outside the
+passages in the current text, or each scoped critique would pull it back
+into refine; a report with no location is not placed outside (the ledger's
+location may have shifted). A finding a refine targeted is judged as any
+target, whatever it was before: left open, or resolved by an earlier critique
+and edited again, it is carried when unresolved or given no verdict.
+
+**The peer contract.** Scoped review and Scoped refine-verify templates (the
+ensemble protocol's § Scoped re-check) give the peer the passages and the
+findings by id, and ask one line per finding: id or NEW, a verdict for an id,
+severity, location, in or outside, evidence. A target with no verdict, two or
+contradictory ones counts unresolved. The convergence rule is the script's,
+never the synthesis's.
+
+**Precedence.** A `conflict` verdict ends on `peer-conflict` first. `converged`
+only adds the commit route when the persona's own conditions also hold
+(designer's accessibility veto and re-render, founder's gate verdicts).
+
+**Plans.** `/orchestrator:plan` proposes an ADR or other document subtask
+that would settle more than two decisions as chained slices of one or two,
+each stating what it owns, the ADR number every slice claims and how later
+slices amend it, at the cost of one landing round per slice. Advice, not a
+`plan-set` rule.
+
+**Known limits.**
+
+- Interactively a verb's last write is terminal and the Stop hook archives the
+  workflow; the next verb starts a new workflow with no ledger, so its
+  critique is full. Under autopilot one workflow carries the critique-refine
+  loop, which is where the loop did not converge.
+- `/engineer:commit` commits the tree as it is; it does not check the tree the
+  last critique reviewed, for any verb (not a property this rule adds).
+- A `/<persona>:start` lifecycle runs critique and refine as skills, not as
+  the commands that hold the ledger blocks, so its critique stays full; so
+  does every critique on Codex, where the verbs run as skills.
+- The ledger is not archived with its workflow and is not pruned.
+
+Implemented in `persona-pipeline/files/scripts/lib/review-scope.mjs` and
+`state.mjs` (the four subcommands), the regions `critique-scope-prepare`,
+`critique-scope-close`, `refine-scope-record` and `ensemble-scoped-recheck`,
+the vendored CommonMark parser (`lib/vendor/commonmark.min.cjs`), and the
+orchestrator plan skill's Step 2. The capture now stamps its index
+copies with the live index's times, so a same-size edit made in the second the
+index was written is not missed (racy git). Tests:
+`tests/persona-pipeline/_review-scope-suite.mjs` (real repositories, every
+persona, run by one `test-review-scope-<persona>.mjs` each); `scripts/mutation-specs/review-scope.mjs`.
 
 ## References
 

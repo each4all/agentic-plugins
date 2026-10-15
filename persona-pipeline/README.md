@@ -560,6 +560,37 @@ PC3b, so far:
   that branches. The contracts check ADR-0039 alone for every persona, and
   every template that states the footer is rendered under every legal
   capability combination with the footer attributed to ADR-0039 alone.
+- **A document deliverable converges** (C120; ADR-0063, amendment of
+  2026-10-14). `scripts/lib/review-scope.mjs`, a unit for every persona,
+  holds the review ledger's rules, and `state.mjs` the ledger itself
+  (`<home>/reviews/<workflow id>.json`, written under the workflow's lock) and
+  four subcommands: `critique-scope`, `critique-close`, `refine-record` and
+  `review-status`. Four regions carry them, for every persona: in critique,
+  `critique-scope-prepare` before the dispatch and `critique-scope-close`
+  before Phase 2; in refine, `refine-scope-record` (the ledger read before the
+  fix, the record after it); and in the ensemble protocol,
+  `ensemble-scoped-recheck`, the Scoped review and Scoped refine-verify
+  templates under an authored heading. A document gets one full critique, then
+  re-checks scoped to what a refine changed and the findings it targeted; a
+  new non-CRITICAL finding outside those passages is left open, and only the
+  ledger's recurring findings reach the `recurring-finding` gate. A code
+  deliverable records nothing and keeps the full critique and the judged
+  recurring rule. `peer-snapshot.mjs` exports its capture as
+  `captureWorkingTree` (the tree, nothing materialized, and the index entries
+  marked assume-unchanged or skip-worktree, which the ledger refuses), and its
+  index copies now keep the live index's timestamps (racy git). `state.mjs
+  append --verb critique` notes a critique-run marker line, from which the
+  ledger counts every critique run, a lifecycle's included. Whether a changed line is
+  code is the union of a stateless over-reading and the CommonMark reference
+  parser (its code blocks and HTML blocks), commonmark.js 0.31.2, vendored byte for byte as the unit
+  `scripts/lib/vendor/commonmark.min.cjs` under a copy notice with its
+  licence and hashes: the persona scripts' first third-party code (ADR-0063,
+  note of 2026-10-15). A change whose prose alters what a code or HTML block
+  holds (a dropped list marker that pulls a command into a fence) is code too:
+  the parser's sequence of those blocks must match on both sides.
+  `tests/persona-pipeline/_review-scope-suite.mjs`, run once per persona by
+  `test-review-scope-<persona>.mjs`, runs the rules against real repositories; `scripts/mutation-specs/review-scope.mjs` puts each defect
+  back.
 
 ## The declaration
 

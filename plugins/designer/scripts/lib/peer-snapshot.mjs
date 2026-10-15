@@ -21,6 +21,9 @@
 //   reclaimPeerSnapshots remove the snapshots of this repository whose owner
 //                        processes are gone (a supervisor that died before
 //                        its cleanup), never one a live process may be using
+//   captureWorkingTree   the same capture of the working tree, written as a
+//                        tree object and nothing materialized (C120: the
+//                        tree a document review is held to)
 //
 // Every git call runs with the caller's git selectors removed (GIT_DIR,
 // GIT_WORK_TREE, GIT_INDEX_FILE, …): one left in the environment would point
@@ -28,7 +31,7 @@
 
 import { spawn } from 'node:child_process';
 import { lstatSync, readdirSync, realpathSync } from 'node:fs';
-import { copyFile, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
@@ -216,7 +219,21 @@ async function capture(top, parent, env, signal, beforeRecheck) {
     if (error?.code !== 'ENOENT') throw new SnapshotError('index-unreadable', `cannot copy ${liveIndex} (${error?.code || error?.message})`);
     liveIndexPresent = false;
   }
-  if (liveIndexPresent) await copyFile(staged, worktree);
+  if (liveIndexPresent) {
+    // The copies keep the live index's timestamps: git trusts an entry whose
+    // stat matches unless the file is not older than the index (racy git), so
+    // a copy stamped now would hide a same-size edit made in the second the
+    // live index was written (C120, found by its fixtures).
+    try {
+      const { atime, mtime } = await stat(liveIndex);
+      await utimes(staged, atime, mtime);
+    } catch (error) {
+      throw new SnapshotError('index-unreadable', `cannot stamp the copy of ${liveIndex} (${error?.code || error?.message})`);
+    }
+    await copyFile(staged, worktree);
+    const { atime, mtime } = await stat(staged);
+    await utimes(worktree, atime, mtime);
+  }
 
   const unmerged = await gitOk(top, ['ls-files', '-u', '-z'], 'index-unreadable', { env, signal, indexFile: staged });
   if (unmerged.length > 0) throw new SnapshotError('unmerged-index', `${top} has unmerged paths: resolve the merge before asking a peer`);
@@ -255,6 +272,30 @@ async function capture(top, parent, env, signal, beforeRecheck) {
   const headAfter = await readHead(top, env, signal);
   const moved = headAfter.head !== headBefore.head || headAfter.unborn !== headBefore.unborn;
   return { ...headBefore, moved, indexTree, worktreeTree, intentToAdd, assumeUnchanged, skipWorktree, staged, worktree };
+}
+
+// C120 — the working tree of the checkout `cwd` belongs to, as the tree
+// object a snapshot would hold (`worktreeTree`: .gitignore respected, the
+// state homes removed), with HEAD; nothing is materialized and the temporary
+// index files are removed. Null when `cwd` is no checkout. The capture is
+// taken again when HEAD moves during it, and refused when it moves twice.
+// `flagged` lists the index entries marked assume-unchanged or skip-worktree:
+// `git add -A` keeps their staged blob, so an edit to such a file is not in
+// `tree`, and a caller that vouches for the working tree refuses it.
+export async function captureWorkingTree({ cwd, env = process.env, signal = null, hooks = {} } = {}) {
+  const live = await liveToplevel(cwd, env);
+  if (live === null) return null;
+  const { top } = live;
+  const parent = await mkdtemp(join(snapshotBase(top), 'review-capture-'));
+  try {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const snap = await capture(top, parent, env, signal, hooks.afterCapture ? () => hooks.afterCapture(attempt) : null);
+      if (!snap.moved) return { top, head: snap.head, unborn: snap.unborn, tree: snap.worktreeTree, flagged: [...new Set([...snap.assumeUnchanged, ...snap.skipWorktree])].sort() };
+    }
+    throw new SnapshotError('head-moved', `HEAD of ${top} moved during the capture, twice`);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
 }
 
 function snapshotBase(top) {
