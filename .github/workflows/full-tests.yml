@@ -32,7 +32,7 @@ jobs:
     # branch's sha. There is nothing to test.
     if: ${{ !github.event.deleted }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -52,6 +52,10 @@ jobs:
       # Codex catalog lists; validate.yml owns those (ADR-0065 Decision 8
       # rule 6). So the suite's verdict on a release commit does not depend on
       # whether the release job has synced the catalogs yet.
+      #
+      # The step's bound catches a suite that hangs; it is not a speed target.
+      # The suite took 11 m 51 s on 2026-10-15 before C120's review-scope tests,
+      # and past 15 min with them (no test failing), so the bound is 25 min.
       - name: Run full test suite (npm test)
-        timeout-minutes: 15
+        timeout-minutes: 25
         run: npm test
