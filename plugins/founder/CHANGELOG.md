@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.9.4...plugin-founder-v0.10.0) (2026-10-15)
+
+
+### Features
+
+* **founder:** critique a document in full once, then only where a refine changed it (C120) ([aca4b24](https://github.com/each4all/agentic-plugins/commit/aca4b24ebc6db5f730e10bf8a6abec7d0591a725))
+
 ## [0.9.4](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.9.3...plugin-founder-v0.9.4) (2026-10-13)
 
 

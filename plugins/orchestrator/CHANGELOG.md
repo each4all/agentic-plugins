@@ -18,6 +18,13 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.24.7](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.24.6...plugin-orchestrator-v0.24.7) (2026-10-15)
+
+
+### Bug Fixes
+
+* **orchestrator:** suggest splitting a document subtask that settles many decisions (C120) ([d26a09a](https://github.com/each4all/agentic-plugins/commit/d26a09a08821d4e3e0140904865747f9cfe20185))
+
 ## [0.24.6](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.24.5...plugin-orchestrator-v0.24.6) (2026-10-15)
 
 
