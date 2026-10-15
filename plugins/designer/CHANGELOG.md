@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.8.4...plugin-designer-v0.9.0) (2026-10-15)
+
+
+### Features
+
+* **designer:** critique a document in full once, then only where a refine changed it (C120) ([761f612](https://github.com/each4all/agentic-plugins/commit/761f61279a106506b614f61afb25808adcd3baa0))
+
 ## [0.8.4](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.8.3...plugin-designer-v0.8.4) (2026-10-13)
 
 

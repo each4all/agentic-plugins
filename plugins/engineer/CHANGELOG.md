@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.29.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.28.5...plugin-engineer-v0.29.0) (2026-10-15)
+
+
+### Features
+
+* **engineer:** critique a document in full once, then only where a refine changed it (C120) ([5d2b9ef](https://github.com/each4all/agentic-plugins/commit/5d2b9ef781761df57c4673a858dc98a0ecb3740f))
+
 ## [0.28.5](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.28.4...plugin-engineer-v0.28.5) (2026-10-14)
 
 
