@@ -47,6 +47,14 @@ Identify the dependency graph. If a subtask depends on others, mark its initial 
 
 **Shared numbers** (ADR-0067 Decision 8, item 2): subtasks with no path between them may run side by side, in lanes. Pre-assign in their topics any number two of them could both take — an ADR number, a port, a section number — so neither picks the same one; the topics are part of the plan the owner approves.
 
+**Split a document that carries many decisions** (C120): an ADR, or another document subtask, whose topic would settle more than two decisions is proposed as a chain of slices of one or two decisions each, linked by `blocked_by`. The advice is the planner's, never a `plan-set` refusal: a large document still validates. Each slice's topic states:
+
+- what it owns: the decisions it settles, by name, and the sections it writes;
+- what it claims: the ADR number, pre-assigned in every slice's topic (the first slice creates the file, later slices amend it under a dated heading, never by rewriting a decision an earlier slice settled);
+- what it leaves to the next slice.
+
+Each slice is one engineer workflow, one critique-refine loop and one landing round (a pull request, review and merge), so a chain of N slices costs N landing rounds. That cost buys convergence: a document deliverable is critiqued in full once and then re-checked only where a refine changed it (ADR-0063, amendment of 2026-10-14), and the fewer decisions a document carries, the fewer findings a full critique can raise against text no refine touched. Keep one subtask when the decisions cannot be read apart (one decides the other's terms) and say so in its description.
+
 ### Step 3: Present and confirm
 
 Follow the Presentation Mode Protocol (`../_shared/references/presentation-protocol.md`) before presenting. The full subtask list IS one decision item — present it as a macro plan, ask the user to confirm the decomposition + dependency graph before any work proceeds. Once a plan is written to a macro workflow, that confirmation is recorded with `orchestrator:approve` (`/orchestrator:approve` on Claude, `$orchestrator:approve` on Codex), which binds the approval to the plan's hash (ADR-0063 D6).
