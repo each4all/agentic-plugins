@@ -18,6 +18,14 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.24.8](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.24.7...plugin-orchestrator-v0.24.8) (2026-10-16)
+
+
+### Bug Fixes
+
+* **orchestrator:** exit after stdout and stderr flush, so CLI and hook output past 64 KiB reaches a pipe whole (C93) ([b221432](https://github.com/each4all/agentic-plugins/commit/b221432f8bdd754399bb618db097e24c7bd42f1e))
+* **orchestrator:** exit after stdout and stderr flush, so CLI and hook output past 64 KiB reaches a pipe whole (C93) ([#959](https://github.com/each4all/agentic-plugins/issues/959)) ([b221432](https://github.com/each4all/agentic-plugins/commit/b221432f8bdd754399bb618db097e24c7bd42f1e))
+
 ## [0.24.7](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.24.6...plugin-orchestrator-v0.24.7) (2026-10-15)
 
 
