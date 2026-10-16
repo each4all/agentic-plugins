@@ -6,16 +6,19 @@
 // (launcher.template.mjs): dry-run by default (preview spawns no worker),
 // arguments through the ADR-0059 args file, a model plan required to start
 // (owner decision D5), Claude only, never from inside a run, status and stop
-// over the ledger, and a launcher that finds the installed orchestrator.
+// over the ledger, and a launcher that finds the installed orchestrator and,
+// installed, exits only once its output has drained (the owner's discussion-2
+// decision R2), with the code and signal mapping it hands over.
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { PIPE_FLOOR_BYTES, pipeEnv, runThroughPipe } from '../persona-pipeline/_pipe-output.mjs';
 import { makeRepo, ORCH, ENG, RUNTIME } from './fixtures/autopilot-repo.mjs';
 import { installLikeRelease } from './fixtures/install-cache.mjs';
 
@@ -450,5 +453,179 @@ describe('the launcher', () => {
 
   it('the template is executable, and importing it runs nothing', () => {
     ok(execFileSync('ls', ['-l', join(AP, 'launcher.template.mjs')], { encoding: 'utf8' }).startsWith('-rwx'));
+  });
+});
+
+// The owner's discussion-2 decision R2, on the launcher as the owner installs
+// it: one extensionless file that carries its own exitAfterFlush. A fake
+// orchestrator root ships only the autopilot entry, whose behaviour
+// FAKE_ENTRY_MODE picks; a preload (--import) writes PAD bytes to the
+// launcher's stdout and stderr before it runs, so what it writes after them is
+// past any pipe's buffer, whatever limit the platform puts on an environment
+// variable's size. Another preload holds the launcher in its flush: it
+// reports on fd 2 when exitAfterFlush starts its wait and delays that wait's
+// callbacks, so a signal can be sent while the launcher is known to be
+// flushing, its event loop free (a pipe pinned by an unread reader would not
+// do: the entry inherits it, which makes it blocking, and the launcher would
+// wait inside a write, before it even saw the entry exit).
+describe('the installed launcher — exit after flush, codes and signals', () => {
+  const PAD = 2 * PIPE_FLOOR_BYTES;
+
+  async function withInstalled(fn) {
+    const dir = mkdtempSync(join(tmpdir(), 'autopilot-launcher-flush-'));
+    try {
+      const installed = join(dir, 'bin', 'agentic-autopilot');
+      mkdirSync(join(dir, 'bin'));
+      cpSync(join(AP, 'launcher.template.mjs'), installed);
+      chmodSync(installed, 0o755);
+      const root = join(dir, 'orchestrator');
+      mkdirSync(join(root, 'adapters', 'claude', 'autopilot'), { recursive: true });
+      writeFileSync(join(root, 'adapters', 'claude', 'autopilot', 'cli.mjs'), [
+        "const mode = process.env.FAKE_ENTRY_MODE;",
+        "if (mode === 'exit7') {",
+        "  process.stderr.write(`entry ${process.pid}\\n`, () => process.exit(7));",
+        "} else {",
+        "  process.stderr.write('ready\\n');",
+        "  setInterval(() => {}, 1000);",
+        "}",
+        '',
+      ].join('\n'));
+      const pad = join(dir, 'pad.mjs');
+      writeFileSync(pad, [
+        "const n = Number(process.env.LAUNCHER_PAD_BYTES ?? 0);",
+        "if (n > 0) {",
+        "  process.stdout.write('o'.repeat(n));",
+        "  process.stderr.write('e'.repeat(n));",
+        "}",
+        '',
+      ].join('\n'));
+      const hold = join(dir, 'hold.mjs');
+      writeFileSync(hold, [
+        "import { writeSync } from 'node:fs';",
+        "let told = false;",
+        "for (const stream of [process.stdout, process.stderr]) {",
+        "  const write = stream.write.bind(stream);",
+        "  stream.write = (chunk, ...rest) => {",
+        "    const cb = rest.find((a) => typeof a === 'function');",
+        "    if (chunk !== '' || !cb) return write(chunk, ...rest);",
+        "    if (!told) { told = true; writeSync(2, 'flushing\\n'); }",
+        "    return write('', () => setTimeout(cb, Number(process.env.LAUNCHER_HOLD_MS)));",
+        "  };",
+        "}",
+        '',
+      ].join('\n'));
+      const argv = (args = [], { padded = false, held = false } = {}) => [
+        ...(padded ? ['--import', pathToFileURL(pad).href] : []),
+        ...(held ? ['--import', pathToFileURL(hold).href] : []),
+        installed,
+        ...args,
+      ];
+      return await fn({ dir, installed, root, argv });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('hands over the entry\'s exit code', async () => {
+    await withInstalled(async ({ root, argv }) => {
+      const r = await runThroughPipe(process.execPath, argv(['status']), {
+        env: pipeEnv(process.env, { AGENTIC_ORCHESTRATOR_ROOT: root, FAKE_ENTRY_MODE: 'exit7' }),
+      });
+      strictEqual(r.timedOut, false);
+      strictEqual(r.status, 7, `stderr: ${r.stderr}`);
+      ok(/^entry \d+\n$/.test(r.stderr), r.stderr);
+    });
+  });
+
+  it('a discovery error prints its one diagnostic, exits 1 and runs nothing past it', async () => {
+    await withInstalled(async ({ argv }) => {
+      const r = await runThroughPipe(process.execPath, argv(), {
+        env: pipeEnv(process.env, { AGENTIC_ORCHESTRATOR_ROOT: 'relative/orchestrator' }),
+      });
+      strictEqual(r.status, 1);
+      strictEqual(r.stdout, '');
+      strictEqual(
+        r.stderr,
+        'agentic-autopilot: AGENTIC_ORCHESTRATOR_ROOT=relative/orchestrator is not an absolute orchestrator root that ships adapters/claude/autopilot/cli.mjs\n',
+        'the diagnostic alone: no stack from running on past the exit',
+      );
+    });
+  });
+
+  it('a diagnostic past a pipe\'s buffer reaches the reader whole', async () => {
+    await withInstalled(async ({ argv }) => {
+      const r = await runThroughPipe(process.execPath, argv([], { padded: true }), {
+        env: pipeEnv(process.env, { AGENTIC_ORCHESTRATOR_ROOT: 'relative/orchestrator', LAUNCHER_PAD_BYTES: String(PAD) }),
+      });
+      strictEqual(r.timedOut, false, 'the launcher must exit');
+      strictEqual(r.status, 1, r.stderr.slice(-500));
+      strictEqual(Buffer.byteLength(r.stdout), PAD, 'stdout arrives whole (less is the exit before the pipe drained)');
+      ok(r.stderr.startsWith('e'.repeat(PAD)), `stderr carries the whole pad (got ${Buffer.byteLength(r.stderr)} bytes)`);
+      ok(r.stderr.endsWith('AGENTIC_ORCHESTRATOR_ROOT=relative/orchestrator is not an absolute orchestrator root that ships adapters/claude/autopilot/cli.mjs\n'),
+        `the diagnostic past the pad arrives: …${r.stderr.slice(-120)}`);
+    });
+  });
+
+  for (const [signal, code] of [['SIGTERM', 143], ['SIGINT', 130]]) {
+    it(`forwards ${signal} to the entry, and exits ${code} when it dies of it`, async () => {
+      await withInstalled(async ({ root, argv }) => {
+        const r = await new Promise((resolveP, rejectP) => {
+          const child = spawn(process.execPath, argv(['status']), {
+            env: pipeEnv(process.env, { AGENTIC_ORCHESTRATOR_ROOT: root, FAKE_ENTRY_MODE: 'wait' }),
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+          let stderr = '';
+          let sent = false;
+          child.stdout.resume();
+          child.stderr.on('data', (d) => {
+            stderr += d;
+            if (!sent && stderr.includes('ready\n')) {
+              sent = true;
+              child.kill(signal);
+            }
+          });
+          const watchdog = setTimeout(() => child.kill('SIGKILL'), 30_000);
+          child.once('error', rejectP);
+          child.once('close', (status, sig) => {
+            clearTimeout(watchdog);
+            resolveP({ status, sig, stderr });
+          });
+        });
+        strictEqual(r.sig, null, `the launcher handles ${signal} rather than dying of it`);
+        strictEqual(r.status, code, r.stderr);
+      });
+    });
+  }
+
+  it('a signal while the output drains leaves the entry\'s code as it is', async () => {
+    await withInstalled(async ({ root, argv }) => {
+      const r = await new Promise((resolveP, rejectP) => {
+        const child = spawn(process.execPath, argv(['status'], { held: true }), {
+          env: pipeEnv(process.env, { AGENTIC_ORCHESTRATOR_ROOT: root, FAKE_ENTRY_MODE: 'exit7', LAUNCHER_HOLD_MS: '1500' }),
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let stderr = '';
+        let signalled = false;
+        const watchdog = setTimeout(() => child.kill('SIGKILL'), 30_000);
+        child.stdout.resume();
+        child.stderr.on('data', (d) => {
+          stderr += d;
+          // The launcher reports 'flushing' from inside exitAfterFlush, after
+          // the entry's exit was handled, and holds the wait open 1.5 s.
+          if (signalled || !stderr.includes('flushing\n')) return;
+          signalled = true;
+          child.kill('SIGTERM');
+        });
+        child.once('error', rejectP);
+        child.once('close', (status, sig) => {
+          clearTimeout(watchdog);
+          resolveP({ status, sig, stderr, signalled });
+        });
+      });
+      strictEqual(r.signalled, true, `the launcher reached its flush: ${r.stderr}`);
+      strictEqual(r.sig, null, 'the launcher handles SIGTERM during the flush rather than dying of it');
+      strictEqual(r.status, 7, r.stderr);
+      ok(/^entry \d+\nflushing\n$/.test(r.stderr), r.stderr);
+    });
   });
 });

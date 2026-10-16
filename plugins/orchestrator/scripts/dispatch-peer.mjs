@@ -52,6 +52,7 @@ import { join, isAbsolute, resolve, dirname, relative, basename } from 'node:pat
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { constants as osConstants, homedir, tmpdir } from 'node:os';
 import { recordPendingEnsemble } from './state.mjs';
+import { absorbOutputErrors, exitAfterFlush } from './lib/cli-entry.mjs';
 import { createRunCancellation, fingerprintForPid, stopProcessGroup } from './lib/process-identity.mjs';
 import {
   createPeerSnapshot,
@@ -918,27 +919,30 @@ function printHelp() {
   );
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// The CLI. Every path returns its exit code, and the entry below exits once,
+// after the output has drained (the owner's discussion-2 decision R2): help
+// and refusals return before any companion is resolved.
+async function cliRun(argv) {
   let opts;
   try {
-    opts = parseCliArgs(process.argv.slice(2));
+    opts = parseCliArgs(argv);
   } catch (err) {
     process.stderr.write(`dispatch-peer: ${err.message}\n`);
-    process.exit(2);
+    return 2;
   }
 
   if (opts.help) {
     printHelp();
-    process.exit(0);
+    return 0;
   }
 
   if (!opts.peer) {
     process.stderr.write('dispatch-peer: --peer claude|codex is required\n');
-    process.exit(2);
+    return 2;
   }
   if (!opts.promptFile && opts.promptText === undefined) {
     process.stderr.write('dispatch-peer: --prompt-file, --prompt-text, or positional prompt is required\n');
-    process.exit(2);
+    return 2;
   }
 
   const bookkeepingFlags = ['workflowPath', 'phase', 'ensembleType', 'runId'];
@@ -954,7 +958,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       process.stderr.write(
         `dispatch-peer: --workflow-path requires --phase, --ensemble-type, --run-id (missing: ${missing.join(', ')})\n`,
       );
-      process.exit(2);
+      return 2;
     }
     ensembleBookkeeping = {
       workflowPath: opts.workflowPath,
@@ -965,7 +969,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   }
 
   // C96 — a signal stops the peer's group and removes its snapshot before
-  // the CLI exits 128+n; the handlers are installed before the snapshot.
+  // the CLI exits 128+n; the handlers are installed before the snapshot, and
+  // stay through the flush, so a signal then leaves the code as it is.
   const cancellation = createRunCancellation();
   for (const sig of DISPATCH_SIGNALS) process.on(sig, () => cancellation.request(sig));
   const result = await dispatchPeer({ ...opts, ensembleBookkeeping, cancellation });
@@ -978,6 +983,20 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   if (result.stderr) {
     process.stderr.write(result.stderr.endsWith('\n') ? result.stderr : result.stderr + '\n');
   }
-  if (cancellation.signal) process.exit(128 + osConstants.signals[cancellation.signal]);
-  process.exit(result.exitCode ?? 1);
+  if (cancellation.signal) return 128 + osConstants.signals[cancellation.signal];
+  return result.exitCode ?? 1;
+}
+
+// Run as a CLI only when this file is the entry point. A refusal dispatchPeer
+// throws is reported as the uncaught error was, with its stack, and exits 1.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  absorbOutputErrors();
+  let code;
+  try {
+    code = await cliRun(process.argv.slice(2));
+  } catch (err) {
+    process.stderr.write(`${err?.stack ?? err}\n`);
+    code = 1;
+  }
+  exitAfterFlush(code);
 }

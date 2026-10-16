@@ -10,6 +10,7 @@
 import { findActiveWorkflow, snapshot } from '../../../scripts/state.mjs';
 import { runInCommandDirectory } from '../../../scripts/lib/state-root.mjs';
 import { readStdinJson, gitTopLevel, gitStatusDigest } from './_shared.mjs';
+import { absorbOutputErrors, exitAfterFlush } from '../../../scripts/lib/cli-entry.mjs';
 
 async function main() {
   const payload = await readStdinJson();
@@ -40,5 +41,8 @@ async function main() {
   return 0;
 }
 
+// Exit once the output has drained (the owner's discussion-2 decision R2),
+// and keep a reader that closed early from killing the hook with a stack.
+absorbOutputErrors();
 const code = await main();
-process.exit(code);
+exitAfterFlush(code);

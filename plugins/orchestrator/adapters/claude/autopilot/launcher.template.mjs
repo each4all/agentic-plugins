@@ -54,11 +54,46 @@ export function findOrchestrator(env = process.env, home = homedir()) {
   return { root: best.root };
 }
 
+// Exit only once stdout and stderr have flushed what was written (the owner's
+// discussion-2 decision R2). `process.exit` right after a write to a pipe
+// drops whatever the pipe has not taken yet, so a diagnostic past 65,536 bytes
+// reached its reader cut short. `write('', cb)` calls back after every earlier
+// write on the stream. A ref'd fallback timer exits anyway when a reader never
+// drains, and a stream error (EPIPE from a reader that closed early) exits
+// with the same code. It writes nothing itself, and a second call is ignored.
+// The installed launcher is one standalone file, so it carries this helper
+// itself rather than importing the orchestrator's scripts/lib/cli-entry.mjs.
+export const EXIT_FLUSH_FALLBACK_MS = 10_000;
+let exitFlushStarted = false;
+export function exitAfterFlush(code, fallbackMs = EXIT_FLUSH_FALLBACK_MS) {
+  if (exitFlushStarted) return;
+  exitFlushStarted = true;
+  const exit = () => process.exit(code);
+  setTimeout(exit, fallbackMs);
+  let pending = 2;
+  const settle = () => {
+    pending -= 1;
+    if (pending === 0) exit();
+  };
+  for (const stream of [process.stdout, process.stderr]) {
+    stream.once('error', exit);
+    try {
+      stream.write('', settle);
+    } catch {
+      exit();
+    }
+  }
+}
+
+// Each exit route returns right after it asks to exit: the exit waits for the
+// output to drain, so main must not run on past it. The SIGINT and SIGTERM
+// handlers stay through the flush, so a signal then leaves the code as it is.
 function main() {
   const found = findOrchestrator();
   if (found.error) {
     process.stderr.write(`agentic-autopilot: ${found.error}\n`);
-    process.exit(1);
+    exitAfterFlush(1);
+    return;
   }
   const child = spawn(process.execPath, [join(found.root, ...ENTRY), ...process.argv.slice(2)], { stdio: 'inherit' });
   for (const signal of ['SIGINT', 'SIGTERM']) {
@@ -66,10 +101,10 @@ function main() {
   }
   child.on('error', (e) => {
     process.stderr.write(`agentic-autopilot: ${e.message}\n`);
-    process.exit(1);
+    exitAfterFlush(1);
   });
   child.on('exit', (code, signal) => {
-    process.exit(code ?? (signal === 'SIGINT' ? 130 : signal === 'SIGTERM' ? 143 : 1));
+    exitAfterFlush(code ?? (signal === 'SIGINT' ? 130 : signal === 'SIGTERM' ? 143 : 1));
   });
 }
 
