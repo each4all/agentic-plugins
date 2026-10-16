@@ -49,6 +49,7 @@ import { realpathSync } from 'node:fs';
 import { join, isAbsolute, resolve, dirname, relative, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
+import { exitAfterFlush } from './lib/exit-after-flush.mjs';
 
 const ENV_OVERRIDE = 'AGENTIC_RUNTIME_ROOT';
 
@@ -543,6 +544,15 @@ function invokedAsCli() {
   }
 }
 
+// Ends through exitAfterFlush (R2): `process.exit` right after a write cut a
+// diagnostic echoing a long flag at 64 KiB on a pipe. A rejection prints its
+// message and exits 1, where it used to surface as an unhandled rejection.
 if (invokedAsCli()) {
-  cliMain(process.argv.slice(2)).then((code) => process.exit(code ?? 0));
+  cliMain(process.argv.slice(2)).then(
+    (code) => exitAfterFlush(code ?? 0),
+    (err) => {
+      process.stderr.write(`discover-runtime.mjs: ${err?.message ?? String(err)}\n`);
+      exitAfterFlush(1);
+    },
+  );
 }
