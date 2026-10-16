@@ -41,7 +41,7 @@
 import { test } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -211,4 +211,105 @@ test('args-file transport (ADR-0059 Decision 8, amended 2026-09-29)', async (t) 
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+// A Codex skill mention runs its block in a fresh shell, where nothing a Claude
+// command's earlier line set exists. Measured 2026-10-17 (C78): eight runtime
+// skills passed `--repo-root "$REPO_ROOT"` without defining it, so each CLI got
+// `--repo-root ""`. A runtime skill shows three kinds of fenced block: a usage
+// synopsis first (`[--option]` forms, not run), `$runtime:<command>` mention
+// examples, and the block the agent runs. That last one is run here as written,
+// by sh, bash and zsh with unset variables an error, against a stub plugin root
+// that records the argv each script receives.
+const RUNTIME_SKILLS = ['bootstrap', 'consensus', 'context', 'dashboard', 'doctor', 'migrate', 'retention', 'settings', 'worktree'];
+const SKILL_PLUGIN_ROOT = '<runtime-plugin-root>';
+const SKILL_ARGS_DIR_LINE = "ARGS_DIR='<directory mktemp printed>'";
+const MENTION_LINE = /^[$/][a-z-]+:[a-z-]+(\s|$)/;
+
+/**
+ * 'synopsis', 'mention' or 'runnable', from what the block's lines are. Only
+ * the first block can be the synopsis: a later block that happens to show a
+ * `[-` is run like any other.
+ */
+function skillBlockKind(lines, index) {
+  const code = lines.filter((l) => l.trim() !== '');
+  if (code.length > 0 && code.every((l) => MENTION_LINE.test(l))) return 'mention';
+  if (index === 0 && code.length > 0 && code.every((l) => l.startsWith(`node "${SKILL_PLUGIN_ROOT}/scripts/`)) && code.some((l) => l.includes(' [-'))) return 'synopsis';
+  return 'runnable';
+}
+
+test('runtime Codex skills: each runnable block defines what it reads (C78)', async (t) => {
+  const skills = RUNTIME_SKILLS.map((name) => {
+    const blocks = fencedBlocks(readFileSync(join(PLUGINS_DIR, 'runtime', 'core', 'skills', name, 'SKILL.md'), 'utf8'));
+    const kinds = blocks.map(skillBlockKind);
+    return { name, kinds, runnable: blocks.filter((_, i) => kinds[i] === 'runnable') };
+  });
+
+  await t.test('each skill opens with a synopsis and has one runnable block, the args-file one', () => {
+    // Identity, not a count: a skill whose block this no longer tells apart
+    // is one the runs below would skip.
+    deepStrictEqual(readdirSync(join(PLUGINS_DIR, 'runtime', 'core', 'skills')).sort(), RUNTIME_SKILLS, 'a runtime skill was added or removed; list it here');
+    for (const { name, kinds, runnable } of skills) {
+      strictEqual(kinds[0], 'synopsis', `${name}: the first block is not a synopsis (${kinds.join(', ')})`);
+      strictEqual(runnable.length, 1, `${name}: ${runnable.length} runnable blocks (${kinds.join(', ')})`);
+      strictEqual(runnable[0].find((l) => l.trim() !== ''), SKILL_ARGS_DIR_LINE, `${name}: the runnable block does not open with the ARGS_DIR line`);
+    }
+  });
+
+  await t.test('a block that passes $REPO_ROOT defines it as the matching command does', () => {
+    // Contract: the runtime CLI's --repo-root — the Claude command and the Codex
+    // skill resolve the same repository from the same working directory.
+    const readers = skills.filter(({ runnable }) => runnable[0].some((l) => l.includes('"$REPO_ROOT"')));
+    deepStrictEqual(readers.map((s) => s.name), RUNTIME_SKILLS.filter((n) => n !== 'bootstrap'));
+    for (const { name, runnable } of readers) {
+      const command = readFileSync(join(PLUGINS_DIR, 'runtime', 'commands', `${name}.md`), 'utf8').split('\n').filter((l) => l.startsWith('REPO_ROOT='));
+      strictEqual(command.length, 1, `${name}: the command defines REPO_ROOT ${command.length} times`);
+      deepStrictEqual(runnable[0].filter((l) => l.startsWith('REPO_ROOT=')), command, `${name}: the skill does not define REPO_ROOT as commands/${name}.md does`);
+    }
+  });
+
+  for (const shell of ['sh', 'bash', 'zsh']) {
+    const available = spawnSync(shell, ['-c', 'exit 0']).status === 0;
+    await t.test(`${shell} -u: the block runs, and each script gets the repository root and the args file`, { skip: available ? false : `${shell} is not installed` }, () => {
+      const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'agentic-c78.')));
+      // Only what a fresh shell is sure to have, so `-u` stops on any variable
+      // the block reads without setting; git looks no higher than the scratch
+      // directory, so the plain directory below is outside every repository.
+      const env = { PATH: process.env.PATH, HOME: process.env.HOME ?? scratch, GIT_CEILING_DIRECTORIES: scratch };
+      try {
+        // A repository whose root differs from the working directory: a block
+        // that passed `pwd`, or nothing, is told apart from one that asked git.
+        // Outside a repository the block falls back to the working directory.
+        const repo = join(scratch, 'repo');
+        const plain = join(scratch, 'plain');
+        mkdirSync(join(repo, 'sub'), { recursive: true });
+        mkdirSync(plain);
+        strictEqual(spawnSync('git', ['init', '-q', repo], { env }).status, 0, 'git init failed');
+        const stub = join(scratch, 'runtime');
+        mkdirSync(join(stub, 'scripts'), { recursive: true });
+        for (const { name, runnable } of skills) {
+          const block = runnable[0].join('\n');
+          const script = block.match(/\/scripts\/([a-z-]+)\.mjs"/)[1];
+          writeFileSync(join(stub, 'scripts', `${script}.mjs`), "import { writeFileSync } from 'node:fs';\nwriteFileSync(process.env.C78_ARGV, JSON.stringify(process.argv.slice(2)));\n");
+          for (const [cwd, root] of [[join(repo, 'sub'), repo], [plain, plain]]) {
+            const argsDir = mkdtempSync(join(scratch, 'args.'));
+            const out = join(scratch, `${name}-${shell}.json`);
+            const source = `${block.replace(SKILL_ARGS_DIR_LINE, `ARGS_DIR='${argsDir}'`).split(`"${SKILL_PLUGIN_ROOT}/`).join(`"${stub}/`)}\n`;
+            const r = spawnSync(shell, ['-u', '-c', source], { cwd, encoding: 'utf8', env: { ...env, C78_ARGV: out } });
+            strictEqual(r.status, 0, `${shell} / ${name} in ${cwd}: status ${r.status}, stderr ${r.stderr}`);
+            const argv = JSON.parse(readFileSync(out, 'utf8'));
+            ok(argv.includes('--args-file'), `${shell} / ${name}: no --args-file in ${JSON.stringify(argv)}`);
+            strictEqual(argv[argv.indexOf('--args-file') + 1], `${argsDir}/args.json`, `${shell} / ${name}: ${JSON.stringify(argv)}`);
+            // Every runtime CLI but bootstrap's takes the repository root.
+            strictEqual(argv.includes('--repo-root'), name !== 'bootstrap', `${shell} / ${name}: --repo-root in ${JSON.stringify(argv)}`);
+            if (name !== 'bootstrap') {
+              strictEqual(argv[argv.indexOf('--repo-root') + 1], root, `${shell} / ${name} in ${cwd}: ${JSON.stringify(argv)}`);
+            }
+          }
+        }
+      } finally {
+        rmSync(scratch, { recursive: true, force: true });
+      }
+    });
+  }
 });
