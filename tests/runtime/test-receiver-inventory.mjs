@@ -41,7 +41,7 @@ const STATUSLINE = 'agentic-statusline.mjs';
 //   v0.91.2 — the last full copy, before the receivers became delegating shims;
 //   v0.97.4 — the last `delegating-shim v1`, whose ladder read the Codex
 //             marketplace clone (ADR-0061 §Decision 3 replaced it).
-const FIXTURE_TAGS = ['plugin-runtime-v0.91.2', 'plugin-runtime-v0.97.4'];
+const FIXTURE_TAGS = ['plugin-runtime-v0.91.2', 'plugin-runtime-v0.97.4', 'plugin-runtime-v0.103.1'];
 function releasedTemplate(tag, basename) {
   ok(FIXTURE_TAGS.includes(tag), `no fixture is checked in for ${tag}`);
   const version = tag.replace('plugin-runtime-', '');
@@ -348,6 +348,39 @@ describe('installed receiver inventory — classification without execution', ()
     // behaviour, because behaviour comes from the resolved runtime.
     ok(/restoring a backup of one does NOT revert behaviour/.test(text));
     ok(/rolling the runtime plugin back too/.test(text));
+      ok(!/itself a DELEGATING shim/.test(text), 'a self-contained file is not described as a delegating one');
+  });
+
+  it('does not call a delegating legacy shim self-contained (R2)', async () => {
+    // The v1 and v2 shapes are released, so they read as legacy, but they
+    // delegate: restoring their backup does not restore what they render.
+    for (const marker of ['statusline delegating-shim v1', 'statusline delegating-shim v2']) {
+      const step = buildReceiverReinstallStep({
+        state: 'stale',
+        receivers: [{ kind: STATUSLINE, state: 'legacy', expected: true, path_pointer: 'p', shipped_in: 'v', marker }],
+      });
+      const text = step.rollback.join(' ');
+      ok(!/SELF-CONTAINED/.test(text), `${marker}: a delegating file is described as self-contained`);
+      ok(/itself a DELEGATING shim: restoring its backup restores only its own bootstrap/.test(text), marker);
+      ok(/rolling the runtime plugin back too/.test(text), marker);
+    }
+  });
+
+  it('the outgoing v2 shim (ending in a bare process.exit) is registered, so an installed one reads as LEGACY (R2)', async () => {
+    const v2 = releasedTemplate('plugin-runtime-v0.103.1', STATUSLINE);
+    const current = await readFile(join(REPO_ROOT, 'plugins/runtime/receivers', STATUSLINE), 'utf8');
+    ok(/^process\.exit\(0\);$/m.test(v2), 'v2 is the shape that ended in a bare process.exit');
+    ok(v2 !== current, 'the current template must differ from the v2 it replaces');
+    const bin = await installDirWith({ [STATUSLINE]: renderLike(v2) });
+    const r = classifyInstalledReceiver({
+      kind: STATUSLINE,
+      path: join(bin, STATUSLINE),
+      currentTemplateSha: sha256(current),
+      knownReleasedShapes: releasedShapesRegistry()[STATUSLINE],
+    });
+    strictEqual(r.state, 'legacy');
+    strictEqual(r.shipped_in, 'plugin-runtime-v0.98.0 … v0.103.1');
+    strictEqual(r.marker, 'statusline delegating-shim v2');
   });
 
   it('surfaces the inventory in doctor TEXT output, not only in JSON', async () => {
