@@ -2,6 +2,13 @@
 
 All notable changes to the `attention` plugin are documented here.
 
+## [0.10.1](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.10.0...plugin-attention-v0.10.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **attention:** exit the Claude hooks and runtime discovery after stdout and stderr flush, so their output reaches a pipe whole (C93) ([c61c193](https://github.com/each4all/agentic-plugins/commit/c61c193d7bc04adcc2d8b84b75185e1a3eebbcda))
+
 ## [0.10.0](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.9.1...plugin-attention-v0.10.0) (2026-10-04)
 
 
