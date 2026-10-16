@@ -50,7 +50,7 @@
 // invocation of this driver is the next /engineer:start after PR2
 // merges.
 
-import { isCliEntry } from './lib/cli-entry.mjs';
+import { absorbOutputErrors, exitAfterFlush, isCliEntry } from './lib/cli-entry.mjs';
 import { runInCommandDirectory } from './lib/state-root.mjs';
 import { capabilityOn, commandPrefix, personaOrRefuse } from './lib/persona.mjs';
 import { execFile, execFileSync } from 'node:child_process';
@@ -2425,22 +2425,24 @@ async function runMain(argv) {
 // compares both sides canonical and as paths, so an install reached through a
 // symlink (with or without --preserve-symlinks-main), or under a directory
 // whose name needs URL escaping (a space, '#', non-ASCII), still runs (ADR-0066
-// D1; the old template-string guard exited 0 there without running).
+// D1; the old template-string guard exited 0 there without running). It exits
+// once, after the output has drained: the plan JSON grows with the changed
+// paths (the owner's discussion-2 decision R2).
 if (isCliEntry(import.meta.url)) {
-  if (!personaOrRefuse('phase7-commit.mjs')) {
-    process.exitCode = 1;
-  } else {
-    // ES-module CLI entry — async IIFE wrapper avoids top-level-await
-    // deadlocks under dynamic-import circular edges (engineer plugin
-    // convention captured in `project_cli_entry_iife_pattern`).
-    (async () => {
+  absorbOutputErrors();
+  // ES-module CLI entry — async IIFE wrapper avoids top-level-await
+  // deadlocks under dynamic-import circular edges (engineer plugin
+  // convention captured in `project_cli_entry_iife_pattern`).
+  (async () => {
+    let code = 1;
+    if (personaOrRefuse('phase7-commit.mjs')) {
       try {
-        const code = await main(process.argv.slice(2));
-        process.exit(code);
+        code = await main(process.argv.slice(2));
       } catch (err) {
         process.stderr.write(`phase7-commit: ${err.message}\n`);
-        process.exit(1);
+        code = 1;
       }
-    })();
-  }
+    }
+    exitAfterFlush(code);
+  })();
 }
