@@ -35,6 +35,7 @@ import {
   resolveRepoRoot,
   spawnPublishSession,
 } from '../../../scripts/lib/sensor.mjs';
+import { exitAfterFlush } from '../../../scripts/lib/exit-after-flush.mjs';
 
 async function main() {
   const payload = await readStdinJson();
@@ -73,4 +74,5 @@ try {
 } catch {
   // Fail-closed: a sensor failure must never break the host lifecycle.
 }
-process.exit(0);
+// After stdout and stderr flush (R2); still exit 0 always.
+exitAfterFlush(0);

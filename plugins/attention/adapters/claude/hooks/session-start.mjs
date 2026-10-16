@@ -39,6 +39,7 @@ import {
   resolveRepoRoot,
   spawnEntryBrief,
 } from '../../../scripts/lib/sensor.mjs';
+import { exitAfterFlush } from '../../../scripts/lib/exit-after-flush.mjs';
 
 async function main() {
   const payload = await readStdinJson();
@@ -63,4 +64,5 @@ try {
 } catch {
   // Fail-closed: an entry-sensor failure must never break session entry.
 }
-process.exit(0);
+// After stdout and stderr flush (R2); still exit 0 always.
+exitAfterFlush(0);
