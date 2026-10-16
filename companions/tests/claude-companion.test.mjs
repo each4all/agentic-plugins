@@ -37,6 +37,7 @@ import {
 import * as companionModule from '../claude-companion.mjs';
 import { fileURLToPath } from 'node:url';
 import { defineNestingGuardSuite } from './nesting-guard.suite.mjs';
+import { defineExitAfterFlushSuite, defineLargeEnvelopeRegression } from './exit-flush.suite.mjs';
 
 // --- helpers ---------------------------------------------------------------
 
@@ -855,6 +856,19 @@ describe('main() integration', () => {
 defineNestingGuardSuite({
   label: 'claude-companion',
   mod: companionModule,
+  scriptPath: fileURLToPath(new URL('../claude-companion.mjs', import.meta.url)),
+  peerBin: PEER_CLI_BIN,
+});
+
+// --- exit after flush (shared suite, both companions) ---------------------
+
+defineExitAfterFlushSuite({
+  label: 'claude-companion',
+  modulePath: fileURLToPath(new URL('../claude-companion.mjs', import.meta.url)),
+});
+
+defineLargeEnvelopeRegression({
+  label: 'claude-companion',
   scriptPath: fileURLToPath(new URL('../claude-companion.mjs', import.meta.url)),
   peerBin: PEER_CLI_BIN,
 });
