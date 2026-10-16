@@ -14,6 +14,7 @@
 import { findActiveWorkflow, snapshot } from '../../../scripts/state.mjs';
 import { runInCommandDirectory } from '../../../scripts/lib/state-root.mjs';
 import { hookPersona, readStdinJson, gitTopLevel, gitStatusDigest } from '../../../scripts/lib/hook-helpers.mjs';
+import { absorbOutputErrors, exitAfterFlush } from '../../../scripts/lib/cli-entry.mjs';
 
 async function main() {
   // Validate the persona declaration first, before any other work: when it is
@@ -49,5 +50,8 @@ async function main() {
   return 0;
 }
 
+// Exit once the output has drained (the owner's discussion-2 decision R2),
+// and keep a reader that closed early from killing the hook with a stack.
+absorbOutputErrors();
 const code = await main();
-process.exit(code);
+exitAfterFlush(code);
