@@ -118,6 +118,7 @@ import { FINDINGS_MAX_PER_ARTIFACT, makeValidator } from './lib/schema-validate.
 import { parseCodexConfigToml, readCodexConfigToml } from './lib/codex-config.mjs';
 import { renderCodexTuiTableToml } from './lib/toml.mjs';
 import { ArgsFileError, expandArgsFile } from './lib/args-file.mjs';
+import { exitAfterFlush } from './lib/exit-after-flush.mjs';
 
 export { RUNTIME_VERSION };
 
@@ -3648,12 +3649,20 @@ export async function runBootstrap({
 async function main() {
   const { exitCode, rendered } = await runBootstrap({ argv: process.argv.slice(2) });
   process.stdout.write(rendered);
-  process.exit(exitCode);
+  return exitCode;
 }
 
+// Ends through exitAfterFlush (R2): `process.exit` right after the write cut a
+// report past 64 KiB short on a pipe, and `process.exitCode` alone would wait
+// on a probe child that ignored SIGTERM after its timeout (defaultRunner
+// resolves without waiting for `close`). The probes are read-only, so a child
+// left running changes nothing on the machine.
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch((err) => {
-    process.stderr.write(`runtime:bootstrap failed: ${err.stack ?? err.message}\n`);
-    process.exit(EXIT.UNEXPECTED);
-  });
+  main().then(
+    (code) => exitAfterFlush(code),
+    (err) => {
+      process.stderr.write(`runtime:bootstrap failed: ${err.stack ?? err.message}\n`);
+      exitAfterFlush(EXIT.UNEXPECTED);
+    },
+  );
 }

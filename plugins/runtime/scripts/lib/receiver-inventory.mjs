@@ -392,6 +392,11 @@ export function buildReceiverReinstallStep(inventory, { host = 'neutral' } = {})
   return step;
 }
 
+// The generation marker a delegating shim carries (`statusline delegating-shim v2`).
+function isDelegatingMarker(marker) {
+  return typeof marker === 'string' && /\bdelegating-shim v\d+$/.test(marker);
+}
+
 /**
  * How to get BACK, stated precisely — because after the delegating-shim change
  * the obvious rollback no longer does what it used to.
@@ -400,9 +405,22 @@ export function buildReceiverRollbackGuidance(entries) {
   const guidance = [
     'Back up the installed file before overwriting it; the backup is the rollback.',
   ];
-  if (entries.some((entry) => entry.state === 'legacy')) {
+  // A legacy file is either a self-contained copy (released before the
+  // receivers delegated) or an earlier delegating shim, told apart by its
+  // generation marker. Only the first carries its own behaviour.
+  const legacy = entries.filter((entry) => entry.state === 'legacy');
+  if (legacy.some((entry) => !isDelegatingMarker(entry.marker))) {
     guidance.push(
       'The file being replaced is a SELF-CONTAINED copy: restoring that backup fully reverts behaviour, because everything it rendered lived inside it.',
+    );
+  }
+  if (legacy.some((entry) => isDelegatingMarker(entry.marker))) {
+    guidance.push(
+      'The file being replaced is itself a DELEGATING shim: restoring its backup restores only its own bootstrap (its runtime floor and resolution ladder), not what it renders, which still comes from the runtime plugin that resolves.',
+    );
+  }
+  if (legacy.length > 0) {
+    guidance.push(
       'The replacement is a DELEGATING shim, and restoring a backup of one does NOT revert behaviour — a delegating shim renders through whichever runtime plugin resolves at the time. Rolling that back means rolling the runtime plugin back too, to a version at or above the shim\'s rendered floor.',
     );
   }

@@ -123,7 +123,7 @@ Line references below are anchors observed at decision time
   `!(apply || executePluginManagement || executePluginCleanup || attestCodexHookReview)`).
   Evidence collection never affects `dry_run`.
 
-## 3. Report schema contract (`runtime-settings-1.27`)
+## 3. Report schema contract (`runtime-settings-1.28`)
 
 `SETTINGS_SCHEMA_VERSION` bumped `runtime-settings-1.16` → `runtime-settings-1.17`
 for the discriminator below, then `runtime-settings-1.17` →
@@ -194,6 +194,30 @@ the readiness **status** exactly like `session_readiness_warnings`).
 Same observed-current semantics and the same additive-section erratum
 scope (1.23 `entry_readiness` appends its own text block in both
 scopes).
+`runtime-settings-1.27` → `runtime-settings-1.28` (additive, R2): a
+plugin-management or cleanup `result` gains `child_running` and `child_pid`.
+The CLI now exits once its report has flushed instead of waiting for every
+live handle, so a mutating command still running after its timeout and
+SIGTERM (it did not close within the grace) is reported as such: `failure_type`
+`timeout_child_running`, not retryable, with the pid to wait for, and a
+manual follow-up per host (`<host>-plugin-management-command-still-running`,
+`<host>-plugin-cleanup-command-still-running`) that offers no command to
+re-run. That host gets no further plugin-management or cleanup command in the
+run: each remaining plan is `blocked` with `block_reason`
+`host-command-still-running` and `blocked_by_pids`, and the follow-up lists
+them in `not_started`. Nor does the report offer any command to run on that
+host, from either area, requested or not: every plan there carries
+`held_by_pids` and the wait guidance as its `next_step` (it keeps its
+`command` and `executable` as the record of what was planned; the text output
+labels it `held-command`); every recommendation there, in `plugins.*` and the
+top-level list, has `command` and `argv` null, `executable` false,
+`held_by_pids`, the wait guidance as its `next_step`, and its command as
+`held_command`; and every other follow-up for that host moves its `commands`
+to `held_commands`, carries `held_by_pids`, and opens its `verify` with the
+wait. After the report, or after a failure once the command
+started, the CLI still reads that command's output until it exits, then exits
+itself: exiting first would close its pipes and cut the command short.
+Read-only probes are not waited for.
 `runtime-settings-1.26` → `runtime-settings-1.27` is **non-additive** too,
 a minor bump for the reason given for 1.26 below (ADR-0064 Decision 7). ADR-0064
 removed the notification emitter and the egress surfaces, and with them
@@ -339,7 +363,7 @@ distinguishable only by what it lacks:
    output byte-compatible (modulo nothing), JSON delta limited to the §3 keys.
 3. Renderer guards: `summarizeSettings` and `formatText` on a narrowed report
    (no throw, qualified output, explicit not-evaluated lines).
-4. Schema-version lockstep: the `runtime-settings-1.27` report constant and the
+4. Schema-version lockstep: the `runtime-settings-1.28` report constant and the
    `runtime-settings-execution-artifact-1.3` execution-artifact constant, and the
    exact-version assertions that pin each (`test-settings-probe-boundary.mjs` pins
    both constants; `test-settings.mjs` pins the report version and the artifact

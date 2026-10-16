@@ -39,6 +39,11 @@ import { sanitizeValue } from './lib/sanitize.mjs';
 import {
   EXECUTABLE_PLUGIN_ACTIONS,
   EXECUTABLE_PLUGIN_CLEANUP_ACTIONS,
+  HOST_COMMAND_STILL_RUNNING,
+  busyHostsOf,
+  holdCommandsOnBusyHosts,
+  holdRecommendation,
+  waitForStillRunningText,
   buildPluginCleanupManualFollowups,
   buildPluginCleanupPlans,
   buildPluginManagementManualFollowups,
@@ -56,6 +61,7 @@ import {
 // SAME leaf, or a freshly recorded attestation reads stale on the machine that wrote it.
 import { parseCodexCliVersion, resolveCodexInstalledPluginVersion } from './lib/codex-attestation-versions.mjs';
 import { expandArgsFile } from './lib/args-file.mjs';
+import { exitAfterFlush } from './lib/exit-after-flush.mjs';
 
 // 1.17 → 1.18 (additive): report.plugin_management / report.plugin_cleanup gain
 // `plan_hash` (§1.6 drift guard) so bootstrap can read a dry-run plan's hash and
@@ -89,7 +95,10 @@ import { expandArgsFile } from './lib/args-file.mjs';
 // plan surfaces left with the notification emitter — `notify_settings`,
 // `notification_plan`, `egress_launcher_plan` and `overall.notify_warnings`
 // are gone (settings-report-contract.md §3).
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.27';
+// 1.28 (additive, R2): a plugin-management or cleanup `result` gains
+// `child_running` / `child_pid` — a mutating command still running after its
+// timeout is reported as such (failure_type `timeout_child_running`).
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.28';
 
 // 1.1 → 1.2 (machine-bootstrap-contract.md §1.5, ADR-0046 §5): the plugin-
 // management and cleanup executors are now write-ahead — the artifact gains the
@@ -117,6 +126,38 @@ export {
 const TARGETS = new Set(['repo', 'user', 'both']);
 const PLUGIN_MANAGEMENT_HOSTS = new Set(['all', 'claude', 'codex']);
 const DEFAULT_PLUGIN_MANAGEMENT_TIMEOUT_MS = 120000;
+// How long a timed-out plugin-management or cleanup command gets, after
+// SIGTERM, to close before the report says it is still running (R2).
+const MUTATING_COMMAND_CLOSE_GRACE_MS = 5000;
+
+// Records a mutating command still running after that grace in the run's
+// list, with its host and the `closed` promise runCommand gives it.
+function trackStillRunningCommand(stillRunningCommands, host, result) {
+  if (result?.child_running === true) {
+    stillRunningCommands.push({
+      host,
+      pid: result.child_pid,
+      closed: typeof result.closed?.then === 'function' ? result.closed : Promise.resolve(),
+    });
+  }
+}
+
+// A host whose earlier mutating command of this run is still running gets no
+// further command (R2): the next install, uninstall or preflight would race
+// it. The plan is blocked, not failed: it never started.
+function blockBehindStillRunningCommand(plan, stillRunningCommands) {
+  const running = stillRunningCommands.filter((command) => command.host === plan.host);
+  if (running.length === 0) return false;
+  const pids = running.map(({ pid }) => pid).filter((pid) => Number.isSafeInteger(pid));
+  const named = pids.length > 0 ? `pid ${pids.join(', pid ')}` : 'the timed-out command';
+  plan.executed = false;
+  plan.status = 'blocked';
+  plan.block_reason = HOST_COMMAND_STILL_RUNNING;
+  plan.blocked_by_pids = pids;
+  plan.reason = `not started: an earlier ${plan.host} command of this run (${named}) is still running, and this one would race it`;
+  plan.next_step = waitForStillRunningText(pids);
+  return true;
+}
 const SETTINGS_RUN_ID_RE = /^settings-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 // Write-ahead status taxonomy (machine-bootstrap-contract.md §1.5). A nonterminal
 // record is an INTERRUPTED run — it has zero failures precisely because it has not
@@ -157,6 +198,12 @@ export async function runSettings({
   // §1.6 plan/executor drift: an operator-supplied hash the executor revalidates
   // against the freshly recomputed plan, refusing on divergence. Null = no guard.
   expectedPlanHash = null,
+  // R2: the run's mutating commands still running after their timeout and
+  // close grace, each `{ host, pid, closed }`, appended as they happen. The
+  // CLI passes its own list so it can wait for them on every path out,
+  // including a rejection after one started; an in-process caller that exits
+  // its process before each `closed` resolves cuts that command short.
+  stillRunningCommands = [],
 } = {}) {
   if (!TARGETS.has(target)) throw new Error('--target must be repo, user, or both');
   // Probe-free conflict gate (settings-report-contract.md §1-§2) — MUST run
@@ -345,6 +392,7 @@ export async function runSettings({
           env,
           timeoutMs: effectivePluginManagementTimeoutMs,
           onAction: writeAhead.appendJournal,
+          stillRunningCommands,
         });
       }
       if (executePluginCleanup) {
@@ -355,6 +403,7 @@ export async function runSettings({
           env,
           timeoutMs: effectivePluginManagementTimeoutMs,
           onAction: writeAhead.appendJournal,
+          stillRunningCommands,
         });
       }
     }
@@ -430,6 +479,15 @@ export async function runSettings({
       buildPluginCleanupManualFollowups(pluginCleanup.plans),
       buildCodexHookReviewManualFollowups(doctor.codex_plugin_hooks, hookSettings, codexHookReview),
     );
+    // R2: once every plan, recommendation and follow-up exists, hold each
+    // command they offer on a host whose command of this run is still running,
+    // across both executors and requested or not (holdCommandsOnBusyHosts).
+    holdCommandsOnBusyHosts({
+      busyHosts: busyHostsOf(stillRunningCommands),
+      plans: [...pluginManagement.plans, ...pluginCleanup.plans],
+      recommendations: Object.values(pluginPlans).flatMap((plugin) => plugin.recommendations),
+      followups: pluginManagement.manual_followups,
+    });
   }
 
   // ADR-0048 §2 — classify what is installed at the receiver paths and, when it
@@ -1014,12 +1072,17 @@ function buildCliAuthPlan(name, cli) {
 
 // EXECUTE half — mutates pluginCleanup.plans in place, journaling each action
 // through the same write-ahead sink as plugin-management (§1.5 part 4).
-async function executePluginCleanupPlans({ plan: pluginCleanup, runner, cwd, env, timeoutMs, onAction }) {
+async function executePluginCleanupPlans({ plan: pluginCleanup, runner, cwd, env, timeoutMs, onAction, stillRunningCommands = [] }) {
   const plans = pluginCleanup.plans;
   for (const plan of plans) {
     if (plan.status !== 'planned') continue;
+    if (blockBehindStillRunningCommand(plan, stillRunningCommands)) {
+      if (onAction) await onAction(makeExecutionJournalEntry({ area: 'plugin-cleanup', plan }));
+      continue;
+    }
     const startedAt = new Date();
-    const result = await runner(plan.argv.command, plan.argv.args, { cwd, env, timeoutMs });
+    const result = await runner(plan.argv.command, plan.argv.args, { cwd, env, timeoutMs, closeGraceMs: MUTATING_COMMAND_CLOSE_GRACE_MS });
+    trackStillRunningCommand(stillRunningCommands, plan.host, result);
     const completedAt = new Date();
     const semanticFailure = classifyPluginManagementSemanticFailure({ plan, result });
     const effectiveResult = semanticFailure
@@ -1128,10 +1191,14 @@ async function codexInstallPostverify({ plan, runner, cwd, env, timeoutMs }) {
 // write-ahead journal sink (machine-bootstrap-contract.md §1.5): it is awaited
 // after EACH action so the durable record advances with the machine mutation,
 // never lagging it. Recomputes the post-execution summary + manual_followups.
-async function executePluginManagementPlans({ plan: pluginManagement, runner, cwd, env, timeoutMs, onAction }) {
+async function executePluginManagementPlans({ plan: pluginManagement, runner, cwd, env, timeoutMs, onAction, stillRunningCommands = [] }) {
   const plans = pluginManagement.plans;
   for (const plan of plans) {
     if (plan.status !== 'planned') continue;
+    if (blockBehindStillRunningCommand(plan, stillRunningCommands)) {
+      if (onAction) await onAction(makeExecutionJournalEntry({ area: 'plugin-management', plan }));
+      continue;
+    }
     const isCodexInstall = plan.host === 'codex' && plan.action === 'install-plugin';
     // ADR-0035 §6 pre-flight: gate the codex install on installPolicy/authPolicy
     // read from `codex plugin list --available --json` (the plain list omits
@@ -1148,7 +1215,8 @@ async function executePluginManagementPlans({ plan: pluginManagement, runner, cw
       }
     }
     const startedAt = new Date();
-    const result = await runner(plan.argv.command, plan.argv.args, { cwd, env, timeoutMs });
+    const result = await runner(plan.argv.command, plan.argv.args, { cwd, env, timeoutMs, closeGraceMs: MUTATING_COMMAND_CLOSE_GRACE_MS });
+    trackStillRunningCommand(stillRunningCommands, plan.host, result);
     const completedAt = new Date();
     // ADR-0035 §6 post-verify: confirm the install landed via a read-only list.
     let postVerify = null;
@@ -1368,6 +1436,8 @@ function sanitizeCommandResult({ result, startedAt, completedAt }) {
     exit_code: result.exit_code ?? null,
     error_code: result.error_code ?? null,
     timed_out: Boolean(result.timed_out),
+    child_running: result.child_running === true,
+    child_pid: result.child_running === true && Number.isSafeInteger(result.child_pid) ? result.child_pid : null,
     stdout_bytes: Buffer.byteLength(result.stdout ?? '', 'utf8'),
     stderr_bytes: Buffer.byteLength(result.stderr ?? '', 'utf8'),
     started_at: startedAt.toISOString(),
@@ -1384,6 +1454,18 @@ function sanitizeCommandResult({ result, startedAt, completedAt }) {
 function classifyPluginManagementFailure(result) {
   const errorCode = String(result.error_code ?? '').toUpperCase();
   const text = `${errorCode}\n${result.error_message ?? ''}\n${result.stderr ?? ''}\n${result.stdout ?? ''}`.toLowerCase();
+  // Checked before the plain timeout: a command still running after SIGTERM
+  // may yet change host state, so a retry now could race it (R2). The CLI
+  // writes its report, then waits for the child before exiting.
+  if (result.child_running === true) {
+    const pid = Number.isSafeInteger(result.child_pid) ? `pid ${result.child_pid}` : 'the timed-out command';
+    return failureClass({
+      type: 'timeout_child_running',
+      retryable: false,
+      retry_after: `wait for ${pid} (or a process it started) to exit, then re-run runtime:doctor before retrying`,
+      doctor_hint: 'runtime:doctor shows the host plugin state the command left once it has exited',
+    });
+  }
   if (result.timed_out || errorCode === 'ETIMEDOUT') {
     return failureClass({
       type: 'timeout',
@@ -2094,7 +2176,7 @@ function buildTopLevelRecommendations({ clis, plugins, pluginCleanup, desiredCon
     }
   }
   for (const plan of pluginCleanup?.plans ?? []) {
-    recommendations.push({
+    const recommendation = {
       area: 'plugin-cleanup',
       host: plan.host,
       plugin: plan.plugin,
@@ -2105,7 +2187,10 @@ function buildTopLevelRecommendations({ clis, plugins, pluginCleanup, desiredCon
       command: plan.command,
       detail: plan.detail,
       next_step: plan.next_step,
-    });
+    };
+    // R2: a cleanup plan held on a busy host offers its command only once the
+    // wait ends (holdCommandsOnBusyHosts).
+    recommendations.push(plan.held_by_pids ? holdRecommendation(recommendation, plan.held_by_pids) : recommendation);
   }
   if (Object.keys(desiredConfig).length === 0) {
     recommendations.push({
@@ -2277,7 +2362,7 @@ export function formatText(report) {
     const codexTmp = plugin.marketplace_cache?.codex_tmp_marketplace;
     lines.push(`- ${name}: ${plugin.status}; source=${plugin.source_version ?? 'n/a'}; codex-marketplace-cache=${codexTmp?.version ?? 'n/a'}; recommendations=${plugin.recommendations.length}`);
     for (const recommendation of plugin.recommendations) {
-      const command = recommendation.command ? ` command=${recommendation.command}` : '';
+      const command = recommendation.command ? ` command=${recommendation.command}` : recommendation.held_command ? ` held-command=${recommendation.held_command}` : '';
       const executionStatus = recommendation.execution_status ? ` status=${recommendation.execution_status};` : '';
       lines.push(`  ${recommendation.host}: ${recommendation.action};${executionStatus} executed=${recommendation.executed};${command}`);
     }
@@ -2301,12 +2386,14 @@ export function formatText(report) {
   }
   lines.push(`- summary: planned=${report.plugin_management.summary.planned}; executed=${report.plugin_management.summary.executed}; failed=${report.plugin_management.summary.failed}; retryable-failed=${report.plugin_management.summary.failed_retryable}; non-retryable-failed=${report.plugin_management.summary.failed_non_retryable}; blocked=${report.plugin_management.summary.blocked}; manual=${report.plugin_management.summary.manual}; deduplicated=${report.plugin_management.summary.deduplicated}; skipped=${report.plugin_management.summary.skipped}`);
   for (const plan of report.plugin_management.plans) {
-    const command = plan.command ? ` command=${plan.command}` : '';
+    // R2: a plan held on a busy host shows its command as held, not as one to run.
+    const command = plan.command ? ` ${plan.held_by_pids ? 'held-command' : 'command'}=${plan.command}` : '';
     lines.push(`- ${plan.plugin}/${plan.host}: ${plan.action}; status=${plan.status}; executable=${plan.executable}; executed=${plan.executed};${command}`);
     if (plan.reason) lines.push(`  reason: ${plan.reason}`);
     if (plan.next_step) lines.push(`  next: ${plan.next_step}`);
     if (plan.result) {
       lines.push(`  result: ok=${plan.result.ok}; exit=${plan.result.exit_code ?? '<none>'}; stdout-bytes=${plan.result.stdout_bytes}; stderr-bytes=${plan.result.stderr_bytes}; timed-out=${plan.result.timed_out}; failure-type=${plan.result.failure_type ?? '<none>'}; retryable=${plan.result.retryable}`);
+      if (plan.result.child_running) lines.push(`  still-running: pid=${plan.result.child_pid ?? '<unknown>'}`);
       if (plan.result.retry_after) lines.push(`  retry-after: ${plan.result.retry_after}`);
       if (plan.result.doctor_hint) lines.push(`  doctor: ${plan.result.doctor_hint}`);
     }
@@ -2320,6 +2407,9 @@ export function formatText(report) {
       lines.push(`  environment: ${followup.environment}`);
       for (const command of followup.commands ?? []) {
         lines.push(`  command: ${command}`);
+      }
+      for (const command of followup.held_commands ?? []) {
+        lines.push(`  held-command: ${command}`);
       }
       lines.push(`  verify: ${followup.verify}`);
     }
@@ -2335,11 +2425,12 @@ export function formatText(report) {
     lines.push(`- mode: ${report.plugin_cleanup.mode}; requested=${report.plugin_cleanup.requested}; timeout-ms=${report.plugin_cleanup.timeout_ms}`);
     lines.push(`- summary: planned=${report.plugin_cleanup.summary.planned}; executable=${report.plugin_cleanup.summary.executable}; executed=${report.plugin_cleanup.summary.executed}; failed=${report.plugin_cleanup.summary.failed}; blocked=${report.plugin_cleanup.summary.blocked}; manual-required=${report.plugin_cleanup.summary.manual_required}`);
     for (const plan of report.plugin_cleanup.plans) {
-      lines.push(`- ${plan.plugin}/${plan.host}: ${plan.action}; status=${plan.status}; executable=${plan.executable}; executed=${plan.executed}; command=${plan.command}`);
+      lines.push(`- ${plan.plugin}/${plan.host}: ${plan.action}; status=${plan.status}; executable=${plan.executable}; executed=${plan.executed}; ${plan.held_by_pids ? 'held-command' : 'command'}=${plan.command}`);
       if (plan.reason) lines.push(`  reason: ${plan.reason}`);
       lines.push(`  next: ${plan.next_step}`);
       if (plan.result) {
         lines.push(`  result: ok=${plan.result.ok}; exit=${plan.result.exit_code ?? '<none>'}; stdout-bytes=${plan.result.stdout_bytes}; stderr-bytes=${plan.result.stderr_bytes}; timed-out=${plan.result.timed_out}; failure-type=${plan.result.failure_type ?? '<none>'}; retryable=${plan.result.retryable}`);
+        if (plan.result.child_running) lines.push(`  still-running: pid=${plan.result.child_pid ?? '<unknown>'}`);
         if (plan.result.retry_after) lines.push(`  retry-after: ${plan.result.retry_after}`);
         if (plan.result.doctor_hint) lines.push(`  doctor: ${plan.result.doctor_hint}`);
       }
@@ -2689,35 +2780,81 @@ function requireValue(argv, index, flag) {
   return value;
 }
 
+// Returns the exit code; nothing runs after help or a refusal.
 async function main() {
   let opts;
   try {
     opts = parseArgs(expandArgsFile(process.argv.slice(2)));
   } catch (err) {
     process.stderr.write(`${err.message}\n${usage()}`);
-    process.exit(2);
+    return 2;
   }
   if (opts.help) {
     process.stdout.write(usage());
-    process.exit(0);
+    return 0;
   }
   try {
     await access(opts.repoRoot, fsConstants.R_OK);
   } catch (err) {
     process.stderr.write(`repo root is not readable: ${err.message}\n`);
-    process.exit(2);
+    return 2;
   }
-  const report = await runSettings(opts);
-  if (opts.format === 'json') {
-    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-  } else {
-    process.stdout.write(formatText(report));
+  // The run's mutating commands still running after their timeout and grace
+  // (runSettings fills the list). On every path out, the report or a failure
+  // after one started, the CLI reads their output until they exit before
+  // exiting itself: exiting first closes the read end of their pipes, and the
+  // command's next write fails (EPIPE), cutting a plugin install or uninstall
+  // short at an arbitrary point.
+  const stillRunningCommands = [];
+  let code = 0;
+  try {
+    const report = await runSettings({ ...opts, stillRunningCommands });
+    ignoreOutputErrorsWhileWaiting(stillRunningCommands);
+    if (opts.format === 'json') {
+      process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    } else {
+      process.stdout.write(formatText(report));
+    }
+  } catch (err) {
+    ignoreOutputErrorsWhileWaiting(stillRunningCommands);
+    process.stderr.write(`runtime:settings failed: ${err.stack ?? err.message}\n`);
+    code = 1;
+  }
+  if (stillRunningCommands.length > 0) {
+    const pids = stillRunningCommands.map(({ pid }) => (Number.isSafeInteger(pid) ? `pid ${pid}` : 'a command')).join(', ');
+    process.stderr.write(`runtime:settings: waiting for ${pids} to exit: a timed-out plugin command still running is not cut short\n`);
+    await Promise.all(stillRunningCommands.map(({ closed }) => closed));
+  }
+  return code;
+}
+
+// A reader that closes stdout or stderr must not end the CLI while a mutating
+// command it waits for is still running: an unhandled EPIPE would exit and cut
+// the command short. Output errors are dropped from here on; exitAfterFlush
+// adds its own listener after the wait.
+function ignoreOutputErrorsWhileWaiting(stillRunningCommands) {
+  if (stillRunningCommands.length === 0) return;
+  for (const stream of [process.stdout, process.stderr]) {
+    if (!stream.listeners('error').includes(ignoreOutputError)) stream.on('error', ignoreOutputError);
   }
 }
 
+function ignoreOutputError() {}
+
+// Ends through exitAfterFlush (R2): `process.exit` right after a write cut it
+// short on a pipe (a usage error echoing a long argument arrived as its first
+// 64 KiB). Every config, journal and attestation write is awaited before
+// runSettings resolves. A plugin-management or cleanup child that outlived its
+// timeout and grace is reported as still running (classifyPluginManagementFailure,
+// `timeout_child_running`), its host gets no further command, and main waits
+// for it after the report or a failure (stillRunningCommands); read-only
+// probes are not waited for.
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch((err) => {
-    process.stderr.write(`runtime:settings failed: ${err.stack ?? err.message}\n`);
-    process.exit(1);
-  });
+  main().then(
+    (code) => exitAfterFlush(code),
+    (err) => {
+      process.stderr.write(`runtime:settings failed: ${err.stack ?? err.message}\n`);
+      exitAfterFlush(1);
+    },
+  );
 }

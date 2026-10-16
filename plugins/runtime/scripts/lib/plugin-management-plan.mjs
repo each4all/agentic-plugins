@@ -680,6 +680,7 @@ function buildPluginManagementManualFollowups(plans) {
   // to install non-interactively.
   const codexInstallBlocked = plans.filter((plan) => (
     plan.host === 'codex' && plan.action === 'install-plugin' && plan.status === 'blocked'
+      && plan.block_reason !== HOST_COMMAND_STILL_RUNNING
   ));
   if (codexInstallBlocked.length > 0) {
     followups.push({
@@ -708,21 +709,125 @@ function buildPluginManagementManualFollowups(plans) {
       verify: 'After Codex reinstalls from the marketplace (a marketplace revision change, or removing and re-adding the plugin), re-run runtime:doctor and confirm the plugin reads current.',
     });
   }
+  followups.push(...stillRunningFollowups(plans, 'plugin-management'));
   return followups;
 }
 
+// R2: a plan runtime:settings did not start because an earlier mutating
+// command on its host was still running (`blocked_by_pids` names it).
+const HOST_COMMAND_STILL_RUNNING = 'host-command-still-running';
+
+// R2: the wait guidance for a host whose mutating command is still running.
+function waitForStillRunningText(pids) {
+  const named = pids.length > 0 ? `pid ${pids.join(', pid ')}` : 'the timed-out command';
+  return `Wait for ${named} (or a process it started) to exit, then re-run runtime:doctor before retrying.`;
+}
+
+// R2: the hosts with a mutating command of this run still running, each with
+// the pids to wait for, from the run's list of `{ host, pid }` entries.
+function busyHostsOf(stillRunningCommands) {
+  const busyHosts = new Map();
+  for (const { host, pid } of stillRunningCommands ?? []) {
+    const pids = busyHosts.get(host) ?? [];
+    if (Number.isSafeInteger(pid) && !pids.includes(pid)) pids.push(pid);
+    busyHosts.set(host, pids);
+  }
+  return busyHosts;
+}
+
+// R2: what the operator may run now is decided per host, not per plan. On a
+// busy host any command the report offers (a plan's next step, a
+// recommendation's command, a follow-up's commands, whichever plan or area it
+// came from) would race the command still running, so each is held behind
+// the wait: it carries `held_by_pids` and the wait guidance, and an offered
+// command moves to `held_command` / `held_commands`. A plan keeps its
+// `command` and `executable`, the record of what was planned; the still-running
+// follow-ups already offer nothing.
+function holdCommandsOnBusyHosts({ busyHosts, plans = [], recommendations = [], followups = [] }) {
+  if (busyHosts.size === 0) return;
+  for (const plan of plans) {
+    const pids = busyHosts.get(plan.host);
+    if (!pids) continue;
+    plan.held_by_pids = pids;
+    plan.next_step = waitForStillRunningText(pids);
+  }
+  for (const recommendation of recommendations) {
+    const pids = busyHosts.get(recommendation.host);
+    if (pids) holdRecommendation(recommendation, pids);
+  }
+  for (const followup of followups) {
+    const pids = busyHosts.get(followup.host);
+    if (!pids || followup.id.endsWith('-command-still-running')) continue;
+    followup.held_by_pids = pids;
+    followup.held_commands = followup.commands ?? [];
+    followup.commands = [];
+    followup.verify = `${waitForStillRunningText(pids)} Then: ${followup.verify}`;
+  }
+}
+
+function holdRecommendation(recommendation, pids) {
+  recommendation.held_by_pids = pids;
+  if (recommendation.command) recommendation.held_command = recommendation.command;
+  recommendation.command = null;
+  recommendation.argv = null;
+  recommendation.executable = false;
+  recommendation.next_step = waitForStillRunningText(pids);
+  return recommendation;
+}
+
+// R2: a timed-out command still running after SIGTERM and its close grace (its
+// result says `child_running`) may still change host state. runtime:settings
+// starts no further command on that host, writes its report, then waits for
+// the command before exiting; the follow-up names the pid to wait for and the
+// plans not started, and offers no command to re-run, since a retry from
+// another shell now would race it. One follow-up per host, the host in its
+// id: mergeManualFollowups keys by id.
+function stillRunningFollowups(plans, area) {
+  const running = plans.filter((plan) => plan.status === 'failed' && plan.result?.child_running === true);
+  const notStarted = plans.filter((plan) => plan.status === 'blocked' && plan.block_reason === HOST_COMMAND_STILL_RUNNING);
+  return uniqueStrings([...running, ...notStarted].map((plan) => plan.host)).map((host) => {
+    const hostRunning = running.filter((plan) => plan.host === host);
+    const hostNotStarted = notStarted.filter((plan) => plan.host === host);
+    const pids = Array.from(new Set([
+      ...hostRunning.map((plan) => plan.result.child_pid),
+      ...hostNotStarted.flatMap((plan) => plan.blocked_by_pids ?? []),
+    ])).filter((pid) => Number.isSafeInteger(pid));
+    const notStartedText = hostNotStarted.length > 0
+      ? ` ${hostNotStarted.length} further planned ${area} command(s) on this host were not started, since they would race it.`
+      : '';
+    return {
+      id: `${host}-${area}-command-still-running`,
+      host,
+      status: 'manual_required',
+      reason: hostRunning.length > 0
+        ? `A ${host} ${area} command timed out and was still running after SIGTERM; runtime:settings waits for it to exit before exiting itself, without killing it.${notStartedText}`
+        : `An earlier ${host} command of this run timed out and was still running after SIGTERM; runtime:settings waits for it to exit before exiting itself, without killing it.${notStartedText}`,
+      environment: 'The machine where runtime:settings ran; nothing to run until the command has exited.',
+      pids,
+      not_started: hostNotStarted.map((plan) => plan.id ?? `${plan.plugin ?? ''}:${plan.host}:${plan.action}`),
+      commands: [],
+      verify: waitForStillRunningText(pids),
+    };
+  });
+}
+
 function buildPluginCleanupManualFollowups(plans) {
+  const running = stillRunningFollowups(plans, 'plugin-cleanup');
+  // A command still running, or one not started behind it, is not offered for
+  // a re-run (stillRunningFollowups).
   const cleanupPlans = plans.filter((plan) => (
     plan.host === 'claude'
       && ['manual_required', 'blocked', 'failed'].includes(plan.status)
       && plan.action === 'uninstall-retired-plugin'
+      && plan.result?.child_running !== true
+      && plan.block_reason !== HOST_COMMAND_STILL_RUNNING
   ));
-  if (cleanupPlans.length === 0) return [];
+  if (cleanupPlans.length === 0) return running;
   const commands = uniqueStrings(cleanupPlans
     .map((plan) => claudeCommandDisplay(plan.command))
     .filter(Boolean));
-  if (commands.length === 0) return [];
-  return [{
+  if (commands.length === 0) return running;
+  return [...running, {
     id: 'claude-retired-plugin-cleanup',
     host: 'claude',
     status: cleanupPlans.some((plan) => plan.status === 'failed') ? 'manual_required' : cleanupPlans.some((plan) => plan.status === 'blocked') ? 'manual_check' : 'manual_required',
@@ -864,6 +969,7 @@ function computeMutationPlanHash(actions) {
 export {
   EXECUTABLE_PLUGIN_ACTIONS,
   EXECUTABLE_PLUGIN_CLEANUP_ACTIONS,
+  HOST_COMMAND_STILL_RUNNING,
   buildPluginCleanupPlans,
   buildPluginCleanupCommand,
   classifyPluginCleanupPlan,
@@ -879,6 +985,10 @@ export {
   buildPluginManagementCandidates,
   buildPluginManagementManualFollowups,
   buildPluginCleanupManualFollowups,
+  busyHostsOf,
+  holdCommandsOnBusyHosts,
+  holdRecommendation,
+  waitForStillRunningText,
   claudePluginCommand,
   claudeCommandDisplay,
   uniqueStrings,

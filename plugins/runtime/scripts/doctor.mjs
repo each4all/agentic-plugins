@@ -54,6 +54,7 @@ import {
 import { semverCompare } from './lib/semver.mjs';
 import { parseCodexCatalogTarget, selectInstalledCacheDir } from './lib/codex-install-identity.mjs';
 import { expandArgsFile } from './lib/args-file.mjs';
+import { exitAfterFlush } from './lib/exit-after-flush.mjs';
 
 export { RUNTIME_VERSION };
 
@@ -502,7 +503,16 @@ async function recordDoctorArtifact({ repoRoot, now, runId, report }) {
   }
 }
 
-export async function runCommand(command, args = [], { cwd = process.cwd(), env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+// On a timeout the child gets SIGTERM and the result resolves at once: a
+// read-only probe left running changes nothing. A caller whose command changes
+// host state passes `closeGraceMs` (R2): the result then waits that long for
+// the child's `close`, and when its pipes are still open says so
+// (`child_running`, `child_pid`), so the caller does not report a command
+// that may still be changing the machine as merely timed out. Such a result
+// also carries a non-enumerable `closed` promise: the output is still read
+// until the child closes, and a caller that exited before then would close the
+// read end of the child's pipes, failing its next write (EPIPE).
+export async function runCommand(command, args = [], { cwd = process.cwd(), env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS, closeGraceMs } = {}) {
   return new Promise((resolvePromise) => {
     const child = spawn(command, args, {
       cwd,
@@ -516,13 +526,24 @@ export async function runCommand(command, args = [], { cwd = process.cwd(), env 
       if (settled) return;
       settled = true;
       child.kill('SIGTERM');
-      resolvePromise({
+      const timedOut = (childRunning) => ({
         ok: false,
         exit_code: null,
         stdout,
         stderr,
         error_code: 'ETIMEDOUT',
         timed_out: true,
+        ...(closeGraceMs === undefined ? {} : { child_running: childRunning, child_pid: child.pid ?? null }),
+      });
+      if (closeGraceMs === undefined) {
+        resolvePromise(timedOut(false));
+        return;
+      }
+      const closed = new Promise((resolveClosed) => child.once('close', () => resolveClosed()));
+      const grace = setTimeout(() => resolvePromise(Object.defineProperty(timedOut(true), 'closed', { value: closed })), closeGraceMs);
+      closed.then(() => {
+        clearTimeout(grace);
+        resolvePromise(timedOut(false));
       });
     }, timeoutMs);
     child.stdout.setEncoding('utf8');
@@ -5620,23 +5641,24 @@ function parsePositiveIntArg(value, flag) {
   return Number.parseInt(value, 10);
 }
 
+// Returns the exit code; nothing runs after help or a refusal.
 async function main() {
   let opts;
   try {
     opts = parseArgs(expandArgsFile(process.argv.slice(2)));
   } catch (err) {
     process.stderr.write(`${err.message}\n${usage()}`);
-    process.exit(EXIT.INVALID);
+    return EXIT.INVALID;
   }
   if (opts.help) {
     process.stdout.write(usage());
-    process.exit(EXIT.OK);
+    return EXIT.OK;
   }
   try {
     await access(opts.repoRoot, fsConstants.R_OK);
   } catch (err) {
     process.stderr.write(`repo root is not readable: ${err.message}\n`);
-    process.exit(EXIT.INVALID);
+    return EXIT.INVALID;
   }
   const report = await runDoctor(opts);
   if (opts.format === 'json') {
@@ -5644,16 +5666,25 @@ async function main() {
   } else {
     process.stdout.write(formatText(report));
   }
-  // `process.exitCode`, never `process.exit(code)`: the report IS the product,
-  // and process.exit() can truncate a stdout write that has not drained to a
-  // pipe — which would break the one invariant this change must preserve, that
-  // `--format json` stays parseable on every non-zero exit.
-  process.exitCode = report.exit_code ?? EXIT.OK;
+  return report.exit_code ?? EXIT.OK;
 }
 
+// Ends through exitAfterFlush (R2), never a bare `process.exit(code)`: the
+// report IS the product, and process.exit() truncates a stdout write that has
+// not drained to a pipe, which would break the invariant that `--format json`
+// stays parseable on every non-zero exit (a usage error echoing a long
+// argument was cut at 64 KiB the same way). Nor `process.exitCode` alone: it
+// keeps the report whole but waits on every live handle, and runCommand
+// resolves after SIGTERM without waiting for `close`, so a probe child that
+// ignores SIGTERM would hold the CLI open until it ended. The probes are
+// read-only, so a child left running changes nothing on the machine; every
+// `--record` write is awaited before runDoctor resolves.
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch((err) => {
-    process.stderr.write(`runtime:doctor failed: ${err.stack ?? err.message}\n`);
-    process.exit(EXIT.UNEXPECTED);
-  });
+  main().then(
+    (code) => exitAfterFlush(code),
+    (err) => {
+      process.stderr.write(`runtime:doctor failed: ${err.stack ?? err.message}\n`);
+      exitAfterFlush(EXIT.UNEXPECTED);
+    },
+  );
 }
