@@ -4,7 +4,8 @@
   "shapes": {
     "agentic-statusline.mjs": {
       "e326eee87c03f0433ccda6da2f2bc67fc25474008bad231b543e513404a3abb3": "plugin-runtime-v0.86.0 … v0.91.2",
-      "046631eed57a2fb084e8b4ddd6e1e4eda524cf122d5de18146f19d99fa161b90": "plugin-runtime-v0.92.0 … v0.97.4"
+      "046631eed57a2fb084e8b4ddd6e1e4eda524cf122d5de18146f19d99fa161b90": "plugin-runtime-v0.92.0 … v0.97.4",
+      "70660a7d17591a15bf0955d0e6b4074d0e4315b13fdd05c120778fb6c0384092": "plugin-runtime-v0.98.0 … v0.103.1"
     }
   }
 }

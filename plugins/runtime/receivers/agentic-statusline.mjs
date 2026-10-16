@@ -304,9 +304,38 @@ async function main() {
   }
 }
 
+// Exit only once stdout has flushed the line (R2): a bare `process.exit` can
+// drop a write a pipe has not taken yet. A self-contained copy of the runtime
+// plugin's scripts/lib/exit-after-flush.mjs, because this file is installed
+// standalone; tests/runtime/test-statusline-plan.mjs holds the two equal. It
+// writes nothing itself and still exits 0, so the fail-closed contract holds.
+// exit-after-flush:begin
+const EXIT_FLUSH_FALLBACK_MS = 10_000;
+let exitFlushStarted = false;
+function exitAfterFlush(code, fallbackMs = EXIT_FLUSH_FALLBACK_MS) {
+  if (exitFlushStarted) return;
+  exitFlushStarted = true;
+  const exit = () => process.exit(code);
+  setTimeout(exit, fallbackMs);
+  let pending = 2;
+  const settle = () => {
+    pending -= 1;
+    if (pending === 0) exit();
+  };
+  for (const stream of [process.stdout, process.stderr]) {
+    stream.once('error', exit);
+    try {
+      stream.write('', settle);
+    } catch {
+      exit();
+    }
+  }
+}
+// exit-after-flush:end
+
 try {
   await main();
 } catch {
   // Fail-closed silent: a statusline must never break the prompt.
 }
-process.exit(0);
+exitAfterFlush(0);
