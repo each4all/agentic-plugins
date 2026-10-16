@@ -2,6 +2,14 @@
 
 All notable changes to the `image` plugin are documented here.
 
+## [0.4.1](https://github.com/each4all/agentic-plugins/compare/plugin-image-v0.4.0...plugin-image-v0.4.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **plugin/image:** exit after stdout and stderr flush, so a critique result past 64 KiB reaches a pipe whole (C93) ([8ecc2c6](https://github.com/each4all/agentic-plugins/commit/8ecc2c642ed9b3185dc73dea73c7051d999b1d19))
+* **plugin/image:** exit after stdout and stderr flush, so a critique result past 64 KiB reaches a pipe whole (C93) ([#958](https://github.com/each4all/agentic-plugins/issues/958)) ([8ecc2c6](https://github.com/each4all/agentic-plugins/commit/8ecc2c642ed9b3185dc73dea73c7051d999b1d19))
+
 ## [0.4.0](https://github.com/each4all/agentic-plugins/compare/plugin-image-v0.3.3...plugin-image-v0.4.0) (2026-10-12)
 
 
