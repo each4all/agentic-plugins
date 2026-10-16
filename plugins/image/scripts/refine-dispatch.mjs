@@ -26,6 +26,7 @@
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { dispatch as composeDispatch, estimateCost, normalizeFormat, BACKGROUNDS, TRANSPARENT_FORMATS } from './compose-dispatch.mjs';
+import { exitAfterFlush } from './exit-after-flush.mjs';
 
 export const MAX_ITERATIONS = 3;
 
@@ -89,65 +90,75 @@ export async function refine(opts = {}) {
   return { ok, iteration, maxIterations, cost: manifest.cost, error: ok ? null : (manifest.error || { kind: 'peer_run_error', message: 'refine generation failed' }), manifest };
 }
 
+// The CLI body: returns the exit code, which the entry tail hands to
+// exitAfterFlush once. Each refusal returns before refine runs, and
+// --estimate-only returns after its estimate, reading no prompt file and
+// sending nothing.
+async function runCli(argv = process.argv.slice(2)) {
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: argv,
+      options: {
+        'base-prompt-file': { type: 'string' }, 'base-prompt': { type: 'string' },
+        'feedback-file': { type: 'string' }, feedback: { type: 'string' },
+        iteration: { type: 'string' }, 'max-iterations': { type: 'string' },
+        'estimate-only': { type: 'boolean' },
+        'repo-root': { type: 'string' }, format: { type: 'string' }, size: { type: 'string' }, quality: { type: 'string' }, slug: { type: 'string' },
+        background: { type: 'string' },
+      },
+      strict: true,
+    });
+  } catch (err) { console.error(`refine-dispatch: ${err.message}`); return 2; }
+  const v = parsed.values;
+
+  // Parameter policy is checked here, not only inside compose-dispatch, so
+  // that --estimate-only cannot quote a price for a combination that will
+  // never be generated.
+  const fmt = normalizeFormat(v.format);
+  if (fmt === null) { console.error('refine-dispatch: --format must be one of png|jpeg|webp'); return 2; }
+  const bg = v.background == null ? null : String(v.background).trim().toLowerCase();
+  if (bg != null && !BACKGROUNDS.includes(bg)) {
+    console.error(`refine-dispatch: --background must be one of ${BACKGROUNDS.join('|')}`);
+    return 2;
+  }
+  if (bg === 'transparent' && !TRANSPARENT_FORMATS.includes(fmt)) {
+    console.error(`refine-dispatch: a transparent background is contracted for ${TRANSPARENT_FORMATS.join('|')} only, not "${fmt}"`);
+    return 2;
+  }
+
+  // strict numeric parsing — a typo must NOT silently generate at iteration 1
+  let iteration = 1;
+  if (v.iteration != null) {
+    if (!/^\d+$/.test(v.iteration)) { console.error('refine-dispatch: --iteration must be a non-negative integer'); return 2; }
+    iteration = Number(v.iteration);
+  }
+  let maxIterations = MAX_ITERATIONS;
+  if (v['max-iterations'] != null) {
+    if (!/^\d+$/.test(v['max-iterations'])) { console.error('refine-dispatch: --max-iterations must be a non-negative integer'); return 2; }
+    maxIterations = Number(v['max-iterations']);
+  }
+
+  if (v['estimate-only']) {
+    // Disclose the per-image cost BEFORE any spend (script-enforced).
+    console.log(JSON.stringify({ ok: true, estimate_only: true, cost: estimateCost({ quality: v.quality }) }, null, 2));
+    return 0;
+  }
+
+  let basePrompt = v['base-prompt'];
+  if (v['base-prompt-file']) { try { basePrompt = readFileSync(v['base-prompt-file'], 'utf8'); } catch (e) { console.error(`refine-dispatch: ${e.message}`); return 2; } }
+  let feedback = v.feedback || '';
+  if (v['feedback-file']) { try { feedback = readFileSync(v['feedback-file'], 'utf8'); } catch (e) { console.error(`refine-dispatch: ${e.message}`); return 2; } }
+  if (!basePrompt) { console.error('refine-dispatch: --base-prompt or --base-prompt-file is required'); return 2; }
+
+  const result = await refine({ basePrompt, feedback, iteration, maxIterations, repoRoot: v['repo-root'] || process.cwd(), format: v.format, size: v.size, quality: v.quality, slug: v.slug, background: v.background, env: process.env });
+  console.log(JSON.stringify(result, null, 2));
+  return result.ok ? 0 : 1;
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
-  (async () => {
-    let parsed;
-    try {
-      parsed = parseArgs({
-        options: {
-          'base-prompt-file': { type: 'string' }, 'base-prompt': { type: 'string' },
-          'feedback-file': { type: 'string' }, feedback: { type: 'string' },
-          iteration: { type: 'string' }, 'max-iterations': { type: 'string' },
-          'estimate-only': { type: 'boolean' },
-          'repo-root': { type: 'string' }, format: { type: 'string' }, size: { type: 'string' }, quality: { type: 'string' }, slug: { type: 'string' },
-          background: { type: 'string' },
-        },
-        strict: true,
-      });
-    } catch (err) { console.error(`refine-dispatch: ${err.message}`); process.exit(2); }
-    const v = parsed.values;
-
-    // Parameter policy is checked here, not only inside compose-dispatch, so
-    // that --estimate-only cannot quote a price for a combination that will
-    // never be generated.
-    const fmt = normalizeFormat(v.format);
-    if (fmt === null) { console.error('refine-dispatch: --format must be one of png|jpeg|webp'); process.exit(2); }
-    const bg = v.background == null ? null : String(v.background).trim().toLowerCase();
-    if (bg != null && !BACKGROUNDS.includes(bg)) {
-      console.error(`refine-dispatch: --background must be one of ${BACKGROUNDS.join('|')}`);
-      process.exit(2);
-    }
-    if (bg === 'transparent' && !TRANSPARENT_FORMATS.includes(fmt)) {
-      console.error(`refine-dispatch: a transparent background is contracted for ${TRANSPARENT_FORMATS.join('|')} only, not "${fmt}"`);
-      process.exit(2);
-    }
-
-    // strict numeric parsing — a typo must NOT silently generate at iteration 1
-    let iteration = 1;
-    if (v.iteration != null) {
-      if (!/^\d+$/.test(v.iteration)) { console.error('refine-dispatch: --iteration must be a non-negative integer'); process.exit(2); }
-      iteration = Number(v.iteration);
-    }
-    let maxIterations = MAX_ITERATIONS;
-    if (v['max-iterations'] != null) {
-      if (!/^\d+$/.test(v['max-iterations'])) { console.error('refine-dispatch: --max-iterations must be a non-negative integer'); process.exit(2); }
-      maxIterations = Number(v['max-iterations']);
-    }
-
-    if (v['estimate-only']) {
-      // Disclose the per-image cost BEFORE any spend (script-enforced).
-      console.log(JSON.stringify({ ok: true, estimate_only: true, cost: estimateCost({ quality: v.quality }) }, null, 2));
-      process.exit(0);
-    }
-
-    let basePrompt = v['base-prompt'];
-    if (v['base-prompt-file']) { try { basePrompt = readFileSync(v['base-prompt-file'], 'utf8'); } catch (e) { console.error(`refine-dispatch: ${e.message}`); process.exit(2); } }
-    let feedback = v.feedback || '';
-    if (v['feedback-file']) { try { feedback = readFileSync(v['feedback-file'], 'utf8'); } catch (e) { console.error(`refine-dispatch: ${e.message}`); process.exit(2); } }
-    if (!basePrompt) { console.error('refine-dispatch: --base-prompt or --base-prompt-file is required'); process.exit(2); }
-
-    const result = await refine({ basePrompt, feedback, iteration, maxIterations, repoRoot: v['repo-root'] || process.cwd(), format: v.format, size: v.size, quality: v.quality, slug: v.slug, background: v.background, env: process.env });
-    console.log(JSON.stringify(result, null, 2));
-    process.exit(result.ok ? 0 : 1);
-  })();
+  runCli().then((code) => exitAfterFlush(code), (err) => {
+    process.stderr.write(`refine-dispatch: ${err?.message ?? err}\n`);
+    exitAfterFlush(1);
+  });
 }

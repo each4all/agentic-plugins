@@ -20,6 +20,7 @@ import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseArgs } from 'node:util';
 import { findCodexCompanion, sniffImage, classifyError, sendDisclosure } from './compose-dispatch.mjs';
+import { exitAfterFlush } from './exit-after-flush.mjs';
 
 const IMAGE_EXT_RE = /\.(?:png|jpe?g|webp)$/i;
 const MAX_IMAGE_BYTES = 64 * 1024 * 1024;
@@ -146,21 +147,28 @@ export async function critique({ imagePath, criteria = [], repoRoot = process.cw
   return { ok: true, image: v.path, verdict: parseVerdict(assessment), assessment, send_disclosure: disclosure, criteria: Array.isArray(criteria) ? criteria.filter((c) => typeof c === 'string') : [] };
 }
 
+// The CLI body: returns the exit code, which the entry tail hands to
+// exitAfterFlush once, so the result reaches a pipe whole.
+async function runCli(argv = process.argv.slice(2)) {
+  let parsed;
+  try {
+    parsed = parseArgs({ args: argv, options: { image: { type: 'string' }, 'criteria-file': { type: 'string' }, 'repo-root': { type: 'string' } }, strict: true });
+  } catch (err) { console.error(`critique-dispatch: ${err.message}`); return 2; }
+  const v = parsed.values;
+  if (!v.image) { console.error('critique-dispatch: --image <path> is required'); return 2; }
+  let criteria = [];
+  if (v['criteria-file']) {
+    try { criteria = readFileSync(v['criteria-file'], 'utf8').split('\n').map((l) => l.trim()).filter(Boolean); }
+    catch (err) { console.error(`critique-dispatch: cannot read --criteria-file: ${err.message}`); return 2; }
+  }
+  const result = await critique({ imagePath: v.image, criteria, repoRoot: v['repo-root'] || process.cwd(), env: process.env });
+  console.log(JSON.stringify(result, null, 2));
+  return result.ok ? 0 : 1;
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
-  (async () => {
-    let parsed;
-    try {
-      parsed = parseArgs({ options: { image: { type: 'string' }, 'criteria-file': { type: 'string' }, 'repo-root': { type: 'string' } }, strict: true });
-    } catch (err) { console.error(`critique-dispatch: ${err.message}`); process.exit(2); }
-    const v = parsed.values;
-    if (!v.image) { console.error('critique-dispatch: --image <path> is required'); process.exit(2); }
-    let criteria = [];
-    if (v['criteria-file']) {
-      try { criteria = readFileSync(v['criteria-file'], 'utf8').split('\n').map((l) => l.trim()).filter(Boolean); }
-      catch (err) { console.error(`critique-dispatch: cannot read --criteria-file: ${err.message}`); process.exit(2); }
-    }
-    const result = await critique({ imagePath: v.image, criteria, repoRoot: v['repo-root'] || process.cwd(), env: process.env });
-    console.log(JSON.stringify(result, null, 2));
-    process.exit(result.ok ? 0 : 1);
-  })();
+  runCli().then((code) => exitAfterFlush(code), (err) => {
+    process.stderr.write(`critique-dispatch: ${err?.message ?? err}\n`);
+    exitAfterFlush(1);
+  });
 }

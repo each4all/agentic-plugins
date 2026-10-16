@@ -84,8 +84,8 @@ export const MUTATIONS = [
   {
     id: 'H7', tests: [T_DISC], killed_by: /--estimate-only writes no disclosure/,
     file: REFINE,
-    from: '      // Disclose the per-image cost BEFORE any spend (script-enforced).\n',
-    to: '      // Disclose the per-image cost BEFORE any spend (script-enforced).\n      process.stderr.write(\'image: sending the base prompt to Codex (OpenAI)\\n\');\n',
+    from: '    // Disclose the per-image cost BEFORE any spend (script-enforced).\n',
+    to: '    // Disclose the per-image cost BEFORE any spend (script-enforced).\n    process.stderr.write(\'image: sending the base prompt to Codex (OpenAI)\\n\');\n',
     why: 'the cost estimate, which sends nothing, says that it sends',
   },
   {
