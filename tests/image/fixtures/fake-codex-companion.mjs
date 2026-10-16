@@ -22,9 +22,16 @@
 //   nofile       — reports success without writing anything
 //
 // A critique prompt (it names no output path) gets an assessment that ends in
-// "verdict: pass". When `FAKE_COMPANION_LOG` names a file, the fixture appends
-// one line to it as it starts, so a test can order what the dispatcher wrote
-// before the spawn against the spawn itself.
+// "verdict: pass"; `FAKE_ASSESSMENT_BYTES=<n>` pads it with n ASCII bytes
+// before the verdict, so a test can push a critique result past a pipe's
+// 64 KiB. When `FAKE_COMPANION_LOG` names a file, the fixture appends one line
+// to it as it starts, so a test can order what the dispatcher wrote before the
+// spawn against the spawn itself.
+//
+// The fixture delivers its envelope whole: an exit waits for the write's
+// callback, and each branch returns once it has scheduled one. Exiting at once
+// would drop what a pipe has not taken yet, and a test past 64 KiB would then
+// measure the fixture's truncation instead of the dispatcher's.
 
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { deflateSync } from 'node:zlib';
@@ -86,27 +93,37 @@ function png(mode) {
   ]);
 }
 
-const promptFileIdx = process.argv.indexOf('--prompt-file');
-if (promptFileIdx < 0) {
-  process.stdout.write(JSON.stringify({ status: 'error', error: { kind: 'misuse', message: 'no --prompt-file' } }));
-  process.exit(2);
+// Write the envelope, then exit once the write has been taken.
+function reply(envelope, code) {
+  process.stdout.write(JSON.stringify(envelope), () => process.exit(code));
 }
-if (process.env.FAKE_COMPANION_LOG) appendFileSync(process.env.FAKE_COMPANION_LOG, 'companion ran\n');
-const prompt = readFileSync(process.argv[promptFileIdx + 1], 'utf8');
-const m = prompt.match(/EXACTLY this absolute path:\n(.+)/);
-if (!m && prompt.startsWith('You are evaluating an image.')) {
-  process.stdout.write(JSON.stringify({ status: 'success', stdout: 'A 2x2 square of dark blue. verdict: pass' }));
-  process.exit(0);
-}
-if (!m) {
-  process.stdout.write(JSON.stringify({ status: 'error', error: { kind: 'misuse', message: 'no output path in prompt' } }));
-  process.exit(2);
-}
-const outPath = m[1].trim();
-const mode = process.env.FAKE_IMAGE_MODE || 'opaque';
 
-if (mode !== 'nofile') writeFileSync(outPath, png(mode));
-process.stdout.write(JSON.stringify({
-  status: 'success',
-  stdout: `wrote ${outPath} (fixture, mode=${mode})`,
-}));
+function main() {
+  const promptFileIdx = process.argv.indexOf('--prompt-file');
+  if (promptFileIdx < 0) {
+    reply({ status: 'error', error: { kind: 'misuse', message: 'no --prompt-file' } }, 2);
+    return;
+  }
+  if (process.env.FAKE_COMPANION_LOG) appendFileSync(process.env.FAKE_COMPANION_LOG, 'companion ran\n');
+  const prompt = readFileSync(process.argv[promptFileIdx + 1], 'utf8');
+  const m = prompt.match(/EXACTLY this absolute path:\n(.+)/);
+  if (!m && prompt.startsWith('You are evaluating an image.')) {
+    const pad = 'x'.repeat(Number(process.env.FAKE_ASSESSMENT_BYTES) || 0);
+    reply({ status: 'success', stdout: `A 2x2 square of dark blue. ${pad ? `${pad} ` : ''}verdict: pass` }, 0);
+    return;
+  }
+  if (!m) {
+    reply({ status: 'error', error: { kind: 'misuse', message: 'no output path in prompt' } }, 2);
+    return;
+  }
+  const outPath = m[1].trim();
+  const mode = process.env.FAKE_IMAGE_MODE || 'opaque';
+
+  if (mode !== 'nofile') writeFileSync(outPath, png(mode));
+  process.stdout.write(JSON.stringify({
+    status: 'success',
+    stdout: `wrote ${outPath} (fixture, mode=${mode})`,
+  }));
+}
+
+main();

@@ -15,6 +15,7 @@
 
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
+import { exitAfterFlush } from './exit-after-flush.mjs';
 
 const QUALITIES = ['low', 'medium', 'high', 'auto'];
 const FORMATS = ['png', 'jpeg', 'webp'];
@@ -190,22 +191,31 @@ export function validateBrief(brief) {
   return { valid: issues.length === 0, issues, warnings };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// The CLI body: returns the exit code, which the entry tail hands to
+// exitAfterFlush once, so the result reaches a pipe whole.
+async function runCli(argv = process.argv.slice(2)) {
   let parsed;
   try {
-    parsed = parseArgs({ options: { 'brief-file': { type: 'string' } }, strict: true });
+    parsed = parseArgs({ args: argv, options: { 'brief-file': { type: 'string' } }, strict: true });
   } catch (err) {
     console.error(`brief-validate: ${err.message}`);
-    process.exit(2);
+    return 2;
   }
   const f = parsed.values['brief-file'];
-  if (!f) { console.error('brief-validate: --brief-file <path> is required'); process.exit(2); }
+  if (!f) { console.error('brief-validate: --brief-file <path> is required'); return 2; }
   let brief;
   try { brief = JSON.parse(readFileSync(f, 'utf8')); } catch (err) {
     console.error(`brief-validate: cannot read/parse brief: ${err.message}`);
-    process.exit(2);
+    return 2;
   }
   const result = validateBrief(brief);
   console.log(JSON.stringify(result, null, 2));
-  process.exit(result.valid ? 0 : 1);
+  return result.valid ? 0 : 1;
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  runCli().then((code) => exitAfterFlush(code), (err) => {
+    process.stderr.write(`brief-validate: ${err?.message ?? err}\n`);
+    exitAfterFlush(1);
+  });
 }

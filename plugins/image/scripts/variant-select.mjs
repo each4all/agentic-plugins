@@ -15,6 +15,7 @@
 import { readFileSync, writeFileSync, existsSync, lstatSync, realpathSync, unlinkSync } from 'node:fs';
 import { resolve, dirname, sep } from 'node:path';
 import { parseArgs } from 'node:util';
+import { exitAfterFlush } from './exit-after-flush.mjs';
 
 const IMAGE_EXT_RE = /\.(?:png|jpe?g|webp)$/i;
 
@@ -75,10 +76,14 @@ export function pruneRejected(manifest, { runDir, unlink = unlinkSync } = {}) {
   return pruned;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// The CLI body: returns the exit code, which the entry tail hands to
+// exitAfterFlush once. Each refusal returns before the prune and the rewrite,
+// so a refused selection leaves the manifest and the variant files as they were.
+async function runCli(argv = process.argv.slice(2)) {
   let parsed;
   try {
     parsed = parseArgs({
+      args: argv,
       options: {
         'manifest-file': { type: 'string' },
         select: { type: 'string' },
@@ -86,22 +91,29 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       },
       strict: true,
     });
-  } catch (err) { console.error(`variant-select: ${err.message}`); process.exit(2); }
+  } catch (err) { console.error(`variant-select: ${err.message}`); return 2; }
   const v = parsed.values;
-  if (!v['manifest-file']) { console.error('variant-select: --manifest-file <path> is required'); process.exit(2); }
+  if (!v['manifest-file']) { console.error('variant-select: --manifest-file <path> is required'); return 2; }
   let manifest;
   try { manifest = JSON.parse(readFileSync(v['manifest-file'], 'utf8')); } catch (err) {
-    console.error(`variant-select: cannot read/parse manifest: ${err.message}`); process.exit(2);
+    console.error(`variant-select: cannot read/parse manifest: ${err.message}`); return 2;
   }
   if (v.select != null) {
-    if (!/^\d+$/.test(v.select)) { console.error('variant-select: --select must be a non-negative integer'); process.exit(2); }
-    try { manifest = selectVariant(manifest, Number(v.select)); } catch (err) { console.error(`variant-select: ${err.message}`); process.exit(1); }
+    if (!/^\d+$/.test(v.select)) { console.error('variant-select: --select must be a non-negative integer'); return 2; }
+    try { manifest = selectVariant(manifest, Number(v.select)); } catch (err) { console.error(`variant-select: ${err.message}`); return 1; }
   }
   let pruned = [];
   if (v['prune-rejected']) pruned = pruneRejected(manifest, { runDir: dirname(resolve(v['manifest-file'])) });
   try { writeFileSync(v['manifest-file'], `${JSON.stringify(manifest, null, 2)}\n`); } catch (err) {
-    console.error(`variant-select: cannot write manifest: ${err.message}`); process.exit(1);
+    console.error(`variant-select: cannot write manifest: ${err.message}`); return 1;
   }
   console.log(JSON.stringify({ ok: true, selected: manifest.images.findIndex((i) => i && i.selected), pruned }, null, 2));
-  process.exit(0);
+  return 0;
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  runCli().then((code) => exitAfterFlush(code), (err) => {
+    process.stderr.write(`variant-select: ${err?.message ?? err}\n`);
+    exitAfterFlush(1);
+  });
 }

@@ -32,6 +32,7 @@ import { homedir } from 'node:os';
 import { parseArgs } from 'node:util';
 
 import { inspectAlpha } from './alpha-inspect.mjs';
+import { exitAfterFlush } from './exit-after-flush.mjs';
 
 // Typed error taxonomy (contracts.md §8). No blind retry of user/auth errors.
 // The six image-facing kinds, two transport kinds for malformed/other
@@ -620,60 +621,69 @@ export async function dispatch(opts = {}) {
   });
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  (async () => {
-    let parsed;
-    try {
-      parsed = parseArgs({
-        options: {
-          'prompt-file': { type: 'string' },
-          prompt: { type: 'string' },
-          'run-root': { type: 'string' },
-          'repo-root': { type: 'string' },
-          format: { type: 'string' },
-          slug: { type: 'string' },
-          size: { type: 'string' },
-          quality: { type: 'string' },
-          background: { type: 'string' },
-        },
-        strict: true,
-      });
-    } catch (err) {
-      console.error(`compose-dispatch: ${err.message}`);
-      process.exit(2);
-    }
-    const v = parsed.values;
-    if (v.background != null && !BACKGROUNDS.includes(String(v.background).trim().toLowerCase())) {
-      console.error(`compose-dispatch: --background must be one of ${BACKGROUNDS.join('|')}`);
-      process.exit(2);
-    }
-    if (normalizeFormat(v.format) === null) {
-      console.error(`compose-dispatch: --format must be one of ${FORMATS.join('|')}`);
-      process.exit(2);
-    }
-    let promptText = v.prompt;
-    if (v['prompt-file']) {
-      try { promptText = (await import('node:fs')).readFileSync(v['prompt-file'], 'utf8').trim(); } catch (err) {
-        console.error(`compose-dispatch: cannot read --prompt-file: ${err.message}`);
-        process.exit(2);
-      }
-    }
-    if (!promptText) {
-      console.error('compose-dispatch: --prompt or --prompt-file is required');
-      process.exit(2);
-    }
-    const manifest = await dispatch({
-      promptText,
-      runRoot: v['run-root'],
-      repoRoot: v['repo-root'] || process.cwd(),
-      format: v.format,
-      slug: v.slug,
-      size: v.size,
-      quality: v.quality,
-      background: v.background,
-      env: process.env,
+// The CLI body: returns the exit code, which the entry tail hands to
+// exitAfterFlush once. Each refusal returns before dispatch, so a refused
+// request discovers and spawns no companion.
+async function runCli(argv = process.argv.slice(2)) {
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: argv,
+      options: {
+        'prompt-file': { type: 'string' },
+        prompt: { type: 'string' },
+        'run-root': { type: 'string' },
+        'repo-root': { type: 'string' },
+        format: { type: 'string' },
+        slug: { type: 'string' },
+        size: { type: 'string' },
+        quality: { type: 'string' },
+        background: { type: 'string' },
+      },
+      strict: true,
     });
-    console.log(JSON.stringify(manifest, null, 2));
-    process.exit(manifest.status === 'success' ? 0 : 1);
-  })();
+  } catch (err) {
+    console.error(`compose-dispatch: ${err.message}`);
+    return 2;
+  }
+  const v = parsed.values;
+  if (v.background != null && !BACKGROUNDS.includes(String(v.background).trim().toLowerCase())) {
+    console.error(`compose-dispatch: --background must be one of ${BACKGROUNDS.join('|')}`);
+    return 2;
+  }
+  if (normalizeFormat(v.format) === null) {
+    console.error(`compose-dispatch: --format must be one of ${FORMATS.join('|')}`);
+    return 2;
+  }
+  let promptText = v.prompt;
+  if (v['prompt-file']) {
+    try { promptText = readFileSync(v['prompt-file'], 'utf8').trim(); } catch (err) {
+      console.error(`compose-dispatch: cannot read --prompt-file: ${err.message}`);
+      return 2;
+    }
+  }
+  if (!promptText) {
+    console.error('compose-dispatch: --prompt or --prompt-file is required');
+    return 2;
+  }
+  const manifest = await dispatch({
+    promptText,
+    runRoot: v['run-root'],
+    repoRoot: v['repo-root'] || process.cwd(),
+    format: v.format,
+    slug: v.slug,
+    size: v.size,
+    quality: v.quality,
+    background: v.background,
+    env: process.env,
+  });
+  console.log(JSON.stringify(manifest, null, 2));
+  return manifest.status === 'success' ? 0 : 1;
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  runCli().then((code) => exitAfterFlush(code), (err) => {
+    process.stderr.write(`compose-dispatch: ${err?.message ?? err}\n`);
+    exitAfterFlush(1);
+  });
 }
