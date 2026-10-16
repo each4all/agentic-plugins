@@ -11,8 +11,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/attention",
-        "ref": "plugin-attention-v0.10.0",
-        "sha": "0fec83d711b20a678bc95f5663273fec18cd3b45"
+        "ref": "plugin-attention-v0.10.1",
+        "sha": "fa2aa1aabf7146ed69c5cf8d1a917d50292bdcc0"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -116,8 +116,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/runtime",
-        "ref": "plugin-runtime-v0.103.1",
-        "sha": "b36947ccaee164af9c2961334ec47ec849cdae96"
+        "ref": "plugin-runtime-v0.103.2",
+        "sha": "fa2aa1aabf7146ed69c5cf8d1a917d50292bdcc0"
       },
       "policy": {
         "installation": "AVAILABLE",
