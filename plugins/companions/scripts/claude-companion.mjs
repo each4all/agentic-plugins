@@ -603,15 +603,44 @@ export async function main(
   }
 }
 
+// Exit only once stdout and stderr have flushed what was written (C125).
+// `process.exit` right after a write to a pipe drops whatever the pipe has not
+// taken yet, so an envelope past 65,536 bytes reached its reader cut short.
+// `write('', cb)` calls back after every earlier write on the stream. A ref'd
+// fallback timer exits anyway when a reader never drains, and a stream error
+// (EPIPE from a reader that closed early) exits with the same code. It writes
+// nothing itself, and a second call while flushing is ignored.
+export const EXIT_FLUSH_FALLBACK_MS = 10_000;
+let exitFlushStarted = false;
+export function exitAfterFlush(code, fallbackMs = EXIT_FLUSH_FALLBACK_MS) {
+  if (exitFlushStarted) return;
+  exitFlushStarted = true;
+  const exit = () => process.exit(code);
+  setTimeout(exit, fallbackMs);
+  let pending = 2;
+  const settle = () => {
+    pending -= 1;
+    if (pending === 0) exit();
+  };
+  for (const stream of [process.stdout, process.stderr]) {
+    stream.once('error', exit);
+    try {
+      stream.write('', settle);
+    } catch {
+      exit();
+    }
+  }
+}
+
 const isMainModule = !!(
   process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 );
 if (isMainModule) {
   main().then(
-    (code) => process.exit(code),
+    (code) => exitAfterFlush(code),
     (err) => {
       process.stderr.write(`fatal: ${err && err.message ? err.message : String(err)}\n`);
-      process.exit(EXIT_COMPANION_MISUSE);
+      exitAfterFlush(EXIT_COMPANION_MISUSE);
     },
   );
 }
