@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.10.0...plugin-founder-v0.10.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **founder:** exit after stdout and stderr flush, so CLI and hook output past 64 KiB reaches a pipe whole (C93) ([8032798](https://github.com/each4all/agentic-plugins/commit/8032798dfa4149619938c93698c280b3a0e16340))
+
 ## [0.10.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.9.4...plugin-founder-v0.10.0) (2026-10-15)
 
 
