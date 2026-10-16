@@ -626,3 +626,43 @@ describe('statusline shim template containment', () => {
     ok(renderAgenticStatuslineShim({ template }).body.includes('INJECTED MARKER'));
   });
 });
+
+describe('the statusline shim ends through its inline exitAfterFlush (R2)', () => {
+  // The installed shim is standalone, so it carries its own copy of the
+  // runtime helper. The behaviour is tested once, on the runtime copy
+  // (tests/runtime/test-exit-after-flush.mjs); this holds the inline copy
+  // equal to it, so an edit to either fails here.
+  it('the template\'s inline helper is the runtime lib\'s helper body without `export`', async () => {
+    const template = await readFile(new URL('../../plugins/runtime/receivers/agentic-statusline.mjs', import.meta.url), 'utf8');
+    const lib = await readFile(new URL('../../plugins/runtime/scripts/lib/exit-after-flush.mjs', import.meta.url), 'utf8');
+    const block = template.match(/^\/\/ exit-after-flush:begin\n([\s\S]*?)^\/\/ exit-after-flush:end\n/m);
+    ok(block, 'the template has no exit-after-flush block');
+    const body = lib.slice(lib.indexOf('export const EXIT_FLUSH_FALLBACK_MS')).replace(/^export /gm, '');
+    strictEqual(block[1], body);
+    ok(/^exitAfterFlush\(0\);\n$/m.test(template.slice(block.index + block[0].length)), 'the template does not end through exitAfterFlush(0)');
+    ok(!/process\.exit\(/.test(template.slice(0, block.index)), 'a bare process.exit precedes the helper');
+  });
+
+  it('the RENDERED shim exits 0, silent on stderr, when its reader closed stdout first', async () => {
+    const { spawn } = await import('node:child_process');
+    const { once } = await import('node:events');
+    const dir = await mkdtemp(join(tmpdir(), 'statusline-shim-closed-'));
+    const shimPath = join(dir, 'agentic-statusline.mjs');
+    await writeFile(shimPath, renderAgenticStatuslineShim().body);
+    const child = spawn(process.execPath, [shimPath], {
+      env: { ...process.env, AGENTIC_RUNTIME_ROOT: RUNTIME_PLUGIN_ROOT },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const watchdog = setTimeout(() => child.kill('SIGKILL'), 20_000);
+    child.stdout.destroy();
+    const err = [];
+    child.stderr.on('data', (c) => err.push(c));
+    child.stdin.end(JSON.stringify({ model: { display_name: 'Opus 4.8' } }));
+    const [status, signal] = await once(child, 'close');
+    clearTimeout(watchdog);
+    strictEqual(signal, null, 'the shim was killed by its watchdog');
+    strictEqual(status, 0);
+    strictEqual(Buffer.concat(err).toString('utf8'), '');
+    await rm(dir, { recursive: true, force: true });
+  });
+});

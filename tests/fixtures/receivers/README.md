@@ -10,6 +10,11 @@ copies were removed with the receiver itself, ADR-0064 Decision 1.)
   first delegating-shim generation (`delegating-shim v1`), whose runtime ladder
   still read the Codex marketplace clone. ADR-0061 §Decision 3 replaced that
   ladder.
+- `*.v0.103.1.template.mjs` — `plugin-runtime-v0.103.1`, the last release of the
+  second delegating-shim generation (`delegating-shim v2`), which ended with a
+  bare `process.exit(0)`. Its successor ends through an inline
+  `exitAfterFlush(0)` (R2); the delegation contract and the marker are
+  unchanged.
 
 Recovered with:
 
