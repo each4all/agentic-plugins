@@ -40,6 +40,7 @@ import {
 import * as companionModule from '../codex-companion.mjs';
 import { fileURLToPath } from 'node:url';
 import { defineNestingGuardSuite } from './nesting-guard.suite.mjs';
+import { defineExitAfterFlushSuite, defineLargeEnvelopeRegression } from './exit-flush.suite.mjs';
 
 // --- helpers ---------------------------------------------------------------
 
@@ -922,6 +923,19 @@ describe('main() integration', () => {
 defineNestingGuardSuite({
   label: 'codex-companion',
   mod: companionModule,
+  scriptPath: fileURLToPath(new URL('../codex-companion.mjs', import.meta.url)),
+  peerBin: PEER_CLI_BIN,
+});
+
+// --- exit after flush (shared suite, both companions) ---------------------
+
+defineExitAfterFlushSuite({
+  label: 'codex-companion',
+  modulePath: fileURLToPath(new URL('../codex-companion.mjs', import.meta.url)),
+});
+
+defineLargeEnvelopeRegression({
+  label: 'codex-companion',
   scriptPath: fileURLToPath(new URL('../codex-companion.mjs', import.meta.url)),
   peerBin: PEER_CLI_BIN,
 });
