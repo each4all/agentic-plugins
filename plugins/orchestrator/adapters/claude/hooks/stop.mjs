@@ -35,6 +35,7 @@ import {
   gitTopLevel,
   readStdinJson,
 } from './_shared.mjs';
+import { absorbOutputErrors, exitAfterFlush } from '../../../scripts/lib/cli-entry.mjs';
 
 // ADR-0031 hook backstop (orchestrator-hook-backstop) — before the archive scan,
 // (re)fire the activation sidecar for any TERMINAL macro so the guaranteed
@@ -84,5 +85,8 @@ async function main() {
   return 0;
 }
 
+// Exit once the output has drained (the owner's discussion-2 decision R2),
+// and keep a reader that closed early from killing the hook with a stack.
+absorbOutputErrors();
 const code = await main();
-process.exit(code);
+exitAfterFlush(code);

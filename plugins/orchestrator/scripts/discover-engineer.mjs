@@ -51,6 +51,8 @@ import { join, isAbsolute, resolve, dirname, relative, basename } from 'node:pat
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 
+import { absorbOutputErrors, exitAfterFlush } from './lib/cli-entry.mjs';
+
 const execFileAsync = promisify(execFile);
 
 const ENV_OVERRIDE = 'AGENTIC_ENGINEER_ROOT';
@@ -630,7 +632,9 @@ async function cliMain(argv) {
 // Run as a CLI only when this file is the entry point. Both sides are compared
 // canonical and as paths, so an install reached through a symlink (with or
 // without --preserve-symlinks-main), or under a directory whose name needs URL
-// escaping (a space, '#', non-ASCII), still runs (ADR-0061 S2).
+// escaping (a space, '#', non-ASCII), still runs (ADR-0061 S2). It exits once,
+// after the output has drained (the owner's discussion-2 decision R2); a
+// rejection is reported with its stack, as an unhandled one was, and exits 1.
 function invokedAsCli() {
   if (!process.argv[1]) return false;
   try {
@@ -641,5 +645,15 @@ function invokedAsCli() {
 }
 
 if (invokedAsCli()) {
-  cliMain(process.argv.slice(2)).then((code) => process.exit(code ?? 0));
+  absorbOutputErrors();
+  (async () => {
+    let code;
+    try {
+      code = (await cliMain(process.argv.slice(2))) ?? 0;
+    } catch (err) {
+      process.stderr.write(`${err?.stack ?? err}\n`);
+      code = 1;
+    }
+    exitAfterFlush(code);
+  })();
 }

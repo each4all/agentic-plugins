@@ -56,6 +56,7 @@ import {
 } from './state.mjs';
 import { evaluateMacroStopArchive } from './stop-archive.mjs';
 import { aliasedComponent } from './lib/state-root.mjs';
+import { absorbOutputErrors, exitAfterFlush } from './lib/cli-entry.mjs';
 
 // Default routing recommendation for an active macro workflow: resume it.
 const DEFAULT_ROUTING = '/orchestrator:resume';
@@ -886,21 +887,31 @@ export async function runSessionHandoff(options = {}) {
   return computeOrchestratorProjection({ repoRoot, branch, routing: options.routing });
 }
 
+// The CLI. Each path returns its code, and the entry below exits once, after
+// the output has drained (the owner's discussion-2 decision R2): the
+// projection carries next_action and checkpoint text without a bound.
+async function cliRun(argv) {
+  try {
+    const options = parseArgs(argv);
+    const result = await runSessionHandoff(options);
+    if (result.help) {
+      process.stdout.write(`${result.text}\n`);
+      return 0;
+    }
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return 0;
+  } catch (error) {
+    process.stderr.write(`✗ ${error.message}\n`);
+    return 1;
+  }
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+  absorbOutputErrors();
   // Async IIFE wrapper (project convention) — avoids the unsettled top-level
   // await deadlock when state.mjs's dynamic imports run during module load.
   (async () => {
-    try {
-      const options = parseArgs(process.argv.slice(2));
-      const result = await runSessionHandoff(options);
-      if (result.help) {
-        process.stdout.write(`${result.text}\n`);
-        return;
-      }
-      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-    } catch (error) {
-      process.stderr.write(`✗ ${error.message}\n`);
-      process.exit(1);
-    }
+    const code = await cliRun(process.argv.slice(2));
+    exitAfterFlush(code);
   })();
 }

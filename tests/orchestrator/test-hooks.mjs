@@ -12,6 +12,8 @@
 //   - graceful no-op when no active workflow on current branch
 //   - malformed workflow file → hook silently no-ops (returns 0,
 //     does not crash the host's lifecycle)
+//   - session-start.mjs with a reader closed early: exit 0, no EPIPE stack
+//     (the owner's discussion-2 decision R2)
 
 import { describe, it } from 'node:test';
 import { strictEqual, ok } from 'node:assert/strict';
@@ -20,6 +22,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+
+import { pipeEnv } from '../persona-pipeline/_pipe-output.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/orchestrator');
@@ -408,4 +412,40 @@ describe('Codex stop.mjs — fallback helper with macro auto-archive parity', ()
       strictEqual(live.length, 0, 'workflow archived under Codex helper too');
     });
   });
+});
+
+// The owner's discussion-2 decision R2: a host that closes the hook's stdout
+// early makes the metadata write fail with EPIPE while the hook still has work
+// to do (the handoff backstop). The hook absorbs the error and exits 0 through
+// exitAfterFlush, never with an uncaught EPIPE stack.
+describe('session-start.mjs — a reader closed early', () => {
+  for (const [label, dir] of [['Claude', HOOKS_CLAUDE], ['Codex', HOOKS_CODEX]]) {
+    it(`${label} hook: exits 0 with no EPIPE stack when stdout is closed before it writes`, async () => {
+      await withTmpRepo(`ss-epipe-${label.toLowerCase()}`, async (root) => {
+        await createWorkflow({
+          repoRoot: root, verb: 'plan', host: label.toLowerCase(),
+          gitBaseline: MIN_BASELINE(), originalRequest: 'early-closed reader',
+        });
+        const r = await new Promise((resolveP, rejectP) => {
+          const child = spawn(process.execPath, [join(dir, 'session-start.mjs')], {
+            cwd: root,
+            env: pipeEnv(),
+            stdio: ['pipe', 'pipe', 'pipe'],
+          });
+          child.stdout.destroy();
+          let stderr = '';
+          child.stderr.on('data', (d) => (stderr += d));
+          const watchdog = setTimeout(() => child.kill('SIGKILL'), 30_000);
+          child.once('error', rejectP);
+          child.once('close', (code) => {
+            clearTimeout(watchdog);
+            resolveP({ code, stderr });
+          });
+          child.stdin.end(JSON.stringify({ cwd: root }));
+        });
+        strictEqual(r.code, 0, `stderr: ${r.stderr}`);
+        ok(!/EPIPE/.test(r.stderr), `no EPIPE stack: ${r.stderr}`);
+      });
+    });
+  }
 });

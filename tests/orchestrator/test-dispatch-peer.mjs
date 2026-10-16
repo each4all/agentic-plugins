@@ -9,16 +9,22 @@
 //   - dispatchPeer graceful degradation: companion missing → kind
 //     'peer_cli_not_found', no pending_ensemble entry recorded
 //     (orchestrator-specific divergence from engineer)
+//   - the CLI: a fake companion's output over 64 KiB passed through a pipe
+//     whole, help and refusals that stop before any companion is resolved,
+//     each with its exit code (the owner's discussion-2 decision R2)
 //
 // Run via `node --test tests/orchestrator/test-dispatch-peer.mjs`.
 
 import { describe, it } from 'node:test';
-import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { strictEqual, ok, deepStrictEqual, match } from 'node:assert/strict';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+
+import { PIPE_FLOOR_BYTES, pipeEnv, runThroughPipe } from '../persona-pipeline/_pipe-output.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const DISPATCH_MJS = resolve(REPO_ROOT, 'plugins/orchestrator/scripts/dispatch-peer.mjs');
@@ -300,4 +306,109 @@ describe('dispatchPeer graceful degradation', () => {
     ok(err);
     ok(/ensembleBookkeeping/.test(err.message));
   });
+});
+
+// The owner's discussion-2 decision R2: the CLI passes the companion's output
+// through and exits only once the pipe has taken all of it (exitAfterFlush,
+// scripts/lib/cli-entry.mjs), and help and refusals stop before any companion
+// is resolved. The fake companion writes its payload whole (exit in the write
+// callback), so a cut is the CLI's, not the fixture's; its discover-peer.mjs
+// leaves a marker when it is asked.
+describe('dispatch-peer.mjs CLI — output through a pipe, help and refusals', () => {
+  const PAYLOAD_BYTES = 2 * PIPE_FLOOR_BYTES;
+
+  async function withFakeCompanions(fn) {
+    const dir = await mkdtemp(join(tmpdir(), 'orchestrator-dispatch-pipe-'));
+    try {
+      const root = join(dir, 'companions');
+      await mkdir(root);
+      const marker = join(dir, 'resolved.marker');
+      await writeFile(join(root, 'discover-peer.mjs'), [
+        "import { writeFileSync } from 'node:fs';",
+        'export async function discoverPeerCompanion({ peer } = {}) {',
+        `  writeFileSync(${JSON.stringify(marker)}, peer ?? '');`,
+        "  return { ok: true, path: new URL('./companion.mjs', import.meta.url).pathname, version: '0.0.0-test' };",
+        '}',
+        '',
+      ].join('\n'));
+      await writeFile(join(root, 'companion.mjs'), [
+        'const args = process.argv.slice(2);',
+        "const format = args[args.indexOf('--output-format') + 1];",
+        `const text = 'p'.repeat(${PAYLOAD_BYTES - 1}) + '\\n';`,
+        "const out = format === 'json'",
+        "  ? JSON.stringify({ status: 'success', peer_host: 'claude', peer_model: null, stdout: text, exit_code: 0 })",
+        '  : text;',
+        'process.stdout.write(out, () => process.exit(0));',
+        '',
+      ].join('\n'));
+      await fn({ dir, root, marker });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+  function cliEnv(dir, root) {
+    const env = pipeEnv(process.env, { HOME: dir, AGENTIC_COMPANIONS_ROOT: root });
+    delete env.CODEX_HOME;
+    return env;
+  }
+  const cli = (args, dir, root) => runThroughPipe(process.execPath, [DISPATCH_MJS, ...args], { cwd: dir, env: cliEnv(dir, root) });
+
+  it('text mode passes a companion stdout over 64 KiB through a pipe whole', async () => {
+    await withFakeCompanions(async ({ dir, root }) => {
+      const r = await cli(['--peer', 'claude', '--prompt-text', 'probe', '--output-format', 'text'], dir, root);
+      strictEqual(r.timedOut, false, 'the CLI must exit');
+      strictEqual(r.status, 0, `stderr: ${r.stderr}`);
+      strictEqual(Buffer.byteLength(r.stdout), PAYLOAD_BYTES,
+        'the reader gets every byte (less is the exit before the pipe drained)');
+    });
+  });
+
+  it('json mode passes an envelope over 64 KiB through a pipe whole', async () => {
+    await withFakeCompanions(async ({ dir, root }) => {
+      const r = await cli(['--peer', 'claude', '--prompt-text', 'probe', '--output-format', 'json'], dir, root);
+      strictEqual(r.status, 0, `stderr: ${r.stderr}`);
+      ok(Buffer.byteLength(r.stdout) > PAYLOAD_BYTES, `stdout is ${Buffer.byteLength(r.stdout)} bytes`);
+      strictEqual(JSON.parse(r.stdout).stdout.length, PAYLOAD_BYTES, 'the envelope parses and carries the whole answer');
+    });
+  });
+
+  it('--help with a peer and a prompt prints help, exits 0 and resolves no companion', async () => {
+    await withFakeCompanions(async ({ dir, root, marker }) => {
+      const r = await cli(['--help', '--peer', 'claude', '--prompt-text', 'probe'], dir, root);
+      strictEqual(r.status, 0, `stderr: ${r.stderr}`);
+      match(r.stdout, /^Usage: dispatch-peer\.mjs/);
+      strictEqual(existsSync(marker), false, 'help must not go on to dispatch');
+    });
+  });
+
+  for (const [label, args, pattern] of [
+    ['an unknown flag', ['--peer', 'claude', '--prompt-text', 'probe', '--bogus'], /Unknown flag: --bogus/],
+    ['a missing --peer', ['--prompt-text', 'probe'], /--peer claude\|codex is required/],
+    ['a missing prompt', ['--peer', 'claude'], /--prompt-file, --prompt-text, or positional prompt is required/],
+    ['a partial bookkeeping set', ['--peer', 'claude', '--prompt-text', 'probe', '--workflow-path', '/nonexistent/wf.md', '--phase', 'compose'], /missing: ensembleType, runId/],
+  ]) {
+    it(`${label} is misuse: exit 2, and no companion is resolved`, async () => {
+      await withFakeCompanions(async ({ dir, root, marker }) => {
+        const r = await cli(args, dir, root);
+        strictEqual(r.status, 2, `stderr: ${r.stderr}`);
+        match(r.stderr, pattern);
+        strictEqual(existsSync(marker), false, 'a refusal must not go on to dispatch');
+      });
+    });
+  }
+
+  for (const [label, args, pattern] of [
+    ['an invalid output format', ['--peer', 'claude', '--prompt-text', 'probe', '--output-format', 'xml'], /Invalid outputFormat: xml/],
+    ['both prompt forms', ['--peer', 'claude', '--prompt-text', 'probe', '--prompt-file', '/nonexistent/prompt.xml'], /Provide either promptFile or promptText, not both/],
+  ]) {
+    it(`${label} is a refusal dispatchPeer throws: exit 1 with its stack, and no companion is resolved`, async () => {
+      await withFakeCompanions(async ({ dir, root, marker }) => {
+        const r = await cli(args, dir, root);
+        strictEqual(r.status, 1, `stderr: ${r.stderr}`);
+        match(r.stderr, pattern);
+        match(r.stderr, /\n\s+at /, 'reported with its stack, as the uncaught error was');
+        strictEqual(existsSync(marker), false);
+      });
+    });
+  }
 });

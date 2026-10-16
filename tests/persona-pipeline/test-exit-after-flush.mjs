@@ -1,9 +1,11 @@
 // plugins/<persona>/scripts/lib/cli-entry.mjs — exitAfterFlush and
 // absorbOutputErrors (the owner's discussion-2 decision R2), run once for
 // every persona the persona-pipeline manifest generates the unit into
-// (ADR-0066 Decision 5).
+// (ADR-0066 Decision 5), and once for the orchestrator's copy,
+// plugins/orchestrator/scripts/lib/cli-entry.mjs (the source byte for byte
+// under a copy notice, tests/scripts/test-orchestrator-peer-snapshot-parity.mjs).
 //
-// Child processes run a driver that imports the persona's generated copy and
+// Child processes run a driver that imports the copy under test and
 // writes twice PIPE_FLOOR_BYTES, read through pipes (or a file, or nothing) as a host
 // reads a CLI: both streams arrive whole, the code is kept, a live handle does
 // not hold the exit, an early-closed reader is no crash, and a reader that
@@ -27,7 +29,7 @@ import { join } from 'node:path';
 import { Writable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 
-import { personasFor, personaInfo } from './_personas.mjs';
+import { personasFor, personaInfo, REPO_ROOT } from './_personas.mjs';
 import { PIPE_FLOOR_BYTES, runThroughPipe } from './_pipe-output.mjs';
 
 const BYTES = 2 * PIPE_FLOOR_BYTES;
@@ -74,9 +76,16 @@ if (mode === 'both') {
 }
 `;
 
-for (const persona of personasFor('scripts/lib/cli-entry.mjs')) {
-  const P = personaInfo(persona);
-  const CLI_ENTRY_URL = pathToFileURL(P.path('scripts/lib/cli-entry.mjs')).href;
+// Each copy of the helper, by the plugin that ships it: the copy is loaded
+// from its path, as a child module and as fresh in-process instances.
+const COPIES = [
+  ...personasFor('scripts/lib/cli-entry.mjs')
+    .map((persona) => ({ label: persona, path: personaInfo(persona).path('scripts/lib/cli-entry.mjs') })),
+  { label: 'orchestrator', path: join(REPO_ROOT, 'plugins/orchestrator/scripts/lib/cli-entry.mjs') },
+];
+
+for (const { label: persona, path: cliEntryPath } of COPIES) {
+  const CLI_ENTRY_URL = pathToFileURL(cliEntryPath).href;
 
   async function withDriver(fn) {
     const dir = await mkdtemp(join(tmpdir(), `${persona}-exit-flush-`));

@@ -7,7 +7,9 @@
 // ADR-0066 PC3)
 // with the macro-specific divergences: cross-branch resolution (find-active then
 // find-macro), the pure evaluateMacroStopArchive gate set, the empty-macro
-// guard, and HEAD-independent archive readiness.
+// guard, and HEAD-independent archive readiness. The CLI exits once its
+// output has drained (the owner's discussion-2 decision R2): a projection over
+// 64 KiB reaches a pipe whole.
 //
 // Run via `node --test tests/orchestrator/test-session-handoff.mjs`.
 
@@ -16,6 +18,7 @@ import { strictEqual, ok } from 'node:assert/strict';
 import { mkdtemp, rm, mkdir, writeFile, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   computeOrchestratorProjection,
@@ -28,6 +31,9 @@ import {
   setMacroTerminal,
 } from '../../plugins/orchestrator/scripts/state.mjs';
 import { normalizeProjection } from '../../plugins/runtime/scripts/context.mjs';
+import { PIPE_FLOOR_BYTES, pipeEnv, runThroughPipe } from '../persona-pipeline/_pipe-output.mjs';
+
+const SESSION_HANDOFF = fileURLToPath(new URL('../../plugins/orchestrator/scripts/session-handoff.mjs', import.meta.url));
 
 // Write a live engineer child workflow referencing a macro (A4 gate input).
 // Mirrors the inline helper in test-stop-archive.mjs; the legacy engineer home
@@ -359,5 +365,41 @@ describe('orchestrator session handoff projection (ADR-0031)', () => {
     strictEqual(options.repoRoot, '/r');
     strictEqual(options.branch, 'b');
     strictEqual(options.routing, '/orchestrator:resume');
+  });
+});
+
+// The owner's discussion-2 decision R2: the projection copies the macro's
+// next_action and checkpoint summary without a bound, so the CLI's JSON can
+// pass any pipe's buffer; it exits only once the pipe has taken all of it
+// (exitAfterFlush, scripts/lib/cli-entry.mjs).
+describe('session-handoff.mjs CLI — a projection over 64 KiB through a pipe', () => {
+  it('prints a macro whose next_action is over 64 KiB as whole, parseable JSON', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'orch-handoff-pipe-'));
+    try {
+      const nextAction = `Dispatch ${'n'.repeat(2 * PIPE_FLOOR_BYTES)}`;
+      const { filePath } = await createWorkflow({
+        repoRoot: root,
+        verb: 'plan',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE('main'),
+        currentPhase: 'phase-2-presented',
+        nextAction,
+        originalRequest: 'session-handoff pipe fixture',
+      });
+      const r = await runThroughPipe(process.execPath, [SESSION_HANDOFF, '--repo-root', root, '--branch', 'main'], {
+        cwd: root,
+        env: pipeEnv(),
+      });
+      strictEqual(r.timedOut, false, 'the CLI must exit');
+      strictEqual(r.status, 0, `stderr: ${r.stderr}`);
+      ok(Buffer.byteLength(r.stdout) > PIPE_FLOOR_BYTES,
+        `the projection is over ${PIPE_FLOOR_BYTES} bytes and arrives whole (got ${Buffer.byteLength(r.stdout)}; less is the exit before the pipe drained)`);
+      const result = JSON.parse(r.stdout);
+      strictEqual(result.status, 'ok');
+      strictEqual(result.projection.workflow_id, macroIdFromPath(filePath));
+      strictEqual(result.projection.next_action, nextAction, 'the whole next_action reaches the reader');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

@@ -31,6 +31,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 
 import { resolveCompanion, validateEnvelopeShape } from './dispatch-peer.mjs';
 import { assertWorkflowWritable, recordPendingEnsemble, resolveWorkflowStorage, workflowStorage } from './state.mjs';
+import { absorbOutputErrors, exitAfterFlush } from './lib/cli-entry.mjs';
 import {
   createRunCancellation,
   fingerprintForPid,
@@ -114,6 +115,8 @@ export const DEFAULT_RETENTION_TTL_DAYS = 14;
 export const DEFAULT_RETENTION_CAP = 200;
 
 const RUN_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+// Held in place of a run's handlers once the run is terminal.
+function ignoreSignal() {}
 const HANDLE_FILE = 'handle.json';
 const STDOUT_FILE = 'stdout.log';
 const STDERR_FILE = 'stderr.log';
@@ -1799,7 +1802,13 @@ async function cliRun(opts) {
           env: process.env,
         });
       } finally {
-        for (const [sig, fn] of handlers) process.off(sig, fn);
+        // The run is terminal: a signal from here on, while the result is
+        // written and the output drains before the exit, leaves it and the
+        // exit code as they are, rather than killing the process by default.
+        for (const [sig, fn] of handlers) {
+          process.on(sig, ignoreSignal);
+          process.off(sig, fn);
+        }
       }
       process.stdout.write(`${JSON.stringify(result)}\n`);
       // The exit code follows the ledger: a signal that came after the run's
@@ -1858,7 +1867,10 @@ async function cliRun(opts) {
   }
 }
 
+// The CLI exits once, after the output has drained (the owner's discussion-2
+// decision R2): a sweep report grows with the ledger.
 if (import.meta.url === `file://${process.argv[1]}`) {
+  absorbOutputErrors();
   const code = await cliMain(process.argv.slice(2));
-  process.exit(code);
+  exitAfterFlush(code);
 }
