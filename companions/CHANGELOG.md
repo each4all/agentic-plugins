@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.3](https://github.com/each4all/agentic-plugins/compare/companions-v0.3.2...companions-v0.3.3) (2026-10-16)
+
+
+### Bug Fixes
+
+* **companions:** exit after stdout and stderr flush, so a peer envelope past 64 KiB reaches a pipe whole (C125) ([dd4a26e](https://github.com/each4all/agentic-plugins/commit/dd4a26ecf4bb53a871df031405772131ee10d902))
+
 ## [0.3.2](https://github.com/each4all/agentic-plugins/compare/companions-v0.3.1...companions-v0.3.2) (2026-09-25)
 
 
