@@ -13,10 +13,12 @@
 import { describe, it, before, after } from 'node:test';
 import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { defineExitAfterFlushSuite } from '../../companions/tests/exit-flush.suite.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const CANONICAL = join(REPO_ROOT, 'companions', 'discover-peer.mjs');
@@ -147,4 +149,86 @@ describe('discover-peer.mjs — default candidates (ADR-0061 §Decision 3)', () 
     strictEqual(run.status, 0, run.stderr);
     strictEqual(run.stdout.trim(), join(root, 'scripts', 'claude-companion.mjs'));
   });
+
+  // Each CLI path keeps its exit code and does no further work once it has
+  // its answer: a refused argument never runs discovery. A preloaded module
+  // records each filesystem read discovery makes (fs/promises stat, readdir,
+  // readFile), so "never runs discovery" is observed, not inferred.
+  const FS_SPY = `import fsp from 'node:fs/promises';
+import { writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+const calls = [];
+for (const name of ['stat', 'readdir', 'readFile']) {
+  const real = fsp[name];
+  fsp[name] = (...args) => { calls.push(name); return real(...args); };
+}
+syncBuiltinESMExports();
+process.on('exit', () => writeFileSync(process.env.FS_SPY_OUT, JSON.stringify(calls)));
+`;
+  const runCli = (args, env) => {
+    const spy = join(scratch, 'fs-spy.mjs');
+    const out = join(scratch, `fs-spy-${process.hrtime.bigint()}.json`);
+    writeFileSync(spy, FS_SPY);
+    const run = spawnSync(process.execPath, ['--import', pathToFileURL(spy).href, CANONICAL, ...args], {
+      env: { PATH: process.env.PATH, ...env, FS_SPY_OUT: out },
+      encoding: 'utf8',
+    });
+    return { ...run, fsCalls: JSON.parse(readFileSync(out, 'utf8')) };
+  };
+
+  it('control: the CLI\'s filesystem record sees discovery when it runs', async () => {
+    const home = join(scratch, 'cli-spy-home');
+    const codexHome = join(scratch, 'cli-spy-codex-home');
+    const root = await plantCompanions(codexCache(codexHome), '0.5.1', { manifestRel: CODEX_MANIFEST });
+    const run = runCli(['--peer', 'claude'], { HOME: home, CODEX_HOME: codexHome });
+    strictEqual(run.status, 0, run.stderr);
+    strictEqual(run.stdout.trim(), join(root, 'scripts', 'claude-companion.mjs'));
+    ok(run.fsCalls.length > 0, 'discovery ran without a recorded filesystem read');
+  });
+
+  it('the CLI refuses an unknown argument with exit 2 and never runs discovery', async () => {
+    const home = join(scratch, 'cli-refusal-home');
+    const codexHome = join(scratch, 'cli-refusal-codex-home');
+    await plantCompanions(codexCache(codexHome), '0.5.1', { manifestRel: CODEX_MANIFEST });
+    const run = runCli(['--peer', 'claude', '--unknown'], { HOME: home, CODEX_HOME: codexHome });
+    strictEqual(run.status, 2, run.stderr);
+    strictEqual(run.stdout, '', 'a refused argument printed a path');
+    ok(run.stderr.startsWith('Unknown argument: --unknown\n'), run.stderr);
+    ok(run.stderr.includes('Usage: node discover-peer.mjs --peer <codex|claude>'), run.stderr);
+    deepStrictEqual(run.fsCalls, [], 'a refused argument ran discovery');
+  });
+
+  it('the CLI refuses a missing or dangling --peer with exit 2', () => {
+    const home = join(scratch, 'cli-missing-home');
+    for (const args of [[], ['--peer']]) {
+      const run = runCli(args, { HOME: home });
+      strictEqual(run.status, 2, `${JSON.stringify(args)}: ${run.stderr}`);
+      strictEqual(run.stdout, '');
+      ok(run.stderr.includes('Usage: node discover-peer.mjs --peer <codex|claude>'), run.stderr);
+      deepStrictEqual(run.fsCalls, [], `${JSON.stringify(args)} ran discovery`);
+    }
+  });
+
+  it('the CLI exits 1 for an invalid peer and for a discovery miss', () => {
+    const home = join(scratch, 'cli-miss-home');
+    for (const args of [['--peer', 'bogus'], ['--peer', 'claude']]) {
+      const run = runCli(args, { HOME: home, CODEX_HOME: join(home, 'no-codex') });
+      strictEqual(run.status, 1, `${JSON.stringify(args)}: ${run.stderr}`);
+      strictEqual(run.stdout, '');
+      ok(run.stderr.startsWith('discover-peer: '), run.stderr);
+    }
+  });
+
+  it('the CLI delivers a diagnostic past 64 KiB to a pipe reader whole (C125)', { skip: process.platform === 'win32' ? 'POSIX pipes' : false }, () => {
+    // The unknown argument is echoed in the diagnostic; 100,000 bytes stays
+    // under Linux's 128 KiB limit on one argument.
+    const arg = 'x'.repeat(100_000);
+    const run = runCli([arg], { HOME: join(scratch, 'cli-large-home') });
+    strictEqual(run.status, 2);
+    const expected = `Unknown argument: ${arg}\nUsage: node discover-peer.mjs --peer <codex|claude>\n`;
+    strictEqual(run.stderr.length, expected.length, `stderr arrived with ${run.stderr.length} of ${expected.length} bytes`);
+    ok(run.stderr === expected, 'stderr arrived altered');
+  });
 });
+
+defineExitAfterFlushSuite({ label: 'discover-peer', modulePath: CANONICAL });
