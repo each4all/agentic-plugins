@@ -42,6 +42,7 @@ import { parseArgs } from 'node:util';
 import {
   CODEX_CATALOG_PATH, checkPinShape, compareSemver, mayTrail, releaseLag, sourceKind,
 } from './lib/codex-catalog-pins.mjs';
+import { absorbOutputErrors, exitAfterFlush } from './lib/exit-after-flush.mjs';
 
 const MANIFEST_PATH = '.release-please-manifest.json';
 const CLAUDE_MARKETPLACE_PATH = '.claude-plugin/marketplace.json';
@@ -152,13 +153,15 @@ function invokedAsCLI() {
   }
 }
 
-if (invokedAsCLI()) {
+// The CLI: returns its exit code, which the entry below exits with once
+// stdout and stderr have flushed.
+function main() {
   try {
     parseArgs({ options: {}, strict: true });
   } catch (err) {
     console.error(`validate-versions: ${err.message}`);
     console.error('usage: validate-versions.mjs');
-    process.exit(2);
+    return 2;
   }
   const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../..');
   // The commit under test is HEAD, whatever the branch or the event that ran
@@ -168,7 +171,7 @@ if (invokedAsCLI()) {
   if (errors.length > 0) {
     console.error(manifest ? 'Version validation failed:' : 'Version validation aborted: cannot load release-please manifest');
     for (const e of errors) console.error(`  - ${e}`);
-    process.exit(1);
+    return 1;
   }
 
   console.log(warnings.length > 0
@@ -184,4 +187,18 @@ if (invokedAsCLI()) {
   for (const [pkg, ver] of Object.entries(manifest)) {
     console.log(`  ${pkg}: ${ver}`);
   }
+  return 0;
+}
+
+// A throw is reported with its stack, as an uncaught one was, and exits 1.
+if (invokedAsCLI()) {
+  absorbOutputErrors();
+  let code;
+  try {
+    code = main();
+  } catch (err) {
+    process.stderr.write(`${err?.stack ?? err}\n`);
+    code = 1;
+  }
+  exitAfterFlush(code);
 }

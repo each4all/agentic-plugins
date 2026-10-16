@@ -82,6 +82,7 @@ import {
   resolveCommit,
   sourceKind,
 } from './lib/codex-catalog-pins.mjs';
+import { absorbOutputErrors, exitAfterFlush } from './lib/exit-after-flush.mjs';
 import { validateMarketplace } from './validate-marketplace.mjs';
 import { validateVersions } from './validate-versions.mjs';
 
@@ -345,7 +346,10 @@ function invokedAsCLI() {
   }
 }
 
-if (invokedAsCLI()) {
+// The CLI: returns its exit code, which the entry below exits with once
+// stdout and stderr have flushed. The release workflow reads it: 2 misuse,
+// 1 a throw, a refusal, --check drift or a failed validation, 0 otherwise.
+function main() {
   let values;
   try {
     ({ values } = parseArgs({
@@ -355,7 +359,7 @@ if (invokedAsCLI()) {
   } catch (err) {
     console.error(`sync-marketplace-versions: ${err.message}`);
     console.error('usage: sync-marketplace-versions.mjs [--check] [--activate]');
-    process.exit(2);
+    return 2;
   }
   const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../..');
   const checkOnly = values.check === true;
@@ -365,14 +369,14 @@ if (invokedAsCLI()) {
     result = syncCatalogs(REPO_ROOT, { checkOnly, activate: values.activate === true });
   } catch (err) {
     console.error(`sync-marketplace-versions: ${err.message}`);
-    process.exit(1);
+    return 1;
   }
   const { claude, codex, errors } = result;
   for (const note of codex.notes) console.log(`  note: ${note}`);
   if (errors.length > 0) {
     console.error('sync-marketplace-versions: refused — nothing was written:');
     for (const e of errors) console.error(`  - ${e}`);
-    process.exit(1);
+    return 1;
   }
 
   const lines = [
@@ -384,7 +388,7 @@ if (invokedAsCLI()) {
   if (lines.length > 0 && checkOnly) {
     console.error('sync-marketplace-versions: catalog drift detected');
     for (const line of lines) console.error(line);
-    process.exit(1);
+    return 1;
   }
   if (lines.length === 0) {
     console.log(`OK — both catalogs already in sync with release-please-manifest (Codex catalog ${codex.phase})`);
@@ -405,7 +409,21 @@ if (invokedAsCLI()) {
       ? 'sync-marketplace-versions: the written catalogs FAILED validation — do not push them:'
       : 'sync-marketplace-versions: nothing to write, but the catalogs as they stand FAILED validation:');
     for (const e of failures) console.error(`  - ${e}`);
-    process.exit(1);
+    return 1;
   }
   console.log(`  validated: phase ${market.phase}, baseline ${market.coverage.baseline?.slice(0, 7) ?? 'not compared'}`);
+  return 0;
+}
+
+// A throw is reported with its stack, as an uncaught one was, and exits 1.
+if (invokedAsCLI()) {
+  absorbOutputErrors();
+  let code;
+  try {
+    code = main();
+  } catch (err) {
+    process.stderr.write(`${err?.stack ?? err}\n`);
+    code = 1;
+  }
+  exitAfterFlush(code);
 }

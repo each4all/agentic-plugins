@@ -29,6 +29,9 @@ const SCRIPTS = [
   'scripts/validate-versions.mjs',
   'scripts/sync-marketplace-versions.mjs',
   'scripts/lib/codex-catalog-pins.mjs',
+  // The CLIs' exit, and the source it re-exports.
+  'scripts/lib/exit-after-flush.mjs',
+  'persona-pipeline/files/scripts/lib/cli-entry.mjs',
 ];
 
 export const CODEX = '.agents/plugins/marketplace.json';

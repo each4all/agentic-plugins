@@ -80,25 +80,57 @@ import { readFile, lstat, realpath, stat, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { basename, dirname, isAbsolute, normalize, relative, resolve, sep } from 'node:path';
 
-const args = process.argv.slice(2);
-if (args.length !== 1) {
-  console.error('Usage: node kit/lint/check-plugin-shape.mjs <plugin-dir>');
-  process.exit(2);
+// How this CLI exits (docket C93): every path ends in one exitAfterFlush call,
+// which exits once stdout and stderr have flushed. kit/lint is not a package
+// and ships nowhere, so it imports the repository's helper in place;
+// kit/README.md says what lifting it out takes.
+import { absorbOutputErrors, exitAfterFlush } from '../../scripts/lib/exit-after-flush.mjs';
+
+absorbOutputErrors();
+// The checks run at the module's top level, where no try can wrap them
+// without reindenting the file, so a throw or rejection they leave uncaught
+// lands here: reported with its stack, as Node reported it, and exits 1.
+// Each exitAfterFlush call below removes it first: the helper ignores a
+// second call, so an error raised after the exit began would otherwise be
+// reported and still exit with the code already chosen; without the handler
+// it takes Node's own path and exits 1, as it did before.
+function onUncaught(err) {
+  process.stderr.write(`${err?.stack ?? err}\n`);
+  exitAfterFlush(1);
+}
+process.on('uncaughtException', onUncaught);
+
+// The plugin directory the arguments name, or the misuse code 2.
+async function resolvePluginDir(args) {
+  if (args.length !== 1) {
+    console.error('Usage: node kit/lint/check-plugin-shape.mjs <plugin-dir>');
+    return { code: 2 };
+  }
+  const dir = resolve(args[0]);
+  let dirStat;
+  try {
+    dirStat = await stat(dir);
+  } catch (err) {
+    console.error(`✗ ${dir}: ${err.message}`);
+    return { code: 2 };
+  }
+  if (!dirStat.isDirectory()) {
+    console.error(`✗ ${dir}: not a directory`);
+    return { code: 2 };
+  }
+  return { dir };
 }
 
-const PLUGIN_DIR = resolve(args[0]);
+const pluginTarget = await resolvePluginDir(process.argv.slice(2));
+if ('code' in pluginTarget) {
+  process.off('uncaughtException', onUncaught);
+  exitAfterFlush(pluginTarget.code);
+  // A module's top level cannot return, so it waits here: no check runs, and
+  // the helper's ref'd fallback timer keeps the process alive until it exits.
+  await new Promise(() => {});
+}
 
-let pluginStat;
-try {
-  pluginStat = await stat(PLUGIN_DIR);
-} catch (err) {
-  console.error(`✗ ${PLUGIN_DIR}: ${err.message}`);
-  process.exit(2);
-}
-if (!pluginStat.isDirectory()) {
-  console.error(`✗ ${PLUGIN_DIR}: not a directory`);
-  process.exit(2);
-}
+const PLUGIN_DIR = pluginTarget.dir;
 
 const errors = [];
 
@@ -1477,8 +1509,10 @@ for (const root of skillsRoots) {
 if (errors.length > 0) {
   console.error(`✗ ${PLUGIN_DIR}:`);
   for (const e of errors) console.error(`  - ${e}`);
-  process.exit(1);
+} else {
+  const name = claudeManifest?.name ?? codexManifest?.name ?? '<unknown>';
+  console.log(`✓ ${PLUGIN_DIR}: plugin "${name}" shape OK`);
 }
 
-const name = claudeManifest?.name ?? codexManifest?.name ?? '<unknown>';
-console.log(`✓ ${PLUGIN_DIR}: plugin "${name}" shape OK`);
+process.off('uncaughtException', onUncaught);
+exitAfterFlush(errors.length > 0 ? 1 : 0);
