@@ -26,8 +26,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/companions",
-        "ref": "plugin-companions-v0.4.2",
-        "sha": "a511c2940c0e12b402d37c8605b838ad53c0706a"
+        "ref": "plugin-companions-v0.4.3",
+        "sha": "b983d33766f6b605914dfc6d7b39add5a18022bb"
       },
       "policy": {
         "installation": "AVAILABLE",
