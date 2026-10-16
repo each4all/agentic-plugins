@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3](https://github.com/each4all/agentic-plugins/compare/plugin-companions-v0.4.2...plugin-companions-v0.4.3) (2026-10-16)
+
+
+### Bug Fixes
+
+* **plugin/companions:** bundle the companions that exit after flush (C125) ([32627e1](https://github.com/each4all/agentic-plugins/commit/32627e18b13f5901e31e8e5939713500858da79e))
+
 ## [0.4.2](https://github.com/each4all/agentic-plugins/compare/plugin-companions-v0.4.1...plugin-companions-v0.4.2) (2026-09-25)
 
 
