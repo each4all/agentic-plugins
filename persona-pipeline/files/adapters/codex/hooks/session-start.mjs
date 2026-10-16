@@ -13,6 +13,7 @@ import {
   consumePendingHandoff,
 } from '../../../scripts/session-handoff.mjs';
 import { gitTopLevel, hookPersona, readStdinJson } from '../../../scripts/lib/hook-helpers.mjs';
+import { absorbOutputErrors, exitAfterFlush } from '../../../scripts/lib/cli-entry.mjs';
 
 const CONTROL_CHARS = /[\x00-\x1F\x7F]/g;
 const MAX_LENGTHS = {
@@ -106,5 +107,8 @@ async function main() {
   return 0;
 }
 
+// Exit once the output has drained (the owner's discussion-2 decision R2),
+// and keep a reader that closed early from killing the hook with a stack.
+absorbOutputErrors();
 const code = await main();
-process.exit(code);
+exitAfterFlush(code);

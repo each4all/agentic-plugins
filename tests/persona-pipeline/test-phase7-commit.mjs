@@ -24,6 +24,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { personasFor, personaInfo, REPO_ROOT } from './_personas.mjs';
+import { PIPE_FLOOR_BYTES, pipeEnv, runThroughPipe } from './_pipe-output.mjs';
 
 for (const persona of personasFor('scripts/phase7-commit.mjs')) {
   const P = personaInfo(persona);
@@ -1405,6 +1406,37 @@ for (const persona of personasFor('scripts/phase7-commit.mjs')) {
         }),
         true,
       );
+    });
+  });
+
+  // The owner's discussion-2 decision R2: the plan JSON grows with the
+  // changed paths, and the CLI exits only once the pipe has taken all of it
+  // (exitAfterFlush, scripts/lib/cli-entry.mjs).
+  describe(`${persona}: phase7-commit driver — a plan over 64 KiB through a pipe`, () => {
+    it('plan mode lists 2,000 changed paths, and the reader gets the whole JSON', async () => {
+      const dir = await makeSandboxRepo();
+      try {
+        const wf = bootstrapWorkflow(dir);
+        const PATHS = 2000;
+        const names = [];
+        for (let i = 0; i < PATHS; i += 1) {
+          const name = `changed-${String(i).padStart(4, '0')}-${'n'.repeat(200)}.md`;
+          writeFileSync(join(dir, name), `${i}\n`);
+          names.push(name);
+        }
+        const r = await runThroughPipe(process.execPath, [
+          PHASE7_PATH, '--mode', 'plan', '--workflow-path', wf, '--repo-root', dir, '--host', 'claude',
+        ], { cwd: dir, env: pipeEnv() });
+        strictEqual(r.timedOut, false, 'the CLI must exit');
+        strictEqual(r.status, 0, `stderr: ${r.stderr}`);
+        ok(Buffer.byteLength(r.stdout) > PIPE_FLOOR_BYTES,
+          `the plan is over ${PIPE_FLOOR_BYTES} bytes, more than a pipe takes at once, and arrives whole (got ${Buffer.byteLength(r.stdout)}; less is the exit before the pipe drained)`);
+        const plan = JSON.parse(r.stdout);
+        strictEqual(plan.mode, 'plan');
+        for (const name of names) ok(plan.git_changes.includes(name), `git_changes lists ${name}`);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
     });
   });
 }

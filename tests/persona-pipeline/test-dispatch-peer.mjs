@@ -27,26 +27,32 @@
 //   - the CLI (the verbatim path peer-now used before peer-runner):
 //       * --peer missing (misuse, exit 2), invalid, or both prompt forms
 //       * no companion resolvable → companion_error, exit 3
+//       * a fake companion's output over 64 KiB passed through a pipe whole,
+//         help and refusals that stop before any companion is resolved
+//         (the owner's discussion-2 decision R2)
 //
 // None of these cases reads or writes workflow state, so every persona runs
 // every case (engineer's own copy of this suite folded in here at ADR-0066
 // Stage 3, when its state.mjs became generated too).
 //
-// Live spawn flows (a companion that runs, a peer CLI that fails) are NOT
-// covered here — no case spawns a companion; those are integration concerns
-// exercised by the dogfood session in Cluster 3.
+// A real peer CLI (one that runs, one that fails) is NOT covered here: the
+// one companion a case spawns is a fake that writes a fixed payload; real
+// peers are integration concerns exercised by the dogfood session in
+// Cluster 3.
 //
 // Run via `node --test tests/persona-pipeline/test-dispatch-peer.mjs`.
 
 import { describe, it } from 'node:test';
 import { strictEqual, notStrictEqual, ok, match } from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { personasFor, personaInfo, REPO_ROOT } from './_personas.mjs';
+import { PIPE_FLOOR_BYTES, pipeEnv, runThroughPipe } from './_pipe-output.mjs';
 
 for (const persona of personasFor('scripts/dispatch-peer.mjs')) {
   const P = personaInfo(persona);
@@ -444,6 +450,104 @@ for (const persona of personasFor('scripts/dispatch-peer.mjs')) {
         const r = cli(dir, ['--peer', 'codex', '--prompt-file', promptFile, '--output-format', 'json']);
         strictEqual(r.status, 3, `stderr: ${r.stderr}`);
         match(r.stderr, /companion for peer "codex" not resolved/);
+      });
+    });
+  });
+
+  // The owner's discussion-2 decision R2: the CLI passes the companion's
+  // output through and exits only once the pipe has taken all of it
+  // (exitAfterFlush, scripts/lib/cli-entry.mjs), and help and refusals stop
+  // before any companion is resolved. The fake companion writes its payload
+  // whole (exit in the write callback), so a cut is the CLI's, not the
+  // fixture's; its discover-peer.mjs leaves a marker when it is asked.
+  describe(`${persona}: dispatch-peer.mjs CLI — output through a pipe, help and refusals`, () => {
+    const PAYLOAD_BYTES = 2 * PIPE_FLOOR_BYTES;
+
+    async function withFakeCompanions(fn) {
+      const dir = await mkdtemp(join(tmpdir(), `${persona}-dispatch-pipe-`));
+      try {
+        const root = join(dir, 'companions');
+        await mkdir(root);
+        const marker = join(dir, 'resolved.marker');
+        await writeFile(join(root, 'discover-peer.mjs'), [
+          "import { writeFileSync } from 'node:fs';",
+          'export async function discoverPeerCompanion({ peer } = {}) {',
+          `  writeFileSync(${JSON.stringify(marker)}, peer ?? '');`,
+          "  return { ok: true, path: new URL('./companion.mjs', import.meta.url).pathname, version: '0.0.0-test' };",
+          '}',
+          '',
+        ].join('\n'));
+        await writeFile(join(root, 'companion.mjs'), [
+          'const args = process.argv.slice(2);',
+          "const format = args[args.indexOf('--output-format') + 1];",
+          `const text = 'p'.repeat(${PAYLOAD_BYTES - 1}) + '\\n';`,
+          "const out = format === 'json'",
+          "  ? JSON.stringify({ status: 'success', peer_host: 'claude', peer_model: null, stdout: text, exit_code: 0 })",
+          '  : text;',
+          'process.stdout.write(out, () => process.exit(0));',
+          '',
+        ].join('\n'));
+        await fn({ dir, root, marker });
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    }
+    function cliEnv(dir, root) {
+      const env = pipeEnv(process.env, { HOME: dir, AGENTIC_COMPANIONS_ROOT: root });
+      delete env.CODEX_HOME;
+      return env;
+    }
+
+    it('text mode passes a companion stdout over 64 KiB through a pipe whole', async () => {
+      await withFakeCompanions(async ({ dir, root }) => {
+        const r = await runThroughPipe(process.execPath, [DISPATCH_PATH, '--peer', 'claude', '--prompt-text', 'probe', '--output-format', 'text'], { cwd: dir, env: cliEnv(dir, root) });
+        strictEqual(r.timedOut, false, 'the CLI must exit');
+        strictEqual(r.status, 0, `stderr: ${r.stderr}`);
+        strictEqual(Buffer.byteLength(r.stdout), PAYLOAD_BYTES,
+          'the reader gets every byte (less is the exit before the pipe drained)');
+      });
+    });
+
+    it('json mode passes an envelope over 64 KiB through a pipe whole', async () => {
+      await withFakeCompanions(async ({ dir, root }) => {
+        const r = await runThroughPipe(process.execPath, [DISPATCH_PATH, '--peer', 'claude', '--prompt-text', 'probe', '--output-format', 'json'], { cwd: dir, env: cliEnv(dir, root) });
+        strictEqual(r.status, 0, `stderr: ${r.stderr}`);
+        ok(Buffer.byteLength(r.stdout) > PAYLOAD_BYTES, `stdout is ${Buffer.byteLength(r.stdout)} bytes`);
+        strictEqual(JSON.parse(r.stdout).stdout.length, PAYLOAD_BYTES, 'the envelope parses and carries the whole answer');
+      });
+    });
+
+    it('--help with a peer and a prompt prints help, exits 0 and resolves no companion', async () => {
+      await withFakeCompanions(async ({ dir, root, marker }) => {
+        const r = await runThroughPipe(process.execPath, [DISPATCH_PATH, '--help', '--peer', 'claude', '--prompt-text', 'probe'], { cwd: dir, env: cliEnv(dir, root) });
+        strictEqual(r.status, 0, `stderr: ${r.stderr}`);
+        match(r.stdout, /^Usage: dispatch-peer\.mjs/);
+        strictEqual(existsSync(marker), false, 'help must not go on to dispatch');
+      });
+    });
+
+    for (const [label, args, pattern] of [
+      ['an unknown flag', ['--peer', 'claude', '--prompt-text', 'probe', '--bogus'], /Unknown flag: --bogus/],
+      ['a missing --peer', ['--prompt-text', 'probe'], /--peer claude\|codex is required/],
+      ['a missing prompt', ['--peer', 'claude'], /--prompt-file, --prompt-text, or positional prompt is required/],
+      ['a partial bookkeeping set', ['--peer', 'claude', '--prompt-text', 'probe', '--workflow-path', '/nonexistent/wf.md', '--phase', 'compose'], /missing: ensembleType, runId/],
+    ]) {
+      it(`${label} is misuse: exit 2, and no companion is resolved`, async () => {
+        await withFakeCompanions(async ({ dir, root, marker }) => {
+          const r = await runThroughPipe(process.execPath, [DISPATCH_PATH, ...args], { cwd: dir, env: cliEnv(dir, root) });
+          strictEqual(r.status, 2, `stderr: ${r.stderr}`);
+          match(r.stderr, pattern);
+          strictEqual(existsSync(marker), false, 'a refusal must not go on to dispatch');
+        });
+      });
+    }
+
+    it('a refusal dispatchPeer throws exits 1 with its message, and no companion is resolved', async () => {
+      await withFakeCompanions(async ({ dir, root, marker }) => {
+        const r = await runThroughPipe(process.execPath, [DISPATCH_PATH, '--peer', 'claude', '--prompt-text', 'probe', '--output-format', 'xml'], { cwd: dir, env: cliEnv(dir, root) });
+        strictEqual(r.status, 1, `stderr: ${r.stderr}`);
+        match(r.stderr, /Invalid outputFormat: xml/);
+        strictEqual(existsSync(marker), false);
       });
     });
   });
