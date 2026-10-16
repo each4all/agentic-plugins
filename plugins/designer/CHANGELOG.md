@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.9.0...plugin-designer-v0.9.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **designer:** exit after stdout and stderr flush, so CLI and hook output past 64 KiB reaches a pipe whole (C93) ([5d30060](https://github.com/each4all/agentic-plugins/commit/5d3006018194a5892658845dbc40bbdbf59bf0c4))
+
 ## [0.9.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.8.4...plugin-designer-v0.9.0) (2026-10-15)
 
 

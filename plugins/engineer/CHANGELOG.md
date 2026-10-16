@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.29.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.29.0...plugin-engineer-v0.29.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **engineer:** exit after stdout and stderr flush, so CLI and hook output past 64 KiB reaches a pipe whole (C93) ([93d3e3e](https://github.com/each4all/agentic-plugins/commit/93d3e3e24f0930775004e725af9d8ff0b2084320))
+
 ## [0.29.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.28.5...plugin-engineer-v0.29.0) (2026-10-15)
 
 
