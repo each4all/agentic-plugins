@@ -14,6 +14,8 @@ import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import { absorbOutputErrors, exitAfterFlush } from './lib/exit-after-flush.mjs';
+
 const DEFAULT_REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../..');
 
 export const REQUIRED_IGNORES = [
@@ -197,13 +199,23 @@ function main() {
   if (!report.ok) {
     console.error('Artifact policy validation failed:');
     for (const error of report.errors) console.error(`  - ${error}`);
-    process.exit(1);
+    return 1;
   }
   console.log('OK — artifact ignore policy is valid');
   console.log(`  required ignores: ${report.checked.required_ignores.length}`);
   console.log(`  tracked files scanned: ${report.checked.tracked_files}`);
+  return 0;
 }
 
+// A throw is reported with its stack, as an uncaught one was, and exits 1.
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main();
+  absorbOutputErrors();
+  let code;
+  try {
+    code = main();
+  } catch (err) {
+    process.stderr.write(`${err?.stack ?? err}\n`);
+    code = 1;
+  }
+  exitAfterFlush(code);
 }

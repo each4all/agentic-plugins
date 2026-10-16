@@ -63,6 +63,12 @@ they are trigger-driven futures.
     resolve to a file. Mutation spec:
     `scripts/mutation-specs/relocation-guards.mjs`.
   - Run locally via `npm run lint:plugin-shape`.
+  - It exits through the repository's `scripts/lib/exit-after-flush.mjs`
+    (docket C93), which re-exports
+    `persona-pipeline/files/scripts/lib/cli-entry.mjs`: kit is no package
+    and ships nowhere, so it imports the helper in place rather than keep a
+    copy. Lifting `kit/lint/` out of this repository takes both files
+    along, at the same paths relative to it.
   - CI-gated once, by `validate.yml`. The linter's own tests
     (`lint/tests/`) run in `full-tests.yml` with the rest of `npm test`.
 
