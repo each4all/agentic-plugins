@@ -61,7 +61,7 @@ import { join, isAbsolute, resolve, dirname, relative, basename } from 'node:pat
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 
-import { isCliEntry } from './lib/cli-entry.mjs';
+import { absorbOutputErrors, exitAfterFlush, isCliEntry } from './lib/cli-entry.mjs';
 import { capabilityOn, loadPersona, personaName, personaOrRefuse } from './lib/persona.mjs';
 import { extractStartArguments, readArgsFile } from './lib/args-file.mjs';
 
@@ -633,11 +633,21 @@ async function cliMain(argv) {
 // sides are compared canonical and as paths, so an install reached through a
 // symlink (with or without --preserve-symlinks-main), or under a directory
 // whose name needs URL escaping (a space, '#', non-ASCII), still runs. The
-// persona declaration is validated first (ADR-0066 Decision 2).
+// persona declaration is validated first (ADR-0066 Decision 2). It exits
+// once, after the output has drained (the owner's discussion-2 decision R2);
+// a rejection is reported with its stack, as an unhandled one was, and exits 1.
 if (isCliEntry(import.meta.url)) {
-  if (!personaOrRefuse('discover-runtime.mjs')) {
-    process.exitCode = 1;
-  } else {
-    cliMain(process.argv.slice(2)).then((code) => process.exit(code ?? 0));
-  }
+  absorbOutputErrors();
+  (async () => {
+    let code = 1;
+    if (personaOrRefuse('discover-runtime.mjs')) {
+      try {
+        code = (await cliMain(process.argv.slice(2))) ?? 0;
+      } catch (err) {
+        process.stderr.write(`${err?.stack ?? err}\n`);
+        code = 1;
+      }
+    }
+    exitAfterFlush(code);
+  })();
 }

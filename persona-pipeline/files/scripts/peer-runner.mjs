@@ -44,7 +44,7 @@ import {
   resolveWorkflowStorage,
   workflowStorage,
 } from './state.mjs';
-import { isCliEntry } from './lib/cli-entry.mjs';
+import { absorbOutputErrors, exitAfterFlush, isCliEntry } from './lib/cli-entry.mjs';
 import { capabilityOn, personaName, personaOrRefuse, stateDirRel } from './lib/persona.mjs';
 import {
   createRunCancellation,
@@ -129,6 +129,8 @@ export const DEFAULT_RETENTION_TTL_DAYS = 14;
 export const DEFAULT_RETENTION_CAP = 200;
 
 const RUN_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+// Held in place of a run's handlers once the run is terminal.
+function ignoreSignal() {}
 const HANDLE_FILE = 'handle.json';
 const STDOUT_FILE = 'stdout.log';
 const STDERR_FILE = 'stderr.log';
@@ -2090,7 +2092,13 @@ async function cliRun(opts) {
           env: process.env,
         });
       } finally {
-        for (const [sig, fn] of handlers) process.off(sig, fn);
+        // The run is terminal: a signal from here on, while the result is
+        // written and the output drains before the exit, leaves it and the
+        // exit code as they are, rather than killing the process by default.
+        for (const [sig, fn] of handlers) {
+          process.on(sig, ignoreSignal);
+          process.off(sig, fn);
+        }
       }
       process.stdout.write(`${JSON.stringify(result)}\n`);
       // The exit code follows the ledger: a signal that came after the run's
@@ -2177,8 +2185,10 @@ async function cliRun(opts) {
 // Run as a CLI only when this file is the entry point (ADR-0066 D1), and only
 // with a valid persona declaration: a run ledger or a pending-ensemble write
 // must never land without knowing whose state it is (ADR-0066 Decision 2).
+// The CLI exits once, after the output has drained (the owner's discussion-2
+// decision R2): a sweep report grows with the ledger.
 if (isCliEntry(import.meta.url)) {
-  if (!personaOrRefuse('peer-runner')) process.exit(1);
-  const code = await cliMain(process.argv.slice(2));
-  process.exit(code);
+  absorbOutputErrors();
+  const code = personaOrRefuse('peer-runner') ? await cliMain(process.argv.slice(2)) : 1;
+  exitAfterFlush(code);
 }

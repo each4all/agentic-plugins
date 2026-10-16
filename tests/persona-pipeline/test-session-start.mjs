@@ -8,6 +8,7 @@
 //   - canonical_command rendered as /<persona>:<verb> (never with profile
 //     colon), /<persona>:start for a start workflow
 //   - field length caps and control-character sanitizing
+//   - a reader closed early: exit 0, no EPIPE stack (discussion-2 R2)
 //
 // Run via `node --test tests/persona-pipeline/test-session-start.mjs`.
 
@@ -362,5 +363,41 @@ for (const persona of personasFor('adapters/claude/hooks/session-start.mjs')) {
         );
       });
     });
+  });
+
+  // The owner's discussion-2 decision R2: a host that closes the hook's stdout
+  // early makes the metadata write fail with EPIPE while the hook still has
+  // work to do (the handoff backstop). The hook absorbs the error and exits 0
+  // through exitAfterFlush, never with an uncaught EPIPE stack.
+  describe(`${persona}: session-start.mjs — a reader closed early`, () => {
+    for (const [label, script] of [['Claude', SESSION_START], ['Codex', CODEX_SESSION_START]]) {
+      it(`${label} hook: exits 0 with no EPIPE stack when stdout is closed before it writes`, async () => {
+        await withTmpRepo(async (dir) => {
+          await createWorkflow({
+            repoRoot: dir,
+            verb: 'compose',
+            host: label.toLowerCase(),
+            gitBaseline: MIN_BASELINE,
+            originalRequest: 'early-closed reader',
+            currentPhase: 'phase-1',
+          });
+          const r = await new Promise((resolveP, reject) => {
+            const child = spawn('node', [script], { stdio: ['pipe', 'pipe', 'pipe'] });
+            child.stdout.destroy();
+            let stderr = '';
+            child.stderr.on('data', (d) => (stderr += d));
+            const watchdog = setTimeout(() => child.kill('SIGKILL'), 30_000);
+            child.on('close', (code) => {
+              clearTimeout(watchdog);
+              resolveP({ code, stderr });
+            });
+            child.on('error', reject);
+            child.stdin.end(JSON.stringify({ cwd: dir }));
+          });
+          strictEqual(r.code, 0, `stderr: ${r.stderr}`);
+          ok(!/EPIPE/.test(r.stderr), `no EPIPE stack: ${r.stderr}`);
+        });
+      });
+    }
   });
 }

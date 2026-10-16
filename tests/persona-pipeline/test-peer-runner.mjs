@@ -32,6 +32,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { personasFor, personaInfo } from './_personas.mjs';
+import { PIPE_FLOOR_BYTES, pipeEnv, runThroughPipe } from './_pipe-output.mjs';
 
 async function exists(path) {
   try {
@@ -1295,6 +1296,41 @@ setInterval(() => {}, 1000);
 
       strictEqual(cp.status, 2);
       ok(/run-id is required/.test(cp.stderr), cp.stderr);
+    });
+  });
+
+  // The owner's discussion-2 decision R2: a sweep report grows with the
+  // ledger, and the CLI exits only once the pipe has taken all of it
+  // (exitAfterFlush, scripts/lib/cli-entry.mjs).
+  describe(`${persona}: peer-runner.mjs CLI — a sweep report over 64 KiB through a pipe`, () => {
+    it('sweep previews the retention of a large ledger, and the reader gets the whole report', async () => {
+      await withTmpRepo(async (repoRoot) => {
+        const RUNS = 1000;
+        const now = Date.now();
+        const ids = [];
+        for (let i = 0; i < RUNS; i += 1) {
+          // Newest first: run 0 is the one a cap of 1 keeps.
+          const runId = `sweep-${String(i).padStart(4, '0')}-${'r'.repeat(230)}`;
+          const at = new Date(now - i * 1000).toISOString();
+          await writeHandleFixture(repoRoot, runId, { status: 'completed', completed_at: at, updated_at: at, exit_code: 0 });
+          ids.push(runId);
+        }
+        const r = await runThroughPipe(process.execPath, [
+          PEER_RUNNER_PATH, 'sweep', '--repo-root', repoRoot, '--retention-cap', '1', '--retention-ttl-days', '3650',
+        ], { cwd: repoRoot, env: pipeEnv() });
+        strictEqual(r.timedOut, false, 'the CLI must exit');
+        strictEqual(r.status, 0, `stderr: ${r.stderr}`);
+        ok(Buffer.byteLength(r.stdout) > PIPE_FLOOR_BYTES,
+          `the report is over ${PIPE_FLOOR_BYTES} bytes, more than a pipe takes at once, and arrives whole (got ${Buffer.byteLength(r.stdout)}; less is the exit before the pipe drained)`);
+        const report = JSON.parse(r.stdout);
+        deepStrictEqual(
+          report.planned_prunes.map((p) => p.run_id).sort(),
+          ids.slice(1).sort(),
+          'the preview names every run but the newest',
+        );
+        ok(report.planned_prunes.every((p) => p.reason === 'cap'));
+        deepStrictEqual(report.pruned, [], 'a preview deletes nothing');
+      });
     });
   });
 }

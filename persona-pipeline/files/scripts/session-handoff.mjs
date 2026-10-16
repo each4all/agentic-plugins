@@ -51,7 +51,7 @@ import {
 } from './state.mjs';
 import { evaluateStopArchive } from './stop-archive.mjs';
 import { aliasedComponent } from './lib/state-root.mjs';
-import { isCliEntry } from './lib/cli-entry.mjs';
+import { absorbOutputErrors, exitAfterFlush, isCliEntry } from './lib/cli-entry.mjs';
 import { capabilityOn, commandPrefix, loadPersona, personaName, personaOrRefuse } from './lib/persona.mjs';
 
 // Default routing recommendation for an active workflow: resume it.
@@ -1169,26 +1169,32 @@ export async function runSessionHandoff(options = {}) {
 }
 
 // Run as a CLI only when this file is the entry point (ADR-0066 D1), and only
-// with a valid persona declaration.
+// with a valid persona declaration. Each path returns its code, and the CLI
+// exits once, after the output has drained (the owner's discussion-2
+// decision R2).
+async function cliRun(argv) {
+  if (!personaOrRefuse('session-handoff.mjs')) return 1;
+  try {
+    const options = parseArgs(argv);
+    const result = await runSessionHandoff(options);
+    if (result.help) {
+      process.stdout.write(`${result.text}\n`);
+      return 0;
+    }
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return 0;
+  } catch (error) {
+    process.stderr.write(`✗ ${error.message}\n`);
+    return 1;
+  }
+}
+
 if (isCliEntry(import.meta.url)) {
+  absorbOutputErrors();
   // Async IIFE wrapper (project convention) — avoids the unsettled top-level
   // await deadlock when state.mjs's dynamic imports run during module load.
   (async () => {
-    if (!personaOrRefuse('session-handoff.mjs')) {
-      process.exitCode = 1;
-      return;
-    }
-    try {
-      const options = parseArgs(process.argv.slice(2));
-      const result = await runSessionHandoff(options);
-      if (result.help) {
-        process.stdout.write(`${result.text}\n`);
-        return;
-      }
-      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-    } catch (error) {
-      process.stderr.write(`✗ ${error.message}\n`);
-      process.exit(1);
-    }
+    const code = await cliRun(process.argv.slice(2));
+    exitAfterFlush(code);
   })();
 }
