@@ -97,8 +97,8 @@ for (const { label: persona, path: cliEntryPath } of COPIES) {
       await rm(dir, { recursive: true, force: true });
     }
   }
-  const run = (driver, mode, extra = []) =>
-    runThroughPipe(process.execPath, [driver, CLI_ENTRY_URL, mode, ...extra], { timeoutMs: 30_000 });
+  const run = (driver, mode, extra = [], options = {}) =>
+    runThroughPipe(process.execPath, [driver, CLI_ENTRY_URL, mode, ...extra], { timeoutMs: 30_000, ...options });
 
   describe(`${persona}: cli-entry.mjs exitAfterFlush — a CLI process`, () => {
     it('stdout and stderr over 64 KiB both reach the reader whole, exit 0', async () => {
@@ -222,10 +222,12 @@ for (const { label: persona, path: cliEntryPath } of COPIES) {
 
     it('control: a bare process.exit() cuts piped output short', async () => {
       await withDriver(async ({ driver }) => {
-        const r = await run(driver, 'bare');
+        // Read only after the exit: a reader draining meanwhile let a bare
+        // exit deliver everything on Linux, 1 run in 1,000 (_pipe-output.mjs).
+        const r = await run(driver, 'bare', [], { readAfterExit: true });
         strictEqual(r.status, 3);
-        // What the pipe's buffer took (65,536 bytes on macOS, 146,176 on
-        // Linux), or a little more when the reader drains meanwhile; never all.
+        // What the pipe's buffer and the reader's high-water mark took
+        // (at most 131,072 bytes on macOS, 182,720 on Linux, measured); never all.
         ok(r.stdout.length < BYTES,
           `without the helper the reader loses the rest (got ${r.stdout.length}); if this changes, the regressions above test nothing here`);
       });
