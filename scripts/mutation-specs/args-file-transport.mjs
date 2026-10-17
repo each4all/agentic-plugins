@@ -171,6 +171,12 @@ export const MUTATIONS = [
     from: '# Runtime - Doctor\n\n$ARGUMENTS\n', to: '# Runtime - Doctor\n',
     why: 'the typed text is no longer shown above the steps that ask the model to copy it',
   },
+  {
+    id: 'R6', tests: [T_PORT], file: 'plugins/runtime/core/skills/dashboard/SKILL.md',
+    from: `ARGS_DIR='<directory mktemp printed>'\nREPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"\n`,
+    to: `ARGS_DIR='<directory mktemp printed>'\n`,
+    why: 'a Codex skill passes --repo-root "$REPO_ROOT" without defining it, so the CLI gets an empty root (C78)',
+  },
   // ── K: the cleanup ───────────────────────────────────────────────────────
   // Since the amendment of 2026-09-29 to ADR-0059 (f) the reader removes the
   // file and its directory; no runbook line does. Each defect below breaks the

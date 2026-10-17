@@ -27,6 +27,7 @@ with your file-editing tool, holding `{"agentic_args": 1, "text": "…"}` with
 
 ```bash
 ARGS_DIR='<directory mktemp printed>'
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 node "<runtime-plugin-root>/scripts/doctor.mjs" --repo-root "$REPO_ROOT" --args-file "$ARGS_DIR/args.json"
 ```
 
