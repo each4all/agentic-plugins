@@ -173,22 +173,34 @@ standalone, no workflow file write occurs.
 ### Layer 2 commit-manifest recording (`code` profile only, command-mode only — ADR-0028 §Layer-2)
 
 When this skill runs in `code` profile **and** is invoked as a sub-step
-of a workflow command (i.e., `$ACTIVE` is bound to the workflow file),
-record every Write/Edit on a tracked path into the workflow's
+of a workflow command (an active workflow on this branch), record every
+Write/Edit on a tracked path into the workflow's
 `commit_manifest` so Phase 7 can intersect the manifest with
-`git_changes` and stage only the workflow-intended files:
+`git_changes` and stage only the workflow-intended files.
+Fill `<plugin-root>` with this plugin's installed root, on either host:
+the path you read this SKILL.md from, cut before its
+`/core/skills/compose/` directory (`../checkpoint/SKILL.md` has the Plugin
+root row for each host). The block reads no variable and no Claude plugin
+cache for it: on Codex either would run another copy's `state.mjs`.
 
 ```bash
 # After each Write or Edit operation on a tracked path during the
-# RED-GREEN-REFACTOR loop, append a manifest entry:
-node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" record-composed-file \
+# RED-GREEN-REFACTOR loop, append a manifest entry. A fresh shell: the
+# workflow is found again here, never carried from an earlier block.
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+ACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
+[ -n "$ACTIVE" ] || { echo "✗ No active engineer workflow on this branch; nothing was recorded." >&2; exit 1; }
+node "<plugin-root>/scripts/state.mjs" record-composed-file \
   --workflow-path "$ACTIVE" \
   --path "<repo-relative path>" \
-  --op create   # or "edit" for an existing file
+  --op create || exit $?   # or "edit" for an existing file
 ```
 
-The CLI subcommand is a no-op when `--workflow-path ""` is passed
-(standalone-mode boundary). `--op` is `create` for a newly added file
+Standalone, with no workflow command, skip this step. The snippet finds the
+workflow in its own shell, so a manifest entry is never lost to a variable an
+earlier Bash call set; with no active workflow it stops instead of recording
+nothing (the CLI itself is a no-op when `--workflow-path ""` is passed, the
+standalone-mode boundary). `--op` is `create` for a newly added file
 and `edit` for a modification of an existing tracked file. The helper
 re-uses `validate-commit.mjs#assertSafePath` to reject pathspec
 injection at the write boundary (ADR-0028 N1).
