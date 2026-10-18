@@ -142,6 +142,47 @@ for (const persona of personasFor('scripts/state.mjs')) {
       match(bad.stderr, /not a .* workflow id/);
     });
 
+    // C134(a) — the id a user typed reaches resolve-workflow as a file, read as
+    // the text files are, then judged and resolved exactly as --workflow-id is.
+    it("resolve-workflow --workflow-id-file: the same lookup, validation and exit codes as --workflow-id; the file is kept", () => {
+      reset();
+      const path = create(repo.main, "feat/x", repo.head);
+      const id = basename(path, ".md");
+      const idFile = join(repo.main, "..", `${basename(repo.main)}-workflow-id.txt`);
+      const byFile = (bytes) => {
+        writeFileSync(idFile, bytes);
+        return run(["resolve-workflow", "--repo-root", repo.lane, "--workflow-id-file", idFile], { cwd: repo.lane });
+      };
+      for (const bytes of [`${id}\n`, id, `${id}\r\n`]) {
+        const r = byFile(bytes);
+        strictEqual(r.status, 0, `${JSON.stringify(bytes)}: ${r.stderr}`);
+        strictEqual(r.stdout, `${path}\n`);
+        ok(existsSync(idFile), "the file is never deleted");
+      }
+      const none = byFile("decide-20261008T000000Z-000000\n");
+      strictEqual(none.status, 3, none.stderr);
+      match(none.stderr, /no workflow "decide-20261008T000000Z-000000"/);
+      for (const [bytes, pattern] of [
+        ["../archive/x\n", /not a .* workflow id/],
+        [`${id} \n`, /not a .* workflow id/],
+        [`$(touch x)\n`, /not a .* workflow id/],
+        ["", /is empty/],
+        [Buffer.from([0xff, 0x0a]), /is not valid UTF-8/],
+      ]) {
+        const r = byFile(bytes);
+        strictEqual(r.status, 1, `${JSON.stringify(String(bytes))}: ${r.stderr}`);
+        strictEqual(r.stdout, "");
+        match(r.stderr, pattern);
+      }
+      writeFileSync(idFile, id);
+      const both = run(["resolve-workflow", "--repo-root", repo.lane, "--workflow-id", id, "--workflow-id-file", idFile], { cwd: repo.lane });
+      strictEqual(both.status, 1);
+      match(both.stderr, /pass --workflow-id or --workflow-id-file, not both/);
+      const twice = run(["resolve-workflow", "--repo-root", repo.lane, "--workflow-id-file", idFile, "--workflow-id-file", idFile], { cwd: repo.lane });
+      strictEqual(twice.status, 2);
+      match(twice.stderr, /--workflow-id-file is given more than once/);
+    });
+
     for (const shell of SHELLS) {
       it(`resume.md (${shell}): archive <id> from a lane resolves the record and archives it in its own home`, () => {
         reset();

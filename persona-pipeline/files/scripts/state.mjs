@@ -5141,9 +5141,10 @@ export function readTextArgumentFile(path, flag) {
   return value;
 }
 
-// The free-text flags that take a --<name>-file <path> twin. Other *-file
-// flags (--text-file, --args-file) keep their own readers.
-const TEXT_FILE_FLAGS = ['original-request', 'next-action', 'phase-note', 'summary', 'resolution'];
+// The flags that take a --<name>-file <path> twin: the free-text ones, and
+// --workflow-id, a workflow id the user typed (C134(a)). Other *-file flags
+// (--text-file, --args-file) keep their own readers.
+const TEXT_FILE_FLAGS = ['original-request', 'next-action', 'phase-note', 'summary', 'resolution', 'workflow-id'];
 
 // Every --<name>-file is read into --<name> before a subcommand runs, so a bad
 // file refuses before anything is written, and a required flag is met by
@@ -5248,11 +5249,12 @@ function cliPrintHelp() {
       '    workflow files are on the same branch (per-branch single-active',
       '    invariant per ADR-0018 §sub-2).',
       '',
-      '  resolve-workflow --repo-root <checkout> --workflow-id <id>',
+      '  resolve-workflow --repo-root <checkout> (--workflow-id <id> | --workflow-id-file <path>)',
       '    Print the workflow file <id>.md found in the workflows homes of the',
       "    checkout's read set (ADR-0067 Decision 4, item 2). Exit 3 when none",
-      '    holds it; exit 1 on an error (two files hold it, or a root cannot be',
-      '    read).',
+      '    holds it; exit 1 on an error (two files hold it, a root cannot be',
+      '    read, or the id is no workflow id). --workflow-id-file reads the id',
+      '    from a file, as the text files below are read (C134(a)).',
       '',
       '  list-workflows --repo-root <checkout>',
       '    Print every workflow file in the workflows homes of the checkout\'s',
@@ -5537,8 +5539,8 @@ function cliPrintHelp() {
       '    creation on; --disable (rollback) is refused once lanes have run.',
       '',
       'Text files (ADR-0059 amendment (j)): --original-request, --next-action,',
-      '--phase-note, --summary and --resolution each have a --<name>-file <path>',
-      'twin, read as UTF-8 with one trailing newline removed (an empty value, a NUL',
+      '--phase-note, --summary, --resolution and --workflow-id each have a',
+      '--<name>-file <path> twin, read as UTF-8 with one trailing newline removed (an empty value, a NUL',
       'byte and standard input are refused; the file is kept). Pass one form or the',
       'other. A runbook passes text an agent wrote this way, never on a command',
       'line; the inline form is for programs.',
