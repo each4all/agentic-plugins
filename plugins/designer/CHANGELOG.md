@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.9.1...plugin-designer-v0.10.0) (2026-10-18)
+
+
+### Features
+
+* **designer:** add the peer-runner new-run-id allocator for peer run ids (C119, C26) ([d1c9efd](https://github.com/each4all/agentic-plugins/commit/d1c9efda535be23cd7d66f070225fb930ec494bb))
+
 ## [0.9.1](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.9.0...plugin-designer-v0.9.1) (2026-10-16)
 
 

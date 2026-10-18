@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.29.1...plugin-engineer-v0.30.0) (2026-10-18)
+
+
+### Features
+
+* **engineer:** add the peer-runner new-run-id allocator for peer run ids (C119, C26) ([2448b0e](https://github.com/each4all/agentic-plugins/commit/2448b0e5e479ba6f66412fee529175a38c0eb4a3))
+
 ## [0.29.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.29.0...plugin-engineer-v0.29.1) (2026-10-16)
 
 
