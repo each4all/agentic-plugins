@@ -89,8 +89,8 @@ fi
 SHOWN="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" plan-hash --workflow-path "$MACRO_PATH")" || exit 1
 # Every field the hash covers is shown — id, label, branch, blocked_by,
 # verb, profile, topic — with | and line breaks escaped so a cell stays one cell.
-printf '%s\n' "$SHOWN" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d);const keys=["id","label","verb","profile","branch","blocked_by","topic"];const cell=(v)=>(v===undefined?"":Array.isArray(v)?v.join(", "):String(v)).replace(/\\/g,"\\\\").replace(/\|/g,"\\|").replace(/\r\n|\r|\n/g,"\\n");process.stdout.write("| "+keys.join(" | ")+" |\n|"+keys.map(()=>"---").join("|")+"|\n");for(const s of o.subtasks)process.stdout.write("| "+keys.map((k)=>cell(s[k])).join(" | ")+" |\n");process.stdout.write("\nplan_hash: "+o.plan_hash+"\napproval before: "+o.approval.status+(o.awaiting_owner_gate?" (awaiting_owner_gate="+o.awaiting_owner_gate+")":"")+"\n")})' || exit 1
-PLAN_HASH="$(printf '%s\n' "$SHOWN" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>process.stdout.write(JSON.parse(d).plan_hash))')" || exit 1
+printf '%s\n' "$SHOWN" | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d);const keys=["id","label","verb","profile","branch","blocked_by","topic"];const cell=(v)=>(v===undefined?"":Array.isArray(v)?v.join(", "):String(v)).replace(/\\/g,"\\\\").replace(/\|/g,"\\|").replace(/\r\n|\r|\n/g,"\\n");process.stdout.write("| "+keys.join(" | ")+" |\n|"+keys.map(()=>"---").join("|")+"|\n");for(const s of o.subtasks)process.stdout.write("| "+keys.map((k)=>cell(s[k])).join(" | ")+" |\n");process.stdout.write("\nplan_hash: "+o.plan_hash+"\napproval before: "+o.approval.status+(o.awaiting_owner_gate?" (awaiting_owner_gate="+o.awaiting_owner_gate+")":"")+"\n")})' || exit 1
+PLAN_HASH="$(printf '%s\n' "$SHOWN" | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>process.stdout.write(JSON.parse(d).plan_hash))')" || exit 1
 
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" plan-approve \
   --workflow-path "$MACRO_PATH" --host claude \

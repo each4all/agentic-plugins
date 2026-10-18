@@ -21,6 +21,7 @@
 const TP = 'tests/persona-pipeline/test-consensus-task.mjs';
 const TR = 'tests/persona-pipeline/test-runbook-contracts.mjs';
 const TO = 'tests/orchestrator/test-plan-consensus.mjs';
+const TRB = 'tests/orchestrator/test-approve-runbook.mjs';
 const TA = 'tests/orchestrator/test-autopilot-consensus.mjs';
 const TD = 'tests/orchestrator/test-autopilot-driver.mjs';
 const TC = 'tests/orchestrator/test-cutover.mjs';
@@ -261,11 +262,11 @@ export const MUTATIONS = [
     killed_by: /a conflict passes the run id to plan-set/,
   },
   {
-    id: 'O7', file: PLAN, tests: [TO],
-    from: '    --text-file "$CONTESTED_FILE")" || exit $?\n',
-    to: '    --text-file "$CONTESTED_FILE")"\n',
+    id: 'O7', file: PLAN, tests: [TRB],
+    from: '      --text-file "$CONTESTED_FILE")" || exit $?\n',
+    to: '      --text-file "$CONTESTED_FILE")"\n',
     why: 'a refused task file passes, and an empty proposal is printed',
-    killed_by: /an empty set of contested items writes no task file and fails the block/,
+    killed_by: /a rerun after a failure at any write keeps the ensemble result once/,
   },
   {
     id: 'O8', file: ORCH_STATE, tests: [TO],
@@ -290,10 +291,10 @@ export const MUTATIONS = [
   },
   {
     id: 'O11', file: PLAN, tests: [TO],
-    from: '  [ -n "${CONTESTED_FILE:-}" ] || { echo "✗ CONTESTED_FILE names no file of contested items; no task file was written." >&2; exit 1; }\n',
-    to: '',
-    why: 'a block run with no contested-items file fails with no word of what is missing',
-    killed_by: /an empty set of contested items writes no task file and fails the block/,
+    from: '    || { echo "✗ $CONTESTED_FILE is missing or blank: write the contested items there with your file-writing tool first; nothing was written." >&2; exit 1; }\n',
+    to: '    || true\n',
+    why: 'a conflict without contested items records the note and the ensemble result, then fails at the task file (C132)',
+    killed_by: /an empty or missing set of contested items fails the block before any write/,
   },
 
   // ---- A: the autopilot policy -----------------------------------------------

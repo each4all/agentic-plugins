@@ -82,8 +82,8 @@ After Step 3 Synthesize produces the `verdict` (`pass | concerns | conflict`) an
 - **Supersede policy**: if a phase is re-executed (Plan Adjustment, retry), the re-run produces a new entry with the same `(phase, ensemble_type)` but a NEW `run_id`. Entries are never overwritten in place; the list grows subject to the retention cap.
 - **Transport**: the summary and the phase note carry the peer's sentences, so the launching runbook writes each to a file with its file-writing tool and passes `--summary-file` / `--phase-note-file` (ADR-0059, amendment of 2026-10-10); spliced into a command line, a backtick or `$(…)` in them would run. The inline `--summary` stays for programs.
 - **Sanitize policy** (writer-side, applied in this order before persisting):
-  1. The summary travels as a YAML-double-quoted scalar through `state.mjs yamlScalar` (`JSON.stringify`), which natively escapes CR, LF, control chars, and double quotes.
-  2. If a caller wants secret-pattern scrubbing on peer output, run `state.mjs scrubSecrets` on the summary before writing its file. The orchestrator MVP does NOT do this automatically for ensemble summaries — it is the caller's responsibility when the peer output may quote logs or credentials.
+  1. The summary travels as a YAML-double-quoted scalar through the `yamlScalar` function `state.mjs` uses (`JSON.stringify`), which natively escapes CR, LF, control chars, and double quotes.
+  2. Nothing masks secret-shaped text in an ensemble summary: `scrubSecrets` is a function `state.mjs` exports, not a subcommand, and `ensemble-commit` does not call it. When the peer output may quote logs or credentials, leave them out of the summary before writing its file; the full answer stays in the peer-run ledger.
 
 The retention cap (`ENSEMBLE_RESULTS_RETENTION_CAP = 20`) enforces a global write-time limit. Oldest entries by `completed_at` are evicted on overflow.
 

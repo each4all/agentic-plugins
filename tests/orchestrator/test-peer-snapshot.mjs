@@ -12,12 +12,13 @@
 
 import { describe, it } from 'node:test';
 import { ok, strictEqual, notStrictEqual, deepStrictEqual, rejects, match } from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -26,6 +27,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
+import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -715,7 +717,7 @@ describe('orchestrator: runbook guidance for the snapshot (C96, C127)', () => {
     ok(skill.includes('A codex peer runs in a snapshot of HEAD plus the working tree and the index (C96), never the checkout'));
     for (const [name, text] of [['commands/plan.md', command], ['core/skills/plan/SKILL.md', skill]]) {
       ok(text.includes('is `failed`, `cancelled` or `orphaned`, whatever its `error_kind`, `snapshot_failed` included), the plan is LOCAL-ONLY'), `${name}: a run that did not complete makes the plan LOCAL-ONLY`);
-      ok(text.includes('set `ENSEMBLE_VERDICT=failed` and name the `error_kind` in `summary.txt`'), `${name}: names the failed ensemble verdict`);
+      ok(text.includes('set the block\'s `ENSEMBLE_VERDICT` line to `failed` and name the `error_kind` in `summary.txt`'), `${name}: names the failed ensemble verdict`);
       ok(text.includes('--verdict "${ENSEMBLE_VERDICT:-$VERDICT}" --summary-file "$TEXT_DIR/summary.txt"'), `${name}: the ensemble commit takes it`);
     }
   });
@@ -725,4 +727,97 @@ describe('orchestrator: runbook guidance for the snapshot (C96, C127)', () => {
       ok(read(rel).includes('A codex peer answers from a snapshot of the checkout, removed when the run ends (C96): a file it writes is discarded with it.'), rel);
     }
   });
+});
+
+// Docket C75 — peer-now's Phase 2 note, on both hosts, runs in a fresh shell:
+// it finds the macro on the branch again and reads the peer, the run id and
+// the run's paths from what Phase 1 wrote to the text directory. The response
+// holds shell syntax, which is recorded and never run.
+describe('orchestrator peer-now: the note block runs in a fresh shell (C75)', async () => {
+  const { fencedBlocks } = await import(pathToFileURL(join(REPO_ROOT, 'tests/_runbook-checks.mjs')).href);
+  const { createWorkflow, readWorkflow } = await import(pathToFileURL(ORCH('scripts/state.mjs')).href);
+  const noteBlock = (rel) => {
+    const found = fencedBlocks(readFileSync(ORCH(rel), 'utf8')).map((b) => b.lines.join('\n')).filter((b) => b.includes('RESPONSE="$(head -c 4000 "$STDOUT_PATH")"'));
+    strictEqual(found.length, 1, `${rel}: one block builds the note`);
+    return found[0];
+  };
+  // Phase 2's lookup: the one block that finds the macro (the note block
+  // finds none, it reads the lookup's).
+  const lookupBlock = (rel) => {
+    const found = fencedBlocks(readFileSync(ORCH(rel), 'utf8')).map((b) => b.lines.join('\n')).filter((b) => b.includes('find-active --repo-root "$REPO_ROOT")" || exit 1'));
+    strictEqual(found.length, 1, `${rel}: one block finds the active macro`);
+    return found[0];
+  };
+  const fill = (block) => block.replaceAll('<plugin-root>', ORCH('')).replaceAll('<claude|codex>', 'codex');
+  // Each test reads its blocks itself: a block missing fails that test.
+  const blocks = [
+    ['claude', () => lookupBlock('commands/peer-now.md'), () => noteBlock('commands/peer-now.md'), "TEXT_DIR='<directory from step 1>'"],
+    ['codex', () => fill(lookupBlock('core/skills/peer-now/SKILL.md')), () => fill(noteBlock('core/skills/peer-now/SKILL.md')), "TEXT_DIR='<directory from mktemp>'"],
+  ];
+  const shells = ['bash', 'zsh', 'sh'].filter((s) => spawnSync(s, ['-c', 'exit 0']).status === 0);
+  const git = (dir, ...args) => execFileSync('git', ['-C', dir, '-c', 'user.name=T', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args], { stdio: 'pipe' });
+  for (const shell of shells) {
+    for (const [host, lookupOf, blockOf, dirLine] of blocks) {
+      // Critique H3 — the lookup and the note block, each in a fresh shell,
+      // with a branch switched between them to one whose macro is another: the
+      // note goes to the macro the lookup found.
+      it(`${shell}, ${host}: the note holds the run Phase 1 wrote and the response, none of it run, in the macro the lookup found`, async () => {
+        const [lookup, block] = [lookupOf(), blockOf()];
+        const dir = realpathSync(mkdtempSync(join(tmpdir(), 'peer-now-note-')));
+        try {
+          spawnSync('git', ['init', '-q', '-b', 'main', dir]);
+          writeFileSync(join(dir, '.gitignore'), '.agentic-plugins/\n');
+          git(dir, 'add', '.gitignore');
+          git(dir, 'commit', '-q', '-m', 'init');
+          const { filePath } = await createWorkflow({
+            repoRoot: dir, verb: 'plan', host: 'claude',
+            gitBaseline: { branch: 'main', head: '0'.repeat(40), status_digest: '' }, originalRequest: 'peer-now note fixture',
+          });
+          git(dir, 'switch', '-q', '-c', 'feat/other');
+          const { filePath: other } = await createWorkflow({
+            repoRoot: dir, verb: 'plan', host: 'claude',
+            gitBaseline: { branch: 'feat/other', head: '0'.repeat(40), status_digest: '' }, originalRequest: 'the macro the switched branch names',
+          });
+          git(dir, 'switch', '-q', 'main');
+          const otherBefore = readFileSync(other, 'utf8');
+          const textDir = mkdtempSync(join(tmpdir(), 'agentic-text.'));
+          const stdoutPath = join(textDir, 'stdout.txt');
+          writeFileSync(stdoutPath, 'line one\nline \\ two $(touch pwned) `touch pwned2`\n');
+          writeFileSync(join(textDir, 'peer'), 'codex');
+          writeFileSync(join(textDir, 'run-id'), 'peer-now-20261017T000000Z-0a0b0c');
+          writeFileSync(join(textDir, 'run.json'), JSON.stringify({ ok: true, run_id: 'peer-now-20261017T000000Z-0a0b0c', handle_path: join(textDir, 'handle.json'), stdout_path: stdoutPath }));
+          const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AGENTIC_') && k !== 'CLAUDE_PLUGIN_ROOT'));
+          const run = (b) => {
+            ok(b.startsWith(`${dirLine}\n`), 'the block opens with its TEXT_DIR line');
+            return spawnSync(shell, ['-c', b.replace(dirLine, () => `TEXT_DIR='${textDir}'`)], { cwd: dir, encoding: 'utf8', env: { ...env, AGENTIC_ORCHESTRATOR_ROOT: ORCH('') } });
+          };
+          let r = run(lookup);
+          strictEqual(r.status, 0, r.stderr);
+          strictEqual(r.stdout, `${filePath}\n`, 'the lookup prints the macro it found');
+          git(dir, 'switch', '-q', 'feat/other');
+          r = run(block);
+          strictEqual(r.status, 0, r.stderr);
+          const { body } = await readWorkflow(filePath);
+          ok(body.includes('[Peer] codex consultation'), body);
+          ok(body.includes('run_id: peer-now-20261017T000000Z-0a0b0c'), body);
+          ok(body.includes('line \\ two $(touch pwned) `touch pwned2`'), body);
+          ok(!existsSync(join(dir, 'pwned')) && !existsSync(join(dir, 'pwned2')), 'nothing in the response ran');
+          strictEqual(readFileSync(other, 'utf8'), otherBefore, 'the macro the switched branch names is untouched');
+          // A lookup that found no macro: the note block records nothing.
+          git(dir, 'switch', '-q', '-c', 'feat/none');
+          r = run(lookup);
+          strictEqual(r.status, 0, r.stderr);
+          strictEqual(readFileSync(join(textDir, 'macro-path'), 'utf8'), '', 'the lookup wrote that it found none');
+          const before = [readFileSync(filePath, 'utf8'), readFileSync(other, 'utf8')];
+          r = run(block);
+          strictEqual(r.status, 1, r.stderr);
+          ok(r.stderr.includes('The lookup found no active macro'), r.stderr);
+          deepStrictEqual([readFileSync(filePath, 'utf8'), readFileSync(other, 'utf8')], before, 'nothing was recorded');
+          rmSync(textDir, { recursive: true, force: true });
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      });
+    }
+  }
 });

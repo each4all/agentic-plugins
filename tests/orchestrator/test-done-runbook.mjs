@@ -9,10 +9,10 @@
 // would extract from $ARGUMENTS. git runs against a real bare "origin"; `gh`
 // is a fake on PATH.
 
-import { describe, it } from 'node:test';
-import { deepStrictEqual, strictEqual, ok, rejects } from 'node:assert/strict';
+import { describe, it, before } from 'node:test';
+import { deepStrictEqual, strictEqual, notStrictEqual, ok, rejects } from 'node:assert/strict';
 import { mkdtemp, rm, writeFile, mkdir, chmod, readFile, rename, symlink } from 'node:fs/promises';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -31,9 +31,11 @@ const PHASES = DONE_TEXT.slice(DONE_TEXT.indexOf('## Phase 0'), DONE_TEXT.indexO
 
 function bashBlocks(section) {
   const blocks = [...section.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]);
-  // Contract: a moved heading that cuts the section short must fail here, not run
-  // part of the runbook.
-  ok(blocks.length >= 5, `done.md phases carry their bash blocks (found ${blocks.length})`);
+  // Contract: Phases 0-3 are one block, run in one shell (docket C75) — a moved
+  // heading that cuts the section short, or a block split again, must fail
+  // here, not run part of the runbook.
+  strictEqual(blocks.length, 1, `done.md runs its phases as one bash block (found ${blocks.length})`);
+  ok(blocks[0].includes("# --- Phase 3b"), "the block runs through Phase 3b");
   return blocks;
 }
 
@@ -68,6 +70,29 @@ const GIT_ENV = {
   GIT_CONFIG_NOSYSTEM: '1',
 };
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, env: GIT_ENV, encoding: 'utf8' }).trim();
+
+// Every block runs under bash and zsh (Critique J4); a shell that is not
+// installed (zsh on the CI image) is reported as skipped, not passed. Not
+// /bin/sh: the blocks use bash arrays, which dash, Ubuntu's /bin/sh, lacks
+// (the runbooks say so). SH is the shell of the suite running now.
+const DONE_SHELLS = ['bash', 'zsh'].map((sh) => [sh, spawnSync(sh, ['-c', 'true']).status === 0]);
+let SH = 'bash';
+
+// The Codex mirror ($orchestrator:done) runs the same phases as the one bash
+// block of its skill, with the plugin root filled in as the agent fills it.
+// The block runs in one shell call and reads nothing an earlier call wrote
+// (docket C75; the owner's ruling of 2026-10-17 removed the files its split
+// phases carried). Every case below runs against both runbooks: VARIANT is
+// the one the running suite holds.
+const SKILL_TEXT = await readFile(resolve(ORCH_ROOT, 'core/skills/done/SKILL.md'), 'utf8');
+function codexBlock(root = ORCH_ROOT) {
+  const blocks = [...SKILL_TEXT.matchAll(/^```bash\n([\s\S]*?)^```$/gm)].map((m) => m[1]);
+  // Contract: one block, as on Claude — a block split again must fail here.
+  strictEqual(blocks.length, 1, `the Codex done skill runs its phases as one bash block (found ${blocks.length})`);
+  ok(blocks[0].includes('# --- Phase 3: resolve the landing'), 'the block runs through the landing');
+  return blocks[0].replaceAll('<orchestrator-plugin-root>', root);
+}
+let VARIANT = 'claude';
 
 const ENGINEER_ID = 'compose-20260927T100000Z-abcdef';
 // FAKE_GH_RETARGET, when set, rewrites the macro while gh "runs": a plan
@@ -146,10 +171,15 @@ async function withFixture(fn, { topicA, idA = 'A' } = {}) {
     // file in REASON_FILE; the runbook never sees the text as shell input.
     // `typed` overrides the argument line when a case needs its exact spelling;
     // `prelude` runs before the script (shell options).
+    // On Codex the plugin root a case swaps in (a shim) is the one the agent
+    // fills into the block, and no Claude variable reaches the shell.
     async function done(vars, { prs = [pr()], reason = null, env = {}, typed = null, prelude = '' } = {}) {
       await writeFile(prsFile, JSON.stringify(prs));
       const all = { EXPLICIT_SUBTASK_ID: idA, ...vars };
-      const script = runbookScript(typed ?? typedArguments(all, reason));
+      const codex = VARIANT === 'codex';
+      const script = codex
+        ? codexBlock(env.AGENTIC_ORCHESTRATOR_ROOT ?? ORCH_ROOT)
+        : runbookScript(typed ?? typedArguments(all, reason));
       if (reason !== null) {
         const reasonFile = join(dir, 'reason.txt');
         await writeFile(reasonFile, reason);
@@ -159,14 +189,15 @@ async function withFixture(fn, { topicA, idA = 'A' } = {}) {
       const assigns = Object.entries(all)
         .map(([k, v]) => `${k}='${String(v).replace(/'/g, "'\\''")}'`).join('\n');
       const full = `${prelude}\n${assigns}\ncd '${work}'\n${script}`;
-      const r = spawnSync('bash', ['-c', full], {
-        encoding: 'utf8',
-        env: {
-          ...GIT_ENV,
-          PATH: `${bin}:${dirname(process.execPath)}:${process.env.PATH}`,
-          CLAUDE_PLUGIN_ROOT: ORCH_ROOT, AGENTIC_HOST: 'claude', FAKE_GH_PRS: prsFile, ...env,
-        },
-      });
+      const base = { ...GIT_ENV, PATH: `${bin}:${dirname(process.execPath)}:${process.env.PATH}`, FAKE_GH_PRS: prsFile };
+      let shellEnv;
+      if (codex) {
+        const { CLAUDE_PLUGIN_ROOT: _r, AGENTIC_ORCHESTRATOR_ROOT: _o, AGENTIC_HOST: _h, ...rest } = { ...base, ...env };
+        shellEnv = rest;
+      } else {
+        shellEnv = { ...base, CLAUDE_PLUGIN_ROOT: ORCH_ROOT, AGENTIC_HOST: 'claude', ...env };
+      }
+      const r = spawnSync(SH, ['-c', full], { encoding: 'utf8', env: shellEnv });
       return { status: r.status, stderr: r.stderr, stdout: r.stdout };
     }
     const subtask = async (id = idA) => (await readWorkflow(macroPath)).frontmatter.plan.subtasks.find((s) => s.id === id);
@@ -177,7 +208,13 @@ async function withFixture(fn, { topicA, idA = 'A' } = {}) {
   }
 }
 
-describe('/orchestrator:done runbook (ADR-0062)', () => {
+const VARIANTS = [['claude', '/orchestrator:done runbook'], ['codex', '$orchestrator:done skill (Codex mirror)']];
+for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VARIANTS) describe(`${label} (ADR-0062, ${shell})`, { skip: !installed && `${shell} is not installed` }, () => {
+  before(() => { SH = shell; VARIANT = variant; });
+  // A case about one host's text alone (Claude's argument substitution, the
+  // Codex block's shape) runs in that host's suite only.
+  const claudeOnly = variant === 'claude' ? it : () => {};
+  const codexOnly = variant === 'codex' ? it : () => {};
   it('records the merge commit, finds the archived owner, and unblocks the successor', async () => {
     await withFixture(async ({ done, subtask, squash }) => {
       const r = await done({});
@@ -204,7 +241,7 @@ describe('/orchestrator:done runbook (ADR-0062)', () => {
     });
   });
 
-  it('Claude\'s argument substitution leaves every bash block as written', () => {
+  claudeOnly('Claude\'s argument substitution leaves every bash block as written', () => {
     const file = bashBlocks(PHASES).join('\n');
     const lines = [
       '', 'A', 'A --pr=7', 'A --pr=7 --commit=0123abc --correct landed as the rebased tip',
@@ -224,7 +261,7 @@ describe('/orchestrator:done runbook (ADR-0062)', () => {
     }
   });
 
-  it('a typed argument that closes a double quote is never run', async () => {
+  claudeOnly('a typed argument that closes a double quote is never run', async () => {
     await withFixture(async ({ done, subtask, dir, macroPath }) => {
       const marker = join(dir, 'should-not-exist');
       const reason = `x"; touch ${marker}; "`;
@@ -241,7 +278,7 @@ describe('/orchestrator:done runbook (ADR-0062)', () => {
   // got a raw newline inside a JSON string and read every field as empty.
   it('a subtask whose JSON carries escapes still reads under an echo that expands them', async () => {
     await withFixture(async ({ done, subtask, squash }) => {
-      const r = await done({ EXPLICIT_PR: '7' }, { prelude: 'shopt -s xpg_echo' });
+      const r = await done({ EXPLICIT_PR: '7' }, { prelude: SH === 'bash' ? 'shopt -s xpg_echo' : '' });
       strictEqual(r.status, 0, r.stderr);
       const a = await subtask('A');
       strictEqual(a.status, 'completed');
@@ -255,22 +292,47 @@ describe('/orchestrator:done runbook (ADR-0062)', () => {
   // spells it, because read-subtask itself cuts its output at 64 KiB today
   // (docket C70) and would fail an end-to-end case before the reader runs.
   it('the field reader takes a document larger than an exec argument limit', async () => {
-    const lines = runbookScript('A').split('\n');
+    const lines = (variant === 'codex' ? codexBlock() : runbookScript('A')).split('\n');
     // Contract: the test runs these two runbook lines — renamed, they must fail here.
     const reader = lines.find((l) => l.startsWith('JSON_FIELD='));
     const read = lines.find((l) => l.startsWith('SUBTASK_BRANCH='));
-    ok(reader && read, 'done.md reads the subtask branch through JSON_FIELD');
+    ok(reader && read, `the ${variant} runbook reads the subtask branch through JSON_FIELD`);
     const dir = await mkdtemp(join(tmpdir(), 'orchestrator-done-reader-'));
     try {
       const doc = join(dir, 'subtask.json');
       await writeFile(doc, JSON.stringify({ id: 'A', branch: 'feat/a', topic: 'x'.repeat(1_100_000) }));
-      const r = spawnSync('bash', ['-c', `SUBTASK_JSON="$(cat '${doc}')"\n${reader}\n${read}\nprintf '%s' "$SUBTASK_BRANCH"`], {
+      const r = spawnSync(SH, ['-c', `SUBTASK_JSON="$(cat '${doc}')"\n${reader}\n${read}\nprintf '%s' "$SUBTASK_BRANCH"`], {
         encoding: 'utf8', env: { ...process.env, PATH: `${dirname(process.execPath)}:${process.env.PATH}` },
       });
       strictEqual(r.stdout, 'feat/a', r.stderr);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  // Docket C110: the integration branch comes from the macro's own read. A read
+  // that prints its answer and then fails stops the block before the landing;
+  // piped into its parser, the read's status was lost and the block went on.
+  it('a macro read that prints its answer and then fails stops the block; nothing is recorded', async () => {
+    await withFixture(async ({ done, subtask, dir }) => {
+      const shim = join(dir, 'failing-read-root');
+      await mkdir(join(shim, 'scripts'), { recursive: true });
+      await writeFile(join(shim, 'scripts', 'state.mjs'), [
+        "import { spawnSync } from 'node:child_process';",
+        'const args = process.argv.slice(2);',
+        `const real = spawnSync(process.execPath, [${JSON.stringify(resolve(ORCH_ROOT, 'scripts/state.mjs'))}, ...args], { encoding: 'utf8', stdio: ['inherit', 'pipe', 'inherit'] });`,
+        'process.stdout.write(real.stdout);',
+        "process.exit(args[0] === 'read' ? 1 : (real.status ?? 1));",
+      ].join('\n'));
+      const env = { CLAUDE_PLUGIN_ROOT: shim, AGENTIC_ORCHESTRATOR_ROOT: shim };
+      const r = await done({}, { env });
+      strictEqual(r.status, 1, r.stderr);
+      strictEqual((await subtask('A')).status, 'in_progress', 'nothing was recorded');
+      // Control: with the branch named, the block reads no macro, and records.
+      const named = await done({ EXPLICIT_INTEGRATION_BRANCH: 'main' }, { env });
+      strictEqual(named.status, 0, named.stderr);
+      strictEqual((await subtask('A')).status, 'completed');
+    });
   });
 
   it('without gh, --commit is recorded by ancestry, with no pull request and a note saying so', async () => {
@@ -648,7 +710,7 @@ describe('/orchestrator:done runbook (ADR-0062)', () => {
     });
   });
 
-  it('the waiver needs a reason, names an owner, and excludes a dispatch to compare (updateSubtask)', async () => {
+  claudeOnly('the waiver needs a reason, names an owner, and excludes a dispatch to compare (updateSubtask)', async () => {
     await withFixture(async ({ macroPath }) => {
       const base = { workflowPath: macroPath, subtaskId: 'A', host: 'claude', engineerWorkflowId: ENGINEER_ID, status: 'completed', closedAt: '2026-10-09T00:00:00Z', waiveDispatch: true };
       const before = await readFile(macroPath, 'utf8');
@@ -772,211 +834,115 @@ describe('/orchestrator:done runbook (ADR-0062)', () => {
     });
   });
 
-  // U7d — the Codex mirror's Phase 4 block ($orchestrator:done), run as the
-  // agent runs it for --no-commit: the plugin root filled in, the optional
-  // flags it omits for --no-commit dropped.
-  const SKILL_TEXT = readFileSync(resolve(ORCH_ROOT, 'core/skills/done/SKILL.md'), 'utf8');
-  // `landing`: the block as the agent runs it with a resolved landing (the
-  // commit and pull request kept, no reason).
-  const codexPhase4 = (root = ORCH_ROOT, { landing = false } = {}) => {
-    const found = [...SKILL_TEXT.matchAll(/^```bash\n([\s\S]*?)^```$/gm)].map((m) => m[1]).filter((b) => b.includes('--command done --host codex'));
-    strictEqual(found.length, 1, 'one Codex block joins for done');
-    const block = found[0].replaceAll('<orchestrator-plugin-root>', root);
-    if (landing) return block.replace(' \\\n  [--correct] [--reason-file "$REASON_FILE"]', '');
-    return block
-      .replace(/^ {2}--commit "\$COMMIT_SHA" \\\n/m, '')
-      .replace(/^ {2}--pr-url "\$PR_URL" \\\n/m, '')
-      .replace('[--correct] [--reason-file "$REASON_FILE"]', '--reason-file "$REASON_FILE"');
-  };
-  const runCodexPhase4 = async ({ work, macroPath, dir }, vars, root = ORCH_ROOT, { landing = false, prelude = '' } = {}) => {
-    const reasonFile = join(dir, 'reason.txt');
-    await writeFile(reasonFile, 'investigation only');
-    const macroId = macroPath.split('/').pop().replace(/\.md$/, '');
-    const all = {
-      MACRO_ID: macroId, MACRO_PATH: macroPath, REPO_ROOT: work, SUBTASK_ID: 'A',
-      SUBTASK_BRANCH: 'feat/a', ENGINEER_WF_ID: ENGINEER_ID, CLOSED_AT: '2026-10-08T00:00:00Z', REASON_FILE: reasonFile, ...vars,
-    };
-    const assigns = Object.entries(all).map(([k, v]) => `${k}='${String(v).replace(/'/g, "'\\''")}'`).join('\n');
-    const r = spawnSync('bash', ['-c', `${prelude}\n${assigns}\n${codexPhase4(root, { landing })}`], { cwd: work, encoding: 'utf8', env: { ...GIT_ENV, PATH: `${dirname(process.execPath)}:${process.env.PATH}` } });
-    return { status: r.status, stderr: r.stderr, stdout: r.stdout };
-  };
-
-  // ADR-0067 Decision 4, item 5 — the Codex mirror's write passes the
-  // dispatch of the owner its Phase 2 scan found: a subtask revised since the
-  // dispatch is not completed or bound.
-  it('Codex: the Phase 4 write is refused when the subtask is no longer the one the scanned owner was dispatched for', async () => {
-    await withFixture(async ({ subtask, work, macroPath, dir }) => {
-      await setPlan({
-        workflowPath: macroPath, host: 'claude',
-        subtasks: [
-          { id: 'A', verb: 'compose', branch: 'feat/a2', blocked_by: [], status: 'in_progress' },
-          { id: 'B', verb: 'compose', branch: 'feat/b', blocked_by: ['A'], status: 'blocked' },
-        ],
-      });
-      const before = await readFile(macroPath, 'utf8');
-      const r = await runCodexPhase4({ work, macroPath, dir }, { NO_COMMIT: '1', SUBTASK_BRANCH: 'feat/a2' });
-      strictEqual(r.status, 1, r.stderr);
-      ok(r.stderr.includes('(dispatch-changed): branch is "feat/a2"; the child was dispatched for "feat/a"'), r.stderr);
-      strictEqual(await readFile(macroPath, 'utf8'), before);
-      strictEqual((await subtask('A')).engineer_workflow_id, undefined);
-      deepStrictEqual(sessionEntries(work, macroPath), [], 'released');
-    });
-  });
-
-  // As the Claude test's shim: the child moves back into the active home
-  // while `admission join` runs, so only a scan after the join sees it.
-  it('Codex --no-commit: the Phase 4 block reads the active children after its join, refuses one made during it, and releases', async () => {
-    await withFixture(async ({ subtask, work, macroPath, child, dir }) => {
-      const shim = join(dir, 'shim-root');
-      await mkdir(join(shim, 'scripts'), { recursive: true });
-      await writeFile(join(shim, 'scripts', 'state.mjs'), [
-        "import { renameSync } from 'node:fs';",
-        "import { spawnSync } from 'node:child_process';",
-        'const args = process.argv.slice(2);',
-        `if (args[0] === 'admission' && args[1] === 'join') renameSync(${JSON.stringify(child('archive'))}, ${JSON.stringify(child('workflows'))});`,
-        `const r = spawnSync(process.execPath, [${JSON.stringify(resolve(ORCH_ROOT, 'scripts/state.mjs'))}, ...args], { stdio: 'inherit' });`,
-        'process.exit(r.status ?? 1);',
-      ].join('\n'));
-      const refused = await runCodexPhase4({ work, macroPath, dir }, { NO_COMMIT: '1' }, shim);
-      strictEqual(refused.status, 1, refused.stderr);
-      ok(/still active/.test(refused.stderr), refused.stderr);
-      strictEqual((await subtask('A')).status, 'in_progress');
-      deepStrictEqual(sessionEntries(work, macroPath), [], 'released on that refusal');
-      // NO_COMMIT left unset, no commit to record: the scan still runs.
-      const unset = await runCodexPhase4({ work, macroPath, dir }, {});
-      strictEqual(unset.status, 1, unset.stderr);
-      ok(/still active/.test(unset.stderr), unset.stderr);
-      strictEqual((await subtask('A')).status, 'in_progress');
-      // Control: the child archived, the same block completes the subtask.
-      await rename(child('workflows'), child('archive'));
-      const r = await runCodexPhase4({ work, macroPath, dir }, { NO_COMMIT: '1' });
-      strictEqual(r.status, 0, r.stderr);
-      strictEqual((await subtask('A')).status, 'completed');
-      deepStrictEqual(sessionEntries(work, macroPath), [], 'released after the write');
-    });
-  });
-  // The Codex mirror's Phase 2 block: the owner and its dispatch come from
-  // owner-dispatch, code rather than the agent's reading of the prose.
-  const codexPhase2 = () => {
-    const found = [...SKILL_TEXT.matchAll(/^```bash\n([\s\S]*?)^```$/gm)].map((m) => m[1])
-      .filter((b) => b.includes('owner-dispatch') && !b.includes('admission join'));
-    strictEqual(found.length, 1, 'one Codex block reads the owner before the landing');
-    return found[0].replaceAll('<orchestrator-plugin-root>', ORCH_ROOT);
-  };
-  it('Codex: the Phase 2 block prints the owner and the dispatch it records, recorded or found', async () => {
-    await withFixture(async ({ work, macroPath, child }) => {
-      const text = await readFile(child('archive'), 'utf8');
-      await writeFile(child('archive'), text.replace('originating_subtask: "A"\n', 'originating_subtask: "A"\ndispatched_branch: "feat/a"\ndispatched_verb: "compose"\ndispatched_profile: "backend"\ndispatched_topic: "the topic"\n'));
-      const macroId = macroPath.split('/').pop().replace(/\.md$/, '');
-      const expected = { engineer_workflow_id: ENGINEER_ID, dispatch: { macro: macroId, subtask: 'A', branch: 'feat/a', verb: 'compose', profile: 'backend', topic: 'the topic' } };
-      for (const owned of [false, true]) {
-        if (owned) await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host: 'codex', engineerWorkflowId: ENGINEER_ID });
-        const r = spawnSync('bash', ['-c', `MACRO_ID='${macroId}'\nMACRO_PATH='${macroPath}'\nREPO_ROOT='${work}'\nSUBTASK_ID='A'\n${codexPhase2()}`], { cwd: work, encoding: 'utf8', env: { ...GIT_ENV, PATH: `${dirname(process.execPath)}:${process.env.PATH}` } });
-        strictEqual(r.status, 0, r.stderr);
-        const out = JSON.parse(r.stdout);
-        deepStrictEqual({ engineer_workflow_id: out.engineer_workflow_id, dispatch: JSON.parse(out.dispatch) }, expected);
-      }
-    });
-  });
-
-  // R1 on Codex: the recorded owner's file gone, the block refuses; with
-  // WAIVE_DISPATCH=1 and a reason it completes and the macro records the waiver.
-  it('Codex: a recorded owner with no file left refuses; WAIVE_DISPATCH=1 with a reason completes and is recorded', async () => {
-    await withFixture(async ({ subtask, work, macroPath, child, dir }) => {
-      await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host: 'codex', engineerWorkflowId: ENGINEER_ID });
+  // Finding 3 — owner-dispatch's exit 3 is an answer, not a failure: under
+  // set -e the waiver still completes.
+  it('under set -e, --waive-dispatch with a reason still completes', async () => {
+    await withFixture(async ({ done, subtask, child, macroPath }) => {
+      await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host: variant, engineerWorkflowId: ENGINEER_ID });
       await rm(child('archive'));
-      const before = await readFile(macroPath, 'utf8');
-      const refused = await runCodexPhase4({ work, macroPath, dir }, { NO_COMMIT: '1' });
-      strictEqual(refused.status, 1, refused.stderr);
-      ok(refused.stderr.includes(`recorded owner ${ENGINEER_ID} has no workflow file left`), refused.stderr);
-      strictEqual(await readFile(macroPath, 'utf8'), before);
-      deepStrictEqual(sessionEntries(work, macroPath), [], 'released on that refusal');
-      const r = await runCodexPhase4({ work, macroPath, dir }, { NO_COMMIT: '1', WAIVE_DISPATCH: '1' });
+      const r = await done({ NO_COMMIT: '1', WAIVE_DISPATCH: '1' }, { reason: 'the lane was removed', prelude: 'set -e' });
       strictEqual(r.status, 0, r.stderr);
       strictEqual((await subtask('A')).status, 'completed');
-      ok((await readWorkflow(macroPath)).body.includes(`Dispatch not compared (--waive-dispatch): the dispatch recorded by "${ENGINEER_ID}" could not be read`));
     });
   });
 
-  it('Codex: WAIVE_DISPATCH=1 is refused while the owner\'s dispatch can be read', async () => {
-    await withFixture(async ({ subtask, work, macroPath, dir }) => {
-      await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host: 'codex', engineerWorkflowId: ENGINEER_ID });
-      const r = await runCodexPhase4({ work, macroPath, dir }, { NO_COMMIT: '1', WAIVE_DISPATCH: '1' });
-      strictEqual(r.status, 1, r.stderr);
-      ok(r.stderr.includes("--waive-dispatch applies only when the owner's dispatch cannot be read"), r.stderr);
+  // A shim plugin root whose state.mjs prints the real answer of every call,
+  // then exits `rc` for the `failing` subcommand.
+  const printThenFail = async (dir, failing, rc = 1) => {
+    const shim = join(dir, `print-then-fail-${failing}`);
+    await mkdir(join(shim, 'scripts'), { recursive: true });
+    await writeFile(join(shim, 'scripts', 'state.mjs'), [
+      "import { spawnSync } from 'node:child_process';",
+      'const args = process.argv.slice(2);',
+      `const real = spawnSync(process.execPath, [${JSON.stringify(resolve(ORCH_ROOT, 'scripts/state.mjs'))}, ...args], { encoding: 'utf8', stdio: ['inherit', 'pipe', 'inherit'] });`,
+      'process.stdout.write(real.stdout);',
+      `process.exit(args[0] === ${JSON.stringify(failing)} ? ${rc} : (real.status ?? 1));`,
+    ].join('\n'));
+    return { CLAUDE_PLUGIN_ROOT: shim, AGENTIC_ORCHESTRATOR_ROOT: shim };
+  };
+
+  // C110, Critique J2 and J3 — the subtask read and the landing are read
+  // before anything is written: one that prints its answer (a whole subtask,
+  // an {ok: true} landing with its commit) and then fails stops the block, and
+  // nothing is joined or recorded. The control is the first case above.
+  for (const failing of ['read-subtask', 'resolve-landing']) {
+    it(`a ${failing} that prints its answer and then fails stops the block; nothing is recorded (C110)`, async () => {
+      await withFixture(async ({ done, subtask, dir, work, macroPath }) => {
+        const before = await readFile(macroPath, 'utf8');
+        const r = await done({}, { env: await printThenFail(dir, failing) });
+        strictEqual(r.status, 1, r.stderr);
+        strictEqual(await readFile(macroPath, 'utf8'), before, 'nothing was written');
+        strictEqual((await subtask('A')).status, 'in_progress');
+        deepStrictEqual(sessionEntries(work, macroPath), [], 'nothing was joined');
+      });
+    });
+  }
+
+  // Critique D2 in one block: two macros both hold a subtask A. The block
+  // resolves the macro from its arguments and reads its owner and landing
+  // there, so a run for one macro completes that macro's A only. The second
+  // macro's A was never dispatched: refused, nothing written to either; with
+  // its own child it completes, and the first macro's A stays as it was.
+  it('the same subtask id in another macro: a run completes the macro its arguments name, and no other', async () => {
+    await withFixture(async ({ done, subtask, child, macroPath, work }) => {
+      const { filePath: otherPath } = await createWorkflow({
+        repoRoot: work, verb: 'plan', host: 'claude',
+        // One active macro per branch: the second is planned on another branch,
+        // and its runs name main as the integration branch.
+        gitBaseline: { branch: 'plan-two', head: '0'.repeat(40), status_digest: '' },
+        originalRequest: 'a second macro holding subtask A',
+      });
+      await setPlan({
+        workflowPath: otherPath, host: 'claude',
+        subtasks: [{ id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'in_progress' }],
+      });
+      const otherId = otherPath.split('/').pop().replace(/\.md$/, '');
+      const first = await readFile(macroPath, 'utf8');
+      const second = await readFile(otherPath, 'utf8');
+      const named = { EXPLICIT_WORKFLOW_ID: otherId, EXPLICIT_INTEGRATION_BRANCH: 'main' };
+      const refused = await done(named);
+      strictEqual(refused.status, 1, refused.stderr);
+      strictEqual(await readFile(macroPath, 'utf8'), first, 'the first macro is unchanged');
+      strictEqual(await readFile(otherPath, 'utf8'), second, 'the second macro is unchanged');
+      const otherChild = 'compose-20260927T100500Z-dddddd';
+      await writeFile(join(dirname(child('archive')), `${otherChild}.md`), (await readFile(child('archive'), 'utf8'))
+        .replace(ENGINEER_ID, otherChild).replace(/parent_workflow: "[^"]*"/, `parent_workflow: "${otherId}"`));
+      const r = await done(named);
+      strictEqual(r.status, 0, r.stderr);
+      const otherA = (await readWorkflow(otherPath)).frontmatter.plan.subtasks.find((s) => s.id === 'A');
+      deepStrictEqual([otherA.status, otherA.engineer_workflow_id], ['completed', otherChild]);
+      strictEqual(await readFile(macroPath, 'utf8'), first, 'the first macro is still unchanged');
       strictEqual((await subtask('A')).status, 'in_progress');
     });
   });
-  // refine-verify-20261009T044549Z-bc0075, finding 1 — Phase 3 resolved the
-  // landing for ENGINEER_WF_ID; a revision and a new dispatch before Phase 4
-  // bind another owner. Contract: the block keeps the landing's owner, refuses
-  // when the subtask now records another, and writes nothing; the unrevised
-  // landing is the control.
-  it('Codex: a landing resolved for one owner is not written for an owner bound since', async () => {
-    await withFixture(async ({ subtask, work, macroPath, dir, child, squash }) => {
-      const other = 'compose-20260927T101500Z-cccccc';
-      await writeFile(join(dirname(child('archive')), `${other}.md`), (await readFile(child('archive'), 'utf8'))
-        .replace(ENGINEER_ID, other)
-        .replace('originating_subtask: "A"\n', 'originating_subtask: "A"\ndispatched_branch: "feat/a"\ndispatched_verb: "compose"\ndispatched_profile: ""\ndispatched_topic: "a revised topic"\n'));
-      await setPlan({
-        workflowPath: macroPath, host: 'codex',
-        subtasks: [
-          { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'in_progress', topic: 'a revised topic', engineer_workflow_id: other },
-          { id: 'B', verb: 'compose', branch: 'feat/b', blocked_by: ['A'], status: 'blocked' },
-        ],
-      });
+
+  // RV1 (refine-verify-20261017T172119Z-a982196) in one block: the landing is
+  // resolved by the run that writes it. With the integration branch rewound
+  // past the merge commit the run refuses (not_reachable) and records nothing;
+  // with the branch pushed again the same run completes.
+  it('an integration branch rewound past the merge commit refuses; pushed again, the run completes', async () => {
+    await withFixture(async ({ done, subtask, work, macroPath, squash, later }) => {
+      git(work, 'push', '-q', '--force', 'origin', `${squash}~1:refs/heads/main`);
       const before = await readFile(macroPath, 'utf8');
-      const landing = { COMMIT_SHA: squash, PR_URL: 'https://github.com/o/r/pull/7' };
-      const r = await runCodexPhase4({ work, macroPath, dir }, landing, ORCH_ROOT, { landing: true });
-      strictEqual(r.status, 1, r.stderr);
-      ok(r.stderr.includes(`A now records owner ${other}, not ${ENGINEER_ID}`), r.stderr);
-      strictEqual(await readFile(macroPath, 'utf8'), before);
-      deepStrictEqual(sessionEntries(work, macroPath), [], 'released on that refusal');
-    });
-    await withFixture(async ({ subtask, work, macroPath, dir, squash }) => {
-      await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host: 'codex', engineerWorkflowId: ENGINEER_ID });
-      const r = await runCodexPhase4({ work, macroPath, dir }, { COMMIT_SHA: squash, PR_URL: 'https://github.com/o/r/pull/7' }, ORCH_ROOT, { landing: true });
+      const refused = await done({});
+      strictEqual(refused.status, 1, refused.stderr);
+      ok(/Cannot record A yet — not_reachable/.test(refused.stderr), refused.stderr);
+      strictEqual(await readFile(macroPath, 'utf8'), before, 'nothing was written');
+      git(work, 'push', '-q', '--force', 'origin', `${later}:refs/heads/main`);
+      const r = await done({});
       strictEqual(r.status, 0, r.stderr);
-      strictEqual((await subtask('A')).status, 'completed');
       strictEqual((await subtask('A')).commit, squash);
     });
   });
 
-  // Finding 3 — owner-dispatch's exit 3 is an answer, not a failure: under
-  // set -e the waiver still completes, on both hosts.
-  it('under set -e, --waive-dispatch with a reason still completes (Claude and Codex)', async () => {
-    for (const host of ['claude', 'codex']) {
-      await withFixture(async ({ done, subtask, child, macroPath, work, dir }) => {
-        await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host, engineerWorkflowId: ENGINEER_ID });
-        await rm(child('archive'));
-        const r = host === 'claude'
-          ? await done({ NO_COMMIT: '1', WAIVE_DISPATCH: '1' }, { reason: 'the lane was removed', prelude: 'set -e' })
-          : await runCodexPhase4({ work, macroPath, dir }, { NO_COMMIT: '1', WAIVE_DISPATCH: '1' }, ORCH_ROOT, { prelude: 'set -e' });
-        strictEqual(r.status, 0, `${host}: ${r.stderr}`);
-        strictEqual((await subtask('A')).status, 'completed', host);
-      });
-    }
-  });
-  // The Codex Phase 3 block resolves the landing for ENGINEER_WF_ID, the owner
-  // Phase 2 printed: for an owner the scan recovered (none recorded), the
-  // landing is bound to that attempt's dispatch time, as on Claude.
-  it('Codex: the Phase 3 block resolves the landing for the owner Phase 2 printed', async () => {
-    await withFixture(async ({ work, macroPath, dir, pr, squash }) => {
-      const found = [...SKILL_TEXT.matchAll(/^```bash\n([\s\S]*?)^```$/gm)].map((m) => m[1]).filter((b) => b.includes('resolve-landing'));
-      strictEqual(found.length, 1, 'one Codex block resolves the landing');
-      const block = found[0].replaceAll('<orchestrator-plugin-root>', ORCH_ROOT).replace(' [--pr "$PR"] [--commit "$COMMIT"]', '');
-      const prs = join(dir, 'prs-codex.json');
-      await writeFile(prs, JSON.stringify([pr()]));
-      const vars = { REPO_ROOT: work, MACRO_PATH: macroPath, SUBTASK_ID: 'A', INTEGRATION_BRANCH: 'main', ENGINEER_WF_ID: ENGINEER_ID };
-      const assigns = Object.entries(vars).map(([k, v]) => `${k}='${v}'`).join('\n');
-      const r = spawnSync('bash', ['-c', `${assigns}\n${block}`], {
-        cwd: work, encoding: 'utf8',
-        env: { ...GIT_ENV, PATH: `${join(dir, 'bin')}:${dirname(process.execPath)}:${process.env.PATH}`, FAKE_GH_PRS: prs },
-      });
-      strictEqual(r.status, 0, r.stderr);
-      const landing = JSON.parse(r.stdout);
-      strictEqual(landing.ok, true, r.stdout);
-      strictEqual(landing.commit, squash);
-    });
+  // The owner's ruling of 2026-10-17 (recurring-finding, option d): the Codex
+  // skill runs as one block, as Claude's, and carries nothing between shell
+  // calls. Contract: the only file the block reads is the reason the agent
+  // wrote, and it writes no file.
+  codexOnly('the skill reads no file but the reason, and writes none', () => {
+    const block = codexBlock();
+    ok(!block.includes('TEXT_DIR'), 'the block names no text directory');
+    deepStrictEqual([...block.matchAll(/\bcat\s+("[^"]*")/g)].map((m) => m[1]), ['"$REASON_FILE"'], 'the reason is the one file read');
+    deepStrictEqual(block.split('\n').filter((l) => /(^|[^2&])>\s*"?\$/.test(l)), [], 'no line redirects into a file');
   });
 });

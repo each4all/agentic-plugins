@@ -28,7 +28,7 @@ shell variable does not outlive a Bash call.
 - `EXPLICIT_INTEGRATION_BRANCH` ← value of `--integration-branch=<b>`; default is the macro's `git_baseline.branch`.
 - `REASON` ← the remaining free text, verbatim. It never passes through the shell (ADR-0059): before running the block below, write it to a new file with your file-writing tool (Claude: the Write tool), exactly as given, and set `REASON_FILE` to that file's path at the top of the block. Leave `REASON_FILE` unset when there is no reason. A heredoc is not safe here: a reason that contains the delimiter line ends it and runs what follows.
 
-**Run Phases 0–3 in one Bash invocation.** Each Bash tool call is a fresh shell, so the variables set in Phase 1 do not survive into a later call. Write `REASON_FILE` (when there is a reason) before that invocation.
+**Phases 0–3 are one block, run in one Bash call** (below, after the phases it runs). Each Bash tool call is a fresh shell, so no phase may rely on a variable another call set: set the argument variables at the top of the block, and write `REASON_FILE` (when there is a reason) before you run it.
 
 **Critical rules** (ADR-0062):
 - Never record the subtask branch tip or `git rev-parse HEAD`. A squash or rebase merge leaves both outside the integration branch.
@@ -42,10 +42,40 @@ shell variable does not outlive a Bash call.
 
 ## Phase 0 — Resolve the macro plan
 
+`--workflow=<id>` names the macro (refused unless basename-shaped, and resolved in the orchestrator workflow homes of this checkout's read set); otherwise `find-active` on the current branch, then `find-macro` for a subtask branch.
+
+## Phase 1 — Read the subtask, check the flags and the reason file
+
+The subtask as the macro records it. A `deferred` or `abandoned` subtask is refused (terminal-partial states are absorbing); a `completed` one, without `--correct`, is a no-op. When `CORRECT=1`, `NO_COMMIT=1` or `WAIVE_DISPATCH=1`, a reason is required. The reason stays in `REASON_FILE`: the block only checks that it holds text, and Phase 3 hands the file's bytes to `state.mjs`, so the shell never reads the reason as text.
+
+## Phase 2 — Resolve the owning engineer workflow
+
+The write in Phase 3 completes the subtask in its owner's name, so it compares the dispatch that owner records (ADR-0067 Decision 4, item 5: `dispatched_*`, or its `git_baseline` branch when it was created before that record), and is refused under the macro's file lock when the subtask is no longer the one the owner was dispatched for. `state.mjs owner-dispatch` finds the owner and reads that dispatch. It reads every engineer workflow file in the workflow homes **and archive homes** of every root of the repository (by the time the work has merged, the child has normally archived itself) and parses the frontmatter values it needs, never matching serialized text:
+
+- `EXISTING_ENG_WF_ID` set (the normal path after `/orchestrator:next` recorded it, or after the engineer terminal note bound it) → the file of that workflow that claims the subtask. When no file of it is left anywhere in the repository (a lane's home removed, for example), the dispatch cannot be read: done refuses, and only a rerun with `--waive-dispatch` and a reason completes the subtask without the comparison. A file of it that claims another subtask refuses, with no waiver.
+- Otherwise → the one workflow whose `parent_workflow == $MACRO_ID` **and** `originating_subtask == $SUBTASK_ID`. None refuses (the subtask was likely never dispatched). More than one refuses rather than guessing: it lists each claimant with a binding line that carries that claimant's dispatch (`subtask-update --engineer-workflow-id=<id> --expect-dispatch=<its dispatch>`), so the owner chosen is bound only while the subtask is the one it was dispatched for; then rerun done.
+
+A home or file that cannot be read (anything but a missing one) also refuses, since it could hide a claimant or the owner's file. `DISPATCH_ARGS` carries the comparison, or the waiver, into Phase 3a or 3b.
+
+## Phase 3a — `--no-commit`: completion without a landed commit
+
+Refused while an engineer workflow for this subtask is still **active**: a child whose branch never moved cannot archive itself, and it would keep the macro's no-active-children gate closed forever. Also refused when a workflow home or file cannot be read (anything but a missing one): the unreadable entry could be that child. The check runs again after the join (ADR-0067 Decision 4, item 5), since a run's step could have dispatched the subtask again before it.
+
+## Phase 3b — Resolve the landing and record it
+
+`resolve-landing` finds the merged pull request and verifies its merge commit (ADR-0062 §Decision 1); a routine refusal (`not_merged` and the rest) writes nothing. Then the block joins the macro's run lock and writes. A write refused with `dispatch-changed` bound and completed nothing: the owner, recorded or found by Phase 2's scan, was dispatched for the subtask as it was before a plan revision. Report it with the child's id; the user revises the plan back, or dispatches the subtask again. A waived write records `Dispatch not compared (--waive-dispatch)` and the reason in the macro body.
+
+`subtask-update` handles ownership, the provenance guard (a different recorded value is refused and names `--correct`), the unblock pass and the auto-terminal pass atomically; surface its JSON envelope. `noop: true` means the record already held these values.
+
+## The block — Phases 0 to 3, in one shell call
+
+One block, run in one Bash call: every value it reads is either an argument variable above, set at its top, or something it read itself, so it runs as written in a fresh shell (C75), bash or zsh (it uses bash arrays, which a POSIX `sh` such as dash does not have). Each JSON document goes to its parser through `printf`, the parser reads the whole document, and a read's status is checked apart from its parser's (C110).
+
 ```bash
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-REPO_ROOT="$(git rev-parse --show-toplevel)"
+# --- Phase 0: the macro plan ---
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 GIT_BRANCH="$(git branch --show-current)"
 if [ -z "$GIT_BRANCH" ]; then
   echo "✗ Detached HEAD — orchestrator workflows are branch-anchored. Switch to any tracked branch first." >&2
@@ -103,31 +133,25 @@ case "$CLAUDE_PLUGIN_ROOT" in
   *"/.claude/"*) DETECTED_HOST="claude" ;;
   *) DETECTED_HOST="${AGENTIC_HOST:-claude}" ;;
 esac
-```
 
----
-
-## Phase 1 — Read the subtask, check the flags, write the reason file
-
-```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+# --- Phase 1: the subtask, the flags, the reason file ---
 SUBTASK_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
   read-subtask --workflow-path "$MACRO_PATH" --subtask-id "$EXPLICIT_SUBTASK_ID")" || exit 1
 
 SUBTASK_ID="$EXPLICIT_SUBTASK_ID"
 # Prints the field named by JSON_KEY of the JSON document on stdin, or "" when
-# it is absent or null. The key travels in the environment, not as a function
-# argument: before any shell sees this file, Claude replaces a dollar sign
-# followed by a digit with the command's argument at that index whenever there
-# is one (C67). The document goes through printf, not echo, whose zsh builtin
-# expands the backslash escapes inside JSON strings.
-JSON_FIELD='let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const v=JSON.parse(d)[process.env.JSON_KEY];process.stdout.write(v==null?"":String(v))}catch{}})'
-SUBTASK_BRANCH="$(printf '%s' "$SUBTASK_JSON" | JSON_KEY=branch node -e "$JSON_FIELD")"
-SUBTASK_STATUS="$(printf '%s' "$SUBTASK_JSON" | JSON_KEY=status node -e "$JSON_FIELD")"
-EXISTING_ENG_WF_ID="$(printf '%s' "$SUBTASK_JSON" | JSON_KEY=engineer_workflow_id node -e "$JSON_FIELD")"
-EXISTING_COMMIT="$(printf '%s' "$SUBTASK_JSON" | JSON_KEY=commit node -e "$JSON_FIELD")"
-EXISTING_CLOSED_AT="$(printf '%s' "$SUBTASK_JSON" | JSON_KEY=closed_at node -e "$JSON_FIELD")"
+# it is absent or null; a document that does not parse fails (C68). The key
+# travels in the environment, not as a function argument: before any shell
+# sees this file, Claude replaces a dollar sign followed by a digit with the
+# command's argument at that index whenever there is one (C67). The document
+# goes through printf, not echo, whose zsh builtin expands the backslash
+# escapes inside JSON strings.
+JSON_FIELD='let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const v=JSON.parse(d)[process.env.JSON_KEY];process.stdout.write(v==null?"":String(v))})'
+SUBTASK_BRANCH="$(printf '%s' "$SUBTASK_JSON" | JSON_KEY=branch node -e "$JSON_FIELD")" || exit 1
+SUBTASK_STATUS="$(printf '%s' "$SUBTASK_JSON" | JSON_KEY=status node -e "$JSON_FIELD")" || exit 1
+EXISTING_ENG_WF_ID="$(printf '%s' "$SUBTASK_JSON" | JSON_KEY=engineer_workflow_id node -e "$JSON_FIELD")" || exit 1
+EXISTING_COMMIT="$(printf '%s' "$SUBTASK_JSON" | JSON_KEY=commit node -e "$JSON_FIELD")" || exit 1
+EXISTING_CLOSED_AT="$(printf '%s' "$SUBTASK_JSON" | JSON_KEY=closed_at node -e "$JSON_FIELD")" || exit 1
 
 if [ "${NO_COMMIT:-}" = "1" ] && { [ -n "${EXPLICIT_COMMIT:-}" ] || [ -n "${EXPLICIT_PR:-}" ] || [ "${CORRECT:-}" = "1" ]; }; then
   echo "✗ --no-commit excludes --commit, --pr and --correct." >&2
@@ -141,11 +165,7 @@ if [ "$SUBTASK_STATUS" = "completed" ] && [ "${CORRECT:-}" != "1" ]; then
   echo "✓ Subtask $SUBTASK_ID is already completed at $EXISTING_CLOSED_AT with commit ${EXISTING_COMMIT:-<none>}. Nothing to do; to change the record, rerun with --correct and a reason." >&2
   exit 0
 fi
-```
 
-When `CORRECT=1`, `NO_COMMIT=1` or `WAIVE_DISPATCH=1`, a reason is required. The reason stays in `REASON_FILE`: the runbook only checks that it holds text, and Phase 3 hands the file's bytes to `state.mjs`, so the shell never reads the reason as text:
-
-```bash
 if [ -n "${REASON_FILE:-}" ] && [ ! -f "$REASON_FILE" ]; then
   echo "✗ REASON_FILE=$REASON_FILE does not exist; write the reason with your file-writing tool first." >&2
   exit 1
@@ -156,22 +176,8 @@ if { [ "${CORRECT:-}" = "1" ] || [ "${NO_COMMIT:-}" = "1" ] || [ "${WAIVE_DISPAT
   echo "✗ --correct, --no-commit and --waive-dispatch need a reason (the free text after the flags)." >&2
   exit 1
 fi
-```
 
----
-
-## Phase 2 — Resolve the owning engineer workflow
-
-The write in Phase 3 completes the subtask in its owner's name, so it compares the dispatch that owner records (ADR-0067 Decision 4, item 5: `dispatched_*`, or its `git_baseline` branch when it was created before that record), and is refused under the macro's file lock when the subtask is no longer the one the owner was dispatched for. `state.mjs owner-dispatch` finds the owner and reads that dispatch. It reads every engineer workflow file in the workflow homes **and archive homes** of every root of the repository (by the time the work has merged, the child has normally archived itself) and parses the frontmatter values it needs, never matching serialized text:
-
-- `EXISTING_ENG_WF_ID` set (the normal path after `/orchestrator:next` recorded it, or after the engineer terminal note bound it) → the file of that workflow that claims the subtask. When no file of it is left anywhere in the repository (a lane's home removed, for example), the dispatch cannot be read: done refuses, and only a rerun with `--waive-dispatch` and a reason completes the subtask without the comparison. A file of it that claims another subtask refuses, with no waiver.
-- Otherwise → the one workflow whose `parent_workflow == $MACRO_ID` **and** `originating_subtask == $SUBTASK_ID`. None refuses (the subtask was likely never dispatched). More than one refuses rather than guessing: it lists each claimant with a binding line that carries that claimant's dispatch (`subtask-update --engineer-workflow-id=<id> --expect-dispatch=<its dispatch>`), so the owner chosen is bound only while the subtask is the one it was dispatched for; then rerun done.
-
-A home or file that cannot be read (anything but a missing one) also refuses, since it could hide a claimant or the owner's file. `DISPATCH_ARGS` carries the comparison, or the waiver, into Phase 3a or 3b:
-
-```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+# --- Phase 2: the owning engineer workflow and the dispatch it records ---
 # ADR-0067 Decision 4, item 5 — the owner and the dispatch it records. Every
 # refusal's reason is printed by owner-dispatch; exit 3 alone (the recorded
 # owner has no file left) may be waived.
@@ -184,8 +190,8 @@ if [ "$OWNER_RC" -eq 0 ]; then
     echo "✗ --waive-dispatch applies only when the owner's dispatch cannot be read; it was read, and the write compares it. Rerun without --waive-dispatch." >&2
     exit 1
   fi
-  EXISTING_ENG_WF_ID="$(printf '%s' "$OWNER_JSON" | JSON_KEY=engineer_workflow_id node -e "$JSON_FIELD")"
-  OWNER_DISPATCH="$(printf '%s' "$OWNER_JSON" | JSON_KEY=dispatch node -e "$JSON_FIELD")"
+  EXISTING_ENG_WF_ID="$(printf '%s' "$OWNER_JSON" | JSON_KEY=engineer_workflow_id node -e "$JSON_FIELD")" || exit 1
+  OWNER_DISPATCH="$(printf '%s' "$OWNER_JSON" | JSON_KEY=dispatch node -e "$JSON_FIELD")" || exit 1
   if [ -z "$EXISTING_ENG_WF_ID" ] || [ -z "$OWNER_DISPATCH" ]; then
     echo "✗ Could not read owner-dispatch's answer for $SUBTASK_ID; refusing to guess." >&2
     exit 1
@@ -198,17 +204,8 @@ elif [ "$OWNER_RC" -eq 3 ] && [ "${WAIVE_DISPATCH:-}" = "1" ]; then
 else
   exit 1
 fi
-```
 
----
-
-## Phase 3a — `--no-commit`: completion without a landed commit
-
-Refused while an engineer workflow for this subtask is still **active**: a child whose branch never moved cannot archive itself, and it would keep the macro's no-active-children gate closed forever. Also refused when a workflow home or file cannot be read (anything but a missing one): the unreadable entry could be that child.
-
-```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+# --- Phase 3a: --no-commit, completion without a landed commit ---
 if [ "${NO_COMMIT:-}" = "1" ]; then
   # Returns non-zero, the reason on stderr, when an engineer workflow of this
   # subtask is active or a home cannot be read. active-child reads every root of
@@ -250,16 +247,21 @@ if [ "${NO_COMMIT:-}" = "1" ]; then
     "${DISPATCH_ARGS[@]}" --reason-file="$REASON_FILE" --event=updated || exit $?
   exit 0
 fi
-```
 
----
-
-## Phase 3b — Resolve the landing and record it
-
-```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-INTEGRATION_BRANCH="${EXPLICIT_INTEGRATION_BRANCH:-$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$MACRO_PATH" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{process.stdout.write(JSON.parse(d).git_baseline.branch||"")}catch{}})')}"
+# --- Phase 3b: resolve the landing and record it ---
+if [ -n "${EXPLICIT_INTEGRATION_BRANCH:-}" ]; then
+  INTEGRATION_BRANCH="$EXPLICIT_INTEGRATION_BRANCH"
+else
+  # The read's status is its own, apart from the parser's: piped, a failed
+  # read would leave the branch empty and the fetch below would name none
+  # (C110).
+  MACRO_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$MACRO_PATH")" || exit 1
+  INTEGRATION_BRANCH="$(printf '%s' "$MACRO_JSON" | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>process.stdout.write((JSON.parse(d).git_baseline||{}).branch||""))')" || exit 1
+  if [ -z "$INTEGRATION_BRANCH" ]; then
+    echo "✗ The macro records no git_baseline.branch; name the integration branch with --integration-branch." >&2
+    exit 1
+  fi
+fi
 if ! git -C "$REPO_ROOT" fetch --quiet origin "$INTEGRATION_BRANCH"; then
   echo "⚠ git fetch origin $INTEGRATION_BRANCH failed; verifying against the last fetched origin/$INTEGRATION_BRANCH." >&2
 fi
@@ -274,10 +276,11 @@ if [ "$LANDING_RC" -ne 0 ]; then
   echo "✗ Cannot record $SUBTASK_ID yet — $(printf '%s' "$LANDING" | JSON_KEY=reason node -e "$JSON_FIELD"): $(printf '%s' "$LANDING" | JSON_KEY=detail node -e "$JSON_FIELD")" >&2
   exit 1
 fi
-COMMIT_SHA="$(printf '%s' "$LANDING" | JSON_KEY=commit node -e "$JSON_FIELD")"
-PR_URL="$(printf '%s' "$LANDING" | JSON_KEY=pr_url node -e "$JSON_FIELD")"
+COMMIT_SHA="$(printf '%s' "$LANDING" | JSON_KEY=commit node -e "$JSON_FIELD")" || exit 1
+PR_URL="$(printf '%s' "$LANDING" | JSON_KEY=pr_url node -e "$JSON_FIELD")" || exit 1
+VERIFICATION="$(printf '%s' "$LANDING" | JSON_KEY=verification node -e "$JSON_FIELD")" || exit 1
 LANDING_NOTE=""
-if [ "$(printf '%s' "$LANDING" | JSON_KEY=verification node -e "$JSON_FIELD")" = "ancestry-only" ]; then
+if [ "$VERIFICATION" = "ancestry-only" ]; then
   # Keep the weaker verification visible in the macro's record.
   LANDING_NOTE="Landing verified by ancestry only: gh was unavailable, so $COMMIT_SHA could not be matched to its pull request."
 fi
@@ -316,10 +319,6 @@ else
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" subtask-update "${UPDATE_ARGS[@]}" || exit $?
 fi
 ```
-
-A write refused with `dispatch-changed` bound and completed nothing: the owner, recorded or found by Phase 2's scan, was dispatched for the subtask as it was before a plan revision. Report it with the child's id; the user revises the plan back, or dispatches the subtask again. A waived write records `Dispatch not compared (--waive-dispatch)` and the reason in the macro body.
-
-`subtask-update` handles ownership, the provenance guard (a different recorded value is refused and names `--correct`), the unblock pass and the auto-terminal pass atomically; surface its JSON envelope. `noop: true` means the record already held these values.
 
 ---
 

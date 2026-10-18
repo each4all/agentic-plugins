@@ -169,6 +169,29 @@ const BINDING_RF = /a plan revision after the switch that changes the subtask's 
 const EXPECT_API_RF = /refuses the write when the subtask verb, profile or topic no longer matches the expectation/;
 
 /** Move the re-read chunk of `file` (from `startMarker` through `endMarker`) to just before `before`. */
+// The Codex next's join and switching blocks are separate shell calls that
+// read what they use from the text directory (docket C75): lines moved from
+// the switching block into the join block take the reads they need along, so
+// the mutation tests only where the check runs, before the join.
+function moveIntoJoin_RA(startMarker, endMarker) {
+  const join = 'ADMISSION="$(node "<orchestrator-plugin-root>/scripts/state.mjs" admission join';
+  const reads = [
+    'JSON_FIELD=\'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const v=JSON.parse(d)[process.env.JSON_KEY];process.stdout.write(v==null?"":String(v))})\'',
+    'SUBTASK_ID="$(JSON_KEY=id node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1',
+    'SUBTASK_STATUS="$(JSON_KEY=status node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1',
+    '',
+  ].join('\n');
+  return (copy, tools) => {
+    const text = readFileSync(`${copy}/${SKILL_RA}`, 'utf8');
+    const at = text.indexOf(startMarker);
+    const end = text.indexOf(endMarker, at);
+    if (at < 0 || end < 0) throw new Error(`moveIntoJoin_RA: markers not found in ${SKILL_RA}`);
+    const chunk = text.slice(at, end + endMarker.length);
+    tools.applyEdit(copy, { file: SKILL_RA, from: chunk, to: '' });
+    tools.applyEdit(copy, { file: SKILL_RA, from: join, to: `${reads}${chunk}${join}` });
+  };
+}
+
 function moveBefore_RA(file, startMarker, endMarker, before) {
   return (copy, tools) => {
         const text = readFileSync(`${copy}/${file}`, 'utf8');
@@ -1891,8 +1914,8 @@ export const MUTATIONS = [
   },
   {
     id: 'A2', file: 'plugins/orchestrator/commands/next.md', tests: [T_ADMISSION_RUNBOOKS],
-    from: "}\ntrap 'release_admission' EXIT\nif [ -n \"$(git -C \"$REPO_ROOT\" status",
-    to: "}\nif [ -n \"$(git -C \"$REPO_ROOT\" status",
+    from: "}\ntrap 'release_admission' EXIT\nprintf '%s' \"$ADMISSION\" > \"$TEXT_DIR/admission\" || exit 1\nif [ -n \"$(git -C \"$REPO_ROOT\" status",
+    to: "}\nprintf '%s' \"$ADMISSION\" > \"$TEXT_DIR/admission\" || exit 1\nif [ -n \"$(git -C \"$REPO_ROOT\" status",
     why: "Phase 3b leaves its admission behind when it stops before the switch",
     killed_by: /what a run's step could change before the join is read again/,
   },
@@ -1933,8 +1956,8 @@ export const MUTATIONS = [
   },
   {
     id: 'A8', file: 'plugins/orchestrator/commands/next.md', tests: [T_ADMISSION_RUNBOOKS],
-    from: "}\ntrap 'release_admission' EXIT\nACTIVE_PATH=",
-    to: "}\nACTIVE_PATH=",
+    from: "}\ntrap 'release_admission' EXIT\nENGINEER_PLUGIN_ROOT=",
+    to: "}\nENGINEER_PLUGIN_ROOT=",
     why: "Phase 5 never releases the admission",
     killed_by: /Phase 5's no-active-workflow exit releases the admission/,
   },
@@ -2039,10 +2062,10 @@ export const MUTATIONS = [
   },
   {
     id: 'A23', file: 'plugins/orchestrator/core/skills/done/SKILL.md', tests: [T_DONE_RUNBOOK],
-    from: '[ -z "$ACTIVE_CHILD" ] || {',
-    to: 'true || {',
-    why: "the Codex done --no-commit completes a subtask whose engineer child is still active",
-    killed_by: /Codex --no-commit: the Phase 4 block reads the active children after its join/,
+    from: "  # A run's step could have dispatched the subtask again before the join.\n  no_active_child || exit 1\n",
+    to: "",
+    why: "the Codex done --no-commit does not read the active children again after the join",
+    killed_by: /--no-commit reads the active children again after the join/,
   },
   ...['finalize', 'abort'].flatMap((name, i) => [
     {
@@ -2069,10 +2092,10 @@ export const MUTATIONS = [
   ]),
   {
     id: 'A30', file: 'plugins/orchestrator/core/skills/done/SKILL.md', tests: [T_DONE_RUNBOOK],
-    from: 'if [ "${NO_COMMIT:-}" = "1" ] || [ -z "${COMMIT_SHA:-}" ]; then',
-    to: 'if [ "${NO_COMMIT:-}" = "1" ]; then',
-    why: "the Codex done skips the active-child check when the agent leaves NO_COMMIT unset",
-    killed_by: /Codex --no-commit: the Phase 4 block reads the active children after its join/,
+    from: "if [ \"${NO_COMMIT:-}\" = \"1\" ] && { [ -n \"${EXPLICIT_COMMIT:-}\" ]",
+    to: "if false && { [ -n \"${EXPLICIT_COMMIT:-}\" ]",
+    why: "the Codex done takes --no-commit with --commit, and completes without the commit it was given",
+    killed_by: /--no-commit excludes --commit/,
   },
   {
     id: 'A31', file: 'plugins/orchestrator/core/skills/next/SKILL.md', tests: [T_ADMISSION_RUNBOOKS],
@@ -2535,39 +2558,36 @@ export const MUTATIONS = [
   },
   {
     id: 'RA2', file: NEXT_RA, tests: [T_RA],
-    from: '  branch "$SUBTASK_BRANCH" verb "$SUBTASK_VERB"',
-    to: '  verb "$SUBTASK_VERB"',
+    from: 'for(const k of ["status","engineer_workflow_id","branch","verb","profile","topic"])',
+    to: 'for(const k of ["status","engineer_workflow_id","verb","profile","topic"])',
     why: "next.md does not compare the subtask's branch after the join",
     killed_by: REVISION_RA,
   },
   {
     id: 'RA3', tests: [T_RA],
-    prepare: moveBefore_RA(SKILL_RA,
-      'SUBTASK_CHANGES="$(node',
-      'nothing was switched." >&2; exit 1; }\n',
-      'ADMISSION="$(node "<orchestrator-plugin-root>/scripts/state.mjs" admission join'),
+    prepare: moveIntoJoin_RA('NOW_SUBTASK="$(node', 'nothing was switched." >&2; exit 1; }\n'),
     why: 'the Codex next reads the subtask again in its join block, before the join',
     killed_by: [REVISION_RA, COMPLETED_RA],
   },
   {
     id: 'RA4', file: SKILL_RA, tests: [T_RA],
-    from: '  branch "$SUBTASK_BRANCH" verb "$SUBTASK_VERB"',
-    to: '  verb "$SUBTASK_VERB"',
+    from: 'for(const k of ["status","engineer_workflow_id","branch","verb","profile","topic"])',
+    to: 'for(const k of ["status","engineer_workflow_id","verb","profile","topic"])',
     why: "the Codex next does not compare the subtask's branch after the join",
     killed_by: REVISION_RA,
   },
   {
     id: 'RA5', file: NEXT_RA, tests: [T_RA],
-    from: '"$SUBTASK_PROFILE" topic "$SUBTASK_TOPIC")" || exit 1\nif',
-    to: '"$SUBTASK_PROFILE")" || exit 1\nif',
+    from: 'for(const k of ["status","engineer_workflow_id","branch","verb","profile","topic"])',
+    to: 'for(const k of ["status","engineer_workflow_id","branch","verb","profile"])',
     why: "next.md does not compare the subtask's topic after the join",
     killed_by: REVISION_RA,
   },
   {
     id: 'RA6', file: NEXT_RA, tests: [T_RA],
-    from: 'const now=String(s[a[i]]||"").replace(/\\n+$/,"");',
-    to: 'const now=String(s[a[i]]||"");',
-    why: 'next.md compares a topic with trailing newlines against the value the command substitution stripped, and refuses every dispatch of it',
+    from: 'const a=String(was[k]||""),b=String(now[k]||"");',
+    to: 'const a=String(was[k]||"").replace(/\\n+$/,""),b=String(now[k]||"");',
+    why: 'next.md compares the selection, its trailing newlines stripped, with the subtask as the plan holds it, and refuses every dispatch of a topic that ends in one',
     killed_by: REVISION_RA,
   },
   // ---- M7: Phase 5 sets its own root and host --------------------------------
@@ -2604,8 +2624,8 @@ export const MUTATIONS = [
   // ---- F1: readiness judged again after the join -----------------------------
   {
     id: 'RF1', file: NEXT_RA, tests: [T_RA],
-    from: 'if [ "$SUBTASK_STATUS" = "pending" ]; then\n  WAITING_NOW="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" subtask-readiness',
-    to: 'if false; then\n  WAITING_NOW="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" subtask-readiness',
+    from: 'if [ "$SUBTASK_STATUS" = "pending" ]; then\n  READINESS_NOW="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" subtask-readiness',
+    to: 'if false; then\n  READINESS_NOW="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" subtask-readiness',
     why: 'next.md switches to a subtask that a plan revision during the join made wait on a predecessor',
     killed_by: WAITING_RF,
   },
@@ -2620,17 +2640,14 @@ export const MUTATIONS = [
   },
   {
     id: 'RF3', file: SKILL_RA, tests: [T_RA],
-    from: 'if [ "$SUBTASK_STATUS" = "pending" ]; then\n  WAITING_NOW="$(node "<orchestrator-plugin-root>/scripts/state.mjs" subtask-readiness',
-    to: 'if false; then\n  WAITING_NOW="$(node "<orchestrator-plugin-root>/scripts/state.mjs" subtask-readiness',
+    from: 'if [ "$SUBTASK_STATUS" = "pending" ]; then\n  READINESS_NOW="$(node "<orchestrator-plugin-root>/scripts/state.mjs" subtask-readiness',
+    to: 'if false; then\n  READINESS_NOW="$(node "<orchestrator-plugin-root>/scripts/state.mjs" subtask-readiness',
     why: 'the Codex next switches to a subtask that a plan revision during the join made wait on a predecessor',
     killed_by: WAITING_RF,
   },
   {
     id: 'RF4', tests: [T_RA],
-    prepare: moveBefore_RA(SKILL_RA,
-      'if [ "$SUBTASK_STATUS" = "pending" ]; then\n  WAITING_NOW',
-      'exit 1; }\nfi\n',
-      'ADMISSION="$(node "<orchestrator-plugin-root>/scripts/state.mjs" admission join'),
+    prepare: moveIntoJoin_RA('if [ "$SUBTASK_STATUS" = "pending" ]; then\n  READINESS_NOW', 'exit 1; }\nfi\n'),
     why: 'the Codex next judges readiness in its join block, before the join',
     killed_by: WAITING_RF,
   },
@@ -2967,10 +2984,15 @@ export const MUTATIONS = [
     why: "done's landing binds the scanned owner to a revised subtask",
     killed_by: /a recorded dispatch, the topic revised \(the landing\)/ },
   { id: 'DS17', file: DONE_SKILL_DS, tests: [T_DONE_RUNBOOK],
-    from: '  "${DISPATCH_ARGS[@]}" \\\n',
+    from: "UPDATE_ARGS+=(\"${DISPATCH_ARGS[@]}\")\n",
     to: '',
-    why: "the Codex done's write omits the scanned owner's dispatch",
-    killed_by: /Codex: the Phase 4 write is refused when the subtask is no longer the one the scanned owner was dispatched for/ },
+    why: "the Codex done's landing write binds the scanned owner to a revised subtask",
+    killed_by: /a recorded dispatch, the topic revised \(the landing\)/ },
+  { id: 'DS36', file: DONE_SKILL_DS, tests: [T_DONE_RUNBOOK],
+    from: "    \"${DISPATCH_ARGS[@]}\" --reason-file \"$REASON_FILE\" --event updated || exit $?",
+    to: "    --reason-file \"$REASON_FILE\" --event updated || exit $?",
+    why: "the Codex done --no-commit binds the scanned owner to a revised subtask",
+    killed_by: /a recorded dispatch, the topic revised \(--no-commit\)/ },
   // The dispatch preflight.
   { id: 'DS18', file: 'plugins/orchestrator/scripts/discover-engineer.mjs', tests: [T_DISC_DS],
     from: "  if (!stateText.includes(\"'dispatch-selection'\") || !writebackText.includes('--expect-dispatch=')) {",
@@ -3018,10 +3040,10 @@ export const MUTATIONS = [
     why: 'done takes a recorded owner whose file is gone as recorded and completes without the comparison (R1)',
     killed_by: [/a recorded owner with no file left refuses; --waive-dispatch with a reason completes and is recorded \(the landing\)/, /a recorded owner with no file left refuses; --waive-dispatch with a reason completes and is recorded \(--no-commit\)/] },
   { id: 'DS25', file: DONE_SKILL_DS, tests: [T_DONE_RUNBOOK],
-    from: 'elif [ "$OWNER_RC" -eq 3 ] && [ "${WAIVE_DISPATCH:-}" = "1" ] && [ "$RECORDED_OWNER" = "$ENGINEER_WF_ID" ]; then\n  DISPATCH_ARGS=(--waive-dispatch)',
-    to: 'elif [ "$OWNER_RC" -eq 3 ]; then\n  DISPATCH_ARGS=()',
+    from: "elif [ \"$OWNER_RC\" -eq 3 ] && [ \"${WAIVE_DISPATCH:-}\" = \"1\" ]; then\n  # The recorded owner's file is gone, and the operator completes in its name\n  # anyway; subtask-update records the waiver and the reason in the macro.\n  DISPATCH_ARGS=(--waive-dispatch)",
+    to: "elif [ \"$OWNER_RC\" -eq 3 ]; then\n  DISPATCH_ARGS=()",
     why: "the Codex done takes a recorded owner whose file is gone as recorded (R1)",
-    killed_by: /Codex: a recorded owner with no file left refuses; WAIVE_DISPATCH=1 with a reason completes and is recorded/ },
+    killed_by: [/a recorded owner with no file left refuses; --waive-dispatch with a reason completes and is recorded \(the landing\)/, /a recorded owner with no file left refuses; --waive-dispatch with a reason completes and is recorded \(--no-commit\)/] },
   { id: 'DS26', file: ORCH_DS, tests: [T_DONE_RUNBOOK],
     from: "  if (!raw.startsWith('\"')) return raw.trim();",
     to: "  if (raw.startsWith('\"')) return raw.slice(1, -1);\n  if (!raw.startsWith('\"')) return raw.trim();",
@@ -3054,23 +3076,28 @@ export const MUTATIONS = [
     killed_by: /--waive-dispatch is refused while the owner's dispatch can be read, and nothing is written/ },
   // The fourth Refine-verify's findings (refine-verify-20261009T044549Z-bc0075).
   { id: 'DS32', file: DONE_SKILL_DS, tests: [T_DONE_RUNBOOK],
-    from: "if [ -n \"$RECORDED_OWNER\" ] && [ \"$RECORDED_OWNER\" != \"$ENGINEER_WF_ID\" ]; then\n  echo \"✗ $SUBTASK_ID now records owner $RECORDED_OWNER, not $ENGINEER_WF_ID, the owner Phase 3 resolved the landing for; nothing was written. Rerun from Phase 2.\" >&2\n  exit 1\nfi\nOWNER_ARGS=(--repo-root \"$REPO_ROOT\" --macro-id \"$MACRO_ID\" --workflow-path \"$MACRO_PATH\" --subtask-id \"$SUBTASK_ID\" --host codex --engineer-workflow-id \"$ENGINEER_WF_ID\")\n# Under set -e an unguarded nonzero exit would end the block before OWNER_RC.\nOWNER_JSON=\"$(node \"<orchestrator-plugin-root>/scripts/state.mjs\" owner-dispatch \"${OWNER_ARGS[@]}\")\" && OWNER_RC=0 || OWNER_RC=$?\nif [ \"$OWNER_RC\" -eq 0 ]; then\n  [ \"${WAIVE_DISPATCH:-}\" != \"1\" ] || { echo \"✗ --waive-dispatch applies only when the owner's dispatch cannot be read; it was read, and the write compares it.\" >&2; exit 1; }\n  OWNER_DISPATCH=\"$(printf '%s' \"$OWNER_JSON\" | JSON_KEY=dispatch node -e \"$JSON_FIELD\")\"",
-    to: "OWNER_ARGS=(--repo-root \"$REPO_ROOT\" --macro-id \"$MACRO_ID\" --workflow-path \"$MACRO_PATH\" --subtask-id \"$SUBTASK_ID\" --host codex)\n[ -n \"$RECORDED_OWNER\" ] && OWNER_ARGS+=(--engineer-workflow-id \"$RECORDED_OWNER\")\nOWNER_JSON=\"$(node \"<orchestrator-plugin-root>/scripts/state.mjs\" owner-dispatch \"${OWNER_ARGS[@]}\")\" && OWNER_RC=0 || OWNER_RC=$?\nif [ \"$OWNER_RC\" -eq 0 ]; then\n  ENGINEER_WF_ID=\"$(printf '%s' \"$OWNER_JSON\" | JSON_KEY=engineer_workflow_id node -e \"$JSON_FIELD\")\"\n  OWNER_DISPATCH=\"$(printf '%s' \"$OWNER_JSON\" | JSON_KEY=dispatch node -e \"$JSON_FIELD\")\"",
-    why: "the Codex done's Phase 4 takes the owner recorded now, not the one its landing was resolved for (finding 1)",
-    killed_by: /Codex: a landing resolved for one owner is not written for an owner bound since/ },
+    from: "  EXISTING_ENG_WF_ID=\"$(printf '%s' \"$OWNER_JSON\" | JSON_KEY=engineer_workflow_id node -e \"$JSON_FIELD\")\" || exit 1\n",
+    to: '',
+    why: "the Codex done drops the owner the scan found, so neither the landing nor the write names it",
+    killed_by: /records the merge commit, finds the archived owner, and unblocks the successor/ },
+  { id: 'DS37', file: DONE_SKILL_DS, tests: [T_DONE_RUNBOOK],
+    from: "  if [ \"${WAIVE_DISPATCH:-}\" = \"1\" ]; then\n    echo \"✗ --waive-dispatch applies only",
+    to: "  if false; then\n    echo \"✗ --waive-dispatch applies only",
+    why: "the Codex done takes --waive-dispatch when the owner's dispatch was read, and the comparison is dropped",
+    killed_by: /--waive-dispatch is refused while the owner's dispatch can be read, and nothing is written/ },
   { id: 'DS33', file: DONE_DS, tests: [T_DONE_RUNBOOK],
     from: "OWNER_JSON=\"$(node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" owner-dispatch \"${OWNER_ARGS[@]}\")\" && OWNER_RC=0 || OWNER_RC=$?",
     to: "OWNER_JSON=\"$(node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" owner-dispatch \"${OWNER_ARGS[@]}\")\"\nOWNER_RC=$?",
     why: "under set -e, done ends at owner-dispatch's exit 3 and the waiver never runs (finding 3)",
-    killed_by: /under set -e, --waive-dispatch with a reason still completes \(Claude and Codex\)/ },
+    killed_by: /under set -e, --waive-dispatch with a reason still completes/ },
   { id: 'DS34', file: DONE_SKILL_DS, tests: [T_DONE_RUNBOOK],
     from: "OWNER_JSON=\"$(node \"<orchestrator-plugin-root>/scripts/state.mjs\" owner-dispatch \"${OWNER_ARGS[@]}\")\" && OWNER_RC=0 || OWNER_RC=$?",
     to: "OWNER_JSON=\"$(node \"<orchestrator-plugin-root>/scripts/state.mjs\" owner-dispatch \"${OWNER_ARGS[@]}\")\"\nOWNER_RC=$?",
     why: "under set -e, the Codex done ends at owner-dispatch's exit 3 (finding 3)",
-    killed_by: /under set -e, --waive-dispatch with a reason still completes \(Claude and Codex\)/ },
+    killed_by: /under set -e, --waive-dispatch with a reason still completes/ },
   { id: 'DS35', file: DONE_SKILL_DS, tests: [T_DONE_RUNBOOK],
-    from: '  --engineer-workflow-id "$ENGINEER_WF_ID" [--pr "$PR"] [--commit "$COMMIT"]',
-    to: '  [--pr "$PR"] [--commit "$COMMIT"]',
-    why: "the Codex done resolves the landing without the owner Phase 2 printed, so a recovered owner has no dispatch time",
-    killed_by: /Codex: the Phase 3 block resolves the landing for the owner Phase 2 printed/ },
+    from: ' --integration-branch "$INTEGRATION_BRANCH" --engineer-workflow-id "$EXISTING_ENG_WF_ID")',
+    to: ' --integration-branch "$INTEGRATION_BRANCH")',
+    why: "the Codex done resolves the landing without the owner the scan found, so a recovered owner has no dispatch time",
+    killed_by: /with the owner recovered from the archive, an older merge of the branch is not taken/ },
 ];

@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { carriedTextDir, withTextDir } from './_next-text-dir.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const ORCH_ROOT = resolve(REPO_ROOT, 'plugins/orchestrator');
@@ -52,15 +53,14 @@ async function withMacro(fn) {
   }
 }
 
+// The block in a fresh shell, given what Phases 0 and 1 wrote to the text
+// directory (docket C75): the macro file, and the subtask as selected.
 async function check(macroPath, subtaskId, status) {
   const script = await validationBlock();
-  return spawnSync('bash', ['-c', `${script}\necho READY`], {
+  const textDir = carriedTextDir({ macroPath, subtask: { id: subtaskId, status } }, macroPath.slice(0, macroPath.indexOf('/.agentic-plugins/')));
+  return spawnSync('bash', ['-c', `${withTextDir(script, textDir)}\necho READY`], {
     encoding: 'utf8',
-    env: {
-      ...process.env,
-      CLAUDE_PLUGIN_ROOT: ORCH_ROOT, MACRO_PATH: macroPath,
-      SUBTASK_ID: subtaskId, SUBTASK_STATUS: status,
-    },
+    env: { ...process.env, CLAUDE_PLUGIN_ROOT: ORCH_ROOT },
   });
 }
 

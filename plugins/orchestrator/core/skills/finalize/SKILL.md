@@ -58,6 +58,7 @@ development, prefer the actual invoking host over cache path guessing.
 Run the parent state transition under the macro file lock:
 
 ```bash
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 # ADR-0067 Decision 4, item 5 — join the macro's run lock before the first
 # write: a run or another session holding it refuses here, naming the
 # holder, and nothing is written.
@@ -115,6 +116,7 @@ admission) when it fails: the admission was released meanwhile, and a run or
 another session may hold the macro now.
 
 ```bash
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 node "<orchestrator-plugin-root>/scripts/state.mjs" admission check \
   --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION" || {
   node "<orchestrator-plugin-root>/scripts/state.mjs" admission release \
@@ -130,6 +132,7 @@ node "<orchestrator-plugin-root>/scripts/state.mjs" admission check \
 Run:
 
 ```bash
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 # ADR-0067 Decision 4, item 5 — release the admission on every exit, after
 # the write included, and check it before the write: it may have been
 # released since Phase 1's join.

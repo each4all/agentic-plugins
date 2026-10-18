@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, basename } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { CLAUDE_TEXT_DIR_LINE, carriedTextDir, withTextDir } from './_next-text-dir.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const ORCH_ROOT = resolve(REPO_ROOT, 'plugins/orchestrator');
@@ -388,13 +389,19 @@ describe('/orchestrator:next runbook shape', () => {
   });
 });
 
+// The checkout a fixture macro lives in, where the text directories go.
+const checkoutOf = (filePath) => filePath.slice(0, filePath.indexOf('/.agentic-plugins/'));
+
 for (const shell of SHELLS) {
   describe(`/orchestrator:next approval gate block (${shell})`, () => {
-    const run = async (filePath, extra = {}, block = gateBlock) =>
-      spawnSync(shell, ['-c', `${await block()}\necho DISPATCH`], {
-        encoding: 'utf8',
-        env: envFor({ MACRO_PATH: filePath, SUBTASK_JSON: JSON.stringify(await subtaskIn(filePath)), ...extra }),
+    // The gate block in a fresh shell, given what Phases 0 and 1 wrote to the
+    // text directory (docket C75): the macro file and the selection.
+    const run = async (filePath, extra = {}, block = gateBlock) => {
+      const textDir = carriedTextDir({ macroPath: filePath, subtask: await subtaskIn(filePath) }, checkoutOf(filePath));
+      return spawnSync(shell, ['-c', `${withTextDir(await block(), textDir)}\necho DISPATCH`], {
+        encoding: 'utf8', env: envFor(extra),
       });
+    };
 
     it('under autopilot, refuses every plan not approved at its current hash', async () => {
       await withDir(async (dir) => {
@@ -454,16 +461,27 @@ for (const shell of SHELLS) {
   });
 
   // The explicit id is gated as well as the automatic pick: Phase 1 as a
-  // whole, selection → validation → gate.
+  // whole, selection → validation → gate, each block in a fresh shell that
+  // shares only the text directory Phase 0 wrote the macro file to (docket
+  // C75). `between` runs in a shell of its own between validation and gate.
   describe(`/orchestrator:next Phase 1 end to end (${shell})`, () => {
-    const script = async (between = '') => {
+    const DISPATCHED = `${CLAUDE_TEXT_DIR_LINE}\nnode -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write("DISPATCH "+s.id+" "+(s.topic||"")+"\\n")' "$TEXT_DIR/subtask.json"`;
+    const run = async (filePath, extra = {}, between = '') => {
       const [selection, validation, gate] = await phase1Blocks();
-      return `${selection}\n${validation}\n${between}\n${gate}\necho "DISPATCH $SUBTASK_ID $SUBTASK_TOPIC"`;
+      const textDir = carriedTextDir({ macroPath: filePath }, checkoutOf(filePath));
+      const steps = [selection, validation];
+      if (between) steps.push(`${CLAUDE_TEXT_DIR_LINE}\nMACRO_PATH="$(cat "$TEXT_DIR/macro-path")"\n${between}`);
+      steps.push(gate, DISPATCHED);
+      let stdout = '';
+      let stderr = '';
+      for (const step of steps) {
+        const r = spawnSync(shell, ['-c', withTextDir(step, textDir)], { encoding: 'utf8', env: envFor(extra) });
+        stdout += r.stdout;
+        stderr += r.stderr;
+        if (r.status !== 0) return { status: r.status, stdout, stderr };
+      }
+      return { status: 0, stdout, stderr };
     };
-    const run = async (filePath, extra = {}, between = '') =>
-      spawnSync(shell, ['-c', await script(between)], {
-        encoding: 'utf8', env: envFor({ MACRO_PATH: filePath, ...extra }),
-      });
 
     it('refuses every unapproved plan under autopilot, by explicit id and by automatic pick', async () => {
       await withDir(async (dir) => {

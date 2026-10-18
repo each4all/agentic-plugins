@@ -50,8 +50,12 @@ amendment of 2026-10-10): a prompt or a path spliced into a block is cut at
    prompt from the user's file itself, byte for byte.
 
 Phase 1's block reads it from there: put the path in its `TEXT_DIR` line, and
-`claude` or `codex` in its `PEER` line. Nothing deletes the files (a headless
-run can deny `rm`).
+`claude` or `codex` in its `PEER` line. It writes the run id, the peer and the
+run's result there itself (`run-id`, `peer`, `run.json`, `run.err`), which the
+status and cancel controls and Phase 2 read, each in a shell of its own, and
+Phase 2's lookup writes the macro it found (`macro-path`), which the note
+block reads.
+Nothing deletes the files (a headless run can deny `rm`).
 
 ---
 
@@ -74,8 +78,13 @@ PROMPT_FILE="$TEXT_DIR/prompt.xml"
 if [ -f "$TEXT_DIR/prompt-path.txt" ]; then PROMPT_FILE="$(cat "$TEXT_DIR/prompt-path.txt")"; fi
 [ -s "$PROMPT_FILE" ] || { echo "✗ The prompt file ($PROMPT_FILE) is missing or empty; nothing was dispatched." >&2; exit 1; }
 RUN_ID="peer-now-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
-RUN_JSON="$(mktemp -t orchestrator-peer-now.XXXXXX).json"
-RUN_ERR="$(mktemp -t orchestrator-peer-now.XXXXXX).err"
+# For the controls below and Phase 2, which may each run in a fresh shell: the
+# run id before the dispatch, so a run that hangs can be named; the run's
+# result beside it.
+printf '%s' "$RUN_ID" > "$TEXT_DIR/run-id" || exit 1
+printf '%s' "$PEER" > "$TEXT_DIR/peer" || exit 1
+RUN_JSON="$TEXT_DIR/run.json"
+RUN_ERR="$TEXT_DIR/run.err"
 
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
   --repo-root "$REPO_ROOT" \
@@ -87,18 +96,21 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
   --cwd "$REPO_ROOT" \
   > "$RUN_JSON" 2> "$RUN_ERR"
 RUN_RC=$?
-
-STDOUT_PATH="$(jq -r '.stdout_path // empty' "$RUN_JSON" 2>/dev/null)"
-STDERR_PATH="$(jq -r '.stderr_path // empty' "$RUN_JSON" 2>/dev/null)"
-HANDLE_PATH="$(jq -r '.handle_path // empty' "$RUN_JSON" 2>/dev/null)"
-ERROR_KIND="$(jq -r '.error_kind // empty' "$RUN_JSON" 2>/dev/null)"
+if [ "$RUN_RC" -ne 0 ]; then
+  echo "✗ Peer dispatch failed (run_id=$RUN_ID, exit $RUN_RC): see $RUN_ERR and $RUN_JSON." >&2
+  exit "$RUN_RC"
+fi
 ```
 
-Status/cancel controls:
+Status/cancel controls, for a run that is still going (the run id is the one
+Phase 1 wrote before it dispatched):
 
 ```bash
+TEXT_DIR='<directory from step 1>'
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+RUN_ID="$(cat "$TEXT_DIR/run-id")" || exit 1
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" status \
   --repo-root "$REPO_ROOT" --run-id "$RUN_ID" --json
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" cancel \
@@ -112,23 +124,40 @@ On non-zero exit, surface the first useful stderr/error line, include
 
 ## Phase 2 — Optional `[Peer]` macro note
 
-Locate the active macro:
+Locate the active macro. The block prints its path, or nothing, and writes the
+same to `macro-path`: the note block reads it there, so a branch switched
+between the two blocks cannot point the note at another macro.
 
 ```bash
+TEXT_DIR='<directory from step 1>'
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
-  find-active --repo-root "$REPO_ROOT" 2>/tmp/orchestrator-peer-now-find.err)"
-FIND_RC=$?
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit 1
+printf '%s' "$ACTIVE" > "$TEXT_DIR/macro-path" || exit 1
+printf '%s\n' "$ACTIVE"
 ```
 
-- **No active macro** -> print the peer response only.
+- **No active macro** (it printed nothing) -> print the peer response only.
 - **Single active macro** -> append a phase note without changing
-  phase or next action:
+  phase or next action. The block reads the macro the lookup found and the
+  run from what Phase 1 wrote:
 
   ```bash
+  TEXT_DIR='<directory from step 1>'
   CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
   [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+  # The macro the lookup found, not the one this branch names now.
+  ACTIVE="$(cat "$TEXT_DIR/macro-path")" || { echo "✗ The lookup writes the macro it found to $TEXT_DIR/macro-path: run it first; nothing was recorded." >&2; exit 1; }
+  [ -n "$ACTIVE" ] || { echo "✗ The lookup found no active macro: print the response alone; nothing was recorded." >&2; exit 1; }
+  PEER="$(cat "$TEXT_DIR/peer")" || exit 1
+  RUN_ID="$(cat "$TEXT_DIR/run-id")" || exit 1
+  # The run's paths, as the runner printed them; a result that does not parse
+  # fails here (C68).
+  JSON_FIELD='let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const v=JSON.parse(d)[process.env.JSON_KEY];process.stdout.write(v==null?"":String(v))})'
+  HANDLE_PATH="$(JSON_KEY=handle_path node -e "$JSON_FIELD" < "$TEXT_DIR/run.json")" || exit 1
+  STDOUT_PATH="$(JSON_KEY=stdout_path node -e "$JSON_FIELD" < "$TEXT_DIR/run.json")" || exit 1
+  [ -n "$STDOUT_PATH" ] || { echo "✗ The run recorded no response file ($TEXT_DIR/run.json); nothing was recorded." >&2; exit 1; }
   # The note holds only values programs read or printed (the run's id and
   # paths, head's read of the response) and the peer enum, no text written
   # into this block: an expansion's result is not evaluated again (ADR-0059,
