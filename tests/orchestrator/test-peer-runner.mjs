@@ -27,6 +27,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { PIPE_FLOOR_BYTES, pipeEnv, runThroughPipe } from '../persona-pipeline/_pipe-output.mjs';
+import { describeRunIdAllocator, runbookRunIdPrefixes } from '../persona-pipeline/_run-id-allocator.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PEER_RUNNER_PATH = resolve(REPO_ROOT, 'plugins/orchestrator/scripts/peer-runner.mjs');
@@ -1174,6 +1175,17 @@ describe('peer-runner.mjs — CLI misuse', () => {
     strictEqual(cp.status, 2);
     ok(/run-id is required/.test(cp.stderr), cp.stderr);
   });
+});
+
+// The orchestrator runbooks build their run ids from fixed prefixes, never
+// from the ensemble type (plan-verify runs under macro-plan).
+describeRunIdAllocator({
+  label: 'orchestrator',
+  peerRunnerPath: PEER_RUNNER_PATH,
+  mod: await import(PEER_RUNNER_PATH),
+  expectedPrefixes: runbookRunIdPrefixes([resolve(REPO_ROOT, 'plugins/orchestrator')], { withEnsembleTypes: false }),
+  foreignPrefix: 'plan-verify',
+  env: pipeEnv(),
 });
 
 // The owner's discussion-2 decision R2: a sweep report grows with the ledger,
