@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.1](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.12.0...plugin-founder-v0.12.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* **founder:** run every persona runbook block correctly in a fresh shell under bash, zsh and /bin/sh (C68, C75, C133) ([725fc8b](https://github.com/each4all/agentic-plugins/commit/725fc8bcacf3f8dc40e15e81e2cba478ce8088c4))
+
 ## [0.12.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.11.0...plugin-founder-v0.12.0) (2026-10-18)
 
 

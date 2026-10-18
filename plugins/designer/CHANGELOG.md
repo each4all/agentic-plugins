@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.1](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.11.0...plugin-designer-v0.11.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* **designer:** run every persona runbook block correctly in a fresh shell under bash, zsh and /bin/sh (C68, C75, C133) ([8dd454c](https://github.com/each4all/agentic-plugins/commit/8dd454c588aa81ab30a4f34709249c8990f1ec48))
+
 ## [0.11.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.10.0...plugin-designer-v0.11.0) (2026-10-18)
 
 
