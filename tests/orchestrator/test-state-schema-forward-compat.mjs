@@ -507,19 +507,25 @@ const SCHEMA_12_KEYS = [
   'awaiting_owner_pointer',
 ];
 
+// C132 — the plan finalize's records, which a reader of any earlier release
+// does not know.
+const C132_KEYS = ['phase_note_run_ids', 'plan_conflict_cleared_run_id'];
+
 // A 1.1-era reader is this build without the six 1.2 entries in
 // FRONTMATTER_KEY_ORDER (the only thing that makes a key known to the
 // parser) and without plan-set's approval reset (a 1.1 writer never touched
 // approval). The copy lives outside the repo and is imported fresh, so it has
-// its own module state (including its own carrier Symbol).
-async function importSchema11Reader(dir) {
+// its own module state (including its own carrier Symbol). `alsoUnknown`
+// names later keys the reader must not know either, in key order.
+async function importSchema11Reader(dir, { alsoUnknown = [] } = {}) {
   const src = await readFile(STATE_PATH, 'utf8');
   // Contract: the 1.1 reader below is built by editing these source lines — an
   // anchor that no longer matches would leave a 1.2 build posing as the 1.1 reader.
-  const keyOrderLine = new RegExp(`^  '(${SCHEMA_12_KEYS.join('|')})',\\n`, 'gm');
+  const unknownKeys = [...SCHEMA_12_KEYS, ...alsoUnknown];
+  const keyOrderLine = new RegExp(`^  '(${unknownKeys.join('|')})',\\n`, 'gm');
   const removed = (src.match(keyOrderLine) ?? []).map((l) => l.trim());
-  deepStrictEqual(removed, SCHEMA_12_KEYS.map((k) => `'${k}',`),
-    'the six keys must each appear once, one per line, in FRONTMATTER_KEY_ORDER');
+  deepStrictEqual(removed, unknownKeys.map((k) => `'${k}',`),
+    'each key must appear once, one per line, in FRONTMATTER_KEY_ORDER');
   const emit = "export const SCHEMA_VERSION = '1.2';";
   ok(src.includes(emit), 'the build must emit 1.2');
   const reset = '    resetPlanApproval(frontmatter, workflowPath, nowIso, { conflict, runId });\n    validateSchema12Fields(frontmatter);\n';
@@ -530,9 +536,10 @@ async function importSchema11Reader(dir) {
     .replace(reset, '');
   await writeFile(join(dir, 'state.mjs'), reader);
   await copyFile(resolve(REPO_ROOT, 'plugins/orchestrator/scripts/landing.mjs'), join(dir, 'landing.mjs'));
-  // The state root, run locks, cutover and proposals (ADR-0067) the script imports beside it.
+  // The state root, run locks, cutover and proposals (ADR-0067), and the
+  // command-argument grammar with its codec (C134(a)), the script imports beside it.
   await mkdir(join(dir, 'lib'), { recursive: true });
-  for (const lib of ['state-root.mjs', 'run-locks.mjs', 'process-identity.mjs', 'cutover.mjs', 'lane-advice.mjs', 'worktree-proposal.mjs']) {
+  for (const lib of ['state-root.mjs', 'run-locks.mjs', 'process-identity.mjs', 'cutover.mjs', 'lane-advice.mjs', 'worktree-proposal.mjs', 'command-args.mjs', 'args-file.mjs']) {
     await copyFile(resolve(REPO_ROOT, 'plugins/orchestrator/scripts/lib', lib), join(dir, 'lib', lib));
   }
   return import(pathToFileURL(join(dir, 'state.mjs')).href);
@@ -641,6 +648,48 @@ describe('ADR-0063 D6 — a 1.1-era reader carries the 1.2 keys', () => {
         const after = await readFile(filePath, 'utf8');
         deepStrictEqual(newKeyLines(after), lines);
         deepStrictEqual(frontmatterLines(after).slice(-4), lines);
+      });
+    } finally {
+      await rm(readerDir, { recursive: true, force: true });
+    }
+  });
+
+  // C132 — the plan finalize's records are string scalars at the tail, so a
+  // reader that does not know them carries them as written.
+  it('carries phase_note_run_ids and plan_conflict_cleared_run_id through a reader that does not know them', async () => {
+    const readerDir = await mkdtemp(join(tmpdir(), 'orchestrator-reader11-'));
+    const { appendPhase, clearAwaitingOwner } = await import(STATE_PATH);
+    try {
+      const r11 = await importSchema11Reader(readerDir, { alsoUnknown: C132_KEYS });
+      await withTmpRepo(async (repoRoot) => {
+        await createWorkflow({ repoRoot, verb: 'plan', host: 'claude', gitBaseline: MIN_BASELINE, originalRequest: 'records' });
+        const filePath = await findActiveWorkflow(repoRoot);
+        const run = 'macro-plan-20261001T000000Z-0ff1ce';
+        await setPlan({ workflowPath: filePath, host: 'claude', subtasks: [st('A')], verdict: 'conflict', runId: run });
+        await appendPhase({ workflowPath: filePath, host: 'claude', phaseNote: 'synthesis', event: 'updated', runId: run });
+        await appendPhase({ workflowPath: filePath, host: 'claude', phaseNote: 'synthesis', event: 'updated', runId: 'macro-plan-20261001T000000Z-000002' });
+        const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AGENTIC_')));
+        await clearAwaitingOwner({ workflowPath: filePath, host: 'claude', gate: 'plan-conflict', env });
+        const records = (text) => text.match(/^(phase_note_run_ids|plan_conflict_cleared_run_id): .*$/gm) ?? [];
+        const lines = records(await readFile(filePath, 'utf8'));
+        deepStrictEqual(lines, ['phase_note_run_ids: "macro-plan-20261001T000000Z-0ff1ce macro-plan-20261001T000000Z-000002"', `plan_conflict_cleared_run_id: "${run}"`]);
+        const original = await readFile(filePath, 'utf8');
+        deepStrictEqual(frontmatterLines(original).slice(-2), lines, 'written at the tail');
+
+        // Read: the reader does not know the records; they land in its carrier.
+        const parsed = r11.parseWorkflowFile(original);
+        for (const k of C132_KEYS) ok(!(k in parsed.frontmatter), `${k} is not a known key`);
+        deepStrictEqual(parsed.frontmatter[r11.FORWARD_COMPAT_UNKNOWNS].map((e) => e.key).filter((k) => C132_KEYS.includes(k)), C132_KEYS);
+
+        // Its writes keep them as written, at the tail.
+        await r11.appendPhase({ workflowPath: filePath, host: 'codex', phaseLabel: 'n', phaseNote: 'x', event: 'updated' });
+        await r11.snapshot({ workflowPath: filePath, host: 'codex', trigger: 'stop', statusDigest: '' });
+        await r11.setPlan({ workflowPath: filePath, host: 'codex', subtasks: [st('A'), st('B')] });
+        const after = await readFile(filePath, 'utf8');
+        deepStrictEqual(records(after), lines);
+        deepStrictEqual(frontmatterLines(after).slice(-2), lines, 'still at the tail');
+        const { frontmatter } = await readWorkflow(filePath);
+        deepStrictEqual([frontmatter.phase_note_run_ids.split(' ').length, frontmatter.plan_conflict_cleared_run_id], [2, run]);
       });
     } finally {
       await rm(readerDir, { recursive: true, force: true });

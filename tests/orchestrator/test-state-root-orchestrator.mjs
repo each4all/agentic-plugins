@@ -149,6 +149,63 @@ describe('orchestrator: macros are found in the read set and written in one copy
     match(missing.stderr, /no macro/);
   });
 
+  // C134(a) — the id a user typed reaches resolve-workflow as a file: read as
+  // the text files are (strict UTF-8, one trailing newline removed, never
+  // trimmed), then judged and resolved exactly as --workflow-id is.
+  it("resolve-workflow --workflow-id-file: the same lookup, validation and exit codes as --workflow-id; the file is kept", () => {
+    reset();
+    const made = create(repo.main);
+    strictEqual(made.status, 0, made.stderr);
+    const macroPath = made.stdout.trim();
+    const id = basename(macroPath, ".md");
+    const idFile = join(dir, "workflow-id.txt");
+    const byFile = (bytes, extra = []) => {
+      writeFileSync(idFile, bytes);
+      return run(["resolve-workflow", "--repo-root", repo.lane, "--workflow-id-file", idFile, ...extra]);
+    };
+    for (const bytes of [`${id}\n`, id, `${id}\r\n`]) {
+      const r = byFile(bytes);
+      strictEqual(r.status, 0, `${JSON.stringify(bytes)}: ${r.stderr}`);
+      strictEqual(r.stdout, `${macroPath}\n`);
+      ok(existsSync(idFile), "the file is never deleted");
+    }
+    const glued = run(["resolve-workflow", "--repo-root", repo.lane, `--workflow-id-file=${idFile}`]);
+    strictEqual(glued.stdout, `${macroPath}\n`, glued.stderr);
+    const none = byFile("macro-plan-20261008T000000Z-abcdef\n");
+    strictEqual(none.status, 3, none.stderr);
+    match(none.stderr, /no macro "macro-plan-20261008T000000Z-abcdef"/);
+    const marker = join(dir, "touched");
+    for (const [bytes, pattern] of [
+      ["../archive/x\n", /not a macro workflow id/],
+      [`${id} \n`, /not a macro workflow id/],
+      [`${id}\n\n`, /not a macro workflow id/],
+      [`$(touch ${marker})\n`, /not a macro workflow id/],
+      ["", /is empty/],
+      ["\n", /is empty/],
+      [Buffer.from([0xff, 0x0a]), /is not valid UTF-8/],
+      [`${id}\0`, /holds a NUL byte/],
+    ]) {
+      const r = byFile(bytes);
+      strictEqual(r.status, 1, `${JSON.stringify(String(bytes))}: ${r.stderr}`);
+      strictEqual(r.stdout, "");
+      match(r.stderr, pattern);
+    }
+    ok(!existsSync(marker), "the file is data, never shell source");
+    writeFileSync(idFile, id);
+    const both = run(["resolve-workflow", "--repo-root", repo.lane, "--workflow-id", id, "--workflow-id-file", idFile]);
+    strictEqual(both.status, 1);
+    match(both.stderr, /pass --workflow-id or --workflow-id-file, not both/);
+    const twice = run(["resolve-workflow", "--repo-root", repo.lane, "--workflow-id-file", idFile, "--workflow-id-file", idFile]);
+    strictEqual(twice.status, 2);
+    match(twice.stderr, /--workflow-id-file is given more than once/);
+    const gone = run(["resolve-workflow", "--repo-root", repo.lane, "--workflow-id-file", join(dir, "absent.txt")]);
+    strictEqual(gone.status, 1);
+    match(gone.stderr, /--workflow-id-file: cannot read/);
+    const stdin = run(["resolve-workflow", "--repo-root", repo.lane, "--workflow-id-file", "-"]);
+    strictEqual(stdin.status, 1);
+    match(stdin.stderr, /standard input \(-\) is not read/);
+  });
+
   it("a macro in the linked worktree's own home is found and updated in place, never copied", () => {
     reset();
     const made = create(repo.lane);

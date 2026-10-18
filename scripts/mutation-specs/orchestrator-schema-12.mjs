@@ -343,11 +343,33 @@ export const MUTATIONS = [
       });
       tools.applyEdit(copy, {
         file: STATE,
-        from: "  'awaiting_owner_run_id',\n];",
-        to: "  'awaiting_owner_run_id',\n  'terminal_marker',\n];",
+        from: "  'plan_conflict_cleared_run_id',\n];",
+        to: "  'plan_conflict_cleared_run_id',\n  'terminal_marker',\n];",
       });
     },
     why: 'the 1.2 keys are not at the tail, so every 1.1 reader write reorders them',
+  },
+  {
+    id: 'F2', tests: [TFC],
+    prepare: (copy, tools) => {
+      tools.applyEdit(copy, {
+        file: STATE,
+        from: "  // C132 — the plan finalize's records, after it for the same reason.\n  'phase_note_run_ids',\n  'plan_conflict_cleared_run_id',\n",
+        to: '',
+      });
+      tools.applyEdit(copy, {
+        file: STATE,
+        from: "  'awaiting_owner_gate',\n",
+        to: "  'phase_note_run_ids',\n  'plan_conflict_cleared_run_id',\n  'awaiting_owner_gate',\n",
+      });
+    },
+    why: 'the C132 records are not at the tail, so a reader that does not know them reorders them',
+  },
+  {
+    id: 'F3', file: STATE, tests: [TFC],
+    from: '      const { key, value, raw } = entry;\n',
+    to: "      const { key, value, raw } = entry;\n      if (key === 'phase_note_run_ids' || key === 'plan_conflict_cleared_run_id') continue;\n",
+    why: 'a reader that does not know the C132 records drops them on its next write (C132: older macros and readers)',
   },
 
   // ---- T: the tests' own controls ----------------------------------------------------
@@ -368,5 +390,11 @@ export const MUTATIONS = [
     from: "    .replace(reset, '');",
     to: ';',
     why: 'the "1.1 writer" still resets approval, so the stale-approval case never arises',
+  },
+  {
+    id: 'T4', file: TFC, tests: [TFC],
+    from: '      const r11 = await importSchema11Reader(readerDir, { alsoUnknown: C132_KEYS });',
+    to: '      const r11 = await importSchema11Reader(readerDir);',
+    why: 'the C132 case\'s reader still knows the records, so the carrier path is never exercised (critique review-20261018T061641Z-274da30)',
   },
 ];
