@@ -42,10 +42,13 @@ subtasks are ready, blocked, or terminal — with the six contract fields:
 The default macro sequence (a ready subtask → `/orchestrator:next`; all subtasks
 terminal → `/orchestrator:finalize` or the Stop-hook auto-archive) remains the
 **fallback** when evidence is genuinely neutral — but a fixed literal is no longer
-the default output. Where a forward-decision surface writes a durable next-action
-(e.g. `state.mjs --next-action`), record the compact form (selected_next +
-one-line rationale + next_command); the fuller proposal (alternatives + evidence
-+ confidence) belongs in the completion output and the phase note.
+the default output. Where a forward-decision surface writes a durable next-action,
+record the compact form (selected_next + one-line rationale + next_command); the
+fuller proposal (alternatives + evidence + confidence) belongs in the completion
+output and the phase note. A next action the agent words is text: it reaches
+`state.mjs` as a file written with the file tool and passed to
+`--next-action-file`, never spliced into `--next-action` (ADR-0059, amendment
+of 2026-10-10). The inline `--next-action` takes a fixed literal only.
 
 **Forward-decision vs terminal-close.** Only forward-decision surfaces carry the
 six-field prose proposal, because only they leave a genuine forward branch to
@@ -167,11 +170,14 @@ would miss the parent):
 #    --routing is the macro's resolved next route (e.g. /orchestrator:next to
 #    dispatch the next ready subtask, else /orchestrator:resume).
 HANDOFF="$(node "$CLAUDE_PLUGIN_ROOT/scripts/session-handoff.mjs" project \
-  --repo-root "$REPO_ROOT" --routing "/orchestrator:next")"
-STATUS="$(echo "$HANDOFF" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).status||"")}catch{}})')"
+  --repo-root "$REPO_ROOT" --routing "/orchestrator:next")" || exit 1
+# The result goes through printf, not echo, whose zsh builtin (and a POSIX
+# sh's) expands the backslash escapes inside JSON strings; each parser reads the
+# whole document, and one that does not parse stops here (C68).
+STATUS="$(printf '%s' "$HANDOFF" | node -e 'let s="";process.stdin.setEncoding("utf8").on("data",d=>s+=d);process.stdin.on("end",()=>{process.stdout.write(JSON.parse(s).status||"")})')" || exit 1
 # Routing is always present in the result (ADR-0031 input (c)) — pass it
 # standalone when there is no projection so the seam never loses it.
-ROUTING="$(echo "$HANDOFF" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).routing||"")}catch{}})')"
+ROUTING="$(printf '%s' "$HANDOFF" | node -e 'let s="";process.stdin.setEncoding("utf8").on("data",d=>s+=d);process.stdin.on("end",()=>{process.stdout.write(JSON.parse(s).routing||"")})')" || exit 1
 
 case "$STATUS" in
   ok)
@@ -179,7 +185,7 @@ case "$STATUS" in
     #    the runtime seam. runtime composes context-risk × archive_gate into
     #    the continue-vs-fresh decision + next-session prompt/command.
     PROJ_FILE="$(mktemp -t orchestrator-projection.XXXXXX).json"
-    echo "$HANDOFF" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{process.stdout.write(JSON.stringify(JSON.parse(s).projection))})' > "$PROJ_FILE"
+    printf '%s' "$HANDOFF" | node -e 'let s="";process.stdin.setEncoding("utf8").on("data",d=>s+=d);process.stdin.on("end",()=>{process.stdout.write(JSON.stringify(JSON.parse(s).projection))})' > "$PROJ_FILE" || exit 1
     # The runtime footer/check is advisory + pointer-only; --risk is the
     # caller-supplied context-budget risk (host-measured tokens are not
     # available — ADR-0031 §7). Use the runtime footer helper when present:

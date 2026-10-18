@@ -62,6 +62,7 @@ or missing one before it writes; nothing deletes it.
 Run:
 
 ```bash
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 node "<plugin-root>/scripts/state.mjs" find-active --repo-root "$REPO_ROOT"
 ```
 

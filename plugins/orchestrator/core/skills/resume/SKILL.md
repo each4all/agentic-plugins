@@ -57,6 +57,7 @@ the plugin enabled with generic `[features].hooks` (default on) and
 Run:
 
 ```bash
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 node "<plugin-root>/scripts/state.mjs" find-active --repo-root "$REPO_ROOT"
 ```
 
@@ -124,6 +125,7 @@ admission on every exit: a run or another session holding the lock
 refuses, naming the holder, and nothing is archived.
 
 ```bash
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 MACRO_ID="$(basename "$WORKFLOW" .md)"
 ADMISSION="$(node "<plugin-root>/scripts/state.mjs" admission join \
   --macro "$MACRO_ID" --checkout "$REPO_ROOT" --command resume --host <claude|codex>)" || exit 1

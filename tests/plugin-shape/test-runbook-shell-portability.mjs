@@ -39,7 +39,7 @@
 // machines — is reported as skipped rather than passed.
 
 import { test } from 'node:test';
-import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
+import { deepStrictEqual, notStrictEqual, ok, strictEqual } from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -309,6 +309,85 @@ test('runtime Codex skills: each runnable block defines what it reads (C78)', as
         }
       } finally {
         rmSync(scratch, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+// Docket C68 — the orchestrator's JSON readers, as the runbooks spell them,
+// under every shell a block may run in. Measured 2026-10-17: `echo "$X" | node`
+// turned a `\n` inside a JSON string into a raw newline under zsh and macOS
+// /bin/sh (xpg_echo), and JSON.parse refused it; a reader that parsed each
+// stdin chunk alone returned nothing, exit 0, for a document past a pipe's
+// 64 KiB; and a reader that swallowed its parse error read a malformed
+// document as an empty value; and one that appended each chunk as it came
+// decoded a character a chunk boundary split into two replacement characters
+// (Review finding). The readers below hand the document over with printf,
+// decode it as UTF-8 across chunks, read it whole, and fail on a document that
+// does not parse.
+test('orchestrator JSON readers (C68)', async (t) => {
+  const ORCH_DIR = join(PLUGINS_DIR, 'orchestrator');
+  const handoff = readFileSync(join(ORCH_DIR, 'core/skills/_shared/references/session-handoff.md'), 'utf8').split('\n');
+  const next = readFileSync(join(ORCH_DIR, 'commands/next.md'), 'utf8').split('\n');
+  // Contract: the lines the agent runs — renamed, they must fail here, not run nothing.
+  const status = handoff.find((l) => l.startsWith('STATUS="$(printf'));
+  const routing = handoff.find((l) => l.startsWith('ROUTING="$(printf'));
+  const field = next.find((l) => l.startsWith('JSON_FIELD='));
+  ok(status && routing && field, 'the handoff reference reads STATUS and ROUTING, and next.md has its JSON_FIELD reader');
+  // Critique H6 — every JSON_FIELD reader of the orchestrator's runbooks and
+  // skills is the one tested below, byte for byte: a copy that drifted (its
+  // UTF-8 decoding dropped, its parse error swallowed) fails here.
+  await t.test('every JSON_FIELD reader in the orchestrator is the tested one', () => {
+    const copies = [];
+    const walk = (dir) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) walk(path);
+        else if (entry.name.endsWith('.md')) {
+          readFileSync(path, 'utf8').split('\n').forEach((line, i) => {
+            if (/^\s*JSON_FIELD=/.test(line)) copies.push([`${relative(ORCH_DIR, path)}:${i + 1}`, line.trim()]);
+          });
+        }
+      }
+    };
+    walk(ORCH_DIR);
+    // The readers the runbooks carry: next.md's own, and those of next, done
+    // and peer-now on both hosts.
+    for (const file of ['commands/next.md', 'commands/done.md', 'commands/peer-now.md', 'core/skills/next/SKILL.md', 'core/skills/done/SKILL.md', 'core/skills/peer-now/SKILL.md']) {
+      ok(copies.some(([where]) => where.startsWith(`${file}:`)), `${file} carries a JSON_FIELD reader`);
+    }
+    deepStrictEqual(copies.filter(([, line]) => line !== field), [], 'each JSON_FIELD reader is the tested one');
+  });
+  // Two-byte characters past every 64 KiB boundary, at both parities, so a
+  // boundary splits one of them in one of the two documents.
+  const values = ['', 'x'].map((pad) => `/orchestrator:next line one\nline \\ two "quoted" ${pad}${'é'.repeat(40000)}`);
+  for (const shell of ['sh', 'bash', 'zsh', 'dash']) {
+    const available = spawnSync(shell, ['-c', 'exit 0']).status === 0;
+    await t.test(`${shell}: a document with escapes, past 64 KiB, reads whole; a malformed one fails the reader`, { skip: available ? false : `${shell} is not installed` }, () => {
+      const dir = mkdtempSync(join(tmpdir(), 'agentic-c68.'));
+      try {
+       for (const value of values) {
+        const file = join(dir, 'doc.json');
+        writeFileSync(file, JSON.stringify({ status: 'ok', routing: value, topic: value }, null, 2));
+        const read = spawnSync(shell, ['-c', [
+          `HANDOFF="$(cat '${file}')"`, status, routing,
+          `printf '%s' "$ROUTING" > '${dir}/routing.out'`,
+          field, `JSON_KEY=topic node -e "$JSON_FIELD" < '${file}' > '${dir}/topic.out' || exit 1`,
+          'printf "%s" "$STATUS"',
+        ].join('\n')], { encoding: 'utf8' });
+        strictEqual(read.status, 0, `${shell}: ${read.stderr}`);
+        strictEqual(read.stdout, 'ok');
+        strictEqual(readFileSync(join(dir, 'routing.out'), 'utf8'), value, `${shell}: ROUTING is the value, byte for byte`);
+        strictEqual(readFileSync(join(dir, 'topic.out'), 'utf8'), value, `${shell}: JSON_FIELD reads the value, byte for byte`);
+       }
+        for (const reader of [status, `${field}\nprintf '%s' "$HANDOFF" | JSON_KEY=status node -e "$JSON_FIELD" || exit 1`]) {
+          const bad = spawnSync(shell, ['-c', `HANDOFF='{"status": "ok", "routing": "cut'\n${reader}\necho READ`], { encoding: 'utf8' });
+          notStrictEqual(bad.status, 0, `${shell}: a malformed document fails the reader`);
+          ok(!bad.stdout.includes('READ'), `${shell}: the block stops`);
+          ok(/SyntaxError/.test(bad.stderr), `${shell}: the parser's error is shown: ${bad.stderr}`);
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
       }
     });
   }

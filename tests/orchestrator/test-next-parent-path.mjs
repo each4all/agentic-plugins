@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { carriedTextDir, withTextDir } from './_next-text-dir.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const ORCH_ROOT = resolve(REPO_ROOT, 'plugins/orchestrator');
@@ -95,21 +96,17 @@ function run(shell, script, work, env = {}) {
   return { ...r, files, text: files.length === 1 ? readFileSync(join(dir, files[0]), 'utf8') : null };
 }
 
-// Phase 3b's admission (ADR-0067 Decision 4, item 5), which the prelude
-// checks before it dispatches.
-const dispatchVars = ({ macroId, macroPath, work }, { verb = 'compose', branch = 'feat/t1' } = {}) => [
-  `MACRO_ID='${macroId}'`,
-  `MACRO_PATH='${macroPath}'`,
-  "SUBTASK_ID='T1'",
-  `SUBTASK_BRANCH='${branch}'`,
-  `SUBTASK_VERB='${verb}'`,
-  `ENGINEER_PLUGIN_ROOT='${ENGINEER_ROOT}'`,
-  "DETECTED_HOST='claude'",
-  "SUBTASK_PROFILE='backend'",
-  "SUBTASK_TOPIC='parent path dispatch'",
-  `REPO_ROOT='${work}'`,
-  `ADMISSION="$(node '${join(ORCH_ROOT, 'scripts/state.mjs')}' admission join --macro '${macroId}' --checkout '${work}' --command next --host claude)" || exit 9`,
-].join('\n');
+// The prelude as the agent runs it: its TEXT_DIR line names the directory the
+// earlier phases wrote (docket C75), with Phase 3b's admission (ADR-0067
+// Decision 4, item 5), which the prelude checks before it dispatches.
+const dispatched = (prelude, { dir, macroId, macroPath, work }, { verb = 'compose', branch = 'feat/t1' } = {}) => {
+  const admission = execFileSync(process.execPath, [join(ORCH_ROOT, 'scripts/state.mjs'), 'admission', 'join',
+    '--macro', macroId, '--checkout', work, '--command', 'next', '--host', 'claude'], { encoding: 'utf8', env: baseEnv() }).trim();
+  return withTextDir(prelude, carriedTextDir({
+    repoRoot: work, macroPath, engineerRoot: ENGINEER_ROOT, admission,
+    subtask: { id: 'T1', verb, branch, blocked_by: [], status: 'pending', profile: 'backend', topic: 'parent path dispatch' },
+  }, dir));
+};
 
 describe('/orchestrator:next hands the macro path to the engineer bootstrap (ADR-0067 Decision 3)', () => {
   for (const shell of SHELLS) {
@@ -119,7 +116,7 @@ describe('/orchestrator:next hands the macro path to the engineer bootstrap (ADR
       // kept in another checkout.
       it(`${shell}, ${verb}: the dispatched child records parent_workflow_path beside the two ids`, () => {
         withDispatch((ctx) => {
-          const r = run(shell, `${dispatchVars(ctx, { verb })}\n${PRELUDE}\n${regionBlock(verb, region)}`, ctx.work);
+          const r = run(shell, `${dispatched(PRELUDE, ctx, { verb })}\n${regionBlock(verb, region)}`, ctx.work);
           strictEqual(r.status, 0, r.stderr);
           strictEqual(r.files.length, 1, r.stderr);
           match(r.text, new RegExp(`^parent_workflow_path: ${JSON.stringify(ctx.macroPath).replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}$`, 'm'));
@@ -136,7 +133,7 @@ describe('/orchestrator:next hands the macro path to the engineer bootstrap (ADR
     // it is kept apart from next.md, so it can lose the export on its own.
     it(`${shell}, Codex prelude: the dispatched child records parent_workflow_path`, () => {
       withDispatch((ctx) => {
-        const r = run(shell, `${dispatchVars(ctx)}\n${CODEX_PRELUDE}\n${regionBlock('compose', 'compose-bootstrap')}`, ctx.work);
+        const r = run(shell, `${dispatched(CODEX_PRELUDE, ctx)}\n${regionBlock('compose', 'compose-bootstrap')}`, ctx.work);
         strictEqual(r.status, 0, r.stderr);
         match(r.text, new RegExp(`^parent_workflow_path: ${JSON.stringify(ctx.macroPath).replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}$`, 'm'));
         match(r.text, /^host_history:\n {2}- host: "codex"$/m);
@@ -161,7 +158,7 @@ describe('/orchestrator:next hands the macro path to the engineer bootstrap (ADR
             `const r = spawnSync(${JSON.stringify(process.execPath)}, a, { stdio: 'inherit' });`,
             'process.exit(r.status ?? 1);',
           ].join('\n'), { mode: 0o755 });
-          const r = run(shell, `${dispatchVars(ctx)}\n${prelude}\n${regionBlock('compose', 'compose-bootstrap')}`, ctx.work, { PATH: `${bin}:${baseEnv().PATH ?? process.env.PATH}` });
+          const r = run(shell, `${dispatched(prelude, ctx)}\n${regionBlock('compose', 'compose-bootstrap')}`, ctx.work, { PATH: `${bin}:${baseEnv().PATH ?? process.env.PATH}` });
           ok(r.status !== 0, `exit ${r.status}: ${r.stderr}`);
           strictEqual(r.files.length, 0, r.stderr);
         });
@@ -172,7 +169,7 @@ describe('/orchestrator:next hands the macro path to the engineer bootstrap (ADR
     // its dispatched children must keep being created and linked.
     it(`${shell}: an orchestrator that exports no path still dispatches a child linked by id`, () => {
       withDispatch((ctx) => {
-        const r = run(shell, `${dispatchVars(ctx)}\n${PRELUDE}\nunset AGENTIC_PARENT_WORKFLOW_PATH AGENTIC_DISPATCH_SELECTION\n${regionBlock('compose', 'compose-bootstrap')}`, ctx.work);
+        const r = run(shell, `${dispatched(PRELUDE, ctx)}\nunset AGENTIC_PARENT_WORKFLOW_PATH AGENTIC_DISPATCH_SELECTION\n${regionBlock('compose', 'compose-bootstrap')}`, ctx.work);
         strictEqual(r.status, 0, r.stderr);
         ok(!/^parent_workflow_path:/m.test(r.text), r.text);
         ok(!/^dispatched_/m.test(r.text), r.text);
@@ -186,7 +183,7 @@ describe('/orchestrator:next hands the macro path to the engineer bootstrap (ADR
     for (const [over, field] of [[{ branch: 'feat/other' }, 'branch'], [{ verb: 'frame' }, 'verb']]) {
       it(`${shell}: a selection naming another ${field} than the child's stops create before any write`, () => {
         withDispatch((ctx) => {
-          const r = run(shell, `${dispatchVars(ctx, over)}\n${PRELUDE}\n${regionBlock('compose', 'compose-bootstrap')}`, ctx.work);
+          const r = run(shell, `${dispatched(PRELUDE, ctx, over)}\n${regionBlock('compose', 'compose-bootstrap')}`, ctx.work);
           strictEqual(r.status, 1, r.stdout);
           match(r.stderr, new RegExp(`the dispatch selection names ${field} `));
           strictEqual(r.files.length, 0);

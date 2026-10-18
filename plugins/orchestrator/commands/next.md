@@ -17,6 +17,27 @@ Claude Code writes into this command when it loads it, else from the newest
 version in the plugin cache. Keep that opening line when you run a block: a
 shell variable does not outlive a Bash call.
 
+No block relies on a variable an earlier block set: each one may run in a
+fresh shell. What a phase finds — the checkout and the macro file (Phase 0),
+the subtask it selected (Phase 1), the engineer root and the workflow its
+ownership check saw (Phase 2), the admission it joined (Phase 3b) — it writes
+to a private directory, and every later block reads it from there. A block
+run again reads what the earlier phases wrote; it never selects again, so the
+subtask Phases 3b to 5 act on is the one Phase 1 selected (ADR-0067 Decision
+4, item 5). Before Phase 0:
+
+1. Create the directory, and note the path it prints:
+
+   ```bash
+   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   ```
+
+2. Put that path in the `TEXT_DIR` line each block opens with. The blocks
+   write every file in it themselves; none is written with your
+   file-writing tool, and a file missing there means the phase that writes it
+   has not run with this directory. Nothing deletes the directory: a headless
+   run can deny `rm`, and it is under `$TMPDIR`.
+
 **Argument parsing**: extract from `$ARGUMENTS`:
 - `EXPLICIT_SUBTASK_ID` ← the leading positional token (e.g., `PR1`), or empty if absent.
 - `EXPLICIT_WORKFLOW_ID` ← value of `--workflow=<id>` flag, or empty if absent.
@@ -26,7 +47,7 @@ shell variable does not outlive a Bash call.
 - Do NOT call `engineer state.mjs create` directly — bypasses the engineer command's runbook semantics.
 - All AGENTIC_* env exports + the engineer command's Phase 0+ snippets MUST run in the **same shell session** (a single Bash tool call). The Bash tool spawns a fresh process per call, so split execution drops the env exports — emit the prelude exports inline at the top of each engineer Phase 0 bash block, OR run the entire engineer Phase 0+verb as one consolidated Bash tool invocation. The CLAUDE_PLUGIN_ROOT rebind also lives in the same block; argv positions use `$ENGINEER_PLUGIN_ROOT` directly (not the rebound `$CLAUDE_PLUGIN_ROOT`).
 - Branch precondition order is fixed: clean-check → resolve `subtasks[i].branch` → ownership-check → engineer preflight → join the run locks → switch → invoke → writeback → release. Any reordering breaks the §1 invariants.
-- Admission (ADR-0067 Decision 4, item 5): Phase 3b joins the locks an autopilot run takes and prints this session's admission id (empty for a worker of the run that holds them). Carry it into every later block as `ADMISSION`, as you carry `MACRO_PATH`. Each block that switches the branch, dispatches into the checkout or writes the macro checks it first, and every exit after the join releases it.
+- Admission (ADR-0067 Decision 4, item 5): Phase 3b joins the locks an autopilot run takes and writes this session's admission id to the text directory (an empty id for a worker of the run that holds them), where every later block reads it as `ADMISSION`. Each block that switches the branch, dispatches into the checkout or writes the macro checks it first, and every exit after the join releases it.
 
 ---
 
@@ -35,9 +56,10 @@ shell variable does not outlive a Bash call.
 ADR-0019 §1 lines 187-213 — orchestrator workflows span multiple branches (macro + N subtask branches). Resolution order: `--workflow=<id>` override → `find-active` on current branch → `find-macro` branch-agnostic scan.
 
 ```bash
+TEXT_DIR='<directory from step 1>'
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-REPO_ROOT="$(git rev-parse --show-toplevel)"
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 GIT_BRANCH="$(git branch --show-current)"
 if [ -z "$GIT_BRANCH" ]; then
   echo "✗ Detached HEAD detected — orchestrator workflows are anchored to a branch (ADR-0018 §sub-2)." >&2
@@ -89,7 +111,9 @@ if [ -z "$MACRO_PATH" ]; then
   echo "  Use --workflow=<id> to specify, or run /orchestrator:plan to start one." >&2
   exit 1
 fi
-MACRO_ID="$(basename "$MACRO_PATH" .md)"
+# For every later block, each of which may run in a fresh shell.
+printf '%s' "$REPO_ROOT" > "$TEXT_DIR/repo-root" || exit 1
+printf '%s' "$MACRO_PATH" > "$TEXT_DIR/macro-path" || exit 1
 ```
 
 ---
@@ -99,8 +123,10 @@ MACRO_ID="$(basename "$MACRO_PATH" .md)"
 Three outcomes — explicit id, automatic first-ready, or actionable diagnostic:
 
 ```bash
+TEXT_DIR='<directory from step 1>'
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+MACRO_PATH="$(cat "$TEXT_DIR/macro-path")" || exit 1
 SUBTASK_JSON=""
 if [ -n "${EXPLICIT_SUBTASK_ID:-}" ]; then
   # Explicit id — read that subtask. PR-C0's absorbing-completed
@@ -117,9 +143,13 @@ else
   NEXT_OUT="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
     next-ready --workflow-path "$MACRO_PATH")"
   if [ $? -ne 0 ]; then exit 1; fi
-  READY="$(echo "$NEXT_OUT" | node -e 'process.stdin.on("data", d => { try { const o = JSON.parse(d.toString()); if (o.ready) process.stdout.write(JSON.stringify(o.ready)); } catch {} })')"
+  # The document goes through printf, not echo, whose zsh builtin (and a POSIX
+  # sh's) expands the backslash escapes inside JSON strings; the parse waits for
+  # the whole document, which a pipe hands over in chunks; and a document that
+  # does not parse fails the block rather than reading as nothing (C68).
+  READY="$(printf '%s' "$NEXT_OUT" | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d);if(o.ready)process.stdout.write(JSON.stringify(o.ready))})')" || exit 1
   if [ -z "$READY" ]; then
-    REASON="$(echo "$NEXT_OUT" | node -e 'process.stdin.on("data", d => { try { const o = JSON.parse(d.toString()); process.stdout.write(o.reason || "unknown"); } catch {} })')"
+    REASON="$(printf '%s' "$NEXT_OUT" | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>process.stdout.write(JSON.parse(d).reason||"unknown"))')" || exit 1
     case "$REASON" in
       empty_plan)
         echo "✗ Macro plan has no subtasks. Run /orchestrator:plan to add some." >&2
@@ -135,7 +165,7 @@ else
         # plan, not a guess from the status. An in_progress subtask whose
         # engineer workflow has committed stays in_progress until it lands.
         echo "✗ No subtask is ready to dispatch. Open subtasks:" >&2
-        echo "$NEXT_OUT" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d);for(const r of o.readiness||[]){let why;if(r.status==="in_progress")why="in progress; once its pull request has merged, record it with /orchestrator:done "+r.id;else if(r.stale_blocked)why="marked blocked, but every predecessor is completed (written before the shared unblock pass); repair: state.mjs subtask-update --subtask-id="+r.id+" --status=pending";else if(r.waiting_on.length>0)why="waiting on "+r.waiting_on.join(", ");else why=r.status;process.stderr.write("  - "+r.id+": "+why+"\n")}})'
+        printf '%s' "$NEXT_OUT" | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d);for(const r of o.readiness||[]){let why;if(r.status==="in_progress")why="in progress; once its pull request has merged, record it with /orchestrator:done "+r.id;else if(r.stale_blocked)why="marked blocked, but every predecessor is completed (written before the shared unblock pass); repair: state.mjs subtask-update --subtask-id="+r.id+" --status=pending";else if(r.waiting_on.length>0)why="waiting on "+r.waiting_on.join(", ");else why=r.status;process.stderr.write("  - "+r.id+": "+why+"\n")}})'
         exit 1;;
       *)
         echo "✗ Unexpected next-ready reason: $REASON" >&2
@@ -144,27 +174,39 @@ else
   fi
   SUBTASK_JSON="$READY"
 fi
-SUBTASK_ID="$(echo "$SUBTASK_JSON" | node -e 'process.stdin.on("data", d => { try { process.stdout.write(JSON.parse(d.toString()).id || ""); } catch {} })')"
-SUBTASK_VERB="$(echo "$SUBTASK_JSON" | node -e 'process.stdin.on("data", d => { try { process.stdout.write(JSON.parse(d.toString()).verb || ""); } catch {} })')"
-SUBTASK_BRANCH="$(echo "$SUBTASK_JSON" | node -e 'process.stdin.on("data", d => { try { process.stdout.write(JSON.parse(d.toString()).branch || ""); } catch {} })')"
-SUBTASK_PROFILE="$(echo "$SUBTASK_JSON" | node -e 'process.stdin.on("data", d => { try { process.stdout.write(JSON.parse(d.toString()).profile || ""); } catch {} })')"
-SUBTASK_TOPIC="$(echo "$SUBTASK_JSON" | node -e 'process.stdin.on("data", d => { try { process.stdout.write(JSON.parse(d.toString()).topic || ""); } catch {} })')"
-SUBTASK_STATUS="$(echo "$SUBTASK_JSON" | node -e 'process.stdin.on("data", d => { try { process.stdout.write(JSON.parse(d.toString()).status || ""); } catch {} })')"
-SUBTASK_EXISTING_ENG_WF_ID="$(echo "$SUBTASK_JSON" | node -e 'process.stdin.on("data", d => { try { process.stdout.write(JSON.parse(d.toString()).engineer_workflow_id || ""); } catch {} })')"
+# The selection, which every later phase reads from here (ADR-0067 Decision 4,
+# item 5): none selects again.
+printf '%s' "$SUBTASK_JSON" > "$TEXT_DIR/subtask.json" || exit 1
+# Prints the field named by JSON_KEY of the JSON document on stdin, or "" when
+# it is absent or null; a document that does not parse fails (C68). The key
+# travels in the environment: before any shell sees this file, Claude replaces
+# a dollar sign followed by a digit with the command's argument at that index
+# (C67).
+JSON_FIELD='let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const v=JSON.parse(d)[process.env.JSON_KEY];process.stdout.write(v==null?"":String(v))})'
+SUBTASK_ID="$(JSON_KEY=id node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
+if [ -z "$SUBTASK_ID" ]; then
+  echo "✗ The selected subtask has no id; nothing was selected." >&2
+  exit 1
+fi
 ```
 
 Validate the resolved subtask is dispatch-ready (mirrors `next-ready`'s gate so explicit-id selection cannot bypass dependency ordering — Codex P2 finding):
 
 ```bash
+TEXT_DIR='<directory from step 1>'
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+MACRO_PATH="$(cat "$TEXT_DIR/macro-path")" || exit 1
+JSON_FIELD='let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const v=JSON.parse(d)[process.env.JSON_KEY];process.stdout.write(v==null?"":String(v))})'
+SUBTASK_ID="$(JSON_KEY=id node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
+SUBTASK_STATUS="$(JSON_KEY=status node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
 # ADR-0062 §Decision 5 — the dependency facts come from the state CLI, which
 # parses the plan properly; they hold for an explicitly chosen subtask even
 # when another one is ready.
 READINESS="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
   subtask-readiness --workflow-path "$MACRO_PATH" --subtask-id "$SUBTASK_ID")" || exit 1
-WAITING_ON="$(echo "$READINESS" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>process.stdout.write(JSON.parse(d).waiting_on.join(", ")))')"
-STALE_BLOCKED="$(echo "$READINESS" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>process.stdout.write(String(JSON.parse(d).stale_blocked)))')"
+WAITING_ON="$(printf '%s' "$READINESS" | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>process.stdout.write(JSON.parse(d).waiting_on.join(", ")))')" || exit 1
+STALE_BLOCKED="$(printf '%s' "$READINESS" | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>process.stdout.write(String(JSON.parse(d).stale_blocked)))')" || exit 1
 case "$SUBTASK_STATUS" in
   completed) echo "✗ Subtask $SUBTASK_ID already completed; nothing to dispatch." >&2; exit 1;;
   deferred|abandoned) echo "✗ Subtask $SUBTASK_ID is terminal-partial ($SUBTASK_STATUS) — set by /orchestrator:finalize or /abort. Cannot re-dispatch." >&2; exit 1;;
@@ -209,8 +251,11 @@ dispatch.
   before schema 1.2 has no approval keys and dispatches as before, with no line.
 
 ```bash
+TEXT_DIR='<directory from step 1>'
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+MACRO_PATH="$(cat "$TEXT_DIR/macro-path")" || exit 1
+SUBTASK_JSON="$(cat "$TEXT_DIR/subtask.json")" || exit 1
 # The gate prints its warning or refusal on stderr; the JSON verdict it
 # prints on stdout is for scripts, not for this runbook.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" approval-gate \
@@ -223,8 +268,16 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" approval-gate \
 ## Phase 2 — Branch precondition (ADR-0019 §1 lines 122-185, fixed order)
 
 ```bash
+TEXT_DIR='<directory from step 1>'
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+REPO_ROOT="$(cat "$TEXT_DIR/repo-root")" || exit 1
+MACRO_PATH="$(cat "$TEXT_DIR/macro-path")" || exit 1
+MACRO_ID="$(basename "$MACRO_PATH" .md)"
+JSON_FIELD='let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const v=JSON.parse(d)[process.env.JSON_KEY];process.stdout.write(v==null?"":String(v))})'
+SUBTASK_ID="$(JSON_KEY=id node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
+SUBTASK_BRANCH="$(JSON_KEY=branch node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
+SUBTASK_EXISTING_ENG_WF_ID="$(JSON_KEY=engineer_workflow_id node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
 # Step 1: clean-worktree check — BEFORE any git switch.
 if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=normal)" ]; then
   echo "✗ Working tree not clean — /orchestrator:next does not switch branches over uncommitted changes." >&2
@@ -271,14 +324,14 @@ if [ -n "$SUBTASK_EXISTING_ENG_WF_ID" ] && [ -z "$EXISTING_ENG_PATH" ]; then
   echo "    2. If you want to dispatch a fresh attempt, clear the engineer_workflow_id field by re-running /orchestrator:plan (full re-plan)." >&2
   exit 1
 fi
-RE_ATTACH=0
 if [ -n "$EXISTING_ENG_PATH" ]; then
-  EXISTING_ENG_PARENT="$(node "$ENGINEER_PLUGIN_ROOT/scripts/state.mjs" read \
-    --workflow-path "$EXISTING_ENG_PATH" | node -e 'process.stdin.on("data", d => { try { const o = JSON.parse(d.toString()); process.stdout.write(o.parent_workflow || ""); } catch {} })')"
-  EXISTING_ENG_SUBTASK="$(node "$ENGINEER_PLUGIN_ROOT/scripts/state.mjs" read \
-    --workflow-path "$EXISTING_ENG_PATH" | node -e 'process.stdin.on("data", d => { try { const o = JSON.parse(d.toString()); process.stdout.write(o.originating_subtask || ""); } catch {} })')"
+  # The read's own status, apart from the parser's: a pipe would report only
+  # the parser's (C110).
+  EXISTING_ENG_JSON="$(node "$ENGINEER_PLUGIN_ROOT/scripts/state.mjs" read \
+    --workflow-path "$EXISTING_ENG_PATH")" || exit 1
+  EXISTING_ENG_PARENT="$(printf '%s' "$EXISTING_ENG_JSON" | JSON_KEY=parent_workflow node -e "$JSON_FIELD")" || exit 1
+  EXISTING_ENG_SUBTASK="$(printf '%s' "$EXISTING_ENG_JSON" | JSON_KEY=originating_subtask node -e "$JSON_FIELD")" || exit 1
   if [ "$EXISTING_ENG_PARENT" = "$MACRO_ID" ] && [ "$EXISTING_ENG_SUBTASK" = "$SUBTASK_ID" ]; then
-    RE_ATTACH=1
     echo "→ Idempotent re-attach: engineer workflow $(basename "$EXISTING_ENG_PATH" .md) already owns this subtask. Proceeding with switch + resume." >&2
   else
     echo "✗ engineer workflow already active on branch '$SUBTASK_BRANCH' with a different parent linkage." >&2
@@ -288,6 +341,10 @@ if [ -n "$EXISTING_ENG_PATH" ]; then
     exit 1
   fi
 fi
+# For Phases 3 to 5: the engineer root, and the workflow the ownership check
+# saw on the subtask branch (empty when none), which Phase 3b compares again.
+printf '%s' "$ENGINEER_PLUGIN_ROOT" > "$TEXT_DIR/engineer-root" || exit 1
+printf '%s' "$EXISTING_ENG_PATH" > "$TEXT_DIR/engineer-workflow" || exit 1
 ```
 
 Phase 2 only reads: a refusal here leaves nothing behind. The switch is
@@ -317,8 +374,10 @@ Read-only, so it runs before the switch: an engineer install that fails it
 leaves the checkout where it was.
 
 ```bash
+TEXT_DIR='<directory from step 1>'
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ENGINEER_PLUGIN_ROOT="$(cat "$TEXT_DIR/engineer-root")" || exit 1
 node "$CLAUDE_PLUGIN_ROOT/scripts/discover-engineer.mjs" preflight \
   --root "$ENGINEER_PLUGIN_ROOT" || {
   echo "✗ engineer install at $ENGINEER_PLUGIN_ROOT does not satisfy ADR-0019 PR-A minimum (preflight failed; see preceding diagnostic for cause)." >&2
@@ -345,6 +404,7 @@ nothing) and switches. Every exit from the join until the switch has succeeded r
 admission.
 
 ```bash
+TEXT_DIR='<directory from step 1>'
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 case "$CLAUDE_PLUGIN_ROOT" in
@@ -352,8 +412,17 @@ case "$CLAUDE_PLUGIN_ROOT" in
   *"/.claude/"*) DETECTED_HOST="claude" ;;
   *) DETECTED_HOST="${AGENTIC_HOST:-claude}" ;;
 esac
-# The id this prints is this session's admission: carry it into every later
-# block as ADMISSION. A refusal names the holder and writes nothing.
+REPO_ROOT="$(cat "$TEXT_DIR/repo-root")" || exit 1
+MACRO_PATH="$(cat "$TEXT_DIR/macro-path")" || exit 1
+MACRO_ID="$(basename "$MACRO_PATH" .md)"
+ENGINEER_PLUGIN_ROOT="$(cat "$TEXT_DIR/engineer-root")" || exit 1
+EXISTING_ENG_PATH="$(cat "$TEXT_DIR/engineer-workflow")" || exit 1
+JSON_FIELD='let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const v=JSON.parse(d)[process.env.JSON_KEY];process.stdout.write(v==null?"":String(v))})'
+SUBTASK_ID="$(JSON_KEY=id node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
+SUBTASK_BRANCH="$(JSON_KEY=branch node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
+SUBTASK_STATUS="$(JSON_KEY=status node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
+# The id this prints is this session's admission, which every later block
+# reads from the text directory. A refusal names the holder and writes nothing.
 ADMISSION="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" admission join \
   --macro "$MACRO_ID" --checkout "$REPO_ROOT" --command next \
   --host "$DETECTED_HOST" --session-id "${CLAUDE_CODE_SESSION_ID:-}")" || exit 1
@@ -362,6 +431,7 @@ release_admission() {
     --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION"
 }
 trap 'release_admission' EXIT
+printf '%s' "$ADMISSION" > "$TEXT_DIR/admission" || exit 1
 if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=normal)" ]; then
   echo "✗ The working tree changed after Phase 2's clean check; nothing was switched. Rerun /orchestrator:next." >&2
   exit 1
@@ -375,13 +445,12 @@ fi
 # The subtask as Phase 1 selected it, every field Phase 1 read that a later
 # phase acts on: a run's step may have completed it, and archived its child, and
 # a plan revision may have changed its branch, verb, profile or topic, before
-# the join. Each name below is followed by the value Phase 1 read, which lost
-# its trailing newlines to the command substitution.
-SUBTASK_CHANGES="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read-subtask \
-  --workflow-path "$MACRO_PATH" --subtask-id "$SUBTASK_ID" \
-  | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const s=JSON.parse(d),a=process.argv.slice(1),out=[];for(let i=0;i<a.length;i+=2){const now=String(s[a[i]]||"").replace(/\n+$/,"");if(now!==a[i+1])out.push(a[i]+" was "+JSON.stringify(a[i+1])+", now "+JSON.stringify(now))}process.stdout.write(out.join("; "))})' -- \
-  status "$SUBTASK_STATUS" engineer_workflow_id "$SUBTASK_EXISTING_ENG_WF_ID" \
-  branch "$SUBTASK_BRANCH" verb "$SUBTASK_VERB" profile "$SUBTASK_PROFILE" topic "$SUBTASK_TOPIC")" || exit 1
+# the join. The read's status is its own, apart from the comparison's (C110).
+NOW_SUBTASK="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read-subtask \
+  --workflow-path "$MACRO_PATH" --subtask-id "$SUBTASK_ID")" || exit 1
+SUBTASK_CHANGES="$(printf '%s' "$NOW_SUBTASK" \
+  | node -e 'const fs=require("fs");let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const now=JSON.parse(d),was=JSON.parse(fs.readFileSync(process.argv[1],"utf8")),out=[];for(const k of ["status","engineer_workflow_id","branch","verb","profile","topic"]){const a=String(was[k]||""),b=String(now[k]||"");if(a!==b)out.push(k+" was "+JSON.stringify(a)+", now "+JSON.stringify(b))}process.stdout.write(out.join("; "))})' \
+  "$TEXT_DIR/subtask.json")" || exit 1
 if [ -n "$SUBTASK_CHANGES" ]; then
   echo "✗ Subtask $SUBTASK_ID changed after Phase 1's selection ($SUBTASK_CHANGES); nothing was switched. Rerun /orchestrator:next." >&2
   exit 1
@@ -390,9 +459,9 @@ fi
 # pending subtask a predecessor not yet completed, with every field above
 # unchanged.
 if [ "$SUBTASK_STATUS" = "pending" ]; then
-  WAITING_NOW="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" subtask-readiness \
-    --workflow-path "$MACRO_PATH" --subtask-id "$SUBTASK_ID" \
-    | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>process.stdout.write(JSON.parse(d).waiting_on.join(", ")))')" || exit 1
+  READINESS_NOW="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" subtask-readiness \
+    --workflow-path "$MACRO_PATH" --subtask-id "$SUBTASK_ID")" || exit 1
+  WAITING_NOW="$(printf '%s' "$READINESS_NOW" | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>process.stdout.write(JSON.parse(d).waiting_on.join(", ")))')" || exit 1
   if [ -n "$WAITING_NOW" ]; then
     echo "✗ Subtask $SUBTASK_ID now waits on: $WAITING_NOW (the plan changed after Phase 1's selection); nothing was switched. Record each predecessor with /orchestrator:done <id> once its pull request has merged, then rerun /orchestrator:next." >&2
     exit 1
@@ -407,8 +476,11 @@ fi
 # of the integration branch, and a successor built on it would carry
 # obsolete history (ADR-0062 §Decision 2).
 # --- ADR-0062 branch-base step (extracted by tests) ---
-INTEGRATION_BRANCH="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$MACRO_PATH" \
-  | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{process.stdout.write(JSON.parse(d).git_baseline.branch||"")}catch{}})')"
+# The read's status is its own, apart from the parser's: piped, a failed read
+# would show as a macro with no baseline branch (C110).
+MACRO_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$MACRO_PATH")" || exit 1
+INTEGRATION_BRANCH="$(printf '%s' "$MACRO_JSON" \
+  | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>process.stdout.write((JSON.parse(d).git_baseline||{}).branch||""))')" || exit 1
 if [ -z "$INTEGRATION_BRANCH" ]; then
   echo "✗ The macro records no git_baseline.branch; cannot tell which branch subtasks start from." >&2
   exit 1
@@ -441,24 +513,31 @@ trap - EXIT
 
 ADR-0019 §1 lines 252-287 — every emitted engineer snippet runs in a subshell with rebound `CLAUDE_PLUGIN_ROOT` and uses `$ENGINEER_PLUGIN_ROOT` directly in argv. Because the Bash tool spawns a fresh process per invocation, the exports MUST live in the **same bash block** as the engineer command's Phase 0 snippets — emit them as the prelude of a single combined Bash tool call.
 
-**Host auto-detection** (Codex P2 finding): infer the host from `$CLAUDE_PLUGIN_ROOT` path shape (Claude cache lives under `~/.claude/`; Codex cache lives under `~/.codex/`). Direct-checkout development falls back to `claude` (override via `AGENTIC_HOST=codex` env if needed):
+**Host auto-detection** (Codex P2 finding): the prelude below infers the host from the orchestrator root's path shape (Claude cache lives under `~/.claude/`; Codex cache lives under `~/.codex/`). Direct-checkout development falls back to `claude` (override via `AGENTIC_HOST=codex` env if needed).
+
+Drive the engineer command's runbook from a single Bash tool call that opens with this prelude. It reads everything it exports from the text directory, so it runs as written in any shell. **Save the orchestrator's plugin root BEFORE rebinding** — after the rebind `$CLAUDE_PLUGIN_ROOT` names the engineer's root, and the `admission check` is an orchestrator CLI that MUST be invoked through the orchestrator's `state.mjs`, not engineer's:
 
 ```bash
+TEXT_DIR='<directory from step 1>'
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-case "$CLAUDE_PLUGIN_ROOT" in
+ORCH_PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"          # save before the rebind below
+case "$ORCH_PLUGIN_ROOT" in
   *"/.codex/"*) DETECTED_HOST="codex" ;;
   *"/.claude/"*) DETECTED_HOST="claude" ;;
   *) DETECTED_HOST="${AGENTIC_HOST:-claude}" ;;
 esac
-```
-
-Then drive the engineer command's runbook from a single Bash tool call. **Save the orchestrator's plugin root BEFORE rebinding** — after the rebind `$CLAUDE_PLUGIN_ROOT` names the engineer's root, and the `admission check` is an orchestrator CLI that MUST be invoked through the orchestrator's `state.mjs`, not engineer's:
-
-```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-ORCH_PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"          # save before the rebind below
+REPO_ROOT="$(cat "$TEXT_DIR/repo-root")" || exit 1
+MACRO_PATH="$(cat "$TEXT_DIR/macro-path")" || exit 1
+MACRO_ID="$(basename "$MACRO_PATH" .md)"
+ENGINEER_PLUGIN_ROOT="$(cat "$TEXT_DIR/engineer-root")" || exit 1
+ADMISSION="$(cat "$TEXT_DIR/admission")" || exit 1
+JSON_FIELD='let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const v=JSON.parse(d)[process.env.JSON_KEY];process.stdout.write(v==null?"":String(v))})'
+SUBTASK_ID="$(JSON_KEY=id node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
+SUBTASK_BRANCH="$(JSON_KEY=branch node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
+SUBTASK_VERB="$(JSON_KEY=verb node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
+SUBTASK_PROFILE="$(JSON_KEY=profile node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
+SUBTASK_TOPIC="$(JSON_KEY=topic node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
 
 # ADR-0067 Decision 4, item 5 — this block dispatches into the checkout: stop
 # before it when this session's admission is gone (Phase 5 still runs, and
@@ -502,7 +581,7 @@ export AGENTIC_TOPIC="${SUBTASK_TOPIC:-}"
 # them to state.mjs create (parent linkage + host + profile + topic).
 ```
 
-**Important**: the LLM following this runbook MUST read engineer's command markdown and execute its bash snippets in the same Bash tool invocation as the exports above, OR re-emit the AGENTIC_* exports — and the `admission check` before them — at the top of each engineer Phase 0 bash block. The simplest and most robust shape is a single Bash tool call that begins with the exports and proceeds through engineer's Phase 0+verb body inline.
+**Important**: the LLM following this runbook MUST read engineer's command markdown and execute its bash snippets in the same Bash tool invocation as the exports above, OR re-emit this prelude — its `TEXT_DIR` line, the `admission check` and the AGENTIC_* exports — at the top of each engineer Phase 0 bash block. The simplest and most robust shape is a single Bash tool call that begins with the prelude and proceeds through engineer's Phase 0+verb body inline.
 
 Whatever the engineer runbook's outcome — it finished, stopped at a gate, or one of its blocks exited non-zero (a `create` the repository-wide check refused, for one) — go on to Phase 5: the engineer's exits cannot release this command's admission, and Phase 5 releases it on every path.
 
@@ -510,9 +589,10 @@ Whatever the engineer runbook's outcome — it finished, stopped at a gate, or o
 
 ## Phase 5 — Post-create writeback (engineer_workflow_id + status=in_progress)
 
-After engineer's Phase 0 creates the workflow file and the verb skill begins, capture the engineer workflow id and write it back to the macro plan so `/orchestrator:done` and `find-active` can locate the child. Set `SUBTASK_ID`, `SUBTASK_BRANCH`, `SUBTASK_VERB`, `SUBTASK_PROFILE` and `SUBTASK_TOPIC` as Phase 1 read them (the writeback expects the last four unchanged). The block sets the orchestrator's plugin root itself, as `$ORCH_PLUGIN_ROOT`, and the host: in a fresh Bash call nothing Phase 4 set is left, and in the shell of Phase 4's engineer call `$CLAUDE_PLUGIN_ROOT` names the engineer's root until the opening line sets it back. Without them the check and the release would fail, and the admission would stay in both locks, blocking the macro until someone releases it by hand:
+After engineer's Phase 0 creates the workflow file and the verb skill begins, capture the engineer workflow id and write it back to the macro plan so `/orchestrator:done` and `find-active` can locate the child. The block reads `SUBTASK_ID`, `SUBTASK_BRANCH`, `SUBTASK_VERB`, `SUBTASK_PROFILE` and `SUBTASK_TOPIC` from the selection Phase 1 wrote (the writeback expects the last four unchanged), and the admission from the file Phase 3b wrote. It sets the orchestrator's plugin root itself, as `$ORCH_PLUGIN_ROOT`, and the host: in a fresh Bash call nothing Phase 4 set is left, and in the shell of Phase 4's engineer call `$CLAUDE_PLUGIN_ROOT` names the engineer's root until the opening line sets it back. Without them the check and the release would fail, and the admission would stay in both locks, blocking the macro until someone releases it by hand:
 
 ```bash
+TEXT_DIR='<directory from step 1>'
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 ORCH_PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"
@@ -521,6 +601,17 @@ case "$ORCH_PLUGIN_ROOT" in
   *"/.claude/"*) DETECTED_HOST="claude" ;;
   *) DETECTED_HOST="${AGENTIC_HOST:-claude}" ;;
 esac
+# What the release needs, before anything else: every exit after these reads
+# releases the admission. Should one of them be gone, the block cannot release
+# an admission Phase 3b may have joined: the next join's refusal names it, with
+# the command that releases it.
+for CARRIED in repo-root macro-path admission; do
+  [ -f "$TEXT_DIR/$CARRIED" ] || { echo "✗ $TEXT_DIR/$CARRIED is missing, so this block cannot release the admission Phase 3b joined, if it joined: the next /orchestrator:next refusal names it and the command that releases it." >&2; exit 1; }
+done
+REPO_ROOT="$(cat "$TEXT_DIR/repo-root")" || exit 1
+MACRO_PATH="$(cat "$TEXT_DIR/macro-path")" || exit 1
+MACRO_ID="$(basename "$MACRO_PATH" .md)"
+ADMISSION="$(cat "$TEXT_DIR/admission")" || exit 1
 # ADR-0067 Decision 4, item 5 — every exit of this block releases the
 # admission Phase 3b joined; the writeback, which writes the macro, checks it
 # first. From the writeback on, the driver's own claim rules see the subtask.
@@ -529,6 +620,13 @@ release_admission() {
     --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION"
 }
 trap 'release_admission' EXIT
+ENGINEER_PLUGIN_ROOT="$(cat "$TEXT_DIR/engineer-root")" || exit 1
+JSON_FIELD='let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const v=JSON.parse(d)[process.env.JSON_KEY];process.stdout.write(v==null?"":String(v))})'
+SUBTASK_ID="$(JSON_KEY=id node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
+SUBTASK_BRANCH="$(JSON_KEY=branch node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
+SUBTASK_VERB="$(JSON_KEY=verb node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
+SUBTASK_PROFILE="$(JSON_KEY=profile node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
+SUBTASK_TOPIC="$(JSON_KEY=topic node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
 ACTIVE_PATH="$(node "$ENGINEER_PLUGIN_ROOT/scripts/state.mjs" \
   find-active --repo-root "$REPO_ROOT" --branch "$SUBTASK_BRANCH" 2>/dev/null)"
 if [ -z "$ACTIVE_PATH" ]; then

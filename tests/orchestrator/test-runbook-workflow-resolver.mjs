@@ -123,12 +123,22 @@ describe('runbook --workflow=<id> resolvers search the read set (ADR-0067 Decisi
   });
 });
 
-/** The bash block of done.md that holds `needle`. */
-function doneBlock(needle) {
+/**
+ * One phase of done.md's block (Phases 0-3 run as one block, docket C75): the
+ * block's plugin-root lines, then its lines from the `# --- <phase>` marker up
+ * to the next phase's.
+ */
+function doneSection(phase, next) {
   const text = readFileSync(join(ORCH_ROOT, 'commands/done.md'), 'utf8');
-  const blocks = [...text.matchAll(/^```bash\n([\s\S]*?)^```$/gm)].map((m) => m[1]).filter((b) => b.includes(needle));
-  strictEqual(blocks.length, 1, `done.md: one block holds ${needle}`);
-  return blocks[0];
+  const blocks = [...text.matchAll(/^```bash\n([\s\S]*?)^```$/gm)].map((m) => m[1]);
+  strictEqual(blocks.length, 1, 'done.md: one block runs Phases 0-3');
+  const lines = blocks[0].split('\n');
+  const from = lines.findIndex((l) => l.startsWith(`# --- ${phase}`));
+  const to = lines.findIndex((l) => l.startsWith(`# --- ${next}`));
+  // Contract: the runs below execute this phase — a renamed marker must fail
+  // here, not run nothing.
+  ok(from > 0 && to > from, `done.md marks ${phase} and ${next}`);
+  return [...lines.slice(0, 2), ...lines.slice(from, to)].join('\n');
 }
 
 // ADR-0067 Decision 1(b) — done.md's engineer scans (the owner of a subtask,
@@ -171,14 +181,14 @@ describe("done.md's engineer scans read every worktree (ADR-0067 Decision 1(b))"
 
   for (const shell of SHELLS) {
     it(`(${shell}) the owner scan finds a child held only in a third worktree's own home`, () => {
-      const block = `${fieldReader()}\n${doneBlock('owner-dispatch "${OWNER_ARGS[@]}"')}\nprintf "OWNER=%s\\n" "$EXISTING_ENG_WF_ID"\n`;
+      const block = `${fieldReader()}\n${doneSection('Phase 2:', 'Phase 3a:')}\nprintf "OWNER=%s\\n" "$EXISTING_ENG_WF_ID"\n`;
       const r = spawnSync(shell, ['-c', block], { cwd: lane, encoding: 'utf8', env: env({ EXISTING_ENG_WF_ID: '' }) });
       strictEqual(r.status, 0, r.stderr);
       match(r.stdout, new RegExp(`^OWNER=${childId}$`, 'm'));
     });
 
     it(`(${shell}) --no-commit refuses while the active child sits in a third worktree's own home`, () => {
-      const r = spawnSync(shell, ['-c', doneBlock('ACTIVE_CHILD="$(')], { cwd: lane, encoding: 'utf8', env: env({ NO_COMMIT: '1' }) });
+      const r = spawnSync(shell, ['-c', doneSection('Phase 3a:', 'Phase 3b:')], { cwd: lane, encoding: 'utf8', env: env({ NO_COMMIT: '1' }) });
       strictEqual(r.status, 1);
       match(r.stderr, /is still active/);
       ok(r.stderr.includes(third), r.stderr);

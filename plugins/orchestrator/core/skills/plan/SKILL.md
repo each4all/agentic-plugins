@@ -69,7 +69,7 @@ Full macro composition with Plan-verify opposite-host peer ensemble + state-writ
 
 ### Step 1: Establish the active workflow
 
-Phase 0 of `commands/plan.md` resolves the active orchestrator workflow on the current git branch (per ADR-0018 §sub-2 — branch is the workflow context). If none exists, create one via `state.mjs create --verb plan ... --original-request-file <file>`, the file holding the feature description on one line, scrubbed of secrets.
+Phase 0 of `commands/plan.md` resolves the active orchestrator workflow on the current git branch (per ADR-0018 §sub-2 — branch is the workflow context). If none exists, create one via `state.mjs create --verb plan ... --original-request-file <file>`, the file holding the feature description on one line, scrubbed of secrets. Then write the macro's path (the one `create` printed, or `find-active` found) to `macro-path` in the text directory with your file-editing tool, one line: every later step writes to that macro, and Step 6 reads it there instead of finding the macro again, so a branch switched meanwhile cannot point it at another one.
 
 If one exists, pass `--require-open` on the resume append and on the post-plan append: a terminal macro is not revised (ADR-0062 §Decision 4), and the flag makes each append refuse a macro whose `terminal_marker` is set under the same lock as the write — a separate check first would race a finalize in another session. Both appends rewrite `current_phase`, which would otherwise leave the marker set with a phase the archive gate rejects. On refusal, stop before writing anything else and tell the user to archive it (`$orchestrator:resume archive`) and plan the new work afresh. `state.mjs plan-set` refuses a terminal macro as well.
 
@@ -83,7 +83,7 @@ Follow the auto-activated Step 1 (Decompose) and Step 2 (Order) above to produce
 
 Launch the peer ensemble per `../_shared/references/ensemble-protocol.md` using the **Plan-verify** ensemble point. The peer receives the orchestrator's draft plan as `<inputs><input name="feature_description">…</input><input name="draft_plan">…</input></inputs>` (the only Independence Rule exception — Plan-verify is the per-protocol exception). The peer returns gaps, ordering issues, risk areas, and edge cases on the macro plan.
 
-Resolve the peer from the current host: Claude invokes Codex; Codex invokes Claude. Ensemble dispatch is via `peer-runner.mjs run --kind ensemble --peer <opposite-host> --prompt-file <the prompt file you wrote> --workflow-path <path> --phase plan --ensemble-type plan-verify --run-id macro-plan-<iso>-<rand>`. The runner preserves orchestrator's graceful-degradation order: if the opposite-host peer is unavailable, it returns kind `peer_cli_not_found` with no peer-run ledger and no pending entry; caller proceeds with a LOCAL-ONLY plan. If the companion resolves, the runner creates the peer-run ledger, records pending best-effort under the workflow file's per-file lock, and supervises stdout/stderr/envelope capture. A codex peer runs in a snapshot of HEAD plus the working tree and the index (C96), never the checkout, made after the pending entry and removed when the run ends; a snapshot that cannot be made ends the run `failed` with `error_kind: snapshot_failed` and no peer run (`../_shared/references/ensemble-protocol.md` § Step 1 and § Step 2).
+Resolve the peer from the current host: Claude invokes Codex; Codex invokes Claude. Ensemble dispatch is via `peer-runner.mjs run --kind ensemble --peer <opposite-host> --prompt-file <the prompt file you wrote> --workflow-path <path> --phase plan --ensemble-type plan-verify --run-id macro-plan-<iso>-<rand>`. The runner preserves orchestrator's graceful-degradation order: if the opposite-host peer is unavailable, it returns kind `peer_cli_not_found` with no peer-run ledger and no pending entry; caller proceeds with a LOCAL-ONLY plan. If the companion resolves, the runner creates the peer-run ledger, records pending best-effort under the workflow file's per-file lock, and supervises stdout/stderr/envelope capture. A codex peer runs in a snapshot of HEAD plus the working tree and the index (C96), never the checkout, made after the pending entry and removed when the run ends; a snapshot that cannot be made ends the run `failed` with `error_kind: snapshot_failed` and no peer run (`../_shared/references/ensemble-protocol.md` § Step 1 and § Step 2). Before you dispatch, write the run id you pass to `--run-id` to `run-id` in the text directory with your file-editing tool, one line, and the macro's path you pass to `--workflow-path` to `run-macro` beside it: Step 5 and Step 6 read them there, in shell calls of their own, and Step 6 records a run only for the macro `run-macro` names. Write both for every dispatch, an earlier run's included, and empty `run-id` first when the dispatch does not reach the runner: a run id left from an earlier dispatch is not this one's.
 
 ### Step 4: Synthesize
 
@@ -98,7 +98,7 @@ Incorporate valid PEER-ONLY additions. Adjust ordering for valid sequencing issu
 
 ### Step 5: Persist via setPlan
 
-Once the synthesized plan is ready, write it via `state.mjs plan-set --workflow-path <path> --host <current-host> --subtasks-json-file <subtasks file> --verdict <pass|concerns|conflict> [--run-id <the Plan-verify run id>] [--decision-file <file>] [--architecture-file <file>]`, where `<current-host>` is `claude` for `/orchestrator:plan` and `codex` for `$orchestrator:plan`, and the decision and architecture files each hold one line you wrote. The CLI reads the JSON file (top-level array of subtask objects matching ADR-0018 §sub-1 + ADR-0019 §2 schema 1.1) and atomically writes the `plan` block under the per-file lock. The same write returns the plan to pending approval (`plan_approval_status=pending`, ADR-0063 D6): any plan write revokes an earlier approval. `--verdict` is the synthesized Plan-verify verdict, the value Step 6 records. With `conflict` the write opens `awaiting_owner_gate=plan-conflict` (pointer `<macro file>#ensemble-synthesis`), otherwise `plan-approval`, so a disputed plan is never approvable, not even between two writes. With `conflict`, `--run-id` names the Plan-verify run the gate records (ADR-0067 Decision 8), and the write retires every consensus task file the macro still has.
+Once the synthesized plan is ready, write it via `state.mjs plan-set --workflow-path <path> --host <current-host> --subtasks-json-file <subtasks file> --verdict <pass|concerns|conflict> [--run-id <the Plan-verify run id>] [--decision-file <file>] [--architecture-file <file>]`, where `<current-host>` is `claude` for `/orchestrator:plan` and `codex` for `$orchestrator:plan`, and the decision and architecture files each hold one line you wrote. The CLI reads the JSON file (top-level array of subtask objects matching ADR-0018 §sub-1 + ADR-0019 §2 schema 1.1) and atomically writes the `plan` block under the per-file lock. The same write returns the plan to pending approval (`plan_approval_status=pending`, ADR-0063 D6): any plan write revokes an earlier approval. `--verdict` is the synthesized Plan-verify verdict, the value Step 6 records. With `conflict` the write opens `awaiting_owner_gate=plan-conflict` (pointer `<macro file>#ensemble-synthesis`), otherwise `plan-approval`, so a disputed plan is never approvable, not even between two writes. With `conflict`, `--run-id` names the Plan-verify run the gate records (ADR-0067 Decision 8), the one in `run-id`, dispatched for the macro `run-macro` names (this one), and the write retires every consensus task file the macro still has.
 
 Subtask validation runs at the write boundary (schema 1.1):
 - `id` non-empty + unique within the plan
@@ -110,17 +110,64 @@ Subtask validation runs at the write boundary (schema 1.1):
 
 ### Step 6: Commit the ensemble result
 
-Record the phase note, then commit the ensemble result. Write both files first, in the text directory: `note.md`, the phase note (`--phase-note-file <note file>`) shaped as `commands/plan.md` Phase 2 shows it, and `summary.txt`, a one-line résumé of the synthesis (`--summary-file <summary file>`). Set `ACTIVE` to the macro file's path, `VERDICT` to the synthesized verdict (`pass`, `concerns` or `conflict`) and `RUN_ID` to the Plan-verify run id; when the run launched and did not complete (`status` is `failed`, `cancelled` or `orphaned`, whatever its `error_kind`, `snapshot_failed` included), the plan is LOCAL-ONLY, `VERDICT` stays the local synthesis's that Step 5 recorded, and you also set `ENSEMBLE_VERDICT=failed` and name the `error_kind` in `summary.txt`, so the ensemble result records the run as failed; put the directory in the block's `TEXT_DIR` line, and run the block, `<plugin-root>` being the orchestrator plugin root (`../checkpoint/SKILL.md` § Command resolution).
+Record the phase note, then commit the ensemble result, and on a conflict write the consensus task file. Write the files first, in the text directory: `note.md`, the phase note (`--phase-note-file <note file>`) shaped as `commands/plan.md` Phase 2 shows it; `summary.txt`, a one-line résumé of the synthesis (`--summary-file <summary file>`); and on a conflict `contested.md`, each CONFLICT item, both positions and their evidence, prepared as the Plan-verify prompt was, since the consensus peers read it (they come from the peer's positions, so never put them into a command). Put the synthesized verdict (`pass`, `concerns` or `conflict`) in the block's `VERDICT` line. When the run launched and did not complete (`status` is `failed`, `cancelled` or `orphaned`, whatever its `error_kind`, `snapshot_failed` included), the plan is LOCAL-ONLY, `VERDICT` stays the local synthesis's that Step 5 recorded, and you also set the block's `ENSEMBLE_VERDICT` line to `failed` and name the `error_kind` in `summary.txt`, so the ensemble result records the run as failed; a run that found no peer never launched, and leaves it empty. Put the directory in the block's `TEXT_DIR` line, and run the block, `<plugin-root>` being the orchestrator plugin root (`../checkpoint/SKILL.md` § Command resolution). The block reads the macro from `macro-path` (Step 1) and the run id from `run-id`.
 
-The block first reads both files with `state.mjs`'s own reader, as `commands/plan.md` Phase 2 does, and stops before either write when it refuses one (missing, empty, a newline alone, a NUL byte, not UTF-8): the append must not record a note whose ensemble result then cannot be committed. `ensemble-commit` is a three-step atomic mutation: it pops the matching pending_ensemble entry, appends the result, and prunes to retention cap 20 — all under one `withFileLock` window.
+The block checks every input before it writes anything, as `commands/plan.md` Phase 2 does (C132): the two verdicts, the run id (in the form `peer-runner.mjs` dispatches, and on a conflict in the narrower form the gate and the task file's name take) and `run-macro`, which must name the macro Step 1 wrote to `macro-path`, `note.md` and `summary.txt` with `state.mjs`'s own reader (missing, empty, a newline alone, a NUL byte, not UTF-8 are refused), and on a conflict `contested.md` as `consensus-task` reads it, and the macro's frontmatter (a terminal macro is refused; so is a verdict other than `conflict` while the `plan-conflict` gate Step 5 bound to this run id is set, and a verdict other than the one a result already recorded for the run carries, since `ensemble-commit` keeps the first one). A refusal there writes nothing. A block that stops at one of the writes that follow is rerun as it is, after the cause is fixed: `ensemble-commit` keeps a result already recorded for the run id, and `consensus-task` writes the same task file again while the run's `plan-conflict` gate is set (once the owner has cleared it, no round is proposed). The append is not skipped on a rerun, so a block that stopped past it records the note a second time, accepted until the macro keeps a machine record of the run's note (the note's text cannot tell the run's own note from a copy another note quotes). `ensemble-commit` is a three-step atomic mutation: it pops the matching pending_ensemble entry, appends the result, and prunes to retention cap 20 — all under one `withFileLock` window.
 
 ```bash
 TEXT_DIR='<directory from mktemp>'
-# Both files, read by state.mjs's own reader, before either write. (The path to
-# state.mjs goes by the environment: as the first argument it would make the
-# import run state.mjs as a command.)
+VERDICT='<pass|concerns|conflict>'
+# The verdict the ensemble result records: VERDICT's when this stays empty,
+# failed for a run that launched and did not complete.
+ENSEMBLE_VERDICT=''
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+# The macro Step 1 found, not the one this branch names now.
+ACTIVE="$(cat "$TEXT_DIR/macro-path")" || { echo "✗ Write the macro's path to $TEXT_DIR/macro-path first (Step 1); nothing was written." >&2; exit 1; }
+[ -f "$ACTIVE" ] || { echo "✗ $TEXT_DIR/macro-path names no macro file (\"$ACTIVE\"); nothing was written." >&2; exit 1; }
+# Every input, before any write (C132).
+case "$VERDICT" in
+  pass|concerns|conflict) ;;
+  *) echo "✗ VERDICT is \"$VERDICT\", not pass, concerns or conflict; nothing was written." >&2; exit 1;;
+esac
+case "${ENSEMBLE_VERDICT:-$VERDICT}" in
+  "$VERDICT") ;;
+  failed)
+    if [ "$VERDICT" = conflict ]; then
+      echo "✗ A run that did not complete gave no peer positions to conflict with; nothing was written." >&2
+      exit 1
+    fi;;
+  *) echo "✗ ENSEMBLE_VERDICT is \"$ENSEMBLE_VERDICT\": leave it empty, or set it to failed; nothing was written." >&2; exit 1;;
+esac
+RUN_ID="$(cat "$TEXT_DIR/run-id")" || { echo "✗ Write the Plan-verify run id to $TEXT_DIR/run-id first; nothing was written." >&2; exit 1; }
+[ -n "$RUN_ID" ] || { echo "✗ $TEXT_DIR/run-id is empty; nothing was written." >&2; exit 1; }
+RUN_MACRO="$(cat "$TEXT_DIR/run-macro")" || { echo "✗ Write the macro's path you dispatched the run for to $TEXT_DIR/run-macro first (Step 3); nothing was written." >&2; exit 1; }
+[ "$RUN_MACRO" = "$ACTIVE" ] || { echo "✗ Run $RUN_ID was dispatched for $RUN_MACRO, not for $ACTIVE: dispatch a Plan-verify run for this macro; nothing was written." >&2; exit 1; }
+# A run id the dispatch could not have used (peer-runner's form, opening with
+# a letter or digit so no command reads it as an option), or on a
+# conflict one consensus-task and plan-set would refuse (their narrower form),
+# is refused here, before the note and the result are written.
+STATE_MJS="<plugin-root>/scripts/state.mjs" node --input-type=module -e 'const { pathToFileURL } = await import("node:url"); const { isSafeConsensusRunId } = await import(pathToFileURL(process.env.STATE_MJS).href); const [id, verdict] = process.argv.slice(1); process.exitCode = (verdict === "conflict" ? isSafeConsensusRunId(id) : /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(id) && !id.includes("..")) ? 0 : 1' -- "$RUN_ID" "$VERDICT" \
+  || { echo "✗ $TEXT_DIR/run-id holds \"$RUN_ID\", not a run id the verdict $VERDICT can record; nothing was written." >&2; exit 1; }
+# Both text files, read by state.mjs's own reader. (The path to state.mjs goes
+# by the environment: as the first argument it would make the import run
+# state.mjs as a command.)
 STATE_MJS="<plugin-root>/scripts/state.mjs" node --input-type=module -e 'const { pathToFileURL } = await import("node:url"); const { readTextArgumentFile } = await import(pathToFileURL(process.env.STATE_MJS).href); const pairs = process.argv.slice(1); try { for (let i = 0; i < pairs.length; i += 2) readTextArgumentFile(pairs[i + 1], pairs[i]); } catch (err) { process.stderr.write(`✗ ${err.message}: write it with your file-writing tool first; nothing was written.\n`); process.exitCode = 1; }' \
   -- --phase-note-file "$TEXT_DIR/note.md" --summary-file "$TEXT_DIR/summary.txt" || exit 1
+CONTESTED_FILE="$TEXT_DIR/contested.md"
+if [ "$VERDICT" = conflict ]; then
+  node -e 'let t;try{t=require("fs").readFileSync(process.argv[1],"utf8")}catch{process.exit(1)}process.exit(t.trim()===""?1:0)' "$CONTESTED_FILE" \
+    || { echo "✗ $CONTESTED_FILE is missing or blank: write the contested items there first; nothing was written." >&2; exit 1; }
+fi
+# The macro, read before any write, as commands/plan.md Phase 2 reads it: a
+# terminal macro is refused, and so is a non-conflict verdict over the
+# plan-conflict gate Step 5 bound to the run, or a verdict other than a result
+# already recorded for the run carries. The read is checked apart from the
+# parser (C110). It prints gated while the gate names this run, open otherwise.
+MACRO_JSON="$(node "<plugin-root>/scripts/state.mjs" read --workflow-path "$ACTIVE")" || { echo "✗ Could not read $ACTIVE; nothing was written." >&2; exit 1; }
+RUN_GATE="$(printf '%s' "$MACRO_JSON" | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const [file,id,verdict,recorded]=process.argv.slice(1);const m=JSON.parse(d);const stop=(why)=>{process.stderr.write(`✗ ${why}; nothing was written.\n`);process.exit(1)};if(m.terminal_marker===true)stop(`${file} is terminal: a terminal macro is not revised (ADR-0062 §Decision 4)`);const gated=m.awaiting_owner_gate==="plan-conflict"&&m.awaiting_owner_run_id===id;if(verdict!=="conflict"&&gated)stop(`plan-set recorded the plan-conflict gate for run ${id}, but VERDICT is ${verdict}: run plan-set with the verdict ${verdict} first`);const prior=(Array.isArray(m.ensemble_results)?m.ensemble_results:[]).find((e)=>e&&e.run_id===id);if(prior&&prior.verdict!==recorded)stop(`the ensemble result of run ${id} is already recorded with the verdict ${prior.verdict}, not ${recorded}, and a recorded result is kept: dispatch a new Plan-verify run for another verdict`);process.stdout.write(gated?"gated":"open")})' -- "$ACTIVE" "$RUN_ID" "$VERDICT" "${ENSEMBLE_VERDICT:-$VERDICT}")" || exit 1
+# Appended each time the block runs: a rerun after a failure past the append
+# records the note a second time (C132), accepted until the macro keeps a
+# machine record of the run's note.
 node "<plugin-root>/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host <claude|codex> \
   --phase-label "Phase 1: Plan (synthesized)" \
@@ -133,6 +180,18 @@ node "<plugin-root>/scripts/state.mjs" ensemble-commit \
   --phase plan --ensemble-type plan-verify \
   --verdict "${ENSEMBLE_VERDICT:-$VERDICT}" --summary-file "$TEXT_DIR/summary.txt" \
   --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 1
+# The round only while the plan-conflict gate names the run: a gate the owner
+# has cleared leaves no conflict to propose a round for.
+if [ "$VERDICT" = conflict ]; then
+  if [ "$RUN_GATE" = gated ]; then
+    PROPOSED="$(node "<plugin-root>/scripts/state.mjs" consensus-task \
+      --workflow-path "$ACTIVE" --host <claude|codex> --run-id "$RUN_ID" \
+      --text-file "$CONTESTED_FILE")" || exit $?
+    echo "→ Proposed, for the owner to run before deciding: $PROPOSED" >&2
+  else
+    echo "→ No plan-conflict gate names run $RUN_ID (the owner has cleared it, or plan-set recorded another verdict): no consensus round is proposed." >&2
+  fi
+fi
 ```
 
 ### Step 7: Present and confirm
@@ -141,7 +200,7 @@ Follow the Presentation Mode Protocol before presenting. Present the synthesized
 
 When the verdict was `conflict`, Step 5's write left the plan at `awaiting_owner_gate=plan-conflict` (ADR-0063 D6). `plan-approve` refuses while `plan-conflict` is set. The owner either revises the plan (a new `plan-set`), or decides the conflict, clears the gate with `state.mjs awaiting-owner-clear --gate plan-conflict` (which returns the plan to `plan-approval`), and approves. The owner's approval is recorded with `orchestrator:approve`; do not approve on the owner's behalf.
 
-A `conflict` also proposes a bounded consensus round before the owner decides (ADR-0067 Decision 8). Once Step 6 has recorded the run, write the contested items (each CONFLICT item, both positions and their evidence, prepared as the Plan-verify prompt was) with the file tool to a file, never into a command, since they come from the peer's positions, and pass it to `state.mjs consensus-task --workflow-path <path> --host <claude|codex> --run-id <macro-plan-…> --text-file <file>`, which writes `.agentic-plugins/state/orchestrator/consensus/<macro-id>.<run-id>.md` and prints the round: `/runtime:consensus plan --task-file <its absolute path> --peers claude,codex --max-rounds 2`. That command is the proposal's `next_command`, with "the owner decides now" among its `rejected_alternatives`; the owner runs it, nothing else does. Clearing `plan-conflict`, or a re-plan, retires the file.
+A `conflict` also proposes a bounded consensus round before the owner decides (ADR-0067 Decision 8). Step 6's block, once it has recorded the run, passes `contested.md` to `state.mjs consensus-task --workflow-path <path> --host <claude|codex> --run-id <macro-plan-…> --text-file <file>`, which writes `.agentic-plugins/state/orchestrator/consensus/<macro-id>.<run-id>.md` and prints the round: `/runtime:consensus plan --task-file <its absolute path> --peers claude,codex --max-rounds 2`. That command is the proposal's `next_command`, with "the owner decides now" among its `rejected_alternatives`; the owner runs it, nothing else does. Clearing `plan-conflict`, or a re-plan, retires the file.
 
 ### Step 8: Session-level handoff preflight
 

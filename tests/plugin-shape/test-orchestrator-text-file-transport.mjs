@@ -289,6 +289,13 @@ const ALLOWED = [
     why: 'an assignment of agent text',
   },
   { file: 'plugins/orchestrator/commands/peer-now.md', line: '--phase-note "$NOTE" \\', why: '--phase-note takes an expansion' },
+  // The Codex mirror builds the same note in its own block, so the block runs
+  // in a fresh shell (docket C75).
+  {
+    file: 'plugins/orchestrator/core/skills/peer-now/SKILL.md',
+    line: 'NOTE="peer: $PEER\nrun_id: $RUN_ID\nhandle: $HANDLE_PATH\nprompt-mode: verbatim\n\n### Response\n\n$RESPONSE\n"',
+    why: 'an assignment of agent text',
+  },
   { file: 'plugins/orchestrator/core/skills/peer-now/SKILL.md', line: '--phase-note "$NOTE" \\', why: '--phase-note takes an expansion' },
   // The hash Phase 1 printed, which the agent copies: hex digits, not text.
   { file: 'plugins/orchestrator/core/skills/approve/SKILL.md', line: '--expect-hash "<plan_hash from Phase 1>"', why: 'a placeholder in shell source' },
@@ -310,6 +317,10 @@ const ALLOWED = [
     ['plugins/orchestrator/commands/plan.md', 'echo "  Switch to a branch first: git switch <branch>" >&2'],
     ['plugins/orchestrator/commands/done.md', 'echo "✗ /orchestrator:done requires a <subtask-id> argument." >&2'],
     ['plugins/orchestrator/commands/done.md', 'echo "✓ Subtask $SUBTASK_ID is already completed at $EXISTING_CLOSED_AT with commit ${EXISTING_COMMIT:-<none>}. Nothing to do; to change the record, rerun with --correct and a reason." >&2'],
+    // The Codex done runs done.md's block, so it carries the same messages.
+    ['plugins/orchestrator/core/skills/done/SKILL.md', 'echo "✗ \\$orchestrator:done requires a <subtask-id> argument." >&2'],
+    ['plugins/orchestrator/core/skills/done/SKILL.md', 'echo "✗ No macro workflow references branch \'$GIT_BRANCH\'. Use --workflow=<id>." >&2'],
+    ['plugins/orchestrator/core/skills/done/SKILL.md', 'echo "✓ Subtask $SUBTASK_ID is already completed at $EXISTING_CLOSED_AT with commit ${EXISTING_COMMIT:-<none>}. Nothing to do; to change the record, rerun with --correct and a reason." >&2'],
     ['plugins/orchestrator/commands/next.md', 'echo "  Repair: node \\"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\\" subtask-update --workflow-path \\"$MACRO_PATH\\" --host <host> --subtask-id $SUBTASK_ID --status=pending, then rerun /orchestrator:next." >&2'],
   ].map(([file, line]) => ({ file, line, why: 'a placeholder in shell source' })),
   // Predates C130 S3 and is outside it: the archive mode's workflow id, a user

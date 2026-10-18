@@ -66,11 +66,15 @@ answer, not for files.
 ```bash
 TEXT_DIR='<directory from mktemp>'
 PEER='<claude|codex>'
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 # The prompt: the file prompt-path.txt names (--prompt-file), or the
 # prompt.xml written for --prompt-text. The path is data cat read, never
 # shell source.
 PROMPT_FILE="$TEXT_DIR/prompt.xml"
 if [ -f "$TEXT_DIR/prompt-path.txt" ]; then PROMPT_FILE="$(cat "$TEXT_DIR/prompt-path.txt")"; fi
+[ -s "$PROMPT_FILE" ] || { echo "✗ The prompt file ($PROMPT_FILE) is missing or empty; nothing was dispatched." >&2; exit 1; }
+# For Phase 2, which may run in a fresh shell: the peer, and the run's result.
+printf '%s' "$PEER" > "$TEXT_DIR/peer" || exit 1
 node "<plugin-root>/scripts/peer-runner.mjs" run \
   --repo-root "$REPO_ROOT" \
   --run-id "$RUN_ID" \
@@ -78,28 +82,64 @@ node "<plugin-root>/scripts/peer-runner.mjs" run \
   --peer "$PEER" --prompt-file "$PROMPT_FILE" \
   --output-format text \
   --host <claude|codex> \
-  --cwd "$REPO_ROOT"
+  --cwd "$REPO_ROOT" \
+  > "$TEXT_DIR/run.json" 2> "$TEXT_DIR/run.err"
 ```
 
 The runner writes a ledger under
 `.agentic-plugins/state/orchestrator/peer-runs/<run_id>/` for new repos
-(or the legacy peer-run home until explicit migration). Use
-`peer-runner.mjs status` and `peer-runner.mjs cancel` for operational
-control.
+(or the legacy peer-run home until explicit migration), and its result —
+`run_id`, `status`, the ledger's paths — to `run.json` in the text directory.
+On a non-zero exit, surface the first useful line of `run.err` with the run
+id, and stop without writing workflow state. Use `peer-runner.mjs status` and
+`peer-runner.mjs cancel` for operational control.
 
 ---
 
 ## Phase 2 — Optional workflow note
 
-If `state.mjs find-active` finds one active macro, append a note. `$NOTE`
-is built as `commands/peer-now.md` Phase 2 builds it, from values programs
-read or printed only: `peer`, `run_id` and `handle` lines from the peer enum
-and the run's JSON, then the first 4000 bytes of the response as
-`head -c 4000 "$STDOUT_PATH"` reads them. Never write the response, or any
-other text, into the block yourself; an expansion's result is not evaluated
-again, a block's source is.
+Locate the active macro first. The block prints its path, or nothing, and
+writes the same to `macro-path` in the text directory: the note block reads it
+there, so a branch switched between the two blocks cannot point the note at
+another macro.
 
 ```bash
+TEXT_DIR='<directory from mktemp>'
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+ACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit 1
+printf '%s' "$ACTIVE" > "$TEXT_DIR/macro-path" || exit 1
+printf '%s\n' "$ACTIVE"
+```
+
+When it found one active macro, append a note. The block reads the macro the
+lookup found, and builds `$NOTE` as `commands/peer-now.md` Phase 2
+builds it, from values programs read or printed only: `peer`, `run_id` and
+`handle` lines from the peer Phase 1 wrote and the run's JSON, then the first
+4000 bytes of the response as `head -c 4000 "$STDOUT_PATH"` reads them. Never
+write the response, or any other text, into the block yourself; an
+expansion's result is not evaluated again, a block's source is.
+
+```bash
+TEXT_DIR='<directory from mktemp>'
+# The macro the lookup found, not the one this branch names now.
+ACTIVE="$(cat "$TEXT_DIR/macro-path")" || { echo "✗ The lookup writes the macro it found to $TEXT_DIR/macro-path: run it first; nothing was recorded." >&2; exit 1; }
+[ -n "$ACTIVE" ] || { echo "✗ The lookup found no active macro: print the response alone; nothing was recorded." >&2; exit 1; }
+PEER="$(cat "$TEXT_DIR/peer")" || exit 1
+JSON_FIELD='let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const v=JSON.parse(d)[process.env.JSON_KEY];process.stdout.write(v==null?"":String(v))})'
+RUN_ID="$(JSON_KEY=run_id node -e "$JSON_FIELD" < "$TEXT_DIR/run.json")" || exit 1
+HANDLE_PATH="$(JSON_KEY=handle_path node -e "$JSON_FIELD" < "$TEXT_DIR/run.json")" || exit 1
+STDOUT_PATH="$(JSON_KEY=stdout_path node -e "$JSON_FIELD" < "$TEXT_DIR/run.json")" || exit 1
+[ -n "$STDOUT_PATH" ] || { echo "✗ The run recorded no response file ($TEXT_DIR/run.json); nothing was recorded." >&2; exit 1; }
+RESPONSE="$(head -c 4000 "$STDOUT_PATH")"
+NOTE="peer: $PEER
+run_id: $RUN_ID
+handle: $HANDLE_PATH
+prompt-mode: verbatim
+
+### Response
+
+$RESPONSE
+"
 node "<plugin-root>/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host <claude|codex> \
   --phase-label "[Peer] $PEER consultation" \

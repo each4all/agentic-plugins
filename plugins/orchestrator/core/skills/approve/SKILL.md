@@ -58,6 +58,7 @@ item 2); it exits non-zero when no root holds it (3) or two files do (1). Refuse
 an id containing `/`, `\`, `..` or a leading `.`. Otherwise:
 
 ```bash
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 node "<plugin-root>/scripts/state.mjs" find-active --repo-root "$REPO_ROOT"
 # empty → the macro whose plan names the current branch:
 node "<plugin-root>/scripts/state.mjs" find-macro --repo-root "$REPO_ROOT" --subtask-branch "$(git branch --show-current)"

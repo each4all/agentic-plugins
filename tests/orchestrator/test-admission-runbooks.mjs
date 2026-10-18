@@ -13,9 +13,10 @@ import { deepStrictEqual, match, ok, rejects, strictEqual } from 'node:assert/st
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { carriedTextDir, withTextDir } from './_next-text-dir.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const ORCH_ROOT = join(REPO_ROOT, 'plugins/orchestrator');
@@ -83,12 +84,16 @@ describe('/orchestrator:next joins the run locks before it switches (ADR-0067 De
   const sessionEntries = (lock) => (existsSync(lock) ? readdirSync(lock).filter((n) => /^s-[0-9a-f]{32}\.json$/.test(n)) : []);
   const held = () => [...sessionEntries(laneLock), ...sessionEntries(macroLock)];
 
-  /** What Phases 0-2 leave set, as the agent carries it into the next block. */
-  const carried = (over = {}) => Object.entries({
-    MACRO_ID: macroId, MACRO_PATH: macroPath, REPO_ROOT: lane, SUBTASK_ID: 'T1', SUBTASK_BRANCH: 'feat/t1',
-    SUBTASK_VERB: 'compose', ENGINEER_PLUGIN_ROOT: ENGINEER_ROOT, EXISTING_ENG_PATH: '', SUBTASK_PROFILE: '', SUBTASK_TOPIC: '',
-    SUBTASK_STATUS: 'pending', SUBTASK_EXISTING_ENG_WF_ID: '', ...over,
-  }).map(([k, v]) => `${k}=${q(v)}`).join('\n');
+  /** Subtask T1 as Phase 1 read it, which the selection file holds. */
+  const T1 = (over = {}) => ({ id: 'T1', verb: 'compose', branch: 'feat/t1', blocked_by: [], status: 'pending', ...over });
+  /**
+   * What the earlier phases left in the text directory (docket C75): a block
+   * reads nothing else, so each run below is a fresh shell given that
+   * directory alone.
+   */
+  const carried = (over = {}) => carriedTextDir({
+    repoRoot: lane, macroPath, subtask: T1(), engineerRoot: ENGINEER_ROOT, engineerWorkflow: '', ...over,
+  }, dir);
 
   function run(shell, script, env = {}) {
     const r = spawnSync(shell, ['-c', script], {
@@ -98,12 +103,12 @@ describe('/orchestrator:next joins the run locks before it switches (ADR-0067 De
     const vars = Object.fromEntries([...r.stdout.matchAll(/^(\w+)=(.*)$/gm)].map((m) => [m[1], m[2]]));
     return { ...r, vars };
   }
-  /** Phase 3b, then the id it carried, as the agent reads it. */
-  const joinAndSwitch = (shell, over = {}, env = {}) => run(shell, `${carried(over)}\n${JOIN_AND_SWITCH}\necho "ADMISSION=$ADMISSION"`, env);
-  const prelude = (shell, admission, env = {}, block = PRELUDE) => run(shell, `${carried({ ADMISSION: admission })}\n${block}\necho "EXPORTED=$AGENTIC_PARENT_WORKFLOW"`, env);
-  // Phase 5 in a fresh Bash call: only what the agent carries, no root or host
+  /** Phase 3b, then the id it wrote, as the next block reads it. */
+  const joinAndSwitch = (shell, over = {}, env = {}) => run(shell, `${withTextDir(JOIN_AND_SWITCH, carried(over))}\necho "ADMISSION=$ADMISSION"`, env);
+  const prelude = (shell, admission, env = {}, block = PRELUDE) => run(shell, `${withTextDir(block, carried({ admission }))}\necho "EXPORTED=$AGENTIC_PARENT_WORKFLOW"`, env);
+  // Phase 5 in a fresh Bash call: only the text directory, no root or host
   // left over from Phase 4.
-  const writeback = (shell, admission, env = {}, block = WRITEBACK, over = {}) => run(shell, `${carried({ ADMISSION: admission, ...over })}\n${block}`, env);
+  const writeback = (shell, admission, env = {}, block = WRITEBACK, over = {}) => run(shell, withTextDir(block, carried({ admission, ...over })), env);
   /** An admission joined as Phase 3b's (or the Codex Phase 2's) join takes it. */
   const joinCli = (host = 'claude') => execFileSync(process.execPath, [ORCH_STATE, 'admission', 'join', '--macro', macroId, '--checkout', lane, '--command', 'next', '--host', host], { encoding: 'utf8', env: cleanEnv(), stdio: 'pipe' }).trim();
   const branch = () => git(lane, 'branch', '--show-current');
@@ -161,6 +166,13 @@ describe('/orchestrator:next joins the run locks before it switches (ADR-0067 De
       "    : frontmatter.plan.subtasks.map((s) => (s.id === 'T1' ? { ...s, ...JSON.parse(process.env.REVISE_T1) } : s));",
       "  await setPlan({ workflowPath, host: 'claude', subtasks });",
       '}',
+      // FAIL_AFTER names a subcommand that prints its real answer, then exits
+      // 1: a reader whose status only its own check sees (docket C110).
+      'if (process.env.FAIL_AFTER === args[0]) {',
+      `  const real = spawnSync(process.execPath, [${JSON.stringify(ORCH_STATE)}, ...args], { encoding: 'utf8' });`,
+      '  process.stdout.write(real.stdout);',
+      '  process.exit(1);',
+      '}',
       `const r = spawnSync(process.execPath, [${JSON.stringify(ORCH_STATE)}, ...args], { stdio: 'inherit' });`,
       'process.exit(r.status ?? 1);',
     ].join('\n'));
@@ -211,7 +223,7 @@ describe('/orchestrator:next joins the run locks before it switches (ADR-0067 De
       git(lane, 'switch', '-q', 'feat/x');
       // Same lane, another macro: the worktree lock. The main checkout, the
       // same macro: the macro lock.
-      for (const over of [{ MACRO_ID: 'macro-plan-20261008T000000Z-ad0002' }, { REPO_ROOT: main }]) {
+      for (const over of [{ macroPath: join(dirname(macroPath), 'macro-plan-20261008T000000Z-ad0002.md') }, { repoRoot: main }]) {
         const second = joinAndSwitch(shell, over);
         strictEqual(second.status, 1, second.stdout);
         match(second.stderr, /an interactive session holds .*\/orchestrator:next, checkout .*lane, host claude, .*admission [0-9a-f]{32}/);
@@ -226,7 +238,7 @@ describe('/orchestrator:next joins the run locks before it switches (ADR-0067 De
       strictEqual(dead.status, 0, dead.stderr);
       // The session dies before Phase 5.
       await rejects(holdAsRun(), (err) => err instanceof locks.LockHeldError && /an interactive session holds/.test(err.message));
-      const refused = joinAndSwitch(shell, { REPO_ROOT: main });
+      const refused = joinAndSwitch(shell, { repoRoot: main });
       const release = refused.stderr.match(/state\.mjs admission release [^\n]*?--admission [0-9a-f]{32}/)?.[0];
       ok(release, refused.stderr);
       const r = spawnSync(shell, ['-c', `node ${q(ORCH_STATE)} ${release.slice('state.mjs '.length)}`], { encoding: 'utf8', env: cleanEnv() });
@@ -283,7 +295,7 @@ describe('/orchestrator:next joins the run locks before it switches (ADR-0067 De
       const id = execFileSync(process.execPath, [ORCH_STATE, 'admission', 'join', '--macro', macroId, '--checkout', lane, '--command', 'next', '--host', 'codex'], { encoding: 'utf8', env: cleanEnv(), stdio: 'pipe' }).trim();
       git(lane, 'switch', '-q', 'feat/t1');
       const child = engineerChild();
-      const wrote = writeback(shell, id, {}, codexBlock('subtask-update'));
+      const wrote = writeback(shell, id, {}, codexBlock('--status in_progress'));
       strictEqual(wrote.status, 0, wrote.stderr);
       const t1 = await subtask();
       deepStrictEqual([t1.status, t1.engineer_workflow_id], ['in_progress', child.split('/').pop().replace(/\.md$/, '')]);
@@ -314,7 +326,7 @@ describe('/orchestrator:next joins the run locks before it switches (ADR-0067 De
       // The subtask branch's engineer workflow Phase 2 saw, gone since.
       const engineerDir = join(lane, '.agentic-plugins/state/engineer/workflows');
       mkdirSync(engineerDir, { recursive: true });
-      const changed = joinAndSwitch(shell, { EXISTING_ENG_PATH: join(engineerDir, 'compose-20261008T000000Z-000001.md') });
+      const changed = joinAndSwitch(shell, { engineerWorkflow: join(engineerDir, 'compose-20261008T000000Z-000001.md') });
       strictEqual(changed.status, 1, changed.stdout);
       match(changed.stderr, /engineer workflow on 'feat\/t1' changed after Phase 2's ownership check/);
       deepStrictEqual(held(), []);
@@ -353,11 +365,11 @@ describe('/orchestrator:next joins the run locks before it switches (ADR-0067 De
       // the step lands, then its switching block.
       await freshMacro(plan);
       strictEqual(CODEX_REREAD.length, 1, 'one Codex block reads the subtask again');
-      const joined = run(shell, `${carried()}\n${codexBlock('admission join', shim)}\necho "ADMISSION=$ADMISSION"`, step());
+      const joined = run(shell, `${withTextDir(codexBlock('admission join', shim), carried())}\necho "ADMISSION=$ADMISSION"`, step());
       strictEqual(joined.status, 0, joined.stderr);
       strictEqual((await subtask()).status, 'completed', 'the step landed during the Codex join');
       const id = joined.vars.ADMISSION;
-      const codex = run(shell, `${carried({ ADMISSION: id })}\n${CODEX_REREAD[0]}\necho "PASSED=1"`);
+      const codex = run(shell, `${withTextDir(CODEX_REREAD[0], carried({ admission: id }))}\necho "PASSED=1"`);
       strictEqual(codex.status, 1, codex.stdout);
       match(codex.stderr, /Subtask T1 changed after its selection \(status was "pending", now "completed"; engineer_workflow_id was "", now "compose-20261008T000000Z-0d0001"\)/);
       strictEqual(codex.vars.PASSED, undefined);
@@ -365,7 +377,7 @@ describe('/orchestrator:next joins the run locks before it switches (ADR-0067 De
       strictEqual(branch(), 'feat/x', 'the Codex block switched nothing');
       // Control: as selected, the Codex block switches and keeps the admission.
       const held2 = execFileSync(process.execPath, [ORCH_STATE, 'admission', 'join', '--macro', macroId, '--checkout', lane, '--command', 'next', '--host', 'codex'], { encoding: 'utf8', env: cleanEnv(), stdio: 'pipe' }).trim();
-      const control = run(shell, `${carried({ ADMISSION: held2, SUBTASK_STATUS: 'completed', SUBTASK_EXISTING_ENG_WF_ID: 'compose-20261008T000000Z-0d0001' })}\n${CODEX_REREAD[0]}\necho "PASSED=1"`);
+      const control = run(shell, `${withTextDir(CODEX_REREAD[0], carried({ admission: held2, subtask: T1({ status: 'completed', engineer_workflow_id: 'compose-20261008T000000Z-0d0001' }) }))}\necho "PASSED=1"`);
       strictEqual(control.status, 0, control.stderr);
       strictEqual(control.vars.PASSED, '1');
       strictEqual(branch(), 'feat/t1', 'switched');
@@ -394,10 +406,10 @@ describe('/orchestrator:next joins the run locks before it switches (ADR-0067 De
         deepStrictEqual(held(), [], `${field}: released on that exit`);
         // The Codex mirror: its join block, then its switching block.
         await setPlan({ workflowPath: macroPath, host: 'claude', subtasks: [original] });
-        const joined = run(shell, `${carried()}\n${codexJoin}\necho "ADMISSION=$ADMISSION"`, env);
+        const joined = run(shell, `${withTextDir(codexJoin, carried())}\necho "ADMISSION=$ADMISSION"`, env);
         strictEqual(joined.status, 0, joined.stderr);
         match(joined.vars.ADMISSION, /^[0-9a-f]{32}$/);
-        const codex = run(shell, `${carried({ ADMISSION: joined.vars.ADMISSION })}\n${codexReread}\necho "PASSED=1"`);
+        const codex = run(shell, `${withTextDir(codexReread, carried({ admission: joined.vars.ADMISSION }))}\necho "PASSED=1"`);
         strictEqual(codex.status, 1, `${field}: ${codex.stdout}${codex.stderr}`);
         match(codex.stderr, new RegExp(`Subtask T1 changed after its selection ${changed.source}`));
         strictEqual(codex.vars.PASSED, undefined);
@@ -405,18 +417,18 @@ describe('/orchestrator:next joins the run locks before it switches (ADR-0067 De
         deepStrictEqual(held(), [], `${field}: the Codex block released`);
       }
       // Control: through the same shim, no revision — both hosts' blocks
-      // switch. The topic ends in a newline, which Phase 1's command
-      // substitution dropped from what the agent carries.
+      // switch. The topic ends in a newline, which the selection Phase 1 wrote
+      // keeps as the plan holds it.
       await setPlan({ workflowPath: macroPath, host: 'claude', subtasks: [{ ...original, topic: 'line one\nline two\n' }] });
-      const asRead = { SUBTASK_TOPIC: 'line one\nline two' };
+      const asRead = { subtask: T1({ topic: 'line one\nline two\n' }) };
       const control = joinAndSwitch(shell, asRead, { AGENTIC_ORCHESTRATOR_ROOT: shim });
       strictEqual(control.status, 0, control.stderr);
       strictEqual(branch(), 'feat/t1');
       execFileSync(process.execPath, [ORCH_STATE, 'admission', 'release', '--macro', macroId, '--checkout', lane, '--admission', control.vars.ADMISSION], { env: cleanEnv(), stdio: 'pipe' });
       git(lane, 'switch', '-q', 'feat/x');
-      const joined = run(shell, `${carried(asRead)}\n${codexJoin}\necho "ADMISSION=$ADMISSION"`, { AGENTIC_ORCHESTRATOR_ROOT: shim });
+      const joined = run(shell, `${withTextDir(codexJoin, carried(asRead))}\necho "ADMISSION=$ADMISSION"`, { AGENTIC_ORCHESTRATOR_ROOT: shim });
       strictEqual(joined.status, 0, joined.stderr);
-      const codex = run(shell, `${carried({ ...asRead, ADMISSION: joined.vars.ADMISSION })}\n${codexReread}\necho "PASSED=1"`);
+      const codex = run(shell, `${withTextDir(codexReread, carried({ ...asRead, admission: joined.vars.ADMISSION }))}\necho "PASSED=1"`);
       strictEqual(codex.status, 0, codex.stderr);
       strictEqual(branch(), 'feat/t1');
       execFileSync(process.execPath, [ORCH_STATE, 'admission', 'release', '--macro', macroId, '--checkout', lane, '--admission', joined.vars.ADMISSION], { env: cleanEnv(), stdio: 'pipe' });
@@ -437,9 +449,9 @@ describe('/orchestrator:next joins the run locks before it switches (ADR-0067 De
       deepStrictEqual(held(), [], 'released on that exit');
       // The Codex mirror: its join block, then its switching block.
       await setPlan({ workflowPath: macroPath, host: 'claude', subtasks: [t1] });
-      const joined = run(shell, `${carried()}\n${codexBlock('admission join', shim)}\necho "ADMISSION=$ADMISSION"`, env);
+      const joined = run(shell, `${withTextDir(codexBlock('admission join', shim), carried())}\necho "ADMISSION=$ADMISSION"`, env);
       strictEqual(joined.status, 0, joined.stderr);
-      const codex = run(shell, `${carried({ ADMISSION: joined.vars.ADMISSION })}\n${codexBlock(CODEX_SWITCH, shim)}\necho "PASSED=1"`);
+      const codex = run(shell, `${withTextDir(codexBlock(CODEX_SWITCH, shim), carried({ admission: joined.vars.ADMISSION }))}\necho "PASSED=1"`);
       strictEqual(codex.status, 1, `${codex.stdout}${codex.stderr}`);
       match(codex.stderr, /Subtask T1 now waits on: T2 \(the plan changed after its selection\); nothing was switched/);
       strictEqual(codex.vars.PASSED, undefined);
@@ -454,9 +466,9 @@ describe('/orchestrator:next joins the run locks before it switches (ADR-0067 De
       strictEqual(branch(), 'feat/t1');
       execFileSync(process.execPath, [ORCH_STATE, 'admission', 'release', '--macro', macroId, '--checkout', lane, '--admission', control.vars.ADMISSION], { env: cleanEnv(), stdio: 'pipe' });
       git(lane, 'switch', '-q', 'feat/x');
-      const codexJoined = run(shell, `${carried()}\n${codexBlock('admission join', shim)}\necho "ADMISSION=$ADMISSION"`, ready);
+      const codexJoined = run(shell, `${withTextDir(codexBlock('admission join', shim), carried())}\necho "ADMISSION=$ADMISSION"`, ready);
       strictEqual(codexJoined.status, 0, codexJoined.stderr);
-      const codexControl = run(shell, `${carried({ ADMISSION: codexJoined.vars.ADMISSION })}\n${codexBlock(CODEX_SWITCH, shim)}\necho "PASSED=1"`);
+      const codexControl = run(shell, `${withTextDir(codexBlock(CODEX_SWITCH, shim), carried({ admission: codexJoined.vars.ADMISSION }))}\necho "PASSED=1"`);
       strictEqual(codexControl.status, 0, codexControl.stderr);
       strictEqual(branch(), 'feat/t1');
       execFileSync(process.execPath, [ORCH_STATE, 'admission', 'release', '--macro', macroId, '--checkout', lane, '--admission', codexJoined.vars.ADMISSION], { env: cleanEnv(), stdio: 'pipe' });
@@ -469,7 +481,7 @@ describe('/orchestrator:next joins the run locks before it switches (ADR-0067 De
     it(`${shell}: a plan revision after the switch that changes the subtask's branch, verb, profile or topic refuses the writeback; the child stays unrecorded and the admission is released (both hosts)`, async () => {
       const original = { id: 'T1', verb: 'compose', branch: 'feat/t1', blocked_by: [], status: 'pending' };
       const revisions = [['branch', 'feat/t1b', 'feat/t1'], ['verb', 'refine', 'compose'], ['profile', 'plan', ''], ['topic', 'a revised topic', '']];
-      const blocks = [['claude', WRITEBACK], ['codex', codexBlock('subtask-update')]];
+      const blocks = [['claude', WRITEBACK], ['codex', codexBlock('--status in_progress')]];
       git(lane, 'switch', '-q', 'feat/t1');
       const childId = engineerChild().split('/').pop().replace(/\.md$/, '');
       for (const [field, now, was] of revisions) {
@@ -486,12 +498,12 @@ describe('/orchestrator:next joins the run locks before it switches (ADR-0067 De
         }
       }
       // Control: no revision. The plan's topic ends in a newline, which the
-      // agent's carried value lost, and it has no profile: both writebacks
-      // bind the child.
+      // block's command substitution drops from what it reads, and it has no
+      // profile: both writebacks bind the child.
       for (const [host, block] of blocks) {
         await setPlan({ workflowPath: macroPath, host: 'claude', subtasks: [{ ...original, topic: 'line one\nline two\n' }] });
         const id = joinCli(host);
-        const wrote = writeback(shell, id, {}, block, { SUBTASK_TOPIC: 'line one\nline two' });
+        const wrote = writeback(shell, id, {}, block, { subtask: T1({ topic: 'line one\nline two\n' }) });
         strictEqual(wrote.status, 0, `${host}: ${wrote.stderr}`);
         const t1 = await subtask();
         deepStrictEqual([t1.status, t1.engineer_workflow_id], ['in_progress', childId], `${host}: bound`);
@@ -506,15 +518,15 @@ describe('/orchestrator:next joins the run locks before it switches (ADR-0067 De
     // 5 passes the dispatch the child records, and the write is refused.
     it(`${shell}: a re-attached child whose recorded dispatch the revised subtask no longer matches is not bound, though Phase 1's values match (both hosts)`, async () => {
       const original = { id: 'T1', verb: 'compose', branch: 'feat/t1', blocked_by: [], status: 'pending' };
-      const revisions = [['verb', 'refine', 'compose', 'SUBTASK_VERB'], ['profile', 'plan', '', 'SUBTASK_PROFILE'], ['topic', 'a revised topic', '', 'SUBTASK_TOPIC']];
-      const blocks = [['claude', WRITEBACK], ['codex', codexBlock('subtask-update')]];
+      const revisions = [['verb', 'refine', 'compose'], ['profile', 'plan', ''], ['topic', 'a revised topic', '']];
+      const blocks = [['claude', WRITEBACK], ['codex', codexBlock('--status in_progress')]];
       git(lane, 'switch', '-q', 'feat/t1');
       const childId = engineerChild({ subtask: 'T1', branch: 'feat/t1', verb: 'compose', profile: '', topic: '' }).split('/').pop().replace(/\.md$/, '');
-      for (const [field, now, was, carriedName] of revisions) {
+      for (const [field, now, was] of revisions) {
         for (const [host, block] of blocks) {
           await setPlan({ workflowPath: macroPath, host: 'claude', subtasks: [{ ...original, [field]: now }] });
           const id = joinCli(host);
-          const wrote = writeback(shell, id, {}, block, { [carriedName]: now });
+          const wrote = writeback(shell, id, {}, block, { subtask: T1({ [field]: now }) });
           strictEqual(wrote.status, 1, `${host}, ${field}: ${wrote.stdout}`);
           ok(wrote.stderr.includes(`(dispatch-changed): ${field} is ${JSON.stringify(now)}; the child was dispatched for ${JSON.stringify(was)}`), `${host}, ${field}: ${wrote.stderr}`);
           const t1 = await subtask();
@@ -551,7 +563,136 @@ describe('/orchestrator:next joins the run locks before it switches (ADR-0067 De
         for (const h of run_) h.release();
       }
     });
+
+    // Docket C110: a reader's status is its own, apart from its parser's. Each
+    // read the switching blocks make, answering valid JSON and then failing,
+    // stops the block before the switch; piped into its parser, the read's
+    // status was lost and the block switched on what it printed.
+    it(`${shell}: a read that prints its answer and then fails stops the switching block, on both hosts; nothing is switched and the admission is released`, () => {
+      for (const failing of ['read-subtask', 'subtask-readiness', 'read']) {
+        const env = { AGENTIC_ORCHESTRATOR_ROOT: shim, FAIL_AFTER: failing };
+        const claude = joinAndSwitch(shell, {}, env);
+        strictEqual(claude.status, 1, `${failing}: ${claude.stdout}${claude.stderr}`);
+        strictEqual(branch(), 'feat/x', `${failing}: nothing was switched`);
+        deepStrictEqual(held(), [], `${failing}: released`);
+        const codex = run(shell, `${withTextDir(codexBlock(CODEX_SWITCH, shim), carried({ admission: joinCli('codex') }))}\necho "PASSED=1"`, { FAIL_AFTER: failing });
+        strictEqual(codex.status, 1, `${failing} (Codex): ${codex.stdout}${codex.stderr}`);
+        strictEqual(codex.vars.PASSED, undefined);
+        strictEqual(branch(), 'feat/x', `${failing} (Codex): nothing was switched`);
+        deepStrictEqual(held(), [], `${failing} (Codex): released`);
+      }
+      // Control: the same shim, with no read failing, switches.
+      const control = joinAndSwitch(shell, {}, { AGENTIC_ORCHESTRATOR_ROOT: shim });
+      strictEqual(control.status, 0, control.stderr);
+      strictEqual(branch(), 'feat/t1');
+      execFileSync(process.execPath, [ORCH_STATE, 'admission', 'release', '--macro', macroId, '--checkout', lane, '--admission', control.vars.ADMISSION], { env: cleanEnv(), stdio: 'pipe' });
+    });
   }
+
+  // Dockets C75 and C68, end to end: every block of next.md from Phase 0 to
+  // Phase 5, each in a fresh shell that shares nothing with the others but
+  // the text directory, in bash, zsh and sh. The topic holds a line break, a
+  // backslash, quotes, a `$` and a backquote, and runs past a pipe's 64 KiB, so
+  // next-ready's answer reaches its parser in several chunks, and an `echo`
+  // would have expanded its `\n` (zsh, a POSIX sh).
+  const FRESH_SHELLS = ['bash', 'zsh', 'sh'].filter((s) => spawnSync(s, ['-c', 'exit 0']).status === 0);
+  const NEXT_BLOCKS = [...NEXT.matchAll(/^```bash\n([\s\S]*?)^```$/gm)].map((m) => m[1])
+    .filter((b) => b.startsWith("TEXT_DIR='<directory from step 1>'\n"));
+  // Critique H6 — two-byte characters past every 64 KiB boundary, at both
+  // parities, so a pipe's chunk boundary splits one of them in one of the two
+  // topics: a reader that decodes chunk by chunk turns it into two
+  // replacement characters, and the topic is no longer the plan's.
+  const TOPICS = ['', 'x'].map((pad) => `line one\nline \\n two "quoted" $HOME \`date\`\n${pad}${'é'.repeat(40000)}`);
+  const CAPTURE = '\nprintf \'%s\' "$AGENTIC_DISPATCH_SELECTION" > "$TEXT_DIR/selection.out" || exit 1\nprintf \'%s\' "$AGENTIC_TOPIC" > "$TEXT_DIR/topic.out" || exit 1\n';
+  /**
+   * The dispatch `blocks` run in order, each in a fresh shell given only the
+   * text directory: the switch, then the prelude (its exports captured), then
+   * the engineer child this test creates in place of the engineer command,
+   * then the writeback.
+   */
+  const dispatchEndToEnd = async (shell, topic, { before, prelude, writeback }) => {
+    ok(Buffer.byteLength(topic) > 70000, 'the topic runs past a pipe buffer');
+    await freshMacro([{ id: 'T1', verb: 'compose', branch: 'feat/t1', blocked_by: [], status: 'pending', profile: 'backend', topic }]);
+    const textDir = mkdtempSync(join(dir, 'agentic-text.'));
+    const env = { EXPLICIT_WORKFLOW_ID: macroId, AGENTIC_ENGINEER_ROOT: ENGINEER_ROOT };
+    const step = (block, suffix = '') => {
+      const r = run(shell, `${withTextDir(block, textDir)}${suffix}`, env);
+      strictEqual(r.status, 0, `${block.split('\n').slice(1, 4).join(' | ')}: ${r.stderr}`);
+      return r;
+    };
+    for (const block of before) step(block);
+    strictEqual(branch(), 'feat/t1', 'the switch switched');
+    const selected = JSON.parse(readFileSync(join(textDir, 'subtask.json'), 'utf8'));
+    strictEqual(selected.topic, topic, 'the selection holds the topic as the plan does');
+    step(prelude, CAPTURE);
+    strictEqual(readFileSync(join(textDir, 'topic.out'), 'utf8'), topic, 'AGENTIC_TOPIC is the topic, byte for byte');
+    const selection_ = JSON.parse(readFileSync(join(textDir, 'selection.out'), 'utf8'));
+    deepStrictEqual(selection_, { subtask: 'T1', branch: 'feat/t1', verb: 'compose', profile: 'backend', topic });
+    // The engineer command, which this test does not run, creates the child.
+    const child = engineerChild(selection_);
+    step(writeback);
+    const t1 = await subtask();
+    deepStrictEqual([t1.status, t1.engineer_workflow_id], ['in_progress', child.split('/').pop().replace(/\.md$/, '')]);
+    deepStrictEqual(held(), [], 'released after the writeback');
+  };
+  for (const shell of FRESH_SHELLS) {
+    it(`${shell}: every block of next.md, each in a fresh shell given only the text directory, dispatches the subtask Phase 1 selected and records it`, async () => {
+      // Contract: the blocks the agent runs, in order — Phase 0, Phase 1's
+      // selection, validation and gate, Phase 2, Phase 3, Phase 3b, Phase 4's
+      // prelude, Phase 5. A block that no longer opens with its TEXT_DIR line
+      // drops out of this list and fails here.
+      strictEqual(NEXT_BLOCKS.length, 9, 'nine blocks read the text directory');
+      const [phase0, selection, validation, gate, phase2, phase3, joinSwitch, preludeBlock, writebackBlock] = NEXT_BLOCKS;
+      for (const topic of TOPICS) {
+        // Each topic from the state beforeEach leaves: no child, no lock.
+        for (const root of [main, lane]) rmSync(join(root, '.agentic-plugins'), { recursive: true, force: true });
+        if (branch() !== 'feat/x') git(lane, 'switch', '-q', 'feat/x');
+        await dispatchEndToEnd(shell, topic, { before: [phase0, selection, validation, gate, phase2, phase3, joinSwitch], prelude: preludeBlock, writeback: writebackBlock });
+      }
+    });
+
+    // Critique H6 — the Codex mirror, end to end the same way: Phase 1's
+    // selection, the approval gate, Phase 2's ownership check, the join and
+    // the switch, Phase 3's prelude, Phase 4's writeback.
+    it(`${shell}: every block of the Codex next skill, each in a fresh shell given only the text directory, dispatches the subtask Phase 1 selected and records it`, async () => {
+      const blocks = CODEX_BLOCKS.filter((b) => b.startsWith("TEXT_DIR='<directory from mktemp>'\n")).map((b) => b.replaceAll('<orchestrator-plugin-root>', ORCH_ROOT));
+      // Contract: the eight blocks of the skill, in order; the standalone
+      // release (the fifth) runs only when stopping before Phase 4.
+      strictEqual(blocks.length, 8, 'eight blocks read the text directory');
+      const [phase1, gate, ownership, join_, release, switchBlock, preludeBlock, writebackBlock] = blocks;
+      ok(release.includes('admission release') && !release.includes('trap'), 'the fifth block is the standalone release');
+      for (const topic of TOPICS) {
+        // Each topic from the state beforeEach leaves: no child, no lock.
+        for (const root of [main, lane]) rmSync(join(root, '.agentic-plugins'), { recursive: true, force: true });
+        if (branch() !== 'feat/x') git(lane, 'switch', '-q', 'feat/x');
+        await dispatchEndToEnd(shell, topic, { before: [phase1, gate, ownership, join_, switchBlock], prelude: preludeBlock, writeback: writebackBlock });
+      }
+    });
+  }
+
+  // Docket C68: a JSON answer that does not parse stops Phase 1 with the
+  // parser's error, rather than reading as no subtask ("Unexpected next-ready
+  // reason: unknown") or as empty fields; nothing is selected.
+  it('a next-ready answer that does not parse stops the selection, loudly, and selects nothing', () => {
+    const [phase0, selection] = NEXT_BLOCKS;
+    const bad = join(dir, 'bad-root');
+    mkdirSync(join(bad, 'scripts'), { recursive: true });
+    writeFileSync(join(bad, 'scripts', 'state.mjs'), [
+      "import { spawnSync } from 'node:child_process';",
+      'const args = process.argv.slice(2);',
+      `if (args[0] === 'next-ready') { process.stdout.write('{"ready": {"id": "T1", "topic": "cut'); process.exit(0); }`,
+      `const r = spawnSync(process.execPath, [${JSON.stringify(ORCH_STATE)}, ...args], { stdio: 'inherit' });`,
+      'process.exit(r.status ?? 1);',
+    ].join('\n'));
+    for (const shell of FRESH_SHELLS) {
+      const textDir = mkdtempSync(join(dir, 'agentic-text.'));
+      strictEqual(run(shell, withTextDir(phase0, textDir), { EXPLICIT_WORKFLOW_ID: macroId }).status, 0);
+      const r = run(shell, withTextDir(selection, textDir), { AGENTIC_ORCHESTRATOR_ROOT: bad });
+      strictEqual(r.status, 1, `${shell}: ${r.stdout}`);
+      match(r.stderr, /SyntaxError/, `${shell}: the parser's error is shown`);
+      ok(!existsSync(join(textDir, 'subtask.json')), `${shell}: nothing was selected`);
+    }
+  });
 });
 
 /** The bash blocks of commands/<name>.md from `## Phase 0` up to `until`, as one script. */

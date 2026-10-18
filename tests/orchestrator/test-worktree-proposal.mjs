@@ -14,6 +14,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import {
   isPlainBranch, macroInDefaultRoot, nextWorktreeProposal, worktreePathFor, worktreeProposalText,
 } from '../../plugins/orchestrator/scripts/lib/worktree-proposal.mjs';
+import { carriedTextDir, withTextDir } from './_next-text-dir.mjs';
 
 const REPO_ROOT = join(dirname(new URL(import.meta.url).pathname), '..', '..');
 const ORCH_STATE = join(REPO_ROOT, 'plugins/orchestrator/scripts/state.mjs');
@@ -204,11 +205,10 @@ describe('worktree proposal for /orchestrator:next (ADR-0067 Decision 8, item 3)
     const block = /```bash\n([\s\S]*?)```/.exec(text.slice(from))[1];
     writeFileSync(join(main, 'stray.txt'), 'uncommitted\n');
     try {
-      const env = {
-        ...cleanEnv(), AGENTIC_ORCHESTRATOR_ROOT: join(REPO_ROOT, 'plugins/orchestrator'),
-        REPO_ROOT: main, MACRO_PATH: macroPath, SUBTASK_ID: 'B', SUBTASK_BRANCH: 'feat/b',
-      };
-      const r = spawnSync('bash', ['-c', block], { cwd: main, encoding: 'utf8', env });
+      const env = { ...cleanEnv(), AGENTIC_ORCHESTRATOR_ROOT: join(REPO_ROOT, 'plugins/orchestrator') };
+      // What Phases 0 and 1 wrote to the text directory (docket C75).
+      const textDir = carriedTextDir({ repoRoot: main, macroPath, subtask: { id: 'B', branch: 'feat/b', verb: 'compose', status: 'pending' } }, dir);
+      const r = spawnSync('bash', ['-c', withTextDir(block, textDir)], { cwd: main, encoding: 'utf8', env });
       strictEqual(r.status, 1);
       strictEqual(r.stderr, [
         '✗ Working tree not clean — /orchestrator:next does not switch branches over uncommitted changes.',
