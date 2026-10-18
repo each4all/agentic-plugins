@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.30.0...plugin-engineer-v0.31.0) (2026-10-18)
+
+
+### Features
+
+* **engineer:** read the workflow id from a file in resolve-workflow (C134(a)) ([edcf4e4](https://github.com/each4all/agentic-plugins/commit/edcf4e4dfe727bff60394f02525a8ebc78971596))
+
 ## [0.30.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.29.1...plugin-engineer-v0.30.0) (2026-10-18)
 
 
