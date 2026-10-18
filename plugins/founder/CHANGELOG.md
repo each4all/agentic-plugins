@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.11.0...plugin-founder-v0.12.0) (2026-10-18)
+
+
+### Features
+
+* **founder:** read the workflow id from a file in resolve-workflow (C134(a)) ([402b523](https://github.com/each4all/agentic-plugins/commit/402b523f7857cd45ca78e0ea092ef4111a72f4b0))
+
 ## [0.11.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.10.1...plugin-founder-v0.11.0) (2026-10-18)
 
 

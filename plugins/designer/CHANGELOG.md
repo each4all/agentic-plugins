@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.10.0...plugin-designer-v0.11.0) (2026-10-18)
+
+
+### Features
+
+* **designer:** read the workflow id from a file in resolve-workflow (C134(a)) ([e8d661c](https://github.com/each4all/agentic-plugins/commit/e8d661cba7ee947aa7d6084628895ab7a718250f))
+
 ## [0.10.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.9.1...plugin-designer-v0.10.0) (2026-10-18)
 
 
