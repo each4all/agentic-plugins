@@ -101,8 +101,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/orchestrator",
-        "ref": "plugin-orchestrator-v0.24.8",
-        "sha": "a7b8f0604ded3e389b49c1f28153c36adfe5e509"
+        "ref": "plugin-orchestrator-v0.24.9",
+        "sha": "3f10419fa1b8a9a0c7a77f718d03f2b817b06e2b"
       },
       "policy": {
         "installation": "AVAILABLE",
