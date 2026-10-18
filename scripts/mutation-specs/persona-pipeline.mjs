@@ -181,13 +181,25 @@ const RESOLVER_TEMPLATES = [
 // PC2a2b: the finalize template and its settle step (PC2b DD6; ensemble-commit
 // before it), moved whole by M1/M2.
 const FINALIZE = 'regions/verb-finalize.md';
+// R4 J2, J4: the consensus finalize's phase-note append, which follows the
+// recorded verdict's read, and its run case; R4 J3: peer-now's dispatch stop.
+const CONSENSUS_FINALIZE = 'regions/verb-finalize-consensus.md';
+const CONSENSUS_APPEND = 'node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \\\n  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \\\n  --phase-label {{phase_label}} \\\n  --phase-note-file "$TEXT_DIR/note.md" \\\n  --current-phase phase-2-presented \\\n  --next-action-file "$TEXT_DIR/next-action.txt" \\\n  --event updated || exit $?\n\n';
+const CONSENSUS_RUN = /^the finalize, run: a recorded conflict writes the task file/;
+// R4 K2, K3: the finalize's pre-settle checks and the contracts that run them.
+const FINALIZE_INPUTS_RUN = /^the finalize, run: a confidence, or where the verb waits for convergence a resolving step/;
+const OPEN_CONFLICT_RUN = /^the finalize, run: a recorded conflict no gate names holds any other verdict/;
+const PEER_NOW_RC_STOP = '[ "$RUN_RC" -eq 0 ] || { echo "✗ peer-now run $RUN_ID failed (exit $RUN_RC${ERROR_KIND:+, $ERROR_KIND}); $RUN_ERR${STDERR_PATH:+ and $STDERR_PATH} say why. No note is appended for it." >&2; exit "$RUN_RC"; }\n';
 // PC2a2c: decide's Phase 0.5 template and the contract that runs its block.
 const RESOLVE = 'regions/decide-resolve.md';
 const PHASE_05_RUN = /^Phase 0\.5: between the resume and the dispatch, the resolver reads the args file/;
 const COMMIT_STEP = [
   '# ADR-0066 PC2b — settle the ensemble attempt from its ledger (never launched,',
-  '# launched and failed, completed); a refusal stops the block before the last',
-  '# write, so the workflow never closes with an attempt left unsettled.',
+  '# launched and failed, completed). It is the first write and the one judge of',
+  '# the run: a refusal (a run still live, of another workflow or phase, or an',
+  '# attempt an empty id would hide) stops the block before any write, so the',
+  '# workflow never records a note for an attempt left unsettled; once it has',
+  '# recorded the run, running the block again records nothing more for it.',
   'node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" settle \\',
   '  --repo-root "$REPO_ROOT" --workflow-path "$ACTIVE" \\',
   '  --host "${AGENTIC_HOST:-claude}" --phase {{verb}} --run-id "$RUN_ID" \\',
@@ -195,7 +207,7 @@ const COMMIT_STEP = [
   '',
   '',
 ].join('\n');
-const FINALIZE_ORDER = /^the dispatch, the note, settle and finish-verb run in that order/;
+const FINALIZE_ORDER = /^the dispatch, settle, the note and finish-verb run in that order/;
 
 // PC3b U5c: the ensemble templates' two capability blocks, whole.
 const ENSEMBLE_AUTOPILOT = readFileSync(new URL('../../persona-pipeline/regions/ensemble-collect.md', import.meta.url), 'utf8').match(/\{\{#capability dispatch_target\}\}\n[^]*?\{\{\/capability\}\}\n/)?.[0];
@@ -887,8 +899,8 @@ export const MUTATIONS = [
   {
     id: 'G38', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: SETTLE_FILE, to: '  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt"\n' }),
-    killed_by: templateCaught(FINALIZE, /^the finalize, run: a settle refusal stops the block before finish-verb/),
-    why: 'a refused settle no longer stops the block: the workflow closes with its ensemble attempt unsettled',
+    killed_by: templateCaught(FINALIZE, /^the finalize, run: settle is the first write, so its refusal stops the block before any write/),
+    why: 'a refused settle no longer stops the block: the note is written and the workflow closes with its ensemble attempt unsettled',
   },
   {
     id: 'G39', tests: [T_CONTRACT, T_CHAR],
@@ -1277,8 +1289,8 @@ export const MUTATIONS = [
   },
   {
     id: 'V6', tests: [T_VERBS], file: 'plugins/designer/commands/refine.md',
-    from: 'CONVERGED="<yes|no — from the re-critique verdict; unset means no>"\nif [ "${CONVERGED:-no}" = "yes" ]; then',
-    to: 'CONVERGED="<yes|no — from the re-critique verdict; unset means no>"\nif true; then',
+    from: '# closes the verb.\nif [ "${CONVERGED:-no}" = "yes" ]; then',
+    to: '# closes the verb.\nif true; then',
     why: 'designer refine closes the workflow without a converged re-critique while its declaration says it waits for one (DD5)',
   },
   {
@@ -1383,8 +1395,8 @@ export const MUTATIONS = [
   },
   {
     id: 'V9', tests: [T_VERBS], file: 'plugins/designer/commands/refine.md',
-    from: 'CONVERGED="<yes|no — from the re-critique verdict; unset means no>"\nif [ "${CONVERGED:-no}" = "yes" ]; then',
-    to: 'CONVERGED="<yes|no — from the re-critique verdict; unset means no>"\nnode "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb --workflow-path "$ACTIVE"\nif [ "${CONVERGED:-no}" = "yes" ]; then',
+    from: '# closes the verb.\nif [ "${CONVERGED:-no}" = "yes" ]; then',
+    to: '# closes the verb.\nnode "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb --workflow-path "$ACTIVE"\nif [ "${CONVERGED:-no}" = "yes" ]; then',
     why: 'designer refine gains a second, unguarded terminal write next to the guarded one',
   },
   {
@@ -1490,7 +1502,7 @@ export const MUTATIONS = [
     id: 'M1', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, edits: [
       { from: COMMIT_STEP, to: '' },
-      { from: '  --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?\n# The owner-decision form', to: `  --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?\n\n${COMMIT_STEP.trimEnd()}\n# The owner-decision form` },
+      { from: '  --next-step-confidence "$CONFIDENCE" || exit $?\n# The owner-decision form', to: `  --next-step-confidence "$CONFIDENCE" || exit $?\n\n${COMMIT_STEP.trimEnd()}\n# The owner-decision form` },
     ] }),
     killed_by: templateCaught(FINALIZE, FINALIZE_ORDER),
     why: 'the terminal write runs before settle: the workflow archives with its ensemble attempt still unsettled',
@@ -1499,10 +1511,156 @@ export const MUTATIONS = [
     id: 'M2', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, edits: [
       { from: COMMIT_STEP, to: '' },
-      { from: `${FILE_CHECK}\nnode "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \\\n`, to: `${FILE_CHECK}\n${COMMIT_STEP}node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \\\n` },
+      { from: '  --event updated || exit $?\n\n', to: `  --event updated || exit $?\n\n${COMMIT_STEP}` },
     ] }),
     killed_by: templateCaught(FINALIZE, FINALIZE_ORDER),
-    why: 'settle runs before the phase note is written',
+    why: 'the phase note is written before settle, so a settle refusal leaves a note and a moved phase behind (R4 G1)',
+  },
+  {
+    id: 'M2a', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: 'if(!good(id))process.exit(1);try{h=JSON.parse(h)}catch{process.exit(3)}bound(h,id)}', to: 'if(!good(id))process.exit(1);process.stdout.write(id);process.exit(0)}' }),
+    killed_by: templateCaught(FINALIZE, /^the finalize, run: an empty DISPATCH_DIR is the empty id even beside a pending run/),
+    why: 'a run ledger directory is taken without its handle\'s workflow check: A\'s run finalized on branch B reaches settle on B\'s workflow, so the block\'s own refusal is gone and settle\'s workflow check is the only one left (R4 J1)',
+  },
+  {
+    id: 'M2b', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: 'catch(e){if(!(e&&e.code==="ENOENT"))process.exit(1);try{h=fs.readFileSync(p.join(d,"handle.json"),"utf8")}', to: 'catch(e){process.exit(1);try{h=fs.readFileSync(p.join(d,"handle.json"),"utf8")}' }),
+    killed_by: templateCaught(FINALIZE, /^the finalize, run: an empty DISPATCH_DIR is the empty id even beside a pending run/),
+    why: 'a run ledger directory is read as a dispatch directory, so a launched run whose dispatch directory is gone cannot be settled through the runbook (R4 G2, J1)',
+  },
+  {
+    id: 'M2c', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: 'const id=p.basename(p.resolve(d));if(!good(id))process.exit(1);try{h=JSON.parse(h)}catch{process.exit(3)}bound(h,id)}', to: 'try{h=JSON.parse(h)}catch{process.exit(3)}bound(h,h&&h.run_id)}' }),
+    killed_by: templateCaught(FINALIZE, /^the finalize, run: an empty DISPATCH_DIR is the empty id even beside a pending run/),
+    why: 'the run is the one a handle says, not the ledger directory named: a handle copied or left in another run\'s directory settles a run the synthesis never read (R4 J1)',
+  },
+  {
+    id: 'M2l', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: 'const good=(v)=>typeof v==="string"&&/^[A-Za-z0-9._:-]+$/.test(v)&&!v.includes("..");', to: 'const good=(v)=>typeof v==="string"&&/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(v);' }),
+    killed_by: templateCaught(FINALIZE, /^the finalize, run: an empty DISPATCH_DIR is the empty id even beside a pending run/),
+    why: 'the plain finalize narrows its run-id rule to the consensus task file\'s (isSafeConsensusRunId), on a path that never reaches consensus-task: a run the runner launched as legacy:run is refused, and settling it by hand leaves every retry refused again (R4 K1)',
+  },
+  // R4 K3: every value the last write takes is checked before settle.
+  {
+    id: 'M2m', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: 'case "$CONFIDENCE" in\n  HIGH|MEDIUM|LOW) ;;\n', to: 'case "$CONFIDENCE" in\n  *) ;;\n' }),
+    killed_by: templateCaught(FINALIZE, FINALIZE_INPUTS_RUN),
+    why: 'a confidence the last write refuses is no longer checked before settle: settle and the note append write, finish-verb refuses, and the documented retry appends the note again (R4 K3)',
+  },
+  {
+    id: 'M2n', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-finalize-convergent.md', from: '  case "$RESOLVE_VERB" in\n    refine|decide|investigate) ;;\n', to: '  case "$RESOLVE_VERB" in\n    *) ;;\n' }),
+    killed_by: templateCaught('regions/verb-finalize-convergent.md', FINALIZE_INPUTS_RUN),
+    why: 'not converged, an unfilled resolving step is no longer checked before settle: the last append refuses after settle and the note have written (R4 K3)',
+  },
+  // R4 K2, L1, L2 (the owner's J2 ruling and its Fix now of 2026-10-19): the
+  // conflict itself holds the phase, before settle: a recorded conflict with no
+  // owner ruling passes only its own run as a conflict, and a pending conflict
+  // gate only the gate's own run as a conflict.
+  {
+    id: 'M2o', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: CONSENSUS_FINALIZE, from: 'case "$HOLD" in\n', to: 'case "" in\n' }),
+    killed_by: templateCaught(CONSENSUS_FINALIZE, OPEN_CONFLICT_RUN),
+    why: 'a run recorded conflict, its gate never set, is closed by a retry with an empty DISPATCH_DIR and another verdict: summary-complete, the terminal marker set, no gate (R4 K2, J2)',
+  },
+  {
+    id: 'M2p', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: CONSENSUS_FINALIZE, from: 'if(gr===""||run!==gr||v!=="conflict")process.stdout.write("gate "+named(gr));', to: 'if(gr==="")process.stdout.write("gate "+named(gr));' }),
+    killed_by: templateCaught(CONSENSUS_FINALIZE, OPEN_CONFLICT_RUN),
+    why: 'a pending conflict gate naming its run lets every finish through: a new run closes the verb summary-complete with the terminal marker beside the gate, and once the owner clears it the next Stop archives the workflow, losing the next step the owner chose (R4 L2)',
+  },
+  {
+    id: 'M2q', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: CONSENSUS_FINALIZE, from: '.filter((id)=>!(safe(id)&&typeof o.workflow_id==="string"&&fs.existsSync(p.join(p.dirname(p.dirname(w)),"consensus",o.workflow_id+"."+id+".resolved.md"))));', to: ';' }),
+    killed_by: templateCaught(CONSENSUS_FINALIZE, OPEN_CONFLICT_RUN),
+    why: 'a conflict the owner already ruled on (its task file retired) holds every later finalize of the phase, so the verb can never close after the gate is cleared (R4 K2)',
+  },
+  {
+    id: 'M2r', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: CONSENSUS_FINALIZE, from: 'if(o.awaiting_owner_gate===g){', to: 'if(typeof o.awaiting_owner_gate==="string"){' }),
+    killed_by: templateCaught(CONSENSUS_FINALIZE, OPEN_CONFLICT_RUN),
+    why: 'any pending gate reads as this verb\'s conflict gate: another gate naming a run whose conflict the owner already ruled on holds every finish of the phase (R4 K2)',
+  },
+  {
+    id: 'M2s', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: CONSENSUS_FINALIZE, from: '.filter((e)=>e&&e.phase===ph&&e.verdict==="conflict")', to: '.filter((e)=>e&&e.phase===ph&&e.verdict==="conflict"&&safe(String(e.run_id)))' }),
+    killed_by: templateCaught(CONSENSUS_FINALIZE, OPEN_CONFLICT_RUN),
+    why: 'a conflict recorded under an id that cannot name a gate (legacy:run, settled by hand) is let through, so the verb closes over it with no gate (R4 refine-verify, K2)',
+  },
+  {
+    id: 'M2t', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: CONSENSUS_FINALIZE, from: '(v==="conflict"&&run!==""&&held.includes(run))', to: '(v==="conflict"&&run!=="")' }),
+    killed_by: templateCaught(CONSENSUS_FINALIZE, OPEN_CONFLICT_RUN),
+    why: 'any run finalized as a conflict passes, the held one or not: a replacement run that failed, finalized as conflict, settles failed, and its retry closes the verb while the first conflict has no ruling (R4 L1)',
+  },
+  {
+    id: 'M2u', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: CONSENSUS_FINALIZE, from: '.filter((e)=>e&&e.phase===ph&&e.verdict==="conflict")', to: '.filter((e)=>e&&e.phase===ph).slice(-1).filter((e)=>e.verdict==="conflict")' }),
+    killed_by: templateCaught(CONSENSUS_FINALIZE, OPEN_CONFLICT_RUN),
+    why: 'only the phase\'s last result is read: a later run settled by hand hides an earlier conflict with no ruling, and the verb closes over it (R4 S8)',
+  },
+  {
+    id: 'M2v', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: CONSENSUS_FINALIZE, from: 'if(gr===""||run!==gr||v!=="conflict")', to: 'if(gr===""||run!==gr)' }),
+    killed_by: templateCaught(CONSENSUS_FINALIZE, OPEN_CONFLICT_RUN),
+    why: 'the gate\'s own run, finalized with another verdict, passes a pending conflict gate and reaches settle, its first write: only the later recorded-verdict check stops it, so the guard no longer holds every finish but the re-finalize before any write (R4 L2)',
+  },
+  {
+    id: 'M2w', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: CONSENSUS_FINALIZE, from: 'if(gr===""||run!==gr||v!=="conflict")', to: 'if(run!==gr||v!=="conflict")' }),
+    killed_by: templateCaught(CONSENSUS_FINALIZE, OPEN_CONFLICT_RUN),
+    why: 'a pending conflict gate that names no run lets the empty id through as a conflict, so the block settles before it stops on the run it cannot name (R4 L2)',
+  },
+  {
+    id: 'M2x', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: CONSENSUS_FINALIZE, from: 'const owner=held.find((id)=>!safe(id));', to: 'const owner=undefined;' }),
+    killed_by: templateCaught(CONSENSUS_FINALIZE, OPEN_CONFLICT_RUN),
+    why: 'a conflict whose id can name no gate is reported as one to finalize as a conflict, a route the block itself refuses for that id, instead of the owner\'s to decide (R4 K2)',
+  },
+  {
+    id: 'M2d', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: 'const [d,w]=process.argv.slice(1);if(d==="")process.exit(5);', to: 'const [d,w]=process.argv.slice(1);' }),
+    killed_by: templateCaught(FINALIZE, /^the finalize, run: an empty DISPATCH_DIR is the empty id even beside a pending run/),
+    why: 'an empty DISPATCH_DIR is no longer the empty id, so a local-only finalize cannot settle (R4 H1)',
+  },
+  {
+    id: 'M2e', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: 'if(has&&m.run_id!==id){process.stdout.write(m.run_id);process.exit(3)}', to: '' }),
+    killed_by: templateCaught(FINALIZE, /^the finalize, run: an empty DISPATCH_DIR is the empty id even beside a pending run/),
+    why: 'a retry settles whatever is named now over the run it kept, so a reused TEXT_DIR records one run with the synthesis of another (R4 H1, M3)',
+  },
+  {
+    id: 'M2f', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: CONSENSUS_FINALIZE, edits: [
+      { from: CONSENSUS_APPEND, to: '' },
+      { from: 'RECORDED="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-verdict \\\n', to: `${CONSENSUS_APPEND}RECORDED="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-verdict \\\n` },
+    ] }),
+    killed_by: templateCaught(CONSENSUS_FINALIZE, CONSENSUS_RUN),
+    why: 'the phase note is appended before the recorded verdict is read, so a mismatch leaves a note stating a verdict the settle refused, and its retry appends the note again (R4 J2, J4)',
+  },
+  {
+    id: 'M2g', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: CONSENSUS_FINALIZE, from: '    --text-file "$CONTESTED_FILE")" \\\n    || { echo "✗ The consensus task file for run $RUN_ID was not written;', to: '    --text-file "$CONTESTED_FILE")" || true\n    : || { echo "✗ The consensus task file for run $RUN_ID was not written;' }),
+    killed_by: templateCaught(CONSENSUS_FINALIZE, CONSENSUS_RUN),
+    why: 'a consensus task file refused no longer stops the block: the note and a gate with no task file are recorded (R4 J4)',
+  },
+  {
+    id: 'M2i', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/peer-now-note.md', from: 'if(r.ok===true)process.exit(0);', to: 'process.exit(0);' }),
+    killed_by: templateCaught('regions/peer-now-note.md', /^after find-active, peer-now branches three ways/),
+    why: 'a failed consultation gets a [Peer] note: the note step no longer reads ok from the run\'s result (R4 J3)',
+  },
+  {
+    id: 'M2j', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/peer-now-dispatch.md', from: PEER_NOW_RC_STOP, to: '' }),
+    killed_by: templateCaught('regions/peer-now-dispatch.md', PEER_NOW_RUN),
+    why: 'a failed peer-now dispatch exits 0, so the agent, which sees only the block\'s status, goes on to the note (R4 J3)',
+  },
+  {
+    id: 'M2k', tests: [T_SKILL],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-peer-now-dispatch.md', from: PEER_NOW_RC_STOP, to: '' }),
+    killed_by: templateCaught('regions/skill-peer-now-dispatch.md', /^the dispatch is synchronous/),
+    why: 'a failed peer-now dispatch in the skill exits 0, so the agent goes on to the note (R4 J3)',
   },
   {
     id: 'M3', tests: [T_CONTRACT],
@@ -1777,8 +1935,8 @@ export const MUTATIONS = [
   },
   {
     id: 'M39', tests: [T_CONTRACT], file: 'plugins/designer/commands/refine.md',
-    from: 'CONVERGED="<yes|no — from the re-critique verdict; unset means no>"\nif [ "${CONVERGED:-no}" = "yes" ]; then',
-    to: 'CONVERGED="<yes|no — from the re-critique verdict; unset means no>"\nif [ "${CONVERGED:-yes}" = "yes" ]; then',
+    from: '# closes the verb.\nif [ "${CONVERGED:-no}" = "yes" ]; then',
+    to: '# closes the verb.\nif [ "${CONVERGED:-yes}" = "yes" ]; then',
     killed_by: [inSuite('designer/commands/refine.md (committed)', /^refine finalize, run: /)],
     why: 'designer refine closes the workflow when CONVERGED was never assigned (the guard fails open)',
   },
@@ -3200,6 +3358,50 @@ export const MUTATIONS = [
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/handoff-recipe.md', from: "  `terminal_phase`, `no_active_children`, `awaiting_owner`) → **`blocked`**,\n", to: "  `terminal_phase`, `no_active_children`, `awaiting_owner`) → **`publish-needed`**,\n" }),
     killed_by: /the handoff templates keep each claim under its capability, in every legal combination \(PC3b U5a\) > dispatch_target true, commit_surface true, legacy_homes true$/,
     why: "the commit-surface mapping says publish-needed, which engineer's session-handoff.mjs never computes",
+  },
+  // K4 (C68): each reader of the handoff recipe decodes UTF-8 across stdin
+  // chunks; without setEncoding a 3-byte character split between two 64 KiB
+  // chunks decodes as U+FFFD and the JSON still parses.
+  {
+    id: 'U8a', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/handoff-recipe.md', edits: [{ from: 'process.stdin.setEncoding("utf8");', to: '', count: 3 }] }),
+    killed_by: /(?:^| > )engineer: reference contracts > committed: the session handoff's recipe, run: /,
+    why: 'the recipe decodes each stdin chunk on its own, so a multibyte character split across chunks reaches the status, routing and projection as U+FFFD',
+  },
+  // K4/J7: the recipe names <plugin-root>, not $CLAUDE_PLUGIN_ROOT, which a
+  // Codex skill shell (and a fresh Claude Bash call) has unset.
+  {
+    id: 'U8b', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/handoff-recipe.md', from: 'HANDOFF="$(node "<plugin-root>/scripts/session-handoff.mjs" project', to: 'HANDOFF="$(node "$CLAUDE_PLUGIN_ROOT/scripts/session-handoff.mjs" project' }),
+    killed_by: /(?:^| > )engineer: reference contracts > committed: the session handoff's recipe, run: /,
+    why: "the recipe runs '/scripts/session-handoff.mjs' wherever CLAUDE_PLUGIN_ROOT is unset — always on Codex",
+  },
+  // K5: the hand-written core-skill snippets run <plugin-root>'s scripts and
+  // never Claude's root lookup, which on Codex with a Claude cache present
+  // runs the cached Claude release's state.mjs.
+  ...[['U8c', 'compose', 'record-composed-file'], ['U8d', 'refine', 'record-refine-file']].map(([id, skill, sub]) => ({
+    id, tests: [T_ENG], file: `plugins/engineer/core/skills/${skill}/SKILL.md`,
+    from: 'REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1\nACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active',
+    to: 'ROOT_OVERRIDE="$(printenv \'AGENTIC_ENGINEER_ROOT\' || true)"\nCLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"\n[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/\'engineer\' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -1)"\n'
+      + 'REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1\nACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active',
+    killed_by: new RegExp(`hand-written workflow writes, run in a fresh shell \\(R4, C75\\) > the ${skill} skill's commit-manifest record runs <plugin-root>'s state\\.mjs`),
+    why: `the ${skill} skill's ${sub} snippet finds the workflow through Claude's root lookup, so on Codex with a Claude cache it runs the cached release's state.mjs`,
+  })),
+  {
+    id: 'U8e', tests: ['tests/plugin-shape/test-designer-plugin.mjs'], file: 'plugins/designer/core/skills/frame/SKILL.md',
+    from: 'REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1\nACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active',
+    to: 'ROOT_OVERRIDE="$(printenv \'AGENTIC_DESIGNER_ROOT\' || true)"\nCLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"\n[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/\'designer\' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -1)"\n'
+      + 'REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1\nACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active',
+    killed_by: /the frame skill dispatch block runs <plugin-root>, in a fresh shell \(K5\) > /,
+    why: "designer's frame dispatch finds the workflow through Claude's root lookup, so on Codex with a Claude cache it runs the cached release's state.mjs",
+  },
+  // The run, not the text checks, catches a cached copy reached some other way.
+  {
+    id: 'U8f', tests: [T_ENG], file: 'plugins/engineer/core/skills/compose/SKILL.md',
+    from: 'REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1\nACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active',
+    to: 'REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1\nnode "$HOME/.claude/plugins/cache/agentic-plugins/engineer/0.1.0/scripts/state.mjs" find-active --repo-root "$REPO_ROOT" >/dev/null 2>&1\nACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active',
+    killed_by: /hand-written workflow writes, run in a fresh shell \(R4, C75\) > the compose skill's commit-manifest record runs <plugin-root>'s state\.mjs/,
+    why: "the compose snippet runs a cached Claude release's state.mjs by a path the text checks do not name; only the run sees it",
   },
   // Dropped with C1 (E1 rule 3): N82 — the text restated what a script does, which that script's own tests run.
   // Dropped with C1 (E1 rule 3): G86, G87 — prose no program reads and no run, order, stop or hand-off depends on.

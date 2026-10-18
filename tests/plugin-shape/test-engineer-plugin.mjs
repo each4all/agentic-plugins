@@ -15,7 +15,10 @@
 // peer-runner calls, the audit alias's hand-off to critique, the resume drift
 // block (whose probes are checked in order and which is run here), the
 // decide-registry call each multi-axis lens section names, and the cited-brief
-// gates that come before a web search.
+// gates that come before a web search. The hand-written blocks that write the
+// workflow — start's Phase 1–6 phase markers and the compose and refine
+// skills' commit-manifest records — are run here too, each in a fresh shell
+// (R4, C75).
 //
 // The runbook, skill and reference regions every persona shares are checked
 // under tests/persona-pipeline/.
@@ -25,7 +28,7 @@
 import { describe, it } from 'node:test';
 import { strictEqual, ok } from 'node:assert/strict';
 import { readFile, stat } from 'node:fs/promises';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { relative, resolve, sep } from 'node:path';
@@ -663,22 +666,36 @@ describe('plugins/engineer — 12 commands (commands/<verb>.md — 6 verbs + aud
       const git = (...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args], { cwd: repo, encoding: 'utf8' }).trim();
       git('init', '-q', '-b', 'main');
       git('commit', '-q', '--allow-empty', '-m', 'baseline');
+      const parent = git('rev-parse', 'HEAD');
+      git('commit', '-q', '--allow-empty', '-m', 'next');
       const head = git('rev-parse', 'HEAD');
-      const run = (vars) => {
-        const assign = Object.entries(vars).map(([k, v]) => `${k}='${v}'`).join('\n');
-        const r = spawnSync('bash', ['-c', `${assign}\n${block}\nprintf 'DRIFT=%s\\n' "$DRIFT"`], { cwd: repo, encoding: 'utf8' });
-        strictEqual(r.status, 0, r.stderr);
-        return { drift: /^DRIFT=(.*)$/m.exec(r.stdout)?.[1], out: r.stdout };
+      const digest = execFileSync('sh', ['-c', 'git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d" " -f1'], { cwd: repo, encoding: 'utf8' }).trim();
+      // R4 (C75): the block runs in a fresh shell — the baseline comes from
+      // the read.json the read left in the resume's directory, and the
+      // checkout's state from git; variables an earlier block set are ignored.
+      const run = (baseline, { status = 0 } = {}) => {
+        const textDir = mkdtempSync(resolve(tmpdir(), 'engineer-resume-read-'));
+        try {
+          if (baseline !== null) writeFileSync(resolve(textDir, 'read.json'), JSON.stringify({ workflow_id: 'w', git_baseline: baseline }));
+          const stale = "BASE_BRANCH='stale'\nBASE_HEAD='stale'\nCURRENT_BRANCH='stale'\n";
+          const script = `${stale}${block.replace("READ_DIR='<directory from step 1>'", () => `READ_DIR='${textDir}'`)}\nprintf 'DRIFT=%s\\n' "$DRIFT"`;
+          const r = spawnSync('bash', ['-c', script], { cwd: repo, encoding: 'utf8' });
+          strictEqual(r.status, status, r.stderr);
+          return { drift: /^DRIFT=(.*)$/m.exec(r.stdout)?.[1], out: r.stdout, err: r.stderr };
+        } finally {
+          rmSync(textDir, { recursive: true, force: true });
+        }
       };
+      ok(block.startsWith("READ_DIR='<directory from step 1>'\n"), 'the block names the read\'s directory first');
       const NOTICE = 'current plugin does not auto-reconcile; review and decide [resume / archive / abort]';
-      const base = { CURRENT_BRANCH: 'main', BASE_BRANCH: 'main', CURRENT_HEAD: head, BASE_HEAD: head, CURRENT_DIGEST: 'd1', BASE_DIGEST: 'd1' };
-      for (const [label, vars] of [['unchanged', base], ['no recorded digest', { ...base, BASE_DIGEST: '' }]]) {
-        const r = run(vars);
+      const base = { branch: 'main', head, status_digest: digest };
+      for (const [label, baseline] of [['unchanged', base], ['no recorded digest', { ...base, status_digest: '' }]]) {
+        const r = run(baseline);
         strictEqual(r.drift, 'clean', label);
         ok(!r.out.includes(NOTICE), `${label}: no dirty report`);
       }
-      for (const [label, vars] of [['branch changed', { ...base, CURRENT_BRANCH: 'other' }], ['HEAD moved', { ...base, CURRENT_HEAD: 'f'.repeat(40) }], ['digest changed', { ...base, CURRENT_DIGEST: 'd2' }]]) {
-        const r = run(vars);
+      for (const [label, baseline] of [['branch changed', { ...base, branch: 'other' }], ['HEAD moved', { ...base, head: parent }], ['digest changed', { ...base, status_digest: 'd2' }]]) {
+        const r = run(baseline);
         strictEqual(r.drift, 'dirty', label);
         let seen = -1;
         for (const line of ['commits since baseline:', 'working-tree diff stat (vs HEAD; untracked excluded):', 'renames since baseline:', 'deletes since baseline:', NOTICE]) {
@@ -687,8 +704,11 @@ describe('plugins/engineer — 12 commands (commands/<verb>.md — 6 verbs + aud
           seen = next;
         }
       }
+      // A read.json missing (no read, or a read that failed) stops the report.
+      const unread = run(null, { status: 1 });
+      ok(unread.err.includes('read.json in READ_DIR (') && unread.drift === undefined, unread.err);
       for (const [label, baseHead] of [['empty baseline head', ''], ['unavailable baseline commit', '0'.repeat(40)]]) {
-        const r = run({ ...base, BASE_HEAD: baseHead });
+        const r = run({ ...base, head: baseHead });
         strictEqual(r.drift, 'dirty', label);
         ok(r.out.includes('✗ Invalid baseline') && !r.out.includes('commits since baseline'), `${label}: no probe runs:\n${r.out}`);
         ok(r.out.includes(NOTICE), `${label}: the notice still closes the report`);
@@ -945,4 +965,131 @@ describe('plugins/engineer — one hook-helper module (ADR-0066 D5)', () => {
       }
     }
   });
+});
+
+// R4 (C75): a shell variable does not outlive a Bash call, so each hand-written
+// block that writes the workflow finds the workflow itself (and a command
+// block its plugin root), in a fresh shell, never from a variable an earlier
+// block set: start's Phase 1–6 markers, and the compose and refine skills'
+// commit-manifest records,
+// which before this were a silent no-op in a fresh shell (an empty
+// --workflow-path) and lost the files Phase 7 stages.
+describe('plugins/engineer — hand-written workflow writes, run in a fresh shell (R4, C75)', () => {
+  const SHELLS = ['bash', 'zsh', 'sh'].filter((sh) => spawnSync(sh, ['-c', 'true']).status === 0);
+  const STATE = resolve(PLUGIN_ROOT, 'scripts/state.mjs');
+  const STALE = "ACTIVE='/w/stale.md'; REPO_ROOT='/nonexistent'; CLAUDE_PLUGIN_ROOT='/nonexistent'\n";
+  const env = () => {
+    const e = { ...process.env, AGENTIC_ENGINEER_ROOT: PLUGIN_ROOT };
+    for (const k of Object.keys(e)) if (k.startsWith('AGENTIC_') && k !== 'AGENTIC_ENGINEER_ROOT') delete e[k];
+    delete e.CLAUDE_PLUGIN_ROOT;
+    return e;
+  };
+  const bashBlocks = (text) => [...text.matchAll(/^```bash\n([\s\S]*?)^```$/gm)].map((m) => m[1]);
+  function withWorkflow(fn) {
+    const repo = mkdtempSync(resolve(tmpdir(), 'engineer-fresh-shell-'));
+    try {
+      const git = (...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args], { cwd: repo, encoding: 'utf8' }).trim();
+      git('init', '-q', '-b', 'feat/r');
+      writeFileSync(resolve(repo, '.gitignore'), '.agentic-plugins/state/\n');
+      git('add', '.');
+      git('commit', '-q', '-m', 'base');
+      const state = (...args) => execFileSync('node', [STATE, ...args], { cwd: repo, encoding: 'utf8', env: env() }).trim();
+      const run = (shell, block, { env: e = env(), stale = STALE } = {}) => spawnSync(shell, ['-c', `${stale}${block}`], { cwd: repo, encoding: 'utf8', env: e });
+      return fn({ repo, git, state, run });
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  }
+  const create = ({ repo, git, state }) => state('create', '--repo-root', repo, '--verb', 'compose', '--host', 'claude',
+    '--git-baseline-branch', 'feat/r', '--git-baseline-head', git('rev-parse', 'HEAD'), '--status-digest', '',
+    '--original-request', 'fresh-shell fixture');
+  const fm = (state, wf) => JSON.parse(state('read', '--workflow-path', wf));
+
+  it("start's Phase 1–6 blocks each find the workflow and advance it; with none found they write nothing", async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'commands/start.md'), 'utf8');
+    const phases = [['## Phase 1 ', 'phase-1-brainstorm-decide'], ['## Phase 2 ', 'phase-2-explore'], ['## Phase 3 ', 'phase-3-verify'],
+      ['## Phase 4 ', 'phase-4-implement'], ['## Phase 5 ', 'phase-5-review'], ['## Phase 6 ', 'phase-6-resolve']];
+    const blockOf = (heading) => {
+      const at = text.indexOf(heading);
+      ok(at >= 0, heading);
+      const section = text.slice(at, text.indexOf('\n## ', at + heading.length));
+      const found = bashBlocks(section);
+      strictEqual(found.length, 1, `one block under ${heading}`);
+      return found[0];
+    };
+    for (const shell of SHELLS) {
+      withWorkflow((ctx) => {
+        const wf = create(ctx);
+        for (const [heading, phase] of phases) {
+          const r = ctx.run(shell, blockOf(heading));
+          strictEqual(r.status, 0, `${shell} ${heading}: ${r.stderr}`);
+          strictEqual(fm(ctx.state, wf).current_phase, phase, `${shell} ${heading}`);
+        }
+      });
+    }
+    withWorkflow((ctx) => {
+      for (const [heading] of phases) {
+        const r = ctx.run('bash', blockOf(heading));
+        strictEqual(r.status, 1, `${heading}: ${r.stderr}`);
+        ok(r.stderr.includes('✗ No active engineer workflow on this branch; nothing was written.'), r.stderr);
+      }
+    });
+  });
+
+  // K5: these two are core skills, which Codex reads too, so the snippet runs
+  // `<plugin-root>` — the root the skill was read from — and never Claude's
+  // root lookup (AGENTIC_ENGINEER_ROOT, $CLAUDE_PLUGIN_ROOT, the newest
+  // release under ~/.claude/plugins/cache): on Codex with a Claude cache
+  // present that lookup silently runs the cached Claude release's state.mjs.
+  // Run here with every AGENTIC_* variable and CLAUDE_PLUGIN_ROOT unset and a
+  // HOME whose Claude cache holds a state.mjs that leaves a marker.
+  function withPlantedCache(fn) {
+    const home = mkdtempSync(resolve(tmpdir(), 'engineer-fake-home-'));
+    try {
+      const scripts = resolve(home, '.claude/plugins/cache/agentic-plugins/engineer/0.1.0/scripts');
+      mkdirSync(scripts, { recursive: true });
+      const marker = resolve(home, 'cached-state-ran');
+      writeFileSync(resolve(scripts, 'state.mjs'), `import fs from 'node:fs';\nfs.writeFileSync(${JSON.stringify(marker)}, process.argv.slice(2).join(' '));\nprocess.stdout.write('/cache/wf.md\\n');\nprocess.stderr.write('CACHED-STATE-RAN\\n');\n`);
+      const e = { ...process.env, HOME: home };
+      for (const k of Object.keys(e)) if (k.startsWith('AGENTIC_')) delete e[k];
+      delete e.CLAUDE_PLUGIN_ROOT;
+      return fn({ env: e, marker });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }
+  for (const [skill, sub, op] of [['compose', 'record-composed-file', 'create'], ['refine', 'record-refine-file', 'edit']]) {
+    it(`the ${skill} skill's commit-manifest record runs <plugin-root>'s state.mjs, finds the workflow and records the path; with none found it stops instead of recording nothing`, async () => {
+      const text = await readFile(resolve(PLUGIN_ROOT, SKILLS_REL, skill, 'SKILL.md'), 'utf8');
+      const found = bashBlocks(text).filter((b) => b.includes(`state.mjs" ${sub} \\`));
+      strictEqual(found.length, 1, `the ${sub} snippet`);
+      ok(found[0].includes('--path "<repo-relative path>"'), 'the path the agent fills');
+      // Contract: the Codex agent running this core-skill snippet runs the
+      // state.mjs of the plugin it read the skill from — a Claude root lookup
+      // here runs a cached Claude release's instead.
+      for (const [claude, what] of [['~/.claude/plugins/cache', "Claude's plugin cache"], ['CLAUDE_PLUGIN_ROOT', 'CLAUDE_PLUGIN_ROOT']]) {
+        ok(!found[0].includes(claude), `the ${sub} snippet must not read ${what}`);
+      }
+      ok(!/AGENTIC_[A-Z_]*_ROOT/.test(found[0]), `the ${sub} snippet must not read an AGENTIC_*_ROOT override`);
+      ok(found[0].includes('ACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active') && found[0].includes(`node "<plugin-root>/scripts/state.mjs" ${sub} \\`), 'both calls run <plugin-root>/scripts/state.mjs');
+      const block = found[0].replace('"<repo-relative path>"', () => '"src/a b.mjs"').split('<plugin-root>').join(PLUGIN_ROOT);
+      const stale = "ACTIVE='/w/stale.md'; REPO_ROOT='/nonexistent'\n";
+      for (const shell of SHELLS) {
+        withWorkflow((ctx) => withPlantedCache(({ env: e, marker }) => {
+          const wf = create(ctx);
+          const r = ctx.run(shell, block, { env: e, stale });
+          ok(!existsSync(marker) && !r.stderr.includes('CACHED-STATE-RAN'), `${shell}: the Claude cache's state.mjs must not run`);
+          strictEqual(r.status, 0, `${shell}: ${r.stderr}`);
+          const rows = fm(ctx.state, wf).commit_manifest ?? [];
+          strictEqual(rows.map((x) => `${x.path} ${x.op}`).join('\n'), `src/a b.mjs ${op}`, `${shell}: the manifest row`);
+        }));
+      }
+      withWorkflow((ctx) => withPlantedCache(({ env: e, marker }) => {
+        const r = ctx.run('bash', block, { env: e, stale });
+        ok(!existsSync(marker), "the Claude cache's state.mjs must not run");
+        strictEqual(r.status, 1, r.stderr);
+        ok(r.stderr.includes('✗ No active engineer workflow on this branch; nothing was recorded.'), r.stderr);
+      }));
+    });
+  }
 });

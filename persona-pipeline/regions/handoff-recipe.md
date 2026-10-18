@@ -41,15 +41,29 @@ surface; at completion the same projection is computed and handed to
 `footer.mjs` automatically by `emitTerminalHandoffSidecar` via the
 `discover-runtime.mjs` resolver (copy-not-import, ADR-0010 §5).
 
+Fill `<plugin-root>` with this plugin's installed root, on either host: the
+path you read this file from, cut before its `/core/skills/_shared/references/`
+directory, which holds `scripts/session-handoff.mjs`
+(`../../checkpoint/SKILL.md` has the Plugin root row for each host). The block
+reads no variable for it: a Codex skill shell has no `$CLAUDE_PLUGIN_ROOT`,
+and a Claude Bash call outside a command block need not have one either.
+
 ```bash
 # 1. Compute the bounded projection from this persona's OWN state.
 PERSONA={{name}}
-HANDOFF="$(node "$CLAUDE_PLUGIN_ROOT/scripts/session-handoff.mjs" project \
-  --repo-root "$REPO_ROOT" --routing "/${PERSONA}:resume")"
-STATUS="$(echo "$HANDOFF" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).status||"")}catch{}})')"
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+HANDOFF="$(node "<plugin-root>/scripts/session-handoff.mjs" project \
+  --repo-root "$REPO_ROOT" --routing "/${PERSONA}:resume")" || exit $?
+# printf, never echo: zsh's and sh's echo turn a `\n` or `\\` inside a JSON
+# string into a control character the parse then refuses. Each reader decodes
+# its input as UTF-8 across chunks (setEncoding, so a character split between
+# two chunks is not replaced with U+FFFD) and joins every chunk before it
+# parses; a result that does not parse fails loudly rather than reading as an
+# empty status.
+STATUS="$(printf '%s' "$HANDOFF" | node -e 'process.stdin.setEncoding("utf8");let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{let o;try{o=JSON.parse(s)}catch(e){process.stderr.write(`✗ session-handoff project printed no JSON: ${e.message}\n`);process.exit(1)}process.stdout.write(String(o.status??""))})')" || exit 1
 # Routing is always present in the result (ADR-0031 input (c)) — pass it
 # standalone when there is no projection so the seam never loses it.
-ROUTING="$(echo "$HANDOFF" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).routing||"")}catch{}})')"
+ROUTING="$(printf '%s' "$HANDOFF" | node -e 'process.stdin.setEncoding("utf8");let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{let o;try{o=JSON.parse(s)}catch(e){process.stderr.write(`✗ session-handoff project printed no JSON: ${e.message}\n`);process.exit(1)}process.stdout.write(String(o.routing??""))})')" || exit 1
 
 case "$STATUS" in
   ok)
@@ -57,7 +71,7 @@ case "$STATUS" in
     #    the runtime seam. runtime composes context-risk × archive_gate into
     #    the continue-vs-fresh decision + next-session prompt/command.
     PROJ_FILE="$(mktemp -t "${PERSONA}-projection.XXXXXX").json"
-    echo "$HANDOFF" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{process.stdout.write(JSON.stringify(JSON.parse(s).projection))})' > "$PROJ_FILE"
+    printf '%s' "$HANDOFF" | node -e 'process.stdin.setEncoding("utf8");let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{let o;try{o=JSON.parse(s)}catch(e){process.stderr.write(`✗ session-handoff project printed no JSON: ${e.message}\n`);process.exit(1)}if(o.projection==null){process.stderr.write("✗ session-handoff project printed status ok and no projection\n");process.exit(1)}process.stdout.write(JSON.stringify(o.projection))})' > "$PROJ_FILE" || exit 1
     #   runtime:context check --risk <green|yellow|red> --workflow-projection-file "$PROJ_FILE"
     ;;
   no_active_branch_context)

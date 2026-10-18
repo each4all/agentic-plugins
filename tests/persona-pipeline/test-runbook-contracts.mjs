@@ -25,7 +25,7 @@ import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { availableParallelism, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import {
   parseRegions,
@@ -126,8 +126,52 @@ const PIPELINE_VERB_DESTS = VERB_DESTS;
 // plain finalize and never propose a consensus round.
 const CONFLICT_GATES = { decide: 'decide-conflict', critique: 'peer-conflict', investigate: 'peer-conflict' };
 const PROPOSED_ROUND = '/runtime:consensus plan --task-file /s/consensus/w.r.md --peers claude,codex --max-rounds 2';
-// The writes a finalize block makes on a verdict other than conflict.
-const typicalLog = (verb) => (Object.hasOwn(CONFLICT_GATES, verb) ? ['append', 'settle', 'ensemble-verdict', 'finish-verb'] : ['append', 'settle', 'finish-verb']);
+// The calls a finalize block makes on a verdict other than conflict: the find
+// (R4, C75: the block finds the workflow itself), then its writes, settle first
+// (R4 G1: the one judge of the run refuses before anything is written); the
+// consensus variant reads the recorded verdict before the note (R4 J2, J4).
+// The calls before settle: the consensus variant reads this phase's last
+// recorded result there (R4 K2: a conflict no gate names holds any other verdict).
+const preSettle = (verb) => (Object.hasOwn(CONFLICT_GATES, verb) ? ['find-active', 'read'] : ['find-active']);
+const typicalLog = (verb) => (Object.hasOwn(CONFLICT_GATES, verb) ? [...preSettle(verb), 'settle', 'ensemble-verdict', 'append', 'finish-verb'] : ['find-active', 'settle', 'append', 'finish-verb']);
+// R4 (C75): a finalize block's head lines, filled the way the agent fills
+// them — the dispatch's directory (here a directory of its own inside the
+// text directory, into which the test writes the runner's result and the
+// run's handle; empty when no run launched; the run's own ledger directory
+// when a run launched and its directory is gone, R4 J1) and the synthesis
+// verdict. Nothing else reaches the block from an earlier one.
+const DISPATCH_DIR_LINE = "DISPATCH_DIR='<the directory the dispatch block ran with; empty when no run launched; the run ledger directory when a run launched and that directory is gone>'";
+const VERDICT_LINE = "VERDICT='<the synthesis verdict>'";
+// R4 K3: the last write's confidence, and, where the verb waits for
+// convergence, the step that resolves what is still open, set at the top and
+// checked before the first write (`null` leaves a line unfilled).
+const CONFIDENCE_LINE = "CONFIDENCE='<HIGH|MEDIUM|LOW>'";
+const RESOLVE_LINE = "RESOLVE_VERB='<refine|decide|investigate — the next step that resolves the flagged item, when not converged>'";
+function finalizeAs(block, { launched = true, verdict = 'agreed', dir = '"$TEXT_DIR/dispatch"', confidence = 'HIGH', resolve = 'refine' } = {}) {
+  ok(block.includes(`${DISPATCH_DIR_LINE}\n${VERDICT_LINE}\n${CONFIDENCE_LINE}\n`), 'the finalize names the dispatch directory, the verdict and the confidence');
+  const value = launched ? `DISPATCH_DIR=${dir}` : "DISPATCH_DIR=''";
+  let s = block.replace(DISPATCH_DIR_LINE, () => value).replace(VERDICT_LINE, () => `VERDICT='${verdict}'`);
+  if (confidence !== null) s = s.replace(CONFIDENCE_LINE, () => `CONFIDENCE='${confidence}'`);
+  if (resolve !== null) s = s.replace(RESOLVE_LINE, () => `RESOLVE_VERB='${resolve}'`);
+  return s;
+}
+/**
+ * The runner's result a dispatch left in its directory, and the run's handle,
+ * naming the workflow it ran for (FOUND unless `workflow` says otherwise).
+ */
+const runResult = (runId = 'r', { workflow = '/w/active.md', handle = true } = {}) => ({
+  'dispatch/prompt.xml.run.json': `${JSON.stringify({ ok: true, run_id: runId, status: 'completed', handle_path: 'agentic text.x/run/handle.json' })}\n`,
+  ...(handle ? { 'run/handle.json': `${JSON.stringify({ run_id: runId, kind: 'ensemble', workflow_path: workflow })}\n` } : {}),
+});
+// The workflow find-active prints, and values an earlier block may have left
+// in a shell, which a fresh-shell block never reads.
+const FOUND = '/w/active.md';
+const STALE = "ACTIVE='/w/stale.md'; RUN_ID='stale'; VERDICT='stale'; CONTESTED_FILE='/nonexistent'\n";
+/**
+ * Two blocks the way separate Bash calls run them, each in a subshell of its
+ * own, sharing one directory: the second reads only what the first wrote there.
+ */
+const inTurn = (first, second) => `${TEXT_DIR_LINE}\nSHARED="$TEXT_DIR"\n(\n${first.replace(TEXT_DIR_LINE, () => 'TEXT_DIR="$SHARED"')}\n) || exit $?\n(\n${second.replace(TEXT_DIR_LINE, () => 'TEXT_DIR="$SHARED"')}\n)\n`;
 // The runbooks whose finalize sits under a generated finalize heading, after
 // every extension their slots hold (PC2a3 QD7, QD8).
 const HEADING_DESTS = ['commands/critique.md', 'commands/refine.md'];
@@ -387,7 +431,7 @@ function spawnAsync(command, args, options = {}, { timeoutMs = CHILD_TIMEOUT_MS,
  * call has its own directory, and the block its own environment, so no two
  * runs share a path or a variable.
  */
-async function runBlock(shell, block, persona, { note = null, texts = {}, failAppend = false, active = '', findStatus = 0, resolveStatus = 0, after = '', baseline = '', baselineStatus = 0, readOutput = '', readStatus = 0, preflightStatus = 0, settleStatus = 0, clearStatus = 0, argsText = null, diag = '', diagStatus = 0, phase7Status = 0, recorded = '', proposed = PROPOSED_ROUND, taskStatus = 0 }) {
+async function runBlock(shell, block, persona, { note = null, texts = {}, failAppend = false, active = '', findStatus = 0, resolveStatus = 0, after = '', baseline = '', baselineStatus = 0, readOutput = '{}', readStatus = 0, preflightStatus = 0, settleStatus = 0, clearStatus = 0, argsText = null, diag = '', diagStatus = 0, phase7Status = 0, recorded = '', proposed = PROPOSED_ROUND, taskStatus = 0 }) {
   const dir = mkdtempSync(join(tmpdir(), 'pc2a2b-finalize.'));
   try {
     mkdirSync(join(dir, 'bin'));
@@ -397,7 +441,11 @@ async function runBlock(shell, block, persona, { note = null, texts = {}, failAp
     const textDir = join(dir, 'agentic text.x');
     mkdirSync(textDir);
     const files = { ...DEFAULT_TEXTS, ...(note === null ? {} : { 'note.md': `${note}\n` }), ...texts };
-    for (const [name, content] of Object.entries(files)) if (content !== null) writeFileSync(join(textDir, name), content);
+    for (const [name, content] of Object.entries(files)) {
+      if (content === null) continue;
+      mkdirSync(dirname(join(textDir, name)), { recursive: true });
+      writeFileSync(join(textDir, name), content);
+    }
     writeFileSync(join(dir, 'bin', 'node'), [
       '#!/bin/sh',
       // An inline script (start's JSON reads) runs on the real node.
@@ -411,6 +459,9 @@ async function runBlock(shell, block, persona, { note = null, texts = {}, failAp
       'printf \'%s\\n\' "$2" >> "$STUB_LOG"',
       'printf \'%s\' "$*" | tr \'\\n\' \' \' >> "$STUB_ARGV"; printf \'\\n\' >> "$STUB_ARGV"',
       'if [ "$2" = find-active ]; then printf \'%s\\n\' "$STUB_ACTIVE"; exit "$STUB_FIND_RC"; fi',
+      // A run prints its result, with the run id it was given (R4: a finalize
+      // reads the id from the result the dispatch left).
+      'if [ "$2" = run ]; then rid=; wf=; prev=; for a in "$@"; do if [ "$prev" = --run-id ]; then rid="$a"; fi; if [ "$prev" = --workflow-path ]; then wf="$a"; fi; prev="$a"; done; hp="$PWD/handle-$rid.json"; printf \'{"run_id":"%s","workflow_path":"%s"}\\n\' "$rid" "$wf" > "$hp"; printf \'{"ok":true,"run_id":"%s","handle_path":"%s"}\\n\' "$rid" "$hp"; exit 0; fi',
       'if [ "$2" = autopilot-preflight ]; then exit "$STUB_PREFLIGHT_RC"; fi',
       'if [ "$2" = settle ]; then exit "$STUB_SETTLE_RC"; fi',
       // ADR-0067 Decision 8: the verdict a settle recorded, and the round a
@@ -598,15 +649,24 @@ const HOSTILE_NEXT = 'Critique "it" — $(touch pwned) or `touch pwned2`; it\'s 
 describe('each convergent variant is its plain template plus the convergence check, nothing else', () => {
   const LAST = 'The last write, `finish-verb`, records';
   const TERMINAL_COMMENT = '# ADR-0029 §1 / completion-output contract §2';
+  // R4 (C133): the finalize asks for the not-converged next action in its
+  // step 2, before the block runs, as lines of its own after the shared ones.
+  const FINALIZE_STEP2 = ['   scripts remove; nothing deletes the files.\n', '\n   When the re-critique did not converge (below), `next-action.txt` holds the\n   flagged item and the next step that resolves it.\n'];
+  // R4 K3: the convergence and the resolving step are set at the top of the
+  // block, with the other values, and the resolving step is checked with the
+  // confidence, before the first write.
+  const FINALIZE_TOP = ["CONFIDENCE='<HIGH|MEDIUM|LOW>'\n", "# The convergence, fail-closed: shell state does not survive between Bash\n# calls, so an unset CONVERGED reads as not converged, never as success.\n# Assign it here, from the re-critique verdict, and, not converged, the next\n# step that resolves the flagged item.\nCONVERGED=\"<yes|no — from the re-critique verdict; unset means no>\"\nRESOLVE_VERB='<refine|decide|investigate — the next step that resolves the flagged item, when not converged>'\n"];
+  const FINALIZE_CHECKS = ["the last write records; nothing was written.\" >&2; exit 1 ;;\nesac\n", "# Not converged, the last write records RESOLVE_VERB as the next step: checked\n# here as well.\nif [ \"${CONVERGED:-no}\" != \"yes\" ]; then\n  case \"$RESOLVE_VERB\" in\n    refine|decide|investigate) ;;\n    *) echo \"✗ CONVERGED is not yes, and RESOLVE_VERB is not refine, decide or investigate, the next step that resolves the flagged item; nothing was written.\" >&2; exit 1 ;;\n  esac\nfi\n"];
   // [plain, variant, the variant's paragraph opening, the paragraph the
-  // convergence paragraph precedes, where the plain terminal part opens]
+  // convergence paragraph precedes, where the plain terminal part opens, and
+  // the variant's own lines elsewhere: [the plain line they follow, the lines]]
   const PAIRS = [
-    ['verb-finalize.md', 'verb-finalize-convergent.md', 'This verb closes only once it converged', LAST, (plain) => plain.indexOf(TERMINAL_COMMENT)],
+    ['verb-finalize.md', 'verb-finalize-convergent.md', 'This verb closes only once it converged', LAST, (plain) => plain.indexOf(TERMINAL_COMMENT), [FINALIZE_STEP2, FINALIZE_TOP, FINALIZE_CHECKS]],
     ['start-terminal.md', 'start-terminal-convergent.md', 'This lifecycle closes only once Phase 4 converged', LAST, (plain) => plain.indexOf(TERMINAL_COMMENT)],
     // The deferral's clear and terminal write: the Defer block's second clear.
     ['refine-owner-decision.md', 'refine-owner-decision-convergent.md', 'This refine closes only once it converged', '**Fix now.**', (plain) => plain.lastIndexOf('node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" awaiting-owner-clear \\\n')],
   ];
-  for (const [plainName, variantName, opening, before, terminalFrom] of PAIRS) {
+  for (const [plainName, variantName, opening, before, terminalFrom, own = []] of PAIRS) {
     it(`${variantName}: rebuilt from ${plainName} and the variant's own lines, it is byte for byte the variant`, () => {
       const read = (rel) => readFileSync(join(REPO_ROOT, 'persona-pipeline', 'regions', rel), 'utf8');
       const plain = read(plainName);
@@ -626,17 +686,23 @@ describe('each convergent variant is its plain template plus the convergence che
       const elseAt = thenEnd + indented.length;
       const elseBranch = variant.slice(elseAt, variant.indexOf('\nfi\n', elseAt) + '\nfi\n'.length);
       ok(elseBranch.startsWith('else\n'), 'an else branch follows');
-      const rebuilt = plain.replace(before, () => `${para}${before}`).replace(terminal, () => `${variant.slice(headAt, thenEnd)}${indented}${elseBranch}`);
+      let rebuilt = plain.replace(before, () => `${para}${before}`).replace(terminal, () => `${variant.slice(headAt, thenEnd)}${indented}${elseBranch}`);
+      for (const [after, lines] of own) {
+        strictEqual(plain.split(after).length - 1, 1, `the plain line the variant's own lines follow: ${after}`);
+        rebuilt = rebuilt.replace(after, () => `${after}${lines}`);
+      }
       strictEqual(variant, rebuilt);
     });
   }
 });
 
 // The consensus finalize (ADR-0067 Decision 8) is a variant of the plain one
-// as well: the conflict paragraph before the last-write paragraph, and the
-// plain terminal write, comment and call, indented in the first branch of the
-// recorded-verdict check. Its own lines (the paragraph, the check, the
-// mismatch and conflict branches) are bound by the conflict run above.
+// as well: the conflict paragraph before the last-write paragraph, the
+// recorded-verdict check (its mismatch stops and the conflict's task file)
+// between the settle and the note (R4 J2, J4), and the plain terminal write,
+// comment and call, indented in the first branch of a check on the recorded
+// verdict, the conflict gate in the other. Its own lines are bound by the
+// conflict run.
 // Contract: the sync renders it for decide, critique and investigate — a
 // shared line that drifts changes what those verbs' last write runs while
 // compose, frame and refine stay right.
@@ -653,15 +719,32 @@ describe('the consensus variant is the plain finalize plus the conflict branch, 
     const terminal = plain.slice(terminalAt, plain.indexOf('# The owner-decision form, for an owner gate'));
     ok(terminalAt > 0 && /\nnode "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" finish-verb \\\n/.test(terminal), 'the plain terminal write, comment and call');
     const indented = terminal.replace(/^(?=.)/gm, '  ');
-    const FIRST = 'if [ "$RECORDED" != conflict ] && [ "$VERDICT" != conflict ]; then\n';
+    // The recorded-verdict check, between the settle and the note.
+    const APPEND = 'node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \\\n';
+    strictEqual(plain.split(APPEND).length - 1, 1, 'the plain note append');
     const headAt = variant.indexOf('# ADR-0067 Decision 8 — the verdict the settle above recorded');
-    const thenEnd = variant.indexOf(FIRST, headAt) + FIRST.length;
-    ok(headAt > 0 && thenEnd > FIRST.length, 'the recorded-verdict check');
+    const checkEnd = variant.indexOf('\nfi\n\n', headAt) + '\nfi\n\n'.length;
+    ok(headAt > 0 && variant.slice(checkEnd).startsWith(APPEND), 'the recorded-verdict check, right before the note');
+    const check = variant.slice(headAt, checkEnd);
+    const FIRST = 'if [ "$RECORDED" != conflict ]; then\n';
+    const firstAt = variant.indexOf(FIRST, checkEnd);
+    const thenEnd = firstAt + FIRST.length;
+    ok(firstAt > checkEnd, 'the branch on the recorded verdict, after the note');
     strictEqual(variant.slice(thenEnd, thenEnd + indented.length), indented, 'the first branch is the plain terminal write, indented');
     const restAt = thenEnd + indented.length;
     const rest = variant.slice(restAt, variant.indexOf('\nfi\n', restAt) + '\nfi\n'.length);
-    ok(rest.startsWith('elif '), 'the mismatch and conflict branches follow');
-    const rebuilt = plain.replace(LAST, () => `${para}${LAST}`).replace(terminal, () => `${variant.slice(headAt, thenEnd)}${indented}${rest}`);
+    ok(rest.startsWith('else\n'), 'the conflict gate follows');
+    // R4: a conflict's contested.md is checked with the other texts, before any
+    // write — the variant's own lines right after the plain check loop.
+    const LOOP_END = 'done\n\n# ADR-0066 PC2b — settle the ensemble attempt from its ledger';
+    const precheckAt = variant.indexOf('# The contested items a conflict ends on');
+    // R4 K1, K2, L1, L2: then the run id this variant's later steps read, and
+    // every result this phase recorded with the gate, up to settle.
+    const precheck = variant.slice(precheckAt, variant.indexOf('\n\n# ADR-0066 PC2b', precheckAt) + 1);
+    ok(precheckAt > 0 && precheck.includes('"$TEXT_DIR/contested.md"') && precheck.includes('state.mjs" read --workflow-path "$ACTIVE"'), 'the contested.md check, the run-id checks and the last result read');
+    strictEqual(plain.split(LOOP_END).length - 1, 1, 'the plain check loop, then settle');
+    const rebuilt = plain.replace(LAST, () => `${para}${LAST}`).replace(APPEND, () => `${check}${APPEND}`).replace(terminal, () => `${FIRST}${indented}${rest}`)
+      .replace(LOOP_END, () => LOOP_END.replace('done\n', () => `done\n${precheck}`));
     strictEqual(variant, rebuilt);
   });
   it('the manifest renders it into exactly decide, critique and investigate, each with its conflict gate', () => {
@@ -705,9 +788,12 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
             for (const b of blocks) {
               const lines = b.text.split('\n');
               // The directories and values the agent fills in come first: the
-              // args or text directory, peer-now's peer and prompt file.
+              // args or text directory, peer-now's peer and prompt file, and a
+              // finalize's dispatch directory, synthesis verdict and confidence,
+              // and where the verb waits for convergence its convergence, with the
+              // comment saying how it is filled, and its resolving step (R4, K3).
               let at = 0;
-              while (/^(ARGS_DIR|TEXT_DIR|PEER|PROMPT_FILE)='<[^'>]+>'$/.test(lines[at] ?? '')) at++;
+              while (/^(ARGS_DIR|TEXT_DIR|DISPATCH_DIR|READ_DIR|VERDICT|CONFIDENCE|RESOLVE_VERB|PEER|PROMPT_FILE)='<[^'>]+>'$|^CONVERGED="<[^">]+>"$|^# /.test(lines[at] ?? '')) at++;
               // Contract: the agent running a block in a fresh shell — without the
               // persona's own override and cache path the block runs another
               // plugin's scripts, or none. A block nested in a list item is indented.
@@ -782,12 +868,20 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               ok(block.text.startsWith(`${TEXT_DIR_LINE}\n`), 'the block names the text directory first');
               ok(!/--summary "|SUMMARY=/.test(block.text), 'no inline summary');
               const summary = { 'summary.txt': "it's \"done\": $(touch pwned) `touch pwned2`\n" };
-              const r = await runBlock('bash', `ACTIVE='/w/active.md'\n${block.text}`, persona, { texts: summary });
-              deepStrictEqual([r.status, r.log], [0, ['checkpoint-set']], r.stderr);
-              ok(r.argv[0].includes(` --workflow-path /w/active.md --host claude --summary-file ${r.textDir}/summary.txt`), r.argv[0]);
-              deepStrictEqual([r.texts, r.sideEffects], [[['--summary-file', summary['summary.txt']]], []]);
-              const unwritten = await runBlock('bash', `ACTIVE='/w/active.md'\n${block.text}`, persona, { texts: { 'summary.txt': null } });
-              deepStrictEqual([unwritten.status, unwritten.log], [1, []], 'nothing written');
+              // R4 (C75): a fresh shell — the block finds the workflow itself,
+              // and an ACTIVE an earlier block left is not what it writes.
+              for (const shell of SHELLS) {
+                const r = await runBlock(shell, `ACTIVE='/w/stale.md'\n${block.text}`, persona, { texts: summary, active: '/w/active.md' });
+                deepStrictEqual([r.status, r.log], [0, ['find-active', 'checkpoint-set']], `${shell}: ${r.stderr}`);
+                ok(r.argv[1].includes(` --workflow-path /w/active.md --host claude --summary-file ${r.textDir}/summary.txt`), r.argv[1]);
+                deepStrictEqual([r.texts, r.sideEffects], [[['--summary-file', summary['summary.txt']]], []], shell);
+              }
+              const unwritten = await runBlock('bash', block.text, persona, { texts: { 'summary.txt': null }, active: '/w/active.md' });
+              deepStrictEqual([unwritten.status, unwritten.log], [1, ['find-active']], 'nothing written');
+              for (const [why, find] of [['no workflow found', { active: '' }], ['a failed find', { active: '', findStatus: 3 }]]) {
+                const none = await runBlock('bash', `ACTIVE='/w/stale.md'\n${block.text}`, persona, find);
+                deepStrictEqual([none.status, none.log], [find.findStatus ?? 1, ['find-active']], `${why}: nothing written`);
+              }
             });
           }
 
@@ -822,7 +916,83 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               const check = code.indexOf('grep -q \'[^[:space:]]\' "$TEXT_DIR/note.md" 2>/dev/null ||', otherwise);
               ok(check > otherwise && check < append && code.includes('--phase-label "Resume" --phase-note-file "$TEXT_DIR/note.md" \\'), code);
               ok(!/--phase-note "/.test(code), 'no inline note');
-              ok(text.includes(`   Re-entered via /${persona}:resume; drift=<clean|dirty>. <one-paragraph diff summary, or 'no changes since baseline'>\n`), 'the note scaffold names this persona\'s resume');
+              ok(text.includes(`Re-entered via /${persona}:resume; drift=<clean|dirty>. <one-paragraph diff summary, or 'no changes since baseline'>\n`), 'the note scaffold names this persona\'s resume');
+            });
+
+            // R4 (C110, C75): the read lands whole in a directory of this
+            // resume's own, its status checked; the drift report and the marker
+            // read it from there, each in a fresh shell. A shared /tmp name let
+            // a failed read leave another session's baseline for the marker.
+            it('resume read, drift report and marker, run: a checked read into the resume\'s own directory, read again by each later block in its own shell; a failed read stops, and concurrent resumes keep apart (R4)', async () => {
+              const read = shellBlocks(region(text, 'resume-read')).find((b) => b.text.includes(' read --workflow-path "$ACTIVE"'));
+              const mark = shellBlocks(region(text, 'resume-marker')).find((b) => b.text.includes('--event resumed'));
+              // engineer's drift report is an authored block after the read.
+              const drift = shellBlocks(text).find((b) => b.text.includes('DRIFT=clean'));
+              ok(read && mark, 'the read and marker blocks');
+              // The read's directory (machine data) apart from the marker's note.
+              const READ_LINE = /^READ_DIR='<[^'>]+>'$/m;
+              for (const b of [read, mark, drift].filter(Boolean)) {
+                ok(READ_LINE.test(b.text.split('\n').slice(0, 2).join('\n')), 'the block names the read\'s directory at its head');
+                ok(!b.text.includes('/tmp/'), `no shared /tmp path: ${b.text}`);
+              }
+              ok(read.text.includes('>"$READ_DIR/read.json.part" \\\n  || {') && read.text.includes('mv -f "$READ_DIR/read.json.part" "$READ_DIR/read.json" || exit 1'), 'the read is checked, and lands whole');
+              // Each block in a subshell of its own, the way separate Bash calls
+              // run them: nothing but the directory passes between them.
+              const own = (b) => `(\n${b.text.replace(TEXT_DIR_LINE, () => 'TEXT_DIR="$SHARED"').replace(READ_LINE, () => 'READ_DIR="$SHARED"')}\n)`;
+              const commit = 'git -c user.name=t -c user.email=t@t commit -q --allow-empty -m base || exit 9';
+              const script = (blocks, sep = ' || exit $?\n') => `${TEXT_DIR_LINE}\nSHARED="$TEXT_DIR"\n${commit}\n${blocks.map(own).join(sep)}\n`;
+              const baseline = (head, id = 'a') => JSON.stringify({ workflow_id: id, workflow_type: 'verb-chain', git_baseline: { branch: 'pc2a2b', head, status_digest: '' } });
+              for (const shell of SHELLS) {
+                const r = await runBlock(shell, script([read, ...(drift ? [drift] : []), mark]), persona, { active: '/w/a.md', readOutput: baseline('HEAD') });
+                deepStrictEqual([r.status, r.log], [0, ['find-active', 'read', 'find-active', 'append']], `${shell}: ${r.stderr}`);
+                ok(r.stdout.includes('workflow: /w/a.md\nbaseline: branch=pc2a2b head=HEAD status_digest=\n'), `${shell}: the read prints what it read: ${r.stdout}`);
+                if (drift) ok(r.stdout.includes('commits since baseline:'), `${shell}: the drift report read the baseline again: ${r.stdout}`);
+                ok(r.argv[3].includes(' append --workflow-path /w/a.md ') && r.argv[3].includes(' --event resumed'), r.argv[3]);
+                // A read that fails, even after printing JSON, leaves no read.json:
+                // the marker run after it stops, and appends nothing.
+                const failed = await runBlock(shell, script([read, mark], ' ; '), persona, { active: '/w/a.md', readOutput: baseline('HEAD'), readStatus: 3 });
+                deepStrictEqual([failed.status, failed.log], [1, ['find-active', 'read', 'find-active']], `${shell}: ${failed.stderr}`);
+                ok(failed.stderr.includes('state.mjs read failed for /w/a.md') && failed.stderr.includes('read.json in READ_DIR ('), failed.stderr);
+              }
+              // A read that is not JSON stops the read block itself.
+              const garbled = await runBlock('bash', script([read]), persona, { active: '/w/a.md', readOutput: 'not json' });
+              deepStrictEqual([garbled.status, garbled.log], [1, ['find-active', 'read']], garbled.stderr);
+              // Two resumes at once, each with its own directory: each marker
+              // judges its own baseline (an unavailable one appends nothing).
+              const [one, two] = await Promise.all([
+                runBlock('bash', script([read, mark]), persona, { active: '/w/one.md', readOutput: baseline('HEAD', 'one') }),
+                runBlock('bash', script([read, mark]), persona, { active: '/w/two.md', readOutput: baseline('0000000000000000000000000000000000000000', 'two') }),
+              ]);
+              deepStrictEqual([one.status, one.log, two.status, two.log], [0, ['find-active', 'read', 'find-active', 'append'], 0, ['find-active', 'read', 'find-active']], `${one.stderr}${two.stderr}`);
+              ok(one.argv[3].includes(' --workflow-path /w/one.md ') && two.stdout.includes('resume marker NOT appended'), `${one.argv[3]} ${two.stdout}`);
+              // The read of another workflow (the branch's workflow changed
+              // between the blocks) gives the marker no baseline: it stops.
+              const other = await runBlock('bash', script([read, mark]), persona, { active: '/w/a.md', readOutput: baseline('HEAD', 'b') });
+              deepStrictEqual([other.status, other.log], [1, ['find-active', 'read', 'find-active']], other.stderr);
+              ok(other.stderr.includes('the read of another workflow than /w/a.md'), other.stderr);
+              // A read run again in the same directory that fails leaves no
+              // earlier read.json for the marker.
+              const retry = `${TEXT_DIR_LINE}\nSHARED="$TEXT_DIR"\n${commit}\n${own(read)}\n${own(read).replace('(\n', () => '(\nSTUB_READ_RC=3; export STUB_READ_RC\n')} ; ${own(mark)}\n`;
+              const stale = await runBlock('bash', retry, persona, { active: '/w/a.md', readOutput: baseline('HEAD') });
+              deepStrictEqual([stale.status, stale.log], [1, ['find-active', 'read', 'find-active', 'read', 'find-active']], stale.stderr);
+              ok(stale.stderr.includes('read.json in READ_DIR ('), stale.stderr);
+              // So does a retry whose lookup fails before the read: the block
+              // empties read.json first, removing nothing (R4 G5; H2: no rm runs
+              // in a runbook block).
+              ok(!/\brm\b/.test(read.text), 'the read removes nothing');
+              for (const shell of SHELLS) {
+                const lost = `${TEXT_DIR_LINE}\nSHARED="$TEXT_DIR"\n${commit}\n${own(read)}\n${own(read).replace('(\n', () => '(\nSTUB_ACTIVE=; export STUB_ACTIVE\n')} ; ${own(mark)}\n`;
+                const r = await runBlock(shell, lost, persona, { active: '/w/a.md', readOutput: baseline('HEAD') });
+                deepStrictEqual([r.status, r.log], [1, ['find-active', 'read', 'find-active', 'find-active']], `${shell}: ${r.stderr}`);
+                ok(r.stderr.includes('read.json in READ_DIR ('), `${shell}: ${r.stderr}`);
+              }
+              // A READ_DIR left unfilled stops the read before anything runs,
+              // and says so (R4 G6).
+              for (const shell of SHELLS) {
+                const unfilled = await runBlock(shell, `${TEXT_DIR_LINE}\n${commit}\n(\n${read.text}\n)\n`, persona, { active: '/w/a.md', readOutput: baseline('HEAD') });
+                deepStrictEqual([unfilled.status, unfilled.log], [1, []], `${shell}: ${unfilled.stderr}`);
+                ok(unfilled.stderr.includes('READ_DIR (<') && unfilled.stderr.includes('set it to the directory step 1 created'), `${shell}: ${unfilled.stderr}`);
+              }
             });
 
             it('resume takes no argument or archive with an optional workflow id, and an argument starting with archive is routed to archive mode', () => {
@@ -895,11 +1065,24 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               // written to prompt.xml, and no path reaches the block.
               ok(block.text.startsWith(`${TEXT_DIR_LINE}\n`), 'the block names the text directory first');
               deepStrictEqual(block.text.match(/^PROMPT_FILE=.*$/gm), ['PROMPT_FILE="$TEXT_DIR/prompt.xml"'], 'the prompt is the agent\'s prompt.xml, never a path the agent pastes');
-              ok(squash(between(text, '<!-- pipeline:begin peer-now-dispatch -->', '```bash\nTEXT_DIR=')).includes('write the prompt there as `prompt.xml`: the `--prompt-text`, or the text of the `--prompt-file`, which you read with your file-reading tool.'), 'the step writes either form to prompt.xml');
+              ok(squash(region(text, 'peer-now-dispatch').split('```bash\nTEXT_DIR=')[0]).includes('write the prompt there as `prompt.xml`: the `--prompt-text`, or the text of the `--prompt-file`, which you read with your file-reading tool.'), 'the step writes either form to prompt.xml');
+              // R4 (C75): the runner's result goes beside the prompt, where the
+              // note step finds it in a shell of its own.
+              deepStrictEqual([block.text.match(/^RUN_JSON=.*$/gm), block.text.match(/^RUN_ERR=.*$/gm)], [['RUN_JSON="$TEXT_DIR/prompt.xml.run.json"'], ['RUN_ERR="$TEXT_DIR/prompt.xml.err"']], 'the result and its stderr in the dispatch\'s directory');
               for (const [how, content] of [['left unwritten', null], ['blank', ' \n\n']]) {
                 const stopped = await runBlock('bash', block.text, persona, { texts: { 'prompt.xml': content } });
                 deepStrictEqual([stopped.status, stopped.log], [1, []], `a prompt ${how}: nothing dispatched`);
                 ok(stopped.stderr.includes('prompt.xml in TEXT_DIR (') && stopped.stderr.includes('is missing or blank'), stopped.stderr);
+              }
+              // R4 J3: the runner's exit status is the block's own, so a failed
+              // consultation stops the agent where it sees it, before the note
+              // (the runner here a shell function, which a block's `node` finds
+              // before the stub on PATH).
+              const failing = 'node() { if [ "$2" = run ]; then printf \'{"ok":false,"run_id":"x","error_kind":"peer_cli_not_found"}\\n\'; return 3; fi; command node "$@"; }\n';
+              for (const shell of SHELLS) {
+                const failed = await runBlock(shell, `${failing}${block.text}`, persona, { texts: { 'prompt.xml': 'hi\n' } });
+                strictEqual(failed.status, 3, `${shell}: ${failed.stderr}`);
+                ok(failed.stderr.includes('failed (exit 3, peer_cli_not_found)') && failed.stderr.includes('No note is appended for it.'), `${shell}: ${failed.stderr}`);
               }
             });
 
@@ -911,14 +1094,52 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               ok(branches.includes(`/${persona}:resume`), 'the duplicate branch points at this persona\'s resume');
               const [block] = shellBlocks(region(text, 'peer-now-note'));
               ok(block, 'the note block');
-              const setup = ["ACTIVE='/w/active.md'", "PEER='codex'", "RUN_ID='peer-now-x'", "HANDLE_PATH='/h/handle.json'", "printf 'the peer said hi' > response", 'STDOUT_PATH=response'].join('\n');
-              const r = await runBlock('bash', `${setup}\n${block.text}`, persona, {});
-              strictEqual(r.status, 0, r.stderr);
-              deepStrictEqual(r.log, ['append'], 'one append');
-              for (const part of [' --workflow-path /w/active.md ', ' --phase-label [Peer] codex consultation ']) ok(r.argv[0].includes(part), `${part}: ${r.argv[0]}`);
-              ok(r.argv[0].trimEnd().endsWith(' --event updated'), r.argv[0]);
-              ok(!/ --(current-phase|next-action|verb|clear-next-step) /.test(r.argv[0]), `the note leaves the phase alone: ${r.argv[0]}`);
-              strictEqual(r.note, 'peer: codex\nrun_id: peer-now-x\nhandle: /h/handle.json\nprompt-mode: verbatim\n\n### Response\n\nthe peer said hi');
+              const DISPATCH_LINE = "DISPATCH_DIR='<the directory the dispatch ran with>'";
+              ok(block.text.startsWith(`${DISPATCH_LINE}\n`), 'the block names the dispatch\'s directory first');
+              // The dispatch's directory, filled as the agent fills it: here the
+              // directory the test writes the run's result into.
+              const note = `${TEXT_DIR_LINE}\n${block.text.replace(DISPATCH_LINE, () => 'DISPATCH_DIR="$TEXT_DIR"')}`;
+              // R4 (C75): a fresh shell — the run comes from the result the
+              // runner wrote in the dispatch's directory, and its peer from the
+              // run's handle; the workflow is found again. Values an earlier
+              // block left in the shell are not what it records.
+              const stale = ["ACTIVE='/w/stale.md'", "PEER='claude'", "RUN_ID='peer-now-stale'", "HANDLE_PATH='/h/stale.json'", 'STDOUT_PATH=/nonexistent'].join('\n');
+              const run = (fields) => ({
+                'prompt.xml.run.json': JSON.stringify({ ok: true, run_id: 'peer-now-x', handle_path: 'agentic text.x/handle.json', stdout_path: 'agentic text.x/stdout.log', ...fields }),
+                'handle.json': JSON.stringify({ run_id: 'peer-now-x', peer_host: 'codex' }),
+                'stdout.log': 'the peer said hi',
+              });
+              for (const shell of SHELLS) {
+                const r = await runBlock(shell, `${stale}\n${note}`, persona, { active: '/w/active.md', texts: run({}) });
+                strictEqual(r.status, 0, `${shell}: ${r.stderr}`);
+                deepStrictEqual(r.log, ['find-active', 'append'], `${shell}: one append`);
+                for (const part of [' --workflow-path /w/active.md ', ' --phase-label [Peer] codex consultation ']) ok(r.argv[1].includes(part), `${shell}: ${part}: ${r.argv[1]}`);
+                ok(r.argv[1].trimEnd().endsWith(' --event updated'), r.argv[1]);
+                ok(!/ --(current-phase|next-action|verb|clear-next-step) /.test(r.argv[1]), `the note leaves the phase alone: ${r.argv[1]}`);
+                strictEqual(r.note, 'peer: codex\nrun_id: peer-now-x\nhandle: agentic text.x/handle.json\nprompt-mode: verbatim\n\n### Response\n\nthe peer said hi', shell);
+              }
+              // No result, a result naming no run, or a handle it cannot read:
+              // nothing is written.
+              for (const [why, texts] of [['no result', { ...run({}), 'prompt.xml.run.json': null }], ['a result still empty', { ...run({}), 'prompt.xml.run.json': '' }], ['no run id', run({ run_id: '' })], ['no handle', { ...run({}), 'handle.json': null }]]) {
+                const r = await runBlock('bash', `${stale}\n${note}`, persona, { active: '/w/active.md', texts });
+                deepStrictEqual([r.status, r.log], [1, ['find-active']], `${why}: ${r.stderr}`);
+              }
+              // R4 J3: a consultation that failed gets no note, whatever paths its
+              // result names: only ok true, read from the result, lets it through.
+              for (const shell of SHELLS) {
+                for (const [why, fields, says] of [
+                  ['ok false', { ok: false, status: 'failed', error_kind: 'peer_cli_not_found' }, 'did not succeed (peer_cli_not_found;'],
+                  ['ok missing', { ok: undefined, status: 'cancelled' }, 'did not succeed (cancelled;'],
+                  ['ok the string true', { ok: 'true' }, 'did not succeed (not ok;'],
+                ]) {
+                  const r = await runBlock(shell, `${stale}\n${note}`, persona, { active: '/w/active.md', texts: run(fields) });
+                  deepStrictEqual([r.status, r.log], [1, ['find-active']], `${shell}, ${why}: ${r.stderr}`);
+                  ok(r.stderr.includes(says) && r.stderr.includes('no note is appended for a failed consultation'), `${shell}, ${why}: ${r.stderr}`);
+                  strictEqual(r.note, null, `${shell}, ${why}: no note`);
+                }
+              }
+              const none = await runBlock('bash', `${stale}\n${note}`, persona, { active: '', texts: run({}) });
+              deepStrictEqual([none.status, none.log], [1, ['find-active']], `no workflow found: ${none.stderr}`);
             });
           }
 
@@ -1034,7 +1255,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
             });
 
             it('start Phase 0 runs autopilot-preflight on $ACTIVE after the find guard and before the baseline check or any write; a refusal stops the block (PC2b DD5)', async () => {
-              const block = blockWith(/find-active --repo-root "\$REPO_ROOT"\)"$/m);
+              const block = blockWith(/^[ \t]+find-active --repo-root "\$REPO_ROOT"\)"$/m);
               // Contract: the agent running /start under autopilot — a preflight that
               // does not stop the block, or runs after a write, lets a step cross an owner gate.
               ok(/node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" autopilot-preflight --workflow-path "\$ACTIVE" --host "\$\{AGENTIC_HOST:-claude\}" \|\| exit \$\?$/m.test(logical(block.text)), logical(block.text));
@@ -1199,26 +1420,33 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
                 ['', 3, null],
                 ['{"workflow_type":"start"}', 3, null],
               ];
+              // R4 (C75): a fresh shell — the block finds the workflow itself; an
+              // ACTIVE an earlier block left is not the one it reads or writes.
+              const stale = "ACTIVE='/w/stale.md'\n";
               for (const [readOutput, readStatus, expected] of cases) {
-                const r = await runBlock('bash', `ACTIVE='/w/active.md'\n${block}`, persona, { readOutput, readStatus, after: '\nprintf \'%s\' "$WF_TYPE" > out\n' });
+                const r = await runBlock('bash', `${stale}${block}`, persona, { active: '/w/active.md', readOutput, readStatus, after: '\nprintf \'%s\' "$WF_TYPE" > out\n' });
                 const what = `${JSON.stringify(readOutput)} (exit ${readStatus})`;
-                ok(r.argv[0].includes(' --workflow-path /w/active.md'), 'the workflow Phase 0 found');
+                ok(r.argv[1].includes(' --workflow-path /w/active.md'), 'the workflow the block found');
                 if (expected === null) {
-                  deepStrictEqual([r.status, r.out, r.log], [3, null, ['read']], `${what}: stopped with the read's status`);
+                  deepStrictEqual([r.status, r.out, r.log], [3, null, ['find-active', 'read']], `${what}: stopped with the read's status`);
                   continue;
                 }
                 if (expected !== 'start') {
-                  deepStrictEqual([r.status, r.out, r.log], [1, null, ['read']], `${what}: refused, only the read`);
+                  deepStrictEqual([r.status, r.out, r.log], [1, null, ['find-active', 'read']], `${what}: refused, only the read`);
                   ok(r.stderr.includes(`workflow_type=${expected}, not start: /${persona}:start does not take a single-verb workflow into its lifecycle`) && r.stderr.includes(`/${persona}:resume archive`), r.stderr);
                   continue;
                 }
                 strictEqual(r.out, 'start', what);
-                deepStrictEqual(r.log, ['read', 'append'], 'a start workflow: the read, then the clear');
-                ok(r.argv[1].includes(' --workflow-path /w/active.md ') && r.argv[1].includes(' --clear-next-step true '), r.argv[1]);
-                ok(!/--(current-phase|next-action|verb|phase-label|phase-note) /.test(r.argv[1]), `the position is kept: ${r.argv[1]}`);
+                deepStrictEqual(r.log, ['find-active', 'read', 'append'], 'a start workflow: the find, the read, then the clear');
+                ok(r.argv[2].includes(' --workflow-path /w/active.md ') && r.argv[2].includes(' --clear-next-step true '), r.argv[2]);
+                ok(!/--(current-phase|next-action|verb|phase-label|phase-note) /.test(r.argv[2]), `the position is kept: ${r.argv[2]}`);
               }
-              const failed = await runBlock('bash', `ACTIVE='/w/active.md'\n${block}`, persona, { readOutput: '{"workflow_type":"start"}', failAppend: true, after: '\nprintf ran > out\n' });
+              const failed = await runBlock('bash', `${stale}${block}`, persona, { active: '/w/active.md', readOutput: '{"workflow_type":"start"}', failAppend: true, after: '\nprintf ran > out\n' });
               deepStrictEqual([failed.status, failed.out], [7, null], 'a failed clear stops the block with its status');
+              for (const [why, find] of [['no workflow found', { active: '' }], ['a failed find', { active: '', findStatus: 3 }]]) {
+                const none = await runBlock('bash', `${stale}${block}`, persona, { ...find, readOutput: '{"workflow_type":"start"}', after: '\nprintf ran > out\n' });
+                deepStrictEqual([none.status, none.out, none.log], [find.findStatus ?? 1, null, ['find-active']], `${why}: nothing read or written`);
+              }
             });
 
             // The lifecycle's terminal write is finish-verb kind commit (the owner
@@ -1236,26 +1464,33 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
                 : [[null, 'finish-verb']];
               for (const [value, last] of cases) {
                 const script = value === null ? block : converged(block, persona, 'start', value);
-                const r = await runBlock('bash', `ACTIVE='/w/active.md'\n${script}`, persona, {});
+                // R4 (C75): a fresh shell — the block finds the workflow itself.
+                const r = await runBlock('bash', `ACTIVE='/w/stale.md'\n${script}`, persona, { active: '/w/active.md' });
                 const label = `CONVERGED ${value === null ? 'as committed' : value === UNSET ? 'unset' : JSON.stringify(value)}`;
                 strictEqual(r.status, 0, `${label}: ${r.stderr}`);
-                deepStrictEqual(r.log, [last], label);
-                ok(r.argv[0].includes(' --workflow-path /w/active.md '), `${label}: the workflow Phase 0 found`);
+                deepStrictEqual(r.log, ['find-active', last], label);
+                ok(r.argv[1].includes(' --workflow-path /w/active.md '), `${label}: the workflow the block found`);
                 // ADR-0059, amendment of 2026-10-10: the next action is the file
                 // the agent wrote, whichever write it reaches.
-                ok(r.argv[0].includes(` --next-action-file ${r.textDir}/next-action.txt `) && !/ --next-action /.test(r.argv[0]), `${label}: the next action's file: ${r.argv[0]}`);
+                ok(r.argv[1].includes(` --next-action-file ${r.textDir}/next-action.txt `) && !/ --next-action /.test(r.argv[1]), `${label}: the next action's file: ${r.argv[1]}`);
                 deepStrictEqual(r.texts, [['--next-action-file', 'the next action\n']], label);
                 if (last === 'finish-verb') {
-                  ok(r.argv[0].trimEnd().endsWith(' --next-step-kind commit --next-step-confidence <HIGH|MEDIUM|LOW>'), `${label}: kind commit: ${r.argv[0]}`);
+                  ok(r.argv[1].trimEnd().endsWith(' --next-step-kind commit --next-step-confidence <HIGH|MEDIUM|LOW>'), `${label}: kind commit: ${r.argv[1]}`);
                 } else {
-                  for (const part of [' --next-step-kind verb --next-step-verb <refine|decide|investigate> ', ' --clear-terminal-marker true ', ' --event updated']) ok(r.argv[0].includes(part), `${label}: ${part}: ${r.argv[0]}`);
-                  ok(!/ --(current-phase|phase-note|verb) /.test(r.argv[0]), `${label}: the position is kept: ${r.argv[0]}`);
+                  for (const part of [' --next-step-kind verb --next-step-verb <refine|decide|investigate> ', ' --clear-terminal-marker true ', ' --event updated']) ok(r.argv[1].includes(part), `${label}: ${part}: ${r.argv[1]}`);
+                  ok(!/ --(current-phase|phase-note|verb) /.test(r.argv[1]), `${label}: the position is kept: ${r.argv[1]}`);
                   ok(/PAUSED/.test(r.stderr), `${label}: the pause is reported`);
                 }
               }
               // A next action the agent did not write stops the block before any write.
-              const unwritten = await runBlock('bash', `ACTIVE='/w/active.md'\n${waits ? converged(block, persona, 'start', 'yes') : block}`, persona, { texts: { 'next-action.txt': null } });
-              deepStrictEqual([unwritten.status, unwritten.log], [1, []], unwritten.stderr);
+              const closing = waits ? converged(block, persona, 'start', 'yes') : block;
+              const unwritten = await runBlock('bash', closing, persona, { active: '/w/active.md', texts: { 'next-action.txt': null } });
+              deepStrictEqual([unwritten.status, unwritten.log], [1, ['find-active']], unwritten.stderr);
+              // No workflow found, or a failed find: nothing written.
+              for (const [why, find] of [['no workflow found', { active: '' }], ['a failed find', { active: '', findStatus: 3 }]]) {
+                const none = await runBlock('bash', `ACTIVE='/w/stale.md'\n${closing}`, persona, find);
+                deepStrictEqual([none.status, none.log], [find.findStatus ?? 1, ['find-active']], `${why}: ${none.stderr}`);
+              }
               // Contract: the agent writing next-action.txt — its scaffold holds the
               // lifecycle's declared default, which the footer shows.
               strictEqual(text.split(`\n   \`\`\`text\n   ${declaration(persona).verbs.start.next_action}\n   \`\`\`\n`).length - 1, 1, 'the declared next action, in the next-action.txt scaffold');
@@ -1387,7 +1622,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
             };
 
             it('Phase 0 stops on a detached HEAD before it finds the workflow into $ACTIVE, and exits on a failed find', () => {
-              const block = blockWith(/find-active --repo-root "\$REPO_ROOT"\)"$/m);
+              const block = blockWith(/^[ \t]+find-active --repo-root "\$REPO_ROOT"\)"$/m);
               const lines = block.text.split('\n');
               // Contract: the agent running Phase 0 — workflows are keyed by branch,
               // so the block stops on a detached HEAD before find-active, and stops
@@ -1400,7 +1635,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
             });
 
             it('Phase 0 runs autopilot-preflight on $ACTIVE right after the find guard, before any write, and a refusal stops the block (PC2b DD5)', async () => {
-              const block = blockWith(/find-active --repo-root "\$REPO_ROOT"\)"$/m);
+              const block = blockWith(/^[ \t]+find-active --repo-root "\$REPO_ROOT"\)"$/m);
               // Contract: the agent running the verb under autopilot — a preflight
               // that does not stop the block, or runs after a write, lets a step
               // cross an owner gate or write before the refusal.
@@ -1424,7 +1659,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
             });
 
             it('Phase 0, run: $ACTIVE holds what find-active printed, and a failed find stops the block with its status', async () => {
-              const block = blockWith(/find-active --repo-root "\$REPO_ROOT"\)"$/m).text;
+              const block = blockWith(/^[ \t]+find-active --repo-root "\$REPO_ROOT"\)"$/m).text;
               const after = '\nprintf \'%s\' "$ACTIVE" > out\n';
               const found = await runBlock('bash', block, persona, { active: '/w/active.md', after });
               strictEqual(found.status, 0, found.stderr);
@@ -1464,10 +1699,12 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               ok(find[0] < createAt[0] && createAt[0] < resumeAt[0], 'find-active, bootstrap, resume in that order');
             });
 
-            // Contract: the agent running the dispatch and finalize — settle before
-            // the note, finish-verb before settle, or a write that does not stop
-            // the block closes the workflow with its attempt unsettled.
-            if (VERB_DESTS.includes(dest)) it('the dispatch, the note, settle and finish-verb run in that order on $ACTIVE; each write stops the block when it fails (PC2b DD6/DD7)', () => {
+            // Contract: the agent running the dispatch and finalize — the note
+            // before settle writes before the one judge of the run can refuse
+            // (R4 G1), finish-verb before settle closes the workflow with its
+            // attempt unsettled, and a write that does not stop the block does
+            // either.
+            if (VERB_DESTS.includes(dest)) it('the dispatch, settle, the note and finish-verb run in that order on $ACTIVE; each write stops the block when it fails (PC2b DD6/DD7, R4 G1)', () => {
               const run = shellSites(text, /peer-runner\.mjs" run \\/);
               const finalize = blockWith(/peer-runner\.mjs" settle \\/);
               const code = logical(finalize.text);
@@ -1476,14 +1713,14 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               const note = at(/^node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" append --workflow-path "\$ACTIVE" [^\n]*--phase-note-file "\$TEXT_DIR\/note\.md" [^\n]*--next-action-file "\$TEXT_DIR\/next-action\.txt" --event updated \|\| exit \$\?$/m);
               const settle = at(new RegExp(`^node "\\$CLAUDE_PLUGIN_ROOT/scripts/peer-runner\\.mjs" settle --repo-root "\\$REPO_ROOT" --workflow-path "\\$ACTIVE" --host "\\$\\{AGENTIC_HOST:-claude\\}" --phase '${verb}' --run-id "\\$RUN_ID" --verdict "\\$VERDICT" --summary-file "\\$TEXT_DIR/summary\\.txt" \\|\\| exit \\$\\?$`, 'm'));
               // Indented inside the convergence check in the convergent variant.
-              const terminal = at(/^[ \t]*node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" finish-verb --workflow-path "\$ACTIVE" [^\n]*--next-action-file "\$TEXT_DIR\/next-action\.txt" --next-step-kind verb --next-step-verb '[a-z]+' --next-step-confidence "<HIGH\|MEDIUM\|LOW>" \|\| exit \$\?$/m);
+              const terminal = at(/^[ \t]*node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" finish-verb --workflow-path "\$ACTIVE" [^\n]*--next-action-file "\$TEXT_DIR\/next-action\.txt" --next-step-kind verb --next-step-verb '[a-z]+' --next-step-confidence "\$CONFIDENCE" \|\| exit \$\?$/m);
               strictEqual(run.length, 1, 'one dispatch');
               ok(run[0] < shellSites(text, /^for TEXT_FILE in note\.md summary\.txt next-action\.txt; do$/m)[0], 'the dispatch precedes the finalize block');
-              ok(repo < note && note < settle && settle < terminal, 'REPO_ROOT, append, settle, finish-verb in that order');
+              ok(repo < settle && settle < note && note < terminal, 'REPO_ROOT, settle, append, finish-verb in that order');
               strictEqual(shellSites(text, /state\.mjs" (set-terminal|ensemble-commit)\b/).length, 0, 'no set-terminal or ensemble-commit runs beside them');
               // Contract: the agent ending on an owner gate runs this commented form
               // in place of the typical finish — its flags record the gate in one write.
-              ok(/\n# node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" finish-verb \\\n#   --workflow-path "\$ACTIVE" --host "\$\{AGENTIC_HOST:-claude\}" \\\n#   --next-action-file "\$TEXT_DIR\/next-action\.txt" \\\n#   --next-step-kind owner-decision --next-step-confidence "<HIGH\|MEDIUM\|LOW>" \\\n#   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' \|\| exit \$\?\n```$/.test(finalize.text + '\n```'), 'the commented owner-decision form ends the block');
+              ok(/\n# node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" finish-verb \\\n#   --workflow-path "\$ACTIVE" --host "\$\{AGENTIC_HOST:-claude\}" \\\n#   --next-action-file "\$TEXT_DIR\/next-action\.txt" \\\n#   --next-step-kind owner-decision --next-step-confidence "\$CONFIDENCE" \\\n#   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' \|\| exit \$\?\n```$/.test(finalize.text + '\n```'), 'the commented owner-decision form ends the block');
               // Contract: the --owner-gate and --owner-gate-anchor values that form
               // takes, which state.mjs validates — the gates this verb may end with,
               // each with its anchor, between the last-write paragraph and the block.
@@ -1500,7 +1737,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
             // gate with the run id, branching on the verdict the settle recorded;
             // without it the verb closes over a conflict, or proposes a round for a
             // run that recorded none.
-            if (Object.hasOwn(CONFLICT_GATES, verb)) it('the finalize, run: a recorded conflict writes the task file, then the conflict gate with the run id; a disagreeing verdict stops before the last write (ADR-0067 Decision 8)', async () => {
+            if (Object.hasOwn(CONFLICT_GATES, verb)) it('the finalize, run: a recorded conflict writes the task file, then the note and the conflict gate with the run id; a disagreeing verdict, or a task file refused, stops before the note, and the retry appends it once (ADR-0067 Decision 8, R4 J2, J4)', async () => {
               const block = converged(blockWith(/peer-runner\.mjs" settle \\/).text, persona, verb);
               const gate = CONFLICT_GATES[verb];
               // The contested items come from the peers' positions: they reach
@@ -1508,20 +1745,22 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               // where a line reading as a delimiter would end a heredoc and run the
               // rest as commands.
               ok(!/<<\s*'?CONTESTED|<the contested items/.test(block), 'the block holds no contested items of its own');
-              const itemsDir = mkdtempSync(join(tmpdir(), 'contested.'));
-              const itemsFile = join(itemsDir, 'items.md');
-              writeFileSync(itemsFile, 'C1: keep "A" or $(touch pwned) `B`\nCONTESTED_ITEMS\nPHASE_NOTE\n');
-              const run = (verdict, opts, file = itemsFile) => runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='r'; VERDICT='${verdict}'; SUMMARY='s'${file === null ? '' : `; CONTESTED_FILE='${file}'`}\n${block}`, persona, { note: 'n', ...opts });
+              // R4: the contested items are contested.md in the text directory,
+              // and the run id the dispatch's result; nothing from the shell.
+              const CONTESTED = 'C1: keep "A" or $(touch pwned) `B`\nCONTESTED_ITEMS\nPHASE_NOTE\n';
+              const CONFLICT_LOG = ['find-active', 'read', 'settle', 'ensemble-verdict', 'consensus-task', 'append', 'finish-verb'];
+              const run = (verdict, opts, items = CONTESTED) => runBlock('bash', `${STALE}${finalizeAs(block, { verdict })}`, persona, { note: 'n', active: FOUND, ...opts, texts: { ...runResult(), 'contested.md': items } });
               const conflict = await run('conflict', { recorded: 'conflict' });
               strictEqual(conflict.status, 0, conflict.stderr);
-              deepStrictEqual(conflict.log, ['append', 'settle', 'ensemble-verdict', 'consensus-task', 'finish-verb']);
-              ok(conflict.argv[2].includes(' ensemble-verdict --workflow-path /w/active.md --run-id r'), conflict.argv[2]);
-              ok(conflict.argv[3].includes(` consensus-task --workflow-path /w/active.md --host claude --run-id r --text-file ${itemsFile}`), `the contested items reach consensus-task as the file the agent wrote: ${conflict.argv[3]}`);
+              deepStrictEqual(conflict.log, CONFLICT_LOG);
+              ok(conflict.argv[conflict.log.indexOf('ensemble-verdict')].includes(' ensemble-verdict --workflow-path /w/active.md --run-id r'), conflict.argv.join('\n'));
+              ok(conflict.argv[conflict.log.indexOf('consensus-task')].includes(` consensus-task --workflow-path /w/active.md --host claude --run-id r --text-file ${conflict.textDir}/contested.md`), `the contested items reach consensus-task as the file the agent wrote: ${conflict.argv[3]}`);
+              deepStrictEqual(conflict.sideEffects, [], 'nothing in the contested items ran');
               for (const part of [
                 ` --next-action Owner decision, after a bounded consensus round: ${PROPOSED_ROUND} `,
-                ' --next-step-kind owner-decision --next-step-confidence <HIGH|MEDIUM|LOW> ',
+                ' --next-step-kind owner-decision --next-step-confidence HIGH ',
                 ` --owner-gate ${gate} --owner-gate-anchor ensemble-synthesis --owner-gate-run-id r`,
-              ]) ok(conflict.argv[4].includes(part), `${part}: ${conflict.argv[4]}`);
+              ]) ok(conflict.argv[conflict.log.indexOf('finish-verb')].includes(part), `${part}: ${conflict.argv.join('\n')}`);
               ok(conflict.stderr.includes(`→ Proposed, for the owner to run before deciding: ${PROPOSED_ROUND}`), conflict.stderr);
               // Every other recorded verdict, and none, takes the typical last write.
               for (const recorded of ['', 'agreed', 'concerns', 'failed', 'degraded']) {
@@ -1529,26 +1768,40 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
                 deepStrictEqual([typical.status, typical.log], [0, typicalLog(verb)], `recorded ${recorded || 'nothing'}: the typical last write`);
                 ok(!typical.argv.some((a) => a.includes('--owner-gate')), 'no gate');
               }
-              // The recorded verdict and VERDICT disagree: nothing more is written,
-              // and the one recovery named is the block again with the recorded
-              // verdict, whose conflict branch writes the task file before the gate
-              // (a gated finish-verb run by itself would leave no task file).
-              for (const [verdict, recorded] of [['concerns', 'conflict'], ['conflict', 'failed'], ['conflict', '']]) {
-                const mismatch = await run(verdict, { recorded });
-                deepStrictEqual([mismatch.status, mismatch.log], [1, ['append', 'settle', 'ensemble-verdict']], `VERDICT ${verdict}, recorded ${recorded || 'nothing'}`);
-                ok(mismatch.stderr.includes(`✗ The synthesis verdict is ${verdict}, but run r is recorded with ${recorded || 'no verdict'}`), mismatch.stderr);
-                ok(mismatch.stderr.includes('Set VERDICT to the recorded verdict (and CONTESTED_FILE when that is conflict) and run this block again'), mismatch.stderr);
-                ok(mismatch.stderr.includes('consensus-task first on a conflict'), mismatch.stderr);
-                ok(!/the matching last write by itself/.test(mismatch.stderr), mismatch.stderr);
-                const again = await run(recorded === 'conflict' ? 'conflict' : recorded || 'agreed', { recorded });
-                deepStrictEqual([again.status, again.log], [0, recorded === 'conflict' ? ['append', 'settle', 'ensemble-verdict', 'consensus-task', 'finish-verb'] : typicalLog(verb)], `the recovery for recorded ${recorded || 'nothing'}`);
+              // The recorded verdict and VERDICT disagree: the settle is the only
+              // write, before the note (R4 J2, J4: a retry appends the note once,
+              // and never a note stating a verdict the settle refused), and the
+              // message names a value the agent can set: the recorded verdict, or,
+              // for a conflict with no run named, the run's directory.
+              for (const [verdict, recorded, runDir, says, next] of [
+                ['concerns', 'conflict', true, 'Run r is recorded with the verdict conflict (an earlier run of this block settled it), but VERDICT is concerns: a recorded conflict ends on its gate. Set VERDICT to conflict, write contested.md, and run this block again with the same DISPATCH_DIR.', 'conflict'],
+                ['conflict', 'failed', true, 'VERDICT is conflict, but run r is recorded with failed: a consensus round needs a recorded conflict. Set VERDICT to failed, rewrite the synthesis heading of note.md to that verdict, and run this block again', 'failed'],
+                ['conflict', 'degraded', true, 'VERDICT is conflict, but run r is recorded with degraded: a consensus round needs a recorded conflict. Set VERDICT to degraded, rewrite the synthesis heading of note.md to that verdict, and run this block again', 'degraded'],
+                ['conflict', '', false, 'VERDICT is conflict, but DISPATCH_DIR names no run, so no conflict is recorded for a consensus round. Set DISPATCH_DIR to the directory the dispatch block ran with, or to the run\'s ledger directory when that is gone', null],
+              ]) {
+                const how = runDir ? { verdict } : { verdict, launched: false };
+                const mismatch = await runBlock('bash', `${STALE}${finalizeAs(block, how)}`, persona, { note: 'n', active: FOUND, recorded, texts: { ...runResult(), 'contested.md': CONTESTED } });
+                deepStrictEqual([mismatch.status, mismatch.log], [1, ['find-active', 'read', 'settle', 'ensemble-verdict']], `VERDICT ${verdict}, recorded ${recorded || 'nothing'}: ${mismatch.stderr}`);
+                ok(mismatch.stderr.includes(`✗ ${says}`), mismatch.stderr);
+                strictEqual(mismatch.note, null, 'no phase note');
+                if (next === null) continue;
+                const again = await run(next, { recorded });
+                deepStrictEqual([again.status, again.log], [0, recorded === 'conflict' ? CONFLICT_LOG : typicalLog(verb)], `the recovery for recorded ${recorded}`);
               }
-              const unnamed = await run('conflict', { recorded: 'conflict' }, null);
-              deepStrictEqual([unnamed.status, unnamed.log], [1, ['append', 'settle', 'ensemble-verdict']], 'no contested-items file, no task file and no gate');
-              ok(unnamed.stderr.includes('✗ CONTESTED_FILE names no file of contested items; the gate was not recorded.'), unnamed.stderr);
+              // A conflict without its contested items stops before any write
+              // (R4: checked with the other texts), not after the settle.
+              for (const [how, items] of [['left unwritten', null], ['blank', ' \n\n'], ['a BOM only', '\uFEFF\n']]) {
+                const unnamed = await run('conflict', { recorded: 'conflict' }, items);
+                deepStrictEqual([unnamed.status, unnamed.log], [1, ['find-active']], `contested.md ${how}: nothing written`);
+                ok(unnamed.stderr.includes('✗ contested.md in TEXT_DIR (') && unnamed.stderr.includes('a conflict needs the contested items'), unnamed.stderr);
+              }
+              // A task file refused: no note and no gate, and the message names
+              // the retry, which (its settle recording nothing more) appends the
+              // note once (R4 J4).
               const refusedTask = await run('conflict', { recorded: 'conflict', taskStatus: 3 });
-              deepStrictEqual([refusedTask.status, refusedTask.log], [3, ['append', 'settle', 'ensemble-verdict', 'consensus-task']], 'a refused task file records no gate');
-              rmSync(itemsDir, { recursive: true, force: true });
+              deepStrictEqual([refusedTask.status, refusedTask.log], [1, ['find-active', 'read', 'settle', 'ensemble-verdict', 'consensus-task']], 'a refused task file records no note and no gate');
+              strictEqual(refusedTask.note, null, 'no phase note');
+              ok(refusedTask.stderr.includes('✗ The consensus task file for run r was not written; the phase note and the gate were not recorded. Run this block again with the same TEXT_DIR and DISPATCH_DIR'), refusedTask.stderr);
             });
 
             // Contract: compose, frame and refine never propose a consensus round —
@@ -1560,20 +1813,454 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               }
               const region = text.slice(text.indexOf(`<!-- pipeline:begin ${verb}-finalize`), text.indexOf(`<!-- pipeline:end ${verb}-finalize`));
               ok(region.length > 0 && !/consensus round|peer-conflict/.test(region), `${verb}'s finalize region proposes no consensus round`);
-              const conflict = await runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='r'; VERDICT='conflict'; SUMMARY='s'\n${converged(block, persona, verb)}`, persona, { note: 'n', recorded: 'conflict' });
+              const conflict = await runBlock('bash', `${STALE}${finalizeAs(converged(block, persona, verb), { verdict: 'conflict' })}`, persona, { note: 'n', recorded: 'conflict', active: FOUND, texts: runResult() });
               deepStrictEqual([conflict.status, conflict.log], [0, typicalLog(verb)], 'a conflict verdict takes the typical last write');
             });
 
-            if (VERB_DESTS.includes(dest)) it('the finalize, run: a settle refusal stops the block before finish-verb, with its status (PC2b DD6)', async () => {
+            // R4 G1: settle is the block's first write, so its refusal (a run of
+            // another phase or workflow, one still live, or an attempt the empty
+            // id would hide) leaves the workflow as it was: no note, no phase.
+            if (VERB_DESTS.includes(dest)) it('the finalize, run: settle is the first write, so its refusal stops the block before any write, with its status (PC2b DD6, R4 G1)', async () => {
               const block = converged(blockWith(/peer-runner\.mjs" settle \\/).text, persona, verb);
-              const passed = await runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='r'; VERDICT='agreed'; SUMMARY='s'\n${block}`, persona, { note: 'n' });
+              const passed = await runBlock('bash', `${STALE}${finalizeAs(block)}`, persona, { note: 'n', active: FOUND, texts: runResult() });
               strictEqual(passed.status, 0, passed.stderr);
               deepStrictEqual(passed.log, typicalLog(verb));
-              ok(passed.argv[1].includes(` --run-id r --verdict agreed --summary-file ${passed.textDir}/summary.txt`), passed.argv[1]);
-              deepStrictEqual(passed.texts.map(([flag]) => flag), ['--phase-note-file', '--next-action-file', '--summary-file', '--next-action-file'], 'the append, settle and last write each read their file');
-              ok(passed.argv.every((a) => a.includes(' --workflow-path /w/active.md ')), 'every call targets $ACTIVE');
-              const refused = await runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID=''\n${block}`, persona, { note: 'n', settleStatus: 1 });
-              deepStrictEqual([refused.status, refused.log], [1, ['append', 'settle']], 'no finish-verb after a refused settle');
+              ok(passed.argv[passed.log.indexOf('settle')].includes(` --run-id r --verdict agreed --summary-file ${passed.textDir}/summary.txt`), passed.argv[passed.log.indexOf('settle')]);
+              deepStrictEqual(passed.texts.map(([flag]) => flag), ['--summary-file', '--phase-note-file', '--next-action-file', '--next-action-file'], 'settle, the append and the last write each read their file');
+              ok(passed.argv.slice(1).every((a) => `${a} `.includes(' --workflow-path /w/active.md ')), 'every call after the find targets the workflow it found');
+              // A run the result names, refused by settle: nothing is written.
+              const named = await runBlock('bash', finalizeAs(block), persona, { note: 'n', active: FOUND, texts: runResult(), settleStatus: 1 });
+              deepStrictEqual([named.status, named.log], [1, [...preSettle(verb), 'settle']], 'a refused settle of the named run writes nothing');
+              ok(named.argv[named.log.indexOf('settle')].includes(' --run-id r --verdict agreed '), named.argv[named.log.indexOf('settle')]);
+              // No run launched: an empty DISPATCH_DIR is the empty id, which
+              // settle judges (it refuses one that would hide an attempt the
+              // ledger holds); the block reads no pending entry for it (R4 H1).
+              const refused = await runBlock('bash', finalizeAs(block, { launched: false }), persona, { note: 'n', active: FOUND, settleStatus: 1, readOutput: JSON.stringify({ pending_ensemble: [{ phase: verb, run_id: 'pending' }] }) });
+              deepStrictEqual([refused.status, refused.log], [1, [...preSettle(verb), 'settle']], 'a refused settle of the empty id writes nothing');
+              ok(refused.argv[refused.log.indexOf('settle')].includes(' --run-id  --verdict agreed '), `no run launched, the empty id: ${refused.argv[refused.log.indexOf('settle')]}`);
+            });
+
+            // R4 K3: every value the last write takes is checked before settle,
+            // the first write — a confidence left unfilled or not HIGH, MEDIUM or
+            // LOW and, where the verb waits for convergence, a resolving step left
+            // unfilled when it did not converge stop the block before any write,
+            // so no retry appends the phase note a second time over them.
+            if (VERB_DESTS.includes(dest)) it('the finalize, run: a confidence, or where the verb waits for convergence a resolving step, that the last write would refuse stops the block before any write (R4 K3)', async () => {
+              const block = blockWith(/peer-runner\.mjs" settle \\/).text;
+              ok(block.includes('#   --next-step-kind owner-decision --next-step-confidence "$CONFIDENCE" \\\n'), 'the owner-decision form records the confidence checked at the top');
+              strictEqual(block.split('"<HIGH|MEDIUM|LOW>"').length - 1, 0, 'no write carries a confidence of its own');
+              for (const confidence of [null, 'high', 'HIGH ', '', 'NONE']) {
+                const r = await runBlock('bash', `${STALE}${finalizeAs(converged(block, persona, verb), { confidence })}`, persona, { note: 'n', active: FOUND, texts: runResult() });
+                deepStrictEqual([r.status, r.log], [1, ['find-active']], `confidence ${JSON.stringify(confidence)}: nothing written: ${r.stderr}`);
+                ok(r.stderr.includes("✗ CONFIDENCE is not HIGH, MEDIUM or LOW, the proposal's confidence the last write records; nothing was written."), r.stderr);
+              }
+              for (const confidence of ['HIGH', 'MEDIUM', 'LOW']) {
+                const r = await runBlock('bash', `${STALE}${finalizeAs(converged(block, persona, verb), { confidence })}`, persona, { note: 'n', active: FOUND, texts: runResult() });
+                deepStrictEqual([r.status, r.log], [0, typicalLog(verb)], `confidence ${confidence}: ${r.stderr}`);
+                ok(r.argv[r.log.indexOf('finish-verb')].includes(` --next-step-confidence ${confidence}`), r.argv.join('\n'));
+              }
+              if (!convergent(persona, verb)) {
+                ok(!block.includes('RESOLVE_VERB'), 'a verb that does not wait for convergence has no resolving step');
+                return;
+              }
+              for (const value of ['no', UNSET, '<yes|no>']) {
+                const r = await runBlock('bash', `${STALE}${finalizeAs(converged(block, persona, verb, value), { resolve: null })}`, persona, { note: 'n', active: FOUND, texts: runResult() });
+                deepStrictEqual([r.status, r.log], [1, ['find-active']], `CONVERGED ${String(value)}, the resolving step unfilled: nothing written: ${r.stderr}`);
+                ok(r.stderr.includes('✗ CONVERGED is not yes, and RESOLVE_VERB is not refine, decide or investigate'), r.stderr);
+              }
+              for (const resolve of ['decide', 'investigate']) {
+                const r = await runBlock('bash', `${STALE}${finalizeAs(converged(block, persona, verb, 'no'), { resolve })}`, persona, { note: 'n', active: FOUND, texts: runResult() });
+                deepStrictEqual([r.status, r.log], [0, ['find-active', 'settle', 'append', 'append']], `not converged, ${resolve}: ${r.stderr}`);
+                ok(r.argv[3].includes(` --next-step-kind verb --next-step-verb ${resolve} --next-step-confidence HIGH `), r.argv[3]);
+              }
+              // Converged, the resolving step is not read.
+              const yes = await runBlock('bash', `${STALE}${finalizeAs(converged(block, persona, verb, 'yes'), { resolve: null })}`, persona, { note: 'n', active: FOUND, texts: runResult() });
+              deepStrictEqual([yes.status, yes.log], [0, typicalLog(verb)], yes.stderr);
+            });
+
+            // R4 K2, L1, L2 (the owner's J2 ruling and its Fix now of
+            // 2026-10-19): the conflict itself holds the phase, read from the
+            // workflow before settle, every result of the phase, not only the
+            // last. A recorded conflict with no owner ruling (this verb's
+            // conflict gate pending and naming it, or its retired task file)
+            // holds every finish but its own run finalized as a conflict: any
+            // other verdict, the empty id, a later run as a conflict (L1), and
+            // a later result recorded since (S8) cannot hide it. While this
+            // verb's conflict gate is pending, only the gate's own run as a
+            // conflict passes (L2: a new run cannot close the verb beside the
+            // gate). A run id left without its gate, or another gate, is no
+            // gate; a conflict whose id could never name a gate is the owner's;
+            // a read that fails or prints no workflow stops the block.
+            if (Object.hasOwn(CONFLICT_GATES, verb)) it('the finalize, run: a recorded conflict no gate names holds any other verdict before any write, the empty id included; a pending conflict gate holds all but its own run as a conflict; a retired task file releases it; a failed read stops the block (R4 K2, L1, L2)', async () => {
+              const block = converged(blockWith(/peer-runner\.mjs" settle \\/).text, persona, verb);
+              const row = (run_id, verdict, phase = verb) => ({ phase, ensemble_type: 'fixture', run_id, verdict, summary: 's', completed_at: '2026-10-18T00:00:00Z' });
+              const wf = (results, extra = {}) => JSON.stringify({ workflow_id: 'w', ensemble_results: results, ...extra });
+              const OPEN = [row('r0', 'agreed'), row('r1', 'conflict')];
+              const GATED = (runId = 'r1') => wf(OPEN, { awaiting_owner_gate: CONFLICT_GATES[verb], ...(runId === null ? {} : { awaiting_owner_run_id: runId }) });
+              const HELD = "✗ Run r1 is recorded in this phase with the verdict conflict, and no owner ruling names it: a recorded conflict ends on its gate, so only that run, finalized with VERDICT conflict, can finish the verb";
+              const FIRST = 'Finalize that run first: set DISPATCH_DIR to its directory, or to its ledger directory when that is gone, VERDICT to conflict';
+              const GATE = "✗ This verb's conflict gate is pending for run r1: until the owner rules on it, only that run, finalized again with VERDICT conflict, can run this block";
+              const CONTESTED = { 'contested.md': 'C1\n' };
+              const CONFLICT_LOG = ['find-active', 'read', 'settle', 'ensemble-verdict', 'consensus-task', 'append', 'finish-verb'];
+              // A workflow under the text directory, so its state home's
+              // consensus/ can hold a task file (the read finds it beside it).
+              const LOCAL = 'agentic text.x/state/workflows/w.md';
+              const RETIRED = { 'state/consensus/w.r1.resolved.md': 'C1\n' };
+              const stopped = async (shells, why, how, opts, says) => {
+                for (const shell of shells) {
+                  const r = await runBlock(shell, `${STALE}${finalizeAs(block, how)}`, persona, { note: 'n', active: FOUND, readOutput: wf(OPEN), ...opts });
+                  deepStrictEqual([r.status, r.log], [1, ['find-active', 'read']], `${shell}, ${why}: nothing written: ${r.stderr}`);
+                  for (const said of says) ok(r.stderr.includes(said), `${shell}, ${why}: ${r.stderr}`);
+                  ok(r.argv[1].includes(` read --workflow-path ${opts.active ?? FOUND}`), r.argv[1]);
+                }
+              };
+              // No gate pending: the conflict holds every finish but its own run.
+              const held = [
+                ['no run named', { launched: false }, {}, SHELLS],
+                ['no run named, concerns', { launched: false, verdict: 'concerns' }, {}],
+                ['the conflict run itself, agreed', {}, { texts: runResult('r1') }],
+                ['a later run, agreed', {}, { texts: runResult('r2') }],
+                // L1: another run finalized as a conflict is not the held run.
+                ['a later run as a conflict', { verdict: 'conflict' }, { recorded: 'failed', texts: { ...runResult('r2'), ...CONTESTED } }, SHELLS],
+                // S8: a result recorded since (a run settled by hand) hides nothing.
+                ['a later result recorded since', { launched: false }, { readOutput: wf([...OPEN, row('r2', 'agreed')]) }, SHELLS],
+                ['a later run settled failed, then that run as a conflict', { verdict: 'conflict' }, { recorded: 'failed', readOutput: wf([...OPEN, row('r2', 'failed')]), texts: { ...runResult('r2'), ...CONTESTED } }],
+                ['a task file written but never retired', { launched: false }, { active: LOCAL, texts: { 'state/consensus/w.r1.md': 'C1\n' } }],
+                // The run id kept without its gate (an older writer), or a gate
+                // of another kind naming it: no conflict gate is set.
+                ['a run id left without its gate', { launched: false }, { readOutput: wf(OPEN, { awaiting_owner_run_id: 'r1' }) }],
+                ['another gate naming the run', { launched: false }, { readOutput: wf(OPEN, { awaiting_owner_gate: 'recurring-finding', awaiting_owner_run_id: 'r1' }) }],
+              ];
+              for (const [why, how, opts, shells = ['bash']] of held) await stopped(shells, why, how, opts, [HELD, FIRST]);
+              // L1: the message names the run it refused.
+              await stopped(['bash'], 'the refused run named', { verdict: 'conflict' }, { texts: { ...runResult('r2'), ...CONTESTED } }, ["not VERDICT conflict for run 'r2'"]);
+              // The earliest conflict with no ruling is named; any held run, as
+              // a conflict, ends on its own gate.
+              const two = wf([row('r1', 'conflict'), row('r2', 'conflict')]);
+              await stopped(['bash'], 'two conflicts, no run named', { launched: false }, { readOutput: two }, [HELD]);
+              for (const [why, opts] of [
+                ['the conflict itself, finalized as one', { texts: { ...runResult('r1'), ...CONTESTED } }],
+                ['either of two conflicts', { readOutput: two, texts: { ...runResult('r2'), ...CONTESTED } }],
+                ['a new conflict, none held', { readOutput: wf([row('r0', 'agreed')]), texts: { ...runResult('r2'), ...CONTESTED } }],
+                // The gate's own run, finalized again as a conflict: settle
+                // records nothing more, and the gate is written again.
+                ['the gate\'s own run as a conflict', { readOutput: GATED(), texts: { ...runResult('r1'), ...CONTESTED } }],
+              ]) {
+                const r = await runBlock('bash', `${STALE}${finalizeAs(block, { verdict: 'conflict' })}`, persona, { note: 'n', active: FOUND, recorded: 'conflict', readOutput: wf(OPEN), ...opts });
+                deepStrictEqual([r.status, r.log], [0, CONFLICT_LOG], `${why}: ${r.stderr}`);
+              }
+              // L2: while this verb's conflict gate is pending, it holds every
+              // finish but its own run as a conflict, a new run's included.
+              for (const [why, how, opts, shells = ['bash']] of [
+                ['a new run, agreed, beside the gate', {}, { texts: runResult('r2') }, SHELLS],
+                ['no run named, beside the gate', { launched: false }, {}],
+                ['the gate\'s own run, agreed', {}, { texts: runResult('r1') }],
+                ['a new run as a conflict, beside the gate', { verdict: 'conflict' }, { texts: { ...runResult('r2'), ...CONTESTED } }],
+                ['the gate\'s run retired, the gate still pending', { launched: false }, { active: LOCAL, texts: RETIRED }],
+              ]) await stopped(shells, why, how, { readOutput: GATED(), ...opts }, [GATE, 'The owner resolves the gate first; nothing was written.']);
+              for (const [why, how, opts] of [
+                ['a pending gate naming no run', { verdict: 'conflict' }, { texts: { ...runResult('r1'), ...CONTESTED } }],
+                ['a pending gate naming no run, no run named, as a conflict', { launched: false, verdict: 'conflict' }, { texts: CONTESTED }],
+              ]) await stopped(['bash'], why, how, { readOutput: GATED(null), ...opts }, ["✗ This verb's conflict gate is pending and names no run: until the owner rules on it, no run of this block can finish the verb."]);
+              const released = [
+                ['its task file retired', wf(OPEN), { active: LOCAL, texts: RETIRED }],
+                ['its task file retired, a later result since', wf([...OPEN, row('r2', 'agreed')]), { active: LOCAL, texts: RETIRED }],
+                ["another phase's conflict", wf([row('r0', 'agreed'), row('r1', 'conflict', 'elsewhere')]), {}],
+                ["another gate naming the run, its task file retired", wf(OPEN, { awaiting_owner_gate: 'recurring-finding', awaiting_owner_run_id: 'r1' }), { active: LOCAL, texts: RETIRED }],
+                ['no results', wf([]), {}],
+              ];
+              for (const [why, readOutput, opts] of released) {
+                const r = await runBlock('bash', `${STALE}${finalizeAs(block, { launched: false })}`, persona, { note: 'n', active: FOUND, readOutput, ...opts });
+                deepStrictEqual([r.status, r.log], [0, typicalLog(verb)], `${why}: ${r.stderr}`);
+              }
+              // A conflict whose id could never name a gate (a run settled by
+              // hand under such an id) is held too, and named the owner's: no
+              // run of the block can end it on its gate. Its retired-looking
+              // task file names nothing, and a later result hides nothing.
+              const LEGACY = ["✗ Run legacy:run is recorded in this phase with the verdict conflict, and no owner ruling names it", 'so no run of this block can end it on its gate: the conflict is the owner\'s to decide, outside this block.'];
+              for (const [why, opts, shells = ['bash']] of [
+                ['a conflict whose id names no gate', {}, SHELLS],
+                ['beside a file named as its retired task', { active: LOCAL, texts: { 'state/consensus/w.legacy:run.resolved.md': 'C1\n' } }],
+                ['a later result recorded since', { readOutput: wf([row('r0', 'agreed'), row('legacy:run', 'conflict'), row('r2', 'agreed')]) }],
+              ]) await stopped(shells, why, { launched: false }, { readOutput: wf([row('r0', 'agreed'), row('legacy:run', 'conflict')]), ...opts }, LEGACY);
+              for (const [why, opts, says] of [
+                ['a failed read', { readStatus: 3 }, '✗ Could not read the results recorded on /w/active.md; nothing was written.'],
+                ['a read printing no JSON', { readOutput: 'not json' }, '✗ The read of /w/active.md printed no workflow; nothing was written.'],
+                ['a read printing null', { readOutput: 'null' }, '✗ The read of /w/active.md printed no workflow; nothing was written.'],
+              ]) {
+                const r = await runBlock('bash', `${STALE}${finalizeAs(block, { launched: false })}`, persona, { note: 'n', active: FOUND, ...opts });
+                deepStrictEqual([r.status, r.log], [1, ['find-active', 'read']], `${why}: nothing written: ${r.stderr}`);
+                ok(r.stderr.includes(says), `${why}: ${r.stderr}`);
+              }
+            });
+
+            // R4 G2, H1, J1: an empty DISPATCH_DIR is "no run launched", the
+            // empty id, whatever the workflow holds pending (settle refuses one
+            // that would hide an attempt), so a local-only finalize never settles
+            // a run its synthesis did not read. A launched run whose dispatch
+            // directory is gone is named by its own ledger directory, the one
+            // holding the envelope the synthesis read: its handle binds it to the
+            // workflow as a dispatch's does. The block reads no pending entry, and
+            // a ledger of another workflow (J1: A's run finalized on branch B,
+            // whose workflow is the one found) stops it before any write.
+            if (VERB_DESTS.includes(dest)) it('the finalize, run: an empty DISPATCH_DIR is the empty id even beside a pending run; a run ledger directory settles its own run, bound to the workflow by its handle; nothing is chosen from pending entries (R4 G2, H1, J1)', async () => {
+              const block = converged(blockWith(/peer-runner\.mjs" settle \\/).text, persona, verb);
+              const id = `${verb}-20261017T000000Z-0a0b0c`;
+              const row = (runId = id, phase = verb) => ({ phase, ensemble_type: 'fixture', run_id: runId, started_at: '2026-10-17T00:00:00Z' });
+              const runs = (pending) => JSON.stringify({ workflow_id: 'w', pending_ensemble: pending, ensemble_results: [] });
+              const rest = typicalLog(verb).slice(1);
+              const LEDGER = `"$TEXT_DIR/peer-runs/${id}"`;
+              const ledger = (runId = id, { workflow = FOUND, at = id, handle } = {}) => ({
+                [`peer-runs/${at}/handle.json`]: handle ?? `${JSON.stringify({ run_id: runId, kind: 'ensemble', phase: verb, workflow_path: workflow })}\n`,
+                [`peer-runs/${at}/envelope.json`]: '{}\n',
+              });
+              for (const shell of SHELLS) {
+                const local = await runBlock(shell, `${STALE}${finalizeAs(block, { launched: false })}`, persona, { note: 'n', active: FOUND, readOutput: runs([row()]) });
+                deepStrictEqual([local.status, local.log], [0, ['find-active', ...rest]], `${shell}, no run launched: ${local.stderr}`);
+                ok(local.argv[local.log.indexOf('settle')].includes(' --run-id  --verdict agreed '), `${shell}: the empty id, never the pending run: ${local.argv[local.log.indexOf('settle')]}`);
+                // The ledger's own run, read from its handle; with another run
+                // pending, no pending entry is read or taken.
+                const r = await runBlock(shell, `${STALE}${finalizeAs(block, { dir: LEDGER })}`, persona, { note: 'n', active: FOUND, readOutput: runs([row('other')]), texts: ledger() });
+                deepStrictEqual([r.status, r.log], [0, ['find-active', ...rest]], `${shell}: ${r.stderr}`);
+                ok(r.argv[r.log.indexOf('settle')].includes(` --run-id ${id} --verdict agreed `), `${shell}: the ledger's run is settled: ${r.argv[r.log.indexOf('settle')]}`);
+                // J1: A's run, named by its ledger on B, while B's own run is
+                // pending there: refused, and nothing is written to B's workflow.
+                const foreign = await runBlock(shell, `${STALE}${finalizeAs(block, { dir: LEDGER })}`, persona, { note: 'n', active: FOUND, readOutput: runs([row('b-run')]), texts: ledger(id, { workflow: '/w/a.md' }) });
+                deepStrictEqual([foreign.status, foreign.log], [1, ['find-active']], `${shell}, a ledger of another workflow: ${foreign.stderr}`);
+                ok(foreign.stderr.includes('its handle names another workflow, or none (a peer-now or manual run, dispatched for no workflow); nothing was written'), `${shell}: ${foreign.stderr}`);
+              }
+              // R4 K1: the block's run-id rule is the runner's, so every run the
+              // runner launched can be finalized: an id with a ":", a ".", a
+              // leading "-" or past 128 characters settles on the plain and
+              // convergent finalizes and on the consensus variant's typical path.
+              // The consensus variant alone refuses, before any write, an id
+              // opening with "--" (its verdict read takes it as a flag) and, with
+              // VERDICT conflict, one that cannot name a task file or a gate
+              // (state.mjs isSafeConsensusRunId), never after settle.
+              const consensus = Object.hasOwn(CONFLICT_GATES, verb);
+              for (const odd of ['legacy:run', '-x', '--x', '.x', 'a.b', `a${'b'.repeat(128)}`]) {
+                const at = `"$TEXT_DIR/peer-runs/${odd}"`;
+                const r = await runBlock('bash', `${STALE}${finalizeAs(block, { dir: at })}`, persona, { note: 'n', active: FOUND, texts: ledger(odd, { at: odd }) });
+                if (consensus && odd.startsWith('--')) {
+                  deepStrictEqual([r.status, r.log], [1, ['find-active']], `${odd}: nothing written: ${r.stderr}`);
+                  ok(r.stderr.includes("opens with '--', which state.mjs reads as a flag; nothing was written"), `${odd}: ${r.stderr}`);
+                  continue;
+                }
+                deepStrictEqual([r.status, r.log], [0, ['find-active', ...rest]], `${odd}: settled: ${r.stderr}`);
+                ok(r.argv[r.log.indexOf('settle')].includes(` --run-id ${odd} --verdict agreed `), `${odd}: ${r.argv.join('\n')}`);
+                if (!consensus) continue;
+                const c = await runBlock('bash', `${STALE}${finalizeAs(block, { dir: at, verdict: 'conflict' })}`, persona, { note: 'n', active: FOUND, recorded: 'conflict', texts: { ...ledger(odd, { at: odd }), 'contested.md': 'C1\n' } });
+                deepStrictEqual([c.status, c.log], [1, ['find-active']], `${odd}, a conflict: nothing written: ${c.stderr}`);
+                ok(c.stderr.includes(`VERDICT is conflict, but run id '${odd}' cannot name a consensus task file or a gate`), `${odd}: ${c.stderr}`);
+              }
+              const longest = `a${'b_-'.repeat(42)}c`;
+              strictEqual(longest.length, 128);
+              const edge = await runBlock('bash', `${STALE}${finalizeAs(block, { dir: `"$TEXT_DIR/peer-runs/${longest}"` })}`, persona, { note: 'n', active: FOUND, texts: ledger(longest, { at: longest }) });
+              deepStrictEqual([edge.status, edge.log], [0, ['find-active', ...rest]], `128 characters: ${edge.stderr}`);
+              ok(edge.argv[edge.log.indexOf('settle')].includes(` --run-id ${longest} --verdict agreed `), edge.argv[edge.log.indexOf('settle')]);
+              // `gone` stands for nothing: a directory with no result, refused,
+              // with the ledger directory named as the way to settle the run.
+              const word = await runBlock('bash', `${STALE}${finalizeAs(block, { dir: 'gone' })}`, persona, { note: 'n', active: FOUND, readOutput: runs([row()]) });
+              deepStrictEqual([word.status, word.log], [1, ['find-active']], `gone: ${word.stderr}`);
+              ok(word.stderr.includes("set it to the run's ledger directory, the one holding the envelope.json the synthesis read"), word.stderr);
+              for (const [why, texts, dir, says] of [
+                ['a ledger handle that is not JSON', ledger(id, { handle: '{"run_id":' }), LEDGER, "cannot be read as that run's"],
+                ['a ledger handle of another run', ledger('other'), LEDGER, "cannot be read as that run's"],
+                ['a ledger handle that is a directory', { [`peer-runs/${id}/handle.json/x`]: 'y\n' }, LEDGER, "cannot be read as that run's"],
+                ['a ledger handle naming no workflow', ledger(id, { handle: `${JSON.stringify({ run_id: id, kind: 'ensemble', phase: verb })}\n` }), LEDGER, 'its handle names another workflow'],
+                ['a ledger directory whose name is no run id', ledger('a..b', { at: 'a..b' }), '"$TEXT_DIR/peer-runs/a..b"', 'and DISPATCH_DIR is no run ledger directory'],
+              ]) {
+                const r = await runBlock('bash', `${STALE}${finalizeAs(block, { dir })}`, persona, { note: 'n', active: FOUND, texts });
+                deepStrictEqual([r.status, r.log], [1, ['find-active']], `${why}: nothing written: ${r.stderr}`);
+                ok(r.stderr.includes(says), `${why}: ${r.stderr}`);
+              }
+              // A retry: the block keeps the run it settles in TEXT_DIR
+              // (finalize-run.json) before settle, on every path (R4 H1, M1):
+              // the ledger's run, the dispatch's run, and the empty id.
+              const kept = (runId = id, workflow = FOUND, phase = verb) => `${JSON.stringify({ run_id: runId, workflow_path: workflow, phase })}\n`;
+              const KEPT = '\nprintf \'KEPT:%s\' "$(cat "$TEXT_DIR/finalize-run.json")"';
+              for (const [why, how, opts, runId] of [
+                ['the run ledger directory, its run', { dir: LEDGER }, { texts: ledger() }, id],
+                ['a dispatch directory, its run', {}, { texts: runResult('r') }, 'r'],
+                ['no run launched, the empty id', { launched: false }, {}, ''],
+              ]) {
+                const first = await runBlock('bash', `${STALE}${finalizeAs(block, how)}`, persona, { note: 'n', active: FOUND, ...opts, after: KEPT });
+                strictEqual(first.status, 0, `${why}: ${first.stderr}`);
+                ok(first.argv[first.log.indexOf('settle')].includes(` --run-id ${runId} --verdict agreed `), `${why}: ${first.argv.join('\n')}`);
+                deepStrictEqual(JSON.parse(first.stdout.slice(first.stdout.indexOf('KEPT:') + 5)), { run_id: runId, workflow_path: FOUND, phase: verb }, `${why}: the run settled is kept`);
+              }
+              // The same run named again passes on every path, the ledger
+              // directory of the run a dispatch directory named first included
+              // (that directory gone between the two); a run kept that differs
+              // from the one named now, the empty id included, stops the block,
+              // before any write (R4 H1: nothing overrides the run a finalize
+              // already took; M3: a reused TEXT_DIR is refused).
+              const same = [
+                ['the run ledger directory, its run kept', { dir: LEDGER }, { texts: { ...ledger(), 'finalize-run.json': kept() } }, id],
+                ['a dispatch directory, its run kept', {}, { texts: { ...runResult('r'), 'finalize-run.json': kept('r') } }, 'r'],
+                ['no run launched, the empty id kept', { launched: false }, { texts: { 'finalize-run.json': kept('') } }, ''],
+              ];
+              for (const [why, how, opts, runId] of same) {
+                const r = await runBlock('bash', `${STALE}${finalizeAs(block, how)}`, persona, { note: 'n', active: FOUND, ...opts, after: KEPT });
+                strictEqual(r.status, 0, `${why}: ${r.stderr}`);
+                ok(r.argv[r.log.indexOf('settle')].includes(` --run-id ${runId} --verdict agreed `), `${why}: ${r.argv.join('\n')}`);
+                strictEqual(JSON.parse(r.stdout.slice(r.stdout.indexOf('KEPT:') + 5)).run_id, runId, `${why}: the run settled is the one kept`);
+              }
+              const differs = [
+                ['the run ledger directory, another run kept', { dir: LEDGER }, { texts: { ...ledger(), 'finalize-run.json': kept('older') } }, `keeps run 'older', not '${id}'`],
+                ['a dispatch directory naming another run than the one kept', {}, { texts: { ...runResult('r'), 'finalize-run.json': kept(id) } }, `keeps run '${id}', not 'r'`],
+                ['no run launched, a run kept', { launched: false }, { texts: { 'finalize-run.json': kept() } }, `keeps run '${id}', not ''`],
+                // The empty id binds too: a local-only finalize's TEXT_DIR, reused
+                // for a run launched later, would give that run its synthesis.
+                ['a dispatch directory, the empty id kept', {}, { texts: { ...runResult('r'), 'finalize-run.json': kept('') } }, "keeps run '', not 'r'"],
+                ['the run ledger directory, the empty id kept', { dir: LEDGER }, { texts: { ...ledger(), 'finalize-run.json': kept('') } }, `keeps run '', not '${id}'`],
+              ];
+              for (const [why, how, opts, says] of differs) {
+                const r = await runBlock('bash', `${STALE}${finalizeAs(block, how)}`, persona, { note: 'n', active: FOUND, ...opts });
+                deepStrictEqual([r.status, r.log], [1, ['find-active']], `${why}: nothing written: ${r.stderr}`);
+                ok(r.stderr.includes(says), `${why}: ${r.stderr}`);
+              }
+              const foreign = 'is malformed or names another workflow or phase than this one of /w/active.md; nothing was written';
+              for (const [why, texts] of [
+                ['a kept run of another workflow', { 'finalize-run.json': kept(id, '/w/other.md') }],
+                ['a kept run of another phase', { 'finalize-run.json': kept(id, FOUND, 'elsewhere') }],
+                ['a record that is not JSON', { 'finalize-run.json': '{"run_id":' }],
+                ['a record with a malformed run id', { 'finalize-run.json': kept('\n') }],
+                ['a record that is a directory', { 'finalize-run.json/x': 'y\n' }],
+              ]) {
+                for (const [how, opts] of [[{ dir: LEDGER }, { texts: ledger() }], [{ launched: false }, {}]]) {
+                  const r = await runBlock('bash', `${STALE}${finalizeAs(block, how)}`, persona, { note: 'n', active: FOUND, ...opts, texts: { ...(opts.texts ?? {}), ...texts } });
+                  deepStrictEqual([r.status, r.log], [1, ['find-active']], `${why}, ${JSON.stringify(how)}: nothing written: ${r.stderr}`);
+                  ok(r.stderr.includes(foreign), `${why}: ${r.stderr}`);
+                }
+              }
+              // A record that cannot be written (a link to a directory that does
+              // not exist reads as absent, and the write through it fails).
+              const unkept = await runBlock('bash', `${STALE}${finalizeAs(block, { dir: LEDGER }).replace('case "$VERDICT" in', () => 'ln -s "$TEXT_DIR/missing/run.json" "$TEXT_DIR/finalize-run.json"\ncase "$VERDICT" in')}`, persona, { note: 'n', active: FOUND, texts: ledger() });
+              deepStrictEqual([unkept.status, unkept.log], [1, ['find-active']], `a run that cannot be kept: nothing written: ${unkept.stderr}`);
+              ok(unkept.stderr.includes('Could not keep the run in TEXT_DIR ('), unkept.stderr);
+            });
+
+            // R4 (C75): each block runs in a shell of its own. The finalize finds
+            // the workflow, and reads the run id from the result the runner wrote
+            // in the dispatch's directory — never a value an earlier block left —
+            // and keeps an empty id (no run launched) apart from a result missing
+            // or unreadable, which stops it before any write. (A result left
+            // empty, and a handle gone, take the run the dispatch recorded: the
+            // case after this one; an empty DISPATCH_DIR is the empty id, and a
+            // run's own ledger directory names it when the dispatch's is gone,
+            // R4 J1.)
+            if (VERB_DESTS.includes(dest)) it('the finalize, run: in a fresh shell it finds the workflow and reads the run id from the dispatch\'s result; a result missing, unreadable or naming no run, a handle of another workflow or unreadable, a verdict or directory left unfilled, or no workflow stops it before any write (R4)', async () => {
+              const block = converged(blockWith(/peer-runner\.mjs" settle \\/).text, persona, verb);
+              for (const shell of SHELLS) {
+                const r = await runBlock(shell, `${STALE}${finalizeAs(block)}`, persona, { note: 'n', active: FOUND, texts: runResult(`${verb}-20261017T000000Z-0a0b0c`) });
+                deepStrictEqual([r.status, r.log], [0, typicalLog(verb)], `${shell}: ${r.stderr}`);
+                ok(r.argv[r.log.indexOf('settle')].includes(` settle --repo-root `) && r.argv[r.log.indexOf('settle')].includes(` --workflow-path /w/active.md `) && r.argv[r.log.indexOf('settle')].includes(` --run-id ${verb}-20261017T000000Z-0a0b0c --verdict agreed `), `${shell}: ${r.argv.join('\n')}`);
+              }
+              const filled = (verdict = true, dir = true) => {
+                let s = block;
+                if (dir) s = s.replace(DISPATCH_DIR_LINE, () => 'DISPATCH_DIR="$TEXT_DIR/dispatch"');
+                if (verdict) s = s.replace(VERDICT_LINE, () => "VERDICT='agreed'");
+                return s.replace(CONFIDENCE_LINE, () => "CONFIDENCE='HIGH'");
+              };
+              const result = (content) => ({ ...runResult(), 'dispatch/prompt.xml.run.json': content });
+              const cases = [
+                ['no result in the dispatch directory', filled(), { texts: result(null) }, 1, 'prompt.xml.run.json in DISPATCH_DIR ('],
+                ['a result that is not JSON', filled(), { texts: result('{"run_id":') }, 1, 'prompt.xml.run.json in DISPATCH_DIR ('],
+                ['a result naming no run', filled(), { texts: result('{"ok":false,"run_id":""}\n') }, 1, 'prompt.xml.run.json in DISPATCH_DIR ('],
+                // A run id the shell would strip to nothing is no empty id.
+                ['a run id of a newline only', filled(), { texts: result('{"run_id":"\\n","handle_path":"agentic text.x/run/handle.json"}\n') }, 1, 'names no well-formed run id'],
+                ['a run whose handle names another workflow', filled(), { texts: runResult('r', { workflow: '/w/other.md' }) }, 1, 'its handle names another workflow'],
+                // F1: a handle that cannot be read is told apart from one naming
+                // another workflow; a handle gone is the next case's.
+                ['a run whose handle is not JSON', filled(), { texts: { ...runResult('r', { handle: false }), 'run/handle.json': '{"run_id":' } }, 1, 'cannot be read as that run\'s'],
+                ['a run whose handle is another run\'s', filled(), { texts: { ...runResult('r', { handle: false }), 'run/handle.json': '{"run_id":"s","workflow_path":"/w/active.md"}\n' } }, 1, 'cannot be read as that run\'s'],
+                ['the dispatch directory left unfilled', filled(true, false), { texts: runResult() }, 1, 'prompt.xml.run.json in DISPATCH_DIR (<'],
+                ['the verdict left unfilled', filled(false), { texts: runResult() }, 1, '✗ VERDICT is not set to the synthesis verdict'],
+                ['no workflow found', filled(), { active: '', texts: runResult() }, 1, `✗ No active ${persona} workflow on this branch`],
+                ['a failed find', filled(), { active: '', findStatus: 3, texts: runResult() }, 3, ''],
+              ];
+              for (const [why, script, opts, status, says] of cases) {
+                const r = await runBlock('bash', `${STALE}${script}`, persona, { note: 'n', active: FOUND, ...opts });
+                deepStrictEqual([r.status, r.log], [status, ['find-active']], `${why}: nothing written: ${r.stderr}`);
+                ok(r.stderr.includes(says), `${why}: ${r.stderr}`);
+              }
+            });
+
+            // R4 F1: a runner that ended without writing its result (killed, or
+            // stopped by an error after the launch) leaves the result empty, and a
+            // ledger pruned since leaves the result's handle gone. The run is then
+            // the one the dispatch recorded before the launch
+            // (prompt.xml.dispatch.json), for the workflow found only; settle, the
+            // block's first write, judges it from the ledger (R4 G1: a run still
+            // live, of another workflow or phase, or never launched, it refuses
+            // before anything is written).
+            if (VERB_DESTS.includes(dest)) it('the finalize, run: a result left empty or a handle gone takes the run the dispatch recorded, for the workflow found only, and settle judges it before any write (R4 F1, G1)', async () => {
+              const block = finalizeAs(converged(blockWith(/peer-runner\.mjs" settle \\/).text, persona, verb));
+              const id = `${verb}-20261017T000000Z-0a0b0c`;
+              const record = (runId = id, workflow = FOUND) => `${JSON.stringify({ run_id: runId, workflow_path: workflow })}\n`;
+              const empty = (rec = record()) => ({ ...runResult(id), 'dispatch/prompt.xml.run.json': '', 'dispatch/prompt.xml.dispatch.json': rec });
+              const gone = (rec = record()) => ({ ...runResult(id, { handle: false }), 'dispatch/prompt.xml.dispatch.json': rec });
+              const settled = (r) => ok(r.argv[r.log.indexOf('settle')].includes(` --run-id ${id} --verdict agreed `), r.argv.join('\n'));
+              const go = [
+                ['a result left empty', { texts: empty() }],
+                ['a whitespace-only result', { texts: { ...empty(), 'dispatch/prompt.xml.run.json': ' \n' } }],
+                ['a handle gone, the dispatch\'s own run', { texts: gone() }],
+              ];
+              for (const shell of SHELLS) {
+                for (const [why, opts] of go) {
+                  const r = await runBlock(shell, `${STALE}${block}`, persona, { note: 'n', active: FOUND, ...opts });
+                  deepStrictEqual([r.status, r.log], [0, typicalLog(verb)], `${shell}, ${why}: ${r.stderr}`);
+                  settled(r);
+                }
+              }
+              // settle refuses the recorded run (still live, of another phase, or
+              // with no ledger and not pending): nothing is written.
+              const refused = await runBlock('bash', `${STALE}${block}`, persona, { note: 'n', active: FOUND, texts: empty(), settleStatus: 1 });
+              deepStrictEqual([refused.status, refused.log], [1, [...preSettle(verb), 'settle']], `a refused settle writes nothing: ${refused.stderr}`);
+              settled(refused);
+              const missing = 'prompt.xml.dispatch.json there is missing, malformed or names another run';
+              const stops = [
+                ['no dispatch record', { texts: empty(null) }, missing],
+                ['a dispatch record that is not JSON', { texts: empty('{"run_id":') }, missing],
+                ['a dispatch record with a malformed run id', { texts: empty(record('\n')) }, missing],
+                ['a handle gone and the record naming another run', { texts: gone(record('another')) }, missing],
+                ['a dispatch for another workflow', { texts: empty(record(id, '/w/other.md')) }, 'was dispatched for another workflow than /w/active.md'],
+              ];
+              for (const [why, opts, says] of stops) {
+                const r = await runBlock('bash', `${STALE}${block}`, persona, { note: 'n', active: FOUND, ...opts });
+                deepStrictEqual([r.status, r.log], [1, ['find-active']], `${why}: nothing written: ${r.stderr}`);
+                ok(r.stderr.includes(says), `${why}: ${r.stderr}`);
+              }
+              // settle alone judges the run: the block inspects no ledger of its own.
+              ok(!/peer-runner\.mjs" (sweep|status)\b/.test(block), 'no sweep or status in the finalize');
+            });
+
+            // R4 (C75): the dispatch and the resume append each run in a shell of
+            // their own too: each finds the workflow; an ACTIVE an earlier block
+            // left is not the one they use, and with none found nothing is
+            // dispatched or written.
+            if (VERB_DESTS.includes(dest)) it('the dispatch and the resume append, run: each finds the workflow in a fresh shell; none found, nothing is dispatched or written (R4)', async () => {
+              const dispatch = blockWith(/peer-runner\.mjs" run \\/).text;
+              const resume = blockWith(/--event resumed/).text;
+              for (const shell of SHELLS) {
+                const sent = await runBlock(shell, `${STALE}${dispatch}`, persona, { active: FOUND, after: '\nprintf "RECORD=%s" "$(cat "$TEXT_DIR/prompt.xml.dispatch.json")"' });
+                deepStrictEqual([sent.status, sent.log], [0, ['find-active', 'run']], `${shell}: ${sent.stderr}`);
+                // R4 F1: the dispatch records, before the launch, the run it launches
+                // and the workflow it found, for a finalize whose runner left no result.
+                const rec = JSON.parse(/RECORD=(.*)$/s.exec(sent.stdout)[1]);
+                ok(rec.workflow_path === FOUND && `${sent.argv[1]} `.includes(` --run-id ${rec.run_id} `), `${shell}: ${sent.stdout}`);
+                ok(sent.argv[1].includes(' --workflow-path /w/active.md ') && / --repo-root \/\S+ /.test(sent.argv[1]), `${shell}: the dispatch on the workflow it found, in the repository: ${sent.argv[1]}`);
+                const resumed = await runBlock(shell, `${STALE}${resume}`, persona, { active: FOUND });
+                deepStrictEqual([resumed.status, resumed.log], [0, ['find-active', 'append']], `${shell}: ${resumed.stderr}`);
+                ok(resumed.argv[1].includes(' --workflow-path /w/active.md '), `${shell}: ${resumed.argv[1]}`);
+              }
+              for (const [name, block] of [['the dispatch', dispatch], ['the resume append', resume]]) {
+                for (const [why, find] of [['no workflow found', { active: '' }], ['a failed find', { active: '', findStatus: 3 }]]) {
+                  const none = await runBlock('bash', `${STALE}${block}`, persona, find);
+                  deepStrictEqual([none.status, none.log], [find.findStatus ?? 1, ['find-active']], `${name}, ${why}: ${none.stderr}`);
+                }
+              }
             });
 
             // Contract: the arguments the agent passes, read from the blocks as the
@@ -1737,12 +2424,15 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               ok(flat.indexOf(adv.prose) < flat.indexOf('peer-runner.mjs" run'), 'the prose comes before the block it changes');
               for (const [profile, expected] of [['default', 'review'], [adv.profile, 'adversarial-scan'], ['unknown', 'review'], ['missing', 'review']]) {
                 const script = profile === adv.profile ? dispatch.replace(TYPE_LINE, "ENSEMBLE_TYPE='adversarial-scan'") : dispatch;
-                const sent = await runBlock('bash', `ACTIVE='/w/active.md'\n${script}\nprintf '%s' "$RUN_ID" > out`, persona, {});
-                strictEqual(sent.status, 0, sent.stderr);
-                ok(sent.argv.length === 1 && sent.argv[0].includes(` --ensemble-type ${expected} `), `${profile}: the dispatch names ${expected}`);
-                ok(sent.out.startsWith(`${expected}-`), `${profile}: the run id carries ${expected}`);
-                const done = await runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='${sent.out}'; VERDICT='sound'; SUMMARY='s'\n${finalize}`, persona, { note: 'n' });
-                ok(done.argv.find((a) => / settle /.test(a)).includes(` --phase critique --run-id ${sent.out} `), `${profile}: settle names the run the dispatch started`);
+                // R4: the dispatch and the finalize each in a shell of its own;
+                // the finalize reads the run from the result the runner wrote.
+                const r = await runBlock('bash', `${STALE}${inTurn(script, finalizeAs(finalize, { verdict: 'sound', dir: '"$SHARED"' }))}`, persona, { note: 'n', active: FOUND });
+                strictEqual(r.status, 0, r.stderr);
+                const sent = r.argv.filter((a) => / run /.test(a));
+                ok(sent.length === 1 && sent[0].includes(` --ensemble-type ${expected} `) && sent[0].includes(' --workflow-path /w/active.md '), `${profile}: the dispatch names ${expected}: ${sent}`);
+                const id = / --run-id (\S+)/.exec(sent[0])?.[1] ?? '';
+                ok(id.startsWith(`${expected}-`), `${profile}: the run id carries ${expected}: ${id}`);
+                ok(r.argv.find((a) => / settle /.test(a)).includes(` --phase critique --run-id ${id} `), `${profile}: settle names the run the dispatch started`);
               }
             });
 
@@ -1778,12 +2468,15 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               const cases = [['analysis', spec.base], ...Object.keys(spec.profiles).map((p) => [p, p]), ['unknown', spec.base], ['missing', spec.base]];
               for (const [profile, expected] of cases) {
                 const script = Object.hasOwn(spec.profiles, profile) ? dispatch.replace(TYPE_LINE, `ENSEMBLE_TYPE='${expected}'`) : dispatch;
-                const sent = await runBlock('bash', `ACTIVE='/w/active.md'\n${script}\nprintf '%s' "$RUN_ID" > out`, persona, {});
-                strictEqual(sent.status, 0, sent.stderr);
-                ok(sent.argv.length === 1 && sent.argv[0].includes(` --ensemble-type ${expected} `), `${profile}: the dispatch names ${expected}`);
-                ok(sent.out.startsWith(`${expected}-`), `${profile}: the run id carries ${expected}`);
-                const done = await runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='${sent.out}'; VERDICT='agreed'; SUMMARY='s'\n${finalize}`, persona, { note: 'n' });
-                ok(done.argv.find((a) => / settle /.test(a)).includes(` --phase investigate --run-id ${sent.out} `), `${profile}: settle names the run the dispatch started`);
+                // R4: the dispatch and the finalize each in a shell of its own;
+                // the finalize reads the run from the result the runner wrote.
+                const r = await runBlock('bash', `${STALE}${inTurn(script, finalizeAs(finalize, { verdict: 'agreed', dir: '"$SHARED"' }))}`, persona, { note: 'n', active: FOUND });
+                strictEqual(r.status, 0, r.stderr);
+                const sent = r.argv.filter((a) => / run /.test(a));
+                ok(sent.length === 1 && sent[0].includes(` --ensemble-type ${expected} `) && sent[0].includes(' --workflow-path /w/active.md '), `${profile}: the dispatch names ${expected}: ${sent}`);
+                const id = / --run-id (\S+)/.exec(sent[0])?.[1] ?? '';
+                ok(id.startsWith(`${expected}-`), `${profile}: the run id carries ${expected}: ${id}`);
+                ok(r.argv.find((a) => / settle /.test(a)).includes(` --phase investigate --run-id ${id} `), `${profile}: settle names the run the dispatch started`);
               }
             });
 
@@ -1880,22 +2573,22 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
                 : [[null, 'finish-verb']];
               for (const [value, last] of cases) {
                 const script = value === null ? block : converged(block, persona, verb, value);
-                const r = await runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='r'; VERDICT='resolved'; SUMMARY='s'\n${script}`, persona, { note: 'n' });
+                const r = await runBlock('bash', `${STALE}${finalizeAs(script, { verdict: 'resolved' })}`, persona, { note: 'n', active: FOUND, texts: runResult() });
                 const label = `CONVERGED ${value === null ? 'as committed' : value === UNSET ? 'unset' : JSON.stringify(value)}`;
                 strictEqual(r.status, 0, `${label}: ${r.stderr}`);
-                deepStrictEqual(r.log, ['append', 'settle', last], label);
-                ok(r.argv.every((a) => a.includes(' --workflow-path /w/active.md ')), `${label}: every write targets $ACTIVE`);
+                deepStrictEqual(r.log, ['find-active', 'settle', 'append', last], label);
+                ok(r.argv.slice(1).every((a) => a.includes(' --workflow-path /w/active.md ')), `${label}: every write targets the workflow the block found`);
                 if (last === 'finish-verb') {
-                  ok(r.argv[2].includes(' --next-step-kind verb --next-step-verb critique '), `${label}: ${r.argv[2]}`);
+                  ok(r.argv[3].includes(' --next-step-kind verb --next-step-verb critique '), `${label}: ${r.argv[3]}`);
                 } else {
-                  for (const part of [' --current-phase phase-2-presented ', ` --next-action-file ${r.textDir}/next-action.txt `, ' --next-step-kind verb --next-step-verb <refine|decide|investigate> ', ' --clear-terminal-marker true ', ' --event updated']) ok(r.argv[2].includes(part), `${label}: ${part}: ${r.argv[2]}`);
-                  ok(!r.argv[2].includes(' --phase-note'), `${label}: the paused write adds no second note`);
+                  for (const part of [' --current-phase phase-2-presented ', ` --next-action-file ${r.textDir}/next-action.txt `, ' --next-step-kind verb --next-step-verb refine --next-step-confidence HIGH ', ' --clear-terminal-marker true ', ' --event updated']) ok(r.argv[3].includes(part), `${label}: ${part}: ${r.argv[3]}`);
+                  ok(!r.argv[3].includes(' --phase-note'), `${label}: the paused write adds no second note`);
                   ok(/PAUSED/.test(r.stderr), `${label}: the pause is reported`);
                 }
               }
               // A refused settle stops the block before either last write.
-              const refused = await runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='r'\n${converged(block, persona, verb, 'no')}`, persona, { note: 'n', settleStatus: 1 });
-              deepStrictEqual([refused.status, refused.log], [1, ['append', 'settle']], 'no write after a refused settle');
+              const refused = await runBlock('bash', finalizeAs(converged(block, persona, verb, 'no'), { verdict: 'resolved' }), persona, { note: 'n', active: FOUND, texts: runResult(), settleStatus: 1 });
+              deepStrictEqual([refused.status, refused.log], [1, ['find-active', 'settle']], 'no write after a refused settle (R4 G1: nothing at all)');
             });
 
             if (verb === 'refine') it('Owner decision, run: fix now clears recurring-finding with this refine next; defer clears it with commit next, then finishes the verb, where the persona waits for convergence only once converged (fail-closed); a failed find or clear, or no workflow, stops each block (PC2b U5b)', async () => {
@@ -2002,30 +2695,32 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
             });
 
             if (VERB_DESTS.includes(dest)) for (const shell of SHELLS) {
-              it(`${shell}: the finalize block hands hostile texts to the scripts byte for byte and runs nothing in them; a file left unwritten or blank stops it before any write, and a failed append before settle and finish-verb`, async () => {
+              it(`${shell}: the finalize block hands hostile texts to the scripts byte for byte and runs nothing in them; a file left unwritten or blank stops it before any write, and a failed append, after settle, before finish-verb`, async () => {
                 const block = converged(blockWith(/peer-runner\.mjs" settle \\/).text, persona, verb);
                 const texts = { 'note.md': `${HOSTILE_NOTE}\n`, 'summary.txt': `${HOSTILE_SUMMARY}\n`, 'next-action.txt': `${HOSTILE_NEXT}\n` };
-                const ok_ = await runBlock(shell, block, persona, { texts });
+                const ok_ = await runBlock(shell, finalizeAs(block), persona, { active: FOUND, texts: { ...texts, ...runResult() } });
                 strictEqual(ok_.status, 0, ok_.stderr);
                 deepStrictEqual(ok_.log, typicalLog(verb));
                 strictEqual(ok_.note, texts['note.md'], 'the note reached state.mjs unread by the shell');
-                deepStrictEqual(ok_.texts, [['--phase-note-file', texts['note.md']], ['--next-action-file', texts['next-action.txt']], ['--summary-file', texts['summary.txt']], ['--next-action-file', texts['next-action.txt']]], 'each script read the file the agent wrote');
+                deepStrictEqual(ok_.texts, [['--summary-file', texts['summary.txt']], ['--phase-note-file', texts['note.md']], ['--next-action-file', texts['next-action.txt']], ['--next-action-file', texts['next-action.txt']]], 'each script read the file the agent wrote');
                 deepStrictEqual(ok_.sideEffects, [], 'nothing in the texts ran');
                 ok(ok_.argv.every((a) => !a.includes('pwned') && !a.includes('INJECTED')), 'no text reached a command line');
                 // A file a script would refuse stops the block like a missing
                 // one: `[ -s ]` passed a newline, and a check for blanks passed a
-                // BOM, a NUL byte or bytes that are not UTF-8; the append wrote,
-                // and settle refused the summary after it.
+                // BOM, a NUL byte or bytes that are not UTF-8; settle recorded the
+                // run, and the append refused the note after it.
                 for (const name of Object.keys(texts)) {
                   for (const [how, content] of REFUSED_TEXTS) {
-                    const stopped = await runBlock(shell, block, persona, { texts: { ...texts, [name]: content } });
-                    deepStrictEqual([stopped.status, stopped.log], [1, []], `${name} ${how}: nothing was written`);
+                    const stopped = await runBlock(shell, finalizeAs(block), persona, { active: FOUND, texts: { ...texts, ...runResult(), [name]: content } });
+                    deepStrictEqual([stopped.status, stopped.log], [1, ['find-active']], `${name} ${how}: nothing was written`);
                     ok(stopped.stderr.includes(`${name} in TEXT_DIR (`) && stopped.stderr.includes('is missing, blank or not UTF-8 text'), stopped.stderr);
                   }
                 }
-                const failed = await runBlock(shell, block, persona, { texts, failAppend: true });
+                const failed = await runBlock(shell, finalizeAs(block), persona, { active: FOUND, texts: { ...texts, ...runResult() }, failAppend: true });
                 strictEqual(failed.status, 7, 'the block exits with the append\'s status');
-                deepStrictEqual(failed.log, ['append'], 'no later write ran');
+                // settle has recorded the run; the block run again records nothing
+                // more for it, and the append then writes the note.
+                deepStrictEqual(failed.log, typicalLog(verb).slice(0, -1), 'no later write ran');
               });
             }
           }

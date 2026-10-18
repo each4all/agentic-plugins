@@ -15,7 +15,9 @@ backtick or line of them would be read as code (ADR-0059, amendment of
    Nothing deletes it.
 
 Then run the block with `TEXT_DIR` set to that directory; a prompt left
-unwritten stops it before the dispatch.
+unwritten stops it before the dispatch. Keep the directory: the runner writes
+its result there, `prompt.xml.run.json`, and the finalize block reads the run's
+id from that file (its `DISPATCH_DIR`), never from this block's shell.
 
 ```bash
 TEXT_DIR='<directory from step 1>'
@@ -23,12 +25,23 @@ ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/{{name}} -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 ENSEMBLE_TYPE={{ensemble_type}}
+# A fresh shell: the workflow is found again here, never carried from an
+# earlier block.
+PERSONA={{name}}
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
+[ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch; nothing was dispatched." >&2; exit 1; }
 # The prompt the agent wrote with its file tool: the runner reads it, so no
 # line of it is shell source. A prompt left unwritten stops the block here.
 PROMPT_FILE="$TEXT_DIR/prompt.xml"
 grep -q '[^[:space:]]' "$PROMPT_FILE" 2>/dev/null || { echo "✗ prompt.xml in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was dispatched." >&2; exit 1; }
 # ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch.
 RUN_ID="${ENSEMBLE_TYPE}-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
+# The dispatch's own record of the run it launches and the workflow it found,
+# written before the launch: the finalize settles that run from it when the
+# runner ends without writing its result (R4 F1).
+node -e 'require("fs").writeFileSync(process.argv[1],JSON.stringify({run_id:process.argv[2],workflow_path:process.argv[3]})+"\n")' "$PROMPT_FILE.dispatch.json" "$RUN_ID" "$ACTIVE" \
+  || { echo "✗ Could not record the dispatch in TEXT_DIR ($TEXT_DIR); nothing was dispatched." >&2; exit 1; }
 # Run this block as a host background task (on Claude, the Bash tool's
 # run_in_background), never with a trailing `&`: the host tracks the runner
 # and notifies you when it exits, where a shell `&` would detach it from both.

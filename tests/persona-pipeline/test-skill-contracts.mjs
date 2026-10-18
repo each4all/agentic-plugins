@@ -27,7 +27,9 @@
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, posix } from 'node:path';
 
 import {
@@ -41,6 +43,38 @@ import { MANIFEST, REPO_ROOT, declaration, pluginRoot } from './_personas.mjs';
 import { codexCellProblems, pluginRootRows } from '../_plugin-root-cell.mjs';
 
 const SKILLS_REL = 'core/skills';
+
+const SHELLS = ['bash', 'zsh', 'sh', 'dash'].filter((s) => spawnSync(s, ['-c', 'exit 0']).status === 0);
+
+/**
+ * R4 (C75): a skill's block run the way a Codex agent runs it, in a fresh
+ * shell — `<plugin-root>` filled with a root whose state.mjs logs each call
+ * and answers find-active with `active` (exiting `findStatus`), the host with
+ * codex, and TEXT_DIR with a directory holding the agent's `texts`. An
+ * ACTIVE an earlier block left is set first, which the block must not use.
+ */
+function runSkillBlock(shell, block, { active = '', findStatus = 0, texts = {} } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'skill-block.'));
+  try {
+    mkdirSync(join(dir, 'root', 'scripts'), { recursive: true });
+    mkdirSync(join(dir, 'text'));
+    for (const [name, content] of Object.entries(texts)) writeFileSync(join(dir, 'text', name), content);
+    writeFileSync(join(dir, 'root', 'scripts', 'state.mjs'), [
+      "import { appendFileSync } from 'node:fs';",
+      'const args = process.argv.slice(2);',
+      "appendFileSync(process.env.STUB_LOG, `${args.join(' ')}\\n`);",
+      "if (args[0] === 'find-active') { if (process.env.STUB_ACTIVE) process.stdout.write(`${process.env.STUB_ACTIVE}\\n`); process.exitCode = Number(process.env.STUB_FIND_RC); }",
+      '',
+    ].join('\n'));
+    spawnSync('git', ['init', '-q', join(dir, 'repo')]);
+    const script = `ACTIVE='/w/stale.md'\n${block.replaceAll('<plugin-root>', join(dir, 'root')).replaceAll('<claude|codex>', 'codex').replace("TEXT_DIR='<directory from step 1>'", () => `TEXT_DIR='${join(dir, 'text')}'`)}`;
+    const r = spawnSync(shell, ['-c', script], { cwd: join(dir, 'repo'), encoding: 'utf8', env: { PATH: process.env.PATH, HOME: dir, STUB_LOG: join(dir, 'log'), STUB_ACTIVE: active, STUB_FIND_RC: String(findStatus) } });
+    const log = existsSync(join(dir, 'log')) ? readFileSync(join(dir, 'log'), 'utf8').split('\n').filter(Boolean) : [];
+    return { status: r.status, stderr: r.stderr, log, textDir: join(dir, 'text') };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 const skillOf = (dest) => new RegExp(`^${SKILLS_REL}/([a-z-]+)/SKILL\\.md$`).exec(dest)?.[1] ?? null;
 
 /** The SKILL.md files of the manifest and the personas enrolled into each. */
@@ -340,6 +374,20 @@ describe('skill regions: the contracts hold for every enrolled persona', () => {
               strictEqual([...set.matchAll(/ --summary-file "\$TEXT_DIR\/summary\.txt"\n```/g)].length, 1, 'the summary goes as the agent\'s file, the call\'s last');
               ok(set.includes("TEXT_DIR='<directory from step 1>'\n") && set.includes('mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"') && squash(set).includes('With your file-writing tool, not the shell, create `summary.txt`'), 'the steps that write it');
               ok(!/--summary "|single quoted argument/.test(set), 'no inline summary left');
+              // R4 (C75): run in a fresh shell, the block finds the workflow
+              // itself — an ACTIVE an earlier block left is not the one it
+              // writes — and with none found it writes nothing.
+              const block = shellBlocks(set).find((b) => b.includes(' checkpoint-set '));
+              for (const shell of SHELLS) {
+                const r = runSkillBlock(shell, block, { active: '/w/a.md', texts: { 'summary.txt': 's\n' } });
+                strictEqual(r.status, 0, `${shell}: ${r.stderr}`);
+                deepStrictEqual(r.log.map((l) => l.split(' ')[0]), ['find-active', 'checkpoint-set'], shell);
+                ok(r.log[1].startsWith(`checkpoint-set --workflow-path /w/a.md --host codex --summary-file ${r.textDir}/summary.txt`), `${shell}: ${r.log[1]}`);
+              }
+              for (const [why, find, status] of [['no workflow found', { active: '' }, 1], ['a failed find', { findStatus: 3 }, 3]]) {
+                const r = runSkillBlock('bash', block, { ...find, texts: { 'summary.txt': 's\n' } });
+                deepStrictEqual([r.status, r.log.map((l) => l.split(' ')[0])], [status, ['find-active']], `${why}: ${r.stderr}`);
+              }
               // Contract: hooks.json, read by both hosts — a SessionStart matcher other than compact
               // re-injects the checkpoint on every session start.
               for (const hooks of ['hooks/hooks.json', 'adapters/codex/hooks/hooks.json']) {
@@ -369,6 +417,10 @@ describe('skill regions: the contracts hold for every enrolled persona', () => {
               // run that answered nothing.
               const after = squash(dispatch.slice(dispatch.indexOf('RUN_RC=$?')));
               ok(/On `RUN_RC != 0`.*stop without appending a phase note and exit non-zero/.test(after), 'a failed run stops before the note');
+              // R4 J3: the runner's status is the block's own, so a failed run
+              // stops the agent where it sees it; the note needs ok true.
+              ok(/\n\[ "\$RUN_RC" -eq 0 \] \|\| \{ echo "✗ peer-now run \$RUN_ID failed [^\n]*; exit "\$RUN_RC"; \}$/.test(block), 'the block exits with the runner\'s status');
+              ok(squash(region(text, 'peer-now-label')).includes('Append only when that file reads `ok: true`'), 'the note needs a run that succeeded');
               const call = block.slice(block.indexOf('node "<plugin-root>/scripts/peer-runner.mjs" run'), block.indexOf('RUN_RC=$?')).replace(/[ \t]*\\\n[ \t]*/g, ' ');
               // Contract: peer-runner.mjs run's arguments — --kind peer-now keeps the run off the
               // workflow's ensemble bookkeeping, which a workflow flag would book it into.
@@ -479,6 +531,20 @@ describe('skill regions: the contracts hold for every enrolled persona', () => {
               }
               const body = region(text, id);
               const fin = squash(body);
+              // R4 (C75): the finish-verb block runs in a fresh shell: it finds
+              // the workflow itself, and with none found it writes nothing.
+              const finish = shellBlocks(body).find((b) => b.includes(' finish-verb '));
+              if (!commitSurface) {
+                ok(finish, 'the finish-verb block');
+                for (const shell of SHELLS) {
+                  const r = runSkillBlock(shell, finish, { active: '/w/a.md', texts: { 'next-action.txt': 'n\n' } });
+                  strictEqual(r.status, 0, `${shell}: ${r.stderr}`);
+                  deepStrictEqual(r.log.map((l) => l.split(' ')[0]), ['find-active', 'finish-verb'], shell);
+                  ok(r.log[1].startsWith('finish-verb --workflow-path /w/a.md --host codex '), `${shell}: ${r.log[1]}`);
+                }
+                const none = runSkillBlock('bash', finish, { active: '', texts: { 'next-action.txt': 'n\n' } });
+                deepStrictEqual([none.status, none.log.map((l) => l.split(' ')[0])], [1, ['find-active']], `no workflow found: ${none.stderr}`);
+              }
               // Contract: the agent closing an unconverged lifecycle — its last write turns the
               // terminal marker off, or the Stop hook archives an open lifecycle.
               strictEqual(fin.includes('--clear-terminal-marker true'), converges, 'the unconverged write clears the marker, exactly where the lifecycle waits for convergence');

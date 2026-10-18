@@ -6371,6 +6371,1594 @@
         ]
       },
       "why": "C120 (ADR-0063, amendment of 2026-10-14): after the fix and before Refine-verify, refine records the findings it targeted and the tree it left, which the next critique is scoped to"
+    },
+    {
+      "runbooks": [
+        "designer/compose",
+        "designer/critique",
+        "designer/decide",
+        "designer/frame",
+        "designer/investigate",
+        "designer/refine",
+        "engineer/compose",
+        "engineer/critique",
+        "engineer/decide",
+        "engineer/frame",
+        "engineer/investigate",
+        "engineer/refine",
+        "founder/compose",
+        "founder/critique",
+        "founder/decide",
+        "founder/frame",
+        "founder/investigate",
+        "founder/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs create",
+      "from": "state.mjs append",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "R4 (C75) each block runs in a fresh shell: it finds the workflow itself with find-active, never reading an $ACTIVE an earlier block set"
+    },
+    {
+      "runbooks": [
+        "designer/start",
+        "engineer/start",
+        "founder/start"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs create",
+      "from": "state.mjs read",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "R4 (C75) each block runs in a fresh shell: it finds the workflow itself with find-active, never reading an $ACTIVE an earlier block set"
+    },
+    {
+      "runbooks": [
+        "designer/compose",
+        "designer/frame",
+        "designer/investigate",
+        "engineer/compose",
+        "engineer/frame",
+        "engineer/investigate",
+        "founder/compose",
+        "founder/frame",
+        "founder/investigate"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs append#1",
+      "from": "peer-runner.mjs run",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "R4 (C75) each block runs in a fresh shell: it finds the workflow itself with find-active, never reading an $ACTIVE an earlier block set"
+    },
+    {
+      "runbooks": [
+        "designer/critique",
+        "engineer/critique",
+        "founder/critique"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs append#1",
+      "from": "state.mjs critique-scope",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "R4 (C75) each block runs in a fresh shell: it finds the workflow itself with find-active, never reading an $ACTIVE an earlier block set"
+    },
+    {
+      "runbooks": [
+        "designer/decide",
+        "engineer/decide",
+        "founder/decide"
+      ],
+      "op": "insert-call",
+      "where": "call:decide-registry.mjs resolve",
+      "from": "peer-runner.mjs run",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "R4 (C75) each block runs in a fresh shell: it finds the workflow itself with find-active, never reading an $ACTIVE an earlier block set"
+    },
+    {
+      "runbooks": [
+        "designer/refine",
+        "engineer/refine",
+        "founder/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs append#1",
+      "from": "state.mjs review-status",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "R4 (C75) each block runs in a fresh shell: it finds the workflow itself with find-active, never reading an $ACTIVE an earlier block set"
+    },
+    {
+      "runbooks": [
+        "designer/start"
+      ],
+      "op": "insert-call",
+      "where": "call:decide-registry.mjs resolve",
+      "from": "state.mjs finish-verb",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "R4 (C75) each block runs in a fresh shell: it finds the workflow itself with find-active, never reading an $ACTIVE an earlier block set"
+    },
+    {
+      "runbooks": [
+        "founder/start"
+      ],
+      "op": "insert-call",
+      "where": "call:discover-runtime.mjs worktree-plan",
+      "from": "state.mjs finish-verb",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "R4 (C75) each block runs in a fresh shell: it finds the workflow itself with find-active, never reading an $ACTIVE an earlier block set"
+    },
+    {
+      "runbooks": [
+        "designer/compose",
+        "designer/decide",
+        "designer/frame",
+        "designer/investigate",
+        "engineer/compose",
+        "engineer/decide",
+        "engineer/frame",
+        "engineer/investigate",
+        "founder/compose",
+        "founder/decide",
+        "founder/frame",
+        "founder/investigate"
+      ],
+      "op": "insert-call",
+      "where": "call:peer-runner.mjs run",
+      "from": "state.mjs append",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "R4 (C75) each block runs in a fresh shell: it finds the workflow itself with find-active, never reading an $ACTIVE an earlier block set"
+    },
+    {
+      "runbooks": [
+        "designer/critique",
+        "engineer/critique",
+        "founder/critique"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs critique-scope",
+      "from": "peer-runner.mjs run",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "R4 (C75) each block runs in a fresh shell: it finds the workflow itself with find-active, never reading an $ACTIVE an earlier block set"
+    },
+    {
+      "runbooks": [
+        "designer/refine",
+        "engineer/refine",
+        "founder/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs review-status",
+      "from": "state.mjs refine-record",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "R4 (C75) each block runs in a fresh shell: it finds the workflow itself with find-active, never reading an $ACTIVE an earlier block set"
+    },
+    {
+      "runbooks": [
+        "designer/critique",
+        "engineer/critique",
+        "founder/critique"
+      ],
+      "op": "insert-call",
+      "where": "call:peer-runner.mjs run",
+      "from": "state.mjs critique-close",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "R4 (C75) each block runs in a fresh shell: it finds the workflow itself with find-active, never reading an $ACTIVE an earlier block set"
+    },
+    {
+      "runbooks": [
+        "designer/refine",
+        "engineer/refine",
+        "founder/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs refine-record",
+      "from": "peer-runner.mjs run",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "R4 (C75) each block runs in a fresh shell: it finds the workflow itself with find-active, never reading an $ACTIVE an earlier block set"
+    },
+    {
+      "runbooks": [
+        "designer/critique",
+        "engineer/critique",
+        "founder/critique"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs critique-close",
+      "from": "state.mjs append",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "R4 (C75) each block runs in a fresh shell: it finds the workflow itself with find-active, never reading an $ACTIVE an earlier block set"
+    },
+    {
+      "runbooks": [
+        "designer/refine",
+        "engineer/refine",
+        "founder/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:peer-runner.mjs run",
+      "from": "state.mjs append",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "R4 (C75) each block runs in a fresh shell: it finds the workflow itself with find-active, never reading an $ACTIVE an earlier block set"
+    },
+    {
+      "runbooks": [
+        "designer/compose",
+        "designer/critique",
+        "designer/decide",
+        "designer/frame",
+        "designer/investigate",
+        "designer/refine",
+        "engineer/compose",
+        "engineer/critique",
+        "engineer/decide",
+        "engineer/frame",
+        "engineer/investigate",
+        "engineer/refine",
+        "founder/compose",
+        "founder/critique",
+        "founder/decide",
+        "founder/frame",
+        "founder/investigate",
+        "founder/refine"
+      ],
+      "where": "call:peer-runner.mjs settle:--verdict",
+      "from": "$VERDICT",
+      "to": "<the synthesis verdict>",
+      "why": "R4 (C75) the finalize assigns VERDICT in the block, a placeholder the agent fills, rather than reading one an earlier shell set"
+    },
+    {
+      "runbooks": [
+        "designer/compose",
+        "engineer/compose",
+        "founder/compose"
+      ],
+      "op": "remove-call",
+      "where": "call:peer-runner.mjs settle",
+      "from": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "compose"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "<the synthesis verdict>"
+          ],
+          [
+            "--summary-file",
+            "<directory from step 1>/summary.txt"
+          ]
+        ]
+      },
+      "to": null,
+      "why": "R4 G1 settle, the one judge of the run, is the finalize's first write: a refusal (a run still live, of another workflow or phase, or an attempt an empty id would hide) stops the block before the note is appended"
+    },
+    {
+      "runbooks": [
+        "designer/compose",
+        "engineer/compose",
+        "founder/compose"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#4",
+      "from": "state.mjs append",
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "compose"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "<the synthesis verdict>"
+          ],
+          [
+            "--summary-file",
+            "<directory from step 1>/summary.txt"
+          ]
+        ]
+      },
+      "why": "R4 G1 settle, the one judge of the run, is the finalize's first write: a refusal (a run still live, of another workflow or phase, or an attempt an empty id would hide) stops the block before the note is appended"
+    },
+    {
+      "runbooks": [
+        "designer/decide",
+        "engineer/decide",
+        "founder/decide"
+      ],
+      "op": "remove-call",
+      "where": "call:peer-runner.mjs settle",
+      "from": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "decide"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "<the synthesis verdict>"
+          ],
+          [
+            "--summary-file",
+            "<directory from step 1>/summary.txt"
+          ]
+        ]
+      },
+      "to": null,
+      "why": "R4 G1 settle, the one judge of the run, is the finalize's first write: a refusal (a run still live, of another workflow or phase, or an attempt an empty id would hide) stops the block before the note is appended"
+    },
+    {
+      "runbooks": [
+        "designer/decide",
+        "engineer/decide",
+        "founder/decide"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#4",
+      "from": "state.mjs append",
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "decide"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "<the synthesis verdict>"
+          ],
+          [
+            "--summary-file",
+            "<directory from step 1>/summary.txt"
+          ]
+        ]
+      },
+      "why": "R4 G1 settle, the one judge of the run, is the finalize's first write: a refusal (a run still live, of another workflow or phase, or an attempt an empty id would hide) stops the block before the note is appended"
+    },
+    {
+      "runbooks": [
+        "designer/frame",
+        "engineer/frame",
+        "founder/frame"
+      ],
+      "op": "remove-call",
+      "where": "call:peer-runner.mjs settle",
+      "from": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "frame"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "<the synthesis verdict>"
+          ],
+          [
+            "--summary-file",
+            "<directory from step 1>/summary.txt"
+          ]
+        ]
+      },
+      "to": null,
+      "why": "R4 G1 settle, the one judge of the run, is the finalize's first write: a refusal (a run still live, of another workflow or phase, or an attempt an empty id would hide) stops the block before the note is appended"
+    },
+    {
+      "runbooks": [
+        "designer/frame",
+        "engineer/frame",
+        "founder/frame"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#4",
+      "from": "state.mjs append",
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "frame"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "<the synthesis verdict>"
+          ],
+          [
+            "--summary-file",
+            "<directory from step 1>/summary.txt"
+          ]
+        ]
+      },
+      "why": "R4 G1 settle, the one judge of the run, is the finalize's first write: a refusal (a run still live, of another workflow or phase, or an attempt an empty id would hide) stops the block before the note is appended"
+    },
+    {
+      "runbooks": [
+        "designer/investigate",
+        "engineer/investigate",
+        "founder/investigate"
+      ],
+      "op": "remove-call",
+      "where": "call:peer-runner.mjs settle",
+      "from": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "investigate"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "<the synthesis verdict>"
+          ],
+          [
+            "--summary-file",
+            "<directory from step 1>/summary.txt"
+          ]
+        ]
+      },
+      "to": null,
+      "why": "R4 G1 settle, the one judge of the run, is the finalize's first write: a refusal (a run still live, of another workflow or phase, or an attempt an empty id would hide) stops the block before the note is appended"
+    },
+    {
+      "runbooks": [
+        "designer/investigate",
+        "engineer/investigate",
+        "founder/investigate"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#4",
+      "from": "state.mjs append",
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "investigate"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "<the synthesis verdict>"
+          ],
+          [
+            "--summary-file",
+            "<directory from step 1>/summary.txt"
+          ]
+        ]
+      },
+      "why": "R4 G1 settle, the one judge of the run, is the finalize's first write: a refusal (a run still live, of another workflow or phase, or an attempt an empty id would hide) stops the block before the note is appended"
+    },
+    {
+      "runbooks": [
+        "designer/critique",
+        "engineer/critique",
+        "founder/critique"
+      ],
+      "op": "remove-call",
+      "where": "call:peer-runner.mjs settle",
+      "from": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "critique"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "<the synthesis verdict>"
+          ],
+          [
+            "--summary-file",
+            "<directory from step 1>/summary.txt"
+          ]
+        ]
+      },
+      "to": null,
+      "why": "R4 G1 settle, the one judge of the run, is the finalize's first write: a refusal (a run still live, of another workflow or phase, or an attempt an empty id would hide) stops the block before the note is appended"
+    },
+    {
+      "runbooks": [
+        "designer/critique",
+        "engineer/critique",
+        "founder/critique"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#6",
+      "from": "state.mjs append",
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "critique"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "<the synthesis verdict>"
+          ],
+          [
+            "--summary-file",
+            "<directory from step 1>/summary.txt"
+          ]
+        ]
+      },
+      "why": "R4 G1 settle, the one judge of the run, is the finalize's first write: a refusal (a run still live, of another workflow or phase, or an attempt an empty id would hide) stops the block before the note is appended"
+    },
+    {
+      "runbooks": [
+        "designer/refine",
+        "engineer/refine",
+        "founder/refine"
+      ],
+      "op": "remove-call",
+      "where": "call:peer-runner.mjs settle",
+      "from": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "refine"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "<the synthesis verdict>"
+          ],
+          [
+            "--summary-file",
+            "<directory from step 1>/summary.txt"
+          ]
+        ]
+      },
+      "to": null,
+      "why": "R4 G1 settle, the one judge of the run, is the finalize's first write: a refusal (a run still live, of another workflow or phase, or an attempt an empty id would hide) stops the block before the note is appended"
+    },
+    {
+      "runbooks": [
+        "designer/refine",
+        "engineer/refine",
+        "founder/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#6",
+      "from": "state.mjs append",
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "refine"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "<the synthesis verdict>"
+          ],
+          [
+            "--summary-file",
+            "<directory from step 1>/summary.txt"
+          ]
+        ]
+      },
+      "why": "R4 G1 settle, the one judge of the run, is the finalize's first write: a refusal (a run still live, of another workflow or phase, or an attempt an empty id would hide) stops the block before the note is appended"
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "op": "insert-call",
+      "where": "call:discover-runtime.mjs worktree-plan#2",
+      "from": "state.mjs append",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "R4 (C75) each block runs in a fresh shell: start's hand-written Phase 1–6 blocks find the workflow themselves with find-active, never reading an $ACTIVE an earlier block set"
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs append#4",
+      "from": "state.mjs append",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "R4 (C75) each block runs in a fresh shell: start's hand-written Phase 1–6 blocks find the workflow themselves with find-active, never reading an $ACTIVE an earlier block set"
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs append#5",
+      "from": "state.mjs append",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "R4 (C75) each block runs in a fresh shell: start's hand-written Phase 1–6 blocks find the workflow themselves with find-active, never reading an $ACTIVE an earlier block set"
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs append#7",
+      "from": "state.mjs append",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "R4 (C75) each block runs in a fresh shell: start's hand-written Phase 1–6 blocks find the workflow themselves with find-active, never reading an $ACTIVE an earlier block set"
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs append#8",
+      "from": "state.mjs append",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "R4 (C75) each block runs in a fresh shell: start's hand-written Phase 1–6 blocks find the workflow themselves with find-active, never reading an $ACTIVE an earlier block set"
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs append#9",
+      "from": "state.mjs append",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "R4 (C75) each block runs in a fresh shell: start's hand-written Phase 1–6 blocks find the workflow themselves with find-active, never reading an $ACTIVE an earlier block set"
+    },
+    {
+      "runbooks": [
+        "designer/critique",
+        "engineer/critique",
+        "founder/critique"
+      ],
+      "op": "remove-call",
+      "where": "call:state.mjs append#2",
+      "from": {
+        "script": "state.mjs",
+        "sub": "append",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase-label",
+            "Phase 1: Critique (synthesized)"
+          ],
+          [
+            "--phase-note-file",
+            "<directory from step 1>/note.md"
+          ],
+          [
+            "--current-phase",
+            "phase-2-presented"
+          ],
+          [
+            "--next-action-file",
+            "<directory from step 1>/next-action.txt"
+          ],
+          [
+            "--event",
+            "updated"
+          ]
+        ]
+      },
+      "to": null,
+      "why": "R4 J2 the consensus finalize reads the verdict the settle recorded, and writes a conflict's task file, before it appends the phase note: a mismatch or a refused task file stops with the settle its only write, so the retry appends the note once (J4) and no note states a verdict the settle refused"
+    },
+    {
+      "runbooks": [
+        "designer/critique",
+        "engineer/critique",
+        "founder/critique"
+      ],
+      "op": "remove-call",
+      "where": "call:state.mjs consensus-task",
+      "from": {
+        "script": "state.mjs",
+        "sub": "consensus-task",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--text-file",
+            "$CONTESTED_FILE"
+          ]
+        ]
+      },
+      "to": null,
+      "why": "R4 J2 the consensus finalize reads the verdict the settle recorded, and writes a conflict's task file, before it appends the phase note: a mismatch or a refused task file stops with the settle its only write, so the retry appends the note once (J4) and no note states a verdict the settle refused"
+    },
+    {
+      "runbooks": [
+        "designer/critique",
+        "engineer/critique",
+        "founder/critique"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs ensemble-verdict",
+      "from": "state.mjs finish-verb",
+      "to": {
+        "script": "state.mjs",
+        "sub": "consensus-task",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--text-file",
+            "$CONTESTED_FILE"
+          ]
+        ]
+      },
+      "why": "R4 J2 the consensus finalize reads the verdict the settle recorded, and writes a conflict's task file, before it appends the phase note: a mismatch or a refused task file stops with the settle its only write, so the retry appends the note once (J4) and no note states a verdict the settle refused"
+    },
+    {
+      "runbooks": [
+        "designer/critique",
+        "engineer/critique",
+        "founder/critique"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs consensus-task",
+      "from": "state.mjs finish-verb",
+      "to": {
+        "script": "state.mjs",
+        "sub": "append",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase-label",
+            "Phase 1: Critique (synthesized)"
+          ],
+          [
+            "--phase-note-file",
+            "<directory from step 1>/note.md"
+          ],
+          [
+            "--current-phase",
+            "phase-2-presented"
+          ],
+          [
+            "--next-action-file",
+            "<directory from step 1>/next-action.txt"
+          ],
+          [
+            "--event",
+            "updated"
+          ]
+        ]
+      },
+      "why": "R4 J2 the consensus finalize reads the verdict the settle recorded, and writes a conflict's task file, before it appends the phase note: a mismatch or a refused task file stops with the settle its only write, so the retry appends the note once (J4) and no note states a verdict the settle refused"
+    },
+    {
+      "runbooks": [
+        "designer/decide",
+        "engineer/decide",
+        "founder/decide"
+      ],
+      "op": "remove-call",
+      "where": "call:state.mjs append#2",
+      "from": {
+        "script": "state.mjs",
+        "sub": "append",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase-label",
+            "Phase 1: Decide (synthesized)"
+          ],
+          [
+            "--phase-note-file",
+            "<directory from step 1>/note.md"
+          ],
+          [
+            "--current-phase",
+            "phase-2-presented"
+          ],
+          [
+            "--next-action-file",
+            "<directory from step 1>/next-action.txt"
+          ],
+          [
+            "--event",
+            "updated"
+          ]
+        ]
+      },
+      "to": null,
+      "why": "R4 J2 the consensus finalize reads the verdict the settle recorded, and writes a conflict's task file, before it appends the phase note: a mismatch or a refused task file stops with the settle its only write, so the retry appends the note once (J4) and no note states a verdict the settle refused"
+    },
+    {
+      "runbooks": [
+        "designer/decide",
+        "engineer/decide",
+        "founder/decide"
+      ],
+      "op": "remove-call",
+      "where": "call:state.mjs consensus-task",
+      "from": {
+        "script": "state.mjs",
+        "sub": "consensus-task",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--text-file",
+            "$CONTESTED_FILE"
+          ]
+        ]
+      },
+      "to": null,
+      "why": "R4 J2 the consensus finalize reads the verdict the settle recorded, and writes a conflict's task file, before it appends the phase note: a mismatch or a refused task file stops with the settle its only write, so the retry appends the note once (J4) and no note states a verdict the settle refused"
+    },
+    {
+      "runbooks": [
+        "designer/decide",
+        "engineer/decide",
+        "founder/decide"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs ensemble-verdict",
+      "from": "state.mjs finish-verb",
+      "to": {
+        "script": "state.mjs",
+        "sub": "consensus-task",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--text-file",
+            "$CONTESTED_FILE"
+          ]
+        ]
+      },
+      "why": "R4 J2 the consensus finalize reads the verdict the settle recorded, and writes a conflict's task file, before it appends the phase note: a mismatch or a refused task file stops with the settle its only write, so the retry appends the note once (J4) and no note states a verdict the settle refused"
+    },
+    {
+      "runbooks": [
+        "designer/decide",
+        "engineer/decide",
+        "founder/decide"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs consensus-task",
+      "from": "state.mjs finish-verb",
+      "to": {
+        "script": "state.mjs",
+        "sub": "append",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase-label",
+            "Phase 1: Decide (synthesized)"
+          ],
+          [
+            "--phase-note-file",
+            "<directory from step 1>/note.md"
+          ],
+          [
+            "--current-phase",
+            "phase-2-presented"
+          ],
+          [
+            "--next-action-file",
+            "<directory from step 1>/next-action.txt"
+          ],
+          [
+            "--event",
+            "updated"
+          ]
+        ]
+      },
+      "why": "R4 J2 the consensus finalize reads the verdict the settle recorded, and writes a conflict's task file, before it appends the phase note: a mismatch or a refused task file stops with the settle its only write, so the retry appends the note once (J4) and no note states a verdict the settle refused"
+    },
+    {
+      "runbooks": [
+        "designer/investigate",
+        "engineer/investigate",
+        "founder/investigate"
+      ],
+      "op": "remove-call",
+      "where": "call:state.mjs append#2",
+      "from": {
+        "script": "state.mjs",
+        "sub": "append",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase-label",
+            "Phase 1: Investigate (synthesized)"
+          ],
+          [
+            "--phase-note-file",
+            "<directory from step 1>/note.md"
+          ],
+          [
+            "--current-phase",
+            "phase-2-presented"
+          ],
+          [
+            "--next-action-file",
+            "<directory from step 1>/next-action.txt"
+          ],
+          [
+            "--event",
+            "updated"
+          ]
+        ]
+      },
+      "to": null,
+      "why": "R4 J2 the consensus finalize reads the verdict the settle recorded, and writes a conflict's task file, before it appends the phase note: a mismatch or a refused task file stops with the settle its only write, so the retry appends the note once (J4) and no note states a verdict the settle refused"
+    },
+    {
+      "runbooks": [
+        "designer/investigate",
+        "engineer/investigate",
+        "founder/investigate"
+      ],
+      "op": "remove-call",
+      "where": "call:state.mjs consensus-task",
+      "from": {
+        "script": "state.mjs",
+        "sub": "consensus-task",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--text-file",
+            "$CONTESTED_FILE"
+          ]
+        ]
+      },
+      "to": null,
+      "why": "R4 J2 the consensus finalize reads the verdict the settle recorded, and writes a conflict's task file, before it appends the phase note: a mismatch or a refused task file stops with the settle its only write, so the retry appends the note once (J4) and no note states a verdict the settle refused"
+    },
+    {
+      "runbooks": [
+        "designer/investigate",
+        "engineer/investigate",
+        "founder/investigate"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs ensemble-verdict",
+      "from": "state.mjs finish-verb",
+      "to": {
+        "script": "state.mjs",
+        "sub": "consensus-task",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--text-file",
+            "$CONTESTED_FILE"
+          ]
+        ]
+      },
+      "why": "R4 J2 the consensus finalize reads the verdict the settle recorded, and writes a conflict's task file, before it appends the phase note: a mismatch or a refused task file stops with the settle its only write, so the retry appends the note once (J4) and no note states a verdict the settle refused"
+    },
+    {
+      "runbooks": [
+        "designer/investigate",
+        "engineer/investigate",
+        "founder/investigate"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs consensus-task",
+      "from": "state.mjs finish-verb",
+      "to": {
+        "script": "state.mjs",
+        "sub": "append",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase-label",
+            "Phase 1: Investigate (synthesized)"
+          ],
+          [
+            "--phase-note-file",
+            "<directory from step 1>/note.md"
+          ],
+          [
+            "--current-phase",
+            "phase-2-presented"
+          ],
+          [
+            "--next-action-file",
+            "<directory from step 1>/next-action.txt"
+          ],
+          [
+            "--event",
+            "updated"
+          ]
+        ]
+      },
+      "why": "R4 J2 the consensus finalize reads the verdict the settle recorded, and writes a conflict's task file, before it appends the phase note: a mismatch or a refused task file stops with the settle its only write, so the retry appends the note once (J4) and no note states a verdict the settle refused"
+    },
+    {
+      "runbooks": [
+        "designer/critique",
+        "engineer/critique",
+        "founder/critique"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#6",
+      "from": "peer-runner.mjs settle",
+      "to": {
+        "script": "state.mjs",
+        "sub": "read",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ]
+        ]
+      },
+      "why": "R4 K2, L1, L2 the consensus finalize reads every result this phase recorded, and the gate, from the workflow before settle, its first write: a recorded conflict with no owner ruling (its task file never retired) holds every finish but its own run finalized as a conflict, and a pending conflict gate every finish but its own run as a conflict, so a recorded conflict never ends without its gate (the owner's J2 ruling and its Fix now of 2026-10-19)"
+    },
+    {
+      "runbooks": [
+        "designer/decide",
+        "engineer/decide",
+        "founder/decide"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#4",
+      "from": "peer-runner.mjs settle",
+      "to": {
+        "script": "state.mjs",
+        "sub": "read",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ]
+        ]
+      },
+      "why": "R4 K2, L1, L2 the consensus finalize reads every result this phase recorded, and the gate, from the workflow before settle, its first write: a recorded conflict with no owner ruling (its task file never retired) holds every finish but its own run finalized as a conflict, and a pending conflict gate every finish but its own run as a conflict, so a recorded conflict never ends without its gate (the owner's J2 ruling and its Fix now of 2026-10-19)"
+    },
+    {
+      "runbooks": [
+        "designer/investigate",
+        "engineer/investigate",
+        "founder/investigate"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#4",
+      "from": "peer-runner.mjs settle",
+      "to": {
+        "script": "state.mjs",
+        "sub": "read",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ]
+        ]
+      },
+      "why": "R4 K2, L1, L2 the consensus finalize reads every result this phase recorded, and the gate, from the workflow before settle, its first write: a recorded conflict with no owner ruling (its task file never retired) holds every finish but its own run finalized as a conflict, and a pending conflict gate every finish but its own run as a conflict, so a recorded conflict never ends without its gate (the owner's J2 ruling and its Fix now of 2026-10-19)"
+    },
+    {
+      "runbooks": [
+        "designer/refine"
+      ],
+      "where": "guards.converged",
+      "from": "    --next-step-confidence \"<HIGH|MEDIUM|LOW>\" || exit $?",
+      "to": "    --next-step-confidence \"$CONFIDENCE\" || exit $?",
+      "why": "R4 K3 every value the last write takes is assigned at the top of the block and checked before settle, its first write: the convergence check's last writes record the CONFIDENCE and RESOLVE_VERB the agent fills, not placeholders of their own"
+    },
+    {
+      "runbooks": [
+        "designer/refine"
+      ],
+      "where": "guards.converged",
+      "from": "    --next-step-confidence \"<HIGH|MEDIUM|LOW>\" \\",
+      "to": "    --next-step-confidence \"$CONFIDENCE\" \\",
+      "why": "R4 K3 every value the last write takes is assigned at the top of the block and checked before settle, its first write: the convergence check's last writes record the CONFIDENCE and RESOLVE_VERB the agent fills, not placeholders of their own"
+    },
+    {
+      "runbooks": [
+        "designer/refine"
+      ],
+      "where": "guards.converged",
+      "from": "--next-step-verb \"<refine|decide|investigate>\" \\",
+      "to": "--next-step-verb \"$RESOLVE_VERB\" \\",
+      "why": "R4 K3 every value the last write takes is assigned at the top of the block and checked before settle, its first write: the convergence check's last writes record the CONFIDENCE and RESOLVE_VERB the agent fills, not placeholders of their own"
+    },
+    {
+      "runbooks": [
+        "designer/refine"
+      ],
+      "where": "call:state.mjs append#3:--next-step-verb",
+      "from": "<refine|decide|investigate>",
+      "to": "<refine|decide|investigate — the next step that resolves the flagged item, when not converged>",
+      "why": "R4 K3 every value the last write takes is assigned at the top of the block and checked before settle, its first write: not converged, the last append records the RESOLVE_VERB the agent fills there"
     }
   ],
   "runbooks": {

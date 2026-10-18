@@ -25,7 +25,9 @@
 import { describe, it } from 'node:test';
 import { strictEqual, ok, deepStrictEqual, match } from 'node:assert/strict';
 import { readFile, readdir, stat } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveSkillsRoot, skillsPath } from '../_helpers.mjs';
@@ -990,5 +992,82 @@ describe('plugins/designer — one hook-helper module (ADR-0066 D5)', () => {
         ok(!text.includes('_shared.mjs'), `adapters/${host}/hooks/${hook} must not import an adapter-local helper`);
       }
     }
+  });
+});
+
+// K5: frame is a core skill, which Codex reads too, so its ensemble dispatch
+// runs `<plugin-root>` — the root the skill was read from — and never Claude's
+// root lookup (AGENTIC_DESIGNER_ROOT, $CLAUDE_PLUGIN_ROOT, the newest release
+// under ~/.claude/plugins/cache): on Codex with a Claude cache present that
+// lookup silently runs the cached Claude release's state.mjs and peer-runner.
+// The block runs here in a fresh shell with every AGENTIC_* variable and
+// CLAUDE_PLUGIN_ROOT unset and a HOME whose Claude cache holds a state.mjs that
+// leaves a marker, against an empty TEXT_DIR, so it stops at the prompt check
+// and never dispatches.
+describe('plugins/designer — the frame skill dispatch block runs <plugin-root>, in a fresh shell (K5)', () => {
+  const SHELLS = ['bash', 'zsh', 'sh'].filter((sh) => spawnSync(sh, ['-c', 'true']).status === 0);
+  const bashBlocks = (text) => [...text.matchAll(/^```bash\n([\s\S]*?)^```$/gm)].map((m) => m[1]);
+  function withRepo(fn) {
+    const dir = mkdtempSync(resolve(tmpdir(), 'designer-frame-shell-'));
+    try {
+      const repo = resolve(dir, 'repo');
+      const home = resolve(dir, 'home');
+      const textDir = resolve(dir, 'text');
+      mkdirSync(textDir);
+      const scripts = resolve(home, '.claude/plugins/cache/agentic-plugins/designer/0.1.0/scripts');
+      mkdirSync(scripts, { recursive: true });
+      const marker = resolve(home, 'cached-state-ran');
+      for (const script of ['state.mjs', 'peer-runner.mjs']) {
+        writeFileSync(resolve(scripts, script), `import fs from 'node:fs';\nfs.writeFileSync(${JSON.stringify(marker)}, process.argv.slice(2).join(' '));\nprocess.stdout.write('/cache/wf.md\\n');\nprocess.stderr.write('CACHED-STATE-RAN\\n');\n`);
+      }
+      const env = { ...process.env, HOME: home };
+      for (const k of Object.keys(env)) if (k.startsWith('AGENTIC_')) delete env[k];
+      delete env.CLAUDE_PLUGIN_ROOT;
+      const git = (...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args], { cwd: repo, encoding: 'utf8' }).trim();
+      mkdirSync(repo);
+      git('init', '-q', '-b', 'feat/r');
+      writeFileSync(resolve(repo, '.gitignore'), '.agentic-plugins/state/\n');
+      git('add', '.');
+      git('commit', '-q', '-m', 'base');
+      const create = () => execFileSync('node', [resolve(PLUGIN_ROOT, 'scripts/state.mjs'), 'create', '--repo-root', repo, '--verb', 'frame', '--host', 'claude',
+        '--git-baseline-branch', 'feat/r', '--git-baseline-head', git('rev-parse', 'HEAD')], { cwd: repo, encoding: 'utf8', env }).trim();
+      const run = (shell, block) => spawnSync(shell, ['-c', `ACTIVE='/w/stale.md'; REPO_ROOT='/nonexistent'\n${block}`], { cwd: repo, encoding: 'utf8', env });
+      return fn({ textDir, marker, create, run });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("names no Claude root lookup, runs <plugin-root>'s state.mjs to find the workflow, and with none found stops before the dispatch", async () => {
+    const text = await readFile(skillsPath(PLUGIN_ROOT, 'frame', 'SKILL.md'), 'utf8');
+    const found = bashBlocks(text).filter((b) => b.includes('/scripts/peer-runner.mjs" run \\'));
+    strictEqual(found.length, 1, 'the frame dispatch block');
+    // Contract: the Codex agent running this core-skill block runs the scripts
+    // of the plugin it read the skill from — a Claude root lookup here runs a
+    // cached Claude release's instead.
+    for (const [claude, what] of [['~/.claude/plugins/cache', "Claude's plugin cache"], ['CLAUDE_PLUGIN_ROOT', 'CLAUDE_PLUGIN_ROOT']]) {
+      ok(!found[0].includes(claude), `the frame dispatch block must not read ${what}`);
+    }
+    ok(!/AGENTIC_[A-Z_]*_ROOT/.test(found[0]), 'the frame dispatch block must not read an AGENTIC_*_ROOT override');
+    ok(found[0].includes('ACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active') && found[0].includes('node "<plugin-root>/scripts/peer-runner.mjs" run \\'), 'both calls run <plugin-root>/scripts');
+    ok(found[0].startsWith("TEXT_DIR='<the directory mktemp printed>'\n"), 'the block names the prompt directory first');
+    const fill = (textDir) => found[0].replace("TEXT_DIR='<the directory mktemp printed>'", () => `TEXT_DIR='${textDir}'`).split('<plugin-root>').join(PLUGIN_ROOT);
+    for (const shell of SHELLS) {
+      withRepo(({ textDir, marker, create, run }) => {
+        create();
+        const r = run(shell, fill(textDir));
+        ok(!existsSync(marker) && !r.stderr.includes('CACHED-STATE-RAN'), `${shell}: the Claude cache's scripts must not run`);
+        // The workflow was found, so the block reached the prompt check, which
+        // stops it (TEXT_DIR holds no prompt.xml).
+        strictEqual(r.status, 1, `${shell}: ${r.stderr}`);
+        ok(r.stderr.includes('prompt.xml in TEXT_DIR (') && !r.stderr.includes('No active designer workflow'), `${shell}: ${r.stderr}`);
+      });
+    }
+    withRepo(({ textDir, marker, run }) => {
+      const r = run('bash', fill(textDir));
+      ok(!existsSync(marker), "the Claude cache's scripts must not run");
+      strictEqual(r.status, 1, r.stderr);
+      ok(r.stderr.includes('✗ No active designer workflow on this branch; nothing was dispatched.'), r.stderr);
+    });
   });
 });

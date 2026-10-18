@@ -22,10 +22,19 @@
 //     finish-verb, so no next step is published;
 //   - the six verbs' finalize settles from a real run ledger — a completed run
 //     records the synthesis verdict, a failed one `failed`, a never-launched
-//     attempt nothing — and refuses an empty run id that would hide a launched
-//     run, before finish-verb; a verb that closes only once it converged
+//     attempt nothing; an empty DISPATCH_DIR beside a pending run is refused
+//     (R4 H1: no run launched never names one); a launched run whose
+//     dispatch directory is gone is named by its own ledger directory (R4 G2,
+//     J1), and `gone` names no run; a ledger of another workflow, or a run of
+//     another phase (R4 G1), stop it before any write; a conflict finalize
+//     run again after its consensus-task failed settles the run it kept in
+//     its TEXT_DIR (R4 G2); a verb that closes only once it converged
 //     (terminal_requires_convergence) stays open, with its next step, when it
 //     did not;
+//   - R4 F1: the dispatch block, killed after it launched the run, leaves its
+//     result empty; the finalize takes the run the dispatch recorded, stops
+//     before any write while the peer still runs, and settles it failed once
+//     it is abandoned; a ledger pruned since settles as ledger_missing;
 //   - decide's Owner selection and refine's Owner decision: the owner's words
 //     reach the resolved note as written, the clear writes the next step and
 //     its next action, and inside a /<persona>:start lifecycle the block
@@ -40,8 +49,9 @@ import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
 import { mkdtemp, rm, readFile, writeFile, mkdir, realpath } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
 import { pathToFileURL } from 'node:url';
 
 import { parseRegions, renderTemplate, renderingDeclaration, replaceRegionBodies } from '../../scripts/lib/persona-pipeline.mjs';
@@ -98,6 +108,16 @@ const writing = (text) => blocks(text).filter((b) => !/^\s*mktemp -d /.test(b));
 // ADR-0059's amendment of 2026-10-10: the directory the agent wrote its text
 // files into, named on a block's first line; the test fills it as the agent does.
 const TEXT_DIR_LINE = "TEXT_DIR='<directory from step 1>'";
+// R4 (C75): the finalize's dispatch directory and synthesis verdict, which the
+// agent fills; the block finds the workflow itself, and reads the run's id
+// from the result the runner wrote in that directory.
+const DISPATCH_DIR_LINE = "DISPATCH_DIR='<the directory the dispatch block ran with; empty when no run launched; the run ledger directory when a run launched and that directory is gone>'";
+const VERDICT_LINE = "VERDICT='<the synthesis verdict>'";
+// R4 K3: the last write's confidence, and, where the verb closes only once it
+// converged, the step that resolves what is still open — set at the top of the
+// block and checked before its first write.
+const CONFIDENCE_LINE = "CONFIDENCE='<HIGH|MEDIUM|LOW>'";
+const RESOLVE_LINE = "RESOLVE_VERB='<refine|decide|investigate — the next step that resolves the flagged item, when not converged>'";
 // The `text` scaffold a runbook shows for one of the files, after the first
 // sentence that names it: what the agent writes when nothing else applies.
 function scaffold(text, file) {
@@ -171,6 +191,38 @@ for (const persona of PERSONAS) {
     return fill(block, TEXT_DIR_LINE, `TEXT_DIR='${dir}'`);
   }
 
+  // The dispatch's directory: the result `peer-runner run` printed, which the
+  // dispatch block redirects to prompt.xml.run.json there.
+  async function dispatched(run) {
+    const dir = await realpath(await mkdtemp(join(tmpdir(), `${persona} agentic dispatch.`)));
+    TEXT_DIRS.push(dir);
+    await writeFile(join(dir, 'prompt.xml.run.json'), run.stdout);
+    return dir;
+  }
+
+  // A run's status as the real runner reports it, or null while it has none.
+  function statusOf(dir, runId) {
+    try {
+      return JSON.parse(execFileSync('node', [PEER_RUNNER, 'status', '--repo-root', dir, '--run-id', runId], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
+    } catch {
+      return null;
+    }
+  }
+
+  async function waitFor(probe, done, what) {
+    for (const end = Date.now() + 20000; Date.now() < end; await new Promise((r) => setTimeout(r, 50))) {
+      const v = probe();
+      if (done(v)) return v;
+    }
+    throw new Error(`timed out waiting for ${what}`);
+  }
+
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+  // The agent's fills of the finalize's head: the dispatch's directory (empty
+  // when no run launched) and the verdict.
+  const filled = (b, runDir = '', verdict = 'agreed') => fill(fill(fill(b, DISPATCH_DIR_LINE, runDir ? `DISPATCH_DIR='${runDir}'` : "DISPATCH_DIR=''"), VERDICT_LINE, `VERDICT='${verdict}'`), CONFIDENCE_LINE, "CONFIDENCE='HIGH'");
+
   async function withRepo(fn) {
     // realpath: the blocks resolve the repository through git, which reports
     // /private/var where mkdtemp said /var on macOS.
@@ -206,14 +258,16 @@ for (const persona of PERSONAS) {
 
   // A stub companions root (AGENTIC_COMPANIONS_ROOT): the runner finds a codex
   // companion that answers at once, or none at all.
-  async function stubCompanions({ missing = false } = {}) {
+  async function stubCompanions({ missing = false, hang = false } = {}) {
     const dir = await realpath(await mkdtemp(join(tmpdir(), `${persona}-companions-`)));
     await writeFile(join(dir, 'discover-peer.mjs'), missing
       ? 'export async function discoverPeerCompanion() { return { ok: false, reason: "not installed" }; }\n'
       : 'export async function discoverPeerCompanion({ peer } = {}) { return { ok: true, path: new URL("./" + peer + "-companion.mjs", import.meta.url).pathname }; }\n');
     if (!missing) {
-      await writeFile(join(dir, 'codex-companion.mjs'),
-        "#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({ status: 'success', peer_host: 'codex', peer_model: null, stdout: 'the peer answer', exit_code: 0 }));\n");
+      await writeFile(join(dir, 'codex-companion.mjs'), hang
+        // A peer that never answers (R4 F1: the runner is killed meanwhile).
+        ? '#!/usr/bin/env node\nsetTimeout(() => {}, 120000);\n'
+        : "#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({ status: 'success', peer_host: 'codex', peer_model: null, stdout: 'the peer answer', exit_code: 0 }));\n");
       execFileSync('chmod', ['755', join(dir, 'codex-companion.mjs')]);
     }
     await writeFile(join(dir, 'prompt.xml'), '<task>fixture</task>\n');
@@ -241,6 +295,7 @@ for (const persona of PERSONAS) {
           find: all0[0],
           resume: all0.find((b) => b.includes('state.mjs" append')),
           phase2: writing(section(text, '## Phase 2 — State finalize'))[0],
+          dispatch: blocks(text).find((blk) => blk.includes('peer-runner.mjs" run \\')),
           nextAction: scaffold(section(text, '## Phase 2 — State finalize'), 'next-action.txt'),
           type: /^ENSEMBLE_TYPE='([^']+)'$/m.exec(text)?.[1],
         };
@@ -250,15 +305,15 @@ for (const persona of PERSONAS) {
       // that resolves what is still open; the note, the summary and the next
       // action written as files (the scaffold's default next action, unless
       // the case names another).
-      const finalize = async (verb, { converged = true, note = '### Ensemble synthesis: fixture', summary = 'fine', nextAction = verbBlocks(verb).nextAction } = {}) => {
-        let b = fill(verbBlocks(verb).phase2, '--next-step-confidence "<HIGH|MEDIUM|LOW>"', '--next-step-confidence HIGH');
+      const finalize = async (verb, { converged = true, note = '### Ensemble synthesis: fixture', summary = 'fine', nextAction = verbBlocks(verb).nextAction, runDir = '' } = {}) => {
+        let b = filled(verbBlocks(verb).phase2, runDir);
         b = await withTexts(b, { 'note.md': note, 'summary.txt': summary, 'next-action.txt': nextAction });
         // Contract: the agent running the finalize — the convergence step it fills exists exactly
         // where the verb waits for convergence; elsewhere it would hold back the terminal write.
         if (convergent(verb)) {
           b = b.replace(/CONVERGED="<yes\|no[^"\n]*>"/, () => `CONVERGED="${converged ? 'yes' : 'no'}"`);
           ok(b.includes(`CONVERGED="${converged ? 'yes' : 'no'}"`), 'the convergence is set in the block');
-          b = fill(b, '"<refine|decide|investigate>"', 'refine');
+          b = fill(b, RESOLVE_LINE, "RESOLVE_VERB='refine'");
         } else {
           ok(!b.includes('CONVERGED='), 'a verb that does not wait for convergence has no convergence step');
         }
@@ -368,7 +423,7 @@ for (const persona of PERSONAS) {
         it('Phase 2 under an autopilot run: the next step only with dispatch_target on, the interactive terminal write with it off', skip('critique'), async () => {
           await withRepo(async (dir) => {
             const wf = createWorkflow(dir, 'critique');
-            const r = runBlock(shell, dir, await finalize('critique'), { ACTIVE: wf, RUN_ID: '', VERDICT: 'agreed', AGENTIC_AUTOPILOT: AUTOPILOT_RUN_ID });
+            const r = runBlock(shell, dir, await finalize('critique'), { ACTIVE: '/w/stale.md', AGENTIC_AUTOPILOT: AUTOPILOT_RUN_ID });
             strictEqual(r.status, 0, r.stderr);
             const fm = (await readWorkflow(wf)).frontmatter;
             // On: the terminal marker is left for the commit; off: the run is
@@ -379,7 +434,7 @@ for (const persona of PERSONAS) {
         });
 
         for (const verb of VERBS) {
-          it(`${verb}'s finalize: completed → the synthesis verdict, failed → failed, never launched → nothing, each then finish-verb; an empty run id hiding a launched run stops the block first`, skip(verb), async () => {
+          it(`${verb}'s finalize: completed → the synthesis verdict, failed → failed, never launched → nothing, each then finish-verb; an empty DISPATCH_DIR beside a pending run is refused, the run's ledger directory settles that run, and a ledger of another workflow (A's run finalized on B) stops the block before any write (R4 G2, H1, J1)`, skip(verb), async () => {
             const ok_ = await stubCompanions();
             const gone = await stubCompanions({ missing: true });
             try {
@@ -388,8 +443,8 @@ for (const persona of PERSONAS) {
                 // Contract: the dispatch's ENSEMBLE_TYPE, which this case launches the run under —
                 // unread, the launch below would book the run under no type.
                 ok(typeof type === 'string', 'the runbook names its ensemble type');
-                const phase2 = await finalize(verb);
-                const vars = { VERDICT: 'agreed' };
+                // A value an earlier shell left is not what the block reads.
+                const vars = { ACTIVE: '/w/stale.md', RUN_ID: 'stale', VERDICT: 'stale' };
                 const results = async (wf) => {
                   const fm = (await readWorkflow(wf)).frontmatter;
                   return { fm, results: fm.ensemble_results ?? [], pending: fm.pending_ensemble ?? [] };
@@ -400,7 +455,7 @@ for (const persona of PERSONAS) {
                 let wf = createWorkflow(dir, verb);
                 let r = launch(dir, wf, verb, type, `${type}-done`, ok_);
                 strictEqual(r.status, 0, r.stderr);
-                r = runBlock(shell, dir, phase2, { ACTIVE: wf, RUN_ID: `${type}-done`, ...vars });
+                r = runBlock(shell, dir, await finalize(verb, { runDir: await dispatched(r) }), vars);
                 strictEqual(r.status, 0, r.stderr);
                 let got = await results(wf);
                 deepStrictEqual(got.results.map((e) => [e.run_id, e.verdict]), [[`${type}-done`, 'agreed']]);
@@ -410,8 +465,8 @@ for (const persona of PERSONAS) {
 
                 // Launched and failed (no companion): verdict failed, whatever the synthesis said.
                 wf = createWorkflow(dir, verb);
-                launch(dir, wf, verb, type, `${type}-gone`, gone);
-                r = runBlock(shell, dir, phase2, { ACTIVE: wf, RUN_ID: `${type}-gone`, ...vars });
+                r = launch(dir, wf, verb, type, `${type}-gone`, gone);
+                r = runBlock(shell, dir, await finalize(verb, { runDir: await dispatched(r) }), vars);
                 strictEqual(r.status, 0, r.stderr);
                 got = await results(wf);
                 deepStrictEqual(got.results.map((e) => [e.run_id, e.verdict]), [[`${type}-gone`, 'failed']]);
@@ -420,7 +475,7 @@ for (const persona of PERSONAS) {
 
                 // Never launched: nothing recorded, the verb still finishes.
                 wf = createWorkflow(dir, verb);
-                r = runBlock(shell, dir, phase2, { ACTIVE: wf, RUN_ID: '', ...vars });
+                r = runBlock(shell, dir, await finalize(verb), vars);
                 strictEqual(r.status, 0, r.stderr);
                 got = await results(wf);
                 deepStrictEqual([got.results.length, got.pending.length, got.fm.current_phase], [0, 0, 'summary-complete']);
@@ -432,7 +487,7 @@ for (const persona of PERSONAS) {
                   // verb's terminal marker turned off.
                   wf = createWorkflow(dir, verb);
                   state('set-terminal', '--workflow-path', wf, '--host', 'claude', '--terminal-phase', 'summary-complete', '--terminal-marker', 'true');
-                  r = runBlock(shell, dir, await finalize(verb, { converged: false, nextAction: 'Paused: the flagged item; refine resolves it' }), { ACTIVE: wf, RUN_ID: '', ...vars });
+                  r = runBlock(shell, dir, await finalize(verb, { converged: false, nextAction: 'Paused: the flagged item; refine resolves it' }), vars);
                   strictEqual(r.status, 0, r.stderr);
                   ok(r.stderr.includes('PAUSED (not converged)'), r.stderr);
                   got = await results(wf);
@@ -441,18 +496,263 @@ for (const persona of PERSONAS) {
                   archive(dir, wf);
                 }
 
-                // An empty run id while a launched run is pending: settle
-                // refuses, and finish-verb never runs.
+                // R4 H1: an empty DISPATCH_DIR while a launched run is pending (a
+                // local-only synthesis, say) is the empty id, never that run:
+                // settle refuses it, and nothing is written.
                 wf = createWorkflow(dir, verb);
-                strictEqual(launch(dir, wf, verb, type, `${type}-hidden`, ok_).status, 0);
-                r = runBlock(shell, dir, phase2, { ACTIVE: wf, RUN_ID: '', ...vars });
-                ok(r.status !== 0, 'the block stops');
+                const hidden = launch(dir, wf, verb, type, `${type}-hidden`, ok_);
+                strictEqual(hidden.status, 0);
+                const hiddenDir = await dispatched(hidden);
+                const unread = await readFile(wf, 'utf8');
+                r = runBlock(shell, dir, await finalize(verb), vars);
+                strictEqual(r.status, 1, r.stderr);
+                ok(r.stderr.includes(`${type}-hidden`), `settle names the run it would hide: ${r.stderr}`);
+                strictEqual(await readFile(wf, 'utf8'), unread, 'no run launched beside a pending run: nothing was written');
+                // R4 J1: the dispatch's directory gone, the run's own ledger
+                // directory names it: the block settles that run, bound to this
+                // workflow by its handle, then finishes the verb.
+                const ledgerOf = (id) => join(dir, P.stateDirRel, 'peer-runs', id);
+                r = runBlock(shell, dir, await finalize(verb, { runDir: ledgerOf(`${type}-hidden`) }), vars);
+                strictEqual(r.status, 0, r.stderr);
                 got = await results(wf);
-                deepStrictEqual([got.fm.next_step_kind, got.fm.terminal_marker === true, got.pending.length], [undefined, false, 1]);
+                deepStrictEqual([got.results.map((e) => [e.run_id, e.verdict]), got.pending.length, got.fm.current_phase], [[[`${type}-hidden`, 'agreed']], 0, 'summary-complete']);
+                archive(dir, wf);
+
+                // R4: a run of another workflow (the branch's workflow changed
+                // after the dispatch) is refused before any write to this one.
+                const other = createWorkflow(dir, verb);
+                const before = await readFile(other, 'utf8');
+                r = runBlock(shell, dir, await finalize(verb, { runDir: hiddenDir }), vars);
+                strictEqual(r.status, 1, r.stderr);
+                ok(r.stderr.includes('its handle names another workflow'), r.stderr);
+                strictEqual(await readFile(other, 'utf8'), before, 'nothing was written');
+                // R4 J1, the peer's repro: A's run (archived with its workflow)
+                // named by its ledger directory on B, whose own run of this phase
+                // is pending: refused, B's workflow untouched and its run still
+                // pending.
+                strictEqual(launch(dir, other, verb, type, `${type}-b`, ok_).status, 0);
+                const pendingB = await readFile(other, 'utf8');
+                r = runBlock(shell, dir, await finalize(verb, { runDir: ledgerOf(`${type}-hidden`) }), vars);
+                strictEqual(r.status, 1, r.stderr);
+                ok(r.stderr.includes('its handle names another workflow'), r.stderr);
+                strictEqual(await readFile(other, 'utf8'), pendingB, "A's ledger on B: nothing was written");
+                // The peer's repro exactly: `gone` on B while B's one run of this
+                // phase is pending (the run a pending-row fallback would settle
+                // with A's summary) is refused, and B is untouched.
+                r = runBlock(shell, dir, await finalize(verb, { runDir: 'gone' }), vars);
+                strictEqual(r.status, 1, r.stderr);
+                ok(r.stderr.includes("set it to the run's ledger directory"), r.stderr);
+                strictEqual(await readFile(other, 'utf8'), pendingB, 'gone on B, its one run pending: nothing was written');
+
+                // R4 G1: a run of this workflow but another phase (a dispatch
+                // directory from an earlier verb) is refused by settle, the
+                // block's first write, so neither the note nor the phase moves.
+                const elsewhere = verb === 'compose' ? 'critique' : 'compose';
+                r = launch(dir, other, elsewhere, type, `${type}-elsewhere`, ok_);
+                strictEqual(r.status, 0, r.stderr);
+                const elsewhereDir = await dispatched(r);
+                const unmoved = await readFile(other, 'utf8');
+                r = runBlock(shell, dir, await finalize(verb, { runDir: elsewhereDir }), vars);
+                strictEqual(r.status, 1, r.stderr);
+                ok(r.stderr.includes(`is phase ${elsewhere}, not ${verb}`), r.stderr);
+                strictEqual(await readFile(other, 'utf8'), unmoved, 'another phase: nothing was written');
+
+                // R4 J1: two runs pending for this phase. `gone` names no run
+                // and is refused before any write; each run's ledger directory
+                // settles that run only, never the other pending one.
+                strictEqual(launch(dir, other, verb, type, `${type}-a`, ok_).status, 0);
+                const held = await readFile(other, 'utf8');
+                r = runBlock(shell, dir, await finalize(verb, { runDir: 'gone' }), vars);
+                strictEqual(r.status, 1, r.stderr);
+                ok(r.stderr.includes("set it to the run's ledger directory"), r.stderr);
+                strictEqual(await readFile(other, 'utf8'), held, 'gone: nothing was written');
+                r = runBlock(shell, dir, await finalize(verb, { runDir: ledgerOf(`${type}-a`) }), vars);
+                strictEqual(r.status, 0, r.stderr);
+                got = await results(other);
+                deepStrictEqual([got.results.map((e) => [e.run_id, e.verdict]), got.pending.filter((e) => e.phase === verb).map((e) => e.run_id)], [[[`${type}-a`, 'agreed']], [`${type}-b`]]);
               });
             } finally {
               await rm(ok_, { recursive: true, force: true });
               await rm(gone, { recursive: true, force: true });
+            }
+          });
+
+          // R4 J1, J2, J4, a retry with the real scripts: a conflict finalize
+          // naming the run by its ledger directory, whose consensus-task
+          // failed, stops before the phase note; run again with the same
+          // TEXT_DIR, it settles nothing more, appends the note once and
+          // records the gate for that run.
+          if (docs[verb].includes('scripts/state.mjs" consensus-task')) it(`${verb}'s finalize: with the dispatch directory gone, a conflict named by its ledger directory whose consensus-task failed stops before the note; run again with the same TEXT_DIR, it appends the note once and records the gate for that run (R4 J1, J2, J4)`, skip(verb), async () => {
+            const ok_ = await stubCompanions();
+            try {
+              await withRepo(async (dir) => {
+                const { type, phase2 } = verbBlocks(verb);
+                const vars = { ACTIVE: '/w/stale.md', RUN_ID: 'stale', VERDICT: 'stale' };
+                const wf = createWorkflow(dir, verb);
+                const id = `${type}-kept`;
+                strictEqual(launch(dir, wf, verb, type, id, ok_).status, 0);
+                let b = filled(phase2, join(dir, P.stateDirRel, 'peer-runs', id), 'conflict');
+                b = await withTexts(b, { 'note.md': '### Ensemble synthesis: fixture-J4', 'summary.txt': 'split', 'next-action.txt': 'Owner: weigh C1', 'contested.md': 'C1: keep A or B' });
+                const notes = async () => (await readFile(wf, 'utf8')).split('### Ensemble synthesis: fixture-J4').length - 1;
+                // consensus-task cannot write its task file: a file stands where
+                // its directory goes.
+                const home = join(dir, P.stateDirRel, 'consensus');
+                await writeFile(home, 'in the way\n');
+                let r = runBlock(shell, dir, b, vars);
+                ok(r.status !== 0, `the first run stops at consensus-task: ${r.stderr}`);
+                let fm = (await readWorkflow(wf)).frontmatter;
+                deepStrictEqual([(fm.ensemble_results ?? []).map((e) => [e.run_id, e.verdict]), (fm.pending_ensemble ?? []).length, fm.awaiting_owner_gate],
+                  [[[id, 'conflict']], 0, undefined], 'settled, the pending entry gone, no gate');
+                strictEqual(await notes(), 0, 'no phase note before the task file');
+                ok(r.stderr.includes('the phase note and the gate were not recorded. Run this block again with the same TEXT_DIR and DISPATCH_DIR'), r.stderr);
+                await rm(home);
+                r = runBlock(shell, dir, b, vars);
+                strictEqual(r.status, 0, r.stderr);
+                strictEqual(await notes(), 1, 'the retry appends the note once');
+                fm = (await readWorkflow(wf)).frontmatter;
+                deepStrictEqual([fm.awaiting_owner_gate, fm.awaiting_owner_run_id, fm.next_step_kind, (fm.ensemble_results ?? []).length],
+                  [verb === 'decide' ? 'decide-conflict' : 'peer-conflict', id, 'owner-decision', 1]);
+              });
+            } finally {
+              await rm(ok_, { recursive: true, force: true });
+            }
+          });
+
+          // R4 K2, L1, L2, the bypasses the owner's J2 ruling closes, with the
+          // real scripts: a conflict a finalize settled, its consensus-task
+          // failed, cannot be finished without its gate by a retry with another
+          // verdict, no run named (the empty id), the run itself, or a later run
+          // finalized as a conflict (L1); the workflow is left as it was. The
+          // route the message names, the conflict finalized from a fresh
+          // TEXT_DIR, records the gate; while it is pending, the later run
+          // cannot close the verb beside it (L2); once the owner clears it (its
+          // task file retired), the later run finishes the phase.
+          if (docs[verb].includes('scripts/state.mjs" consensus-task')) it(`${verb}'s finalize: a recorded conflict whose gate was never set stops a finalize with another verdict, the empty id included, and a later run as a conflict, before any write; finalized as a conflict it records the gate, which holds a later run until the owner clears it, and then the phase finishes (R4 K2, L1, L2)`, skip(verb), async () => {
+            const ok_ = await stubCompanions();
+            try {
+              await withRepo(async (dir) => {
+                const { type, phase2 } = verbBlocks(verb);
+                const gate = verb === 'decide' ? 'decide-conflict' : 'peer-conflict';
+                const vars = { ACTIVE: '/w/stale.md', RUN_ID: 'stale', VERDICT: 'stale' };
+                const wf = createWorkflow(dir, verb);
+                const id = `${type}-k2`;
+                strictEqual(launch(dir, wf, verb, type, id, ok_).status, 0);
+                const ledger = join(dir, P.stateDirRel, 'peer-runs', id);
+                const texts = { 'note.md': '### Ensemble synthesis: fixture-K2', 'summary.txt': 'split', 'next-action.txt': 'Owner: weigh C1', 'contested.md': 'C1: keep A or B' };
+                // consensus-task cannot write its task file: a file stands where
+                // its directory goes.
+                const home = join(dir, P.stateDirRel, 'consensus');
+                await writeFile(home, 'in the way\n');
+                let r = runBlock(shell, dir, await withTexts(filled(phase2, ledger, 'conflict'), texts), vars);
+                ok(r.status !== 0, `the first run stops at consensus-task: ${r.stderr}`);
+                await rm(home);
+                // A later run of the phase, launched beside the conflict.
+                const later = `${type}-k2-later`;
+                strictEqual(launch(dir, wf, verb, type, later, ok_).status, 0);
+                const laterLedger = join(dir, P.stateDirRel, 'peer-runs', later);
+                let held = await readFile(wf, 'utf8');
+                for (const [why, runDir, verdict] of [['no run named, agreed', '', 'agreed'], ['no run named, concerns', '', 'concerns'], ['the run itself, agreed', ledger, 'agreed'], ['a later run as a conflict', laterLedger, 'conflict']]) {
+                  r = runBlock(shell, dir, await withTexts(filled(phase2, runDir, verdict), { ...texts, 'note.md': '### Ensemble synthesis: bypass' }), vars);
+                  strictEqual(r.status, 1, `${why}: ${r.stderr}`);
+                  ok(r.stderr.includes(`✗ Run ${id} is recorded in this phase with the verdict conflict, and no owner ruling names it`), `${why}: ${r.stderr}`);
+                  strictEqual(await readFile(wf, 'utf8'), held, `${why}: the workflow is left as it was`);
+                }
+                r = runBlock(shell, dir, await withTexts(filled(phase2, ledger, 'conflict'), texts), vars);
+                strictEqual(r.status, 0, r.stderr);
+                let fm = (await readWorkflow(wf)).frontmatter;
+                deepStrictEqual([fm.awaiting_owner_gate, fm.awaiting_owner_run_id], [gate, id], 'the route the message names records the gate');
+                // L2: beside the pending gate, the later run cannot close the verb.
+                held = await readFile(wf, 'utf8');
+                r = runBlock(shell, dir, await withTexts(filled(phase2, laterLedger, 'agreed'), { ...texts, 'note.md': '### Ensemble synthesis: beside the gate' }), vars);
+                strictEqual(r.status, 1, `a later run beside the gate: ${r.stderr}`);
+                ok(r.stderr.includes(`✗ This verb's conflict gate is pending for run ${id}: until the owner rules on it`), r.stderr);
+                strictEqual(await readFile(wf, 'utf8'), held, 'beside the gate: the workflow is left as it was');
+                state('awaiting-owner-clear', '--workflow-path', wf, '--host', 'claude', '--gate', gate, '--resolution', 'Owner decision: keep A');
+                r = runBlock(shell, dir, await withTexts(filled(phase2, laterLedger, 'agreed'), { ...texts, 'note.md': '### Ensemble synthesis: after the ruling' }), vars);
+                strictEqual(r.status, 0, `cleared, the phase finishes: ${r.stderr}`);
+                fm = (await readWorkflow(wf)).frontmatter;
+                deepStrictEqual([(fm.ensemble_results ?? []).map((e) => [e.run_id, e.verdict]), fm.awaiting_owner_gate], [[[id, 'conflict'], [later, 'agreed']], undefined]);
+              });
+            } finally {
+              await rm(ok_, { recursive: true, force: true });
+            }
+          });
+
+          // R4 F1, with the real runner and the real dispatch block: one variant
+          // of each finalize region (plain, consensus, and refine's convergent
+          // where the persona has it).
+          if (['compose', 'critique', 'refine'].includes(verb)) it(`${verb}'s finalize: a dispatch killed after the launch leaves its result empty; the run it recorded is settled — still running, the block stops before any write; abandoned, it settles failed; a pruned ledger settles ledger_missing (R4 F1)`, skip(verb), async () => {
+            const hang = await stubCompanions({ hang: true });
+            const ok_ = await stubCompanions();
+            const scratch = await realpath(await mkdtemp(join(tmpdir(), `${persona}-killed-runner-`)));
+            let peerPid = null;
+            try {
+              await withRepo(async (dir) => {
+                const { dispatch } = verbBlocks(verb);
+                ok(dispatch, 'the dispatch block');
+                const vars = { ACTIVE: '/w/stale.md', RUN_ID: 'stale', VERDICT: 'stale' };
+                const fm = async (wf) => (await readWorkflow(wf)).frontmatter;
+                const dispatchIn = async () => {
+                  const b = await withTexts(dispatch, { 'prompt.xml': '<task>fixture</task>' });
+                  return { block: b, runDir: TEXT_DIRS[TEXT_DIRS.length - 1] };
+                };
+
+                // The dispatch block, as the host runs it, killed with its shell
+                // and runner once the peer runs; the peer, in a group of its
+                // own, lives on.
+                let wf = createWorkflow(dir, verb);
+                const killed = await dispatchIn();
+                const env = { ...process.env, [ROOT_ENV]: P.root, AGENTIC_COMPANIONS_ROOT: hang, TMPDIR: scratch, ...vars };
+                delete env.CLAUDE_PLUGIN_ROOT;
+                delete env.AGENTIC_AUTOPILOT;
+                const host = spawn(shell, ['-c', killed.block], { cwd: dir, env, stdio: 'ignore', detached: true });
+                const exited = once(host, 'exit');
+                const id = await waitFor(() => { try { return JSON.parse(state('read', '--workflow-path', wf)).pending_ensemble?.[0]?.run_id; } catch { return undefined; } }, (x) => typeof x === 'string', 'the pending entry');
+                const st = await waitFor(() => statusOf(dir, id), (x) => x?.handle?.status === 'running' && Number.isInteger(x.handle.pid), 'the peer to run');
+                peerPid = st.handle.pid;
+                process.kill(-host.pid, 'SIGKILL');
+                await exited;
+                strictEqual(readFileSync(join(killed.runDir, 'prompt.xml.run.json'), 'utf8'), '', 'the redirect left the result empty');
+                deepStrictEqual(JSON.parse(readFileSync(join(killed.runDir, 'prompt.xml.dispatch.json'), 'utf8')), { run_id: id, workflow_path: wf });
+
+                // The peer still runs: settle, the block's first write, refuses
+                // it, so the block stops before any write (R4 G1).
+                const before = await readFile(wf, 'utf8');
+                let r = runBlock(shell, dir, await finalize(verb, { runDir: killed.runDir }), vars);
+                strictEqual(r.status, 1, r.stderr);
+                ok(r.stderr.includes(`run ${id} is running and not shown abandoned: collect it first`), r.stderr);
+                strictEqual(await readFile(wf, 'utf8'), before, 'nothing was written');
+
+                // The peer gone too: abandoned past the grace, settled failed.
+                process.kill(peerPid, 'SIGKILL');
+                await waitFor(() => alive(peerPid), (x) => !x, 'the peer to end');
+                r = runBlock(shell, dir, await finalize(verb, { runDir: killed.runDir }), { ...vars, PEER_RUN_STALE_GRACE_MS: '1' });
+                strictEqual(r.status, 0, r.stderr);
+                let got = await fm(wf);
+                deepStrictEqual([got.ensemble_results.map((x) => [x.run_id, x.verdict]), got.pending_ensemble ?? [], got.current_phase], [[[id, 'failed']], [], 'summary-complete']);
+                ok(got.ensemble_results[0].summary.includes('orphaned'), got.ensemble_results[0].summary);
+                archive(dir, wf);
+
+                // A ledger pruned since the run: the result's handle is gone, and
+                // settle records the run failed (ledger_missing) from its pending
+                // entry.
+                wf = createWorkflow(dir, verb);
+                const pruned = await dispatchIn();
+                r = runBlock(shell, dir, pruned.block, { ...vars, AGENTIC_COMPANIONS_ROOT: ok_ });
+                strictEqual(r.status, 0, r.stderr);
+                const result = JSON.parse(readFileSync(join(pruned.runDir, 'prompt.xml.run.json'), 'utf8'));
+                await rm(dirname(result.handle_path), { recursive: true });
+                r = runBlock(shell, dir, await finalize(verb, { runDir: pruned.runDir }), vars);
+                strictEqual(r.status, 0, r.stderr);
+                got = await fm(wf);
+                deepStrictEqual([got.ensemble_results.map((x) => [x.run_id, x.verdict, x.summary]), got.pending_ensemble ?? []], [[[result.run_id, 'failed', 'peer run ledger missing: error_kind=ledger_missing']], []]);
+                archive(dir, wf);
+              });
+            } finally {
+              if (peerPid !== null && alive(peerPid)) process.kill(peerPid, 'SIGKILL');
+              await rm(hang, { recursive: true, force: true });
+              await rm(ok_, { recursive: true, force: true });
+              await rm(scratch, { recursive: true, force: true });
             }
           });
 
@@ -465,10 +765,11 @@ for (const persona of PERSONAS) {
               await withRepo(async (dir) => {
                 const { type } = verbBlocks(verb);
                 const wf = createWorkflow(dir, verb);
-                strictEqual(launch(dir, wf, verb, type, `${type}-hostile`, ok_).status, 0);
+                const run = launch(dir, wf, verb, type, `${type}-hostile`, ok_);
+                strictEqual(run.status, 0);
                 const summary = '--agreed: "A" $(touch pwned) `touch pwned2` it\'s done';
                 const nextAction = `Next: "${verb}" $(touch pwned) or \`touch pwned2\`, it's next`;
-                const r = runBlock(shell, dir, await finalize(verb, { note: HOSTILE, summary, nextAction }), { ACTIVE: wf, RUN_ID: `${type}-hostile`, VERDICT: 'agreed' });
+                const r = runBlock(shell, dir, await finalize(verb, { note: HOSTILE, summary, nextAction, runDir: await dispatched(run) }), {});
                 strictEqual(r.status, 0, r.stderr);
                 const { frontmatter: fm, body } = await readWorkflow(wf);
                 ok(body.includes(HOSTILE), `the note, as written: ${body}`);
@@ -484,12 +785,12 @@ for (const persona of PERSONAS) {
                   for (const [how, content] of [['left unwritten', null], ['holding a newline only', ''], ['holding a BOM and a newline', '﻿']]) {
                     const w = createWorkflow(dir, verb);
                     const before = await readFile(w, 'utf8');
-                    let b = fill(verbBlocks(verb).phase2, '--next-step-confidence "<HIGH|MEDIUM|LOW>"', '--next-step-confidence HIGH');
-                    if (convergent(verb)) b = fill(b.replace(/CONVERGED="<yes\|no[^"\n]*>"/, 'CONVERGED="yes"'), '"<refine|decide|investigate>"', 'refine');
+                    let b = filled(verbBlocks(verb).phase2);
+                    if (convergent(verb)) b = fill(b.replace(/CONVERGED="<yes\|no[^"\n]*>"/, 'CONVERGED="yes"'), RESOLVE_LINE, "RESOLVE_VERB='refine'");
                     const files = { 'note.md': 'n', 'summary.txt': 's', 'next-action.txt': 'a' };
                     if (content === null) delete files[name];
                     else files[name] = content;
-                    const left = runBlock(shell, dir, await withTexts(b, files), { ACTIVE: w, RUN_ID: '', VERDICT: 'agreed' });
+                    const left = runBlock(shell, dir, await withTexts(b, files), {});
                     strictEqual(left.status, 1, `${name} ${how}: ${left.stderr}`);
                     ok(left.stderr.includes(`${name} in TEXT_DIR (`) && left.stderr.includes('is missing, blank or not UTF-8 text'), left.stderr);
                     strictEqual(await readFile(w, 'utf8'), before, `${name} ${how}: nothing was written`);

@@ -363,7 +363,7 @@ export const MUTATIONS = [
   {
     id: 'F8', tests: [RB],
     // The prepare block's line (the close block has one too).
-    prepare: every(CRITIQUE, 'REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || REPO_ROOT="$PWD"\n# A failure (an older', 'REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1\n# A failure (an older'),
+    prepare: every(CRITIQUE, 'REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || REPO_ROOT="$PWD"\n# A fresh shell: the workflow is found again here, never carried from an\n# earlier block. A failure (no workflow found', 'REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1\n# A fresh shell: the workflow is found again here, never carried from an\n# earlier block. A failure (no workflow found'),
     why: 'a broken HEAD stops the critique before critique-scope can fall back',
   },
   // ── a critique the ledger never recorded, a lost tree, a replaced ledger ──

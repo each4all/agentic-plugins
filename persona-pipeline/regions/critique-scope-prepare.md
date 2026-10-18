@@ -11,9 +11,12 @@ CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 # A checkout git cannot read (a broken HEAD) is the script's to judge, and
 # it falls back: the block hands it this directory instead of stopping.
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || REPO_ROOT="$PWD"
-# A failure (an older state.mjs without the subcommand, a workflow it cannot
-# read) is no reason to stop the critique: it runs as it always has.
-node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" critique-scope \
+# A fresh shell: the workflow is found again here, never carried from an
+# earlier block. A failure (no workflow found, an older state.mjs without the
+# subcommand, a workflow it cannot read) is no reason to stop the critique: it
+# runs as it always has.
+ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")"
+[ -n "$ACTIVE" ] && node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" critique-scope \
   --workflow-path "$ACTIVE" --repo-root "$REPO_ROOT" \
   --profile '<profile, empty for the default>' \
   || echo '{"recorded": false, "mode": "full", "reason": "critique-scope-failed"}'
