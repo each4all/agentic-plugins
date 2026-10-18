@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.10.1...plugin-founder-v0.11.0) (2026-10-18)
+
+
+### Features
+
+* **founder:** add the peer-runner new-run-id allocator for peer run ids (C119, C26) ([b493c0a](https://github.com/each4all/agentic-plugins/commit/b493c0adc3a45f1003f73a1453d755a870fb99de))
+
 ## [0.10.1](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.10.0...plugin-founder-v0.10.1) (2026-10-16)
 
 
