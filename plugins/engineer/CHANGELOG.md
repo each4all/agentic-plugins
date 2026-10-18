@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.31.0...plugin-engineer-v0.31.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* **engineer:** run every persona runbook block correctly in a fresh shell under bash, zsh and /bin/sh (C68, C75, C133) ([8cac007](https://github.com/each4all/agentic-plugins/commit/8cac007d9f964f9fc9dcfda34a434560b4caec69))
+
 ## [0.31.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.30.0...plugin-engineer-v0.31.0) (2026-10-18)
 
 
