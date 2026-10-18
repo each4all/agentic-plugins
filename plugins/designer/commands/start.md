@@ -188,6 +188,11 @@ ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'designer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 PERSONA='designer'
+# A fresh shell: the workflow is found again here, never carried from an
+# earlier block.
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
+[ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
 # The read is checked on its own: a read that fails stops the block, whatever
 # it printed, before the type is parsed.
 WF_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE")" || exit $?
@@ -452,6 +457,12 @@ TEXT_DIR='<directory from step 1>'
 ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'designer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+# A fresh shell: the workflow is found again here, never carried from an
+# earlier block.
+PERSONA='designer'
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
+[ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
 # The next action the agent wrote with its file tool: state.mjs reads it
 # itself, so no line of it is shell source. A file left unwritten stops the
 # block before any write.
@@ -461,9 +472,10 @@ grep -q '[^[:space:]]' "$TEXT_DIR/next-action.txt" 2>/dev/null || { echo "✗ ne
 # not converged, never as success. Assign it here, from the Phase 4 result.
 CONVERGED="<yes|no — from the Phase 4 re-critique verdict; unset means no>"
 if [ "${CONVERGED:-no}" = "yes" ]; then
-  # ADR-0029 §1 / completion-output contract §2 — write the COMPACT form
-  # (selected_next + one-line why + next_command) into --next-action; the
-  # code-emitted footer surfaces it verbatim as "recommended next work".
+  # ADR-0029 §1 / completion-output contract §2 — next-action.txt holds the
+  # COMPACT form (selected_next + one-line why + next_command), which the write
+  # records from the file; the code-emitted footer surfaces it verbatim as
+  # "recommended next work".
   # ADR-0063 D3 — finish-verb is the lifecycle's last write: the ADR-0017
   # §sub-decision 5 atomic terminal write (summary-complete + terminal marker)
   # with the next step. ADR-0066 Decision 3: an inherited AGENTIC_AUTOPILOT

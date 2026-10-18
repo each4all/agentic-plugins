@@ -95,9 +95,19 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
       const append = block.indexOf('state.mjs" append');
       const commit = block.indexOf(gen ? 'peer-runner.mjs" settle' : 'state.mjs" ensemble-commit');
       const finish = block.indexOf('state.mjs" finish-verb');
-      ok(append >= 0 && commit > append && finish > commit, gen ? 'append → settle → finish-verb' : 'append → ensemble-commit → finish-verb');
-      ok(/--event updated \|\| exit \$\?\n/.test(block.slice(append, commit)), 'the append stops the block when it fails');
-      ok((gen ? /--summary-file "\$TEXT_DIR\/summary\.txt" \|\| exit \$\?\n/ : /--completed-at "[^\n]*" \|\| exit \$\?\n/).test(block.slice(commit, finish)), 'the ensemble write stops the block when it fails');
+      if (gen) {
+        // R4 J2/J4: generated, the settle is the first write and the one judge
+        // of the run, so a refusal stops the block before the phase note, and
+        // running it again (the settle records nothing more) appends the note
+        // once.
+        ok(commit >= 0 && append > commit && finish > append, 'settle → append → finish-verb');
+        ok(/--summary-file "\$TEXT_DIR\/summary\.txt" \|\| exit \$\?\n/.test(block.slice(commit, append)), 'the ensemble write stops the block when it fails');
+        ok(/--event updated \|\| exit \$\?\n/.test(block.slice(append, finish)), 'the append stops the block when it fails');
+      } else {
+        ok(append >= 0 && commit > append && finish > commit, 'append → ensemble-commit → finish-verb');
+        ok(/--event updated \|\| exit \$\?\n/.test(block.slice(append, commit)), 'the append stops the block when it fails');
+        ok(/--completed-at "[^\n]*" \|\| exit \$\?\n/.test(block.slice(commit, finish)), 'the ensemble write stops the block when it fails');
+      }
       // Contract: finish-verb's flags — the closed-enum next step the autopilot
       // driver reads; terminal flags here would close the workflow mid-run.
       // The call itself, up to its last continued line: in a block with a
@@ -107,7 +117,15 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
       // ADR-0059's amendment of 2026-10-10: the next action is the agent's file.
       ok(/--next-action-file "\$TEXT_DIR\/next-action\.txt" \\\n/.test(finishCall), finishCall);
       ok(/--next-step-kind verb --next-step-verb (?:[a-z]+|'[a-z]+'|"<next verb>") \\\n/.test(finishCall), finishCall);
-      ok(finishCall.includes('--next-step-confidence "<HIGH|MEDIUM|LOW>"'), 'confidence comes from the proposal');
+      // R4 K3: generated, the proposal's confidence is CONFIDENCE, checked by a
+      // case before the first write.
+      if (gen) {
+        ok(finishCall.includes('--next-step-confidence "$CONFIDENCE"'), 'confidence comes from the proposal');
+        const check = block.indexOf('case "$CONFIDENCE" in');
+        ok(check >= 0 && check < commit && /HIGH\|MEDIUM\|LOW\) ;;/.test(block.slice(check, commit)), 'CONFIDENCE is checked before the first write');
+      } else {
+        ok(finishCall.includes('--next-step-confidence "<HIGH|MEDIUM|LOW>"'), 'confidence comes from the proposal');
+      }
       ok(!/--terminal-marker|--terminal-phase/.test(finishCall), finishCall);
     });
 
@@ -160,7 +178,7 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
       // PC3 U7: the generated finalize names each gate with its heading and
       // anchor above the block, and the block's owner-decision form takes it.
       ok(/^- `decide-conflict` \(the `Ensemble synthesis` heading, anchor\n  `ensemble-synthesis`\): [^\n]*\n[^\n]*CONFLICT remained/m.test(phase2), phase2);
-      ok(/#   --next-step-kind owner-decision --next-step-confidence "<HIGH\|MEDIUM\|LOW>" \\\n#   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' \|\| exit \$\?\n/.test(phase2), phase2);
+      ok(/#   --next-step-kind owner-decision --next-step-confidence "\$CONFIDENCE" \\\n#   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' \|\| exit \$\?\n/.test(phase2), phase2);
     } else {
       ok(/#   --next-step-kind owner-decision --next-step-confidence "<HIGH\|MEDIUM\|LOW>" \\\n#   --owner-gate decide-conflict --owner-gate-anchor ensemble-synthesis\n/.test(phase2), phase2);
     }

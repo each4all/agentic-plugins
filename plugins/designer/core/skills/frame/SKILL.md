@@ -164,15 +164,25 @@ amendment of 2026-10-10): create a private directory with
 prints; with your file-writing tool write the Frame XML prompt there as
 `prompt.xml` (the privacy gate must have passed; no screenshot bytes); then
 run the dispatch, in the foreground of a host background task, never behind a
-shell `&`:
+shell `&`. Fill `<plugin-root>` with this plugin's installed root, on either
+host: the path you read this SKILL.md from, cut before its
+`/core/skills/frame/` directory (`../checkpoint/SKILL.md` has the Plugin root
+row for each host). The block reads no variable and no Claude plugin cache
+for it: on Codex either would run another copy's `state.mjs` and
+`peer-runner.mjs`.
 
 ```bash
 TEXT_DIR='<the directory mktemp printed>'
+# A fresh shell: the workflow is found again here, never carried from an
+# earlier block.
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+ACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
+[ -n "$ACTIVE" ] || { echo "✗ No active designer workflow on this branch; nothing was dispatched." >&2; exit 1; }
 PROMPT_FILE="$TEXT_DIR/prompt.xml"
 grep -q '[^[:space:]]' "$PROMPT_FILE" 2>/dev/null || { echo "✗ prompt.xml in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was dispatched." >&2; exit 1; }
 # ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch.
 RUN_ID="frame-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
-node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
+node "<plugin-root>/scripts/peer-runner.mjs" run \
   --repo-root "$REPO_ROOT" --kind ensemble \
   --peer codex --prompt-file "$PROMPT_FILE" --output-format json \
   --workflow-path "$ACTIVE" --phase frame \

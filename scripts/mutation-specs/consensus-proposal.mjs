@@ -170,10 +170,10 @@ export const MUTATIONS = [
   // ---- R: the persona finalize templates (each run renders every persona) ----
   {
     id: 'R1', file: VARIANT, tests: [TR],
-    from: 'elif [ "$RECORDED" != conflict ] || [ "$VERDICT" != conflict ]; then\n',
+    from: 'elif [ "$RECORDED" = conflict ]; then\n',
     to: 'elif false; then\n',
-    why: 'a conflict recorded by an earlier attempt takes the gate although VERDICT now says concerns',
-    killed_by: /a recorded conflict writes the task file, then the conflict gate with the run id/,
+    why: 'a conflict recorded by an earlier attempt goes on past the settle although VERDICT now says concerns, to a gate with no task file (R4 J2)',
+    killed_by: /a recorded conflict writes the task file, then the note and the conflict gate with the run id/,
   },
   {
     id: 'R2', file: MANIFEST, tests: [TR], count: 2,
@@ -184,9 +184,9 @@ export const MUTATIONS = [
   },
   {
     id: 'R3', file: VARIANT, tests: [TR],
-    from: '    --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?\nelif',
-    to: '    --next-step-confidence "<HIGH|MEDIUM|LOW>"\nelif',
-    why: 'the variant\'s typical last write drifts from the plain one (a failed finish-verb no longer stops the block)',
+    from: '    --next-step-confidence "$CONFIDENCE" || exit $?\nelse\n',
+    to: '    --next-step-confidence "$CONFIDENCE"\nelse\n',
+    why: 'the variant\'s typical last write drifts from the plain one\'s text (nothing runs after it, so the block still exits with finish-verb\'s status: the text contracts see the drift, not a run)',
     killed_by: /verb-finalize-consensus\.md: rebuilt from verb-finalize\.md/,
   },
   {
@@ -198,24 +198,25 @@ export const MUTATIONS = [
   },
   {
     id: 'R5', file: VARIANT, tests: [TR],
-    from: '    --text-file "$CONTESTED_FILE")" || exit $?\n',
-    to: '    --text "$(cat "$CONTESTED_FILE")")" || exit $?\n',
+    from: '    --text-file "$CONTESTED_FILE")" \\\n',
+    to: '    --text "$(cat "$CONTESTED_FILE")")" \\\n',
     why: 'the contested items pass through the shell as an argument (a leading -- reads as a flag)',
-    killed_by: /a recorded conflict writes the task file, then the conflict gate with the run id/,
+    killed_by: /a recorded conflict writes the task file, then the note and the conflict gate with the run id/,
   },
   {
     id: 'R6', file: VARIANT, tests: [TR],
-    from: '  [ -n "${CONTESTED_FILE:-}" ] || { echo "✗ CONTESTED_FILE names no file of contested items; the gate was not recorded." >&2; exit 1; }\n',
+    // R4: the contested items are contested.md, checked before any write.
+    from: '  node -e \'let t;try{t=new TextDecoder("utf-8",{fatal:true}).decode(require("fs").readFileSync(process.argv[1]))}catch{process.exit(1)}process.exit(t.includes("\\0")||t.trim()===""?1:0)\' "$TEXT_DIR/contested.md" || { echo "✗ contested.md in TEXT_DIR ($TEXT_DIR) is missing, blank or not UTF-8 text; a conflict needs the contested items: write them with the file tool first. Nothing was written." >&2; exit 1; }\n',
     to: '',
-    why: 'a block run with no contested-items file goes on toward the gate',
-    killed_by: /a recorded conflict writes the task file, then the conflict gate with the run id/,
+    why: 'a conflict with no contested items settles the run before it stops (the later file check or consensus-task still stops it before the note), so the refusal is no longer before any write',
+    killed_by: /a recorded conflict writes the task file, then the note and the conflict gate with the run id/,
   },
   {
     id: 'R7', file: VARIANT, tests: [TR],
-    from: 'Set VERDICT to the recorded verdict (and CONTESTED_FILE when that is conflict) and run this block again: its settle does nothing for a recorded run, and the matching branch runs, consensus-task first on a conflict. Nothing more was written.',
-    to: 'Set VERDICT to the recorded verdict and run the matching last write by itself; nothing more was written.',
+    from: 'Set VERDICT to conflict, write contested.md, and run this block again with the same DISPATCH_DIR.',
+    to: 'Run the gate\'s finish-verb by itself.',
     why: 'the recovery from a recorded conflict sets the gate with no task file',
-    killed_by: /a recorded conflict writes the task file, then the conflict gate with the run id/,
+    killed_by: /a recorded conflict writes the task file, then the note and the conflict gate with the run id/,
   },
 
   // ---- O: the orchestrator state and the plan runbook ------------------------

@@ -41,7 +41,8 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
       // CP: ADR-0067 Decision 8's conflict branch (macro f76033).
       // C130: ADR-0059's amendment of 2026-10-10, the agent's text as files.
       // C120: the review ledger of a document deliverable (ADR-0063, amendment of 2026-10-14).
-      ok(/^(?:PC2(?:a[234]|b)|PC3b?|ADR-0067-WP|CP|C130|C120) /.test(d.why), `${d.where}: a change with its reason`);
+      // R4: each block runs in a fresh shell (C75), finding the workflow and the run itself.
+      ok(/^(?:PC2(?:a[234]|b)|PC3b?|ADR-0067-WP|CP|C130|C120|R4) /.test(d.why), `${d.where}: a change with its reason`);
       if (structural) ok(STRUCTURAL_OPS.includes(d.op), `${d.where}: a known op`);
       else ok(typeof d.from === 'string' && typeof d.to === 'string' && d.from !== d.to && d.from.length > 0, `${d.where}: a string change`);
     }
@@ -244,7 +245,7 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
           strictEqual(arg(run, '--prompt-file'), '$PROMPT_FILE');
         });
 
-        it('order: find-active, then bootstrap or resume, the dispatch, the note, the settlement, the terminal write — every write on $ACTIVE', () => {
+        it('order: find-active, then bootstrap or resume, the dispatch, the settlement and the note (settle first where the finalize is settled), the terminal write — every write on $ACTIVE', () => {
           const index = (script, sub, nth = 0) => {
             const sites = of(script, sub);
             ok(sites.length > nth, `${script} ${sub} #${nth + 1}`);
@@ -282,7 +283,11 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
           const settled = of('peer-runner.mjs', 'settle').length > 0;
           const commit = settled ? index('peer-runner.mjs', 'settle') : index('state.mjs', 'ensemble-commit');
           const terminal = settled || persona === 'engineer' ? index('state.mjs', 'finish-verb') : index('state.mjs', 'set-terminal');
-          ok(find < create && create < resume && resume < run && run < note && note < commit && commit < terminal);
+          // R4 G1: settle, the one judge of the run, is the settled finalize's
+          // first write, so its refusal comes before the note is appended.
+          ok(find < create && create < resume && resume < run && (settled
+            ? run < commit && commit < note && note < terminal
+            : run < note && note < commit && commit < terminal));
           if (settled) {
             // The closed-enum next step the typical case records: the verb
             // after this one in the lifecycle (an independent map).

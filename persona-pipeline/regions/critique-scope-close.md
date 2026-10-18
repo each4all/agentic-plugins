@@ -30,9 +30,12 @@ CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 # A checkout git cannot read (a broken HEAD) is the script's to judge, and
 # it falls back: the block hands it this directory instead of stopping.
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || REPO_ROOT="$PWD"
-# A refusal records nothing and is no reason to stop the critique: the
-# fallback below says so, and the bullets say what follows.
-node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" critique-close \
+# A fresh shell: the workflow is found again here, never carried from an
+# earlier block. A refusal, or no workflow found, records nothing and is no
+# reason to stop the critique: the fallback below says so, and the bullets say
+# what follows.
+ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")"
+[ -n "$ACTIVE" ] && node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" critique-close \
   --workflow-path "$ACTIVE" --repo-root "$REPO_ROOT" \
   --ledger '<ledger from critique-scope>' \
   --generation '<generation from critique-scope>' \

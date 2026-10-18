@@ -115,6 +115,12 @@ TEXT_DIR='<directory from step 1>'
 ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'designer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+# A fresh shell: the workflow is found again here, never carried from an
+# earlier block.
+PERSONA='designer'
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
+[ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
 # The summary the agent wrote with its file tool: state.mjs reads it itself.
 grep -q '[^[:space:]]' "$TEXT_DIR/summary.txt" 2>/dev/null || { echo "✗ summary.txt in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was written." >&2; exit 1; }
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" checkpoint-set \

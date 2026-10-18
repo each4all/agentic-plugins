@@ -188,10 +188,13 @@ const FILE_FLAGS = ['--phase-note-file', '--summary-file', '--next-action-file',
 // The variables the retired forms carried agent text in.
 const TEXT_VARS = /^(NOTE|SUMMARY|RESOLUTION|OWNER_RESOLUTION|APPROVED_SUBJECT|SUBJECT|PROMPT_ARG|PROMPT_TEXT|REQUEST)=/;
 // The variables a block may have the agent fill from a placeholder: the
-// directories it created with mktemp, enums it validated, and a workflow path
-// a program printed. ARCHIVE_WORKFLOW_ID, the user's `archive <workflow-id>`,
+// directories it created with mktemp (a dispatch's DISPATCH_DIR and a
+// resume's READ_DIR among them, R4), enums it validated (a finalize's VERDICT,
+// and its CONFIDENCE and RESOLVE_VERB, each checked by a `case` before any
+// write, R4 K3), and a workflow path a
+// program printed. ARCHIVE_WORKFLOW_ID, the user's `archive <workflow-id>`,
 // predates C130 and stays until resolve-workflow takes the id from a file.
-const PLACEHOLDER_VARS = new Set(['TEXT_DIR', 'ARGS_DIR', 'PEER', 'CONVERGED', 'AGENTIC_DESIGNER_PROFILE', 'WORKFLOW', 'ARCHIVE_WORKFLOW_ID']);
+const PLACEHOLDER_VARS = new Set(['TEXT_DIR', 'ARGS_DIR', 'DISPATCH_DIR', 'READ_DIR', 'VERDICT', 'CONFIDENCE', 'RESOLVE_VERB', 'PEER', 'CONVERGED', 'AGENTIC_DESIGNER_PROFILE', 'WORKFLOW', 'ARCHIVE_WORKFLOW_ID']);
 
 // The inline values a block may give a free-text flag: fixed literals, an
 // enum placeholder (the profile), the expansion of a literal assigned in the
@@ -408,9 +411,9 @@ describe('persona text-file transport (C130, ADR-0059 amendment of 2026-10-10)',
       planted('persona-pipeline/regions/checkpoint-set.md', 'create `summary.txt` in that', 'create the summary file in that', 'R3 the section never names summary.txt, which the block reads');
     });
     it('R2: a text flag with its text in the prose of a command, a skill and a region', () => {
-      planted('plugins/founder/commands/compose.md', 'Then run the block with `TEXT_DIR` set to that directory, `RUN_ID` to the run', 'Then run the block with `--summary "<the résumé>"`, `TEXT_DIR` set to that directory, `RUN_ID` to the run', 'R2 a text flag with its text — --summary "<the résumé>"');
+      planted('plugins/founder/commands/compose.md', 'Then run the block with `TEXT_DIR` set to that directory, `DISPATCH_DIR` to the', 'Then run the block with `--summary "<the résumé>"`, `TEXT_DIR` set to that directory, `DISPATCH_DIR` to the', 'R2 a text flag with its text — --summary "<the résumé>"');
       planted('plugins/engineer/core/skills/refine/SKILL.md', '**Core principle**: do not modify code', '**Core principle**: never pass `--resolution "<the ruling>"`; do not modify code', 'R2 a text flag with its text — --resolution "<the ruling>"');
-      planted('persona-pipeline/regions/verb-finalize.md', 'Then run the block with `TEXT_DIR` set to that directory, `RUN_ID` to the run', 'Then run the block with `--next-action <the next step>`, `TEXT_DIR` set to that directory, `RUN_ID` to the run', 'R2 a text flag with its text — --next-action <the next step>');
+      planted('persona-pipeline/regions/verb-finalize.md', 'Then run the block with `TEXT_DIR` set to that directory, `DISPATCH_DIR` to the', 'Then run the block with `--next-action <the next step>`, `TEXT_DIR` set to that directory, `DISPATCH_DIR` to the', 'R2 a text flag with its text — --next-action <the next step>');
     });
     it('manifest: a prose value that names a text flag with its text', () => {
       planted('persona-pipeline/manifest.json#critique-finalize.owner_gates', "--resolution-file <the ruling's file>", '--resolution "<the ruling>"', 'R2 a text flag with its text — --resolution "<the ruling>"');

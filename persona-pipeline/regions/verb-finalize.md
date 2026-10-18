@@ -56,10 +56,47 @@ block:
    file holds its text as written and ends with one newline, which the
    scripts remove; nothing deletes the files.
 
-Then run the block with `TEXT_DIR` set to that directory, `RUN_ID` to the run
-id the dispatch generated (empty when no run launched), and `VERDICT` to the
-synthesis's verdict. A file left unwritten, blank, or not UTF-8 text stops the
-block before any write.
+Then run the block with `TEXT_DIR` set to that directory, `DISPATCH_DIR` to the
+directory the dispatch block ran with, `VERDICT` to the synthesis's verdict,
+and `CONFIDENCE` to the proposal's confidence (`HIGH`, `MEDIUM` or `LOW`). The block reads the run's id from the result the runner wrote there,
+`prompt.xml.run.json`, never from a value carried from the dispatch's shell. A
+runner that ended without writing its result (killed, or stopped by an error
+after it launched the run) leaves that file empty: the block then takes the run
+from `prompt.xml.dispatch.json`, which the dispatch block wrote there before
+the launch, naming the run and the workflow. A run whose handle or record names
+another workflow than the one the block finds, a handle that cannot be read
+as that run's (one gone is left to the dispatch's record), or a directory
+with no result, or one naming no well-formed run id, stops the block before
+any write; settle, its first write, refuses a run of another phase. A
+well-formed run id is one the runner accepts: letters, digits, `.`, `_`, `:`
+and `-`, with no `..`, so a run the runner launched can always be finalized.
+
+When no run launched (the verb ran local-only, or the dispatch's
+`prompt.xml.err` says why), leave `DISPATCH_DIR` empty: that is the empty id,
+"no run launched", and settle refuses it while the workflow holds a run of
+this phase it would hide. When a run launched but its dispatch's directory is
+gone (a later session, or a system that cleared its temporary files), set
+`DISPATCH_DIR` to the run's own ledger directory, the one holding the
+`envelope.json` the synthesis read
+(`.agentic-plugins/state/{{persona}}/peer-runs/<run id>`): the block reads the
+run from its `handle.json` and checks it as it checks a dispatch's, the
+workflow here and the phase in settle, so the run settled is always the one
+the synthesis read, never one chosen from the workflow's pending entries. With
+neither directory left, nothing binds the run to the synthesis: the block
+cannot settle it, and settle does by hand (`peer-runner.mjs settle --run-id`).
+
+Whatever run the block settles, the empty id included, it keeps in its text
+directory as `finalize-run.json` before settle. Every value the last write
+takes is checked before settle too (`CONFIDENCE` here), so a step that fails
+after it fails on the workflow's own state, and its message says what. Run
+again with the same `TEXT_DIR` after a later step failed, it settles that same
+run again, which records nothing more; a phase note the failed run already
+appended (the failure came at the last write) is appended a second time. A kept run that differs from the one this run of the
+block names stops it before any write: each finalize takes a fresh text
+directory, and a record left by another stays its own. The empty id binds
+too: after settle refuses it (a run of this phase is pending), collect that
+run, synthesize it, and finalize it from a fresh text directory. A file left
+unwritten, blank, or not UTF-8 text stops it too.
 
 `peer-runner.mjs settle` decides from the run ledger what the workflow
 records, not from these values alone: a run that never launched records
@@ -68,9 +105,14 @@ records verdict `failed` with the ledger's `error_kind`; a run that completed
 records the synthesis verdict, or `degraded` when its answer was empty or
 unreadable. An answer that parses to nothing usable, only structural
 shell, reads to `settle` like any other, so set `VERDICT` to `degraded` then.
-It refuses, and the block stops before the last write, while a run is still
-live (collect it first) or when an empty `RUN_ID` would hide a run that
-launched (set it to that run's id).
+It runs before the block writes anything, so its refusal leaves the workflow
+as it was: while a run is still live, or its handle was last updated less than
+the stale grace (a minute) ago (collect it, or wait, and run the block again); for a run of
+another workflow or phase; or when an empty id would hide an attempt the
+ledger holds for this phase (collect that run and synthesize it, then set
+`DISPATCH_DIR` to its directory, or to its ledger directory when that is
+gone). Once
+it has recorded a run, running the block again records nothing more for it.
 
 The last write, `finish-verb`, records the proposal's next step in closed-enum
 {{^capability commit_surface}}
@@ -107,20 +149,102 @@ write and leaves the workflow open, not terminal, until the owner resolves it.
 
 ```bash
 TEXT_DIR='<directory from step 1>'
+DISPATCH_DIR='<the directory the dispatch block ran with; empty when no run launched; the run ledger directory when a run launched and that directory is gone>'
+VERDICT='<the synthesis verdict>'
+CONFIDENCE='<HIGH|MEDIUM|LOW>'
 ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/{{name}} -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-# The run ledger lives under the repository root, where the dispatch put it.
+# A fresh shell: the workflow and the run are found again here, never carried
+# from an earlier block. The run ledger lives under the repository root, where
+# the dispatch put it.
+PERSONA={{name}}
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
+[ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch; nothing was written." >&2; exit 1; }
+case "$VERDICT" in
+  ''|*'<'*) echo "✗ VERDICT is not set to the synthesis verdict; nothing was written." >&2; exit 1 ;;
+esac
+# The last write's confidence, checked here with the other values it takes, so
+# a value it would refuse stops the block before settle, its first write.
+case "$CONFIDENCE" in
+  HIGH|MEDIUM|LOW) ;;
+  *) echo "✗ CONFIDENCE is not HIGH, MEDIUM or LOW, the proposal's confidence the last write records; nothing was written." >&2; exit 1 ;;
+esac
+# The run's id, from the result the runner wrote beside the dispatch's prompt,
+# or, when DISPATCH_DIR is the run's own ledger directory (no result there,
+# its handle.json instead), from that handle, the directory naming the run. An empty
+# DISPATCH_DIR (exit 5) is the empty id, no run launched; nothing else stands
+# for a run, and none is chosen from the workflow's pending entries. A result
+# that is missing or names no well-formed run id (the runner's rule: letters,
+# digits, ".", "_", ":" and "-", with no "..", so every run it launched can be
+# finalized) stops it, as does a
+# run whose handle names another workflow than the one found above (exit 2)
+# or cannot be read as the run's (exit 3): nothing is written to a workflow
+# the run is not for; settle, the first write, judges the phase. Exit 4 leaves the run to the
+# dispatch's own record: a result left empty, or a run whose handle is gone
+# (its id printed).
+RUN_ID="$(node -e 'const [d,w]=process.argv.slice(1);if(d==="")process.exit(5);const fs=require("fs"),p=require("path");const good=(v)=>typeof v==="string"&&/^[A-Za-z0-9._:-]+$/.test(v)&&!v.includes("..");const same=(a,b)=>{try{return fs.realpathSync(a)===fs.realpathSync(b)}catch{return p.resolve(a)===p.resolve(b)}};const bound=(h,id)=>{if(h===null||typeof h!=="object"||h.run_id!==id)process.exit(3);if(typeof h.workflow_path!=="string"||!same(h.workflow_path,w))process.exit(2);process.stdout.write(id);process.exit(0)};let t,r,h;try{t=fs.readFileSync(p.join(d,"prompt.xml.run.json"),"utf8")}catch(e){if(!(e&&e.code==="ENOENT"))process.exit(1);try{h=fs.readFileSync(p.join(d,"handle.json"),"utf8")}catch(e){process.exit(e&&(e.code==="ENOENT"||e.code==="ENOTDIR")?1:3)}const id=p.basename(p.resolve(d));if(!good(id))process.exit(1);try{h=JSON.parse(h)}catch{process.exit(3)}bound(h,id)}if(t.trim()==="")process.exit(4);try{r=JSON.parse(t)}catch{process.exit(1)}const id=r&&r.run_id;if(!good(id))process.exit(1);try{h=fs.readFileSync(r.handle_path,"utf8")}catch(e){if(e&&e.code==="ENOENT"){process.stdout.write(id);process.exit(4)}process.exit(3)}try{h=JSON.parse(h)}catch{process.exit(3)}bound(h,id)' "$DISPATCH_DIR" "$ACTIVE")"
+RUN_READ=$?
+if [ "$RUN_READ" -eq 2 ]; then
+  echo "✗ The run in DISPATCH_DIR ($DISPATCH_DIR) is not one of $ACTIVE: its handle names another workflow, or none (a peer-now or manual run, dispatched for no workflow); nothing was written. Finalize on the branch whose workflow the dispatch ran for; a run dispatched for no workflow is not this finalize's to settle." >&2
+  exit 1
+elif [ "$RUN_READ" -eq 3 ]; then
+  echo "✗ The handle of the run in DISPATCH_DIR ($DISPATCH_DIR) cannot be read as that run's, so the run cannot be bound to $ACTIVE; nothing was written." >&2
+  exit 1
+elif [ "$RUN_READ" -eq 4 ]; then
+  # The dispatch recorded, before the launch, the run it launches and the
+  # workflow it found (prompt.xml.dispatch.json): that run is the one to
+  # settle, for the workflow found above only. A run the result names, its
+  # handle gone, must be that same run.
+  RUN_ID="$(node -e 'const [d,w,named]=process.argv.slice(1);const fs=require("fs"),p=require("path");const same=(a,b)=>{try{return fs.realpathSync(a)===fs.realpathSync(b)}catch{return p.resolve(a)===p.resolve(b)}};let m;try{m=JSON.parse(fs.readFileSync(p.join(d,"prompt.xml.dispatch.json"),"utf8"))}catch{process.exit(1)}const id=m&&m.run_id;if(typeof id!=="string"||!/^[A-Za-z0-9._:-]+$/.test(id)||id.includes("..")||(named!==""&&named!==id))process.exit(1);if(typeof m.workflow_path!=="string"||!same(m.workflow_path,w))process.exit(2);process.stdout.write(id)' "$DISPATCH_DIR" "$ACTIVE" "$RUN_ID")"
+  case $? in
+    0) ;;
+    2) echo "✗ The run in DISPATCH_DIR ($DISPATCH_DIR) was dispatched for another workflow than $ACTIVE; nothing was written. Finalize on the branch whose workflow the dispatch ran for." >&2; exit 1 ;;
+    *) echo "✗ The runner left no usable result in DISPATCH_DIR ($DISPATCH_DIR), and prompt.xml.dispatch.json there is missing, malformed or names another run; nothing was written. When the run launched, set DISPATCH_DIR to its ledger directory, the one holding the envelope.json the synthesis read, and run this block again; with no ledger directory either, settle the run by hand (peer-runner.mjs settle --run-id), then run this block with DISPATCH_DIR empty from a fresh TEXT_DIR. When the runner refused before any ledger (prompt.xml.err says why), no run launched: leave DISPATCH_DIR empty." >&2; exit 1 ;;
+  esac
+elif [ "$RUN_READ" -eq 5 ]; then
+  # No run launched: the empty id (the read printed nothing), which settle
+  # accepts only when no attempt of this phase is open. It never stands for a
+  # run whose directory is gone.
+  :
+elif [ "$RUN_READ" -ne 0 ]; then
+  echo "✗ prompt.xml.run.json in DISPATCH_DIR ($DISPATCH_DIR) is missing or names no well-formed run id, and DISPATCH_DIR is no run ledger directory; nothing was written. Set DISPATCH_DIR to the directory the dispatch block ran with; leave it empty when no run launched (prompt.xml.err there says why), or, when a run launched and that directory is gone, set it to the run's ledger directory, the one holding the envelope.json the synthesis read." >&2
+  exit 1
+fi
+# The run this block settles is kept in TEXT_DIR (finalize-run.json) before
+# settle; the empty id is kept too. Run again after a later step failed, the
+# block settles the same run: a run kept that differs from the one named now,
+# the empty id included (exit 3), stops it, as does a record that is
+# malformed or names another workflow or phase (exit 7).
+KEPT_ID="$(node -e 'const [rec,id,w,ph]=process.argv.slice(1);const fs=require("fs"),p=require("path");const good=(v)=>typeof v==="string"&&(v===""||/^[A-Za-z0-9._:-]+$/.test(v)&&!v.includes(".."));const same=(a,b)=>{try{return fs.realpathSync(a)===fs.realpathSync(b)}catch{return p.resolve(a)===p.resolve(b)}};let m,has=true;try{m=JSON.parse(fs.readFileSync(rec,"utf8"))}catch(e){if(!(e&&e.code==="ENOENT"))process.exit(7);has=false}if(has&&(!m||!good(m.run_id)||m.phase!==ph||typeof m.workflow_path!=="string"||!same(m.workflow_path,w)))process.exit(7);if(has&&m.run_id!==id){process.stdout.write(m.run_id);process.exit(3)}if(!has){try{fs.writeFileSync(rec,JSON.stringify({run_id:id,workflow_path:w,phase:ph})+"\n")}catch{process.exit(8)}}process.stdout.write(id);process.exit(0)' "$TEXT_DIR/finalize-run.json" "$RUN_ID" "$ACTIVE" {{verb}})"
+case $? in
+  0) ;;
+  3) echo "✗ finalize-run.json in TEXT_DIR ($TEXT_DIR), left by an earlier run of this block, keeps run '$KEPT_ID', not '$RUN_ID'; nothing was written. Use a fresh TEXT_DIR for each finalize." >&2; exit 1 ;;
+  7) echo "✗ finalize-run.json in TEXT_DIR ($TEXT_DIR), left by an earlier run of this block, is malformed or names another workflow or phase than this one of $ACTIVE; nothing was written. Use a fresh TEXT_DIR for each finalize." >&2; exit 1 ;;
+  8) echo "✗ Could not keep the run in TEXT_DIR ($TEXT_DIR) as finalize-run.json; nothing was written." >&2; exit 1 ;;
+  *) echo "✗ Could not check finalize-run.json in TEXT_DIR ($TEXT_DIR); nothing was written." >&2; exit 1 ;;
+esac
 # The texts the agent wrote with its file tool (ADR-0059, amendment of
 # 2026-10-10): each script reads its file itself, so no line of the note is
-# shell source. settle reads the summary only after the append has written,
+# shell source. The append reads the note only after settle has written,
 # so each file is first held to every reader's rule: strict UTF-8, no NUL
 # byte, and text left once blanks are trimmed (settle's rule). A file a
 # script would refuse stops the block before any write.
 for TEXT_FILE in note.md summary.txt next-action.txt; do
   node -e 'let t;try{t=new TextDecoder("utf-8",{fatal:true}).decode(require("fs").readFileSync(process.argv[1]))}catch{process.exit(1)}process.exit(t.includes("\0")||t.trim()===""?1:0)' "$TEXT_DIR/$TEXT_FILE" || { echo "✗ $TEXT_FILE in TEXT_DIR ($TEXT_DIR) is missing, blank or not UTF-8 text; write it with the file tool first. Nothing was written." >&2; exit 1; }
 done
+
+# ADR-0066 PC2b — settle the ensemble attempt from its ledger (never launched,
+# launched and failed, completed). It is the first write and the one judge of
+# the run: a refusal (a run still live, of another workflow or phase, or an
+# attempt an empty id would hide) stops the block before any write, so the
+# workflow never records a note for an attempt left unsettled; once it has
+# recorded the run, running the block again records nothing more for it.
+node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" settle \
+  --repo-root "$REPO_ROOT" --workflow-path "$ACTIVE" \
+  --host "${AGENTIC_HOST:-claude}" --phase {{verb}} --run-id "$RUN_ID" \
+  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt" || exit $?
 
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
@@ -130,20 +254,12 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --next-action-file "$TEXT_DIR/next-action.txt" \
   --event updated || exit $?
 
-# ADR-0066 PC2b — settle the ensemble attempt from its ledger (never launched,
-# launched and failed, completed); a refusal stops the block before the last
-# write, so the workflow never closes with an attempt left unsettled.
-node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" settle \
-  --repo-root "$REPO_ROOT" --workflow-path "$ACTIVE" \
-  --host "${AGENTIC_HOST:-claude}" --phase {{verb}} --run-id "$RUN_ID" \
-  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt" || exit $?
-
-# ADR-0029 §1 / completion-output contract §2 — set --next-action (the
-# append above and this terminal write) to the COMPACT form of the
+# ADR-0029 §1 / completion-output contract §2 — next-action.txt, which the
+# append above and this terminal write record, holds the COMPACT form of the
 # proposal above (selected_next + one-line why + next_command) so the
 # durable state and the code-emitted completion footer agree with the
-# Active Next-Action Proposal. The value shown is the typical-case
-# default; override it, and the --next-step-* flags, when the verb's result
+# Active Next-Action Proposal. Step 2 shows the typical-case default; write
+# another, and change the --next-step-* flags, when the verb's result
 {{^capability commit_surface}}
 # selects a different next step (e.g. the owner's save and commit).
 {{/capability}}
@@ -175,13 +291,13 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --next-action-file "$TEXT_DIR/next-action.txt" \
   --next-step-kind verb --next-step-verb {{next_verb}} \
-  --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?
+  --next-step-confidence "$CONFIDENCE" || exit $?
 # The owner-decision form, for an owner gate named above this block: it
 # records the gate with the next step in one write, and the workflow stays
 # open until the owner resolves the gate.
 # node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
 #   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
 #   --next-action-file "$TEXT_DIR/next-action.txt" \
-#   --next-step-kind owner-decision --next-step-confidence "<HIGH|MEDIUM|LOW>" \
+#   --next-step-kind owner-decision --next-step-confidence "$CONFIDENCE" \
 #   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' || exit $?
 ```

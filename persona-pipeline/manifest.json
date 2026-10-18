@@ -2688,7 +2688,13 @@
         "designer",
         "engineer",
         "founder"
-      ]
+      ],
+      "substitutions": {
+        "name": {
+          "field": "name",
+          "context": "shell"
+        }
+      }
     },
     {
       "id": "checkpoint-outcomes",
@@ -3155,6 +3161,10 @@
         "equals": false
       },
       "substitutions": {
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
         "persona": {
           "field": "name",
           "context": "markdown"
@@ -3177,6 +3187,10 @@
         "equals": true
       },
       "substitutions": {
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
         "persona": {
           "field": "name",
           "context": "markdown"

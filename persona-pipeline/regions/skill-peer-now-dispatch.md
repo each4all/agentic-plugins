@@ -31,7 +31,9 @@ the block:
 
 Then run the block with `TEXT_DIR` set to that directory and `PEER` to the
 `--peer` value. A `prompt.xml` that is missing or blank stops it before the
-dispatch.
+dispatch. Keep the directory: the runner writes its result there,
+`prompt.xml.run.json`, and its stderr, `prompt.xml.err`; the `[Peer]` note
+step reads the run from the result.
 
 ```bash
 TEXT_DIR='<directory from step 1>'
@@ -39,8 +41,10 @@ PEER='<claude|codex, from --peer>'
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 HOST="${AGENTIC_HOST:-claude}"  # Codex-side command-invoked mode uses codex.
 RUN_ID="peer-now-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
-RUN_JSON="$(mktemp -t {{name}}-peer-now.XXXXXX).json"
-RUN_ERR="$(mktemp -t {{name}}-peer-now.XXXXXX).err"
+# The runner's result and its stderr go beside the prompt: the [Peer] note
+# step reads the run from there, never from this block's shell.
+RUN_JSON="$TEXT_DIR/prompt.xml.run.json"
+RUN_ERR="$TEXT_DIR/prompt.xml.err"
 echo "peer-now run_id=$RUN_ID" >&2
 # The prompt is the file the agent wrote with its file tool (ADR-0059,
 # amendment of 2026-10-10), a --prompt-text or a --prompt-file's text: no
@@ -59,6 +63,9 @@ STDOUT_PATH="$(node -e 'try{process.stdout.write((JSON.parse(require("fs").readF
 STDERR_PATH="$(node -e 'try{process.stdout.write((JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).stderr_path)||"")}catch{}' "$RUN_JSON")"
 HANDLE_PATH="$(node -e 'try{process.stdout.write((JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).handle_path)||"")}catch{}' "$RUN_JSON")"
 ERROR_KIND="$(node -e 'try{process.stdout.write((JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).error_kind)||"")}catch{}' "$RUN_JSON")"
+# The runner's exit status is this block's own (R4 J3): a failed consultation
+# stops here, where the agent sees it, and the [Peer] note step refuses it too.
+[ "$RUN_RC" -eq 0 ] || { echo "✗ peer-now run $RUN_ID failed (exit $RUN_RC${ERROR_KIND:+, $ERROR_KIND}); $RUN_ERR${STDERR_PATH:+ and $STDERR_PATH} say why. No note is appended for it." >&2; exit "$RUN_RC"; }
 ```
 
 Exit-code semantics (per `companions/contract.md` §5.1): 0 success (response

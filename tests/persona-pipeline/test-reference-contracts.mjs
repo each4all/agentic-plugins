@@ -23,8 +23,9 @@
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { readdirSync, readFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, posix } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -144,10 +145,12 @@ const squash = (s) => s.replace(/\s+/g, ' ').trim();
 const mdFiles = (text) => [...text.matchAll(/(?<![\w.\/-])[\w.-]+\.md(?![\w.\/-])/g)].map((m) => m[0]);
 const plain = (s) => squash(s.replace(/[`"“”‘’'*]/g, ''));
 
-// The Markdown file an agent writes its phase note into before a block, in a
-// private directory it creates (ADR-0059's amendment of 2026-10-10): a file
-// it writes, not a document it reads.
-const TEXT_FILES = new Set(['note.md']);
+// The Markdown files an agent writes before a block, in a private directory it
+// creates (ADR-0059's amendment of 2026-10-10): its phase note, and the
+// contested items a conflict ends on (R4: the consensus finalize reads them
+// from that directory, never from a path carried between blocks). Files it
+// writes, not documents it reads.
+const TEXT_FILES = new Set(['note.md', 'contested.md']);
 
 /**
  * The names a citation may carry that are not in-plugin documents: repository
@@ -543,6 +546,64 @@ for (const persona of PERSONAS) {
         const legacy = `.claude/agentic-${persona}/`;
         strictEqual(squash(recipe).includes(`and the pre-migration slot's \`${legacy}last-session-handoff.json*\``), caps.legacy_homes, 'the rollback removes the legacy slot exactly when legacy_homes is on');
         strictEqual(stateFacts(persona).legacyDir, legacy.slice(0, -1), 'the legacy home the note names is the one state.mjs resolves');
+      });
+
+      // R4 (C68): zsh's and macOS sh's echo turn a `\n` or `\\` inside a JSON
+      // string into a control character, so the recipe hands the projection to
+      // each parser with printf; each decodes UTF-8 across chunks and joins
+      // every chunk before it parses (a character split between two 64 KiB
+      // chunks otherwise decodes as U+FFFD and still parses), and a projection
+      // that does not parse stops the block instead of reading as an empty
+      // status. The block names the plugin root `<plugin-root>`, read from no
+      // variable (K4/J7): it runs here with `<plugin-root>` filled and
+      // CLAUDE_PLUGIN_ROOT unset.
+      it(`${label}: the session handoff's recipe, run: escaped text, a projection past one chunk and a multibyte character split across chunks read whole under every shell; a projection that is not JSON, or a failed one, stops it`, holding(persona, HANDOFF), () => {
+        const recipe = region(docs.get(HANDOFF), 'handoff-recipe');
+        const start = recipe.indexOf('```bash\n') + '```bash\n'.length;
+        const block = recipe.slice(start, recipe.indexOf('\n```', start));
+        ok(!/\becho "\$HANDOFF"/.test(block) && block.split('printf \'%s\' "$HANDOFF" | node').length - 1 === 3, 'every parser reads the projection through printf');
+        ok(!block.includes('CLAUDE_PLUGIN_ROOT') && block.includes('node "<plugin-root>/scripts/session-handoff.mjs" project'), 'the block runs session-handoff.mjs from <plugin-root>, not from a host variable');
+        const dir = mkdtempSync(join(tmpdir(), 'handoff-recipe.'));
+        try {
+          mkdirSync(join(dir, 'root', 'scripts'), { recursive: true });
+          // The projection the stub prints: the file it is given, and its status.
+          writeFileSync(join(dir, 'root', 'scripts', 'session-handoff.mjs'), "import fs from 'node:fs';\nprocess.stdout.write(fs.readFileSync(process.env.STUB_OUT, 'utf8'));\nprocess.exitCode = Number(process.env.STUB_RC || 0);\n");
+          execFileSync('git', ['init', '-q', join(dir, 'repo')]);
+          const after = '\nprintf \'%s\' "$STATUS" > status; printf \'%s\' "$ROUTING" > routing; if [ -n "${PROJ_FILE:-}" ]; then cp "$PROJ_FILE" proj; fi\n';
+          const run = (shell, out, rc = 0) => {
+            for (const f of ['status', 'routing', 'proj']) rmSync(join(dir, 'repo', f), { force: true });
+            writeFileSync(join(dir, 'out.json'), out);
+            const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AGENTIC_') && k !== 'CLAUDE_PLUGIN_ROOT'));
+            const filled = block.split('<plugin-root>').join(join(dir, 'root'));
+            const r = spawnSync(shell, ['-c', filled + after], { cwd: join(dir, 'repo'), encoding: 'utf8', env: { ...env, TMPDIR: dir, STUB_OUT: join(dir, 'out.json'), STUB_RC: String(rc) } });
+            const read = (f) => (existsSync(join(dir, 'repo', f)) ? readFileSync(join(dir, 'repo', f), 'utf8') : null);
+            return { status: r.status, stderr: r.stderr, out: { status: read('status'), routing: read('routing'), proj: read('proj') } };
+          };
+          const routing = 'resume with:\n  /x:resume \\ "a\\nb"\ttab';
+          const projection = { workflow_id: 'w', note: 'z'.repeat(200000) };
+          const shells = ['bash', 'zsh', 'sh', 'dash'].filter((s) => spawnSync(s, ['-c', 'exit 0']).status === 0);
+          ok(shells.length >= 2, 'at least two shells to run the recipe under');
+          for (const shell of shells) {
+            const ok_ = run(shell, `${JSON.stringify({ status: 'ok', routing, projection }, null, 2)}\n`);
+            strictEqual(ok_.status, 0, `${shell}: ${ok_.stderr}`);
+            deepStrictEqual([ok_.out.status, ok_.out.routing], ['ok', routing], `${shell}: the status and the routing, escapes and all`);
+            deepStrictEqual(JSON.parse(ok_.out.proj), projection, `${shell}: the projection file, past one stdin chunk`);
+            // 3-byte characters past 64 KiB: some fall across a chunk boundary.
+            const wide = '한'.repeat(100000);
+            const mb = run(shell, `${JSON.stringify({ status: 'ok', routing: wide, projection: { workflow_id: 'w', note: wide } })}\n`);
+            strictEqual(mb.status, 0, `${shell}: ${mb.stderr}`);
+            ok(!mb.out.routing.includes('\uFFFD') && !mb.out.proj.includes('\uFFFD'), `${shell}: no character split across chunks decodes as U+FFFD`);
+            strictEqual(mb.out.routing, wide, `${shell}: the routing, multibyte past one chunk`);
+            deepStrictEqual(JSON.parse(mb.out.proj), { workflow_id: 'w', note: wide }, `${shell}: the projection file, multibyte past one chunk`);
+            const bad = run(shell, '{"status": "ok", "routing": ');
+            deepStrictEqual([bad.status, bad.out.status], [1, null], `${shell}: a projection that is not JSON stops the block`);
+            ok(bad.stderr.includes('✗ session-handoff project printed no JSON'), bad.stderr);
+            const failed = run(shell, '', 1);
+            deepStrictEqual([failed.status, failed.out.status], [1, null], `${shell}: a failed projection stops the block`);
+          }
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
       });
 
       it(`${label}: the output-file rules name the brief file and output root the declaration implies (RD7)`, holding(persona, OUTPUT_RULES), () => {
