@@ -15,6 +15,7 @@
 // selected dispatch paths to this managed runner.
 
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import {
   access,
@@ -110,6 +111,23 @@ export const HANDLE_SCHEMA_VERSION = '1.0';
 export const VALID_PEERS = new Set(['claude', 'codex']);
 export const VALID_KINDS = new Set(['ensemble', 'peer-now', 'manual']);
 export const VALID_OUTPUT_FORMATS = new Set(['text', 'json']);
+// C119 — the run-id prefixes the persona runbooks dispatch under: each verb's
+// ensemble type, the profile-selected ones (adversarial-scan, root-cause,
+// cited-brief) and peer-now. `new-run-id` allocates only these.
+export const RUN_ID_PREFIXES = new Set([
+  'adversarial-scan',
+  'brainstorm',
+  'cited-brief',
+  'frame',
+  'investigate',
+  'peer-now',
+  'plan-verify',
+  'reference-scan',
+  'refine-verify',
+  'research-scan',
+  'review',
+  'root-cause',
+]);
 export const VALID_STATUSES = new Set([
   'queued',
   'spawning',
@@ -302,6 +320,17 @@ export function generateRunId(kind = 'manual', now = new Date()) {
   const stamp = now.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
   const suffix = Math.random().toString(16).slice(2, 10);
   return `${prefix}-${stamp}-${suffix}`;
+}
+
+// C119/C26 — the id a runbook allocates before its dispatch and passes with
+// --run-id: `<prefix>-<UTC yyyymmddThhmmssZ>-<6 lowercase hex>`, the suffix
+// from crypto, so no shell arithmetic or hand-written date is involved.
+export function allocateRunId(prefix, now = new Date()) {
+  if (!RUN_ID_PREFIXES.has(prefix)) {
+    throw new Error(`--prefix must be one of ${[...RUN_ID_PREFIXES].join(', ')} (got ${prefix})`);
+  }
+  const stamp = now.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+  return `${prefix}-${stamp}-${randomBytes(3).toString('hex')}`;
 }
 
 export function validateHandleShape(handle) {
@@ -1920,6 +1949,10 @@ function parseCliArgs(argv) {
       case '--run-id':
         opts.runId = rest[++i];
         break;
+      case '--prefix':
+        if (Object.hasOwn(opts, 'prefix')) throw new Error('--prefix is given more than once');
+        opts.prefix = rest[++i];
+        break;
       case '--kind':
         opts.kind = rest[++i];
         break;
@@ -2009,9 +2042,15 @@ function parseCliArgs(argv) {
 
 function printHelp() {
   process.stdout.write([
-    'Usage: peer-runner.mjs <run|status|cancel|sweep|settle> [flags]',
+    'Usage: peer-runner.mjs <new-run-id|run|status|cancel|sweep|settle> [flags]',
     '',
     'Subcommands:',
+    `  new-run-id --prefix <${[...RUN_ID_PREFIXES].join('|')}>`,
+    '      Print one run id, <prefix>-<UTC yyyymmddThhmmssZ>-<6 hex>, for a',
+    '      runbook to pass with --run-id. Exit 0, 2 for a missing or unknown',
+    '      prefix, 1 when the persona declaration is missing or invalid; stop',
+    '      on any other status than 0. Writes nothing.',
+    '',
     '  run --peer claude|codex (--prompt-file <path>|--prompt-text <text>)',
     '      [--repo-root <path>] [--run-id <id>] [--kind ensemble|peer-now|manual]',
     '      [--workflow-path <path> --phase <p> --ensemble-type <t>]',
@@ -2060,6 +2099,12 @@ async function cliMain(argv) {
 
 async function cliRun(opts) {
   try {
+    if (opts.subcommand === 'new-run-id') {
+      if (opts.prefix === undefined) throw new Error('--prefix is required');
+      process.stdout.write(`${allocateRunId(opts.prefix)}\n`);
+      return 0;
+    }
+
     if (opts.subcommand === 'run') {
       // C96 — a signal ends the run the way a cancel does: the peer's group is
       // stopped, the ledger records the cancellation, the snapshot is removed,
