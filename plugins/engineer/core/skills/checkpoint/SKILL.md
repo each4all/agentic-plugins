@@ -130,6 +130,12 @@ Then run the block with `TEXT_DIR` set to that directory.
 
 ```bash
 TEXT_DIR='<directory from step 1>'
+# A fresh shell: the workflow is found again here, never carried from an
+# earlier block.
+PERSONA='engineer'
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+ACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
+[ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
 node "<plugin-root>/scripts/state.mjs" checkpoint-set \
   --workflow-path "$ACTIVE" --host <claude|codex> --summary-file "$TEXT_DIR/summary.txt"
 ```
@@ -143,10 +149,9 @@ The file carries embedded whitespace and special characters intact, since no
 shell reads it. The CLI rejects an empty summary, and a missing file; Phase 0
 already filtered the empty case.
 
-**Cross-Bash-call note**: shell-variable state (`$ACTIVE`, `$TEXT_DIR`) does
-not survive across Bash tool invocations. If Phase 1 and Phase 2 run in
-separate Bash calls, re-resolve both values inside the second call — or
-combine them in a single Bash call.
+**Cross-Bash-call note**: shell-variable state does not survive across Bash
+tool invocations, so the block carries nothing from Phase 1: it finds the
+active workflow again itself, and `TEXT_DIR` is the directory you set in it.
 <!-- pipeline:end checkpoint-set -->
 
 ---

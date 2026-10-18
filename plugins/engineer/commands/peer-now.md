@@ -101,7 +101,9 @@ the block:
 
 Then run the block with `TEXT_DIR` set to that directory and `PEER` to the
 `--peer` value. A `prompt.xml` that is missing or blank stops it before the
-dispatch.
+dispatch. Keep the directory: the runner writes its result there,
+`prompt.xml.run.json`, and its stderr, `prompt.xml.err`; the `[Peer]` note
+step reads the run from the result.
 
 ```bash
 TEXT_DIR='<directory from step 1>'
@@ -111,8 +113,10 @@ CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 RUN_ID="peer-now-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
-RUN_JSON="$(mktemp -t 'engineer'-peer-now.XXXXXX).json"
-RUN_ERR="$(mktemp -t 'engineer'-peer-now.XXXXXX).err"
+# The runner's result and its stderr go beside the prompt: the [Peer] note
+# step reads the run from there, never from this block's shell.
+RUN_JSON="$TEXT_DIR/prompt.xml.run.json"
+RUN_ERR="$TEXT_DIR/prompt.xml.err"
 echo "peer-now run_id=$RUN_ID" >&2
 # The prompt is the file the agent wrote with its file tool (ADR-0059,
 # amendment of 2026-10-10), a --prompt-text or a --prompt-file's text: no
@@ -129,6 +133,9 @@ STDOUT_PATH="$(node -e 'try{process.stdout.write((JSON.parse(require("fs").readF
 STDERR_PATH="$(node -e 'try{process.stdout.write((JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).stderr_path)||"")}catch{}' "$RUN_JSON")"
 HANDLE_PATH="$(node -e 'try{process.stdout.write((JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).handle_path)||"")}catch{}' "$RUN_JSON")"
 ERROR_KIND="$(node -e 'try{process.stdout.write((JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).error_kind)||"")}catch{}' "$RUN_JSON")"
+# The runner's exit status is this block's own (R4 J3): a failed consultation
+# stops here, where the agent sees it, and the [Peer] note step refuses it too.
+[ "$RUN_RC" -eq 0 ] || { echo "✗ peer-now run $RUN_ID failed (exit $RUN_RC${ERROR_KIND:+, $ERROR_KIND}); $RUN_ERR${STDERR_PATH:+ and $STDERR_PATH} say why. No note is appended for it." >&2; exit "$RUN_RC"; }
 ```
 <!-- pipeline:end peer-now-dispatch -->
 
@@ -190,10 +197,36 @@ Branch on the result:
   violation per ADR-0018 §sub-2 cascade of ADR-0011 §1).
 
 <!-- pipeline:begin peer-now-note -->
+Run it with `DISPATCH_DIR` set to the directory the dispatch ran with (Phase
+1's step 1): in a fresh shell, it reads the run from the result the runner
+wrote there, `prompt.xml.run.json`, and from the run's handle, and finds the
+workflow again, carrying nothing from Phase 1.
+
 ```bash
+DISPATCH_DIR='<the directory the dispatch ran with>'
 ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+PERSONA='engineer'
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
+[ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch; nothing was written." >&2; exit 1; }
+# One field of a JSON file, a non-empty string; anything else fails.
+FIELD='let r;try{r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))}catch{process.exit(1)}const v=r&&r[process.argv[2]];if(typeof v!=="string"||v==="")process.exit(1);process.stdout.write(v)'
+RUN_JSON="$DISPATCH_DIR/prompt.xml.run.json"
+# Only a consultation that succeeded gets a note: the runner's own result says
+# so (ok true), read here, never the dispatch shell's exit status (R4 J3).
+FAILED="$(node -e 'let r;try{r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))}catch{process.exit(1)}if(r===null||typeof r!=="object")process.exit(1);if(r.ok===true)process.exit(0);process.stdout.write(String(r.error_kind||r.status||"not ok"));process.exit(2)' "$RUN_JSON")"
+case $? in
+  0) ;;
+  2) echo "✗ The run in DISPATCH_DIR ($DISPATCH_DIR) did not succeed ($FAILED; prompt.xml.err there says why); no note is appended for a failed consultation." >&2; exit 1 ;;
+  *) echo "✗ The run's result in DISPATCH_DIR ($DISPATCH_DIR) is missing or unreadable; nothing was written." >&2; exit 1 ;;
+esac
+RUN_ID="$(node -e "$FIELD" "$RUN_JSON" run_id)" \
+  && HANDLE_PATH="$(node -e "$FIELD" "$RUN_JSON" handle_path)" \
+  && STDOUT_PATH="$(node -e "$FIELD" "$RUN_JSON" stdout_path)" \
+  && PEER="$(node -e "$FIELD" "$HANDLE_PATH" peer_host)" \
+  || { echo "✗ The run's result in DISPATCH_DIR ($DISPATCH_DIR), or its handle, is missing or unreadable; nothing was written." >&2; exit 1; }
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --phase-label "[Peer] $PEER consultation" \

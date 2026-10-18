@@ -118,17 +118,51 @@ Branch on the result:
 Read the active workflow's frontmatter and compare git state:
 
 <!-- pipeline:begin resume-read -->
+The read goes into a private directory of this resume's own, never a shared
+`/tmp` name another session's resume could leave behind or overwrite; the
+drift report and the marker (Phase 2b) read it from there. Before the block:
+
+1. Create the directory, and note the path it prints:
+
+   ```bash
+   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   ```
+
+Then run the block with `READ_DIR` set to that directory. It prints the
+workflow, its baseline and the checkout's current state. It first empties
+`read.json`, so a run that stops (a failed lookup or read) leaves it empty,
+never an earlier read, and the drift report and the marker refuse it.
+
 ```bash
+READ_DIR='<directory from step 1>'
 ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE" >/tmp/'engineer'-resume-read.json
+# A fresh shell: the workflow is found again here, never carried from an
+# earlier block.
+PERSONA='engineer'
+# The last read is emptied before anything here can fail, so a retry that
+# stops leaves no earlier snapshot behind (the readers refuse an empty
+# read.json); nothing is removed. A READ_DIR left unfilled stops here (printf,
+# not `:`, whose failed redirection would end a POSIX shell before the message).
+printf '' 2>/dev/null >"$READ_DIR/read.json" || { echo "✗ READ_DIR ($READ_DIR) is not a directory this resume can write; set it to the directory step 1 created. Nothing was read." >&2; exit 1; }
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
+[ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
+# The read is checked on its own, and lands in read.json only whole.
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE" >"$READ_DIR/read.json.part" \
+  || { echo "✗ state.mjs read failed for $ACTIVE (its error is above); no drift report." >&2; exit 1; }
+mv -f "$READ_DIR/read.json.part" "$READ_DIR/read.json" || exit 1
 CURRENT_BRANCH="$(git branch --show-current)"
 CURRENT_HEAD="$(git rev-parse HEAD)"
 CURRENT_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
-BASE_BRANCH="$(node -e 'try{const b=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).git_baseline||{};process.stdout.write(String(b.branch??""))}catch{}' /tmp/'engineer'-resume-read.json)"
-BASE_HEAD="$(node -e 'try{const b=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).git_baseline||{};process.stdout.write(String(b.head??""))}catch{}' /tmp/'engineer'-resume-read.json)"
-BASE_DIGEST="$(node -e 'try{const b=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).git_baseline||{};process.stdout.write(String(b.status_digest??""))}catch{}' /tmp/'engineer'-resume-read.json)"
+# A baseline field the workflow does not record reads empty; a read.json that
+# does not parse stops the block.
+BASE_BRANCH="$(node -e 'let r;try{r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))}catch{process.exit(1)}process.stdout.write(String((r&&r.git_baseline||{})[process.argv[2]]??""))' "$READ_DIR/read.json" branch)" || { echo "✗ $READ_DIR/read.json is not the workflow read; no drift report." >&2; exit 1; }
+BASE_HEAD="$(node -e 'let r;try{r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))}catch{process.exit(1)}process.stdout.write(String((r&&r.git_baseline||{})[process.argv[2]]??""))' "$READ_DIR/read.json" head)" || { echo "✗ $READ_DIR/read.json is not the workflow read; no drift report." >&2; exit 1; }
+BASE_DIGEST="$(node -e 'let r;try{r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))}catch{process.exit(1)}process.stdout.write(String((r&&r.git_baseline||{})[process.argv[2]]??""))' "$READ_DIR/read.json" status_digest)" || { echo "✗ $READ_DIR/read.json is not the workflow read; no drift report." >&2; exit 1; }
+printf 'workflow: %s\nbaseline: branch=%s head=%s status_digest=%s\ncurrent:  branch=%s head=%s status_digest=%s\n' \
+  "$ACTIVE" "$BASE_BRANCH" "$BASE_HEAD" "$BASE_DIGEST" "$CURRENT_BRANCH" "$CURRENT_HEAD" "$CURRENT_DIGEST"
 ```
 <!-- pipeline:end resume-read -->
 
@@ -181,7 +215,20 @@ prints `(probe failed: ...)`. Placeholder texts intentionally differ
 (e.g., `git diff --stat HEAD` excludes untracked files, so its
 placeholder avoids claiming a clean working tree).
 
+Run it with `READ_DIR` set to the directory the read above used: a fresh
+shell, it reads the baseline again from that `read.json` and the checkout's
+state from git.
+
 ```bash
+READ_DIR='<directory from step 1>'
+# Nothing survives from the read's block: the baseline comes from its
+# read.json, and a read.json that does not parse stops the report.
+BASE_BRANCH="$(node -e 'let r;try{r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))}catch{process.exit(1)}process.stdout.write(String((r&&r.git_baseline||{})[process.argv[2]]??""))' "$READ_DIR/read.json" branch)" || { echo "✗ read.json in READ_DIR ($READ_DIR) is missing or unreadable; run the read again." >&2; exit 1; }
+BASE_HEAD="$(node -e 'let r;try{r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))}catch{process.exit(1)}process.stdout.write(String((r&&r.git_baseline||{})[process.argv[2]]??""))' "$READ_DIR/read.json" head)" || { echo "✗ read.json in READ_DIR ($READ_DIR) is missing or unreadable; run the read again." >&2; exit 1; }
+BASE_DIGEST="$(node -e 'let r;try{r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))}catch{process.exit(1)}process.stdout.write(String((r&&r.git_baseline||{})[process.argv[2]]??""))' "$READ_DIR/read.json" status_digest)" || { echo "✗ read.json in READ_DIR ($READ_DIR) is missing or unreadable; run the read again." >&2; exit 1; }
+CURRENT_BRANCH="$(git branch --show-current)"
+CURRENT_HEAD="$(git rev-parse HEAD)"
+CURRENT_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
 # Determine drift classification (DRIFT=clean|dirty per ADR-0017 §sub-decision-1).
 if [ "$CURRENT_BRANCH" = "$BASE_BRANCH" ] \
    && [ "$CURRENT_HEAD" = "$BASE_HEAD" ] \
@@ -276,19 +323,32 @@ would be read as code (ADR-0059, amendment of 2026-10-10). Before the block:
    Re-entered via /engineer:resume; drift=<clean|dirty>. <one-paragraph diff summary, or 'no changes since baseline'>
    ```
 
-Then run the block with `TEXT_DIR` set to that directory. Over an invalid
-baseline it appends nothing, and needs no file; otherwise a note left
-unwritten stops it before the write. Nothing deletes the file.
+Then run the block with `TEXT_DIR` set to that directory and `READ_DIR` to the
+one Phase 2's read used: it reads the baseline from the `read.json` there.
+Over an invalid baseline it appends nothing, and needs no note; otherwise a
+note left unwritten stops it before the write. A `read.json` missing or
+unreadable, or the read of another workflow than the one the block finds,
+stops it too: run Phase 2 again. Nothing deletes the files.
 
 ```bash
 TEXT_DIR='<directory from step 1>'
+READ_DIR='<the directory Phase 2 read into>'
 ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+# A fresh shell: the workflow is found again here, never carried from an
+# earlier block.
+PERSONA='engineer'
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
+[ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
 # host_history fidelity (ADR-0017 §sub-decision-1): no marker over a baseline
-# whose commit object is not available. Re-read here: shell variables from
-# Phase 2 do not survive across Bash calls.
-BASE_HEAD_CHECK="$(node -e 'try{const b=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).git_baseline||{};process.stdout.write(String(b.head??""))}catch{}' /tmp/'engineer'-resume-read.json)"
+# whose commit object is not available. Re-read here, from this resume's own
+# read.json: shell variables from Phase 2 do not survive across Bash calls. A
+# read of another workflow than the one found above (the branch or its
+# workflow changed since) stops the block: its baseline is not this one's.
+BASE_HEAD_CHECK="$(node -e 'let r;try{r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))}catch{process.exit(1)}if(r===null||r.workflow_id!==require("path").basename(process.argv[2],".md"))process.exit(1);process.stdout.write(String((r.git_baseline||{}).head??""))' "$READ_DIR/read.json" "$ACTIVE")" \
+  || { echo "✗ read.json in READ_DIR ($READ_DIR) is missing, unreadable or the read of another workflow than $ACTIVE; run Phase 2's read again. Nothing was written." >&2; exit 1; }
 if [ -z "$BASE_HEAD_CHECK" ] || ! git cat-file -e "$BASE_HEAD_CHECK^{commit}" 2>/dev/null; then
   echo "Phase 2b: resume marker NOT appended (invalid baseline; ADR-0017 §sub-decision-1 host_history fidelity)."
 else
