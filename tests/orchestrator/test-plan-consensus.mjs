@@ -35,6 +35,7 @@ const STATE = resolve(ORCH_ROOT, 'scripts/state.mjs');
 const {
   createWorkflow, setPlan, setAwaitingOwner, clearAwaitingOwner, commitEnsemble, readWorkflow,
   writeConsensusTask, writeConsensusTaskUnderLock, retireConsensusTask, consensusProposal,
+  appendPhase, approvePlan, withFileLock, setMacroTerminal,
 } = await import(STATE);
 
 const SHELLS = ['bash', 'zsh'].filter((sh) => spawnSync(sh, ['-c', 'true']).status === 0);
@@ -268,3 +269,174 @@ for (const shell of SHELLS) {
     }));
   });
 }
+
+// C132 — the plan finalize's machine records: the run whose phase note an
+// `append --run-id` wrote (phase_note_run_ids) and the run whose plan-conflict
+// gate the owner cleared (plan_conflict_cleared_run_id). A rerun decides from
+// them, never from note prose.
+describe('C132: the plan finalize\'s machine records', () => {
+  const R2 = 'macro-plan-20261001T000000Z-000002';
+  const keyed = (macro, runId, note = 'synthesis') => appendPhase({
+    workflowPath: macro, host: 'claude', phaseLabel: 'Phase 1: Plan (synthesized)', phaseNote: note,
+    currentPhase: 'phase-2-presented', event: 'updated', requireOpen: true, runId,
+  });
+  const records = async (macro) => {
+    const { frontmatter } = await readWorkflow(macro);
+    return [frontmatter.phase_note_run_ids, frontmatter.plan_conflict_cleared_run_id];
+  };
+
+  it('an older macro without the records reads as none, in the API and in read\'s JSON', () => withMacro(async ({ macro }) => {
+    deepStrictEqual(await records(macro), [undefined, undefined]);
+    const r = cli(['read', '--workflow-path', macro]);
+    strictEqual(r.status, 0, r.stderr);
+    const json = JSON.parse(r.stdout);
+    ok(!('phase_note_run_ids' in json) && !('plan_conflict_cleared_run_id' in json), r.stdout);
+    ok(!/phase_note_run_ids|plan_conflict_cleared_run_id/.test(await readFile(macro, 'utf8')), 'no key is written until a record is');
+  }));
+
+  it('an append keyed by a run records it; the same run again writes nothing; another run appends and is added', () => withMacro(async ({ macro }) => {
+    const first = await keyed(macro, RUN);
+    strictEqual(first.skipped, false);
+    deepStrictEqual(await records(macro), [RUN, undefined]);
+    const once = await readFile(macro, 'utf8');
+    strictEqual(once.split('Phase 1: Plan (synthesized)').length - 1, 1);
+    const again = await keyed(macro, RUN, 'a different body, same run');
+    strictEqual(again.skipped, true);
+    strictEqual(await readFile(macro, 'utf8'), once, 'nothing was written: not the note, the phase, updated_at or host_history');
+    const r = cli(['append', '--workflow-path', macro, '--host', 'claude', '--phase-label', 'Phase 1: Plan (synthesized)', '--phase-note', 'x', '--run-id', RUN, '--require-open']);
+    strictEqual(r.status, 0, r.stderr);
+    strictEqual(r.stdout, `${macro}\n`);
+    ok(/already recorded \(phase_note_run_ids\); nothing written/.test(r.stderr), r.stderr);
+    strictEqual(await readFile(macro, 'utf8'), once, 'the CLI writes nothing either');
+    await keyed(macro, R2);
+    deepStrictEqual(await records(macro), [`${RUN} ${R2}`, undefined]);
+    strictEqual((await readFile(macro, 'utf8')).split('Phase 1: Plan (synthesized)').length - 1, 2, 'the second run has its own note');
+    await appendPhase({ workflowPath: macro, host: 'claude', phaseLabel: 'Unkeyed', phaseNote: 'u', event: 'updated' });
+    await appendPhase({ workflowPath: macro, host: 'claude', phaseLabel: 'Unkeyed', phaseNote: 'u', event: 'updated' });
+    strictEqual((await readFile(macro, 'utf8')).split('### Unkeyed').length - 1, 2, 'an unkeyed append appends as before');
+    deepStrictEqual(await records(macro), [`${RUN} ${R2}`, undefined], 'and leaves the record alone');
+  }));
+
+  it('a keyed append is decided and recorded under the macro lock', () => withMacro(async ({ macro }) => {
+    const before = await readFile(macro, 'utf8');
+    let pending;
+    let during;
+    await withFileLock(macro, async () => {
+      pending = keyed(macro, RUN);
+      pending.catch(() => {});
+      await new Promise((r) => setTimeout(r, 400));
+      during = await readFile(macro, 'utf8');
+    });
+    strictEqual((await pending).skipped, false);
+    strictEqual(during, before, 'the append waited for the lock');
+    deepStrictEqual(await records(macro), [RUN, undefined]);
+    // Two keyed appends of one run racing: one note.
+    const [a, b] = await Promise.all([keyed(macro, R2), keyed(macro, R2)]);
+    deepStrictEqual([a.skipped, b.skipped].sort(), [false, true]);
+    strictEqual((await readFile(macro, 'utf8')).split('Phase 1: Plan (synthesized)').length - 1, 2);
+  }));
+
+  it('a run id that is not one, an empty one, and a terminal macro are refused with the file unchanged', () => withMacro(async ({ macro }) => {
+    const before = await readFile(macro, 'utf8');
+    for (const bad of ['', 'a.b', 'run\r', '-x', 'x'.repeat(129)]) {
+      await rejects(keyed(macro, bad), /--run-id must be a run id/, JSON.stringify(bad));
+      const r = cli(['append', '--workflow-path', macro, '--host', 'claude', '--phase-note', 'n', `--run-id=${bad}`]);
+      strictEqual(r.status, 1, `${JSON.stringify(bad)}: ${r.stderr}`);
+    }
+    strictEqual(await readFile(macro, 'utf8'), before);
+    for (const value of ['a.b', '', 'a  b', 'a b a', ' a', Array.from({ length: 65 }, (_, i) => `r${i}`).join(' ')]) {
+      await writeFile(macro, before.replace(/^(workflow_id: .*)$/m, `$1\nphase_note_run_ids: ${JSON.stringify(value)}`));
+      await rejects(readWorkflow(macro), /phase_note_run_ids must list 1 to 64 distinct run ids/, JSON.stringify(value));
+    }
+    await writeFile(macro, before.replace(/^(workflow_id: .*)$/m, `$1\nplan_conflict_cleared_run_id: "../x"`));
+    await rejects(readWorkflow(macro), /plan_conflict_cleared_run_id must be a run id/);
+    // A terminal macro is refused before the record is looked at, for its own run too.
+    await writeFile(macro, before);
+    await keyed(macro, RUN);
+    await setMacroTerminal({ workflowPath: macro, host: 'claude', terminalPhase: 'aborted' });
+    const terminal = await readFile(macro, 'utf8');
+    for (const run of [RUN, R2]) await rejects(keyed(macro, run), /terminal macro is not revised/);
+    strictEqual(await readFile(macro, 'utf8'), terminal);
+  }));
+
+  it('every run keeps its own record: A, B, then A again appends nothing, after a commit or a failure before it', () => withMacro(async ({ macro }) => {
+    // append(A) → commit(A) → append(B) → commit(B) → append(A)
+    await keyed(macro, RUN);
+    await commit(macro, RUN, 'pass');
+    await keyed(macro, R2);
+    await commit(macro, R2, 'pass');
+    strictEqual((await keyed(macro, RUN)).skipped, true);
+    // append(A3) → a failure before its commit → append(B4) → retry(A3)
+    const A3 = 'macro-plan-20261001T000000Z-000003';
+    const B4 = 'macro-plan-20261001T000000Z-000004';
+    await keyed(macro, A3);
+    await keyed(macro, B4);
+    const before = await readFile(macro, 'utf8');
+    strictEqual((await keyed(macro, A3)).skipped, true);
+    strictEqual(await readFile(macro, 'utf8'), before);
+    strictEqual(before.split('Phase 1: Plan (synthesized)').length - 1, 4, 'one note per run');
+    deepStrictEqual(await records(macro), [`${RUN} ${R2} ${A3} ${B4}`, undefined]);
+  }));
+
+  it('a keyed append needs a note; the list keeps the latest 64 runs', () => withMacro(async ({ macro }) => {
+    const before = await readFile(macro, 'utf8');
+    for (const note of [null, '', '  \n']) {
+      await rejects(keyed(macro, RUN, note), /--run-id records a phase note, so it needs --phase-note/, JSON.stringify(note));
+    }
+    const r = cli(['append', '--workflow-path', macro, '--host', 'claude', '--phase-label', 'L', '--run-id', RUN]);
+    strictEqual(r.status, 1, r.stderr);
+    strictEqual(await readFile(macro, 'utf8'), before, 'a refused append records nothing');
+    const runs = Array.from({ length: 66 }, (_, i) => `macro-plan-20261001T000000Z-${String(i).padStart(6, '0')}`);
+    for (const run of runs) await keyed(macro, run, 'n');
+    const [list] = await records(macro);
+    deepStrictEqual(list.split(' '), runs.slice(2));
+    strictEqual((await keyed(macro, runs[0], 'n')).skipped, false, 'an evicted run appends again: the stated limit');
+  }));
+
+  it('consensus-task refuses a run whose plan-conflict gate the owner cleared, under the lock', () => withMacro(async ({ dir, macro, id }) => {
+    await conflictPlan(macro);
+    await commit(macro, RUN, 'conflict');
+    await clearAwaitingOwner({ workflowPath: macro, host: 'claude', gate: 'plan-conflict', env: env() });
+    const before = await readFile(macro, 'utf8');
+    await rejects(writeConsensusTask({ workflowPath: macro, runId: RUN, text: 'C1' }), /the owner cleared the plan-conflict gate of run .*no consensus round/);
+    const r = cli(['consensus-task', '--workflow-path', macro, '--run-id', RUN, '--text', 'C1']);
+    strictEqual(r.status, 1);
+    strictEqual(r.stdout, '');
+    ok(!existsSync(task(dir, id, RUN)), 'no task file');
+    strictEqual(await readFile(macro, 'utf8'), before);
+  }));
+
+  it('the owner\'s clear records the run of the gate it cleared, and every later write keeps it', () => withMacro(async ({ macro }) => {
+    await conflictPlan(macro);
+    await keyed(macro, RUN);
+    await clearAwaitingOwner({ workflowPath: macro, host: 'claude', gate: 'plan-conflict', env: env() });
+    let { frontmatter } = await readWorkflow(macro);
+    deepStrictEqual([frontmatter.awaiting_owner_gate, frontmatter.awaiting_owner_run_id, frontmatter.plan_conflict_cleared_run_id], ['plan-approval', undefined, RUN]);
+    // Later writes: a commit of the result, a keyed and an unkeyed append, a
+    // re-plan with another run's conflict, its clear-less approval path, a
+    // re-plan that passes, the approval.
+    await commit(macro, RUN, 'conflict');
+    await keyed(macro, RUN);
+    await appendPhase({ workflowPath: macro, host: 'claude', phaseNote: 'later', event: 'updated' });
+    await conflictPlan(macro, R2);
+    deepStrictEqual(await records(macro), [RUN, RUN], 'a new conflict gate leaves the earlier clear recorded');
+    await setPlan({ workflowPath: macro, host: 'claude', subtasks: SUBTASKS, verdict: 'pass' });
+    await approvePlan({ workflowPath: macro, host: 'claude', env: env() });
+    ({ frontmatter } = await readWorkflow(macro));
+    deepStrictEqual([frontmatter.plan_approval_status, frontmatter.plan_conflict_cleared_run_id], ['approved', RUN]);
+    const r = cli(['read', '--workflow-path', macro]);
+    strictEqual(JSON.parse(r.stdout).plan_conflict_cleared_run_id, RUN, 'read prints it');
+  }));
+
+  it('only the next clear of a run\'s gate replaces the record; a gate raised by hand, with no run, leaves it', () => withMacro(async ({ macro }) => {
+    await conflictPlan(macro);
+    await clearAwaitingOwner({ workflowPath: macro, host: 'claude', gate: 'plan-conflict', env: env() });
+    await setAwaitingOwner({ workflowPath: macro, host: 'claude', gate: 'plan-conflict', pointer: 'x/y.md#ensemble-synthesis' });
+    await clearAwaitingOwner({ workflowPath: macro, host: 'claude', gate: 'plan-conflict', env: env() });
+    deepStrictEqual(await records(macro), [undefined, RUN]);
+    await conflictPlan(macro, R2);
+    const r = cli(['awaiting-owner-clear', '--workflow-path', macro, '--host', 'claude', '--gate', 'plan-conflict']);
+    strictEqual(r.status, 0, r.stderr);
+    deepStrictEqual(await records(macro), [undefined, R2]);
+  }));
+});

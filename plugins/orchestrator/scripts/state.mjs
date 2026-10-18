@@ -82,6 +82,7 @@ import {
 import { LockHeldError, checkAdmission, joinAdmission, releaseAdmission } from './lib/run-locks.mjs';
 import { moveCutover, moveRollback, planCutover, planRollback, verifyCutover } from './lib/cutover.mjs';
 import { laneAdvice, laneAdviceLine } from './lib/lane-advice.mjs';
+import { readCommandArguments } from './lib/command-args.mjs';
 import { macroInDefaultRoot, nextWorktreeProposal, worktreeProposalText } from './lib/worktree-proposal.mjs';
 
 // -----------------------------------------------------------------------------
@@ -305,6 +306,22 @@ const AWAITING_OWNER_KEYS = ['awaiting_owner_gate', 'awaiting_owner_since', 'awa
 // consensus task file to its gate. Optional, outside the all-or-none triple:
 // plan-approval, and a plan-conflict raised by hand, carry none.
 const AWAITING_OWNER_RUN_ID = 'awaiting_owner_run_id';
+// C132 — the plan finalize's machine records, so a rerun decides from
+// frontmatter and never from note prose. Optional run ids, absent = none, each
+// written under the macro's file lock and kept by every later write:
+//   - phase_note_run_ids: the runs whose phase note an `append --run-id`
+//     wrote, oldest first, separated by one space (a run id holds none). An
+//     append keyed by a listed run writes nothing. One string scalar, so an
+//     older reader's forward-compat carrier keeps it as written. It keeps the
+//     latest PHASE_NOTE_RUN_IDS_MAX runs; a macro sees a handful.
+//   - plan_conflict_cleared_run_id: the run of the plan-conflict gate the
+//     owner last cleared (awaiting-owner-clear). A clear of a gate that names
+//     no run leaves it as it was. consensus-task refuses that run under the
+//     lock: the owner decided its conflict.
+const PHASE_NOTE_RUN_IDS = 'phase_note_run_ids';
+const PHASE_NOTE_RUN_IDS_MAX = 64;
+const phaseNoteRunIds = (fm) => (typeof fm[PHASE_NOTE_RUN_IDS] === 'string' && fm[PHASE_NOTE_RUN_IDS] !== '' ? fm[PHASE_NOTE_RUN_IDS].split(' ') : []);
+const PLAN_CONFLICT_CLEARED_RUN_ID = 'plan_conflict_cleared_run_id';
 // A run id as the gate records it and a task file's name carries it: no `.`,
 // so a live name never equals a retired `<id>.<run>.resolved.md` one.
 const CONSENSUS_RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
@@ -1528,6 +1545,9 @@ const FRONTMATTER_KEY_ORDER = [
   // same carrier reason: a reader that does not know it re-emits it after
   // every key it knows, in place.
   'awaiting_owner_run_id',
+  // C132 — the plan finalize's records, after it for the same reason.
+  'phase_note_run_ids',
+  'plan_conflict_cleared_run_id',
 ];
 
 // ADR-0028 §Forward-compat (PR5 #356 ported from engineer) — invisible
@@ -2275,6 +2295,22 @@ function validateSchema12Fields(fm) {
         `at most 128 characters (got ${JSON.stringify(fm[AWAITING_OWNER_RUN_ID])}) (ADR-0067 Decision 8)`,
     );
   }
+  if (PLAN_CONFLICT_CLEARED_RUN_ID in fm && !isSafeConsensusRunId(fm[PLAN_CONFLICT_CLEARED_RUN_ID])) {
+    throw new Error(
+      `${PLAN_CONFLICT_CLEARED_RUN_ID} must be a run id of [A-Za-z0-9_-] starting with a letter or digit, ` +
+        `at most 128 characters (got ${JSON.stringify(fm[PLAN_CONFLICT_CLEARED_RUN_ID])}) (C132)`,
+    );
+  }
+  if (PHASE_NOTE_RUN_IDS in fm) {
+    const value = fm[PHASE_NOTE_RUN_IDS];
+    const ids = typeof value === 'string' ? value.split(' ') : [];
+    if (ids.length === 0 || ids.length > PHASE_NOTE_RUN_IDS_MAX || !ids.every(isSafeConsensusRunId) || new Set(ids).size !== ids.length) {
+      throw new Error(
+        `${PHASE_NOTE_RUN_IDS} must list 1 to ${PHASE_NOTE_RUN_IDS_MAX} distinct run ids of [A-Za-z0-9_-], ` +
+          `separated by one space (got ${JSON.stringify(value)}) (C132)`,
+      );
+    }
+  }
 
   const pending = fm.plan_approval_status === 'pending';
   const gated = VALID_MACRO_OWNER_GATES.has(fm.awaiting_owner_gate);
@@ -2934,10 +2970,25 @@ export async function appendPhase({
   // appends, so a macro finalized by another session between a check and
   // the append cannot be left with terminal_marker and a non-terminal phase.
   requireOpen = false,
+  // C132 — the run this note belongs to. When the macro records it as
+  // phase_note_run_ids, the note is already there: nothing is written and the
+  // result says `skipped`. Otherwise the append records it, in the same write.
+  // A keyed append carries a note: a record with no note would skip the real
+  // one on the retry.
+  runId,
 }) {
   validateHost(host);
   validateHookEvent(event);
   if (verb !== undefined) validateVerb(verb);
+  if (runId !== undefined && !isSafeConsensusRunId(runId)) {
+    throw new Error(
+      `append: --run-id must be a run id of [A-Za-z0-9_-] starting with a letter or digit, ` +
+        `at most 128 characters (got ${JSON.stringify(runId)}) (C132)`,
+    );
+  }
+  if (runId !== undefined && (typeof phaseNote !== 'string' || phaseNote.trim() === '')) {
+    throw new Error('append: --run-id records a phase note, so it needs --phase-note (or --phase-note-file) with text (C132)');
+  }
 
   return withFileLock(workflowPath, async ({ lockPath, token }) => {
     const text = await readFile(workflowPath, 'utf8');
@@ -2950,8 +3001,12 @@ export async function appendPhase({
           `Archive it (/orchestrator:resume archive) and start a new /orchestrator:plan.`,
       );
     }
+    if (runId !== undefined && phaseNoteRunIds(frontmatter).includes(runId)) {
+      return { frontmatter, workflowPath, skipped: true };
+    }
     const nowIso = isoUtc(now);
 
+    if (runId !== undefined) frontmatter[PHASE_NOTE_RUN_IDS] = [...phaseNoteRunIds(frontmatter), runId].slice(-PHASE_NOTE_RUN_IDS_MAX).join(' ');
     if (currentPhase !== undefined) frontmatter.current_phase = currentPhase;
     if (nextAction !== undefined) frontmatter.next_action = nextAction;
     frontmatter.updated_at = nowIso;
@@ -2969,7 +3024,7 @@ export async function appendPhase({
       assembleWorkflowFile(frontmatter, newBody),
       { lockPath, token },
     );
-    return { frontmatter, workflowPath };
+    return { frontmatter, workflowPath, skipped: false };
   });
 }
 
@@ -3670,6 +3725,11 @@ export async function writeConsensusTaskUnderLock({ workflowPath, runId, text, h
       `consensus-task: run ${runId} is recorded with verdict ${JSON.stringify(result.verdict)}, not conflict; only a conflict is put to a consensus round (ADR-0067 Decision 8)`,
     );
   }
+  // C132 — the owner cleared this run's plan-conflict gate, deciding the
+  // conflict: no round, also for a runbook that read the gate before the clear.
+  if (frontmatter[PLAN_CONFLICT_CLEARED_RUN_ID] === runId) {
+    throw new Error(`consensus-task: the owner cleared the plan-conflict gate of run ${runId} (plan_conflict_cleared_run_id); its conflict is decided and gets no consensus round (C132)`);
+  }
   const paths = consensusTaskPaths(workflowPath, frontmatter.workflow_id, runId);
   if (!paths) throw new Error(`consensus-task: ${JSON.stringify(workflowPath)} is not a macro file under an orchestrator state home`);
   await ensureDir(paths.dir, 0o700);
@@ -3840,6 +3900,8 @@ export async function clearAwaitingOwner({
       since: nowIso,
       pointer: macroPointer(workflowPath, MACRO_PLAN_ANCHOR),
     });
+    // C132 — the machine record of the clear: which run's gate it was.
+    if (runId !== undefined) frontmatter[PLAN_CONFLICT_CLEARED_RUN_ID] = runId;
     validateSchema12Fields(frontmatter);
     frontmatter.updated_at = nowIso;
     frontmatter.host_history = [
@@ -5369,9 +5431,9 @@ function cliParseFlags(argv) {
         i += 1;
       }
     }
-    // A text file given twice would leave the first one unread (the last
-    // value wins): every file named is read, or the command refuses.
-    if (name in flags && TEXT_FILE_FLAGS.some((text) => name === `${text}-file`)) {
+    // A text or args file given twice would leave the first one unread (the
+    // last value wins): every file named is read, or the command refuses.
+    if (name in flags && (name === 'args-file' || TEXT_FILE_FLAGS.some((text) => name === `${text}-file`))) {
       throw new Error(`--${name} is given more than once`);
     }
     flags[name] = value;
@@ -5453,10 +5515,11 @@ export function readTextArgumentFile(path, flag) {
   return value;
 }
 
-// The free-text flags that take a --<name>-file <path> twin. Other *-file
-// flags (--text-file, --subtasks-json-file, --reason-file) keep their own
-// readers.
-const TEXT_FILE_FLAGS = ['original-request', 'next-action', 'phase-note', 'summary', 'decision', 'architecture'];
+// The flags that take a --<name>-file <path> twin: the free-text ones, and
+// --workflow-id, a macro id the user typed (C134(a)). Other *-file flags
+// (--text-file, --subtasks-json-file, --reason-file, --args-file) keep their
+// own readers.
+const TEXT_FILE_FLAGS = ['original-request', 'next-action', 'phase-note', 'summary', 'decision', 'architecture', 'workflow-id'];
 
 // Every --<name>-file is read into --<name> before a subcommand runs, so a bad
 // file refuses before anything is written, and a required flag is met by
@@ -5547,7 +5610,9 @@ function cliPrintHelp() {
       '    plan-approval gate and a phase note records the resolution. Exit 1 when',
       '    the gate named is not the one set, for plan-approval (approve instead),',
       '    and when AGENTIC_AUTOPILOT names an autopilot run. The run id goes with',
-      '    plan-conflict, and its task file is retired (ADR-0067 Decision 8).',
+      '    plan-conflict, and its task file is retired (ADR-0067 Decision 8). When',
+      '    the gate names a run, plan_conflict_cleared_run_id records it (C132);',
+      '    later writes keep it, and only the next clear of a run\'s gate replaces it.',
       '',
       '  consensus-task --workflow-path <path> --run-id <run id> [--host claude|codex]',
       '                 (--text <contested items> | --text-file <path>)',
@@ -5618,9 +5683,13 @@ function cliPrintHelp() {
       '         [--phase-label <text>] [--phase-note <text>]',
       '         [--current-phase <label>] [--next-action <text>]',
       '         [--event created|updated|snapshot|resumed|checkpointed] [--require-open]',
+      '         [--run-id <run id>]',
       '    Append a phase note to an existing workflow. Default event=resumed.',
       '    --require-open refuses, under the write lock, a macro whose terminal_marker',
-      '    is set (ADR-0062 §Decision 4).',
+      '    is set (ADR-0062 §Decision 4). --run-id keys the append to a run (C132):',
+      '    when phase_note_run_ids already lists it, nothing is written and stderr',
+      '    says so (exit 0); otherwise the same locked write adds it (the latest 64',
+      '    are kept). It needs a non-blank --phase-note.',
       '',
       '  snapshot --workflow-path <path> --host <host> --trigger pre-compact|stop',
       '           [--status-digest <hex>]',
@@ -5726,11 +5795,22 @@ function cliPrintHelp() {
       '    archive/. Collision-safe (timestamp-suffix). Idempotent if source is',
       '    already absent. Engineer-pattern mirror.',
       '',
-      '  resolve-workflow --repo-root <checkout> --workflow-id <macro id>',
+      '  resolve-workflow --repo-root <checkout> (--workflow-id <macro id> | --workflow-id-file <path>)',
       '    Print the macro file <id>.md found in the orchestrator workflows homes',
       "    of the checkout's read set (ADR-0067 Decision 4, item 2). Exit 3 when",
-      '    none holds it; exit 1 on an error (two files hold it, or a root cannot',
-      '    be read).',
+      '    none holds it; exit 1 on an error (two files hold it, a root cannot be',
+      '    read, or the id is no macro id). --workflow-id-file reads the id from a',
+      '    file, as the text files below are read (C134(a)).',
+      '',
+      '  command-args --command next|done|abort|finalize|approve|resume --args-file <path>',
+      "    Read a command's argument text from an ADR-0059 args file",
+      '    ({"agentic_args": 1, "text": "…"}; the reader removes a file the runbook\'s',
+      '    mktemp -d step made) and print its fields as one JSON object, every field',
+      "    present ('' or false when not given): next subtask_id, workflow_id; done",
+      '    subtask_id, pr, commit, correct, no_commit, waive_dispatch, workflow_id,',
+      '    integration_branch, reason; abort, finalize and approve workflow_id;',
+      '    resume mode (resume|archive), workflow_id. Grammar: scripts/lib/',
+      '    command-args.mjs. Exit 1 on a file or text it refuses, naming why.',
       '',
       '  admission join --macro <id> --checkout <path> --command next|done|finalize|abort|resume',
       '                 --host claude|codex [--session-id <id>]',
@@ -5797,8 +5877,8 @@ function cliPrintHelp() {
       '    turns shared creation off and moves; a rerun continues it.',
       '',
       'Text files (ADR-0059 amendment (j)): --original-request, --next-action,',
-      '--phase-note, --summary, --decision and --architecture each have a',
-      '--<name>-file <path> twin (also --<name>-file=<path>), read as UTF-8 with one',
+      '--phase-note, --summary, --decision, --architecture and --workflow-id each',
+      'have a --<name>-file <path> twin (also --<name>-file=<path>), read as UTF-8 with one',
       'trailing newline removed (an empty value, a NUL byte and standard input are',
       'refused; the file is kept). Pass one form or the other. A runbook passes text',
       'an agent wrote this way, never on a command line; the inline form is for',
@@ -5890,6 +5970,16 @@ async function cliRun(subcommand, flags) {
           return 3;
         }
         process.stdout.write(`${path}\n`);
+        return 0;
+      }
+
+      // C134(a) — a command's argument text from an args file, parsed by its
+      // grammar (scripts/lib/command-args.mjs) and printed as JSON, which the
+      // runbook keeps: the codec removes the args file it read.
+      case 'command-args': {
+        cliRequire(flags, ['command', 'args-file']);
+        const fields = readCommandArguments(flags.command, flags['args-file']);
+        process.stdout.write(`${JSON.stringify(fields)}\n`);
         return 0;
       }
 
@@ -6375,7 +6465,7 @@ async function cliRun(subcommand, flags) {
 
       case 'append': {
         cliRequire(flags, ['workflow-path', 'host']);
-        await appendPhase({
+        const appended = await appendPhase({
           workflowPath: flags['workflow-path'],
           host: flags.host,
           verb: flags.verb,
@@ -6385,7 +6475,11 @@ async function cliRun(subcommand, flags) {
           nextAction: flags['next-action'],
           event: flags.event ?? 'resumed',
           requireOpen: cliPresenceFlag(flags, 'require-open'),
+          runId: flags['run-id'],
         });
+        if (appended.skipped) {
+          process.stderr.write(`→ append: the phase note of run ${flags['run-id']} is already recorded (phase_note_run_ids); nothing written.\n`);
+        }
         process.stdout.write(`${flags['workflow-path']}\n`);
         return 0;
       }
