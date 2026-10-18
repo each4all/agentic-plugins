@@ -287,6 +287,12 @@ Then run the block with `TEXT_DIR` set to that directory.
 
 ```bash
 TEXT_DIR='<directory from step 1>'
+# A fresh shell: the workflow is found again here, never carried from an
+# earlier block.
+PERSONA='founder'
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+ACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
+[ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
 # ADR-0063 D3 — finish-verb is the lifecycle's last write: the ADR-0017
 # §sub-decision 5 atomic terminal write (summary-complete + terminal marker)
 # with the next step, kind commit (the owner saves and commits).
