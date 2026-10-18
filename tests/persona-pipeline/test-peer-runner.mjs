@@ -33,6 +33,13 @@ import { pathToFileURL } from 'node:url';
 
 import { personasFor, personaInfo } from './_personas.mjs';
 import { PIPE_FLOOR_BYTES, pipeEnv, runThroughPipe } from './_pipe-output.mjs';
+import { describeRunIdAllocator, runbookRunIdPrefixes } from './_run-id-allocator.mjs';
+
+// One allowed set for every persona copy: the prefixes all persona runbooks use.
+const PERSONA_RUN_ID_PREFIXES = runbookRunIdPrefixes(
+  personasFor('scripts/peer-runner.mjs').map((persona) => personaInfo(persona).root),
+  { withEnsembleTypes: true },
+);
 
 async function exists(path) {
   try {
@@ -1297,6 +1304,15 @@ setInterval(() => {}, 1000);
       strictEqual(cp.status, 2);
       ok(/run-id is required/.test(cp.stderr), cp.stderr);
     });
+  });
+
+  describeRunIdAllocator({
+    label: persona,
+    peerRunnerPath: PEER_RUNNER_PATH,
+    mod: await import(pathToFileURL(PEER_RUNNER_PATH).href),
+    expectedPrefixes: PERSONA_RUN_ID_PREFIXES,
+    foreignPrefix: 'macro-plan',
+    env: pipeEnv(),
   });
 
   // The owner's discussion-2 decision R2: a sweep report grows with the
