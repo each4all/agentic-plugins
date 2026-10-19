@@ -38,6 +38,8 @@ const LANDING = 'plugins/orchestrator/scripts/landing.mjs';
 const PREFLIGHT = 'plugins/orchestrator/scripts/discover-engineer.mjs';
 const NEXT = 'plugins/orchestrator/commands/next.md';
 const DONE = 'plugins/orchestrator/commands/done.md';
+// done's argument grammar, which refuses --no-commit with a commit (C134(a)).
+const COMMAND_ARGS = 'plugins/orchestrator/scripts/lib/command-args.mjs';
 const PLAN = 'plugins/orchestrator/commands/plan.md';
 const PLAN_SKILL = 'plugins/orchestrator/core/skills/plan/SKILL.md';
 const WRITEBACK = 'plugins/engineer/scripts/parent-writeback.mjs';
@@ -361,9 +363,9 @@ export const MUTATIONS = [
     why: 'a plan revision during resolution lets the stale landing complete moved work',
   },
   {
-    id: 'D6', file: DONE, tests: [T_DONE],
-    from: 'if [ "${NO_COMMIT:-}" = "1" ] && { [ -n "${EXPLICIT_COMMIT:-}" ]',
-    to: 'if false && { [ -n "${EXPLICIT_COMMIT:-}" ]',
+    id: 'D6', file: COMMAND_ARGS, tests: [T_DONE],
+    from: '  if (fields.no_commit === true) {',
+    to: '  if (false) {',
     why: '--no-commit is combined with a commit',
   },
 

@@ -182,9 +182,11 @@ function shellWords(block) {
 }
 
 // The flags whose value is free text: since the amendment each has a -file twin.
-const TEXT_FLAGS = ['--phase-note', '--summary', '--next-action', '--original-request', '--resolution', '--decision', '--architecture', '--subject', '--subject-pkg', '--prompt-text'];
+// A workflow id the user typed is text too: it reaches resolve-workflow as
+// workflow-id.txt (C134(a)), in a block or in a skill's prose.
+const TEXT_FLAGS = ['--phase-note', '--summary', '--next-action', '--original-request', '--resolution', '--decision', '--architecture', '--subject', '--subject-pkg', '--prompt-text', '--workflow-id'];
 // The file flags a block passes the agent's files with, and the prompt's.
-const FILE_FLAGS = ['--phase-note-file', '--summary-file', '--next-action-file', '--original-request-file', '--resolution-file', '--subject-file', '--subject-pkg-file', '--prompt-file'];
+const FILE_FLAGS = ['--phase-note-file', '--summary-file', '--next-action-file', '--original-request-file', '--resolution-file', '--subject-file', '--subject-pkg-file', '--prompt-file', '--workflow-id-file'];
 // The variables the retired forms carried agent text in.
 const TEXT_VARS = /^(NOTE|SUMMARY|RESOLUTION|OWNER_RESOLUTION|APPROVED_SUBJECT|SUBJECT|PROMPT_ARG|PROMPT_TEXT|REQUEST)=/;
 // The variables a block may have the agent fill from a placeholder: the
@@ -192,9 +194,9 @@ const TEXT_VARS = /^(NOTE|SUMMARY|RESOLUTION|OWNER_RESOLUTION|APPROVED_SUBJECT|S
 // resume's READ_DIR among them, R4), enums it validated (a finalize's VERDICT,
 // and its CONFIDENCE and RESOLVE_VERB, each checked by a `case` before any
 // write, R4 K3), and a workflow path a
-// program printed. ARCHIVE_WORKFLOW_ID, the user's `archive <workflow-id>`,
-// predates C130 and stays until resolve-workflow takes the id from a file.
-const PLACEHOLDER_VARS = new Set(['TEXT_DIR', 'ARGS_DIR', 'DISPATCH_DIR', 'READ_DIR', 'VERDICT', 'CONFIDENCE', 'RESOLVE_VERB', 'PEER', 'CONVERGED', 'AGENTIC_DESIGNER_PROFILE', 'WORKFLOW', 'ARCHIVE_WORKFLOW_ID']);
+// program printed. The user's `archive <workflow-id>` reaches
+// resolve-workflow as a file in TEXT_DIR (C134(a)), never as a variable.
+const PLACEHOLDER_VARS = new Set(['TEXT_DIR', 'ARGS_DIR', 'DISPATCH_DIR', 'READ_DIR', 'VERDICT', 'CONFIDENCE', 'RESOLVE_VERB', 'PEER', 'CONVERGED', 'AGENTIC_DESIGNER_PROFILE', 'WORKFLOW']);
 
 // The inline values a block may give a free-text flag: fixed literals, an
 // enum placeholder (the profile), the expansion of a literal assigned in the

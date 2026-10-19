@@ -74,6 +74,10 @@ const PASSES_ARGS_FILE = '--args-file "$ARGS_DIR/args.json"';
 // A block that shows the resolve call inside the decide runbook's own block
 // rather than being run on its own.
 const ILLUSTRATIONS = new Set(['plugins/designer/commands/start.md']);
+// An orchestrator block that also reads its text directory opens with that
+// directory's line (tests/plugin-shape/test-orchestrator-text-file-transport.mjs),
+// and names the args directory on the line after it.
+const TEXT_DIR_LINE = /^TEXT_DIR='<[^'>]+>'$/;
 
 /** The fenced blocks of a markdown file, as arrays of lines with their indent removed. */
 function fencedBlocks(text) {
@@ -156,7 +160,8 @@ test('args-file transport (ADR-0059 Decision 8, amended 2026-09-29)', async (t) 
     for (const { file, block } of readers) {
       if (ILLUSTRATIONS.has(file)) continue;
       const code = block.filter((l) => l.trim() !== '');
-      if (!ARGS_DIR_LINE.test(code[0] ?? '')) offenders.push(`${file}: ${JSON.stringify(code[0])}`);
+      const opening = TEXT_DIR_LINE.test(code[0] ?? '') ? code[1] : code[0];
+      if (!ARGS_DIR_LINE.test(opening ?? '')) offenders.push(`${file}: ${JSON.stringify(code[0])}`);
     }
     deepStrictEqual(offenders, [], 'the block must start by naming the directory the model wrote into');
   });

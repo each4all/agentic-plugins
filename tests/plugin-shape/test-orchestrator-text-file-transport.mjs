@@ -80,7 +80,11 @@ const TEXT_DIR_LINES = ["TEXT_DIR='<directory from step 1>'", "TEXT_DIR='<direct
 const ASSIGNMENT = new RegExp(`^(?:${TEXT_VARS.join('|')})\\+?=`);
 // A heredoc or herestring, its delimiter quoted, escaped (<<\EOF) or bare.
 const HEREDOC = /<<<|<<-?\s*\\?["']?[A-Za-z_]/g;
-const PROSE_PLACEHOLDER = new RegExp(`--(${TEXT_FLAGS.filter((f) => f !== 'prompt-text').join('|')})(?:=|\\s+)(?:"<|'<|<)`);
+// A workflow id the user typed reaches resolve-workflow as workflow-id.txt
+// (C134(a)), so prose never shows `--workflow-id <id>` either; in a block,
+// `--workflow-id` takes the field command-args printed, an expansion the
+// checks above would refuse for a text flag.
+const PROSE_PLACEHOLDER = new RegExp(`--(${[...TEXT_FLAGS.filter((f) => f !== 'prompt-text'), 'workflow-id'].join('|')})(?:=|\\s+)(?:"<|'<|<)`);
 // A placeholder the agent fills: `<…>` around words, on one line, wherever it
 // sits in a word (`prefix<summary>`) and whatever it holds (`<the user's …>`).
 // Not shell syntax: `<<`, `<(`, `<&`, `< file`, `<"$file"`. A program's own
@@ -92,7 +96,8 @@ const SCRIPT_FLAGS = ['-e', '--eval', '-p', '--print'];
 // line that names it (the text directory, or the args directory of ADR-0059).
 const ENUM_PLACEHOLDER = /^<[\w-]+(?:\|[\w-]+)+>$/;
 const ROOT_PLACEHOLDERS = ['<plugin-root>', '<orchestrator-plugin-root>'];
-const DIRECTORY_LINE = /^(?:TEXT_DIR|ARGS_DIR)='<directory from (?:step 1|mktemp)>'$/;
+// next.md makes its args directory in step 3, after the text directory's.
+const DIRECTORY_LINE = /^(?:TEXT_DIR='<directory from (?:step 1|mktemp)>'|ARGS_DIR='<directory from (?:step [13]|mktemp)>')$/;
 
 // The words of a shell block's source as the shell splits them (Critique
 // finding M2: a value read line by line, or up to the next quote character,
@@ -315,18 +320,12 @@ const ALLOWED = [
     ['plugins/orchestrator/commands/next.md', 'echo "  Record each predecessor with /orchestrator:done <id> once its pull request has merged, or pick a different subtask." >&2'],
     ['plugins/orchestrator/commands/next.md', 'echo "✗ Subtask $SUBTASK_ID now waits on: $WAITING_NOW (the plan changed after Phase 1\'s selection); nothing was switched. Record each predecessor with /orchestrator:done <id> once its pull request has merged, then rerun /orchestrator:next." >&2'],
     ['plugins/orchestrator/commands/plan.md', 'echo "  Switch to a branch first: git switch <branch>" >&2'],
-    ['plugins/orchestrator/commands/done.md', 'echo "✗ /orchestrator:done requires a <subtask-id> argument." >&2'],
     ['plugins/orchestrator/commands/done.md', 'echo "✓ Subtask $SUBTASK_ID is already completed at $EXISTING_CLOSED_AT with commit ${EXISTING_COMMIT:-<none>}. Nothing to do; to change the record, rerun with --correct and a reason." >&2'],
     // The Codex done runs done.md's block, so it carries the same messages.
-    ['plugins/orchestrator/core/skills/done/SKILL.md', 'echo "✗ \\$orchestrator:done requires a <subtask-id> argument." >&2'],
     ['plugins/orchestrator/core/skills/done/SKILL.md', 'echo "✗ No macro workflow references branch \'$GIT_BRANCH\'. Use --workflow=<id>." >&2'],
     ['plugins/orchestrator/core/skills/done/SKILL.md', 'echo "✓ Subtask $SUBTASK_ID is already completed at $EXISTING_CLOSED_AT with commit ${EXISTING_COMMIT:-<none>}. Nothing to do; to change the record, rerun with --correct and a reason." >&2'],
     ['plugins/orchestrator/commands/next.md', 'echo "  Repair: node \\"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\\" subtask-update --workflow-path \\"$MACRO_PATH\\" --host <host> --subtask-id $SUBTASK_ID --status=pending, then rerun /orchestrator:next." >&2'],
   ].map(([file, line]) => ({ file, line, why: 'a placeholder in shell source' })),
-  // Predates C130 S3 and is outside it: the archive mode's workflow id, a user
-  // argument, single-quoted (persona resume runbooks carry the same line).
-  // Pinned so it is the only one; moving it to the args file is its own change.
-  { file: 'plugins/orchestrator/commands/resume.md', line: "ARCHIVE_WORKFLOW_ID='<workflow-id>'", why: 'a placeholder in shell source' },
 ];
 
 function corpusProblems() {

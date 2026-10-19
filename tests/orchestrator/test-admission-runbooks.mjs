@@ -17,6 +17,16 @@ import { dirname, join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { carriedTextDir, withTextDir } from './_next-text-dir.mjs';
+import { withArgs } from './_command-args-file.mjs';
+
+// The ARGS_DIR lines of the orchestrator runbooks, which name the args file
+// the agent writes for the command's arguments (ADR-0059, C134(a)).
+const ARGS_DIR_LINES = ["ARGS_DIR='<directory from step 3>'", "ARGS_DIR='<directory from step 1>'", "ARGS_DIR='<directory from mktemp>'"];
+/** `block` with its ARGS_DIR line, when it has one, naming a new args file holding `text`. */
+function withTyped(block, text) {
+  const line = ARGS_DIR_LINES.find((l) => block.includes(l));
+  return line ? withArgs(block, text, { line }) : block;
+}
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const ORCH_ROOT = join(REPO_ROOT, 'plugins/orchestrator');
@@ -614,9 +624,9 @@ describe('/orchestrator:next joins the run locks before it switches (ADR-0067 De
     ok(Buffer.byteLength(topic) > 70000, 'the topic runs past a pipe buffer');
     await freshMacro([{ id: 'T1', verb: 'compose', branch: 'feat/t1', blocked_by: [], status: 'pending', profile: 'backend', topic }]);
     const textDir = mkdtempSync(join(dir, 'agentic-text.'));
-    const env = { EXPLICIT_WORKFLOW_ID: macroId, AGENTIC_ENGINEER_ROOT: ENGINEER_ROOT };
+    const env = { AGENTIC_ENGINEER_ROOT: ENGINEER_ROOT };
     const step = (block, suffix = '') => {
-      const r = run(shell, `${withTextDir(block, textDir)}${suffix}`, env);
+      const r = run(shell, `${withTyped(withTextDir(block, textDir), `--workflow=${macroId}`)}${suffix}`, env);
       strictEqual(r.status, 0, `${block.split('\n').slice(1, 4).join(' | ')}: ${r.stderr}`);
       return r;
     };
@@ -686,11 +696,60 @@ describe('/orchestrator:next joins the run locks before it switches (ADR-0067 De
     ].join('\n'));
     for (const shell of FRESH_SHELLS) {
       const textDir = mkdtempSync(join(dir, 'agentic-text.'));
-      strictEqual(run(shell, withTextDir(phase0, textDir), { EXPLICIT_WORKFLOW_ID: macroId }).status, 0);
+      strictEqual(run(shell, withTyped(withTextDir(phase0, textDir), `--workflow=${macroId}`)).status, 0);
       const r = run(shell, withTextDir(selection, textDir), { AGENTIC_ORCHESTRATOR_ROOT: bad });
       strictEqual(r.status, 1, `${shell}: ${r.stdout}`);
       match(r.stderr, /SyntaxError/, `${shell}: the parser's error is shown`);
       ok(!existsSync(join(textDir, 'subtask.json')), `${shell}: nothing was selected`);
+    }
+  });
+
+  // C134(a), on both hosts: the subtask id the args file names is the one
+  // selected, with two ready, not next-ready's first; and once the arguments
+  // are kept, a new args file naming others is refused, never left unread.
+  it('the args file selects the subtask it names, on both hosts, and a new args file naming other arguments than the kept ones is refused', async () => {
+    await freshMacro([
+      { id: 'T1', verb: 'compose', branch: 'feat/t1', blocked_by: [], status: 'pending' },
+      { id: 'T2', verb: 'compose', branch: 'feat/t2', blocked_by: [], status: 'pending' },
+    ]);
+    const [phase0, selection] = NEXT_BLOCKS;
+    const codexPhase1 = CODEX_BLOCKS.filter((b) => b.startsWith("TEXT_DIR='<directory from mktemp>'\n"))[0].replaceAll('<orchestrator-plugin-root>', ORCH_ROOT);
+    ok(codexPhase1.includes('command-args'), "the Codex skill's first block parses the args file");
+    const selected = (textDir) => JSON.parse(readFileSync(join(textDir, 'subtask.json'), 'utf8')).id;
+    for (const shell of FRESH_SHELLS) {
+      const hosts = {
+        claude: (textDir, text) => {
+          const zero = run(shell, withTextDir(text === undefined ? phase0 : withTyped(phase0, text), textDir));
+          return zero.status === 0 ? run(shell, withTextDir(selection, textDir)) : zero;
+        },
+        codex: (textDir, text) => run(shell, withTextDir(text === undefined ? codexPhase1 : withTyped(codexPhase1, text), textDir)),
+      };
+      for (const [host, select] of Object.entries(hosts)) {
+        // Control: no subtask id, so next-ready's first.
+        const auto = mkdtempSync(join(dir, 'agentic-text.'));
+        const first = select(auto, `--workflow=${macroId}`);
+        strictEqual(first.status, 0, `${shell} ${host}: ${first.stderr}`);
+        strictEqual(selected(auto), 'T1', `${shell} ${host}: next-ready picks T1`);
+
+        const textDir = mkdtempSync(join(dir, 'agentic-text.'));
+        const named = select(textDir, `T2 --workflow=${macroId}`);
+        strictEqual(named.status, 0, `${shell} ${host}: ${named.stderr}`);
+        strictEqual(selected(textDir), 'T2', `${shell} ${host}: the named subtask`);
+        const kept = readFileSync(join(textDir, 'arguments.json'), 'utf8');
+        const keptSelection = readFileSync(join(textDir, 'subtask.json'), 'utf8');
+
+        const other = select(textDir, `--workflow=${macroId}`);
+        strictEqual(other.status, 1, `${shell} ${host}: ${other.stdout}`);
+        match(other.stderr, /names other arguments than the ones kept/, `${shell} ${host}`);
+        strictEqual(readFileSync(join(textDir, 'arguments.json'), 'utf8'), kept, `${shell} ${host}: the kept arguments stay`);
+        strictEqual(readFileSync(join(textDir, 'subtask.json'), 'utf8'), keptSelection, `${shell} ${host}: nothing was selected`);
+        // The same arguments again, and no new args file, both run on the kept ones.
+        for (const text of [`T2 --workflow=${macroId}`, undefined]) {
+          const again = select(textDir, text);
+          strictEqual(again.status, 0, `${shell} ${host} (${text ?? 'no args file'}): ${again.stderr}`);
+          strictEqual(selected(textDir), 'T2', `${shell} ${host} (${text ?? 'no args file'})`);
+        }
+      }
     }
   });
 });
@@ -760,13 +819,13 @@ describe('/orchestrator:finalize, :abort and :resume archive join the macro lock
       it(`${name}.md (${shell}): a session holding the macro lock refuses before the first write; free, it closes the macro and releases`, async () => {
         const script = phases(name, '## Phase 4');
         const other = holdAsSession();
-        const refused = runIn(shell, script, { EXPLICIT_WORKFLOW_ID: macroId });
+        const refused = runIn(shell, withTyped(script, `--workflow=${macroId}`));
         strictEqual(refused.status, 1, refused.stdout);
         match(refused.stderr, new RegExp(`an interactive session holds .*/orchestrator:done, .*host codex, .*admission ${other}`));
         strictEqual((await macro()).frontmatter.plan.subtasks[0].status, 'pending', 'nothing written');
         deepStrictEqual(sessionEntries(), [`s-${other}.json`]);
         execFileSync(process.execPath, [ORCH_STATE, 'admission', 'release', '--macro', macroId, '--checkout', main, '--admission', other], { env: cleanEnv(), stdio: 'pipe' });
-        const closed = runIn(shell, script, { EXPLICIT_WORKFLOW_ID: macroId });
+        const closed = runIn(shell, withTyped(script, `--workflow=${macroId}`));
         strictEqual(closed.status, 0, closed.stderr);
         const after_ = (await macro()).frontmatter;
         deepStrictEqual([after_.plan.subtasks[0].status, after_.current_phase, after_.terminal_marker], [status, phase, true]);
@@ -780,7 +839,7 @@ describe('/orchestrator:finalize, :abort and :resume archive join the macro lock
       const unreadable = join(home, 'compose-20261008T000000Z-0bad00.md');
       writeFileSync(unreadable, '---\nworkflow_id: "x"\n---\n');
       execFileSync('chmod', ['000', unreadable]);
-      const r = runIn(SHELLS[0], phases(name, '## Phase 4'), { EXPLICIT_WORKFLOW_ID: macroId });
+      const r = runIn(SHELLS[0], withTyped(phases(name, '## Phase 4'), `--workflow=${macroId}`));
       strictEqual(r.status, 1, r.stdout);
       match(r.stderr, /Step 2 did not archive every engineer child/);
       strictEqual((await macro()).frontmatter.plan.subtasks[0].status, status, 'Phase 1 wrote');

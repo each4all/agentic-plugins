@@ -69,8 +69,10 @@ describe('/orchestrator:done records the landing', () => {
     ok(text.includes('state.mjs" resolve-landing'), 'done.md calls resolve-landing');
     ok(text.includes('--expect-branch="$SUBTASK_BRANCH"'), 'every completion write carries --expect-branch');
     // Contract: the agent running /orchestrator:done — the reason must reach the block as a
-    // file the agent wrote; a heredoc ends at a delimiter line inside the reason and runs the rest.
-    ok(text.includes('with your file-writing tool'), 'the reason reaches the runbook as a file the agent wrote');
+    // file the agent wrote, with the other arguments in the args file (C134(a)); a
+    // heredoc ends at a delimiter line inside the reason and runs the rest.
+    ok(/with your file-writing tool[^.]*args\.json/i.test(text.replace(/\s+/g, ' ')), 'the reason reaches the runbook as a file the agent wrote');
+    ok(text.includes('command-args \\\n  --command done --args-file "$ARGS_DIR/args.json"'), 'the block parses that file');
     ok(!/<<-?\s*'?[A-Z_]*REASON/.test(text), 'no heredoc carries the reason (a delimiter line in it would end the heredoc)');
   });
 
