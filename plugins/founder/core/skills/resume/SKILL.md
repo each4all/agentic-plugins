@@ -202,8 +202,13 @@ When the argument starts with `archive`:
 - `archive` (no id) → archive the single active workflow on the current
   branch. If `find-active` returned a per-branch duplicate error, reject —
   the user must run `archive <workflow-id>` explicitly.
-- `archive <id>` → resolve the id with `node "<plugin-root>/scripts/state.mjs"
-  resolve-workflow --repo-root "$REPO_ROOT" --workflow-id <id>`: it prints the
+- `archive <id>` → write the id, exactly as typed and ending with one
+  newline, with your file-editing tool to `workflow-id.txt` in a new private
+  directory (`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`), never into a
+  command, where a quote, `$` or backquote in it would be read as code
+  (ADR-0059, C134(a)); then resolve it with `node "<plugin-root>/scripts/state.mjs"
+  resolve-workflow --repo-root "$REPO_ROOT" --workflow-id-file <that directory>/workflow-id.txt`
+  (the path quoted): it prints the
   workflow file found in the workflow homes of this checkout's read set
   (ADR-0067 Decision 4, item 2), the default state root first. Stop when it
   exits non-zero (an id that is not a workflow id, no root holds it — exit 3
