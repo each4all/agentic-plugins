@@ -7959,6 +7959,168 @@
       "from": "<refine|decide|investigate>",
       "to": "<refine|decide|investigate — the next step that resolves the flagged item, when not converged>",
       "why": "R4 K3 every value the last write takes is assigned at the top of the block and checked before settle, its first write: not converged, the last append records the RESOLVE_VERB the agent fills there"
+    },
+    {
+      "runbooks": [
+        "designer/compose",
+        "engineer/compose",
+        "founder/compose"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#3",
+      "from": "peer-runner.mjs run",
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "new-run-id",
+        "args": [
+          [
+            "--prefix",
+            "plan-verify"
+          ]
+        ]
+      },
+      "why": "R4 (C119, C26) the runner allocates the run id the dispatch passes, so no shell arithmetic or hand-written date makes it, and an allocation that prints nothing stops the block before the dispatch"
+    },
+    {
+      "runbooks": [
+        "designer/critique",
+        "engineer/critique",
+        "founder/critique"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#4",
+      "from": "peer-runner.mjs run",
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "new-run-id",
+        "args": [
+          [
+            "--prefix",
+            "review"
+          ]
+        ]
+      },
+      "why": "R4 (C119, C26) the runner allocates the run id the dispatch passes, so no shell arithmetic or hand-written date makes it, and an allocation that prints nothing stops the block before the dispatch"
+    },
+    {
+      "runbooks": [
+        "designer/decide",
+        "engineer/decide",
+        "founder/decide"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#3",
+      "from": "peer-runner.mjs run",
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "new-run-id",
+        "args": [
+          [
+            "--prefix",
+            "brainstorm"
+          ]
+        ]
+      },
+      "why": "R4 (C119, C26) the runner allocates the run id the dispatch passes, so no shell arithmetic or hand-written date makes it, and an allocation that prints nothing stops the block before the dispatch"
+    },
+    {
+      "runbooks": [
+        "designer/frame",
+        "engineer/frame",
+        "founder/frame"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#3",
+      "from": "peer-runner.mjs run",
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "new-run-id",
+        "args": [
+          [
+            "--prefix",
+            "frame"
+          ]
+        ]
+      },
+      "why": "R4 (C119, C26) the runner allocates the run id the dispatch passes, so no shell arithmetic or hand-written date makes it, and an allocation that prints nothing stops the block before the dispatch"
+    },
+    {
+      "runbooks": [
+        "designer/investigate"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#3",
+      "from": "peer-runner.mjs run",
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "new-run-id",
+        "args": [
+          [
+            "--prefix",
+            "reference-scan"
+          ]
+        ]
+      },
+      "why": "R4 (C119, C26) the runner allocates the run id the dispatch passes, so no shell arithmetic or hand-written date makes it, and an allocation that prints nothing stops the block before the dispatch"
+    },
+    {
+      "runbooks": [
+        "designer/refine",
+        "engineer/refine",
+        "founder/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#5",
+      "from": "peer-runner.mjs run",
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "new-run-id",
+        "args": [
+          [
+            "--prefix",
+            "refine-verify"
+          ]
+        ]
+      },
+      "why": "R4 (C119, C26) the runner allocates the run id the dispatch passes, so no shell arithmetic or hand-written date makes it, and an allocation that prints nothing stops the block before the dispatch"
+    },
+    {
+      "runbooks": [
+        "engineer/investigate"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#3",
+      "from": "peer-runner.mjs run",
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "new-run-id",
+        "args": [
+          [
+            "--prefix",
+            "investigate"
+          ]
+        ]
+      },
+      "why": "R4 (C119, C26) the runner allocates the run id the dispatch passes, so no shell arithmetic or hand-written date makes it, and an allocation that prints nothing stops the block before the dispatch"
+    },
+    {
+      "runbooks": [
+        "founder/investigate"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#3",
+      "from": "peer-runner.mjs run",
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "new-run-id",
+        "args": [
+          [
+            "--prefix",
+            "research-scan"
+          ]
+        ]
+      },
+      "why": "R4 (C119, C26) the runner allocates the run id the dispatch passes, so no shell arithmetic or hand-written date makes it, and an allocation that prints nothing stops the block before the dispatch"
     }
   ],
   "runbooks": {

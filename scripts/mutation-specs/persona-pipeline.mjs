@@ -1332,10 +1332,10 @@ export const MUTATIONS = [
   },
   {
     id: 'K6', tests: [T_CHAR], file: 'plugins/founder/commands/decide.md',
-    from: `RUN_ID="\${ENSEMBLE_TYPE}-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"`,
-    to: "RUN_ID='${ENSEMBLE_TYPE}-$(date -u +%Y%m%dT%H%M%SZ)'",
+    from: "RUN_ID=\"$(node \"$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs\" new-run-id --prefix \"$ENSEMBLE_TYPE\")\" || RUN_ID=''",
+    to: "RUN_ID='$(node \"$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs\" new-run-id --prefix \"$ENSEMBLE_TYPE\")' || RUN_ID=''",
     killed_by: /^does what the fixture recorded, with the listed changes/,
-    why: 'founder decide single-quotes its run id, so the date never runs and the runner refuses the literal (Codex review of PC2a2b)',
+    why: 'founder decide single-quotes its run id, so the allocation never runs and the runner refuses the literal (Codex review of PC2a2b; R4 C119 moved it to the allocator)',
   },
   // PC2a3 T0': critique, refine and start recorded before their regions.
   {
@@ -1704,9 +1704,42 @@ export const MUTATIONS = [
   },
   {
     id: 'M8', tests: [T_CONTRACT, T_CHAR],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-dispatch.md', from: 'RUN_ID="${ENSEMBLE_TYPE}-$(date', to: 'RUN_ID="ensemble-$(date' }),
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-dispatch.md', from: 'new-run-id --prefix "$ENSEMBLE_TYPE")"', to: 'new-run-id --prefix ensemble)"' }),
     killed_by: templateCaught('regions/verb-dispatch.md', /^identity: persona, verb, phase, ensemble type and run-id prefix/),
     why: 'the run id no longer carries the ensemble type the dispatch and the commit name',
+  },
+  // R4 (C119, C26): an allocation that prints nothing, or fails, stops the
+  // dispatch; each G drops that guard from one allocating template.
+  {
+    id: 'G99', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-dispatch.md', from: '[ -n "$RUN_ID" ] || { echo "✗ peer-runner.mjs new-run-id allocated no run id', to: ': || { echo "✗ peer-runner.mjs new-run-id allocated no run id' }),
+    killed_by: templateCaught('regions/verb-dispatch.md', /^the dispatch and the resume append, run: each finds the workflow in a fresh shell/),
+    why: 'a verb dispatch whose allocation printed nothing launches a run with an empty id',
+  },
+  {
+    id: 'G100', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/peer-now-dispatch.md', from: '[ -n "$RUN_ID" ] || { echo "✗ peer-runner.mjs new-run-id allocated no run id', to: ': || { echo "✗ peer-runner.mjs new-run-id allocated no run id' }),
+    killed_by: templateCaught('regions/peer-now-dispatch.md', /^dispatch, run: the run id is a peer-now- id/),
+    why: 'peer-now whose allocation failed dispatches a run with an empty id',
+  },
+  {
+    id: 'G101', tests: [T_SKILL],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-peer-now-dispatch.md', from: '[ -n "$RUN_ID" ] || { echo "✗ peer-runner.mjs new-run-id allocated no run id', to: ': || { echo "✗ peer-runner.mjs new-run-id allocated no run id' }),
+    killed_by: templateCaught('regions/skill-peer-now-dispatch.md', /^the dispatch is synchronous, and a failed run stops before any phase note$/),
+    why: 'the Codex peer-now skill whose allocation failed dispatches a run with an empty id',
+  },
+  {
+    id: 'G102', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/peer-now-dispatch.md', from: 'printf \'%s\' "$RUN_ID" > "$TEXT_DIR/prompt.xml.run-id" || {', to: ': || {' }),
+    killed_by: templateCaught('regions/peer-now-dispatch.md', /^dispatch, run: the run id is a peer-now- id/),
+    why: 'peer-now leaves no record of its run id before the dispatch, so a status or cancel of a run that hangs cannot name it',
+  },
+  {
+    id: 'N142', tests: [T_CONTRACT], file: 'plugins/engineer/commands/peer-now.md',
+    from: 'RUN_ID="$(cat "$TEXT_DIR/prompt.xml.run-id")" || exit 1\n',
+    to: '',
+    killed_by: /(?:^| > )engineer\/commands\/peer-now\.md \(committed\) > status and cancel, run: /,
+    why: "engineer's status and cancel controls name a run id no block in their shell set",
   },
   {
     id: 'M9', tests: [T_CONTRACT],
@@ -2726,10 +2759,10 @@ export const MUTATIONS = [
   {
     id: 'N29', tests: [T_CHAR],
     file: 'plugins/engineer/commands/critique.md',
-    from: `RUN_ID="\${ENSEMBLE_TYPE}-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"\n`,
+    from: "RUN_ID=\"$(node \"$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs\" new-run-id --prefix \"$ENSEMBLE_TYPE\")\" || RUN_ID=''\n",
     to: '',
     killed_by: /verb runbook characterization \(PC2a2 T0\) > engineer\/critique > identity: /,
-    why: "engineer's critique dispatches with a run id no block set",
+    why: "engineer's critique dispatches with a run id no block set (R4 C119: no allocation)",
   },
   // engineer's runbooks join the regions group by group (PC3 U7): a template
   // defect regenerated into every enrolled persona fails engineer's contract.

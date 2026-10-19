@@ -180,8 +180,11 @@ ACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active --repo-root "$REPO_
 [ -n "$ACTIVE" ] || { echo "✗ No active designer workflow on this branch; nothing was dispatched." >&2; exit 1; }
 PROMPT_FILE="$TEXT_DIR/prompt.xml"
 grep -q '[^[:space:]]' "$PROMPT_FILE" 2>/dev/null || { echo "✗ prompt.xml in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was dispatched." >&2; exit 1; }
-# ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch.
-RUN_ID="frame-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
+# ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch, allocated by the
+# runner (C119, C26): no shell arithmetic or hand-written date makes it. An
+# allocation that prints nothing stops the block too.
+RUN_ID="$(node "<plugin-root>/scripts/peer-runner.mjs" new-run-id --prefix frame)" || RUN_ID=''
+[ -n "$RUN_ID" ] || { echo "✗ peer-runner.mjs new-run-id allocated no run id for frame (its error, if any, is above); nothing was dispatched." >&2; exit 1; }
 node "<plugin-root>/scripts/peer-runner.mjs" run \
   --repo-root "$REPO_ROOT" --kind ensemble \
   --peer codex --prompt-file "$PROMPT_FILE" --output-format json \

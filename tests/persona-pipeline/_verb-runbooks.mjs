@@ -294,16 +294,19 @@ export function noteScaffold(text) {
  * block's `RUN_ID="${ENSEMBLE_TYPE}-$(date …"` reads like the literal form.
  * Only a double-quoted value counts: in single quotes the `$(date …)` would
  * not run, and the id would be a literal the runner refuses (Codex review of
- * PC2a2b).
+ * PC2a2b). R4 (C119, C26): an id the runner allocates,
+ * `RUN_ID="$(node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" new-run-id --prefix <word>)"`,
+ * has the prefix its `--prefix` word reads as.
  */
 function runIdPrefixes(code) {
   const assignments = literalAssignments(code);
-  return [...code.matchAll(/^RUN_ID=("[^\n]*")$/gm)]
+  const dated = [...code.matchAll(/^RUN_ID=("[^\n]*")$/gm)]
     // A prefix the agent picks at run time stays symbolic: engineer's
     // `${ENSEMBLE_TYPE:-review}` (PC3).
-    .map((m) => /^([a-z][a-z-]*|\$\{[A-Z_]+:-[a-z][a-z-]*\})-\$\(date /.exec(readWordValue(m[1], varsAt(assignments, m.index)).text))
-    .filter(Boolean)
-    .map((m) => m[1]);
+    .map((m) => [m.index, /^([a-z][a-z-]*|\$\{[A-Z_]+:-[a-z][a-z-]*\})-\$\(date /.exec(readWordValue(m[1], varsAt(assignments, m.index)).text)?.[1]]);
+  const allocated = [...code.matchAll(/^RUN_ID="\$\(node "\$CLAUDE_PLUGIN_ROOT\/scripts\/peer-runner\.mjs" new-run-id --prefix ([^\s)]+)\)"/gm)]
+    .map((m) => [m.index, /^[a-z][a-z-]*$/.exec(readWordValue(m[1], varsAt(assignments, m.index)).text)?.[0]]);
+  return [...dated, ...allocated].sort(([a], [b]) => a - b).map(([, p]) => p).filter(Boolean);
 }
 
 /**
