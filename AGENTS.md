@@ -330,9 +330,18 @@ ADR-0001 final note.
   specs; run it after editing anchored source. `validate.yml` runs it on
   every push.
 
-GitHub Actions run on Node 24. `full-tests.yml` runs the full `npm test` once,
-with no path filter: it is the only workflow that runs tests, and the
-repo-level coverage authority (ADR-0033). `validate.yml` runs the non-test
+GitHub Actions run on Node 24. `full-tests.yml` runs every file of `npm test`
+once, with no path filter: it is the only workflow that runs tests, and the
+repo-level coverage authority (ADR-0033). It runs them as a matrix of shards:
+each calls `node scripts/shard-tests.mjs run <i>/<N>`, which splits Node's own
+discovery by the recorded durations in `scripts/data/test-weights.json`,
+refuses a split that drops or repeats a file, and runs its part through
+`npm test -- <files>`; the check `full test suite (Node 24)` passes only when
+every shard did (ADR-0033 amendment of 2026-10-19). `node
+scripts/shard-tests.mjs plan` shows the estimated split; refresh the weights
+with its `record` command (the command is in the header of
+`scripts/lib/duration-reporter.mjs`) when the shards drift apart; a new test
+file needs nothing. `validate.yml` runs the non-test
 checks: `lint:plugin-shape`, the persona-pipeline drift check, the static
 mutation anchor check and the three validators, with `--base` set to
 main's previous commit on a push to `main` and to the branch's fork point on
