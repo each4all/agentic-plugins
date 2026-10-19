@@ -231,8 +231,11 @@ ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "
 # line of it is shell source. A prompt left unwritten stops the block here.
 PROMPT_FILE="$TEXT_DIR/prompt.xml"
 grep -q '[^[:space:]]' "$PROMPT_FILE" 2>/dev/null || { echo "✗ prompt.xml in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was dispatched." >&2; exit 1; }
-# ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch.
-RUN_ID="${ENSEMBLE_TYPE}-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
+# ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch, allocated by the
+# runner (C119, C26): no shell arithmetic or hand-written date makes it. An
+# allocation that prints nothing stops the block too.
+RUN_ID="$(node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" new-run-id --prefix "$ENSEMBLE_TYPE")" || RUN_ID=''
+[ -n "$RUN_ID" ] || { echo "✗ peer-runner.mjs new-run-id allocated no run id for $ENSEMBLE_TYPE (its error, if any, is above); nothing was dispatched." >&2; exit 1; }
 # The dispatch's own record of the run it launches and the workflow it found,
 # written before the launch: the finalize settles that run from it when the
 # runner ends without writing its result (R4 F1).
