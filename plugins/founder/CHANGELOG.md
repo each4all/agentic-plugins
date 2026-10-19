@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.3](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.12.2...plugin-founder-v0.12.3) (2026-10-19)
+
+
+### Bug Fixes
+
+* **founder:** pass typed workflow ids and command arguments through files, never shell source (C134(a), C132) ([49477f5](https://github.com/each4all/agentic-plugins/commit/49477f51ab05e16a188c4f18277ea5cc22ca7174))
+
 ## [0.12.2](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.12.1...plugin-founder-v0.12.2) (2026-10-19)
 
 

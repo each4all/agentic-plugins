@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.3](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.11.2...plugin-designer-v0.11.3) (2026-10-19)
+
+
+### Bug Fixes
+
+* **designer:** pass typed workflow ids and command arguments through files, never shell source (C134(a), C132) ([bbdac4d](https://github.com/each4all/agentic-plugins/commit/bbdac4de9027b825360b3204ef5b95b6f4cebbdf))
+
 ## [0.11.2](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.11.1...plugin-designer-v0.11.2) (2026-10-19)
 
 
