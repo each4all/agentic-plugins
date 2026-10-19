@@ -42,6 +42,11 @@ Accepted (2026-09-29, owner decision).
   D8's macro-scoped files and halt signal, and the S3+S4 note on
   `finish-verb` carry dated notes;
   until ADR-0068 is accepted they change nothing.
+- Proposed amendment 2026-10-19 by ADR-0068's slice 2 (Proposed): stall
+  detection, log-only until the owner switches it on, and the driver's event
+  file that the main session watches. D1's Bounded property, D4's proceed
+  rule 6, D5's session hosting, D8's halt signal and Q5 carry dated notes;
+  until ADR-0068 is accepted they change nothing.
 
 <!--
 Adds one named effect domain — S1, owner-launched fresh-session spawn —
@@ -232,6 +237,14 @@ the owner's repo. The safety argument rests on seven properties:
   whole per-step wall clock. The `--max-time` option that set one is
   removed, and an args file that still passes it is refused as an unknown
   option.
+
+  *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 2,
+  proposed; in force once it is accepted):* a stall
+  detector judges every step from its stream and its descendants' CPU. It
+  records only, and the per-step wall clock stays the step's bound, until
+  the owner switches it on after reviewing its verdicts; then a step stalled
+  10 minutes is aborted, and the wall clock's default becomes an 8-hour
+  emergency cap (ADR-0068 Decision 3).
 - **No implicit retry loop.** A step never re-runs automatically. The loop
   advances only on an **observed state change** (fingerprint differs).
   `no-progress` halts.
@@ -378,6 +391,10 @@ view is:
 6. Budgets remain: iterations, total cost, wall clock. *Amendment 2026-10-13
    (C105):* the run's wall clock is removed. Iterations and total cost
    remain, and each step's own wall clock (D1) still bounds that step.
+   *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 2,
+   proposed; in force once it is accepted):* once the
+   owner switches the stall detector on, a step is bounded by the stall rule
+   and by the emergency cap (ADR-0068 Decision 3, item 8).
 
 **Halt** reason codes (closed set):
 
@@ -509,6 +526,15 @@ claude -p --input-format stream-json --output-format stream-json --verbose
    set is empty. Completion re-invokes the model, per probe D2.
 4. On timeout or abort, kill the worker's process group (the peer-runner
    pattern, `plugins/engineer/scripts/peer-runner.mjs:711-725`).
+
+   *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 2,
+   proposed; in force once it is accepted):* the host also
+   keeps the time of the last stream event other than heartbeats and hooks,
+   and the driver samples the worker's descendants' CPU. Log-only, the
+   verdicts are recorded and nothing is aborted; switched on, a `stalled`
+   verdict is one more abort, `stalled`, with the timeout's teardown,
+   outranking a close on a finished report as every abort does. The detector
+   stops watching at that close (ADR-0068 Decision 3).
 5. The worker's own `Stop` hooks archive the engineer workflow and send its
    terminal note to the macro (probe E8). Since ADR-0062 that note no longer
    completes the subtask (D3a).
@@ -730,6 +756,16 @@ Other rules:
   or blocked behind one of those, or the plan done; exit 2 keeps its
   meaning, and `halt.json` gives each lane its state and resolution
   (ADR-0068 Decision 1, items 7 and 9).
+
+  *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 2,
+  proposed; in force once it is accepted):* beside
+  these, the driver appends one JSON line per event (a park, a halt, a
+  failed step, a finished commit, a stall verdict, the run's end) to the
+  event file of its lock scope, `events/<macro-id>.jsonl` under the main
+  worktree's `.agentic-plugins/runs/autopilot/` for a macro, and the main
+  session watches it with the Monitor tool. The lines hold codes, ids and
+  pointers, never free text; `--notify-local` is unchanged (ADR-0068
+  Decision 4).
 - **Consumer repos** must gitignore `.agentic-plugins/{runs,state,tmp,cache}/`.
   Otherwise session-capture writes trip the clean-tree gate (observed in E).
 
@@ -985,6 +1021,11 @@ that part of §4 before this ADR was adopted.
   owner default and mechanical steps on sonnet.
 - **Q5. Halt notification kind.** *Resolved 2026-09-25:* no plugin notification; terminal + ledger + optional `--notify-local`. (Previously: reuse `response-needed`, or add an
   `autopilot-halt` kind to ADR-0047.)
+  *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 2,
+  proposed; in force once it is accepted):* the
+  resolution stands. The driver's event file is part of the ledger, appended
+  and read by local processes: no plugin notification, no egress, no
+  ADR-0047 kind (ADR-0068 Decision 4, item 7).
 - **Q6** (raised by this ADR; **resolved**, D2 above). The command is dry-run
   by default, matching ADR-0035 §3 invariant 1:
   - A bare invocation or `preview` observes and decides, prints the posture, and

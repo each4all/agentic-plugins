@@ -35,6 +35,10 @@ Proposed 2026-10-07.
   Reconciliation rows, Decision 6's capability floor, Drain, Throttle and
   Forced resume, and §Out of scope carry dated notes; until ADR-0068 is
   accepted they change nothing.
+- Proposed amendment 2026-10-19 by ADR-0068's slice 2 (Proposed): stall
+  detection and the driver's event file. Decision 6's Budgets and Decision
+  8, item 5, carry dated notes; until ADR-0068 is accepted they change
+  nothing.
 - **On acceptance** it:
   - amends [ADR-0063](0063-autopilot-fresh-session-driver.md): R2's halt
     wording, D1's worktree-lanes clause (the held integration-merge clause is
@@ -1423,6 +1427,12 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
     *Amendment 2026-10-13 (C105):* a run has no deadline. Each worker gets its
     whole per-step timeout, however late it starts and however long its lane
     took to prepare.
+    *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+    slice 2, proposed; in force once it is accepted):* the reservation's
+    `timeoutSec` stays `--step-timeout` while the stall detector only
+    records; once the owner switches it on, its default is the 8-hour
+    emergency cap, and a stalled step ends earlier, settling its reservation
+    as an abort does (ADR-0068 Decision 3, item 8).
 - **Drain (W2).** A halt in any lane or in a lane's creation (Decision 5),
   an invalidated plan approval, version drift, or an exhausted budget puts
   the run in `draining`:
@@ -2032,6 +2042,14 @@ closed `kind`:
 Each entry is built from facts the driver has checked: identifiers against
 its closed alphabets, paths it resolved itself, fixed templates. It is
 display only, bounded, and never acted on by the driver.
+
+*Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+slice 2, proposed; in force once it is accepted):* the driver's event file is
+one more report, and carries none of these entries: a halted run's
+`run-ended` line points at the halt record that holds them, and a `halt`
+line met while the
+run drains at the run's records as they stand (ADR-0068 Decision 4, items 2
+and 3).
 
 ### Decision 9. Amendments
 
