@@ -28,6 +28,13 @@ Proposed 2026-10-07.
   peers are unaccounted for (a look that could not read or list them, a
   cancellation that did not go through), and the cleanup searches that step.
   Each place keeps its text and carries a dated note.
+- Proposed amendment 2026-10-19 by
+  [ADR-0068](0068-autopilot-lanes-that-keep-going.md) (Proposed): a lane
+  halt parks only its lane, and the owner can hold a lane and release it.
+  Decision 4 item 5, Decision 5's Creation and Removal and its
+  Reconciliation rows, Decision 6's capability floor, Drain, Throttle and
+  Forced resume, and §Out of scope carry dated notes; until ADR-0068 is
+  accepted they change nothing.
 - **On acceptance** it:
   - amends [ADR-0063](0063-autopilot-fresh-session-driver.md): R2's halt
     wording, D1's worktree-lanes clause (the held integration-merge clause is
@@ -1018,6 +1025,18 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
      re-plan revokes the approval, and the driver halts at its next decision
      (ADR-0063 S6 note). An approval is the owner's own act.
    - SR implements this, because SR makes the macro visible.
+   - *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+     proposed; in force once it is accepted):* admission's join is
+     unchanged. A lane the owner holds is kept from the driver by its hold
+     record, and its worktree lock carries an entry for the hold, which
+     fences it from any run, an older driver included, and which
+     `admission release` does not remove from that release on; the macro
+     lock gets none. The person in the lane uses the persona commands,
+     which join no admission, and the commands above are still refused
+     beside a live run. `/orchestrator:next` refuses, from any checkout, a
+     subtask held (its handoff done or pending, or its record unreadable),
+     with a release no run has compared yet, or with a persona operation
+     open (ADR-0068 Decision 2, items 3 to 5).
 
 ### Decision 5. Lanes: placement, ownership, lifecycle, reconciliation
 
@@ -1123,6 +1142,11 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
   - The branch stays; the owner prunes it.
   - The ignored files a removal does delete are the lane's own per-checkout
     artifacts (Decision 1(a)), which describe only that lane.
+  - *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+    proposed; in force once it is accepted):* neither Creation nor Removal
+    begins for a held subtask. The driver reads the hold right before each,
+    and one already begun when a hold appears runs to its end before the
+    lane is handed over (ADR-0068 Decision 2, items 3 and 4).
 - **Reconciliation** runs at the start of every run with lanes, before the
   first decision, and its subtask rows (10–12) run again before each lane is
   created (Creation above). A serial run does not reconcile lanes
@@ -1185,6 +1209,19 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
   |---|---|---|
   | 13 | a worktree under the lanes directory without our reason, or with another macro's | report it; never touch it |
 
+  *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+  proposed; in force once it is accepted):* the holds and kept lane parks of
+  the macro are read before anything else, the preparation included. A held
+  subtask, its handoff done or pending, is reported as such and passed by:
+  no row acts on it (no lane id written, no removal intent finished, no
+  prepared dispatch, no adoption, no removal, no new lane, no halt;
+  ADR-0068 Decision 2, item 11). A park an earlier run kept parks its lane
+  again before any row acts on it, while the lane's fingerprint is unchanged
+  (ADR-0068 Decision 1, item 3). Besides the subtask rows' rerun before each
+  creation, the preparation's items for a parked lane's path and its rows
+  also run mid-run for that lane alone when it is reconsidered, planned from
+  the facts of the whole macro (ADR-0068 Decision 1, item 4).
+
 - **Preflight per lane.** The four `.agentic-plugins/` directories must be
   ignored in each lane, as in the driven checkout (`driver.mjs:55`, `:97-99`).
 
@@ -1229,6 +1266,12 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
   - A subtask already in progress on a branch checked out in the driver's
     own checkout (left by a serial run) cannot get a lane, since git checks
     a branch out in one worktree only: reconciliation row 11 halts.
+  - *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+    proposed; in force once it is accepted):* the floor gains a token for
+    the pinned engineer's hold-aware persona, and a run records in
+    `run.json` that it honours holds only when it reads holds and that
+    token is present; a run without it does not start while a hold applies
+    (ADR-0068 Decision 2, item 9).
 - **Policy.**
   - More than one active child is allowed when each one's branch is checked
     out in its own lane. With lanes this replaces `policy.mjs:470-473`;
@@ -1389,6 +1432,17 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
     and a halt during the drain is recorded too;
   - when nothing is in flight, the driver writes `halt.json`, with the first
     halt as `reason` and one entry per lane, and exits 2.
+
+  *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+  proposed; in force once it is accepted):* only an invalidated approval (a
+  plan-changing decision included), a gate on the macro, version drift, an
+  exhausted budget and the other run-wide halts drain, scoped by their
+  cause. A halt that arises in a lane parks that lane, the other lanes go
+  on, and the lane is judged again when its record changes or the owner
+  releases it. The park is kept for the next run while the lane's
+  fingerprint is unchanged, so a failure that writes nothing is never
+  retried on an unchanged record. The run ends when nothing runs and
+  nothing can start (ADR-0068 Decision 1).
 - **SIGINT and SIGTERM do not drain.** Every group in flight is aborted
   (`interrupted`), during a drain too. Lanes are kept, and locks are released
   once every group is empty (the S8 rules).
@@ -1465,6 +1519,12 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
     Ctrl-C.
   - Lanes already started keep stepping: the throttle gates new lanes only,
     the owner's default.
+
+    *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+    proposed; in force once it is accepted):* a lane resumed after a park
+    or a hold counts as a new lane: the throttle gates its first step after
+    the resumption, since the capacity it left may have gone to other lanes
+    (ADR-0068 Decision 1, item 4).
 - **Forced resume.** `--next <step>` keeps its grammar, and with lanes it is
   judged per lane:
   - With more than one active child it needs `--lane <subtask-id>`, and is
@@ -1479,6 +1539,11 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
     steps start first. The other lanes are then judged as usual, and a
     judgment halt that persists in one of them drains the run while the
     forced steps finish.
+  - *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+    proposed; in force once it is accepted):* a forced step resolves its
+    lane's park; a judgment halt that persists in another lane parks that
+    lane only, and a forced step on a held lane is refused (ADR-0068
+    Decision 1, item 8).
 - **Lanes waiting to land do not hold capacity.** The cap bounds concurrent
   workers: their cost, the rate limit, a full test run each. A lane waiting
   for its merge runs nothing. The backlog is bounded by the plan and reported
@@ -2014,6 +2079,13 @@ Not amended:
 - Interactive lanes: `/orchestrator:next --parallel`, `claude --bg` lane
   sessions and cross-session messages (L2). They are the next macro, with its
   own ADR; the precedent is its main input.
+
+  *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+  proposed; in force once it is accepted):* that ADR takes up the takeover of a lane by a person (hold and
+  release), worked in a session of the person's own in the lane's folder;
+  its later slices take up record-based messages at step boundaries (the
+  driver's event file, main-to-lane instructions). `/orchestrator:next
+  --parallel` stays unbuilt, the owner's decision of 2026-10-17.
 - A heavy-job lock, so two lanes do not run `npm test` at the same time.
 - A shared-number allocator. The planner pre-assigns numbers instead.
 - Docket C105: a step-start guard based on recent step durations. Today the

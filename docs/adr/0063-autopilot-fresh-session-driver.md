@@ -35,6 +35,13 @@ Accepted (2026-09-29, owner decision).
   re-checked only where a refine changed it, and its recurring findings come
   from a review ledger. D4's ceremony gates carry a dated note; the contract
   is § Amendment 2026-10-14 — document deliverables converge (C120).
+- Proposed amendment 2026-10-19 by
+  [ADR-0068](0068-autopilot-lanes-that-keep-going.md) (Proposed): with
+  lanes, a lane halt parks only its lane, and the owner can hold a lane and
+  release it. R2, D4's halt table and Lanes paragraph, D6's `next_step`,
+  D8's macro-scoped files and halt signal, and the S3+S4 note on
+  `finish-verb` carry dated notes;
+  until ADR-0068 is accepted they change nothing.
 
 <!--
 Adds one named effect domain — S1, owner-launched fresh-session spawn —
@@ -85,6 +92,12 @@ system already computes. Two gaps sit at the root:
 | R3 | **Claude-only.** Codex parity is not required (Claude adapter, documented non-parity). |
 | R4 | `decide` results are auto-accepted **unless** the ensemble verdict is CONFLICT or confidence is below HIGH. |
 | R5 | **Deterministic control.** The driver never synthesizes a command from free text. Commands come only from closed enums in state (same principle as entry-brief R0). |
+
+*Note 2026-10-19 on R2 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+proposed; in force once it is accepted):* with lanes, a judgment point in a
+lane parks that lane only, and the other lanes go on; the run-wide halts
+still drain, and the run reports once nothing can start (ADR-0068 Decision
+1).
 
 ### Host truth
 
@@ -386,6 +399,21 @@ view is:
 | `version-drift` | installed plugin versions changed since the run started, or the content of a loaded plugin or a pinned script root did ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decision 8) |
 | `interrupted` | SIGINT/SIGTERM from the owner |
 
+*Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+proposed; in force once it is accepted):* the codes are unchanged, and with
+lanes each halt has a scope, set by its cause, not by its code or by
+whether it names a subtask. The run-wide causes are a closed list:
+`version-drift`, `budget`, `plan-unapproved`, a gate on the macro, a halt
+that names no lane of the plan (the other macro-level halts, the aggregate
+halts), the run's footing wherever it is met (the baseline fetch, the
+rollback fence), a finalize's halts, a done's once its worker started (a
+done that could not spawn parks its lane), the checks on the driver's own
+checkout, a worker group that outlived SIGKILL (in any lane, although its
+code is the lane's `worker-failed`) and an unreadable holds directory; they
+drain the run. `interrupted` aborts it. Every other halt is a lane halt and
+parks only that lane (ADR-0068 Decision 1, item 1). Serial runs keep the
+drain.
+
 **`awaiting_owner.gate`** is a closed enum of genuine-judgment gates only:
 `plan-approval`, `plan-conflict`, `scope-routing`, `decide-conflict`,
 `peer-conflict` ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md)
@@ -420,6 +448,13 @@ in-flight steps finish, then every lane reports once. SIGINT/SIGTERM aborts
 without draining. Scheduling, the per-lane fingerprint, budgets and the
 throttle: [ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md)
 Decision 6.
+
+*Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+proposed; in force once it is accepted):* only a run-wide halt drains. A
+lane halt parks its lane while the other lanes go on, the park is kept for
+the next run, and the lane is judged again once its record changes or the
+owner releases it; a lane the owner holds is left alone (ADR-0068 Decisions
+1 and 2).
 
 ### D5. Worker contract
 
@@ -571,6 +606,17 @@ cache fallback, the driver appends a short hint naming the resolved roots
 ### D6. State contract additions (host-neutral core)
 
 - **`next_step` (engineer workflow).** Written at verb State finalize.
+
+  *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+  proposed; in force once it is accepted):* every persona operation of a
+  macro's child also stays visible, from its first write to its last (the
+  write that records `next_step`, the close without a commit, or, for a
+  commit, its archive and the parent writeback after it), through one new
+  field of the child and a record beside the macro's holds. A release can so
+  tell that no persona operation is still open in a held lane, those begun
+  before the macro had a holds directory included (ADR-0068 Decision 2,
+  items 7 and 9).
+
   - `kind`: `verb | commit | owner-decision | done`.
     - `done` means the subtask needs no further step. `/engineer:commit`
       closes it without a commit, and `/orchestrator:done --no-commit` records
@@ -648,6 +694,14 @@ landing log, the lane removal intents and the open-run records
   same records across runs ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md)
   Decision 7 and its note of that date).
 
+*Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+proposed; in force once it is accepted):* the macro-scoped files under the
+main worktree gain the macro's holds directory,
+`.agentic-plugins/runs/autopilot/holds/<macro-id>/`: the owner's hold
+records, what the driver and the persona record beside them, and the lane
+parks kept for the next run, under a lock of their own (ADR-0068 Decision
+1, item 3; Decision 2, item 1).
+
 Other rules:
 - **Status** (listed 2026-10-14, docket C123): `agentic-autopilot status`
   reads these files, a run's landing records among them, one line each with
@@ -668,6 +722,14 @@ Other rules:
   notification: the notification feature is removed ([ADR-0064](0064-runtime-surface-reduction.md), proposed alongside).
   The optional driver-local `--notify-local` shows one macOS notification through
   `osascript`, with a fixed script, the payload as argv, and no egress (Q5 resolved).
+
+  *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+  proposed; in force once it is accepted):* with lanes, the run ends when
+  nothing runs and nothing can start, every remaining lane parked, held
+  (its handoff done or pending, or its record unreadable), waiting to land,
+  or blocked behind one of those, or the plan done; exit 2 keeps its
+  meaning, and `halt.json` gives each lane its state and resolution
+  (ADR-0068 Decision 1, items 7 and 9).
 - **Consumer repos** must gitignore `.agentic-plugins/{runs,state,tmp,cache}/`.
   Otherwise session-capture writes trip the clean-tree gate (observed in E).
 
@@ -1185,6 +1247,13 @@ follow live in one file, `plugins/engineer/core/skills/_shared/references/autopi
   - `state.mjs finish-verb` is each verb's last write, in both modes.
     - Interactive: the old `set-terminal summary-complete` plus the next step,
       so the footer prints as before.
+
+      *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+      proposed; in force once it is accepted):* not while the workflow's
+      subtask is held or has a kept lane park, nor while a run of its macro
+      is live: then it records the next step and leaves the terminal marker
+      unset, as under autopilot, and the driver resumes the lane from that
+      step (ADR-0068 Decision 2, item 6).
     - Autopilot: the next action and next step only. The terminal marker is
       turned off, an inherited one included, and the handoff sidecar is
       skipped. A pending peer ensemble is refused.
