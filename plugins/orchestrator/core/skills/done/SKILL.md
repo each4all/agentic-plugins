@@ -44,41 +44,51 @@ command file as the canonical Claude runbook.
 
 ## Phase 0 - Argument intake
 
-Require a leading `<subtask-id>`, as `EXPLICIT_SUBTASK_ID`.
+The arguments reach the block through an args file, never as shell source
+(ADR-0059, C134(a)): typed into a command, a quote, `$` or backquote in an id
+or a reason would be read as code, and a heredoc ends at a line of the reason
+that reads its delimiter. Create a private directory for it
+(`mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"`, noting the path it
+prints), write `args.json` in it with your file-editing tool, holding
+`{"agentic_args": 1, "text": "…"}` with `text` set to the arguments exactly
+as typed, as a JSON string, and put that path in the block's `ARGS_DIR` line.
+The block reads it with `state.mjs command-args --command done` (grammar:
+`scripts/lib/command-args.mjs`), as `commands/done.md` does, which removes the
+file and its directory once read. The fields:
 
-Parse optional:
-
-- `--pr=<n>`, as `EXPLICIT_PR` — names the pull request when more than one
-  merged the branch;
-- `--commit=<sha>`, as `EXPLICIT_COMMIT` — must equal that pull request's
-  merge commit;
-- `--correct`, as `CORRECT=1` — replace a recorded value deliberately (needs
+- `subtask_id`, the leading `<subtask-id>` (required);
+- `pr`, from `--pr=<n>` — names the pull request when more than one merged
+  the branch;
+- `commit`, from `--commit=<sha>` — must equal that pull request's merge
+  commit;
+- `correct`, from `--correct` — replace a recorded value deliberately (needs
   a reason);
-- `--no-commit`, as `NO_COMMIT=1` — the work landed no commit (needs a
+- `no_commit`, from `--no-commit` — the work landed no commit (needs a
   reason; excludes `--pr`, `--commit` and `--correct`);
-- `--waive-dispatch`, as `WAIVE_DISPATCH=1` — complete in the recorded
+- `waive_dispatch`, from `--waive-dispatch` — complete in the recorded
   owner's name without comparing the dispatch it records, when no file of it
   is left to read it from (Phase 2; needs a reason, and the macro records
   both);
-- `--workflow=<macro-id>`, as `EXPLICIT_WORKFLOW_ID`;
-- `--integration-branch=<b>`, as `EXPLICIT_INTEGRATION_BRANCH` — default is
-  the macro's `git_baseline.branch`;
-- the remaining free text is the reason, verbatim.
+- `workflow_id`, from `--workflow=<macro-id>`;
+- `integration_branch`, from `--integration-branch=<b>` — default is the
+  macro's `git_baseline.branch`;
+- `reason`, the free text after the subtask id and the options, byte for
+  byte (a lone `--` before it lets it name one of done's options). The block
+  writes it to a file of its own, which `state.mjs` reads.
 
-The reason never passes through the shell (ADR-0059). When there is one,
-create a private directory first (`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`,
-noting the path it prints), write the reason with your file-editing tool to
-`reason.txt` in it, exactly as given, and set `REASON_FILE` to that file's
-path at the top of the block. Leave `REASON_FILE` unset when there is no
-reason. Never splice the reason into a command line or a heredoc: a delimiter
-line in the text would end the heredoc and run what follows.
+The parser refuses, and nothing is written: a missing subtask id, an unknown
+or repeated option, `--no-commit` with `--pr`, `--commit` or `--correct`,
+an option after the reason began (unless `--` opened it), and a subtask id
+or option holding a quote or backslash (a value is written bare, so a subtask
+whose id holds a quote, a backslash or a space, or starts with `-`, cannot be
+named here). The reason takes any text.
 
 **Phases 1–3 are one block, run in one shell call** (below, after the phases
-it runs), as `commands/done.md` runs them. Each shell call is a fresh shell,
-so set the argument variables at the top of the block, and write `REASON_FILE`
-(when there is a reason) before you run it. A refusal is answered by running
-the whole block again with other arguments (`--waive-dispatch` after exit 3, a
-binding line after an ambiguity, `--correct`), never by running part of it.
+it runs), as `commands/done.md` runs them. Each shell call is a fresh shell:
+the block reads its arguments from the args file at its top. A refusal is
+answered by running the whole block again with other arguments, in a new args
+file (`--waive-dispatch` after exit 3, a binding line after an ambiguity,
+`--correct`), never by running part of it.
 
 ---
 
@@ -90,11 +100,10 @@ otherwise `find-active` on the current branch, then `find-macro` for a
 subtask branch. Then the subtask as the macro records it. A `deferred` or
 `abandoned` subtask is refused (terminal-partial states are absorbing); a
 `completed` one, without `--correct`, is a no-op and the block ends there.
-`--no-commit` with `--commit`, `--pr` or `--correct` is refused. When
-`CORRECT=1`, `NO_COMMIT=1` or `WAIVE_DISPATCH=1`, a reason is required. The
-reason stays in `REASON_FILE`: the block only checks that it holds text, and
-Phase 3 hands the file's bytes to `state.mjs`, so the shell never reads the
-reason as text.
+With `--correct`, `--no-commit` or `--waive-dispatch`, a reason is
+required. The reason stays in the file the block wrote it to (`REASON_FILE`):
+the block only checks that it holds text, and Phase 3 hands the file's bytes
+to `state.mjs`, so the shell never reads the reason as text.
 
 ---
 
@@ -161,14 +170,15 @@ checks ownership and provenance itself, under the macro's file lock.
 
 ## The block — Phases 1 to 3, in one shell call
 
-One block, run in one shell call: every value it reads is either an argument
-variable above, set at its top, or something it read itself, so it runs as
-written in a fresh shell (C75), bash or zsh (it uses bash arrays, which a
-POSIX `sh` such as dash does not have). It writes no file of its own. Each JSON
+One block, run in one shell call: every value it reads is either a field of
+its parsed arguments or something it read itself, so it runs as written in a
+fresh shell (C75), bash or zsh (it uses bash arrays, which a POSIX `sh` such
+as dash does not have). The one file it writes is the reason's. Each JSON
 document goes to its parser through `printf`, the parser reads the whole
 document, and a read's status is checked apart from its parser's (C110).
 
 ```bash
+ARGS_DIR='<directory from mktemp>'
 # --- Phase 1: the macro plan ---
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 GIT_BRANCH="$(git branch --show-current)"
@@ -177,28 +187,49 @@ if [ -z "$GIT_BRANCH" ]; then
   exit 1
 fi
 
-if [ -z "${EXPLICIT_SUBTASK_ID:-}" ]; then
-  echo "✗ \$orchestrator:done requires a <subtask-id> argument." >&2
-  exit 1
-fi
+# --- The arguments: the args file, parsed (ADR-0059, C134(a)) ---
+# command-args reads the file by done's grammar and removes it: it refuses a
+# missing subtask id, an unknown or repeated option, --no-commit with --pr,
+# --commit or --correct, and an id or option holding a quote or backslash. Each value
+# below is read from what it printed, so no character the user typed is shell
+# source. The reason goes from there to a file of its own, which state.mjs
+# reads; the shell never holds it.
+ARGS_JSON="$(node "<orchestrator-plugin-root>/scripts/state.mjs" command-args \
+  --command done --args-file "$ARGS_DIR/args.json")" || exit 1
+# Prints the field named by JSON_KEY of the JSON document on stdin, or "" when
+# it is absent or null; a document that does not parse fails (C68). The
+# document goes through printf, not echo, whose zsh builtin expands the
+# backslash escapes inside JSON strings.
+JSON_FIELD='let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const v=JSON.parse(d)[process.env.JSON_KEY];process.stdout.write(v==null?"":String(v))})'
+ARG_SUBTASK_ID="$(printf '%s' "$ARGS_JSON" | JSON_KEY=subtask_id node -e "$JSON_FIELD")" || exit 1
+ARG_PR="$(printf '%s' "$ARGS_JSON" | JSON_KEY=pr node -e "$JSON_FIELD")" || exit 1
+ARG_COMMIT="$(printf '%s' "$ARGS_JSON" | JSON_KEY=commit node -e "$JSON_FIELD")" || exit 1
+ARG_WORKFLOW_ID="$(printf '%s' "$ARGS_JSON" | JSON_KEY=workflow_id node -e "$JSON_FIELD")" || exit 1
+ARG_INTEGRATION_BRANCH="$(printf '%s' "$ARGS_JSON" | JSON_KEY=integration_branch node -e "$JSON_FIELD")" || exit 1
+# The switches read true or false.
+CORRECT="$(printf '%s' "$ARGS_JSON" | JSON_KEY=correct node -e "$JSON_FIELD")" || exit 1
+NO_COMMIT="$(printf '%s' "$ARGS_JSON" | JSON_KEY=no_commit node -e "$JSON_FIELD")" || exit 1
+WAIVE_DISPATCH="$(printf '%s' "$ARGS_JSON" | JSON_KEY=waive_dispatch node -e "$JSON_FIELD")" || exit 1
+REASON_FILE="$(mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX")/reason.txt" || exit 1
+printf '%s' "$ARGS_JSON" | node -e 'const fs=require("fs");let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>fs.writeFileSync(process.argv[1],JSON.parse(d).reason))' "$REASON_FILE" || exit 1
 
 MACRO_PATH=""
-if [ -n "${EXPLICIT_WORKFLOW_ID:-}" ]; then
+if [ -n "$ARG_WORKFLOW_ID" ]; then
   # Reject path-component overrides — `--workflow=../archive/<id>` would
   # otherwise let the macro path escape `workflows/`.
-  case "$EXPLICIT_WORKFLOW_ID" in
+  case "$ARG_WORKFLOW_ID" in
     # No NUL case: a shell variable cannot hold NUL, and bash expands $'\0'
     # to an empty string, which made the pattern match every id.
     */*|*\\*|..|.*)
-      echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID invalid — must be a basename-shaped workflow id (no '/', '\\\\', '..', or leading '.')." >&2
+      echo "✗ --workflow=$ARG_WORKFLOW_ID invalid — must be a basename-shaped workflow id (no '/', '\\\\', '..', or leading '.')." >&2
       exit 1;;
   esac
   # ADR-0067 Decision 4, item 2 — the macro file in the orchestrator workflow
   # homes of this checkout's read set, the default state root's first. Two
   # files holding the id are an error, named on stderr, never a choice.
   if ! MACRO_PATH="$(node "<orchestrator-plugin-root>/scripts/state.mjs" \
-    resolve-workflow --repo-root "$REPO_ROOT" --workflow-id "$EXPLICIT_WORKFLOW_ID")"; then
-    echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID names no single macro file in the orchestrator workflow homes of this checkout's read set (the reason is above; archived macros are not addressed)." >&2
+    resolve-workflow --repo-root "$REPO_ROOT" --workflow-id "$ARG_WORKFLOW_ID")"; then
+    echo "✗ --workflow=$ARG_WORKFLOW_ID names no single macro file in the orchestrator workflow homes of this checkout's read set (the reason is above; archived macros are not addressed)." >&2
     exit 1
   fi
 else
@@ -225,40 +256,27 @@ MACRO_ID="$(basename "$MACRO_PATH" .md)"
 
 # --- Phase 1: the subtask, the flags, the reason file ---
 SUBTASK_JSON="$(node "<orchestrator-plugin-root>/scripts/state.mjs" \
-  read-subtask --workflow-path "$MACRO_PATH" --subtask-id "$EXPLICIT_SUBTASK_ID")" || exit 1
+  read-subtask --workflow-path "$MACRO_PATH" --subtask-id "$ARG_SUBTASK_ID")" || exit 1
 
-SUBTASK_ID="$EXPLICIT_SUBTASK_ID"
-# Prints the field named by JSON_KEY of the JSON document on stdin, or "" when
-# it is absent or null; a document that does not parse fails (C68). The
-# document goes through printf, not echo, whose zsh builtin expands the
-# backslash escapes inside JSON strings.
-JSON_FIELD='let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const v=JSON.parse(d)[process.env.JSON_KEY];process.stdout.write(v==null?"":String(v))})'
+SUBTASK_ID="$ARG_SUBTASK_ID"
 SUBTASK_BRANCH="$(printf '%s' "$SUBTASK_JSON" | JSON_KEY=branch node -e "$JSON_FIELD")" || exit 1
 SUBTASK_STATUS="$(printf '%s' "$SUBTASK_JSON" | JSON_KEY=status node -e "$JSON_FIELD")" || exit 1
 EXISTING_ENG_WF_ID="$(printf '%s' "$SUBTASK_JSON" | JSON_KEY=engineer_workflow_id node -e "$JSON_FIELD")" || exit 1
 EXISTING_COMMIT="$(printf '%s' "$SUBTASK_JSON" | JSON_KEY=commit node -e "$JSON_FIELD")" || exit 1
 EXISTING_CLOSED_AT="$(printf '%s' "$SUBTASK_JSON" | JSON_KEY=closed_at node -e "$JSON_FIELD")" || exit 1
 
-if [ "${NO_COMMIT:-}" = "1" ] && { [ -n "${EXPLICIT_COMMIT:-}" ] || [ -n "${EXPLICIT_PR:-}" ] || [ "${CORRECT:-}" = "1" ]; }; then
-  echo "✗ --no-commit excludes --commit, --pr and --correct." >&2
-  exit 1
-fi
 if [ "$SUBTASK_STATUS" = "deferred" ] || [ "$SUBTASK_STATUS" = "abandoned" ]; then
   echo "✗ Subtask $SUBTASK_ID is $SUBTASK_STATUS — terminal-partial states are absorbing (set by \$orchestrator:finalize or \$orchestrator:abort)." >&2
   exit 1
 fi
-if [ "$SUBTASK_STATUS" = "completed" ] && [ "${CORRECT:-}" != "1" ]; then
+if [ "$SUBTASK_STATUS" = "completed" ] && [ "$CORRECT" != true ]; then
   echo "✓ Subtask $SUBTASK_ID is already completed at $EXISTING_CLOSED_AT with commit ${EXISTING_COMMIT:-<none>}. Nothing to do; to change the record, rerun with --correct and a reason." >&2
   exit 0
 fi
 
-if [ -n "${REASON_FILE:-}" ] && [ ! -f "$REASON_FILE" ]; then
-  echo "✗ REASON_FILE=$REASON_FILE does not exist; write the reason with your file-editing tool first." >&2
-  exit 1
-fi
 HAS_REASON=0
-if [ -n "${REASON_FILE:-}" ] && grep -q '[^[:space:]]' "$REASON_FILE"; then HAS_REASON=1; fi
-if { [ "${CORRECT:-}" = "1" ] || [ "${NO_COMMIT:-}" = "1" ] || [ "${WAIVE_DISPATCH:-}" = "1" ]; } && [ "$HAS_REASON" -eq 0 ]; then
+if grep -q '[^[:space:]]' "$REASON_FILE"; then HAS_REASON=1; fi
+if { [ "$CORRECT" = true ] || [ "$NO_COMMIT" = true ] || [ "$WAIVE_DISPATCH" = true ]; } && [ "$HAS_REASON" -eq 0 ]; then
   echo "✗ --correct, --no-commit and --waive-dispatch need a reason (the free text after the flags)." >&2
   exit 1
 fi
@@ -272,7 +290,7 @@ OWNER_ARGS=(--repo-root "$REPO_ROOT" --macro-id "$MACRO_ID" --workflow-path "$MA
 # Under set -e an unguarded nonzero exit would end the block before OWNER_RC.
 OWNER_JSON="$(node "<orchestrator-plugin-root>/scripts/state.mjs" owner-dispatch "${OWNER_ARGS[@]}")" && OWNER_RC=0 || OWNER_RC=$?
 if [ "$OWNER_RC" -eq 0 ]; then
-  if [ "${WAIVE_DISPATCH:-}" = "1" ]; then
+  if [ "$WAIVE_DISPATCH" = true ]; then
     echo "✗ --waive-dispatch applies only when the owner's dispatch cannot be read; it was read, and the write compares it. Rerun without --waive-dispatch." >&2
     exit 1
   fi
@@ -283,7 +301,7 @@ if [ "$OWNER_RC" -eq 0 ]; then
     exit 1
   fi
   DISPATCH_ARGS=(--expect-dispatch "$OWNER_DISPATCH")
-elif [ "$OWNER_RC" -eq 3 ] && [ "${WAIVE_DISPATCH:-}" = "1" ]; then
+elif [ "$OWNER_RC" -eq 3 ] && [ "$WAIVE_DISPATCH" = true ]; then
   # The recorded owner's file is gone, and the operator completes in its name
   # anyway; subtask-update records the waiver and the reason in the macro.
   DISPATCH_ARGS=(--waive-dispatch)
@@ -292,7 +310,7 @@ else
 fi
 
 # --- Phase 3, --no-commit: completion without a landed commit ---
-if [ "${NO_COMMIT:-}" = "1" ]; then
+if [ "$NO_COMMIT" = true ]; then
   # Returns non-zero, the reason on stderr, when an engineer workflow of this
   # subtask is active or a home cannot be read. active-child reads every root of
   # the repository (ADR-0067 Decision 1(b)) and parses each frontmatter, as
@@ -334,8 +352,8 @@ if [ "${NO_COMMIT:-}" = "1" ]; then
 fi
 
 # --- Phase 3: resolve the landing and record it ---
-if [ -n "${EXPLICIT_INTEGRATION_BRANCH:-}" ]; then
-  INTEGRATION_BRANCH="$EXPLICIT_INTEGRATION_BRANCH"
+if [ -n "$ARG_INTEGRATION_BRANCH" ]; then
+  INTEGRATION_BRANCH="$ARG_INTEGRATION_BRANCH"
 else
   # The read's status is its own, apart from the parser's: piped, a failed
   # read would leave the branch empty and the fetch below would name none
@@ -353,8 +371,8 @@ fi
 # The owner may have been recovered by the Phase 2 scan rather than read from
 # the macro; pass it so the landing is bound to this attempt's dispatch time.
 LANDING_ARGS=(--repo-root "$REPO_ROOT" --workflow-path "$MACRO_PATH" --subtask-id "$SUBTASK_ID" --integration-branch "$INTEGRATION_BRANCH" --engineer-workflow-id "$EXISTING_ENG_WF_ID")
-[ -n "${EXPLICIT_PR:-}" ] && LANDING_ARGS+=(--pr "$EXPLICIT_PR")
-[ -n "${EXPLICIT_COMMIT:-}" ] && LANDING_ARGS+=(--commit "$EXPLICIT_COMMIT")
+[ -n "$ARG_PR" ] && LANDING_ARGS+=(--pr "$ARG_PR")
+[ -n "$ARG_COMMIT" ] && LANDING_ARGS+=(--commit "$ARG_COMMIT")
 LANDING="$(node "<orchestrator-plugin-root>/scripts/state.mjs" resolve-landing "${LANDING_ARGS[@]}")"
 LANDING_RC=$?
 if [ "$LANDING_RC" -ne 0 ]; then
@@ -391,7 +409,7 @@ UPDATE_ARGS=(--workflow-path "$MACRO_PATH" --host codex --subtask-id "$SUBTASK_I
 # is the one that owner records it was dispatched for, unless the operator
 # waived that check (Phase 2).
 UPDATE_ARGS+=("${DISPATCH_ARGS[@]}")
-[ "${CORRECT:-}" = "1" ] && UPDATE_ARGS+=(--correct)
+[ "$CORRECT" = true ] && UPDATE_ARGS+=(--correct)
 if [ -n "$LANDING_NOTE" ] || [ "$HAS_REASON" -eq 1 ]; then
   # The note reaches state.mjs on stdin: the landing line, then the reason
   # copied byte for byte from REASON_FILE. No temporary file is written.

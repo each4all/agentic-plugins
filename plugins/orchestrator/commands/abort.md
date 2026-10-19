@@ -25,8 +25,29 @@ version in the plugin cache. Keep that opening line when you run a block: a
 shell variable does not outlive a Bash call. The engineer plugin root is
 resolved separately, by `discover-engineer.mjs`.
 
-**Argument parsing**: extract from `$ARGUMENTS`:
-- `EXPLICIT_WORKFLOW_ID` ← value of `--workflow=<id>` flag, or empty if absent.
+**Arguments** reach the block through an args file, never as shell source
+(ADR-0059, C134(a)): typed into a block, a quote, `$` or backquote in them
+would be read as code. Before the block:
+
+1. Create a private directory for the file, and note the path it prints:
+
+   ```bash
+   mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"
+   ```
+
+2. With your file-writing tool, not the shell, create `args.json` in that
+   directory holding `{"agentic_args": 1, "text": "…"}`, with `text` set to
+   the arguments above exactly as typed, as a JSON string (`""` when there
+   are none).
+
+Then run the block with that directory in its `ARGS_DIR` line. The block reads
+the file with `state.mjs command-args --command abort` (grammar:
+`scripts/lib/command-args.mjs`), which removes the file and its directory once
+read, so each run of the block takes a new args file. The field it reads:
+- `workflow_id` ← the value of `--workflow=<id>`, or empty if absent.
+
+Any other argument, and a word holding a quote or backslash, is refused before
+anything is read or written.
 
 **P1-i defense**: every engineer-side CLI invocation MUST use `$ENGINEER_PLUGIN_ROOT` in `argv[1]` (NOT the rebound `$CLAUDE_PLUGIN_ROOT`).
 
@@ -37,6 +58,7 @@ resolved separately, by `discover-engineer.mjs`.
 ## Phase 0 — Resolve the macro plan
 
 ```bash
+ARGS_DIR='<directory from step 1>'
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 set -e
@@ -49,6 +71,13 @@ fi
 
 ORCH_PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"
 
+# The arguments, parsed from the args file the agent wrote (ADR-0059,
+# C134(a)): command-args reads it by abort's grammar and removes it, so no
+# character the user typed is shell source.
+ARGS_JSON="$(node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" command-args \
+  --command abort --args-file "$ARGS_DIR/args.json")" || exit 1
+ARG_WORKFLOW_ID="$(printf '%s' "$ARGS_JSON" | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>process.stdout.write(JSON.parse(d).workflow_id))')" || exit 1
+
 # Host auto-detection (Codex P2 finding — mirror /next, /done, /finalize).
 case "$CLAUDE_PLUGIN_ROOT" in
   *"/.codex/"*) DETECTED_HOST="codex" ;;
@@ -57,20 +86,20 @@ case "$CLAUDE_PLUGIN_ROOT" in
 esac
 
 MACRO_PATH=""
-if [ -n "${EXPLICIT_WORKFLOW_ID:-}" ]; then
-  case "$EXPLICIT_WORKFLOW_ID" in
+if [ -n "$ARG_WORKFLOW_ID" ]; then
+  case "$ARG_WORKFLOW_ID" in
     # No NUL case: a shell variable cannot hold NUL, and bash expands $'\0'
     # to an empty string, which made the pattern match every id.
     */*|*\\*|..|.*)
-      echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID invalid — must be a basename-shaped workflow id." >&2
+      echo "✗ --workflow=$ARG_WORKFLOW_ID invalid — must be a basename-shaped workflow id." >&2
       exit 1;;
   esac
   # ADR-0067 Decision 4, item 2 — the macro file in the orchestrator workflow
   # homes of this checkout's read set, the default state root's first. Two
   # files holding the id are an error, named on stderr, never a choice.
   if ! MACRO_PATH="$(node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" \
-    resolve-workflow --repo-root "$REPO_ROOT" --workflow-id "$EXPLICIT_WORKFLOW_ID")"; then
-    echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID names no single macro file in the orchestrator workflow homes of this checkout's read set (the reason is above)." >&2
+    resolve-workflow --repo-root "$REPO_ROOT" --workflow-id "$ARG_WORKFLOW_ID")"; then
+    echo "✗ --workflow=$ARG_WORKFLOW_ID names no single macro file in the orchestrator workflow homes of this checkout's read set (the reason is above)." >&2
     exit 1
   fi
 else

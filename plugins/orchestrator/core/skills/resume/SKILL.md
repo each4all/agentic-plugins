@@ -115,11 +115,25 @@ Do not mutate `current_phase`, `next_action`, or `plan`.
 ## Phase 3 — Archive mode
 
 Resolve the active or named workflow and ask for confirmation before
-mutation. A named workflow is the file `node "<plugin-root>/scripts/state.mjs"
-resolve-workflow --repo-root "$REPO_ROOT" --workflow-id <workflow-id>`
-prints: the orchestrator workflow homes of the checkout's read set, the
-default state root first (ADR-0067 Decision 4, item 2); stop when it exits
-non-zero (3: no root holds the id; 1: two files do). Then join the
+mutation. A named workflow is the file the block below prints: the
+orchestrator workflow homes of the checkout's read set, the default state root
+first (ADR-0067 Decision 4, item 2); stop when it exits non-zero (3: no root
+holds the id; 1: two files do, or the id is not a macro id). The id reaches
+`state.mjs` as a file, never in a command: typed into one, a quote, `$` or
+backquote in it would be read as code (ADR-0059, C134(a)). Create a private
+directory (`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`, noting the path
+it prints), write `workflow-id.txt` in it with your file-editing tool, holding
+the id exactly as typed and ending with one newline, and put the directory in
+the block's `TEXT_DIR` line:
+
+```bash
+TEXT_DIR='<directory from mktemp>'
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+node "<plugin-root>/scripts/state.mjs" resolve-workflow \
+  --repo-root "$REPO_ROOT" --workflow-id-file "$TEXT_DIR/workflow-id.txt"
+```
+
+Use the path it prints as `WORKFLOW`. Then join the
 macro's run lock (ADR-0067 Decision 4, item 5) and archive, releasing the
 admission on every exit: a run or another session holding the lock
 refuses, naming the holder, and nothing is archived.

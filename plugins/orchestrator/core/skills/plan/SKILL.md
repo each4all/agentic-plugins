@@ -112,7 +112,7 @@ Subtask validation runs at the write boundary (schema 1.1):
 
 Record the phase note, then commit the ensemble result, and on a conflict write the consensus task file. Write the files first, in the text directory: `note.md`, the phase note (`--phase-note-file <note file>`) shaped as `commands/plan.md` Phase 2 shows it; `summary.txt`, a one-line résumé of the synthesis (`--summary-file <summary file>`); and on a conflict `contested.md`, each CONFLICT item, both positions and their evidence, prepared as the Plan-verify prompt was, since the consensus peers read it (they come from the peer's positions, so never put them into a command). Put the synthesized verdict (`pass`, `concerns` or `conflict`) in the block's `VERDICT` line. When the run launched and did not complete (`status` is `failed`, `cancelled` or `orphaned`, whatever its `error_kind`, `snapshot_failed` included), the plan is LOCAL-ONLY, `VERDICT` stays the local synthesis's that Step 5 recorded, and you also set the block's `ENSEMBLE_VERDICT` line to `failed` and name the `error_kind` in `summary.txt`, so the ensemble result records the run as failed; a run that found no peer never launched, and leaves it empty. Put the directory in the block's `TEXT_DIR` line, and run the block, `<plugin-root>` being the orchestrator plugin root (`../checkpoint/SKILL.md` § Command resolution). The block reads the macro from `macro-path` (Step 1) and the run id from `run-id`.
 
-The block checks every input before it writes anything, as `commands/plan.md` Phase 2 does (C132): the two verdicts, the run id (in the form `peer-runner.mjs` dispatches, and on a conflict in the narrower form the gate and the task file's name take) and `run-macro`, which must name the macro Step 1 wrote to `macro-path`, `note.md` and `summary.txt` with `state.mjs`'s own reader (missing, empty, a newline alone, a NUL byte, not UTF-8 are refused), and on a conflict `contested.md` as `consensus-task` reads it, and the macro's frontmatter (a terminal macro is refused; so is a verdict other than `conflict` while the `plan-conflict` gate Step 5 bound to this run id is set, and a verdict other than the one a result already recorded for the run carries, since `ensemble-commit` keeps the first one). A refusal there writes nothing. A block that stops at one of the writes that follow is rerun as it is, after the cause is fixed: `ensemble-commit` keeps a result already recorded for the run id, and `consensus-task` writes the same task file again while the run's `plan-conflict` gate is set (once the owner has cleared it, no round is proposed). The append is not skipped on a rerun, so a block that stopped past it records the note a second time, accepted until the macro keeps a machine record of the run's note (the note's text cannot tell the run's own note from a copy another note quotes). `ensemble-commit` is a three-step atomic mutation: it pops the matching pending_ensemble entry, appends the result, and prunes to retention cap 20 — all under one `withFileLock` window.
+The block checks every input before it writes anything, as `commands/plan.md` Phase 2 does (C132): the two verdicts, the run id (in the form the macro's records of a run take: letters, digits, `_` and `-`, opening with a letter or digit, which `peer-runner.mjs new-run-id` allocates) and `run-macro`, which must name the macro Step 1 wrote to `macro-path`, `note.md` and `summary.txt` with `state.mjs`'s own reader (missing, empty, a newline alone, a NUL byte, not UTF-8 are refused), and on a conflict `contested.md` as `consensus-task` reads it, and the macro's frontmatter (a terminal macro is refused; so is a verdict other than `conflict` for a run whose `plan-conflict` gate Step 5 set, whether the gate is still set or the owner has cleared it, a `conflict` for a run the macro records neither gate nor clear for, and a verdict other than the one a result already recorded for the run carries, since `ensemble-commit` keeps the first one). A refusal there writes nothing. A block that stops at one of the writes that follow is rerun as it is, after the cause is fixed, and each write then happens once: the append is keyed by the run (`--run-id`), and the macro's `phase_note_run_ids` makes an append keyed by a run it lists write nothing; `ensemble-commit` keeps a result already recorded for the run id; and `consensus-task` writes the same task file again while the run's `plan-conflict` gate is set. Once the owner has cleared that gate, the macro records the run as `plan_conflict_cleared_run_id` and no round is proposed for it, also when Step 5 run again has gated the run since (`consensus-task` refuses the run too, so a clear between the block's read and the task write stops the block, and its rerun finds the record). Each is decided from the macro's frontmatter, never from a note's text. `ensemble-commit` is a three-step atomic mutation: it pops the matching pending_ensemble entry, appends the result, and prunes to retention cap 20 — all under one `withFileLock` window.
 
 ```bash
 TEXT_DIR='<directory from mktemp>'
@@ -142,12 +142,12 @@ RUN_ID="$(cat "$TEXT_DIR/run-id")" || { echo "✗ Write the Plan-verify run id t
 [ -n "$RUN_ID" ] || { echo "✗ $TEXT_DIR/run-id is empty; nothing was written." >&2; exit 1; }
 RUN_MACRO="$(cat "$TEXT_DIR/run-macro")" || { echo "✗ Write the macro's path you dispatched the run for to $TEXT_DIR/run-macro first (Step 3); nothing was written." >&2; exit 1; }
 [ "$RUN_MACRO" = "$ACTIVE" ] || { echo "✗ Run $RUN_ID was dispatched for $RUN_MACRO, not for $ACTIVE: dispatch a Plan-verify run for this macro; nothing was written." >&2; exit 1; }
-# A run id the dispatch could not have used (peer-runner's form, opening with
-# a letter or digit so no command reads it as an option), or on a
-# conflict one consensus-task and plan-set would refuse (their narrower form),
-# is refused here, before the note and the result are written.
-STATE_MJS="<plugin-root>/scripts/state.mjs" node --input-type=module -e 'const { pathToFileURL } = await import("node:url"); const { isSafeConsensusRunId } = await import(pathToFileURL(process.env.STATE_MJS).href); const [id, verdict] = process.argv.slice(1); process.exitCode = (verdict === "conflict" ? isSafeConsensusRunId(id) : /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(id) && !id.includes("..")) ? 0 : 1' -- "$RUN_ID" "$VERDICT" \
-  || { echo "✗ $TEXT_DIR/run-id holds \"$RUN_ID\", not a run id the verdict $VERDICT can record; nothing was written." >&2; exit 1; }
+# A run id the macro's records of a run cannot take (the keyed append's form,
+# which the gate and the task file's name take too: opening with a letter or
+# digit, so no command reads it as an option) is refused here, before the note
+# and the result are written.
+STATE_MJS="<plugin-root>/scripts/state.mjs" node --input-type=module -e 'const { pathToFileURL } = await import("node:url"); const { isSafeConsensusRunId } = await import(pathToFileURL(process.env.STATE_MJS).href); process.exitCode = isSafeConsensusRunId(process.argv[1]) ? 0 : 1' -- "$RUN_ID" \
+  || { echo "✗ $TEXT_DIR/run-id holds \"$RUN_ID\", not a run id the macro can record (letters, digits, _ and -, opening with a letter or digit); nothing was written." >&2; exit 1; }
 # Both text files, read by state.mjs's own reader. (The path to state.mjs goes
 # by the environment: as the first argument it would make the import run
 # state.mjs as a command.)
@@ -159,29 +159,34 @@ if [ "$VERDICT" = conflict ]; then
     || { echo "✗ $CONTESTED_FILE is missing or blank: write the contested items there first; nothing was written." >&2; exit 1; }
 fi
 # The macro, read before any write, as commands/plan.md Phase 2 reads it: a
-# terminal macro is refused, and so is a non-conflict verdict over the
-# plan-conflict gate Step 5 bound to the run, or a verdict other than a result
-# already recorded for the run carries. The read is checked apart from the
-# parser (C110). It prints gated while the gate names this run, open otherwise.
+# terminal macro is refused, and the verdict is held to the macro's records of
+# the run (C132): Step 5's plan-conflict gate for it, or the owner's clear of
+# that gate (plan_conflict_cleared_run_id), each of which says the run's
+# verdict is conflict, and a result already recorded for the run. The read is
+# checked apart from the parser (C110). It prints cleared once the owner has
+# cleared the run's gate, also when Step 5 run again gated it since
+# (consensus-task refuses a cleared run, so the record decides), gated while
+# the gate names this run, open for a run with no gate.
 MACRO_JSON="$(node "<plugin-root>/scripts/state.mjs" read --workflow-path "$ACTIVE")" || { echo "✗ Could not read $ACTIVE; nothing was written." >&2; exit 1; }
-RUN_GATE="$(printf '%s' "$MACRO_JSON" | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const [file,id,verdict,recorded]=process.argv.slice(1);const m=JSON.parse(d);const stop=(why)=>{process.stderr.write(`✗ ${why}; nothing was written.\n`);process.exit(1)};if(m.terminal_marker===true)stop(`${file} is terminal: a terminal macro is not revised (ADR-0062 §Decision 4)`);const gated=m.awaiting_owner_gate==="plan-conflict"&&m.awaiting_owner_run_id===id;if(verdict!=="conflict"&&gated)stop(`plan-set recorded the plan-conflict gate for run ${id}, but VERDICT is ${verdict}: run plan-set with the verdict ${verdict} first`);const prior=(Array.isArray(m.ensemble_results)?m.ensemble_results:[]).find((e)=>e&&e.run_id===id);if(prior&&prior.verdict!==recorded)stop(`the ensemble result of run ${id} is already recorded with the verdict ${prior.verdict}, not ${recorded}, and a recorded result is kept: dispatch a new Plan-verify run for another verdict`);process.stdout.write(gated?"gated":"open")})' -- "$ACTIVE" "$RUN_ID" "$VERDICT" "${ENSEMBLE_VERDICT:-$VERDICT}")" || exit 1
-# Appended each time the block runs: a rerun after a failure past the append
-# records the note a second time (C132), accepted until the macro keeps a
-# machine record of the run's note.
+RUN_GATE="$(printf '%s' "$MACRO_JSON" | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const [file,id,verdict,recorded]=process.argv.slice(1);const m=JSON.parse(d);const stop=(why)=>{process.stderr.write(`✗ ${why}; nothing was written.\n`);process.exit(1)};if(m.terminal_marker===true)stop(`${file} is terminal: a terminal macro is not revised (ADR-0062 §Decision 4)`);const cleared=m.plan_conflict_cleared_run_id===id;const gated=!cleared&&m.awaiting_owner_gate==="plan-conflict"&&m.awaiting_owner_run_id===id;if(verdict!=="conflict"&&gated)stop(`plan-set recorded the plan-conflict gate for run ${id}, but VERDICT is ${verdict}: run plan-set with the verdict ${verdict} first`);if(verdict!=="conflict"&&cleared)stop(`the owner cleared the plan-conflict gate plan-set recorded for run ${id}, but VERDICT is ${verdict}: the run keeps the verdict conflict; dispatch a new Plan-verify run for another verdict`);if(verdict==="conflict"&&!gated&&!cleared)stop(`no plan-conflict gate names run ${id}, and the owner cleared none for it: plan-set recorded another verdict; run plan-set with the verdict conflict first`);const prior=(Array.isArray(m.ensemble_results)?m.ensemble_results:[]).find((e)=>e&&e.run_id===id);if(prior&&prior.verdict!==recorded)stop(`the ensemble result of run ${id} is already recorded with the verdict ${prior.verdict}, not ${recorded}, and a recorded result is kept: dispatch a new Plan-verify run for another verdict`);process.stdout.write(gated?"gated":cleared?"cleared":"open")})' -- "$ACTIVE" "$RUN_ID" "$VERDICT" "${ENSEMBLE_VERDICT:-$VERDICT}")" || exit 1
+# Keyed by the run (C132): the write that adds the note lists the run in
+# phase_note_run_ids, and an append keyed by a listed run writes nothing, so a
+# rerun after a failure past the append records the note once.
 node "<plugin-root>/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host <claude|codex> \
   --phase-label "Phase 1: Plan (synthesized)" \
   --phase-note-file "$TEXT_DIR/note.md" \
   --current-phase phase-2-presented \
   --next-action 'Await approval of the macro plan by the owner ($orchestrator:approve); then $orchestrator:next dispatches the first ready subtask' \
-  --event updated --require-open || exit 1
+  --event updated --require-open --run-id "$RUN_ID" || exit 1
 node "<plugin-root>/scripts/state.mjs" ensemble-commit \
   --workflow-path "$ACTIVE" --run-id "$RUN_ID" \
   --phase plan --ensemble-type plan-verify \
   --verdict "${ENSEMBLE_VERDICT:-$VERDICT}" --summary-file "$TEXT_DIR/summary.txt" \
   --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 1
 # The round only while the plan-conflict gate names the run: a gate the owner
-# has cleared leaves no conflict to propose a round for.
+# has cleared, which the macro records, leaves no conflict to propose a round
+# for.
 if [ "$VERDICT" = conflict ]; then
   if [ "$RUN_GATE" = gated ]; then
     PROPOSED="$(node "<plugin-root>/scripts/state.mjs" consensus-task \
@@ -189,7 +194,7 @@ if [ "$VERDICT" = conflict ]; then
       --text-file "$CONTESTED_FILE")" || exit $?
     echo "→ Proposed, for the owner to run before deciding: $PROPOSED" >&2
   else
-    echo "→ No plan-conflict gate names run $RUN_ID (the owner has cleared it, or plan-set recorded another verdict): no consensus round is proposed." >&2
+    echo "→ The owner has cleared the plan-conflict gate of run $RUN_ID (plan_conflict_cleared_run_id): its conflict is decided, and no consensus round is proposed." >&2
   fi
 fi
 ```

@@ -51,20 +51,52 @@ The Claude command runbook is `commands/approve.md`.
 
 ## Phase 0 — Resolve the macro
 
-With `--workflow=<macro-id>`, use the file `state.mjs resolve-workflow
---repo-root "$REPO_ROOT" --workflow-id "<macro-id>"` prints: the macro in the
-orchestrator workflow homes of this checkout's read set (ADR-0067 Decision 4,
-item 2); it exits non-zero when no root holds it (3) or two files do (1). Refuse
-an id containing `/`, `\`, `..` or a leading `.`. Otherwise:
+The arguments reach the block below through an args file, never as shell
+source (ADR-0059, C134(a)): typed into a command, a quote, `$` or backquote in
+them would be read as code. Create a private directory for it
+(`mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"`, noting the path it
+prints), write `args.json` in it with your file-editing tool, holding
+`{"agentic_args": 1, "text": "…"}` with `text` set to the arguments exactly
+as typed, as a JSON string (`""` when there are none), and put that path in
+the block's `ARGS_DIR` line. The block reads it with `state.mjs command-args
+--command approve` (grammar: `scripts/lib/command-args.mjs`), as
+`commands/approve.md` Phase 0 does, which removes the file and its directory
+once read; any argument but `--workflow=<macro-id>`, and a word holding a
+quote or backslash, is refused. It resolves the macro by that id (refused
+unless basename-shaped; `state.mjs resolve-workflow` looks in the orchestrator
+workflow homes of this checkout's read set, ADR-0067 Decision 4, item 2, and
+exits non-zero when no root holds it, 3, or two files do, 1), else the active
+macro of the current branch, else the macro whose plan names it (`find-macro`),
+and prints the macro's path and id:
 
 ```bash
+ARGS_DIR='<directory from mktemp>'
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
-node "<plugin-root>/scripts/state.mjs" find-active --repo-root "$REPO_ROOT"
-# empty → the macro whose plan names the current branch:
-node "<plugin-root>/scripts/state.mjs" find-macro --repo-root "$REPO_ROOT" --subtask-branch "$(git branch --show-current)"
+GIT_BRANCH="$(git branch --show-current)"
+ARGS_JSON="$(node "<plugin-root>/scripts/state.mjs" command-args \
+  --command approve --args-file "$ARGS_DIR/args.json")" || exit 1
+ARG_WORKFLOW_ID="$(printf '%s' "$ARGS_JSON" | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>process.stdout.write(JSON.parse(d).workflow_id))')" || exit 1
+if [ -n "$ARG_WORKFLOW_ID" ]; then
+  case "$ARG_WORKFLOW_ID" in
+    */*|*\\*|..|.*) echo "✗ --workflow=$ARG_WORKFLOW_ID is not a basename-shaped workflow id." >&2; exit 1;;
+  esac
+  MACRO_PATH="$(node "<plugin-root>/scripts/state.mjs" resolve-workflow \
+    --repo-root "$REPO_ROOT" --workflow-id "$ARG_WORKFLOW_ID")" || exit 1
+else
+  [ -n "$GIT_BRANCH" ] || { echo "✗ Detached HEAD — name the macro with --workflow, or switch to the macro's branch or a subtask branch." >&2; exit 1; }
+  MACRO_PATH="$(node "<plugin-root>/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit 1
+  if [ -z "$MACRO_PATH" ]; then
+    MACRO_PATH="$(node "<plugin-root>/scripts/state.mjs" find-macro \
+      --repo-root "$REPO_ROOT" --subtask-branch "$GIT_BRANCH")" || exit 1
+  fi
+fi
+[ -n "$MACRO_PATH" ] || { echo "✗ No macro workflow references branch '$GIT_BRANCH'; name one with --workflow." >&2; exit 1; }
+printf 'MACRO_PATH=%s\nMACRO_ID=%s\n' "$MACRO_PATH" "$(basename "$MACRO_PATH" .md)"
 ```
 
-If neither finds a macro, stop: there is no plan to approve.
+When it stops, there is no plan to approve. The later blocks use the
+`MACRO_PATH` it printed, the path a program found, never the id you were
+given.
 
 ---
 

@@ -57,22 +57,40 @@ assuming a Claude slash command runner exists.
 
 ## Phase 0 - Argument intake
 
-Parse:
+The arguments reach Phase 1's block through an args file, never as shell
+source (ADR-0059, C134(a)): typed into a command, a quote, `$` or backquote in
+them would be read as code. Create a private directory for it
+(`mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"`, noting the path it
+prints), write `args.json` in it with your file-editing tool, holding
+`{"agentic_args": 1, "text": "…"}` with `text` set to the arguments exactly
+as typed, as a JSON string (`""` when there are none), and put that path in
+the block's `ARGS_DIR` line. The block parses it with `state.mjs command-args
+--command next` (grammar: `scripts/lib/command-args.mjs`), as
+`commands/next.md` Phase 0 does, which removes the file and its directory once
+read, and keeps the fields in the text directory as `arguments.json`:
 
-- optional leading `<subtask-id>`, as `EXPLICIT_SUBTASK_ID`;
-- optional `--workflow=<macro-id>`, as `EXPLICIT_WORKFLOW_ID`.
+- `subtask_id`, the optional leading `<subtask-id>`;
+- `workflow_id`, the value of `--workflow=<macro-id>`.
 
-Phase 1's block reads both, as `commands/next.md` Phase 0 and Phase 1 do, and
-refuses a `--workflow` value that is not basename-shaped (`/`, `\`, `..` or a
-leading `.`).
+A refused text (an unknown option, a second subtask id, a word holding a quote
+or backslash) stops the block with the reason; the parse removed the args
+file, so write a new one before running the block again. Once the block has
+kept `arguments.json`, the block run again with the same text directory reads
+it; a new args file there is parsed too, and refused unless it names the same
+arguments: to run with other arguments, start again with a new text
+directory. The block refuses a
+`--workflow` value that is not basename-shaped (`/`, `\`, `..` or a leading
+`.`).
 
 No block below relies on a variable an earlier block set: each may run in a
 fresh shell call. What a phase finds (the checkout, the macro file, the
 selected subtask, the engineer root, the workflow the ownership check saw, the
 admission) it writes to a private directory, and every later block reads it
-there. A block run again never selects again, so Phases 2 to 4 act on the
-subtask Phase 1 selected (ADR-0067 Decision 4, item 5). Create the directory
-first (`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`, noting the path it
+there. A later block run again never selects again, so Phases 2 to 4 act on
+the subtask Phase 1 selected (ADR-0067 Decision 4, item 5); Phase 1's block
+run again selects anew, so after a later phase has run, rerun that phase's
+block, not Phase 1's. Create the directory first
+(`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`, noting the path it
 prints) and put that path in the `TEXT_DIR` line each block opens with. The
 blocks write every file in it themselves; none is written with your
 file-editing tool, and nothing deletes them.
@@ -113,15 +131,34 @@ does not parse stops the block (C68):
 
 ```bash
 TEXT_DIR='<directory from mktemp>'
+ARGS_DIR='<directory from mktemp>'
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 GIT_BRANCH="$(git branch --show-current)"
 [ -n "$GIT_BRANCH" ] || { echo "✗ Detached HEAD — orchestrator workflows are anchored to a branch (ADR-0018 §sub-2)." >&2; exit 1; }
-if [ -n "${EXPLICIT_WORKFLOW_ID:-}" ]; then
-  case "$EXPLICIT_WORKFLOW_ID" in
-    */*|*\\*|..|.*) echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID is not a basename-shaped workflow id." >&2; exit 1;;
+# The arguments, parsed from the args file you wrote (C134(a)); the parse
+# removes it, so its fields are kept in the text directory, where a rerun of
+# this block reads them. A new args file beside kept arguments is parsed too,
+# and refused unless it names the same arguments.
+if [ ! -f "$TEXT_DIR/arguments.json" ]; then
+  ARGS_JSON="$(node "<orchestrator-plugin-root>/scripts/state.mjs" command-args \
+    --command next --args-file "$ARGS_DIR/args.json")" || exit 1
+  printf '%s' "$ARGS_JSON" > "$TEXT_DIR/arguments.json" || exit 1
+elif [ -e "$ARGS_DIR/args.json" ]; then
+  ARGS_JSON="$(node "<orchestrator-plugin-root>/scripts/state.mjs" command-args \
+    --command next --args-file "$ARGS_DIR/args.json")" || exit 1
+  [ "$ARGS_JSON" = "$(cat "$TEXT_DIR/arguments.json")" ] || {
+    echo "✗ The args file in ARGS_DIR ($ARGS_DIR) names other arguments than the ones kept in TEXT_DIR ($TEXT_DIR); nothing was selected. To run with these arguments, start again with a new text directory." >&2
+    exit 1
+  }
+fi
+ARG_WORKFLOW_ID="$(node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>process.stdout.write(JSON.parse(d).workflow_id))' < "$TEXT_DIR/arguments.json")" || exit 1
+ARG_SUBTASK_ID="$(node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>process.stdout.write(JSON.parse(d).subtask_id))' < "$TEXT_DIR/arguments.json")" || exit 1
+if [ -n "$ARG_WORKFLOW_ID" ]; then
+  case "$ARG_WORKFLOW_ID" in
+    */*|*\\*|..|.*) echo "✗ --workflow=$ARG_WORKFLOW_ID is not a basename-shaped workflow id." >&2; exit 1;;
   esac
   MACRO_PATH="$(node "<orchestrator-plugin-root>/scripts/state.mjs" resolve-workflow \
-    --repo-root "$REPO_ROOT" --workflow-id "$EXPLICIT_WORKFLOW_ID")" || exit 1
+    --repo-root "$REPO_ROOT" --workflow-id "$ARG_WORKFLOW_ID")" || exit 1
 else
   MACRO_PATH="$(node "<orchestrator-plugin-root>/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit 1
   if [ -z "$MACRO_PATH" ]; then
@@ -130,9 +167,9 @@ else
   fi
 fi
 [ -n "$MACRO_PATH" ] || { echo "✗ No macro workflow references branch '$GIT_BRANCH'; name one with --workflow, or plan one with \$orchestrator:plan." >&2; exit 1; }
-if [ -n "${EXPLICIT_SUBTASK_ID:-}" ]; then
+if [ -n "$ARG_SUBTASK_ID" ]; then
   SUBTASK_JSON="$(node "<orchestrator-plugin-root>/scripts/state.mjs" read-subtask \
-    --workflow-path "$MACRO_PATH" --subtask-id "$EXPLICIT_SUBTASK_ID")" || exit 1
+    --workflow-path "$MACRO_PATH" --subtask-id "$ARG_SUBTASK_ID")" || exit 1
 else
   NEXT_OUT="$(node "<orchestrator-plugin-root>/scripts/state.mjs" next-ready --workflow-path "$MACRO_PATH")" || exit 1
   SUBTASK_JSON="$(printf '%s' "$NEXT_OUT" | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d);if(o.ready)process.stdout.write(JSON.stringify(o.ready))})')" || exit 1
