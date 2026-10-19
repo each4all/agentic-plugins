@@ -148,7 +148,11 @@ TEXT_DIR='<directory from step 1>'
 PEER='<claude|codex, from --peer>'
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 HOST="${AGENTIC_HOST:-claude}"  # Codex-side command-invoked mode uses codex.
-RUN_ID="peer-now-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
+# The run id, allocated by the runner (C119, C26): no shell arithmetic or
+# hand-written date makes it. An allocation that prints nothing stops the
+# block too.
+RUN_ID="$(node "<plugin-root>/scripts/peer-runner.mjs" new-run-id --prefix peer-now)" || RUN_ID=''
+[ -n "$RUN_ID" ] || { echo "✗ peer-runner.mjs new-run-id allocated no run id (its error, if any, is above); nothing was dispatched." >&2; exit 1; }
 # The runner's result and its stderr go beside the prompt: the [Peer] note
 # step reads the run from there, never from this block's shell.
 RUN_JSON="$TEXT_DIR/prompt.xml.run.json"
