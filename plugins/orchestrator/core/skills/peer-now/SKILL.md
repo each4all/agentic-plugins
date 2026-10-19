@@ -73,7 +73,15 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 PROMPT_FILE="$TEXT_DIR/prompt.xml"
 if [ -f "$TEXT_DIR/prompt-path.txt" ]; then PROMPT_FILE="$(cat "$TEXT_DIR/prompt-path.txt")"; fi
 [ -s "$PROMPT_FILE" ] || { echo "✗ The prompt file ($PROMPT_FILE) is missing or empty; nothing was dispatched." >&2; exit 1; }
-# For Phase 2, which may run in a fresh shell: the peer, and the run's result.
+# The run id, allocated by the runner (C119, C26): no shell arithmetic or
+# hand-written date makes it. An allocation that prints nothing stops the
+# block too.
+RUN_ID="$(node "<plugin-root>/scripts/peer-runner.mjs" new-run-id --prefix peer-now)" || RUN_ID=''
+[ -n "$RUN_ID" ] || { echo "✗ peer-runner.mjs new-run-id allocated no run id (its error, if any, is above); nothing was dispatched." >&2; exit 1; }
+# For status and cancel, and Phase 2, which may each run in a fresh shell: the
+# run id before the dispatch, so a run that hangs can be named; the peer, and
+# the run's result.
+printf '%s' "$RUN_ID" > "$TEXT_DIR/run-id" || exit 1
 printf '%s' "$PEER" > "$TEXT_DIR/peer" || exit 1
 node "<plugin-root>/scripts/peer-runner.mjs" run \
   --repo-root "$REPO_ROOT" \
@@ -92,7 +100,9 @@ The runner writes a ledger under
 `run_id`, `status`, the ledger's paths — to `run.json` in the text directory.
 On a non-zero exit, surface the first useful line of `run.err` with the run
 id, and stop without writing workflow state. Use `peer-runner.mjs status` and
-`peer-runner.mjs cancel` for operational control.
+`peer-runner.mjs cancel` for operational control, with `--repo-root` and the
+run id the block wrote to `run-id` before it dispatched, read from there in a
+shell of their own.
 
 ---
 

@@ -193,10 +193,13 @@ ACTIVE="$(cat "$TEXT_DIR/macro-path")" || { echo "✗ Phase 0 writes the macro's
 [ -f "$ACTIVE" ] || { echo "✗ $TEXT_DIR/macro-path names no macro file (\"$ACTIVE\"); nothing was dispatched." >&2; exit 1; }
 PROMPT_FILE="$TEXT_DIR/prompt.xml"
 [ -s "$PROMPT_FILE" ] || { echo "✗ $PROMPT_FILE is missing or empty: write the Plan-verify prompt there with your file-writing tool first; nothing was dispatched." >&2; exit 1; }
-# Generate a stable run-id BEFORE dispatch so the pending entry, the
+# Allocate a stable run-id BEFORE dispatch so the pending entry, the
 # peer's eventual result, and the ensemble-commit call all share the
-# same key.
-RUN_ID="macro-plan-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
+# same key. The runner allocates it (C119, C26): no shell arithmetic or
+# hand-written date makes it, and an allocation that prints nothing stops
+# the block with run-id still empty.
+RUN_ID="$(node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" new-run-id --prefix macro-plan)" || RUN_ID=''
+[ -n "$RUN_ID" ] || { echo "✗ peer-runner.mjs new-run-id allocated no run id (its error, if any, is above); nothing was dispatched." >&2; exit 1; }
 # The macro this run is for, then its id: Phase 2 records it for that macro only.
 printf '%s' "$ACTIVE" > "$TEXT_DIR/run-macro" || exit 1
 printf '%s' "$RUN_ID" > "$TEXT_DIR/run-id" || exit 1
