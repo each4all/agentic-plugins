@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.2](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.11.1...plugin-designer-v0.11.2) (2026-10-19)
+
+
+### Bug Fixes
+
+* **designer:** allocate every peer run id with peer-runner new-run-id, never shell arithmetic (C119, C26) ([ed2872f](https://github.com/each4all/agentic-plugins/commit/ed2872f86efce202f9e806c876205099522dc655))
+
 ## [0.11.1](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.11.0...plugin-designer-v0.11.1) (2026-10-18)
 
 

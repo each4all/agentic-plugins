@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.2](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.31.1...plugin-engineer-v0.31.2) (2026-10-19)
+
+
+### Bug Fixes
+
+* **engineer:** allocate every peer run id with peer-runner new-run-id, never shell arithmetic (C119, C26) ([0e712f0](https://github.com/each4all/agentic-plugins/commit/0e712f05a84ab47dafcd8bfb8d67cd6aad71b3b7))
+
 ## [0.31.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.31.0...plugin-engineer-v0.31.1) (2026-10-18)
 
 
