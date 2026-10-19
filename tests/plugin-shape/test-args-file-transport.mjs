@@ -698,6 +698,9 @@ const ARGS_FILE_RUNBOOKS = ([
   'plugins/engineer/commands/start.md',
   'plugins/founder/commands/decide.md',
   'plugins/founder/commands/start.md',
+  // The orchestrator commands' own arguments, parsed by state.mjs
+  // command-args (C134(a)).
+  ...['abort', 'approve', 'done', 'finalize', 'next'].map((c) => `plugins/orchestrator/commands/${c}.md`),
   // Claude only (ADR-0063 D9): no Codex skill below.
   'plugins/orchestrator/commands/autopilot.md',
   ...['bootstrap', 'consensus', 'context', 'dashboard', 'doctor', 'migrate', 'retention', 'settings', 'worktree']
@@ -710,6 +713,7 @@ const ARGS_FILE_SKILLS = ([
   'plugins/engineer/core/skills/start/SKILL.md',
   'plugins/founder/core/skills/decide/SKILL.md',
   'plugins/founder/core/skills/start/SKILL.md',
+  ...['abort', 'approve', 'done', 'finalize', 'next'].map((c) => `plugins/orchestrator/core/skills/${c}/SKILL.md`),
   ...['bootstrap', 'consensus', 'context', 'dashboard', 'doctor', 'migrate', 'retention', 'settings', 'worktree']
     .map((c) => `plugins/runtime/core/skills/${c}/SKILL.md`),
 ]).filter(inConverted);

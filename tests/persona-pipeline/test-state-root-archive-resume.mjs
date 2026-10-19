@@ -13,7 +13,7 @@
 // Real git repositories: a main checkout and a linked worktree `lane` on feat/x.
 
 import { describe, it, before, after } from 'node:test';
-import { strictEqual, ok, match } from 'node:assert/strict';
+import { deepStrictEqual, strictEqual, ok, match } from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -190,10 +190,22 @@ for (const persona of personasFor('scripts/state.mjs')) {
         const inLane = create(repo.lane, 'feat/z', repo.head);
         const resolveBlock = regionBlock(persona, 'resume-archive-resolve');
         const archiveBlock = regionBlock(persona, 'resume-archive');
-        ok(resolveBlock.includes("ARCHIVE_WORKFLOW_ID='<workflow-id>'") && archiveBlock.includes("WORKFLOW='<workflow path>'"), 'the placeholders the runbook names');
+        // C134(a): the id the user typed reaches resolve-workflow as the file
+        // the agent wrote, workflow-id.txt in the text directory the block's
+        // first line names; no id is a placeholder in the block.
+        const TEXT_DIR_LINE = "TEXT_DIR='<directory from step 1>'";
+        ok(resolveBlock.startsWith(`${TEXT_DIR_LINE}\n`) && resolveBlock.includes('--workflow-id-file "$TEXT_DIR/workflow-id.txt"') && !resolveBlock.includes('<workflow-id>'), 'the id travels in a file');
+        ok(archiveBlock.includes("WORKFLOW='<workflow path>'"), 'the placeholder the runbook names');
         const sh = (block) => spawnSync(shell, ['-c', block], { cwd: repo.lane, encoding: 'utf8', env: cleanEnv({ [rootEnv]: pluginRoot(persona) }) });
+        // The agent writes the id with its file tool, ending with one newline;
+        // the directory's path holds a space, so an unquoted path splits.
+        const textDir = mkdtempSync(join(dir, 'agentic text.'));
+        const resolveWith = (id) => {
+          writeFileSync(join(textDir, 'workflow-id.txt'), `${id}\n`);
+          return sh(resolveBlock.replace(TEXT_DIR_LINE, () => `TEXT_DIR='${textDir}'`));
+        };
         for (const [path, root] of [[inMain, repo.main], [inLane, repo.lane]]) {
-          const resolved = sh(resolveBlock.replace("'<workflow-id>'", `'${basename(path, '.md')}'`));
+          const resolved = resolveWith(basename(path, '.md'));
           strictEqual(resolved.status, 0, resolved.stderr);
           const printed = /^WORKFLOW=(.*)$/m.exec(resolved.stdout)?.[1];
           strictEqual(printed, path);
@@ -204,9 +216,14 @@ for (const persona of personasFor('scripts/state.mjs')) {
         }
         strictEqual(mdIn(arDir(repo.lane)).length, 1, 'the lane archive holds the lane record only');
         // An id no root holds stops the block before anything is archived.
-        const missing = sh(resolveBlock.replace("'<workflow-id>'", "'decide-20261008T000000Z-000000'"));
+        const missing = resolveWith('decide-20261008T000000Z-000000');
         strictEqual(missing.status, 1);
-        match(missing.stderr, /names no single workflow file in the workflow homes of this checkout's read set/);
+        match(missing.stderr, /The id in .*workflow-id\.txt names no single workflow file in the workflow homes of this checkout's read set/);
+        // An id holding shell syntax is the file's text, refused as no workflow
+        // id, and none of it runs.
+        const hostile = resolveWith(`decide-x'; touch pwned-tick-\`touch pwned-sub\`; echo "$(touch pwned-cmd)"`);
+        strictEqual(hostile.status, 1, hostile.stderr);
+        deepStrictEqual(readdirSync(repo.lane).filter((n) => n.startsWith('pwned')), [], 'nothing in the id ran');
       });
     }
   });

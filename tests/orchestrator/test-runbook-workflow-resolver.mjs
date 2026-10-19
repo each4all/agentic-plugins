@@ -8,19 +8,25 @@
 // script, in bash and in zsh.
 
 import { describe, it, before, after } from 'node:test';
-import { strictEqual, ok, match } from 'node:assert/strict';
+import { deepStrictEqual, strictEqual, ok, match } from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import { withArgs } from './_command-args-file.mjs';
+
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const ORCH_ROOT = resolve(REPO_ROOT, 'plugins/orchestrator');
 const HOME = '.agentic-plugins/state/orchestrator';
 const SHELLS = ['bash', 'zsh'].filter((s) => spawnSync(s, ['-c', 'exit 0']).status === 0);
 const RUNBOOKS = ['next', 'approve', 'done', 'finalize', 'abort'];
-const OPEN = 'if [ -n "${EXPLICIT_WORKFLOW_ID:-}" ]; then';
+const OPEN = 'if [ -n "$ARG_WORKFLOW_ID" ]; then';
+// The id reaches each block in the args file the agent writes (C134(a)); done
+// takes a subtask id too. next names its args directory in step 3.
+const ARGS_LINE = { next: "ARGS_DIR='<directory from step 3>'" };
+const typed = (name, id) => (name === 'done' ? `T1 --workflow=${id}` : `--workflow=${id}`);
 
 const GIT_ENV = {
   GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@t.local',
@@ -50,6 +56,13 @@ function resolverBlock(name) {
   return [...lines.slice(0, close + 1), 'printf "MACRO_PATH=%s\\n" "$MACRO_PATH"', ''].join('\n');
 }
 
+/** The resolver block of `name`, its args file holding --workflow=<id>, and next's text directory a new one. */
+function resolverRun(name, id) {
+  let block = withArgs(resolverBlock(name), typed(name, id), { line: ARGS_LINE[name] });
+  if (name === 'next') block = block.replace("TEXT_DIR='<directory from step 1>'", () => `TEXT_DIR='${mkdtempSync(join(tmpdir(), 'agentic-text.'))}'`);
+  return block;
+}
+
 describe('runbook --workflow=<id> resolvers search the read set (ADR-0067 Decision 4, item 2)', () => {
   let dir;
   let main;
@@ -77,18 +90,17 @@ describe('runbook --workflow=<id> resolvers search the read set (ADR-0067 Decisi
 
   const runIn = (shell, cwd, block, env) => spawnSync(shell, ['-c', block], {
     cwd, encoding: 'utf8',
-    env: baseEnv({ AGENTIC_ORCHESTRATOR_ROOT: ORCH_ROOT, EXPLICIT_SUBTASK_ID: 'T1', ...env }),
+    env: baseEnv({ AGENTIC_ORCHESTRATOR_ROOT: ORCH_ROOT, ...env }),
   });
 
   for (const name of RUNBOOKS) {
     for (const shell of SHELLS) {
       it(`${name}.md (${shell}): from a linked worktree, --workflow finds the macro stored in the main checkout`, () => {
-        const block = resolverBlock(name);
-        const r = runIn(shell, lane, block, { EXPLICIT_WORKFLOW_ID: macroId });
+        const r = runIn(shell, lane, resolverRun(name, macroId), {});
         strictEqual(r.status, 0, r.stderr);
         match(r.stdout, new RegExp(`^MACRO_PATH=${macroPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
         // An id no root holds is refused, naming the read set.
-        const missing = runIn(shell, lane, block, { EXPLICIT_WORKFLOW_ID: 'macro-plan-20261008T000000Z-000000' });
+        const missing = runIn(shell, lane, resolverRun(name, 'macro-plan-20261008T000000Z-000000'), {});
         strictEqual(missing.status, 1);
         match(missing.stderr, /names no single macro file in the orchestrator workflow homes of this checkout's read set/);
       });
@@ -99,7 +111,12 @@ describe('runbook --workflow=<id> resolvers search the read set (ADR-0067 Decisi
   // resolver before it archives anything.
   for (const shell of SHELLS) {
     it(`resume.md (${shell}): archive <workflow-id> from a linked worktree resolves the macro stored in the main checkout`, () => {
-      const block = (id) => runbookBlock('resume', "ARCHIVE_WORKFLOW_ID='<workflow-id>'").replace("'<workflow-id>'", `'${id}'`);
+      // C134(a): the id reaches resolve-workflow as the file the agent wrote.
+      const block = (id) => {
+        const textDir = mkdtempSync(join(tmpdir(), 'agentic text.'));
+        writeFileSync(join(textDir, 'workflow-id.txt'), `${id}\n`);
+        return runbookBlock('resume', '--workflow-id-file "$TEXT_DIR/workflow-id.txt"').replace("TEXT_DIR='<directory from step 1>'", () => `TEXT_DIR='${textDir}'`);
+      };
       const r = runIn(shell, lane, block(macroId), {});
       strictEqual(r.status, 0, r.stderr);
       match(r.stdout, new RegExp(`^WORKFLOW=${macroPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
@@ -114,13 +131,128 @@ describe('runbook --workflow=<id> resolvers search the read set (ADR-0067 Decisi
     mkdirSync(join(lane, HOME, 'workflows'), { recursive: true });
     writeFileSync(copy, readFileSync(macroPath, 'utf8'));
     try {
-      const r = runIn(SHELLS[0], lane, resolverBlock('next'), { EXPLICIT_WORKFLOW_ID: macroId });
+      const r = runIn(SHELLS[0], lane, resolverRun('next', macroId), {});
       strictEqual(r.status, 1);
       ok(r.stderr.includes(macroPath) && r.stderr.includes(copy), r.stderr);
     } finally {
       rmSync(copy);
     }
   });
+});
+
+/** The bash block of the Codex skill `name` holding `needle`, its plugin root filled in as the agent fills it. */
+function codexBlock(name, needle) {
+  const text = readFileSync(join(ORCH_ROOT, 'core/skills', name, 'SKILL.md'), 'utf8');
+  const blocks = [...text.matchAll(/^```bash\n([\s\S]*?)^```$/gm)].map((m) => m[1]).filter((b) => b.includes(needle));
+  // Contract: the runs below execute this block — a renamed line must fail
+  // here, not run nothing.
+  strictEqual(blocks.length, 1, `${name}/SKILL.md: one block holds ${needle}`);
+  return blocks[0].replaceAll('<orchestrator-plugin-root>', ORCH_ROOT).replaceAll('<plugin-root>', ORCH_ROOT);
+}
+
+// C134(a) on Codex: the Phase 0 block of $orchestrator:approve, :abort and
+// :finalize parses the args file with command-args and resolves the macro it
+// names, and $orchestrator:resume's archive block reads the id from
+// workflow-id.txt; nothing the user typed runs. Each skill's own block, with
+// the real orchestrator script, in bash and in zsh.
+describe('the Codex skills take their arguments from a file (C134(a))', () => {
+  const CODEX_PHASE0 = ['approve', 'abort', 'finalize'];
+  const CODEX_ARGS_LINE = "ARGS_DIR='<directory from mktemp>'";
+  let dir;
+  let main;
+  let lane;
+  let detached;
+  let macroPath;
+  let macroId;
+  before(() => {
+    dir = realpathSync(mkdtempSync(join(tmpdir(), 'codex-resolver-')));
+    main = join(dir, 'repo');
+    mkdirSync(main);
+    git(main, 'init', '-q', '-b', 'main');
+    writeFileSync(join(main, 'README.md'), 'x\n');
+    git(main, 'add', 'README.md');
+    git(main, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'init');
+    git(main, 'worktree', 'add', '-q', '-b', 'feat/x', join(dir, 'lane'));
+    git(main, 'worktree', 'add', '-q', '--detach', join(dir, 'detached'));
+    main = realpathSync(main);
+    lane = realpathSync(join(dir, 'lane'));
+    detached = realpathSync(join(dir, 'detached'));
+    macroPath = execFileSync(process.execPath, [join(ORCH_ROOT, 'scripts/state.mjs'),
+      'create', '--repo-root', main, '--verb', 'plan', '--host', 'codex', '--git-baseline-branch', 'main',
+      '--git-baseline-head', git(main, 'rev-parse', 'HEAD'), '--original-request', 'codex resolver fixture',
+    ], { encoding: 'utf8', env: baseEnv() }).trim();
+    macroId = basename(macroPath, '.md');
+  });
+  after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const runIn = (shell, cwd, block) => spawnSync(shell, ['-c', block], { cwd, encoding: 'utf8', env: baseEnv() });
+  const printed = (r) => /^MACRO_PATH=(.*)$/m.exec(r.stdout)?.[1];
+  const pwned = (cwd) => readdirSync(cwd).filter((n) => n.startsWith('pwned'));
+  const HOSTILE = `--workflow=x'; touch pwned-tick-\`touch pwned-sub\`; echo "$(touch pwned-cmd)"`;
+
+  for (const name of CODEX_PHASE0) {
+    for (const shell of SHELLS) {
+      it(`${name}/SKILL.md Phase 0 (${shell}): the args file's --workflow finds the macro from a linked worktree, no argument finds it on its branch, and a refused argument runs nothing`, () => {
+        const block = codexBlock(name, 'command-args');
+        ok(block.startsWith(`${CODEX_ARGS_LINE}\n`), `${name}: the block opens with its ARGS_DIR line`);
+        const phase0 = (cwd, text) => runIn(shell, cwd, withArgs(block, text, { line: CODEX_ARGS_LINE }));
+        const byId = phase0(lane, `--workflow=${macroId}`);
+        strictEqual(byId.status, 0, byId.stderr);
+        strictEqual(printed(byId), macroPath);
+        match(byId.stdout, new RegExp(`^MACRO_ID=${macroId}$`, 'm'));
+        // No argument: the active macro of the branch it was planned on.
+        const active = phase0(main, '');
+        strictEqual(active.status, 0, active.stderr);
+        strictEqual(printed(active), macroPath);
+        // An id no root holds, an unknown option, a path-shaped id and a word
+        // holding shell syntax are refused, and resolve nothing.
+        for (const [text, why] of [
+          ['--workflow=macro-plan-20261008T000000Z-000000', /macro-plan-20261008T000000Z-000000/],
+          ['--bogus', /--bogus/],
+          ['--workflow=..', /not a basename-shaped workflow id/],
+          [HOSTILE, /quote|backslash/],
+        ]) {
+          const r = phase0(lane, text);
+          strictEqual(r.status, 1, `${text}: ${r.stdout}`);
+          strictEqual(printed(r), undefined, `${text}: no macro`);
+          match(r.stderr, why, text);
+        }
+        deepStrictEqual(pwned(lane), [], 'nothing in the arguments ran');
+        // On a detached HEAD abort and finalize refuse before the parse, as
+        // their commands do; approve resolves a named macro there.
+        const onDetached = phase0(detached, `--workflow=${macroId}`);
+        if (name === 'approve') {
+          strictEqual(onDetached.status, 0, onDetached.stderr);
+          strictEqual(printed(onDetached), macroPath);
+        } else {
+          strictEqual(onDetached.status, 1, onDetached.stdout);
+          match(onDetached.stderr, /Detached HEAD/);
+        }
+      });
+    }
+  }
+
+  for (const shell of SHELLS) {
+    it(`resume/SKILL.md archive (${shell}): the id in workflow-id.txt resolves the macro from a linked worktree; an id no root holds, or one holding shell syntax, is refused and runs nothing`, () => {
+      const block = codexBlock('resume', '--workflow-id-file "$TEXT_DIR/workflow-id.txt"');
+      const TEXT_DIR_LINE = "TEXT_DIR='<directory from mktemp>'";
+      ok(block.startsWith(`${TEXT_DIR_LINE}\n`) && !block.includes('<workflow-id>'), 'the id travels in a file');
+      const resolveWith = (id) => {
+        const textDir = mkdtempSync(join(dir, 'agentic text.'));
+        writeFileSync(join(textDir, 'workflow-id.txt'), `${id}\n`);
+        return runIn(shell, lane, block.replace(TEXT_DIR_LINE, () => `TEXT_DIR='${textDir}'`));
+      };
+      const r = resolveWith(macroId);
+      strictEqual(r.status, 0, r.stderr);
+      strictEqual(r.stdout.trim(), macroPath);
+      for (const id of ['macro-plan-20261008T000000Z-000000', `macro-x'; touch pwned-tick-\`touch pwned-sub\`; echo "$(touch pwned-cmd)"`]) {
+        const refused = resolveWith(id);
+        strictEqual(refused.status === 0, false, `${id}: ${refused.stdout}`);
+        strictEqual(refused.stdout.trim(), '', `${id}: no macro`);
+      }
+      deepStrictEqual(pwned(lane), [], 'nothing in the id ran');
+    });
+  }
 });
 
 /**
@@ -138,7 +270,10 @@ function doneSection(phase, next) {
   // Contract: the runs below execute this phase — a renamed marker must fail
   // here, not run nothing.
   ok(from > 0 && to > from, `done.md marks ${phase} and ${next}`);
-  return [...lines.slice(0, 2), ...lines.slice(from, to)].join('\n');
+  // The plugin-root lines, which follow the block's ARGS_DIR line.
+  const root = lines.findIndex((l) => l.startsWith('CLAUDE_PLUGIN_ROOT='));
+  ok(root > 0, 'done.md sets its plugin root');
+  return [...lines.slice(root, root + 2), ...lines.slice(from, to)].join('\n');
 }
 
 // ADR-0067 Decision 1(b) — done.md's engineer scans (the owner of a subtask,
@@ -188,7 +323,7 @@ describe("done.md's engineer scans read every worktree (ADR-0067 Decision 1(b))"
     });
 
     it(`(${shell}) --no-commit refuses while the active child sits in a third worktree's own home`, () => {
-      const r = spawnSync(shell, ['-c', doneSection('Phase 3a:', 'Phase 3b:')], { cwd: lane, encoding: 'utf8', env: env({ NO_COMMIT: '1' }) });
+      const r = spawnSync(shell, ['-c', doneSection('Phase 3a:', 'Phase 3b:')], { cwd: lane, encoding: 'utf8', env: env({ NO_COMMIT: 'true' }) });
       strictEqual(r.status, 1);
       match(r.stderr, /is still active/);
       ok(r.stderr.includes(third), r.stderr);

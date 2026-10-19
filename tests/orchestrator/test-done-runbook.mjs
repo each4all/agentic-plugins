@@ -5,9 +5,9 @@
 // section of commands/done.md goes through Claude's argument substitution for
 // the argument line an operator would type (C67: the file as written is not
 // the text the agent reads), then every ```bash block in it runs in one bash
-// process (as the runbook requires), with the argument variables an agent
-// would extract from $ARGUMENTS. git runs against a real bare "origin"; `gh`
-// is a fake on PATH.
+// process (as the runbook requires), its arguments in the args file the agent
+// writes (ADR-0059, C134(a)). git runs against a real bare "origin"; `gh` is a
+// fake on PATH.
 
 import { describe, it, before } from 'node:test';
 import { deepStrictEqual, strictEqual, notStrictEqual, ok, rejects } from 'node:assert/strict';
@@ -18,10 +18,12 @@ import { join, resolve, dirname } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { substituteClaudeArguments } from '../_claude-command-substitution.mjs';
+import { withArgs } from './_command-args-file.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const ORCH_ROOT = resolve(REPO_ROOT, 'plugins/orchestrator');
 const { createWorkflow, setPlan, updateSubtask, readWorkflow } = await import(resolve(ORCH_ROOT, 'scripts/state.mjs'));
+const { parseCommandArguments } = await import(resolve(ORCH_ROOT, 'scripts/lib/command-args.mjs'));
 
 const DONE_TEXT = await readFile(resolve(ORCH_ROOT, 'commands/done.md'), 'utf8');
 // Located in the file, before any rendering: typed text lands in the prose
@@ -48,19 +50,36 @@ function bashBlocks(section) {
 const renderPhases = (args) => substituteClaudeArguments(PHASES, args, { appendIfUnused: false });
 const runbookScript = (args) => bashBlocks(renderPhases(args)).join('\n');
 
-/** The argument line an operator types for these variables (argument-hint order). */
+/** The argument line an operator types for these arguments (argument-hint order). */
 function typedArguments(vars, reason) {
-  // An id holding a double quote is typed inside single quotes.
-  const parts = [vars.EXPLICIT_SUBTASK_ID.includes('"') ? `'${vars.EXPLICIT_SUBTASK_ID}'` : vars.EXPLICIT_SUBTASK_ID];
-  if (vars.EXPLICIT_PR) parts.push(`--pr=${vars.EXPLICIT_PR}`);
-  if (vars.EXPLICIT_COMMIT) parts.push(`--commit=${vars.EXPLICIT_COMMIT}`);
-  if (vars.CORRECT === '1') parts.push('--correct');
-  if (vars.NO_COMMIT === '1') parts.push('--no-commit');
-  if (vars.WAIVE_DISPATCH === '1') parts.push('--waive-dispatch');
-  if (vars.EXPLICIT_WORKFLOW_ID) parts.push(`--workflow=${vars.EXPLICIT_WORKFLOW_ID}`);
-  if (vars.EXPLICIT_INTEGRATION_BRANCH) parts.push(`--integration-branch=${vars.EXPLICIT_INTEGRATION_BRANCH}`);
+  const parts = [vars.subtask];
+  if (vars.pr) parts.push(`--pr=${vars.pr}`);
+  if (vars.commit) parts.push(`--commit=${vars.commit}`);
+  if (vars.correct) parts.push('--correct');
+  if (vars.no_commit) parts.push('--no-commit');
+  if (vars.waive_dispatch) parts.push('--waive-dispatch');
+  if (vars.workflow) parts.push(`--workflow=${vars.workflow}`);
+  if (vars.integration_branch) parts.push(`--integration-branch=${vars.integration_branch}`);
   if (reason !== null) parts.push(reason);
   return parts.join(' ');
+}
+
+// The line of each runbook's block that names the args directory the agent made.
+const ARGS_LINE = { claude: "ARGS_DIR='<directory from step 1>'", codex: "ARGS_DIR='<directory from mktemp>'" };
+// The block's call to the argument parser.
+const PARSE_CALL = /^ARGS_JSON="\$\(node "[^"\n]*\/scripts\/state\.mjs" command-args \\\n {2}--command done --args-file "\$ARGS_DIR\/args\.json"\)" \|\| exit 1$/m;
+// A word holding a quote or a backslash cannot be typed: the grammar refuses
+// it (the quoted-id case below). A subtask id holding one is still a plan's to
+// carry, and /orchestrator:next selects it by itself, so the cases that test
+// how the block reads such an id by its value run the block from its parsed
+// arguments on: the parser's call replaced by the fields it prints for the
+// same line, with that id.
+const TYPABLE = /^[^"'\\\s]+$/;
+function withParsedArgs(block, vars, reason) {
+  ok(PARSE_CALL.test(block), 'the block parses its arguments with state.mjs command-args');
+  const fields = parseCommandArguments('done', typedArguments({ ...vars, subtask: 'X' }, reason));
+  fields.subtask_id = vars.subtask;
+  return block.replace(PARSE_CALL, () => `ARGS_JSON='${JSON.stringify(fields).replace(/'/g, "'\\''")}'`);
 }
 
 const GIT_ENV = {
@@ -167,28 +186,27 @@ async function withFixture(fn, { topicA, idA = 'A' } = {}) {
       number: 7, url: 'https://github.com/o/r/pull/7', state: 'MERGED', baseRefName: 'main',
       headRefName: 'feat/a', createdAt: '2026-09-27T10:30:00Z', mergeCommit: { oid: squash }, ...over,
     });
-    // The agent writes the reason with its file-writing tool and names the
-    // file in REASON_FILE; the runbook never sees the text as shell input.
-    // `typed` overrides the argument line when a case needs its exact spelling;
+    // The agent writes the arguments, the reason with them, into the args file
+    // with its file-writing tool; the runbook never sees the text as shell
+    // input. `typed` overrides the argument line when a case needs its exact spelling;
     // `prelude` runs before the script (shell options).
     // On Codex the plugin root a case swaps in (a shim) is the one the agent
     // fills into the block, and no Claude variable reaches the shell.
     async function done(vars, { prs = [pr()], reason = null, env = {}, typed = null, prelude = '' } = {}) {
       await writeFile(prsFile, JSON.stringify(prs));
-      const all = { EXPLICIT_SUBTASK_ID: idA, ...vars };
+      const all = { subtask: idA, ...vars };
       const codex = VARIANT === 'codex';
-      const script = codex
+      // An id that cannot be typed is rendered as one that can: Claude's
+      // substitution changes no bash block (the invariance case).
+      const typable = typed !== null || TYPABLE.test(all.subtask);
+      const text = typed ?? typedArguments(typable ? all : { ...all, subtask: 'X' }, reason);
+      const block = codex
         ? codexBlock(env.AGENTIC_ORCHESTRATOR_ROOT ?? ORCH_ROOT)
-        : runbookScript(typed ?? typedArguments(all, reason));
-      if (reason !== null) {
-        const reasonFile = join(dir, 'reason.txt');
-        await writeFile(reasonFile, reason);
-        all.REASON_FILE = reasonFile;
-      }
-      // Single-quoted assignments, as an agent would write literal values.
-      const assigns = Object.entries(all)
-        .map(([k, v]) => `${k}='${String(v).replace(/'/g, "'\\''")}'`).join('\n');
-      const full = `${prelude}\n${assigns}\ncd '${work}'\n${script}`;
+        : runbookScript(text);
+      const script = typable
+        ? withArgs(block, text, { line: ARGS_LINE[VARIANT], base: dir })
+        : withParsedArgs(block, all, reason);
+      const full = `${prelude}\ncd '${work}'\n${script}`;
       const base = { ...GIT_ENV, PATH: `${bin}:${dirname(process.execPath)}:${process.env.PATH}`, FAKE_GH_PRS: prsFile };
       let shellEnv;
       if (codex) {
@@ -232,7 +250,7 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
   // so any /done typed with a flag read every field as empty.
   it('--pr=<n> names the pull request, and the fields still read', async () => {
     await withFixture(async ({ done, subtask, squash }) => {
-      const r = await done({ EXPLICIT_PR: '7' });
+      const r = await done({ pr: '7' });
       strictEqual(r.status, 0, r.stderr);
       const a = await subtask('A');
       strictEqual(a.status, 'completed');
@@ -265,7 +283,7 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
     await withFixture(async ({ done, subtask, dir, macroPath }) => {
       const marker = join(dir, 'should-not-exist');
       const reason = `x"; touch ${marker}; "`;
-      const r = await done({ NO_COMMIT: '1' }, { reason, typed: `A '${reason}' --no-commit` });
+      const r = await done({ no_commit: true }, { reason, typed: `A --no-commit ${reason}` });
       strictEqual(existsSync(marker), false, 'the argument ran as shell');
       strictEqual(r.status, 0, r.stderr);
       strictEqual((await subtask('A')).status, 'completed');
@@ -278,7 +296,7 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
   // got a raw newline inside a JSON string and read every field as empty.
   it('a subtask whose JSON carries escapes still reads under an echo that expands them', async () => {
     await withFixture(async ({ done, subtask, squash }) => {
-      const r = await done({ EXPLICIT_PR: '7' }, { prelude: SH === 'bash' ? 'shopt -s xpg_echo' : '' });
+      const r = await done({ pr: '7' }, { prelude: SH === 'bash' ? 'shopt -s xpg_echo' : '' });
       strictEqual(r.status, 0, r.stderr);
       const a = await subtask('A');
       strictEqual(a.status, 'completed');
@@ -329,7 +347,7 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
       strictEqual(r.status, 1, r.stderr);
       strictEqual((await subtask('A')).status, 'in_progress', 'nothing was recorded');
       // Control: with the branch named, the block reads no macro, and records.
-      const named = await done({ EXPLICIT_INTEGRATION_BRANCH: 'main' }, { env });
+      const named = await done({ integration_branch: 'main' }, { env });
       strictEqual(named.status, 0, named.stderr);
       strictEqual((await subtask('A')).status, 'completed');
     });
@@ -337,7 +355,7 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
 
   it('without gh, --commit is recorded by ancestry, with no pull request and a note saying so', async () => {
     await withFixture(async ({ done, subtask, squash, macroPath }) => {
-      const r = await done({ EXPLICIT_COMMIT: squash }, { env: { FAKE_GH_FAIL: '1' } });
+      const r = await done({ commit: squash }, { env: { FAKE_GH_FAIL: '1' } });
       strictEqual(r.status, 0, r.stderr);
       const a = await subtask('A');
       strictEqual(a.status, 'completed');
@@ -371,13 +389,13 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
     await withFixture(async ({ done, macroPath, pr, later, squash, dir }) => {
       strictEqual((await done({})).status, 0);
       const corrected = [pr({ mergeCommit: { oid: later } })];
-      const bare = await done({ CORRECT: '1' }, { prs: corrected });
+      const bare = await done({ correct: true }, { prs: corrected });
       strictEqual(bare.status, 1);
       ok(/need a reason/.test(bare.stderr), bare.stderr);
 
       const marker = join(dir, 'should-not-exist');
       const reason = `landed as ${later.slice(0, 7)}; "quoted" $(touch ${marker}) \`touch ${marker}\``;
-      const r = await done({ CORRECT: '1' }, { prs: corrected, reason });
+      const r = await done({ correct: true }, { prs: corrected, reason });
       strictEqual(r.status, 0, r.stderr);
       const { frontmatter, body } = await readWorkflow(macroPath);
       strictEqual(frontmatter.plan.subtasks[0].commit, later);
@@ -392,7 +410,7 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
       strictEqual((await done({})).status, 0);
       const marker = join(dir, 'should-not-exist');
       const reason = `line one\nAGENTIC_DONE_REASON_EOF\ntouch ${marker}\nEOF\n$(touch ${marker})`;
-      const r = await done({ CORRECT: '1' }, { prs: [pr({ mergeCommit: { oid: later } })], reason });
+      const r = await done({ correct: true }, { prs: [pr({ mergeCommit: { oid: later } })], reason });
       strictEqual(r.status, 0, r.stderr);
       strictEqual(existsSync(marker), false, 'nothing in the reason ran');
       ok((await readWorkflow(macroPath)).body.includes(`Reason: ${reason}`));
@@ -413,7 +431,7 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
   it('--workflow selects the macro explicitly under bash', async () => {
     await withFixture(async ({ done, subtask, macroPath }) => {
       const id = macroPath.split('/').pop().replace(/\.md$/, '');
-      const r = await done({ EXPLICIT_WORKFLOW_ID: id });
+      const r = await done({ workflow: id });
       strictEqual(r.status, 0, r.stderr);
       strictEqual((await subtask('A')).status, 'completed');
     });
@@ -422,13 +440,13 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
   it('--no-commit is refused while the engineer child is active, then completes with the reason', async () => {
     await withFixture(async ({ done, subtask, child, macroPath }) => {
       await rename(child('archive'), child('workflows'));
-      const refused = await done({ NO_COMMIT: '1' }, { reason: 'investigation only; no code change' });
+      const refused = await done({ no_commit: true }, { reason: 'investigation only; no code change' });
       strictEqual(refused.status, 1);
       ok(/still active/.test(refused.stderr), refused.stderr);
       strictEqual((await subtask('A')).status, 'in_progress');
 
       await rename(child('workflows'), child('archive'));
-      const r = await done({ NO_COMMIT: '1' }, { reason: 'investigation only; no code change' });
+      const r = await done({ no_commit: true }, { reason: 'investigation only; no code change' });
       strictEqual(r.status, 0, r.stderr);
       const a = await subtask('A');
       strictEqual(a.status, 'completed');
@@ -473,7 +491,7 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
           ],
         });
         const before = await readFile(macroPath, 'utf8');
-        const r = noCommit ? await done({ NO_COMMIT: '1' }, { reason: 'investigation only' }) : await done({});
+        const r = noCommit ? await done({ no_commit: true }, { reason: 'investigation only' }) : await done({});
         if (!revision) {
           strictEqual(r.status, 0, r.stderr);
           strictEqual((await subtask('A')).status, 'completed');
@@ -516,7 +534,7 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
     it(`--no-commit refuses when ${what}`, async () => {
       await withFixture(async ({ done, subtask, work, macroPath, dir }) => {
         await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host: 'claude', engineerWorkflowId: ENGINEER_ID });
-        const r = await done({ NO_COMMIT: '1' }, { reason: 'investigation only', env: await faultDuringJoin(dir, fault(work)) });
+        const r = await done({ no_commit: true }, { reason: 'investigation only', env: await faultDuringJoin(dir, fault(work)) });
         strictEqual(r.status, 1, r.stderr);
         ok(/could not scan the engineer workflow homes for an active child of A/i.test(r.stderr), r.stderr);
         strictEqual((await subtask('A')).status, 'in_progress');
@@ -529,7 +547,7 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
     await withFixture(async ({ done, subtask, work, macroPath }) => {
       await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host: 'claude', engineerWorkflowId: ENGINEER_ID });
       await mkdir(join(work, '.agentic-plugins/state/engineer/workflows/compose-20260927T110000Z-bbbbbb.md'));
-      const r = await done({ NO_COMMIT: '1' }, { reason: 'investigation only' });
+      const r = await done({ no_commit: true }, { reason: 'investigation only' });
       strictEqual(r.status, 1, r.stderr);
       ok(/could not scan the engineer workflow homes for A's owner/i.test(r.stderr), r.stderr);
       strictEqual((await subtask('A')).status, 'in_progress');
@@ -551,23 +569,23 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
   // the comparison cannot run: done refuses, and only --waive-dispatch with a
   // reason completes, the macro recording both. Contract: the refusal writes
   // nothing on either write path; the waiver is the one way through.
-  for (const [label, vars] of [['the landing', {}], ['--no-commit', { NO_COMMIT: '1' }]]) {
+  for (const [label, vars] of [['the landing', {}], ['--no-commit', { no_commit: true }]]) {
     it(`a recorded owner with no file left refuses; --waive-dispatch with a reason completes and is recorded (${label})`, async () => {
       await withFixture(async ({ done, subtask, child, macroPath }) => {
         await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host: 'claude', engineerWorkflowId: ENGINEER_ID });
         await rm(child('archive'));
         const before = await readFile(macroPath, 'utf8');
-        const refused = await done(vars, { reason: vars.NO_COMMIT ? 'investigation only' : null });
+        const refused = await done(vars, { reason: vars.no_commit ? 'investigation only' : null });
         strictEqual(refused.status, 1, refused.stderr);
         ok(refused.stderr.includes(`recorded owner ${ENGINEER_ID} has no workflow file left`), refused.stderr);
         ok(refused.stderr.includes('rerun with --waive-dispatch and a reason'), refused.stderr);
         strictEqual(await readFile(macroPath, 'utf8'), before);
-        const bare = await done({ ...vars, WAIVE_DISPATCH: '1' });
+        const bare = await done({ ...vars, waive_dispatch: true });
         strictEqual(bare.status, 1, bare.stderr);
         ok(/need a reason/.test(bare.stderr), bare.stderr);
         strictEqual(await readFile(macroPath, 'utf8'), before);
         const reason = 'the lane that held the child was removed; the merged pull request is the work';
-        const r = await done({ ...vars, WAIVE_DISPATCH: '1' }, { reason });
+        const r = await done({ ...vars, waive_dispatch: true }, { reason });
         strictEqual(r.status, 0, r.stderr);
         strictEqual((await subtask('A')).status, 'completed');
         const { body } = await readWorkflow(macroPath);
@@ -581,7 +599,7 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
     await withFixture(async ({ done, subtask, macroPath }) => {
       await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host: 'claude', engineerWorkflowId: ENGINEER_ID });
       const before = await readFile(macroPath, 'utf8');
-      const r = await done({ WAIVE_DISPATCH: '1' }, { reason: 'nothing to waive' });
+      const r = await done({ waive_dispatch: true }, { reason: 'nothing to waive' });
       strictEqual(r.status, 1, r.stderr);
       ok(r.stderr.includes("--waive-dispatch applies only when the owner's dispatch cannot be read"), r.stderr);
       strictEqual(await readFile(macroPath, 'utf8'), before);
@@ -595,8 +613,8 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
       const text = await readFile(child('archive'), 'utf8');
       await writeFile(child('archive'), text.replace('originating_subtask: "A"', 'originating_subtask: "B"'));
       const before = await readFile(macroPath, 'utf8');
-      for (const vars of [{}, { WAIVE_DISPATCH: '1' }]) {
-        const r = await done(vars, { reason: vars.WAIVE_DISPATCH ? 'complete it anyway' : null });
+      for (const vars of [{}, { waive_dispatch: true }]) {
+        const r = await done(vars, { reason: vars.waive_dispatch ? 'complete it anyway' : null });
         strictEqual(r.status, 1, r.stderr);
         ok(r.stderr.includes(`recorded owner ${ENGINEER_ID} was not dispatched for it`) && r.stderr.includes('originating_subtask=B'), r.stderr);
         strictEqual(await readFile(macroPath, 'utf8'), before);
@@ -631,7 +649,7 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
         ],
       });
       const before = await readFile(macroPath, 'utf8');
-      const r = await done({ NO_COMMIT: '1' }, { reason: 'investigation only' });
+      const r = await done({ no_commit: true }, { reason: 'investigation only' });
       strictEqual(r.status, 1, r.stderr);
       ok(r.stderr.includes('(dispatch-changed): branch is "feat/a2"; the child was dispatched for "feat/a"'), r.stderr);
       strictEqual(await readFile(macroPath, 'utf8'), before);
@@ -641,11 +659,28 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
   it('a subtask id holding a quote: --no-commit refuses while its child is active', async () => {
     await withFixture(async ({ done, subtask, child }) => {
       await rename(child('archive'), child('workflows'));
-      const r = await done({ NO_COMMIT: '1' }, { reason: 'investigation only' });
+      const r = await done({ no_commit: true }, { reason: 'investigation only' });
       strictEqual(r.status, 1, r.stderr);
       ok(/still active/.test(r.stderr), r.stderr);
       strictEqual((await subtask()).status, 'in_progress');
     }, { idA: QUOTED });
+  });
+
+  // C134(a) — the arguments reach the block in the args file and are parsed
+  // by done's grammar, which takes a value bare: a typed id holding a quote is
+  // refused before anything is read or written, and none of it runs. (The
+  // cases above run the block from its parsed arguments on.)
+  it('a typed subtask id holding a quote is refused by the grammar; nothing runs or is written', async () => {
+    await withFixture(async ({ done, subtask, macroPath, dir }) => {
+      const marker = join(dir, 'should-not-exist');
+      const before = await readFile(macroPath, 'utf8');
+      const r = await done({}, { typed: `'A"1$(touch ${marker})' --no-commit investigation only` });
+      strictEqual(r.status, 1, r.stderr);
+      ok(r.stderr.includes('holds a quote or backslash; write it bare'), r.stderr);
+      strictEqual(existsSync(marker), false, 'nothing in the id ran');
+      strictEqual(await readFile(macroPath, 'utf8'), before);
+      strictEqual((await subtask('A')).status, 'in_progress');
+    });
   });
 
   // A topic holding U+2028, a line terminator to a regular expression but not
@@ -735,7 +770,7 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
 
   it('--no-commit excludes --commit', async () => {
     await withFixture(async ({ done, squash }) => {
-      const r = await done({ NO_COMMIT: '1', EXPLICIT_COMMIT: squash }, { reason: 'x' });
+      const r = await done({ no_commit: true, commit: squash }, { reason: 'x' });
       strictEqual(r.status, 1);
       ok(/--no-commit excludes/.test(r.stderr), r.stderr);
     });
@@ -780,8 +815,8 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
   it('a session holding the macro lock refuses the write, naming it; nothing is written and its entry is kept', async () => {
     await withFixture(async ({ done, subtask, work, macroPath }) => {
       const other = holdAsSession(work, macroPath);
-      for (const vars of [{}, { NO_COMMIT: '1' }]) {
-        const r = await done(vars, { reason: vars.NO_COMMIT ? 'investigation only' : null });
+      for (const vars of [{}, { no_commit: true }]) {
+        const r = await done(vars, { reason: vars.no_commit ? 'investigation only' : null });
         strictEqual(r.status, 1, r.stderr);
         ok(new RegExp(`an interactive session holds .*/orchestrator:finalize, .*host codex, .*admission ${other}`).test(r.stderr), r.stderr);
         strictEqual((await subtask('A')).status, 'in_progress');
@@ -804,7 +839,7 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
       deepStrictEqual(sessionEntries(work, macroPath), [], 'released after the landing');
     });
     await withFixture(async ({ done, subtask, work, macroPath }) => {
-      const r = await done({ NO_COMMIT: '1' }, { reason: 'investigation only' });
+      const r = await done({ no_commit: true }, { reason: 'investigation only' });
       strictEqual(r.status, 0, r.stderr);
       strictEqual((await subtask('A')).status, 'completed');
       deepStrictEqual(sessionEntries(work, macroPath), [], 'released after the --no-commit completion');
@@ -826,7 +861,7 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
         `const r = spawnSync(process.execPath, [${JSON.stringify(resolve(ORCH_ROOT, 'scripts/state.mjs'))}, ...args], { stdio: 'inherit' });`,
         'process.exit(r.status ?? 1);',
       ].join('\n'));
-      const r = await done({ NO_COMMIT: '1' }, { reason: 'investigation only', env: { CLAUDE_PLUGIN_ROOT: shim, AGENTIC_ORCHESTRATOR_ROOT: shim } });
+      const r = await done({ no_commit: true }, { reason: 'investigation only', env: { CLAUDE_PLUGIN_ROOT: shim, AGENTIC_ORCHESTRATOR_ROOT: shim } });
       strictEqual(r.status, 1, r.stderr);
       ok(/still active/.test(r.stderr), r.stderr);
       strictEqual((await subtask('A')).status, 'in_progress');
@@ -840,7 +875,7 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
     await withFixture(async ({ done, subtask, child, macroPath }) => {
       await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host: variant, engineerWorkflowId: ENGINEER_ID });
       await rm(child('archive'));
-      const r = await done({ NO_COMMIT: '1', WAIVE_DISPATCH: '1' }, { reason: 'the lane was removed', prelude: 'set -e' });
+      const r = await done({ no_commit: true, waive_dispatch: true }, { reason: 'the lane was removed', prelude: 'set -e' });
       strictEqual(r.status, 0, r.stderr);
       strictEqual((await subtask('A')).status, 'completed');
     });
@@ -899,7 +934,7 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
       const otherId = otherPath.split('/').pop().replace(/\.md$/, '');
       const first = await readFile(macroPath, 'utf8');
       const second = await readFile(otherPath, 'utf8');
-      const named = { EXPLICIT_WORKFLOW_ID: otherId, EXPLICIT_INTEGRATION_BRANCH: 'main' };
+      const named = { workflow: otherId, integration_branch: 'main' };
       const refused = await done(named);
       strictEqual(refused.status, 1, refused.stderr);
       strictEqual(await readFile(macroPath, 'utf8'), first, 'the first macro is unchanged');
@@ -937,12 +972,16 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
 
   // The owner's ruling of 2026-10-17 (recurring-finding, option d): the Codex
   // skill runs as one block, as Claude's, and carries nothing between shell
-  // calls. Contract: the only file the block reads is the reason the agent
-  // wrote, and it writes no file.
-  codexOnly('the skill reads no file but the reason, and writes none', () => {
+  // calls. Contract: the files the block reads are the args file the agent
+  // wrote (through command-args, C134(a)) and the reason, which is the one
+  // file it writes, from the parsed arguments.
+  codexOnly('the skill reads no file but its args file and the reason, and writes only the reason', () => {
     const block = codexBlock();
     ok(!block.includes('TEXT_DIR'), 'the block names no text directory');
-    deepStrictEqual([...block.matchAll(/\bcat\s+("[^"]*")/g)].map((m) => m[1]), ['"$REASON_FILE"'], 'the reason is the one file read');
+    deepStrictEqual([...block.matchAll(/--args-file\s+("[^"]*")/g)].map((m) => m[1]), ['"$ARGS_DIR/args.json"'], 'the args file is read once');
+    deepStrictEqual([...block.matchAll(/\bcat\s+("[^"]*")/g)].map((m) => m[1]), ['"$REASON_FILE"'], 'the reason is the one file cat reads');
+    deepStrictEqual([...block.matchAll(/writeFileSync\(([^,]*),/g)].map((m) => m[1]), ['process.argv[1]'], 'one file is written');
+    ok(/writeFileSync\(process\.argv\[1\],JSON\.parse\(d\)\.reason\)\)' "\$REASON_FILE"/.test(block), 'the file written is the reason');
     deepStrictEqual(block.split('\n').filter((l) => /(^|[^2&])>\s*"?\$/.test(l)), [], 'no line redirects into a file');
   });
 });

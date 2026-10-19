@@ -86,7 +86,7 @@ const pointerOf = (filePath, anchor) =>
 function envFor(extra = {}, base = process.env) {
   const env = { ...base, AGENTIC_ORCHESTRATOR_ROOT: ORCH_ROOT, ...extra };
   delete env.CLAUDE_PLUGIN_ROOT;
-  for (const k of ['AGENTIC_AUTOPILOT', 'EXPLICIT_SUBTASK_ID', 'EXPLICIT_WORKFLOW_ID', 'SUBTASK_JSON']) {
+  for (const k of ['AGENTIC_AUTOPILOT', 'SUBTASK_JSON']) {
     if (!(k in extra)) delete env[k];
   }
   return env;
@@ -95,11 +95,11 @@ function envFor(extra = {}, base = process.env) {
 describe('test controls', () => {
   it('a block or CLI run drops the autopilot and selection variables the runner carries', () => {
     const planted = {
-      PATH: '/usr/bin', AGENTIC_AUTOPILOT: RUN_ID, EXPLICIT_SUBTASK_ID: 'B', EXPLICIT_WORKFLOW_ID: 'x',
+      PATH: '/usr/bin', AGENTIC_AUTOPILOT: RUN_ID,
       SUBTASK_JSON: '{"id":"B"}', CLAUDE_PLUGIN_ROOT: '/elsewhere', AGENTIC_ORCHESTRATOR_ROOT: '/elsewhere',
     };
     const env = envFor({}, planted);
-    for (const k of ['AGENTIC_AUTOPILOT', 'EXPLICIT_SUBTASK_ID', 'EXPLICIT_WORKFLOW_ID', 'SUBTASK_JSON', 'CLAUDE_PLUGIN_ROOT']) {
+    for (const k of ['AGENTIC_AUTOPILOT', 'SUBTASK_JSON', 'CLAUDE_PLUGIN_ROOT']) {
       strictEqual(k in env, false, k);
     }
     strictEqual(env.AGENTIC_ORCHESTRATOR_ROOT, ORCH_ROOT);
@@ -466,9 +466,11 @@ for (const shell of SHELLS) {
   // C75). `between` runs in a shell of its own between validation and gate.
   describe(`/orchestrator:next Phase 1 end to end (${shell})`, () => {
     const DISPATCHED = `${CLAUDE_TEXT_DIR_LINE}\nnode -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write("DISPATCH "+s.id+" "+(s.topic||"")+"\\n")' "$TEXT_DIR/subtask.json"`;
-    const run = async (filePath, extra = {}, between = '') => {
+    // `args` is the argument text Phase 0 parsed (the explicit id), which
+    // the text directory carries as arguments.json (C134(a)).
+    const run = async (filePath, { args = '', ...extra } = {}, between = '') => {
       const [selection, validation, gate] = await phase1Blocks();
-      const textDir = carriedTextDir({ macroPath: filePath }, checkoutOf(filePath));
+      const textDir = carriedTextDir({ macroPath: filePath, args }, checkoutOf(filePath));
       const steps = [selection, validation];
       if (between) steps.push(`${CLAUDE_TEXT_DIR_LINE}\nMACRO_PATH="$(cat "$TEXT_DIR/macro-path")"\n${between}`);
       steps.push(gate, DISPATCHED);
@@ -487,7 +489,7 @@ for (const shell of SHELLS) {
       await withDir(async (dir) => {
         for (const state of ['pending', 'stale', 'absent', 'conflict']) {
           const filePath = await macro(dir, state);
-          for (const extra of [{ EXPLICIT_SUBTASK_ID: 'A' }, {}]) {
+          for (const extra of [{ args: 'A' }, {}]) {
             const r = await run(filePath, { AGENTIC_AUTOPILOT: RUN_ID, ...extra });
             strictEqual(r.status, 1, `${state} ${JSON.stringify(extra)}: ${r.stderr}`);
             ok(r.stderr.startsWith('✗ plan-unapproved'), r.stderr);
@@ -501,14 +503,14 @@ for (const shell of SHELLS) {
     it('dispatches once the owner approves, and interactively with a warning before that', async () => {
       await withDir(async (dir) => {
         const filePath = await macro(dir, 'pending');
-        for (const extra of [{ EXPLICIT_SUBTASK_ID: 'A' }, {}]) {
+        for (const extra of [{ args: 'A' }, {}]) {
           const r = await run(filePath, extra);
           strictEqual(r.status, 0, r.stderr);
           strictEqual(r.stdout, 'DISPATCH A first\n');
           strictEqual(r.stderr.split('\n').filter(Boolean).length, 1, r.stderr);
         }
         await approvePlan({ workflowPath: filePath, host: 'claude', env: {} });
-        for (const extra of [{ EXPLICIT_SUBTASK_ID: 'A' }, {}]) {
+        for (const extra of [{ args: 'A' }, {}]) {
           const r = await run(filePath, { AGENTIC_AUTOPILOT: RUN_ID, ...extra });
           strictEqual(r.status, 0, r.stderr);
           strictEqual(r.stdout, 'DISPATCH A first\n');
@@ -533,7 +535,7 @@ for (const shell of SHELLS) {
           "await approvePlan({ workflowPath, host: 'claude', env: {} });",
         ].join('\n'));
         const between = `node "${injector}" "${STATE}" "$MACRO_PATH" || exit 9`;
-        for (const extra of [{ EXPLICIT_SUBTASK_ID: 'A' }, {}]) {
+        for (const extra of [{ args: 'A' }, {}]) {
           // Each round starts from the plan the owner approved first.
           const fresh = await macro(dir, 'approved');
           const r = await run(fresh, { AGENTIC_AUTOPILOT: RUN_ID, ...extra }, between);
@@ -558,7 +560,7 @@ for (const shell of SHELLS) {
           "await updateSubtask({ workflowPath, subtaskId: 'A', host: 'claude', status: 'in_progress', engineerWorkflowId: 'eng-A' });",
         ].join('\n'));
         const between = `node "${injector}" "${STATE}" "$MACRO_PATH" || exit 9`;
-        for (const extra of [{ EXPLICIT_SUBTASK_ID: 'A' }, {}]) {
+        for (const extra of [{ args: 'A' }, {}]) {
           const fresh = await macro(dir, 'approved');
           const r = await run(fresh, { AGENTIC_AUTOPILOT: RUN_ID, ...extra }, between);
           strictEqual(r.status, 0, `${JSON.stringify(extra)}: ${r.stderr}`);
@@ -576,7 +578,7 @@ for (const shell of SHELLS) {
       await withDir(async (dir) => {
         const filePath = await macro(dir, 'approved');
         await updateSubtask({ workflowPath: filePath, subtaskId: 'A', host: 'claude', status: 'in_progress', engineerWorkflowId: 'eng-A' });
-        const r = await run(filePath, { AGENTIC_AUTOPILOT: RUN_ID, EXPLICIT_SUBTASK_ID: 'A' });
+        const r = await run(filePath, { AGENTIC_AUTOPILOT: RUN_ID, args: 'A' });
         strictEqual(r.status, 0, r.stderr);
         strictEqual(r.stdout, 'DISPATCH A first\n');
         strictEqual(r.stderr, '');

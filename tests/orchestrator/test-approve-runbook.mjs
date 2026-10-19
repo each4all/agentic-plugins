@@ -21,6 +21,8 @@ import { join, resolve, basename } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { withArgs } from './_command-args-file.mjs';
+
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const ORCH_ROOT = resolve(REPO_ROOT, 'plugins/orchestrator');
 const {
@@ -74,12 +76,14 @@ async function conflictGate(filePath, runId) {
   await setPlan({ workflowPath: filePath, host: 'claude', subtasks: frontmatter.plan.subtasks, verdict: 'conflict', runId });
 }
 
-async function run(shell, dir, extraEnv = {}) {
+// The block run with `args`, the command's arguments as typed, in the args
+// file the agent writes (ADR-0059, C134(a)): a new one each run, since
+// command-args removes the file it read.
+async function run(shell, dir, extraEnv = {}, args = '') {
   const env = { ...process.env, AGENTIC_ORCHESTRATOR_ROOT: ORCH_ROOT, ...extraEnv };
   delete env.CLAUDE_PLUGIN_ROOT;
   if (!('AGENTIC_AUTOPILOT' in extraEnv)) delete env.AGENTIC_AUTOPILOT;
-  if (!('EXPLICIT_WORKFLOW_ID' in extraEnv)) delete env.EXPLICIT_WORKFLOW_ID;
-  return spawnSync(shell, ['-c', await approveBlock()], { cwd: dir, encoding: 'utf8', env });
+  return spawnSync(shell, ['-c', withArgs(await approveBlock(), args)], { cwd: dir, encoding: 'utf8', env });
 }
 
 describe('/orchestrator:approve binds the approval to the hash it showed', () => {
@@ -171,10 +175,10 @@ for (const shell of SHELLS) {
         r = await run(shell, dir);
         strictEqual(r.status, 1);
         ok(r.stderr.includes("No macro workflow on branch 'unrelated'"), r.stderr);
-        r = await run(shell, dir, { EXPLICIT_WORKFLOW_ID: basename(filePath, '.md') });
+        r = await run(shell, dir, {}, `--workflow=${basename(filePath, '.md')}`);
         strictEqual(r.status, 0, r.stderr);
         ok(r.stdout.includes('"noop":true'), r.stdout);
-        r = await run(shell, dir, { EXPLICIT_WORKFLOW_ID: '../archive/x' });
+        r = await run(shell, dir, {}, '--workflow=../archive/x');
         strictEqual(r.status, 1);
         ok(r.stderr.includes('must be a basename-shaped workflow id'), r.stderr);
         deepStrictEqual(r.stdout, '');
@@ -482,10 +486,10 @@ for (const shell of SHELLS) {
         ['an unknown ENSEMBLE_VERDICT', { ENSEMBLE_VERDICT: 'skipped' }, {}, /ENSEMBLE_VERDICT is "skipped"/],
         ['a failed run with a conflict', { VERDICT: 'conflict', ENSEMBLE_VERDICT: 'failed' }, { 'contested.md': 'C1\n' }, /gave no peer positions to conflict with/],
         ['no run id written', { RUN_ID: null }, {}, /writes the run id to .*\/run-id/],
-        ['a run id the dispatch could not have used', { RUN_ID: 'macro/plan' }, {}, /run-id holds "macro\/plan", not a run id the verdict pass can record/],
-        ['a run id holding ..', { RUN_ID: 'macro-plan..x' }, {}, /not a run id the verdict pass can record/],
-        ['a run id a command would read as an option', { RUN_ID: '--probe' }, {}, /run-id holds "--probe", not a run id the verdict pass can record/],
-        ['a conflict whose run id the gate cannot record', { VERDICT: 'conflict', RUN_ID: 'macro-plan.bad' }, { 'contested.md': 'C1\n' }, /run-id holds "macro-plan\.bad", not a run id the verdict conflict can record/],
+        ['a run id the dispatch could not have used', { RUN_ID: 'macro/plan' }, {}, /run-id holds "macro\/plan", not a run id the macro can record/],
+        ['a run id holding ..', { RUN_ID: 'macro-plan..x' }, {}, /not a run id the macro can record/],
+        ['a run id a command would read as an option', { RUN_ID: '--probe' }, {}, /run-id holds "--probe", not a run id the macro can record/],
+        ['a conflict whose run id the gate cannot record', { VERDICT: 'conflict', RUN_ID: 'macro-plan.bad' }, { 'contested.md': 'C1\n' }, /run-id holds "macro-plan\.bad", not a run id the macro can record/],
         ['a run id ending in a carriage return', { RUN_ID: 'macro-plan-20260930T000000Z-abcdef\r' }, {}, /not a run id/],
         ['a conflict with no contested.md', { VERDICT: 'conflict' }, {}, /contested\.md is missing or blank/],
         ['a conflict with a blank contested.md', { VERDICT: 'conflict' }, { 'contested.md': ' \n\t\n' }, /contested\.md is missing or blank/],
@@ -501,29 +505,40 @@ for (const shell of SHELLS) {
       }
     });
 
-    // C132 — a failure injected at each write in turn, then the block run
-    // again as it is: the ensemble result is recorded once and the task file
-    // is there. The append is not skipped on a rerun, so a failure past it
-    // leaves the note twice, the duplicate accepted until the macro keeps a
-    // machine record of the run's note.
-    it('a rerun after a failure at any write keeps the ensemble result once and writes the task file; past the append it records the note again (C132)', async () => {
+    // C132 — a failure injected at each write in turn (before it, and after
+    // it was made), then the block run again as it is: the note, keyed by the
+    // run, and the ensemble result are each recorded once, and the task file
+    // is there. With the owner's clear of the gate between the two runs, the
+    // rerun still records the note and the result once, and proposes no
+    // round: the macro records the clear (plan_conflict_cleared_run_id).
+    it('a rerun after a failure at any write records the note and the result once and writes the task file; after the owner clears the gate, it proposes no round (C132)', async () => {
       const RUN_ID = 'macro-plan-20260930T000000Z-abcdef';
-      for (const [step, after] of ['append', 'ensemble-commit', 'consensus-task'].flatMap((s) => [[s, ''], [s, '1']])) {
-        await withTextRepo(async (dir, textDir) => {
-          const filePath = await plannedMacro(dir);
-          await conflictGate(filePath, RUN_ID);
-          const files = { 'note.md': 'The note\n', 'summary.txt': 'The summary\n', 'contested.md': 'C1: split A or not\n' };
-          const failing = await failingRoot(dir);
-          const first = await runFinalize(dir, textDir, filePath, { VERDICT: 'conflict', AGENTIC_ORCHESTRATOR_ROOT: failing, FAIL_STEP: step, FAIL_AFTER: after }, files);
-          strictEqual(first.status, 1, `${step}: ${first.stderr}`);
-          ok(first.stderr.includes(`✗ injected failure: ${step}`), first.stderr);
-          const again = await runFinalize(dir, textDir, filePath, { VERDICT: 'conflict' }, files);
-          strictEqual(again.status, 0, `${step}: ${again.stderr}`);
-          const { frontmatter, body } = await readWorkflow(filePath);
-          strictEqual(notesIn(body), step === 'append' && after === '' ? 1 : 2, `${step}${after ? ' (after)' : ''}: the note once per append that ran`);
-          deepStrictEqual(frontmatter.ensemble_results.filter((e) => e.run_id === RUN_ID).map((e) => e.verdict), ['conflict'], `${step}: the result once`);
-          strictEqual(await readFile(consensusTask(dir, filePath, RUN_ID), 'utf8'), 'C1: split A or not\n', `${step}: the task file`);
-        });
+      for (const clear of [false, true]) {
+        for (const [step, after] of ['append', 'ensemble-commit', 'consensus-task'].flatMap((s) => [[s, ''], [s, '1']])) {
+          const what = `${step}${after ? ' (after)' : ''}${clear ? ', cleared between the runs' : ''}`;
+          await withTextRepo(async (dir, textDir) => {
+            const filePath = await plannedMacro(dir);
+            await conflictGate(filePath, RUN_ID);
+            const files = { 'note.md': 'The note\n', 'summary.txt': 'The summary\n', 'contested.md': 'C1: split A or not\n' };
+            const failing = await failingRoot(dir);
+            const first = await runFinalize(dir, textDir, filePath, { VERDICT: 'conflict', AGENTIC_ORCHESTRATOR_ROOT: failing, FAIL_STEP: step, FAIL_AFTER: after }, files);
+            strictEqual(first.status, 1, `${what}: ${first.stderr}`);
+            ok(first.stderr.includes(`✗ injected failure: ${step}`), first.stderr);
+            if (clear) await clearAwaitingOwner({ workflowPath: filePath, host: 'claude', gate: 'plan-conflict', env: blockEnv({}) });
+            const again = await runFinalize(dir, textDir, filePath, { VERDICT: 'conflict' }, files);
+            strictEqual(again.status, 0, `${what}: ${again.stderr}`);
+            const { frontmatter, body } = await readWorkflow(filePath);
+            strictEqual(notesIn(body), 1, `${what}: the note once`);
+            strictEqual(frontmatter.phase_note_run_ids, RUN_ID, `${what}: the run's note is recorded`);
+            deepStrictEqual(frontmatter.ensemble_results.filter((e) => e.run_id === RUN_ID).map((e) => e.verdict), ['conflict'], `${what}: the result once`);
+            if (clear) {
+              ok(again.stderr.includes(`The owner has cleared the plan-conflict gate of run ${RUN_ID}`) && !again.stderr.includes('runtime:consensus'), `${what}: ${again.stderr}`);
+              ok(!existsSync(consensusTask(dir, filePath, RUN_ID)), `${what}: no round for a decided conflict`);
+            } else {
+              strictEqual(await readFile(consensusTask(dir, filePath, RUN_ID), 'utf8'), 'C1: split A or not\n', `${what}: the task file`);
+            }
+          });
+        }
       }
     });
 
@@ -603,28 +618,23 @@ for (const shell of SHELLS) {
       }
     });
 
-    // Critique F5 — the strict run-id form is the gate's and the task file's,
-    // needed on a conflict only: another verdict records any id the dispatch
-    // could have used, such as one with an extended ISO time.
-    it('a pass or concerns records a run id with colons and dots; a conflict refuses it before any write', async () => {
+    // C132 (Critique F5 before it) — the note is keyed by the run, so every
+    // verdict takes the form the macro's records of a run take, the gate's
+    // and the task file's: an id with an extended ISO time, which no
+    // peer-runner new-run-id allocates, is refused before any write whatever
+    // the verdict.
+    it('a run id with colons and dots is refused before any write, whatever the verdict (C132)', async () => {
       const runId = 'macro-plan-2026-10-10T00:00:00.000Z-abc';
-      for (const [VERDICT, ENSEMBLE_VERDICT, recorded] of [['pass', undefined, 'pass'], ['concerns', undefined, 'concerns'], ['concerns', 'failed', 'failed']]) {
+      for (const [VERDICT, ENSEMBLE_VERDICT] of [['pass', undefined], ['concerns', undefined], ['concerns', 'failed'], ['conflict', undefined]]) {
         await withTextRepo(async (dir, textDir) => {
           const filePath = await plannedMacro(dir);
-          const r = await runFinalize(dir, textDir, filePath, { VERDICT, ENSEMBLE_VERDICT, RUN_ID: runId });
-          strictEqual(r.status, 0, `${recorded}: ${r.stderr}`);
-          const { frontmatter } = await readWorkflow(filePath);
-          deepStrictEqual([frontmatter.ensemble_results.at(-1).run_id, frontmatter.ensemble_results.at(-1).verdict], [runId, recorded]);
+          const before = await readFile(filePath, 'utf8');
+          const r = await runFinalize(dir, textDir, filePath, { VERDICT, ENSEMBLE_VERDICT, RUN_ID: runId }, { 'note.md': 'The note\n', 'summary.txt': 'The summary\n', 'contested.md': 'C1\n' });
+          strictEqual(r.status, 1, `${VERDICT}/${ENSEMBLE_VERDICT}: ${r.stderr}`);
+          ok(/not a run id the macro can record \(letters, digits, _ and -, opening with a letter or digit\); nothing was written\./.test(r.stderr), r.stderr);
+          strictEqual(await readFile(filePath, 'utf8'), before);
         });
       }
-      await withTextRepo(async (dir, textDir) => {
-        const filePath = await plannedMacro(dir);
-        const before = await readFile(filePath, 'utf8');
-        const r = await runFinalize(dir, textDir, filePath, { VERDICT: 'conflict', RUN_ID: runId }, { 'note.md': 'The note\n', 'summary.txt': 'The summary\n', 'contested.md': 'C1\n' });
-        strictEqual(r.status, 1, r.stderr);
-        ok(/not a run id the verdict conflict can record; nothing was written\./.test(r.stderr), r.stderr);
-        strictEqual(await readFile(filePath, 'utf8'), before);
-      });
     });
 
     // Critique G2 — the verdict is held to the gate plan-set recorded for the
@@ -696,13 +706,15 @@ for (const shell of SHELLS) {
     // The round is proposed only while the plan-conflict gate names the run.
     // A finalize that stopped before its result (or before its note), rerun
     // after the owner cleared the gate, records the conflict's result and
-    // proposes no round; so does a conflict plan-set never gated. Whether the
-    // owner cleared this run's gate is not in the macro's machine data, so
-    // another verdict is not refused then (C132, Left open).
-    it('a conflict rerun after the owner cleared the run\'s gate records its result and proposes no round', async () => {
+    // its note once, and proposes no round: the macro records the clear
+    // (plan_conflict_cleared_run_id), which the block reads, never a note's
+    // text (C132). That record also says the run's verdict is conflict, so
+    // another verdict is refused for it; and a conflict for a run plan-set
+    // gated with no conflict at all is refused before any write.
+    it('a conflict rerun after the owner cleared the run\'s gate records its result and proposes no round; the record holds the verdict (C132)', async () => {
       const RUN_ID = 'macro-plan-20260930T000000Z-abcdef';
       const files = { 'note.md': 'The note\n', 'summary.txt': 'The summary\n', 'contested.md': 'C1\n' };
-      for (const [step, notes] of [['ensemble-commit', 2], ['append', 1]]) {
+      for (const [step, notes] of [['ensemble-commit', 1], ['append', 1]]) {
         await withTextRepo(async (dir, textDir) => {
           const filePath = await plannedMacro(dir);
           await conflictGate(filePath, RUN_ID);
@@ -713,21 +725,62 @@ for (const shell of SHELLS) {
           await clearAwaitingOwner({ workflowPath: filePath, host: 'claude', gate: 'plan-conflict', env: blockEnv({}) });
           r = await runFinalize(dir, textDir, filePath, { VERDICT: 'conflict', RUN_ID }, files);
           strictEqual(r.status, 0, `${step}: ${r.stderr}`);
-          ok(r.stderr.includes(`No plan-conflict gate names run ${RUN_ID}`) && !r.stderr.includes('runtime:consensus'), `${step}: ${r.stderr}`);
+          ok(r.stderr.includes(`The owner has cleared the plan-conflict gate of run ${RUN_ID} (plan_conflict_cleared_run_id)`) && !r.stderr.includes('runtime:consensus'), `${step}: ${r.stderr}`);
           const { frontmatter, body } = await readWorkflow(filePath);
-          strictEqual(notesIn(body), notes, `${step}: the note once per append that ran`);
+          strictEqual(notesIn(body), notes, `${step}: the note once`);
           deepStrictEqual(frontmatter.ensemble_results.map((e) => [e.run_id, e.verdict]), [[RUN_ID, 'conflict']], step);
           deepStrictEqual(frontmatter.pending_ensemble ?? [], [], `${step}: the pending entry is popped`);
           ok(!existsSync(consensusTask(dir, filePath, RUN_ID)), `${step}: no round for a decided conflict`);
         });
       }
+      // The clear says the run's verdict is conflict: another is refused.
       await withTextRepo(async (dir, textDir) => {
         const filePath = await plannedMacro(dir);
+        await conflictGate(filePath, RUN_ID);
+        await clearAwaitingOwner({ workflowPath: filePath, host: 'claude', gate: 'plan-conflict', env: blockEnv({}) });
+        const before = await readFile(filePath, 'utf8');
+        const r = await runFinalize(dir, textDir, filePath, { VERDICT: 'pass', RUN_ID }, files);
+        strictEqual(r.status, 1, r.stderr);
+        ok(r.stderr.includes(`the owner cleared the plan-conflict gate plan-set recorded for run ${RUN_ID}, but VERDICT is pass`) && r.stderr.trimEnd().endsWith('nothing was written.'), r.stderr);
+        strictEqual(await readFile(filePath, 'utf8'), before, 'nothing was written');
+      });
+      // A conflict for a run plan-set never gated: plan-set recorded another
+      // verdict, and nothing is written.
+      await withTextRepo(async (dir, textDir) => {
+        const filePath = await plannedMacro(dir);
+        const before = await readFile(filePath, 'utf8');
         const r = await runFinalize(dir, textDir, filePath, { VERDICT: 'conflict', RUN_ID }, files);
-        strictEqual(r.status, 0, r.stderr);
-        ok(r.stderr.includes(`No plan-conflict gate names run ${RUN_ID}`), r.stderr);
-        deepStrictEqual((await readWorkflow(filePath)).frontmatter.ensemble_results.map((e) => e.verdict), ['conflict']);
+        strictEqual(r.status, 1, r.stderr);
+        ok(r.stderr.includes(`no plan-conflict gate names run ${RUN_ID}, and the owner cleared none for it: plan-set recorded another verdict`) && r.stderr.trimEnd().endsWith('nothing was written.'), r.stderr);
+        strictEqual(await readFile(filePath, 'utf8'), before, 'nothing was written');
         ok(!existsSync(consensusTask(dir, filePath, RUN_ID)), 'no round without the gate');
+      });
+    });
+
+    // Plan-verify finding (plan-verify-20261019T030746Z-4c83cd): the owner
+    // clears the run's gate, then a plan-set rerun gates the same run again.
+    // The clear record decides, as consensus-task's refusal does: the block
+    // proposes no round and completes, run after run, rather than fail at
+    // consensus-task each time (C132).
+    it('a run plan-set gated again after the owner cleared it proposes no round, and completes (C132)', async () => {
+      const RUN_ID = 'macro-plan-20260930T000000Z-abcdef';
+      const files = { 'note.md': 'The note\n', 'summary.txt': 'The summary\n', 'contested.md': 'C1\n' };
+      await withTextRepo(async (dir, textDir) => {
+        const filePath = await plannedMacro(dir);
+        await conflictGate(filePath, RUN_ID);
+        await clearAwaitingOwner({ workflowPath: filePath, host: 'claude', gate: 'plan-conflict', env: blockEnv({}) });
+        await conflictGate(filePath, RUN_ID);
+        const gatedAgain = (await readWorkflow(filePath)).frontmatter;
+        deepStrictEqual([gatedAgain.awaiting_owner_gate, gatedAgain.awaiting_owner_run_id, gatedAgain.plan_conflict_cleared_run_id], ['plan-conflict', RUN_ID, RUN_ID], 'the control: the run is gated again, and the clear is kept');
+        for (const pass of ['first', 'again']) {
+          const r = await runFinalize(dir, textDir, filePath, { VERDICT: 'conflict', RUN_ID }, files);
+          strictEqual(r.status, 0, `${pass}: ${r.stderr}`);
+          ok(r.stderr.includes(`The owner has cleared the plan-conflict gate of run ${RUN_ID}`), `${pass}: ${r.stderr}`);
+        }
+        const { frontmatter, body } = await readWorkflow(filePath);
+        strictEqual(notesIn(body), 1, 'the note once');
+        deepStrictEqual(frontmatter.ensemble_results.map((e) => [e.run_id, e.verdict]), [[RUN_ID, 'conflict']]);
+        ok(!existsSync(consensusTask(dir, filePath, RUN_ID)), 'no round for a decided conflict');
       });
     });
 
@@ -785,25 +838,87 @@ for (const shell of SHELLS) {
       return spawnSync(shell, ['-c', await codexPlanCommitBlock(textDir, verdicts, root)], { cwd: dir, encoding: 'utf8', env: blockEnv(env) });
     };
 
-    // C132 on Codex: the same rerun after a failure at each write.
-    it('a rerun after a failure at any write keeps the ensemble result once and writes the task file; past the append it records the note again (C132)', async () => {
-      for (const [step, after] of ['append', 'ensemble-commit', 'consensus-task'].flatMap((s) => [[s, ''], [s, '1']])) {
-        await withTextRepo(async (dir, textDir) => {
-          const filePath = await plannedMacro(dir);
-          await conflictGate(filePath, 'macro-plan-20261010T000000Z-c0de00');
-          const files = { 'note.md': 'The note\n', 'summary.txt': 'The summary\n', 'contested.md': 'C1: split A or not\n' };
-          const failing = await failingRoot(dir);
-          const first = await runCodexCommit(dir, textDir, filePath, files, { verdicts: { VERDICT: 'conflict' }, env: { FAIL_STEP: step, FAIL_AFTER: after }, root: failing });
-          strictEqual(first.status, 1, `${step}: ${first.stderr}`);
-          ok(first.stderr.includes(`✗ injected failure: ${step}`), first.stderr);
-          const again = await runCodexCommit(dir, textDir, filePath, files, { verdicts: { VERDICT: 'conflict' } });
-          strictEqual(again.status, 0, `${step}: ${again.stderr}`);
-          const { frontmatter, body } = await readWorkflow(filePath);
-          strictEqual(notesIn(body), step === 'append' && after === '' ? 1 : 2, `${step}${after ? ' (after)' : ''}: the note once per append that ran`);
-          deepStrictEqual(frontmatter.ensemble_results.filter((e) => e.run_id === 'macro-plan-20261010T000000Z-c0de00').map((e) => e.verdict), ['conflict'], `${step}: the result once`);
-          ok(existsSync(consensusTask(dir, filePath, 'macro-plan-20261010T000000Z-c0de00')), `${step}: the task file`);
-        });
+    // C132 on Codex: the same rerun after a failure at each write, as it is
+    // and with the owner's clear of the gate between the runs.
+    it('a rerun after a failure at any write records the note and the result once and writes the task file; after the owner clears the gate, it proposes no round (C132)', async () => {
+      const RUN_ID = 'macro-plan-20261010T000000Z-c0de00';
+      for (const clear of [false, true]) {
+        for (const [step, after] of ['append', 'ensemble-commit', 'consensus-task'].flatMap((s) => [[s, ''], [s, '1']])) {
+          const what = `${step}${after ? ' (after)' : ''}${clear ? ', cleared between the runs' : ''}`;
+          await withTextRepo(async (dir, textDir) => {
+            const filePath = await plannedMacro(dir);
+            await conflictGate(filePath, RUN_ID);
+            const files = { 'note.md': 'The note\n', 'summary.txt': 'The summary\n', 'contested.md': 'C1: split A or not\n' };
+            const failing = await failingRoot(dir);
+            const first = await runCodexCommit(dir, textDir, filePath, files, { verdicts: { VERDICT: 'conflict' }, env: { FAIL_STEP: step, FAIL_AFTER: after }, root: failing });
+            strictEqual(first.status, 1, `${what}: ${first.stderr}`);
+            ok(first.stderr.includes(`✗ injected failure: ${step}`), first.stderr);
+            if (clear) await clearAwaitingOwner({ workflowPath: filePath, host: 'codex', gate: 'plan-conflict', env: blockEnv({}) });
+            const again = await runCodexCommit(dir, textDir, filePath, files, { verdicts: { VERDICT: 'conflict' } });
+            strictEqual(again.status, 0, `${what}: ${again.stderr}`);
+            const { frontmatter, body } = await readWorkflow(filePath);
+            strictEqual(notesIn(body), 1, `${what}: the note once`);
+            strictEqual(frontmatter.phase_note_run_ids, RUN_ID, `${what}: the run's note is recorded`);
+            deepStrictEqual(frontmatter.ensemble_results.filter((e) => e.run_id === RUN_ID).map((e) => e.verdict), ['conflict'], `${what}: the result once`);
+            if (clear) {
+              ok(again.stderr.includes(`The owner has cleared the plan-conflict gate of run ${RUN_ID}`) && !again.stderr.includes('runtime:consensus'), `${what}: ${again.stderr}`);
+              ok(!existsSync(consensusTask(dir, filePath, RUN_ID)), `${what}: no round for a decided conflict`);
+            } else {
+              ok(existsSync(consensusTask(dir, filePath, RUN_ID)), `${what}: the task file`);
+            }
+          });
+        }
       }
+    });
+
+    // The same on Codex: a run Step 5 gated again after the owner cleared it.
+    it('a run Step 5 gated again after the owner cleared it proposes no round, and completes (C132)', async () => {
+      const RUN_ID = 'macro-plan-20261010T000000Z-c0de00';
+      const files = { 'note.md': 'The note\n', 'summary.txt': 'The summary\n', 'contested.md': 'C1\n' };
+      await withTextRepo(async (dir, textDir) => {
+        const filePath = await plannedMacro(dir);
+        await conflictGate(filePath, RUN_ID);
+        await clearAwaitingOwner({ workflowPath: filePath, host: 'claude', gate: 'plan-conflict', env: blockEnv({}) });
+        await conflictGate(filePath, RUN_ID);
+        const gatedAgain = (await readWorkflow(filePath)).frontmatter;
+        deepStrictEqual([gatedAgain.awaiting_owner_gate, gatedAgain.awaiting_owner_run_id, gatedAgain.plan_conflict_cleared_run_id], ['plan-conflict', RUN_ID, RUN_ID], 'the control: the run is gated again, and the clear is kept');
+        for (const pass of ['first', 'again']) {
+          const r = await runCodexCommit(dir, textDir, filePath, files, { verdicts: { VERDICT: 'conflict' } });
+          strictEqual(r.status, 0, `${pass}: ${r.stderr}`);
+          ok(r.stderr.includes(`The owner has cleared the plan-conflict gate of run ${RUN_ID}`), `${pass}: ${r.stderr}`);
+        }
+        const { frontmatter, body } = await readWorkflow(filePath);
+        strictEqual(notesIn(body), 1, 'the note once');
+        deepStrictEqual(frontmatter.ensemble_results.map((e) => [e.run_id, e.verdict]), [[RUN_ID, 'conflict']]);
+        ok(!existsSync(consensusTask(dir, filePath, RUN_ID)), 'no round for a decided conflict');
+      });
+    });
+
+    // The clear record holds the run's verdict on Codex, as on Claude: another
+    // verdict for a cleared run is refused, and so is a conflict for a run
+    // Step 5 never gated; neither writes anything (C132).
+    it('the clear record holds the verdict: another verdict for a cleared run, or a conflict for a run never gated, stops the block before any write (C132)', async () => {
+      const RUN_ID = 'macro-plan-20261010T000000Z-c0de00';
+      const files = { 'note.md': 'The note\n', 'summary.txt': 'The summary\n', 'contested.md': 'C1\n' };
+      await withTextRepo(async (dir, textDir) => {
+        const filePath = await plannedMacro(dir);
+        await conflictGate(filePath, RUN_ID);
+        await clearAwaitingOwner({ workflowPath: filePath, host: 'codex', gate: 'plan-conflict', env: blockEnv({}) });
+        const before = await readFile(filePath, 'utf8');
+        const r = await runCodexCommit(dir, textDir, filePath, files, { verdicts: { VERDICT: 'pass' } });
+        strictEqual(r.status, 1, r.stderr);
+        ok(r.stderr.includes(`the owner cleared the plan-conflict gate plan-set recorded for run ${RUN_ID}, but VERDICT is pass`) && r.stderr.trimEnd().endsWith('nothing was written.'), r.stderr);
+        strictEqual(await readFile(filePath, 'utf8'), before, 'nothing was written');
+      });
+      await withTextRepo(async (dir, textDir) => {
+        const filePath = await plannedMacro(dir);
+        const before = await readFile(filePath, 'utf8');
+        const r = await runCodexCommit(dir, textDir, filePath, files, { verdicts: { VERDICT: 'conflict' } });
+        strictEqual(r.status, 1, r.stderr);
+        ok(r.stderr.includes(`no plan-conflict gate names run ${RUN_ID}, and the owner cleared none for it: plan-set recorded another verdict`) && r.stderr.trimEnd().endsWith('nothing was written.'), r.stderr);
+        strictEqual(await readFile(filePath, 'utf8'), before, 'nothing was written');
+        ok(!existsSync(consensusTask(dir, filePath, RUN_ID)), 'no round without the gate');
+      });
     });
 
     // Critique K2 — the conflict inputs on Codex, as on Claude: the contested
@@ -893,7 +1008,7 @@ for (const shell of SHELLS) {
         await clearAwaitingOwner({ workflowPath: filePath, host: 'codex', gate: 'plan-conflict', env: blockEnv({}) });
         r = await runCodexCommit(dir, textDir, filePath, files, { verdicts: { VERDICT: 'conflict' } });
         strictEqual(r.status, 0, r.stderr);
-        ok(r.stderr.includes(`No plan-conflict gate names run ${RUN_ID}`), r.stderr);
+        ok(r.stderr.includes(`The owner has cleared the plan-conflict gate of run ${RUN_ID} (plan_conflict_cleared_run_id)`), r.stderr);
         const { frontmatter } = await readWorkflow(filePath);
         deepStrictEqual(frontmatter.ensemble_results.map((e) => e.verdict), ['conflict']);
         deepStrictEqual(frontmatter.pending_ensemble ?? [], [], 'the pending entry is popped');
@@ -912,9 +1027,9 @@ for (const shell of SHELLS) {
     });
 
     // Critique F1, F2 and F5 on Codex: a later run's note and result after the
-    // first's, the macro from macro-path, and the strict run-id form on a
-    // conflict only.
-    it('a later run records its own note, the macro is the one macro-path names, and a non-conflict takes any dispatched run id', async () => {
+    // first's, the macro from macro-path, and the run-id form the macro's
+    // records take, whatever the verdict (C132).
+    it('a later run records its own note, the macro is the one macro-path names, and a run id with colons and dots is refused', async () => {
       await withTextRepo(async (dir, textDir) => {
         const filePath = await plannedMacro(dir);
         execFileSync('git', ['-C', dir, 'switch', '-q', '-c', 'feat/other']);
@@ -924,7 +1039,7 @@ for (const shell of SHELLS) {
           originalRequest: 'the macro the switched branch names',
         });
         const otherBefore = await readFile(other, 'utf8');
-        const second = 'macro-plan-2026-10-10T00:00:00.000Z-abc';
+        const second = 'macro-plan-20261010T000000Z-c0de01';
         for (const [runId, note] of [['macro-plan-20261010T000000Z-c0de00', 'The first note\n'], [second, 'The second note\n']]) {
           const r = await runCodexCommit(dir, textDir, filePath, { 'run-id': `${runId}\n`, 'note.md': note, 'summary.txt': 'The summary\n' });
           strictEqual(r.status, 0, r.stderr);
@@ -935,10 +1050,12 @@ for (const shell of SHELLS) {
         deepStrictEqual(frontmatter.ensemble_results.map((e) => e.run_id), ['macro-plan-20261010T000000Z-c0de00', second]);
         strictEqual(await readFile(other, 'utf8'), otherBefore, 'the macro the branch names now is untouched');
         const before = await readFile(filePath, 'utf8');
-        const r = await runCodexCommit(dir, textDir, filePath, { 'run-id': `${second}\n`, 'note.md': 'n\n', 'summary.txt': 's\n', 'contested.md': 'C1\n' }, { verdicts: { VERDICT: 'conflict' } });
-        strictEqual(r.status, 1, r.stderr);
-        ok(/not a run id the verdict conflict can record; nothing was written\./.test(r.stderr), r.stderr);
-        strictEqual(await readFile(filePath, 'utf8'), before);
+        for (const VERDICT of ['concerns', 'conflict']) {
+          const r = await runCodexCommit(dir, textDir, filePath, { 'run-id': 'macro-plan-2026-10-10T00:00:00.000Z-abc\n', 'note.md': 'n\n', 'summary.txt': 's\n', 'contested.md': 'C1\n' }, { verdicts: { VERDICT } });
+          strictEqual(r.status, 1, `${VERDICT}: ${r.stderr}`);
+          ok(/not a run id the macro can record \(letters, digits, _ and -, opening with a letter or digit\); nothing was written\./.test(r.stderr), r.stderr);
+          strictEqual(await readFile(filePath, 'utf8'), before);
+        }
       });
     });
 

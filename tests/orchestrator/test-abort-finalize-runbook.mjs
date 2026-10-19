@@ -26,6 +26,8 @@ import { dirname, join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import { withArgs } from './_command-args-file.mjs';
+
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const ORCH_ROOT = resolve(REPO_ROOT, 'plugins/orchestrator');
 const ENGINEER_ROOT = resolve(REPO_ROOT, 'plugins/engineer');
@@ -63,7 +65,10 @@ async function withRepo(fn) {
       gitBaseline: { branch: 'main', head: '0'.repeat(40), status_digest: '' },
       originalRequest: 'abort/finalize runbook fixture',
     });
-    const run = (script, env = {}) => spawnSync('bash', ['-c', `cd '${work}'\n${script}`], {
+    // A script holding Phase 0 reads the command's arguments from the args
+    // file the agent writes (C134(a)): none here, in a new file each run.
+    const ARGS_LINE = "ARGS_DIR='<directory from step 1>'";
+    const run = (script, env = {}) => spawnSync('bash', ['-c', `cd '${work}'\n${script.includes(ARGS_LINE) ? withArgs(script, '', { base: dir }) : script}`], {
       encoding: 'utf8',
       env: {
         ...GIT_ENV,
@@ -79,13 +84,14 @@ async function withRepo(fn) {
 
 /** An orchestrator root whose state.mjs fails every call with status 7. */
 // Every write fails with status 7. The admission (ADR-0067 Decision 4, item 5)
-// goes to the real script, so Phase 1 reaches the write it joins for.
+// goes to the real script, so Phase 1 reaches the write it joins for, and so
+// does the argument parse (C134(a)), so Phase 0 reaches find-active.
 async function failingOrchestrator(dir) {
   const root = join(dir, 'failing-orchestrator');
   await mkdir(join(root, 'scripts'), { recursive: true });
   await writeFile(join(root, 'scripts', 'state.mjs'), [
     "import { spawnSync } from 'node:child_process';",
-    "if (process.argv[2] === 'admission') {",
+    "if (process.argv[2] === 'admission' || process.argv[2] === 'command-args') {",
     `  const r = spawnSync(process.execPath, [${JSON.stringify(resolve(ORCH_ROOT, 'scripts/state.mjs'))}, ...process.argv.slice(2)], { stdio: 'inherit' });`,
     '  process.exit(r.status ?? 1);',
     '}',

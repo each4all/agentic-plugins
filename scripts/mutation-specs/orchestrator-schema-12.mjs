@@ -302,8 +302,8 @@ export const MUTATIONS = [
   },
   {
     id: 'R4', file: PLAN_MD, tests: [TRB],
-    from: '  --event updated --require-open || exit 1\n',
-    to: '  --event updated --require-open\n',
+    from: '  --event updated --require-open --run-id "$RUN_ID" || exit 1\n',
+    to: '  --event updated --require-open --run-id "$RUN_ID"\n',
     why: 'a refused append (terminal macro) is followed by the ensemble commit anyway',
   },
   {
@@ -397,4 +397,16 @@ export const MUTATIONS = [
     to: '      const r11 = await importSchema11Reader(readerDir);',
     why: 'the C132 case\'s reader still knows the records, so the carrier path is never exercised (critique review-20261018T061641Z-274da30)',
   },
+  // C134(a)/C132 consumer — the plan finalize reads the owner's clear first: a
+  // run plan-set gated again after the clear is decided, as consensus-task
+  // judges it (Plan-verify plan-verify-20261019T030746Z-4c83cd).
+  ...[['PF1', PLAN_MD, /a run plan-set gated again after the owner cleared it proposes no round, and completes/],
+    ['PF2', 'plugins/orchestrator/core/skills/plan/SKILL.md', /a run Step 5 gated again after the owner cleared it proposes no round, and completes/]]
+    .map(([id, file, killedBy]) => ({
+      id, file, tests: [TRB],
+      from: 'const cleared=m.plan_conflict_cleared_run_id===id;const gated=!cleared&&m.awaiting_owner_gate==="plan-conflict"&&m.awaiting_owner_run_id===id;',
+      to: 'const gated=m.awaiting_owner_gate==="plan-conflict"&&m.awaiting_owner_run_id===id;const cleared=!gated&&m.plan_conflict_cleared_run_id===id;',
+      why: 'a run gated again after the owner cleared it reads as gated: the block proposes a round consensus-task refuses, and every rerun fails there',
+      killed_by: killedBy,
+    })),
 ];
