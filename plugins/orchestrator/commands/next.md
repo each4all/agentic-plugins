@@ -38,9 +38,35 @@ subtask Phases 3b to 5 act on is the one Phase 1 selected (ADR-0067 Decision
    has not run with this directory. Nothing deletes the directory: a headless
    run can deny `rm`, and it is under `$TMPDIR`.
 
-**Argument parsing**: extract from `$ARGUMENTS`:
-- `EXPLICIT_SUBTASK_ID` ← the leading positional token (e.g., `PR1`), or empty if absent.
-- `EXPLICIT_WORKFLOW_ID` ← value of `--workflow=<id>` flag, or empty if absent.
+The arguments above reach the blocks through an args file, never as shell
+source (ADR-0059, C134(a)): typed into a block, a quote, `$` or backquote in
+them would be read as code. Before Phase 0, too:
+
+3. Create a private directory for the args file, and note the path it prints:
+
+   ```bash
+   mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"
+   ```
+
+4. With your file-writing tool, not the shell, create `args.json` in that
+   directory holding `{"agentic_args": 1, "text": "…"}`, with `text` set to
+   the arguments above exactly as typed, as a JSON string (`""` when there
+   are none). Put the directory's path in Phase 0's `ARGS_DIR` line.
+
+**Arguments**: Phase 0 parses the args file with `state.mjs command-args
+--command next` (grammar: `scripts/lib/command-args.mjs`), which removes the
+file and its directory once read, and keeps the fields it prints in the text
+directory as `arguments.json`, where every later block reads them:
+- `subtask_id` ← the leading word (e.g., `PR1`), or empty if absent.
+- `workflow_id` ← the value of `--workflow=<id>`, or empty if absent.
+
+A refused text (an unknown option, a second subtask id, a word holding a quote
+or backslash) stops Phase 0 with the reason, and nothing is selected; the
+parse removed the args file, so write a new one before running Phase 0 again.
+Once Phase 0 has kept `arguments.json`, Phase 0 run again with the same text
+directory reads it; a new args file there is parsed too, and refused unless it
+names the same arguments: to run with other arguments, start again from step 1
+with a new text directory.
 
 **Critical rules** (ADR-0019 §1):
 - Do NOT invoke the engineer skill directly (`core/skills/<verb>/SKILL.md`) — bypasses Phase 0 bootstrap and drops the parent linkage the engineer terminal note needs.
@@ -57,6 +83,7 @@ ADR-0019 §1 lines 187-213 — orchestrator workflows span multiple branches (ma
 
 ```bash
 TEXT_DIR='<directory from step 1>'
+ARGS_DIR='<directory from step 3>'
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
@@ -66,25 +93,44 @@ if [ -z "$GIT_BRANCH" ]; then
   echo "  Switch to the macro branch first: git switch <branch>" >&2
   exit 1
 fi
+# The arguments, parsed from the args file the agent wrote (ADR-0059, C134(a)):
+# command-args reads it by next's grammar and removes it, so its fields are kept
+# in the text directory, where Phase 1 and a rerun of this block read them. No
+# character the user typed is shell source. A new args file beside kept
+# arguments is parsed too, and refused unless it names the same arguments: a
+# rerun never selects by other arguments than the kept ones without a word.
+if [ ! -f "$TEXT_DIR/arguments.json" ]; then
+  ARGS_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" command-args \
+    --command next --args-file "$ARGS_DIR/args.json")" || exit 1
+  printf '%s' "$ARGS_JSON" > "$TEXT_DIR/arguments.json" || exit 1
+elif [ -e "$ARGS_DIR/args.json" ]; then
+  ARGS_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" command-args \
+    --command next --args-file "$ARGS_DIR/args.json")" || exit 1
+  [ "$ARGS_JSON" = "$(cat "$TEXT_DIR/arguments.json")" ] || {
+    echo "✗ The args file in ARGS_DIR ($ARGS_DIR) names other arguments than the ones kept in TEXT_DIR ($TEXT_DIR); nothing was selected. To run with these arguments, start again from step 1 with a new text directory." >&2
+    exit 1
+  }
+fi
+ARG_WORKFLOW_ID="$(node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>process.stdout.write(JSON.parse(d).workflow_id))' < "$TEXT_DIR/arguments.json")" || exit 1
 MACRO_PATH=""
-if [ -n "${EXPLICIT_WORKFLOW_ID:-}" ]; then
+if [ -n "$ARG_WORKFLOW_ID" ]; then
   # Reject path-component overrides — `--workflow=../archive/<id>` would
   # otherwise let the macro path escape `workflows/` and target archived
   # or unrelated files (Codex P2 finding; mirrors PR-C's path-traversal
   # guard in parent-writeback.mjs).
-  case "$EXPLICIT_WORKFLOW_ID" in
+  case "$ARG_WORKFLOW_ID" in
     # No NUL case: a shell variable cannot hold NUL, and bash expands $'\0'
     # to an empty string, which made the pattern match every id.
     */*|*\\*|..|.*)
-      echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID invalid — must be a basename-shaped workflow id (no '/', '\\\\', '..', or leading '.')." >&2
+      echo "✗ --workflow=$ARG_WORKFLOW_ID invalid — must be a basename-shaped workflow id (no '/', '\\\\', '..', or leading '.')." >&2
       exit 1;;
   esac
   # ADR-0067 Decision 4, item 2 — the macro file in the orchestrator workflow
   # homes of this checkout's read set, the default state root's first. Two
   # files holding the id are an error, named on stderr, never a choice.
   if ! MACRO_PATH="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
-    resolve-workflow --repo-root "$REPO_ROOT" --workflow-id "$EXPLICIT_WORKFLOW_ID")"; then
-    echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID names no single macro file in the orchestrator workflow homes of this checkout's read set (the reason is above)." >&2
+    resolve-workflow --repo-root "$REPO_ROOT" --workflow-id "$ARG_WORKFLOW_ID")"; then
+    echo "✗ --workflow=$ARG_WORKFLOW_ID names no single macro file in the orchestrator workflow homes of this checkout's read set (the reason is above)." >&2
     echo "  Use \`gh pr list\` or run /orchestrator:plan to start a new macro." >&2
     exit 1
   fi
@@ -127,13 +173,15 @@ TEXT_DIR='<directory from step 1>'
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 MACRO_PATH="$(cat "$TEXT_DIR/macro-path")" || exit 1
+# The subtask id Phase 0 parsed from the arguments, or empty.
+ARG_SUBTASK_ID="$(node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>process.stdout.write(JSON.parse(d).subtask_id))' < "$TEXT_DIR/arguments.json")" || exit 1
 SUBTASK_JSON=""
-if [ -n "${EXPLICIT_SUBTASK_ID:-}" ]; then
+if [ -n "$ARG_SUBTASK_ID" ]; then
   # Explicit id — read that subtask. PR-C0's absorbing-completed
   # / terminal-partial preconditions reject downgrades downstream;
   # the runbook only validates the id resolves cleanly here.
   SUBTASK_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
-    read-subtask --workflow-path "$MACRO_PATH" --subtask-id "$EXPLICIT_SUBTASK_ID")"
+    read-subtask --workflow-path "$MACRO_PATH" --subtask-id "$ARG_SUBTASK_ID")"
   if [ $? -ne 0 ]; then exit 1; fi
 else
   # Automatic — first subtask with status=pending AND every blocked_by
