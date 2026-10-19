@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.3](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.31.2...plugin-engineer-v0.31.3) (2026-10-19)
+
+
+### Bug Fixes
+
+* **engineer:** pass typed workflow ids and command arguments through files, never shell source (C134(a), C132) ([11d5669](https://github.com/each4all/agentic-plugins/commit/11d5669e87d3674c22f85da29ab913ddb365cfc8))
+
 ## [0.31.2](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.31.1...plugin-engineer-v0.31.2) (2026-10-19)
 
 
