@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.2](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.12.1...plugin-founder-v0.12.2) (2026-10-19)
+
+
+### Bug Fixes
+
+* **founder:** allocate every peer run id with peer-runner new-run-id, never shell arithmetic (C119, C26) ([13df2c0](https://github.com/each4all/agentic-plugins/commit/13df2c08f753342afc8179efd74637889229bd55))
+
 ## [0.12.1](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.12.0...plugin-founder-v0.12.1) (2026-10-18)
 
 
