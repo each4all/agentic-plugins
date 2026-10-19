@@ -407,7 +407,27 @@ describe('skill regions: the contracts hold for every enrolled persona', () => {
               // in the foreground; backgrounded, RUN_RC is the launch's status, not the run's.
               strictEqual([...block.matchAll(/^node "<plugin-root>\/scripts\/peer-runner\.mjs" run \\$/gm)].length, 1, 'one runner call');
               ok(/ > "\$RUN_JSON" 2> "\$RUN_ERR"\nRUN_RC=\$\?\n/.test(block), 'the runner\'s exit code is read right after it, in the foreground');
-              ok(!/&\s*$/m.test(block.replace(/&&|& 0x/g, '')), 'nothing runs in the background');
+              ok(!/&\s*$/m.test(block.replace(/&&/g, '')), 'nothing runs in the background');
+              // R4 (C119, C26): the run id is the one the plugin's runner allocates
+              // before the runner call, in every shell, and an allocation that
+              // prints nothing stops the block there.
+              const head = block.slice(0, block.indexOf('node "<plugin-root>/scripts/peer-runner.mjs" run'));
+              ok(/^RUN_ID="\$\(node "<plugin-root>\/scripts\/peer-runner\.mjs" new-run-id --prefix peer-now\)" \|\| RUN_ID=''\n\[ -n "\$RUN_ID" \] \|\| \{ echo "✗ [^\n]*; exit 1; \}$/m.test(head), 'the allocation, before the runner call');
+              ok(!/RANDOM|date -u/.test(block), 'no shell arithmetic or date makes the id');
+              const dir = mkdtempSync(join(tmpdir(), 'skill-peer-now-id.'));
+              try {
+                writeFileSync(join(dir, 'prompt.xml'), 'hi\n');
+                const allocate = head.replace(/<plugin-root>/g, pluginRoot(persona)).replace("TEXT_DIR='<directory from step 1>'", `TEXT_DIR='${dir}'`).replace("PEER='<claude|codex, from --peer>'", "PEER='codex'");
+                for (const shell of SHELLS) {
+                  const r = spawnSync(shell, ['-c', `${allocate}\nprintf 'ID=%s' "$RUN_ID"`], { cwd: dir, encoding: 'utf8', env: { PATH: process.env.PATH, HOME: dir } });
+                  strictEqual(r.status, 0, `${shell}: ${r.stderr}`);
+                  ok(/ID=peer-now-\d{8}T\d{6}Z-[0-9a-f]{6}$/.test(r.stdout), `${shell}: ${r.stdout}`);
+                  const none = spawnSync(shell, ['-c', allocate.replace('--prefix peer-now', '--prefix peer-later')], { cwd: dir, encoding: 'utf8', env: { PATH: process.env.PATH, HOME: dir } });
+                  ok(none.status === 1 && none.stderr.includes('new-run-id allocated no run id'), `${shell}: a refused allocation stops the block: ${none.stderr}`);
+                }
+              } finally {
+                rmSync(dir, { recursive: true, force: true });
+              }
               // Contract (ADR-0059, amendment of 2026-10-10): the agent passing either prompt
               // form — both are the prompt.xml it wrote; a --prompt-file's path pasted into the
               // block would be the user's text read as shell source.

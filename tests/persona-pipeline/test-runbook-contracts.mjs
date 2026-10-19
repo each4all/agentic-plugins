@@ -431,7 +431,7 @@ function spawnAsync(command, args, options = {}, { timeoutMs = CHILD_TIMEOUT_MS,
  * call has its own directory, and the block its own environment, so no two
  * runs share a path or a variable.
  */
-async function runBlock(shell, block, persona, { note = null, texts = {}, failAppend = false, active = '', findStatus = 0, resolveStatus = 0, after = '', baseline = '', baselineStatus = 0, readOutput = '{}', readStatus = 0, preflightStatus = 0, settleStatus = 0, clearStatus = 0, argsText = null, diag = '', diagStatus = 0, phase7Status = 0, recorded = '', proposed = PROPOSED_ROUND, taskStatus = 0 }) {
+async function runBlock(shell, block, persona, { note = null, texts = {}, failAppend = false, active = '', findStatus = 0, resolveStatus = 0, after = '', baseline = '', baselineStatus = 0, readOutput = '{}', readStatus = 0, preflightStatus = 0, settleStatus = 0, clearStatus = 0, argsText = null, diag = '', diagStatus = 0, phase7Status = 0, recorded = '', proposed = PROPOSED_ROUND, taskStatus = 0, newRunId = null, newRunIdStatus = 0 }) {
   const dir = mkdtempSync(join(tmpdir(), 'pc2a2b-finalize.'));
   try {
     mkdirSync(join(dir, 'bin'));
@@ -457,6 +457,9 @@ async function runBlock(shell, block, persona, { note = null, texts = {}, failAp
       'case "$1" in */start-args.mjs) printf \'start-args\\n\' >> "$STUB_LOG"; shift; exec "$STUB_REAL_NODE" "$STUB_START_ARGS" "$@";; esac',
       'case "$1" in */phase7-commit.mjs) printf \'phase7 %s\\n\' "$3" >> "$STUB_LOG"; printf \'%s\' "$*" | tr \'\\n\' \' \' >> "$STUB_ARGV"; printf \'\\n\' >> "$STUB_ARGV"; exit "$STUB_PHASE7_RC";; esac',
       'printf \'%s\\n\' "$2" >> "$STUB_LOG"',
+      // R4 (C119, C26): the run id comes from this persona's own allocator,
+      // peer-runner.mjs new-run-id, unless the test gives what it prints.
+      'if [ "$2" = new-run-id ]; then printf \'%s\' "$*" | tr \'\\n\' \' \' >> "$STUB_ARGV"; printf \'\\n\' >> "$STUB_ARGV"; if [ -n "${STUB_NEW_RUN_ID+set}" ]; then printf \'%s\' "$STUB_NEW_RUN_ID"; exit "$STUB_NEW_RUN_ID_RC"; fi; shift; exec "$STUB_REAL_NODE" "$STUB_PEER_RUNNER" "$@"; fi',
       'printf \'%s\' "$*" | tr \'\\n\' \' \' >> "$STUB_ARGV"; printf \'\\n\' >> "$STUB_ARGV"',
       'if [ "$2" = find-active ]; then printf \'%s\\n\' "$STUB_ACTIVE"; exit "$STUB_FIND_RC"; fi',
       // A run prints its result, with the run id it was given (R4: a finalize
@@ -521,6 +524,9 @@ async function runBlock(shell, block, persona, { note = null, texts = {}, failAp
       STUB_DIAG_RC: String(diagStatus),
       STUB_PHASE7_RC: String(phase7Status),
       STUB_START_ARGS: join(pluginRoot(persona), 'scripts', 'start-args.mjs'),
+      STUB_PEER_RUNNER: join(pluginRoot(persona), 'scripts', 'peer-runner.mjs'),
+      ...(newRunId === null ? {} : { STUB_NEW_RUN_ID: newRunId }),
+      STUB_NEW_RUN_ID_RC: String(newRunIdStatus),
       STUB_CONTEXT: RESOLVER_CONTEXT,
       STUB_DIAGNOSTIC: RESOLVER_DIAGNOSTIC,
       ...(failAppend ? { STUB_FAIL_APPEND: '1' } : {}),
@@ -1050,12 +1056,25 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               // Contract: the agent collecting the run — the id is printed before the
               // runner call, so a dispatch that never returns still names its run.
               ok(block.text.indexOf('echo "peer-now run_id=$RUN_ID" >&2') >= 0 && block.text.indexOf('echo "peer-now run_id=$RUN_ID" >&2') < block.text.indexOf('peer-runner.mjs" run'), 'the run id is surfaced before the runner call');
-              const r = await runBlock('bash', block.text, persona, { texts: { 'prompt.xml': 'He said "go"; $(touch pwned) `touch pwned2`\n' } });
+              const r = await runBlock('bash', block.text, persona, { texts: { 'prompt.xml': 'He said "go"; $(touch pwned) `touch pwned2`\n' }, after: '\nprintf "RECORDED=%s" "$(cat "$TEXT_DIR/prompt.xml.run-id")"' });
               strictEqual(r.status, 0, r.stderr);
               const id = /^peer-now run_id=(peer-now-\d{8}T\d{6}Z-[0-9a-f]{6})$/m.exec(r.stderr)?.[1];
               ok(id, `a peer-now run id on stderr: ${r.stderr}`);
-              deepStrictEqual(r.log, ['run'], 'one runner call');
-              for (const part of [` --run-id ${id} `, ' --kind peer-now ', ' --peer codex ', ` --prompt-file ${r.textDir}/prompt.xml `, ' --output-format text ']) ok(r.argv[0].includes(part), `${part}: ${r.argv[0]}`);
+              // R4 (C119): and in the dispatch's directory, where a status or
+              // cancel in a shell of its own reads it.
+              ok(r.stdout.endsWith(`RECORDED=${id}`), `the run id the dispatch recorded: ${r.stdout}`);
+              // R4 (C119, C26): the id is the one this persona's allocator printed,
+              // then one runner call keyed with it.
+              deepStrictEqual(r.log, ['new-run-id', 'run'], 'the allocation, then one runner call');
+              ok(r.argv[0].trimEnd().endsWith(' new-run-id --prefix peer-now'), r.argv[0]);
+              for (const part of [` --run-id ${id} `, ' --kind peer-now ', ' --peer codex ', ` --prompt-file ${r.textDir}/prompt.xml `, ' --output-format text ']) ok(r.argv[1].includes(part), `${part}: ${r.argv[1]}`);
+              for (const shell of SHELLS) {
+                for (const [why, alloc] of [['a refused prefix', { newRunId: '', newRunIdStatus: 2 }], ['an empty id', { newRunId: '' }]]) {
+                  const unallocated = await runBlock(shell, block.text, persona, { texts: { 'prompt.xml': 'hi\n' }, ...alloc });
+                  deepStrictEqual([unallocated.status, unallocated.log], [1, ['new-run-id']], `${shell}, ${why}: nothing dispatched: ${unallocated.stderr}`);
+                  ok(unallocated.stderr.includes('new-run-id allocated no run id') && !unallocated.stderr.includes('peer-now run_id='), `${shell}, ${why}: ${unallocated.stderr}`);
+                }
+              }
               // Contract (ADR-0059, amendment of 2026-10-10): the agent forwarding
               // a --prompt-text — it reaches the runner as the file the agent wrote,
               // never as an argument the shell splits or runs.
@@ -1071,7 +1090,8 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               deepStrictEqual([block.text.match(/^RUN_JSON=.*$/gm), block.text.match(/^RUN_ERR=.*$/gm)], [['RUN_JSON="$TEXT_DIR/prompt.xml.run.json"'], ['RUN_ERR="$TEXT_DIR/prompt.xml.err"']], 'the result and its stderr in the dispatch\'s directory');
               for (const [how, content] of [['left unwritten', null], ['blank', ' \n\n']]) {
                 const stopped = await runBlock('bash', block.text, persona, { texts: { 'prompt.xml': content } });
-                deepStrictEqual([stopped.status, stopped.log], [1, []], `a prompt ${how}: nothing dispatched`);
+                // The allocation before the check writes nothing (R4, C119).
+                deepStrictEqual([stopped.status, stopped.log], [1, ['new-run-id']], `a prompt ${how}: nothing dispatched`);
                 ok(stopped.stderr.includes('prompt.xml in TEXT_DIR (') && stopped.stderr.includes('is missing or blank'), stopped.stderr);
               }
               // R4 J3: the runner's exit status is the block's own, so a failed
@@ -1083,6 +1103,24 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
                 const failed = await runBlock(shell, `${failing}${block.text}`, persona, { texts: { 'prompt.xml': 'hi\n' } });
                 strictEqual(failed.status, 3, `${shell}: ${failed.stderr}`);
                 ok(failed.stderr.includes('failed (exit 3, peer_cli_not_found)') && failed.stderr.includes('No note is appended for it.'), `${shell}: ${failed.stderr}`);
+              }
+            });
+
+            // R4 (C119): engineer's authored status and cancel controls read the
+            // run id the dispatch recorded, in a shell of their own.
+            if (/peer-runner\.mjs" status \\/.test(text)) it('status and cancel, run: in a fresh shell, each names the run id the dispatch recorded; with none recorded, neither runs', async () => {
+              const block = shellBlocks(text).find((b) => b.text.includes('/scripts/peer-runner.mjs" status'));
+              const LINE = "TEXT_DIR='<the directory the dispatch ran with>'";
+              ok(block.text.startsWith(`${LINE}\n`), 'the block names the dispatch\'s directory first');
+              const controls = `${TEXT_DIR_LINE}\n${block.text.replace(LINE, () => 'TEXT_DIR="$TEXT_DIR"')}`;
+              for (const shell of SHELLS) {
+                const r = await runBlock(shell, `RUN_ID='peer-now-stale'\n${controls}`, persona, { texts: { 'prompt.xml.run-id': 'peer-now-20261019T000000Z-0a0b0c' } });
+                deepStrictEqual([r.status, r.log], [0, ['status', 'cancel']], `${shell}: ${r.stderr}`);
+                for (const a of r.argv) ok(`${a} `.includes(' --run-id peer-now-20261019T000000Z-0a0b0c '), `${shell}: ${a}`);
+                for (const [why, texts] of [['no record', {}], ['an empty record', { 'prompt.xml.run-id': '' }]]) {
+                  const none = await runBlock(shell, `RUN_ID='peer-now-stale'\n${controls}`, persona, { texts });
+                  deepStrictEqual([none.status, none.log], [1, []], `${shell}, ${why}: ${none.stderr}`);
+                }
               }
             });
 
@@ -2245,12 +2283,26 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               const resume = blockWith(/--event resumed/).text;
               for (const shell of SHELLS) {
                 const sent = await runBlock(shell, `${STALE}${dispatch}`, persona, { active: FOUND, after: '\nprintf "RECORD=%s" "$(cat "$TEXT_DIR/prompt.xml.dispatch.json")"' });
-                deepStrictEqual([sent.status, sent.log], [0, ['find-active', 'run']], `${shell}: ${sent.stderr}`);
+                deepStrictEqual([sent.status, sent.log], [0, ['find-active', 'new-run-id', 'run']], `${shell}: ${sent.stderr}`);
+                // R4 (C119, C26): the run id is the one this persona's allocator
+                // printed for the block's ensemble type, in every shell (zsh read
+                // the arithmetic it replaces with other precedence).
+                const type = FIXTURE.expected_ensemble_types[persona][verb];
+                ok(sent.argv[1].trimEnd().endsWith(` new-run-id --prefix ${type}`), `${shell}: ${sent.argv[1]}`);
+                const allocated = new RegExp(`^ --run-id (${type}-\\d{8}T\\d{6}Z-[0-9a-f]{6}) $`);
+                ok(allocated.test(/ --run-id \S+ /.exec(`${sent.argv[2]} `)?.[0] ?? ''), `${shell}: an allocated ${type} run id: ${sent.argv[2]}`);
                 // R4 F1: the dispatch records, before the launch, the run it launches
                 // and the workflow it found, for a finalize whose runner left no result.
                 const rec = JSON.parse(/RECORD=(.*)$/s.exec(sent.stdout)[1]);
-                ok(rec.workflow_path === FOUND && `${sent.argv[1]} `.includes(` --run-id ${rec.run_id} `), `${shell}: ${sent.stdout}`);
-                ok(sent.argv[1].includes(' --workflow-path /w/active.md ') && / --repo-root \/\S+ /.test(sent.argv[1]), `${shell}: the dispatch on the workflow it found, in the repository: ${sent.argv[1]}`);
+                ok(rec.workflow_path === FOUND && `${sent.argv[2]} `.includes(` --run-id ${rec.run_id} `), `${shell}: ${sent.stdout}`);
+                ok(sent.argv[2].includes(' --workflow-path /w/active.md ') && / --repo-root \/\S+ /.test(sent.argv[2]), `${shell}: the dispatch on the workflow it found, in the repository: ${sent.argv[2]}`);
+                // An allocation that fails, or that prints nothing, stops the block
+                // before the dispatch, with the stale RUN_ID unused.
+                for (const [why, alloc] of [['a refused prefix', { newRunId: '', newRunIdStatus: 2 }], ['an empty id', { newRunId: '' }]]) {
+                  const unallocated = await runBlock(shell, `${STALE}${dispatch}`, persona, { active: FOUND, ...alloc });
+                  deepStrictEqual([unallocated.status, unallocated.log], [1, ['find-active', 'new-run-id']], `${shell}, ${why}: ${unallocated.stderr}`);
+                  ok(unallocated.stderr.includes('new-run-id allocated no run id'), `${shell}, ${why}: ${unallocated.stderr}`);
+                }
                 const resumed = await runBlock(shell, `${STALE}${resume}`, persona, { active: FOUND });
                 deepStrictEqual([resumed.status, resumed.log], [0, ['find-active', 'append']], `${shell}: ${resumed.stderr}`);
                 ok(resumed.argv[1].includes(' --workflow-path /w/active.md '), `${shell}: ${resumed.argv[1]}`);

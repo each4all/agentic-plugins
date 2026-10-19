@@ -1060,9 +1060,12 @@ for (const shell of SHELLS) {
         const shim = join(dir, 'shim-root');
         await mkdir(join(shim, 'scripts'), { recursive: true });
         await writeFile(join(shim, 'scripts', 'peer-runner.mjs'), [
-          "import { readFileSync, writeFileSync } from 'node:fs';",
+          "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';",
           "import { dirname, join } from 'node:path';",
+          "import { spawnSync } from 'node:child_process';",
           'const args = process.argv.slice(2);',
+          // R4 (C119, C26): the allocation goes to the real runner, logged.
+          "if (args[0] === 'new-run-id') { appendFileSync(process.env.SHIM_ALLOC, args.join(' ') + '\\n'); process.exit(spawnSync(process.execPath, [process.env.REAL_RUNNER, ...args], { stdio: 'inherit' }).status ?? 1); }",
           "const textDir = dirname(args[args.indexOf('--prompt-file') + 1]);",
           "const held = (name) => readFileSync(join(textDir, name), 'utf8');",
           "const seen = { args, runId: held('run-id'), runMacro: held('run-macro') };",
@@ -1072,22 +1075,32 @@ for (const shell of SHELLS) {
         ].join('\n'));
         const filePath = await plannedMacro(dir);
         const shimLog = join(dir, 'shim-log.json');
+        const shimAlloc = join(dir, 'shim-alloc.log');
+        const env = blockEnv({ AGENTIC_ORCHESTRATOR_ROOT: shim, SHIM_LOG: shimLog, SHIM_ALLOC: shimAlloc, REAL_RUNNER: resolve(ORCH_ROOT, 'scripts/peer-runner.mjs') });
         // What an earlier dispatch, for another macro, left in the directory.
         await writeTexts(textDir, { 'macro-path': filePath, 'prompt.xml': '<prompt/>\n', 'run-id': 'macro-plan-20261009T000000Z-0ld000', 'run-macro': join(dir, 'other-macro.md') });
-        const r = spawnSync(shell, ['-c', withTextDir(dispatch, textDir)], { cwd: dir, encoding: 'utf8', env: blockEnv({ AGENTIC_ORCHESTRATOR_ROOT: shim, SHIM_LOG: shimLog }) });
+        const r = spawnSync(shell, ['-c', withTextDir(dispatch, textDir)], { cwd: dir, encoding: 'utf8', env });
         strictEqual(r.status, 0, r.stderr);
         ok(existsSync(shimLog), 'the runner had answered when the block exited');
+        strictEqual(await readFile(shimAlloc, 'utf8'), 'new-run-id --prefix macro-plan\n', "one allocation, by the plugin's runner");
         const seen = JSON.parse(await readFile(shimLog, 'utf8'));
         const opt = (name) => seen.args[seen.args.indexOf(name) + 1];
         strictEqual(seen.args[0], 'run');
-        // The random tail's length is not pinned: zsh binds `&` before `*`, so
-        // its RANDOM line (runid-runbooks') can print more than six digits.
-        ok(/^macro-plan-\d{8}T\d{6}Z-[0-9a-f]+$/.test(opt('--run-id')), opt('--run-id'));
+        // R4 (C119, C26): the id the runner allocated, six hex digits in every
+        // shell (zsh read the arithmetic it replaces with other precedence).
+        ok(/^macro-plan-\d{8}T\d{6}Z-[0-9a-f]{6}$/.test(opt('--run-id')), opt('--run-id'));
         notStrictEqual(opt('--run-id'), 'macro-plan-20261009T000000Z-0ld000', 'a new run id');
         deepStrictEqual([seen.runId, seen.runMacro], [opt('--run-id'), filePath], 'run-id and run-macro held this run before the runner started');
         strictEqual(opt('--workflow-path'), filePath);
         deepStrictEqual([await readFile(join(textDir, 'run-id'), 'utf8'), await readFile(join(textDir, 'run-macro'), 'utf8')], [opt('--run-id'), filePath]);
         strictEqual(await readFile(join(textDir, 'prompt.xml.run.json'), 'utf8'), '{"shim":true}\n', "the runner's answer");
+        // An allocation that fails stops the block before the dispatch, with
+        // run-id left empty for Phase 2.
+        const unrun = join(dir, 'shim-log-unallocated.json');
+        const refused = spawnSync(shell, ['-c', withTextDir(dispatch, textDir)], { cwd: dir, encoding: 'utf8', env: { ...env, SHIM_LOG: unrun, REAL_RUNNER: join(dir, 'no-such-runner.mjs') } });
+        strictEqual(refused.status, 1, refused.stderr);
+        ok(refused.stderr.includes('new-run-id allocated no run id'), refused.stderr);
+        deepStrictEqual([existsSync(unrun), await readFile(join(textDir, 'run-id'), 'utf8')], [false, ''], 'no runner call, and no run id');
       });
     });
 
