@@ -1,11 +1,22 @@
 # Repo-level coverage authority (ADR-0033).
 #
-# The one workflow that runs tests. It runs the full discovery-based `npm test`
-# (node --test, no-arg) with no path filter, so every test file is gated on
-# every push and a newly added test cannot silently escape CI.
+# The one workflow that runs tests. It runs every file of the discovery-based
+# `npm test` (node --test, no-arg) with no path filter, so every test file is
+# gated on every push and a newly added test cannot silently escape CI.
 # validate.yml runs the checks that are not test files (kit/lint over every
 # plugin, the catalog/version/artifact validators).
 # tests/scripts/test-full-suite-coverage.mjs guards the invariants.
+#
+# Shards (ADR-0033, 2026-10-19 amendment). One job reached 24.5 to 25 minutes
+# against its 25-minute step bound, so the suite runs as a matrix of shards.
+# Each shard runs `scripts/shard-tests.mjs run <i>/<N>`, which takes Node's own
+# discovery, splits it by recorded duration (scripts/data/test-weights.json),
+# checks that the shards together hold every file exactly once, prints its
+# files and runs them through `npm test -- <files>`, so the hermetic preload
+# and the per-test timeout are npm test's own. N is the length of the matrix;
+# the script reads it from strategy.job-total, so a shard cannot use another.
+# The job `full test suite (Node 24)` keeps the check name the single job had:
+# it passes only when every shard passed.
 #
 # Triggers (ADR-0033, 2026-10-03 amendment): a push to any branch, and
 # workflow_dispatch for a manual run. There is no pull_request trigger. GitHub
@@ -26,13 +37,18 @@ permissions:
   contents: read
 
 jobs:
-  full-suite:
-    name: full test suite (Node 24)
+  shard:
+    name: full test suite (Node 24) shard ${{ matrix.shard }}/${{ strategy.job-total }}
     # GitHub runs a push workflow for a branch deletion, on the default
     # branch's sha. There is nothing to test.
     if: ${{ !github.event.deleted }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 25
+    strategy:
+      # Every shard runs to its end, so one run reports every failing file.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -53,9 +69,27 @@ jobs:
       # rule 6). So the suite's verdict on a release commit does not depend on
       # whether the release job has synced the catalogs yet.
       #
-      # The step's bound catches a suite that hangs; it is not a speed target.
-      # The suite took 11 m 51 s on 2026-10-15 before C120's review-scope tests,
-      # and past 15 min with them (no test failing), so the bound is 25 min.
-      - name: Run full test suite (npm test)
-        timeout-minutes: 25
-        run: npm test
+      # The step's bound catches a shard that hangs; it is not a speed target.
+      # The whole suite took 24.5 to 25 min in one job in October 2026; a
+      # shard of three is planned at about a third of that.
+      - name: Run test shard (npm test)
+        timeout-minutes: 20
+        env:
+          SHARD: ${{ matrix.shard }}
+          TOTAL: ${{ strategy.job-total }}
+        run: node scripts/shard-tests.mjs run "$SHARD/$TOTAL"
+
+  full-suite:
+    name: full test suite (Node 24)
+    needs: shard
+    # always(): a failed or cancelled shard must still produce this check, red,
+    # rather than a skipped one. A branch deletion skips it as it skips the
+    # shards.
+    if: ${{ always() && !github.event.deleted }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every shard passed
+        env:
+          SHARDS: ${{ needs.shard.result }}
+        run: test "$SHARDS" = success

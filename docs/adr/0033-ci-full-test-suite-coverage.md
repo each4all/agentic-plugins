@@ -9,6 +9,9 @@ Accepted
 > host workflows are removed and CI no longer triggers on `pull_request`.
 > Amended 2026-10-05: Decision 1's serial pin is removed; `npm test` runs at
 > Node's default concurrency.
+> Amended 2026-10-19: `full-tests.yml` runs `npm test`'s files as a matrix of
+> shards that together run each file once, and Decision 5's guard pins the
+> shards instead of one `npm test` step.
 
 ## Context
 
@@ -93,7 +96,9 @@ structural guard** (the "E′" option):
    `workflow_dispatch` instead — see [Amendments](#amendments)). This is
    the repo-level coverage authority. It replicates the host workflows'
    `AGENTIC_RELEASE_PLEASE_PR` branch detection so release-please PRs
-   tolerate intentional version/catalog lag.
+   tolerate intentional version/catalog lag. (2026-10-19: it runs
+   `npm test`'s files as a matrix of shards, each file once — see
+   [Amendments](#amendments).)
 
 4. **Host workflows remain scoped diagnostic signals.** *(Withdrawn
    2026-10-03: the host workflows are removed — see
@@ -114,7 +119,9 @@ structural guard** (the "E′" option):
    remains; (iii) `full-tests.yml` exists, gates `pull_request` without a
    `paths` filter, runs exactly `npm test`, and wires the release-please
    env. (2026-10-03: (iii) now asserts the push trigger, and the guard
-   gains (iv) and (v) — see [Amendments](#amendments).)
+   gains (iv) and (v) — see [Amendments](#amendments). 2026-10-19: (i) and
+   (ii) read the discovery the shards split instead of mirroring it, and
+   (iii) and (v) pin the shards — see the amendment of that date.)
 
 ## Consequences
 
@@ -320,3 +327,100 @@ over wall time.
 
 **Rollback.** Put `--test-concurrency=1` back into `scripts.test` in
 `package.json`. No other file sets or checks the suite's concurrency.
+
+### 2026-10-19 — the suite runs as shards
+
+**Trigger**: macro subtask `ci-shard` of macro 5 (owner decision of
+2026-10-19, docket C152). The one full-tests job took 24 m 32 s to 24 m 54 s
+on recent green runs, against the 25-minute bound of its test step (the job's
+was 30). PR #978's first attempt ran the suite in 1,015 s; two reruns hit the
+step bound and failed with no test failing. The slowest files were the
+runbook region contracts (316 s), the landing reports with lanes (144, 98 and
+65 s) and the verb runbook blocks (112, 99 and 57 s).
+
+**What changed.**
+
+- **Decision 3.** `full-tests.yml` has two jobs. `shard` is a matrix over
+  one axis, `shard: [1, 2, 3]`, with `fail-fast: false`; each shard checks
+  out the full history, sets up Node 24 and runs
+  `node scripts/shard-tests.mjs run "$SHARD/$TOTAL"`, where `SHARD` is
+  `matrix.shard` and `TOTAL` is `strategy.job-total`, the matrix's own
+  length. `full-suite`, named `full test suite (Node 24)` like the single job
+  before it, needs `shard`, runs under `always()` and passes only when
+  `needs.shard.result` is `success`, so the check that branch protection may
+  require stays one check under its old name, and a failed or cancelled shard
+  turns it red rather than skipped. `full-tests.yml` stays the only workflow
+  that runs tests, and the coverage authority.
+- **The split.** `scripts/shard-tests.mjs` takes Node's no-argument
+  discovery (`scripts/lib/discover-tests.mjs`: Node 24's default pattern
+  through `fs.globSync`, the glob Node's runner uses, with its `node_modules`
+  exclusion). It weighs each file by its recorded seconds in
+  `scripts/data/test-weights.json` plus 0.5 s for the process start and
+  preload the recording leaves out, or 5 s when a file has no recording, and
+  places files heaviest first into the least-loaded shard (ties by path, then
+  lowest index), so every shard of a run computes the same partition. Before
+  running, it checks the whole partition: every discovered file in exactly
+  one shard, no shard empty, every path made only of letters, digits, `.`,
+  `_`, `-` and `/`. Anything else stops the shard, naming the files. A new
+  test file lands in a shard by being created; no list is kept.
+- **The launch.** The shard prints its files, checks that each exists
+  (`node --test` given a name that matches nothing runs the rest and exits 0)
+  and that `package.json` has no `pretest` hook that could change them after
+  the check, and starts `npm test -- <files>` with an argument array. The
+  hermetic preload and the per-test timeout are therefore `npm test`'s own.
+  npm runs the script through `sh`; the path rule keeps each name one word
+  there, with nothing to expand. The shard removes any inherited
+  `NODE_TEST_*` variable from npm's environment: a `node --test` that
+  inherits `NODE_TEST_CONTEXT` takes itself for a child, runs nothing and
+  exits 0.
+- **The weights.** `scripts/lib/duration-reporter.mjs` is a `node:test`
+  reporter that writes each file's duration (its `test:summary`, or for a
+  file that never imports `node:test`, the file-level test Node reports in
+  its place); `shard-tests.mjs record --from <file>` rewrites the weights
+  from one full run and refuses a run that did not finish, did not pass, or
+  missed a discovered file.
+  Weights only balance the shards: a stale or missing one costs time, never
+  coverage. `shard-tests.mjs plan` prints the estimated load per shard.
+- **Decision 5.** (i) and (ii) read `discover-tests.mjs` instead of a
+  hand-written mirror of Node's rules, and
+  `tests/scripts/test-discover-tests.mjs` holds that list to a real
+  `node --test` run over a fixture tree. (iii) pins the jobs of
+  `full-tests.yml` line for line (comments aside), takes the shard count from
+  the matrix (two to four, numbered 1..N), and checks that those shards run
+  every discovered file exactly once; this replaces the 2026-10-03 form, one
+  `npm test` with no matrix. (iv) allows the aggregate job's
+  `always() && !github.event.deleted` condition in `full-tests.yml` only.
+  (v) counts a step that calls `shard-tests.mjs` as a test runner, and the
+  one runner left is the shard step.
+- `scripts/mutation-specs/full-tests-shards.mjs` breaks the discovery, the
+  partition, the launch, the wiring and the weights' validation one at a
+  time, and names the test that must catch each.
+
+**Why this split.** Node's own `--test-shard=i/N` assigns files round-robin
+by position, blind to how long they run, and the suite's cost is
+concentrated in a few files. A list of files per shard kept by hand is the
+curated list this ADR removed. The partition check, not the balancing, is
+what keeps coverage: the weights can be wrong without dropping a file.
+
+**What the measurement does not show.** The weights were recorded on one
+local run of the finished tree (a 10-core Mac, Node 24.11.1 at default
+concurrency, 244 files, 11,936 tests: 11,751 passed, 185 skipped, none
+failed, 1,230 s from start to finish), not on GitHub's 4-core runners, and a
+file's duration under concurrency depends on what else runs beside it: the
+recorded file times add up to 7,075 s, nearly six times the run's wall time.
+A shard's weight is therefore a share of the suite, not a prediction of its
+time. Three shards each hold about a third of the weight (2,399 s), and the
+heaviest file (`tests/persona-pipeline/test-verb-runbook-runs.mjs`, 763 s)
+is under a third of one, so a fourth shard would not be held up by it either;
+three was chosen as the smallest count that leaves each shard well inside a
+bound the single job filled. The bounds (step 20 minutes, job 25) are hang
+bounds, set from the single job's 25 minutes rather than from the weights.
+Whether three shards finish well inside them, and whether the required check
+in branch protection is `full test suite (Node 24)`, is established by the
+first real push, not here: its shards' printed lists must together equal
+discovery at that commit, each file once.
+
+**Rollback.** Revert the commit: the workflow, the scripts, the weights, the
+guards and the mutation spec go back together. The restored single job
+meets the 25-minute step bound again, so a rollback that has to hold should
+also raise that bound.
