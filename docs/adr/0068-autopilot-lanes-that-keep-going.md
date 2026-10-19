@@ -13,8 +13,8 @@ Proposed (2026-10-19).
   planner.
   - **Slice 1 (this text):** Decision 1, an owner gate stops only its lane,
     and Decision 2, hold and release.
-  - **Slice 2:** stall detection, and the driver's event file watched by the
-    main session.
+  - **Slice 2 (2026-10-19, below Decision 2):** Decision 3, stall detection,
+    and Decision 4, the driver's event file watched by the main session.
   - **Slice 3:** the driver-run verification step, and one lock for heavy
     work.
   - **Slice 4:** main-to-lane instructions read at the next step boundary,
@@ -64,6 +64,32 @@ Proposed (2026-10-19).
     (Decision 1, item 8);
   - the persona depends on the orchestrator's run directory, gains one
     schema field, and ships first (Decision 2, item 9).
+- **Open point of acceptance (slice 2): what Decisions 3 and 4 add to the
+  owner's rule.** The owner set the stall rule and the event file; these
+  follow from the design or the measurement, and acceptance confirms them or
+  sends them back:
+  - a descendant's CPU after its last sample, and the CPU of exited
+    children, is not counted, as it was not in the measurement, so a polling
+    loop of short processes reads as stalled, and a working descendant no
+    sample ever saw reads as nothing (Decision 3, item 3);
+  - the detector ships log-only and is switched on only by a later owner
+    review against stated criteria, one of them a measurement not yet made:
+    how long a single model response can go without a stream event
+    (Decision 3, items 7 and 8);
+  - switched on, the default step wall clock becomes the 8-hour emergency
+    cap, and a stalled step ends `worker-failed`, which parks its lane and is
+    never retried by itself (Decision 3, items 8 and 9);
+  - only the driver, and the cleanup of a run whose driver died, write the
+    event file: a hold or release appears when the driver acts on it
+    (Decision 4, item 1);
+  - narrower than asked, after review: a cleared lane gate has no event of
+    its own, and shows only as a `lane-resumed` when a live driver
+    reconsiders the lane (Decision 4, item 3); a failed write need not leave
+    a `seq` gap, its count in `run.json` tells (items 4 and 5); and `stall`
+    lines past the reader's volume bound arrive as counts, every other kind
+    line by line (item 6); a forward wall-clock step of more than an
+    interval turns a window `unknown`, and a suspend shorter than an
+    interval is not detected (Decision 3, item 5).
 - **On acceptance** it amends
   [ADR-0063](0063-autopilot-fresh-session-driver.md) and
   [ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) at the places
@@ -188,6 +214,95 @@ where a decision depends on them:
 - SIGTERM leaves a worker's turn unfinished; SIGINT ends it cleanly.
 - No host interface tells another process whether an interactive session is
   still going to write.
+
+### Slice 2 (2026-10-19): what the owner decided and measured
+
+<!--
+Slice 2 citations are `path:line` at agentic-plugins 90afa503, verified
+2026-10-19.
+-->
+
+Discussion 3, item 1 (2026-10-17): a step's wall clock kills legitimate
+waits (18 cases, no real stall among them), and catches a real stall hours
+late. The root of the second is B, a stall judged from output and CPU
+activity with a long emergency cap; the rule's numbers come from
+measurement. The record of that measurement is outside this repository
+(`~/.agentic-plugins/ops/discussion-3/b-measure.md`, 2026-10-17, macOS,
+Claude Code 2.1.302, codex-cli 0.163.0). What it found [measured]:
+- **Stream silence alone cannot tell.** Over 391 worker streams, the longest
+  gap without an assistant or user event was p50 4.7 min, p90 18 min, p99
+  64.6 min, at most 115.9 min, each one a worker waiting on a background
+  task (a full test run, a mutation run) after its provisional report. Three
+  steps the wall clock cut were silent 64.1, 69.7 and 69.1 minutes, the last
+  one a legitimate wait that resumed.
+- **A foreground tool is never silent:** while it runs the stream carries a
+  `tool_progress` heartbeat every 30 s, whatever the tool does. A heartbeat
+  says the tool still runs, not that anything progresses.
+- **The worker's own `claude` process uses 0 to 0.6 s of CPU per 10 s doing
+  nothing.** Its descendants are what tell: a Codex peer wait of 507 s used
+  at least 0.1 s in any 60 s window and 1.5 s in any 300 s window (its
+  longest run of zero samples 40 s), about 3 s per 600 s by linear
+  extrapolation [inferred]; a background test run at least 6 s per
+  120 s; a foreground or background wait on nothing 0.0 s; an endless polling
+  loop of short processes 0.1 s per 300 s while starting a new process every
+  10 s, so counting new processes as activity would never catch it.
+- **The peer ledger is no signal:** its `stdout.log` is written once, at the
+  end.
+- **The rule recommended:** stalled after 10 minutes with no stream event
+  other than heartbeats and hooks *and* under 1 s of CPU growth summed over
+  the live descendants other than `claude` itself; an emergency cap of about
+  8 hours; new process counts ignored; shipped first in a mode that only
+  records its verdicts. Its margins: the slowest legitimate activity measured
+  is about 3 times the threshold (Codex, two runs only), a stall at least 5
+  times under it.
+
+Discussion 3, item 2 and discussion 4, item 3 (2026-10-19): the driver
+writes events (a halt, a lane's gate, a commit finished, a worker failed…)
+as JSON lines to a file, and the main session watches the file with the
+Monitor tool, re-armed every 30 minutes. On 2026-10-19 two lines appended to
+a file reached a watching session while it ran other commands [measured,
+outside this repository]. A session-to-session message is not usable from a
+node driver (its socket format is undocumented), and `--notify-local` stays.
+
+**What the code does today:**
+- **One wall clock per step.** The worker host arms
+  `setTimeout(() => abort('timeout'), stepTimeoutSec * 1000)`
+  (`plugins/orchestrator/adapters/claude/autopilot/worker.mjs:455`); an abort
+  sends SIGTERM to the worker's process group and SIGKILL 5 s later
+  (`worker.mjs:388-402`). The default is 3600 s (`driver.mjs:74`), settable
+  with `--step-timeout` up to the timer's limit (`cli.mjs:72`, `:160`;
+  `worker.mjs:229-231`), and the budget reserves it with each step
+  (`budget.mjs:54-58`). A timeout halts `worker-failed`
+  (`policy.mjs:1136`).
+- **No activity signal.** The host reads the stream for background tasks,
+  results, denials, PreCompact and rate limits (`worker.mjs:458-502`); it
+  keeps no event times, reads no process table, and samples no CPU.
+- **Worker processes.** The worker is spawned detached, so its pid leads its
+  own process group (`worker.mjs:345-347`); a peer run leaves that group
+  (ADR-0063 D5, amendment of 2026-10-13) but stays a descendant by parent
+  pid while its runner waits.
+- **One macOS process reader is locale-dependent today.** The persona's
+  process identity reads `ps -o lstart=` as text in the caller's locale
+  (`persona-pipeline/files/scripts/lib/process-identity.mjs:34-44`; docket
+  C141, recorded outside this repository); the run locks' fingerprint
+  already pins `LC_ALL=C` (`plugins/orchestrator/scripts/lib/run-locks.mjs:100-106`,
+  `:125-127`).
+- **The run's records** are its run directory (`run.json`, `steps.jsonl`,
+  `lanes.jsonl`, `landing.jsonl`, `halt.json`, the worker streams) in the
+  launching checkout, and the macro-scoped files under the main worktree
+  (`plugins/orchestrator/adapters/claude/autopilot/ledger.mjs:5-41`).
+  `appendLine` already ends a torn last line before it appends
+  (`ledger.mjs:115-142`). A dead run's cleanup records its halt
+  `interrupted` (`dead-runs.mjs:391-407`).
+- **The only push signal** is `--notify-local`: one macOS notification when
+  the run ends (`driver.mjs:368-375`, `:628`).
+
+**The Monitor tool** (Claude Code, its tool description, read 2026-10-19):
+each stdout line of its command is an event delivered to the session; a
+monitor expires after its `timeout_ms`, 5 minutes by default and 30 at most,
+with one notice; a monitor that emits too many events is stopped; and its
+filter must match every terminal state, since silence looks like "still
+running".
 
 ## Decision
 
@@ -795,12 +910,423 @@ slice: the wake sources (Decision 1, item 6) and the hold records (Decision
 2). Each adds its own Consequences and Alternatives under its own heading.
 - **Slice 2:** stall detection, and the driver's event file that the main
   session watches with the Monitor tool. Slice 2 decides their parameters.
+  *2026-10-19:* Decisions 3 and 4 below.
 - **Slice 3:** the verification step the driver runs without an LLM, and
   one heavy-work lock shared with the mutation harness and interactive
   sessions.
 - **Slice 4:** main-to-lane instructions read at the next step boundary, and
   rebinding a dispatched subtask after an owner-approved instruction change
   (C147).
+
+### Decision 3. Stall detection replaces the step clock as the normal stop (slice 2, 2026-10-19)
+
+It applies to every worker step, serial or in a lane, whatever its kind. It
+ships log-only (item 7); until the owner switches it on (item 8), the step
+clock stays exactly as it is.
+
+1. **The rule.** A step is *stalled* when, for the last 10 minutes of its
+   life, both hold:
+   - its stream carried no event other than `tool_progress` heartbeats and
+     hook events (`hook_started`, `hook_response`, which `--include-hook-events`
+     adds); every other event counts as activity, a `result`, a task
+     notification, a rate-limit event and a retry event the host may emit
+     included; and
+   - the CPU time its descendants used, summed, grew by under 1 s, every
+     sample of that window known (item 4).
+
+   The verdict is one of `active`, `stalled` and `unknown`. A step younger
+   than 10 minutes is `active`. The number of new processes is never read:
+   it would hide the polling stall the measurement found.
+
+2. **What the verdict records.** Beside the verdict, the quiet time and the
+   window's CPU, the facts of what the step waits on, which can hold
+   together: how many background tasks are pending, whether a foreground
+   tool runs (its heartbeats arriving), and whether an answer of the model is
+   owed (after the step's prompt, a tool result or a task notification, with
+   no answer since). The detector judges activity, not cause: a stall, a
+   network outage and a hung peer look alike to it, and the record says
+   which wait it was.
+
+3. **Whose CPU counts.** The descendants of the worker process, by parent
+   pid, and every member of the worker's process group, the worker process
+   itself excluded (its `claude` uses up to 0.6 s per 10 s doing nothing).
+   - **Identity is the pid with its start time,** so a reused pid is a new
+     process, never the continuation of one the step had.
+   - **Membership sticks.** A process once seen as a member stays one, by
+     its identity, until it exits, so a descendant reparented when its parent
+     exits (a detached peer, a daemon) is still counted. One that detached
+     before any sample saw it is not, and its work counts as nothing: a
+     false `stalled` when it is the only thing working (§Consequences).
+   - **Growth is per identity, between samples.** A process first seen
+     counts the CPU it used since its start when it started inside the
+     window. A process that exits keeps what the samples saw of it; the CPU
+     it used after its last sample is not seen, and the CPU of exited
+     children is never added to their parent (Linux `cutime`/`cstime`, BSD
+     `ps -S`). The measurement was taken that way, and adding it could let a
+     polling loop of short processes pass as work (§Status, open point).
+
+4. **A missing sample is unknown, never zero.** A sample is unknown for a
+   worker when the read fails, times out or prints what cannot be parsed,
+   when a live member of that worker's tree cannot be read, when the
+   resolution is coarser than 0.1 s, or when the time since the previous
+   sample is not known to be short (item 5). A process proven to have exited
+   between the listing and its read is an exit, not a gap. A window holding
+   an unknown sample is `unknown`: it never yields `stalled`, and the time
+   it covers is recorded. Only the emergency cap bounds a step whose samples
+   stay unknown.
+
+5. **Clocks.** Windows, intervals and the quiet time are measured on the
+   monotonic clock; wall-clock time appears only in the records, so a
+   wall-clock change never shortens or lengthens a window. A suspended
+   machine must not read as a quiet window, and the monotonic clock may not
+   advance during a suspend (Linux's `CLOCK_MONOTONIC` does not; macOS's is
+   likely the same [inferred]), so two samples on either side of one can
+   look an interval apart. A window is therefore `unknown` when the samples'
+   spacing exceeds three intervals on the monotonic clock, or when the wall
+   clock moved forward more than an interval further than the monotonic
+   clock between two samples (a suspend, or a forward clock step); the time
+   is recorded. A wall-clock step backward, or forward by less than an
+   interval, changes no verdict; a larger forward step can only turn a
+   window `unknown`, never `stalled`. A suspend is detected only through
+   those two bounds: one shorter than an interval looks like a small clock
+   step and changes no verdict, the window measured on the monotonic clock
+   either way (§Status, open point).
+
+6. **How processes are read.** The requirements: a source on each platform
+   that gives each process's parent, group, CPU time at 0.1 s or finer, and
+   a start time that makes its identity; and output that does not depend on
+   the caller's locale or environment. Linux reads `/proc/<pid>/stat` (procps
+   `ps` prints whole seconds, too coarse). macOS reads `ps` with its locale
+   pinned to C, as the run locks already do for their fingerprint
+   (`plugins/orchestrator/scripts/lib/run-locks.mjs:100-106`, `:125-127`),
+   not the persona's reader, whose `ps` start time follows the caller's
+   locale (`persona-pipeline/files/scripts/lib/process-identity.mjs:34-44`,
+   docket C141, which stays its own item). The sample interval is 10 s, as
+   measured.
+
+7. **Log-only, which ships first.** The detector records and never acts.
+   - Each verdict change is a `stall` line in `steps.jsonl` and an event
+     (Decision 4); the step's `finished` line carries a summary: its longest
+     quiet stream gap, its lowest known 10-minute CPU window, the time spent
+     unknown, the count of each verdict, and the wait at each `stalled`
+     verdict. A `stalled` verdict on a step that later shows activity, or
+     ends normally, is visible as such, for the review to judge (item 8).
+   - The wall clock stays the step's stop, with its default (3600 s) and
+     `--step-timeout`. Landing log-only removes no cap and changes no halt.
+   - **The observation configuration.** To observe the long quiet waits the
+     measurement found (up to 115.9 minutes), observation runs pass
+     `--step-timeout 10800` or more; the default cap would cut them at 60
+     minutes first. Observed alongside: Codex peer waits the size of a
+     Refine-verify, and the longest gap while an answer of the model is owed.
+
+8. **Switching it on is the owner's review.** After observation the owner
+   reviews the recorded verdicts and records the decision as a dated
+   amendment of this ADR. The review needs:
+   - **evidence that it sees:** at least 20 steps whose quiet stream reached
+     10 minutes with every CPU window known, 5 of them Codex peer waits of 5
+     minutes or more, and the measured stall shapes (a foreground wait on
+     nothing, a background sleep, a polling loop) judged `stalled` on the
+     owner's machine. A run of `unknown` windows is a probe defect to fix,
+     never a pass;
+   - **no false positive:** no `stalled` verdict on a step that was doing
+     legitimate work the rule did not see (a model answer under way, a
+     descendant working unseen), judged by the owner from the step's
+     records. A step that later showed activity or completed is not by that
+     alone a false positive: a staged stall that completes (a `sleep 900`)
+     and a hung retry that recovered were stalled when judged;
+   - **the model's gap:** the longest gap observed while an answer of the
+     model was owed well under 10 minutes. A single long model response may
+     emit no stream event until it is done [unverified]; if the gap comes
+     near the threshold, the detector first gains a signal for it
+     (partial-message events, which the worker does not request today) and
+     is observed again.
+   - A false positive sends the numbers back to measurement; it does not
+     shorten the review.
+
+   Switched on, with `--stall-detector on` (the default stays `log` until a
+   later release changes it, once the review has passed):
+   - a `stalled` verdict aborts the step as a timeout does, with abort reason
+     `stalled`, the same group teardown and the same charge to its
+     reservation (the whole reservation when no cost was reported,
+     `budget.mjs:70-81`), and the step halts `worker-failed`, its detail
+     naming the stall and the wait. Decision 1 scopes that halt by its
+     cause, as any: in a lane it parks the lane, while a stalled `done` or
+     `finalize` step, a group that outlives SIGKILL, and an exhausted budget
+     stay run-wide. `unknown` never aborts;
+   - the default step wall clock becomes the **emergency cap**, 28800 s
+     (8 h); an explicit `--step-timeout` still wins. It bounds what the rule
+     cannot see: a step busy forever (a loop burning CPU is never stalled)
+     and a step whose samples stay unknown.
+
+9. **A network outage** (2026-10-19: the API unreachable, `ENOTFOUND`,
+   retries exhausted). The worker owes an answer of the model; no
+   descendant runs, so the CPU is 0. While the host retries, any retry event
+   it emits counts as activity; once the retries are exhausted the result is
+   an error and the step halts `worker-failed` by today's rule, as it did
+   that day, the edits in the tree kept. A retry that hangs for 10 minutes
+   with no event is a `stalled` verdict, the model's answer owed; switched
+   on, it also ends `worker-failed`. Either way the policy is Decision 1's:
+   nothing is retried on an unchanged record, each lane the outage reached
+   parks, and the run ends once nothing can start. After the network
+   returns, the owner resumes with a note and `--lane <id> --next <step>`,
+   or a bare release. Several lanes failing within minutes of each other in
+   the event file is the hint of a shared cause; the event file is local
+   and needs no network to be written or read.
+
+10. **Until the worker exits.** The detector watches the step from its spawn
+    to the worker's exit, an idle close of stdin included: a worker that
+    ignores that EOF, or hangs shutting down, is quiet and idle, and is
+    judged like any. Only a close on a finished report, which has its own
+    bounded teardown (ADR-0063 D5, amendment of 2026-10-13), and an abort
+    already under way end the watch. A peer run the step left pending stays
+    the concern of D5's cleanup. The driver's own jobs without an LLM (slice
+    3's verification step) are slice 3's to bound.
+
+### Decision 4. The driver's event file, watched by the main session (slice 2, 2026-10-19)
+
+1. **Where, and who writes.** One append-only file per lock scope, so that
+   one run drives what it reports at a time, and each relaunch continues the
+   same file:
+   - a run of a macro:
+     `<main>/.agentic-plugins/runs/autopilot/events/<macro-id>.jsonl`, beside
+     the macro's landing log, findable from any checkout of the repository;
+   - a run with no macro (a verb chain):
+     `<checkout>/.agentic-plugins/runs/autopilot/events.jsonl`, beside its
+     worktree lock.
+
+   The writers are the driver of a run once it holds its locks, and the
+   cleanup of a run whose driver died (`stop`, or a later run's cleanup),
+   which writes that run's `run-ended`. A launch refused at its locks writes
+   no event, and the reader never reports it as a run missing its terminal
+   event: today it still creates a run directory and ends `halted`
+   `owner-choice`, with `halt.json`, `run.json` and exit 2
+   (`driver.mjs:502`, `:640-646`), and how the reader tells such a run from
+   one that held its locks is `impl-events`'. Appends are
+   serialized by a lock of the file, but a dead run's cleanup can finish
+   after the next run has begun (a cleanup that is busy does not stop a new
+   run, `driver.mjs:657-671`), so lines of two runs can interleave. Owner
+   commands write no events: a hold or a release appears when the driver
+   acts on it. The driver prints the path, and the command that watches it
+   (item 6), when it starts.
+
+2. **One line per event, machine data only.** Each line is a JSON object:
+   `schema` (`agentic-autopilot-event/1`), `run_id`, `seq`, `at` (UTC),
+   `kind`, `macro_id`, `subtask_id` (or null) and the kind's own fields, each
+   a code from a closed set, an id checked against its alphabet, a number, or
+   a path the driver resolved itself. There is no free text: no detail
+   string, summary, peer output, worker report or user text. The line points
+   at the record that holds the rest, as it stands when the line is written:
+   a step's line in `steps.jsonl`, a `lanes.jsonl` event, `run.json`, and
+   `halt.json` only from the `run-ended` of a run that halted, since the
+   driver writes it only then, when the run ends (`driver.mjs:603-605`); a
+   run that completed has none, and its `run-ended` points at `run.json`.
+   Monitor puts every line into the main session's context, so nothing a
+   worker, a peer or a person wrote may reach it this way (the runtime rule
+   of no raw peer output in the main session).
+
+3. **The kinds**, a closed list; a later slice adds kinds with a minor
+   schema change, and readers ignore fields they do not know. A step is
+   referred to by its ledger `step` number, never by the event's `seq`:
+   - `run-started` (lanes, detector mode, the ledger's path);
+   - `halt`: a run-wide halt, met, with its reason code; the run drains or
+     ends. Met mid-run, the halt is recorded only as `run.json`'s `draining`
+     status (`scheduler.mjs:453-468`), so the line points at `run.json`, and
+     at the step's `steps.jsonl` line when a step met it; the halt's detail
+     reaches `halt.json` at the run's end;
+   - `lane-parked` (reason code, pointer: an owner gate set, and every other
+     lane halt) and `lane-resumed` (cause: its record changed, a release, a
+     forced step), Decision 1. A cleared gate has no kind of its own: the
+     owner clears it in a session, which knows it then, and the file shows
+     it only as `lane-resumed` with cause "its record changed", when a live
+     driver reconsiders that lane; a gate cleared in a serial run, or after
+     the run ended, shows nothing until the next run acts on the lane
+     (§Status, open point);
+   - `lane-held` and `lane-released` (consumed or rejected), when the driver
+     completes a handoff or compares a release, Decision 2;
+   - `step-failed` (step, the halt code, the abort kind when there was one,
+     from the worker's closed set: `timeout`, `stalled`, `interrupted`,
+     `compaction-imminent`, `provenance`);
+   - `commit-finished` (step, the commit, its landing readiness, ADR-0067
+     Decision 7);
+   - `stall` (step, verdict, mode, the wait's facts, quiet time, window
+     CPU), Decision 3;
+   - `run-ended` (status, halt reason or none, exit code, the pointer, and
+     whether a cleanup wrote it for a driver that died). It is the only kind
+     marked `"terminal": true`, at most one per run: a writer appends it
+     only when the file holds none for that run, so a driver's end, a
+     cleanup, and a cleanup retried after a crash write it once between
+     them.
+
+   No line is written per step started or finished, and a `stall` line only
+   when a step's verdict changes.
+
+4. **Identity.** An event is `(run_id, seq)`; `seq` counts from 1 within a
+   run and only rises. No two lines of a file share an identity, a line
+   ended after a writer died mid-line included. A `seq` may be skipped, so a
+   gap is not proof of a lost event, and a lost event need not leave a gap:
+   the failure count in `run.json` (item 5) is what tells. How a writer
+   chooses its next `seq` is `impl-events`'. An event exists once its line
+   is complete and parses; a line that never does never had an identity.
+
+5. **Writes.**
+   - **Recoverable lines.** Each event is appended as a whole line under the
+     file's lock. A writer that dies mid-line leaves a torn last line, which
+     the next append ends first (`appendLine`'s rule, `ledger.mjs:115-142`),
+     so the events after it parse; the reader reports the torn one.
+   - **A failed write never stops the run.** The run's records stay the
+     truth, and the event file is a signal: the driver prints a warning and
+     counts the failure in `run.json`, which the reader reports (item 6).
+     The publication is best effort; the records it points at are not.
+
+6. **The reader, and the Monitor recipe.** `agentic-autopilot events
+   (--macro <id> | --checkout <dir>) --after <run-id>:<seq> [--follow]`
+   prints, one per line and in file order, every event after that one; with
+   `--follow` it then waits for more, across relaunches, since a relaunch
+   writes to the same file. It holds a partial last line until its newline
+   arrives.
+   - **Arming before anything is on file.** `<run-id>:0` means from that
+     run's first line, whenever it arrives: a run whose first write failed,
+     or that has written nothing yet, is waited for, as is a file not yet
+     created. Only a cursor naming a `seq` its run's lines on file do not
+     hold is an error. A run that ends with no line on file is reported
+     missing its terminal event (below), and the watch goes on with the
+     lines of the runs after it.
+   - **No loss, no repeats across an expiry or a relaunch.** Re-armed with
+     the identity of the last line it delivered (an event's, or a
+     `reader-summary`'s last identity covered), the reader neither skips nor
+     repeats an event, interleaved runs included: the cursor is an identity,
+     not a position in a run's sequence.
+   - **No loss, and bounded repeats, across a restart of the main session.**
+     The file records what was published, not what the session received, so
+     a session that lost its cursor re-arms from `<run-id>:0` of every run of
+     the macro it has not seen end, and recognizes by identity what it had
+     already handled.
+   - **Silence is reconciled.** At each arm, and every 30 s while it
+     follows, the reader compares the file with the run's own records. It
+     prints on stdout, where Monitor sees it, never only on stderr: a
+     `reader-armed` line at each arm (the latest run live or ended, its last
+     `seq` on file, its failed writes); a `reader-gap` line for a `seq`
+     missing within a run, a hint (item 4); a `reader-skipped` line for a
+     line it cannot parse; a `reader-terminal-missing` line, pointing at the
+     run's records,
+     for a run that has ended or died with no `run-ended` on file (a failed
+     last write, a crash before it, a dead run nothing has cleaned yet); and
+     a `reader-error` line, then a non-zero exit, when the file cannot be
+     read or the cursor is an error (above). A cursor not found is never
+     read as "from the start".
+   - **Volume is bounded, for `stall` lines only.** Replaying a backlog, or
+     a burst while it follows, the reader may fold `stall` lines past a
+     fixed number per delivery window into one `reader-summary` line (counts
+     by verdict, the last identity covered), which keeps file order: it
+     covers only `stall` lines that come before the next line passed on its
+     own. Those arrive as counts, not lines, and their records keep them.
+     Every other kind, and every
+     `reader-` line, is always passed on its own. A monitor stopped early,
+     for volume or any other cause, is re-armed as after an expiry.
+   - **The recipe**, in `commands/autopilot.md`: Monitor runs the reader
+     with `--follow` and `timeout_ms` at Monitor's maximum, 30 minutes; at
+     each expiry or early stop the session re-arms it with the cursor of the
+     last line it received, or with the `<run-id>:0` the driver printed at
+     start when it received none. The reader is the filter, so the recipe
+     adds none; a session that narrows it must keep every line with
+     `"terminal": true` and every `reader-` line, and the documented pattern
+     is tested against the kind list.
+
+7. **Beside the other signals.** Terminal output, `halt.json` and exit code
+   2 stay the halt signal (ADR-0063 D8), and `--notify-local` is unchanged.
+   The event file is a ledger file in the repository, read by a local
+   process: no plugin notification, no egress, no ADR-0047 kind (ADR-0063
+   Q5 stands). The driver never truncates or rotates it; its lines are few
+   and short, and its retention is left to a later decision.
+
+### Left to the implementation (slice 2)
+
+As for slice 1: the guarantees above are the decision, each case below must
+be tested, and each new test must be shown to bite by a mutation that it
+kills. The parsers, the sampler's organization and the file lock are the
+implementation's.
+
+**`impl-events`** (Decision 4):
+- The writer: the file's lock, the torn-line rule, how the next `seq` is
+  chosen so that no identity repeats (a seq the writer used, its write
+  failed or not, and every parseable line of its run), a failed write
+  counted in `run.json`, `run-ended` at most once. Tests: a driver killed
+  mid-line, then a cleanup: the cleanup's `run-ended` takes a new identity,
+  and a torn line holding complete JSON is not duplicated; a write that
+  failed before any byte landed, then a success: no identity repeats; a
+  cleanup retried after it wrote `run-ended` writes no second one; a dead
+  run's cleanup finishing after the next run began, its line among the new
+  run's.
+- Each kind written once, where its record is written (a park beside its
+  `lanes.jsonl` line, a `commit-finished` beside its landing report), with
+  the documented fields only, pointing at records that exist when it is
+  written (a mid-run `halt` at `run.json`, a completed run's `run-ended` at
+  `run.json`, a halted one's at `halt.json`). Tests: no field carries text
+  from a worker report, a peer or a halt's `detail`; a launch refused at its
+  locks writes no line and is never reported missing its terminal event.
+- The reader: replay after a cursor, follow across a relaunch, interleaved
+  runs, a partial last line held, a gap, an unparsable line, a missing
+  terminal event (a failed last write, a dead uncleaned run, a verb-chain
+  run, whose startup cleans no dead runs, `driver.mjs:662`), a cursor `R:0`
+  of a run with no line yet, a file not yet created, a cursor naming a
+  `seq` not on file, a file that cannot be read, a backlog over the volume
+  bound. Tests: replay from a recorded position across a relaunch neither
+  loses nor repeats an event; a re-arm from a `reader-summary`'s cursor
+  neither repeats nor skips; a run whose every write failed, then the next
+  run's lines: a watch armed at its `R:0` reports its terminal missing and
+  delivers the next run's lines; `R:0` and a missing file wait, and a `seq` not
+  on file exits non-zero with a `reader-error` line; a backlog folds only
+  `stall` lines.
+- The recipe's pattern tested against every kind marked terminal and every
+  `reader-` kind; the path printed at start; `--notify-local` unchanged.
+
+**`impl-stall`** (Decision 3):
+- The stream clock: heartbeats and hook events excluded, every other event
+  counted, the wait's facts kept (the step's prompt owes an answer before
+  any event arrives).
+- The process probe for each platform (fixture tables and `/proc` trees),
+  identity by pid and start time, sticky membership, growth per identity,
+  the worker process excluded. Tests: pid reuse; a descendant reparented
+  after its parent exits; a short process seen once, and one never seen; a
+  process that exits between the listing and its read; a macOS table read
+  under a non-C locale; a line that does not parse.
+- Unknown: a failed, slow, coarse or late sample, a live member that cannot
+  be read, a suspend. Tests: a missing sample never yields `stalled`; a
+  suspend longer than an interval between two samples an interval apart on
+  the monotonic clock is `unknown`, and a shorter one changes no verdict; a
+  backward or sub-interval wall-clock step within a window
+  changes no verdict, and a larger forward step turns it `unknown`, never
+  `stalled`.
+- The watch's end. Test: a worker that ignores an idle close of stdin is
+  judged until it exits.
+- Log-only: the `stall` lines, the `finished` summary, the events, and the
+  step never stopped; the step clock and every halt unchanged. Tests: the
+  measured shapes as fakes (a mutation run and a Codex wait, quiet but busy;
+  a foreground wait on nothing with heartbeats; a background sleep; a
+  polling loop of short processes; a missing sample).
+- `--stall-detector on` as a documented option, off by default, with the
+  abort, its charge, the halt detail, the scope of item 8 and the
+  emergency-cap default behind it. Tests: with it on, a stalled step ends
+  `worker-failed` and parks its lane, a stalled `done` drains, and an
+  `unknown` one runs to its cap.
+
+### Amendments (slice 2)
+
+Each place below keeps its text and gets a dated note (2026-10-19) that
+points here. Until acceptance the notes announce the proposal and change
+nothing.
+- **ADR-0063:** Status; D1's Bounded property (the stall rule, then the
+  emergency cap, bound a step once the owner switches the detector on);
+  D4's proceed rule 6 (a step's own bound is the same); D5's session hosting
+  (the stall abort beside the timeout, outranking a close on a finished
+  report as every abort does, with the detector stopping at that close);
+  D8's halt signal (the event file beside
+  terminal output, `halt.json` and `--notify-local`); Q5 (the event file is
+  no plugin notification).
+- **ADR-0067:** Status; Decision 6's Budgets (the reservation's
+  `timeoutSec` is the emergency cap once the detector is on); Decision 8,
+  item 5 (the event file's lines carry no proposal text; a halted run's
+  `run-ended` points at the halt record that does).
 
 ## Consequences
 
@@ -860,6 +1386,60 @@ slice: the wake sources (Decision 1, item 6) and the hold records (Decision
 - The halt reason codes and the gate enum are unchanged; only the scope of a
   halt changes.
 - Exit codes keep their meaning: 0 completed, 2 halted, 1 an error.
+
+### Slice 2
+
+**Positive**:
+
+- Once switched on, a real stall is caught about 10 minutes after it
+  begins instead of at the step clock (60 minutes by default, 3 hours as the
+  owner runs it), and a legitimate quiet wait is no longer cut at that clock:
+  none of the 18 waits discussion 3 counted would have met the clock, and
+  whether the rule passes each such wait is what log-only observes.
+- Log-only first: the rule is judged on the owner's real runs before it can
+  stop anything, and a false positive costs a record line, not a step.
+- The main session learns of a park, a halt, a failed step or the run's end
+  while it works, without polling status, and across relaunches from one
+  file; a re-arm loses and repeats no event, `stall` lines past the volume
+  bound arriving as counts.
+- Nothing a worker, a peer or a person wrote reaches the main session
+  through the event file.
+
+**Negative**:
+
+- The driver samples the process table every 10 s for the run, and keeps a
+  per-process table and a stream clock per worker. A probe bug shows as
+  `unknown` verdicts, which only the log reveals in log-only mode.
+- The rule is measured on few Codex waits (two) and never on a long single
+  model response; the switch waits for that measurement, and the step clock
+  keeps cutting legitimate waits until then, unless the owner passes a long
+  `--step-timeout`.
+- A stall that keeps a process burning CPU is caught only by the emergency
+  cap, 8 hours.
+- The reverse error: a descendant that detached before any sample saw it
+  does its work unseen, and if nothing else is active the step reads as
+  stalled. Log-only observes how often; switched on, such a step is aborted
+  and parks its lane for the owner.
+- A stalled step that reported no cost is charged its whole reservation, as
+  a timed-out one is today.
+- A polling loop of short processes reads as stalled even when what it
+  polls for is about to happen: the rule's measured basis ignores exited
+  processes.
+- The main session's own watch is bounded: Monitor expires every 30 minutes
+  and the session re-arms it; a session that does not re-arm misses nothing,
+  but hears nothing until it does.
+- One more append, and one more file lock, per event; a failed write is a
+  count in `run.json` the reader reports, not a stop, and the event it lost
+  is not replayed.
+- A cleared lane gate is not an event of its own: the session that cleared
+  it knows, and the file shows it only when a live driver resumes the lane.
+
+**Neutral**:
+
+- The halt codes are unchanged: a stall ends `worker-failed`, as a timeout
+  does. `--notify-local`, `halt.json` and exit codes keep their meaning.
+- The event file only adds a signal; every decision still reads the run's
+  records.
 
 ## Alternatives Considered
 
@@ -993,3 +1573,81 @@ owner's decision of 2026-10-17: the takeover covers the need, a person works
 a held lane in a session of their own (`claude`, or `claude --bg` and
 attached), and team communication between sessions goes through records at
 step boundaries (slices 2 and 4).
+
+### Slice 2
+
+**Keep the wall clock alone, longer or shorter (today).** Rejected by the
+measurement: legitimate waits ran silent up to 115.9 minutes, so a clock
+long enough for them catches a real stall hours late, and one short enough
+to catch it kills legitimate waits.
+
+**Judge from stream silence alone.** Rejected [measured]: the p99 silent gap
+of a legitimate step was 64.6 minutes, and a foreground stall is never
+silent, its heartbeat arriving every 30 s.
+
+**Count heartbeats, new processes, or the peer ledger as activity.**
+Rejected [measured]: a heartbeat says only that a tool runs, and arrived
+throughout a foreground wait on nothing; an endless polling loop starts a
+process every 10 s with almost no CPU; the peer's `stdout.log` is written
+once, at the end.
+
+**Count the worker's own `claude` CPU.** Rejected [measured]: it uses up to
+0.6 s per 10 s doing nothing, up to 36 s over 10 minutes at that rate
+[inferred], far above the threshold.
+
+**Add exited children's CPU to their parent** (`cutime`/`cstime`, `ps -S`).
+Rejected: the threshold was measured without it, and a polling loop's short
+processes, reaped by its shell, could add up past 1 s per 10 minutes and
+hide the stall the rule exists to catch [inferred: their CPU was not
+measured].
+
+**Switch it on from the start.** Rejected: the Codex margin rests on two
+runs, and a long model response was never measured; a false positive would
+kill a paid step. The owner chose log-only first (discussion 3, item 1;
+discussion 4).
+
+**Retry a stalled or failed step automatically.** Rejected, as in slice 1:
+the record is unchanged, so a retry repeats the failure or a partial step;
+an outage's right resumption was a note and a forced next step.
+
+**Read `ps` time and start-time text in the caller's locale.** Rejected: the
+persona's macOS process identity already reads differently in a Korean and
+a C locale (C141), and a verdict must not depend on who launched the driver.
+
+**Notify the main session by `SendMessage`, Channels or team mode.**
+Rejected: the message socket's body format is undocumented, Channels needs
+an MCP server and is a research preview, and team members cannot be
+headless. A file a local process appends to, watched by Monitor, needs
+none of them and was measured to arrive mid-turn.
+
+**Watch `steps.jsonl` and `lanes.jsonl` directly.** Rejected: they live in a
+run directory that changes with each relaunch, they hold free text (a
+worker's summary in a halt's detail), and a step's start and finish would
+flood Monitor.
+
+**One event file per run, or per repository.** Rejected: per run, a
+relaunch needs a new watch on a new path; per repository, runs of several
+macros would write one file at once, and a session watching one macro would
+read every other's events. One file per lock scope has one live run at a
+time, a dead run's late cleanup aside, and survives relaunches.
+
+**Byte offsets as the replay cursor.** Rejected: an offset means nothing to
+a person, and gives no way to see a lost event. The event's identity can be
+read from the line the session last received, and a loss shows in the
+failure count the reader reports.
+
+**A cursor file the reader advances, for exactly-once delivery across a
+session's restart.** Rejected: the reader cannot see what Monitor delivered,
+so a cursor it advances on printing loses the lines a dying session never
+received, and one it advances before printing loses the next. A restarted
+session replays from each run it has not seen end and recognizes repeats by
+identity.
+
+**Stop watching at any close of stdin.** Rejected (Plan-verify): an idle
+close has no bounded teardown, so a worker that ignored its EOF would be
+held to the 8-hour cap, keeping its reservation and its lane.
+
+**Copy each halt's detail into its event.** Rejected: the detail can carry a
+worker's summary or the tail of its stderr, which would enter the main
+session's context unfiltered. A `halt` line points at the run's records,
+and the `run-ended` of a halted run at `halt.json`.
