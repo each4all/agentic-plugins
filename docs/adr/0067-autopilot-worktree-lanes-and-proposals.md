@@ -44,6 +44,11 @@ Proposed 2026-10-07.
   Decision 6's opening, its capacity claim and its Locks, §Out of scope and
   cascade item 7c carry dated notes; until ADR-0068 is accepted they change
   nothing.
+- Proposed amendment 2026-10-20 by ADR-0068's slice 4 (Proposed): the main
+  session's instructions to a lane, and the rebinding of a dispatched
+  subtask by an approved change of its instructions. Decision 4, item 5,
+  Decision 6's Forced resume and §Out of scope carry dated notes; until
+  ADR-0068 is accepted they change nothing.
 - **On acceptance** it:
   - amends [ADR-0063](0063-autopilot-fresh-session-driver.md): R2's halt
     wording, D1's worktree-lanes clause (the held integration-merge clause is
@@ -1033,6 +1038,18 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
    - `/orchestrator:plan` and `/orchestrator:approve` stay available. A
      re-plan revokes the approval, and the driver halts at its next decision
      (ADR-0063 S6 note). An approval is the owner's own act.
+
+     *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+     slice 4, proposed; in force once it is accepted):* an approval that
+     changes the plan joins the macro lock as an admission, so it is refused
+     beside a live run of the macro or an admitted command. An approval that
+     changes an in-progress subtask's topic or profile records a rebinding
+     of its child, and is also refused while a persona operation is open in
+     that lane, the subtask is held, or its release awaits comparison; every
+     write that compares a child's dispatch also accepts a child rebound
+     under the macro's current approval (an active child once it has been
+     told), and a changed branch, a changed verb the child recorded, and
+     any other child, stay refused (ADR-0068 Decision 8).
    - SR implements this, because SR makes the macro visible.
    - *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
      proposed; in force once it is accepted):* admission's join is
@@ -1571,6 +1588,12 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
     lane's park; a judgment halt that persists in another lane parks that
     lane only, and a forced step on a held lane is refused (ADR-0068
     Decision 1, item 8).
+  - *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+    slice 4, proposed; in force once it is accepted):* a forced step on a
+    lane with a pending instruction that carries a step is refused, naming
+    it: the owner
+    withdraws the instruction or drops the forced step (ADR-0068 Decision
+    7, item 5).
 - **Lanes waiting to land do not hold capacity.** The cap bounds concurrent
   workers: their cost, the rate limit, a full test run each. A lane waiting
   for its merge runs nothing. The backlog is bounded by the plan and reported
@@ -2129,6 +2152,12 @@ Not amended:
   its later slices take up record-based messages at step boundaries (the
   driver's event file, main-to-lane instructions). `/orchestrator:next
   --parallel` stays unbuilt, the owner's decision of 2026-10-17.
+
+  *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+  slice 4, proposed; in force once it is accepted):* main-to-lane messages
+  are taken up there as instructions, records the driver applies at a
+  lane's next step boundary (ADR-0068 Decision 7). Lane-to-lane notes stay
+  out, the owner's decision of 2026-10-19.
 - A heavy-job lock, so two lanes do not run `npm test` at the same time.
 
   *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
