@@ -495,6 +495,9 @@ describe('what changes while a step\'s marker waits for the park records\' lock 
       return false;
     };
     mkdirSync(PK.parksDir(t.work, t.fx.macroId), { recursive: true });
+    // A's marker waits for the lock as long as the owner may hold it (up to
+    // 30 s for B to end on a slow machine), not the run's 5 s.
+    const wait = PK.setLockWaitMs(60_000);
     try {
       strictEqual(await t.run({}, { startWorker, laneBusy }), 2, t.lines.join('\n'));
       strictEqual(asked >= 4, true, 'A\'s commit was admitted');
@@ -504,6 +507,7 @@ describe('what changes while a step\'s marker waits for the park records\' lock 
       strictEqual(r.halt.reason, 'worker-failed');
       deepStrictEqual(stepsOf(r).filter((x) => x[2] === 'commit'), [], 'no worker started beside the group');
     } finally {
+      PK.setLockWaitMs(wait);
       t.fx.cleanup();
     }
   });
