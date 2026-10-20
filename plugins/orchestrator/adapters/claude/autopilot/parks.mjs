@@ -41,7 +41,13 @@ import { acquireLock, AUTOPILOT_DIR_REL, LockHeldError, processFingerprint } fro
 export const PARK_SCHEMA = 'agentic-autopilot-park-1.0';
 export const PARK_STATES = Object.freeze(['creating', 'in-flight', 'parked']);
 // How long a writer waits for the directory's lock while another holds it.
-const LOCK_WAIT_MS = 5000;
+let lockWaitMs = 5000;
+/** Tests only: set that wait (ms) and return the previous one. */
+export function setLockWaitMs(ms) {
+  const previous = lockWaitMs;
+  lockWaitMs = ms;
+  return previous;
+}
 const RECORD_ID_RE = /^[0-9a-f]{16}$/;
 
 export const newRecordId = () => randomBytes(8).toString('hex');
@@ -123,7 +129,7 @@ let selfFingerprint = null;
 // participant, judged by its process's fingerprint, so a live holder is never
 // taken over however long it holds it, and one whose process is gone is
 // cleared. A writer waits for a live holder until `waitMs`, then fails.
-async function withLock(mainRoot, macroId, fn, { waitMs = LOCK_WAIT_MS } = {}) {
+async function withLock(mainRoot, macroId, fn, { waitMs = lockWaitMs } = {}) {
   const dir = parksDir(mainRoot, macroId);
   fs.mkdirSync(dir, { recursive: true });
   const lock = path.join(dir, '.lock');
