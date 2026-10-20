@@ -15,8 +15,8 @@ Proposed (2026-10-19).
     and Decision 2, hold and release.
   - **Slice 2 (2026-10-19, below Decision 2):** Decision 3, stall detection,
     and Decision 4, the driver's event file watched by the main session.
-  - **Slice 3:** the driver-run verification step, and one lock for heavy
-    work.
+  - **Slice 3 (2026-10-20, below Decision 4):** Decision 5, the
+    driver-run verification step, and Decision 6, one lock for heavy work.
   - **Slice 4:** main-to-lane instructions read at the next step boundary,
     and rebinding a dispatched subtask after an owner-approved instruction
     change (docket C147).
@@ -90,6 +90,56 @@ Proposed (2026-10-19).
     line by line (item 6); a forward wall-clock step of more than an
     interval turns a window `unknown`, and a suspend shorter than an
     interval is not detected (Decision 3, item 5).
+- **Open point of acceptance (slice 3): what Decisions 5 and 6 add to, or
+  narrow in, the owner's decisions.** The owner decided that the driver runs
+  long checks and that one lock serializes heavy work; these follow from the
+  design, and acceptance confirms them or sends them back:
+  - verification is offered only in a repository that commits a declaration
+    of its check kinds, read from the run's baseline; elsewhere a worker
+    checks in its step as today (Decision 5, items 3 and 11);
+  - the changed-file selection over-selects through imports, falls back to
+    the whole suite for a file no test matches, but not for a file an
+    unrelated test happens to match, relies on the declaration's mappings
+    for files tests read by paths no rule sees, and is accepted by a
+    backtest on this repository's history, not by proof (Decision 5, item 4);
+  - a result binds its tree as the tree part of Decision 2's digest sees it
+    at the batch's start and end: an edit undone in between, or to an
+    ignored file, is not seen (Decision 5, item 5);
+  - only a check that passed or failed on its tree is evidence; a timeout,
+    a check that could not start, and one cut by a stop, a hold, a drain or a
+    bound are not (Decision 5, item 6);
+  - a check that fails stops its batch; a request is answered only by its
+    own results; only a batch cut short by a stop, a hold, a drain or the
+    driver's end is taken up again, a batch whose every check passed takes
+    `on_pass`, and every other end resumes the verb; a
+    verb that asks for the same checks again on an unchanged tree after they
+    all passed or one failed halts its lane `no-progress` at once, so a
+    flaky test is rerun only after a change or by the owner's explicit
+    rerun, while after a timeout with no failure they run again (Decision 5,
+    items 6, 7 and 10);
+  - a check whose command takes the lock itself waits for it inside its own
+    timeout, unseen by the driver, and counts as running (Decision 5,
+    item 9);
+  - a check runs the lane's own code with the reach a worker's shell
+    already has, outside the permission posture (Decision 5, item 8);
+  - the driver probes only its own host's persona; the other host's reader
+    is the owner's install under ADR-0067 Decision 4, item 3, and a host that
+    skipped it refuses a workflow file from its worker's last `verify` until
+    the batch's next step, a drain and relaunch included (Decision 5,
+    item 11);
+  - narrower than asked: the lock has one holder until a later decision,
+    waiters between processes get no order, and it binds only cooperating
+    holders in one repository's worktrees; a process that leaves its
+    holder's process group is outside it for every holder (Decision 6,
+    items 1, 2, 5 and 8);
+  - against an older harness copy, exclusion holds only while the holder
+    lives: after its end an older copy may start beside a descendant that
+    left the group, and after a kill beside its last children; an older
+    harness nested under a holder waits on it rather than joining (Decision
+    6, items 2 and 3);
+  - the inherited proof prevents accidental joins, not a same-user process
+    that reads it, and a driver started under a holder refuses to start
+    (Decision 6, item 3).
 - **On acceptance** it amends
   [ADR-0063](0063-autopilot-fresh-session-driver.md) and
   [ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) at the places
@@ -303,6 +353,79 @@ monitor expires after its `timeout_ms`, 5 minutes by default and 30 at most,
 with one notice; a monitor that emits too many events is stopped; and its
 filter must match every terminal state, since silence looks like "still
 running".
+
+### Slice 3 (2026-10-20): what the owner decided and measured
+
+<!--
+Slice 3 citations are `path:line` at agentic-plugins 1048c8d2, verified
+2026-10-20.
+-->
+
+Discussion 3, item 1 (2026-10-17): the root of the first problem, legitimate
+waits killed by the step clock, is C: machine work that takes hours (mutation
+runs, full test runs) leaves the LLM step and runs in the driver, designed
+together with the heavy-work lock ADR-0067 left out of scope. Shrinking the
+checks inside a step (D) treats the symptom and was not adopted. Discussion
+4, items 1 and 2 (2026-10-19):
+- **A verification step the driver runs.** A worker makes its edits and
+  quick checks and closes its step with the checks to run recorded; the
+  driver runs them with no LLM and records the results, and the next LLM
+  step reads them. The list is the worker's, plus the tests that read the
+  changed files (docket C150).
+- **One heavy-work lock.** The driver's verification jobs run one at a time
+  by default, under one lock file shared with the mutation harness and
+  interactive sessions, extending the harness's lock.
+
+The facts behind them [measured, recorded outside this repository]:
+- All 18 `worker-failed` steps discussion 3 counted were workers waiting,
+  after a provisional report, on a background full test run, mutation run or
+  peer; the three since C127 were cut at 7200 s and 10800 s waiting on 62 and
+  51 mutations and a Refine-verify
+  (`~/.agentic-plugins/ops/discussion-3/prep.md`).
+- Docket C145 (2026-10-16): the landing tests pass alone in 24 s; seven
+  failed, at 80 to 127 s, under a load of 40 to 64 while lanes ran full test
+  runs at once.
+- Docket C150 (2026-10-18, PR #974): a refine changed the finalize order in
+  the pipeline's region `persona-pipeline/regions/verb-finalize.md` and the
+  runbooks generated from it, and the targeted tests its step ran missed
+  `tests/plugin-shape/test-engineer-autopilot-runbooks.mjs`. That test reads
+  each generated runbook through a path it builds, the plugin root joined to
+  `commands/${verb}.md`
+  (`tests/plugin-shape/test-engineer-autopilot-runbooks.mjs:29-31`, `:55`);
+  of the generated runbooks it spells out only `commands/decide.md` and
+  `commands/refine.md`, relative to the plugin (`:173`, `:200`), and the
+  region only in a comment (`:43`). Seven tests failed in CI.
+
+**What the code does today:**
+- **Long checks run inside the step.** The worker runs the test suite, the
+  mutation harness and its peers itself, and its step waits for them under
+  the step's wall clock (Decision 3).
+- **One lock, the harness's.** `scripts/mutation-harness.mjs` takes
+  `<git-common-dir>/mutation-harness.lock`, which every worktree of a
+  repository shares (`:820-843`). Its record is written whole and
+  hard-linked into place (`:908-918`); its holder is judged by pid, host and
+  a start time spelled independently of locale and clock (`:855-906`); a
+  stale lock is reaped under a guard, one reaper at a time (`:980-1034`); and
+  waiters poll every 2 s, in no order (`:1040-1083`). On a signal it stops
+  its test runs before it releases (`:1124-1141`). It acquires
+  unconditionally (`:1157`), so a process that holds the lock and runs the
+  harness waits on itself. Nothing else takes a lock: two lanes' test suites
+  run at once (ADR-0067 §Out of scope).
+- **A step's cost.** A spawned step that reported no cost is charged its
+  whole reservation
+  (`plugins/orchestrator/adapters/claude/autopilot/budget.mjs:70-81`).
+- **The next step's kinds are closed in both packages:** `verb`, `commit`,
+  `owner-decision`, `done`
+  (`plugins/orchestrator/adapters/claude/autopilot/policy.mjs:24`;
+  `persona-pipeline/files/scripts/state.mjs:253`). The persona's parser
+  validates the kind on every read (`state.mjs:1965`, `:2163-2165`), so an
+  older reader refuses a workflow file holding a new kind; an unknown key, by
+  contrast, is carried (`:1932-1942`). The driver stops on a kind outside its
+  enum with `owner-choice` (`policy.mjs:362-365`).
+- **The driver reads a child through the persona's CLI**
+  (`plugins/orchestrator/adapters/claude/autopilot/observe.mjs:348-349`) and
+  checks the persona's surfaces with source probes before a run
+  (`plugins/orchestrator/adapters/claude/autopilot/roots.mjs:101-123`).
 
 ## Decision
 
@@ -913,7 +1036,7 @@ slice: the wake sources (Decision 1, item 6) and the hold records (Decision
   *2026-10-19:* Decisions 3 and 4 below.
 - **Slice 3:** the verification step the driver runs without an LLM, and
   one heavy-work lock shared with the mutation harness and interactive
-  sessions.
+  sessions. *2026-10-20:* Decisions 5 and 6 below.
 - **Slice 4:** main-to-lane instructions read at the next step boundary, and
   rebinding a dispatched subtask after an owner-approved instruction change
   (C147).
@@ -1328,6 +1451,469 @@ nothing.
   item 5 (the event file's lines carry no proposal text; a halted run's
   `run-ended` points at the halt record that does).
 
+### Decision 5. A verification step the driver runs (slice 3, 2026-10-20)
+
+It applies to every run, serial or with lanes, of a macro or a verb chain,
+on Claude (ADR-0063 D9), once the driver offers it (item 11).
+
+1. **The shape.** A verb's step makes its edits and the quick checks it
+   judges to take minutes, and then, instead of waiting for long checks,
+   ends with the next step `verify`: a request naming the checks to run and
+   the step that follows them. The driver runs the checks with no LLM,
+   records each result in the workflow, and dispatches the step that
+   follows, which reads them. In a run that offers verification, a worker
+   runs no mutation run and not the whole test suite in its step, and never
+   waits there for the heavy-work lock (Decision 6): a wait on a lock is
+   quiet and idle, which Decision 3 would judge stalled.
+
+2. **The request** is machine data, written with the verb's last write
+   through the persona's CLI. It names an ordered list of checks, each a
+   *kind* from the repository's declaration (item 3) with arguments that are
+   data (test file paths, mutation spec paths, case ids), each checked
+   against the tested tree or its alphabet; the step that follows a batch
+   that passed (`on_pass`, a next step as today); and a confidence, to which
+   ADR-0063 D4's rules apply: below `HIGH` it halts `low-confidence` before
+   anything runs. No argument is a shell word, and no text a peer, a person
+   or the model wrote becomes one: a check never runs peer or user text.
+
+3. **The allow-list is the repository's declaration, read from the run's
+   baseline.** A file committed to the repository declares each check kind:
+   its command, the arguments it takes, a timeout of at most 4 hours, whether
+   the command takes the heavy-work lock itself, and the changed paths that
+   add it (item 4). The driver reads it from the commit the run started from,
+   never from a lane's tree, so a worker cannot widen it in its own step. For
+   this repository it lists `npm test -- <files>`, `npm run mutate -- <spec>
+   --only <ids>`, `npm run sync:persona-pipeline`, `npm run mutate:static [--
+   <specs>]` and `npm run lint:plugin-shape`. A repository without the file
+   offers no verification, and its workers check in their steps as today.
+
+4. **The driver adds checks, and over-selects.** Before a batch, the driver
+   adds every test that may read a changed file, and each declared check
+   whose paths a changed file matches (here: `sync:persona-pipeline` for a
+   pipeline source or a copy generated from one, `mutate:static` for a file a
+   mutation spec anchors, `lint:plugin-shape` for a file under `plugins/`). It
+   adds; it never drops a check the worker asked for. Its guarantees:
+   - **Every change counts:** against the lane's fork point from the
+     integration branch (a verb chain: the commit its run started from),
+     committed or not, tracked or untracked, added, modified, deleted or
+     renamed. A deleted or renamed file counts by its old path too, and a
+     persona-pipeline source as every copy generated from it, and the
+     reverse.
+   - **It over-selects, through imports.** A test is selected when it, or a
+     module it imports directly or through others, may read the file: names
+     it by any spelling the rules know, a directory a path is built from
+     included (the C150 case), or imports it. The rules are `verify-select`'s.
+   - **No match never means no relevant tests.** A changed file that no test
+     matches selects the whole suite.
+   - **A match is not proof of coverage.** A test can read a file by a path
+     no rule sees (a test that reads each `persona.json` through
+     `tests/persona-pipeline/_personas.mjs:38-47` names none of them), and a
+     match by an unrelated test cancels the fallback. The declaration may
+     therefore map paths to further tests or to the whole suite, and the
+     driver adds those too.
+   - **Its acceptance is a backtest, not a proof.** On the C150 change the
+     selection holds `tests/plugin-shape/test-engineer-autopilot-runbooks.mjs`,
+     and on a recorded set of this repository's past pull requests every test
+     that failed on a pull request's first CI run is selected by that pull
+     request's diff. A miss widens the rules or the declaration's mappings
+     (§Status, open point).
+
+5. **Binding.** A request and its results are bound to the workflow attempt
+   (the engineer workflow, and the run and step that recorded the request)
+   and to the tested tree: the lane's checkout, uncommitted and untracked
+   changes included, as the tree part of Decision 2's content digest (item 7)
+   sees it when the batch starts and again when it ends. A result is evidence
+   for that tree only, and a batch whose tree differs at its end has no
+   evidence. The comparison sees what that digest sees, at those two moments:
+   an edit undone before the end, or a change to an ignored file, goes unseen
+   (§Status, open point).
+
+6. **Results, and the step that follows.** Each check's result is recorded
+   in the workflow through the persona's CLI, holding what the owner named
+   (exit, duration, failing tests, a pointer to its log in the run
+   directory); its form and timing are `verify-record-cli`'s. A result is *evidence* about its tree only when the check
+   ran to its end on that tree and passed or failed. Any other end is no
+   evidence: a timeout, a check that could not start or was refused, one
+   stopped by `stop`, a hold, a drain or the driver's end, one never reached,
+   and every check of a batch whose tree changed. The batch stops at the
+   first check that does not pass: a mutation run on a failing tree is no
+   evidence, and the harness refuses one whose control is not green anyway.
+   Then:
+   - every check passed on the tested tree, still the lane's: the driver
+     dispatches `on_pass`;
+   - a batch stopped by `stop`, a hold, a drain or the driver's end:
+     nothing follows it; the request stays, and runs when it is next taken up
+     (item 7);
+   - any other end: the driver resumes the requesting verb, which reads the
+     results from the workflow.
+
+   A result is never a halt by itself, and no decision of the driver depends
+   on a failure's detail. The failing tests' names and the logs reach the
+   next worker of the lane, never the main session or the event file
+   (Decision 4, item 2).
+
+7. **Recovery and repeats.** A request is answered only by its own results,
+   for the lane's tree:
+   - a check that ended before its result was recorded (the driver died) has
+     no result and runs again; a result is never assumed;
+   - only a batch cut short (by `stop`, a hold, a drain or the driver's end)
+     is taken up again (a relaunch, a release, the next look); a batch that
+     ended, at a failure or at a check with no evidence of its own (a
+     timeout, a check that could not start or was refused), resumes the
+     verb even when the driver died before doing so, and runs nothing more;
+   - a batch taken up again on the tree its results are for goes on from its
+     first check that did not pass; on another tree (a person's edits under a
+     hold, Decision 2), or when a relaunch's newer declaration resolves it to
+     other commands, it runs again whole, and old results never take
+     `on_pass`;
+   - a verb that records the same checks again on an unchanged tree, after
+     a batch in which they all passed or one failed, halts its lane
+     `no-progress` at once, and nothing runs (item 10); after a batch that
+     ended with no failure but a check with no evidence, they run again
+     whole. A flaky test is rerun only after a change, or by the owner's
+     explicit rerun, whose form is `verify-exec`'s (today's forced steps,
+     Decision 1, item 8, name no verification);
+   - a verb run in the lane, a person's in a held lane included, replaces the
+     request, as its Phase 0 clears any next step.
+
+8. **How a check runs.** The driver's effect domain grows by one effect,
+   amending ADR-0063 D1: it runs a declared check
+   - as an argv array built from the declaration and the request's checked
+     arguments, never a shell string;
+   - in the lane's checkout (in a serial run, the driven checkout), with the
+     environment a worker gets, minus the run's admission token and autopilot
+     flag, so that a check cannot act as a worker of the run;
+   - in a process group of its own, which only the driver kills (ADR-0035 §4,
+     the child-only rule): at its timeout, at `stop`, or at the driver's own
+     signal, SIGTERM and then SIGKILL, as a worker (ADR-0063 D5);
+   - under the heavy-work lock (Decision 6).
+
+   **A check is a worker group of its lane** wherever a rule asks whether one
+   still lives: the hold's handoff (Decision 2, item 4), `stop`, the cleanup
+   of a run whose driver died, and an admission. This covers the check's
+   process group and the wrapper the driver started for it. A driver killed
+   while a check runs or waits for the lock leaves the lane busy until that
+   group ends. A check group that outlives SIGKILL is not a result: as for a
+   worker group, it is a run-wide halt (Decision 1, item 1), and the run's
+   locks are kept while it lives.
+
+   A check runs the lane's own code, its tests and scripts, with the reach a
+   worker's shell already has: the permission posture binds a worker's tool
+   calls, not the processes a test starts, today as here. The orchestrator
+   adapter executes it; runtime's ceiling is unchanged.
+
+9. **Bounds and budgets.**
+   - **No LLM cost.** A batch takes no cost reservation, is charged nothing,
+     and is not a step of `--max-steps`. Time bounds it: each check its
+     declared timeout, a batch 6 hours of running checks, the driver's wait
+     for the heavy-work lock 8 hours; a check cut by either batch bound gives
+     no evidence. Every loop through verification passes through an LLM
+     step, which is counted and charged as today.
+   - **A command that locks itself waits inside its own timeout.** The
+     driver runs it without the wrapper (Decision 6, item 3), so its wait for
+     the lock is the command's: the driver cannot see it, the check counts as
+     running, and a wait that eats its timeout ends it with no evidence
+     (§Status, open point).
+   - **Not judged by the stall detector.** A batch has no stream, and a quiet
+     test is not a stall; its bounds bound it (Decision 3, item 10).
+   - **One batch at a time.** The driver runs its batches one at a time
+     across its lanes, in the order their requests were recorded. A lane
+     whose batch waits or runs holds no worker capacity (`--lanes N` counts
+     workers), so the other lanes' workers run meanwhile.
+   - **Only a running check is in flight.** The driver reads holds and the
+     drain before each check (Decision 2, item 3), so a hold or a draining run
+     (an exhausted budget among its causes, though a batch charges nothing)
+     ends the driver's wait for the lock and stops a running batch before its
+     next check, never during one. A running check is in flight: the run does
+     not end before it (Decision 1, item 7), and a hold's handoff waits for it
+     as for a worker step (Decision 2, item 4). A request not running is not
+     in flight: it stays recorded, and starts again only when its lane is
+     neither held nor parked and the run is not draining.
+
+10. **Where it appears.**
+    - **Policy.** `verify` is a next-step kind in both packages and a step
+      kind of the driver. A child whose next step is `verify` yields a
+      verification step when the run offers verification, and halts
+      `owner-choice` naming what is missing when it does not. That cause is
+      the run's own footing, not the lane's, so the halt is run-wide
+      (Decision 1, item 1), and a relaunch that offers verification goes on
+      with no release.
+    - **Progress.** ADR-0063 D4's gates apply to the step a batch dispatches
+      as to any step. A batch's recorded results count as a change of the
+      lane's child, so a passing batch's `on_pass` is not refused
+      `no-progress` on a tree left unchanged by design; a batch itself is
+      judged by its results, never by `no-progress`. The repeat of item 7 is
+      a new trigger of the `no-progress` code, amending ADR-0063 D4's table;
+      the codes are unchanged.
+    - **Records.** A batch is a step of the run's step ledger, of kind
+      `verify` and with no cost. The event file gains no kind: a batch's end
+      is a step's end, which Decision 4 does not publish (item 3), and a
+      failed check is no halt.
+    - **Status** shows a lane verifying, or waiting for the lock with its
+      holder when the driver itself waits.
+
+11. **Rollout.** Older readers refuse a workflow that holds the new kind
+    (§Context), so it is written only where its readers know it:
+    - **First the persona's CLI, with the orchestrator refusing.** The
+      persona accepts `verify` and records requests and results, but writes
+      `verify` only in a step of a run that offers verification, never
+      interactively, where no driver will run it. The orchestrator released
+      beside it names `verify` and refuses it explicitly, as a kind its
+      driver does not run yet, not as an unknown enum, and its cleanup of a
+      dead run accounts a batch as no step and no cost
+      (`plugins/orchestrator/adapters/claude/autopilot/dead-runs.mjs:361-377`
+      counts every unaccounted step today).
+    - **Then the driver.** It offers verification only when the installed
+      persona's CLI has the capability (a source probe beside today's,
+      `roots.mjs:101-123`) and the repository has a declaration; it records
+      the offer in `run.json` and tells each worker in its environment and
+      rules.
+    - **Then the runbooks** hand long checks to `verify` when the run offers
+      it.
+
+    The new kind is a new value, so ADR-0067 Decision 4, item 3 applies
+    unchanged: it is written only once its readers are installed on both
+    hosts. The driver's probe sees its own host's persona only; the other
+    host's install is the owner's, as for every value under that rule. A
+    persona older than the kind, on a host that skipped it, refuses a
+    workflow file while it holds `verify`, from its worker's last write
+    until the batch's next step, a drain and a relaunch included (§Status,
+    open point).
+
+### Decision 6. One heavy-work lock (slice 3, 2026-10-20)
+
+1. **One lock per repository.** It is the mutation harness's lock file,
+   `<git-common-dir>/mutation-harness.lock`, shared by every worktree of the
+   repository and kept compatible with every harness copy that takes it
+   (from `7badfe23` on), on an older branch included, so that they honor it;
+   the name is historical. Its holders are the mutation harness and the
+   wrapper (item 4), which a person, a session or the driver runs. The
+   driver runs a check whose command does not take the lock itself through
+   the wrapper, so every holder is a process that runs its heavy work as its
+   own children, and a driver that dies leaves a holder that still ends its
+   work and releases. It has one holder at a time: more slots are a later
+   decision, since older harness copies honor only the one file.
+
+2. **What it guarantees.**
+   - Among cooperating holders, at most one heavy job of the repository runs
+     at a time, whichever worktree, lane or session starts it.
+   - **Ownership ends only after the holder's process group has stopped.** A
+     holder releases only once the command it ran, and that command's
+     process group, have exited; on a signal it stops them first, as the
+     harness does today. A holder killed outright has its children stopped
+     by a supervisor, as the harness's are today, and a reader of this
+     release judges a lock stale only once no process of its ownership
+     runs. A process that leaves its holder's process group (a daemon, a
+     detached child) is outside this guarantee for every holder (§Status,
+     open point).
+   - **Narrower with older harness copies.** As a holder, an older harness
+     stops only its test run's process group before it releases
+     (`scripts/mutation-harness.mjs:378`), so a descendant that left that
+     group outlives even an orderly end. As a reader, it judges a holder by
+     the recorded process alone (`:898-905`), and its supervisor stops the
+     test runs only after it sees its holder die (`:253-263`). So against an
+     older copy, exclusion holds while the holder lives; after its end, an
+     older copy may start beside a descendant that outlived it, and after a
+     kill beside the holder's last children (§Status, open point).
+
+3. **Nested acquisition: authenticated inherited ownership.** A holder's
+   descendants can join its ownership by a proof they inherit, and the
+   lock's record keeps nothing from which another process could make it. A
+   joined acquirer waits for nothing and releases nothing, its processes
+   count as the holder's, and its cancellation stops its own processes only.
+   Only the holder releases, after every process of its ownership has
+   stopped. Any other acquirer waits, and a proof that matches no live
+   holder is ignored. So the harness of this release, which acquires
+   unconditionally, runs under a holder without waiting on it. The proof
+   keeps an unrelated process from joining by accident; it does not stop a
+   process of the same user that reads the holder's environment. How the
+   proof passes and is checked is `impl-heavy-lock`'s.
+   - **One boundary for a command that locks itself.** The driver runs a
+     check whose command takes the lock itself (the declaration says so,
+     Decision 5, item 3) without the wrapper, so a harness too old to know
+     the proof, in a lane cut before it, still runs; its wait is inside the
+     check (Decision 5, item 9).
+   - **Unsupported nesting.** An older harness under a holder, started
+     through the wrapper or a script, cannot join and would wait on its own
+     holder. The wrapper refuses a command the declaration marks as locking
+     itself, and an indirect older harness waits, naming the holder it waits
+     on, until it is stopped (§Status, open point).
+   - **A driver under a holder refuses to start.** A driver started inside a
+     holder's ownership (its launcher, or the shell it runs in, run under the
+     wrapper) would pass the proof to every check and worker, and every
+     lane's heavy work would join that one holder and run at once. It
+     refuses to start, naming the holder (§Status, open point).
+
+4. **The wrapper for interactive sessions.** `agentic-autopilot heavy --
+   <command> [args...]` takes the lock, runs the command as its child, and
+   releases once the command and its process group have stopped; while it
+   waits it names the holder, as the harness does. A person or a session
+   uses it for a whole test suite or anything else heavy; nothing forces it,
+   since the lock is cooperative, and the harness needs none (item 3). Where
+   the instructions tell sessions to use it is slice 4's.
+
+5. **Queueing and fairness.** Within one driver, batches run in the order
+   their requests were recorded (Decision 5, item 9). Between processes
+   there is no queue: waiters poll, as the harness's do, and the first to
+   find the lock free takes it. A waiter reports the holder and how long it
+   has waited; the driver's own waits show in `status` and its records. A
+   waiter can lose the race again and again; nothing bounds that but the
+   holders' own bounds and, for the driver, its 8-hour wait (§Status, open
+   point).
+
+6. **Stale holders** are judged as the harness judges them today, and by a
+   reader of this release also by whether a process of its ownership runs
+   (item 2). A holder on another host is never judged stale from here, and
+   stays until it releases or a person removes it. The judgment and the
+   reap are `impl-heavy-lock`'s.
+
+7. **Order with the run locks.** The driver waits for the heavy-work lock
+   while it holds its run locks, directly or through a check that locks
+   itself. No holder of the heavy-work lock waits for a run lock: an
+   admission refuses rather than waits (ADR-0067 Decision 4, item 5), and
+   the harness and the wrapper take none. So the order cannot deadlock.
+
+8. **What it does not cover:** a worker's quick checks in its step; a
+   process started without the wrapper; a process that left its holder's
+   process group; another clone of the repository (another git common dir)
+   or another machine; CI; a peer's own commands; the driver's git
+   operations; and load from outside the repository. It bounds the overlap
+   of heavy jobs among cooperating holders, which made the C145 load, not
+   the machine's load.
+
+### Left to the implementation (slice 3)
+
+As for slices 1 and 2: the guarantees above are the decision, each case
+below must be tested, and each new test must be shown to bite by a mutation
+that it kills.
+
+**`verify-record-cli`** (Decision 5, items 2, 5 to 7, 10, 11):
+- The request's and the results' fields and encodings, the outcomes and
+  which of them are evidence, when each is written, the bounds (failing test
+  names, log paths), the identity of "the same checks" (the commands as the
+  declaration resolves them, the driver's additions included), and the wire
+  form of the new kind. Tests: a request whose argument is not a path in the
+  tree, or not in its alphabet, or begins with `-`, is refused at the write;
+  `finish-verb --next-step-kind verify` outside a run that offers
+  verification is refused, and a persona that is not offered verification
+  never writes it; results of another request or tree are never read as this
+  one's; recording results changes the lane child's fingerprint; a verb
+  that replaces the request leaves the old results unread.
+- The orchestrator's explicit refusal of `verify`, in the policy and in the
+  interactive commands that read a child's next step, and its dead-run
+  cleanup accounting a batch as no step and no cost. Test: an orchestrator
+  of this release cleaning up after a newer driver's batch.
+
+**`verify-select`** (Decision 5, item 4):
+- The rules and their spellings, the test discovery they read, the import
+  graph, the pipeline map between sources and generated copies, renames and
+  deletions, the whole-suite fallback, and the declaration's mappings.
+  Tests: the C150 change selects
+  `tests/plugin-shape/test-engineer-autopilot-runbooks.mjs` through a path it
+  builds, with the comment that names the source removed; a change to a
+  persona's `persona.json` selects the tests that read it through
+  `tests/persona-pipeline/_personas.mjs`, though another test names it; a
+  test that imports a helper naming the file is selected; a file no rule
+  matches selects the whole suite; an untracked file, a renamed file by both
+  paths, a deleted file by its old path, a generated copy for its source and
+  the reverse; the worker's checks are kept. The backtest set and its
+  replay.
+
+**`impl-heavy-lock`** (Decision 6):
+- One protocol shared by the harness, the wrapper and the driver: the
+  record, its creation, the proof and how it passes, release, stale
+  judgment and the reap guard, and where its code lives so that the driver
+  needs nothing from this repository's `scripts/`. Tests: an older harness
+  and a new holder exclude each other; `npm run mutate` under a holder runs
+  without waiting on it, and a process with a wrong proof waits; SIGKILL to a
+  holder: no holder of this release starts while a process of its ownership
+  runs, and the window an older harness has (its supervisor's delay) is
+  measured and stated; an orderly end with a descendant that left the group:
+  the descendant's survival is measured and stated, for an older harness and
+  for this release; a holder's release while a joined process still runs is
+  refused, and a joined acquirer's cancellation leaves the holder's other
+  processes running; the wrapper refuses a command declared as locking itself, and an
+  older harness started through a script under the wrapper waits naming its
+  holder; a record that does not parse is reaped, and a holder on another
+  host never is; a driver started under the wrapper refuses to start.
+- The wrapper's signals, exit code and waiting report.
+
+**`verify-exec`** (Decision 5, items 1, 3, 6 to 10; Decision 6, items 5 and 7):
+- Reading the declaration from the baseline commit; the capability probe and
+  the offer in `run.json`; the order of a batch's checks (the worker's and
+  the driver's additions, no mutation check before the tests); the batch
+  queue across lanes; the environment scrub; the check's record as a worker
+  group of its lane; timeouts, `stop` and the driver's signal; the digest
+  before and after; the step ledger line and `status`; the owner's explicit
+  rerun. Tests:
+  - the declaration: a worker that edits it in its lane widens nothing; a
+    check whose command is not declared is refused, never run;
+  - order and stops: a batch runs its checks in the stated order and stops
+    at the first that does not pass, the rest not run; a request below
+    `HIGH` halts `low-confidence` and runs nothing;
+  - offer: a persona without the capability, or a repository without a
+    declaration, is not offered verification, and its workers check in
+    their steps;
+  - binding and recovery: a driver killed after a check ended and before its
+    result reruns that check; a batch cut short resumes from its first check
+    that did not pass, the one interrupted included; a driver killed after a recorded failure resumes the
+    verb and runs no later check; a tree edited during a batch gives no
+    evidence; a passing batch dispatches `on_pass` on its unchanged tree
+    without a `no-progress` halt and without counting a step; a tree
+    changed after a passing batch and before `on_pass` resumes the verb; an
+    edit under a hold followed by a release reruns the request on the edited
+    tree; a relaunch with a changed declaration reruns the request whole;
+  - repeats: a request repeated on an unchanged tree after a pass or a
+    failure halts `no-progress` and runs nothing; one repeated after a batch
+    whose first check passed and second timed out runs whole; the owner's
+    explicit rerun reruns an answered request once;
+  - processes: the scrubbed environment lacks the admission token and the
+    autopilot flag; a driver killed while a check runs, and while it waits
+    for the lock, leaves the lane busy for the handoff, `stop`, dead-run
+    cleanup and admission until the group ends; a check group that outlives
+    SIGKILL halts the run with its locks kept;
+  - bounds: each of the 4-hour, 6-hour and 8-hour bounds ends what it bounds
+    with no evidence; a batch is not judged by the stall detector; a check
+    that locks itself and waits inside its command ends at its own timeout;
+  - capacity and drain: a batch charges no cost and holds no worker slot;
+    batches of two lanes run one at a time in request order; a hold arriving
+    between two checks stops the batch before the second, and one arriving
+    during the driver's lock wait ends the wait; a hold's handoff waits for a
+    running check, while a queued request in a held lane neither blocks the
+    handoff nor keeps the run from ending; the last permitted worker step
+    recording `verify`, and a budget exhausted while a request is queued:
+    nothing starts, and the request survives for the relaunch;
+  - records: a batch adds no event kind, and no failing test name or log
+    text reaches the main session or the event file; a run that does not
+    offer verification halts run-wide on a `verify` child, and a relaunch
+    that offers it goes on with no release; no holder of the heavy-work lock
+    waits on a run lock.
+
+**`verify-runbooks`** (Decision 5, item 1): the persona runbooks hand long
+checks to `verify` when the run offers it, and read the results when they
+resume. Tests: under a run that offers verification, no runbook block runs
+the whole suite or a mutation run in a step.
+
+### Amendments (slice 3)
+
+Each place below keeps its text and gets a dated note (2026-10-20) that
+points here. Until acceptance the notes announce the proposal and change
+nothing.
+- **ADR-0063:** Status; D1's effect domain (the driver runs declared checks
+  as argv arrays in the lane, child-only); D3's step model (a verification
+  step runs no `claude` process); D4's `no-progress` trigger (a repeated
+  request on an unchanged tree after all its checks passed or one failed; a batch's results count as
+  progress for the step it dispatches); D5's worker contract (in a run that offers
+  verification, a worker hands long checks to the driver and never waits for
+  the heavy-work lock in its step); D8's Lock bullet (the heavy-work lock
+  beside the run locks, and its order with them).
+- **ADR-0067:** Status; Decision 6's opening (`--lanes N` counts workers; the
+  driver runs verification batches one at a time beside them), its claim that
+  the cap bounds "a full test run each" (the heavy-work lock serializes those
+  runs), its Locks bullet (the heavy-work lock), §Out of scope (the
+  heavy-job lock is taken up here), and cascade item 7c (its Lock text is
+  ADR-0063 D8's, which carries the note).
+
 ## Consequences
 
 ### Slice 1
@@ -1440,6 +2026,57 @@ nothing.
   does. `--notify-local`, `halt.json` and exit codes keep their meaning.
 - The event file only adds a signal; every decision still reads the run's
   records.
+
+### Slice 3
+
+**Positive**:
+
+- An LLM step no longer waits hours for a test or mutation run: its wall
+  clock and its reservation cover its own work. Of the 18 cuts discussion 3
+  counted, those on a test or mutation run go; a wait on a peer stays.
+- Hours of machine checks cost no LLM money and hold no worker slot, so
+  another lane's worker runs while one lane verifies.
+- The tests a change can break are chosen by code that over-selects, from
+  every changed file, the C150 miss included; a worker's own list is only
+  added to.
+- Results are records bound to their tree: a check interrupted by a crash,
+  or whose result went unrecorded, runs again and is never passed, a change after a result makes it stale, and only a pass or a
+  failure counts as evidence.
+- Two lanes, a session and the harness, when they take the lock, no longer
+  run heavy jobs at once in one repository, short of the detached processes
+  and older harness copies of Decision 6, item 2: the C145 load came from
+  such overlap.
+
+**Negative**:
+
+- One more step kind, a new next-step kind both packages must ship in
+  order, and a repository declaration to keep in step with the scripts it
+  names. While a workflow waits for its batch, a persona older than the
+  kind, on a host that skipped its install, refuses that file.
+- One more LLM step on a failure: the requesting verb resumes to read the
+  results, where today's worker read them in the step that ran them. A
+  passing batch goes straight to `on_pass`.
+- Heavy work is serialized across lanes: with two lanes verifying, one waits
+  for the other's batch, and the slowest batch sets the pace.
+- A changed file no rule matches runs the whole suite; the backtest bounds
+  the misses it knows, not the ones it has not met.
+- A failing check stops its batch, so a mutation result arrives one round
+  later than a test fix; a flaky test is not rerun by itself, and a verb
+  that asks for it again on an unchanged tree parks its lane.
+- A check that takes the lock itself waits inside its own timeout, where
+  the driver cannot see or bound the wait separately.
+- The lock binds only those who take it, and between processes a waiter may
+  wait long behind repeated winners; a holder on another host is never
+  reaped from here, and stays until it releases or a person removes it.
+- A check runs the lane's own code outside the permission posture, as a
+  script a worker runs does today.
+
+**Neutral**:
+
+- The halt reason codes and the exit codes are unchanged; a check result is
+  never a halt.
+- The harness keeps its file, its record and its behavior when it runs
+  alone; a run without a declaration behaves as today.
 
 ## Alternatives Considered
 
@@ -1651,3 +2288,92 @@ held to the 8-hour cap, keeping its reservation and its lane.
 worker's summary or the tail of its stderr, which would enter the main
 session's context unfiltered. A `halt` line points at the run's records,
 and the `run-ended` of a halted run at `halt.json`.
+
+### Slice 3
+
+**Shrink the checks inside the step (D).** Rejected by the owner
+(discussion 3, item 1): it treats the symptom, a long wait under the step's
+clock, and gives up the checks that caught defects.
+
+**Let the worker wait for its long checks, with a longer clock or stall
+detection only.** Rejected: the worker holds its reservation and its lane's
+slot while it waits, is charged for the wait when it reports no cost, and a
+wait on a lock is quiet and idle, which stall detection would judge stalled.
+
+**Run the checks in a second worker step, `claude` driven.** Rejected: it
+pays an LLM to run commands and waits under the same clock, and its report
+is text where a check result is an exit code.
+
+**Mark the request with a new field, keeping the next step's kind.**
+Rejected: an older driver ignores an unknown field and would run `on_pass`
+on unchecked work. An unknown kind is refused explicitly, which is the
+safer failure; its cost is the window, until the batch's next step, in
+which an older persona refuses the file.
+
+**Read the allow-list from the plugin, or from the lane's tree.** Rejected:
+a list fixed in the plugin knows only this repository's scripts, and one
+read from the lane lets a worker widen it in its own step. The repository
+declares it, and the driver reads it from the run's baseline.
+
+**Let the worker's list stand alone, or let the LLM choose the tests.**
+Rejected by C150: a targeted list missed a test that builds its paths, and
+seven tests failed in CI. Code adds the tests, and over-selects.
+
+**Select by literal path only, and run nothing more when nothing matches.**
+Rejected: the C150 test reads most generated runbooks by a path it builds
+from a base, and spells two of them only relative to the plugin; that a
+comment in it names their pipeline source is chance. A file no test matches runs the whole suite.
+
+**Answer an identical request from an earlier request's results.**
+Rejected after review: a result would then answer a request it is not bound
+to, and a cached non-result (a stop, a timeout) would park the lane with no
+check run. A request is answered only by its own results, and a repeat on
+an unchanged tree after all its checks passed or one failed halts
+`no-progress`.
+
+**Run every check of a batch whatever fails.** Rejected: a mutation run on a
+failing tree is no evidence and the harness refuses it anyway, and the hours
+it takes delay the fix. The batch stops at the first check that does not
+pass.
+
+**Rerun a failed check automatically.** Rejected, as every automatic retry
+in this ADR: on an unchanged tree it repeats the result, and a flaky test
+passing on a retry hides the flake. A change or the owner's forced step
+reruns it.
+
+**A new lock file for heavy work, beside the harness's.** Rejected: harness
+copies on older branches in other worktrees would take only the old file,
+and both would run at once. The harness's file is extended.
+
+**A lock in the run's locks, or per worktree.** Rejected: the run locks are
+per macro and per checkout, and heavy work collides across macros,
+worktrees and sessions of one repository. The git common dir is the one
+place they all share.
+
+**Several slots from the start.** Rejected: older harness copies honor only
+the one file, so a second slot would let a new holder run beside an old
+harness. One holder until a later decision.
+
+**Pass ownership to a child by an unauthenticated flag.** Rejected: any
+process of the user could set it by accident and run beside the holder.
+The proof is inherited only by the holder's descendants, and the record
+keeps nothing that makes it.
+
+**Scrub an inherited proof from the driver's environment.** Rejected: a
+driver started under a holder would then wait on its own parent for every
+check. It refuses to start instead.
+
+**Have the driver hold the lock for every check, the harness's included.**
+Rejected: a harness that predates the proof would wait on its own holder
+until the check's timeout. A command that takes the lock itself is its own
+boundary.
+
+**A fair queue between processes (tickets in a directory).** Rejected for
+now: it needs every holder to know it, older harness copies do not, and
+heavy jobs are few. Waiters report whom they wait for, and the driver's
+batches keep their own order.
+
+**Force interactive sessions through the lock.** Rejected: no host
+interface intercepts a session's commands, and a lock that refuses a
+person's test run would be bypassed. The wrapper is offered, and slice 4
+writes the instructions.
