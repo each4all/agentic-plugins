@@ -52,6 +52,11 @@ Accepted (2026-09-29, owner decision).
   D1's effect domain, D3's step model, D4's `no-progress` trigger, D5's
   worker contract and D8's Lock bullet carry dated notes; until ADR-0068 is
   accepted they change nothing.
+- Proposed amendment 2026-10-20 by ADR-0068's slice 4 (Proposed): the main
+  session's instructions to a lane, applied at its next step boundary, and
+  the rebinding of a dispatched subtask by an approved change of its
+  instructions. The S6 note and the S8 note's forced-step rules carry dated
+  notes; until ADR-0068 is accepted they change nothing.
 
 <!--
 Adds one named effect domain — S1, owner-launched fresh-session spawn —
@@ -1321,6 +1326,19 @@ under an autopilot run, a plan the owner has not approved at its current hash.
   the gate and Phase 5's `subtask-update` revokes the approval after the
   check, and the dispatch goes on with the subtask as it was approved; the
   driver's own policy (D4 rule 3, S8) halts before the next step.
+
+  *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+  slice 4, proposed; in force once it is accepted):* the gate is unchanged.
+  An approval that changes the plan joins the run locks as an admission, so
+  it is refused beside a live run of the macro. A `plan-set` followed by an
+  approval between two of the driver's looks therefore no longer passes
+  unseen: the approval is refused, and the run halts at its next look. An
+  approval that changes an in-progress subtask's topic or profile records a
+  rebinding of its child, and is also refused while that lane is held, has
+  a release awaiting comparison or has a persona operation open. The
+  dispatch comparison accepts the rebinding only under the current
+  approval, and for an active child only once the child has been told
+  (ADR-0068 Decision 8).
 - Tests: `tests/orchestrator/test-next-approval-gate.mjs` covers the function
   over every approval state in both modes, the binding, the CLI, the runbook
   block and Phase 1 end to end in bash and zsh (explicit id and automatic
@@ -1579,6 +1597,17 @@ roots, `driver.mjs` runs the loop, and `cli.mjs` is the entry of
     `/orchestrator:done` and `/orchestrator:finalize` run exactly when their
     prerequisites hold, so forcing one could only skip a prerequisite (round 2
     reproduced a forced `--no-commit` completing unlanded work).
+
+    *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+    slice 4, proposed; in force once it is accepted):* the owner may also
+    give a lane its next step while a run lives, as an instruction: the same
+    grammar without the dispatch, and the same reach (it replaces the
+    recorded step and its judgment halt, goes through the step's
+    prerequisites, and leaves every gate, error and landing refusal
+    standing), except that it never replaces an interrupted commit, which
+    runs again first; with a note for the child, applied at the lane's next
+    step boundary. A forced step on a lane with a pending instruction that
+    carries a step is refused (ADR-0068 Decision 7).
   - Each step has a postcondition beyond "something changed": a dispatch leaves
     the subtask in progress with an active child; a commit archives, commits or
     sets a gate; a done completes the subtask; a finalize archives the macro.

@@ -17,9 +17,10 @@ Proposed (2026-10-19).
     and Decision 4, the driver's event file watched by the main session.
   - **Slice 3 (2026-10-20, below Decision 4):** Decision 5, the
     driver-run verification step, and Decision 6, one lock for heavy work.
-  - **Slice 4:** main-to-lane instructions read at the next step boundary,
-    and rebinding a dispatched subtask after an owner-approved instruction
-    change (docket C147).
+  - **Slice 4 (2026-10-20, below Decision 6):** Decision 7, instructions
+    from the main session read at a lane's next step boundary, and Decision
+    8, rebinding a dispatched subtask after an owner-approved change of its
+    instructions (docket C147).
 - Slice 1 went through a Codex Plan-verify review and six critique rounds
   on 2026-10-19. Each round found defects in the protocol the last refine
   had added, so the text was condensed to decision level: it states each
@@ -140,6 +141,52 @@ Proposed (2026-10-19).
   - the inherited proof prevents accidental joins, not a same-user process
     that reads it, and a driver started under a holder refuses to start
     (Decision 6, item 3).
+- **Open point of acceptance (slice 4): what Decisions 7 and 8 add to, or
+  narrow in, the owner's decisions.** The owner decided that the main session
+  instructs a lane without stopping the run, and asked that an approved
+  change of an in-progress subtask's instructions be accepted at landing
+  (C147); these follow from the design, and acceptance confirms them or sends
+  them back:
+  - an instruction is not a plan change and not a step queue: it carries a
+    note and at most one next step, in the forced-step grammar with no
+    dispatch; several pending at one boundary are applied together, and the
+    last next step named wins (Decision 7, items 1 and 4);
+  - an instruction never clears an owner gate and never overrides the
+    resolution of a gate set after it was written: that gate drops its next
+    step, even once resolved, and keeps its note; it never interrupts a
+    started verification batch, between its checks included, and its next
+    step replaces the step the batch would dispatch (Decision 7, items 3 and
+    5);
+  - narrower than a forced step: an instruction's step never replaces an
+    interrupted commit, which runs again and drops it (Decision 7, item 5);
+  - an instruction is bound to the child it was written for, and is dropped,
+    never redirected, when that child archives first; it reaches a person's
+    interactive session only through a run, or the `instruct` command run
+    again at a boundary, and is applied only where the persona's operations
+    are visible; an acknowledgement says it was applied, not that its step
+    ran; only a driver publishes its outcome as an event (Decision 7,
+    items 3, 4, 6, 8 and 9);
+  - only `topic` and `profile` can be rebound; a changed branch or verb
+    stays refused, as do a child other than the one rebound and any approval
+    that is not the current one; a child that recorded no verb, profile or
+    topic stays uncompared on them (Decision 8, items 1 and 6);
+  - beyond what was asked: every approval that changes the plan becomes an
+    admission, refused beside a live run of the macro or any command
+    admitted under its locks, so the owner approves after the run has ended
+    or been stopped
+    (Decision 8, item 3); an approval that rebinds is refused while its lane
+    is held, has a release awaiting comparison, or has a persona operation
+    open;
+  - narrower than asked: the approval-between-two-looks guarantee holds only
+    once every host the owner approves from runs the release, and the
+    open-operation check only once the persona's operations are visible
+    (Decision 8, item 7); a delivery the approval did not finish is
+    completed only before a run of the release starts the child's next
+    step, not before a person runs it by hand (item 4); a rebinding changes
+    which words the child's work answers to, not its recorded next step
+    (item 5); a dependency added to
+    an in-progress subtask is approved but neither waits for nor rebases
+    its work (item 1).
 - **On acceptance** it amends
   [ADR-0063](0063-autopilot-fresh-session-driver.md) and
   [ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) at the places
@@ -426,6 +473,85 @@ The facts behind them [measured, recorded outside this repository]:
   (`plugins/orchestrator/adapters/claude/autopilot/observe.mjs:348-349`) and
   checks the persona's surfaces with source probes before a run
   (`plugins/orchestrator/adapters/claude/autopilot/roots.mjs:101-123`).
+
+### Slice 4 (2026-10-20): what the owner decided and measured
+
+<!--
+Slice 4 citations are `path:line` at agentic-plugins a739c10d, verified
+2026-10-20.
+-->
+
+Discussion 3, item 3 (2026-10-17): the parallel work the owner wants is the
+main session's, which sets up several lanes and must talk with each, as a
+team lead does with its members. Communication at step boundaries, through
+records: lane to main (Decision 4), main to lane (the next step to take),
+lane to lane (a shared note). Instructions in the middle of a step stay out
+of autopilot (item 2). Discussion 4, items 5 and 7 (2026-10-19): the main
+session instructs a lane without stopping the run, a note and a next step in
+the lane's record that the driver reads at its next boundary; lane-to-lane
+notes are deferred; and docket C147 is in scope.
+
+The facts behind them [measured, recorded outside this repository]:
+- **Docket C147 (2026-10-18, run 467d51, lane orch-shell).** An owner
+  decision changed what an in-progress subtask was to do. The new
+  instructions reached the child through a gate resolution, and the
+  subtask's `topic` was revised with `plan-set` and approved again. After
+  the pull request (#968) landed, `/orchestrator:done` refused
+  `dispatch-changed` and the run halted `owner-choice`. The recovery put the
+  topic back to the words of the dispatch and approved the plan again. The
+  rule kept since: changed instructions for an in-progress subtask go into a
+  gate resolution, and a topic is revised only before its subtask is
+  dispatched.
+- **Notes by hand.** In this macro the owner's session appends an operator
+  note to a lane's child with a script: it polls the run's `steps.jsonl`
+  until the subtask's dispatch step has finished, then runs the persona's
+  `append` with the note in a file. Slices 2 and 3 were written under such a
+  note. Nothing orders that write with the driver's next spawn in the lane,
+  and the note has no record of its own.
+
+**What the code does today:**
+- **The owner's only word to a running lane is a gate resolution.** A forced
+  step needs a relaunch, and its grammar admits no text, "so the owner cannot
+  hand a worker free text through the driver either"
+  (`plugins/orchestrator/adapters/claude/autopilot/policy.mjs:118-150`).
+- **A verb's last write replaces the next step.** The persona's `append` and
+  `finish-verb` replace all three next-step keys at once
+  (`persona-pipeline/files/scripts/state.mjs:2710-2722`; `finish-verb` at
+  `:4253`), and the free-text flags, the phase note and the next action
+  among them, have a file form (`:5147`). The driver follows the child's
+  recorded next step (`policy.mjs:358-374`).
+- **Every binding compares the child's dispatch.** A child records the
+  selection `/orchestrator:next` dispatched it for: macro, subtask, branch,
+  verb, profile, topic (`plugins/orchestrator/scripts/state.mjs:4075-4083`).
+  `/orchestrator:next`'s writeback, the engineer's terminal note and
+  `/orchestrator:done`'s write compare it with the subtask under the
+  macro's lock, and refuse `dispatch-changed` on any difference in a field
+  the child recorded; one it did not record (an older child) is skipped
+  (`:4117-4144`, `:4359-4362`, `:4684-4687`). Done's owner scan reads the
+  dispatch it passes to that write (`:5323-5345`, `owner-dispatch` at
+  `:6039`), and when several children claim the subtask it prints, for the
+  owner to choose, a `subtask-update --expect-dispatch` binding per claimant,
+  which compares the same way (`:6095-6107`). The driver's own linkage check
+  compares parent, subtask, branch and id, not the verb, profile or topic
+  (`plugins/orchestrator/adapters/claude/autopilot/observe.mjs:261`). The
+  approval plays no part in any of them. `--waive-dispatch` skips the
+  comparison when the operator gives a reason and names the owner
+  (`:4215-4231`); that it is for a record that cannot be read is the rule
+  its comment states (`:4058-4062`) and done follows.
+- **A revision of an in-progress subtask is free; its approval is not.**
+  `plan-set` keeps a completed subtask as recorded (`:3365-3394`) but lets
+  any other subtask change, and resets the approval (`:3514`, `:3594-3600`).
+  The plan hash covers `id`, `label`, `branch`, `blocked_by`, `verb`,
+  `profile` and `topic` (`:337`); `plan-approve` is refused under autopilot
+  (`:3940`) and binds the hash the owner was shown (`:3964-3969`). It joins
+  no admission (ADR-0067 Decision 4, item 5).
+- **The driver reads the approval's status and hash, not which approval.**
+  Each decision checks that the plan is approved and its hash matches
+  (`policy.mjs:476-483`, `:759-764`; `scheduler.mjs:593-595`), so a revision
+  approved between two looks is never seen as one.
+- **An older orchestrator refuses a block-style key it does not know** in a
+  macro file; it carries only unknown scalar keys
+  (`plugins/orchestrator/scripts/state.mjs:1570-1572`, `:1987-1994`).
 
 ## Decision
 
@@ -1039,7 +1165,7 @@ slice: the wake sources (Decision 1, item 6) and the hold records (Decision
   sessions. *2026-10-20:* Decisions 5 and 6 below.
 - **Slice 4:** main-to-lane instructions read at the next step boundary, and
   rebinding a dispatched subtask after an owner-approved instruction change
-  (C147).
+  (C147). *2026-10-20:* Decisions 7 and 8 below.
 
 ### Decision 3. Stall detection replaces the step clock as the normal stop (slice 2, 2026-10-19)
 
@@ -1914,6 +2040,428 @@ nothing.
   heavy-job lock is taken up here), and cascade item 7c (its Lock text is
   ADR-0063 D8's, which carries the note).
 
+### Decision 7. Instructions from the main session, read at a lane's next step boundary (slice 4, 2026-10-20)
+
+It applies to every run of a macro, serial or with lanes, on Claude (ADR-0063
+D9). A verb chain's run has no lanes to instruct, and takes no instructions.
+
+1. **What an instruction is.** The owner's message to one subtask's lane: a
+   *note*, and at most one *next step* in the forced-step grammar without its
+   dispatch, `/engineer:<verb>` or `/engineer:commit` (ADR-0063, S8 note).
+   - **A record of its own,** in the macro's records directory beside the
+     holds (Decision 2, item 1), never a field of the child. A worker's step
+     that ends after it is written replaces the child's next step with its
+     `finish-verb`; the instruction is untouched by that write and is applied
+     after it.
+   - **The note is carried, never read.** The driver reads only the step. The
+     note reaches the lane's child as a phase note its next worker reads, and
+     nothing else: not the event file, `halt.json` or `status`, which show
+     its id, and never a shell (ADR-0059; Decision 4, item 2).
+   - **Not a plan change.** It changes no field of the plan and needs no
+     approval: it tells the child. A change to what the subtask is, its
+     topic, is a plan revision (Decision 8). A dispatch is never an
+     instruction's step, since dispatch follows readiness.
+
+2. **Who writes it.** The owner, or the main session acting for them, with
+   `agentic-autopilot instruct <subtask-id> --macro <id> --note-file <path>
+   [--next <step>]`, also reachable as `/orchestrator:autopilot instruct`,
+   with or without a live run. The note goes through a file (ADR-0059); the
+   step, a fixed grammar, inline as `--next` takes it.
+   - A caller whose `AGENTIC_AUTOPILOT` names a run is refused: a worker
+     never instructs a lane, its own included. Lane-to-lane notes are deferred
+     (owner, 2026-10-19).
+   - It refuses a malformed step, a subtask not in the plan or recorded
+     completed, deferred or abandoned, and a subtask whose child has archived
+     (committed or closed: the lane's next work is landing).
+   - A subtask with no child yet (pending, or in progress before its
+     dispatch has created one) takes a note only. The note waits for the
+     dispatch and is applied at the first boundary after it; the dispatch
+     step runs the first verb, so the note reaches the steps after it.
+   - It prints the instruction's id and its state.
+
+3. **Applied at the lane's next step boundary, never mid-step.** A lane is at
+   a boundary for an instruction when no worker step of any run is in
+   flight in it, no verification batch has started there and not yet ended
+   (between two of its checks included, a stricter rule than Decision 5,
+   item 9's for a hold or a drain; a batch waiting for the heavy-work lock
+   has started), no settlement is pending, no persona operation is open in
+   it (Decision 2, item 7), it is not held, and no release of it awaits its
+   comparison (Decision 2, item 7). A batch cut short by a stop, a hold or a
+   drain has ended: what is left of it is a request not running.
+   - **With a run live,** its driver applies the lane's pending instructions
+     when it next looks at the lane, before it chooses the lane's next step
+     or reconsiders the lane after a park. The instruction records are wake
+     sources (Decision 1, item 6, which named this slice), so with lanes an
+     instruction to an idle or parked lane is applied within the poll; a
+     serial run, which has no timer, applies it at its next look. One to a
+     lane mid-step is applied at that step's end. A draining run applies
+     none: nothing starts after a halt (ADR-0063 R2).
+   - **With no run live,** the next run applies them before it acts on the
+     lane, after it has read the holds and kept parks; and the `instruct`
+     command applies them itself when it finds the lane at a boundary. A
+     person who works a lane between verbs, outside any run, runs it again
+     there.
+   - **What applying does.** One persona operation on the child: the note
+     appended as a phase note that names the instruction, and the next step,
+     if any, recorded at `HIGH`, the owner's word, replacing the recorded
+     one. The instruction is then acknowledged, with what applied it and the
+     next step it replaced. The lane is judged afresh by the usual rules: its
+     fingerprint changed, so a parked lane is reconsidered (Decision 1,
+     item 4).
+   - **Once, whole.** An instruction is applied with its note and its step
+     together, or not at all, and no crash applies it twice or loses it.
+
+4. **Several, revised, withdrawn.** A lane's instructions keep the order
+   they were written in. All those pending at one boundary are applied
+   together, in order: every note is appended, the last next step named
+   wins, and the earlier steps are acknowledged as superseded. Instructions
+   are not a queue of steps, and an acknowledgement says an instruction was
+   applied, not that its step ran: to sequence two, write the second once
+   `status` shows the first one's step has run. A pending instruction may be
+   revised, keeping its place, by a revision that names the one it replaces
+   and is refused when that is no longer current; or withdrawn. An applied
+   one is final: write a new one. `status` lists each lane's instructions and
+   what became of each.
+
+5. **Precedence.**
+   - **Over the child's recorded next step: the instruction.** Its step
+     replaces the recorded one, whatever its confidence, and the judgment
+     halt it would raise (a low confidence, an owner decision, no next
+     step), as a forced step replaces the policy's choice
+     (`policy.mjs:533-541`). As for a forced step, every gate, error and
+     landing refusal still stands, and the step goes through its own
+     prerequisites.
+   - **Not over an interrupted commit.** A child whose commit step started
+     and did not finish takes no instruction's step: the driver's next step
+     there is the commit again, as today, which archives the child or sets a
+     gate, so the instruction is dropped (item 6) or its step superseded
+     (below). In this an instruction reaches less far than a forced step,
+     which today replaces that commit (`policy.mjs:555`, `:790`); this slice
+     leaves the forced step as it is.
+   - **Under an owner gate: the gate.** An instruction never clears a gate,
+     which only its resolution does, with the decision (ADR-0063 D6). A next
+     step for a lane whose child has a gate set is refused at the write. A
+     gate set on the child after an instruction was written supersedes that
+     instruction's step, and keeps superseding it once the gate is
+     resolved: at the boundary its note is appended and its step dropped;
+     the lane parks on the gate if it is still set, and otherwise follows
+     the step the resolution recorded. So a gate's resolution is never
+     overridden by an instruction written before the gate was set. One
+     written after the resolution is the owner's later word and applies as
+     any, once the resolving session's operation has ended (item 3).
+   - **Beside a verification request (Decision 5).** An instruction never
+     interrupts a batch and never discards a result. A started batch keeps
+     the lane until it ends (item 3); there, the results stay recorded, and
+     the instruction's step, if it has one, replaces the step the batch
+     would have dispatched (`on_pass`, or the requesting verb), which reads
+     them. A request not running is replaced by an instruction's step, as a
+     verb's Phase 0 replaces it (Decision 5, item 7); a note alone leaves
+     it, and the batch runs.
+   - **Beside a forced step.** A relaunch's `--lane <id> --next <step>` on a
+     lane with a pending instruction that carries a next step is refused,
+     naming it: withdraw the instruction, or drop the forced step. An
+     instruction written while a live run still carries an untaken forced
+     step for the lane waits for that step, or for the run's end: it is
+     applied at the boundary after it. So the earlier of the two words is
+     never lost to the later by the order the code happens to look in.
+   - **In a held lane: after the release.** The instruction waits for the
+     release, and is applied once the release's comparison has been consumed
+     (Decision 2, item 7), so the comparison sees the lane as the person left
+     it and the driver's write comes after it.
+
+6. **When it applies to nothing.** An instruction is bound to its subtask,
+   the branch, and the child it was written for (none, for a note waiting
+   for its dispatch). It is dropped, never applied to anything else, when
+   the subtask leaves the plan or changes branch, when its child archives
+   before it is applied (a commit, a close), when a different child takes
+   the lane, when `/orchestrator:done` completes the subtask, and when the
+   macro ends. A dropped instruction is acknowledged with its cause and
+   shown in `status` and `halt.json`, so the owner can write it again for
+   what the lane is now. A rebinding (Decision 8) keeps the child, and so
+   keeps its instructions.
+
+7. **How it differs from the owner's other words.**
+
+   | | written | carries | applied | resolves |
+   |---|---|---|---|---|
+   | instruction | any time, a run live or not | a note, at most one next step | at the lane's next boundary, after a step in flight ends | a judgment, and a park by changing its record |
+   | `--lane <id> --next <step>` | at a relaunch | a next step, a dispatch included | to the lane's first step of that run | a judgment, and a kept park (Decision 1, item 8) |
+   | gate resolution | in a session, for a gate | the decision, a next step | at once, to the child | the gate |
+
+8. **Records.** What a driver does with an instruction (applies, supersedes
+   or drops it) is published in the event file under one new kind, by
+   Decision 4, item 3's minor schema change, as codes and ids with no text,
+   and recorded in `lanes.jsonl`. Owner commands write no events (Decision 4,
+   item 1): an instruction the `instruct` command applies with no run live
+   shows in its output and in `status` only.
+
+9. **Rollout.** One orchestrator release. An instruction is applied with
+   the persona's existing `append`, a phase note from a file and the
+   next-step flags (§Context), so no persona schema change is needed. It is
+   applied only where the persona's operations are visible (the hold-aware
+   persona, Decision 2, item 9), in every mode, serial runs and the command
+   included; elsewhere it stays pending. `instruct` beside a live run that
+   does not apply instructions warns that the instruction waits for one that
+   does. An older driver never reads the records, so a pending instruction
+   waits there, applying nothing; a rollback below this release while one is
+   pending leaves it unapplied.
+
+### Decision 8. Rebinding a dispatched subtask after an owner-approved change of its instructions (slice 4, 2026-10-20)
+
+The dispatch comparison of ADR-0067 Decision 4, item 5 stays: a child is
+bound only to the subtask it was dispatched for. This decision adds one way
+for the owner to change that subtask's instructions after the dispatch, so
+that its work is accepted at landing (C147).
+
+1. **What can be rebound.** An in-progress subtask's `topic` and `profile`,
+   the words of its instructions, for the child its dispatch created.
+   - **Not rebindable,** and refused at every binding that compares it, as
+     today: a changed `branch` (the child's work is on the old one), `verb`
+     (the step the dispatch began with; another start is another dispatch),
+     subtask id or macro (another subtask), and a child other than the one
+     rebound (a later dispatch of the same subtask).
+   - **A child that recorded no verb, profile or topic** (dispatched before
+     its record carried them) is compared, as today, only on what it
+     recorded (`state.mjs:4127-4128`): a change of those fields neither
+     refuses it nor needs a rebinding, and the approval shows it as not
+     compared on them.
+   - **Needs no rebinding:** `label` and `blocked_by`, which the dispatch
+     does not record. A predecessor added to an in-progress subtask does not
+     make its work wait or move it onto the predecessor's work: it was
+     dispatched on the base it had (ADR-0062 §Decision 2). The approval
+     covers the change as any plan change. Starting the subtask again on the
+     landed predecessor is a fresh attempt, with the old binding cleared and
+     a new branch base, which this decision does not provide.
+   - A completed subtask is kept as recorded, as today.
+
+2. **Recorded with the approval.** When the owner approves a plan
+   (`/orchestrator:approve`) in which an in-progress subtask's topic or
+   profile differs from what its child records, the approval records a
+   rebinding of that child, from the dispatch it records to the fields
+   approved, as part of that approval. The macro's body keeps each
+   rebinding as history.
+   - **The approval shows each rebinding before it is given,** with the
+     child's state: active with its recorded next step, or archived
+     (committed, waiting to land). A change that cannot be rebound (item 1)
+     is shown too, with the refusal it will meet and the exits that refusal
+     names today (`state.mjs:4138-4144`).
+   - **It approves what it showed:** a child whose state or recorded
+     dispatch changed between the display and the approval refuses the
+     approval, as a plan that changed does (`--expect-hash`).
+   - Only the owner rebinds: `plan-approve` stays refused under autopilot.
+   - The child's own record is never rewritten. Its dispatch stays the
+     selection `/orchestrator:next` made; the macro records the owner's
+     rebinding of it, and no persona release is needed.
+
+3. **Only with nothing in flight.** Every approval that changes the approved
+   plan, whatever it changes, takes part in the run locks as an admission
+   (ADR-0067 Decision 4, item 5): it is refused beside a live run of the
+   macro, or beside any command admitted under them (an interactive
+   `/orchestrator:next` among them), and no run or dispatch starts while it
+   holds them. An approval that records
+   or changes a rebinding is also refused while a persona operation is open
+   in that subtask's lane, while the subtask is held, and while a release of
+   it waits for its comparison (Decision 2, item 7), whose digest the note
+   of item 4 would change.
+   - **D1's whole-run treatment is kept.** The `plan-set` before the
+     approval revoked it, so a live run halts `plan-unapproved` at its next
+     look and drains (Decision 1, item 1). The owner approves once that run
+     has ended, or after `stop`; the approval never resumes or extends a
+     run. A draining run starts nothing, so the refusal costs the owner no
+     progress.
+   - **No in-flight worker's obsolete instructions become current.** A
+     `plan-set` and an approval between two of a run's looks, which today's
+     checks pass (§Context), are now refused at the approval, whatever
+     subtask they touch: a dispatch under way, its subtask not yet recorded
+     in progress, or put back to pending, included. The plan stays pending,
+     the run halts at its next look, a worker still in its step under the
+     old words finishes under the drain, and its outcome is shown at the
+     approval that follows.
+
+4. **Told to an active child.** Each approved change of the words an active
+   child was last told (its dispatch, or the last change it was told), a
+   return to its dispatch included, reaches the child as a phase note naming
+   the fields that changed with their old and new text, the owner's own
+   words from the plan. The approval delivers it, at a moment its admission
+   (item 3) makes a boundary of the lane. A delivery the approval did not
+   finish is completed before a run of this release starts the child's next
+   step, never mid-step; a person who runs that step by hand before then
+   works under the old words. An archived child has nothing left to run: the
+   approval showed it committed (the C147 case). How the words a child was
+   last told are recorded, and how an unfinished delivery is completed, are
+   `impl-rebind`'s (§Left to the implementation).
+
+5. **The next step stays the child's.** A rebinding changes which words the
+   child's work answers to, not the work: the child's next step is the one
+   it recorded, which the approval showed. A verb's worker reads the note;
+   a recorded commit commits the work as it stands. The owner replaces that
+   step with an instruction (Decision 7) or a forced step at the relaunch.
+
+6. **Honored under the current approval only.** Every write that binds a
+   child to its subtask (`/orchestrator:next`'s writeback, a re-attach
+   included; the engineer's terminal note; `/orchestrator:done`'s write;
+   the owner's explicit binding, `subtask-update --expect-dispatch`, which
+   done prints when several children claim the subtask, `state.mjs:6095-6107`)
+   compares as today and also accepts a child whose recorded dispatch
+   differs from the subtask only in topic or profile, when the macro's
+   current approval, approved and matching the plan, holds a rebinding of
+   that very child, from the dispatch it records to exactly the subtask's
+   current fields, and an active child has been told it (item 4). The
+   comparison is the orchestrator's: the persona passes the dispatch it
+   records, as today.
+   - **A pending or stale approval rebinds nothing.** A `plan-set` after the
+     approval suspends its rebindings until the owner approves again.
+   - **Repeated revisions.** Each approval derives its rebindings afresh from
+     the child's own record, never from an earlier rebinding, so only the
+     latest approval's fields bind. A revision back to the dispatched fields
+     needs no rebinding, and today's recovery stays valid; the child is
+     still told (item 4).
+   - **Stays refused, for a child whose dispatch differs from its subtask:**
+     no current approval (an unapproved, pending or stale plan); a change
+     item 1 does not rebind; a child the approval did not name; an active
+     child not yet told. A write whose dispatch matches is compared as
+     today, whatever the approval. `--waive-dispatch` keeps its meaning and
+     is not a rebinding.
+
+7. **Rollout.** One orchestrator release: the approval's display, its
+   admission and its record; the comparison; and the note.
+   - **Readers.** An orchestrator older than it refuses a macro file holding
+     a block-style key it does not know (§Context), so where the rebinding
+     is kept must not break a reader older than this release on either
+     host: ADR-0067 Decision 4, item 3 (readers on both hosts first) applies
+     to whatever new field it writes. An older orchestrator never honors a
+     rebinding: its comparison refuses as today.
+   - **Writers.** An older `plan-approve` joins no admission
+     (`state.mjs:3932-3943`), so on a host that has not installed this
+     release an approval can still pass between two looks of a live run, as
+     today. The guarantees of item 3 hold once every host the owner approves
+     from runs this release; rolling an approver back below it is
+     unsupported.
+   - **Operations.** Until the persona's operations are visible (Decision
+     2, item 9), the approval cannot see one open in a person's session;
+     closing their own sessions first is the owner's.
+
+### Left to the implementation (slice 4)
+
+As for slices 1 to 3: the guarantees above are the decision, each case below
+must be tested, and each new test must be shown to bite by a mutation that it
+kills.
+
+**`impl-instruct`** (Decision 7):
+- The record: its location beside the holds and its lock, id and revision,
+  where the note is kept and its bounds (size, encoding), its states and
+  their transitions, and the wake source's digest; the command and its
+  refusals; the application as one persona operation through `append`,
+  carrying the instruction's id so that a crash between the child's write
+  and the acknowledgement is recognized; the event kind, `lanes.jsonl`,
+  `status`, `halt.json` and `run.json`; retirement by `/orchestrator:done`
+  and the macro's end. Tests:
+  - to an idle lane, and to a parked lane (applied within the poll, the lane
+    reconsidered); to a lane mid-step: applied after the step, surviving its
+    `finish-verb`; to a subtask before its dispatch: the note reaches the
+    child after the dispatch step, and a next step is refused;
+  - beside verification: a started batch keeps the lane between its checks
+    and while it waits for the heavy-work lock, its results stay, and the
+    instruction's step replaces `on_pass`; a queued request, and what is
+    left of a batch a hold cut short, is replaced by a step and runs under a
+    note alone;
+  - a held lane: applied after the release's comparison, never before it;
+    the `instruct` command with no run live leaves a released lane whose
+    release awaits its comparison as it is, and the next run compares the
+    release before it applies the instruction;
+  - an interrupted commit: the instruction's step is not taken, the commit
+    runs again, and its archive drops the instruction (its gate supersedes
+    the step);
+  - a forced step: refused beside a pending instruction with a step, taken
+    beside one with a note only; an instruction written while a live run
+    carries an untaken forced step for the lane applied after that step;
+    an instruction written after a gate's resolution applied as any;
+  - gates: a next step for a gated child refused at the write; a gate set
+    after an instruction drops its step, keeps its note, and the lane parks
+    on the gate; a gate set and resolved before the boundary: the step
+    still dropped and the resolution's step followed, a verification
+    request at that boundary included;
+  - several pending at one boundary: every note in order, the last step
+    wins; a revision of a superseded revision refused; a withdrawal; an
+    applied instruction not revised; the driver dies after applying one
+    and before spawning its step, a second is written, and the relaunch
+    applies it: `status` shows the first one's step never ran;
+  - drops: the child archives first, the branch changes, `done` completes
+    the subtask; none applied to another child;
+  - refusals: a malformed step; a caller that is a worker; a forced step
+    beside a pending instruction that carries a next step; a draining run
+    applies nothing; a crash
+    between the child's write and the acknowledgement applies once;
+  - a serial run, and the `instruct` command applying at a boundary with no
+    run live (no event written); a persona whose operations are not
+    visible: nothing applied, in every mode.
+
+**`impl-rebind`** (Decision 8):
+- Where the rebinding is kept (item 7), its fields, the approval's display
+  and its binding to what it showed, the admission every approval that
+  changes the plan joins, the note, the record of what the child was last
+  told and how a delivery the approval did not finish is completed (item
+  4), the comparison in every binding path, the audit in the macro's body,
+  and refusal messages that name an approval's absent or stale rebinding.
+  Tests:
+  - an unfinished delivery: of a return to the dispatched fields (the
+    ordinary comparison would accept it, so the child's next step waits for
+    the note); after a delivered change, an approval of another subtask
+    leaves that child bound and told; a completion that changes no plan
+    field delivers only at a boundary;
+  - a child that recorded no verb, profile or topic: a change of those
+    fields neither refused nor rebound, and shown so at the approval;
+  - C147 reproduced: an in-progress subtask's topic revised and approved,
+    the work landed, `/orchestrator:done` accepted; and for an archived
+    child, with the approval given after its commit;
+  - an unapproved revision, a stale approval (a `plan-set` after it) and a
+    child the approval did not name refused `dispatch-changed`;
+  - repeated approved revisions: only the latest binds; A to B to C delivers
+    each change; A to B and back to A needs no rebinding but delivers the
+    return to A;
+  - a changed branch, verb or id refused at every binding that compares it
+    (a verb only where the child recorded one), and shown so at the
+    approval;
+  - the approval refused beside a live run, beside an admitted interactive
+    `/orchestrator:next` whose subtask is not yet recorded in progress, and
+    while a persona operation is open in the lane, the subtask is held, or
+    its release waits for its comparison; a `plan-set` and an approval
+    between two looks: the approval refused, the run halts
+    `plan-unapproved` and drains; an approval from an older orchestrator on
+    the other host, stated as the narrowing it is;
+  - a child whose state changes between the display and the approval refuses
+    the approval; a crash between the macro's record and the child's note
+    leaves the child unbound until it is told;
+  - the engineer's terminal note, a re-attach by `/orchestrator:next` and
+    the owner's explicit `subtask-update --expect-dispatch` honor a
+    rebinding; the rebinding is recorded in the macro's body;
+  - a macro file holding a rebinding stays readable by the release before
+    this one, or that release is shown to be required on both hosts first.
+
+**Handed on from slice 3.** Where the instructions tell sessions to use the
+heavy-work wrapper (Decision 6, item 4) is guidance, not an instruction in
+Decision 7's sense: it goes with the wrapper to `impl-heavy-lock`, which
+states it in the repository's guidance (AGENTS.md, §Build / test / CI) and the
+persona runbooks that run a suite outside `verify`.
+
+### Amendments (slice 4)
+
+Each place below keeps its text and gets a dated note (2026-10-20) that
+points here. Until acceptance the notes announce the proposal and change
+nothing.
+- **ADR-0063:** Status; the S6 note (an approval that changes the plan
+  joins the run locks, and records the rebindings of in-progress
+  subtasks); and the S8 note's forced-step rules (an instruction shares the
+  grammar, without the dispatch, and the reach, except over an interrupted
+  commit; a forced step beside a pending instruction with a step is
+  refused).
+- **ADR-0067:** Status; Decision 4, item 5 (`/orchestrator:approve` stays
+  available, but an approval that changes the plan is an admission; the
+  dispatch comparison accepts a rebinding under the current approval);
+  Decision 6's Forced resume (refused beside a pending instruction with a
+  step); §Out of scope, interactive lanes (main-to-lane messages are taken
+  up; lane-to-lane notes stay out).
+
 ## Consequences
 
 ### Slice 1
@@ -2077,6 +2625,46 @@ nothing.
   never a halt.
 - The harness keeps its file, its record and its behavior when it runs
   alone; a run without a declaration behaves as today.
+
+### Slice 4
+
+**Positive**:
+
+- The main session steers a lane while the run goes on: a note and a next
+  step reach the lane at its next boundary, ordered with the driver's own
+  steps, where the hand-run script raced the next spawn.
+- An instruction outlives the step in flight; its outcome is a record, and
+  an event when a driver handled it, so the main session learns, without
+  reading the lane, whether it was applied, superseded or dropped.
+- A parked lane whose judgment the owner can give in one line (a low
+  confidence, a failed worker) resumes without a relaunch.
+- A topic revised for an in-progress subtask, and approved, is accepted at
+  landing: the C147 halt and its recovery by revising back go away, and an
+  active child learns the change from its own record.
+
+**Negative**:
+
+- Two more records to keep in step with the plan: instructions beside the
+  holds, rebindings with the approval, each with its own states and exits.
+- The owner's words now have three forms (an instruction, a forced step, a
+  gate resolution) whose precedence must be learned; the refusals name the
+  conflicting one.
+- An instruction to a lane worked by hand outside any run waits until a run
+  or the `instruct` command applies it; interactive persona commands do not
+  read it.
+- Every approval that changes the plan waits for the macro's run to end
+  or be stopped, where today it could be given at any time; a revision
+  approved between two looks went unseen.
+- A rebinding re-labels the child's work and leaves its next step as
+  recorded: a recorded commit commits work written under the old words
+  unless the owner replaces the step.
+
+**Neutral**:
+
+- The halt reason codes and exit codes are unchanged, and the dispatch
+  comparison keeps its rule for every change that is not a rebinding.
+- The persona's schema is unchanged by this slice: it applies notes and next
+  steps through its existing `append`.
 
 ## Alternatives Considered
 
@@ -2377,3 +2965,75 @@ batches keep their own order.
 interface intercepts a session's commands, and a lock that refuses a
 person's test run would be bypassed. The wrapper is offered, and slice 4
 writes the instructions.
+
+### Slice 4
+
+**Write the instruction into the child's next step and notes directly.**
+Rejected: the worker in flight replaces the next step with its
+`finish-verb`, and a note written mid-step races the driver's next spawn,
+which is today's hand-run script. A record of its own, applied at the
+boundary, survives the step and is ordered with it.
+
+**Deliver instructions mid-step, to a running worker.** Rejected by the
+owner (discussion 3, item 2): it changes a step's outcome outside the
+record, and a stuck worker's handling is unverified. The boundary is the
+only point at which the lane has one writer.
+
+**Let an instruction carry free text into the worker's prompt.** Rejected:
+the driver's step grammar admits no text by design (`policy.mjs:118-150`),
+and a prompt is not a record. The note goes into the child's record, where
+every later worker of the lane, and the owner, reads it.
+
+**Queue several next steps.** Rejected: a queue decided ahead of the
+results it depends on would run steps the lane's state no longer calls for.
+The last step named wins; a second is written once the first one's step has
+run.
+
+**Let an instruction clear a gate.** Rejected: a gate holds a judgment whose
+resolution records the decision (ADR-0063 D6); a next step without that
+record would bypass it. A gate supersedes an instruction's step.
+
+**Let an instruction cancel a running verification batch.** Rejected: the
+batch is evidence about the lane's tree that the next step needs, and a
+stopped batch is no evidence (Decision 5, item 6). The instruction waits
+for the batch, and replaces only the step it would dispatch.
+
+**Lane-to-lane notes now.** Deferred by the owner (2026-10-19): no lane
+needs another's notes yet, and a note one worker writes for another is peer
+text that reaches a worker without the owner.
+
+**Rewrite the child's recorded dispatch at the approval.** Rejected: an
+archived child is a record of what was done, and its dispatch is what
+`/orchestrator:next` selected; rewriting it would erase which words the work
+began under, and needs a persona release. The macro records the rebinding,
+and the child keeps its record.
+
+**Waive the comparison for an approved plan.** Rejected: the comparison also
+guards a changed branch or verb, and another child of the subtask; an
+approval says the owner accepts the plan, not that a given child's work
+answers to it. Only the fields of the instructions, for the child shown, are
+rebound.
+
+**Honor a rebinding on approval alone, with a live run.** Rejected: a
+`plan-set` and an approval between two looks would then accept a worker's
+output made under words the owner had already replaced, and the run would
+never see the plan change. The approval waits for the run to end, and the
+note carries the change to the child.
+
+**Make only an approval that changes an in-progress subtask an admission.**
+Rejected after review: a dispatch under way has created its child before it
+records the subtask in progress (`commands/next.md`, Phases 4 and 5), and a
+revision can put an in-progress subtask back to pending, so such an
+approval would still pass between two looks. Every approval that changes
+the plan is an admission; a draining run starts nothing, so it costs no
+progress.
+
+**Have the driver pin the approval it started under, and drain on any
+other.** Rejected: the approval's admission already keeps a revision from
+being approved while a run lives, with no new run state, and the approval,
+not the driver, is where the owner sees what a rebinding accepts.
+
+**Keep today's rule: revise a topic only before its dispatch.** Rejected by
+the owner's scope (discussion 4, item 7): it leaves an approved plan whose
+words no longer say what its in-progress subtask is doing, and the gate
+resolution that carried the change is not a record the plan can point to.
