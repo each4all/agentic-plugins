@@ -28,27 +28,23 @@ Proposed 2026-10-07.
   peers are unaccounted for (a look that could not read or list them, a
   cancellation that did not go through), and the cleanup searches that step.
   Each place keeps its text and carries a dated note.
-- Proposed amendment 2026-10-19 by
-  [ADR-0068](0068-autopilot-lanes-that-keep-going.md) (Proposed): a lane
+- Amended 2026-10-19 by
+  [ADR-0068](0068-autopilot-lanes-that-keep-going.md) (accepted 2026-10-20): a lane
   halt parks only its lane, and the owner can hold a lane and release it.
   Decision 4 item 5, Decision 5's Creation and Removal and its
   Reconciliation rows, Decision 6's capability floor, Drain, Throttle and
-  Forced resume, and §Out of scope carry dated notes; until ADR-0068 is
-  accepted they change nothing.
-- Proposed amendment 2026-10-19 by ADR-0068's slice 2 (Proposed): stall
+  Forced resume, and §Out of scope carry dated notes.
+- Amended 2026-10-19 by ADR-0068's slice 2 (accepted 2026-10-20): stall
   detection and the driver's event file. Decision 6's Budgets and Decision
-  8, item 5, carry dated notes; until ADR-0068 is accepted they change
-  nothing.
-- Proposed amendment 2026-10-20 by ADR-0068's slice 3 (Proposed): a
+  8, item 5, carry dated notes.
+- Amended 2026-10-20 by ADR-0068's slice 3 (accepted 2026-10-20): a
   verification step the driver runs with no LLM, and one heavy-work lock.
   Decision 6's opening, its capacity claim and its Locks, §Out of scope and
-  cascade item 7c carry dated notes; until ADR-0068 is accepted they change
-  nothing.
-- Proposed amendment 2026-10-20 by ADR-0068's slice 4 (Proposed): the main
+  cascade item 7c carry dated notes.
+- Amended 2026-10-20 by ADR-0068's slice 4 (accepted 2026-10-20): the main
   session's instructions to a lane, and the rebinding of a dispatched
   subtask by an approved change of its instructions. Decision 4, item 5,
-  Decision 6's Forced resume and §Out of scope carry dated notes; until
-  ADR-0068 is accepted they change nothing.
+  Decision 6's Forced resume and §Out of scope carry dated notes.
 - **On acceptance** it:
   - amends [ADR-0063](0063-autopilot-fresh-session-driver.md): R2's halt
     wording, D1's worktree-lanes clause (the held integration-merge clause is
@@ -1040,7 +1036,7 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
      (ADR-0063 S6 note). An approval is the owner's own act.
 
      *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-     slice 4, proposed; in force once it is accepted):* an approval that
+     slice 4, accepted 2026-10-20):* an approval that
      changes the plan joins the macro lock as an admission, so it is refused
      beside a live run of the macro or an admitted command. An approval that
      changes an in-progress subtask's topic or profile records a rebinding
@@ -1052,7 +1048,7 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
      any other child, stay refused (ADR-0068 Decision 8).
    - SR implements this, because SR makes the macro visible.
    - *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-     proposed; in force once it is accepted):* admission's join is
+     accepted 2026-10-20):* admission's join is
      unchanged. A lane the owner holds is kept from the driver by its hold
      record, and its worktree lock carries an entry for the hold, which
      fences it from any run, an older driver included, and which
@@ -1169,7 +1165,7 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
   - The ignored files a removal does delete are the lane's own per-checkout
     artifacts (Decision 1(a)), which describe only that lane.
   - *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-    proposed; in force once it is accepted):* neither Creation nor Removal
+    accepted 2026-10-20):* neither Creation nor Removal
     begins for a held subtask. The driver reads the hold right before each,
     and one already begun when a hold appears runs to its end before the
     lane is handed over (ADR-0068 Decision 2, items 3 and 4).
@@ -1236,7 +1232,7 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
   | 13 | a worktree under the lanes directory without our reason, or with another macro's | report it; never touch it |
 
   *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-  proposed; in force once it is accepted):* the holds and kept lane parks of
+  accepted 2026-10-20):* the holds and kept lane parks of
   the macro are read before anything else, the preparation included. A held
   subtask, its handoff done or pending, is reported as such and passed by:
   no row acts on it (no lane id written, no removal intent finished, no
@@ -1259,7 +1255,7 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
   (Decision 4, item 5), the content drift check (Decision 8, item 4), and
   the dead-run cleanup below. 2 or more: lanes.
   - *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-    slice 3, proposed; in force once it is accepted):* N counts workers.
+    slice 3, accepted 2026-10-20):* N counts workers.
     Beside them, serial or with lanes, the driver runs verification batches
     with no LLM, one at a time in the order their requests were recorded,
     each under the heavy-work lock; a lane whose batch waits or runs holds
@@ -1299,7 +1295,7 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
     own checkout (left by a serial run) cannot get a lane, since git checks
     a branch out in one worktree only: reconciliation row 11 halts.
   - *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-    proposed; in force once it is accepted):* the floor gains a token for
+    accepted 2026-10-20):* the floor gains a token for
     the pinned engineer's hold-aware persona, and a run records in
     `run.json` that it honours holds only when it reads holds and that
     token is present; a run without it does not start while a hold applies
@@ -1354,7 +1350,7 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
   holds the worktree lock of every checkout it drives: its own, and with
   lanes each lane's (Decision 5).
   - *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-    slice 3, proposed; in force once it is accepted):* beside these, the
+    slice 3, accepted 2026-10-20):* beside these, the
     repository's heavy-work lock, the mutation harness's
     `<git-common-dir>/mutation-harness.lock`, under which the driver's
     verification checks run. No holder of it waits for a run lock (ADR-0068
@@ -1462,7 +1458,7 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
     whole per-step timeout, however late it starts and however long its lane
     took to prepare.
     *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-    slice 2, proposed; in force once it is accepted):* the reservation's
+    slice 2, accepted 2026-10-20):* the reservation's
     `timeoutSec` stays `--step-timeout` while the stall detector only
     records; once the owner switches it on, its default is the 8-hour
     emergency cap, and a stalled step ends earlier, settling its reservation
@@ -1478,7 +1474,7 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
     halt as `reason` and one entry per lane, and exits 2.
 
   *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-  proposed; in force once it is accepted):* only an invalidated approval (a
+  accepted 2026-10-20):* only an invalidated approval (a
   plan-changing decision included), a gate on the macro, version drift, an
   exhausted budget and the other run-wide halts drain, scoped by their
   cause. A halt that arises in a lane parks that lane, the other lanes go
@@ -1565,7 +1561,7 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
     the owner's default.
 
     *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-    proposed; in force once it is accepted):* a lane resumed after a park
+    accepted 2026-10-20):* a lane resumed after a park
     or a hold counts as a new lane: the throttle gates its first step after
     the resumption, since the capacity it left may have gone to other lanes
     (ADR-0068 Decision 1, item 4).
@@ -1584,12 +1580,12 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
     judgment halt that persists in one of them drains the run while the
     forced steps finish.
   - *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-    proposed; in force once it is accepted):* a forced step resolves its
+    accepted 2026-10-20):* a forced step resolves its
     lane's park; a judgment halt that persists in another lane parks that
     lane only, and a forced step on a held lane is refused (ADR-0068
     Decision 1, item 8).
   - *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-    slice 4, proposed; in force once it is accepted):* a forced step on a
+    slice 4, accepted 2026-10-20):* a forced step on a
     lane with a pending instruction that carries a step is refused, naming
     it: the owner
     withdraws the instruction or drops the forced step (ADR-0068 Decision
@@ -1600,7 +1596,7 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
   by Decision 7. The run halts `awaiting-landing` when nothing else can run,
   as today.
   *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-  slice 3, proposed; in force once it is accepted):* the cap no longer
+  slice 3, accepted 2026-10-20):* the cap no longer
   bounds full test runs: a worker hands them to the driver's verification
   step, and the heavy-work lock lets one heavy job of the repository run at
   a time among the holders that take it (with the exceptions ADR-0068
@@ -2092,7 +2088,7 @@ its closed alphabets, paths it resolved itself, fixed templates. It is
 display only, bounded, and never acted on by the driver.
 
 *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-slice 2, proposed; in force once it is accepted):* the driver's event file is
+slice 2, accepted 2026-10-20):* the driver's event file is
 one more report, and carries none of these entries: a halted run's
 `run-ended` line points at the halt record that holds them, and a `halt`
 line met while the
@@ -2147,21 +2143,21 @@ Not amended:
   own ADR; the precedent is its main input.
 
   *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-  proposed; in force once it is accepted):* that ADR takes up the takeover of a lane by a person (hold and
+  accepted 2026-10-20):* that ADR takes up the takeover of a lane by a person (hold and
   release), worked in a session of the person's own in the lane's folder;
   its later slices take up record-based messages at step boundaries (the
   driver's event file, main-to-lane instructions). `/orchestrator:next
   --parallel` stays unbuilt, the owner's decision of 2026-10-17.
 
   *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-  slice 4, proposed; in force once it is accepted):* main-to-lane messages
+  slice 4, accepted 2026-10-20):* main-to-lane messages
   are taken up there as instructions, records the driver applies at a
   lane's next step boundary (ADR-0068 Decision 7). Lane-to-lane notes stay
   out, the owner's decision of 2026-10-19.
 - A heavy-job lock, so two lanes do not run `npm test` at the same time.
 
   *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-  slice 3, proposed; in force once it is accepted):* taken up there: one
+  slice 3, accepted 2026-10-20):* taken up there: one
   heavy-work lock per repository, the mutation harness's file, shared by the
   driver's verification checks, the harness and a wrapper for interactive
   sessions (ADR-0068 Decision 6).
@@ -2571,7 +2567,7 @@ begins "- `halt.json`: reason code"):**
 macro:" through "The serial prototype keeps a per-repo `.lock`.") with:**
 
 *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 3,
-proposed; in force once it is accepted):* the text below, applied on
+accepted 2026-10-20):* the text below, applied on
 acceptance, is ADR-0063 D8's Lock bullet, which now carries a dated note on
 the heavy-work lock (ADR-0068 Decision 6); this block is left as applied.
 

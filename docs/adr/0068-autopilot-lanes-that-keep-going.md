@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed (2026-10-19).
+Accepted (2026-10-20 — the owner accepted all four slices explicitly in the main
+session, with every open point of acceptance listed below).
+Proposed 2026-10-19.
 - Asked for by the owner in discussion 3 (item 3, decided 2026-10-17) and
   discussion 4 (item 4 and the scope of macro 5, decided 2026-10-19). Both
   decision records are outside this repository
@@ -187,12 +189,11 @@ Proposed (2026-10-19).
     (item 5); a dependency added to
     an in-progress subtask is approved but neither waits for nor rebases
     its work (item 1).
-- **On acceptance** it amends
+- **On acceptance (2026-10-20)** it amends
   [ADR-0063](0063-autopilot-fresh-session-driver.md) and
   [ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) at the places
   listed under §Amendments. Each place keeps its text and carries a dated note
-  that points here; until acceptance the note announces the proposal and
-  changes nothing.
+  that points here.
 
 <!--
 Citations are `path:line` at agentic-plugins 211283c3, verified 2026-10-19.
@@ -1127,8 +1128,7 @@ drafts.
 ### Amendments
 
 Each place below keeps its text and gets a dated note (2026-10-19) that
-points here. Until acceptance the notes announce the proposal and change
-nothing.
+points here. The notes took effect when this ADR was accepted (2026-10-20).
 - **ADR-0063:** Status; R2 ("Nothing starts after the halt"; with lanes a
   lane halt parks its lane); D4's halt table (the scope of each reason with
   lanes) and its Lanes (W2) paragraph (a lane halt parks its lane; the
@@ -1562,8 +1562,7 @@ implementation's.
 ### Amendments (slice 2)
 
 Each place below keeps its text and gets a dated note (2026-10-19) that
-points here. Until acceptance the notes announce the proposal and change
-nothing.
+points here. The notes took effect when this ADR was accepted (2026-10-20).
 - **ADR-0063:** Status; D1's Bounded property (the stall rule, then the
   emergency cap, bound a step once the owner switches the detector on);
   D4's proceed rule 6 (a step's own bound is the same); D5's session hosting
@@ -2023,8 +2022,7 @@ the whole suite or a mutation run in a step.
 ### Amendments (slice 3)
 
 Each place below keeps its text and gets a dated note (2026-10-20) that
-points here. Until acceptance the notes announce the proposal and change
-nothing.
+points here. The notes took effect when this ADR was accepted (2026-10-20).
 - **ADR-0063:** Status; D1's effect domain (the driver runs declared checks
   as argv arrays in the lane, child-only); D3's step model (a verification
   step runs no `claude` process); D4's `no-progress` trigger (a repeated
@@ -2447,8 +2445,7 @@ persona runbooks that run a suite outside `verify`.
 ### Amendments (slice 4)
 
 Each place below keeps its text and gets a dated note (2026-10-20) that
-points here. Until acceptance the notes announce the proposal and change
-nothing.
+points here. The notes took effect when this ADR was accepted (2026-10-20).
 - **ADR-0063:** Status; the S6 note (an approval that changes the plan
   joins the run locks, and records the rebindings of in-progress
   subtasks); and the S8 note's forced-step rules (an instruction shares the
