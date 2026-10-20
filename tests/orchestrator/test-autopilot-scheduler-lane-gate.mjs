@@ -466,12 +466,17 @@ describe('what changes while a step\'s marker waits for the park records\' lock 
 
   it('a worker group that outlived SIGKILL, ending while another step\'s marker waits for its lock, lets nothing start beside it', async () => {
     // A's dispatch is step 1; B's, step 2, waits for `go`, writes nothing and
-    // leaves its group behind.
-    const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT], file: 'b.txt' }, actions: { 2: ['wait:go', 'noop'] } } });
+    // leaves its group behind. A's dispatch ends only once B's has started, so
+    // B's is step 2 and is running when A's commit is admitted: a lane created
+    // after that admission would wait for the lock the owner holds below.
+    const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT], file: 'b.txt' }, actions: { 1: ['stop-wait:bstarted'], 2: ['mark-start:bstarted', 'wait:go', 'noop'] } } });
+    let bStarted = false;
     let bEnded = false;
+    let startedBeforeHold = null;
     let releasedAfterB = null;
     const startWorker = (o) => {
       if (!/^\/orchestrator:next B /.test(o.prompt)) return W.startWorker(o);
+      bStarted = true;
       const h = W.startWorker({ ...o, terminateGroup: async () => 'lingering' });
       h.done.then(() => { bEnded = true; });
       return h;
@@ -482,6 +487,7 @@ describe('what changes while a step\'s marker waits for the park records\' lock 
     let asked = 0;
     const laneBusy = (id) => {
       if (id === 'A' && (asked += 1) === 4) {
+        startedBeforeHold = bStarted;
         const held = RL.acquireLock(lockOf(t), { record: { run_id: 'the owner' } });
         writeFileSync(join(t.dir, 'go'), '1');
         (async () => {
@@ -501,6 +507,7 @@ describe('what changes while a step\'s marker waits for the park records\' lock 
     try {
       strictEqual(await t.run({}, { startWorker, laneBusy }), 2, t.lines.join('\n'));
       strictEqual(asked >= 4, true, 'A\'s commit was admitted');
+      strictEqual(startedBeforeHold, true, 'B\'s worker had started when the owner took the lock');
       strictEqual(releasedAfterB, true, 'B\'s worker ended while A\'s marker waited');
       const r = t.latest();
       strictEqual(r.steps.find((x) => x.seq === 2)?.group_teardown, 'lingering');
