@@ -330,10 +330,13 @@ async function clearDebris(lock, judged) {
  *
  * `hooks.beforeCreate` and `hooks.afterCreate` are test seams around step 2,
  * and `hooks.afterRead(phase)` one inside each scan ('check', 'recheck').
+ * `selfFingerprint` is this process's own fingerprint when the caller has
+ * already read it (a process's start does not change): a caller that takes a
+ * lock often spares a `ps` each time.
  */
-export async function acquireLock(lock, { record, now = () => Date.now(), probe = processFingerprint, hooks = {}, attempts = 20 }) {
+export async function acquireLock(lock, { record, now = () => Date.now(), probe = processFingerprint, hooks = {}, attempts = 20, selfFingerprint = null }) {
   fs.mkdirSync(lock, { recursive: true });
-  const self = { pid: process.pid, fingerprint: await processFingerprint(process.pid) };
+  const self = { pid: process.pid, fingerprint: selfFingerprint ?? await processFingerprint(process.pid) };
   const base = { ...record, ...self, worker: null };
   const mine = path.join(lock, `h-${process.pid}-${randomBytes(6).toString('hex')}.json`);
   for (let attempt = 1; attempt <= attempts; attempt += 1) {

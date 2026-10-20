@@ -39,7 +39,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { reportLandingReady } from './landing-ready.mjs';
-import { createLane, fetchBaseline, removeLane } from './lanes.mjs';
+import { createLane, fetchBaseline, reconcileLane, removeLane } from './lanes.mjs';
 import { processFingerprint } from './ledger.mjs';
 import { observe } from './observe.mjs';
 import { terminateGroup } from './worker.mjs';
@@ -73,6 +73,12 @@ export const TASKS = {
     return { ...r, lines };
   },
   fetchBaseline: (a, env) => fetchBaseline({ checkout: a.checkout, baseline: a.baseline, env }),
+  // ADR-0068 Decision 1, item 4 — one parked lane's reconciliation, as it is
+  // picked up again.
+  reconcileLane: (a, env) => reconcileLane({
+    home: a.home, checkout: a.checkout, macroId: a.macroId, view: a.view, baseline: a.baseline, subtaskId: a.subtaskId,
+    runId: a.runId, runDir: a.runDir, now: () => a.nowMs, env,
+  }),
   removeLane: (a, env) => removeLane({
     home: a.home, macroId: a.macroId, subtaskId: a.subtaskId, runId: a.runId, runDir: a.runDir,
     now: () => a.nowMs, env, ownLaneLock: a.ownLaneLock, protect: a.protect,

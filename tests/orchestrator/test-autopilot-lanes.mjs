@@ -605,6 +605,29 @@ describe('reconciliation', () => {
     }
   });
 
+  // ADR-0068 Decision 1, item 4 — a parked lane picked up again mid-run.
+  it('reconciles one lane from the whole macro\'s facts: its own pre-pass and rows, and the run-wide ones, never another lane\'s', async () => {
+    const t = await setup();
+    try {
+      t.rawLane('A', 'feat/a', { identity: false });
+      t.rawLane('B', 'feat/b', { identity: false });
+      const view = viewOf([{ id: 'A', branch: 'feat/a', status: 'pending' }, { id: 'B', branch: 'feat/b2', status: 'in_progress' }], { children: { B: { location: 'active', branch: 'feat/b' } } });
+      const one = (id, v = view) => LN.reconcileLane({ home: t.home, checkout: t.fx.work, macroId: t.fx.macroId, view: v, baseline: 'main', subtaskId: id, runId: RUN, runDir: t.runDir, env: t.fx.env });
+      const a = await one('A');
+      deepStrictEqual([a.lane?.subtaskId, a.lane?.state, a.halts], ['A', 'prepared', []], 'B\'s row is not A\'s');
+      strictEqual(LN.readLaneIdentity(t.lane('A')).state, 'ok', 'A\'s identity was assigned');
+      strictEqual(LN.readLaneIdentity(t.lane('B')).state, 'absent', 'another lane is left as it is');
+      ok(!t.events().some((e) => e.subtask_id === 'B'), t.events().map((e) => JSON.stringify(e)).join('\n'));
+      ok(SR.readSharedCreation(t.home.mainRoot).record.lanes_first_run_at, 'the rollback fence, the macro\'s, is recorded');
+      const b = await one('B');
+      deepStrictEqual([b.lane, b.halts.map((h) => [h.row, h.subtaskId])], [null, [[3, 'B']]]);
+      const unlisted = await one('A', { ...view, claimsError: 'boom' });
+      deepStrictEqual([unlisted.lane, unlisted.halts.map((h) => [h.subtaskId ?? null, h.scope])], [null, [[null, 'run']]]);
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
   it('finishes a cleanup interrupted after done: a completed subtask\'s lane, a crash after the unlock, and one after the remove (rows 7, 9, pre-pass)', async () => {
     const t = await setup();
     try {

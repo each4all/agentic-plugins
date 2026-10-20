@@ -49,12 +49,13 @@ import {
 } from './policy.mjs';
 import {
   appendStep, acquireLock, createRunDir, LockHeldError, macroLockPath, mainWorktreeRoot, newRunId,
-  processFingerprint, relaunchCommand, removeOpenRun, workerStreamPath, worktreeLockPath, writeHalt, writeOpenRun, writeRun,
+  processFingerprint, relaunchCommand, releaseCommand, removeOpenRun, workerStreamPath, worktreeLockPath, writeHalt, writeOpenRun, writeRun,
 } from './ledger.mjs';
 import {
   capabilityProblems, driftOf, frozenInputProblems, lanesCapabilityProblems, PLUGINS, resolveRoots,
 } from './roots.mjs';
 import { observeInChild, offLoop as defaultOffLoop } from './offloop.mjs';
+import { readParks, retiring } from './parks.mjs';
 import {
   abandonedText, endedUnlooked, foundWaiting, laneBlock, ownChildOnly, peerCancellationOutcome, peerRunnerCommand, peerSettlementOutcome, peersUnlisted,
   reconcileWaiting, reportClosePeersUnlisted, runLanes,
@@ -359,8 +360,11 @@ function haltRecord({ runId, d, lastSessionId, repoRoot, macroId, lanes }) {
     proposals: d.proposals ?? [],
     last_session_id: lastSessionId,
     resume,
-    // A run with lanes: the other halts its drain met, and one entry per lane.
+    // A run with lanes: the other halts it met and the open parks beside the
+    // reason, a parked lane's resolution, and one entry per lane (ADR-0068
+    // Decision 1, item 9).
     ...(d.also ? { also: d.also } : {}),
+    ...(d.resolution ? { resolution: d.resolution } : {}),
     ...(lanes >= 2 ? { lanes: d.lanes ?? [] } : {}),
   };
 }
@@ -407,15 +411,30 @@ export function withLanding(d, report, waiting) {
 // ADR-0067 Decision 6: a serial run does not reconcile lanes, and would halt
 // on their active children or ask for a switch to a branch git will not check
 // out twice; it refuses while a lane of the macro holds unfinished work.
+// ADR-0068 Decision 2, item 2: nor does it start beside a kept park, which
+// only a run with lanes honours (parks.mjs); one that no longer applies (its
+// subtask completed or gone) does not count.
 function serialRefusal({ repoRoot, macroId, view, env }) {
   if (!macroId) return [];
+  const problems = [];
   const held = lanesHoldingWork({ checkout: repoRoot, macroId, view, env });
-  if (held.problem) return [held.problem];
-  if (held.lanes.length === 0) return [];
-  return [
-    `a lane of macro ${macroId} holds work that is not completed (${held.lanes.map((l) => `${l.subtaskId}=${l.status} at ${l.path}`).join(', ')}): ` +
-      `a serial run does not drive lanes. Run it with lanes: ${relaunchCommand({ macroId, lanes: 2, repoRoot })}`,
-  ];
+  if (held.problem) problems.push(held.problem);
+  else if (held.lanes.length > 0) {
+    problems.push(`a lane of macro ${macroId} holds work that is not completed (${held.lanes.map((l) => `${l.subtaskId}=${l.status} at ${l.path}`).join(', ')}): ` +
+      `a serial run does not drive lanes. Run it with lanes: ${relaunchCommand({ macroId, lanes: 2, repoRoot })}`);
+  }
+  const kept = readParks(mainWorktreeRoot(repoRoot), macroId);
+  if (kept.problem) {
+    problems.push(`whether macro ${macroId} keeps a parked lane cannot be told (${kept.problem}): a serial run does not start beside a kept park`);
+  } else {
+    const gone = new Set(retiring(kept.records, view));
+    const open = kept.records.filter((r) => !gone.has(r.subtaskId));
+    if (open.length > 0) {
+      problems.push(`macro ${macroId} keeps ${open.length} parked lane${open.length === 1 ? '' : 's'} (${open.map((r) => `${r.subtaskId}: ${r.state === 'ok' ? `${r.record.reason} — ${r.record.detail}` : `an unreadable record, ${r.error}`}`).join('; ')}): ` +
+        `a serial run does not start beside a kept park. Release each (${open.map((r) => releaseCommand({ subtaskId: r.subtaskId, macroId, repoRoot })).join('; ')}), or run with lanes: ${relaunchCommand({ macroId, lanes: 2, repoRoot })}`);
+    }
+  }
+  return problems;
 }
 
 /**
@@ -426,7 +445,8 @@ function serialRefusal({ repoRoot, macroId, view, env }) {
  * @param a.env       the environment (workers inherit it, scrubbed)
  * @param a.out, a.err  line printers
  * @param a.deps      test seams: { observe, observeAsync, offLoop, startWorker, cancelPeerRuns, settleAbandonedPeers, now, signals,
- *                    checkClaude, terminateGroupsSync, resolveRoots (the drift check between steps), createBudget }
+ *                    checkClaude, terminateGroupsSync, resolveRoots (the drift check between steps), createBudget,
+ *                    wakeIntervalMs, quietMs and laneBusy (a run with lanes: scheduler.mjs) }
  */
 export async function startRun({ repoRoot, options, env = process.env, out = console.log, err = console.error, deps = {} }) {
   const observe = deps.observe ?? defaultObserve;
@@ -729,6 +749,8 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         observeAsync: deps.observeAsync ?? (deps.observe ? async (a) => deps.observe(a) : observeInChild),
         offLoop, startWorker, terminateGroup: deps.terminateGroup ?? null,
         helpers: { provenanceProblem, newPendingRuns, newPendingTargets },
+        wakeIntervalMs: deps.wakeIntervalMs ?? null, quietMs: deps.quietMs ?? null, laneBusy: deps.laneBusy ?? null,
+        resolveRoots: deps.resolveRoots ?? null,
       });
     }
 

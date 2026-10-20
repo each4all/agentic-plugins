@@ -50,8 +50,9 @@ const CLEAR_RETIRE = '    const retired = runId === undefined\n      ? { retired
 
 // The lanes path and the previews (M4, M5, M7 of the CP critique), by the
 // test that names each.
-const LANES_E2E = /a lane whose step ends on its conflict gate while the run drains keeps its proposal/;
-const RETIRED = /a task file retired while the run drains is not reported/;
+const LANES_E2E = /a lane whose step ends on its conflict gate while another lane is parked keeps its proposal/;
+const RETIRED = /a task file retired while the run goes on is not reported/;
+const DRAIN_GATE = /a lane whose step ends on its conflict gate while the run drains keeps its proposal/;
 const SERIAL_PREVIEW = /serial: a child on its conflict gate, in the preview/;
 const LANES_MACRO_PREVIEW = /with lanes: a macro on plan-conflict halts the preview plan-unapproved/;
 const OBS_MACRO = /a macro on plan-conflict: its run, its recorded conflict and its task file in the orchestrator home/;
@@ -353,7 +354,7 @@ export const MUTATIONS = [
     id: 'A8', file: POLICY, tests: [TA],
     from: '  const current = (ps) => (fresh?.lookError ? [] : currentProposals(fresh, ps));\n',
     to: '  const current = (ps) => ps;\n',
-    why: 'the run\'s end does not judge again: a task file retired while the run drains still has its round reported (M4)',
+    why: 'the run\'s end does not judge again: a task file retired while the run goes on still has its round reported (M4)',
     killed_by: RETIRED,
   },
   {
@@ -361,13 +362,13 @@ export const MUTATIONS = [
     from: '      if (proposals.length) lane(id).proposals = proposals;\n',
     to: '',
     why: 'a lane whose in-flight step ends on its conflict gate during the drain has no halt, and its round is lost (M7a)',
-    killed_by: LANES_E2E,
+    killed_by: DRAIN_GATE,
   },
   {
     id: 'A10', file: SCHED, tests: [TA],
-    from: '      if (hh.proposals?.length) lane(hh.subtaskId).proposals = hh.proposals;\n',
+    from: '    if (h.proposals?.length) lane(id).proposals = h.proposals;\n',
     to: '',
-    why: 'a second lane halted on its gate (kept in also) loses its round',
+    why: 'a second lane parked on its gate (kept in also) loses its round',
     killed_by: LANES_E2E,
   },
   {

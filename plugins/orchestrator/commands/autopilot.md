@@ -1,6 +1,6 @@
 ---
 description: Run an approved macro unattended — one fresh Claude worker per step, halting at owner judgment (ADR-0063, Claude only; dry-run by default)
-argument-hint: "[preview|start [--execute]|status|stop] [--macro <id>] [--models owner-default|mixed|sonnet] [--model <m>] [--effort <e>] [--max-steps <n>] [--max-cost <usd>] [--step-budget <usd>] [--step-timeout <s>] [--lanes <n>] [--next \"<step>\"] [--lane <subtask> --next \"<step>\"] [--notify-local] [--json]"
+argument-hint: "[preview|start [--execute]|status|stop|release <subtask>] [--macro <id>] [--models owner-default|mixed|sonnet] [--model <m>] [--effort <e>] [--max-steps <n>] [--max-cost <usd>] [--step-budget <usd>] [--step-timeout <s>] [--lanes <n>] [--next \"<step>\"] [--lane <subtask> --next \"<step>\"] [--notify-local] [--json]"
 ---
 
 # Orchestrator · Autopilot
@@ -62,8 +62,31 @@ its own git worktree beside the repository, with `/orchestrator:done` and
 `/orchestrator:finalize` in the checkout the run starts from (ADR-0067
 Decision 6). Run it from a checkout no one works in: work there halts the run
 at its next done. A new lane waits while the rate limit's five-hour window is
-at 0.85 or more, or refused; a halt in any lane lets the steps in flight finish,
-then reports every lane and exits 2. Ctrl-C, `stop` or a closed terminal
+at 0.85 or more, or refused. A halt in one lane (its gate, a judgment, a step
+or a creation of that lane that failed) **parks that lane only** (ADR-0068
+Decision 1): it starts nothing more, and the other lanes go on. The park is
+kept in the macro's records (`.agentic-plugins/runs/autopilot/holds/<macro-id>/parks/`),
+so a relaunch parks the lane again at once while its record is unchanged, and a
+step that wrote nothing is never retried on that record. The lane is picked up
+again, within about a minute while the run lives or at the next relaunch, once
+its record changes (the owner clears its gate, records a next step, settles a
+pending peer ensemble, commits or moves its branch) or once the owner releases
+it with `release <subtask> --macro <id>`, with or without a live run; its lane
+is reconciled again first, as at a run's start. No worker spawns into a lane
+whose engineer record was written outside the run less than that quiet period
+ago, so a gate resolution (its clear, then its next step) finishes first; an
+operation that writes nothing for longer is not seen until the persona records
+its open operations (ADR-0068 Decision 2, item 9). A run-wide halt (version drift, an
+exhausted budget, a plan change that revokes the approval, a gate on the macro,
+a halt that names no lane, the baseline or the rollback fence, the driver's
+own done or finalize, a worker group that outlived SIGKILL) lets the steps in
+flight finish, then reports every lane and exits 2. The run also ends, exit 2,
+once nothing runs and nothing can start: every remaining lane parked, waiting
+to land, or behind one of those; `halt.json` names the first lane still parked
+(after a run-wide halt), lists the other parks under `also`, and gives each
+lane's state and what resolves it, and `status` shows each parked lane's
+reason and since when. A serial run does not start beside a kept park: release
+it, or run with lanes. Ctrl-C, `stop` or a closed terminal
 (SIGINT, SIGTERM, SIGHUP) ends it at once instead: a lane's creation or removal,
 or a peer run's cancellation, already under way gets 15 s to finish, the workers
 and everything else in flight are stopped, and the lanes are kept for the next
@@ -90,6 +113,12 @@ on Codex the steps stay manual.
   finish (a peer it could not cancel, a peer-run home it could not read, a
   ledger that is gone) it prints, keeps, and makes `stop` exit 1, as does a
   run any part of which still runs.
+- `release <subtask> --macro <id>` ends that subtask's kept park (ADR-0068
+  Decision 1, item 4): a live run picks the lane up at its next tick, the next
+  run judges it afresh. It refuses inside an autopilot worker, a subtask with
+  no kept park, and a step a live run has under way. A park whose cause lies
+  outside the lane's record (another worktree holds its branch, another session
+  holds its lock, its record cannot be read) waits for this release.
 
 Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
 from `AGENTIC_ORCHESTRATOR_ROOT` when that is set, else from the plugin path
@@ -124,7 +153,7 @@ as text. It removes the args file and its directory once it has read them.
 
 ---
 
-## preview, status, stop, and start without --execute
+## preview, status, stop, release, and start without --execute
 
 Run this block when the arguments do not contain `start` together with
 `--execute`:
@@ -136,8 +165,8 @@ CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 node "$CLAUDE_PLUGIN_ROOT/adapters/claude/autopilot/cli.mjs" --args-file "$ARGS_DIR/args.json"
 ```
 
-Show the output as it is. Exit 0: the preview would proceed (or status/stop
-succeeded). Exit 2: the preview would halt — the reason and its pointer are in
+Show the output as it is. Exit 0: the preview would proceed (or status, stop
+or release succeeded). Exit 2: the preview would halt — the reason and its pointer are in
 the output. Exit 1: an error or a start condition that fails; the output names
 it.
 

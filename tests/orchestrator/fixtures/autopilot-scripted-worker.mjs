@@ -27,6 +27,14 @@
 // [<rate_limit_info>…] }` emits those rate_limit_events into the step's stream
 // before its Stop hooks run (the stream's first one, after init, is the fake's
 // FAKE_RATE_LIMIT).
+//
+// ADR-0068 Decision 1: "gate:<gate>" makes a dispatch record that owner gate
+// on its new child (next step owner-decision), as a verb that stops for the
+// owner does, and writes the child's path to child-<subtask>.path beside the
+// scenario, for the test to resolve the gate as the owner would;
+// "kill-driver" SIGKILLs the driver (this worker's parent) once the step's
+// work is done, before the worker reports: the driver dies between the step's
+// end and its verdict. It fires once per scenario.
 
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -86,10 +94,17 @@ export async function perform({ prompt, cwd, env }) {
   const git = (...args) => execFileSync('git', ['-C', cwd, ...args], { env, encoding: 'utf8' }).trim();
   const engCli = path.join(env.AGENTIC_ENGINEER_ROOT, 'scripts', 'state.mjs');
   const orchCli = path.join(env.AGENTIC_ORCHESTRATOR_ROOT, 'scripts', 'state.mjs');
-  const action = actionList.find((a) => !/^(wait|stop-wait|mark|mark-start):/.test(a)) ?? null;
+  const action = actionList.find((a) => !/^(wait|stop-wait|mark|mark-start):/.test(a) && a !== 'kill-driver') ?? null;
   const stateBase = env.AGENTIC_STATE_BASE || cwd;
   const finish = (r) => {
     for (const a of actionList) if (a.startsWith('mark:')) fs.writeFileSync(path.join(dir, a.slice('mark:'.length)), seq);
+    // Once per scenario: a relaunch that retried the step (the defect a crash
+    // test exists for) must fail its assertions, not lose its own process.
+    const killed = path.join(dir, 'driver-killed');
+    if (actionList.includes('kill-driver') && !fs.existsSync(killed)) {
+      fs.writeFileSync(killed, seq);
+      process.kill(process.ppid, 'SIGKILL');
+    }
     return r;
   };
 
@@ -213,6 +228,16 @@ export async function perform({ prompt, cwd, env }) {
       await eng.recordComposedFile({ workflowPath: filePath, path: rel, op: 'create' });
     }
     const ns = nextFor(id);
+    if (action?.startsWith('gate:')) {
+      const gate = action.slice('gate:'.length);
+      fs.writeFileSync(path.join(dir, `child-${id}.path`), filePath);
+      await eng.finishVerb({
+        workflowPath: filePath, host: 'claude', nextAction: 'Owner decision', nextStep: { kind: 'owner-decision', confidence: 'HIGH' },
+        ownerGate: { gate, anchor: 'routing-recommendation' },
+      });
+      await stopHooks();
+      return finish({ report: { ...verbReport(wf, { kind: 'owner-decision', verb: null, confidence: 'HIGH' }), outcome: 'needs_owner', awaiting_owner: gate } });
+    }
     if (action === 'conflict-gate' || action === 'conflict-gate-no-task') {
       // ADR-0067 Decision 8: the verb's synthesis is a conflict — the settle
       // records it, the task file is written (or not), and the conflict gate

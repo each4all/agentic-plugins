@@ -30,18 +30,27 @@ const RT = await import(resolve(AP, 'roots.mjs'));
 const { observeInChild } = await import(resolve(AP, 'offloop.mjs'));
 const pause = (ms) => new Promise((r) => { setTimeout(r, ms); });
 const until = async (file) => { for (let i = 0; i < 600 && !existsSync(file); i += 1) await pause(50); };
+// ADR-0068 Decision 1: a lane halt parks its lane and drains nothing, so the
+// drain these tests need is a run-wide one: version drift, seen once a step
+// has written <dir>/drift.
+const driftOn = (t) => ({
+  resolveRoots: async (o) => {
+    const r = await RT.resolveRoots(o);
+    return existsSync(join(t.dir, 'drift')) ? { ...r, versions: { ...r.versions, engineer: '99.0.0' } } : r;
+  },
+});
 
 // ADR-0067 Decision 7, docket C128 and C123 — the landing report of a run
 // with lanes.
 describe('landing reports with lanes', () => {
-  // A reported ready, then B's dispatch makes no progress, which drains the
+  // A reported ready, then B's dispatch brings version drift, which drains the
   // run; the drain's last look fails, or the owner interrupts it.
   const lastLook = async (mode) => {
     const t = await setup({
-      scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT] }, actions: { 2: ['wait:a-reported', 'noop'] } },
+      scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT] }, actions: { 2: ['wait:a-reported', 'mark:drift'] } },
     });
     markOn(t, /^◆ landing-ready: A on feat\/a /, 'a-reported');
-    markOn(t, /^■ lane B: owner-choice/, 'drained');
+    markOn(t, /^■ version-drift/, 'drained');
     const { failedView } = await import(resolve(AP, 'offloop.mjs'));
     const observeAsync = async (a, o) => {
       if (existsSync(join(t.dir, 'drained'))) {
@@ -54,7 +63,7 @@ describe('landing reports with lanes', () => {
       }
       return observeInChild(a, o);
     };
-    const code = await t.run({}, { observeAsync });
+    const code = await t.run({}, { observeAsync, ...driftOn(t) });
     return { t, code, r: t.latest() };
   };
   const statusText = async (t) => {
@@ -69,7 +78,7 @@ describe('landing reports with lanes', () => {
     try {
       strictEqual(code, 2, t.lines.join('\n'));
       ok(!existsSync(join(t.dir, 'a-reported.timeout')), t.lines.join('\n'));
-      strictEqual(r.halt.reason, 'owner-choice');
+      strictEqual(r.halt.reason, 'version-drift');
       strictEqual(r.halt.waiting, null, 'a halt for another reason lists no waiting branch');
       deepStrictEqual(r.landing.map((x) => [x.subtask_id, x.sync.state]), [['A', 'ready']]);
       const a = bySubtask(r).A.waiting;
@@ -91,7 +100,7 @@ describe('landing reports with lanes', () => {
     const { t, code, r } = await lastLook('macro');
     try {
       strictEqual(code, 2, t.lines.join('\n'));
-      strictEqual(r.halt.reason, 'owner-choice');
+      strictEqual(r.halt.reason, 'version-drift');
       const a = bySubtask(r).A.waiting;
       ok(a, `lane A is still listed waiting: ${JSON.stringify(bySubtask(r).A)}`);
       deepStrictEqual([a.branch, a.sync.state, a.sync.detail], ['feat/a', 'unknown', "the run's last look failed (the macro could not be read: simulated: the macro could not be read)"]);
@@ -107,7 +116,7 @@ describe('landing reports with lanes', () => {
     try {
       strictEqual(code, 2, t.lines.join('\n'));
       strictEqual(r.halt.reason, 'interrupted', t.lines.join('\n'));
-      ok(/while it drained after owner-choice/.test(r.halt.detail), r.halt.detail);
+      ok(/while it drained after version-drift/.test(r.halt.detail), r.halt.detail);
       deepStrictEqual(r.landing.map((x) => [x.subtask_id, x.sync.state]), [['A', 'ready']]);
       const unlooked = "the run ended before its last look (the owner interrupted the run)";
       deepStrictEqual([bySubtask(r).A.waiting?.sync?.state, bySubtask(r).A.waiting?.sync?.detail], ['unknown', unlooked], JSON.stringify(bySubtask(r).A));

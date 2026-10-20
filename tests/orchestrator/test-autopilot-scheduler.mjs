@@ -9,7 +9,8 @@
 // shared creation is on in it, so the macro and every child live in its
 // default state root, and each lane is a real git worktree beside it.
 //
-// This file: two lanes, the drain, budgets, forced resume, preview, start conditions and admission.
+// This file: two lanes, a lane halt that parks its lane, the drain, budgets, forced resume, preview, start
+// conditions and admission.
 // The scheduler tests are split across test-autopilot-scheduler*.mjs so
 // node --test runs them in parallel; each file sets up its own repositories.
 
@@ -26,6 +27,7 @@ import {
 } from './fixtures/autopilot-lanes-run.mjs';
 
 const SR = await import(resolve(AP, '../../../scripts/lib/state-root.mjs'));
+const PK = await import(resolve(AP, 'parks.mjs'));
 const RT = await import(resolve(AP, 'roots.mjs'));
 const { observeInChild } = await import(resolve(AP, 'offloop.mjs'));
 const pause = (ms) => new Promise((r) => { setTimeout(r, ms); });
@@ -88,39 +90,45 @@ describe('two lanes', () => {
   });
 });
 
-describe('drain (W2)', () => {
-  it('a halt in one lane drains the run: the other lane\'s step in flight runs to its end and is recorded, nothing new starts, every lane is reported once', async () => {
-    // A's dispatch changes nothing (no-progress… here a dispatch that left
-    // its subtask pending), once B's has started; B's goes on only once the
-    // run has started draining.
+describe('a lane halt parks its lane (ADR-0068 Decision 1)', () => {
+  it('a halt in one lane parks that lane only: the other lane\'s step in flight runs to its end and the lane goes on, nothing new starts in the parked lane, every lane is reported once', async () => {
+    // A's dispatch changes nothing (a dispatch that left its subtask
+    // pending), once B's has started; B's goes on only once A is parked.
     const t = await setup({
       scenario: {
         A: { next: [COMMIT] }, B: { next: [COMMIT], file: 'b.txt' },
-        actions: { 1: ['wait:b-started', 'noop'], 2: ['mark-start:b-started', 'wait:drained'] },
+        actions: { 1: ['wait:b-started', 'noop'], 2: ['mark-start:b-started', 'wait:parked'] },
       },
     });
-    markOn(t, /^■ lane A: owner-choice/, 'drained');
+    markOn(t, /^■ lane A: owner-choice/, 'parked');
     try {
       strictEqual(await t.run(), 2, t.lines.join('\n'));
-      ok(!existsSync(join(t.dir, 'drained.timeout')), 'B was still running when the drain began');
+      ok(!existsSync(join(t.dir, 'parked.timeout')), 'B was still running when A parked');
       const r = t.latest();
-      deepStrictEqual(stepsOf(r).map((x) => [x[1], x[2], x[4]]).sort(), [['A', 'dispatch', 'owner-choice'], ['B', 'dispatch', 'ok']]);
-      strictEqual(r.halt.reason, 'owner-choice');
-      strictEqual(r.halt.subtask_id, 'A');
-      ok(t.lines.some((l) => /draining: 1 step\(s\) in flight/.test(l)), t.lines.join('\n'));
+      deepStrictEqual(stepsOf(r).map((x) => [x[1], x[2], x[4]]).sort(), [['A', 'dispatch', 'owner-choice'], ['B', 'commit', 'ok'], ['B', 'dispatch', 'ok']]);
+      ok(!t.lines.some((l) => /draining/.test(l)), 'a lane halt drains nothing');
+      ok(t.lines.some((l) => /^ {2}other lanes continue/.test(l)), t.lines.join('\n'));
+      // The run ends when every remaining lane waits: A parked, B waiting to
+      // land; the first lane still parked is the reason.
+      deepStrictEqual([r.halt.reason, r.halt.subtask_id], ['owner-choice', 'A']);
+      match(r.halt.resolution.release, new RegExp(`release A --macro ${t.fx.macroId}`));
       const lanes = bySubtask(r);
-      strictEqual(lanes.A.halt.reason, 'owner-choice');
-      deepStrictEqual([lanes.B.last_step.kind, lanes.B.last_step.outcome, lanes.B.halt], ['dispatch', 'ok', null]);
+      deepStrictEqual([lanes.A.state, lanes.A.park.reason], ['parked', 'owner-choice']);
+      deepStrictEqual([lanes.B.state, lanes.B.last_step.kind, lanes.B.last_step.outcome, lanes.B.halt], ['waiting-to-land', 'commit', 'ok', null]);
       deepStrictEqual(r.halt.lanes.map((l) => l.subtask_id), ['A', 'B']);
       strictEqual(t.lines.filter((l) => /^ {2}lane B /.test(l)).length, 1, 'each lane is reported once');
-      ok(existsSync(t.lane('A')) && existsSync(t.lane('B')), 'a drain keeps the lanes');
+      ok(existsSync(t.lane('A')) && existsSync(t.lane('B')), 'the run keeps the lanes');
+      // The park is kept in the macro's records, with the lane's fingerprint.
+      const kept = PK.readPark(t.work, t.fx.macroId, 'A');
+      deepStrictEqual([kept.state, kept.record.state, kept.record.reason, kept.record.form], ['ok', 'parked', 'owner-choice', 'lane']);
+      deepStrictEqual(PK.readPark(t.work, t.fx.macroId, 'B'), { state: 'absent' }, 'B\'s step markers were settled');
       strictEqual(r.run.status, 'halted');
     } finally {
       t.fx.cleanup();
     }
   });
 
-  it('simultaneous halts: both lanes are recorded, the first is the run\'s reason and the other is kept beside it', async () => {
+  it('simultaneous halts: both lanes park, the first in plan order is the run\'s reason and the other is kept beside it', async () => {
     const t = await setup({
       scenario: {
         A: { next: [COMMIT] }, B: { next: [COMMIT] },
@@ -132,9 +140,36 @@ describe('drain (W2)', () => {
       const r = t.latest();
       deepStrictEqual(stepsOf(r).map((x) => [x[1], x[4]]).sort(), [['A', 'owner-choice'], ['B', 'owner-choice']]);
       const lanes = bySubtask(r);
-      ok(lanes.A.halt && lanes.B.halt, 'each lane records its own halt');
-      strictEqual(r.halt.also.length, 1);
-      deepStrictEqual([r.halt.subtask_id, r.halt.also[0].subtask_id].sort(), ['A', 'B']);
+      ok(lanes.A.park && lanes.B.park, 'each lane keeps its own park');
+      deepStrictEqual([r.halt.subtask_id, r.halt.also.map((x) => [x.subtask_id, x.parked])], ['A', [['B', true]]]);
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+});
+
+describe('drain (W2)', () => {
+  it('a run-wide halt drains the run: a plan change revokes the approval while the other lane\'s step is in flight, which runs to its end and is recorded; nothing new starts', async () => {
+    // B's dispatch edits the plan (the approval no longer holds) while A's
+    // runs; A's goes on only once the run drains.
+    const t = await setup({
+      scenario: {
+        A: { next: [COMMIT], file: true }, B: { next: [COMMIT], file: 'b.txt' },
+        actions: { 1: ['mark-start:a-started', 'wait:drained'], 2: ['wait:a-started', 'edit-plan'] },
+      },
+    });
+    markOn(t, /^■ plan-unapproved/, 'drained');
+    try {
+      strictEqual(await t.run(), 2, t.lines.join('\n'));
+      ok(!existsSync(join(t.dir, 'drained.timeout')), 'A was still running when the drain began');
+      const r = t.latest();
+      deepStrictEqual(stepsOf(r).map((x) => [x[1], x[2], x[4]]).sort(), [['A', 'dispatch', 'ok'], ['B', 'dispatch', 'ok']], 'nothing new started');
+      strictEqual(r.halt.reason, 'plan-unapproved');
+      ok(t.lines.some((l) => /draining: 1 step\(s\) in flight/.test(l)), t.lines.join('\n'));
+      deepStrictEqual(r.halt.lanes.map((l) => [l.subtask_id, l.state]), [['A', 'active'], ['B', 'active']]);
+      deepStrictEqual(PK.readParks(t.work, t.fx.macroId).records, [], 'a drain keeps no park');
+      ok(existsSync(t.lane('A')) && existsSync(t.lane('B')), 'a drain keeps the lanes');
+      strictEqual(r.run.status, 'halted');
     } finally {
       t.fx.cleanup();
     }
@@ -142,11 +177,11 @@ describe('drain (W2)', () => {
 
   it('SIGTERM during a drain aborts the step still in flight (interrupted) instead of waiting for it, and keeps the lanes', async () => {
     const t = await setup({
-      scenario: { A: { next: [COMMIT] }, B: { next: [COMMIT] }, actions: { 1: ['wait:b-started', 'noop'], 2: ['mark-start:b-started', 'wait:never'] } },
+      scenario: { A: { next: [COMMIT] }, B: { next: [COMMIT] }, actions: { 1: ['mark-start:a-started', 'wait:never'], 2: ['wait:a-started', 'edit-plan'] } },
     });
     const push = t.lines.push.bind(t.lines);
     t.lines.push = (line) => {
-      if (/^■ lane A: owner-choice/.test(line)) setTimeout(() => t.signals.emit('SIGTERM'), 50);
+      if (/^■ plan-unapproved/.test(line)) setTimeout(() => t.signals.emit('SIGTERM'), 50);
       return push(line);
     };
     try {
@@ -154,10 +189,11 @@ describe('drain (W2)', () => {
       strictEqual(await t.run(), 2, t.lines.join('\n'));
       ok(Date.now() - startedAt < 55_000, 'the run did not wait out the step in flight');
       const r = t.latest();
-      const b = r.steps.find((x) => x.lane === 'B');
-      deepStrictEqual([b.aborted, b.outcome], ['interrupted', 'interrupted']);
+      const a = r.steps.find((x) => x.lane === 'A');
+      deepStrictEqual([a.aborted, a.outcome], ['interrupted', 'interrupted']);
       strictEqual(r.halt.reason, 'interrupted');
-      match(r.halt.detail, /while it drained after owner-choice/);
+      match(r.halt.detail, /while it drained after plan-unapproved/);
+      deepStrictEqual(PK.readParks(t.work, t.fx.macroId).records, [], 'an interrupt parks nothing');
       ok(existsSync(t.lane('A')) && existsSync(t.lane('B')));
       deepStrictEqual(L.readLockEntries(L.macroLockPath(t.work, t.fx.macroId)), [], 'every group is empty, so the locks are released');
       deepStrictEqual(L.listOpenRuns(t.work), []);
@@ -202,25 +238,29 @@ describe('budgets are reserved', () => {
 });
 
 describe('forced resume', () => {
-  it('with two active children --next needs --lane; --lane A --next replaces only A\'s judgment halt, and runs first', async () => {
+  it('with two active children --next needs --lane; --lane A --next ends only A\'s kept park and runs first; B\'s persisting judgment halt keeps B parked', async () => {
     const LOW = { kind: 'verb', verb: 'critique', confidence: 'LOW' };
     const t = await setup({
-      scenario: { A: { next: [LOW, COMMIT], file: true }, B: { next: [COMMIT, COMMIT], file: 'b.txt' }, actions: { 1: 'wait:b-started', 2: 'mark-start:b-started' } },
+      scenario: { A: { next: [LOW, COMMIT], file: true }, B: { next: [LOW, COMMIT], file: 'b.txt' }, actions: { 1: 'wait:b-started', 2: 'mark-start:b-started' } },
     });
     try {
-      // Run 1: A's dispatch asks for a LOW-confidence critique: the run drains.
+      // Run 1: each dispatch asks for a LOW-confidence critique: both lanes park.
       strictEqual(await t.run(), 2, t.lines.join('\n'));
-      strictEqual(t.latest().halt.reason, 'low-confidence');
+      deepStrictEqual([t.latest().halt.reason, t.latest().halt.subtask_id, t.latest().halt.also.map((x) => x.subtask_id)], ['low-confidence', 'A', ['B']]);
       // Two active children: --next without --lane is refused.
       strictEqual(await t.run({ forcedPairs: [{ lane: null, step: { kind: 'verb', verb: 'critique' } }] }), 2);
       match(t.latest().halt.detail, /name the lane with --lane/);
       strictEqual(t.latest().steps.length, 0);
-      // --lane A: A's forced critique starts first; B commits; both wait to land.
+      // --lane A: A's kept park ends and its forced critique starts first; B
+      // stays parked on its unchanged record (ADR-0068 Decision 1, item 8).
       strictEqual(await t.run({ forcedPairs: [{ lane: 'A', step: { kind: 'verb', verb: 'critique' } }] }), 2, t.lines.join('\n'));
       const r = t.latest();
       deepStrictEqual([r.steps[0].lane, r.steps[0].kind, r.steps[0].forced], ['A', 'verb', true]);
-      deepStrictEqual(r.steps.map((x) => [x.lane, x.kind]).sort(), [['A', 'commit'], ['A', 'verb'], ['B', 'commit']]);
-      strictEqual(r.halt.reason, 'awaiting-landing');
+      deepStrictEqual(r.steps.map((x) => [x.lane, x.kind]), [['A', 'verb'], ['A', 'commit']]);
+      deepStrictEqual([r.halt.reason, r.halt.subtask_id], ['low-confidence', 'B']);
+      ok(t.lines.some((l) => /^■ lane B: low-confidence — .*\(kept since run /.test(l)), t.lines.join('\n'));
+      strictEqual(bySubtask(r).A.state, 'waiting-to-land');
+      deepStrictEqual(PK.readPark(t.work, t.fx.macroId, 'A'), { state: 'absent' });
     } finally {
       t.fx.cleanup();
     }
@@ -279,7 +319,7 @@ describe('start conditions with lanes', () => {
 });
 
 describe('what changes while a step is admitted', () => {
-  it('a step that ended while another lane\'s admission awaited is settled first: its halt drains the run, and the other lane\'s step never spawns', async () => {
+  it('a step that ended while another lane\'s admission awaited is settled first: its halt parks its lane before the other lane\'s step spawns', async () => {
     const t = await setup({ scenario: { A: { next: [COMMIT] }, B: { next: [COMMIT] }, actions: { 1: ['noop', 'mark:a-ended'] } } });
     let held = false;
     try {
@@ -297,11 +337,11 @@ describe('what changes while a step is admitted', () => {
       strictEqual(code, 2, t.lines.join('\n'));
       ok(held, 'B was admitted while A ran');
       const r = t.latest();
-      deepStrictEqual(stepsOf(r).map((x) => [x[1], x[2], x[4]]), [['A', 'dispatch', 'owner-choice']], 'B never spawned');
+      deepStrictEqual(stepsOf(r).map((x) => [x[1], x[2], x[4]]).slice(0, 2), [['A', 'dispatch', 'owner-choice'], ['B', 'dispatch', 'ok']]);
       strictEqual(r.halt.subtask_id, 'A');
-      // Decision 5: the drain leaves no lane without its step.
-      ok(!existsSync(t.lane('B')), 'B\'s lane, created for a step that never spawned, is removed');
-      strictEqual(bySubtask(r).B.state, 'removed (no step used it)');
+      const parkedAt = t.lines.findIndex((l) => /^■ lane A: owner-choice/.test(l));
+      const bAt = t.lines.findIndex((l) => /^\[2\] lane B: /.test(l));
+      ok(parkedAt !== -1 && bAt > parkedAt, `A was settled and parked before B's step spawned:\n${t.lines.join('\n')}`);
     } finally {
       t.fx.cleanup();
     }

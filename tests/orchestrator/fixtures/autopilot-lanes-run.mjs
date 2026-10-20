@@ -59,7 +59,9 @@ export async function setup({ scenario, subtasks = [{ id: 'A' }, { id: 'B' }], r
       ...DEFAULTS, models: 'owner-default', model: null, effort: null, macro: fx.macroId, forced: null, forcedText: null,
       forcedPairs: null, notifyLocal: false, lanes: 2, ...opts,
     },
-    env, out: (s) => lines.push(s), err: (s) => lines.push(`ERR ${s}`), deps: { signals, ...deps },
+    // A wake-up tick of 300 ms, not 30 s (ADR-0068 Decision 1, item 6): a run
+    // that ends beside a parked lane waits one quiet period first.
+    env, out: (s) => lines.push(s), err: (s) => lines.push(`ERR ${s}`), deps: { signals, wakeIntervalMs: 300, ...deps },
   });
   const latest = () => L.readRun(work, L.listRuns(work).at(-1));
   const home = LN.laneHome(work);

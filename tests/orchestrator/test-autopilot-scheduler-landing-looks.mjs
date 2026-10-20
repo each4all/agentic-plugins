@@ -30,27 +30,36 @@ const RT = await import(resolve(AP, 'roots.mjs'));
 const { observeInChild } = await import(resolve(AP, 'offloop.mjs'));
 const pause = (ms) => new Promise((r) => { setTimeout(r, ms); });
 const until = async (file) => { for (let i = 0; i < 600 && !existsSync(file); i += 1) await pause(50); };
+// ADR-0068 Decision 1: a lane halt parks its lane and drains nothing, so the
+// drain these tests need is a run-wide one: version drift, seen once a step
+// has written <dir>/drift.
+const driftOn = (t) => ({
+  resolveRoots: async (o) => {
+    const r = await RT.resolveRoots(o);
+    return existsSync(join(t.dir, 'drift')) ? { ...r, versions: { ...r.versions, engineer: '99.0.0' } } : r;
+  },
+});
 
 // ADR-0067 Decision 7, docket C128 and C123 — the landing report of a run
 // with lanes.
 describe('landing reports with lanes', () => {
   it('a commit made while the run drains is reported ready by a last look that fetches, before the run ends', async () => {
-    // A's dispatch makes no progress once B's commit has started, which
+    // A's dispatch brings version drift once B's commit has started, which
     // drains the run; B's commit goes on once the drain has begun. A lane's
     // look after its step does not fetch, so only a later look reports B ready.
     const t = await setup({
       scenario: {
         A: { next: [COMMIT] }, B: { next: [COMMIT], file: 'b.txt' },
-        actions: { 1: ['wait:b-committing', 'noop'], 3: ['mark-start:b-committing', 'wait:drained'] },
+        actions: { 1: ['wait:b-committing', 'mark:drift'], 3: ['mark-start:b-committing', 'wait:drained'] },
       },
     });
-    markOn(t, /^■ lane A: owner-choice/, 'drained');
+    markOn(t, /^■ version-drift/, 'drained');
     try {
-      strictEqual(await t.run(), 2, t.lines.join('\n'));
+      strictEqual(await t.run({}, driftOn(t)), 2, t.lines.join('\n'));
       ok(!existsSync(join(t.dir, 'drained.timeout')) && !existsSync(join(t.dir, 'b-committing.timeout')), t.lines.join('\n'));
       const r = t.latest();
-      deepStrictEqual(stepsOf(r).map((x) => [x[0], x[1], x[2], x[4]]), [[1, 'A', 'dispatch', 'owner-choice'], [2, 'B', 'dispatch', 'ok'], [3, 'B', 'commit', 'ok']]);
-      strictEqual(r.halt.reason, 'owner-choice');
+      deepStrictEqual(stepsOf(r).map((x) => [x[0], x[1], x[2], x[4]]), [[1, 'A', 'dispatch', 'ok'], [2, 'B', 'dispatch', 'ok'], [3, 'B', 'commit', 'ok']]);
+      strictEqual(r.halt.reason, 'version-drift');
       const base = t.git(t.work, 'rev-parse', 'refs/remotes/origin/main');
       deepStrictEqual(r.landing.map((x) => [x.subtask_id, x.after_seq, x.sync.state, x.sync.base_commit]), [['B', 3, 'ready', base]]);
       const drained = t.lines.findIndex((l) => /draining: 1 step\(s\) in flight/.test(l));
@@ -69,19 +78,19 @@ describe('landing reports with lanes', () => {
     const t = await setup({
       scenario: {
         A: { next: [COMMIT] }, B: { next: [COMMIT], file: 'b.txt' },
-        actions: { 1: ['wait:b-committing', 'noop'], 3: ['mark-start:b-committing', 'wait:drained'] },
+        actions: { 1: ['wait:b-committing', 'mark:drift'], 3: ['mark-start:b-committing', 'wait:drained'] },
       },
     });
-    markOn(t, /^■ lane A: owner-choice/, 'drained');
+    markOn(t, /^■ version-drift/, 'drained');
     const { failedView } = await import(resolve(AP, 'offloop.mjs'));
     const observeAsync = async (a, o) => {
       if (existsSync(join(t.dir, 'drained')) && a.repoRoot !== t.lane('B')) return failedView(a.repoRoot, 'simulated: the look failed');
       return observeInChild(a, o);
     };
     try {
-      strictEqual(await t.run({}, { observeAsync }), 2, t.lines.join('\n'));
+      strictEqual(await t.run({}, { observeAsync, ...driftOn(t) }), 2, t.lines.join('\n'));
       const r = t.latest();
-      deepStrictEqual(stepsOf(r).map((x) => [x[0], x[1], x[2], x[4]]), [[1, 'A', 'dispatch', 'owner-choice'], [2, 'B', 'dispatch', 'ok'], [3, 'B', 'commit', 'ok']]);
+      deepStrictEqual(stepsOf(r).map((x) => [x[0], x[1], x[2], x[4]]), [[1, 'A', 'dispatch', 'ok'], [2, 'B', 'dispatch', 'ok'], [3, 'B', 'commit', 'ok']]);
       const b = bySubtask(r).B.waiting;
       ok(b, `lane B is listed waiting: ${JSON.stringify(bySubtask(r).B)}`);
       deepStrictEqual([b.branch, b.commit, b.sync?.state, b.sync?.detail], ['feat/b', t.git(t.work, 'rev-parse', 'refs/heads/feat/b'), 'unknown', "the run's last look failed (simulated: the look failed)"]);

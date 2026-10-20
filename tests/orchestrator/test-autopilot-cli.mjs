@@ -268,6 +268,50 @@ describe('status and stop', () => {
     });
   });
 
+  // ADR-0068 Decision 1, item 4 — a bare release, with no live run here.
+  it('release ends a kept park; it refuses a worker of a run, a hold, a subtask with no park, and needs --macro', async () => {
+    const PK = await import(join(AP, 'parks.mjs'));
+    await withRepo(async (fx, env, work) => {
+      throws(() => C.parseCli(['release', '--macro', fx.macroId]), /release needs the subtask/);
+      throws(() => C.parseCli(['release', 'A']), /release needs --macro/);
+      throws(() => C.parseCli(['status', '--hold', 'h1']), /--hold applies only to release/);
+      const rec = { schema: PK.PARK_SCHEMA, record_id: PK.newRecordId(), macro_id: fx.macroId, subtask_id: 'A', state: 'parked', reason: 'worker-failed', detail: 'the worker could not start', run_id: L.newRunId() };
+      ok((await PK.writePark(work, fx.macroId, rec)).ok);
+      const worker = await main(['release', 'A', '--macro', fx.macroId], { ...env, AGENTIC_AUTOPILOT: L.newRunId() }, work);
+      strictEqual(worker.code, 1);
+      ok(/never releases a lane/.test(worker.err), worker.err);
+      const hold = await main(['release', 'A', '--macro', fx.macroId, '--hold', 'h1'], env, work);
+      ok(hold.code === 1 && /--hold names a hold/.test(hold.err), hold.err);
+      strictEqual(PK.readPark(work, fx.macroId, 'A').record.record_id, rec.record_id, 'nothing was released yet');
+      const r = await main(['release', 'A', '--macro', fx.macroId], env, work);
+      strictEqual(r.code, 0, r.err);
+      ok(/released subtask A's lane .*worker-failed/.test(r.out) && /the next run judges it afresh/.test(r.out), r.out);
+      deepStrictEqual(PK.readPark(work, fx.macroId, 'A'), { state: 'absent' });
+      const again = await main(['release', 'A', '--macro', fx.macroId], env, work);
+      ok(again.code === 1 && /has no kept park/.test(again.err), again.err);
+    });
+  });
+
+  it('release of a record that cannot be read ends only the bytes it read: a marker a relaunch writes meanwhile stays', async () => {
+    const PK = await import(join(AP, 'parks.mjs'));
+    await withRepo(async (fx, env, work) => {
+      mkdirSync(PK.parksDir(work, fx.macroId), { recursive: true });
+      writeFileSync(PK.parkPath(work, fx.macroId, 'A'), '{torn');
+      const marker = { schema: PK.PARK_SCHEMA, record_id: PK.newRecordId(), macro_id: fx.macroId, subtask_id: 'A', state: 'in-flight', seq: 1, run_id: L.newRunId() };
+      // A forced relaunch replaces the torn record while the release reads the live run.
+      const hooks = { afterLiveRun: () => writeFileSync(PK.parkPath(work, fx.macroId, 'A'), JSON.stringify(marker)) };
+      const out = [];
+      const code = await C.main(['release', 'A', '--macro', fx.macroId, '--repo', work], { env, out: (x) => out.push(x), err: (x) => out.push(`ERR ${x}`), hooks });
+      strictEqual(code, 1, out.join('\n'));
+      ok(/changed while it was released/.test(out.join('\n')), out.join('\n'));
+      strictEqual(PK.readPark(work, fx.macroId, 'A').record?.record_id, marker.record_id, 'the new marker stays');
+      // Unchanged, the torn record is released.
+      writeFileSync(PK.parkPath(work, fx.macroId, 'A'), '{torn');
+      strictEqual(await C.main(['release', 'A', '--macro', fx.macroId, '--repo', work], { env, out: () => {}, err: () => {} }), 0);
+      deepStrictEqual(PK.readPark(work, fx.macroId, 'A'), { state: 'absent' });
+    });
+  });
+
   // ADR-0067 Decision 4, item 5 — status shows each session's admission once,
   // with its age (stale past 4 h) and the command that releases it, with or
   // without a run in this checkout.
