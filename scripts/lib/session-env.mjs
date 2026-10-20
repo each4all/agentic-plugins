@@ -27,6 +27,11 @@ export const SESSION_VARIABLES = Object.freeze([
   'AGENTIC_TOPIC',
   'AGENTIC_COMPANION_DEPTH',
   'AGENTIC_COMPANION_MAX_DEPTH',
+  // ADR-0068 Decision 6 — the heavy-work lock's proof and handle chain, which
+  // a wrapper holder hands its command. Inherited by a test run, they would let
+  // a fixture's harness join the operator's lock instead of its own.
+  'AGENTIC_HEAVY_LOCK_PROOF',
+  'AGENTIC_HEAVY_LOCK_VIA',
 ]);
 
 /**

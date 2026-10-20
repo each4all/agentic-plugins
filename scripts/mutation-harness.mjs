@@ -56,7 +56,10 @@
 // which is no verdict: the defect was neither caught nor missed (C135).
 //
 // Runs of the CLI in worktrees of one repository take turns: the second waits
-// for the first (C101). See `acquireRunLock` below.
+// for the first (C101). The lock is the repository's heavy-work lock (ADR-0068
+// Decision 6), which `agentic-autopilot heavy -- <command>` takes too; a run
+// started under that wrapper joins its lock instead of waiting on it. See
+// `acquireRunLock` below.
 //
 // `prepare(copy, tools)` mutates the copy freely; `file`/`from`/`to` is the
 // common single-anchor case. `expect` defaults to `'KILLED'` — a mutation with
@@ -71,15 +74,17 @@
 // nonzero exit alone does not show that the intended contract caught it.
 
 import { execFileSync, spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import {
-  chmodSync, copyFileSync, cpSync, existsSync, linkSync, lstatSync, lutimesSync, mkdirSync, mkdtempSync, readdirSync,
-  readFileSync, readlinkSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync,
+  chmodSync, copyFileSync, cpSync, existsSync, lstatSync, lutimesSync, mkdirSync, mkdtempSync, readdirSync,
+  readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync,
 } from 'node:fs';
-import { constants as osConstants, hostname, tmpdir } from 'node:os';
+import { constants as osConstants, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import {
+  HeavyLockError, acquire, groupState, lockPath, processInfo, reapStale as reapStaleLock, registerGroup,
+} from '../plugins/orchestrator/scripts/lib/heavy-lock.mjs';
 import { isSessionVariable } from './lib/session-env.mjs';
 
 export class MutationHarnessError extends Error {
@@ -246,6 +251,11 @@ export function resolveTimeoutSeconds(flag, env = process.env) {
 // the runner could not start. Only that report is a test result. Its own exit
 // status is not: a runner that failed to start, or a supervisor that crashed,
 // would otherwise be scored as a test that failed, and so as a kill.
+//
+// The supervisor starts idle and runs nothing until the harness writes `go` on
+// its lifeline, which the harness does only once the group is registered in the
+// lock's ownership (ADR-0068 Decision 6). A harness killed before that leaves an
+// idle supervisor, which its lifeline's end stops: nothing ran unregistered.
 const GROUPS = process.platform !== 'win32';
 const KILL_GRACE_MS = 5000;
 const REPORT = 'mutation-harness-run ';
@@ -254,13 +264,19 @@ export const SUPERVISOR = [
   "const { spawn } = require('node:child_process');",
   "const { writeSync } = require('node:fs');",
   `const report = (r) => writeSync(2, ${JSON.stringify(REPORT)} + JSON.stringify(r) + '\\n');`,
-  "const run = spawn(process.execPath, process.argv.slice(1), { stdio: ['ignore', 'inherit', 'ignore'] });",
-  "const stop = () => { try { process.kill(0, 'SIGKILL'); } catch { run.kill('SIGKILL'); process.exit(1); } };",
+  'let run = null;',
+  "const stop = () => { try { process.kill(0, 'SIGKILL'); } catch { if (run !== null) run.kill('SIGKILL'); process.exit(1); } };",
   "process.stdin.on('end', stop);",
   "process.stdin.on('error', stop);",
+  "let line = '';",
+  "process.stdin.setEncoding('utf8');",
+  "process.stdin.on('data', (chunk) => { if (run !== null) return; line += chunk; if (line.includes('\\n')) (line === 'go\\n' ? go : stop)(); });",
   'process.stdin.resume();',
+  'function go() {',
+  "run = spawn(process.execPath, process.argv.slice(1), { stdio: ['ignore', 'inherit', 'ignore'] });",
   "run.on('error', (err) => { report({ error: err.message }); process.exit(1); });",
   "run.on('exit', (code, signal) => { report({ code, signal }); signal ? process.kill(process.pid, signal) : process.exit(code); });",
+  '}',
 ].join('\n');
 
 // The supervisor's REPORT, or null when it made none.
@@ -274,7 +290,14 @@ function runReport(stderr) {
   }
 }
 
+// The start of each test run's supervisor, by its pid, which leads the run's
+// group: once the group has ended its id is free, and a kill by the id alone
+// would reach a group that took it since (lib/heavy-lock.mjs groupState).
+const STARTS = new Map();
+const reused = (pid) => GROUPS && STARTS.has(pid) && groupState(pid, STARTS.get(pid)) === 'foreign';
+
 function stopRun(pid, signal) {
+  if (reused(pid)) return;
   try {
     process.kill(GROUPS ? -pid : pid, signal);
   } catch {
@@ -282,9 +305,12 @@ function stopRun(pid, signal) {
   }
 }
 
+// A run's group runs until the system says it is gone (lib/heavy-lock.mjs
+// groupState): a group of zombies only runs until they are reaped.
 function groupAlive(pid) {
+  if (GROUPS) return groupState(pid, STARTS.get(pid) ?? null) === 'running';
   try {
-    process.kill(GROUPS ? -pid : pid, 0);
+    process.kill(pid, 0);
     return true;
   } catch (err) {
     return err.code === 'EPERM';
@@ -297,6 +323,12 @@ function groupAlive(pid) {
 const LIVE = new Set();
 const HALTED = new Set();
 let stopping = false;
+// The ownership of the lock the CLI holds or joined, where each test run's
+// group is registered; null when no lock is held (a test calling runTests).
+let OWNERSHIP = null;
+// The groups of test runs that failed because they would not end: the CLI
+// keeps the copies while one of them runs, since it may still write there.
+const STUCK = new Set();
 
 /**
  * Stop every test run in progress, start no more, and wait, up to `ms`, until
@@ -329,8 +361,15 @@ export async function stopRuns(ms = KILL_GRACE_MS) {
  * status, which is no verdict. The timeout bounds the whole run, its output
  * included: a process that left the group still holding the output pipe does
  * not hold the harness past it.
+ *
+ * With an `ownership` (the CLI's lock), the run's group is registered there
+ * before the run starts, and stays there until the group is gone: the run
+ * settles only once nothing of its group is left, or, past KILL_GRACE_MS of
+ * SIGKILLs, fails with the group kept in the ownership, so the lock outlives
+ * it. A registration the ownership refuses (it was closed) starts nothing.
+ * `beforeGo` (called between the registration and the go line) is for tests.
  */
-export function runTests(copy, tests, { timeoutSeconds = DEFAULT_TIMEOUT_SECONDS } = {}) {
+export function runTests(copy, tests, { timeoutSeconds = DEFAULT_TIMEOUT_SECONDS, ownership = OWNERSHIP, beforeGo = () => {} } = {}) {
   return new Promise((done, fail) => {
     if (stopping) {
       fail(new MutationHarnessError('the harness is stopping; no test run starts'));
@@ -348,6 +387,8 @@ export function runTests(copy, tests, { timeoutSeconds = DEFAULT_TIMEOUT_SECONDS
     let timedOut = false;
     let settled = false;
     let grace;
+    let entry = null;
+    let refused = null;
     child.stdin.on('error', () => { /* the supervisor has exited */ });
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => { stdout += chunk; });
@@ -377,7 +418,25 @@ export function runTests(copy, tests, { timeoutSeconds = DEFAULT_TIMEOUT_SECONDS
       // What the run left behind ends with it, and its output pipe closes.
       stopRun(child.pid, 'SIGKILL');
     });
-    child.on('close', () => settle(() => {
+    child.on('close', () => { groupEnded(child.pid).then((ended) => settle(() => {
+      if (!ended) {
+        STUCK.add(child.pid);
+        fail(new MutationHarnessError(
+          `the process group ${child.pid} of a test run still runs ${KILL_GRACE_MS / 1000} s after its runner ended; `
+          + 'it stays in the lock\'s ownership — treat as no verdict',
+        ));
+        return;
+      }
+      try {
+        harnessError(() => entry?.unregister());
+      } catch (err) {
+        fail(err);
+        return;
+      }
+      if (refused !== null) {
+        fail(refused instanceof MutationHarnessError ? refused : new MutationHarnessError(`test run not started: ${refused.message}`));
+        return;
+      }
       if (timedOut) {
         done({ status: null, timedOut: true, failing: [], failingPaths: [], stdout });
         return;
@@ -405,8 +464,33 @@ export function runTests(copy, tests, { timeoutSeconds = DEFAULT_TIMEOUT_SECONDS
         failingPaths: failed.map((f) => f.path),
         stdout,
       });
-    }));
+    })); });
+    // Registered, then started: no group of the lock's ownership runs
+    // unregistered (the go line).
+    if (child.pid !== undefined) {
+      const leaderStarted = processInfo(child.pid)?.started ?? null;
+      STARTS.set(child.pid, leaderStarted);
+      try {
+        if (ownership) entry = harnessError(() => registerGroup(ownership, child.pid, { leaderStarted }));
+        beforeGo(child);
+        child.stdin.write('go\n');
+      } catch (err) {
+        refused = err;
+        stopRun(child.pid, 'SIGKILL');
+      }
+    }
   });
+}
+
+// Whether the group of a run whose supervisor has ended is gone, SIGKILL sent
+// to it until it is, for up to KILL_GRACE_MS.
+async function groupEnded(pid) {
+  for (const end = Date.now() + KILL_GRACE_MS; groupAlive(pid);) {
+    if (Date.now() >= end) return false;
+    stopRun(pid, 'SIGKILL');
+    await new Promise((wake) => setTimeout(wake, 20));
+  }
+  return true;
 }
 
 /**
@@ -824,260 +908,66 @@ export async function checkSpecs(specPaths, options = {}) {
 // run waits for it. The holder records its pid, host and start time: a run
 // killed without releasing the lock (SIGKILL, a step cap) leaves a lock the
 // next run finds stale, and the test run it left was stopped by its supervisor
-// when the harness died (SUPERVISOR above).
+// when the harness died (SUPERVISOR above). Each test run's process group is
+// registered in the lock's ownership before the run starts (the go line), so a
+// reader of this release judges the lock stale only once that group is gone
+// too.
 
-const LOCK_NAME = 'mutation-harness.lock';
-const WAIT_REPORT_MS = 5 * 60_000;
+// The lock itself, its record, its reap guard and its ownership, is the shared
+// heavy-work lock (ADR-0068 Decision 6), in
+// plugins/orchestrator/scripts/lib/heavy-lock.mjs: this harness, the wrapper
+// `agentic-autopilot heavy -- <command>` and the driver take the same file. The
+// functions below keep this file's names and its errors: what the module
+// throws is rethrown as a MutationHarnessError with the same message.
+
+// Run `fn`, rethrowing the lock's own error as this harness's.
+function harnessError(fn) {
+  try {
+    return fn();
+  } catch (err) {
+    if (err instanceof HeavyLockError) throw new MutationHarnessError(err.message);
+    throw err;
+  }
+}
 
 /** The run lock of the repository `repoRoot` belongs to. */
 export function runLockPath(repoRoot) {
-  let common;
-  try {
-    common = execFileSync('git', ['-C', repoRoot, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
-      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
-    }).trim();
-  } catch (err) {
-    throw new MutationHarnessError(`cannot find the git common dir of ${repoRoot}: ${err.message.trim()}`);
-  }
-  return join(common, LOCK_NAME);
+  return harnessError(() => lockPath(repoRoot));
 }
 
-function processAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return err.code === 'EPERM';
-  }
-}
-
-// What the system says of a running pid: `{ zombie, started }`, or null when it
-// cannot say (no ps, or a sandbox that denies it). `started` names when the
-// process started, and every reader must spell it alike, or a live holder reads
-// as a reused pid and loses its lock. On Linux it is the start in clock ticks
-// since boot, from /proc, which no clock change moves (ps derives its start time
-// from the boot time, which moves when the clock is set). Elsewhere it is ps's
-// start time in the C locale and UTC: ps prints local time, so two runs in
-// different time zones would spell one start differently. Each spelling names
-// its scheme (`boot:`, `utc:`), so that a reader compares only a start spelled
-// as it spells one (see `holderRunning`).
-function processInfo(pid) {
-  if (process.platform === 'linux') {
-    let stat;
-    try {
-      stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
-    } catch {
-      return null;
-    }
-    // The fields after the command name, which is in parentheses and may hold
-    // any byte: the state, then the start time 19 fields on.
-    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-    return fields[19] ? { zombie: fields[0] === 'Z', started: `boot:${fields[19]}` } : null;
-  }
-  let out;
-  try {
-    out = execFileSync('ps', ['-o', 'stat=,lstart=', '-p', String(pid)], {
-      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' },
-    }).trim();
-  } catch {
-    return null;
-  }
-  const match = /^(\S+)\s+(.+)$/.exec(out);
-  return match ? { zombie: match[1].startsWith('Z'), started: `utc:${match[2]}` } : null;
-}
-
-// Whether the process a record names is still the one running: alive, not a
-// zombie, and started when the record says (a pid reused by another process
-// started later). What cannot be checked counts as running; a holder on another
-// host cannot be checked from here at all, and a start spelled in a scheme this
-// reader does not use (a harness of another version wrote it) cannot be
-// compared: unequal spellings of one start would read as a reused pid.
-const startScheme = (started) => /^(boot|utc):/.exec(started)?.[1] ?? null;
-
-function holderRunning(record) {
-  if (record.host !== hostname()) return true;
-  if (!processAlive(record.pid)) return false;
-  const info = processInfo(record.pid);
-  if (info === null) return true;
-  if (info.zombie) return false;
-  if (typeof record.started !== 'string' || startScheme(record.started) !== startScheme(info.started)) return true;
-  return record.started === info.started;
-}
-
-// Write `record` whole, then link it to `target`: a reader never sees a part of
-// it, and the link fails with EEXIST when `target` exists.
-function placeExclusive(target, record) {
-  const tmp = `${target}.${randomUUID()}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(record)}\n`, 'utf8');
-  try {
-    linkSync(tmp, target);
-  } finally {
-    rmSync(tmp, { force: true });
-  }
-}
-
-// `{ raw, record }`, or null when there is no lock. A record that does not
-// parse, or names no pid and host, is null: nothing but a whole record is ever
-// linked into place, and one without a holder would be waited for for ever.
-function readLock(path) {
-  let raw;
-  try {
-    raw = readFileSync(path, 'utf8');
-  } catch (err) {
-    if (err.code === 'ENOENT') return null;
-    throw new MutationHarnessError(`cannot read the run lock ${path}: ${err.message}`);
-  }
-  let record = null;
-  try {
-    record = JSON.parse(raw);
-  } catch {
-    /* unreadable: stale */
-  }
-  const whole = Number.isInteger(record?.pid) && typeof record?.host === 'string';
-  return { raw, record: whole ? record : null };
-}
-
-// The reap guard: a directory `<lock>.reap` holding one entry, named by its
-// reaper's token and holding the reaper's record. A reaper places it whole, by
-// renaming a directory it built aside onto the guard's name, which fails while
-// another reaper's guard holds an entry (an empty guard is replaced). Returns
-// whether this reaper now holds the guard.
-function placeGuard(guard, self) {
-  const tmp = `${guard}.${randomUUID()}.tmp`;
-  try {
-    mkdirSync(tmp);
-    writeFileSync(join(tmp, self.token), `${JSON.stringify(self)}\n`, 'utf8');
-    renameSync(tmp, guard);
-    return true;
-  } catch (err) {
-    if (err.code === 'ENOTEMPTY' || err.code === 'EEXIST') return false;
-    // A file there is the guard of a harness from before the guard was a
-    // directory (never released). Its reaper cannot be judged by its entry, so
-    // it is the operator's to remove.
-    if (err.code === 'ENOTDIR') {
-      throw new MutationHarnessError(
-        `${guard} is a reap guard file left by an older harness; remove it once no mutation harness runs in this repository`,
-      );
-    }
-    throw new MutationHarnessError(`cannot create ${guard}: ${err.message}`);
-  } finally {
-    rmSync(tmp, { recursive: true, force: true });
-  }
-}
-
-// Remove the guard directory if it is empty; a reaper's guard never is.
-function dropEmptyGuard(guard) {
-  try {
-    rmdirSync(guard);
-  } catch (err) {
-    if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(err.code)) {
-      throw new MutationHarnessError(`cannot remove ${guard}: ${err.message}`);
-    }
-  }
-}
-
-// Remove the stale lock `seen`, if it is still the lock. One reaper at a time,
-// under the reap guard: without it, a slow reaper could remove the lock a
-// faster one's run has just taken. A guard is taken from its reaper only once
-// that reaper has stopped running, never for its age, since a reaper paused
-// for a while is still a reaper. And a waiter takes only the guard it judged:
-// judging takes a while (ps), and the guard a live reaper placed meanwhile must
-// stay, or two reapers each remove a lock, the second the one the first's run
-// took. So a waiter never removes the guard by its name, whose holder can
-// change while it judges. It captures the dead reaper's entry by renaming it
-// away under the entry's own name, which no process but that reaper uses: the
-// rename takes that entry or, when another waiter took it first, nothing,
-// however late it comes, and a live reaper's entry, under another name, is
-// never touched. An entry leaves the guard only by its own reaper or by such a
-// capture. Returns whether this call removed the lock. `running` and `judged`
-// (called after the last read of the guard, before its capture) are for tests.
-export function reapStale(path, seen, self, log, { running = holderRunning, judged = () => {} } = {}) {
-  const guard = `${path}.reap`;
-  if (!placeGuard(guard, self)) {
-    let names;
-    try {
-      names = readdirSync(guard);
-    } catch (err) {
-      if (err.code === 'ENOENT') return false;
-      throw new MutationHarnessError(`cannot read ${guard}: ${err.message}`);
-    }
-    for (const name of names) {
-      const reaper = readLock(join(guard, name));
-      if (reaper === null) continue;
-      if (reaper.record !== null && reaper.record.token === name && running(reaper.record)) continue;
-      judged();
-      const captured = `${guard}.${randomUUID()}.captured`;
-      try {
-        renameSync(join(guard, name), captured);
-      } catch (err) {
-        if (err.code === 'ENOENT') continue;
-        throw new MutationHarnessError(`cannot capture ${join(guard, name)}: ${err.message}`);
-      }
-      rmSync(captured, { force: true });
-      log(`mutation-harness: removed the guard of a reaper that is not running (${guard})`);
-    }
-    dropEmptyGuard(guard);
-    return false;
-  }
-  try {
-    const now = readLock(path);
-    if (now === null || now.raw !== seen.raw) return false;
-    unlinkSync(path);
-    const holder = seen.record;
-    log(`mutation-harness: removed a stale run lock (${holder ? `pid ${holder.pid}, ${holder.worktree}, which is not running` : 'unreadable'})`);
-    return true;
-  } finally {
-    rmSync(join(guard, self.token), { force: true });
-    dropEmptyGuard(guard);
-  }
+/** Remove the stale lock `seen`, if it is still the lock (heavy-lock.mjs). */
+export function reapStale(path, seen, self, log, options = {}) {
+  return harnessError(() => reapStaleLock(path, seen, self, log, options));
 }
 
 /**
- * Take the repository's run lock, waiting while another live run holds it.
- * Returns `{ path, release() }`.
+ * Take the repository's run lock, waiting while another live run holds it, or
+ * join the heavy-work lock whose proof the environment carries (a harness that
+ * `npm run mutate` started under the wrapper): a joined run waits for nothing
+ * and releases nothing. Returns `{ path, joined, ownership, release() }`; each
+ * test run registers its process group in `ownership` before it starts. A
+ * release while a test run's group still runs keeps the lock, saying so: the
+ * next run waits until the group ends.
  */
-export async function acquireRunLock(repoRoot, { spec = '', log = console.log, pollMs = 2000 } = {}) {
-  const path = runLockPath(repoRoot);
-  const record = {
-    pid: process.pid,
-    host: hostname(),
-    started: processInfo(process.pid)?.started ?? null,
-    token: randomUUID(),
-    started_at: new Date().toISOString(),
-    worktree: resolve(repoRoot),
-    spec,
-  };
-  const since = Date.now();
-  let reported = null;
-  let reportedAt = 0;
-  for (;;) {
-    try {
-      placeExclusive(path, record);
-      break;
-    } catch (err) {
-      if (err.code !== 'EEXIST') throw new MutationHarnessError(`cannot create the run lock ${path}: ${err.message}`);
-    }
-    const seen = readLock(path);
-    if (seen === null) continue;
-    if (seen.record === null || !holderRunning(seen.record)) {
-      if (reapStale(path, seen, record, log)) continue;
-    } else if (seen.record.token !== reported || Date.now() - reportedAt >= WAIT_REPORT_MS) {
-      const h = seen.record;
-      log(
-        `mutation-harness: waiting for the run of ${h.spec || 'a spec'} in ${h.worktree} `
-        + `(pid ${h.pid} on ${h.host}, since ${h.started_at}); its lock is ${path}`,
-      );
-      reported = h.token;
-      reportedAt = Date.now();
-    }
-    await new Promise((wake) => setTimeout(wake, pollMs));
+export async function acquireRunLock(repoRoot, { spec = '', log = console.log, pollMs = 2000, env = process.env } = {}) {
+  let handle;
+  try {
+    handle = await acquire(repoRoot, { kind: 'harness', purpose: spec, spec, log, pollMs, env, prefix: 'mutation-harness' });
+  } catch (err) {
+    if (err instanceof HeavyLockError) throw new MutationHarnessError(err.message);
+    throw err;
   }
-  if (reported !== null) log(`mutation-harness: the run lock is ours after ${Math.round((Date.now() - since) / 1000)} s`);
   return {
-    path,
+    path: handle.path,
+    joined: handle.joined,
+    ownership: handle.ownership,
     release() {
-      if (readLock(path)?.record?.token === record.token) unlinkSync(path);
+      try {
+        harnessError(() => handle.release());
+      } catch (err) {
+        if (!(err instanceof MutationHarnessError)) throw err;
+        log(`mutation-harness: ${err.message} (the next run waits until it ends)`);
+      }
     },
   };
 }
@@ -1115,7 +1005,10 @@ async function main(argv) {
   // starts beside what is left of this one.
   const cleanUp = () => {
     try {
-      if (!opts.keep && !opts.workDir) rmSync(workDir, { recursive: true, force: true, maxRetries: 3 });
+      const stuck = [...STUCK].filter(groupAlive);
+      if (stuck.length > 0) {
+        console.error(`mutation-harness: copies kept under ${workDir}: process group ${stuck.join(', ')} of a test run still runs there`);
+      } else if (!opts.keep && !opts.workDir) rmSync(workDir, { recursive: true, force: true, maxRetries: 3 });
     } finally {
       lock?.release();
       lock = null;
@@ -1155,6 +1048,7 @@ async function main(argv) {
     const timeoutSeconds = resolveTimeoutSeconds(opts.timeout);
     await loadSpec(opts.spec, { repoRoot, only: opts.only });
     lock = await acquireRunLock(repoRoot, { spec: opts.spec });
+    OWNERSHIP = lock.ownership;
     const { unexpected } = await runSpec(opts.spec, {
       repoRoot,
       workDir,

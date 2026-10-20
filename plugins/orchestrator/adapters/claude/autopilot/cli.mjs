@@ -13,6 +13,9 @@
 //                       up after it (dead-runs.mjs)
 //   release <subtask>   end a lane's kept park (ADR-0068 Decision 1, item 4),
 //                       with or without a live run (parks.mjs)
+//   heavy -- <command>  run a command under the repository's heavy-work lock
+//                       (ADR-0068 Decision 6, lib/heavy-run.mjs); exempt from
+//                       the host refusal below, since the lock is host-neutral
 //
 // Dry-run by default (ADR-0035 §3 invariant 1 style): only `start --execute`
 // starts anything, and it needs a model plan (owner decision D5, 2026-10-01:
@@ -32,6 +35,8 @@ import readline from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 
 import { expandArgsFile } from '../../../scripts/lib/args-file.mjs';
+import { holderName, holderOf } from '../../../scripts/lib/heavy-lock.mjs';
+import { HeavyUsageError, parseHeavy, runHeavy } from '../../../scripts/lib/heavy-run.mjs';
 import { describeAdmission } from '../../../scripts/lib/run-locks.mjs';
 import { isAutopilotRun } from '../../../scripts/state.mjs';
 import { MIN_STEP_BUDGET_USD } from './budget.mjs';
@@ -59,6 +64,7 @@ const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,63}$/;
 
 export const USAGE = `Usage: autopilot [preview|start|status|stop|release] [options]
+       autopilot heavy [--purpose <text>] [--repo <dir>] [--declaration-ref <rev>] -- <command> [args...]
 
   preview                 observe, decide and print the posture; spawns nothing (default)
   start                   preview, plus how to execute
@@ -69,6 +75,8 @@ export const USAGE = `Usage: autopilot [preview|start|status|stop|release] [opti
   release <subtask> --macro <id>
                           end a parked lane's kept park, with or without a live run: a live run picks the
                           lane up at its next tick, the next run judges it afresh
+  heavy -- <command>      run a command under the repository's heavy-work lock, one heavy job at a time
+                          across worktrees (heavy --help for its options and exit codes)
 
 Options:
   --repo <dir>            repository to drive (default: the current one)
@@ -814,6 +822,10 @@ async function releaseCmd(o, repoRoot, env, out, err, hooks = {}) {
 }
 
 export async function main(argv = process.argv.slice(2), { env = process.env, io = process, out = (s) => process.stdout.write(`${s}\n`), err = (s) => process.stderr.write(`${s}\n`), hooks = {} } = {}) {
+  // The wrapper parses its own words, and nothing after its `--`; it is
+  // exempt from the host and autopilot refusals below: the lock is
+  // repository-level and host-neutral, and ADR-0063 D9 is about the driver.
+  if (argv[0] === 'heavy') return runHeavy(argv.slice(1), { env, out, err });
   let o;
   try {
     o = parseCli(argv);
@@ -832,6 +844,18 @@ export async function main(argv = process.argv.slice(2), { env = process.env, io
   }
   const repoRoot = repoRootOf(o.repo ? resolve(o.repo) : process.cwd());
   if (!repoRoot) { err(`✗ ${o.repo ?? process.cwd()} is not inside a git repository`); return 1; }
+  // ADR-0068 Decision 6, item 3: a driver inside a heavy-work lock holder's
+  // ownership would hand its proof to every check and worker, and every lane's
+  // heavy work would join that one holder at once.
+  if (o.sub === 'start' && o.execute) {
+    let holder = null;
+    try { holder = holderOf(repoRoot, env); } catch { /* no lock to be inside */ }
+    if (holder !== null) {
+      err(`✗ this shell runs inside the heavy-work lock of ${holderName(holder)} (pid ${holder.pid}, ${holder.worktree}); `
+        + 'start the autopilot outside `agentic-autopilot heavy`, whose ownership every lane would join');
+      return 1;
+    }
+  }
   switch (o.sub) {
     case 'preview': return previewCmd(o, repoRoot, env, out);
     case 'start': return startCmd(o, repoRoot, env, out, err, io);
@@ -841,6 +865,9 @@ export async function main(argv = process.argv.slice(2), { env = process.env, io
     default: return 1;
   }
 }
+
+// For tests: the wrapper's parser, reached through this entry.
+export const heavyForTests = { parseHeavy, HeavyUsageError };
 
 // Run only as the entry script, compared canonically (an install reached
 // through a symlink, or a path that needs URL escaping, still runs).

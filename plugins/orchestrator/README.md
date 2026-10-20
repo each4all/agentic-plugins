@@ -194,6 +194,60 @@ the text and a `{kind: "worktree", command, pointer}` entry in `preview --json`'
 
 Nothing is run for you: each proposal is display only.
 
+### The heavy-work lock
+
+One heavy job runs at a time per repository, whichever worktree, lane or session
+starts it ([ADR-0068](../../docs/adr/0068-autopilot-lanes-that-keep-going.md) Decision 6).
+The lock is the mutation harness's file, `<git-common-dir>/mutation-harness.lock`,
+which every harness copy honors; its code is `scripts/lib/heavy-lock.mjs`. Its holders
+are the mutation harness and the wrapper:
+
+```bash
+agentic-autopilot heavy [--purpose <text>] [--repo <dir>] [--declaration-ref <rev>] -- <command> [args...]
+```
+
+(or `node adapters/claude/autopilot/cli.mjs heavy -- …`). It takes the lock, runs the
+command in a process group of its own, and releases the lock once the command and its
+group have stopped. While it waits it names the holder and repeats the line every 5
+minutes. It runs on any host and inside an autopilot step: the lock is host-neutral.
+
+- **Nesting.** A wrapper holder hands its command a proof
+  (`AGENTIC_HEAVY_LOCK_PROOF`, with `AGENTIC_HEAVY_LOCK_VIA`); a harness or wrapper
+  started under it joins its lock and waits for nothing, so `heavy -- npm run mutate …`
+  does not deadlock. Only the holder releases, after every group of its ownership has
+  ended. Test runs and autopilot workers never inherit the proof, and `start --execute`
+  refuses to run inside a holder. A command the repository's committed check
+  declaration (`.agentic-plugins/verify-checks.json`) marks as `locks_itself` is
+  refused: an older harness under a holder would wait on its own holder.
+- **Exit status.** The command's own; 128+n for signal n, whether it ended the command
+  or stopped the wrapper; 125 for the wrapper's own failure or refusal; 126 when the
+  command cannot be executed; 127 when it is not found.
+- **Signals.** SIGINT, SIGTERM or SIGHUP while waiting cancels the wait, and nothing
+  runs. While the command runs, the signal goes to its group, SIGKILL follows 5 s
+  later, and the wrapper waits until the group is gone before it releases. SIGKILL to
+  the wrapper leaves the group to its supervisor, which kills it, and the lock to the
+  next acquirer, which waits until no group of it runs. These hold for the wrapper's
+  own pid, which is what `node adapters/claude/autopilot/cli.mjs heavy` runs as. The
+  `agentic-autopilot` launcher in front of it is a separate process, a file copied at
+  install that an upgrade does not replace, and it forwards SIGINT and SIGTERM only:
+  a SIGHUP or SIGKILL sent to the launcher's pid alone ends the launcher, while the
+  wrapper runs its command to the end and then releases. A terminal hangup or Ctrl-C
+  reaches the wrapper directly, as both are in the terminal's foreground group; for
+  Ctrl-C the launcher forwards a second SIGINT, which the wrapper notes.
+- **What it does not cover:** a worker's quick checks in its step; a process started
+  without the wrapper; a process that leaves its holder's process group (a daemon, a
+  detached child); another clone or machine; CI; a peer's own commands; the driver's
+  git operations; load from outside the repository. Against a harness copy from before
+  this release, exclusion holds while the holder lives; that copy judges a holder by
+  its pid alone, so after a holder's death it may start beside the holder's last
+  children.
+- **A known limit.** A process group counts as ended only when the system says it is
+  gone, never from a look at the process list, which can miss a running member. So a
+  group whose processes have all exited but are not yet reaped (zombies) still holds
+  the lock: under a parent that never reaps them, such as a PID 1 with no init in a
+  container started without one, the lock is kept until that parent reaps them or
+  exits. On macOS launchd reaps orphans, and on Linux an init does.
+
 ## Workflow file shape
 
 `<repo>/.agentic-plugins/state/orchestrator/workflows/<workflow_id>.md` with frontmatter `schema: '1.2'` (ADR-0063 D6; a `'1.1'` file keeps its schema when written). Existing legacy `.claude/agentic-orchestrator/` state remains readable/writable until explicit migration; legacy schema `'1.0'` files are still readable but mutations are refused with archive/re-plan diagnostic. `workflow_id` format `macro-<verb>-<iso>-<rand>`. `workflow_type: macro`. The `plan` block carries `decision`, `architecture`, and `subtasks: [{id, verb, branch, blocked_by, status, label?, profile?, topic?, engineer_workflow_id?, commit?, pr_url?, closed_at?}]` per ADR-0018 §sub-decision-1 + ADR-0019 §2 spec. `verb` ∈ {investigate, frame, decide, compose, critique, refine}; `branch` must pass git ref-format and have no parent/child path-prefix relationship across subtasks. Optional top-level `terminal_marker: boolean` per ADR-0019 §5 (set by `/orchestrator:finalize` / `/orchestrator:abort` or auto-set when all subtasks reach terminal status). Optional `latest_checkpoint: {at, summary}` is written by `/orchestrator:checkpoint` for macro workflow continuity. Optional flat scalars (ADR-0063 D6, absent = null) record the plan's approval: `plan_approval_status` (`pending | approved`), with `plan_approval_approved_at` and `plan_approval_plan_hash` (sha256 over the subtasks' id, label, branch, blocked_by, verb, profile and topic — `state.mjs plan-hash`) exactly when approved; and `awaiting_owner_gate` (`plan-approval | plan-conflict`), `awaiting_owner_since` and `awaiting_owner_pointer`, all or none, set exactly while the plan is pending. `plan-set` returns the plan to pending, at `plan-conflict` when its Plan-verify verdict (`--verdict`) is `conflict` and at `plan-approval` otherwise; `awaiting-owner-clear --gate plan-conflict` returns it to `plan-approval`; `plan-approve` approves. `next-ready` reports `approval: {status, hash_ok}` on every output.
@@ -269,6 +323,8 @@ Required peers:
 | `PEER_RUN_STALE_GRACE_MS` | Age threshold used by `scripts/peer-runner.mjs sweep` before a dead, no-envelope non-terminal run is marked `orphaned`. | `60000` |
 | `PEER_RUN_RETENTION_TTL_DAYS` | Terminal peer-run ledger TTL used by `scripts/peer-runner.mjs sweep --apply`. | `14` |
 | `PEER_RUN_RETENTION_CAP` | Maximum terminal peer-run ledger directories retained per repo by `scripts/peer-runner.mjs sweep --apply`. Non-terminal runs are preserved. | `200` |
+| `AGENTIC_HEAVY_LOCK_POLL_MS` | How often `autopilot heavy` polls the heavy-work lock while it waits (10 ms up to the default; a test seam). | `2000` |
+| `AGENTIC_HEAVY_LOCK_REPORT_MS` | How often `autopilot heavy` repeats a waiting line (10 ms up to the default; a test seam). | `300000` |
 
 ## License
 
