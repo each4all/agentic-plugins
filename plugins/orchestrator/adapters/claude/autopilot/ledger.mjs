@@ -16,8 +16,10 @@
 //                       Decision 7)
 //   lanes.jsonl         the lane events of a run with lanes: created, adopted,
 //                       removed, kept, reconciled, reported, identity-assigned,
-//                       lanes-first-run, fetch-warning
-//                       (lanes.mjs, ADR-0067 Decisions 5 and 6); the lane's
+//                       lanes-first-run, fetch-warning, parked, resumed
+//                       (lanes.mjs, ADR-0067 Decisions 5 and 6; scheduler.mjs,
+//                       ADR-0068 Decision 1: the kept parks themselves are in
+//                       the macro's holds directory, parks.mjs); the lane's
 //                       git lock reason, not this file, proves ownership
 //   worker-<seq>.jsonl  the raw worker stream (byte-capped by worker.mjs)
 //   halt.json           reason, detail, pointer, resume hints
@@ -88,6 +90,15 @@ export function relaunchCommand({ macroId = null, lanes = 1, repoRoot }) {
   if (macroId) args.push(`--macro ${macroId}`);
   if (Number.isInteger(lanes) && lanes >= 2) args.push(`--lanes ${lanes}`);
   const a = args.join(' ');
+  return `/orchestrator:autopilot ${a}   (or: agentic-autopilot ${a} --repo ${repoRoot})`;
+}
+
+/**
+ * ADR-0068 Decision 1, item 4 — the bare release that ends a lane's kept
+ * park, with or without a live run.
+ */
+export function releaseCommand({ subtaskId, macroId, repoRoot }) {
+  const a = `release ${subtaskId} --macro ${macroId}`;
   return `/orchestrator:autopilot ${a}   (or: agentic-autopilot ${a} --repo ${repoRoot})`;
 }
 

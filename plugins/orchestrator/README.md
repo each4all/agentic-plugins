@@ -31,7 +31,7 @@ Ships `/orchestrator:plan` (macro plan + Plan-verify opposite-host peer ensemble
 | `/orchestrator:checkpoint <summary>` | ✅ shipping | Write `latest_checkpoint: {at, summary}` on the active macro workflow. Claude SessionStart re-injects it after compact (`matcher: "compact"`, so not on an arbitrary new session and not on `claude --continue`); Codex does the same once the bundled hooks load (generic `[features].hooks`) and are reviewed/trusted in `/hooks`. |
 | `/orchestrator:peer-now --peer <claude\|codex> (...)` | ✅ shipping | Raw side-channel peer consultation through `peer-runner.mjs --kind peer-now`; optionally appends a `[Peer]` note and stays out of `ensemble_results`. |
 | `/orchestrator:audit <findings>` | ✅ shipping | Audit follow-up alias that canonicalizes to `/orchestrator:plan Audit follow-up: ...`; state remains `verb=plan`, `workflow_id=macro-plan-...`. |
-| `/orchestrator:autopilot [preview\|start [--execute]\|status\|stop] [options]` | ✅ shipping (Claude Code only) | Drive an approved macro without relaying commands between sessions (ADR-0063): each step runs as one command in a fresh `claude -p` worker, decided from closed-enum state only, and the run halts at owner judgment (an unapproved plan, an owner gate, a next step below HIGH confidence, a subtask waiting for its pull request to merge, a step that changed nothing). Dry-run by default; `start --execute` runs it and asks for the model plan first. See [Autopilot](#autopilot-claude-code-only). |
+| `/orchestrator:autopilot [preview\|start [--execute]\|status\|stop\|release <subtask>] [options]` | ✅ shipping (Claude Code only) | Drive an approved macro without relaying commands between sessions (ADR-0063): each step runs as one command in a fresh `claude -p` worker, decided from closed-enum state only, and the run halts at owner judgment (an unapproved plan, an owner gate, a next step below HIGH confidence, a subtask waiting for its pull request to merge, a step that changed nothing). Dry-run by default; `start --execute` runs it and asks for the model plan first. See [Autopilot](#autopilot-claude-code-only). |
 
 ## Autopilot (Claude Code only)
 
@@ -114,10 +114,24 @@ the steps stay manual**, and the host-neutral state it reads (`next_step_*`,
   with the done and finalize steps in the driver's checkout (Decision 6): each step reserves
   its budget before it spawns, a new lane starts only while the rate limit's five-hour
   window is open (below 0.85, and before the first rate-limit event only while no worker
-  runs), a lane step is judged by its lane's own fingerprint and gates, and a halt in any
-  lane drains the run — steps in flight finish and are recorded, nothing new starts — before
-  it records one entry per lane and exits 2. SIGINT, SIGTERM and SIGHUP (a closed terminal)
-  abort every worker instead. The work the scheduler runs in a child process while workers
+  runs), and a lane step is judged by its lane's own fingerprint and gates. A halt in one
+  lane parks that lane only ([ADR-0068](../../docs/adr/0068-autopilot-lanes-that-keep-going.md)
+  Decision 1): the other lanes go on. `parks.mjs` keeps each park with the lane's
+  fingerprint in the macro's holds directory (`<main>/.agentic-plugins/runs/autopilot/holds/<macro-id>/parks/`),
+  and a marker before each lane step's spawn, so neither a relaunch nor a crash retries a
+  step that wrote nothing on its unchanged record; every 30 s a tick reads a cheap digest
+  of what resolves a park, and a lane whose record changed (and stayed so for one interval)
+  or that the owner released (`release <subtask> --macro <id>`) is picked up again, its
+  rows reconciled first, and no worker spawns into a lane whose engineer record was
+  written outside the run less than one interval ago. The park records' lock is
+  `run-locks.mjs`'s, so a live writer is never taken over. A
+  run-wide halt — version drift, an exhausted budget, a revoked approval, a macro gate, a
+  halt that names no lane, the baseline or rollback fence, the driver's own steps, a group
+  that outlived SIGKILL — drains the run: steps in flight finish and are recorded, nothing
+  new starts. The run ends, exit 2, on a drain or once every remaining lane waits (parked,
+  waiting to land, or behind those), with `halt.json` naming the first open park and
+  listing the others, one entry per lane with its state and resolution. SIGINT, SIGTERM
+  and SIGHUP (a closed terminal) abort every worker instead. The work the scheduler runs in a child process while workers
   run (`offloop.mjs`: a look, a lane's creation and removal, a baseline fetch, the
   landing-ready report, a peer cancellation) is held as a worker is: each task's process
   group is on the macro lock and its checkout's lock before it starts, and is emptied before
@@ -129,7 +143,8 @@ the steps stay manual**, and the host-neutral state it reads (`next_step_*`,
   `--lane <subtask> --next "<step>"` forces one lane's first step. Lanes need shared
   creation on, the default state root, and the macro there; `preview --lanes 2` shows the
   reconciliation and the first wave. Absent or 1, the run is serial, and it refuses to
-  start while a lane of the macro holds a subtask that is not completed.
+  start while a lane of the macro holds a subtask that is not completed, or the macro
+  keeps a park.
 - **Bounds.** Steps, total cost, and each step's budget and wall clock
   (`--max-steps`, `--max-cost`, `--step-budget`, `--step-timeout`); a halt or `stop`
   ends a run too. The run itself has no clock, so a step started late gets its whole

@@ -213,8 +213,8 @@ async function previewOf(t, ...args) {
   return { code, out };
 }
 
-// A ends on its conflict gate first and halts the run; B, in flight, ends on
-// its own while the run drains.
+// A ends on its conflict gate first and parks its lane; B, in flight, ends on
+// its own once A is parked, and parks too (ADR-0068 Decision 1).
 const BOTH_ON_GATES = {
   A: { next: [COMMIT] }, B: { next: [COMMIT] },
   actions: { 1: ['wait:b-started', 'conflict-gate'], 2: ['mark-start:b-started', 'wait:drained', 'conflict-gate'] },
@@ -222,7 +222,7 @@ const BOTH_ON_GATES = {
 const DRAIN_STARTS = /^■ lane A: awaiting-owner:peer-conflict/;
 
 describe('a run with lanes reports the proposals it met (ADR-0067 Decision 8, item 5)', () => {
-  it('a lane whose step ends on its conflict gate while the run drains keeps its proposal into the report; every lane\'s is reported once, naming its subtask and gate; the preview and the relaunch report both', async () => {
+  it('a lane whose step ends on its conflict gate while another lane is parked keeps its proposal into the report; every lane\'s is reported once, naming its subtask and gate; the preview and the relaunch report both', async () => {
     const t = await setup({ scenario: BOTH_ON_GATES });
     markOn(t, DRAIN_STARTS, 'drained');
     try {
@@ -230,37 +230,63 @@ describe('a run with lanes reports the proposals it met (ADR-0067 Decision 8, it
       for (const n of ['b-started', 'drained']) ok(!existsSync(join(t.dir, `${n}.timeout`)), `${n}: the steps ran in the order the test set`);
       let r = t.latest();
       deepStrictEqual(stepsOf(r).map((x) => [x[1], x[2], x[4]]).sort(), [['A', 'dispatch', 'ok'], ['B', 'dispatch', 'ok']]);
-      deepStrictEqual([r.halt.reason, r.halt.subtask_id, r.halt.also], ['awaiting-owner:peer-conflict', 'A', undefined],
-        'B met its gate in the drain: no halt of its own');
+      deepStrictEqual([r.halt.reason, r.halt.subtask_id, r.halt.also.map((h) => [h.reason, h.subtask_id, h.parked])], ['awaiting-owner:peer-conflict', 'A', [['awaiting-owner:peer-conflict', 'B', true]]],
+        'the first lane parked is the reason, the other park beside it');
       const pa = await laneProposal(t, 'A');
       const pb = await laneProposal(t, 'B');
       deepStrictEqual(r.halt.proposals, [pa, pb], 'every lane\'s, the halt\'s own once');
       const lanes = bySubtask(r);
-      deepStrictEqual([lanes.A.proposals, lanes.B.proposals, lanes.B.halt], [[pa], [pb], null]);
+      deepStrictEqual([lanes.A.proposals, lanes.B.proposals, lanes.B.state], [[pa], [pb], 'parked']);
       for (const p of [pa, pb]) strictEqual(t.lines.filter((l) => l === line(p)).length, 1, t.lines.join('\n'));
 
-      // The preview: every lane halt's proposal, in its JSON and its text.
+      // The preview: every kept park, and its current proposal, in its JSON and its text.
       const json = await previewOf(t, '--lanes', '2', '--macro', t.fx.macroId, '--json');
       const report = JSON.parse(json.out.join('\n'));
-      strictEqual(report.lanes.halt.reason, 'awaiting-owner:peer-conflict', json.out.join('\n'));
+      deepStrictEqual(report.lanes.kept.map((k) => [k.subtask_id, k.reason]), [['A', 'awaiting-owner:peer-conflict'], ['B', 'awaiting-owner:peer-conflict']], json.out.join('\n'));
+      strictEqual(report.lanes.halt, null, 'a park drains nothing');
       deepStrictEqual(report.proposals, [pa, pb]);
       const text = await previewOf(t, '--lanes', '2', '--macro', t.fx.macroId);
       for (const p of [pa, pb]) ok(text.out.includes(line(p)), text.out.join('\n'));
 
-      // The relaunch halts on both gates before any step: the first is the
-      // run's halt, the other is kept beside it, and each carries its round.
+      // The relaunch parks both lanes again at once, on their unchanged
+      // records: the first is the run's halt, the other is kept beside it,
+      // and each carries its round.
       t.lines.length = 0;
       strictEqual(await t.run(), 2, t.lines.join('\n'));
       r = t.latest();
       strictEqual(r.steps.length, 0, t.lines.join('\n'));
       deepStrictEqual([r.halt.subtask_id, r.halt.also?.map((h) => [h.reason, h.subtask_id])], ['A', [['awaiting-owner:peer-conflict', 'B']]]);
+      ok(t.lines.some((l) => /^■ lane B: awaiting-owner:peer-conflict — .*\(kept since run /.test(l)), t.lines.join('\n'));
       deepStrictEqual(r.halt.proposals, [pa, pb]);
     } finally {
       t.fx.cleanup();
     }
   });
 
-  it('a task file retired while the run drains is not reported: the run judges every proposal it met again as it ends', async () => {
+  it('a lane whose step ends on its conflict gate while the run drains keeps its proposal: no decision parks it, and the report carries its round', async () => {
+    // A's dispatch revokes the approval (a run-wide drain) while B's runs; B
+    // then ends on its conflict gate in the drain, and no decision follows.
+    const t = await setup({
+      scenario: {
+        A: { next: [COMMIT] }, B: { next: [COMMIT] },
+        actions: { 1: ['wait:b-started', 'edit-plan'], 2: ['mark-start:b-started', 'wait:drained', 'conflict-gate'] },
+      },
+    });
+    markOn(t, /^■ plan-unapproved/, 'drained');
+    try {
+      strictEqual(await t.run(), 2, t.lines.join('\n'));
+      ok(!existsSync(join(t.dir, 'drained.timeout')), 'B was in flight when the run began to drain');
+      const r = t.latest();
+      strictEqual(r.halt.reason, 'plan-unapproved');
+      const pb = await laneProposal(t, 'B');
+      deepStrictEqual([r.halt.proposals, bySubtask(r).B.proposals], [[pb], [pb]]);
+      ok(!t.lines.some((l) => /^■ lane B:/.test(l)), 'B was not parked: the drain took no decision after its step');
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('a task file retired while the run goes on is not reported: the run judges every proposal it met again as it ends', async () => {
     const t = await setup({ scenario: BOTH_ON_GATES });
     markOn(t, DRAIN_STARTS, 'drained');
     const dir = join(t.work, '.agentic-plugins/state/engineer/consensus');

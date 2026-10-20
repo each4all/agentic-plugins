@@ -11,6 +11,8 @@
 //   stop                SIGTERM the run that holds a macro's lock; for a run
 //                       whose driver died, empty its worker groups and clean
 //                       up after it (dead-runs.mjs)
+//   release <subtask>   end a lane's kept park (ADR-0068 Decision 1, item 4),
+//                       with or without a live run (parks.mjs)
 //
 // Dry-run by default (ADR-0035 §3 invariant 1 style): only `start --execute`
 // starts anything, and it needs a model plan (owner decision D5, 2026-10-01:
@@ -38,21 +40,25 @@ import { DEFAULTS, posture, preflight, startRun } from './driver.mjs';
 import { landingLabel } from './landing-ready.mjs';
 import { gatherLaneFacts, laneHome, lanePath, lanesRequirements, planReconciliation } from './lanes.mjs';
 import { launchProposals, proposalLines, reportEntries } from './launch-proposals.mjs';
-import { holderAlive, listLocks, listRuns, mainWorktreeRoot, provablySame, readOpenRun, readRun } from './ledger.mjs';
+import {
+  holderAlive, listLocks, listRuns, macroLockPath, mainWorktreeRoot, provablySame, readLockEntries, readOpenRun, readRun, relaunchCommand,
+} from './ledger.mjs';
+import { deletePark, readPark, readParks, retiring } from './parks.mjs';
 import { resolveRoots } from './roots.mjs';
 import { observe } from './observe.mjs';
 import { INTERRUPT_BOUND_MS } from './offloop.mjs';
 import {
-  decide, decideLanes, fingerprint, forcedForLanes, isSafeSubtaskId, MODEL_PLANS, parseForcedStep, proposalLines as haltProposalLines, proposalsOnce, renderStep,
+  decide, decideLanes, fingerprint, forcedForLanes, haltScope, isSafeSubtaskId, MODEL_PLANS, parseForcedStep, proposalLines as haltProposalLines, proposalsOnce,
+  renderStep, withProposals,
 } from './policy.mjs';
 import { MAX_STEP_TIMEOUT_SEC, terminateGroup } from './worker.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const SUBCOMMANDS = ['preview', 'start', 'status', 'stop'];
+const SUBCOMMANDS = ['preview', 'start', 'status', 'stop', 'release'];
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,63}$/;
 
-export const USAGE = `Usage: autopilot [preview|start|status|stop] [options]
+export const USAGE = `Usage: autopilot [preview|start|status|stop|release] [options]
 
   preview                 observe, decide and print the posture; spawns nothing (default)
   start                   preview, plus how to execute
@@ -60,6 +66,9 @@ export const USAGE = `Usage: autopilot [preview|start|status|stop] [options]
   status [--run <id>]     the latest run (or that run) and whether it still holds its lock
   stop [--macro <id>]     stop the run that drives a macro (SIGTERM; it records an interrupted halt), or
                           clean up after one whose driver died (its peers, its unfinished step, its halt)
+  release <subtask> --macro <id>
+                          end a parked lane's kept park, with or without a live run: a live run picks the
+                          lane up at its next tick, the next run judges it afresh
 
 Options:
   --repo <dir>            repository to drive (default: the current one)
@@ -114,6 +123,7 @@ export function parseCli(argv) {
     maxSteps: DEFAULTS.maxSteps, maxCostUsd: DEFAULTS.maxCostUsd, stepBudgetUsd: DEFAULTS.stepBudgetUsd,
     stepTimeoutSec: DEFAULTS.stepTimeoutSec,
     forced: null, forcedText: null, forcedPairs: null, lanes: 1, notifyLocal: false, json: false, help: false,
+    subtask: null, hold: null,
   };
   // --lane <id> --next "<step>" pairs, in order; a --next with no --lane
   // before it names no lane.
@@ -127,6 +137,12 @@ export function parseCli(argv) {
   }
   for (; i < words.length; i += 1) {
     const word = words[i];
+    // release names its subtask as its one positional argument.
+    if (o.sub === 'release' && o.subtask === null && !word.startsWith('-')) {
+      if (!isSafeSubtaskId(word)) throw new UsageError(`release ${JSON.stringify(word)}: not a subtask id`);
+      o.subtask = word;
+      continue;
+    }
     const eq = word.startsWith('--') ? word.indexOf('=') : -1;
     const name = eq > 0 ? word.slice(0, eq) : word;
     const inline = eq > 0 ? word.slice(eq + 1) : undefined;
@@ -169,12 +185,16 @@ export function parseCli(argv) {
       case '--next': pairs.push({ lane: pendingLane, text: value() }); pendingLane = null; break;
       case '--notify-local': o.notifyLocal = flag(); break;
       case '--json': o.json = flag(); break;
+      case '--hold': o.hold = value(); break;
       case '--help': case '-h': o.help = true; break;
       default: throw new UsageError(`unknown option ${JSON.stringify(word)}`);
     }
   }
   if (o.execute && o.sub !== 'start') throw new UsageError('--execute applies only to start');
   if (o.run !== null && o.sub !== 'status') throw new UsageError('--run applies only to status');
+  if (o.hold !== null && o.sub !== 'release') throw new UsageError('--hold applies only to release');
+  if (o.sub === 'release' && o.subtask === null) throw new UsageError('release needs the subtask whose lane it releases');
+  if (o.sub === 'release' && o.macro === null) throw new UsageError('release needs --macro <id>');
   if (o.models !== null && !MODEL_PLANS.includes(o.models)) throw new UsageError(`--models must be one of ${MODEL_PLANS.join(', ')}`);
   if (o.model !== null && !MODEL_RE.test(o.model)) throw new UsageError(`--model ${JSON.stringify(o.model)} is not a model name`);
   if (o.effort !== null && !EFFORTS.includes(o.effort)) throw new UsageError(`--effort must be one of ${EFFORTS.join(', ')}`);
@@ -257,8 +277,10 @@ const previewCommand = (step, macroId) => (step.kind === 'done-no-commit'
  * are (no fetch, no write: a prepared lane is judged against the last fetched
  * baseline), and the first wave decideLanes gives, up to N steps, each with
  * the lane it runs in. `proposals` holds those of every halt decideLanes
- * gives, once each (ADR-0067 Decision 8, item 5): each lane's halt drains the
- * run, and the run reports every lane's.
+ * gives, once each (ADR-0067 Decision 8, item 5). ADR-0068 Decision 1: the
+ * macro's kept parks (`kept`) are left out of the decision, as the run leaves
+ * them out until their record changes or the owner releases them, and each
+ * lane the decision halts would park (`parks`) while the others start.
  */
 export function previewLanes(o, repoRoot, view, pre, env = process.env) {
   const n = o.lanes;
@@ -266,9 +288,19 @@ export function previewLanes(o, repoRoot, view, pre, env = process.env) {
   const problems = macroId
     ? lanesRequirements({ checkout: repoRoot, stateRoot: pre.stateRoot, macroPath: view.macro.path, view })
     : [`a run with lanes needs its macro${view.macroLookupError ? ` (${view.macroLookupError})` : ''}: name it with --macro <id>`];
-  const result = { n, problems, plan: null, first_wave: [], halt: null, idle: null, proposals: [] };
+  const result = { n, problems, plan: null, first_wave: [], halt: null, idle: null, proposals: [], kept: [], parks: [] };
   const home = laneHome(repoRoot);
   if (home.problem || !macroId || view.macro.archived) return result;
+  const parks = readParks(home.mainRoot, macroId);
+  if (parks.problem) result.problems = [...problems, `the macro's kept parks cannot be read (${parks.problem})`];
+  const gone = new Set(retiring(parks.records, view));
+  result.kept = parks.records.filter((r) => !gone.has(r.subtaskId)).map((r) => ({
+    subtask_id: r.subtaskId, state: r.state === 'ok' ? r.record.state : 'unreadable',
+    reason: r.record?.reason ?? null, detail: r.record?.detail ?? r.error ?? null, since: r.record?.since ?? null,
+  }));
+  // A kept park's proposal, judged again from this look: only a current one.
+  const keptHalts = parks.records.filter((r) => !gone.has(r.subtaskId) && r.state === 'ok' && r.record.state === 'parked')
+    .map((r) => withProposals({ outcome: 'halt', reason: r.record.reason, detail: r.record.detail, subtaskId: r.subtaskId }, view));
   let facts;
   try {
     facts = gatherLaneFacts({ home, checkout: repoRoot, macroId, view, baseline: view.macro.fm?.git_baseline?.branch ?? null, env });
@@ -286,25 +318,33 @@ export function previewLanes(o, repoRoot, view, pre, env = process.env) {
   const held = new Map(plan.lanes.filter((e) => e.action === 'adopt' || e.action === 'prepared')
     .map((e) => [e.subtaskId, { path: e.lane.path, branch: e.lane.branch, subtaskId: e.subtaskId, state: e.action }]));
   let forced = new Map();
-  if (plan.halts.length > 0) result.halt = { reason: plan.halts[0].reason, detail: plan.halts[0].detail };
+  // A row's halt of a plan subtask parks its lane; one that names none drains.
+  for (const h of plan.halts) {
+    if (haltScope(h, view) === 'lane') result.parks.push({ subtask_id: h.subtaskId, reason: h.reason, detail: h.detail });
+    else result.halt ??= { reason: h.reason, detail: h.detail };
+  }
   if (o.forcedPairs?.length) {
     const f = forcedForLanes(o.forcedPairs, view);
     if (f.halt) result.halt ??= f.halt;
     else forced = f.forced;
   }
-  const d = decideLanes(view, { lanes: held, forced });
+  // A forced lane's kept park ends at the start; every other one stays out.
+  const parked = new Set([...result.kept.map((k) => k.subtask_id).filter((id) => !forced.has(id)), ...result.parks.map((p) => p.subtask_id)]);
+  const d = decideLanes(view, { lanes: held, forced, parked });
   if (d.outcome === 'halt') {
     result.halt ??= d;
     result.proposals = d.proposals ?? [];
     return result;
   }
   if (d.outcome === 'completed') return result;
-  // As the run admits them: forced steps first; a lane's halt then drains the
-  // run, so nothing else starts.
-  const steps = d.laneHalts.length > 0
-    ? d.laneSteps.filter((x) => x.forced)
-    : [...d.laneSteps.filter((x) => x.forced), ...(d.driverStep ? [d.driverStep] : []),
-      ...d.laneSteps.filter((x) => !x.forced && !x.newLane), ...d.laneSteps.filter((x) => !x.forced && x.newLane)];
+  // A halt that names no lane drains the run, so nothing starts; each lane
+  // halt parks its lane, and the rest start as the run admits them: forced
+  // steps first.
+  const drains = d.laneHalts.find((h) => haltScope(h, view) !== 'lane');
+  if (drains) result.halt ??= drains;
+  result.parks.push(...d.laneHalts.filter((h) => h !== drains).map((h) => ({ subtask_id: h.subtaskId, reason: h.reason, detail: h.detail })));
+  const steps = drains ? [] : [...d.laneSteps.filter((x) => x.forced), ...(d.driverStep ? [d.driverStep] : []),
+    ...d.laneSteps.filter((x) => !x.forced && !x.newLane), ...d.laneSteps.filter((x) => !x.forced && x.newLane)];
   for (const st of steps.slice(0, n)) {
     const id = st.subtaskId ?? null;
     result.first_wave.push({
@@ -316,9 +356,8 @@ export function previewLanes(o, repoRoot, view, pre, env = process.env) {
       waits_for_rate_limit_event: st.newLane === true && result.first_wave.length > 0,
     });
   }
-  if (d.laneHalts.length > 0) result.halt ??= d.laneHalts[0];
   if (result.first_wave.length === 0) result.idle = d.idle;
-  result.proposals = proposalsOnce([...d.laneHalts, ...(result.idle ? [result.idle] : [])].flatMap((h) => h.proposals ?? []));
+  result.proposals = proposalsOnce([...keptHalts, ...d.laneHalts, ...(result.idle ? [result.idle] : [])].flatMap((h) => h.proposals ?? []));
   return result;
 }
 
@@ -336,6 +375,8 @@ function printLanesPreview(lp, out) {
     for (const x of lp.plan.others) out(`    ${x}`);
     for (const h of lp.plan.halts) out(`    ✗ ${h.subtask_id ? `${h.subtask_id}: ` : ''}${h.detail}`);
   }
+  for (const k of lp.kept ?? []) out(`  ■ lane ${k.subtask_id} is parked (${k.state}${k.since ? ` since ${k.since}` : ''}): ${k.reason ?? '?'} — ${k.detail ?? ''}`);
+  for (const p of lp.parks ?? []) out(`  ■ lane ${p.subtask_id} would park: ${p.reason} — ${p.detail}`);
   if (lp.first_wave.length) {
     out('  first wave:');
     for (const w of lp.first_wave) {
@@ -558,7 +599,8 @@ async function statusCmd(o, repoRoot, out, err) {
   // another reason does not list (C128).
   for (const l of r.run.lanes?.lanes ?? []) {
     const sync = l.waiting?.sync;
-    out(`  lane ${l.subtask_id} · ${l.state ?? '?'}${l.path ? ` · ${l.path}` : ''}${l.last_step ? ` · last [${l.last_step.seq}] ${l.last_step.outcome}` : ''}${l.halt ? ` · halted: ${l.halt.reason}` : ''}` +
+    const why = l.park ? ` · parked since ${l.park.since ?? '?'}: ${l.park.reason} — ${l.park.detail}` : (l.halt ? ` · halted: ${l.halt.reason}` : '');
+    out(`  lane ${l.subtask_id} · ${l.state ?? '?'}${l.path ? ` · ${l.path}` : ''}${l.last_step ? ` · last [${l.last_step.seq}] ${l.last_step.outcome}` : ''}${why}` +
       `${sync ? ` · ${landingLabel(sync)}${sync.detail ? ` (${sync.detail})` : ''}` : ''}`);
   }
   if (r.run.error) out(`  error: ${r.run.error}`);
@@ -718,7 +760,60 @@ async function stopCmd(o, repoRoot, out, err, { wait = 30_000, env = process.env
   return 1;
 }
 
-export async function main(argv = process.argv.slice(2), { env = process.env, io = process, out = (s) => process.stdout.write(`${s}\n`), err = (s) => process.stderr.write(`${s}\n`) } = {}) {
+// The run that holds a macro's lock while its driver lives, or null.
+async function liveRun(mainRoot, macroId) {
+  let entries = [];
+  try { entries = readLockEntries(macroLockPath(mainRoot, macroId)); } catch { return null; }
+  for (const e of entries) if (!e.session && e.holder?.run_id && await holderAlive(e.holder)) return e.holder.run_id;
+  return null;
+}
+
+/**
+ * ADR-0068 Decision 1, item 4 — a bare release: end the kept park of a
+ * subtask's lane, with or without a live run. A worker never releases a lane
+ * (Decision 2, item 2); a marker of a step a live run has under way is not a
+ * park, and stays; one a dead run left is the owner's to end. `--hold`
+ * names a hold, which this release does not build (ADR-0068 Decision 2).
+ * `hooks.afterLiveRun` is a test seam after the live run is read.
+ */
+async function releaseCmd(o, repoRoot, env, out, err, hooks = {}) {
+  if (isAutopilotRun(env)) {
+    err(`✗ AGENTIC_AUTOPILOT=${env.AGENTIC_AUTOPILOT}: a step of an autopilot run never releases a lane, its own included`);
+    return 1;
+  }
+  if (o.hold !== null) {
+    err('✗ --hold names a hold, and holds are not part of this release (ADR-0068 Decision 2): release a parked lane with no --hold');
+    return 1;
+  }
+  const mainRoot = mainWorktreeRoot(repoRoot);
+  const cur = readPark(mainRoot, o.macro, o.subtask);
+  if (cur.state === 'absent') {
+    err(`✗ subtask ${o.subtask} of macro ${o.macro} has no kept park: there is nothing to release`);
+    return 1;
+  }
+  const live = await liveRun(mainRoot, o.macro);
+  if (hooks.afterLiveRun) await hooks.afterLiveRun();
+  if (cur.state === 'ok' && cur.record.state !== 'parked' && live && live === cur.record.run_id) {
+    err(`✗ run ${live} has a step of subtask ${o.subtask} under way (${cur.record.state}): its lane is not parked; wait for the step to end`);
+    return 1;
+  }
+  // Only the record read above, across the await: a record id, or the bytes
+  // of one that cannot be read, so a marker a relaunch wrote meanwhile stays.
+  const read = cur.state === 'ok' ? { expect: cur.record.record_id } : { expectDigest: cur.digest ?? null };
+  const r = await deletePark(mainRoot, o.macro, o.subtask, { ...read, event: 'released', fields: { by: 'owner', live_run: live } });
+  if (!r.ok) {
+    err(`✗ subtask ${o.subtask}'s park changed while it was released (${r.current.state === 'ok' ? `now record ${r.current.record.record_id}, ${r.current.record.state}` : r.current.state}); run release again`);
+    return 1;
+  }
+  const what = cur.state === 'ok' ? `${cur.record.reason} — ${cur.record.detail}` : `an unreadable record (${cur.error})`;
+  out(`✓ released subtask ${o.subtask}'s lane of macro ${o.macro} (it was parked: ${what})`);
+  out(live
+    ? `  run ${live} picks it up at its next tick`
+    : `  the next run judges it afresh: ${relaunchCommand({ macroId: o.macro, lanes: 2, repoRoot })}`);
+  return 0;
+}
+
+export async function main(argv = process.argv.slice(2), { env = process.env, io = process, out = (s) => process.stdout.write(`${s}\n`), err = (s) => process.stderr.write(`${s}\n`), hooks = {} } = {}) {
   let o;
   try {
     o = parseCli(argv);
@@ -742,6 +837,7 @@ export async function main(argv = process.argv.slice(2), { env = process.env, io
     case 'start': return startCmd(o, repoRoot, env, out, err, io);
     case 'status': return statusCmd(o, repoRoot, out, err);
     case 'stop': return stopCmd(o, repoRoot, out, err, { env });
+    case 'release': return releaseCmd(o, repoRoot, env, out, err, hooks);
     default: return 1;
   }
 }

@@ -311,6 +311,37 @@ export function fetchBaseline({ checkout, baseline, env = process.env }) {
   };
 }
 
+/**
+ * The tip of `refs/heads/<branch>` read from a git common dir's files (the
+ * loose ref, else packed-refs), with no git process: the wake-up of a run
+ * with lanes reads it every tick (ADR-0068 Decision 1, item 6). Null when
+ * there is none, or the branch is no branch name the driver uses.
+ */
+export function refTip(commonDir, branch) {
+  if (typeof commonDir !== 'string' || !isSafeBranch(branch)) return null;
+  try {
+    const loose = fs.readFileSync(path.join(commonDir, 'refs', 'heads', ...branch.split('/')), 'utf8').trim();
+    if (/^[0-9a-f]{40,64}$/.test(loose)) return loose;
+  } catch { /* packed, or none */ }
+  try {
+    for (const line of fs.readFileSync(path.join(commonDir, 'packed-refs'), 'utf8').split('\n')) {
+      const m = /^([0-9a-f]{40,64}) refs\/heads\/(.+)$/.exec(line.trim());
+      if (m && m[2] === branch) return m[1];
+    }
+  } catch { /* none */ }
+  return null;
+}
+
+/** A linked worktree's own git dir, from its `.git` file, or null. */
+export function laneGitDir(lane) {
+  try {
+    const m = /^gitdir: (.+)$/m.exec(fs.readFileSync(path.join(lane, '.git'), 'utf8'));
+    return m ? path.resolve(lane, m[1].trim()) : null;
+  } catch {
+    return null;
+  }
+}
+
 function branchTip(checkout, branch, env) {
   const r = git(checkout, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`], { env });
   return r.code === 0 && r.stdout ? r.stdout : null;
@@ -438,7 +469,7 @@ const claimsOf = (facts, id) => facts.claims.filter((c) => c?.originating_subtas
 export function judgeSubtask(facts, subtask) {
   const id = subtask?.id;
   const branch = subtask?.branch;
-  if (!isSafeSubtaskId(id) || !isSafeBranch(branch)) return { halt: halt(`subtask ${id ?? '?'} has no branch the driver can give a lane`) };
+  if (!isSafeSubtaskId(id) || !isSafeBranch(branch)) return { halt: halt(`subtask ${id ?? '?'} has no branch the driver can give a lane`, isSafeSubtaskId(id) ? { subtaskId: id } : {}) };
   const child = facts.children[id];
   const live = subtask.status === 'in_progress' && child?.location === 'active';
   const ready = subtask.status === 'pending' && facts.readiness.find((r) => r?.id === id)?.ready === true;
@@ -456,7 +487,7 @@ export function judgeSubtask(facts, subtask) {
       halt: halt(driver
         ? `subtask ${id}'s branch ${branch} is checked out in the driver's own checkout (${b.heldBy}): switch it off ${branch} and relaunch, so the subtask can have a lane (git checks a branch out in one worktree only)`
         : `subtask ${id}'s branch ${branch} is checked out in ${b.heldBy}, a worktree that is not one of this run's lanes: free it there, then relaunch (the driver never forces a worktree)`,
-      { subtaskId: id }),
+      { subtaskId: id, releaseOnly: true }),
     };
   }
   if (ready) {
@@ -728,8 +759,10 @@ export async function removeLane({ home, macroId, subtaskId, runId = null, runDi
  * prepared lane: row 4 next time).
  */
 export function createLane({ home, checkout, macroId, subtask, view, baseline, runId = null, runDir = null, now = () => Date.now(), env = process.env, out = () => {} }) {
+  // The run's footing (the baseline, the rollback fence) is the run's, not
+  // the lane's (ADR-0068 Decision 1, item 1): its halts are `scope: 'run'`.
   const fetched = fetchBaseline({ checkout, baseline, env });
-  if (!fetched.ok) return { ok: false, halt: fetched.halt };
+  if (!fetched.ok) return { ok: false, halt: { ...fetched.halt, scope: 'run' } };
   if (fetched.warning) {
     out(`⚠ ${fetched.warning}`);
     if (runDir) appendLaneEvent(runDir, { event: 'fetch-warning', subtask_id: subtask?.id ?? null, run_id: runId, at: new Date(now()).toISOString(), warning: fetched.warning });
@@ -748,7 +781,7 @@ export function createLane({ home, checkout, macroId, subtask, view, baseline, r
     const m = markLanesFirstRun(home.mainRoot, { now: new Date(now()) });
     if (m.changed && runDir) appendLaneEvent(runDir, { event: 'lanes-first-run', lanes_first_run_at: m.at, run_id: runId, at: new Date(now()).toISOString() });
   } catch (err) {
-    return { ok: false, halt: halt(`no lane was created: ${err.message}`, { subtaskId: subtask.id }) };
+    return { ok: false, halt: halt(`no lane was created: ${err.message}`, { subtaskId: subtask.id, scope: 'run' }) };
   }
   const add = j.action === 'new-branch'
     ? ['worktree', 'add', '--quiet', '--lock', '--reason', reason, '--no-track', '-b', subtask.branch, lane, fetched.ref]
@@ -793,7 +826,10 @@ export function createLane({ home, checkout, macroId, subtask, view, baseline, r
  */
 export async function reconcileLanes({ home, checkout, macroId, view, baseline, runId = null, runDir = null, now = () => Date.now(), env = process.env, out = () => {}, protect = [], hooks = {} }) {
   const fetched = fetchBaseline({ checkout, baseline, env });
-  if (!fetched.ok) return { halt: fetched.halt, lanes: new Map(), toCreate: [], reports: [], plan: null };
+  if (!fetched.ok) {
+    const h = { ...fetched.halt, scope: 'run' };
+    return { halt: h, halts: [h], lanes: new Map(), toCreate: [], reports: [], plan: null };
+  }
   if (fetched.warning) out(`⚠ ${fetched.warning}`);
   const at = () => new Date(now()).toISOString();
   const record = (event, fields) => { if (runDir) appendLaneEvent(runDir, { event, run_id: runId, at: at(), ...fields }); };
@@ -806,7 +842,8 @@ export async function reconcileLanes({ home, checkout, macroId, view, baseline, 
     if (p.kind === 'mark-first-run') {
       let m;
       try { m = markLanesFirstRun(home.mainRoot, { now: new Date(now()) }); } catch (err) {
-        return { halt: halt(`the rollback fence could not be recorded: ${err.message}`), halts: [], lanes: new Map(), toCreate: [], reports: [], plan: null };
+        const h = halt(`the rollback fence could not be recorded: ${err.message}`, { scope: 'run' });
+        return { halt: h, halts: [h], lanes: new Map(), toCreate: [], reports: [], plan: null };
       }
       if (m.changed) record('lanes-first-run', { lanes_first_run_at: m.at });
     } else if (p.kind === 'intent-done') {
@@ -890,6 +927,90 @@ export async function reconcileLanes({ home, checkout, macroId, view, baseline, 
   }
   const toCreate = plan.subtasks.filter((s) => s.action === 'existing-branch' || s.action === 'new-branch');
   return { halt: plan.halts[0] ?? null, halts: plan.halts, lanes, toCreate, reports, plan };
+}
+
+/**
+ * ADR-0068 Decision 1, item 4 — reconciliation for one parked lane the run
+ * picks up again: the pre-pass items that concern it (the rollback fence,
+ * which is the macro's, its removal intents, its lane's identity), then its
+ * rows, planned from the facts of the whole macro, as reconcileLanes plans
+ * them. Nothing is removed: a parked subtask is not completed (completion ends
+ * its park). Resolves to { lane | null, halts, reports }: `lane` the lane to
+ * hold (adopted or prepared), or null when it has none (its next step creates
+ * one); `halts` its own and those that name no subtask (run-wide, as the
+ * baseline and the fence are), never another lane's.
+ */
+export async function reconcileLane({ home, checkout, macroId, view, baseline, subtaskId, runId = null, runDir = null, now = () => Date.now(), env = process.env }) {
+  const fetched = fetchBaseline({ checkout, baseline, env });
+  if (!fetched.ok) return { lane: null, halts: [{ ...fetched.halt, scope: 'run' }], reports: [] };
+  const at = () => new Date(now()).toISOString();
+  const record = (event, fields) => { if (runDir) appendLaneEvent(runDir, { event, run_id: runId, at: at(), ...fields }); };
+  const reports = fetched.warning ? [`⚠ ${fetched.warning}`] : [];
+  let facts = gatherLaneFacts({ home, checkout, macroId, view, baseline, env });
+  const first = planReconciliation(facts);
+  let acted = false;
+  for (const p of first.prepass) {
+    if (p.kind === 'mark-first-run') {
+      let m;
+      try { m = markLanesFirstRun(home.mainRoot, { now: new Date(now()) }); } catch (err) {
+        return { lane: null, halts: [halt(`the rollback fence could not be recorded: ${err.message}`, { scope: 'run' })], reports };
+      }
+      if (m.changed) record('lanes-first-run', { lanes_first_run_at: m.at });
+      acted = true;
+    } else if (p.kind === 'intent-done' && p.intent.subtask_id === subtaskId) {
+      appendIntent(home.mainRoot, macroId, { event: 'done', path: p.intent.path, lane_id: p.intent.lane_id, subtask_id: subtaskId, run_id: runId, at: at(), why: 'git no longer lists the path: the removal finished before a crash' });
+      record('reconciled', { path: p.intent.path, lane_id: p.intent.lane_id, action: 'intent-done' });
+      acted = true;
+    } else if (p.kind === 'assign-identity' && p.lane.subtaskId === subtaskId) {
+      const identity = writeLaneIdentity(p.lane.path, { macroId, subtaskId, branch: p.lane.branch, now: new Date(now()) });
+      record('identity-assigned', { path: p.lane.path, lane_id: identity.lane_id, subtask_id: subtaskId });
+      acted = true;
+    }
+  }
+  if (acted) facts = gatherLaneFacts({ home, checkout, macroId, view, baseline, env });
+  let plan = planReconciliation(facts);
+  // Row 9 for this lane: its worktree unlocked with its removal intent open
+  // (the removal of a lane no step used, interrupted). It is locked again
+  // while it is still that lane, then judged by its rows; a subtask picked up
+  // again is never completed, so it is never removed here.
+  const stuck = [];
+  for (const u of plan.unlocked.filter((x) => x.intent?.subtask_id === subtaskId)) {
+    const w = u.worktree;
+    const again = relockIfOurs({ mainRoot: home.mainRoot, lane: w.path, laneId: u.intent.lane_id, reason: lockReason(macroId, subtaskId), env });
+    if (again.code === 0) {
+      const why = 'locked again: its subtask was picked up again';
+      appendIntent(home.mainRoot, macroId, { event: 'kept', path: w.path, lane_id: u.intent.lane_id, subtask_id: subtaskId, run_id: runId, at: at(), why });
+      record('kept', { path: w.path, lane_id: u.intent.lane_id, subtask_id: subtaskId, row: 9, why });
+      reports.push(`kept the lane ${w.path} (${why})`);
+      acted = true;
+    } else {
+      stuck.push(halt(`the lane ${w.path} of subtask ${subtaskId} is unlocked with its removal intent open, and locking it again failed (${again.stderr}); lock it again with its reason or remove it, then relaunch`, { subtaskId, row: 9 }));
+    }
+  }
+  if (plan.unlocked.some((x) => x.intent?.subtask_id === subtaskId) && acted) plan = planReconciliation(gatherLaneFacts({ home, checkout, macroId, view, baseline, env }));
+  const halts = [...stuck, ...plan.halts.filter((h) => h.subtaskId === subtaskId || h.subtaskId == null)
+    .map((h) => (h.subtaskId == null ? { ...h, scope: 'run' } : h))];
+  let lane = null;
+  for (const e of plan.lanes.filter((x) => x.subtaskId === subtaskId)) {
+    const l = e.lane;
+    const laneId = l.identity?.identity?.lane_id ?? null;
+    if (e.action === 'adopt' || e.action === 'prepared') {
+      const unignored = lanePreflight(l.path, { env });
+      if (unignored) {
+        halts.push({ row: e.row, ...halt(`${unignored}: add .agentic-plugins/{runs,state,tmp,cache}/ to .gitignore on ${l.branch}`, { subtaskId }) });
+        record('reconciled', { path: l.path, lane_id: laneId, subtask_id: subtaskId, row: e.row, action: 'halt', why: unignored });
+        continue;
+      }
+      lane = { path: l.path, laneId, branch: l.branch, subtaskId, state: e.action, ready: e.ready ?? null };
+      record(e.action === 'adopt' ? 'adopted' : 'reconciled', { path: l.path, lane_id: laneId, subtask_id: subtaskId, row: e.row, action: e.action });
+    } else if (e.action === 'keep') {
+      reports.push(e.report);
+      record('kept', { path: l.path, lane_id: laneId, subtask_id: subtaskId, row: e.row, why: e.report });
+    } else if (e.action === 'halt') {
+      record('reconciled', { path: l.path, lane_id: laneId, subtask_id: subtaskId, row: e.row, action: 'halt' });
+    }
+  }
+  return { lane, halts, reports };
 }
 
 // ---------------------------------------------------------------------------

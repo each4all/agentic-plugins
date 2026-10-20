@@ -732,10 +732,40 @@ describe('lanes — ADR-0067 Decision 6', () => {
 
     it('a subtask with a step in flight is left alone: a pending subtask claimed by its new child is not a claim problem then', () => {
       const claimed = lanesView({ subtasks: three(), claims: [{ id: ENG_A, path: '/x', relPath: 'x', originating_subtask: 'A', branch: 'feat/a' }] });
-      strictEqual(decideLanes(claimed).outcome, 'halt', 'between steps it halts');
+      // ADR-0068 Decision 1, item 1: between steps the claim halts A's lane
+      // only, and A is left out of readiness in the same decision (R3).
+      const between = decideLanes(claimed);
+      strictEqual(between.outcome, 'lanes', 'between steps it halts the lane, not the run');
+      deepStrictEqual(between.laneHalts.map((h) => [h.reason, h.subtaskId]), [['owner-choice', 'A']]);
+      match(between.laneHalts[0].detail, /claims subtask A, which is pending/);
+      strictEqual(P.haltScope(between.laneHalts[0], claimed), 'lane');
+      deepStrictEqual([between.laneHalts[0].releaseOnly, between.laneHalts[0].claim], [true, true], 'the claiming workflow lies outside the lane\'s record');
+      deepStrictEqual(between.laneSteps.map((s) => s.subtaskId), ['B'], 'A is never dispatched beside its claim');
       const d = decideLanes(claimed, { inFlight: new Set(['A']) });
       strictEqual(d.outcome, 'lanes');
+      deepStrictEqual(d.laneHalts, []);
       deepStrictEqual(d.laneSteps.map((s) => s.subtaskId), ['B']);
+    });
+
+    it('a claim that names no subtask of the plan, or claims that cannot be listed, stay run-wide', () => {
+      const stray = decideLanes(lanesView({ subtasks: three(), claims: [{ id: ENG_A, path: '/x', relPath: 'x', originating_subtask: 'Z', branch: 'feat/z' }] }));
+      deepStrictEqual([stray.outcome, stray.reason, stray.scope], ['halt', 'owner-choice', 'run']);
+      match(stray.detail, /claims subtask Z, which is not in the plan/);
+      const unlisted = decideLanes(lanesView({ subtasks: three(), claimsError: 'boom' }));
+      deepStrictEqual([unlisted.outcome, unlisted.scope], ['halt', 'run']);
+    });
+
+    it('a parked lane is left out as a lane in flight is: no step, not ready, no claim check, and its successors still wait', () => {
+      const v = lanesView({
+        subtasks: three('in_progress', 'pending'),
+        children: { A: childA({ awaiting_owner: { gate: 'scope-routing' } }) },
+        claims: [{ id: 'compose-20261001T000300Z-cccccc', path: '/y', relPath: 'y', originating_subtask: 'B', branch: 'feat/b' }],
+      });
+      const open = decideLanes(v);
+      deepStrictEqual(open.laneHalts.map((h) => [h.reason, h.subtaskId]).sort(), [['awaiting-owner:scope-routing', 'A'], ['owner-choice', 'B']]);
+      const d = decideLanes(v, { parked: new Set(['A', 'B']) });
+      deepStrictEqual([d.outcome, d.laneSteps, d.laneHalts], ['lanes', [], []]);
+      ok(!d.laneSteps.some((s) => s.subtaskId === 'C'), 'C waits on A');
     });
 
     it('a pending peer ensemble or a commit phase in a lane with a step in flight is not judged until the step ends', () => {
@@ -832,6 +862,75 @@ describe('lanes — ADR-0067 Decision 6', () => {
       ok(/HEAD is detached in \/r/.test(checkoutProblem(view({ git: { detached: true, branch: '' } })).detail));
       ok(/indeterminate/.test(checkoutProblem(view({ brief: { disposition: 'indeterminate' } })).detail));
       ok(/does not belong/.test(checkoutProblem(view({ foreign: { id: ENG_B, detail: 'other', path: '/x' } })).detail));
+    });
+  });
+
+  // ADR-0068 Decision 1, item 1 — a halt's scope is set by its cause.
+  describe('haltScope', () => {
+    const { haltScope } = P;
+    const v = lanesView({ subtasks: three() });
+    it('the closed run-wide list wins over the code and over a subtask the halt names', () => {
+      for (const reason of ['version-drift', 'budget', 'plan-unapproved']) {
+        strictEqual(haltScope({ reason, detail: 'x', subtaskId: 'A' }, v), 'run', `${reason} with a lane`);
+        strictEqual(haltScope({ reason, detail: 'x' }, v), 'run', reason);
+      }
+    });
+    it('a halt marked run-wide at its source, or naming no subtask of the plan, drains; an interrupt aborts', () => {
+      strictEqual(haltScope({ reason: 'worker-failed', subtaskId: 'A', scope: 'run' }, v), 'run', 'a group that outlived SIGKILL');
+      strictEqual(haltScope({ reason: 'owner-choice', subtaskId: 'A', scope: 'run' }, v), 'run', 'the run\'s footing');
+      strictEqual(haltScope({ reason: 'awaiting-owner:plan-approval' }, v), 'run', 'a macro gate names no lane');
+      strictEqual(haltScope({ reason: 'owner-choice', subtaskId: 'Z' }, v), 'run', 'an id outside the plan');
+      strictEqual(haltScope({ reason: 'interrupted', subtaskId: 'A' }, v), 'interrupted');
+    });
+    it('every other halt of a plan subtask parks its lane', () => {
+      for (const reason of ['awaiting-owner:recurring-finding', 'owner-decision', 'low-confidence', 'owner-choice', 'worker-failed', 'no-progress', 'permission-denied', 'compaction-imminent', 'dirty-tree']) {
+        strictEqual(haltScope({ reason, detail: 'x', subtaskId: 'B' }, v), 'lane', reason);
+      }
+    });
+    it('verifyStep marks a lingering group and an unread macro run-wide, an unread own child not', () => {
+      const lingering = verifyStep({ step: { kind: 'verb', verb: 'critique', subtaskId: 'A', lane: true }, worker: { groupTeardown: 'lingering', pgid: 7 }, before: v, after: v });
+      deepStrictEqual([lingering.reason, lingering.scope], ['worker-failed', 'run']);
+      const report = { outcome: 'completed', workflow: ENG_A, next_step: null, awaiting_owner: null, summary: 's', waiting_on_background: false };
+      const worker = { exitCode: 0, lastResult: { is_error: false }, report, denials: [] };
+      const macroUnread = verifyStep({ step: { kind: 'verb', verb: 'critique', subtaskId: 'A', lane: true }, worker, before: v, after: { ...v, macroLookupError: 'gone' } });
+      strictEqual(haltScope(macroUnread, v), 'run');
+      const childUnread = verifyStep({ step: { kind: 'verb', verb: 'critique', subtaskId: 'A', lane: true }, worker, before: v, after: { ...v, children: { A: { location: 'error', detail: 'torn' } } } });
+      strictEqual(haltScope(childUnread, v), 'lane');
+    });
+  });
+
+  // ADR-0068 Decision 1, item 3 — the kept park's fingerprint.
+  describe('parkFingerprint and compareKept', () => {
+    const { parkFingerprint, compareKept, PARK_FINGERPRINT_VERSION } = P;
+    const lane = lanesView({ subtasks: three('in_progress'), children: { A: childA() }, git: { branch: 'feat/a', head: 'a1', porcelain: '' } });
+    const kept = (over = {}) => ({ fingerprint: parkFingerprint(lane, 'A', { form: 'lane' }), form: 'lane', fingerprint_version: PARK_FINGERPRINT_VERSION, release_only: false, ...over });
+    it('is changed by what resolves a park, a pending peer ensemble settled included, in either form', () => {
+      // A lane parked on a pending ensemble: settling it moves only the peer
+      // bookkeeping, and that is the owner's change.
+      const pending = { ...lane, children: { A: childA({ pending_ensemble: 1, ensemble_results: 3 }) } };
+      const settled = { ...lane, children: { A: childA({ pending_ensemble: 0, ensemble_results: 4 }) } };
+      for (const [form, o] of [['lane', { form: 'lane' }], ['no-worktree', { form: 'no-worktree', branch: 'feat/a', branchTip: 't1' }]]) {
+        const parkedOn = kept({ form, fingerprint: parkFingerprint(pending, 'A', o) });
+        strictEqual(compareKept(parkedOn, { fingerprint: parkFingerprint(pending, 'A', o), form }), 'unchanged', form);
+        strictEqual(compareKept(parkedOn, { fingerprint: parkFingerprint(settled, 'A', o), form }), 'changed', `${form}: the ensemble settled`);
+      }
+      const cleared = { ...lane, children: { A: childA({ next_step: { kind: 'commit', verb: null, confidence: 'HIGH' } }) } };
+      strictEqual(compareKept(kept(), { fingerprint: parkFingerprint(cleared, 'A', { form: 'lane' }), form: 'lane' }), 'changed');
+      const moved = { ...lane, git: { ...lane.git, head: 'a2' } };
+      strictEqual(compareKept(kept(), { fingerprint: parkFingerprint(moved, 'A', { form: 'lane' }), form: 'lane' }), 'changed');
+    });
+    it('never counts a record of another fingerprint version, or a park outside its record, as changed', () => {
+      const other = { fingerprint: 'f'.repeat(64), form: 'lane' };
+      strictEqual(compareKept(kept({ fingerprint_version: PARK_FINGERPRINT_VERSION + 1 }), other), 'incomparable');
+      strictEqual(compareKept(kept({ release_only: true }), other), 'incomparable');
+      strictEqual(compareKept(kept(), { fingerprint: null, form: 'lane' }), 'incomparable');
+    });
+    it('a worktree that appeared or went at the lane\'s path is a change; with none, the branch tip in the main repository counts', () => {
+      const none = (tip) => parkFingerprint(lane, 'A', { form: 'no-worktree', branch: 'feat/a', branchTip: tip });
+      strictEqual(compareKept(kept(), { fingerprint: none('t1'), form: 'no-worktree' }), 'changed');
+      const noWorktree = kept({ form: 'no-worktree', fingerprint: none('t1') });
+      strictEqual(compareKept(noWorktree, { fingerprint: none('t1'), form: 'no-worktree' }), 'unchanged');
+      strictEqual(compareKept(noWorktree, { fingerprint: none('t2'), form: 'no-worktree' }), 'changed');
     });
   });
 });

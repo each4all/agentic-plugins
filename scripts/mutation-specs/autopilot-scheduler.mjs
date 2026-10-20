@@ -13,7 +13,9 @@
 // Groups: T the throttle, B the budget, L the lanes policy, A a dead run's
 // accounting, O the work run off the loop (offloop.mjs), S the scheduler end
 // to end (scheduler.mjs and its start in driver.mjs and cli.mjs, against the
-// fake claude: each runs for minutes).
+// fake claude: each runs for minutes). ADR-0068 Decision 1's own cases (the
+// scope of a halt, the kept parks, the lane gate end to end) are in
+// autopilot-lane-gate.mjs.
 
 const TT = 'tests/orchestrator/test-autopilot-throttle.mjs';
 const TB = 'tests/orchestrator/test-autopilot-budget.mjs';
@@ -198,15 +200,15 @@ export const MUTATIONS = [
   },
   {
     id: 'L4', file: POLICY, tests: [TP],
-    from: '    if (s?.status !== \'in_progress\' || inFlight.has(s.id)) continue;',
-    to: '    if (s?.status !== \'in_progress\') continue;',
+    from: '    if (s?.status !== \'in_progress\' || away(s.id) || halted.has(s.id)) continue;',
+    to: '    if (s?.status !== \'in_progress\' || halted.has(s.id)) continue;',
     why: 'a lane with a step in flight is judged mid-step: its pending peer or commit phase halts the run',
     killed_by: /not judged until the step ends/,
   },
   {
     id: 'L5', file: POLICY, tests: [TP],
-    from: '  const claim = claimProblem({ ...view, claims: (view.claims ?? []).filter((c) => !inFlight.has(c?.originating_subtask)) }, subtasks);',
-    to: '  const claim = claimProblem(view, subtasks);',
+    from: '  const problems = claimProblems({ ...view, claims: (view.claims ?? []).filter((c) => !away(c?.originating_subtask)) }, subtasks);',
+    to: '  const problems = claimProblems(view, subtasks);',
     why: 'a dispatch in flight, whose new child claims its still-pending subtask, halts the run',
     killed_by: /a pending subtask claimed by its new child is not a claim problem then/,
   },
@@ -344,17 +346,17 @@ export const MUTATIONS = [
   // ---- S: the scheduler, end to end ------------------------------------------
   {
     id: 'S1', file: SCHED, tests: TS,
-    from: "    if (!draining) {\n      draining = hh;",
-    to: "    if (!draining && !hh.subtaskId) {\n      draining = hh;",
-    why: "a halt in one lane does not drain the run: the other lane goes on starting steps",
-    killed_by: /a halt in one lane drains the run/,
+    from: "    if (haltScope(hh, lastGlobal) === 'lane') return park(hh, hint, facts);",
+    to: '    if (false) return park(hh, hint, facts);',
+    why: "a halt in one lane drains the whole run, as before ADR-0068: the other lane starts nothing more",
+    killed_by: /a halt in one lane parks that lane only/,
   },
   {
     id: 'S2', file: SCHED, tests: TS,
     from: "      if (draining) {\n        if (inflight.size > 0) { await nextEvent(); continue; }",
     to: "      if (draining) {",
     why: "a drain ends the run with a step still in flight, never verified or recorded",
-    killed_by: /a halt in one lane drains the run/,
+    killed_by: /a run-wide halt drains the run/,
   },
   {
     id: 'S3', file: SCHED, tests: TS,
@@ -416,8 +418,8 @@ export const MUTATIONS = [
     id: 'S11', file: SCHED, tests: TS,
     from: "      forced = f.forced;",
     to: "      forced = new Map();",
-    why: "--lane A --next is ignored: A's judgment halt drains the run again",
-    killed_by: /--lane A --next replaces only A's judgment halt/,
+    why: "--lane A --next is ignored: A's kept park stands and A is never stepped",
+    killed_by: /--lane A --next ends only A's kept park/,
   },
   {
     id: 'S12', file: DRIVER, tests: TS,
@@ -470,15 +472,15 @@ export const MUTATIONS = [
   },
   {
     id: 'S19', file: SCHED, tests: TS,
-    from: "    if (after.lookError) {",
-    to: "    if (false) {",
+    from: "    } else if (after.lookError && w.groupTeardown !== 'lingering') {",
+    to: "    } else if (false) {",
     why: "a failed look after a step passes as progress: the step is never verified",
     killed_by: /a look that fails after a step halts the run unverified/,
   },
   {
     id: 'S20', file: SCHED, tests: TS,
-    from: "      keep();\n      verdict = asHalt({ reason: 'owner-choice', detail: `the look at",
-    to: "      verdict = asHalt({ reason: 'owner-choice', detail: `the look at",
+    from: "    if (after.lookError) keep();\n",
+    to: "",
     why: "a run whose look after a step failed removes its open-run record: that step's peers are never cancelled",
     killed_by: /a look that fails after a step halts the run unverified/,
   },
@@ -498,9 +500,9 @@ export const MUTATIONS = [
   },
   {
     id: 'S23', file: SCHED, tests: TS,
-    from: '    if (d && halts.length > 1) d = { ...d, also:',
-    to: '    if (false) d = { ...d, also:',
-    why: 'a second lane\'s halt met during the drain is missing from halt.json',
+    from: '      if (also.length) d = { ...d, also };',
+    to: '      if (false) d = { ...d, also };',
+    why: 'a second lane\'s park, open as the run ends, is missing from halt.json',
     killed_by: /simultaneous halts/,
   },
   {
@@ -519,7 +521,7 @@ export const MUTATIONS = [
   },
   {
     id: 'S26', file: SCHED, tests: [TLS],
-    from: '    const refreshable = d.laneHalts.length > 0\n      ? d.laneSteps.some((x) => x.forced && !x.newLane)\n      : d.laneSteps.some((x) => !x.newLane) || d.driverStep !== null;',
+    from: '    const refreshable = d.laneSteps.some((x) => !x.newLane) || d.driverStep !== null;',
     to: '    const refreshable = false;',
     why: 'a forced new lane throttled by a refusal that names no reset halts the run budget while a started lane still has a runnable step (with a reset the lane would only wait, so the case needs one without)',
     killed_by: /a forced new lane that is throttled waits while a started lane has a runnable step/,
@@ -535,7 +537,7 @@ export const MUTATIONS = [
     id: 'S28', file: SCHED, tests: [TLS],
     from: '      const made = created.error\n        ? { ok: false, failed: true,',
     to: '      if (created.error) throw new Error(created.error);\n      const made = false\n        ? { ok: false, failed: true,',
-    why: 'a lane whose creation fails aborts every worker in flight and ends the run as an error, instead of draining',
+    why: 'a lane whose creation fails aborts every worker in flight and ends the run as an error, instead of parking that lane',
     killed_by: /a lane whose creation fails is that lane's halt/,
   },
   {
@@ -579,7 +581,7 @@ export const MUTATIONS = [
   },
   {
     id: 'S35', file: SCHED, tests: [TLS],
-    from: '      if (!r.admitted && s.subtaskId && unused.has(s.subtaskId) && !c.interrupted()) await removeUnused(s.subtaskId);\n',
+    from: '        if (!parks && unused.has(s.subtaskId) && !c.interrupted()) await removeUnused(s.subtaskId);\n',
     to: '',
     why: 'an admission that gives way after creating its lane leaves the lane on disk without its step (Decision 5)',
     killed_by: /a five-hour part that expires while a new lane is admitted/,
@@ -621,8 +623,8 @@ export const MUTATIONS = [
   },
   {
     id: 'S39', file: SCHED, tests: [TLS],
-    from: '      if (!r.admitted && s.subtaskId && unused.has(s.subtaskId) && !c.interrupted()) await removeUnused(s.subtaskId);',
-    to: '      if (!r.admitted && s.subtaskId && unused.has(s.subtaskId)) await removeUnused(s.subtaskId);',
+    from: '        if (!parks && unused.has(s.subtaskId) && !c.interrupted()) await removeUnused(s.subtaskId);',
+    to: '        if (!parks && unused.has(s.subtaskId)) await removeUnused(s.subtaskId);',
     why: 'a removal starts after the interrupt: the interrupted run removes the lane its creation just made instead of keeping it',
     killed_by: /SIGHUP with a lane's creation under way/,
   },
@@ -745,4 +747,5 @@ export const MUTATIONS = [
     why: 'a peer whose cancellation did not go through after a close on a report may still run, and the run drops its open-run record (C127)',
     killed_by: /settlement task that fails halts the lane and keeps the open-run record/,
   },
+
 ];

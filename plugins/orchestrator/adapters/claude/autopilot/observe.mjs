@@ -208,7 +208,10 @@ function findArchived(stateCli, roots, homes, id, o) {
 function observeGit(repoRoot, o) {
   const branch = run('git', ['-C', repoRoot, 'branch', '--show-current'], o);
   const head = run('git', ['-C', repoRoot, 'rev-parse', '--verify', '--quiet', 'HEAD'], o);
-  const status = run('git', ['-C', repoRoot, 'status', '--porcelain', '--untracked-files=normal'], o);
+  // No optional lock: a look never refreshes the index, so the index a run with
+  // lanes watches for a parked lane changes only when someone else writes it
+  // (ADR-0068 Decision 1, item 6).
+  const status = run('git', ['-C', repoRoot, 'status', '--porcelain', '--untracked-files=normal'], { ...o, env: { ...o.env, GIT_OPTIONAL_LOCKS: '0' } });
   const git = {
     branch: branch.code === 0 ? branch.stdout : '',
     head: head.code === 0 ? head.stdout : null,

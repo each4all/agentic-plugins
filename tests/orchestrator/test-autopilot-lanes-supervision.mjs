@@ -225,7 +225,7 @@ describe('what changes while a lane is admitted', () => {
 });
 
 describe('a lane-layer failure is the lane\'s', () => {
-  it('a lane whose creation fails is that lane\'s halt: the run drains, and the other lane\'s step in flight runs to its end, never aborted', async () => {
+  it('a lane whose creation fails is that lane\'s halt: it parks that lane, and the other lane\'s step in flight runs to its end, never aborted, and that lane goes on', async () => {
     const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT] }, actions: { 1: 'wait:b-failed' } } });
     markOn(t, /^■ lane B: owner-choice — subtask B's lane could not be created/, 'b-failed');
     try {
@@ -235,10 +235,10 @@ describe('a lane-layer failure is the lane\'s', () => {
       strictEqual(code, 2, t.lines.join('\n'));
       ok(!existsSync(join(t.dir, 'b-failed.timeout')), 'A was in flight when B\'s creation failed');
       const r = t.latest();
-      deepStrictEqual(r.steps.map((x) => [x.lane, x.kind, x.aborted, x.outcome]), [['A', 'dispatch', null, 'ok']]);
+      deepStrictEqual(r.steps.map((x) => [x.lane, x.kind, x.aborted, x.outcome]), [['A', 'dispatch', null, 'ok'], ['A', 'commit', null, 'ok']]);
       strictEqual(r.halt.subtask_id, 'B');
       match(r.halt.detail, /lane could not be created: injected/);
-      strictEqual(bySubtask(r).B.state, 'creation failed');
+      deepStrictEqual([bySubtask(r).B.state, bySubtask(r).B.note], ['parked', 'creation failed']);
       deepStrictEqual(L.listOpenRuns(t.work), []);
     } finally {
       t.fx.cleanup();
@@ -410,7 +410,7 @@ describe('an interrupt, and the driver\'s exit, with a task in flight', () => {
       strictEqual(r.halt.reason, 'interrupted');
       deepStrictEqual(r.steps, [], 'no step starts after the interrupt');
       strictEqual(LN.readLaneIdentity(t.lane('A')).state, 'ok', 'the creation finished: the lane has its identity');
-      strictEqual(bySubtask(r).A.state, 'created');
+      deepStrictEqual([bySubtask(r).A.state, bySubtask(r).A.note], ['active', 'created']);
       ok(!t.lines.some((l) => /lane A: removed/.test(l)), 'no removal starts after the interrupt');
     } finally {
       t.fx.cleanup();
@@ -505,7 +505,8 @@ describe('the loop keeps serving its workers', () => {
       const began = statSync(join(t.dir, 'b-creating')).mtimeMs;
       ok(aEnded - began < 6000, `A's end was seen ${aEnded - began} ms after B's 12 s creation began`);
       ok(t.lines.some((l) => /lane B: created/.test(l)), t.lines.join('\n'));
-      deepStrictEqual(stepsOf(t.latest()).map((x) => [x[1], x[2]]), [['A', 'dispatch']]);
+      // A's halt parks A only (ADR-0068 Decision 1): B, created, steps.
+      deepStrictEqual(stepsOf(t.latest()).map((x) => [x[1], x[2]]).slice(0, 2), [['A', 'dispatch'], ['B', 'dispatch']]);
     } finally {
       t.fx.cleanup();
     }

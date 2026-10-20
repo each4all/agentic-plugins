@@ -27,6 +27,15 @@ import {
 
 const SR = await import(resolve(AP, '../../../scripts/lib/state-root.mjs'));
 const RT = await import(resolve(AP, 'roots.mjs'));
+// ADR-0068 Decision 1: a lane halt parks its lane and drains nothing, so the
+// drain a test here needs is a run-wide one: version drift, seen once a step
+// has written <dir>/drift.
+const driftOn = (t) => ({
+  resolveRoots: async (o) => {
+    const r = await RT.resolveRoots(o);
+    return existsSync(join(t.dir, 'drift')) ? { ...r, versions: { ...r.versions, engineer: '99.0.0' } } : r;
+  },
+});
 const { observeInChild } = await import(resolve(AP, 'offloop.mjs'));
 const pause = (ms) => new Promise((r) => { setTimeout(r, ms); });
 const until = async (file) => { for (let i = 0; i < 600 && !existsSync(file); i += 1) await pause(50); };
@@ -105,10 +114,10 @@ describe('landing reports with lanes', () => {
     // As above, but A does not land: the drain's last look fails, and the
     // end's look succeeds without a fetch or a report of its own.
     const t = await setup({
-      scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT] }, actions: { 2: ['wait:a-reported', 'conflict-gate'] } },
+      scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT] }, actions: { 2: ['wait:a-reported', 'conflict-gate', 'mark:drift'] } },
     });
     markOn(t, /^◆ landing-ready: A on feat\/a /, 'a-reported');
-    markOn(t, /^■ lane B: awaiting-owner:peer-conflict/, 'drained');
+    markOn(t, /^■ version-drift/, 'drained');
     const { failedView } = await import(resolve(AP, 'offloop.mjs'));
     let endLooks = 0;
     const observeAsync = async (a, o) => {
@@ -119,7 +128,7 @@ describe('landing reports with lanes', () => {
       return observeInChild(a, o);
     };
     try {
-      strictEqual(await t.run({}, { observeAsync }), 2, t.lines.join('\n'));
+      strictEqual(await t.run({}, { observeAsync, ...driftOn(t) }), 2, t.lines.join('\n'));
       strictEqual(endLooks, 1, t.lines.join('\n'));
       const r = t.latest();
       deepStrictEqual(r.landing.map((x) => [x.subtask_id, x.sync.state]), [['A', 'ready']]);

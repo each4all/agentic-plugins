@@ -172,8 +172,8 @@ export const MUTATIONS = [
   },
   {
     id: 'V7', file: POLICY, tests: [TP],
-    from: "  if (unread) return halt('owner-choice', ",
-    to: "  if (false) return halt('owner-choice', ",
+    from: '  if (unread) {\n    const runWide',
+    to: '  if (false) {\n    const runWide',
     why: 'a look that could not read what verifyStep compares is reported as the step\'s failure: a postcondition or cross-check over nothing (C92)',
     killed_by: [/the macro: halts owner-choice naming the read/, /its readiness: halts owner-choice naming the read/, /the step's own child: halts owner-choice naming the read/],
   },

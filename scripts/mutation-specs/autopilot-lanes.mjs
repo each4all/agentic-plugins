@@ -15,7 +15,8 @@
 // Groups: P placement and identity, C creation, R removal, F the rollback
 // fence, K reconciliation rows, S where a step runs, L the worker groups in
 // the locks, X peer cancellation, D the dead-run cleanup (Decision 6, Locks:
-// open-run records, a dead run's peers and budget, stop and the next run).
+// open-run records, a dead run's peers and budget, stop and the next run),
+// Q one parked lane's reconciliation (ADR-0068 Decision 1, item 4).
 
 const T = 'tests/orchestrator/test-autopilot-lanes.mjs';
 const TD = 'tests/orchestrator/test-autopilot-driver.mjs';
@@ -551,5 +552,19 @@ export const MUTATIONS = [
     to: '    if (false) {',
     why: 'stop empties a dead-looking driver\'s groups and exits 0 while the driver, alive but unprovable and with no record, runs on',
     killed_by: /exits 1 when the run it stops still runs/,
+  },
+  {
+    id: 'Q1', file: LANES, tests: [T],
+    from: '  const halts = [...stuck, ...plan.halts.filter((h) => h.subtaskId === subtaskId || h.subtaskId == null)',
+    to: '  const halts = [...stuck, ...plan.halts',
+    why: 'a lane picked up again halts on another lane\'s row: one lane\'s park spreads to the next',
+    killed_by: /reconciles one lane from the whole macro's facts/,
+  },
+  {
+    id: 'Q2', file: LANES, tests: [T],
+    from: "    } else if (p.kind === 'assign-identity' && p.lane.subtaskId === subtaskId) {",
+    to: "    } else if (p.kind === 'assign-identity') {",
+    why: 'reconciling one lane writes another lane\'s identity, a lane the run may have mid-step',
+    killed_by: /reconciles one lane from the whole macro's facts/,
   },
 ];
