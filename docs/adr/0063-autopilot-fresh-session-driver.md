@@ -35,28 +35,25 @@ Accepted (2026-09-29, owner decision).
   re-checked only where a refine changed it, and its recurring findings come
   from a review ledger. D4's ceremony gates carry a dated note; the contract
   is § Amendment 2026-10-14 — document deliverables converge (C120).
-- Proposed amendment 2026-10-19 by
-  [ADR-0068](0068-autopilot-lanes-that-keep-going.md) (Proposed): with
+- Amended 2026-10-19 by
+  [ADR-0068](0068-autopilot-lanes-that-keep-going.md) (accepted 2026-10-20): with
   lanes, a lane halt parks only its lane, and the owner can hold a lane and
   release it. R2, D4's halt table and Lanes paragraph, D6's `next_step`,
   D8's macro-scoped files and halt signal, and the S3+S4 note on
-  `finish-verb` carry dated notes;
-  until ADR-0068 is accepted they change nothing.
-- Proposed amendment 2026-10-19 by ADR-0068's slice 2 (Proposed): stall
+  `finish-verb` carry dated notes.
+- Amended 2026-10-19 by ADR-0068's slice 2 (accepted 2026-10-20): stall
   detection, log-only until the owner switches it on, and the driver's event
   file that the main session watches. D1's Bounded property, D4's proceed
-  rule 6, D5's session hosting, D8's halt signal and Q5 carry dated notes;
-  until ADR-0068 is accepted they change nothing.
-- Proposed amendment 2026-10-20 by ADR-0068's slice 3 (Proposed): a
+  rule 6, D5's session hosting, D8's halt signal and Q5 carry dated notes.
+- Amended 2026-10-20 by ADR-0068's slice 3 (accepted 2026-10-20): a
   verification step the driver runs with no LLM, and one heavy-work lock.
   D1's effect domain, D3's step model, D4's `no-progress` trigger, D5's
-  worker contract and D8's Lock bullet carry dated notes; until ADR-0068 is
-  accepted they change nothing.
-- Proposed amendment 2026-10-20 by ADR-0068's slice 4 (Proposed): the main
+  worker contract and D8's Lock bullet carry dated notes.
+- Amended 2026-10-20 by ADR-0068's slice 4 (accepted 2026-10-20): the main
   session's instructions to a lane, applied at its next step boundary, and
   the rebinding of a dispatched subtask by an approved change of its
   instructions. The S6 note and the S8 note's forced-step rules carry dated
-  notes; until ADR-0068 is accepted they change nothing.
+  notes.
 
 <!--
 Adds one named effect domain — S1, owner-launched fresh-session spawn —
@@ -109,7 +106,7 @@ system already computes. Two gaps sit at the root:
 | R5 | **Deterministic control.** The driver never synthesizes a command from free text. Commands come only from closed enums in state (same principle as entry-brief R0). |
 
 *Note 2026-10-19 on R2 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-proposed; in force once it is accepted):* with lanes, a judgment point in a
+accepted 2026-10-20):* with lanes, a judgment point in a
 lane parks that lane only, and the other lanes go on; the run-wide halts
 still drain, and the run reports once nothing can start (ADR-0068 Decision
 1).
@@ -249,7 +246,7 @@ the owner's repo. The safety argument rests on seven properties:
   option.
 
   *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 2,
-  proposed; in force once it is accepted):* a stall
+  accepted 2026-10-20):* a stall
   detector judges every step from its stream and its descendants' CPU. It
   records only, and the per-step wall clock stays the step's bound, until
   the owner switches it on after reviewing its verdicts; then a step stalled
@@ -298,7 +295,7 @@ the owner's repo. The safety argument rests on seven properties:
   ref.
 
   *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 3,
-  proposed; in force once it is accepted):* S1 also covers the driver's
+  accepted 2026-10-20):* S1 also covers the driver's
   verification checks: each a kind the repository declares, read from the
   run's baseline, run as an argv array with checked arguments in the lane's
   checkout (serial: the driven checkout), in its own process group, which
@@ -348,7 +345,7 @@ driver is stateless across runs. It re-derives everything from durable state
 each iteration, so re-launching after a halt continues.
 
 *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 3,
-proposed; in force once it is accepted):* one more step, which runs no
+accepted 2026-10-20):* one more step, which runs no
 `claude` process: when the child's next step is `verify` and the run offers
 verification, the driver runs the requested checks with no LLM, records each
 result in the workflow, and then dispatches the request's `on_pass` when
@@ -422,7 +419,7 @@ view is:
    (C105):* the run's wall clock is removed. Iterations and total cost
    remain, and each step's own wall clock (D1) still bounds that step.
    *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 2,
-   proposed; in force once it is accepted):* once the
+   accepted 2026-10-20):* once the
    owner switches the stall detector on, a step is bounded by the stall rule
    and by the emergency cap (ADR-0068 Decision 3, item 8).
 
@@ -447,7 +444,7 @@ view is:
 | `interrupted` | SIGINT/SIGTERM from the owner |
 
 *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-proposed; in force once it is accepted):* the codes are unchanged, and with
+accepted 2026-10-20):* the codes are unchanged, and with
 lanes each halt has a scope, set by its cause, not by its code or by
 whether it names a subtask. The run-wide causes are a closed list:
 `version-drift`, `budget`, `plan-unapproved`, a gate on the macro, a halt
@@ -462,7 +459,7 @@ parks only that lane (ADR-0068 Decision 1, item 1). Serial runs keep the
 drain.
 
 *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 3,
-proposed; in force once it is accepted):* `no-progress` gains one trigger: a
+accepted 2026-10-20):* `no-progress` gains one trigger: a
 verb that asks for the same checks again on an unchanged tree after a
 verification batch in which they all passed or one failed (after a timeout
 with no failure they run again). A batch is judged by its results, never
@@ -505,7 +502,7 @@ throttle: [ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md)
 Decision 6.
 
 *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-proposed; in force once it is accepted):* only a run-wide halt drains. A
+accepted 2026-10-20):* only a run-wide halt drains. A
 lane halt parks its lane while the other lanes go on, the park is kept for
 the next run, and the lane is judged again once its record changes or the
 owner releases it; a lane the owner holds is left alone (ADR-0068 Decisions
@@ -566,7 +563,7 @@ claude -p --input-format stream-json --output-format stream-json --verbose
    pattern, `plugins/engineer/scripts/peer-runner.mjs:711-725`).
 
    *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 2,
-   proposed; in force once it is accepted):* the host also
+   accepted 2026-10-20):* the host also
    keeps the time of the last stream event other than heartbeats and hooks,
    and the driver samples the worker's descendants' CPU. Log-only, the
    verdicts are recorded and nothing is aborted; switched on, a `stalled`
@@ -668,7 +665,7 @@ cache fallback, the driver appends a short hint naming the resolved roots
 - A dedicated worktree (the `runtime:worktree` planner) is recommended.
 
 *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 3,
-proposed; in force once it is accepted):* in a run that offers verification
+accepted 2026-10-20):* in a run that offers verification
 (recorded in `run.json` and told to each worker), a worker makes its edits
 and the quick checks it judges to take minutes, runs no mutation run and not
 the whole test suite in its step, never waits there for the heavy-work lock,
@@ -682,7 +679,7 @@ processes a check starts, as it does not bind those a worker's script starts
 - **`next_step` (engineer workflow).** Written at verb State finalize.
 
   *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-  proposed; in force once it is accepted):* every persona operation of a
+  accepted 2026-10-20):* every persona operation of a
   macro's child also stays visible, from its first write to its last (the
   write that records `next_step`, the close without a commit, or, for a
   commit, its archive and the parent writeback after it), through one new
@@ -769,7 +766,7 @@ landing log, the lane removal intents and the open-run records
   Decision 7 and its note of that date).
 
 *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-proposed; in force once it is accepted):* the macro-scoped files under the
+accepted 2026-10-20):* the macro-scoped files under the
 main worktree gain the macro's holds directory,
 `.agentic-plugins/runs/autopilot/holds/<macro-id>/`: the owner's hold
 records, what the driver and the persona record beside them, and the lane
@@ -793,7 +790,7 @@ Other rules:
   and 6).
 
   *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 3,
-  proposed; in force once it is accepted):* beside these, one heavy-work lock
+  accepted 2026-10-20):* beside these, one heavy-work lock
   per repository, the mutation harness's
   `<git-common-dir>/mutation-harness.lock`, with one holder at a time: the
   harness, or the wrapper `agentic-autopilot heavy --`, which the driver uses
@@ -811,7 +808,7 @@ Other rules:
   `osascript`, with a fixed script, the payload as argv, and no egress (Q5 resolved).
 
   *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-  proposed; in force once it is accepted):* with lanes, the run ends when
+  accepted 2026-10-20):* with lanes, the run ends when
   nothing runs and nothing can start, every remaining lane parked, held
   (its handoff done or pending, or its record unreadable), waiting to land,
   or blocked behind one of those, or the plan done; exit 2 keeps its
@@ -819,7 +816,7 @@ Other rules:
   (ADR-0068 Decision 1, items 7 and 9).
 
   *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 2,
-  proposed; in force once it is accepted):* beside
+  accepted 2026-10-20):* beside
   these, the driver appends one JSON line per event (a park, a halt, a
   failed step, a finished commit, a stall verdict, the run's end) to the
   event file of its lock scope, `events/<macro-id>.jsonl` under the main
@@ -1083,7 +1080,7 @@ that part of §4 before this ADR was adopted.
 - **Q5. Halt notification kind.** *Resolved 2026-09-25:* no plugin notification; terminal + ledger + optional `--notify-local`. (Previously: reuse `response-needed`, or add an
   `autopilot-halt` kind to ADR-0047.)
   *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 2,
-  proposed; in force once it is accepted):* the
+  accepted 2026-10-20):* the
   resolution stands. The driver's event file is part of the ledger, appended
   and read by local processes: no plugin notification, no egress, no
   ADR-0047 kind (ADR-0068 Decision 4, item 7).
@@ -1328,7 +1325,7 @@ under an autopilot run, a plan the owner has not approved at its current hash.
   driver's own policy (D4 rule 3, S8) halts before the next step.
 
   *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-  slice 4, proposed; in force once it is accepted):* the gate is unchanged.
+  slice 4, accepted 2026-10-20):* the gate is unchanged.
   An approval that changes the plan joins the run locks as an admission, so
   it is refused beside a live run of the macro. A `plan-set` followed by an
   approval between two of the driver's looks therefore no longer passes
@@ -1364,7 +1361,7 @@ follow live in one file, `plugins/engineer/core/skills/_shared/references/autopi
       so the footer prints as before.
 
       *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-      proposed; in force once it is accepted):* not while the workflow's
+      accepted 2026-10-20):* not while the workflow's
       subtask is held or has a kept lane park, nor while a run of its macro
       is live: then it records the next step and leaves the terminal marker
       unset, as under autopilot, and the driver resumes the lane from that
@@ -1599,7 +1596,7 @@ roots, `driver.mjs` runs the loop, and `cli.mjs` is the entry of
     reproduced a forced `--no-commit` completing unlanded work).
 
     *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-    slice 4, proposed; in force once it is accepted):* the owner may also
+    slice 4, accepted 2026-10-20):* the owner may also
     give a lane its next step while a run lives, as an instruction: the same
     grammar without the dispatch, and the same reach (it replaces the
     recorded step and its judgment halt, goes through the step's
