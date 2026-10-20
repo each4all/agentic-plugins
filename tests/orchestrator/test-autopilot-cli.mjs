@@ -154,6 +154,38 @@ describe('refusals', () => {
   });
 });
 
+// ADR-0068 Decision 6, item 4 — the wrapper's words (lib/heavy-run.mjs); its
+// behaviour is tests/orchestrator/test-heavy-lock-wrapper.mjs's.
+describe('heavy', () => {
+  const { parseHeavy, HeavyUsageError } = C.heavyForTests;
+
+  it('reads its options before --, and nothing after it', () => {
+    deepStrictEqual(parseHeavy(['--purpose', 'the suite', '--repo', '/r', '--declaration-ref', 'abc', '--', 'npm', 'test', '--', '--purpose']), {
+      purpose: 'the suite', repo: '/r', declarationRef: 'abc', command: ['npm', 'test', '--', '--purpose'], help: false,
+    });
+    deepStrictEqual(parseHeavy(['--', '--help']).command, ['--help']);
+    strictEqual(parseHeavy(['--help']).help, true);
+    for (const words of [[], ['npm', 'test'], ['--'], ['--', ''], ['--purpose'], ['--purpose', '--', 'x'], ['--bogus', '--', 'x']]) {
+      throws(() => parseHeavy(words), HeavyUsageError, JSON.stringify(words));
+    }
+  });
+
+  it('is exempt from the host refusal and runs inside an autopilot step: the lock is host-neutral', async () => {
+    await withRepo(async (fx, env, work) => {
+      for (const extra of [{ AGENTIC_HOST: 'codex' }, { AGENTIC_AUTOPILOT: 'autopilot-20261001T000000Z-abcdef' }]) {
+        const r = await main(['heavy', '--', 'sh', '-c', 'exit 5'], { ...env, ...extra }, work);
+        strictEqual(r.code, 5, r.err);
+      }
+      const usage = await main(['heavy', '--help'], { ...env, AGENTIC_HOST: 'codex' }, work);
+      strictEqual(usage.code, 0);
+      ok(usage.out.startsWith('Usage: agentic-autopilot heavy'), usage.out);
+      const bad = await main(['heavy', 'npm', 'test'], env, work);
+      strictEqual(bad.code, 125);
+      ok(/the command follows --/.test(bad.err), bad.err);
+    });
+  });
+});
+
 describe('preview is a dry run', () => {
   it('prints the decision and the posture and spawns no worker', async () => {
     await withRepo(async (fx, env, work) => {

@@ -86,6 +86,10 @@ const SCRUB_EXACT = Object.freeze([
   // secret. Inherited from an outer session they would name another
   // checkout's homes or another run: only the driver may supply them.
   'AGENTIC_STATE_BASE', 'AGENTIC_AUTOPILOT_TOKEN',
+  // ADR-0068 Decision 6: the heavy-work lock's proof and handle chain. A
+  // worker started inside a holder's ownership would join it with every
+  // heavy job of its step.
+  'AGENTIC_HEAVY_LOCK_PROOF', 'AGENTIC_HEAVY_LOCK_VIA',
   // Runbooks resolve their root from AGENTIC_<PLUGIN>_ROOT first; a stale
   // inherited value must not stand in for it.
   'CLAUDE_PLUGIN_ROOT',

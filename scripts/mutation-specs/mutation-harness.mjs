@@ -24,6 +24,9 @@ import { join } from 'node:path';
 
 const T = 'tests/scripts/test-mutation-harness.mjs';
 const H = 'scripts/mutation-harness.mjs';
+// The lock itself moved to the shared heavy-work lock (ADR-0068 Decision 6);
+// its cases keep their ids and their tests.
+const LOCK = 'plugins/orchestrator/scripts/lib/heavy-lock.mjs';
 
 const T_FLAG = /^defaults to 900 s; the flag beats the environment$/;
 const T_REFUSE = /^refuses a value that is not a whole number of seconds from 1, naming its source$/;
@@ -124,7 +127,12 @@ export const MUTATIONS = [
     from: "      // What the run left behind ends with it, and its output pipe closes.\n      stopRun(child.pid, 'SIGKILL');\n",
     to: '',
     why: 'a process a passing run left behind outlives it',
-    killed_by: T_LEFTOVER,
+    // Equivalent since the run settles only once its group is gone (ADR-0068
+    // Decision 6; heavy-lock.mjs H4 holds that wait): the teardown at the
+    // run's close kills what it left. The kill at the runner's exit still
+    // closes the output pipe early for a process the runner itself started
+    // holding it, a case no test makes.
+    expect: 'SURVIVED',
   },
   {
     id: 'R6', file: H,
@@ -196,7 +204,7 @@ export const MUTATIONS = [
 
   // ---- L: the run lock and the CLI's cleanup ----------------------------------
   {
-    id: 'L1', file: H,
+    id: 'L1', file: LOCK,
     from: '    linkSync(tmp, target);',
     to: '    writeFileSync(target, readFileSync(tmp));',
     why: 'taking the lock replaces the holder\'s: two runs run at once (C101)',
@@ -210,35 +218,35 @@ export const MUTATIONS = [
     killed_by: [T_TURNS, T_SIGNAL],
   },
   {
-    id: 'L3', file: H,
+    id: 'L3', file: LOCK,
     from: '  if (!processAlive(record.pid)) return false;\n',
     to: '',
     why: 'a lock whose holder was killed is never recovered: every later run waits for ever',
     killed_by: [T_STALE, T_SIGKILL],
   },
   {
-    id: 'L4', file: H,
+    id: 'L4', file: LOCK,
     from: '  return record.started === info.started;\n',
     to: '  return true;\n',
     why: 'a dead holder\'s pid, reused by another process, keeps its lock held for ever',
     killed_by: T_STALE,
   },
   {
-    id: 'L5', file: H,
+    id: 'L5', file: LOCK,
     from: '      if (reaper.record !== null && reaper.record.token === name && running(reaper.record)) continue;\n',
     to: '',
     why: 'a live reaper\'s guard is taken: two reapers, and one may remove the lock the other\'s run took',
     killed_by: T_GUARD,
   },
   {
-    id: 'L6', file: H,
+    id: 'L6', file: LOCK,
     from: '  if (record.host !== hostname()) return true;\n',
     to: '',
     why: 'a holder on another host is judged by a pid that means nothing here',
     killed_by: T_HOST,
   },
   {
-    id: 'L7', file: H,
+    id: 'L7', file: LOCK,
     from: '      if (readLock(path)?.record?.token === record.token) unlinkSync(path);',
     to: '      unlinkSync(path);',
     why: 'a run releases the lock another run holds',
@@ -259,14 +267,14 @@ export const MUTATIONS = [
     killed_by: T_SIGNAL,
   },
   {
-    id: 'L10', file: H,
+    id: 'L10', file: LOCK,
     from: '        renameSync(join(guard, name), captured);\n',
     to: '        rmSync(guard, { recursive: true, force: true });\n',
     why: 'a waiter removes the guard by its name, not the entry it judged: the guard a live reaper placed meanwhile goes, two reapers, two holders',
     killed_by: [T_GUARD_SAME, T_GUARD_CAPTURE],
   },
   {
-    id: 'L11', file: H,
+    id: 'L11', file: LOCK,
     from: "LC_ALL: 'C', TZ: 'UTC' }",
     to: "LC_ALL: 'C' }",
     why: 'ps spells a start time in the reader\'s time zone: a waiter elsewhere takes a live holder\'s lock',
@@ -274,7 +282,7 @@ export const MUTATIONS = [
     ...(process.platform === 'linux' ? { expect: 'SURVIVED' } : { killed_by: T_TZ }),
   },
   {
-    id: 'L12', file: H,
+    id: 'L12', file: LOCK,
     from: " || startScheme(record.started) !== startScheme(info.started)) return true;",
     to: ') return true;',
     why: 'a start another version of the harness spelled reads as a reused pid: a live holder loses its lock',
@@ -295,7 +303,7 @@ export const MUTATIONS = [
     killed_by: T_STOPPING,
   },
   {
-    id: 'L15', file: H,
+    id: 'L15', file: LOCK,
     from: '      judged();\n      const captured',
     to: '      const again = readLock(join(guard, name));\n      judged();\n      if (again?.raw === reaper.raw) { rmSync(guard, { recursive: true, force: true }); log(`mutation-harness: removed the guard of a reaper that is not running (${guard})`); continue; }\n      const captured',
     why: 'the re-check, then remove, is back: a waiter re-reads the dead reaper\'s guard, then removes the guard by its name, and the guard a live reaper placed after that read goes with it (C101)',
