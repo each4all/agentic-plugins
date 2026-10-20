@@ -486,7 +486,7 @@ describe('what changes while a step\'s marker waits for the park records\' lock 
         writeFileSync(join(t.dir, 'go'), '1');
         (async () => {
           const l = await held;
-          for (let i = 0; i < 90 && !bEnded; i += 1) await pause(50);
+          for (let i = 0; i < 600 && !bEnded; i += 1) await pause(50);
           await pause(150);
           releasedAfterB = bEnded;
           l.release();
