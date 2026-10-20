@@ -39,6 +39,11 @@ Proposed 2026-10-07.
   detection and the driver's event file. Decision 6's Budgets and Decision
   8, item 5, carry dated notes; until ADR-0068 is accepted they change
   nothing.
+- Proposed amendment 2026-10-20 by ADR-0068's slice 3 (Proposed): a
+  verification step the driver runs with no LLM, and one heavy-work lock.
+  Decision 6's opening, its capacity claim and its Locks, §Out of scope and
+  cascade item 7c carry dated notes; until ADR-0068 is accepted they change
+  nothing.
 - **On acceptance** it:
   - amends [ADR-0063](0063-autopilot-fresh-session-driver.md): R2's halt
     wording, D1's worktree-lanes clause (the held integration-merge clause is
@@ -1236,6 +1241,12 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
   lane-specific: Decision 7's event, the admission entries and worker token
   (Decision 4, item 5), the content drift check (Decision 8, item 4), and
   the dead-run cleanup below. 2 or more: lanes.
+  - *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+    slice 3, proposed; in force once it is accepted):* N counts workers.
+    Beside them, serial or with lanes, the driver runs verification batches
+    with no LLM, one at a time in the order their requests were recorded,
+    each under the heavy-work lock; a lane whose batch waits or runs holds
+    no worker slot (ADR-0068 Decision 5, item 9).
   - The owner's default cap is 2. The proposals (Decision 8) never suggest
     more. A larger N is the owner's explicit choice: it prints the
     rate-limit cost, and the throttle still gates each new lane.
@@ -1325,6 +1336,12 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
   exclusion (`acquireLock`, `:391-423`) and its entry shape. Each run also
   holds the worktree lock of every checkout it drives: its own, and with
   lanes each lane's (Decision 5).
+  - *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+    slice 3, proposed; in force once it is accepted):* beside these, the
+    repository's heavy-work lock, the mutation harness's
+    `<git-common-dir>/mutation-harness.lock`, under which the driver's
+    verification checks run. No holder of it waits for a run lock (ADR-0068
+    Decision 6, item 7).
   - **One entry per worker group.** Beside its own entry, a run adds one
     entry for each worker group in flight, recording the driver (pid,
     fingerprint) and that group in the `worker` field: today's `{pid, pgid,
@@ -1559,6 +1576,14 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
   for its merge runs nothing. The backlog is bounded by the plan and reported
   by Decision 7. The run halts `awaiting-landing` when nothing else can run,
   as today.
+  *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+  slice 3, proposed; in force once it is accepted):* the cap no longer
+  bounds full test runs: a worker hands them to the driver's verification
+  step, and the heavy-work lock lets one heavy job of the repository run at
+  a time among the holders that take it (with the exceptions ADR-0068
+  Decision 6, item 2 states). The cap bounds the workers' cost and the rate limit; a lane
+  verifying, like one waiting to land, holds no slot (ADR-0068 Decisions 5
+  and 6).
 - **Final report:** one block per lane, then the run line.
 
 ### Decision 7. The landing-ready event (docket C118)
@@ -2105,6 +2130,12 @@ Not amended:
   driver's event file, main-to-lane instructions). `/orchestrator:next
   --parallel` stays unbuilt, the owner's decision of 2026-10-17.
 - A heavy-job lock, so two lanes do not run `npm test` at the same time.
+
+  *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
+  slice 3, proposed; in force once it is accepted):* taken up there: one
+  heavy-work lock per repository, the mutation harness's file, shared by the
+  driver's verification checks, the harness and a wrapper for interactive
+  sessions (ADR-0068 Decision 6).
 - A shared-number allocator. The planner pre-assigns numbers instead.
 - Docket C105: a step-start guard based on recent step durations. Today the
   driver checks only `MIN_STEP_TIMEOUT_SEC` (`driver.mjs:50`).
@@ -2509,6 +2540,11 @@ begins "- `halt.json`: reason code"):**
 
 **7c. ADR-0063 D8 — replace the Lock bullet (from "- **Lock.** One run per
 macro:" through "The serial prototype keeps a per-repo `.lock`.") with:**
+
+*Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 3,
+proposed; in force once it is accepted):* the text below, applied on
+acceptance, is ADR-0063 D8's Lock bullet, which now carries a dated note on
+the heavy-work lock (ADR-0068 Decision 6); this block is left as applied.
 
 ```markdown
 - **Lock.** One run per macro: `<main>/.agentic-plugins/runs/autopilot/locks/<macro-id>.lock`,

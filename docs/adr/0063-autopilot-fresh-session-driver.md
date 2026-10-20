@@ -47,6 +47,11 @@ Accepted (2026-09-29, owner decision).
   file that the main session watches. D1's Bounded property, D4's proceed
   rule 6, D5's session hosting, D8's halt signal and Q5 carry dated notes;
   until ADR-0068 is accepted they change nothing.
+- Proposed amendment 2026-10-20 by ADR-0068's slice 3 (Proposed): a
+  verification step the driver runs with no LLM, and one heavy-work lock.
+  D1's effect domain, D3's step model, D4's `no-progress` trigger, D5's
+  worker contract and D8's Lock bullet carry dated notes; until ADR-0068 is
+  accepted they change nothing.
 
 <!--
 Adds one named effect domain — S1, owner-launched fresh-session spawn —
@@ -287,6 +292,15 @@ the owner's repo. The safety argument rests on seven properties:
   check `git merge-tree --write-tree` (ADR-0067 Decision 7), which writes no
   ref.
 
+  *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 3,
+  proposed; in force once it is accepted):* S1 also covers the driver's
+  verification checks: each a kind the repository declares, read from the
+  run's baseline, run as an argv array with checked arguments in the lane's
+  checkout (serial: the driven checkout), in its own process group, which
+  only the driver kills, with a worker's environment minus the run's
+  admission token and autopilot flag, under the heavy-work lock (ADR-0068
+  Decisions 5 and 6).
+
 Runtime is **not** granted S1. Runtime's §4 ceiling, including "hidden host
 startup", is unchanged.
 
@@ -327,6 +341,17 @@ approval, the exploration map and the plan only in conversation, so it is
 **out of scope**: autopilot runs macros whose subtasks are verb-chains. The
 driver is stateless across runs. It re-derives everything from durable state
 each iteration, so re-launching after a halt continues.
+
+*Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 3,
+proposed; in force once it is accepted):* one more step, which runs no
+`claude` process: when the child's next step is `verify` and the run offers
+verification, the driver runs the requested checks with no LLM, records each
+result in the workflow, and then dispatches the request's `on_pass` when
+every check passed on the lane's current tree, leaves the request for later
+when a stop, a hold, a drain or the driver's end cut the batch short, or
+resumes the requesting verb otherwise. It costs nothing and is bounded by
+the checks' timeouts, the batch's running time and its wait for the
+heavy-work lock (ADR-0068 Decision 5).
 
 ### D3a. Landing (ADR-0062; owner decision D23, 2026-09-29)
 
@@ -430,6 +455,14 @@ code is the lane's `worker-failed`) and an unreadable holds directory; they
 drain the run. `interrupted` aborts it. Every other halt is a lane halt and
 parks only that lane (ADR-0068 Decision 1, item 1). Serial runs keep the
 drain.
+
+*Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 3,
+proposed; in force once it is accepted):* `no-progress` gains one trigger: a
+verb that asks for the same checks again on an unchanged tree after a
+verification batch in which they all passed or one failed (after a timeout
+with no failure they run again). A batch is judged by its results, never
+by `no-progress`, and its recorded results count as a change of the child
+for the step it dispatches (ADR-0068 Decision 5, items 7 and 10).
 
 **`awaiting_owner.gate`** is a closed enum of genuine-judgment gates only:
 `plan-approval`, `plan-conflict`, `scope-routing`, `decide-conflict`,
@@ -629,6 +662,16 @@ cache fallback, the driver appends a short hint naming the resolved roots
   `awaiting-owner:pr-handling`.
 - A dedicated worktree (the `runtime:worktree` planner) is recommended.
 
+*Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 3,
+proposed; in force once it is accepted):* in a run that offers verification
+(recorded in `run.json` and told to each worker), a worker makes its edits
+and the quick checks it judges to take minutes, runs no mutation run and not
+the whole test suite in its step, never waits there for the heavy-work lock,
+and ends with the next step `verify`, a request naming declared checks with
+data arguments and the step that follows. The posture does not bind the
+processes a check starts, as it does not bind those a worker's script starts
+(ADR-0068 Decision 5, items 1, 2 and 8).
+
 ### D6. State contract additions (host-neutral core)
 
 - **`next_step` (engineer workflow).** Written at verb State finalize.
@@ -743,6 +786,19 @@ Other rules:
   `/orchestrator:next` first joins the worktree lock of its checkout
   ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decisions 4
   and 6).
+
+  *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 3,
+  proposed; in force once it is accepted):* beside these, one heavy-work lock
+  per repository, the mutation harness's
+  `<git-common-dir>/mutation-harness.lock`, with one holder at a time: the
+  harness, or the wrapper `agentic-autopilot heavy --`, which the driver uses
+  for a verification check whose command does not take the lock itself. A
+  holder's descendants join its ownership by an inherited proof (an older
+  harness copy cannot, and waits), and it releases only after its process
+  group has stopped; an older harness copy, as a reader, may start after a
+  holder's end beside a process that outlived it. The driver waits for it
+  while holding its run locks; no holder of it waits for a run lock, so the
+  order cannot deadlock (ADR-0068 Decision 6).
 - **Resume a halted step interactively:** `claude --resume <session_id>`.
 - **Halt signal:** terminal output + `halt.json` + exit code 2. There is no plugin
   notification: the notification feature is removed ([ADR-0064](0064-runtime-surface-reduction.md), proposed alongside).
