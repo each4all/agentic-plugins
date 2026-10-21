@@ -1,0 +1,425 @@
+{
+  "schema": "verify-select-backtest-1.0",
+  "note": [
+    "ADR-0068 Decision 5, item 4: pull requests whose first full-tests run failed, with the test files that failed in it.",
+    "Collected 2026-10-20 from the full-tests runs GitHub kept (runs from 2026-06-07 on), release-please pull requests and runs that failed with no failing test (a timeout) left out.",
+    "Each entry is replayed from main's history, not from the failing run's commit, which a squash merge leaves unreachable: the change is base..head, where head is the merge GitHub recorded and base the commit before the pull request's commits on main (head^ for a squash, head~k for a rebase merge of k commits). The selection reads the final change, an approximation of the first run's.",
+    "An entry's mappings are the declaration mappings its replay adds: a test that failed on a path no rule sees.",
+    "Where the failing run's commit (run_sha) is in the clone, the backtest also replays it against its fork point with the change's head: the first run's own tree. Most of these commits are on no branch GitHub keeps, so CI's clone lacks them and replays the merge only.",
+    "selected is the number of tests the rules (not the fallback) selected on the merge replay when recorded, 2026-10-21: a ceiling the backtest holds, so a rule that widens shows here and raising it is a deliberate edit.",
+    "fallback_only names the failing tests no rule selects, with why: each passes only because its change selects the whole suite, which the backtest asserts. A rule that comes to select one fails the backtest until the entry drops it.",
+    "#744 records a docs/** mapping (2026-10-21): its doc-version test failed on main's documents against the release tags, not on the ADRs the change edits, so no reading rule selects it; the suite caught it only while no test read an ADR. tests/scripts/test-set-terminal-archive-timing.mjs walks every document, so a rule now matches the ADRs and the fallback no longer fires (ADR-0068 D5 item 4: a match cancels it); #710 records the same test by mapping."
+  ],
+  "entries": [
+    {
+      "pr": 639,
+      "run_id": 30138748893,
+      "attempt": 1,
+      "run_sha": "716984596379360fe34694239a89034fa3219cbf",
+      "merge": "squash",
+      "base": "af620df40d54f385f933923ad0004a3962babb33",
+      "head": "c549ed281d16fc2410e492233af8ed4c0cfb5460",
+      "failing_tests": [
+        "tests/plugin-shape/test-runtime-plugin.mjs"
+      ],
+      "selected": 82
+    },
+    {
+      "pr": 641,
+      "run_id": 30144645480,
+      "attempt": 1,
+      "run_sha": "5e530f35869f86cc218dce1847a49c4364700c28",
+      "merge": "squash",
+      "base": "d21a23c9f1aebe8471c6fc14da66e4d70289b84e",
+      "head": "af620df40d54f385f933923ad0004a3962babb33",
+      "failing_tests": [
+        "tests/plugin-shape/test-runtime-plugin.mjs"
+      ],
+      "selected": 84
+    },
+    {
+      "pr": 644,
+      "run_id": 30187041195,
+      "attempt": 1,
+      "run_sha": "e6895ab8554ea869b1c4dc2e760a6e392ad7e336",
+      "merge": "squash",
+      "base": "18176f990b1ae881813e079749129dc196a2c074",
+      "head": "72482c3ce3378ec45febb13c71ab04e00ac6ec57",
+      "failing_tests": [
+        "tests/scripts/test-doc-evidence-consistency.mjs"
+      ],
+      "selected": 20
+    },
+    {
+      "pr": 694,
+      "run_id": 31779761301,
+      "attempt": 1,
+      "run_sha": "6955060daa4ead466c052c2d66a0b0d8a3245fe9",
+      "merge": "squash",
+      "base": "daedb08ed1cca6d30388fffb7d684b62e151928f",
+      "head": "aaf4744670387b0099976da10eced2b24916ae3f",
+      "failing_tests": [
+        "tests/runtime/test-host-parity-baseline.mjs"
+      ],
+      "selected": 116
+    },
+    {
+      "pr": 698,
+      "run_id": 31949645363,
+      "attempt": 1,
+      "run_sha": "610836920feb5683e41d29c8181abb8dc97c96fc",
+      "merge": "rebase",
+      "base": "aa49e24da2b47a05505008f81fbe4caf6b1e5b31",
+      "head": "6abe4be44380702cd24e94a71d78311c971a5840",
+      "failing_tests": [
+        "tests/scripts/test-release-obligation.mjs"
+      ],
+      "selected": 104
+    },
+    {
+      "pr": 702,
+      "run_id": 31998462916,
+      "attempt": 1,
+      "run_sha": "b222edebb7a0413ff36bf728cd6209e57963e813",
+      "merge": "squash",
+      "base": "38e59bbdaed4f4b5b265b845e6d68cf95e8c413a",
+      "head": "48db4f3751c3e02287b02a92151227d4b226586b",
+      "failing_tests": [
+        "tests/scripts/test-doc-evidence-consistency.mjs"
+      ],
+      "selected": 6,
+      "fallback_only": {
+        "tests/scripts/test-doc-evidence-consistency.mjs": "it checks the documents scripts/check-doc-evidence.mjs finds at run time, by directory and git history: no literal names the ADR the change adds"
+      }
+    },
+    {
+      "pr": 703,
+      "run_id": 32014361494,
+      "attempt": 1,
+      "run_sha": "52b56a24c46b0ca6492f708a524a93f01cf48eab",
+      "merge": "squash",
+      "base": "48db4f3751c3e02287b02a92151227d4b226586b",
+      "head": "e8f6d2b79d49ec7b6ca9e865cd642da4734d2997",
+      "failing_tests": [
+        "tests/scripts/test-release-obligation.mjs"
+      ],
+      "selected": 106
+    },
+    {
+      "pr": 705,
+      "run_id": 32021108820,
+      "attempt": 1,
+      "run_sha": "1c2c6e6e6f151074a9e925a0ee0eb8f49eb7babb",
+      "merge": "squash",
+      "base": "e8f6d2b79d49ec7b6ca9e865cd642da4734d2997",
+      "head": "79003cc49b7d8d7b6ec71f1f599d7ac744634d70",
+      "failing_tests": [
+        "tests/scripts/test-release-obligation.mjs"
+      ],
+      "selected": 89,
+      "fallback_only": {
+        "tests/scripts/test-release-obligation.mjs": "it evaluates the release obligation over the repository's own history and tags, which no file of the tree names"
+      }
+    },
+    {
+      "pr": 706,
+      "run_id": 32032413450,
+      "attempt": 1,
+      "run_sha": "d15ae59b8b23df083d1265d6e70b11f12c82c26a",
+      "merge": "squash",
+      "base": "79003cc49b7d8d7b6ec71f1f599d7ac744634d70",
+      "head": "b8ad2b328186fac63aadfca7995b10373b19f2c7",
+      "failing_tests": [
+        "tests/scripts/test-release-obligation.mjs"
+      ],
+      "selected": 109,
+      "fallback_only": {
+        "tests/scripts/test-release-obligation.mjs": "it evaluates the release obligation over the repository's own history and tags, which no file of the tree names"
+      }
+    },
+    {
+      "pr": 707,
+      "run_id": 32086109861,
+      "attempt": 1,
+      "run_sha": "22252a7ed0400bd1db150d91a92ac0bd61337226",
+      "merge": "squash",
+      "base": "b8ad2b328186fac63aadfca7995b10373b19f2c7",
+      "head": "c535c1ae97fd8f0e5dd9a3c66a2e2479332561c4",
+      "failing_tests": [
+        "tests/scripts/test-release-obligation.mjs"
+      ],
+      "selected": 99
+    },
+    {
+      "pr": 708,
+      "run_id": 32091259524,
+      "attempt": 1,
+      "run_sha": "b67eb90ec5c1647035c309cafc3ab06c776d9714",
+      "merge": "squash",
+      "base": "c535c1ae97fd8f0e5dd9a3c66a2e2479332561c4",
+      "head": "6651c5cf6a24e89818a2c3f01897e44f82b71ddf",
+      "failing_tests": [
+        "tests/scripts/test-release-obligation.mjs"
+      ],
+      "selected": 105
+    },
+    {
+      "pr": 709,
+      "run_id": 32103127200,
+      "attempt": 1,
+      "run_sha": "4c0ece070fd96868da9f4e3ad43936ca5ab85093",
+      "merge": "squash",
+      "base": "6651c5cf6a24e89818a2c3f01897e44f82b71ddf",
+      "head": "70e0461d7ebc94ac9e48e31d9a7bf45d5d54e03d",
+      "failing_tests": [
+        "tests/scripts/test-release-obligation.mjs"
+      ],
+      "selected": 125
+    },
+    {
+      "pr": 710,
+      "run_id": 32122382296,
+      "attempt": 1,
+      "run_sha": "cdc19c2b18a2c9d6128f40b7d669e283ae43991b",
+      "merge": "squash",
+      "base": "e8a9b44d03a2b899251fe5befe0099aed65e92bc",
+      "head": "4ee876459c90513a8004fc5c51e7e7688b919316",
+      "failing_tests": [
+        "tests/plugin-shape/test-runtime-plugin.mjs",
+        "tests/scripts/test-sync-doc-versions.mjs"
+      ],
+      "mappings": [
+        {
+          "paths": [
+            "plugins/runtime/**"
+          ],
+          "tests": [
+            "tests/plugin-shape/test-runtime-plugin.mjs",
+            "tests/scripts/test-sync-doc-versions.mjs"
+          ]
+        }
+      ],
+      "selected": 119
+    },
+    {
+      "pr": 716,
+      "run_id": 32205857666,
+      "attempt": 1,
+      "run_sha": "4f6eb8c0d6a1539e86eef7faddfd995d4de83e59",
+      "merge": "squash",
+      "base": "da7b8d9c739316ac8e5ecaacd6fef1a9cb2c76a3",
+      "head": "592fa1acc4e86949fdb8df69dd4f594e1aec9949",
+      "failing_tests": [
+        "tests/scripts/test-release-obligation.mjs"
+      ],
+      "selected": 96
+    },
+    {
+      "pr": 734,
+      "run_id": 32787608868,
+      "attempt": 1,
+      "run_sha": "2afe538267ee0650e2a5ae046d02950c198b1d86",
+      "merge": "squash",
+      "base": "219bc151f073e94a3e42b8fbf53b5cdafb9ea1b8",
+      "head": "a973d05da3c248aa8eb164d9f4a9a1a88a889e95",
+      "failing_tests": [
+        "tests/scripts/test-release-obligation.mjs"
+      ],
+      "selected": 114
+    },
+    {
+      "pr": 739,
+      "run_id": 32938203439,
+      "attempt": 1,
+      "run_sha": "e1dce450a76a72abc49730b957d0d9ac94bd9f41",
+      "merge": "squash",
+      "base": "3c22185a8ef609c3d21f94dd4d49ecb4a928c469",
+      "head": "f79508505ee21fdc36e34e04a611573cca2be8e2",
+      "failing_tests": [
+        "tests/scripts/test-release-obligation.mjs"
+      ],
+      "selected": 128
+    },
+    {
+      "pr": 744,
+      "run_id": 33043133415,
+      "attempt": 1,
+      "run_sha": "f9c02cc56252eea4f77726d4e7d904904367362b",
+      "merge": "squash",
+      "base": "458c01b4c24f9ab49b61c0d6004c834f8ff54b8c",
+      "head": "61299cf9bb35cb5f66d2cc0a2be3ac213be0edba",
+      "failing_tests": [
+        "tests/plugin-shape/test-runtime-plugin.mjs",
+        "tests/scripts/test-sync-doc-versions.mjs"
+      ],
+      "selected": 9,
+      "mappings": [
+        {
+          "paths": [
+            "docs/**"
+          ],
+          "tests": [
+            "tests/scripts/test-sync-doc-versions.mjs"
+          ]
+        }
+      ]
+    },
+    {
+      "pr": 749,
+      "run_id": 33082458171,
+      "attempt": 1,
+      "run_sha": "daa69ee782d16cb44666a0cedc4a9d24cf9ad31d",
+      "merge": "squash",
+      "base": "0be3ae5468c3f5961ee0e78edba09a217bb912bf",
+      "head": "d28702e2363223fe21af31ac97427e3a242d759c",
+      "failing_tests": [
+        "tests/scripts/test-release-obligation.mjs"
+      ],
+      "selected": 141
+    },
+    {
+      "pr": 752,
+      "run_id": 33137127598,
+      "attempt": 1,
+      "run_sha": "46575b76f21437530e2fca1ff83d575fad9dd700",
+      "merge": "squash",
+      "base": "1c2af4093bc6fbeef040168abe3961b3a53ef67c",
+      "head": "9d014b7ecb3df0b95e243c0f8341151c17b58791",
+      "failing_tests": [
+        "tests/scripts/test-release-obligation.mjs"
+      ],
+      "selected": 144
+    },
+    {
+      "pr": 755,
+      "run_id": 33155890586,
+      "attempt": 1,
+      "run_sha": "7305126341ebd7bb40f3761966c54894e676ee0c",
+      "merge": "squash",
+      "base": "f0b476425d9cd7cc6a4f489dc8811c40eab1e288",
+      "head": "97d7f643a905c30ce7fa72ab66a85c62481a79a8",
+      "failing_tests": [
+        "tests/scripts/test-release-obligation.mjs"
+      ],
+      "selected": 97
+    },
+    {
+      "pr": 801,
+      "run_id": 35809152751,
+      "attempt": 1,
+      "run_sha": "95b63c0a371f72dd48565c0c5b7f0abb6f67039e",
+      "merge": "squash",
+      "base": "2b2b153976fa3cc7508d936fa108e50cf1202737",
+      "head": "1b6f2e59ac3696a7ac62a09d19170b72e063a161",
+      "failing_tests": [
+        "tests/scripts/test-release-obligation.mjs"
+      ],
+      "selected": 138
+    },
+    {
+      "pr": 814,
+      "run_id": 36098875316,
+      "attempt": 1,
+      "run_sha": "eb88d9cabbb47215d0ea6d54432c507f558f1550",
+      "merge": "squash",
+      "base": "7fb284d83ad0c2b60eef17895f91d30a89be9650",
+      "head": "dce659259e957dd4cd534bf66a31307ae2ce888a",
+      "failing_tests": [
+        "tests/scripts/test-release-obligation.mjs"
+      ],
+      "selected": 107
+    },
+    {
+      "pr": 817,
+      "run_id": 36132759630,
+      "attempt": 1,
+      "run_sha": "c94ca46a58aea4a79c9621031d562b2557ca7819",
+      "merge": "squash",
+      "base": "49d6a698f19ef67d0a7e72f2c8f5b1c7e735ed4b",
+      "head": "6577e36b3810312203f108b882f7b2ec0407fcab",
+      "failing_tests": [
+        "tests/scripts/test-codex-pin-writer.mjs"
+      ],
+      "selected": 7
+    },
+    {
+      "pr": 820,
+      "run_id": 36288477225,
+      "attempt": 1,
+      "run_sha": "53e403f61e0de8c877c661bb847ad340e04c4bf1",
+      "merge": "squash",
+      "base": "85eabde20d6bc7c8d545669a89d5870db54f2aad",
+      "head": "651f15fdeea86b681e952050b31f7aa020e03b35",
+      "failing_tests": [
+        "tests/scripts/test-release-obligation.mjs"
+      ],
+      "selected": 110
+    },
+    {
+      "pr": 829,
+      "run_id": 36440212355,
+      "attempt": 1,
+      "run_sha": "e0dacee02a091fbb82c4be9fe720c3efdecf7c68",
+      "merge": "rebase",
+      "base": "e650f159ea5084277b74d7b06a4d96fdad032d8a",
+      "head": "3372eded3a166652ff3abee2916bfd25509b2e45",
+      "failing_tests": [
+        "tests/scripts/test-release-obligation.mjs"
+      ],
+      "selected": 173
+    },
+    {
+      "pr": 849,
+      "run_id": 37034794425,
+      "attempt": 1,
+      "run_sha": "c3ccff939d7c22ddd3f0669272c98c5b3d8dbd8a",
+      "merge": "squash",
+      "base": "5977ad3ac065a646ed5c1908c40b6ecabc606b8b",
+      "head": "1c1db216be477b24b7cef81c437d4da6b2e3cd6a",
+      "failing_tests": [
+        "tests/orchestrator/test-autopilot-driver.mjs",
+        "tests/orchestrator/test-autopilot-ledger.mjs"
+      ],
+      "selected": 132
+    },
+    {
+      "pr": 938,
+      "run_id": 38323863835,
+      "attempt": 1,
+      "run_sha": "d86872274167242efa4ea31c0f379e46261b490c",
+      "merge": "rebase",
+      "base": "c601998373068261f4b61a8cd87701c83f918b59",
+      "head": "7ecd9b77a7f921bc5ced31e149f665caabba8837",
+      "failing_tests": [
+        "tests/runtime/test-entry-brief-readers.mjs"
+      ],
+      "selected": 155
+    },
+    {
+      "pr": 974,
+      "run_id": 39151471277,
+      "attempt": 1,
+      "run_sha": "09658039978b08e4aa36f63ddda2f70f72dc14a7",
+      "merge": "rebase",
+      "base": "7d18697fcdd8db7f1e9025490a61c4915050db5b",
+      "head": "725fc8bcacf3f8dc40e15e81e2cba478ce8088c4",
+      "failing_tests": [
+        "tests/plugin-shape/test-engineer-autopilot-runbooks.mjs"
+      ],
+      "selected": 208
+    },
+    {
+      "pr": 984,
+      "run_id": 39382776905,
+      "attempt": 1,
+      "run_sha": "df1fc9f9f5dde367391cd237016d28912c1bcfc8",
+      "merge": "squash",
+      "base": "13e24da887dde8c3fe8c24a21ded6bc7db7b6fe2",
+      "head": "2162bea93a8ced52ede1465b77bd75fe3042bb4f",
+      "failing_tests": [
+        "tests/orchestrator/test-autopilot-scheduler-lane-gate.mjs"
+      ],
+      "selected": 167
+    }
+  ]
+}
