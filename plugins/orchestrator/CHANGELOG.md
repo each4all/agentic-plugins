@@ -18,6 +18,13 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.29.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.28.0...plugin-orchestrator-v0.29.0) (2026-10-21)
+
+
+### Features
+
+* **orchestrator:** select the tests a lane's changes may affect, for driver-run verification (ADR-0068 D5) ([#992](https://github.com/each4all/agentic-plugins/issues/992)) ([fe3e776](https://github.com/each4all/agentic-plugins/commit/fe3e776238916f2edfe635c3f9af4d91d96842e4))
+
 ## [0.28.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.27.0...plugin-orchestrator-v0.28.0) (2026-10-20)
 
 
