@@ -54,6 +54,8 @@ import {
   createRunCancellation,
   fingerprintForPid,
   fingerprintsMatch,
+  identityState,
+  isGroupAlive,
   isProcessAlive,
   stopProcessGroup,
 } from './lib/process-identity.mjs';
@@ -62,12 +64,19 @@ import {
 const EXIT_LINGER_MS = 1000;
 import {
   createPeerSnapshot,
+  groupTiedToTree,
+  handlePeerProcess,
+  handleSupervisor,
   peerSnapshotRecord,
+  judgeRunEnded,
   reclaimPeerSnapshots,
   recordSnapshotCompanion,
   recordSnapshotLaunch,
+  removeOwnedSnapshot,
   removePeerSnapshot,
   scrubGitSelectors,
+  SNAPSHOT_TREE_DIR,
+  treeOccupancy,
   writeSnapshotPrompt,
 } from './lib/peer-snapshot.mjs';
 import {
@@ -642,7 +651,11 @@ async function verifiedProcessForHandle(handle) {
   if (!(await isProcessAlive(handle.pid))) {
     return { ok: false, reason: 'not_running' };
   }
-  const current = await fingerprintForPid(handle.pid);
+  // Read in the pid namespace the handle's supervisor's clock names (C142,
+  // eighteenth review's Y-F1). A documented limit (ADR-0023): a supervisor the
+  // runner never writes (handleSupervisor's `malformed`, a hand-made handle)
+  // gives no clock, and the process is read in the reader's namespace.
+  const current = await fingerprintForPid(handle.pid, { clock: handleSupervisor(handle)?.fingerprint?.clock ?? null });
   if (!fingerprintsMatch(handle.process_fingerprint, current)) {
     return { ok: false, reason: 'unsupported_unverifiable', current_fingerprint: current };
   }
@@ -659,10 +672,13 @@ async function originalProcessAliveForHandle(handle) {
 }
 
 // `groupOnly`: the group alone, never the pid, which may have been reused once
-// the process exited (a timer that fires after the run).
+// the process exited (a timer that fires after the run). The group is
+// signalled only as the one the pid leads, as the runner records it: another
+// id, init's group 1 above all (`kill(-1)` reaches every process the user
+// may signal), is no group of the run's.
 async function sendSignal(handle, signal, { groupOnly = false } = {}) {
   const targets = [];
-  if (Number.isInteger(handle.pgid) && handle.pgid > 0) targets.push(-handle.pgid);
+  if (Number.isInteger(handle.pgid) && handle.pgid > 1 && handle.pgid === handle.pid) targets.push(-handle.pgid);
   if (!groupOnly && Number.isInteger(handle.pid) && handle.pid > 0) targets.push(handle.pid);
 
   let delivered = false;
@@ -997,6 +1013,10 @@ async function runPeerInCheckout(args) {
         h.status = 'running';
         h.pid = child.pid;
         h.pgid = detached ? child.pid : null;
+        // Kept past the run's end, which clears pid and pgid: the process
+        // that ran as the peer, the evidence an owner record is checked
+        // against before the run's snapshot is removed (C142).
+        h.peer_process = { pid: child.pid, pgid: h.pgid };
         h.process_fingerprint = await fingerprintForPid(child.pid);
       });
     });
@@ -1241,11 +1261,45 @@ export async function cancelPeerRun({
   const handle = await readHandle(paths.handle);
 
   if (isTerminalStatus(handle.status)) {
+    // C142 — a runner killed inside its own end wrote the run terminal and
+    // left its snapshot, and may have left a process of its peer's group: that
+    // group is stopped when the runner is gone, and the snapshot removed once
+    // the run is proven over. A group that cannot be stopped is no success.
+    if (snapshotOwnerPath(handle) === null) return { ok: true, run_id: runId, status: handle.status, reason: 'already_terminal' };
+    let run = await judgeHostKilledRun(handle, graceMs);
+    if (refusalReason(run.judged) === 'group_alive') return { ok: false, run_id: runId, status: handle.status, reason: 'group_alive', why: run.judged.why };
+    // A snapshot a reclaim removed leaves no owner record to name the group,
+    // and its removal is no proof the group stopped (finishHostKilledRun's
+    // rule): a terminal status an envelope's reconcile wrote keeps the
+    // handle's group, which is stopped the same way, its leader proven first
+    // (stopHandleGroup). The snapshot gone, its removal is recorded, so a
+    // later cancel has nothing of it left to judge or stop. An owner record
+    // that still exists but cannot be read is no such case: its supervisor
+    // may live, so nothing is signalled, and the reclaim's age rule remains
+    // its route.
+    if (run.judged.why === 'owner-unreadable' && await snapshotGone(handle, run.ownerPath)) {
+      // The supervisor the handle keeps must be gone too: one at work, or
+      // one that cannot be told, still owns its end (finishHostKilledRun's
+      // rule). Nothing is signalled, and the removal is not recorded.
+      const supervisor = await handleSupervisorState(handle);
+      if (supervisor !== 'gone' && supervisor !== 'unrecorded') {
+        return { ok: true, run_id: runId, status: handle.status, reason: 'already_terminal', snapshot_cleanup: { removed: false, skipped: `supervisor-${supervisor}`, error: null } };
+      }
+      const left = await stopHandleGroup(handle, graceMs, 'owner-unreadable');
+      if (left !== null) return { ok: false, run_id: runId, status: handle.status, ...left };
+      // Nor is its removal recorded while a process runs in the removed tree.
+      const occupancy = await handleTreeOccupancy(handle);
+      if (occupancy !== 'none') {
+        return { ok: true, run_id: runId, status: handle.status, reason: 'already_terminal', snapshot_cleanup: { removed: false, skipped: `tree-${occupancy}`, error: null } };
+      }
+      run = { ...run, judged: { verdict: 'ended', why: 'snapshot-gone', supervisor: null, companion: null }, gone: true };
+    }
     return {
       ok: true,
       run_id: runId,
       status: handle.status,
       reason: 'already_terminal',
+      ...(await snapshotCleanupField(paths, handle, run)),
     };
   }
   if (handle.status !== 'running' && handle.status !== 'cancel_requested') {
@@ -1259,6 +1313,7 @@ export async function cancelPeerRun({
 
   const verified = await verifiedProcessForHandle(handle);
   if (!verified.ok) {
+    if (verified.reason === 'not_running' && snapshotOwnerPath(handle) !== null) return finishHostKilledRun(paths, handle, graceMs);
     return {
       ok: false,
       run_id: runId,
@@ -1268,12 +1323,21 @@ export async function cancelPeerRun({
     };
   }
 
+  // The process verified above, read as every judgment reads it: a handle
+  // whose process fields the runner did not write is signalled nothing
+  // (C142).
+  const proc = handlePeerProcess(handle);
+  if (proc?.malformed) return { ok: false, run_id: runId, status: handle.status, reason: 'unsupported_unverifiable', why: 'handle-malformed' };
+
   await updateHandle(paths.handle, (h) => {
     h.status = 'cancel_requested';
     h.error_kind = 'cancelled';
   });
 
   let latest = await readHandle(paths.handle);
+  // The group of the process verified above: a later read may find it
+  // cleared by the run's end while a child of it still runs.
+  const peerGroup = proc?.pgid ?? null;
   const term = await sendSignal(latest, 'SIGTERM');
   if (!term.ok) {
     return { ok: false, run_id: runId, status: latest.status, reason: term.reason };
@@ -1297,6 +1361,16 @@ export async function cancelPeerRun({
     }
   }
 
+  // C142 — stopped means the companion's whole group, not only its leader: a
+  // child it left running would run on in the snapshot. The leader was
+  // verified above, and its group keeps its id from reuse while any process
+  // of it lives, so a group alive here is the run's unless it ended and
+  // another process's took its id in the moment since the leader exited.
+  await stopProcessGroup(peerGroup, graceMs);
+  if (isGroupAlive(peerGroup)) {
+    return { ok: false, run_id: runId, status: (await readHandle(paths.handle)).status, reason: 'group_alive' };
+  }
+
   const final = await updateHandle(paths.handle, (h) => {
     h.status = 'cancelled';
     h.completed_at ??= nowIso();
@@ -1312,7 +1386,230 @@ export async function cancelPeerRun({
     ok: true,
     run_id: runId,
     status: final.status,
+    ...(await snapshotCleanupField(paths, final, null, handle)),
   };
+}
+
+// C142 — a run whose companion is gone while its handle still reads live: its
+// runner may have been killed before its cleanup (measured: Claude Code ends a
+// background task by SIGTERM to its process tree and SIGKILL about 1.5 s
+// later, which can land while the runner is still stopping its peer). The run
+// is finished here only when its snapshot's owner record proves it over
+// (judgeRunEnded): a dead supervisor alone is no proof that nothing of its
+// companion's group runs, and a supervisor that lives, or cannot be told,
+// still owns the run and its cleanup. Over, the run's answer decides when it
+// wrote one (the envelope, as reconcileOne reads it), else the cancellation
+// this command was asked for; then its own snapshot is removed. Each refusal
+// writes nothing and has a reason of its own, never `not_running`, which a
+// caller reads as nothing left to cancel.
+async function finishHostKilledRun(paths, handle, graceMs) {
+  const refused = (reason, why) => ({ ok: false, run_id: handle.run_id, status: handle.status, reason, why });
+  let run = await judgeHostKilledRun(handle, graceMs);
+  // A snapshot a reclaim removed leaves no record to judge. A reclaim also
+  // removes one on age alone (identity-unknown-expired), so its removal is no
+  // proof the companion's group stopped: the handle names that group, whose
+  // leader is gone (not_running) and whose id no new process takes while the
+  // group lives, so what is left of it is stopped (stopHandleGroup), as the
+  // runner's own end would have, and a group that cannot be stopped is
+  // refused. With the directory gone and the handle unmoved past the stale
+  // grace, the run is then finished cancelled. Its own runner never leaves
+  // this state: it writes the handle terminal at its end, before its
+  // `finally` removes the snapshot, and a cancelled record that lands before
+  // that write is kept by it.
+  if (run.judged.why === 'owner-unreadable' && await snapshotGoneAndStale(handle, run.ownerPath)) {
+    // Nor is the record's absence proof its supervisor is gone (a reclaim
+    // removes a record on age while its supervisor cannot be told): the
+    // supervisor the handle keeps must be gone.
+    const supervisor = await handleSupervisorState(handle);
+    if (supervisor !== 'gone' && supervisor !== 'unrecorded') return refused(supervisor === 'match' ? 'supervisor_alive' : 'supervisor_unknown', `snapshot-gone-supervisor-${supervisor}`);
+    const left = await stopHandleGroup(handle, graceMs, 'snapshot-gone');
+    if (left !== null) return refused(left.reason, left.why);
+    const occupancy = await handleTreeOccupancy(handle);
+    if (occupancy !== 'none') return refused('supervisor_unknown', `snapshot-gone-tree-${occupancy}`);
+    run = { ...run, judged: { verdict: 'ended', why: 'snapshot-gone', supervisor: null, companion: null }, gone: true };
+  }
+  if (run.judged.verdict !== 'ended') return refused(refusalReason(run.judged), run.judged.why);
+
+  const sameLedger = (h) => h.run_id === handle.run_id && h.started_at === handle.started_at;
+  let final = handle;
+  if (await exists(paths.envelope)) final = await reconcileOne(paths, handle, { staleGraceMs: DEFAULT_STALE_GRACE_MS, now: new Date() });
+  if (!isTerminalStatus(final.status)) {
+    final = await updateHandle(paths.handle, (h) => {
+      if (isTerminalStatus(h.status)) return h;
+      h.status = 'cancelled';
+      h.completed_at ??= nowIso();
+      h.exit_code ??= null;
+      h.error_kind = 'cancelled';
+      h.pid = null;
+      h.pgid = null;
+      h.process_fingerprint = { kind: 'none' };
+    }, { expect: sameLedger });
+    // The ledger now holds another run under this id: nothing of it is this
+    // cancel's to finish.
+    if (final === null) return refused('replaced', 'another run holds the ledger');
+  }
+  return {
+    ok: true,
+    run_id: handle.run_id,
+    status: final.status,
+    reason: 'ended',
+    ...(await snapshotCleanupField(paths, final, run)),
+  };
+}
+
+// C142 — the run of a handle's snapshot, judged from its owner record
+// (judgeRunEnded), with what is left of its companion's group stopped first
+// when its supervisor is gone (the leader dead, a child running on), as the
+// runner's own end would have, then judged again. `companion-alive` names a
+// group whose leader is gone or still the companion (snapshotEnded judges one
+// that cannot be told `companion-unknown`), so the group stopped is the run's.
+async function judgeHostKilledRun(handle, graceMs) {
+  const ownerPath = snapshotOwnerPath(handle);
+  let run = await judgeRunEnded(ownerPath, { runId: handle.run_id, handle });
+  if (run.judged.why === 'companion-alive' && supervisorGone(run.judged)) {
+    await stopProcessGroup(run.owner?.companion?.pgid, graceMs);
+    run = await judgeRunEnded(ownerPath, { runId: handle.run_id, handle });
+  }
+  return { ...run, ownerPath };
+}
+
+// Only a supervisor no process has is gone: one whose pid a process has under
+// another fingerprint cannot be told from the runner itself (snapshotEnded's
+// rule: an incomplete fingerprint, or one read under another locale).
+const supervisorGone = (judged) => judged.supervisor === 'gone';
+
+// The reason a run not proven over is refused with: its supervisor at work,
+// its companion's group left running after its supervisor died, or neither
+// told (a group alive under a supervisor that cannot be told included).
+function refusalReason(judged) {
+  if (judged.why === 'supervisor-alive') return 'supervisor_alive';
+  if (judged.why === 'companion-alive') return supervisorGone(judged) ? 'group_alive' : 'supervisor_unknown';
+  return 'supervisor_unknown';
+}
+
+// C142 — stop what is left of the group a run's handle names, its companion's,
+// as the runner's own end would have, and say what remains: null when nothing
+// of it runs, else a refusal { reason, why }. The group is the one the
+// handle's process led, read once (handlePeerProcess): its `peer_process`,
+// which outlives the writes that clear `pid` and `pgid`, else those. A handle
+// whose process fields the runner did not write names no group that may be
+// signalled, and is never read as one naming none. Once the group has ended
+// the id may name another process's: it is signalled only while its leader,
+// the handle's process, is still the one the handle recorded, or is gone
+// while a process of the group runs in the run's tree (groupTiedToTree), read
+// in the pid namespace the handle's supervisor's clock names (C142 U-F1). A
+// pid another process now has, or one that cannot be told, may lead a group
+// of its own under that id (companionState's rule), and so may a gone leader's
+// id that no process of the run's tree holds.
+async function stopHandleGroup(handle, graceMs, why) {
+  const proc = handlePeerProcess(handle);
+  if (proc?.malformed) return { reason: 'supervisor_unknown', why: `${why}-handle-malformed` };
+  const pgid = proc?.pgid ?? null;
+  if (!isGroupAlive(pgid)) return null;
+  const fingerprint = proc.pid === handle.pid ? handle.process_fingerprint : { kind: 'none' };
+  const leader = await identityState({ pid: proc.pid, fingerprint }, { clock: handleSupervisor(handle)?.fingerprint?.clock ?? null });
+  if (leader !== 'gone' && leader !== 'match') return { reason: 'supervisor_unknown', why: `${why}-group-leader-${leader}` };
+  if (leader === 'gone') {
+    // The run's tree where createPeerSnapshot made it, beside its owner record.
+    const ownerPath = snapshotOwnerPath(handle);
+    const tie = await groupTiedToTree(pgid, ownerPath === null ? null : join(dirname(ownerPath), SNAPSHOT_TREE_DIR), { clock: handleSupervisor(handle)?.fingerprint?.clock });
+    if (tie !== 'tied') return { reason: 'supervisor_unknown', why: `${why}-group-${tie}` };
+  }
+  await stopProcessGroup(pgid, graceMs);
+  return isGroupAlive(pgid) ? { reason: 'group_alive', why: `${why}-group-alive` } : null;
+}
+
+// C142 — what is known now of the supervisor a run's handle keeps (its
+// snapshot record's, copied from the owner record when the snapshot was
+// made), read as every judgment reads it (handleSupervisor): identityState's
+// answer, 'malformed' for one the runner did not write, or 'unrecorded' on a
+// handle an earlier runner wrote, which keeps none (that run's route is the
+// stale grace alone, as before; on Linux, where a listing for a run whose
+// clock was not recorded proves nothing, a cancel of it once its snapshot is
+// gone reads the tree `unknown` and refuses, so it ends by reconcile only).
+async function handleSupervisorState(handle) {
+  const supervisor = handleSupervisor(handle);
+  if (supervisor === null) return 'unrecorded';
+  if (supervisor.malformed) return 'malformed';
+  return identityState(supervisor);
+}
+
+// C142 — whether a process still runs in the tree of a run whose snapshot a
+// reclaim removed (treeOccupancy): one the companion started in a group of its
+// own runs on in the removed directory, so the run is not over. The tree is
+// where createPeerSnapshot made it, beside its owner record; the supervisor
+// the handle keeps (none on an earlier runner's) bounds which processes may
+// be the run's.
+async function handleTreeOccupancy(handle) {
+  const ownerPath = snapshotOwnerPath(handle);
+  const supervisor = handleSupervisor(handle);
+  return treeOccupancy(ownerPath === null ? null : join(dirname(ownerPath), SNAPSHOT_TREE_DIR), { supervisor: supervisor?.malformed ? null : supervisor });
+}
+
+async function snapshotGoneAndStale(handle, ownerPath) {
+  const updated = Date.parse(handle.updated_at ?? handle.started_at);
+  if (!Number.isFinite(updated) || Date.now() - updated <= DEFAULT_STALE_GRACE_MS) return false;
+  return snapshotGone(handle, ownerPath);
+}
+
+// Whether a run's snapshot is gone: its directory and the tree its handle
+// recorded both absent.
+async function snapshotGone(handle, ownerPath) {
+  try {
+    // Only ENOENT or ENOTDIR is absence: a directory that cannot be judged is
+    // no proof the snapshot is gone.
+    const absent = async (path) => {
+      try {
+        await access(path, fsConstants.F_OK);
+        return false;
+      } catch (err) {
+        if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') return true;
+        throw err;
+      }
+    };
+    return await absent(dirname(ownerPath)) && await absent(handle.snapshot.root ?? dirname(ownerPath));
+  } catch {
+    return false;
+  }
+}
+
+// The owner record of a run's snapshot still to be removed, or null: the run
+// made none, or its removal is recorded.
+function snapshotOwnerPath(handle) {
+  const rec = handle?.snapshot;
+  if (rec?.isolation !== 'snapshot' || typeof rec.owner_path !== 'string' || rec.owner_path === '' || rec.removed_at) return null;
+  return rec.owner_path;
+}
+
+// C142 — a run's own snapshot, removed once the run is proven over and the
+// removal recorded on its handle, as the runner's own end records it. The
+// field this adds to an answer, `snapshot_cleanup`, is apart from the run's
+// lifecycle: a removal skipped (`skipped`, why the run is not proven over) or
+// failed (`error`) never changes the run's status or the answer's `ok`; a
+// failure keeps the owner record, so the next reclaim retries it. Nothing is
+// added for a run with no snapshot left to remove. `run`, when given, is the
+// judgment just made (judgeHostKilledRun's). `recorded` is the handle as read
+// before this command's own write cleared the companion's process from it (a
+// cancel's, or a settle's reconcile), the evidence the judgment checks the
+// owner record against (snapshotEnded's rule).
+async function snapshotCleanupField(paths, handle, run = null, recorded = handle) {
+  const ownerPath = snapshotOwnerPath(handle);
+  if (ownerPath === null) return {};
+  try {
+    const { judged, owner, gone = false } = run ?? await judgeRunEnded(ownerPath, { runId: handle.run_id, handle: recorded });
+    if (judged.verdict !== 'ended') return { snapshot_cleanup: { removed: false, skipped: judged.why, error: null } };
+    const removed = gone ? { removed: true, error: null } : await removeOwnedSnapshot(ownerPath, owner, { root: handle.snapshot.root ?? null });
+    // A record that names anything but the run's own snapshot removes
+    // nothing and writes nothing: the reclaim, which takes its worktree from
+    // git's lock and never from the record, is its route.
+    if (removed.refused) return { snapshot_cleanup: { removed: false, skipped: removed.refused, error: null } };
+    await updateHandle(paths.handle, (h) => {
+      h.snapshot = { ...(h.snapshot ?? handle.snapshot), removed_at: removed.removed ? nowIso() : null, cleanup_error: removed.error };
+    }, { expect: (h) => h.run_id === handle.run_id && h.started_at === handle.started_at }).catch(() => {});
+    return { snapshot_cleanup: { removed: removed.removed, skipped: null, error: removed.error, ...(gone ? { already_gone: true } : {}) } };
+  } catch (err) {
+    return { snapshot_cleanup: { removed: false, skipped: null, error: String(err?.message ?? err) } };
+  }
 }
 
 // ADR-0067 Decision 1(a) — the sweep reads every root of the checkout's read
@@ -1685,7 +1982,10 @@ export async function reconcileOne(paths, handle, { staleGraceMs, now, guard = n
 //
 // Every write goes through commitEnsemble, which pops the pending row and
 // appends the result idempotently under the workflow file's lock, so a
-// repeated or concurrent settle records one result.
+// repeated or concurrent settle records one result. After it, a run proven
+// over that left its snapshot (its runner killed before its cleanup, C142)
+// has that snapshot removed, reported as `snapshot_cleanup`; a repeat does
+// it too.
 
 export const SETTLE_FAILED_VERDICT = 'failed';
 export const SETTLE_DEGRADED_VERDICT = 'degraded';
@@ -1839,7 +2139,9 @@ async function settleEnsembleInCheckout({
   if (done) {
     if (done.phase !== phase) refuse(`run ${runId} was settled for phase ${done.phase}, not ${phase}`);
     if (row) await commit({ ensemble_type: done.ensemble_type, verdict: done.verdict, summary: done.summary });
-    return { ok: true, settlement: 'already-settled', run_id: runId, phase, verdict: done.verdict };
+    // C142 — a settle stopped between its commit and its cleanup leaves the
+    // run's snapshot to this one.
+    return { ok: true, settlement: 'already-settled', run_id: runId, phase, verdict: done.verdict, ...(await settledRunCleanup(repoRoot, runId, wf, phase)) };
   }
 
   const paths = await resolvePeerRunPathsForRead(repoRoot, runId, wf);
@@ -1863,18 +2165,25 @@ async function settleEnsembleInCheckout({
     refuse(`run ${runId}: the pending entry's ensemble type ${row.ensemble_type} is not the ledger's ${handle.ensemble_type}`);
   }
 
+  // The handle as read before the reconcile, whose orphan write clears the
+  // companion's process from it: the cleanup's evidence (snapshotEnded).
+  const recorded = handle;
   handle = await reconcileOne(paths, handle, { staleGraceMs, now });
   if (!isTerminalStatus(handle.status)) {
     refuse(`run ${runId} is ${handle.status} and not shown abandoned: collect it first`);
   }
   const base = { ok: true, run_id: runId, phase, status: handle.status, error_kind: handle.error_kind };
+  // C142 — once the settlement is committed, the run's own snapshot, which a
+  // runner the host killed before its cleanup left: removed when the run is
+  // proven over, reported apart, never a change of the settlement.
+  const cleanup = () => snapshotCleanupField(paths, handle, null, recorded);
   if (handle.status !== 'completed') {
     const settlement = await commit({
       ensemble_type: handle.ensemble_type,
       verdict: SETTLE_FAILED_VERDICT,
       summary: `peer run ${handle.status}: error_kind=${handle.error_kind ?? 'none'}`,
     });
-    return { ...base, settlement, verdict: keptVerdict ?? SETTLE_FAILED_VERDICT };
+    return { ...base, settlement, verdict: keptVerdict ?? SETTLE_FAILED_VERDICT, ...(await cleanup()) };
   }
   const answer = await completedAnswer(paths, handle);
   if (answer === null || answer.trim() === '') {
@@ -1885,13 +2194,29 @@ async function settleEnsembleInCheckout({
       verdict: SETTLE_DEGRADED_VERDICT,
       summary: `peer answer ${why}; the synthesis is local-only${local}`,
     });
-    return { ...base, settlement, verdict: keptVerdict ?? SETTLE_DEGRADED_VERDICT, answer: why };
+    return { ...base, settlement, verdict: keptVerdict ?? SETTLE_DEGRADED_VERDICT, answer: why, ...(await cleanup()) };
   }
   if (typeof verdict !== 'string' || verdict.trim() === '') refuse(`run ${runId} completed: settle needs the synthesis --verdict`);
   if (verdict === SETTLE_FAILED_VERDICT) refuse(`run ${runId} completed: '${SETTLE_FAILED_VERDICT}' is reserved for a run that failed`);
   if (typeof summary !== 'string' || summary.trim() === '') refuse(`run ${runId} completed: settle needs the synthesis --summary`);
   const settlement = await commit({ ensemble_type: handle.ensemble_type, verdict, summary: singleLineSummary(summary) });
-  return { ...base, settlement, verdict: keptVerdict ?? verdict };
+  return { ...base, settlement, verdict: keptVerdict ?? verdict, ...(await cleanup()) };
+}
+
+// C142 — the snapshot cleanup of a run already settled, read from its ledger
+// when the ledger is this workflow's attempt of this phase. A ledger that is
+// gone, or cannot be read, leaves the snapshot to a later reclaim.
+async function settledRunCleanup(repoRoot, runId, workflowPath, phase) {
+  try {
+    const paths = await resolvePeerRunPathsForRead(repoRoot, runId, workflowPath);
+    if (paths.missing || !(await present(paths.handle))) return {};
+    const handle = await readHandle(paths.handle);
+    if (handle.kind !== 'ensemble' || handle.phase !== phase) return {};
+    if (typeof handle.workflow_path !== 'string' || !samePhysicalFile(handle.workflow_path, workflowPath)) return {};
+    return await snapshotCleanupField(paths, handle);
+  } catch {
+    return {};
+  }
 }
 
 function singleLineSummary(text) {
@@ -2076,6 +2401,10 @@ function printHelp() {
     '',
     '  status --run-id <id> [--repo-root <path>] [--json]',
     '  cancel --run-id <id> [--repo-root <path>] [--cancel-grace-ms <ms>]',
+    '      A run whose runner was killed before its cleanup is finished, and its',
+    '      snapshot removed, once its owner record proves it over (reason',
+    '      ended); while its runner lives or cannot be told, nothing is written',
+    '      (reason supervisor_alive, supervisor_unknown or group_alive, exit 1).',
     '  sweep [--repo-root <path>] [--apply] [--stale-grace-ms <ms>]',
     '        [--retention-ttl-days <days>] [--retention-cap <n>]',
     "  settle --workflow-path <path> --phase <p> --run-id <id|''>",
