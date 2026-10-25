@@ -8,13 +8,25 @@
 // both peer dispatchers stop a peer's process group here.
 // Generated from persona-pipeline/ (ADR-0066).
 
-import { execFileSync } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { readdir, readFile, readlink, stat } from 'node:fs/promises';
 
-export async function fingerprintForPid(pid) {
+// `clock`, when a string, is the clock the process was recorded in
+// (clockDomain): a Linux reader in another pid namespace than the one it
+// names reads, under `pid`, a process of its own namespace, which no start
+// time it shares proves the one recorded, and it fingerprints none (C142,
+// eighteenth review's Y-F1). One given no clock (an earlier runner's record,
+// or a recording) is read in the reader's namespace, as before.
+export async function fingerprintForPid(pid, { clock = null } = {}) {
   if (!Number.isInteger(pid) || pid <= 0) return { kind: 'none' };
 
   if (process.platform === 'linux') {
+    // A /proc of another pid namespace than the reader's names, under `pid`,
+    // a process of that namespace, not the one a signal to `pid` reaches: it
+    // fingerprints none (procReadsSelf; C142, refine-verify of the fourteenth
+    // review's fixes, F1).
+    if (!(await procReadsSelf(SYSTEM))) return { kind: 'none' };
+    if (typeof clock === 'string' && !(await inPidNamespace(clock, SYSTEM))) return { kind: 'none' };
     try {
       const statText = await readFile(`/proc/${pid}/stat`, 'utf8');
       const end = statText.lastIndexOf(')');
@@ -63,14 +75,608 @@ export async function isProcessAlive(pid) {
 }
 
 // Whether any process of the group `pgid` is alive: a companion that exited
-// can leave children in its group, still running in its directory.
+// can leave children in its group, still running in its directory. Group 1 is
+// init's, never a peer's, and `kill(-1)` reaches every process the user may
+// signal, so it is no group here.
 export function isGroupAlive(pgid) {
-  if (!Number.isInteger(pgid) || pgid <= 0) return false;
+  if (!Number.isInteger(pgid) || pgid <= 1) return false;
   try {
     process.kill(-pgid, 0);
     return true;
   } catch (err) {
     return err?.code === 'EPERM';
+  }
+}
+
+// The processes of the group `pgid` and the directory each runs in, as
+// [{ pid, cwd, raw }] (`cwd` null when it cannot be read), or null when the
+// processes cannot be listed: on Linux from /proc, on macOS from `ps` and
+// `lsof`, elsewhere never. A directory removed since reads as the path it had
+// (Linux marks it " (deleted)", which is dropped when no directory has that
+// full name; macOS reports the name it keeps). `raw` is the name as the
+// system wrote it (the Linux link, lsof's name with its escapes), null when
+// none was read. A process whose directory was not read is marked
+// `unreadable: true`: on Linux one of the user's own the system denies (one
+// not dumpable); on macOS one lsof reports it could not read, or lists with
+// no name, and in the listing of every process one of the user's own (by its
+// real uid) that `ps` lists and lsof left out. In the listing of every
+// process, each carries what places it among the processes (processLineage):
+// its `starttime`, the `clock` it was read in (clockDomain) and its
+// `ancestors`, each null when it cannot be read. Another user's process on
+// Linux is listed with none read (`unreadable` under a /proc mounted
+// `hidepid=1`, which refuses its owner: procListsAll). A Linux process whose
+// main thread has exited while its other threads run on is listed once for
+// each directory they run in. What a group's members run in ties them to a run apart from the
+// group's id, which the system may have given another process's group. A
+// pid, a group's id too, names a process only within one pid namespace: a
+// Linux group is listed only through a /proc that is the reader's
+// (procReadsSelf), and, given the run's `clock` (clockDomain), only by a
+// reader in the pid namespace it names; a group listed otherwise is another
+// namespace's under the same id, and the listing is null (C142 U-F1). One
+// given no clock (an earlier runner's record) is read in the reader's own.
+// `system` is what the listing reads (the system itself; a test passes its own).
+export async function groupMemberCwds(pgid, { system = SYSTEM, clock = null } = {}) {
+  if (!Number.isInteger(pgid) || pgid <= 1) return null;
+  return processCwds(pgid, system, typeof clock === 'string' ? clock : null);
+}
+
+// C142 — every process the user can see and the directory each runs in, as
+// groupMemberCwds reads a group's, or null when they cannot be listed: what
+// still runs in a run's tree once its companion's group has ended (a process
+// the companion started in a group of its own). A listing counts as complete
+// only when it is proved complete: it lists the reader's own process, a Linux
+// /proc hides none (procListsAll), and a process it did not read is listed
+// `unreadable`, never left out. `clock`, when a string, is the clock the
+// run's processes were read in (clockDomain): a Linux listing read in another
+// pid namespace than the one it names lists only that namespace's processes,
+// none of the run's, and is null too, as is a Linux listing given no clock,
+// which names no namespace to compare. A Linux process started while the
+// listing ran is met by reading /proc again once the processes listed are
+// read, as macOS reads its process table again (processCwds).
+export async function allProcessCwds({ system = SYSTEM, clock = null } = {}) {
+  return processCwds(null, system, typeof clock === 'string' ? clock : null);
+}
+
+const SYSTEM = {
+  platform: process.platform, pid: process.pid, env: process.env, readdir, readFile, readlink, stat, spawnSync,
+  getuid: () => process.getuid(), uptime: () => process.uptime(), now: () => Date.now(),
+};
+
+// Whether the Linux /proc is the reader's: its `self` names the reader's
+// pid. One mounted from another pid namespace numbers every process, the
+// reader too, as that namespace does.
+async function procReadsSelf(system) {
+  try {
+    return (await system.readlink('/proc/self')) === String(system.pid);
+  } catch {
+    return false;
+  }
+}
+
+// Whether the Linux /proc lists every process: mounted with no `hidepid`, or
+// with `hidepid` 0 (`off`) or 1 (`noaccess`), which refuse the reads of a
+// process and still list it (proc(5)). `hidepid` 2 (`invisible`) and 4
+// (`ptraceable`), the mount systemd's ProtectProc=invisible gives, leave out
+// every process the reader may not ptrace: its own set-uid children (`sudo`)
+// and those not dumpable, which may run anywhere. Which of the mounts at
+// /proc in the reader's mount namespace (/proc/self/mountinfo) is the one read
+// is not told by their order (a mount moved over a later one is listed
+// first), so every one there must be of type proc and hide nothing, by its
+// options per mount and per superblock; a mountinfo that cannot be read, or
+// that holds no mount at /proc, proves nothing either. The `gid=` exemption is
+// not honoured: such a /proc reads as one that hides. Under `hidepid` 1 the
+// status of another user's process is refused too, so its owner cannot be
+// read and it is listed `unreadable`: while one runs, a tree reads 'unknown'
+// (treeOccupancy), and only the reclaim's age removes it. A mount at or under
+// one process's directory (`/proc/<pid>`, an empty tmpfs over it) hides that
+// process's links while /proc still lists its pid, so it reads as exited: such
+// a /proc proves nothing either. A mount under /proc's other entries
+// (`/proc/sys/fs/binfmt_misc`) hides no process (C142 R-F4).
+async function procListsAll(system) {
+  let text;
+  try {
+    text = await system.readFile('/proc/self/mountinfo', 'utf8');
+  } catch {
+    return false;
+  }
+  let mounts = 0;
+  for (const line of text.split('\n')) {
+    // proc_pid_mountinfo(5): the first ` - ` ends the optional fields; a
+    // source after it may itself read `-`.
+    const at = line.indexOf(' - ');
+    if (at < 0) continue;
+    const fields = line.slice(0, at).split(' ');
+    const fs = line.slice(at + ' - '.length);
+    if (/^\/proc\/\d+(\/|$)/.test(fields[4])) return false;
+    if (fields[4] !== '/proc') continue;
+    mounts++;
+    const [type, , superOptions = ''] = fs.split(' ');
+    if (type !== 'proc') return false;
+    const options = `${fields[5] ?? ''},${superOptions}`.split(',');
+    if (options.some((o) => o.startsWith('hidepid=') && !['0', '1', 'off', 'noaccess'].includes(o.slice('hidepid='.length)))) return false;
+  }
+  return mounts > 0;
+}
+
+async function processCwds(pgid, system, runClock = null) {
+  if (system.platform === 'linux') {
+    let entries;
+    try {
+      entries = await system.readdir('/proc');
+    } catch {
+      return null;
+    }
+    // A /proc of another pid namespace than the reader's (whose `self`
+    // names the reader under another pid) numbers every process as that
+    // namespace does: neither listing reads it, a group's included, whose id
+    // there names another namespace's group (C142 U-F1). Nor does a listing
+    // of every process read one that does not list the reader (unmounted or
+    // masked, and so empty), or one that hides the processes the reader may
+    // not ptrace (procListsAll).
+    if (!(await procReadsSelf(system))) return null;
+    if (pgid === null && !(entries.includes(String(system.pid)) && (await procListsAll(system)))) return null;
+    const members = [];
+    let clock;
+    // A reader in another pid namespace than the run's (a sandbox that
+    // unshares it, with a /proc of its own) lists its namespace's processes
+    // alone, and proves nothing of the run's: a pid namespace is the third
+    // part of a clock (clockDomain), and one that cannot be read is no proof
+    // either. A run whose clock was not recorded (an earlier runner's record,
+    // or one whose clock could not be read when it was written) names no pid
+    // namespace to compare: its listing of every process is no proof, and the
+    // run is left to the reclaim's age (C142 R-F1); its group is read in the
+    // reader's namespace, as an earlier runner's was (U-F1).
+    if (pgid === null && runClock === null) return null;
+    if (runClock !== null) {
+      clock = await clockDomain({ system });
+      if (clock === null || clock.split('/')[2] !== runClock.split('/')[2]) return null;
+    }
+    // A process of the user's own that may run anywhere, listed `unreadable`
+    // with the start time and ancestors its stat, and theirs, still read.
+    const unreadable = async (entry) => {
+      if (pgid !== null) return { pid: Number(entry), cwd: null, raw: null, unreadable: true };
+      const statText = await system.readFile(`/proc/${entry}/stat`, 'utf8').catch(() => null);
+      if (clock === undefined) clock = await clockDomain({ system });
+      return {
+        pid: Number(entry), cwd: null, raw: null, unreadable: true,
+        starttime: statText === null ? null : statStartTime(statText),
+        clock,
+        ancestors: statText === null ? null : await linuxAncestors(Number(entry), statText, system),
+      };
+    };
+    const read = async (entry) => {
+      if (pgid !== null) {
+        let statText;
+        try {
+          statText = await system.readFile(`/proc/${entry}/stat`, 'utf8');
+        } catch {
+          return; // exited since the listing
+        }
+        // proc_pid_stat(5): state, ppid, pgrp follow the command's closing paren.
+        const fields = statText.slice(statText.lastIndexOf(')') + 2).split(' ');
+        if (Number(fields[2]) !== pgid) return;
+      }
+      const dirs = await linuxCwds(entry, system);
+      if (dirs === null) return; // exited since the listing
+      for (const raw of dirs.raws) members.push({ pid: Number(entry), cwd: await undeletedCwd(raw, system), raw });
+      if (!dirs.denied) return;
+      // The system denies the link of another user's process, and of one
+      // of the user's own that is not dumpable (prctl PR_SET_DUMPABLE, as
+      // a process hardens itself): that one may run anywhere, so it is
+      // marked `unreadable` (an own process whose uid cannot be read is
+      // counted as one).
+      if (await ownProcess(entry, system) !== false) members.push(await unreadable(entry));
+      else if (dirs.raws.length === 0) members.push({ pid: Number(entry), cwd: null, raw: null });
+    };
+    // A listing of every process reads /proc again once the processes it
+    // listed are read, and reads each process it had not met, until a round
+    // meets none (at most four rounds): a process of the run that starts a
+    // child and exits while the listing runs is gone when its turn comes,
+    // and the child, started after /proc was first read, is met in a later
+    // round. Those still unmet after the last round are listed `unreadable`
+    // when they are the user's own, as macOS lists the processes its last
+    // `ps` names that lsof never did; one of them that has exited by then may
+    // have started a child that no round read, so the listing is no proof
+    // (C142 R-F2). A pid is met once: one that a process
+    // met in this listing held and another holds now (the system's pids
+    // wrapping around within it) is not read again.
+    const met = new Set();
+    let pending = entries.filter((entry) => /^\d+$/.test(entry));
+    for (let round = 0; pending.length > 0; round++) {
+      for (const entry of pending) {
+        met.add(entry);
+        await read(entry);
+      }
+      if (pgid !== null) break;
+      let again;
+      try {
+        again = await system.readdir('/proc');
+      } catch {
+        return null;
+      }
+      pending = again.filter((entry) => /^\d+$/.test(entry) && !met.has(entry));
+      if (pending.length > 0 && round === 3) {
+        for (const entry of pending) {
+          const own = await ownProcess(entry, system, { gone: 'gone' });
+          if (own === 'gone') return null;
+          if (own !== false) members.push(await unreadable(entry));
+        }
+        break;
+      }
+    }
+    return members;
+  }
+  if (system.platform === 'darwin') {
+    let pids = null;
+    if (pgid !== null) {
+      const ps = runTool(system, 'ps', '/bin/ps', ['-A', '-o', 'pid=,pgid=']);
+      if (ps.status !== 0 || typeof ps.stdout !== 'string') return null;
+      pids = ps.stdout.split('\n').map((line) => line.trim().split(/\s+/).map(Number)).filter(([, g]) => g === pgid).map(([p]) => p);
+      if (pids.length === 0) return [];
+    }
+    // lsof exits 1 when a process of a pid list has exited since: what it
+    // printed for the others still stands. A listing of every process exits
+    // 0 (measured on macOS, 2026-10-21); one that exits 1 may have left out
+    // processes it could not read, and none it left out can be judged.
+    const lsof = lsofCwds(system, pids);
+    if (typeof lsof.stdout !== 'string' || !(lsof.status === 0 || (lsof.status === 1 && pids !== null))) return null;
+    const names = new Map();
+    readLsofRecords(lsof.stdout, names);
+    // lsof writes a name's unprintable bytes as escapes (`\t`, `\x09`),
+    // which no path can be told from: such a name reads as one not read.
+    // A name that is no path is lsof's report of a directory it could not
+    // read (`cwd info error: …`), and a record with no name one it read
+    // none of: that process may run anywhere.
+    const member = (p) => {
+      const raw = names.get(p) ?? null;
+      if (names.has(p) && (raw === null || !raw.startsWith('/'))) return { pid: p, cwd: null, raw, unreadable: true };
+      return { pid: p, cwd: raw === null || raw.includes('\\') ? null : raw, raw };
+    };
+    if (pids !== null) return pids.map(member);
+    // A listing of every process lists lsof's reader, whatever its exit
+    // status says, or it failed. And lsof leaves out, exiting 0, a process
+    // it may not inspect (one of the user's own that runs set-uid, as
+    // `login` and `sudo` do), and one started after it read the process
+    // table: every process of the user's own (by its real uid) that `ps`,
+    // run after lsof, lists and lsof did not name is read again by its pid,
+    // and `ps` run again, until a round finds none it had not met (at most
+    // four rounds). One lsof names is read; one the last `ps` lists that
+    // lsof never named (a process the system would not let it read, one
+    // started meanwhile, one whose pid another process holds now) is
+    // `unreadable`; one the last `ps` no longer lists, or lists as a zombie
+    // (it has exited, and its directory with it), has exited. A `ps` or an
+    // lsof that fails leaves the listing unproved. On a machine that starts
+    // processes faster than the rounds read them (a test suite running beside
+    // the reader, measured 2026-10-21), every round meets new ones, and those
+    // the last `ps` lists stay `unreadable`: the listing proves less, and a
+    // judgment of it keeps what it would have removed (treeOccupancy's
+    // 'unknown'), to be judged again later. That is the safe direction; a rule
+    // that places a process started after the listing began is deferred.
+    if (!names.has(system.pid)) return null;
+    const uid = system.getuid();
+    const unnamed = (t) => [...t].filter(([p, { ruid, zombie }]) => ruid === uid && !zombie && !names.has(p));
+    let table = darwinProcessTable(system);
+    if (table === null) return null;
+    let pending = unnamed(table);
+    for (let round = 0; pending.length > 0 && round < 4; round++) {
+      const again = lsofCwds(system, pending.map(([p]) => p));
+      if (typeof again.stdout !== 'string' || !(again.status === 0 || again.status === 1)) return null;
+      readLsofRecords(again.stdout, names);
+      table = darwinProcessTable(system);
+      if (table === null) return null;
+      const met = pending;
+      pending = unnamed(table);
+      if (pending.every(([p, { starttime }]) => met.some(([q, m]) => q === p && m.starttime === starttime))) break;
+    }
+    const members = [...[...names.keys()].map(member), ...pending.map(([p]) => ({ pid: p, cwd: null, raw: null, unreadable: true }))];
+    const clock = members.some((m) => m.unreadable) ? await clockDomain({ system }) : null;
+    return members.map((m) => (m.unreadable ? { ...m, starttime: table.get(m.pid)?.starttime ?? null, clock, ancestors: tableAncestors(table, m.pid) } : m));
+  }
+  return null;
+}
+
+// lsof's record of the directory each process of `pids` (every process, when
+// null) runs in. `-b` keeps lsof from calls that may block, `-w` from warnings.
+function lsofCwds(system, pids) {
+  return runTool(system, 'lsof', '/usr/sbin/lsof', ['-b', '-w', ...(pids === null ? [] : ['-a', '-p', pids.join(',')]), '-d', 'cwd', '-Fn']);
+}
+
+// Every process lsof printed (a `p` record) into `names`, with its name, or
+// null when the record has none.
+function readLsofRecords(stdout, names) {
+  let pid = null;
+  for (const line of stdout.split('\n')) {
+    if (line.startsWith('p')) {
+      pid = Number(line.slice(1));
+      if (!names.has(pid)) names.set(pid, null);
+    } else if (line.startsWith('n') && pid !== null) names.set(pid, line.slice(1));
+  }
+}
+
+// A tool by its name on PATH, else where macOS keeps it: a PATH without the
+// tool is no reason the processes cannot be listed. `env` extends the
+// caller's environment.
+function runTool(system, name, fallback, args, env = null) {
+  const options = { encoding: 'utf8', timeout: 10000, maxBuffer: 64 * 1024 * 1024, ...(env === null ? {} : { env: { ...system.env, ...env } }) };
+  const run = system.spawnSync(name, args, options);
+  return run.error?.code === 'ENOENT' ? system.spawnSync(fallback, args, options) : run;
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// Every process macOS lists now, from one `ps` (one read of the process
+// table): pid → { ppid, ruid, zombie, starttime }, `zombie` true for one
+// that has exited and is not yet reaped (state Z), the start time in seconds since
+// the epoch (`lstart`, read in UTC and the C locale whatever the caller's),
+// or null when ps fails or prints a line this does not read. The ps run
+// itself (set-uid on macOS, so one lsof would leave out) is not among them.
+function darwinProcessTable(system) {
+  const ps = runTool(system, 'ps', '/bin/ps', ['-A', '-o', 'pid=,ppid=,ruid=,stat=,lstart='], { LC_ALL: 'C', TZ: 'UTC0' });
+  if (ps.status !== 0 || typeof ps.stdout !== 'string') return null;
+  const table = new Map();
+  for (const line of ps.stdout.split('\n')) {
+    if (line.trim() === '') continue;
+    const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+[A-Z][a-z]{2}\s+([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+(\d{4})\s*$/.exec(line);
+    const month = m === null ? -1 : MONTHS.indexOf(m[5]);
+    if (month < 0) return null;
+    const seconds = Date.UTC(Number(m[10]), month, Number(m[6]), Number(m[7]), Number(m[8]), Number(m[9])) / 1000;
+    table.set(Number(m[1]), { ppid: Number(m[2]), ruid: Number(m[3]), zombie: m[4].startsWith('Z'), starttime: String(seconds) });
+  }
+  table.delete(ps.pid);
+  return table.size === 0 ? null : table;
+}
+
+// The ancestors of `pid` in a process table, its parent first and up to the
+// process whose parent is 0 (launchd): [{ pid, starttime }], or null when the
+// table does not hold it or one of them.
+function tableAncestors(table, pid) {
+  const ancestors = [];
+  let entry = table.get(pid);
+  for (let depth = 0; entry !== undefined && depth < 4096; depth++) {
+    if (entry.ppid === 0) return ancestors;
+    const parent = table.get(entry.ppid);
+    if (parent === undefined) return null;
+    ancestors.push({ pid: entry.ppid, starttime: parent.starttime });
+    entry = parent;
+  }
+  return null;
+}
+
+// C142 — where the process `pid` stands among the processes now:
+// { starttime, clock, ancestors }, its start time, the clock it was read in
+// (clockDomain) and its ancestors, its parent first and up to init
+// ([{ pid, starttime, reaper }], linuxAncestors' and tableAncestors'), each
+// null when it cannot be read; null when the process cannot be read, or on a
+// platform that lists none. treeOccupancy places a process the listing did
+// not read by these. A macOS start time is the wall clock read at the fork,
+// which may have been set before the boot time is read here, so no boot time
+// shows it: the reader's own start time is kept only when its uptime (a
+// monotonic clock) dates its start to the second the start time names (with
+// up to 1.5 s for the process to start up), and another process's cannot be
+// checked so.
+export async function processLineage(pid, { system = SYSTEM } = {}) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  if (system.platform === 'linux') {
+    const statText = await system.readFile(`/proc/${pid}/stat`, 'utf8').catch(() => null);
+    if (statText === null) return null;
+    return { starttime: statStartTime(statText), clock: await clockDomain({ system }), ancestors: await linuxAncestors(pid, statText, system) };
+  }
+  if (system.platform === 'darwin') {
+    const table = darwinProcessTable(system);
+    if (table === null || !table.has(pid)) return null;
+    let { starttime } = table.get(pid);
+    if (pid === system.pid) {
+      const started = system.now() / 1000 - system.uptime();
+      if (!(started >= Number(starttime) - 0.05 && started < Number(starttime) + 1.5)) starttime = null;
+    }
+    return { starttime, clock: await clockDomain({ system }), ancestors: tableAncestors(table, pid) };
+  }
+  return null;
+}
+
+// The ancestors of the Linux process `pid` whose stat reads `statText`, its
+// parent first and up to init (a parent of 0): [{ pid, starttime, reaper }],
+// or null when one cannot be read. Each parent is read, then its child again:
+// a parent that exited in between left the child another (the nearest
+// subreaper among its ancestors, or its pid namespace's init), and its pid
+// may since be another process's, so a child whose parent or start time
+// changed gives null. `reaper: true` marks one that may be a pid namespace's
+// init (its status's NSpid ends in 1, or names none, or cannot be read): such
+// an init adopts what a parent in its namespace leaves, though it is no
+// ancestor of that parent (pid_namespaces(7)).
+async function linuxAncestors(pid, statText, system) {
+  const ancestors = [];
+  let child = pid;
+  let childStat = statText;
+  for (let depth = 0; depth < 4096; depth++) {
+    const ppid = statFields(childStat)[1];
+    if (!/^\d+$/.test(ppid ?? '')) return null;
+    if (ppid === '0') return ancestors;
+    const parentStat = await system.readFile(`/proc/${ppid}/stat`, 'utf8').catch(() => null);
+    const again = await system.readFile(`/proc/${child}/stat`, 'utf8').catch(() => null);
+    const starttime = parentStat === null ? null : statStartTime(parentStat);
+    if (starttime === null || again === null || statFields(again)[1] !== ppid || statStartTime(again) !== statStartTime(childStat)) return null;
+    const status = await system.readFile(`/proc/${ppid}/status`, 'utf8').catch(() => '');
+    const nspid = /^NSpid:\s+([\d\s]+)$/m.exec(status)?.[1].trim().split(/\s+/);
+    ancestors.push({ pid: Number(ppid), starttime, ...(nspid === undefined || nspid.at(-1) === '1' ? { reaper: true } : {}) });
+    child = Number(ppid);
+    childStat = parentStat;
+  }
+  return null;
+}
+
+// The directories the Linux process `entry` runs in: { raws, denied }, the
+// links read and whether the system denied one, or null when it has exited
+// (no thread of it runs). proc_pid_cwd(5): once a multithreaded process's
+// main thread has exited, its own link is gone while its other threads run
+// on, so a link that is gone is no proof the process exited: each thread's
+// is read (task/<tid>/cwd). A thread that exits while they are read may have
+// started another, which this read of the task list does not name (C142
+// R-F3): while a thread other than the main one is gone when its link is
+// read, or the list names fewer threads than the process's status counts
+// (S-F1), or that status cannot be read, or a read of the list after the
+// count no longer names a thread it named (F1), the task list is read again
+// (four walks in all), and a process still read so is marked denied, which
+// counts it as one not read, with every directory its threads were read in
+// (F2). Only a process whose task list names no thread with a link left and
+// whose status counts one thread at most is one that exited (a zombie).
+async function linuxCwds(entry, system) {
+  const gone = (err) => err?.code === 'ENOENT' || err?.code === 'ESRCH';
+  try {
+    return { raws: [await system.readlink(`/proc/${entry}/cwd`)], denied: false };
+  } catch (err) {
+    if (!gone(err)) return { raws: [], denied: true };
+  }
+  // Every directory a thread was read in, on any read of the task list: a
+  // walk that proves nothing still keeps what it read (refine-verify of the
+  // twelfth review's fixes, F2).
+  const seen = new Set();
+  for (let attempt = 0; attempt < 4; attempt++) {
+    let tids;
+    try {
+      tids = await system.readdir(`/proc/${entry}/task`);
+    } catch (err) {
+      return gone(err) ? null : { raws: [...seen], denied: true };
+    }
+    const raws = [];
+    const named = [];
+    let denied = false;
+    let vanished = false;
+    for (const tid of tids) {
+      if (!/^\d+$/.test(tid)) continue;
+      named.push(tid);
+      try {
+        const raw = await system.readlink(`/proc/${entry}/task/${tid}/cwd`);
+        raws.push(raw);
+        seen.add(raw);
+      } catch (err) {
+        if (!gone(err)) denied = true;
+        else if (tid !== String(entry)) vanished = true;
+      }
+    }
+    // A thread that exited while the others were read may have started one
+    // this read of the task list does not name, whatever the others read.
+    if (vanished) continue;
+    if (denied) return { raws: [...seen], denied };
+    // A task list read while threads exit can end early (proc_task_readdir),
+    // whatever threads it names: the walk stands only when it names as many
+    // threads as the process's status counts (C142 S-F1), and when a read of
+    // the list after that count still names every thread it named, since one
+    // read and exited before the count leaves a place in it that a thread the
+    // list left out fills (refine-verify of the twelfth review's fixes, F1).
+    // Then a walk that read none (the main thread alone listed, its link
+    // gone) is a zombie's.
+    const threads = await threadCount(entry, system);
+    if (threads === null || named.length < threads) continue;
+    let after;
+    try {
+      after = new Set(await system.readdir(`/proc/${entry}/task`));
+    } catch (err) {
+      return gone(err) ? null : { raws: [...seen], denied: true };
+    }
+    if (!named.every((tid) => after.has(tid))) continue;
+    return raws.length > 0 ? { raws: [...new Set(raws)], denied } : null;
+  }
+  return { raws: [...seen], denied: true };
+}
+
+// The threads the Linux process `entry` has, by its status's `Threads`: 0
+// when it has exited since, or null when that cannot be read.
+async function threadCount(entry, system) {
+  let status;
+  try {
+    status = await system.readFile(`/proc/${entry}/status`, 'utf8');
+  } catch (err) {
+    return err?.code === 'ENOENT' || err?.code === 'ESRCH' ? 0 : null;
+  }
+  const threads = /^Threads:\s+(\d+)/m.exec(status);
+  return threads === null ? null : Number(threads[1]);
+}
+
+// The clock a start time is read in, and the pids it names: two start times,
+// or two pids, compare only when read in one. On Linux the boot, the
+// reader's time namespace (time_namespaces(7) offsets the boot time a reader
+// sees) and its pid namespace (pid_namespaces(7): a pid names a process only
+// within one), as `<boot id>/<time namespace>/<pid namespace>`, `-` for a
+// kernel without that namespace, and none when the /proc read is not the
+// reader's (procReadsSelf); on macOS the boot time `kern.boottime` reports,
+// to the microsecond, as `darwin-boot/<seconds>.<microseconds>`: a start
+// time there is the wall clock read at the fork, and setting that clock moves
+// the boot time macOS reports (it keeps the time since boot), so start times
+// read under one boot time compare (processLineage checks a clock set before
+// it). Null elsewhere, or when any of it cannot be read.
+export async function clockDomain({ system = SYSTEM } = {}) {
+  if (system.platform === 'darwin') {
+    const run = runTool(system, 'sysctl', '/usr/sbin/sysctl', ['-n', 'kern.boottime']);
+    const boot = run.status === 0 && typeof run.stdout === 'string' ? /\bsec = (\d+), usec = (\d+)/.exec(run.stdout) : null;
+    return boot === null ? null : `darwin-boot/${boot[1]}.${boot[2]}`;
+  }
+  if (system.platform !== 'linux' || !(await procReadsSelf(system))) return null;
+  let boot;
+  try {
+    boot = (await system.readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim();
+  } catch {
+    return null;
+  }
+  const namespaces = [];
+  for (const kind of ['time', 'pid']) {
+    try {
+      namespaces.push(await system.readlink(`/proc/self/ns/${kind}`));
+    } catch (err) {
+      if (err?.code !== 'ENOENT') return null;
+      namespaces.push('-');
+    }
+  }
+  return boot === '' ? null : [boot, ...namespaces].join('/');
+}
+
+// Whether the Linux reader is in the pid namespace a clock names (its third
+// part, clockDomain); a reader whose own clock cannot be read is in none.
+async function inPidNamespace(clock, system) {
+  const here = await clockDomain({ system });
+  return here !== null && here.split('/')[2] === clock.split('/')[2];
+}
+
+// proc_pid_stat(5)'s fields after the command's closing paren: state, ppid,
+// pgrp, … starttime (the 20th here, field 22 of the line).
+function statFields(statText) {
+  return statText.slice(statText.lastIndexOf(')') + 2).trim().split(/\s+/);
+}
+
+// proc_pid_stat(5)'s starttime (field 22, clock ticks since boot) as written,
+// or null when the text holds none.
+function statStartTime(statText) {
+  const starttime = statFields(statText)[19];
+  return /^\d+$/.test(starttime ?? '') ? starttime : null;
+}
+
+// Whether the Linux process `entry` is the user's own, by the real uid its
+// status reads (readable for every process, dumpable or not): true, false
+// (another's, or one exited since), or null when it cannot be read. `gone` is
+// what one exited since answers instead, for a reader that must tell it from
+// another user's.
+async function ownProcess(entry, system, { gone = false } = {}) {
+  let status;
+  try {
+    status = await system.readFile(`/proc/${entry}/status`, 'utf8');
+  } catch (err) {
+    return err?.code === 'ENOENT' || err?.code === 'ESRCH' ? gone : null;
+  }
+  const uid = /^Uid:\s+(\d+)/m.exec(status);
+  return uid === null ? null : Number(uid[1]) === system.getuid();
+}
+
+// The path a Linux cwd link names: the kernel appends " (deleted)" to a
+// directory removed since, but a directory may carry that name itself, so
+// the suffix is dropped only when no directory under the full name exists.
+export async function undeletedCwd(link, system = SYSTEM) {
+  const suffix = ' (deleted)';
+  if (!link.endsWith(suffix)) return link;
+  try {
+    await system.stat(link);
+    return link;
+  } catch {
+    return link.slice(0, -suffix.length);
   }
 }
 
@@ -93,13 +699,16 @@ export function fingerprintsMatch(recorded, current) {
 //   'unknown' a process has its pid, and no fingerprint was recorded or none
 //             can be taken now, so it may be the original.
 // A record without a pid is 'gone': nothing was recorded to be alive.
-export async function identityState(record) {
+// `clock` is the clock its pid was read in (fingerprintForPid): its
+// fingerprint's own, or, for one recorded with none (a companion's), the
+// clock of the supervisor that recorded it.
+export async function identityState(record, { clock = record?.fingerprint?.clock ?? null } = {}) {
   const pid = record?.pid;
   if (!Number.isInteger(pid) || pid <= 0) return 'gone';
   if (!(await isProcessAlive(pid))) return 'gone';
   const recorded = record.fingerprint;
   if (!recorded || recorded.kind === 'none') return 'unknown';
-  const current = await fingerprintForPid(pid);
+  const current = await fingerprintForPid(pid, { clock });
   if (current.kind === 'none') {
     // It may have exited between the two looks.
     return (await isProcessAlive(pid)) ? 'unknown' : 'gone';
@@ -112,7 +721,7 @@ export async function identityState(record) {
 // grace. Only a recorded group is signalled; with none there is nothing a run
 // can tell apart from another process.
 export async function stopProcessGroup(pgid, graceMs) {
-  if (!Number.isInteger(pgid) || pgid <= 0 || !isGroupAlive(pgid)) return;
+  if (!Number.isInteger(pgid) || pgid <= 1 || !isGroupAlive(pgid)) return;
   try {
     process.kill(-pgid, 'SIGTERM');
   } catch {

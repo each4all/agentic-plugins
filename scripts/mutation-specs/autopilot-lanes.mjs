@@ -567,4 +567,11 @@ export const MUTATIONS = [
     why: 'reconciling one lane writes another lane\'s identity, a lane the run may have mid-step',
     killed_by: /reconciles one lane from the whole macro's facts/,
   },
+  {
+    id: 'D29', file: TDR, tests: [TDR],
+    from: "env: SNAP.withListing({ ...fx.env, ...extraEnv }), out:",
+    to: "env: { ...fx.env, ...extraEnv }, out:",
+    why: "the runners a dead-run cleanup starts in the suite judge the system's listing, not the peer snapshot suites' (C142 O-F2, refine-verify of 2026-10-22)",
+    killed_by: /a peer whose runner lives keeps the dead run's record; one proven over is cancelled and its snapshot removed/,
+  },
 ];

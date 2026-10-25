@@ -684,8 +684,8 @@ export const MUTATIONS = [
     id: 'E14', tests: [T_SETTLE],
     prepare: (copy, tools) => canonicalDefect(copy, tools, {
       dest: 'scripts/peer-runner.mjs',
-      from: "  return { ...base, settlement, verdict: keptVerdict ?? verdict };\n}",
-      to: "  return { ...base, settlement, verdict };\n}",
+      from: "  return { ...base, settlement, verdict: keptVerdict ?? verdict, ...(await cleanup()) };\n}",
+      to: "  return { ...base, settlement, verdict, ...(await cleanup()) };\n}",
     }),
     killed_by: /two concurrent settles of a completed run report the verdict the workflow holds \(Review of code step 6\)$/,
     why: 'the settle that lost a race reports its own verdict, which the workflow does not hold',

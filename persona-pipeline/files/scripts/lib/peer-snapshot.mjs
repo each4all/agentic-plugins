@@ -18,6 +18,10 @@
 //   reclaimPeerSnapshots remove the snapshots of this repository whose owner
 //                        processes are gone (a supervisor that died before
 //                        its cleanup), never one a live process may be using
+//   snapshotEnded        whether the run that made a snapshot is proven over
+//                        (C142: the judgment a cancel or a settle that finds
+//                        a host-killed run needs before it finishes the run
+//                        and removes its snapshot, removeOwnedSnapshot)
 //   captureWorkingTree   the same capture of the working tree, written as a
 //                        tree object and nothing materialized (C120: the
 //                        tree a document review is held to)
@@ -32,7 +36,7 @@ import { copyFile, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, utimes, 
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
-import { fingerprintForPid, identityState, isGroupAlive, stopProcessGroup } from './process-identity.mjs';
+import { allProcessCwds, fingerprintForPid, groupMemberCwds, identityState, isGroupAlive, processLineage, stopProcessGroup } from './process-identity.mjs';
 
 export const SNAPSHOT_LOCK_PREFIX = 'peer-snapshot v1 ';
 export const SNAPSHOT_OWNER_FILE = 'owner.json';
@@ -42,10 +46,29 @@ export const SNAPSHOT_TREE_DIR = 'tree';
 // identity cannot be told) is reclaimed only once it is this old.
 export const SNAPSHOT_TTL_MS = 24 * 60 * 60 * 1000;
 const SNAPSHOT_DIR_MARK = '-peer-snapshot-';
+// The largest pid a process can have (pid_t is a signed 32-bit integer): a
+// recorded pid past it names no process, and would read as one gone.
+const PID_MAX = 2 ** 31 - 1;
+// A pid a run's process can have: past init's (1, whose group `kill(-1)` would
+// read as every process) and within PID_MAX.
+const isRunPid = (n) => Number.isInteger(n) && n > 1 && n <= PID_MAX;
 // How long an aborted git call's process group gets after SIGTERM.
 const ABORT_GRACE_MS = 2000;
 // The characters XML escapes, which no snapshot root carries.
 const XML_SPECIAL = /[&<>"']/;
+
+// C142 — the listing of every process a judgment reads when its caller passes
+// none: the system's (allProcessCwds, for the run whose `clock` the judgment
+// names), or the one a function installed on `globalThis` under this symbol
+// gives, handed the system's to read from. Only code loaded into this process
+// installs one: a test preloads a module that does (`node --import`) into the
+// runner it starts, so that no result of its depends on what else runs on the
+// machine. Nothing here reads the environment for it.
+export const LISTING_HOOK = Symbol.for('agentic-plugins.peer-snapshot.list-processes');
+function listProcessesHere(options = {}) {
+  const hook = globalThis[LISTING_HOOK];
+  return typeof hook === 'function' ? hook(() => allProcessCwds(options)) : allProcessCwds(options);
+}
 
 // The state homes a snapshot never carries: a copy of them in another
 // worktree of the repository would read, to the ADR-0067 write guard, as a
@@ -295,15 +318,29 @@ export async function captureWorkingTree({ cwd, env = process.env, signal = null
   }
 }
 
+// The supervisor's fingerprint with what places it among the processes
+// (processLineage): its `starttime` (on Linux the fingerprint's own), the
+// `clock` it was read in and its `ancestors`, by which treeOccupancy places a
+// process the listing did not read. A lineage that cannot be read adds
+// nothing, and a fingerprint of none adds none.
+export async function supervisorFingerprint(pid) {
+  const fingerprint = await fingerprintForPid(pid);
+  if (fingerprint.kind === 'none') return fingerprint;
+  const lineage = await processLineage(pid);
+  if (lineage === null) return fingerprint;
+  const starttime = fingerprint.kind === 'linux_proc_starttime' ? fingerprint.starttime : lineage.starttime;
+  return { ...fingerprint, starttime, clock: lineage.clock, ancestors: lineage.ancestors };
+}
+
 function snapshotBase(top) {
   const candidates = [];
   try {
-    candidates.push(realpathSync(tmpdir()));
+    candidates.push(realpathSync.native(tmpdir()));
   } catch {
     /* an unresolvable TMPDIR is skipped */
   }
   try {
-    candidates.push(realpathSync('/tmp'));
+    candidates.push(realpathSync.native('/tmp'));
   } catch {
     /* no /tmp */
   }
@@ -353,7 +390,7 @@ export async function createPeerSnapshot({
       common_dir: live.commonDir,
       tree,
       branch: null,
-      supervisor: { pid: supervisorPid, fingerprint: await fingerprintForPid(supervisorPid) },
+      supervisor: { pid: supervisorPid, fingerprint: await supervisorFingerprint(supervisorPid) },
       companion: null,
       created_at: new Date().toISOString(),
     };
@@ -409,6 +446,7 @@ export async function createPeerSnapshot({
       head: snap.head,
       index_tree: snap.indexTree,
       worktree_tree: snap.worktreeTree,
+      supervisor: owner.supervisor,
     };
   } catch (error) {
     await removePeerSnapshot({ live_toplevel: top, root: tree, parent, branch: createdBranch }, { env, signal }).catch(() => {});
@@ -437,6 +475,9 @@ export async function recordSnapshotCompanion(snapshot, { pid, pgid, fingerprint
 }
 
 // The handle's `snapshot` field: what was isolated, where, and from what.
+// `supervisor` is the owner record's (the run that made the snapshot, its pid
+// and fingerprint), kept on the handle so that a run whose snapshot a reclaim
+// removed can still be judged by it (C142).
 export function peerSnapshotRecord(snapshot, extra = {}) {
   if (!snapshot) return null;
   return {
@@ -448,6 +489,7 @@ export function peerSnapshotRecord(snapshot, extra = {}) {
     index_tree: snapshot.index_tree ?? null,
     worktree_tree: snapshot.worktree_tree ?? null,
     owner_path: snapshot.owner_path ?? null,
+    supervisor: snapshot.supervisor ?? null,
     removed_at: null,
     cleanup_error: null,
     prompt_paths_rewritten: 0,
@@ -651,33 +693,45 @@ async function readOwner(ownerPath) {
   }
 }
 
+// A snapshot's owner record, or null when it cannot be read as one.
+export async function readSnapshotOwner(ownerPath) {
+  return readOwner(ownerPath);
+}
+
 // A live group blocks the reclaim however old the record: the companion may
 // have exited and left a child running in the snapshot. Its group id is the
 // companion's pid, which the system gives no new process while the group
 // lives, so a live group under a pid no process has is the companion's, and
 // one under a pid whose process cannot be told may be. Only under a pid
 // another process now has may it be that process's own group: told apart by
-// age alone.
-async function companionState(companion) {
-  if (!companion) return null;
-  const state = await identityState({ pid: companion.pid, fingerprint: companion.fingerprint });
-  if (state === 'match') return 'alive';
+// age alone. `identity` is the companion's own identityState, which the state
+// came from, read in the pid namespace `clock`, the supervisor's, names.
+async function companionStates(companion, clock) {
+  if (!companion) return { state: null, identity: null };
+  const identity = await identityState({ pid: companion.pid, fingerprint: companion.fingerprint }, { clock: typeof clock === 'string' ? clock : null });
+  if (identity === 'match') return { state: 'alive', identity };
   const group = isGroupAlive(companion.pgid);
-  if (group && state !== 'differ') return 'alive';
-  if (group || state === 'unknown') return 'unknown';
-  return 'gone';
+  if (group && identity !== 'differ') return { state: 'alive', identity };
+  if (group || identity === 'unknown') return { state: 'unknown', identity };
+  return { state: 'gone', identity };
+}
+
+async function companionState(companion, clock) {
+  return (await companionStates(companion, clock)).state;
 }
 
 // Whether a snapshot may be reclaimed: 'reclaim', or 'keep' with why.
 // Its supervisor (the run that made it) and its companion (the peer's
 // process group) must both be gone; a process whose identity cannot be told,
 // or a companion launched and never recorded, keeps the snapshot until the
-// record is SNAPSHOT_TTL_MS old.
-export async function judgeSnapshot(owner, { now = Date.now(), ttlMs = SNAPSHOT_TTL_MS, recordedAtMs = null } = {}) {
+// record is SNAPSHOT_TTL_MS old, and so does a process running in its `tree`
+// (the snapshot's own, found apart from the record; treeOccupancy) once both
+// are gone (C142).
+export async function judgeSnapshot(owner, { now = Date.now(), ttlMs = SNAPSHOT_TTL_MS, recordedAtMs = null, tree = null, listProcesses = listProcessesHere } = {}) {
   const old = (atMs) => Number.isFinite(atMs) && now - atMs > ttlMs;
   if (owner === null) return old(recordedAtMs) ? { verdict: 'reclaim', why: 'owner-unreadable-expired' } : { verdict: 'keep', why: 'owner-unreadable' };
   const supervisor = await identityState(owner.supervisor);
-  const companion = await companionState(owner.companion);
+  const companion = await companionState(owner.companion, owner.supervisor?.fingerprint?.clock);
   if (supervisor === 'match') return { verdict: 'keep', why: 'supervisor-alive' };
   if (companion === 'alive') return { verdict: 'keep', why: 'companion-alive' };
   // A launch whose companion was never recorded: the peer may be running
@@ -686,7 +740,393 @@ export async function judgeSnapshot(owner, { now = Date.now(), ttlMs = SNAPSHOT_
   if (supervisor === 'unknown' || companion === 'unknown' || unnamedLaunch) {
     return old(Date.parse(owner.created_at)) ? { verdict: 'reclaim', why: 'identity-unknown-expired' } : { verdict: 'keep', why: 'identity-unknown' };
   }
+  const occupancy = await treeOccupancy(tree ?? owner.tree, { supervisor: owner.supervisor, listProcesses });
+  if (occupancy !== 'none') return old(Date.parse(owner.created_at)) ? { verdict: 'reclaim', why: `tree-${occupancy}-expired` } : { verdict: 'keep', why: `tree-${occupancy}` };
   return { verdict: 'reclaim', why: companion === null ? 'supervisor-gone-companion-unrecorded' : 'owners-gone' };
+}
+
+// C142 — the companion's process a run's handle names, read once for every
+// judgment and every signal: { pid, pgid } (pgid null when the companion led
+// no group of its own), null when the handle names none, or { malformed: true }.
+// The process is its `peer_process`, which the runner records once the peer
+// runs and no later write clears; on a handle written before it existed (or
+// one whose record names no process), its `pid` and `pgid`, which the run's
+// end, a cancel and an orphan write clear. The runner writes both the same, a
+// pid in a run's range and the group it leads (none on Windows, where the
+// companion leads no group of its own), and writes `peer_process` only with
+// its pid, so a field present that is anything else, a `peer_process` naming
+// no pid, or `pid`/`pgid` that disagree with `peer_process`, is a handle the
+// runner did not write: it proves nothing, and is never read as one naming
+// no process.
+export function handlePeerProcess(handle) {
+  if (handle === null || typeof handle !== 'object') return null;
+  const groupless = process.platform === 'win32';
+  const read = (pid, pgid) => {
+    if ((pid ?? null) === null && (pgid ?? null) === null) return null;
+    if (!isRunPid(pid)) return { malformed: true };
+    if ((pgid ?? null) === null ? !groupless : pgid !== pid) return { malformed: true };
+    return { pid, pgid: pgid ?? null };
+  };
+  const live = read(handle.pid, handle.pgid);
+  if ((handle.peer_process ?? null) === null) return live;
+  const record = handle.peer_process;
+  const kept = typeof record === 'object' && !Array.isArray(record) ? read(record.pid, record.pgid) ?? { malformed: true } : { malformed: true };
+  if (kept.malformed || live?.malformed) return { malformed: true };
+  if (live !== null && (live.pid !== kept.pid || live.pgid !== kept.pgid)) return { malformed: true };
+  return kept;
+}
+
+// C142 — the supervisor a run's handle keeps, read once for every judgment
+// (handlePeerProcess's rule): { pid, fingerprint }, the owner record's, which
+// the runner copies onto the handle's snapshot record when it makes the
+// snapshot; null on a handle an earlier runner wrote, which keeps neither a
+// supervisor nor a `peer_process`; else { malformed: true }. The runner writes
+// the key on every snapshot record, with a pid in a run's range and the
+// fingerprint it took, so a key it holds that is anything else, or one absent
+// beside a `peer_process` (which only this runner writes), is a handle the
+// runner did not write, and is never read as an earlier runner's.
+export function handleSupervisor(handle) {
+  const rec = handle?.snapshot;
+  if (rec === null || typeof rec !== 'object') return null;
+  if (!Object.hasOwn(rec, 'supervisor') && (handle.peer_process ?? null) === null) return null;
+  const { supervisor } = rec;
+  const isRecord = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  if (!isRecord(supervisor) || !isRunPid(supervisor.pid) || !isRecord(supervisor.fingerprint)) return { malformed: true };
+  return { pid: supervisor.pid, fingerprint: supervisor.fingerprint };
+}
+
+// Whether two supervisor records name one process: its pid and the
+// fingerprint taken once, which the runner copies from one record to the other.
+const sameSupervisor = (a, b) => a?.pid === b.pid && JSON.stringify(a?.fingerprint) === JSON.stringify(b.fingerprint);
+
+// C142 — whether the group `pgid` is a run's apart from its id, which the
+// system may have given another process's group once the run's ended: 'tied'
+// when a process of it runs in the run's snapshot `tree` (the companion starts
+// there, and what it starts inherits it), 'untied' when none does (none could
+// be read, or the group has ended), 'unknown' when its processes cannot be
+// listed. A path no process of another's runs in, the snapshot's directory
+// being made for this one run, ties the group; nothing else does. The tree is
+// never followed through a link: one put in its place could name any
+// directory, `/` included. Only its parent's spelling is resolved, so a tree
+// that is a link ties nothing (no process reports a cwd under the link's own
+// path), and a removed tree is the path recorded, which is the one its
+// processes report. `clock` is the one the run's supervisor was read in (its
+// recorded fingerprint's): a group listed in another pid namespace than the
+// one it names, or through a /proc that is not the reader's, is 'unknown'
+// (groupMemberCwds, C142 U-F1). `system` is what the listing reads (a test
+// passes its own).
+export async function groupTiedToTree(pgid, tree, { clock = null, system } = {}) {
+  if (typeof tree !== 'string' || tree === '') return 'untied';
+  const members = await groupMemberCwds(pgid, { clock, system });
+  if (members === null) return 'unknown';
+  const inTree = treeTest(tree);
+  return members.some((m) => inTree(m.cwd)) ? 'tied' : 'untied';
+}
+
+// Whether a cwd lies in the tree, under the tree's spellings groupTiedToTree
+// takes: the path recorded, and the one with its parent resolved.
+function treeTest(tree) {
+  const trees = treeSpellings(tree);
+  return (cwd) => typeof cwd === 'string' && isAbsolute(cwd) && trees.some((t) => isWithinOrEqual(cwd, t));
+}
+
+function treeSpellings(tree) {
+  const trees = [resolve(tree)];
+  try {
+    trees.push(join(realpathSync.native(dirname(resolve(tree))), basename(tree)));
+  } catch {
+    /* its parent removed too */
+  }
+  return trees;
+}
+
+// C142 — whether any process the user can see runs in the run's snapshot
+// `tree`, which a removal must find empty: a process the companion started in
+// a group or a session of its own outlives the companion's group, still
+// running there. 'none' when no process does, 'occupied' when one may, and
+// 'unknown' when the processes cannot be listed (elsewhere than Linux and
+// macOS, a `/proc` or `lsof` that fails, a listing that does not list its
+// reader, a macOS `ps` that fails, a Linux listing read in another pid
+// namespace than the one the supervisor's recorded clock names), when a
+// process runs where the listing did not read (allProcessCwds'
+// `unreadable`: on Linux one of the user's own not
+// dumpable; on macOS one lsof could not read or left out, its name an error
+// report or none) and may be the run's, or no tree is named. Such a process
+// is placed outside the run by the run's `supervisor` (the owner record's,
+// which started the companion), its start time and ancestors read in the
+// clock the process's were (clockDomain; start times compare in clock ticks
+// since boot on Linux, seconds on macOS):
+//   - it started before the supervisor: what the run starts descends from
+//     the supervisor, and so starts after it;
+//   - or one of its ancestors started before the supervisor and is not one
+//     of the supervisor's ancestors: a process of the run descends from the
+//     supervisor, and one left by its parent is given to the nearest
+//     subreaper among its ancestors or to its pid namespace's init, so each
+//     ancestor of it is the supervisor, a process the run started since, an
+//     ancestor of the supervisor, or such an init. Only its ancestors below
+//     the first init (pid 1, or one that may be a pid namespace's init:
+//     `reaper`) count: an init may have adopted it, though it is no ancestor
+//     of its parent, and what lies above that init is the init's lineage,
+//     which says nothing of its own;
+//   - or, on macOS (a clock of `darwin-boot/`), its ancestors reach one of
+//     the supervisor's other than launchd (pid 1) before they reach the
+//     supervisor's pid: macOS has no subreaper and gives an orphan to
+//     launchd, so a process of the run reaches the supervisor's ancestors
+//     only through the supervisor. A new terminal tab's set-uid `login`,
+//     under a terminal the supervisor runs in, is placed so. (A debugger that
+//     attaches to a process becomes its parent there; one attached to a
+//     hidden process of the run, which takes root for a set-uid one, would
+//     place it.)
+// One it does not place may be the run's: the interactive codex, another
+// lane's peer, an ssh session or a `sudo` started since is placed by the
+// shell, the session or the daemon it runs under, when that started before
+// the run and is no ancestor of its supervisor. Where a tie
+// needs a name read as written, here a name that may be the tree's counts:
+// the one Linux's " (deleted)" mark leaves or the mark kept, and an escaped
+// lsof name, which keeps the tree's spelling verbatim when that spelling has
+// nothing lsof escapes, and could be any otherwise. A process in the tree is
+// not thereby the run's (a location proves no ancestry): nothing here signals
+// it, and the run is left to the reclaim's age.
+// On a machine that starts processes faster than the listing reads them (a
+// test suite running beside the run, measured 2026-10-21), a process of the
+// user's own started during the listing can stay unread, and when it descends
+// from an ancestor of the supervisor nothing places it outside the run: the
+// tree reads 'unknown', and cancel, settle and the reclaim keep the snapshot
+// for a later attempt. That is the retention direction, never a removal under
+// a live process; it only delays the cleanup on a busy machine. A rule that
+// places a process started after the listing began is deferred (C142's
+// listing-hardening slice). `listProcesses` lists them (listProcessesHere;
+// a test passes its own).
+export async function treeOccupancy(tree, { listProcesses = listProcessesHere, supervisor = null } = {}) {
+  if (typeof tree !== 'string' || tree === '') return 'unknown';
+  const recorded = supervisor?.fingerprint;
+  const runClock = typeof recorded?.clock === 'string' ? recorded.clock : null;
+  const all = await listProcesses({ clock: runClock });
+  if (all === null) return 'unknown';
+  const inTree = treeTest(tree);
+  const plain = treeSpellings(tree).every((t) => /^[\x20-\x5b\x5d-\x7e]*$/.test(t));
+  const suffix = ' (deleted)';
+  const runStart = runClock !== null && /^\d+$/.test(recorded.starttime ?? '') ? BigInt(recorded.starttime) : null;
+  const before = (starttime) => runStart !== null && /^\d+$/.test(starttime ?? '') && BigInt(starttime) < runStart;
+  const runAncestors = lineageOf(recorded?.ancestors);
+  const darwin = runClock?.startsWith('darwin-boot/') === true;
+  const outsideRun = (starttime, clock, ancestors) => {
+    if (runStart === null || clock !== runClock) return false;
+    if (before(starttime)) return true;
+    if (runAncestors === null) return false;
+    for (const a of lineageOf(ancestors) ?? []) {
+      if (a.pid === 1 || a.reaper === true || (darwin && a.pid === supervisor.pid)) return false;
+      if (runAncestors.some((r) => r.pid === a.pid && r.starttime === a.starttime)) {
+        if (darwin) return true;
+      } else if (before(a.starttime)) return true;
+    }
+    return false;
+  };
+  let escaped = false;
+  let unread = false;
+  for (const { cwd, raw, unreadable, starttime, clock, ancestors } of all) {
+    if (unreadable === true && !outsideRun(starttime, clock, ancestors)) unread = true;
+    if (typeof raw !== 'string') continue;
+    if (inTree(cwd) || inTree(raw) || (raw.endsWith(suffix) && inTree(raw.slice(0, -suffix.length)))) return 'occupied';
+    if (cwd === null) escaped = true;
+  }
+  if (escaped && !plain) return 'occupied';
+  // A process whose directory was not read, and that is not placed outside
+  // the run, may run in the tree: the tree is not proven empty.
+  return unread ? 'unknown' : 'none';
+}
+
+// A list of ancestors as processLineage writes it ([{ pid, starttime,
+// reaper }], a pid and a start time in digits, `reaper` true or absent), or
+// null for anything else.
+function lineageOf(ancestors) {
+  if (!Array.isArray(ancestors)) return null;
+  return ancestors.every((a) => a !== null && typeof a === 'object' && Number.isInteger(a.pid) && a.pid > 0 && /^\d+$/.test(a.starttime ?? '') && (a.reaper === undefined || a.reaper === true)) ? ancestors : null;
+}
+
+// C142 — whether the run that made a snapshot is proven over, the judgment a
+// terminal write and a removal of that one run's snapshot need (a cancel or a
+// settle that finds the run's supervisor killed before its cleanup). Stricter
+// than judgeSnapshot, which also reclaims on age: here no age counts.
+//   'ended'   the record reads, its supervisor is gone (no process has its
+//             pid), its companion's group is gone (or none was launched),
+//             and no process runs in the run's tree (treeOccupancy);
+//   'alive'   the supervisor, or a process of the companion's group, runs;
+//   'unknown' anything else: no record, an identity that cannot be told (a
+//             companion's group alive under a pid whose process cannot be
+//             told included, and one whose leader is gone while none of its
+//             processes runs in the run's tree), a launch whose companion was
+//             never recorded, a process in the run's tree outside the
+//             companion's group (`tree-occupied`), or processes that cannot
+//             be listed (`tree-unknown`).
+//             A supervisor pid a process has under another fingerprint
+//             (identityState's `differ`) is one that cannot be told: a
+//             recorded fingerprint that is incomplete or of a kind this
+//             platform does not take reads `differ`, and so does a macOS
+//             `lstart` read under another locale or time zone than the
+//             runner's (C141), the runner alive. A pid truly reused is left
+//             to the reclaim.
+// `supervisor` and `companion` are the states the verdict came from
+// (identityState's and companionState's), so a caller can tell a companion
+// group outliving its dead supervisor from a supervisor still at work. A
+// `companion-alive` verdict names a group whose leader is still the companion,
+// or is gone while a process of the group runs in the run's tree, never one
+// that cannot be told: a caller may stop that group as the run's. `handle`,
+// when given, is the run's handle, which the runner writes apart from this
+// record and which names the companion's process (handlePeerProcess). `tree`,
+// when given, is the run's tree as found apart from the record (judgeRunEnded
+// takes it from where the record lies), which a group must run in to be the
+// run's: a record's own `tree` could name any directory. `listProcesses` is
+// treeOccupancy's.
+export async function snapshotEnded(owner, { handle = null, tree = null, listProcesses = listProcessesHere } = {}) {
+  if (owner === null || typeof owner !== 'object') return { verdict: 'unknown', why: 'owner-unreadable', supervisor: null, companion: null };
+  // A record that names no supervisor, or no snapshot to remove, proves
+  // nothing: a missing pid would read as a process gone, and so would one
+  // past the range a pid takes. Nor does one that names a companion without
+  // its pid and group (a missing group would read as one ended while a
+  // process of it runs on), or with a group it does not lead: the runner
+  // starts the companion as its group's leader, so a group under another id
+  // is no group of the run's. Nor, whatever its `launched_at` says, does one
+  // that omits the companion the run's handle names, or names another: the
+  // runner records the same process in both, so a record that disagrees with
+  // the handle is one the runner did not write. A handle whose process fields,
+  // or whose kept supervisor, the runner did not write (handlePeerProcess,
+  // handleSupervisor) proves nothing either.
+  const id = isRunPid;
+  const named = owner.companion;
+  const companionIncomplete = named !== null && named !== undefined && (typeof named !== 'object' || !id(named.pid) || named.pgid !== named.pid);
+  const shown = handlePeerProcess(handle);
+  const kept = handleSupervisor(handle);
+  if (shown?.malformed || kept?.malformed) return { verdict: 'unknown', why: 'handle-malformed', supervisor: null, companion: null };
+  const handleNames = shown !== null;
+  const handleDisagrees = handleNames && (named === null || typeof named !== 'object' || named.pid !== shown.pid || (Number.isInteger(shown.pgid) && named.pgid !== shown.pgid));
+  // The supervisor too: the runner copies the record's onto the handle, so a
+  // record naming another (an exited one, while the handle's runs) is one it
+  // did not write.
+  const supervisorDisagrees = kept !== null && !sameSupervisor(owner.supervisor, kept);
+  if (!id(owner.supervisor?.pid) || typeof owner.live_toplevel !== 'string' || typeof owner.tree !== 'string' || companionIncomplete || handleDisagrees || supervisorDisagrees) {
+    return { verdict: 'unknown', why: 'owner-incomplete', supervisor: null, companion: null };
+  }
+  const supervisor = await identityState(owner.supervisor);
+  const { state: companion, identity: companionIdentity } = await companionStates(named ?? null, owner.supervisor.fingerprint?.clock);
+  const judged = (verdict, why) => ({ verdict, why, supervisor, companion });
+  if (supervisor === 'match') return judged('alive', 'supervisor-alive');
+  // A group alive under a companion pid whose process cannot be told may be
+  // that process's own (the pid reused once the companion's group ended):
+  // nothing proves it the run's, so nothing may stop it as the run's.
+  if (companion === 'alive' && companionIdentity === 'unknown') return judged('unknown', 'companion-unknown');
+  // Nor does a group whose leader is gone prove itself the run's by its id:
+  // once the companion's group ended, the id may lead a group another process
+  // started and left (a job-control pipeline, a daemon's double fork). It is
+  // the run's only while a process of it runs in the run's tree
+  // (groupTiedToTree), read in the pid namespace its supervisor's clock names.
+  if (companion === 'alive' && companionIdentity === 'gone' && (await groupTiedToTree(named.pgid, tree ?? owner.tree, { clock: owner.supervisor.fingerprint?.clock })) !== 'tied') return judged('unknown', 'companion-untied');
+  if (companion === 'alive') return judged('alive', 'companion-alive');
+  if (supervisor === 'unknown' || supervisor === 'differ') return judged('unknown', 'supervisor-unknown');
+  if (companion === 'unknown') return judged('unknown', 'companion-unknown');
+  if (companion === null && typeof owner.launched_at === 'string') return judged('unknown', 'launch-unrecorded');
+  // Nor is a run over while a process runs in its tree: the companion may
+  // have started it in a group of its own, which its group's end leaves
+  // running (treeOccupancy).
+  const occupancy = await treeOccupancy(tree ?? owner.tree, { supervisor: owner.supervisor, listProcesses });
+  if (occupancy !== 'none') return judged('unknown', `tree-${occupancy}`);
+  return judged('ended', companion === null ? 'supervisor-gone-nothing-launched' : 'owners-gone');
+}
+
+// C142 — judge the run of the snapshot whose owner record is at `ownerPath`
+// (snapshotEnded), the record read again once it is judged `ended`: the first
+// read came before the judgment awaited the owner processes, and a supervisor
+// that recorded a launch (or its companion) and then died in between has
+// written it since (judgeOwnerRecord's rule). A record that names another run
+// than `runId` proves nothing of this one, nor one that disagrees with the
+// run's `handle` (snapshotEnded's rule). The run's tree is the record's
+// directory's `tree`, where createPeerSnapshot made it. Returns
+// { judged, owner }.
+export async function judgeRunEnded(ownerPath, { runId = null, handle = null } = {}) {
+  const tree = typeof ownerPath === 'string' ? join(dirname(ownerPath), SNAPSHOT_TREE_DIR) : null;
+  const judge = async (owner) => {
+    if (owner !== null && runId !== null && owner.run_id !== runId) return { verdict: 'unknown', why: 'owner-of-another-run', supervisor: null, companion: null };
+    return snapshotEnded(owner, { handle, tree });
+  };
+  const first = await readOwner(ownerPath);
+  const judged = await judge(first);
+  if (judged.verdict !== 'ended') return { judged, owner: first };
+  const reread = await readOwner(ownerPath);
+  if (JSON.stringify(reread) === JSON.stringify(first)) return { judged, owner: first };
+  return { judged: await judge(reread), owner: reread };
+}
+
+// C142 — remove the one snapshot an owner record describes, a run's own, never
+// a scan of the repository's (reclaimPeerSnapshots): its worktree and
+// registration, its branch and its directory, through the checkout it was
+// made from, or, that one gone, its repository's common git directory. The
+// caller has judged its run ended (judgeRunEnded). `root` is the tree the
+// run's handle recorded. Returns removePeerSnapshot's { removed, error }, or
+// { removed: false, error: null, refused } when the record names anything
+// but its own snapshot (ownedSnapshotTarget).
+export async function removeOwnedSnapshot(ownerPath, owner, { env = process.env, root } = {}) {
+  let top = owner.live_toplevel;
+  if ((await mtimeMs(top)) === null && typeof owner.common_dir === 'string' && (await mtimeMs(owner.common_dir)) !== null) top = owner.common_dir;
+  const target = await ownedSnapshotTarget(ownerPath, owner, top, root, env);
+  if (target.refused) return { removed: false, error: null, refused: target.refused };
+  if (target.error) return { removed: false, error: target.error };
+  return removePeerSnapshot(target.snapshot, { env });
+}
+
+// What an owner record may remove, confirmed apart from the record's own
+// paths, which a corrupted record, or one another tool wrote, could point at
+// any worktree or branch (a forced `worktree remove` deletes uncommitted
+// files): the record sits in a snapshot directory, its tree is that
+// directory's `tree` and the tree the run's handle recorded, its branch is
+// the one createPeerSnapshot names for that directory, and a worktree
+// registered at the tree is locked naming this record, as the reclaim
+// requires of every worktree it removes (snapshotOwnerPathOf). A tree with no
+// registration is removed with its directory, as an interrupted creation's.
+// Returns { snapshot }, { refused: why } or { error }.
+async function ownedSnapshotTarget(ownerPath, owner, top, root, env) {
+  const parent = dirname(ownerPath);
+  if (basename(ownerPath) !== SNAPSHOT_OWNER_FILE || !basename(parent).includes(SNAPSHOT_DIR_MARK)) return { refused: 'owner-path-not-a-snapshot' };
+  const tree = join(parent, SNAPSHOT_TREE_DIR);
+  if (!samePath(owner.tree, tree)) return { refused: 'tree-not-the-snapshot' };
+  if (root !== undefined && !samePath(root, tree)) return { refused: 'tree-not-the-handle-root' };
+  const branch = snapshotBranchOf(parent, owner);
+  if (branch === null && (owner.branch ?? null) !== null) return { refused: 'branch-not-the-snapshot' };
+  const listed = await git(top, ['worktree', 'list', '--porcelain', '-z'], { env });
+  if (listed.code !== 0) return { error: `git worktree list: ${(listed.stderr || listed.stdout).trim().split('\n')[0] || `exit ${listed.code}`}` };
+  let registered = null;
+  for (const { worktree, locked } of parseWorktreeList(listed.stdout)) {
+    if (!samePath(worktree, tree)) continue;
+    const named = snapshotOwnerPathOf(worktree, locked);
+    if (named === null || !samePath(named, ownerPath)) return { refused: 'registration-not-locked-by-owner' };
+    registered = worktree;
+  }
+  return { snapshot: { live_toplevel: top, root: registered, parent, branch } };
+}
+
+// The branch an owner record may have deleted: the one createPeerSnapshot
+// names for the record's directory, never another branch the record names.
+function snapshotBranchOf(parent, owner) {
+  return owner?.branch === `peer-snapshot/${basename(parent)}` ? owner.branch : null;
+}
+
+// Whether two spellings name one path: as written, resolved, or through the
+// real path of the directory that holds it (the path itself may be gone).
+function samePath(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a === '' || b === '') return false;
+  if (resolve(a) === resolve(b)) return true;
+  const real = (p) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      try {
+        return join(realpathSync(dirname(p)), basename(p));
+      } catch {
+        return null;
+      }
+    }
+  };
+  const ra = real(a);
+  return ra !== null && ra === real(b);
 }
 
 // Judge a snapshot from its owner record and, when it would be reclaimed,
@@ -724,7 +1164,8 @@ async function mtimeMs(path) {
 // peer snapshot, and every snapshot directory an interrupted creation left in
 // a temporary directory naming this repository, whose owners judgeSnapshot
 // finds gone. A snapshot another reclaimer removed first is not an error.
-export async function reclaimPeerSnapshots({ cwd, env = process.env, now = Date.now(), ttlMs = SNAPSHOT_TTL_MS, hooks = {} } = {}) {
+// `listProcesses` is judgeSnapshot's.
+export async function reclaimPeerSnapshots({ cwd, env = process.env, now = Date.now(), ttlMs = SNAPSHOT_TTL_MS, hooks = {}, listProcesses = listProcessesHere } = {}) {
   const report = { reclaimed: [], kept: [], errors: [] };
   let live;
   try {
@@ -750,12 +1191,12 @@ export async function reclaimPeerSnapshots({ cwd, env = process.env, now = Date.
     const parentGone = (await mtimeMs(dirname(ownerPath))) === null && (await mtimeMs(worktree)) === null;
     const { judged, owner } = parentGone
       ? { judged: { verdict: 'reclaim', why: 'directory-gone' }, owner: null }
-      : await judgeOwnerRecord(ownerPath, { now, ttlMs, recordedAtMs: (await mtimeMs(ownerPath)) ?? (await mtimeMs(dirname(ownerPath))) }, hooks);
+      : await judgeOwnerRecord(ownerPath, { now, ttlMs, recordedAtMs: (await mtimeMs(ownerPath)) ?? (await mtimeMs(dirname(ownerPath))), tree: worktree, listProcesses }, hooks);
     if (judged.verdict !== 'reclaim') {
       report.kept.push({ tree: worktree, why: judged.why });
       continue;
     }
-    const removed = await removePeerSnapshot({ live_toplevel: top, root: worktree, parent: dirname(ownerPath), branch: owner?.branch ?? null }, { env });
+    const removed = await removePeerSnapshot({ live_toplevel: top, root: worktree, parent: dirname(ownerPath), branch: snapshotBranchOf(dirname(ownerPath), owner) }, { env });
     if (removed.removed) report.reclaimed.push({ tree: worktree, why: judged.why });
     else report.errors.push(`${worktree}: ${removed.error}`);
   }
@@ -764,7 +1205,7 @@ export async function reclaimPeerSnapshots({ cwd, env = process.env, now = Date.
   const bases = new Set();
   for (const b of [tmpdir(), '/tmp']) {
     try {
-      bases.add(realpathSync(b));
+      bases.add(realpathSync.native(b));
     } catch {
       /* skipped */
     }
@@ -783,13 +1224,13 @@ export async function reclaimPeerSnapshots({ cwd, env = process.env, now = Date.
       const seen = await readOwner(join(parent, SNAPSHOT_OWNER_FILE));
       if (seen === null || !ownsRepository(seen, live)) continue;
       if (worktrees.some((w) => w.worktree === seen.tree)) continue;
-      const { judged, owner } = await judgeOwnerRecord(join(parent, SNAPSHOT_OWNER_FILE), { now, ttlMs }, hooks);
+      const { judged, owner } = await judgeOwnerRecord(join(parent, SNAPSHOT_OWNER_FILE), { now, ttlMs, tree: join(parent, SNAPSHOT_TREE_DIR), listProcesses }, hooks);
       if (owner === null) continue;
       if (judged.verdict !== 'reclaim') {
         report.kept.push({ tree: owner.tree, why: judged.why });
         continue;
       }
-      const removed = await removePeerSnapshot({ live_toplevel: top, root: null, parent, branch: owner.branch ?? null }, { env });
+      const removed = await removePeerSnapshot({ live_toplevel: top, root: null, parent, branch: snapshotBranchOf(parent, owner) }, { env });
       if (removed.removed) report.reclaimed.push({ tree: owner.tree, why: `interrupted-${judged.why}` });
       else report.errors.push(`${parent}: ${removed.error}`);
     }

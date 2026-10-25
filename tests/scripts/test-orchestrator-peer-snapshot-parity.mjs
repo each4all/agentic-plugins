@@ -85,3 +85,36 @@ describe('orchestrator peer snapshot and CLI exit libraries are the persona-pipe
     }
   });
 });
+
+// C142 — the orchestrator's peer-runner.mjs is kept by hand, so no byte check
+// holds its rules to the personas'. Each rule the persona spec's mutations
+// guard in the personas' runner, where the same text is in the orchestrator's,
+// is a second guard there: the orchestrator spec makes that same edit, and an
+// orchestrator case kills it (the sixteenth review's W-F1, after V-F1 found
+// one such rule with no case). This lists the edits; the harness scores them.
+describe('the orchestrator spec mutates every persona runner rule its hand-kept runner shares (C142 W-F1)', () => {
+  const RUNNER = 'plugins/orchestrator/scripts/peer-runner.mjs';
+  const editsOf = (mutation) => {
+    const edits = [];
+    if (mutation.from !== undefined) edits.push({ file: mutation.file, from: mutation.from, to: mutation.to });
+    mutation.prepare?.('/nonexistent', { applyEdit: (_copy, edit) => edits.push(edit) });
+    return edits;
+  };
+  const spec = async (name) => (await import(pathToFileURL(join(REPO_ROOT, 'scripts/mutation-specs', name)).href)).MUTATIONS;
+
+  it('each persona edit of engineer\'s peer-runner.mjs whose text the orchestrator runner holds is an orchestrator mutation\'s edit', async () => {
+    const runner = readFileSync(join(REPO_ROOT, RUNNER), 'utf8');
+    const orchestrator = (await spec('peer-snapshot-orchestrator.mjs'))
+      .flatMap((m) => editsOf(m).filter((e) => e.file === RUNNER).map((e) => ({ id: m.id, ...e })));
+    const shared = [];
+    for (const m of await spec('peer-snapshot.mjs')) {
+      for (const e of editsOf(m)) {
+        if (e.file === 'plugins/engineer/scripts/peer-runner.mjs' && runner.includes(e.from)) shared.push({ id: m.id, ...e });
+      }
+    }
+    // Not vacuous: the persona cases V-F1, W-F1 and X-F1 measured are among them.
+    for (const id of ['H7', 'H10', 'H53', 'H128', 'H132']) ok(shared.some((e) => e.id === id), `persona ${id} edits a rule the orchestrator runner shares`);
+    const missing = shared.filter((e) => !orchestrator.some((o) => o.from === e.from && o.to === e.to)).map((e) => e.id);
+    strictEqual(missing.join(', '), '', `persona runner cases with no orchestrator mutation making the same edit in ${RUNNER}: add one to scripts/mutation-specs/peer-snapshot-orchestrator.mjs, killed by an orchestrator case`);
+  });
+});
