@@ -267,6 +267,10 @@ Cancellation sequence:
 6. If still alive and still verified, send `SIGKILL`.
 7. Mark the handle `cancelled` with exit/error metadata.
 
+(2026-10-19: a run whose companion is gone and whose runner its host killed
+before its cleanup, and the end of the companion's whole group, are in the
+amendment of that date, C142.)
+
 Cross-host cancellation means "called from the other local agent host in
 the same repo checkout" (for example, Codex asks to cancel a run started
 by Claude Code). Remote-machine cancellation is a non-goal. If the
@@ -671,3 +675,582 @@ ledgers) does not keep them.
   than the run that recorded it would read a live supervisor as replaced.
   The fix belongs in the shared source, `persona-pipeline/`, with the
   persona releases it brings; the orchestrator copy then follows it.
+
+## Amendment 2026-10-19 — a run its host killed before its cleanup (C142)
+
+**Why.** `engineer-peer-snapshot-*` directories were found left in the
+temporary directory (2026-10-17, five during autopilot run `6f6884`, whose
+steps ended with exit 143; 2026-10-19, one more). The 2026-10-13 lifecycle
+holds when the runner gets to run its end, and measured on Claude Code
+(2.1.303, macOS) it does not always: a background task the host ends (its
+step closed on a report, or aborted) gets SIGTERM to each of its processes,
+the companion included, and SIGKILL about 1.5 s later. A runner still
+stopping a peer that takes longer is killed before its cleanup: its snapshot
+and locked worktree stay, and its handle stays `cancel_requested`. The Bash
+tool starts each command in a process group of its own, so the autopilot
+worker's group signals and its 5 s grace never reach the runner. `cancel`
+then answered `not_running`, wrote nothing and removed nothing; `settle`
+refused the run for the stale grace; and the next codex dispatch's reclaim,
+or a `sweep`, removed the snapshot only when there was one (none after a
+macro's last step, or after an interactive session ends).
+
+**Who finishes such a run.** Whoever finds it: the next dispatch's reclaim
+and `sweep` as before, and now `cancel` and `settle`, each for that one run's
+snapshot only, never a scan of the repository's. They act only on a run
+proven over: `snapshotEnded` (`lib/peer-snapshot.mjs`) reads the run's owner
+record and answers `ended` when its supervisor is gone (no process has its
+pid), nothing of its
+companion's group runs (or nothing was launched) and no process runs in its
+tree (below); `alive` when the
+supervisor or a process of that group runs; `unknown` otherwise (no record,
+a record naming no supervisor or another run, or a companion without its pid
+or with a group it does not lead (the runner starts it as its group's
+leader), an identity that cannot be told, a group alive under a companion
+pid whose process cannot be told, a group alive whose leader is gone while
+none of its processes runs in the run's tree (below), a launch never named,
+a pid past the range a pid takes, or init's pid 1). The run's handle, which the runner writes apart from the
+record, is checked against it: a record that omits the companion the handle
+names, or names another, is `unknown` (`owner-incomplete`) whatever its
+`launched_at` says, since the runner records the same process in both
+(fourth review, 2026-10-19, reproduced by the peer: a record with no
+companion and no launch read `ended` while a child of the handle's group
+ran). The runner keeps that process on the handle (`peer_process`, its pid
+and group) past the writes that clear `pid` and `pgid` (its end, a cancel,
+an orphan write), so a repeat `settle` and a terminal run's `cancel` check
+against it too (refine-verify, 2026-10-19, reproduced by the peer: a repeat
+settle removed the snapshot the first had kept). A handle an earlier runner
+wrote has no `peer_process`: `settle` then checks against its `pid` and
+`pgid` as read before its reconcile. Every judgment and every group signal
+reads the handle's process one way (`handlePeerProcess`): `peer_process`,
+else `pid` and `pgid`. A field present that is not a pid in 2..2^31−1, a
+group its pid does not lead, a pid without its group (except on Windows,
+where the companion leads none), a `peer_process` that names no pid, or
+`pid`/`pgid` that disagree with `peer_process`, is a handle the runner did
+not write: the run is `unknown`
+(`handle-malformed`) and no group of it is signalled, where such a field was
+read before as naming no process and so skipped the check it should feed
+(fifth review, 2026-10-19, reproduced by the peer: a numeric-string `pgid`
+let a run be finished while its group ran). A supervisor pid
+a process has under another fingerprint is one that cannot be told, not one
+gone: a recorded fingerprint that is incomplete or of a kind the platform
+does not take reads as another, and so does a macOS `lstart` read under
+another locale or time zone than the runner's (the 2026-10-14 limits), the
+runner alive (third review, 2026-10-19, reproduced end to end). A pid truly
+reused is left to the reclaim. A record judged `ended` is read again, as the
+reclaim's is, since a supervisor may have written it before it died. Unlike
+the reclaim's judgment, no age counts: a dead supervisor is still no proof that its
+companion's group stopped, and a supervisor that lives or cannot be told
+still owns its run and its cleanup.
+
+The supervisor the handle keeps (its snapshot record's, below) is read the
+same way (`handleSupervisor`) and checked against the record's: a record
+naming another supervisor, by pid or fingerprint, is `owner-incomplete`,
+since the runner copies one onto the other; a kept supervisor that is
+`null`, names no pid in 2..2^31−1 or no fingerprint, or is absent beside a
+`peer_process`, is `handle-malformed`. Only a handle with neither, an earlier
+runner's, is judged on the record alone (sixth review, 2026-10-20, reproduced
+by the peer: a record naming an exited supervisor let a cancel finish a run,
+and remove its snapshot, while the handle's supervisor ran). Nor is a run
+`ended` while any process the user can see runs in its tree (`treeOccupancy`:
+Linux reads every `/proc/<pid>/cwd`, macOS `lsof -d cwd` over every process).
+A process the companion starts in a group or session of its own outlives the
+companion's group there, and the removal would delete the worktree under it
+(sixth review, 2026-10-20, reproduced by a local reviewer: a detached child
+ran on in the removed tree; that the installed codex starts some of its
+children so is an inference from its binary). Such a run is `unknown`
+(`tree-occupied`) and nothing is signalled, since a location proves no
+ancestry; processes that cannot be listed are `tree-unknown`. A listing
+counts as complete only when it is proved complete, and a process it did not
+read is listed `unreadable`, never left out (owner ruling of 2026-10-21 on
+the eighth review). It must list its reader: a Linux `/proc` that does not
+(empty, unmounted or masked), or whose `self` names the reader under another
+pid (one mounted from another pid namespace, which numbers every process as
+that namespace does; refine-verify of the eighth review, reproduced by the
+peer with an injected `/proc`), and an `lsof` that does not (none at all, or
+others only) cannot be read; nor does such a `/proc` give a clock (refine-verify of the
+sixth review, reproduced by the peer with injected read failures; eighth
+review, reproduced by the peer at the library seam: both read as a tree with
+nothing in it). Nor can a Linux `/proc` mounted `hidepid=invisible` or
+`hidepid=ptraceable` (2 or 4; systemd's `ProtectProc=invisible` mounts one),
+which still lists its reader but leaves out every process the reader may not
+ptrace, its own set-uid children (`sudo`) and those not dumpable among them:
+every mount at `/proc` that `/proc/self/mountinfo` shows must be of type
+proc and carry no `hidepid` but `0`, `off`, `1` or `noaccess`, whose refusals
+leave a process listed, and a mountinfo that cannot be read, or shows no
+mount at `/proc`, proves nothing. Every one, since their order does not tell
+which one is read: a mount moved over a later one is listed first
+(refine-verify of the ninth review, reproduced by the peer at the library
+seam with a real occupant, which a cancel removed the tree under when the
+last line was taken; the kernel's order inferred from `fs/namespace.c`). Its
+`gid=` exemption is not honoured (ninth review, P-F1, owner ruling of
+2026-10-22; reproduced at the library seam by a local reviewer and the peer,
+the kernel's behaviour inferred from `fs/proc/base.c` and proc(5)).
+A mount at or under one process's directory (`/proc/<pid>`, such as an empty
+tmpfs over it) proves nothing either: `/proc` still lists the pid, and its
+links read as those of a process that exited (eleventh review, R-F4,
+reproduced by the peer with injected mountinfo and reads; the native mount
+inferred from mount semantics). A mount under `/proc`'s other entries
+(`/proc/sys/fs/binfmt_misc`) hides no process.
+A mountinfo line is cut at its first ` - ` only, since a source after it may
+itself read `-` (tenth review, Q-F2, reproduced by the peer through a cancel
+that removed a real occupied worktree). A `/proc` mounted `hidepid=1`
+(`noaccess`) lists every process but refuses the owner of another user's,
+which is then listed `unreadable`: while one runs, every tree reads
+`tree-unknown` and only the reclaim's age removes it (the safe direction,
+stated as a limit; tenth review). A Linux listing of every process is read
+in the pid namespace the supervisor's recorded clock names, or proves
+nothing: a reader in another one with a `/proc` of its own (a sandbox that
+unshares it, such as `bwrap --unshare-pid --proc /proc`) lists its reader as
+itself and hides nothing, yet holds none of the run's processes, and a pid
+namespace that cannot be read now is no proof either (tenth review, Q-F1,
+reproduced at the library seam by a local reviewer; that a host sandbox runs
+a cancel so is inferred from the bubblewrap arguments in Claude Code's
+binary). An owner record with no clock (an earlier runner's, or one whose
+clock could not be read when it was written) names no pid namespace to check,
+so its Linux listing proves nothing: the tree reads `tree-unknown`, and only
+the reclaim's age removes it (eleventh review, R-F1, reproduced by the peer
+as a cancel that removed a real worktree under a live occupant, read from
+another pid namespace; owner ruling of 2026-10-24). A group's listing, which
+ties a gone leader's group to the run (`groupTiedToTree`), keeps two of these
+rules: it reads only a `/proc` that is the reader's, and, when the record or
+the handle keeps a clock, only in the pid namespace that clock names. Read
+otherwise, a group id names another namespace's group, so the tie is
+`unknown` and nothing is signalled (fourteenth review, U-F1, reproduced by the
+peer and locally with an injected `/proc`: a cancel signalled an unrelated
+group of the reader's under the run's group id). A record with no clock reads
+its group in the reader's namespace, as an earlier runner's did. For the same
+reason a Linux fingerprint is read only through a `/proc` that is the
+reader's, else it is none: a process of another namespace under the
+companion's pid, with the start time recorded, would match a live companion
+and have its group signalled (refine-verify of the fourteenth review's fixes,
+F1, reproduced by the peer with an injected `/proc` and a real group). And,
+as the listing does, when the record or the handle keeps a clock, a
+fingerprint is read only by a reader in the pid namespace that clock names,
+else it is none: each namespace numbers its own processes, so the reader's
+process under the recorded pid shares no more than a start tick with the
+run's. A match read in another namespace is `unknown`, and an unknown identity
+is never signalled. The rule holds at every place a match is read: the live
+cancel's handle process, `stopHandleGroup`'s group leader, and the supervisor
+and companion that `snapshotEnded` and the reclaim judge, each under the
+clock of the run's supervisor (its own fingerprint's, for the supervisor). A
+record with no clock is read in the reader's namespace, as before (eighteenth
+review, Y-F1, reproduced by the peer in all four runners with a modeled
+`/proc` and a real group; owner ruling of 2026-10-25). A documented limit of
+this rule: a handle whose snapshot record keeps a supervisor the runner never
+writes (`handleSupervisor` reads it `malformed`, a pid out of a run's range,
+say) gives the live cancel no clock, so its handle process is read in the
+reader's namespace, as a record with no clock is. Only a handle made or changed
+by hand reaches it, so it is not fixed now (refine-verify of the eighteenth
+review's fix, reproduced by the peer with a supervisor pid of 1; owner ruling
+of 2026-10-25 on uncommon cases). The namespace check reads the reader's whole
+clock, so a reader whose boot id or time namespace cannot be read is in no
+namespace and reads every clocked fingerprint as none: a refusal, never a
+signal. Once the processes listed
+are read, a Linux listing reads `/proc` again and reads each process it had
+not met, until a round meets none (at most four rounds, the last after
+the fifth read of `/proc`), as the
+macOS rounds read the process table again; one of the user's own still unmet
+after the last round is listed `unreadable`, and one that has exited by then
+leaves the listing unproved, since a child it started may be one no round
+read (eleventh review, R-F2, reproduced locally with an injected chain of
+processes that each fork the next into the tree and exit: five or more read
+the tree empty). A process of the run that starts a child and exits
+while the listing runs is gone when its turn comes, and the child, started
+after `/proc` was first read, is met in a later round (tenth review, Q-F3,
+reproduced by the peer with an injected fork-and-exit sequence: a cancel
+removed the tree under the child). A pid met once is not read again, so a
+process given a pid that another process held earlier in the same listing
+(the system's pids wrapping around within it) is not met; a process started
+after the last round is no more seen than one started after any listing
+ends.
+On macOS a listing of every process counts only when `lsof`
+exits 0 (it did, three times of three, over every process on the owner's
+Mac, 2026-10-21); exit 1 stands only for a pid list, where it means a process
+of the list has exited since (seventh review, reproduced by the peer with an
+injected `lsof` that listed one unrelated process and exited 1: a cancel
+removed the tree under a live child). Exit 0 is not enough: `lsof` leaves
+out, exiting 0, a process it may not inspect, one of the user's own that runs
+set-uid as `login` and `sudo` do (eighth review, reproduced natively:
+`/usr/bin/login` was in `ps -A` and not in the listing; the cause is
+inferred from lsof's source), and one started after it read the process
+table. So `ps -A -o pid=,ppid=,ruid=,stat=,lstart=`, run after `lsof` in UTC and
+the C locale, lists every process, and every process of the user's own (by
+its real uid) that it lists and `lsof` did not name is read again by its
+pid, and `ps` run again, until a round meets none it had not met (at most
+four rounds): one `lsof` names is read; one the last `ps` lists that `lsof`
+never named (one the system would not let it read, one started meanwhile,
+one whose pid another process holds now) is `unreadable`; one the last `ps`
+no longer lists, or lists as a zombie (its directory went with its exit;
+measured: a zombie of the user's own read as hidden, and under the suite's
+load made a judgment `tree-unknown`), has exited (refine-verify of the eighth review, reproduced by
+the peer with injected answers: a child forked during the second read, and a
+process that took a left-out one's pid, were dropped though the last `ps`
+listed them). The `ps` run itself (set-uid on macOS) is not among them. Measured on the owner's Mac
+(2026-10-22): without the second read, a process launchd started for the user
+between the two tools (its parent init) made one listing in five
+`tree-unknown`; with it, twenty of twenty read empty. A `ps` or a second
+`lsof` that fails leaves the listing unproved. A record `lsof` prints with
+no name, and one whose name is no path (`cwd info error: …`, refine-verify
+of the seventh review, reproduced by the peer with an injected listing), is
+`unreadable` too. `lsof`, `ps` and `sysctl` are taken from PATH, else from
+`/usr/sbin` and `/bin`, and `lsof` runs with `-b -w`. On Linux a process
+of the user's own whose directory the system will not say (one not dumpable,
+as a process that hardens itself makes itself) is `unreadable`, and a cwd
+link that is gone is no proof its process exited: once a multithreaded
+process's main thread has exited, its link is gone while its other threads
+run on (proc_pid_cwd(5)), so each thread's link is read (seventh review,
+established by reading and by the peer's injected `/proc`). A thread that
+exits while they are read may have started another that this read of the
+task list does not name, whatever the others read, and a task list read
+while threads exit can end early (`proc_task_readdir`), whatever threads it
+names: while a thread other than the main one is gone when its link is read,
+or the list names fewer threads than the process's status counts
+(`Threads`), or that status cannot be read, or a read of the list after the
+count no longer names every thread it named (a thread read and exited before
+the count leaves a place in it that a thread the list left out fills), the
+task list is walked again (four walks in all), and a process still read so is
+`unreadable`, listed with every directory its threads were read in, so a
+process placed outside the run still keeps a tree one of its threads was
+read in. Only a process
+whose task list names no thread with a link left and whose status counts one
+thread at most (a zombie), or whose status is gone, is passed over (eleventh
+review, R-F3, reproduced by the peer through injected reads: a leaderless
+process whose last thread started another in the tree read as exited, and
+the judgment `ended`; the refine-verify of its fix reproduced the same
+through a walk in which another thread was read, and through a task list
+that named the main thread alone, the kernel's early end inferred from
+`fs/proc/base.c`; the twelfth review, S-F1, reproduced it through a list cut
+short to the main thread and one thread outside the tree while the status
+counted three; the refine-verify of that fix reproduced it again through a
+thread that exited once read, and found a walk that proved nothing dropping
+the directory a thread was read in, which read a tree empty under a process
+started before the supervisor (F1, F2). That a zombie's status counts one thread, and that a zombie
+leader stays counted in `Threads` while its other threads run, since
+`nr_threads` drops only when a thread is released, are inferred from the
+kernel source, not measured).
+
+An `unreadable` process keeps the tree `tree-unknown` unless it is placed
+outside the run by the run's supervisor, whose start time, clock and
+ancestors the snapshot records beside its fingerprint (`processLineage`;
+`starttime`, `clock`, `ancestors`), and the listing reads the hidden
+process's the same way. It is placed when it started before the supervisor
+(what the run starts descends from the supervisor and starts after it), or
+when one of its ancestors started before the supervisor and is neither init
+(pid 1, or on Linux one whose status's `NSpid` ends in 1 or names none, a
+pid namespace's init as far as the reader can tell) nor one of the
+supervisor's ancestors: a process of the run descends from the supervisor,
+and one its parent leaves is given to the nearest subreaper among its
+ancestors or to its pid namespace's init, which adopts what a parent in its
+namespace leaves though it is no ancestor of that parent (refine-verify of
+the eighth review: a run that forks into an existing namespace below the
+reader's; reproduced by the peer as a topology on an injected `/proc`, the
+kernel's choice of reaper inferred from its source), so each ancestor of it
+is the supervisor, a process the run started since, an ancestor of the
+supervisor, or such an init. Only its ancestors below the first such init
+count: what lies above an init that may have adopted it is that init's
+lineage and says nothing of its own (ninth review, P-F3, reproduced by the
+peer on an injected `/proc`: a child of the run left in a namespace it
+entered, under an init whose parent predates the run, read `none` and then
+`ended`). On macOS, which has no subreaper and gives an orphan to launchd,
+one is also placed when its ancestors reach one of the supervisor's other
+than launchd before they reach the supervisor's pid: a process of the run
+reaches those only through the supervisor (ninth review, P-F4, recurring
+O-F1, owner ruling of 2026-10-22: a new terminal tab's set-uid `login`, under
+the terminal the supervisor runs in, made every tree `tree-unknown` while the
+tab was open; measured that `login` is the one own process `lsof` cannot
+read on the owner's Mac, the rest inferred). On Linux a recorded ancestor may
+be a subreaper, which adopts what the run leaves, so the rule is macOS's
+alone. So the interactive codex, another lane's peer, a new ssh session or
+a `sudo` started since is placed by the shell, the session or the daemon it
+runs under when that started before the run and is no ancestor of the
+supervisor (eighth review: one hidden process started after the supervisor
+made every tree `tree-unknown` on a dual-host machine; reproduced with an
+injected `/proc`, native Linux inferred). On Linux each ancestor is read,
+then its child again, and a child whose parent changed in between gives no
+ancestors: its parent's pid may since be another process's. Start times and
+pids compare only when read in one clock (`clockDomain`): on Linux the same
+boot, time namespace and pid namespace, since a time namespace's offset
+shifts every start time its reader sees (refine-verify of the seventh
+review, 2026-10-21, reproduced by the peer with injected start times) and a
+pid names a process only within its namespace; on macOS the same boot time
+`kern.boottime` reports, to the microsecond (the same value through this
+session, 2026-10-21 to 22), since a start time there is the wall clock read
+at the fork, and setting that clock moves the boot time macOS reports (an
+inference from XNU, not measured here); in seconds alone a clock set back by
+less than a second kept it (refine-verify of the eighth review, reproduced by
+the peer with injected answers). A clock set between the supervisor's start
+and the record shows in no boot time read then: the runner records its own
+start time only when its uptime, a monotonic clock, dates its start to the
+second its start time names (with up to 1.5 s for it to start up). Without the start-time
+bound one hidden process anywhere on the machine (an ssh-agent; on macOS a
+`login`, measured) made every tree `tree-unknown`, so no host-killed run
+was ever `ended` and the reclaim waited its full age (seventh and eighth
+reviews). Where the tie
+needs a name read as written, here a name that may be the tree's counts:
+Linux's " (deleted)" mark dropped or kept, and an escaped lsof name, which
+keeps the tree's spelling verbatim unless the tree's own path holds a byte
+lsof escapes (then any escaped name counts). The reclaim reads the tree the
+same way: a snapshot whose owners are gone but whose tree is occupied is kept
+as an identity it cannot tell, until it is old (`tree-occupied`, then
+`tree-occupied-expired`), where it was reclaimed at once. The snapshot-gone
+routes of `cancel` below check the removed tree too, after the handle's
+group is stopped: occupied, a live run is refused (`supervisor_unknown`,
+`snapshot-gone-tree-…`) and a terminal one keeps its removal unrecorded
+(`skipped: tree-…`).
+
+**cancel.** For a run whose handle records a snapshot not yet removed and
+whose companion is no longer running: `ended` → the run's answer decides
+when it wrote one (the envelope, as `reconcileOne` reads it), else it is
+recorded `cancelled`; then its snapshot is removed and recorded on the
+handle (`snapshot.removed_at`, `cleanup_error`), and the answer is `ok`,
+reason `ended`. A supervisor gone whose companion's group lives on (its
+leader dead, a child left) has that group stopped first (SIGTERM, SIGKILL
+after the grace), then judged again; still alive, the answer is reason
+`group_alive`. Only a group whose leader, the companion, is still the
+process the record names, or is gone while a process of the group runs in
+the run's tree, is stopped: under a pid whose process cannot be told it may
+be another process's own group, and the run is `unknown`. So may a group
+whose leader is gone: once the companion's group ended, the system may give
+its id to a process that leads a group of its own and exits while its
+members run on (a job-control pipeline, a daemon's double fork), and the id
+alone cannot tell that group from the run's (fifth review, 2026-10-19,
+reproduced by a local reviewer with a modelled owner record: an unrelated
+leaderless group was killed and the snapshot removed). The tie is what the
+group's processes run in (`groupTiedToTree`; Linux reads `/proc`, macOS `ps`
+and `lsof`): the companion starts in the snapshot's tree and what it starts
+inherits it, and no other process runs in a directory made for one run. A
+group's id cannot be reused while any process of it lives, so one tied
+process proves the group the run's. The tree is the one beside the owner
+record, never the record's own `tree`, which could name any directory, and
+it is never followed through a link (only its parent's spelling is
+resolved), since a link put in its place could name `/`. A name that
+cannot be read as written ties nothing: lsof writes a name's unprintable
+bytes as escapes, so a name holding a backslash reads as unread, and Linux's
+" (deleted)" suffix is dropped only when no directory has the full name
+(refine-verify, 2026-10-19, reproduced by the peer). A group nothing ties is
+`companion-untied` (`unknown`), and nothing is signalled. `alive` → `supervisor_alive`, `unknown` →
+`supervisor_unknown` (so is a group alive under a supervisor that cannot be
+told); each refusal is `ok: false` (exit 1) and writes nothing. A ledger
+that holds another run under the id by the time of the write is refused too
+(`replaced`). A snapshot a reclaim already removed leaves no record to
+judge, and its removal is no proof the companion's group stopped (a reclaim
+also removes a snapshot on age alone, its owners' identities unknown): what
+is left of the group the handle names is stopped first, and a group that
+cannot be stopped is `group_alive`. The handle keeps that group's id past
+the run's end (`peer_process`), so it is signalled only while the handle's
+own process, the group's leader, is still the one the handle recorded, or is
+gone while a process of the group runs in the run's tree (the same tie, read
+from the removed tree's path, which both platforms still report for a
+process inside it): a pid another process now has, or one that cannot be
+told, may lead a group of its own under that id, so may a gone leader's id
+that nothing ties, and a handle whose process fields the runner did not
+write proves no group; each is `supervisor_unknown`, nothing signalled. Once the directory is gone and the handle has not moved for
+the stale grace, the run is then finished as `ended`, the removal recorded
+(`already_gone`); before that it is `supervisor_unknown`. The record's
+absence is no proof its supervisor is gone either (a reclaim removes a
+record on age while its supervisor cannot be told), so the handle keeps the
+supervisor's pid and fingerprint in its snapshot record, copied from the
+owner record when the snapshot is made, and the run is finished, or a
+terminal run's group stopped and its removal recorded, only once that
+supervisor is gone: one alive is `supervisor_alive`, one that cannot be told
+`supervisor_unknown` (`snapshot-gone-supervisor-…`; a terminal run answers
+`already_terminal` with `skipped: supervisor-…`), nothing written or
+signalled (refine-verify, 2026-10-19, reproduced by the peer: a cancel
+finished such a run while its recorded supervisor was alive). The run's own
+runner never leaves that state: it writes the handle terminal at its end,
+before its `finally` removes the snapshot. These reasons are deliberately not `not_running`, which the
+autopilot's dead-run cleanup reads as nothing left to cancel: a refusal
+keeps the dead run's open-run record. A terminal run whose snapshot was not
+removed (its runner killed inside its own end) answers `already_terminal`
+as before, its status unchanged: a process of its companion's group its dead
+runner left is stopped first (`group_alive`, `ok: false`, when it cannot
+be), and the snapshot is removed once the run is `ended`. With no owner
+record left (a reclaim removed the snapshot, the run made terminal since by
+an envelope's reconcile, which keeps the handle's group) and the snapshot's
+directory and tree gone, the group the handle names is stopped the same
+way, its leader proven first, and its removal is recorded (`already_gone`),
+so a later cancel has nothing of it left to judge or stop. An owner record
+that is still there but cannot be read proves nothing of its supervisor,
+which may be at work: nothing is signalled, the snapshot is kept
+(`skipped: owner-unreadable`), and the reclaim's age rule remains its route
+(refine-verify, 2026-10-19, reproduced by the peer). A cancel of a live run now answers `ok` only once the
+companion's whole group is gone (`group_alive` otherwise); its handle is read
+the same way first, and one whose process fields the runner did not write is
+refused (`unsupported_unverifiable`, `handle-malformed`) before anything is
+written or signalled. A group is signalled only as the one its pid leads,
+and never group 1, init's, which `kill(-1)` would read as every process the
+user may signal. Each answer
+reports the removal apart, in `snapshot_cleanup` (`removed`, `skipped` with
+why the run is not proven over, `error`): a removal skipped or failed never
+changes the run's status or the answer's `ok`; a failed removal keeps the
+owner record, so the next reclaim retries it. The removal goes through the
+checkout the snapshot was made from, or, that one gone, its repository's
+common git directory. It takes nothing on the owner record's word (a
+corrupted record, or one another tool wrote, could name any worktree, and a
+forced `worktree remove` deletes uncommitted files): the record must sit in
+a snapshot directory, its tree must be that directory's `tree` and the tree
+the run's handle recorded, its branch the one the snapshot's creation names
+for that directory, and a worktree registered at the tree must be locked
+naming that record, as the reclaim requires of every worktree it removes.
+Anything else removes and records nothing (`skipped` names the check), and
+the reclaim, which takes its worktree from git's lock, remains its route.
+The orchestrator's `cancel`
+does the same (its copies of both files, per the 2026-10-14 amendment).
+
+**settle** (the persona runners; the orchestrator has none). After its
+commit, a run proven over has its snapshot removed the same way, reported
+as `snapshot_cleanup`; a repeat (`already-settled`) does it too, so a settle
+stopped between its commit and its cleanup leaves the snapshot to the next.
+The run's ledger reads `orphaned` (reconcile, after the stale grace) and the
+workflow's ensemble result `failed`. So the autopilot's report-close path
+(cancel, then settle) passes such a step: the cancel finishes the run, and
+the settle records it `failed`.
+
+**Not covered.** `cancel` keeps its earlier answers for a run with no
+snapshot record (a claude peer, no checkout) and for `queued`, `spawning`,
+`no_pid` and `unsupported_unverifiable` runs; `sweep` and the next
+dispatch's reclaim remain their route. A runbook's finalize settles
+directly, so within the stale grace of a host-killed run it is still refused
+(collect it, or wait): only the autopilot's report-close path cancels first.
+`reconcileOne`'s staleness rule is unchanged: a runner stopped (not dead) past the stale grace is still
+orphaned by a sweep or a settle, though its snapshot is then kept, its
+supervisor alive. A run its host killed in an interactive session that then
+ends, with no later codex run, `cancel` or `settle` in that repository,
+keeps its snapshot: nothing observes it. A snapshot already removed by a
+reclaim leaves no record, which `cancel` accepts only past the stale grace
+(above). When that run was also orphaned (a sweep or a settle past the stale
+grace, which clears the handle's `pid` and `pgid`), only `peer_process`
+names the group: a handle an earlier runner wrote has none, so nothing names
+the group any more, and a process of it left running is not stopped. A snapshot whose directory
+is gone while git still lists its registration is reported removed
+(`already_gone`); the next reclaim removes the registration
+(`directory-gone`). On Windows the runner records no group for its companion, so its runs are
+never proven over here (`owner-incomplete`): the reclaim's age rule remains
+their route. A group alive whose leader is gone is stopped only while a
+process of it runs in the run's tree: one whose every process has moved
+elsewhere is not stopped, and its run is not finished here (`companion-untied`),
+where it was before (the reclaim still keeps the snapshot while the group
+lives, as it always has). On a platform with neither `/proc` nor `ps` and
+`lsof`, or where they fail, no group whose leader is gone is tied, and such a
+run is left the same way. The tie proves where a process runs, not whose
+child it is: another process of the same user that entered the snapshot's
+tree would tie its own group (an assumption the runner does not enforce; the
+tree is a private temporary directory made for one run). The listing reads a
+group's members and then their directories, and a group may end and its id
+be reused between the tie and the signal (an inference; not seen). A handle
+an earlier runner wrote keeps no supervisor: after a reclaim removed its
+snapshot, the stale grace alone remains its route, as before. A live run's `cancel` stops the companion's group
+right after the leader it verified exits, with no tie: a group alive then is
+the run's unless it ended and another process's took its id in that moment
+(an inference; not seen). A handle an earlier runner wrote names the companion
+only until a terminal or orphan write clears its `pid` and `pgid`: after
+that, a terminal run's `cancel` and a repeat `settle` (`already-settled`)
+judge its owner record alone. The reclaim, which reads no handle, still
+reclaims a record with no companion and no launch at once when nothing runs
+in its tree (`supervisor-gone-companion-unrecorded`), the record the runner
+writes when it dies before the launch. On Windows, and wherever the
+processes cannot be listed, no run is `ended` here (`tree-unknown`) and the
+reclaim keeps a snapshot whose owners are gone until it is old, where it
+reclaimed it at once. A process of another user in the tree is not seen (the
+tree lies in a private directory made for one run), nor is one of the run's
+whose real uid is another's (a command `sudo` runs as root). While a hidden
+process of the user's own (Linux, one not dumpable; macOS, one set-uid) is
+not placed outside the run, no run is `ended` here (`tree-unknown`): one
+started after the supervisor and left to init, or on Linux to a subreaper
+among the supervisor's ancestors, on Linux one whose every ancestor that
+started before the run is an ancestor of the supervisor (a shell opened in
+the supervisor's tmux after the run started; macOS places it), one adopted by a pid
+namespace's init whose ancestors below it all started since, one whose
+ancestors cannot be read, or any while the
+supervisor's start time, clock or ancestors are not recorded (an earlier
+runner's record, a platform that lists none, a macOS supervisor whose uptime
+contradicts its start time). The snapshot of a run its host
+killed then waits for the reclaim's age, which removes it whether or not the
+tree is occupied. On a machine that starts processes faster than the listing
+reads them (another lane's test suite beside the run, measured 2026-10-21:
+five to fourteen processes unread in each listing of about 960, all started
+within the last second), the macOS rounds meet new processes in every round
+(the Linux rounds are expected to as well, not measured), and those still
+unmet after the last stay `unreadable`; when one descends from an
+ancestor of the supervisor (a sibling of the runner under its host), nothing
+places it outside the run, and the tree reads `tree-unknown`. That is the
+safe default, kept on purpose (owner ruling of 2026-10-22): cancel, settle
+and the reclaim keep the snapshot, and a later attempt judges it again. It
+is the retention direction, never a removal under a live process, and only
+delays the cleanup on a busy machine. A rule that places a process started
+after the listing began is deferred to C142's listing-hardening slice. A hidden process placed outside the run that then entered
+the tree is not seen, the same premise as another process of the user's that
+enters it. An ancestor of the supervisor that its parent chain skipped when
+it was recorded (a parent that died first gave the supervisor to a
+subreaper above it) and that becomes a subreaper itself later would place a
+process of the run outside it (an inference; not seen). On macOS a debugger
+that attaches to a process becomes its parent: one attached to a hidden
+process of the run, which takes root for a set-uid one, would place it
+outside the run (an inference from XNU's `ptrace`; not seen). A macOS supervisor
+recorded by another process than itself (the suite's) has no uptime check:
+a clock set back between its start and the record by more than the time to
+the run's first child goes unseen. A pid `lsof` named whose process exited
+and whose pid another process took before the last `ps` reads as the one
+named, the same window as the pid reuse ones above. No listing is one
+read of every process: a process of the run that forks a child into the tree
+and exits while the listing reads the processes is gone when its turn comes
+(the peer, eighth review, on an injected `/proc`); the rounds above meet the
+child, and past the last round the listing is unproved on Linux and the
+child `unreadable` on macOS (tenth review, Q-F3; eleventh review, R-F2). The suite judges each listing on an injected one (`/proc`,
+`spawnSync`), and its cases that are not about the listing judge only the
+processes they read or record their supervisors as a snapshot does; a
+listing that proves nothing (on Linux, one a process started and exited
+during the last round left unproved) is taken again, up to five times, so
+such a case does not hang on what else starts on the machine (twelfth
+review, S-F2, inferred, not measured on Linux). The
+runners, cancels, settles and dispatches those cases start judge the same:
+the suite preloads (`node --import`) a module that installs its listing on
+`globalThis` under the library's `LISTING_HOOK`, which a judgment reads when
+its caller passes no listing. Only code loaded into the process installs it,
+and the library reads no environment variable for it (C142 O-F2 recurrence,
+measured: 33 of the full suite's cases failed under another lane's load
+before it). A case pins that a runner started without the preload never
+reads that listing's variable, and that it judges the system's listing, the
+one production judges: with a real process running in the run's tree, its
+cancel keeps the run and writes nothing (ninth review, P-F2: before that
+case, a default listing that named no process passed every suite). It
+asserts the retention direction only, since what else runs on the machine
+may keep a run too. How a
+real Linux kernel reports a leaderless or a hidden process is what proc(5)
+documents, not measured here, and the branch's Linux CI run is owed before
+it lands. Occupancy is judged by working directory only: a descendant of the run
+that left the tree but keeps files open in it or uses absolute paths into
+it, a thread with a working directory of its own (macOS; Linux, a thread
+that unshared its filesystem attributes while the main thread runs), and a
+working directory in the snapshot's directory above the tree are not seen.
+No listing proves that nothing uses a path, so this is a limit, not a check
+to add (seventh review, reproduced by the peer; docket C142). Nor does the
+runner's own normal end look at the tree: once the companion exits
+normally, the runner and `dispatch-peer` remove the snapshot without an
+occupancy check, so a detached child the companion left there runs on in the
+removed tree (seventh review, reproduced by a local reviewer). That is C96's
+ordinary path, outside this judgment of a run its host killed; it is on the
+docket with C142. The macOS fingerprint's locale
+dependence (the 2026-10-14 limits) no longer ends a run here: a `cancel` or
+`settle` run under another locale than the runner reads a live supervisor
+as replaced, which this judgment takes as `unknown`: `cancel` refuses
+(`supervisor_unknown`, nothing written), and neither removes the snapshot
+(`settle` still records its settlement, as for any run not proven over).
+The reclaim still reads it as gone. A `cancel` and a `settle` of one run in two processes still
+race on the handle (C139).
+
+**Rollout.** The autopilot driver calls the pinned engineer's
+`peer-runner.mjs` (`roots.engineer`), so the fix reaches autopilot only
+through an engineer release that is installed and pinned; it is rolled back
+forward only. The dead-run cleanup cancels with the engineer a dead run
+pinned while that version is still installed, so a run left by an older
+pin is still answered `not_running` and left to the reclaim. The persona and orchestrator releases carry it for their own
+runs.
+
+**Test hygiene.** A fake companion and a child it starts that would run on
+end on their own after ten minutes, and the runbook-run tests make their
+snapshots in a private area beside their checkout, removed with it: a test
+run killed midway leaves nothing among the shared temporary directory's
+snapshots (two such leftovers were found while this was measured: a
+`designer-peer-snapshot-*` of a killed runbook test, and a `hang`-mode fake
+companion alive 31 h).

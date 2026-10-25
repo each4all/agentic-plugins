@@ -17,6 +17,9 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { makeRepo, ORCH, ENG, RUNTIME } from './fixtures/autopilot-repo.mjs';
+// C142 O-F2 — this process's judgments, and the runners its cleanups start
+// (withListing), read the peer snapshot suites' listing.
+import '../persona-pipeline/_peer-snapshot-listing.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const AP = resolve(REPO_ROOT, 'plugins/orchestrator/adapters/claude/autopilot');
@@ -25,7 +28,13 @@ const L = await import(join(AP, 'ledger.mjs'));
 const C = await import(join(AP, 'cli.mjs'));
 const { startRun, DEFAULTS } = await import(join(AP, 'driver.mjs'));
 const RUNNER = await import(join(ENG, 'scripts/peer-runner.mjs'));
+const SNAP_LIB = await import(join(ENG, 'scripts/lib/peer-snapshot.mjs'));
 const FAKE = resolve(REPO_ROOT, 'tests/orchestrator/fixtures/autopilot-fake-claude.mjs');
+const { settleAbandonedPeers } = await import(join(AP, 'driver.mjs'));
+const { peerSettlementOutcome } = await import(join(AP, 'scheduler.mjs'));
+const ENG_STATE = await import(join(ENG, 'scripts/state.mjs'));
+const ENG_STATE_ROOT = await import(join(ENG, 'scripts/lib/state-root.mjs'));
+const SNAP = await import(resolve(REPO_ROOT, 'tests/persona-pipeline/_peer-snapshot-fixtures.mjs'));
 const SCRIPTED = resolve(REPO_ROOT, 'tests/orchestrator/fixtures/autopilot-scripted-worker.mjs');
 
 const DEAD = 'autopilot-20261009T010000Z-dead01';
@@ -37,11 +46,14 @@ const until = async (cond, ms = 15_000) => {
   return cond();
 };
 
-// A process that is gone, and the fingerprint it had: a dead driver.
-async function deadProcess() {
+// A process that is gone, and the fingerprint it had: a dead driver. As a
+// snapshot's supervisor (`supervisor`), the fingerprint a snapshot records,
+// with the start time, clock and ancestors that place outside the run a
+// process of the machine's that hides its directory (C142 O-F2).
+async function deadProcess({ supervisor = false } = {}) {
   const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
   await new Promise((r) => { setTimeout(r, 200); });
-  const fingerprint = await L.processFingerprint(child.pid);
+  const fingerprint = supervisor ? await SNAP_LIB.supervisorFingerprint(child.pid) : await L.processFingerprint(child.pid);
   const exited = new Promise((r) => child.on('exit', r));
   child.kill('SIGKILL');
   await exited;
@@ -114,10 +126,12 @@ async function setup() {
       }, null, 2));
       return { id, pid, handle: () => JSON.parse(readFileSync(join(dir, 'handle.json'), 'utf8')) };
     },
-    cleanup: (o = {}) => {
+    // `extraEnv`: variables for the runners the cleanup starts, which judge
+    // the peer snapshot suites' listing (withListing).
+    cleanup: ({ extraEnv = {}, ...o } = {}) => {
       const lines = [];
       return DR.cleanupDeadRuns({
-        mainRoot, macroId: fx.macroId, engineerRoot: ENG, by: { run_id: null, label: 'stop' }, env: fx.env, out: (s) => lines.push(s), ...o,
+        mainRoot, macroId: fx.macroId, engineerRoot: ENG, by: { run_id: null, label: 'stop' }, env: SNAP.withListing({ ...fx.env, ...extraEnv }), out: (s) => lines.push(s), ...o,
       }).then((results) => ({ results, lines, of: (id) => results.find((r) => r.run_id === id) }));
     },
     done() {
@@ -379,6 +393,84 @@ describe('cleaning up after a dead run (ADR-0067 Decision 6, Locks)', () => {
       try { chmodSync(shut, 0o755); } catch { /* gone */ }
       t.done();
     }
+  });
+});
+
+// C142 — engineer's cancel finishes a run its host killed before its cleanup
+// only once the run's snapshot owner record proves it over, and answers a run
+// it cannot prove over with a reason of its own (supervisor_alive,
+// supervisor_unknown, group_alive), never not_running: the cleanup reads
+// not_running as nothing left to cancel.
+describe('a dead run\'s peer whose runner its host killed (C142)', () => {
+  // A pending handle as such a runner leaves it, its companion gone and its
+  // snapshot's owner record naming `supervisor`.
+  async function hostKilled(t, id, supervisor) {
+    const p = await t.peer(id, { names: DEAD, status: 'cancel_requested' });
+    const companion = await deadProcess();
+    const parent = join(t.fx.dir, `engineer-peer-snapshot-${id.slice(-6)}`);
+    mkdirSync(join(parent, 'tree'), { recursive: true });
+    const ownerPath = join(parent, 'owner.json');
+    writeFileSync(ownerPath, JSON.stringify({
+      schema: 'peer-snapshot-owner-1', run_id: id, persona: 'engineer', live_toplevel: t.work, tree: join(parent, 'tree'), branch: null,
+      supervisor, companion: { pid: companion.pid, pgid: companion.pid, fingerprint: { kind: 'none' } },
+      created_at: t.t0, launched_at: t.t0,
+    }));
+    const handlePath = join(t.work, '.agentic-plugins/state/engineer/peer-runs', id, 'handle.json');
+    const h = JSON.parse(readFileSync(handlePath, 'utf8'));
+    writeFileSync(handlePath, JSON.stringify({
+      ...h, pid: companion.pid, pgid: companion.pid, process_fingerprint: companion.fingerprint,
+      snapshot: { isolation: 'snapshot', reason: null, root: join(parent, 'tree'), peer_cwd: join(parent, 'tree'), head: null, index_tree: null, worktree_tree: null, owner_path: ownerPath, removed_at: null, cleanup_error: null, prompt_paths_rewritten: 0 },
+    }, null, 2));
+    return { ...p, parent };
+  }
+
+  it('a peer whose runner lives keeps the dead run\'s record; one proven over is cancelled and its snapshot removed', { timeout: 60_000 }, async () => {
+    const t = await setup();
+    try {
+      await t.deadRun();
+      const owned = await hostKilled(t, 'plan-verify-20261019T010001Z-c14201', { pid: process.pid, fingerprint: await RUNNER.fingerprintForPid(process.pid) });
+      const over = await hostKilled(t, 'plan-verify-20261019T010001Z-c14202', await deadProcess({ supervisor: true }));
+      // C142 O-F2 — the runner the cleanup starts judges the suites' listing:
+      // one naming a process in the run's tree keeps the run it finishes below.
+      await t.cleanup({ extraEnv: { PEER_SNAPSHOT_TEST_OCCUPANT: join(over.parent, 'tree', 'sub') } });
+      deepStrictEqual([over.handle().status, existsSync(over.parent)], ['cancel_requested', true], 'a run whose tree the listing names occupied is kept');
+      const { lines, of } = await t.cleanup();
+      strictEqual(of(DEAD).outcome, 'kept', lines.join('\n'));
+      deepStrictEqual(L.readRun(t.work, DEAD).run.dead_run_cleanup.unresolved, [owned.id], lines.join('\n'));
+      ok(L.readOpenRun(t.mainRoot, DEAD), 'the record is kept for the next run\'s cleanup');
+      deepStrictEqual([owned.handle().status, existsSync(owned.parent)], ['cancel_requested', true], 'nothing of the run its runner owns is touched');
+      deepStrictEqual([over.handle().status, existsSync(over.parent)], ['cancelled', false]);
+    } finally {
+      t.done();
+    }
+  });
+
+  it('a report-closed step whose peer its host killed: settleAbandonedPeers cancels it (ended), settles it failed, and the step passes', { timeout: 60_000 }, async (tt) => {
+    await SNAP.withTmp(async (dir, snaps) => {
+      const top = SNAP.makeDirtyRepo(dir);
+      rmSync(join(top, '.agentic-plugins'), { recursive: true, force: true });
+      const companions = await SNAP.writeFakeCompanions(dir);
+      const record = join(dir, 'record.json');
+      const { filePath: wf } = await ENG_STATE_ROOT.runInCommandDirectory(top, () => ENG_STATE.createWorkflow({
+        repoRoot: top, verb: 'compose', originalRequest: 'x', host: 'claude', currentPhase: 'p', nextAction: 'n',
+        gitBaseline: { branch: 'main', head: SNAP.git(top, 'rev-parse', 'HEAD').trim(), status_digest: '' },
+      }));
+      const runId = 'plan-verify-20261019T010001Z-c14203';
+      const env = SNAP.cleanEnv();
+      const run = await SNAP.startHostedRun(tt, {
+        runnerPath: join(ENG, 'scripts/peer-runner.mjs'), readHandle: RUNNER.readHandle, handlePath: RUNNER.peerRunPaths(top, runId).handle, top, runId,
+        env: { ...env, AGENTIC_COMPANIONS_ROOT: companions, FAKE_COMPANION_MODE: 'deaf', FAKE_RECORD: record, TMPDIR: snaps },
+        extra: ['--kind', 'ensemble', '--workflow-path', wf, '--phase', 'compose', '--ensemble-type', 'plan-verify'],
+        ready: () => existsSync(record),
+      });
+      await SNAP.hostTeardown(run, RUNNER.readHandle);
+      strictEqual(SNAP.leftovers(snaps).length, 1, 'the host left the snapshot');
+      const settlements = settleAbandonedPeers([{ run_id: runId, workflow_path: wf, phase: 'compose' }], { roots: { engineer: ENG }, checkout: top, env });
+      deepStrictEqual(peerSettlementOutcome(settlements), { verdict: null, keep: false }, JSON.stringify(settlements));
+      deepStrictEqual([settlements[0].cancel.result.reason, settlements[0].settle.result.verdict], ['ended', 'failed']);
+      deepStrictEqual((await ENG_STATE.readWorkflow(wf)).frontmatter.ensemble_results.map((r) => [r.run_id, r.verdict]), [[runId, 'failed']]);
+      deepStrictEqual(SNAP.leftovers(snaps), []);
+    });
   });
 });
 

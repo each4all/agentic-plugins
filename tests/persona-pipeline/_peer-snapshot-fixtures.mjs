@@ -6,7 +6,7 @@
 // the orchestrator's copies.
 
 import { ok } from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
@@ -20,13 +20,23 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const GIT_ENV = {
   GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@t',
   GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0',
 };
-export const cleanEnv = (extra = {}) => ({
+// C142 O-F2 — the listing every runner a suite starts judges
+// (_peer-snapshot-listing.mjs), preloaded through NODE_OPTIONS, so that no
+// case's result depends on what else runs on the machine. withListing adds it
+// to an environment of another fixture's.
+export const LISTING_PRELOAD = join(dirname(fileURLToPath(import.meta.url)), '_peer-snapshot-listing.mjs');
+export const withListing = (env) => ({
+  ...env,
+  NODE_OPTIONS: [env.NODE_OPTIONS, `--import=${pathToFileURL(LISTING_PRELOAD).href}`].filter(Boolean).join(' '),
+});
+export const cleanEnv = (extra = {}) => withListing({
   ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AGENTIC_') && !k.startsWith('GIT_'))),
   ...GIT_ENV,
   ...extra,
@@ -88,6 +98,22 @@ export const groupAlive = (pgid) => {
   }
 };
 
+/**
+ * C142 — a process group whose leader has exited while its child runs on in
+ * `cwd`: a companion's after its leader died, when `cwd` is the run's tree;
+ * run elsewhere, a group another process started under an id that was once a
+ * companion's, and left (a job-control pipeline, a daemon's double fork).
+ * Resolves to the group's id; the child is killed after the test.
+ */
+export async function leaderlessGroup(t, cwd = process.cwd()) {
+  const child = `require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 600000)'], { stdio: 'ignore', cwd: ${JSON.stringify(cwd)} }).unref()`;
+  const leader = spawn(process.execPath, ['-e', child], { stdio: 'ignore', detached: true });
+  t.after(() => killGroup(leader.pid));
+  await new Promise((r) => leader.once('exit', r));
+  ok(!alive(leader.pid) && groupAlive(leader.pid), 'the leader is gone, its group lives');
+  return leader.pid;
+}
+
 /** A private temporary area, and TMPDIR pointed at it while `fn` runs, so a
  * snapshot directory left behind is counted, not lost among other runs'. */
 export async function withTmp(fn) {
@@ -107,6 +133,87 @@ export async function withTmp(fn) {
 }
 
 export const leftovers = (snaps) => readdirSync(snaps).filter((n) => n.includes('-peer-snapshot-'));
+
+/**
+ * C142 — a peer-runner CLI as a host runs a background command: in a process
+ * group of its own, its codex peer running in the snapshot. Resolves once the
+ * handle reads running, the snapshot's owner record names the companion and
+ * `ready`, when given, holds; whatever it started is killed after the test.
+ */
+export async function startHostedRun(t, { runnerPath, readHandle, handlePath, top, runId, env, extra = [], ready = null }) {
+  const cli = spawn(process.execPath, [
+    runnerPath, 'run', '--repo-root', top, '--run-id', runId, '--peer', 'codex', '--prompt-text', 'x', '--cwd', top,
+    '--cancel-grace-ms', '10000', ...extra,
+  ], { env, stdio: 'ignore', detached: true });
+  const exited = new Promise((r) => cli.once('exit', r));
+  t.after(() => killGroup(cli.pid));
+  const running = await waitFor(async () => {
+    try {
+      const h = await readHandle(handlePath);
+      return h.status === 'running' ? h : null;
+    } catch {
+      return null;
+    }
+  }, { message: 'the run to be running' });
+  const ownerPath = running.snapshot.owner_path;
+  const owner = await waitFor(() => {
+    const o = JSON.parse(readFileSync(ownerPath, 'utf8'));
+    return o.companion ? o : null;
+  }, { message: 'the owner record to name the companion' });
+  t.after(() => killGroup(owner.companion.pgid));
+  // The peer's own word that it runs (a fake companion's record), when asked.
+  if (ready) await waitFor(ready, { message: 'the peer to be ready' });
+  return { cli, exited, handlePath, ownerPath, companion: owner.companion };
+}
+
+/**
+ * What Claude Code's end of a background task does to it (measured
+ * 2026-10-19): SIGTERM to the runner and to its peer, then SIGKILL to both
+ * about 1.5 s later, which lands while the runner is still stopping a peer
+ * that takes longer. Here the SIGKILL comes once the runner has recorded the
+ * cancellation the SIGTERM asked for: with a peer that ignores SIGTERM
+ * (`deaf`) the runner waits out its cancel grace, so any moment in it leaves
+ * the same state. Resolves once nothing of either group runs.
+ */
+export async function hostTeardown(run, readHandle) {
+  const signal = (target, sig) => {
+    try {
+      process.kill(target, sig);
+    } catch {
+      /* gone */
+    }
+  };
+  signal(-run.cli.pid, 'SIGTERM');
+  signal(-run.companion.pgid, 'SIGTERM');
+  await waitFor(async () => (await readHandle(run.handlePath)).status === 'cancel_requested', { message: 'the runner to record the cancellation' });
+  signal(-run.cli.pid, 'SIGKILL');
+  signal(-run.companion.pgid, 'SIGKILL');
+  await within(run.exited, 'the runner to die');
+  await waitFor(() => !groupAlive(run.cli.pid) && !groupAlive(run.companion.pgid), { message: 'the runner and its peer to be gone' });
+}
+
+/**
+ * The SIGTERMs a `deaf` fake companion, or a `deaf-family` one's child,
+ * ignored, by who got each ('companion', 'child'), in order. Such a process
+ * outlives a SIGTERM, so its survival is no proof nothing signalled it; this
+ * log is (C142 X-F1). A SIGTERM is logged by its handler, a moment after it
+ * is sent: wait a little before asserting none came.
+ */
+export function sigtermsSeen(record) {
+  try {
+    return readFileSync(`${record}.sigterm`, 'utf8').split(' ').filter(Boolean);
+  } catch (err) {
+    if (err?.code === 'ENOENT') return [];
+    throw err;
+  }
+}
+
+/** Rewrite a JSON file through `fn` (an owner record, a handle). */
+export function editJson(path, fn) {
+  const value = JSON.parse(readFileSync(path, 'utf8'));
+  fn(value);
+  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+}
 
 export function snapshotWorktrees(top) {
   if (!existsSync(top)) return [];
@@ -207,14 +314,23 @@ export async function discoverPeerCompanion({ peer } = {}) {
 }
 `);
   const companion = `#!/usr/bin/env node
-import { readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
 const args = process.argv.slice(2);
 const get = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : null; };
 const mode = process.env.FAKE_COMPANION_MODE || 'vandal';
+// Each SIGTERM a deaf peer, or a deaf-family peer's child, ignores is logged
+// beside its record (sigtermsSeen), so a case sees a signal its survival
+// would hide (C142 X-F1).
+const SIGTERM_LOG = process.env.FAKE_RECORD ? process.env.FAKE_RECORD + '.sigterm' : '';
+// Set first: a deaf peer ignores SIGTERM from its first moment, before its record says it runs.
+if (mode === 'deaf' || mode === 'deaf-family') process.on('SIGTERM', () => { if (SIGTERM_LOG) appendFileSync(SIGTERM_LOG, 'companion '); });
 const cwd = get('--cwd');
 const promptFile = get('--prompt-file');
 const record = { cwd, promptFile, prompt: readFileSync(promptFile, 'utf8'), pid: process.pid, gitDir: process.env.GIT_DIR ?? null };
+// No process of a fixture outlives a killed test run by more than ten
+// minutes: each that would run on ends on its own then (C142).
+const BOUND = 'setTimeout(() => process.exit(0), 600000)';
 if (mode === 'vandal' || mode === 'stubborn') {
   const g = (...a) => { try { execFileSync('git', ['-C', cwd, ...a], { stdio: 'ignore' }); } catch {} };
   g('checkout', '--', '.');
@@ -222,18 +338,30 @@ if (mode === 'vandal' || mode === 'stubborn') {
   g('reset', '-q');
   writeFileSync(cwd + '/peer-wrote-this', 'x');
 }
-if (mode === 'stubborn' || mode === 'leaky') {
-  // leaky: the child keeps the companion's stdout and stderr open.
+if (mode === 'stubborn' || mode === 'leaky' || mode === 'deaf-family' || mode === 'family') {
+  // leaky: the child keeps the companion's stdout and stderr open. The child
+  // ignores SIGTERM, and says so (its ready file) before the record is
+  // written, so a test that signals it once the record exists tests that.
   const stdio = mode === 'leaky' ? ['ignore', 'inherit', 'inherit'] : 'ignore';
-  const child = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { stdio, cwd });
+  const ready = (process.env.FAKE_RECORD || '/dev/null') + '.child-ready';
+  const child = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => { if (process.argv[2]) require('fs').appendFileSync(process.argv[2], 'child '); }); if (process.argv[1] !== '/dev/null.child-ready') require('fs').writeFileSync(process.argv[1], ''); " + BOUND, ready, mode === 'deaf-family' ? SIGTERM_LOG : ''], { stdio, cwd });
   record.grandchild = child.pid;
   child.unref();
+  if (process.env.FAKE_RECORD) {
+    const start = Date.now();
+    while (!existsSync(ready) && Date.now() - start < 20000) await new Promise((r) => setTimeout(r, 10));
+    rmSync(ready, { force: true });
+  }
 }
 if (process.env.FAKE_RECORD) {
   writeFileSync(process.env.FAKE_RECORD + '.tmp', JSON.stringify(record));
   renameSync(process.env.FAKE_RECORD + '.tmp', process.env.FAKE_RECORD);
 }
-if (mode === 'hang') { setInterval(() => {}, 1000); await new Promise(() => {}); }
+// hang: a peer that never answers. deaf (its SIGTERM handler set above):
+// one that ignores SIGTERM too, as a peer still stopping when its host's
+// SIGKILL comes (C142); deaf-family, with a child that ignores it as well;
+// family, a peer that ends on SIGTERM and leaves such a child.
+if (mode === 'hang' || mode === 'deaf' || mode === 'deaf-family' || mode === 'family') { setTimeout(() => process.exit(0), 600000); await new Promise(() => {}); }
 const fail = mode === 'fail';
 process.stdout.write(JSON.stringify(fail
   ? { status: 'peer_error', peer_host: 'codex', peer_model: null, stdout: '', exit_code: 1, error: { kind: 'peer_run_error', message: 'boom', detail: null } }

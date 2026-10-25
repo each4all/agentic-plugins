@@ -225,8 +225,17 @@ for (const persona of PERSONAS) {
 
   async function withRepo(fn) {
     // realpath: the blocks resolve the repository through git, which reports
-    // /private/var where mkdtemp said /var on macOS.
-    const dir = await realpath(await mkdtemp(join(tmpdir(), `${persona}-verb-runbook-`)));
+    // /private/var where mkdtemp said /var on macOS. A private area holds the
+    // checkout and, beside it, the TMPDIR every block and runner here makes
+    // its peer snapshots in (one inside the checkout would send them to
+    // /tmp), removed together: a run a killed test left is found in its
+    // fixture's area, never among the shared TMPDIR's (C142).
+    const area = await realpath(await mkdtemp(join(tmpdir(), `${persona}-verb-runbook-`)));
+    const dir = join(area, 'repo');
+    await mkdir(dir);
+    await mkdir(join(area, 'tmp'));
+    const savedTmp = process.env.TMPDIR;
+    process.env.TMPDIR = join(area, 'tmp');
     try {
       const git = (...a) => execFileSync('git', a, { cwd: dir, stdio: 'ignore' });
       git('init', '-q', '-b', 'feat/r');
@@ -237,7 +246,9 @@ for (const persona of PERSONAS) {
       git('commit', '-qm', 'chore: base', '--no-verify');
       return await fn(dir);
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      if (savedTmp === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = savedTmp;
+      await rm(area, { recursive: true, force: true });
       for (const text of TEXT_DIRS.splice(0)) await rm(text, { recursive: true, force: true });
     }
   }
