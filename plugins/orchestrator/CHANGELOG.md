@@ -18,6 +18,13 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.31.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.30.1...plugin-orchestrator-v0.31.0) (2026-10-25)
+
+
+### Features
+
+* **orchestrator:** accept an owner-approved change to a dispatched subtask's instructions (ADR-0068 D8) ([1c81bfc](https://github.com/each4all/agentic-plugins/commit/1c81bfcd4fad4b36062528ff1c107f60cf5d2cb6))
+
 ## [0.30.1](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.30.0...plugin-orchestrator-v0.30.1) (2026-10-25)
 
 
