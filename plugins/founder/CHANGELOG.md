@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.1](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.13.0...plugin-founder-v0.13.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* **founder:** finish a peer run its host killed before its cleanup, and remove its snapshot only when no process can still use it (C142) ([a952b67](https://github.com/each4all/agentic-plugins/commit/a952b67602ab9c3d5d8aebe335fd02838eedf24f))
+
 ## [0.13.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.12.3...plugin-founder-v0.13.0) (2026-10-25)
 
 
