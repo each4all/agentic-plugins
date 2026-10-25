@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.1](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.12.0...plugin-designer-v0.12.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* **designer:** finish a peer run its host killed before its cleanup, and remove its snapshot only when no process can still use it (C142) ([bdcefd6](https://github.com/each4all/agentic-plugins/commit/bdcefd6ab911f15966624b56b26c5c2adc4ba39b))
+
 ## [0.12.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.11.3...plugin-designer-v0.12.0) (2026-10-25)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.32.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.32.0...plugin-engineer-v0.32.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* **engineer:** finish a peer run its host killed before its cleanup, and remove its snapshot only when no process can still use it (C142) ([3a71823](https://github.com/each4all/agentic-plugins/commit/3a7182327a1124d684ff7e56dc077cd8a1103983))
+
 ## [0.32.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.31.3...plugin-engineer-v0.32.0) (2026-10-25)
 
 
