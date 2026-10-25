@@ -614,7 +614,9 @@ async function materializePrompt({ paths, promptText, promptFile, retainPrompt }
   return { promptFile: file, cleanup: dir };
 }
 
-async function recordPendingIfEnsemble(handle) {
+// `env` is the run's (runPeer's `env`): the step's, whose attempt the pending
+// entry is held to (ADR-0068 Decision 5), never this process's own.
+async function recordPendingIfEnsemble(handle, env) {
   if (handle.kind !== 'ensemble') return;
   try {
     await recordPendingEnsemble({
@@ -623,6 +625,8 @@ async function recordPendingIfEnsemble(handle) {
       ensemble_type: handle.ensemble_type,
       run_id: handle.run_id,
       started_at: handle.started_at,
+      host: handle.host ?? undefined,
+      env,
     });
   } catch (err) {
     process.stderr.write(
@@ -789,7 +793,7 @@ async function runPeerInCheckout(args) {
     });
     promptCleanup = prompt.cleanup;
 
-    await recordPendingIfEnsemble(await readHandle(paths.handle));
+    await recordPendingIfEnsemble(await readHandle(paths.handle), options.env);
 
     const companion = await resolveCompanion(options.peer, { env: options.env });
     const companionPath = companion.path;
@@ -1780,6 +1784,10 @@ async function settleEnsembleInCheckout({
   runId,
   verdict,
   summary,
+  host,
+  // The step's environment, which the workflow write is admitted under (its
+  // attempt mark, ADR-0068 Decision 5), as every writer's.
+  env = process.env,
   staleGraceMs = DEFAULT_STALE_GRACE_MS,
   now = new Date(),
 } = {}) {
@@ -1815,6 +1823,8 @@ async function settleEnsembleInCheckout({
       run_id: runId,
       phase,
       completed_at: isoSeconds(now),
+      host,
+      env,
       ...fields,
     });
     if (!idempotentSkip) return 'committed';
@@ -2189,6 +2199,7 @@ async function cliRun(opts) {
           runId: opts.runId,
           verdict: opts.verdict,
           summary: opts.summary,
+          host: opts.host,
           staleGraceMs: Number.isInteger(opts.staleGraceMs)
             ? opts.staleGraceMs
             : parsePositiveInt(process.env.PEER_RUN_STALE_GRACE_MS, DEFAULT_STALE_GRACE_MS),
