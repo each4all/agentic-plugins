@@ -522,8 +522,9 @@ describe('the posture (D5)', () => {
     }
   });
 
-  it('scrubs the launching session and the dispatch contract, sets the run and the roots', async () => {
-    const { started } = await run('simple', {}, {
+  it('scrubs the launching session and the dispatch contract, sets the run, the step\'s number and the roots', async () => {
+    const { started } = await run('simple', { seq: 7 }, {
+      AGENTIC_AUTOPILOT_STEP: '3', AGENTIC_AUTOPILOT_VERIFY: 'a'.repeat(40),
       CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'outer', CLAUDE_CODE_SESSION_KIND: 'bg',
       CLAUDE_BG_SESSION_PERMISSION_RULES: '{"allow":["Bash(*)"],"deny":[]}', CLAUDE_CODE_MESSAGING_SOCKET: '/s',
       CLAUDE_CODE_CHILD_SESSION: '1', CLAUDE_RELAUNCH_SESSION_ADD_DIRS: '[]', CLAUDE_PID: '1', CLAUDE_EFFORT: 'max',
@@ -547,6 +548,10 @@ describe('the posture (D5)', () => {
     }
     strictEqual(env.KEEP_ME, 'yes');
     strictEqual(env.AGENTIC_AUTOPILOT, RUN);
+    // ADR-0068 Decision 5, item 7 — the step's number is the step's seq, never
+    // an inherited one, and it comes with no offer of verification.
+    strictEqual(env.AGENTIC_AUTOPILOT_STEP, '7');
+    ok(!('AGENTIC_AUTOPILOT_VERIFY' in env));
     deepStrictEqual([env.AGENTIC_ORCHESTRATOR_ROOT, env.AGENTIC_ENGINEER_ROOT, env.AGENTIC_RUNTIME_ROOT], [ROOTS.orchestrator, ROOTS.engineer, ROOTS.runtime]);
     // Contract: git reads GIT_CONFIG_COUNT/KEY/VALUE — without the block the worker
     // pushes with `git -C`, which the command denylist does not match.

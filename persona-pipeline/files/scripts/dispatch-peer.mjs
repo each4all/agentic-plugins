@@ -586,6 +586,10 @@ export async function dispatchPeer({
         phase: ensembleBookkeeping.phase,
         ensemble_type: ensembleBookkeeping.ensembleType,
         run_id: ensembleBookkeeping.runId,
+        // The caller's host and environment: under an autopilot run the
+        // pending run is held to the attempt mark (ADR-0068 Decision 5).
+        host: env.AGENTIC_HOST ?? 'claude',
+        env,
       });
     } catch (err) {
       process.stderr.write(

@@ -47,6 +47,8 @@ const LOCK_CHECK = '  if (!(await holdsLock(ownership))) {\n';
 const PUBLISH = '  await atomicWrite(paths.file, `${scrubSecrets(text).trim()}\\n`, ownership);\n';
 const PRIVATE_DIR = '  await ensureDir(paths.dir, 0o700);\n';
 const CLEAR_RETIRE = '    const retired = runId === undefined\n      ? { retired: null, warning: null }\n      : await retireConsensusTask(workflowPath, frontmatter.workflow_id, runId, { lockPath, token });\n';
+// The persona's clear writes under the ownership withFileLock gives it whole.
+const CLEAR_RETIRE_PERSONA = CLEAR_RETIRE.replace('{ lockPath, token }', 'ownership');
 
 // The lanes path and the previews (M4, M5, M7 of the CP critique), by the
 // test that names each.
@@ -106,7 +108,7 @@ export const MUTATIONS = [
   },
   {
     id: 'P7', file: ENG_STATE, tests: [TP], count: 1,
-    from: CLEAR_RETIRE,
+    from: CLEAR_RETIRE_PERSONA,
     to: '    const retired = { retired: null, warning: null };\n',
     why: 'the owner\'s clear leaves the task file live',
     killed_by: /the clear retires the file and records the run/,
@@ -141,8 +143,9 @@ export const MUTATIONS = [
   },
   {
     id: 'P12', file: ENG_STATE, tests: [TP],
-    from: LOCK_CHECK,
-    to: '  if (false) {\n',
+    // The retire's check: renameHeld, above it, makes the same one.
+    from: `  if (!paths) return { retired: null, warning: null };\n${LOCK_CHECK}`,
+    to: '  if (!paths) return { retired: null, warning: null };\n  if (false) {\n',
     why: 'a writer whose lock was reclaimed retires a file the new owner made current',
     killed_by: /a writer whose lock was reclaimed neither publishes nor retires a task file/,
   },

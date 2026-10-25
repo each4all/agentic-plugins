@@ -131,7 +131,7 @@ export const MUTATIONS = [
   },
   {
     id: 'R4', tests: T,
-    prepare: every(STATE, '        await rename(paths.file, superseded);\n', ''),
+    prepare: every(STATE, '        await renameHeld(paths.file, superseded, ownership);\n', ''),
     why: 'a document that turned into code leaves its ledger, and refine works from findings its last critique never judged',
   },
   {

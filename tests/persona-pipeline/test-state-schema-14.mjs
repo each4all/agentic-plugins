@@ -168,8 +168,8 @@ for (const persona of personasFor('scripts/state.mjs')) {
       });
     });
 
-    it('the enums are engineer\'s: four kinds, three confidences, six workflow gates (ADR-0067 Decision 8 adds peer-conflict)', () => {
-      deepStrictEqual([...VALID_NEXT_STEP_KINDS], ['verb', 'commit', 'owner-decision', 'done']);
+    it('the enums are engineer\'s: five kinds (ADR-0068 Decision 5 adds verify), three confidences, six workflow gates (ADR-0067 Decision 8 adds peer-conflict)', () => {
+      deepStrictEqual([...VALID_NEXT_STEP_KINDS], ['verb', 'commit', 'owner-decision', 'done', 'verify']);
       deepStrictEqual([...VALID_CONFIDENCE], ['HIGH', 'MEDIUM', 'LOW']);
       deepStrictEqual([...VALID_WORKFLOW_OWNER_GATES].sort(), ['decide-conflict', 'peer-conflict', 'pr-handling', 'recurring-finding', 'scope-routing', 'staging-set']);
     });

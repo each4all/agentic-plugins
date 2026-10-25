@@ -84,6 +84,17 @@
       "requires": []
     },
     {
+      "id": "lib-verify",
+      "source": "files/scripts/lib/verify.mjs",
+      "dest": "scripts/lib/verify.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
       "id": "lib-yaml-mini",
       "source": "files/scripts/lib/yaml-mini.mjs",
       "dest": "scripts/lib/yaml-mini.mjs",

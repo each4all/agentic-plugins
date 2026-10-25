@@ -231,15 +231,18 @@ const ENG_RE = 'plugins/engineer/scripts/state.mjs';
 const ORCH_RE = 'plugins/orchestrator/scripts/state.mjs';
 
 
-// withCreationLocks' two-lock path, as written in both state scripts.
+// withCreationLocks' two-lock path, as written in orchestrator's state script,
+// and in the persona's, which hands `fn` the repository lock as `outer` too
+// (ninth critique MAJOR 1).
 const TWO_LOCKS_RE = 'return withDirectoryLock(defaultRoot, () => withDirectoryLock(storage.stateRoot, fn, { storage }), { storage: repoStorage });';
+const TWO_LOCKS_OUTER_RE = 'return withDirectoryLock(defaultRoot, (outer) => withDirectoryLock(storage.stateRoot,\n    (inner) => fn({ ...inner, outer: [{ lockPath: outer.lockPath, token: outer.token }] }), { storage }), { storage: repoStorage });';
 // The repository lock dropped, its directory still made (the existing test
 // only looked for that directory).
 const NO_REPO_LOCK_RE = 'await ensureDir(repoStorage.workflows, 0o700);\n  return withDirectoryLock(storage.stateRoot, fn, { storage });';
 // The record home's lock dropped: `fn` runs under the repository lock alone.
 const NO_HOME_LOCK_RE = 'return withDirectoryLock(defaultRoot, async (held) => { await ensureDir(storage.workflows, 0o700); return fn({ ...held, storage }); }, { storage: repoStorage });';
 
-const lockMutations_RE = (prefix, n, file, tests) => [
+const lockMutations_RE = (prefix, n, file, tests, TWO_LOCKS_RE) => [
   { id: `${prefix}${n}`, file, tests, from: TWO_LOCKS_RE, to: NO_REPO_LOCK_RE,
     why: "create skips the repository's creation lock (directory kept)", killed_by: /create waits on the repository's creation lock/ },
   { id: `${prefix}${n + 1}`, file, tests, from: TWO_LOCKS_RE, to: NO_REPO_LOCK_RE,
@@ -476,8 +479,8 @@ export const MUTATIONS = [
   // ---- U: one writable copy (U2b) -------------------------------------------
   {
     id: 'U1', file: STATE, tests: [T_WRITERS],
-    from: "    await assertSingleCopy(workflowPath);\n    const result = await fn(",
-    to: "    const result = await fn(",
+    from: "    await assertSingleCopy(workflowPath);\n    const held = ",
+    to: "    const held = ",
     why: "a write goes to one of two copies of a workflow",
     killed_by: /a workflow held at one relative path under two roots refuses every write to either file/,
   },
@@ -797,8 +800,8 @@ export const MUTATIONS = [
   },
   {
     id: 'V18', file: STATE, tests: [T_WRITERS],
-    from: 'export async function withFileLock(workflowPath, fn) {\n  const lockPath = fileLockPath(workflowPath);\n  const token = await acquireLock(lockPath);\n  let releaseOk = false;\n  try {\n    // ADR-0067 Decision 4, item 2 — checked holding the lock, so a copy that\n    // appears while this writer waits for it is seen.\n    await assertSingleCopy(workflowPath);',
-    to: 'export async function withFileLock(workflowPath, fn) {\n  await assertSingleCopy(workflowPath);\n  const lockPath = fileLockPath(workflowPath);\n  const token = await acquireLock(lockPath);\n  let releaseOk = false;\n  try {',
+    from: "hold = true } = {}) {\n  const lockPath = fileLockPath(workflowPath);\n  const token = await acquireLock(lockPath);\n  let releaseOk = false;\n  try {\n    // ADR-0067 Decision 4, item 2 — checked holding the lock, so a copy that\n    // appears while this writer waits for it is seen.\n    await assertSingleCopy(workflowPath);",
+    to: "hold = true } = {}) {\n  await assertSingleCopy(workflowPath);\n  const lockPath = fileLockPath(workflowPath);\n  const token = await acquireLock(lockPath);\n  let releaseOk = false;\n  try {",
     why: 'the copy check runs before the lock, so a copy made while the writer waits is missed',
     killed_by: /the copy check runs holding the lock/,
   },
@@ -1247,8 +1250,8 @@ export const MUTATIONS = [
   },
   {
     id: 'Y10', file: STATE, tests: [T_WRITERS],
-    from: '      text = readFrontmatterText(file);',
-    to: "      text = await readFile(file, 'utf8');",
+    from: '      // must not stall it (ADR-0067 Decision 4, item 2).\n      text = readFrontmatterText(file);',
+    to: "      // must not stall it (ADR-0067 Decision 4, item 2).\n      text = await readFile(file, 'utf8');",
     why: "the persona branch scan opens a FIFO and waits on it under the writer's lock",
     killed_by: /a FIFO in a home of the read set refuses the branch scan at once/,
   },
@@ -2855,12 +2858,12 @@ export const MUTATIONS = [
 
   // ---- RE: the final critique's findings (refine) ----
   // M9 — each lock, each writer (the shared helper; killed_by names the writer's test).
-  ...lockMutations_RE('RE', 1, ENG_RE, [W_RE]),
-  ...lockMutations_RE('RE', 5, ORCH_RE, [O_RE]),
+  ...lockMutations_RE('RE', 1, ENG_RE, [W_RE], TWO_LOCKS_OUTER_RE),
+  ...lockMutations_RE('RE', 5, ORCH_RE, [O_RE], TWO_LOCKS_RE),
   // M9 — a writer forced onto the single-lock path at its call site.
   { id: 'RE9', file: ENG_RE, tests: [W_RE],
-    from: 'return withCreationLocks(storage, ({ lockPath, token }) =>',
-    to: 'return withDirectoryLock(storage.stateRoot, ({ lockPath, token }) =>',
+    from: 'return withCreationLocks(storage, ({ lockPath, token, outer }) =>',
+    to: 'return withDirectoryLock(storage.stateRoot, ({ lockPath, token, outer }) =>',
     why: 'persona create takes only the record home lock', killed_by: /create waits on the repository's creation lock/ },
   { id: 'RE10', file: ENG_RE, tests: [W_RE],
     from: 'return withCreationLocks(sourceStorage, async () => {',
@@ -2894,8 +2897,8 @@ export const MUTATIONS = [
   // where a new record would be created (the default state root once shared
   // creation is on), not where it is.
   { id: 'RE17', file: ENG_RE, tests: [W_RE],
-    from: '    await atomicWrite(\n      workflowPath,\n      assembleWorkflowFile(frontmatter, newBody),\n      { lockPath, token },\n    );\n    // ADR-0067 Decision 8 — a gate set again over itself',
-    to: "    const updateDir = join(creationRoot(resolvePath(workflowPath, '../../../../..')).root, stateDirRel(), 'workflows');\n    await ensureDir(updateDir, 0o700);\n    await atomicWrite(\n      join(updateDir, basename(workflowPath)),\n      assembleWorkflowFile(frontmatter, newBody),\n      { lockPath, token },\n    );\n    // ADR-0067 Decision 8 — a gate set again over itself",
+    from: '    await writeWorkflow(workflowPath, frontmatter, newBody, ownership, { nextStep: nextStepWrite !== null });\n    // ADR-0067 Decision 8 — a gate set again over itself',
+    to: "    const updateDir = join(creationRoot(resolvePath(workflowPath, '../../../../..')).root, stateDirRel(), 'workflows');\n    await ensureDir(updateDir, 0o700);\n    await writeWorkflow(join(updateDir, basename(workflowPath)), frontmatter, newBody, ownership, { nextStep: nextStepWrite !== null });\n    // ADR-0067 Decision 8 — a gate set again over itself",
     why: 'append writes a local record under the creation root', killed_by: /updated in place, never copied/ },
   { id: 'RE18', file: ORCH_RE, tests: [O_RE],
     from: '    await atomicWrite(\n      workflowPath,\n      assembleWorkflowFile(frontmatter, newBody),\n      { lockPath, token },\n    );\n    return {\n      frontmatter, workflowPath, promoted, allTerminal,\n',

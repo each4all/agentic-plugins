@@ -320,7 +320,7 @@ function stateFacts(persona) {
   const url = pathToFileURL(join(pluginRoot(persona), 'scripts/state.mjs')).href;
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AGENTIC_') && !k.startsWith('NODE_TEST')));
   const out = execFileSync(process.execPath, ['--input-type=module', '-e',
-    `const m = await import(${JSON.stringify(url)}); process.stdout.write(JSON.stringify({ settable: [...m.settableOwnerGates()].sort(), kinds: [...m.VALID_NEXT_STEP_KINDS].sort(), legacyDir: m.legacyStateDirRel() }));`,
+    `const m = await import(${JSON.stringify(url)}); process.stdout.write(JSON.stringify({ settable: [...m.settableOwnerGates()].sort(), kinds: [...m.VALID_NEXT_STEP_KINDS].sort(), proposalKinds: [...m.PROPOSAL_NEXT_STEP_KINDS].sort(), legacyDir: m.legacyStateDirRel() }));`,
   ], { encoding: 'utf8', env });
   return JSON.parse(out);
 }
@@ -460,7 +460,11 @@ for (const persona of PERSONAS) {
         // `finish-verb --next-step-kind` — a kind finish-verb does not accept
         // fails the terminal write, a missing one leaves a next step unmapped.
         const kindRows = tableColumn(region(contract, 'routing-proposal'), 1).filter((c) => c !== 'next_step_kind');
-        deepStrictEqual([...kindRows].sort(), facts.kinds, 'the closed-enum table maps onto exactly the kinds finish-verb accepts');
+        deepStrictEqual([...kindRows].sort(), facts.proposalKinds, 'the closed-enum table maps onto exactly the kinds finish-verb accepts from a proposal');
+        // `verify` is the one kind no proposal maps to: finish-verb takes it
+        // only with a request file under the driver's offer (ADR-0068
+        // Decision 5, item 11), so the table must not offer it.
+        deepStrictEqual([...facts.proposalKinds, 'verify'].sort(), facts.kinds, 'every kind a reader accepts but verify is a proposal kind');
       });
 
       it(`${label}: the skills and the runbooks name finish-verb as the terminal write (PC2b DD8)`, holding(persona, CONTRACT), () => {
