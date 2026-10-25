@@ -82,6 +82,7 @@ import { join, resolve } from 'node:path';
 
 import { createBudget } from './budget.mjs';
 import { holdLane, laneGitDir, laneHome, lanePath, reconcileLanes, refTip, stepPlacement } from './lanes.mjs';
+import { deliverAtBoundary, rebindDue, stillHeldDetail } from './rebind-boundary.mjs';
 import {
   appendLaneEvent, appendStep, LockHeldError, processFingerprint, relaunchCommand, releaseCommand, workerStreamPath, writeRun,
 } from './ledger.mjs';
@@ -448,6 +449,10 @@ export async function runLanes(c) {
   const markers = new Map();
   const busy = new Set();
   let busyDue = false;
+  // The lanes whose child the run told at their boundary and whose step has
+  // not been admitted since (ADR-0068 Decision 8, item 4): one still held
+  // then parks, as the serial run halts, instead of being told again.
+  const toldLanes = new Set();
   // Per parked lane, its wake digest as the tick last read it, since when,
   // and the digest it was last judged at (the park's own, at first).
   const seen = new Map();
@@ -1129,6 +1134,39 @@ export async function runLanes(c) {
     if (inLane && laneBusy(id, view)) {
       busy.add(id);
       return { ...refuse(null), again: false, busy: true };
+    }
+
+    // ADR-0068 Decision 8, item 4 — a note the owner's approval did not
+    // finish telling reaches the child before its next step, never mid-step:
+    // the lane is idle here, and no persona operation is open in it (the
+    // check above; rebind-boundary.mjs). Told, the step yields, and the run
+    // admits it again from a fresh look, every check below included, with the
+    // note in its progress baseline. The writer is a group of the run's
+    // locks while it writes. A note that cannot be told parks this lane only,
+    // as does a child the binding writes' told check refuses (rebindDue's
+    // 'refused'), with the check's own way out: the recorded owner, or, with
+    // none, the child this look selected.
+    const due = id ? rebindDue(view.macro?.fm, id, { macroPath: view.macro?.path, selected: view.children?.[id]?.workflow_id ?? null }) : null;
+    const toldBefore = toldLanes.delete(id);
+    if (due && toldBefore) {
+      return refuse({
+        reason: 'owner-choice', subtaskId: id,
+        detail: stillHeldDetail({ macroPath: view.macro?.path, macroId, subtaskId: id, due: due.due, why: due.why ?? null }),
+      });
+    }
+    if (due) {
+      const told = await (c.deliverRebindings ?? deliverAtBoundary)({
+        roots, macroPath: view.macro.path, macroId, subtaskId: id, repoRoot, env, runId, token: c.token, due: due.due, why: due.why ?? null,
+        hold: holdAt(repoRoot),
+        // A group that outlived SIGKILL keeps the run's locks, and nothing
+        // more starts beside it: it drains the run, as a task's does.
+        onLingering: () => c.markLingering(),
+      });
+      if (told.lingering) return refuse({ reason: 'worker-failed', detail: told.detail, subtaskId: id, scope: 'run' });
+      if (!told.ok) return refuse({ reason: 'owner-choice', detail: told.detail, subtaskId: id });
+      out(`  lane ${id}: told its child the owner's instruction change before its next step`);
+      toldLanes.add(id);
+      return refuse(null);
     }
     let createdNow = false;
     if (inLane && !lanes.has(id)) {

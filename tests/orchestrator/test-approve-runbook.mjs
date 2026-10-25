@@ -96,7 +96,32 @@ describe('/orchestrator:approve binds the approval to the hash it showed', () =>
     ok(/PLAN_HASH="\$\(printf '%s\\n' "\$SHOWN" \| node -e '[^']*JSON\.parse\(d\)\.plan_hash/.test(block), 'PLAN_HASH comes from what was shown');
     ok(block.includes('--expect-hash "$PLAN_HASH"'), 'plan-approve is bound to it');
   });
+
+  it('passes the shown rebind_digest as --expect-rebind (ADR-0068 Decision 8, item 2)', async () => {
+    const block = await approveBlock();
+    ok(/REBIND_DIGEST="\$\(printf '%s\\n' "\$SHOWN" \| node -e '[^']*JSON\.parse\(d\)\.rebind_digest/.test(block), 'REBIND_DIGEST comes from what was shown');
+    ok(block.includes('--expect-rebind "$REBIND_DIGEST"'), 'plan-approve is bound to it');
+  });
 });
+
+// ADR-0068 Decision 8 — an in-progress subtask of the macro, dispatched as
+// /orchestrator:next does: its child records the dispatch selection.
+const ENG_ROOT = resolve(REPO_ROOT, 'plugins/engineer');
+const eng = await import(resolve(ENG_ROOT, 'scripts/state.mjs'));
+const { updateSubtask } = await import(resolve(ORCH_ROOT, 'scripts/state.mjs'));
+async function dispatchedChild(dir, filePath) {
+  const { frontmatter } = await readWorkflow(filePath);
+  const a = frontmatter.plan.subtasks.find((x) => x.id === 'A');
+  const { filePath: child } = await eng.createWorkflow({
+    repoRoot: dir, verb: a.verb, host: 'claude', profile: a.profile, originalRequest: a.topic,
+    gitBaseline: { branch: a.branch, head: '0'.repeat(40), status_digest: '' },
+    currentPhase: 'phase-0-bootstrap', nextAction: 'Run the verb', parentWorkflow: frontmatter.workflow_id, originatingSubtask: 'A',
+    dispatchSelection: { subtask: 'A', branch: a.branch, verb: a.verb, profile: a.profile, topic: a.topic },
+  });
+  const id = (await eng.readWorkflow(child)).frontmatter.workflow_id;
+  await updateSubtask({ workflowPath: filePath, host: 'claude', subtaskId: 'A', status: 'in_progress', engineerWorkflowId: id });
+  return { path: child, id };
+}
 
 for (const shell of SHELLS) {
   describe(`/orchestrator:approve runbook (${shell})`, () => {
@@ -123,6 +148,50 @@ for (const shell of SHELLS) {
         strictEqual(r.status, 0, r.stderr);
         ok(r.stdout.includes('"noop":true'), r.stdout);
         ok(r.stdout.includes('approval before: approved'), r.stdout);
+      });
+    });
+
+    it('shows the in-progress children it rebinds and tells, approves exactly that view, and tells the child (ADR-0068 Decision 8)', async () => {
+      await withRepo(async (dir) => {
+        const filePath = await plannedMacro(dir);
+        const child = await dispatchedChild(dir, filePath);
+        let r = await run(shell, dir);
+        strictEqual(r.status, 0, r.stderr);
+        ok(r.stdout.includes('in-progress children: nothing to rebind or tell'), r.stdout);
+        const { frontmatter } = await readWorkflow(filePath);
+        await setPlan({ workflowPath: filePath, host: 'claude', subtasks: frontmatter.plan.subtasks.map((x) => (x.id === 'A' ? { ...x, topic: 'the owner | revised it' } : x)) });
+        r = await run(shell, dir, { AGENTIC_ENGINEER_ROOT: ENG_ROOT });
+        strictEqual(r.status, 0, r.stderr);
+        ok(r.stdout.includes('| subtask | child | state | next step | rebinding | note to the child |'), r.stdout);
+        ok(r.stdout.includes(`| A | ${child.id} | active | none recorded (phase phase-0-bootstrap) | rebound on topic | told the change of topic |`), r.stdout);
+        ok(/\nrebind_digest: [0-9a-f]{64}\n/.test(r.stdout), r.stdout);
+        const envelope = JSON.parse(r.stdout.split('\n').find((l) => l.startsWith('{"workflowPath"')));
+        strictEqual(envelope.rebindings, 1);
+        deepStrictEqual(envelope.deliveries.map((d) => d.status), ['delivered']);
+        ok((await readFile(child.path, 'utf8')).includes('the owner | revised it'));
+      });
+    });
+
+    it('shows an archived child last told other words refused, though it matches its dispatch (ADR-0068 Decision 8, item 2)', async () => {
+      await withRepo(async (dir) => {
+        const filePath = await plannedMacro(dir);
+        const child = await dispatchedChild(dir, filePath);
+        const { frontmatter } = await readWorkflow(filePath);
+        const revise = (topic) => setPlan({ workflowPath: filePath, host: 'claude', subtasks: frontmatter.plan.subtasks.map((x) => (x.id === 'A' ? { ...x, topic } : x)) });
+        await revise('the owner revised it');
+        let r = await run(shell, dir, { AGENTIC_ENGINEER_ROOT: ENG_ROOT });
+        strictEqual(r.status, 0, r.stderr);
+        // The child committed and archived, told the revised words; the plan
+        // revised back to the words it was dispatched for.
+        const archived = child.path.replace('/workflows/', '/archive/');
+        await mkdir(join(archived, '..'), { recursive: true });
+        await writeFile(archived, await readFile(child.path, 'utf8'));
+        await rm(child.path);
+        await revise('the objective | with a pipe');
+        r = await run(shell, dir, { AGENTIC_ENGINEER_ROOT: ENG_ROOT });
+        strictEqual(r.status, 0, r.stderr);
+        const row = r.stdout.split('\n').find((l) => l.startsWith(`| A | ${child.id} | archived |`));
+        ok(row?.includes(`| matches its dispatch; refused at every write that binds it: ${child.id} was last told other words for subtask A`), r.stdout);
       });
     });
 

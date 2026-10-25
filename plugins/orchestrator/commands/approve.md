@@ -19,6 +19,18 @@ plan whose hash still matches and refuses anything else (`plan-unapproved`);
 an interactive `/orchestrator:next` does not require an approval, and prints
 one warning line for a plan pending approval or changed since it was approved.
 
+When the plan changed the `topic` or `profile` of a subtask already in
+progress, the approval also rebinds that subtask's child to the words approved
+(ADR-0068 Decision 8): it prints a second table, one row per in-progress
+subtask it rebinds, tells, or cannot rebind, with the child's state and next
+step, and approves exactly what that table showed. It records the rebindings
+with the approval (`plan_rebindings`, `plan_approval_id`), and the child's
+work is then accepted at its terminal note and at `/orchestrator:done` instead
+of being refused `dispatch-changed`. Each active child is told the change
+first, as a phase note naming the old and new words; the child's next step
+stays the one it recorded. A `branch` or `verb` change is never rebound: its
+row says so, and its writes stay refused.
+
 It does not mutate `current_phase`, `next_action`, or `plan.subtasks[]`. The
 workflow namespace is `.agentic-plugins/state/orchestrator/` for new repos;
 legacy `.claude/agentic-orchestrator/` state remains active until explicit
@@ -119,10 +131,15 @@ SHOWN="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" plan-hash --workflow-path 
 # verb, profile, topic — with | and line breaks escaped so a cell stays one cell.
 printf '%s\n' "$SHOWN" | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d);const keys=["id","label","verb","profile","branch","blocked_by","topic"];const cell=(v)=>(v===undefined?"":Array.isArray(v)?v.join(", "):String(v)).replace(/\\/g,"\\\\").replace(/\|/g,"\\|").replace(/\r\n|\r|\n/g,"\\n");process.stdout.write("| "+keys.join(" | ")+" |\n|"+keys.map(()=>"---").join("|")+"|\n");for(const s of o.subtasks)process.stdout.write("| "+keys.map((k)=>cell(s[k])).join(" | ")+" |\n");process.stdout.write("\nplan_hash: "+o.plan_hash+"\napproval before: "+o.approval.status+(o.awaiting_owner_gate?" (awaiting_owner_gate="+o.awaiting_owner_gate+")":"")+"\n")})' || exit 1
 PLAN_HASH="$(printf '%s\n' "$SHOWN" | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>process.stdout.write(JSON.parse(d).plan_hash))')" || exit 1
+# ADR-0068 Decision 8, item 2 — the in-progress children the approval rebinds,
+# tells, or cannot rebind, each with its state and next step; the digest it
+# approves is the one of this view.
+printf '%s\n' "$SHOWN" | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d);const v=o.rebind_view;const cell=(t)=>String(t??"").replace(/\\/g,"\\\\").replace(/\|/g,"\\|").replace(/\r\n?|\n/g,"\\n");const kinds={rebind:(r)=>"rebound on "+r.changed.join(", "),"not-rebindable":(r)=>"not rebindable ("+r.not_rebindable.join(", ")+" changed): stays refused dispatch-changed",matches:()=>"matches its dispatch",told:(r)=>"not in progress ("+r.status+"): rebound by nothing; its active child is told",none:()=>"no child: nothing rebound",ambiguous:(r)=>"not rebound: "+r.detail,"owner-missing":(r)=>"not rebound: "+r.detail,elsewhere:(r)=>"not rebound: "+r.detail,unreadable:(r)=>"not rebound: "+r.detail};if(v.rows.length===0&&v.carried.length===0){process.stdout.write("\nin-progress children: nothing to rebind or tell\n");}else{process.stdout.write("\n| subtask | child | state | next step | rebinding | note to the child |\n|---|---|---|---|---|---|\n");for(const r of v.rows){const what=kinds[r.kind](r)+(r.not_compared.length?"; not compared on "+r.not_compared.join(", "):"")+(r.refused!==undefined?"; refused at every write that binds it: "+r.refused:"");process.stdout.write("| "+[r.subtask,r.child??"",r.child_state??"",r.next_step??"",what,r.delivery?(r.delivery.restate?"told its words in full":"told the change of "+r.delivery.fields.join(", ")):""].map(cell).join(" | ")+" |\n");}for(const e of v.carried)process.stdout.write("| "+cell(e.subtask)+" | "+cell(e.child)+" | completed |  | kept as recorded |  |\n");}if((v.unknown??[]).length)process.stdout.write("what the child was last told is not known (told its words in full once rebindable): "+v.unknown.map(cell).join(", ")+"\n");process.stdout.write("rebind_digest: "+o.rebind_digest+"\n")})' || exit 1
+REBIND_DIGEST="$(printf '%s\n' "$SHOWN" | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>process.stdout.write(JSON.parse(d).rebind_digest))')" || exit 1
 
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" plan-approve \
   --workflow-path "$MACRO_PATH" --host claude \
-  --expect-hash "$PLAN_HASH" || exit 1
+  --expect-hash "$PLAN_HASH" --expect-rebind "$REBIND_DIGEST" || exit 1
 echo "workflow: $MACRO_PATH"
 # ADR-0067 Decision 8, item 2 — the lane advice, display only: one line, or
 # nothing when two lanes would not shorten the plan.
@@ -131,12 +148,51 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" lane-advice \
 ```
 
 `plan-approve` prints `{workflowPath, plan_hash, approved_at}`, with
-`noop: true` when this hash was already approved (nothing is written). On a
-refusal it exits 1 with the reason on stderr; surface it verbatim:
+`noop: true` when this hash was already approved and nothing is left to
+record or tell (nothing is written), `rebindings` when it rebound children,
+and `deliveries` when it told them. A child it could not tell yet is named on
+stderr (`⚠ … is not told yet`): its work is not accepted under the new words
+until it is. A run of the macro tells it before the child's next step, or the
+owner tells it now with
+`node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" rebind-deliver --workflow-path "$MACRO_PATH" --host claude`,
+or approves again. Until a note has told the child, every write that binds it
+(the re-attach, the terminal writeback and `/orchestrator:done`'s completion)
+refuses it, whatever its dispatch, as it refuses a child last told other words
+for its subtask (ADR-0068 Decision 8, item 4), and a run does not step it:
+the run's boundary asks the same check of the child it would step (the
+recorded owner, or, with none, the one it selected). An approval tells only
+the child it would rebind: while no owner is recorded and several workflows
+claim the subtask, record the child its owner first (`subtask-update
+--expect-dispatch`, which `/orchestrator:done` prints). An archived child, which no
+note reaches, is completed by `/orchestrator:done --waive-dispatch` with a
+reason, which the macro records; or the plan is revised back to the words it
+was last told. The table shows that refusal before the approval: an archived
+child's row ends `refused at every write that binds it: <why>`, even when it
+matches its dispatch, and the macro's audit records it refused, never
+rebound. On a refusal it exits 1 with the reason on stderr; surface
+it verbatim:
 
 - **the plan changed since it was shown** — another session rewrote the plan
   between the two calls. Run `/orchestrator:approve` again and review the new
   table.
+- **the in-progress children changed since they were shown** — a child's
+  state, recorded dispatch or next step moved between the display and the
+  approval (ADR-0068 Decision 8, item 2). Run `/orchestrator:approve` again.
+- **refused, nothing written: another autopilot run holds …** or **an
+  interactive session holds …** — every approval joins the macro's run lock
+  (ADR-0068 Decision 8, item 3), so it never passes between two looks of a
+  live run, and no run or dispatch starts while it holds it. Stop the run, or
+  wait for it to drain (a `plan-set` already made it halt `plan-unapproved`),
+  then approve again. An approval killed while it held the lock leaves its
+  entry: the refusal names it with the `state.mjs admission release …`
+  command that removes it, once that process is gone. The release refuses
+  while a note's writer the approval started is still running, since it may
+  still append its note to the child: wait for it to end.
+- **the approval would rebind or tell `<subtask>`, which is held or has a
+  release awaiting its comparison** — wait for the hold to end, then approve
+  again.
+- **the record of this approval's rebindings would take … over the cap** —
+  the in-progress instruction text it tells is too long; shorten it.
 - **the Plan-verify ensemble reported a conflict** (`awaiting_owner_gate=plan-conflict`)
   — the owner revises the plan (`/orchestrator:plan`), or decides the conflict
   and clears it first:
@@ -146,6 +202,20 @@ refusal it exits 1 with the reason on stderr; surface it verbatim:
 - **no subtasks to approve** / **this macro is terminal** — there is no plan
   to approve; plan the work with `/orchestrator:plan`.
 - **refused under autopilot** — only the owner approves.
+
+Two limits of the rebinding, stated as they are (ADR-0068 Decision 8, item 7):
+
+- **Operations.** Until the persona's operations are visible to the
+  orchestrator (ADR-0068 Decision 2, item 9), the approval cannot see one open
+  in a person's session in that subtask's lane; close your own sessions there
+  before approving.
+- **An older approver.** An orchestrator older than this release joins no
+  lock, so on a host that has not installed it an approval can still pass
+  between two looks of a live run. It also keeps the `plan_approval_id` it
+  does not know: its approval of a different plan, or of the same plan at
+  another second, rebinds nothing (the record names its own approval), but
+  its approval of the identical plan within the same second cannot be told
+  from this one's. Approve from hosts that run this release.
 
 ---
 

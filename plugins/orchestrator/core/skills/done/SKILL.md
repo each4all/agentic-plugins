@@ -67,8 +67,9 @@ file and its directory once read. The fields:
   reason; excludes `--pr`, `--commit` and `--correct`);
 - `waive_dispatch`, from `--waive-dispatch` — complete in the recorded
   owner's name without comparing the dispatch it records, when no file of it
-  is left to read it from (Phase 2; needs a reason, and the macro records
-  both);
+  is left to read it from (Phase 2), or, with that dispatch read, complete an
+  archived owner the macro's record cannot vouch for (Phase 3; needs a
+  reason, and the macro records both);
 - `workflow_id`, from `--workflow=<macro-id>`;
 - `integration_branch`, from `--integration-branch=<b>` — default is the
   macro's `git_baseline.branch`;
@@ -284,16 +285,15 @@ fi
 # --- Phase 2: the owning engineer workflow and the dispatch it records ---
 # ADR-0067 Decision 4, item 5 — the owner and the dispatch it records. Every
 # refusal's reason is printed by owner-dispatch; exit 3 alone (the recorded
-# owner has no file left) may be waived.
+# owner has no file left) may be waived. With the dispatch read, the waiver is
+# of the told check only (ADR-0068 Decision 8, item 4): subtask-update applies
+# it to an archived child the macro's record cannot vouch for, and refuses it
+# for any other.
 OWNER_ARGS=(--repo-root "$REPO_ROOT" --macro-id "$MACRO_ID" --workflow-path "$MACRO_PATH" --subtask-id "$SUBTASK_ID" --host codex)
 [ -n "$EXISTING_ENG_WF_ID" ] && OWNER_ARGS+=(--engineer-workflow-id "$EXISTING_ENG_WF_ID")
 # Under set -e an unguarded nonzero exit would end the block before OWNER_RC.
 OWNER_JSON="$(node "<orchestrator-plugin-root>/scripts/state.mjs" owner-dispatch "${OWNER_ARGS[@]}")" && OWNER_RC=0 || OWNER_RC=$?
 if [ "$OWNER_RC" -eq 0 ]; then
-  if [ "$WAIVE_DISPATCH" = true ]; then
-    echo "✗ --waive-dispatch applies only when the owner's dispatch cannot be read; it was read, and the write compares it. Rerun without --waive-dispatch." >&2
-    exit 1
-  fi
   EXISTING_ENG_WF_ID="$(printf '%s' "$OWNER_JSON" | JSON_KEY=engineer_workflow_id node -e "$JSON_FIELD")" || exit 1
   OWNER_DISPATCH="$(printf '%s' "$OWNER_JSON" | JSON_KEY=dispatch node -e "$JSON_FIELD")" || exit 1
   if [ -z "$EXISTING_ENG_WF_ID" ] || [ -z "$OWNER_DISPATCH" ]; then
@@ -301,6 +301,7 @@ if [ "$OWNER_RC" -eq 0 ]; then
     exit 1
   fi
   DISPATCH_ARGS=(--expect-dispatch "$OWNER_DISPATCH")
+  if [ "$WAIVE_DISPATCH" = true ]; then DISPATCH_ARGS+=(--waive-told); fi
 elif [ "$OWNER_RC" -eq 3 ] && [ "$WAIVE_DISPATCH" = true ]; then
   # The recorded owner's file is gone, and the operator completes in its name
   # anyway; subtask-update records the waiver and the reason in the macro.
@@ -427,7 +428,25 @@ the landing has one. `--expect-branch` refuses the write if a plan revision
 moved the subtask after the landing was resolved. `DISPATCH_ARGS` carries the
 owner's dispatch: the write is refused (`dispatch-changed`) when the subtask
 is no longer the one that owner was dispatched for, and binds or completes
-nothing. With `--waive-dispatch` (exit 3 only) it carries the waiver instead,
+nothing, unless the macro's current approval rebound that very child to the
+subtask's current `topic` and `profile` and an active child has been told
+(ADR-0068 Decision 8). The refusal's `No rebinding applies: …` clause names
+why it was not: the plan is pending approval, the approval rebound another
+child or other words, the child is not told yet (`state.mjs rebind-deliver`),
+or the change is to a `branch` or `verb`. The owner's exits: revise the plan
+back, dispatch the subtask again, or, for a `topic` or `profile` change,
+approve the revised plan (`orchestrator:approve`). Whatever the comparison
+found, the write also refuses an owner the macro's record cannot vouch for
+(`<child> is not bound to subtask …`, ADR-0068 Decision 8, item 4): a note to
+it still pending, other words last told for the subtask, or last words not
+known after an approval replaced an unreadable record. The refusal names the
+way out: for an active owner, deliver the note (`state.mjs rebind-deliver`),
+approve the plan as it stands, or revise it back to the words the owner was
+last told; for an archived owner, which no note reaches, revise it back, or
+the user reruns with `--waive-dispatch` and a reason, which then carries
+`--waive-told`: the write completes it and the macro body records `Told
+check waived (--waive-dispatch)` and the reason (refused for an active owner,
+or when nothing is refused). With `--waive-dispatch` and exit 3 it carries the waiver instead,
 which the macro body records with the reason. A recorded `commit` or
 `pr_url` is never replaced, and a recorded `closed_at` is kept, unless
 `--correct` with a reason; the macro body then records old value, new

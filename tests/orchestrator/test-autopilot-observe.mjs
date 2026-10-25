@@ -163,7 +163,10 @@ describe('observe → decide on real state', () => {
       const m = await fx.readMacro();
       const subtasks = m.plan.subtasks.map((s) => (s.id === 'A' ? { ...s, branch: 'feat/a2' } : s));
       await fx.orch.setPlan({ workflowPath: fx.macroPath, host: 'claude', subtasks });
-      await fx.orch.approvePlan({ workflowPath: fx.macroPath, host: 'claude', env: {} });
+      // The approval shows A's child as not rebindable (its branch changed,
+      // ADR-0068 Decision 8) and is given for that view.
+      const { digest } = fx.orch.planRebindView({ workflowPath: fx.macroPath });
+      await fx.orch.approvePlan({ workflowPath: fx.macroPath, host: 'claude', env: {}, expectRebind: digest });
       // feat/a is checked out and no subtask names it any more: only a pinned
       // macro (the driver pins it on its first look) is found.
       strictEqual(look().macro, null);

@@ -303,7 +303,9 @@ const ALLOWED = [
   },
   { file: 'plugins/orchestrator/core/skills/peer-now/SKILL.md', line: '--phase-note "$NOTE" \\', why: '--phase-note takes an expansion' },
   // The hash Phase 1 printed, which the agent copies: hex digits, not text.
-  { file: 'plugins/orchestrator/core/skills/approve/SKILL.md', line: '--expect-hash "<plan_hash from Phase 1>"', why: 'a placeholder in shell source' },
+  { file: 'plugins/orchestrator/core/skills/approve/SKILL.md', line: '--expect-hash "<plan_hash from Phase 1>" \\', why: 'a placeholder in shell source' },
+  // The view digest Phase 1 printed (ADR-0068 Decision 8): hex digits too.
+  { file: 'plugins/orchestrator/core/skills/approve/SKILL.md', line: '--expect-rebind "<rebind_digest from Phase 1>"', why: 'a placeholder in shell source' },
   // A command's grammar, shown to the user in a message to stderr: the line as
   // written, since a one-word placeholder in a message may as well be text the
   // agent fills (`echo "Drift: <summary>" >&2`, Refine-verify finding).

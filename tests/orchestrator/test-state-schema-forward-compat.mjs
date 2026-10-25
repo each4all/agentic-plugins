@@ -511,6 +511,11 @@ const SCHEMA_12_KEYS = [
 // does not know.
 const C132_KEYS = ['phase_note_run_ids', 'plan_conflict_cleared_run_id'];
 
+// ADR-0068 Decision 8 — the approval's id and its record of rebindings, the
+// last keys, which no reader before that release knows. Every approval this
+// build writes carries the id.
+const D8_KEYS = ['plan_approval_id', 'plan_rebindings'];
+
 // A 1.1-era reader is this build without the six 1.2 entries in
 // FRONTMATTER_KEY_ORDER (the only thing that makes a key known to the
 // parser) and without plan-set's approval reset (a 1.1 writer never touched
@@ -521,7 +526,7 @@ async function importSchema11Reader(dir, { alsoUnknown = [] } = {}) {
   const src = await readFile(STATE_PATH, 'utf8');
   // Contract: the 1.1 reader below is built by editing these source lines — an
   // anchor that no longer matches would leave a 1.2 build posing as the 1.1 reader.
-  const unknownKeys = [...SCHEMA_12_KEYS, ...alsoUnknown];
+  const unknownKeys = [...SCHEMA_12_KEYS, ...alsoUnknown, ...D8_KEYS];
   const keyOrderLine = new RegExp(`^  '(${unknownKeys.join('|')})',\\n`, 'gm');
   const removed = (src.match(keyOrderLine) ?? []).map((l) => l.trim());
   deepStrictEqual(removed, unknownKeys.map((k) => `'${k}',`),
@@ -539,15 +544,18 @@ async function importSchema11Reader(dir, { alsoUnknown = [] } = {}) {
   // The state root, run locks, cutover and proposals (ADR-0067), and the
   // command-argument grammar with its codec (C134(a)), the script imports beside it.
   await mkdir(join(dir, 'lib'), { recursive: true });
-  for (const lib of ['state-root.mjs', 'run-locks.mjs', 'process-identity.mjs', 'cutover.mjs', 'lane-advice.mjs', 'worktree-proposal.mjs', 'command-args.mjs', 'args-file.mjs']) {
+  for (const lib of ['state-root.mjs', 'run-locks.mjs', 'process-identity.mjs', 'cutover.mjs', 'lane-advice.mjs', 'worktree-proposal.mjs', 'command-args.mjs', 'args-file.mjs', 'rebind.mjs']) {
     await copyFile(resolve(REPO_ROOT, 'plugins/orchestrator/scripts/lib', lib), join(dir, 'lib', lib));
   }
   return import(pathToFileURL(join(dir, 'state.mjs')).href);
 }
 
-const newKeyLines = (text) => text.match(/^(plan_approval_|awaiting_owner_)\w+: .*$/gm) ?? [];
+const newKeyLines = (text) => text.match(new RegExp(`^(${SCHEMA_12_KEYS.join('|')}): .*$`, 'gm')) ?? [];
 const frontmatterBlock = (text) => text.slice(0, text.indexOf('\n---\n') + 5);
-const frontmatterLines = (text) => text.slice(4, text.indexOf('\n---\n')).split('\n');
+// The frontmatter's lines without the ADR-0068 Decision 8 keys, which follow
+// every key these blocks check the place of (the D8 block below checks theirs).
+const frontmatterLines = (text) => text.slice(4, text.indexOf('\n---\n')).split('\n')
+  .filter((line) => !D8_KEYS.some((k) => line.startsWith(`${k}: `)));
 const st = (id, extra = {}) => ({
   id, verb: 'compose', branch: `feat/${id.toLowerCase()}`, blocked_by: [], status: 'pending', ...extra,
 });
@@ -581,7 +589,7 @@ describe('ADR-0063 D6 — a 1.1-era reader carries the 1.2 keys', () => {
         const parsed = r11.parseWorkflowFile(original);
         for (const k of SCHEMA_12_KEYS) ok(!(k in parsed.frontmatter), `${k} is not a known key`);
         deepStrictEqual(parsed.frontmatter[r11.FORWARD_COMPAT_UNKNOWNS].map((e) => e.key),
-          ['plan_approval_status', 'plan_approval_approved_at', 'plan_approval_plan_hash']);
+          ['plan_approval_status', 'plan_approval_approved_at', 'plan_approval_plan_hash', 'plan_approval_id']);
         // The frontmatter only: parse + assemble grows the body by one blank
         // line in every state copy (docket C79), which is not what this checks.
         strictEqual(frontmatterBlock(r11.assembleWorkflowFile(parsed.frontmatter, parsed.body)), frontmatterBlock(original));

@@ -2320,6 +2320,14 @@ that its work is accepted at landing (C147).
      (committed, waiting to land). A change that cannot be rebound (item 1)
      is shown too, with the refusal it will meet and the exits that refusal
      names today (`state.mjs:4138-4144`).
+   - **An archived child shows the refusal its writes will meet.** No note
+     reaches an archived child, so one last told other words than the
+     subtask's (item 4) is refused at every write that binds it, whatever
+     the approval rebinds. The approval asks the writes' own check of the
+     record it is about to write, and shows such a row refused, with the
+     refusal, even when the child matches its dispatch; the macro's body
+     records it refused, never rebound. The rebinding is still recorded, for
+     the waiver that completes the subtask.
    - **It approves what it showed:** a child whose state or recorded
      dispatch changed between the display and the approval refuses the
      approval, as a plan that changed does (`--expect-hash`).
@@ -2362,9 +2370,113 @@ that its work is accepted at landing (C147).
    finish is completed before a run of this release starts the child's next
    step, never mid-step; a person who runs that step by hand before then
    works under the old words. An archived child has nothing left to run: the
-   approval showed it committed (the C147 case). How the words a child was
-   last told are recorded, and how an unfinished delivery is completed, are
-   `impl-rebind`'s (§Left to the implementation).
+   approval showed it committed (the C147 case). One check answers whether a
+   child may work for its subtask under the words it was last told, and both
+   places that ask it ask the same one: the writes that bind the child (the
+   re-attach, the terminal writeback and `/orchestrator:done`'s completion)
+   refuse a child it does not vouch for, and a run's step boundary does not
+   step one, whose lane parks or whose serial run halts with the way out the
+   writes name. The boundary asks it of the child the step would run: the
+   subtask's recorded owner, or, when none is recorded, the child the run
+   selected for it. So a run never spends a step under words whose work the
+   writeback would refuse. An approval tells only the child it would rebind,
+   the recorded owner or the one claimant: when no owner is recorded and
+   several workflows claim the subtask, the way out names recording the
+   child its owner first. What a child was last told is kept until its own
+   row replaces it or its subtask completes: an approval that selects
+   another child of the subtask (the owner changed) never drops it, so a
+   return to the first child still meets the words its latest note gave
+   it. When a child's copies disagree on what it was told, none of them is
+   chosen: partial evidence is never read as "never told", nor as told the
+   words of either copy. A child with an active copy is told only when every
+   active copy holds the note and none is unreadable: a note found only in an
+   archived copy never stands for an active one, and an active copy that
+   cannot be read is waited for. An active copy that cannot be read makes the
+   child unreadable to the approval too, a readable active copy beside it
+   included, so the approval keeps the pending note and what the child was
+   told. A child archived everywhere is told when every copy holds the note
+   and none is unreadable. When only some do, or a copy cannot be read, it is
+   told, since that copy may be the one its work answers to, but the told
+   entry is marked `contested` and binds no words: the writes that bind it
+   refuse whatever the plan says, the note's words included, and the told
+   waiver stays the way out. A contested child found active again is restated
+   the words in full, and the delivered note clears the mark. An approval
+   that drops a pending note some copy of the child holds (its subtask no
+   longer in progress, or a row deciding the child that sends it no note)
+   records the child told it, contested, so no words bind it until a
+   restated note is delivered; an active child the approval finds, a pending
+   note to which some copy holds, is restated the words in full. Every file
+   that bears the child's workflow id or its name is a copy of it, whatever
+   it holds or claims: the archiver's collision-suffixed archive
+   (`<id>-<YYYYMMDDTHHMMSSZ>-<6 hex>.md`, suffixed any number of times)
+   included, and a file of its id that claims another subtask or macro,
+   which keeps any note from being acknowledged and every binding write
+   refused until the owner repairs or removes it.
+   **More than one file bearing the child refuses it outright.** While more
+   than one file bears the child, or the files that may bear it cannot all
+   be read, which words its work answers to is not known, so no copy is
+   judged: every write that binds it and a run's step boundary refuse it
+   ("more than one copy of `<child>` may run"), no note to it is delivered
+   or acknowledged, and a pending one is partial evidence, so an approval
+   that drops it records the child told it, contested. An approval shows an
+   archived child's row refused with the same words. The way out is the
+   owner's: repair or remove the extra copies, or, when no file bearing the
+   child is in a workflow home, the told waiver. Once one file is left, the
+   rules of this item judge it and what the record kept: a child whose
+   remaining file was last told other words is refused until a restated
+   note is delivered. This replaces widening, round after round, which files
+   the copy checks compare: six reviews in a row each found a file they did
+   not see. The rules above for copies that disagree, and below for a
+   copy that does not hold its told note, stay: they now govern a child one
+   file bears, and what the record kept from before a repair; simplifying
+   them is left for later. A scan of the copies that fails is partial
+   evidence, never "never told", and its refusal says what could not be
+   read. A file counts once by its device and inode, so a hard link or a
+   symbolic link of it is that file, and a link whose target is gone is
+   none; it counts as active when any name of it, a link included, is in a
+   workflow home. A run's step boundary asks the same check with no record
+   of rebindings too. The count holds only when it is stable: the engineer's
+   archiver writes the archive before it removes the workflow file, and the
+   scan reads by name, then by workflow id, so a file moving while it runs
+   can be met under two names. More than one file found, the scan runs again
+   after a moment, up to three times, and the child is refused only when two
+   scans in a row find the same files, or they never settle. An archive
+   killed between its write and its removal of the workflow file leaves
+   both, and one retried after that a second, suffixed archive: those files
+   hold the same notes, so the refusal names them and says to keep one (the
+   file in a workflow home, when there is one) and remove the others. The
+   limits, each an uncommon case under the owner's rule of 2026-10-25
+   (fix natural use, document what needs a hand-made file or an unusual
+   deployment):
+   - copies are found by name and frontmatter among `.md` files, the only
+     ones the engineer reads as workflows, so a file renamed by hand to
+     another name, under another workflow id, is not seen;
+   - with no record of rebindings, a scan error anywhere in the engineer
+     homes (an archive holding a malformed value, an entry that is not a
+     regular file, a failing `git worktree list`) refuses every binding
+     write and the boundary for every macro until the entry is repaired;
+     each trigger is a hand-made or broken file;
+   - two archived files of the child whose recorded dispatches disagree,
+     which takes a hand-edited dispatch, make the claim scan throw, so the
+     told waiver reports that no file claims the subtask; this fails closed,
+     and the owner repairs the files;
+   - a second file appearing between a delivery's last check of the copies
+     and its acknowledgement is not seen: the check-to-commit window every
+     write has.
+   The record names the child, not a copy, so a copy restored or moved
+   between homes after a delivery could outlive the evidence: the record's
+   evidence is checked against every copy the child may run from at each
+   write that binds it, and at a run's step boundary. A told entry vouches
+   only while every such copy holds the note it names (every active copy,
+   none unreadable; for a child archived everywhere, every copy, none
+   unreadable). Otherwise the writes refuse: an archived child keeps the told
+   waiver as its way out, and an active one is restated the words in full by
+   the next approval and binds once that note is delivered. The note is found
+   in each copy by its delivery heading, not by its full body: the told entry
+   keeps the words it told, not the words the note quoted before them. How
+   the words a child was last told are recorded,
+   and how an unfinished delivery is completed, are `impl-rebind`'s (§Left to
+   the implementation).
 
 5. **The next step stays the child's.** A rebinding changes which words the
    child's work answers to, not the work: the child's next step is the one
@@ -2507,6 +2619,12 @@ kills.
   - a child whose state changes between the display and the approval refuses
     the approval; a crash between the macro's record and the child's note
     leaves the child unbound until it is told;
+  - a child last told other words, with no note pending, is not stepped by a
+    serial run or a run with lanes, and the detail names the binding writes'
+    way out; approving the plan as it stands tells it, and the next run
+    steps it; so for the child a run selects for a subtask that records no
+    owner, with the owner's record first while several workflows claim it,
+    and a recorded owner is asked before the selected child;
   - the engineer's terminal note, a re-attach by `/orchestrator:next` and
     the owner's explicit `subtask-update --expect-dispatch` honor a
     rebinding; the rebinding is recorded in the macro's body;

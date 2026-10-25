@@ -534,7 +534,30 @@ Surface the JSON envelope. Respect skipped absorbing-terminal results:
 `in_progress`. A refused writeback names the field that changed; the child
 stays unrecorded. Report it with the child's workflow id and leave the choice
 to the user: archive the child (`$engineer:resume archive <id>` on its
-branch) and rerun `$orchestrator:next`, or revise the plan back.
+branch) and rerun `$orchestrator:next`, or revise the plan back. When only
+the subtask's `topic` or `profile` changed, the owner may instead approve the
+revised plan (`orchestrator:approve`), which rebinds the child to the words
+approved and tells it the change (ADR-0068 Decision 8); the re-attach then
+binds it. The refusal's `No rebinding applies: …` clause says why it was not
+rebound. Whatever its dispatch, the re-attach also refuses a child the
+macro's record cannot vouch for (ADR-0068 Decision 8, item 4): one a note to
+which is still pending (`has not been told the subtask's words yet`), one
+last told other words for the subtask (`was last told other words`), and,
+after an approval replaced an unreadable record of rebindings, one whose last
+words are not known (`what <child> was last told is not known`). Its exits:
+deliver the note (a run does at the child's next boundary, or
+`state.mjs rebind-deliver` now); approve the plan as it stands, which tells
+the child the subtask's words (in full, when it replaced the record and can
+read the child); or revise the plan back to the words the child was last
+told. An archived child, which no note reaches, is completed by
+`orchestrator:done --waive-dispatch` with a reason, which the macro records.
+A run asks the same check at the child's step boundary, of the child the step
+would run (the recorded owner, or, when none is recorded, the child the run
+selected): it does not step a child the check refuses (its lane parks, or a
+serial run halts) and names the same exits. An approval tells only the child
+it would rebind: when the subtask records no owner and several workflows claim
+it, the refusal names recording the child its owner first
+(`subtask-update --expect-dispatch`, which `orchestrator:done` prints).
 
 ARCHIVE TIMING — when this update lands the macro's final subtask, the
 auto-terminal pass marks the macro terminal without any `set-terminal` call of

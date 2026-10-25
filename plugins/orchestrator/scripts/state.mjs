@@ -55,8 +55,9 @@ import {
 import { join, dirname, basename, isAbsolute, resolve as resolvePath } from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
 import { hrtime, pid } from 'node:process';
-import { execFileSync } from 'node:child_process';
-import { lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { resolveLanding, dispatchTimeFromWorkflowId } from './landing.mjs';
 import {
@@ -79,7 +80,15 @@ import {
   workflowIdOfText,
   writerRoots,
 } from './lib/state-root.mjs';
-import { LockHeldError, checkAdmission, joinAdmission, releaseAdmission } from './lib/run-locks.mjs';
+import {
+  AUTOPILOT_DIR_REL, LockHeldError, admissionWriterAlive, checkAdmission, joinAdmission, mainWorktreeRoot, processFingerprint,
+  recordAdmissionWriter, releaseAdmission,
+} from './lib/run-locks.mjs';
+import {
+  APPROVAL_ID_KEY, REBIND_KEY, REBINDABLE_FIELDS, deliveryHeading, deliveryNote, deriveRebindView, digestOf, holdsDeliveryNote,
+  acknowledgeInRecord, archivedExit, copiesRefusal, isEmptyRecord, newApprovalId, newDeliveryId, parseRebindRecord, rebindingVerdict, serializeRebindRecord,
+  stampMatches, vouchVerdict, wordsDigest, wordsOf,
+} from './lib/rebind.mjs';
 import { moveCutover, moveRollback, planCutover, planRollback, verifyCutover } from './lib/cutover.mjs';
 import { laneAdvice, laneAdviceLine } from './lib/lane-advice.mjs';
 import { readCommandArguments } from './lib/command-args.mjs';
@@ -1548,6 +1557,12 @@ const FRONTMATTER_KEY_ORDER = [
   // C132 — the plan finalize's records, after it for the same reason.
   'phase_note_run_ids',
   'plan_conflict_cleared_run_id',
+  // ADR-0068 Decision 8 — the approval's id and its record of rebindings
+  // (lib/rebind.mjs), two scalars, last for the same reason. Neither fails a
+  // read: a record that cannot be read binds nothing, and the next approval
+  // replaces it.
+  'plan_approval_id',
+  'plan_rebindings',
 ];
 
 // ADR-0028 §Forward-compat (PR5 #356 ported from engineer) — invisible
@@ -3595,6 +3610,10 @@ function resetPlanApproval(frontmatter, workflowPath, nowIso, { conflict = false
   frontmatter.plan_approval_status = 'pending';
   delete frontmatter.plan_approval_approved_at;
   delete frontmatter.plan_approval_plan_hash;
+  // ADR-0068 Decision 8, item 6 — the record of rebindings stays, as history
+  // and for the next approval's deliveries; without its approval's stamp it
+  // binds nothing.
+  delete frontmatter[APPROVAL_ID_KEY];
   return setMacroGate(frontmatter, conflict ? 'plan-conflict' : 'plan-approval', {
     since: nowIso,
     pointer: macroPointer(workflowPath, conflict ? ENSEMBLE_SYNTHESIS_ANCHOR : MACRO_PLAN_ANCHOR),
@@ -3928,18 +3947,82 @@ export async function clearAwaitingOwner({
  * under an autopilot run, while plan-conflict is set, on an empty plan, and on
  * a terminal macro. Approving a plan already approved at the same hash writes
  * nothing. A macro no 1.2 writer planned (no approval keys) can be approved.
+ *
+ * ADR-0068 Decision 8 — every approval first joins the macro's run lock as an
+ * admission (item 3), released when it returns: it is refused beside a live
+ * run or another admitted command, and nothing starts while it holds it. It
+ * then records, with the approval, a rebinding of each in-progress child whose
+ * topic or profile the plan changed since its dispatch, and the notes due to
+ * the active ones (item 4), which it delivers after its write while it still
+ * holds the admission (deliverPendingRebindings; `engineerRoot` is the
+ * engineer plugin whose `append` writes them, and none leaves them pending).
+ * `expectRebind` binds the approval to the rebinding view the owner was shown
+ * (`plan-hash` rebind_digest), and is required whenever that view has rows.
  */
 export async function approvePlan({
   workflowPath,
   host,
   expectHash,
+  expectRebind,
+  engineerRoot,
+  repoRoot,
   env = process.env,
   now = new Date(),
 }) {
   validateHost(host);
   refuseUnderAutopilot(env, 'plan-approve');
   if (expectHash !== undefined) validatePlanHash('--expect-hash', expectHash);
+  if (expectRebind !== undefined) validatePlanHash('--expect-rebind', expectRebind);
   ensureNotArchived(workflowPath, 'plan-approve');
+  const scanRoot = repoRoot ?? workflowStateRoot(workflowPath);
+  return withApprovalAdmission({ workflowPath, host, env, caller: 'plan-approve' }, async (admission) => {
+    const approved = await writeApproval({ workflowPath, host, expectHash, expectRebind, scanRoot, now });
+    if (approved.noop || approved.pendingDeliveries === 0) return approved;
+    approved.deliveries = await deliverPendingRebindings({
+      workflowPath, host, engineerRoot, repoRoot: scanRoot, env, now, admitted: true, admission,
+    });
+    return approved;
+  });
+}
+
+// ADR-0068 Decision 8, item 3 — `fn` runs holding an admission entry in the
+// macro's run lock (scripts/lib/run-locks.mjs, command `approve`), joined
+// before the macro's file lock and released however `fn` ends. The lock lives
+// under the main worktree of the macro's state root. A process killed while
+// it holds it leaves the entry, which the next join's refusal names with the
+// command that releases it. `fn` gets the admission ({ stateRoot, macroId,
+// admissionId, keep }); it sets `keep` when a delivery writer it started may
+// outlive it (fencedAppend), and the entry then stays for the owner to release.
+async function withApprovalAdmission({ workflowPath, host, env, caller }, fn) {
+  const stateRoot = workflowStateRoot(workflowPath);
+  if (stateRoot === null) {
+    throw new Error(`${caller}: ${workflowPath} is under no state home, so the macro's run lock cannot be found`);
+  }
+  const macroId = basename(workflowPath, '.md');
+  let joined;
+  try {
+    joined = await joinAdmission({
+      command: 'approve', checkout: stateRoot, macroId, host, env, resolveCheckout: false,
+    });
+  } catch (err) {
+    if (!(err instanceof LockHeldError)) throw err;
+    throw new Error(
+      `${caller}: refused, nothing written: ${err.message}. An approval waits until no run of this macro is live ` +
+        'and no other command holds its lock (ADR-0068 Decision 8, item 3): stop the run, or wait for it to drain, ' +
+        'and approve again.',
+    );
+  }
+  const admission = { stateRoot, macroId, admissionId: joined.admissionId, keep: false };
+  try {
+    return await fn(admission);
+  } finally {
+    if (joined.admissionId !== '' && !admission.keep) {
+      releaseAdmission({ checkout: stateRoot, macroId, admissionId: joined.admissionId, resolveCheckout: false });
+    }
+  }
+}
+
+async function writeApproval({ workflowPath, host, expectHash, expectRebind, scanRoot, now }) {
   return withFileLock(workflowPath, async ({ lockPath, token }) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
@@ -3968,21 +4051,94 @@ export async function approvePlan({
           `now ${planHash.slice(0, 12)}); review it again before approving`,
       );
     }
-    if (
-      frontmatter.plan_approval_status === 'approved'
+    // ADR-0068 Decision 8, items 2 and 4 — what this approval rebinds and
+    // tells, derived under the lock from the children as they are now. It
+    // approves what it showed: a view that differs from the one shown refuses.
+    const { previous, reconciled, acknowledged, view } = rebindView({ frontmatter, scanRoot });
+    if (view.rows.length > 0 && expectRebind === undefined) {
+      throw new Error(
+        `plan-approve: this approval rebinds or tells ${view.rows.length} subtask` +
+          `${view.rows.length === 1 ? '' : 's'} (${view.rows.map((r) => r.subtask).join(', ')}); pass --expect-rebind ` +
+          'with the rebind_digest plan-hash prints beside them, so the approval is given for what was shown (ADR-0068 Decision 8, item 2).',
+      );
+    }
+    if (expectRebind !== undefined && expectRebind !== view.digest) {
+      throw new Error(
+        `plan-approve: the in-progress children changed since they were shown (shown ${expectRebind.slice(0, 12)}, ` +
+          `now ${view.digest.slice(0, 12)}): a child's state, recorded dispatch or next step, or a delivery, ` +
+          'is not what was shown. Review it again before approving (ADR-0068 Decision 8, item 2).',
+      );
+    }
+    for (const d of view.deliveries) {
+      if ([d.from.profile, d.from.topic, d.to.profile, d.to.topic].some((t) => t.includes('\0'))) {
+        throw new Error(`plan-approve: the words told to ${d.child} (${d.subtask}) hold a NUL byte, which no note carries; fix the plan`);
+      }
+    }
+    // Item 3 — an approval that records or changes a rebinding, or a note,
+    // waits while that subtask is held or its release awaits its comparison.
+    // A note carried as it was, for a child no row decides, is not changed.
+    const touched = new Set([
+      ...view.rebindings.map((e) => e.subtask), ...view.deliveries.filter((d) => !d.untouched).map((d) => d.subtask),
+    ]);
+    for (const subtaskId of touched) {
+      const blockers = rebindBlockers({ workflowPath, subtaskId });
+      if (blockers.length > 0) {
+        throw new Error(
+          `plan-approve: the approval would rebind or tell ${subtaskId}, which is held or has a release awaiting ` +
+            `its comparison: ${blockers.join('; ')}. Nothing was written (ADR-0068 Decision 8, item 3).`,
+        );
+      }
+    }
+    const content = (r) => canonicalJson({ rebindings: r.rebindings, carried: r.carried, told: r.told, unknown: r.unknown ?? [] });
+    const unchanged = frontmatter.plan_approval_status === 'approved'
       && frontmatter.plan_approval_plan_hash === planHash
-    ) {
+      && view.deliveries.length === 0
+      && acknowledged.length === 0
+      && (previous.status === 'absent'
+        ? view.rebindings.length === 0 && view.carried.length === 0 && Object.keys(view.told).length === 0
+        : previous.status === 'readable' && stampMatches(previous.record, frontmatter)
+          && previous.record.pending.length === 0 && content(previous.record) === content(view));
+    if (unchanged) {
       return {
         frontmatter,
         workflowPath,
         planHash,
         approvedAt: frontmatter.plan_approval_approved_at,
         noop: true,
+        rebindings: view.rebindings.length,
+        pendingDeliveries: 0,
       };
     }
     const nowIso = isoUtc(now);
+    const approvalId = newApprovalId();
+    // When a record was last replaced unread: what a child there by then was
+    // told is known only from a note since, which every binding write checks
+    // (vouchChild). Kept by every approval after it. Taken here, under the
+    // locks the write holds, never from `now`, which the call may have taken
+    // long before: a child started after it is taken to have lost nothing.
+    const replacedAt = previous.status === 'unreadable'
+      ? isoUtc(new Date(Math.max(Date.now(), now.getTime())))
+      : reconciled.record?.replaced_at;
+    const record = {
+      v: 1,
+      approval: { id: approvalId, at: nowIso, hash: planHash },
+      rebindings: view.rebindings,
+      carried: view.carried,
+      told: view.told,
+      ...(view.unknown.length > 0 ? { unknown: view.unknown } : {}),
+      ...(replacedAt !== undefined ? { replaced_at: replacedAt } : {}),
+      pending: view.deliveries.map((d) => ({
+        delivery_id: d.delivery_id ?? newDeliveryId(), child: d.child, subtask: d.subtask, from: d.from, to: d.to,
+        ...(d.restate ? { restate: true } : {}),
+      })),
+    };
+    // Refused past its cap before anything is written.
+    const recordText = isEmptyRecord(record) ? null : serializeRebindRecord(record);
     let replaced = '';
-    if (frontmatter.plan_approval_status === 'approved') {
+    if (frontmatter.plan_approval_status === 'approved' && frontmatter.plan_approval_plan_hash === planHash) {
+      replaced = ` Re-records the approval of ${frontmatter.plan_approval_approved_at}, whose record of rebindings ` +
+        'was not current.';
+    } else if (frontmatter.plan_approval_status === 'approved') {
       replaced = ` Replaces the approval of ${frontmatter.plan_approval_approved_at} ` +
         `(hash ${frontmatter.plan_approval_plan_hash.slice(0, 12)}), which no longer matched the plan.`;
     } else if (frontmatter.awaiting_owner_gate === 'plan-approval') {
@@ -3991,10 +4147,14 @@ export async function approvePlan({
     const note =
       `### Plan approved at ${nowIso} (hash ${planHash.slice(0, 12)})\n\n` +
       `${subtasks.length} subtask${subtasks.length === 1 ? '' : 's'}: ` +
-      `${subtasks.map((s) => s.id).join(', ')}.${replaced}\n\n`;
+      `${subtasks.map((s) => s.id).join(', ')}.${replaced}\n\n` +
+      rebindAudit({ view, record, previous, reconciled, acknowledged });
     frontmatter.plan_approval_status = 'approved';
     frontmatter.plan_approval_approved_at = nowIso;
     frontmatter.plan_approval_plan_hash = planHash;
+    frontmatter[APPROVAL_ID_KEY] = approvalId;
+    if (recordText === null) delete frontmatter[REBIND_KEY];
+    else frontmatter[REBIND_KEY] = recordText;
     if (frontmatter.awaiting_owner_gate === 'plan-approval') clearMacroGate(frontmatter);
     validateSchema12Fields(frontmatter);
     frontmatter.updated_at = nowIso;
@@ -4007,7 +4167,10 @@ export async function approvePlan({
       assembleWorkflowFile(frontmatter, `${body}${note}`),
       { lockPath, token },
     );
-    return { frontmatter, workflowPath, planHash, approvedAt: nowIso, noop: false };
+    return {
+      frontmatter, workflowPath, planHash, approvedAt: nowIso, noop: false,
+      rebindings: record.rebindings.length, pendingDeliveries: record.pending.length,
+    };
   });
 }
 
@@ -4058,8 +4221,11 @@ const UPDATE_SUBTASK_ALLOWED_KEYS = new Set([
   // The dispatch the child records at its creation, which every binding of a
   // child compares (below). `waiveDispatch` (with a `reason`) is the operator's
   // override when that record cannot be read: the write is not compared, and
-  // the macro body records why.
-  'expectDispatch', 'waiveDispatch',
+  // the macro body records why. `waiveTold` (with a `reason`) is done's
+  // override of the told check for an archived child, which no note reaches
+  // (ADR-0068 Decision 8, item 4): the dispatch is compared, and the macro
+  // body records the waiver and why.
+  'expectDispatch', 'waiveDispatch', 'waiveTold',
 ]);
 
 // The plan-time fields a caller may expect unchanged, by option name. An empty
@@ -4112,35 +4278,62 @@ export function parseExpectDispatch(value, caller) {
 }
 
 // What differs between the subtask as the locked read has it and the dispatch
-// the child records, or null. An empty profile or topic stands for an absent
-// one, and trailing newlines are not compared (EXPECTED_SUBTASK_FIELDS).
-function dispatchMismatch({ frontmatter, subtaskId, current, expectDispatch }) {
+// the child records: [{ field, message }], empty when nothing does. Another
+// macro or subtask is the only difference reported, since nothing else is
+// then compared. An empty profile or topic stands for an absent one, and
+// trailing newlines are not compared (EXPECTED_SUBTASK_FIELDS).
+function dispatchMismatches({ frontmatter, subtaskId, current, expectDispatch }) {
   if (expectDispatch.macro !== frontmatter.workflow_id) {
-    return `the child was dispatched by macro ${JSON.stringify(expectDispatch.macro)}, not ${JSON.stringify(frontmatter.workflow_id)}`;
+    return [{ field: 'macro', message: `the child was dispatched by macro ${JSON.stringify(expectDispatch.macro)}, not ${JSON.stringify(frontmatter.workflow_id)}` }];
   }
   if (expectDispatch.subtask !== subtaskId) {
-    return `the child was dispatched for subtask ${JSON.stringify(expectDispatch.subtask)}, not ${JSON.stringify(subtaskId)}`;
+    return [{ field: 'subtask', message: `the child was dispatched for subtask ${JSON.stringify(expectDispatch.subtask)}, not ${JSON.stringify(subtaskId)}` }];
   }
+  const out = [];
   if (current.branch !== expectDispatch.branch) {
-    return `branch is ${JSON.stringify(current.branch)}; the child was dispatched for ${JSON.stringify(expectDispatch.branch)}`;
+    out.push({ field: 'branch', message: `branch is ${JSON.stringify(current.branch)}; the child was dispatched for ${JSON.stringify(expectDispatch.branch)}` });
   }
   for (const field of ['verb', 'profile', 'topic']) {
     if (!(field in expectDispatch)) continue;
     const now = String(current[field] || '').replace(/\n+$/, '');
     const dispatched = expectDispatch[field].replace(/\n+$/, '');
     if (now !== dispatched) {
-      return `${field} is ${JSON.stringify(now)}; the child was dispatched for ${JSON.stringify(dispatched)}`;
+      out.push({ field, message: `${field} is ${JSON.stringify(now)}; the child was dispatched for ${JSON.stringify(dispatched)}` });
     }
   }
-  return null;
+  return out;
 }
 
-function dispatchRefusal(caller, subtaskId, mismatch) {
+// ADR-0068 Decision 8, item 6 — a write whose dispatch differs from the
+// subtask is accepted only under the current approval's rebinding of that
+// very child (lib/rebind.mjs rebindingVerdict); a matching dispatch is
+// compared as before, whatever the approval. Returns null for a match, the
+// verdict of an accepted rebinding, or throws dispatch-changed.
+function compareDispatch(caller, { frontmatter, subtaskId, current, expectDispatch, child, waived = false }) {
+  const mismatches = dispatchMismatches({ frontmatter, subtaskId, current, expectDispatch });
+  if (mismatches.length === 0) return null;
+  const verdict = rebindingVerdict({
+    fm: frontmatter, approval: planApprovalState(frontmatter), subtaskId, current, expectDispatch, child, mismatches, waived,
+  });
+  if (!verdict.ok) throw dispatchRefusal(caller, subtaskId, mismatches, verdict.why);
+  return verdict;
+}
+
+function dispatchRefusal(caller, subtaskId, mismatches, why) {
+  const words = mismatches.every((m) => REBINDABLE_FIELDS.includes(m.field));
   return new Error(
     `${caller}: subtask ${JSON.stringify(subtaskId)} changed after its child was dispatched ` +
-      `(dispatch-changed): ${mismatch}. Nothing was written (ADR-0067 Decision 4, item 5): ` +
-      `archive the child and dispatch the subtask again, or revise the plan back.`,
+      `(dispatch-changed): ${mismatches.map((m) => m.message).join('; ')}. No rebinding applies: ${why}. ` +
+      `Nothing was written (ADR-0067 Decision 4, item 5; ADR-0068 Decision 8): ` +
+      `archive the child and dispatch the subtask again, or revise the plan back` +
+      `${words ? ', or have the owner approve the plan as it stands (/orchestrator:approve), which rebinds the child and tells it the change' : ''}.`,
   );
+}
+
+// The macro-body sentence of a write accepted under a rebinding.
+function reboundNote(verdict, child) {
+  return `Rebound (ADR-0068 Decision 8): accepted under the approval of ${verdict.approval.at} ` +
+    `(approval ${verdict.approval.id}), which rebound ${child} from its dispatch on ${verdict.entry.fields.join(' and ')}.`;
 }
 
 // ADR-0062 §Decision 3 — provenance fields a later write may fill but never
@@ -4187,6 +4380,7 @@ export async function updateSubtask(opts) {
     reason,
     expectBranch,
     waiveDispatch = false,
+    waiveTold = false,
   } = opts;
   const expectDispatch = opts.expectDispatch === undefined
     ? undefined
@@ -4201,6 +4395,9 @@ export async function updateSubtask(opts) {
   }
   if (typeof waiveDispatch !== 'boolean') {
     throw new Error('updateSubtask: waiveDispatch must be a boolean');
+  }
+  if (typeof waiveTold !== 'boolean') {
+    throw new Error('updateSubtask: waiveTold must be a boolean');
   }
   if (reason !== undefined && typeof reason !== 'string') {
     throw new Error('updateSubtask: reason must be a string');
@@ -4227,6 +4424,21 @@ export async function updateSubtask(opts) {
     }
     if (typeof engineerWorkflowId !== 'string' || engineerWorkflowId.length === 0) {
       throw new Error('updateSubtask: --waive-dispatch names no owner; pass --engineer-workflow-id');
+    }
+  }
+  // ADR-0068 Decision 8, item 4 — done's waiver of the told check, for the
+  // completion of an archived child the record cannot vouch for (vouchChild).
+  if (waiveTold) {
+    if (reasonText.length === 0) {
+      throw new Error(
+        'updateSubtask: --waive-told requires a non-empty reason (ADR-0068 Decision 8, item 4: ' +
+          'a completion of a child the record cannot vouch for records why).',
+      );
+    }
+    if (waiveDispatch) throw new Error('updateSubtask: pass --waive-dispatch or --waive-told, not both');
+    if (status !== 'completed') throw new Error('updateSubtask: --waive-told applies only to a completion (--status completed)');
+    if (typeof engineerWorkflowId !== 'string' || engineerWorkflowId.length === 0) {
+      throw new Error('updateSubtask: --waive-told names no owner; pass --engineer-workflow-id');
     }
   }
   if (expectBranch !== undefined && (typeof expectBranch !== 'string' || expectBranch.length === 0)) {
@@ -4356,10 +4568,9 @@ export async function updateSubtask(opts) {
         );
       }
     }
-    if (expectDispatch !== undefined) {
-      const mismatch = dispatchMismatch({ frontmatter, subtaskId, current, expectDispatch });
-      if (mismatch) throw dispatchRefusal('updateSubtask', subtaskId, mismatch);
-    }
+    const rebound = expectDispatch === undefined
+      ? null
+      : compareDispatch('updateSubtask', { frontmatter, subtaskId, current, expectDispatch, child: engineerWorkflowId, waived: waiveTold });
 
     // ADR-0019 §4 precondition — terminal-partial states (deferred /
     // abandoned) are ABSORBING. Once `/orchestrator:finalize` or
@@ -4467,6 +4678,31 @@ export async function updateSubtask(opts) {
       }
     }
 
+    // ADR-0068 Decision 8, item 4 — a re-attach, and a completion, bind the
+    // child they name only while the macro's record can vouch for what that
+    // child was told, whatever the dispatch comparison above found, as does a
+    // write of completion provenance (commit, pr_url, closed_at). The child
+    // is the one the write names, else the owner recorded. A write that only
+    // names the owner (done's binding line) accepts none of the child's work,
+    // which only these writes and the terminal writeback do: vouching it would
+    // leave a child no approval can tell (no owner, several claimants) with no
+    // way to be named, and so never told.
+    const bindsChild = typeof payload.engineer_workflow_id === 'string' ? payload.engineer_workflow_id : current.engineer_workflow_id;
+    const binds = current.status !== 'completed'
+      && (payload.status === 'in_progress' || payload.status === 'completed' || hasCompletionFields);
+    if (waiveTold && !binds) {
+      throw new Error(
+        `updateSubtask: --waive-told waives nothing: subtask ${JSON.stringify(subtaskId)} is already completed, so this ` +
+          'write binds no child; rerun without it. Nothing was written (ADR-0068 Decision 8, item 4).',
+      );
+    }
+    const vouchNote = binds && typeof bindsChild === 'string' && bindsChild.length > 0
+      ? vouchChild('updateSubtask', {
+        frontmatter, workflowPath, subtaskId, current, child: bindsChild,
+        waive: waiveTold ? 'told' : waiveDispatch ? 'dispatch' : null,
+      })
+      : '';
+
     // ADR-0062 §Decision 3 — a recorded value is not replaced silently. The
     // engineer Stop hook used to re-send the branch tip after Phase 7 had
     // recorded it, and the merge below replaced the record (docket C14).
@@ -4500,7 +4736,7 @@ export async function updateSubtask(opts) {
     }
 
     const changedKeys = Object.keys(payload).filter((k) => current[k] !== payload[k]);
-    if (changedKeys.length === 0) {
+    if (changedKeys.length === 0 && vouchNote === '') {
       return {
         frontmatter,
         workflowPath,
@@ -4561,7 +4797,7 @@ export async function updateSubtask(opts) {
 
     const noteHeading = `### subtask-update ${JSON.stringify(subtaskId)} @ ${nowIso}\n\n`;
     const noteSummary =
-      `Fields updated: ${changedKeys.join(', ')}` +
+      `Fields updated: ${changedKeys.join(', ') || 'none'}` +
       (autoTerminalSetThisCall ? '. Auto-terminal: all subtasks terminal; terminal_marker + current_phase set.' : '.') +
       '\n\n';
     const correctionNote = corrections.length > 0
@@ -4574,7 +4810,9 @@ export async function updateSubtask(opts) {
         'could not be read, so this write was not checked against it.\n\n'
       : '';
     const reasonNote = reasonText.length > 0 ? `Reason: ${reasonText}\n\n` : '';
-    const newBody = `${body}${noteHeading}${noteSummary}${correctionNote}${waiverNote}${reasonNote}`;
+    const rebindNote = rebound ? `${reboundNote(rebound, engineerWorkflowId)}\n\n` : '';
+    const retireNote = vouchNote ? `${vouchNote}\n\n` : '';
+    const newBody = `${body}${noteHeading}${noteSummary}${correctionNote}${waiverNote}${rebindNote}${retireNote}${reasonNote}`;
 
     await atomicWrite(
       workflowPath,
@@ -4681,10 +4919,9 @@ export async function recordEngineerTerminal({
         skipReason: `subtask ${JSON.stringify(subtaskId)} is ${current.status}; the engineer terminal note is not written.`,
       };
     }
-    if (expectDispatch !== undefined) {
-      const mismatch = dispatchMismatch({ frontmatter, subtaskId, current, expectDispatch });
-      if (mismatch) throw dispatchRefusal('recordEngineerTerminal', subtaskId, mismatch);
-    }
+    const rebound = expectDispatch === undefined
+      ? null
+      : compareDispatch('recordEngineerTerminal', { frontmatter, subtaskId, current, expectDispatch, child: engineerWorkflowId });
     const recordedOwner = current.engineer_workflow_id;
     if (typeof recordedOwner === 'string' && recordedOwner.length > 0 && recordedOwner !== engineerWorkflowId) {
       throw new Error(
@@ -4698,6 +4935,9 @@ export async function recordEngineerTerminal({
     if (!boundOwner && !promotedToInProgress && body.includes(heading)) {
       return { workflowPath, subtask: current, noop: true };
     }
+    // ADR-0068 Decision 8, item 4 — the terminal writeback binds the child
+    // only while the macro's record can vouch for what it was told.
+    const vouchNote = vouchChild('recordEngineerTerminal', { frontmatter, workflowPath, subtaskId, current, child: engineerWorkflowId });
 
     const updated = { ...current, engineer_workflow_id: engineerWorkflowId };
     if (promotedToInProgress) updated.status = 'in_progress';
@@ -4711,10 +4951,12 @@ export async function recordEngineerTerminal({
       ? ''
       : `${heading}\nEngineer workflow ${engineerWorkflowId} reached its terminal commit ${branchCommit} ` +
         `on ${current.branch}. The subtask stays in_progress until the work lands (ADR-0062): ` +
-        `after the pull request merges, run ${doneCommand}.\n\n`;
+        `after the pull request merges, run ${doneCommand}.` +
+        `${rebound ? ` ${reboundNote(rebound, engineerWorkflowId)}` : ''}\n\n`;
+    const retireNote = vouchNote ? `${vouchNote}\n\n` : '';
     await atomicWrite(
       workflowPath,
-      assembleWorkflowFile(frontmatter, `${body}${note}`),
+      assembleWorkflowFile(frontmatter, `${body}${note}${retireNote}`),
       { lockPath, token },
     );
     return { workflowPath, subtask: updated, noted: note.length > 0, boundOwner, promotedToInProgress };
@@ -5234,6 +5476,9 @@ const ENGINEER_HOMES = [['.agentic-plugins', 'state', 'engineer'], ['.claude', '
 const CLAIM_KEYS = new Set([
   'workflow_id', 'parent_workflow', 'originating_subtask',
   'dispatched_branch', 'dispatched_verb', 'dispatched_profile', 'dispatched_topic',
+  // ADR-0068 Decision 8, item 2 — the next step a child records, which an
+  // approval that rebinds it shows.
+  'current_phase', 'next_step_kind', 'next_step_verb', 'terminal_marker', 'awaiting_owner_gate',
 ]);
 
 function claimScalar(raw, key, file) {
@@ -5279,13 +5524,24 @@ function claimValues(text, file) {
   return null;
 }
 
+// The physical file `path` names, a link followed: its device and inode, so
+// a hard link and a symbolic one are each the file they name. Throws as
+// statSync, ENOENT for a link whose target is gone.
+function fileIdentity(path) {
+  const { dev, ino } = statSync(path);
+  return `${dev}:${ino}`;
+}
+
 // Every engineer workflow file in the homes of every root of the repository
-// (ADR-0067 Decision 1(b)), each physical file once: [{ path, active, values }].
+// (ADR-0067 Decision 1(b)), each physical file once (fileIdentity):
+// [{ path, active, values }], active when any name of it (a link included) is
+// in a workflow home. A link whose target is gone is no file.
 // Only a missing home or file is "nothing there"; anything else that cannot
 // be read throws, a non-regular entry included, since it could hide a claimant.
 function engineerWorkflowFiles(repoRoot, { activeOnly = false } = {}) {
   const files = [];
-  const seen = new Set();
+  // Each physical file read, with the entry it gave (null for none).
+  const seen = new Map();
   for (const root of repositoryRoots(repoRoot)) {
     for (const home of ENGINEER_HOMES) {
       for (const sub of activeOnly ? ['workflows'] : ['workflows', 'archive']) {
@@ -5302,17 +5558,25 @@ function engineerWorkflowFiles(repoRoot, { activeOnly = false } = {}) {
           let identity;
           let text;
           try {
-            identity = realpathSync(path);
-            if (seen.has(identity)) continue;
+            identity = fileIdentity(path);
+            if (seen.has(identity)) {
+              const known = seen.get(identity);
+              if (known && sub === 'workflows') known.active = true;
+              continue;
+            }
             text = readFrontmatterText(path);
           } catch (err) {
             if (err.code === 'ENOENT') continue;
             throw err;
           }
-          seen.add(identity);
+          seen.set(identity, null);
           if (text === null) throw new Error(`${path} is not a regular file`);
           const values = claimValues(text, path);
-          if (values) files.push({ path, active: sub === 'workflows', values });
+          if (values) {
+            const file = { path, active: sub === 'workflows', values };
+            seen.set(identity, file);
+            files.push(file);
+          }
         }
       }
     }
@@ -5347,7 +5611,7 @@ function claimDispatch({ values, path }, macroId, subtaskId) {
 /**
  * The engineer workflows that claim `subtaskId` of `macroId` (both
  * `parent_workflow` and `originating_subtask` equal), by workflow id, with the
- * dispatch each records: Map id → { id, paths, active, dispatch }. Two files
+ * dispatch each records: Map id → { id, paths, active, dispatch, files }. Two files
  * of one id that record different dispatches throw; so does any entry that
  * cannot be read. `others` maps the ids of the files that claim something else.
  */
@@ -5371,10 +5635,11 @@ export function subtaskClaims({ repoRoot, macroId, subtaskId, activeOnly = false
         );
       }
       known.paths.push(path);
+      known.files.push(file);
       known.active ||= file.active;
       continue;
     }
-    claims.set(values.workflow_id, { id: values.workflow_id, paths: [path], active: file.active, dispatch });
+    claims.set(values.workflow_id, { id: values.workflow_id, paths: [path], active: file.active, dispatch, files: [file] });
   }
   return { claims, others };
 }
@@ -5398,6 +5663,1096 @@ export function ownerDispatch({ repoRoot, macroId, subtaskId, owner = null }) {
   if (claims.size === 0) return { status: 'none' };
   if (claims.size > 1) return { status: 'ambiguous', claims: [...claims.values()] };
   return { status: 'found', claim: [...claims.values()][0] };
+}
+
+// -----------------------------------------------------------------------------
+// ADR-0068 Decision 8 — rebinding a dispatched subtask after an owner-approved
+// change of its instructions. The rules are lib/rebind.mjs's; what follows
+// reads the children and the holds, writes the notes and acknowledges them.
+
+// The next step a child's file records, as the approval shows it.
+function childNextStep(values) {
+  if (values.terminal_marker === 'true') return 'terminal (committed, archive pending)';
+  if (values.awaiting_owner_gate) return `owner gate ${values.awaiting_owner_gate}`;
+  if (values.next_step_kind) {
+    return `${values.next_step_kind}${values.next_step_verb ? ` ${values.next_step_verb}` : ''}` +
+      `${values.current_phase ? ` (phase ${values.current_phase})` : ''}`;
+  }
+  return values.current_phase ? `none recorded (phase ${values.current_phase})` : 'none recorded';
+}
+
+/**
+ * The child an approval would rebind for an in-progress subtask (item 2): the
+ * recorded owner, or the sole claimant when none is recorded; its one active
+ * copy, or an archived one, with the next step it records. What cannot be
+ * told is said, never guessed: several claimants and no owner, an owner whose
+ * files claim something else or are gone, two active copies, an entry that
+ * cannot be read.
+ */
+function rebindChildInfo({ repoRoot, macroId, subtask }) {
+  const owner = typeof subtask.engineer_workflow_id === 'string' && subtask.engineer_workflow_id !== ''
+    ? subtask.engineer_workflow_id
+    : null;
+  let found;
+  try {
+    found = ownerDispatch({ repoRoot, macroId, subtaskId: subtask.id, owner });
+  } catch (err) {
+    return { status: 'unreadable', child: owner, detail: `the engineer workflow homes cannot be read: ${err.message}` };
+  }
+  if (found.status === 'owner-missing') {
+    return { status: 'owner-missing', child: owner, detail: 'no workflow file of the recorded owner is left in the repository' };
+  }
+  if (found.status === 'elsewhere') {
+    return {
+      status: 'elsewhere', child: owner,
+      detail: `the recorded owner claims ${found.files.map((f) => `${f.values.parent_workflow ?? '<none>'}/${f.values.originating_subtask ?? '<none>'}`).join(', ')}`,
+    };
+  }
+  if (found.status === 'none') return { status: 'none', detail: 'no engineer workflow claims this subtask' };
+  if (found.status === 'ambiguous') {
+    return {
+      status: 'ambiguous',
+      detail: `no owner is recorded and ${found.claims.map((c) => c.id).join(', ')} all claim it: revise the plan back, ` +
+        'record the owner (subtask-update --expect-dispatch, which /orchestrator:done prints), then approve the revision',
+    };
+  }
+  const { claim } = found;
+  const active = claim.files.filter((f) => f.active);
+  if (active.length > 1) {
+    return { status: 'ambiguous', child: claim.id, detail: `two active copies: ${active.map((f) => f.path).join(', ')}` };
+  }
+  // An active copy the claim scan skips, beside an archived copy or a readable
+  // active one: the child may still run from it, and what it holds is not
+  // known, so the child is unreadable. The approval then keeps its pending
+  // note and what it was told, never taking a readable copy as the child.
+  if (childFileUnparsed(repoRoot, claim.id, { activeOnly: true })) {
+    return { status: 'unreadable', child: claim.id, detail: `an active workflow file of ${claim.id} cannot be parsed` };
+  }
+  const file = active[0] ?? claim.files[0];
+  return {
+    status: 'found', child: claim.id, owner: owner ? 'recorded' : 'sole-claimant',
+    child_state: active.length === 1 ? 'active' : 'archived', path: file.path,
+    next_step: childNextStep(file.values), started_at: childStartedAt(file.path), dispatch: claim.dispatch,
+  };
+}
+
+// When the engineer workflow file at `path` records it started (started_at),
+// or null when that cannot be read: a child whose start is not known is never
+// taken as started after anything (lib/rebind.mjs startedAfter). Read apart
+// from the claim scan, so a value only this check needs fails no other reader.
+function childStartedAt(path) {
+  try {
+    const text = readFrontmatterText(path);
+    const m = text === null ? null : text.match(/^started_at: (.*?)\r?$/m);
+    if (!m) return null;
+    const raw = m[1].trim();
+    const value = raw.startsWith('"') ? JSON.parse(raw) : raw;
+    return typeof value === 'string' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * ADR-0068 Decision 8, item 4 — a write that binds `child` to `subtaskId` (the
+ * re-attach, the engineer's terminal writeback and done's completion write)
+ * binds it only while the macro's record can vouch for what it was told
+ * (lib/rebind.mjs vouchVerdict), whatever its dispatch comparison found.
+ * Throws, so nothing is written, when it cannot. `waive` is done's waiver of
+ * that refusal, with a reason: 'told' (--waive-told) for an archived child,
+ * which no note reaches, and refused for any other or when nothing is refused;
+ * 'dispatch' (--waive-dispatch) for an owner with no file left, which waives
+ * whatever the record cannot vouch for, and refused while a file of it is
+ * left. A child is taken as archived only when a file of it claims the
+ * subtask and no file named for it is in any workflow home, whatever that file
+ * holds or claims; and as gone only when no file named for it is in any home. When the child started after the
+ * record was replaced, the subtask's `unknown` named the child before it, and
+ * is retired in `frontmatter`. Returns the sentence the write records (a
+ * waiver, a retirement), or '' when there is none.
+ */
+function vouchChild(caller, { frontmatter, workflowPath, subtaskId, current, child, waive = null }) {
+  const { verdict, archived, claim: c, fileLeft } = readVouch({ frontmatter, workflowPath, subtaskId, current, child });
+  if (!verdict.ok) {
+    const gone = () => !fileLeft();
+    const refused = `${child} is not bound to subtask ${JSON.stringify(subtaskId)}: ${verdict.why}.`;
+    if ((waive === 'dispatch' && gone()) || (waive === 'told' && archived)) {
+      return `Told check waived (--waive-dispatch): ${refused} The operator completed it anyway (ADR-0068 Decision 8, item 4).`;
+    }
+    if (waive === 'dispatch') {
+      throw new Error(
+        `${caller}: ${refused} --waive-dispatch waives this check, with the dispatch's comparison, only when no file of ${child} ` +
+          'is left. Nothing was written (ADR-0068 Decision 8, item 4).',
+      );
+    }
+    if (waive === 'told') {
+      throw new Error(
+        `${caller}: ${refused} --waive-dispatch waives this check only for an archived child, and ${c === null
+          ? `no file of ${child} claiming the subtask was found` : `a file of ${child} is still in a workflow home (it is active, or may be)`}: ` +
+          'deliver the note to it instead. Nothing was written (ADR-0068 Decision 8, item 4).',
+      );
+    }
+    throw new Error(`${caller}: ${refused} Nothing was written (ADR-0068 Decision 8, item 4).`);
+  }
+  if (waive === 'told') {
+    throw new Error(
+      `${caller}: the waiver (--waive-told; done's --waive-dispatch) waives nothing: the macro's record vouches for what ` +
+        `${child} was told, so the write binds it without one; rerun without it. Nothing was written (ADR-0068 Decision 8, item 4).`,
+    );
+  }
+  if (!verdict.retire) return '';
+  const { record } = parseRebindRecord(frontmatter[REBIND_KEY]);
+  record.unknown = record.unknown.filter((id) => id !== subtaskId);
+  if (record.unknown.length === 0) delete record.unknown;
+  frontmatter[REBIND_KEY] = serializeRebindRecord(record);
+  return `Subtask ${subtaskId} is no longer named unknown in the record of rebindings: ${child} started after the ` +
+    `approval of ${record.replaced_at} replaced an unreadable record, so it lost nothing (ADR-0068 Decision 8, item 4).`;
+}
+
+/**
+ * ADR-0068 Decision 8, item 4 — the told check for `child` and `subtaskId`
+ * (lib/rebind.mjs vouchVerdict), read once for every place that asks it: the
+ * binding writes (vouchChild) and a run's step boundary (childVouchVerdict).
+ * The child's start is read from its claim of the subtask, `fresh` from the
+ * macro's approval state, and a refusal is read again with `archived` (no
+ * workflow file of the child left active), which names its way out; one of a
+ * subtask no approval can tell the child of names the owner's record first
+ * (unnamedExit). A verdict the record vouches for is refused too while a copy
+ * of the child does not hold the note its `told` entry names, or cannot be
+ * read (toldNoteHeld). While more than one file bears the child, every
+ * verdict is refused before any of that (childCopies). Returns
+ * { verdict, archived, claim, fileLeft }: the child's claim (read for a
+ * refusal only; null when none was read) and whether a file named for it is
+ * left, for the waivers.
+ */
+function readVouch({ frontmatter, workflowPath, subtaskId, current, child }) {
+  // The child's claim of the subtask, read once and only when needed; null
+  // when no file of it claims the subtask, or the scan cannot be read.
+  let claim;
+  const readClaim = () => {
+    if (claim !== undefined) return claim;
+    claim = null;
+    const scanRoot = workflowStateRoot(workflowPath);
+    if (scanRoot === null) return claim;
+    try {
+      claim = subtaskClaims({ repoRoot: scanRoot, macroId: frontmatter.workflow_id, subtaskId }).claims.get(child) ?? null;
+    } catch {
+      claim = null;
+    }
+    return claim;
+  };
+  const startedAt = () => {
+    const c = readClaim();
+    const file = c ? (c.files.find((f) => f.active) ?? c.files[0]) : null;
+    return file ? childStartedAt(file.path) : null;
+  };
+  const approval = planApprovalState(frontmatter);
+  const fresh = approval.status === 'approved' && approval.hash_ok === true;
+  const scanRoot = workflowStateRoot(workflowPath);
+  // Whether a file named for the child is left in a workflow home (or any
+  // home), whatever it holds or claims, or no home can be checked: either
+  // keeps the child from counting as archived, or as gone.
+  const fileLeft = (opts) => {
+    try {
+      return scanRoot === null || childFileExists(scanRoot, child, opts);
+    } catch {
+      return true;
+    }
+  };
+  const verdict = vouchVerdict({ fm: frontmatter, subtaskId, current, child, startedAt, fresh });
+  // More than one file bears the child, or they cannot all be read: no copy
+  // is judged, so every binding write refuses until the owner repairs or
+  // removes the extra copies (childCopies). The child counts as archived, for
+  // the told waiver, only when it claims the subtask and no file bearing it is
+  // in a workflow home; with files of it left it is never gone.
+  const copies = childCopies(scanRoot, child);
+  if (copies !== null) {
+    const c = readClaim();
+    const archived = c !== null && c.active === false && !copies.active;
+    return { verdict: { ok: false, why: copiesRefusal(child, { ...copies, archived }) }, archived, claim: c, fileLeft: () => true };
+  }
+  // The record names the child, not a copy: what its `told` entry says the
+  // child was told vouches only while every copy the child may run from holds
+  // that note (toldNoteHeld). A copy restored, or moved between homes, since
+  // the delivery may answer to other words, so it is checked here, at every
+  // write that binds, never only when the note was acknowledged.
+  // The refusal when a copy does not hold it, named once `archived` is read.
+  let notHeld = null;
+  if (verdict.ok && scanRoot !== null) {
+    const parsed = parseRebindRecord(frontmatter[REBIND_KEY]);
+    const told = parsed.status === 'readable' ? parsed.record.told[child] : undefined;
+    if (told && told.subtask === subtaskId) {
+      const held = toldNoteHeld({ repoRoot: scanRoot, macroId: frontmatter.workflow_id, subtaskId, child, told });
+      if (held === 'conflict') {
+        notHeld = () => `a workflow file of ${child} claims another subtask or macro, so which words it answers to is not known; ` +
+          'repair or remove that file';
+      } else if (held === 'unreadable') {
+        notHeld = () => `a workflow file of ${child} cannot be read, so whether it holds the note that told it the subtask's words ` +
+          `(delivery ${told.delivery_id}) is not known; repair or remove that file`;
+      } else if (held !== 'held') {
+        notHeld = (archived) => `a copy of ${child} does not hold the note that told it the subtask's words (delivery ${told.delivery_id}), ` +
+          `so it may answer to other words; ${archived ? archivedExit(child)
+            : 'approve the plan as it stands (/orchestrator:approve), which restates the words to it in full, and the write binds it once that note is delivered'}`;
+      }
+    }
+  }
+  if (verdict.ok && notHeld === null) return { verdict, archived: false, claim: null, fileLeft };
+  const c = readClaim();
+  const archived = c !== null && c.active === false && !fileLeft({ activeOnly: true });
+  if (notHeld !== null) return { verdict: { ok: false, why: notHeld(archived) }, archived, claim: c, fileLeft };
+  const refused = vouchVerdict({ fm: frontmatter, subtaskId, current, child, startedAt, archived, fresh });
+  return { verdict: archived ? refused : unnamedExit(refused, { frontmatter, scanRoot, subtaskId, current, child }), archived, claim: c, fileLeft };
+}
+
+// An approval tells only the child it would rebind (rebindChildInfo): the
+// recorded owner, or the one claimant. A subtask that records no owner while
+// several workflows claim it is told nothing, so a refusal of one of them
+// names the owner's record first, the step its way out needs. That record
+// compares the child's dispatch as updateSubtask does (compareDispatch): when
+// it would be refused, the way out restores the dispatch's words around it.
+// Any other refusal is returned as it is, as is one whose claims cannot be read.
+function unnamedExit(verdict, { frontmatter, scanRoot, subtaskId, current, child }) {
+  const owner = current?.engineer_workflow_id;
+  if (verdict.ok || scanRoot === null || (typeof owner === 'string' && owner !== '')) return verdict;
+  let found;
+  try {
+    found = ownerDispatch({ repoRoot: scanRoot, macroId: frontmatter.workflow_id, subtaskId, owner: null });
+  } catch {
+    return verdict;
+  }
+  if (found.status !== 'ambiguous') return verdict;
+  const dispatch = found.claims.find((x) => x.id === child)?.dispatch;
+  let changed = [];
+  if (dispatch && typeof dispatch === 'object') {
+    try {
+      compareDispatch('unnamedExit', { frontmatter, subtaskId, current, expectDispatch: dispatch, child });
+    } catch {
+      changed = dispatchMismatches({ frontmatter, subtaskId, current, expectDispatch: dispatch }).map((m) => m.field);
+    }
+  }
+  const record = '(subtask-update --expect-dispatch, which /orchestrator:done prints; it accepts no work)';
+  // A changed branch or verb is rebound by no approval (REBINDABLE_FIELDS):
+  // revising it again after the record would leave the child refused.
+  const fixed = changed.filter((f) => !REBINDABLE_FIELDS.includes(f));
+  const refusedWhile = `its record is refused while the subtask's ${changed.join(' and ')} ` +
+    `${changed.length > 1 ? 'differ' : 'differs'} from ${child}'s dispatch`;
+  return {
+    ...verdict,
+    why: `${verdict.why}; subtask ${subtaskId} records no owner and ${found.claims.map((x) => x.id).join(', ')} all claim it, ` +
+      `so an approval tells ${child} nothing until it is recorded the owner: ` + (changed.length === 0
+      ? `record it first ${record}, then approve`
+      : fixed.length === 0
+        ? `${refusedWhile}, so revise the plan back to what ${child} was dispatched for, record it the owner ${record}, ` +
+          'revise the plan again, then approve'
+        : `${refusedWhile}, and no approval rebinds a changed ${fixed.join(' or ')}: revise the plan back to what ${child} ` +
+          `was dispatched for, record it the owner ${record}, then approve with its ${fixed.join(' and ')} as dispatched; ` +
+          `or archive ${child} and dispatch the subtask again`),
+  };
+}
+
+/**
+ * ADR-0068 Decision 8, item 4 — whether a run may step `child`, the child of
+ * `subtaskId` its step runs (the recorded owner, or with none the one the run
+ * selected), from macro `workflowPath` as `frontmatter` holds it: the
+ * binding writes' told check (readVouch), one predicate for both; `current`
+ * is the subtask's plan entry. Read only:
+ * a retirement it would allow is left to the binding write. { ok, retire } or
+ * { ok: false, why }, the why naming the way out the binding writes name.
+ */
+export function childVouchVerdict({ frontmatter, workflowPath, subtaskId, current, child }) {
+  return readVouch({ frontmatter, workflowPath, subtaskId, current, child }).verdict;
+}
+
+// Whether the child of pending delivery `p`, claiming its subtask, holds that
+// delivery's note (lib/rebind.mjs holdsDeliveryNote: its heading and the words
+// it tells): a note written, by this or a killed run, but not acknowledged. A
+// heading alone, or one over other words, is not the note. A child with an
+// active copy holds it only when every active copy does and none is one the
+// claim scan skips (an unparsed copy may be repaired and run, and holds
+// nothing the scan can see): an archived copy never holds it for an active
+// one. A child archived everywhere holds it when every copy does and no
+// archived copy is one the scan skips ('all'), and when only some readable
+// copies do, or one it skips may hold other words, its copies disagree
+// ('contested'): the note counts as
+// told, since that copy may be the one its work answers to, but no words bind
+// it, so every binding write refuses (fail closed; the told waiver is the way
+// out, and a child found active again is restated the words in full). False
+// when no copy holds it. Partial evidence across copies is never read as
+// "never told", nor as told the words of either copy. A file of the child's
+// id that claims another subtask or macro is a copy too, whatever it claims:
+// it may be the one that runs, so the note is never acknowledged while it is
+// left.
+function deliveryWritten({ repoRoot, macroId, p }) {
+  const { claims, others } = subtaskClaims({ repoRoot, macroId, subtaskId: p.subtask });
+  const claim = claims.get(p.child);
+  if (!claim) return false;
+  if (others.has(p.child)) return false;
+  const holds = (f) => {
+    try {
+      return holdsDeliveryNote(readFileSync(f.path, 'utf8').replace(/\r\n/g, '\n'), p);
+    } catch {
+      return false;
+    }
+  };
+  const active = claim.files.filter((f) => f.active);
+  const unparsedActive = childFileUnparsed(repoRoot, p.child, { activeOnly: true });
+  if (active.length > 0 || unparsedActive) return !unparsedActive && active.length > 0 && active.every(holds) ? 'all' : false;
+  const held = claim.files.filter(holds).length;
+  return held === 0 ? false : held === claim.files.length && !childFileUnparsed(repoRoot, p.child) ? 'all' : 'contested';
+}
+
+// Whether any readable copy of the child of pending delivery `p` holds its
+// note, though deliveryWritten does not acknowledge it (an active copy
+// without it, or one the scan skips): partial evidence, which an approval
+// that drops the note records as told, contested (lib/rebind.mjs
+// deriveRebindView), never as "never told".
+function deliveryHeldSomewhere({ repoRoot, macroId, p }) {
+  const claim = subtaskClaims({ repoRoot, macroId, subtaskId: p.subtask }).claims.get(p.child);
+  if (!claim) return false;
+  return claim.files.some((f) => {
+    try {
+      return holdsDeliveryNote(readFileSync(f.path, 'utf8').replace(/\r\n/g, '\n'), p);
+    } catch {
+      return false;
+    }
+  });
+}
+
+// Whether every copy `child` may run from holds the note that told it
+// (`told.delivery_id`): every active copy, none unparsed, or, archived
+// everywhere, every copy, none unparsed. The record names the child, not a
+// copy, so a copy swapped in since (restored, or moved between homes) is
+// checked here at every write that binds it (readVouch). The note is found by
+// its delivery heading, not by its body: the `told` entry keeps the words it
+// told, not the words it quoted before them. 'held', 'missing',
+// 'unreadable', or 'conflict' when a file of the child's id claims another
+// subtask or macro: which words that copy answers to is not known.
+function toldNoteHeld({ repoRoot, macroId, subtaskId, child, told }) {
+  let claim;
+  let others;
+  try {
+    const scan = subtaskClaims({ repoRoot, macroId, subtaskId });
+    others = scan.others;
+    claim = scan.claims.get(child) ?? null;
+  } catch {
+    return 'unreadable';
+  }
+  if (others.has(child)) return 'conflict';
+  if (claim === null) return 'missing';
+  const heading = `\n### ${deliveryHeading(told.delivery_id)}\n\n`;
+  const holds = (f) => {
+    try {
+      return readFileSync(f.path, 'utf8').replace(/\r\n/g, '\n').includes(heading);
+    } catch {
+      return false;
+    }
+  };
+  const active = claim.files.filter((f) => f.active);
+  if (childFileUnparsed(repoRoot, child, { activeOnly: true })) return 'unreadable';
+  if (active.length > 0) return active.every(holds) ? 'held' : 'missing';
+  if (childFileUnparsed(repoRoot, child)) return 'unreadable';
+  return claim.files.every(holds) ? 'held' : 'missing';
+}
+
+// The names of the files of child `childId` in `dir`: `<id>.md`, and the
+// archiver's collision-suffixed `<id>-<YYYYMMDDTHHMMSSZ>-<6 hex>.md` (engineer
+// archiveWorkflow), suffixed any number of times, since the archiver suffixes
+// the name it is given. Every file of the child's name is a copy of it,
+// whatever it holds or claims (ADR-0068 Decision 8, item 4). Throws as
+// readdirSync.
+function childCopyNames(dir, childId) {
+  const stem = childId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const copyName = new RegExp(`^${stem}(-\\d{8}T\\d{6}Z-[0-9a-f]{6})*\\.md$`);
+  return readdirSync(dir).filter((n) => copyName.test(n));
+}
+
+// The files that bear child `childId` in the engineer homes of every root of
+// the repository: every file of its name (childCopyNames), and every file
+// whose frontmatter records its workflow id, whatever either holds or claims.
+// [{ path, active, identity }], each physical file once (fileIdentity: a hard
+// link or a symbolic one is the file it names), active when any name of it (a
+// link included) is in a workflow home. A name gone by the time it is looked
+// at (moved, or a link whose target is gone) bears nothing. Only `.md` files
+// count: the engineer reads no other as a workflow. Throws when a home or an
+// entry cannot be read, as engineerWorkflowFiles does.
+function childBearers(repoRoot, childId) {
+  const bearers = new Map();
+  const add = (path, active) => {
+    let identity;
+    try {
+      identity = fileIdentity(path);
+    } catch (err) {
+      if (err.code === 'ENOENT') return;
+      throw err;
+    }
+    const known = bearers.get(identity);
+    if (known) known.active ||= active;
+    else bearers.set(identity, { path, active, identity });
+  };
+  for (const root of repositoryRoots(repoRoot)) {
+    for (const home of ENGINEER_HOMES) {
+      for (const sub of ['workflows', 'archive']) {
+        const dir = join(root, ...home, sub);
+        let names;
+        try {
+          names = childCopyNames(dir, childId);
+        } catch (err) {
+          if (err.code === 'ENOENT') continue;
+          throw err;
+        }
+        for (const name of names) add(join(dir, name), sub === 'workflows');
+      }
+    }
+  }
+  for (const f of engineerWorkflowFiles(repoRoot)) if (f.values.workflow_id === childId) add(f.path, f.active);
+  return [...bearers.values()];
+}
+
+/**
+ * ADR-0068 Decision 8, item 4 — whether more than one file bears `child`
+ * (childBearers), or the files that may bear it cannot all be read: then
+ * which words its work answers to is not known, so no copy of it is judged.
+ * Every binding write and a run's boundary refuse it (readVouch), and no note
+ * to it is acknowledged (rebindView, deliverPendingRebindings), until the
+ * owner repairs or removes the extra copies, or, for an archived child,
+ * waives. null for a child one file bears, or none (the rules for one copy
+ * judge it), or with no state root to scan; otherwise { count, active,
+ * paths, sameNotes, error }: the number of files (Infinity when they cannot
+ * all be read, `error` saying why), whether one of them is in a workflow
+ * home, or may be, their paths, sorted, and whether they all hold the same
+ * notes (sameNotes), as the engineer's archiver leaves them when it is
+ * killed between writing the archive and removing the workflow file, or
+ * retried after that.
+ *
+ * The count is the scan's only when it holds: a file moved while the scan
+ * runs (the archiver's write, then its removal of the source, or a move
+ * between the scan's two passes, by name and by workflow id) can be met
+ * under both names. More than one file found, the scan waits a moment and
+ * runs again, up to COPY_SCAN_ATTEMPTS times; the child is refused only when
+ * two scans in a row find the same files, or the scans never settle (fail
+ * closed). `scan` and `settle` are seams for a test; each defaults to the
+ * real one.
+ *
+ * Limits (ADR-0068 Decision 8, item 4; uncommon cases under the owner's rule
+ * of 2026-10-25): a file renamed by hand to another name under another id is
+ * not seen; with no record of rebindings, a scan error anywhere in the homes
+ * (a hand-made or broken entry) refuses every child of every macro until it
+ * is repaired; two archives of the child whose dispatches disagree make the
+ * claim scan throw, so the told waiver finds no claimant (fail closed); and a
+ * file appearing between a delivery's last check and its acknowledgement is
+ * not seen, the check-to-commit window every write has.
+ */
+const COPY_SCAN_ATTEMPTS = 3;
+const COPY_SCAN_SETTLE_MS = 100;
+function settleSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+export function childCopies(scanRoot, child, { scan = childBearers, settle = settleSync } = {}) {
+  if (scanRoot === null) return null;
+  let previous = null;
+  for (let attempt = 1; ; attempt += 1) {
+    let bearers;
+    try {
+      bearers = scan(scanRoot, child);
+    } catch (err) {
+      return { count: Infinity, active: true, paths: [], sameNotes: false, error: err?.message ?? String(err) };
+    }
+    if (bearers.length <= 1) return null;
+    const found = bearers.map((b) => b.identity).sort().join('\n');
+    if (found === previous || attempt >= COPY_SCAN_ATTEMPTS) {
+      return {
+        count: bearers.length, active: bearers.some((b) => b.active),
+        paths: bearers.map((b) => b.path).sort(), sameNotes: sameNotes(bearers), error: null,
+      };
+    }
+    previous = found;
+    settle(COPY_SCAN_SETTLE_MS);
+  }
+}
+
+// Whether every file in `bearers` holds the same notes: the text after its
+// frontmatter is the same, blank lines around it aside, as in the archive the
+// engineer's archiver writes and the workflow file it moves (the archive's
+// frontmatter only adds the move, and its serializer opens the body with one
+// more blank line). False when one cannot be read.
+function sameNotes(bearers) {
+  const bodies = new Set();
+  for (const b of bearers) {
+    let text;
+    try {
+      text = readFileSync(b.path, 'utf8').replace(/\r\n/g, '\n');
+    } catch {
+      return false;
+    }
+    const close = text.startsWith('---\n') ? text.indexOf('\n---\n', 3) : -1;
+    if (close === -1) return false;
+    bodies.add(text.slice(close + 5).replace(/^\n+/, '').replace(/\s+$/, ''));
+  }
+  return bodies.size === 1;
+}
+
+// Whether a file named for child `childId` (childCopyNames) is in a workflow
+// home (or, without `activeOnly`, an archive home) of any root of the
+// repository, whatever it holds or claims: a waiver of the told check takes a
+// child as archived, or gone, only when none is (vouchChild). A path that
+// cannot be checked counts as one.
+function childFileExists(repoRoot, childId, { activeOnly = false } = {}) {
+  const subs = activeOnly ? ['workflows'] : ['workflows', 'archive'];
+  for (const root of repositoryRoots(repoRoot)) {
+    for (const home of ENGINEER_HOMES) {
+      for (const sub of subs) {
+        try {
+          if (childCopyNames(join(root, ...home, sub), childId).length > 0) return true;
+        } catch (err) {
+          if (err.code !== 'ENOENT') return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+// Whether a workflow file named for `childId` (childCopyNames) is in an
+// engineer home of the repository but is no claim the scan can read (its
+// frontmatter never opens or closes, or it cannot be read): the claim scan
+// skips such a file, so the child looks gone, though it may be repaired and
+// told yet. With `activeOnly`, only an active copy counts: an archived one has
+// nothing left to run.
+function childFileUnparsed(repoRoot, childId, { activeOnly = false } = {}) {
+  const subs = activeOnly ? ['workflows'] : ['workflows', 'archive'];
+  for (const root of repositoryRoots(repoRoot)) {
+    for (const home of ENGINEER_HOMES) {
+      for (const sub of subs) {
+        let names;
+        try {
+          names = childCopyNames(join(root, ...home, sub), childId);
+        } catch (err) {
+          if (err.code === 'ENOENT') continue;
+          return true;
+        }
+        for (const name of names) {
+          const path = join(root, ...home, sub, name);
+          let text;
+          try {
+            text = readFrontmatterText(path);
+          } catch (err) {
+            if (err.code === 'ENOENT') continue;
+            return true;
+          }
+          try {
+            if (text === null || claimValues(text, path) === null) return true;
+          } catch {
+            return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * The view an approval of the macro as it stands would record (lib/rebind.mjs
+ * deriveRebindView), read-only. Pending deliveries whose note the child
+ * already holds count as told first (reconciliation), so a crash between a
+ * child's note and its acknowledgement never tells it twice.
+ */
+function rebindView({ frontmatter, scanRoot, nowIso = isoUtc() }) {
+  const macroId = frontmatter.workflow_id;
+  const subtasks = Array.isArray(frontmatter.plan?.subtasks) ? frontmatter.plan.subtasks : [];
+  const previous = parseRebindRecord(frontmatter[REBIND_KEY]);
+  let reconciled = previous;
+  const acknowledged = [];
+  // The pending deliveries some readable copy of their child holds, though
+  // not acknowledged: partial evidence an approval that drops them keeps.
+  const partial = new Set();
+  if (previous.status === 'readable') {
+    const record = structuredClone(previous.record);
+    record.pending = record.pending.filter((p) => {
+      // A child more than one file bears is never acknowledged, whichever
+      // copy holds the note (childCopies): the note is partial evidence.
+      if (childCopies(scanRoot, p.child) !== null) {
+        partial.add(p.delivery_id);
+        return true;
+      }
+      let written = false;
+      try {
+        written = scanRoot !== null && deliveryWritten({ repoRoot: scanRoot, macroId, p });
+      } catch {
+        written = false;
+      }
+      if (!written) {
+        try {
+          if (scanRoot !== null && deliveryHeldSomewhere({ repoRoot: scanRoot, macroId, p })) partial.add(p.delivery_id);
+        } catch {
+          // A scan that cannot be read may hide a copy that holds the note:
+          // partial evidence, never "never told" (fail closed).
+          if (scanRoot !== null) partial.add(p.delivery_id);
+        }
+        return true;
+      }
+      acknowledgeInRecord(record, p, nowIso, { contested: written === 'contested' });
+      acknowledged.push(p);
+      return false;
+    });
+    reconciled = { status: 'readable', record };
+  }
+  // The children read: each in-progress subtask's, and, for a subtask not in
+  // progress nor completed, its child's when that child may be owed a note:
+  // the record names it told or unknown, or was replaced (a child there by
+  // then is restated), or cannot be read at all.
+  const owed = new Set();
+  if (reconciled.status === 'readable') {
+    for (const t of Object.values(reconciled.record.told)) owed.add(t.subtask);
+    for (const id of reconciled.record.unknown ?? []) owed.add(id);
+    for (const p of reconciled.record.pending) if (p.restate === true) owed.add(p.subtask);
+    if (reconciled.record.replaced_at !== undefined) for (const s of subtasks) if (s) owed.add(s.id);
+  }
+  const children = new Map();
+  for (const s of subtasks) {
+    if (!s || s.status === 'completed') continue;
+    if (s.status !== 'in_progress' && reconciled.status !== 'unreadable' && !owed.has(s.id)) continue;
+    const info = scanRoot === null
+      ? { status: 'unreadable', detail: 'the macro is under no state home, so its children cannot be found' }
+      : rebindChildInfo({ repoRoot: scanRoot, macroId, subtask: s });
+    // An active child, an active copy of which does not hold the note its
+    // `told` entry names, is restated in full (`told_missing`): every binding
+    // write refuses it until a note every copy holds is delivered (readVouch).
+    // An archived child whose copies do not hold it, or cannot show it, is
+    // marked too: the approval shows its row refused, as its writes are.
+    const t = reconciled.status === 'readable' && info.status === 'found'
+      ? reconciled.record.told[info.child] : undefined;
+    const heldNow = t && t.subtask === s.id ? toldNoteHeld({ repoRoot: scanRoot, macroId, subtaskId: s.id, child: info.child, told: t }) : 'held';
+    if (info.child_state === 'active' ? heldNow === 'missing' : heldNow !== 'held') info.told_missing = true;
+    // A child more than one file bears is refused at every binding write
+    // (readVouch): the approval shows an archived one's row refused with the
+    // same words, offering the told waiver only when no file of it is active.
+    const copies = info.status === 'found' ? childCopies(scanRoot, info.child) : null;
+    if (copies !== null) info.copies = copies;
+    children.set(s.id, info);
+  }
+  // The children owed a note whose own file the claim scan skips: their note
+  // is kept, not dropped as if the child were gone.
+  const unparsed = new Set();
+  if (reconciled.status === 'readable' && scanRoot !== null) {
+    for (const p of reconciled.record.pending) {
+      if (childFileUnparsed(scanRoot, p.child)) unparsed.add(p.child);
+    }
+  }
+  return { previous, reconciled, acknowledged, view: deriveRebindView({ subtasks, children, previous: reconciled, unparsed, partial, nowIso }) };
+}
+
+/**
+ * What /orchestrator:approve shows beside the plan (plan-hash rebind_view):
+ * { rows, carried, digest }, read from the macro file and the children as
+ * they are now. plan-approve's expectRebind is this digest.
+ */
+export function planRebindView({ workflowPath, repoRoot }) {
+  const { frontmatter } = parseWorkflowFile(readFileSync(workflowPath, 'utf8'));
+  const { view } = rebindView({ frontmatter, scanRoot: repoRoot ?? workflowStateRoot(workflowPath) });
+  return { rows: view.rows, carried: view.carried, untouched: view.untouched, unknown: view.unknown, digest: view.digest };
+}
+
+// The refusal a write would meet for a row the approval shows but does not
+// rebind, with the exits that refusal names.
+const ROW_TEXT = {
+  told: (r) => `not in progress (${r.status ?? 'no status'}), and rebound by nothing; its child, still active, may be re-attached`,
+  'not-rebindable': (r) => `not rebindable (${r.not_rebindable.join(', ')} changed): its writes stay refused dispatch-changed; ` +
+    'archive the child and dispatch the subtask again, or revise the plan back',
+  none: () => 'no child claims it; nothing is rebound',
+  ambiguous: (r) => `not rebound: ${r.detail}`,
+  'owner-missing': (r) => `not rebound: ${r.detail}; /orchestrator:done may waive the comparison with a reason`,
+  elsewhere: (r) => `not rebound: ${r.detail}`,
+  unreadable: (r) => `not rebound: ${r.detail}`,
+};
+
+// Words as the audit quotes them: one line, at most 200 characters.
+const auditWords = (text) => {
+  const line = String(text ?? '').replace(/\s+/g, ' ').trim();
+  return line.length > 200 ? `${line.slice(0, 199)}…` : line;
+};
+
+// The approval's audit in the macro body (item 2): every rebinding, carried
+// entry, row it shows, note due, and note found already written.
+function rebindAudit({ view, record, previous, acknowledged }) {
+  const lines = [];
+  if (previous.status === 'unreadable') {
+    lines.push(`- the previous record of rebindings was unreadable (${previous.error}) and is replaced; what each active child was last told is not known, so each is told the words it answers to now, in full`);
+  }
+  for (const p of acknowledged) lines.push(`- delivery ${p.delivery_id} to ${p.child} (${p.subtask}) found in its notes: acknowledged`);
+  for (const row of view.rows) {
+    const who = row.child ? `${row.child}${row.owner === 'sole-claimant' ? ' (sole claimant, no owner recorded)' : ''}` : 'no child';
+    const state = row.child_state === 'active' ? `active, next step ${row.next_step}`
+      : row.child_state === 'archived' ? 'archived (committed, waiting to land)' : null;
+    let text;
+    if (row.refused !== undefined) {
+      // An archived child its binding writes refuse is never audited bound;
+      // the words approved are still recorded, for done's waiver.
+      const entry = record.rebindings.find((e) => e.subtask === row.subtask && e.child === row.child);
+      text = `refused at every write that binds it: ${row.refused}` +
+        `${entry ? ` (the words approved are recorded, words ${entry.to_digest.slice(0, 12)}, for the waiver)` : ''}`;
+    } else if (row.kind === 'rebind') {
+      // The words approved, so each rebinding stays in the body as history
+      // after a later approval replaces the record (item 2).
+      const entry = record.rebindings.find((e) => e.subtask === row.subtask && e.child === row.child);
+      text = `rebound from its dispatch on ${row.changed.join(' and ')} to ` +
+        `${row.changed.map((f) => `${f} ${JSON.stringify(auditWords(row.now[f]))}`).join(', ')}` +
+        `${entry ? ` (words ${entry.to_digest.slice(0, 12)})` : ''}`;
+    }
+    else if (row.kind === 'matches') text = 'matches its dispatch';
+    else text = ROW_TEXT[row.kind](row);
+    if (row.not_compared.length > 0) text += `; not compared on ${row.not_compared.join(', ')} (its dispatch recorded none)`;
+    const pending = row.delivery ? record.pending.find((p) => p.child === row.child) : null;
+    if (pending?.restate) text += `; told the words it answers to now, in full, by delivery ${pending.delivery_id}`;
+    else if (pending) text += `; told the change of ${row.delivery.fields.join(' and ')} by delivery ${pending.delivery_id}`;
+    lines.push(`- ${row.subtask}: ${who}${state ? ` (${state})` : ''}: ${text}`);
+  }
+  for (const e of record.carried) lines.push(`- ${e.subtask} (completed): the rebinding of ${e.child} is kept as recorded`);
+  for (const id of view.unknown) {
+    if (!record.pending.some((p) => p.subtask === id && p.restate)) {
+      lines.push(`- ${id}: what its child was last told is not known; its child is told its words in full once an approval finds it active and rebindable`);
+    }
+  }
+  for (const id of view.untouched.pending) {
+    const p = record.pending.find((x) => x.delivery_id === id);
+    if (p) lines.push(`- ${p.subtask}: delivery ${id} to ${p.child} stays pending as it was (no row above decides its child)`);
+  }
+  for (const id of view.untouched.contested ?? []) {
+    const t = Object.entries(record.told).find(([, e]) => e.delivery_id === id);
+    if (t) lines.push(`- ${t[1].subtask}: delivery ${id} to ${t[0]} is dropped, but a copy of ${t[0]} holds it, so it is recorded told, contested: no words bind it until a note restated to it is delivered`);
+  }
+  if (lines.length === 0) return '';
+  return `Rebindings (ADR-0068 Decision 8), approval ${record.approval.id}:\n${lines.join('\n')}\n\n`;
+}
+
+/**
+ * ADR-0068 Decision 8, item 3 — what keeps an approval from rebinding or
+ * telling `subtaskId`, and a delivery from completing: a hold on the subtask,
+ * a release awaiting its comparison (Decision 2, item 7), or a persona
+ * operation open in its lane. Until the hold records land, any entry of the
+ * macro's holds directory other than the park records refuses (fail closed),
+ * and an unreadable directory refuses. Persona operations are not visible yet
+ * (Decision 2, item 9): none is reported, as Decision 8, item 7 says.
+ */
+export function rebindBlockers({ workflowPath, subtaskId }) {
+  const stateRoot = workflowStateRoot(workflowPath);
+  if (stateRoot === null) return [`${workflowPath} is under no state home, so its holds cannot be read`];
+  const macroId = basename(workflowPath, '.md');
+  const dir = join(mainWorktreeRoot(stateRoot), AUTOPILOT_DIR_REL, 'holds', macroId);
+  let names;
+  try {
+    names = readdirSync(dir);
+  } catch (err) {
+    if (err.code === 'ENOENT') return [];
+    return [`the macro's holds directory ${dir} cannot be read (${err.code ?? err.message})`];
+  }
+  return names.filter((n) => n !== 'parks').map((n) => `${join(dir, n)} is a hold or release record this orchestrator ` +
+    `cannot judge for ${subtaskId} yet, so it refuses`);
+}
+
+// Whether the engineer plugin at `root` writes a phase note from a file
+// (`append --phase-note-file`, ADR-0059), the one way a delivery writes; null
+// when it does, the reason otherwise.
+export function engineerDeliveryProblem(root) {
+  if (typeof root !== 'string' || root === '') return 'no engineer plugin root was found to write the note with';
+  const cli = join(root, 'scripts', 'state.mjs');
+  let text;
+  try {
+    text = readFileSync(cli, 'utf8');
+  } catch (err) {
+    return `${cli} cannot be read (${err.code ?? err.message})`;
+  }
+  if (!/TEXT_FILE_FLAGS\s*=\s*\[[^\]]*'phase-note'/.test(text)) {
+    return `the engineer at ${root} does not take append --phase-note-file; upgrade engineer`;
+  }
+  return null;
+}
+
+// Acknowledge one delivery under the macro's lock, keyed by its id and not by
+// the approval's stamp: a note the child holds is recorded as told even when a
+// plan-set landed meanwhile. A delivery no longer pending is left as it is.
+async function acknowledgeDelivery({ workflowPath, host, deliveryId, now, contested = false }) {
+  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+    const { frontmatter, body } = parseWorkflowFile(await readFile(workflowPath, 'utf8'));
+    ensureMutable(frontmatter);
+    const parsed = parseRebindRecord(frontmatter[REBIND_KEY]);
+    if (parsed.status !== 'readable') return false;
+    const record = parsed.record;
+    const idx = record.pending.findIndex((p) => p.delivery_id === deliveryId);
+    if (idx === -1) return false;
+    const [p] = record.pending.splice(idx, 1);
+    const nowIso = isoUtc(now);
+    acknowledgeInRecord(record, p, nowIso, { contested });
+    frontmatter[REBIND_KEY] = serializeRebindRecord(record);
+    frontmatter.updated_at = nowIso;
+    frontmatter.host_history = [...(frontmatter.host_history ?? []), { host, at: nowIso, event: 'updated' }];
+    const note = `### Owner instruction delivered (${p.delivery_id}) @ ${nowIso}\n\n` +
+      `${p.child} (subtask ${p.subtask}) holds the note of the change (ADR-0068 Decision 8, item 4).\n\n`;
+    await atomicWrite(workflowPath, assembleWorkflowFile(frontmatter, `${body}${note}`), { lockPath, token });
+    return true;
+  });
+}
+
+/**
+ * ADR-0068 Decision 8, item 4 — complete the deliveries the macro's record
+ * holds pending (of `subtaskId` only, when given), never mid-step: the
+ * approval right after its write, a run at the child's boundary, or the owner
+ * (`state.mjs rebind-deliver`). Each, outside the macro's file lock (the two
+ * workflow locks are never held together): checks the approval is still the
+ * one that recorded it and the plan still holds its words, the blockers, the
+ * child still active, the engineer able to write it; appends the note unless
+ * its heading is there already; reads the child back; acknowledges it by id.
+ * Each result is { delivery_id, child, subtask, status, detail }, status
+ * `delivered`, `acknowledged` (written earlier) or the reason it waits.
+ * `admitted` says the caller holds the macro's run lock (an approval, or the
+ * run itself); otherwise this joins it as `approve` does.
+ */
+export async function deliverPendingRebindings({
+  workflowPath, host, engineerRoot, repoRoot, subtaskId, env = process.env, now = new Date(), admitted = false, admission = null,
+}) {
+  validateHost(host);
+  if (!admitted) {
+    return withApprovalAdmission({ workflowPath, host, env, caller: 'rebind-deliver' }, (joined) => deliverPendingRebindings({
+      workflowPath, host, engineerRoot, repoRoot, subtaskId, env, now, admitted: true, admission: joined,
+    }));
+  }
+  const scanRoot = repoRoot ?? workflowStateRoot(workflowPath);
+  const { frontmatter } = await readWorkflow(workflowPath);
+  const parsed = parseRebindRecord(frontmatter[REBIND_KEY]);
+  if (parsed.status === 'absent') return [];
+  if (parsed.status === 'unreadable') {
+    throw new Error(
+      `rebind-deliver: the macro's record of rebindings is unreadable (${parsed.error}); its notes cannot be told. ` +
+        'Approve the plan again (/orchestrator:approve), which rewrites it.',
+    );
+  }
+  const macroId = frontmatter.workflow_id;
+  const approval = planApprovalState(frontmatter);
+  const current = approval.status === 'approved' && approval.hash_ok === true && stampMatches(parsed.record, frontmatter);
+  const results = [];
+  for (const p of parsed.record.pending) {
+    if (subtaskId !== undefined && p.subtask !== subtaskId) continue;
+    const result = { delivery_id: p.delivery_id, child: p.child, subtask: p.subtask, status: null, detail: null };
+    results.push(result);
+    const wait = (status, detail) => Object.assign(result, { status, detail });
+    if (admission?.keep) {
+      wait('blocked', 'the writer of an earlier note is still running; nothing more is told until it ends');
+      continue;
+    }
+    // A child more than one file bears is told nothing and acknowledged
+    // nothing (childCopies): which copy its work answers to is not known.
+    const copies = childCopies(scanRoot, p.child);
+    if (copies?.count === Infinity) {
+      wait('unreadable', `the engineer workflow files that may bear ${p.child} cannot all be read; the note waits until they can`);
+      continue;
+    }
+    if (copies !== null) {
+      wait('copies', `${copiesRefusal(p.child, { ...copies, archived: false })}; the note waits until then`);
+      continue;
+    }
+    // A note already written is acknowledged whatever happened since. A
+    // child whose claim cannot be read waits, as the approval's view shows it:
+    // the approval is written by then, and its note stays pending.
+    let found;
+    try {
+      found = scanRoot !== null && deliveryWritten({ repoRoot: scanRoot, macroId, p });
+    } catch (err) {
+      wait('unreadable', `the engineer workflow homes cannot be read (${err.message}); the note waits until they can`);
+      continue;
+    }
+    if (found) {
+      await acknowledgeDelivery({ workflowPath, host, deliveryId: p.delivery_id, now, contested: found === 'contested' });
+      wait('acknowledged', 'the child already holds the note');
+      continue;
+    }
+    if (!current) {
+      wait('stale', 'the approval that recorded it is no longer current: approve the plan again');
+      continue;
+    }
+    const s = (frontmatter.plan?.subtasks ?? []).find((x) => x?.id === p.subtask);
+    if (!s || wordsDigest(s) !== digestOf(wordsOf(p.to))) {
+      wait('stale', 'the plan no longer holds the words it tells: approve the plan again');
+      continue;
+    }
+    const blockers = rebindBlockers({ workflowPath, subtaskId: p.subtask });
+    if (blockers.length > 0) {
+      wait('blocked', blockers.join('; '));
+      continue;
+    }
+    const info = scanRoot === null ? { status: 'unreadable', detail: 'no state root' } : rebindChildInfo({ repoRoot: scanRoot, macroId, subtask: s });
+    if (info.status !== 'found' || info.child !== p.child) {
+      wait('no-child', `the child it tells is not the subtask's child now (${info.detail ?? info.status})`);
+      continue;
+    }
+    if (info.child_state !== 'active') {
+      wait('archived', `${p.child} is archived, with nothing left to run: approve the plan again, which shows it archived`);
+      continue;
+    }
+    const problem = engineerDeliveryProblem(engineerRoot);
+    if (problem) {
+      wait('no-engineer', problem);
+      continue;
+    }
+    const text = deliveryNote({ macroId, subtaskId: p.subtask, approvedAt: parsed.record.approval.at, from: p.from, to: p.to, restate: p.restate === true });
+    const dir = mkdtempSync(join(tmpdir(), 'agentic-rebind-'));
+    try {
+      const file = join(dir, 'note.md');
+      writeFileSync(file, `${text}\n`);
+      const args = [
+        join(engineerRoot, 'scripts', 'state.mjs'), 'append', '--workflow-path', info.path, '--host', host,
+        '--phase-label', deliveryHeading(p.delivery_id), '--phase-note-file', file, '--event', 'updated',
+      ];
+      // Under an admission of its own (an approval, or rebind-deliver run by
+      // hand) the append is fenced to it; a run's worker is inside the run's
+      // delivery group already (rebind-boundary.mjs runHeld).
+      if (admission?.admissionId) {
+        const appended = await fencedAppend(args, admission);
+        if (!appended.ok) {
+          wait('failed', appended.detail);
+          continue;
+        }
+      } else {
+        execFileSync(process.execPath, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: APPEND_TIMEOUT_MS });
+      }
+    } catch (err) {
+      wait('failed', `the engineer's append refused: ${String(err.stderr ?? err.message).trim().split('\n')[0]}`);
+      continue;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    let written = '';
+    try {
+      written = readFileSync(info.path, 'utf8').replace(/\r\n/g, '\n');
+    } catch (err) {
+      wait('failed', `the child could not be read back (${err.code ?? err.message})`);
+      continue;
+    }
+    if (!written.includes(`\n### ${deliveryHeading(p.delivery_id)}\n\n${text}\n`)) {
+      wait('failed', 'the child read back does not hold the note as written');
+      continue;
+    }
+    // A second file bearing the child may have appeared while the note was
+    // written: then the note written is not known to be the one its work
+    // answers to, and it waits, as it would have before.
+    const copiesAfter = childCopies(scanRoot, p.child);
+    if (copiesAfter !== null) {
+      wait('copies', `${copiesRefusal(p.child, { ...copiesAfter, archived: false })}; the note was written to ${info.path}, but waits until then`);
+      continue;
+    }
+    await acknowledgeDelivery({ workflowPath, host, deliveryId: p.delivery_id, now });
+    wait('delivered', null);
+  }
+  return results;
+}
+
+const APPEND_TIMEOUT_MS = 60_000;
+
+// The gate a fenced append runs behind: it waits for the line `start` on its
+// stdin, then runs the script its arguments name (the engineer's state.mjs,
+// with its own arguments) in this same process, whose argv is already the
+// script's. The process recorded is so the writer itself, on every platform,
+// Windows included, where no process group holds a child. A stdin closed
+// first (its starter gone) ends it with nothing run.
+const APPEND_GATE = "let got='';process.stdin.setEncoding('utf8');" +
+  "process.stdin.on('data',(c)=>{got+=c;const nl=got.indexOf('\\n');if(nl===-1)return;process.stdin.destroy();" +
+  "if(got.slice(0,nl)!=='start')process.exit(3);" +
+  "import(require('node:url').pathToFileURL(process.argv[1]).href).catch((e)=>{process.stderr.write(String(e&&e.stack||e)+'\\n');process.exit(1)})});" +
+  "process.stdin.on('end',()=>process.exit(3));";
+
+// Whether any process is left in process group `pgid` (EPERM counts as left).
+function groupLeft(pgid) {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (err) {
+    return err.code === 'EPERM';
+  }
+}
+
+/**
+ * ADR-0068 Decision 8, item 4 — an interactive delivery's engineer append,
+ * fenced to the admission it runs under, as rebind-boundary.mjs runHeld fences
+ * a run's: it starts idle in a process group of its own, the admission's entry
+ * records that group (run-locks.mjs recordAdmissionWriter) before the line
+ * `start` lets it write, and the group is emptied before this returns. An
+ * approver killed meanwhile leaves its entry naming the group, and `admission
+ * release` refuses while anything is left in it, so no later approval passes
+ * beside a note still being written. A group left after SIGKILL sets
+ * `admission.keep`: the entry stays for the owner. { ok } or { ok: false, detail }.
+ */
+async function fencedAppend(args, admission) {
+  const detached = process.platform !== 'win32';
+  const child = spawn(process.execPath, ['-e', APPEND_GATE, ...args], { detached, stdio: ['pipe', 'ignore', 'pipe'] });
+  child.stdin.on('error', () => {});
+  let stderr = '';
+  child.stderr.setEncoding('utf8').on('data', (c) => { stderr += c; });
+  const exited = new Promise((resolve) => {
+    child.on('error', (err) => resolve({ err }));
+    child.on('close', (code, signal) => resolve({ code, signal }));
+  });
+  const kill = () => { try { process.kill(detached ? -child.pid : child.pid, 'SIGKILL'); } catch { /* gone */ } };
+  try {
+    if (!Number.isInteger(child.pid)) throw new Error('its process did not start');
+    recordAdmissionWriter({
+      checkout: admission.stateRoot, macroId: admission.macroId, admissionId: admission.admissionId,
+      writer: { pid: child.pid, pgid: detached ? child.pid : null, fingerprint: await processFingerprint(child.pid) },
+    });
+  } catch (err) {
+    kill();
+    child.stdin.destroy();
+    await exited;
+    return { ok: false, detail: `the writer of the note could not be recorded on the admission (${err?.message ?? err}); nothing was written` };
+  }
+  child.stdin.end('start\n');
+  const timer = setTimeout(kill, APPEND_TIMEOUT_MS);
+  const { err, code, signal } = await exited;
+  clearTimeout(timer);
+  // Nothing the append began outlives its record on the admission.
+  if (detached && groupLeft(child.pid)) {
+    kill();
+    for (let i = 0; i < 20 && groupLeft(child.pid); i += 1) await new Promise((r) => { setTimeout(r, 100); });
+    if (groupLeft(child.pid)) {
+      admission.keep = true;
+      return {
+        ok: false,
+        detail: `a process of the note's writer (process group ${child.pid}) is still there after SIGKILL; the admission is kept, ` +
+          'and admission release refuses, until that group is empty',
+      };
+    }
+  }
+  if (err || code !== 0) {
+    return { ok: false, detail: `the engineer's append refused: ${String(stderr || err?.message || `exit ${code ?? signal}`).trim().split('\n')[0]}` };
+  }
+  return { ok: true };
+}
+
+// ADR-0068 Decision 8, item 4 — `rebind-deliver --await-start`: a run starts
+// the command idle and sends the line `start` only once its process is on the
+// run's locks (adapters/claude/autopilot/rebind-boundary.mjs), as a worker
+// gets its prompt only after the driver recorded it. A driver that dies before
+// then leaves a process that writes nothing and exits when stdin closes.
+function awaitStartLine(stream = process.stdin) {
+  return new Promise((resolve, reject) => {
+    let got = '';
+    let settled = false;
+    const settle = (err) => {
+      if (settled) return;
+      settled = true;
+      stream.destroy();
+      if (err) reject(err);
+      else resolve();
+    };
+    stream.setEncoding('utf8');
+    stream.on('data', (chunk) => {
+      got += chunk;
+      const nl = got.indexOf('\n');
+      if (nl === -1) return;
+      settle(got.slice(0, nl) === 'start' ? null : new Error('rebind-deliver: --await-start read another line than "start"; nothing was written'));
+    });
+    stream.on('end', () => settle(new Error(
+      'rebind-deliver: --await-start: stdin closed before the line "start" (the run never put this delivery on its locks); nothing was written',
+    )));
+    stream.on('error', (err) => settle(err));
+  });
 }
 
 // A word the POSIX shells (bash, zsh) read back as `value`, quotes and all.
@@ -5572,11 +6927,16 @@ function cliPrintHelp() {
       '    Every shape also carries approval: {status: approved|pending|absent,',
       '    hash_ok: true|false|null} (ADR-0063 D6; hash_ok is null unless approved).',
       '',
-      '  plan-hash --workflow-path <path>',
+      '  plan-hash --workflow-path <path> [--repo-root <path>]',
       '    ADR-0063 D6 — print {plan_hash, subtasks, approval, approved_at,',
-      '    awaiting_owner_gate, awaiting_owner_pointer}. plan_hash is sha256 over the',
-      '    canonical JSON of subtasks, the plan projected to id, label, branch,',
-      '    blocked_by, verb, profile and topic (progress fields are not covered).',
+      '    awaiting_owner_gate, awaiting_owner_pointer, rebind_view, rebind_digest}.',
+      '    plan_hash is sha256 over the canonical JSON of subtasks, the plan',
+      '    projected to id, label, branch, blocked_by, verb, profile and topic',
+      '    (progress fields are not covered). ADR-0068 Decision 8 — rebind_view.rows',
+      '    is one row per in-progress subtask the approval would rebind, tell, or',
+      '    show as not rebindable or not compared, each with its child, state, next',
+      '    step and recorded dispatch; rebind_digest binds plan-approve to them.',
+      '    The children are found from --repo-root, else the macro\'s state root.',
       '',
       '  approval-gate --workflow-path <path> --host claude|codex --subtask-json <json>',
       '    ADR-0063 D4 rule 3 — the approval gate of /orchestrator:next, for the',
@@ -5591,12 +6951,34 @@ function cliPrintHelp() {
       '    reason, autopilot, approval, pointer}.',
       '',
       '  plan-approve --workflow-path <path> --host claude|codex [--expect-hash <hex>]',
+      '               [--expect-rebind <hex>] [--engineer-root <path>] [--repo-root <path>]',
       '    ADR-0063 D6 — record the owner\'s approval of the plan as it stands:',
       '    plan_approval_status=approved, approved_at, plan_hash; removes the',
       '    plan-approval gate. Exit 1 when --expect-hash differs from the current',
       '    hash, while plan-conflict is set, on an empty plan, on a terminal macro,',
       '    and when AGENTIC_AUTOPILOT names an autopilot run. The same hash approved',
       '    again writes nothing ({noop: true}). JSON {workflowPath, plan_hash, approved_at}.',
+      '    ADR-0068 Decision 8 — it joins the macro\'s run lock first (exit 1 beside',
+      '    a live run or an admitted command; a killed approval\'s entry is named',
+      '    with its release command). It records the rebinding of each in-progress',
+      '    child whose topic or profile changed since its dispatch (plan_rebindings,',
+      '    plan_approval_id), and the notes due to active children, which it then',
+      '    writes with the engineer\'s append (--engineer-root, else the discovered',
+      '    engineer). --expect-rebind is plan-hash\'s rebind_digest, required when',
+      '    rebind_view has rows; a different view is refused, as is a rebinding of',
+      '    a held subtask. JSON adds rebindings and deliveries; a delivery that',
+      '    waits is named on stderr.',
+      '',
+      '  rebind-deliver --workflow-path <path> --host claude|codex [--subtask-id <id>]',
+      '                 [--engineer-root <path>] [--repo-root <path>] [--await-start]',
+      '    ADR-0068 Decision 8, item 4 — tell the active children the changes the',
+      '    current approval recorded and did not finish telling, joining the run',
+      '    lock as plan-approve does. JSON {deliveries: [{delivery_id, child,',
+      '    subtask, status, detail}]}; status delivered, acknowledged, or why it',
+      '    waits (unreadable, stale, blocked, archived, no-child, no-engineer, failed).',
+      '    --await-start: do nothing until the line "start" arrives on stdin, and',
+      '    exit 1 writing nothing when stdin closes first (a run starts it so, and',
+      '    sends the line once the process is on the run\'s locks).',
       '',
       '  awaiting-owner-set --workflow-path <path> --host claude|codex',
       '                     --gate plan-approval|plan-conflict',
@@ -5746,6 +7128,7 @@ function cliPrintHelp() {
       '                 [--event updated|resumed] [--expect-branch <branch>]',
       '                 [--expect-verb <verb>] [--expect-profile <profile>]',
       '                 [--expect-topic <topic>] [--expect-dispatch <json> | --waive-dispatch]',
+      '                 [--waive-told]',
       '                 [--correct] [--reason-file <path>|- | --reason <text>]',
       '    ADR-0019 PR-C0 — atomic single-subtask mutation. Updates one',
       '    plan.subtasks[i] entry by id without rewriting the whole plan.',
@@ -5770,6 +7153,11 @@ function cliPrintHelp() {
       '    expectation given is compared on its own. --waive-dispatch (reason',
       '    required, with --engineer-workflow-id) writes without that comparison when',
       '    the record cannot be read; the macro body records the waiver and the reason.',
+      '    A re-attach (--status in_progress) or a completion binds its child only',
+      '    while the macro\'s record of rebindings vouches for what it was told',
+      '    (ADR-0068 Decision 8, item 4). --waive-told (reason required, with',
+      '    --status completed and --engineer-workflow-id) completes an archived child',
+      '    it cannot vouch for; the macro body records the waiver and the reason.',
       '',
       '  bulk-subtask-status --workflow-path <path> --host claude|codex',
       '                      --from-statuses <csv> --to-status deferred|abandoned',
@@ -5889,6 +7277,33 @@ function cliPrintHelp() {
       '',
     ].join('\n'),
   );
+}
+
+// The engineer plugin a delivery writes with: --engineer-root, else the one
+// /orchestrator:next would dispatch to (discover-engineer.mjs), else none
+// (the note stays pending, and the result says why).
+async function cliEngineerRoot(flags) {
+  if (flags['engineer-root']) return flags['engineer-root'];
+  try {
+    const { discoverEngineerPluginRoot } = await import('./discover-engineer.mjs');
+    return await discoverEngineerPluginRoot({ stderr: { write() {} } });
+  } catch {
+    return null;
+  }
+}
+
+function cliReportDeliveries(results, host) {
+  const prefix = host === 'codex' ? '$' : '/';
+  for (const r of results) {
+    if (r.status === 'delivered' || r.status === 'acknowledged') {
+      process.stderr.write(`✓ told ${r.child} (${r.subtask}) the change: delivery ${r.delivery_id} ${r.status}\n`);
+    } else {
+      process.stderr.write(
+        `⚠ ${r.child} (${r.subtask}) is not told yet, delivery ${r.delivery_id} ${r.status}: ${r.detail}. Its work is ` +
+          `not bound to the new words until it is (a run tells it at its next boundary; state.mjs rebind-deliver, or ${prefix}orchestrator:approve again).\n`,
+      );
+    }
+  }
 }
 
 async function cliMain(argv) {
@@ -6018,6 +7433,17 @@ async function cliRun(subcommand, flags) {
           return 1;
         }
         if (admissionAction === 'release') {
+          // ADR-0068 Decision 8, item 4 — a delivery's writer the admission
+          // started (fencedAppend) may still append a note: its entry stays.
+          const writer = await admissionWriterAlive({ checkout: flags.checkout, macroId: flags.macro, admissionId: flags.admission });
+          if (writer) {
+            process.stderr.write(
+              `state.mjs admission release: refused: the writer of an instruction note this admission started ` +
+                `(process group ${writer.pgid ?? writer.pid}) is still running, and may still append it to a child ` +
+                '(ADR-0068 Decision 8, item 4). Wait for it to end, or stop it, then release again.\n',
+            );
+            return 1;
+          }
           const removed = releaseAdmission({ checkout: flags.checkout, macroId: flags.macro, admissionId: flags.admission });
           process.stderr.write(`released ${removed.length} admission entr${removed.length === 1 ? 'y' : 'ies'}\n`);
           return 0;
@@ -6227,6 +7653,9 @@ async function cliRun(subcommand, flags) {
         cliRequire(flags, ['workflow-path']);
         const { frontmatter } = await readWorkflow(flags['workflow-path']);
         const subtasks = Array.isArray(frontmatter?.plan?.subtasks) ? frontmatter.plan.subtasks : [];
+        // ADR-0068 Decision 8, item 2 — what the approval would rebind and
+        // tell, and the digest plan-approve --expect-rebind binds it to.
+        const view = planRebindView({ workflowPath: flags['workflow-path'], repoRoot: flags['repo-root'] || undefined });
         process.stdout.write(`${JSON.stringify({
           plan_hash: computePlanHash(subtasks),
           subtasks: planHashProjection(subtasks),
@@ -6234,6 +7663,8 @@ async function cliRun(subcommand, flags) {
           approved_at: frontmatter.plan_approval_approved_at ?? null,
           awaiting_owner_gate: frontmatter.awaiting_owner_gate ?? null,
           awaiting_owner_pointer: frontmatter.awaiting_owner_pointer ?? null,
+          rebind_view: { rows: view.rows, carried: view.carried, untouched: view.untouched, unknown: view.unknown },
+          rebind_digest: view.digest,
         })}\n`);
         return 0;
       }
@@ -6260,13 +7691,16 @@ async function cliRun(subcommand, flags) {
 
       case 'plan-approve': {
         cliRequire(flags, ['workflow-path', 'host']);
-        if ('expect-hash' in flags && flags['expect-hash'].length === 0) {
-          throw new Error('--expect-hash needs a value');
+        for (const flag of ['expect-hash', 'expect-rebind']) {
+          if (flag in flags && flags[flag].length === 0) throw new Error(`--${flag} needs a value`);
         }
         const result = await approvePlan({
           workflowPath: flags['workflow-path'],
           host: flags.host,
           expectHash: flags['expect-hash'],
+          expectRebind: flags['expect-rebind'],
+          engineerRoot: await cliEngineerRoot(flags),
+          repoRoot: flags['repo-root'] || undefined,
         });
         const envelope = {
           workflowPath: result.workflowPath,
@@ -6274,7 +7708,28 @@ async function cliRun(subcommand, flags) {
           approved_at: result.approvedAt,
         };
         if (result.noop) envelope.noop = true;
+        if (result.rebindings > 0) envelope.rebindings = result.rebindings;
+        if (result.deliveries) envelope.deliveries = result.deliveries;
+        cliReportDeliveries(result.deliveries ?? [], flags.host);
         process.stdout.write(`${JSON.stringify(envelope)}\n`);
+        return 0;
+      }
+
+      // ADR-0068 Decision 8, item 4 — complete the notes an approval recorded
+      // and did not finish (deliverPendingRebindings). Exit 0 with the results
+      // as JSON, each one that waits named on stderr; exit 1 on a refusal.
+      case 'rebind-deliver': {
+        cliRequire(flags, ['workflow-path', 'host']);
+        if ('await-start' in flags) await awaitStartLine();
+        const results = await deliverPendingRebindings({
+          workflowPath: flags['workflow-path'],
+          host: flags.host,
+          engineerRoot: await cliEngineerRoot(flags),
+          repoRoot: flags['repo-root'] || undefined,
+          subtaskId: flags['subtask-id'] || undefined,
+        });
+        cliReportDeliveries(results, flags.host);
+        process.stdout.write(`${JSON.stringify({ deliveries: results })}\n`);
         return 0;
       }
 
@@ -6718,6 +8173,7 @@ async function cliRun(subcommand, flags) {
           expectTopic: flags['expect-topic'],
           expectDispatch: flags['expect-dispatch'],
           waiveDispatch: cliPresenceFlag(flags, 'waive-dispatch'),
+          waiveTold: cliPresenceFlag(flags, 'waive-told'),
         });
         // Emit JSON envelope so callers (PR-C engineer parent-writeback
         // helper, PR-D /next + /done runbooks) can parse the result

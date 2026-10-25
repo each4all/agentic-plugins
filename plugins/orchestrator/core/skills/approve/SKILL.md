@@ -13,6 +13,15 @@ hash shown is the hash approved, and a plan that changes in between is
 refused. It does not mutate `current_phase`, `next_action`, or
 `plan.subtasks[]`.
 
+When the plan changed the `topic` or `profile` of a subtask already in
+progress, the approval also rebinds that subtask's child to the words approved
+(ADR-0068 Decision 8), records the rebinding with the approval
+(`plan_rebindings`, `plan_approval_id`), and tells each active child the
+change as a phase note, old and new words; the child's next step stays the one
+it recorded. Its work is then accepted at its terminal note and at
+`orchestrator:done` instead of being refused `dispatch-changed`. A `branch`
+or `verb` change is never rebound.
+
 Any later `plan-set` returns the plan to pending approval
 (`awaiting_owner_gate=plan-conflict` when its Plan-verify verdict is
 `conflict`, `plan-approval` otherwise). Under ADR-0063's Claude autopilot,
@@ -30,6 +39,7 @@ for a plan pending approval or changed since it was approved.
 | `state.mjs plan-hash` (read-only) | Yes | Yes |
 | `state.mjs plan-approve` | `--host claude` | `--host codex` |
 | `state.mjs awaiting-owner-clear --gate plan-conflict` | `--host claude` | `--host codex` |
+| `state.mjs rebind-deliver` (ADR-0068 Decision 8) | `--host claude` | `--host codex` |
 | Schema preservation | Yes | Yes |
 
 Approval is host-neutral state: a plan approved on Codex is approved for a
@@ -107,11 +117,46 @@ node "<plugin-root>/scripts/state.mjs" plan-hash --workflow-path "$MACRO_PATH"
 ```
 
 It prints `{plan_hash, subtasks, approval, approved_at, awaiting_owner_gate,
-awaiting_owner_pointer}`. `subtasks` is exactly what the hash covers: each
-subtask's id, label, branch, blocked_by, verb, profile and topic. Progress
-(status, the engineer workflow, commit, pull request) is not covered, so a plan
-stays approved while it executes. Show the owner the subtask table and the
-hash.
+awaiting_owner_pointer, rebind_view, rebind_digest}`. `subtasks` is exactly
+what the hash covers: each subtask's id, label, branch, blocked_by, verb,
+profile and topic. Progress (status, the engineer workflow, commit, pull
+request) is not covered, so a plan stays approved while it executes. Show the
+owner the subtask table and the hash.
+
+`rebind_view.rows` holds one row per in-progress subtask the approval
+rebinds, tells, or cannot rebind (ADR-0068 Decision 8, item 2): its `child`,
+`child_state` (`active` or `archived`), `next_step`, the `kind`
+(`rebind` on the fields in `changed`; `not-rebindable`, a `branch` or
+`verb` change whose writes stay refused `dispatch-changed`; `matches`;
+`told`, a subtask not in progress, in `status`, whose active child was told
+other words and is told the change, though nothing rebinds it; or
+why no child is rebound, in `detail`), the fields `not_compared` because the
+child recorded none, and `delivery`, the fields a note will tell it
+(with `restate`, a note that tells the words in full: the approval replaces a
+record it could not read, or the child was there when an earlier approval
+replaced one and no note has told it since, so what the child was last told
+is not known). A row of an archived child that the told check below will
+refuse carries `refused`, the refusal, and is shown even when it matches its
+dispatch; render it as `refused at every write that binds it: <refused>`. The
+macro's audit records such a row refused, never rebound.
+`rebind_view.unknown` names the in-progress subtasks in that state that no
+note restates yet; show them too: a run holds their next step until an
+approval restates it. Whatever the view shows, and whatever a child's
+dispatch, the writes that bind it (the re-attach, the terminal writeback and
+`orchestrator:done`'s completion) refuse a child a note to which is still
+pending, one last told other words for its subtask, and one whose last words
+the record cannot vouch for, until a note has told it (a run's boundary, or
+`state.mjs rebind-deliver`; ADR-0068 Decision 8, item 4), and a run does not
+step it: the run's boundary asks the same check of the child it would step
+(the recorded owner, or, with none, the one it selected). An approval tells
+only the child it would rebind: while no owner is recorded and several
+workflows claim the subtask, record the child its owner first
+(`subtask-update --expect-dispatch`, which `orchestrator:done` prints). An archived child,
+which no note reaches, is completed by `orchestrator:done --waive-dispatch`
+with a reason, which the macro records; or the plan is revised back to the
+words it was last told.
+`rebind_view.carried` lists the completed subtasks whose rebinding is kept.
+Show the owner a second table of these rows, and keep `rebind_digest`.
 
 ---
 
@@ -120,15 +165,35 @@ hash.
 ```bash
 node "<plugin-root>/scripts/state.mjs" plan-approve \
   --workflow-path "$MACRO_PATH" --host <claude|codex> \
-  --expect-hash "<plan_hash from Phase 1>"
+  --expect-hash "<plan_hash from Phase 1>" \
+  --expect-rebind "<rebind_digest from Phase 1>"
 ```
 
 It prints `{workflowPath, plan_hash, approved_at}` (`noop: true` when this
-hash was already approved; nothing is written), removes the `plan-approval`
-gate, and appends `### Plan approved at <iso> (hash <12 hex>)` to the macro.
-It exits 1 with the reason when:
+hash was already approved and nothing is left to record or tell; nothing is
+written), with `rebindings` and `deliveries` when it rebound and told
+children, removes the `plan-approval` gate, and appends `### Plan approved at
+<iso> (hash <12 hex>)` to the macro, with each rebinding, row and note. A
+child it could not tell yet is named on stderr (`⚠ … is not told yet`): its
+work is not accepted under the new words until it is; `state.mjs
+rebind-deliver --workflow-path "$MACRO_PATH" --host <claude|codex>` tells it,
+as a Claude autopilot run does before the child's next step. It exits 1 with
+the reason when:
 
 - the plan changed since Phase 1 — show the new plan and ask again;
+- the in-progress children changed since Phase 1 (a child's state, recorded
+  dispatch or next step) — show the new rows and ask again;
+- a run of the macro is live, or another command holds its run lock: every
+  approval joins that lock (ADR-0068 Decision 8, item 3). Stop the run or wait
+  for it to drain, then approve again. An approval killed while it held the
+  lock leaves its entry; the refusal names the `state.mjs admission release …`
+  command that removes it once that process is gone. The release refuses
+  while a note's writer the approval started is still running (it may still
+  append its note): wait for it to end;
+- the approval would rebind or tell a subtask that is held, or whose release
+  awaits its comparison;
+- the record of its rebindings would exceed its cap (the in-progress
+  instruction text it tells is too long);
 - `awaiting_owner_gate=plan-conflict` — the Plan-verify ensemble disagreed.
   The owner revises the plan (`orchestrator:plan`), or decides the conflict,
   clears it with `state.mjs awaiting-owner-clear --workflow-path "$MACRO_PATH"
@@ -153,10 +218,21 @@ Claude Code only (ADR-0063 D9).
 
 ---
 
+Two limits, stated as they are (ADR-0068 Decision 8, item 7): until the
+persona's operations are visible to the orchestrator, the approval cannot see
+one open in a person's session in that subtask's lane, so the owner closes
+their own sessions there first; and an orchestrator older than this release
+joins no lock and keeps the `plan_approval_id` it does not know, so its
+approval can pass between two looks of a live run, and its approval of the
+identical plan within the same second cannot be told from this one's.
+Approve from hosts that run this release.
+
+---
+
 ## Anti-patterns
 
 - Do not approve on the owner's behalf, or as a side effect of another
   command.
 - Do not clear `plan-conflict` without the owner's decision on the conflict.
 - Do not edit the approval keys in the workflow frontmatter by hand.
-- Do not approve a hash the owner was not shown.
+- Do not approve a hash, or a rebinding view, the owner was not shown.

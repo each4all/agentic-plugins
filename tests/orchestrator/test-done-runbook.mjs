@@ -19,10 +19,17 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { substituteClaudeArguments } from '../_claude-command-substitution.mjs';
 import { withArgs } from './_command-args-file.mjs';
+import { isSessionVariable } from '../../scripts/lib/session-env.mjs';
+
+// Run on its own from an agentic session, this file would inherit the session
+// (`npm test` clears it first, tests/_hermetic-env.mjs): the fixtures' own
+// writes would follow its AGENTIC_STATE_BASE. Cleared here, before any of them;
+// the runbook shells start without it too (runbookEnv).
+for (const name of Object.keys(process.env)) if (isSessionVariable(name)) delete process.env[name];
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const ORCH_ROOT = resolve(REPO_ROOT, 'plugins/orchestrator');
-const { createWorkflow, setPlan, updateSubtask, readWorkflow } = await import(resolve(ORCH_ROOT, 'scripts/state.mjs'));
+const { createWorkflow, setPlan, updateSubtask, readWorkflow, parseWorkflowFile, assembleWorkflowFile } = await import(resolve(ORCH_ROOT, 'scripts/state.mjs'));
 const { parseCommandArguments } = await import(resolve(ORCH_ROOT, 'scripts/lib/command-args.mjs'));
 
 const DONE_TEXT = await readFile(resolve(ORCH_ROOT, 'commands/done.md'), 'utf8');
@@ -82,13 +89,21 @@ function withParsedArgs(block, vars, reason) {
   return block.replace(PARSE_CALL, () => `ARGS_JSON='${JSON.stringify(fields).replace(/'/g, "'\\''")}'`);
 }
 
-const GIT_ENV = {
-  ...process.env,
+const GIT_IDENTITY = {
   GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@t.local',
   GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@t.local',
   GIT_CONFIG_NOSYSTEM: '1',
 };
+const GIT_ENV = { ...process.env, ...GIT_IDENTITY };
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, env: GIT_ENV, encoding: 'utf8' }).trim();
+
+// The environment a runbook shell starts from: this process's, read when the
+// block runs, without the agentic session's variables (scripts/lib/session-env.mjs).
+// `npm test` clears them before any test, but a file run on its own from an
+// agentic session (an autopilot worker) inherits them: AGENTIC_ORCHESTRATOR_ROOT
+// would run the installed orchestrator instead of this tree's. A case that needs
+// one sets it itself.
+const runbookEnv = () => Object.fromEntries(Object.entries({ ...process.env, ...GIT_ENV, ...GIT_IDENTITY }).filter(([k]) => !isSessionVariable(k)));
 
 // Every block runs under bash and zsh (Critique J4); a shell that is not
 // installed (zsh on the CI image) is reported as skipped, not passed. Not
@@ -207,7 +222,7 @@ async function withFixture(fn, { topicA, idA = 'A' } = {}) {
         ? withArgs(block, text, { line: ARGS_LINE[VARIANT], base: dir })
         : withParsedArgs(block, all, reason);
       const full = `${prelude}\ncd '${work}'\n${script}`;
-      const base = { ...GIT_ENV, PATH: `${bin}:${dirname(process.execPath)}:${process.env.PATH}`, FAKE_GH_PRS: prsFile };
+      const base = { ...runbookEnv(), PATH: `${bin}:${dirname(process.execPath)}:${process.env.PATH}`, FAKE_GH_PRS: prsFile };
       let shellEnv;
       if (codex) {
         const { CLAUDE_PLUGIN_ROOT: _r, AGENTIC_ORCHESTRATOR_ROOT: _o, AGENTIC_HOST: _h, ...rest } = { ...base, ...env };
@@ -243,6 +258,34 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
       strictEqual(a.pr_url, 'https://github.com/o/r/pull/7');
       strictEqual(a.engineer_workflow_id, ENGINEER_ID);
       strictEqual((await subtask('B')).status, 'pending');
+    });
+  });
+
+  // A file run on its own from an agentic session inherits the session's
+  // variables; the runbook shell starts without them (runbookEnv). Planted
+  // here, where a variable inherited at load would not show: the plugin root
+  // names a directory with no state.mjs, and the run marker would put the
+  // block under autopilot. The control passes them as a case does, and fails.
+  it('the runbook shell starts without the session\'s inherited AGENTIC_* variables', async () => {
+    await withFixture(async ({ dir, done, subtask }) => {
+      const planted = {
+        AGENTIC_ORCHESTRATOR_ROOT: join(dir, 'planted-orchestrator-root'),
+        AGENTIC_ENGINEER_ROOT: join(dir, 'planted-engineer-root'),
+        AGENTIC_AUTOPILOT: 'autopilot-20261023T000000Z-abcdef',
+      };
+      const control = await done({}, { env: planted });
+      notStrictEqual(control.status, 0, 'the planted variables do not reach the block: the check proves nothing');
+      strictEqual((await subtask('A')).status, 'in_progress');
+      const saved = Object.fromEntries(Object.keys(planted).map((k) => [k, process.env[k]]));
+      Object.assign(process.env, planted);
+      let r;
+      try {
+        r = await done({});
+      } finally {
+        for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+      }
+      strictEqual(r.status, 0, r.stderr);
+      strictEqual((await subtask('A')).status, 'completed');
     });
   });
 
@@ -595,15 +638,54 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
     });
   }
 
-  it('--waive-dispatch is refused while the owner\'s dispatch can be read, and nothing is written', async () => {
+  it('--waive-dispatch is refused while the owner\'s dispatch can be read and the record vouches for it, and nothing is written', async () => {
     await withFixture(async ({ done, subtask, macroPath }) => {
       await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host: 'claude', engineerWorkflowId: ENGINEER_ID });
       const before = await readFile(macroPath, 'utf8');
       const r = await done({ waive_dispatch: true }, { reason: 'nothing to waive' });
       strictEqual(r.status, 1, r.stderr);
-      ok(r.stderr.includes("--waive-dispatch applies only when the owner's dispatch cannot be read"), r.stderr);
+      ok(r.stderr.includes('waives nothing: the macro\'s record vouches for what'), r.stderr);
       strictEqual(await readFile(macroPath, 'utf8'), before);
       strictEqual((await subtask('A')).status, 'in_progress');
+    });
+  });
+
+  // ADR-0068 Decision 8, item 4 — the macro's record says the archived owner
+  // was last told other words for A than A's now (the plan revised back after
+  // a note, say): its dispatch matches, yet done refuses, since no note reaches
+  // an archived child. --waive-dispatch with a reason is its way out, and the
+  // macro records the waiver.
+  it('an archived owner last told other words is refused; --waive-dispatch with a reason completes it and is recorded', async () => {
+    await withFixture(async ({ done, subtask, macroPath }) => {
+      await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host: 'claude', engineerWorkflowId: ENGINEER_ID });
+      const parsed = parseWorkflowFile(await readFile(macroPath, 'utf8'));
+      parsed.frontmatter.plan_rebindings = JSON.stringify({
+        v: 1, approval: { id: 'a'.repeat(32), at: '2026-10-20T00:00:00Z', hash: 'b'.repeat(64) },
+        rebindings: [], carried: [], pending: [],
+        told: { [ENGINEER_ID]: { subtask: 'A', profile: '', topic: 'other words', delivery_id: 'd-0123456789abcdef', at: '2026-10-20T00:00:00Z' } },
+      });
+      await writeFile(macroPath, assembleWorkflowFile(parsed.frontmatter, parsed.body));
+      const before = await readFile(macroPath, 'utf8');
+      const refused = await done({});
+      strictEqual(refused.status, 1, refused.stderr);
+      ok(refused.stderr.includes(`${ENGINEER_ID} was last told other words for subtask A (delivery d-0123456789abcdef)`), refused.stderr);
+      ok(refused.stderr.includes('/orchestrator:done --waive-dispatch with a reason completes the subtask'), refused.stderr);
+      strictEqual(await readFile(macroPath, 'utf8'), before);
+      // The waiver is of the told check only: the dispatch is still compared,
+      // so a subtask moved to another branch is refused all the same.
+      await writeFile(macroPath, before.replace('branch: "feat/a"', 'branch: "feat/a2"'));
+      const moved = await done({ no_commit: true, waive_dispatch: true }, { reason: 'anyway' });
+      strictEqual(moved.status, 1, moved.stderr);
+      ok(moved.stderr.includes('(dispatch-changed)'), moved.stderr);
+      strictEqual((await subtask('A')).status, 'in_progress');
+      await writeFile(macroPath, before);
+      const reason = 'the child finished under the words it was told; the merged pull request is the work';
+      const r = await done({ waive_dispatch: true }, { reason });
+      strictEqual(r.status, 0, r.stderr);
+      strictEqual((await subtask('A')).status, 'completed');
+      const { body } = await readWorkflow(macroPath);
+      ok(body.includes(`Told check waived (--waive-dispatch): ${ENGINEER_ID} is not bound to subtask "A"`), body);
+      ok(body.includes(`Reason: ${reason}`), body);
     });
   });
 

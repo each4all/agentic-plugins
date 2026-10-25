@@ -176,6 +176,11 @@ export async function perform({ prompt, cwd, env }) {
       repoRoot: cwd, verb: sub.verb, host: 'claude', profile: sub.profile, originalRequest: sub.topic,
       gitBaseline: { branch: sub.branch, head: git('rev-parse', 'HEAD'), status_digest: createHash('sha256').update(status).digest('hex') },
       currentPhase: 'phase-0-bootstrap', nextAction: 'Run the verb', parentWorkflow: macroId, originatingSubtask: id,
+      // `"recordDispatch": true` records the selection, as /orchestrator:next
+      // does since ADR-0067 Decision 4, item 5 (ADR-0068 Decision 8 compares it).
+      ...(scenario.recordDispatch
+        ? { dispatchSelection: { subtask: id, branch: sub.branch, verb: sub.verb, profile: sub.profile ?? '', topic: sub.topic ?? '' } }
+        : {}),
     });
     const wf = (await eng.readWorkflow(filePath)).frontmatter.workflow_id;
     if (action === 'pending-sleep') {

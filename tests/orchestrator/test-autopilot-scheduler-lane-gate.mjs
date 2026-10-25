@@ -237,6 +237,13 @@ describe('no worker spawns into a lane with a persona operation open', () => {
       ok(Date.parse(a.started_at) >= closed, 'A started only once its operation closed');
       const created = r.lanes.filter((e) => e.event === 'created' && e.subtask_id === 'A').map((e) => Date.parse(e.at));
       ok(created.length > 0 && created.every((at) => at >= closed - 1), `no lane was created for A while it was busy: ${JSON.stringify(created)} vs ${closed}`);
+      // Nor was its creation begun: the creation's marker, which awaits the
+      // park records' lock, is not written for a lane laneBusy already holds
+      // when its step is admitted (an operation that opens during that wait
+      // is the check after the marker's, tested below).
+      const begun = readFileSync(join(PK.parksDir(t.work, t.fx.macroId), 'events.jsonl'), 'utf8').trim().split('\n')
+        .map((l) => JSON.parse(l)).filter((e) => e.event === 'creating' && e.subtask_id === 'A').map((e) => Date.parse(e.at));
+      ok(begun.length > 0 && begun.every((at) => at >= closed - 1), `no creation of A's lane began while it was busy: ${JSON.stringify(begun)} vs ${closed}`);
       strictEqual(r.halt.reason, 'awaiting-landing');
     } finally {
       t.fx.cleanup();
