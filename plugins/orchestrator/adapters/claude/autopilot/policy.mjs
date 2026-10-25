@@ -21,7 +21,7 @@ import { createHash } from 'node:crypto';
 import { subtaskReadiness, VALID_MACRO_OWNER_GATES } from '../../../scripts/state.mjs';
 
 export const VERBS = Object.freeze(['investigate', 'frame', 'decide', 'compose', 'critique', 'refine']);
-export const NEXT_STEP_KINDS = Object.freeze(['verb', 'commit', 'owner-decision', 'done']);
+export const NEXT_STEP_KINDS = Object.freeze(['verb', 'commit', 'owner-decision', 'done', 'verify']);
 export const CONFIDENCES = Object.freeze(['HIGH', 'MEDIUM', 'LOW']);
 export const ENGINEER_OWNER_GATES = Object.freeze([
   'scope-routing', 'decide-conflict', 'peer-conflict', 'recurring-finding', 'staging-set', 'pr-handling',
@@ -190,11 +190,18 @@ function progressEvents(history) {
 
 // The fields of an engineer child a step is meant to move. `withoutPeers`
 // leaves out its peer bookkeeping (pending and settled ensemble counts).
+// ADR-0068 Decision 5, item 10 — a batch's recorded results are a change of
+// the child: the verify summary is appended only when the child holds a
+// request, so a child without one keeps the fingerprint it had before.
 function childTuple(id, c, { withoutPeers = false } = {}) {
-  return [id, c.location, c.workflow_id ?? null, c.current_phase ?? null, c.terminal_marker === true,
+  const tuple = [id, c.location, c.workflow_id ?? null, c.current_phase ?? null, c.terminal_marker === true,
     c.next_step ? [c.next_step.kind, c.next_step.verb ?? null, c.next_step.confidence] : null,
     c.awaiting_owner?.gate ?? null, withoutPeers ? null : (c.pending_ensemble ?? 0), withoutPeers ? null : (c.ensemble_results ?? 0),
     c.commit_manifest ?? 0, c.progress ?? 0];
+  if (c.verify) {
+    tuple.push([c.verify.request_id ?? null, c.verify.answered_by ?? null, c.verify.batches ?? 0, c.verify.results ?? 0, c.verify.last_end ?? null]);
+  }
+  return tuple;
 }
 
 /**
@@ -347,6 +354,19 @@ function classify(subtask, child, landing) {
     if ((child.pending_ensemble ?? 0) > 0) {
       return stop('owner-choice', `subtask ${id}: a peer ensemble is still pending (${(child.pending_runs ?? []).join(', ') || 'unknown run'}); let it finish, or settle it with ensemble-commit --verdict aborted`, { pointer: pointerOf('pending_ensemble') });
     }
+    const ns = child.next_step;
+    // ADR-0068 Decision 5, item 11 — after the gates and the pending peer,
+    // which a child in either state needs whatever its next step, and before
+    // the commit recovery below and the owner-decision and confidence rules:
+    // a verify child is never routed to a commit, the recovery of a commit
+    // begun included, whatever wrote the file (an older persona, a hand edit).
+    // A commit begun beside a pending request is a state no current writer
+    // leaves, so the owner judges it. The halt is the run's (`runWide`, scope
+    // 'run'): a run with lanes starts nothing beside it.
+    if (ns?.kind === 'verify') {
+      const label = `verify @ ${ns.confidence}`;
+      return { kind: 'halt', runWide: true, halt: halt('owner-choice', verifyRefusalText(id, label), { subtaskId: id, pointer: pointerOf('next_step'), scope: 'run' }) };
+    }
     // The outcome table (ADR-0063 S3+S4 note): a live file in a commit phase
     // is an interrupted commit (beginCommit leaves phase-7-commit and keeps the
     // old next step) or a commit whose archive did not run. /engineer:commit
@@ -355,7 +375,6 @@ function classify(subtask, child, landing) {
       || (child.terminal_marker === true && COMMIT_SURFACE_PHASES.has(child.current_phase))) {
       return { kind: 'active', step: { kind: 'commit', subtaskId: id, branch: child.branch, recovery: true } };
     }
-    const ns = child.next_step;
     if (!ns) {
       return { kind: 'active', judgment: true, halt: halt('owner-choice', `subtask ${id}: no next step is recorded — the last verb did not finish (its Phase 0 clears next_step)`, { subtaskId: id, pointer: pointerOf('next_step') }) };
     }
@@ -400,6 +419,18 @@ function classify(subtask, child, landing) {
     };
   }
   return stop('owner-choice', `subtask ${id}: landing refused (${landing.reason}): ${landing.detail ?? ''}`);
+}
+
+// ADR-0068 Decision 5, items 10 and 11 — this driver does not run a
+// verification step yet (verify-exec does), so it offers none, and a child
+// whose next step is `verify` halts the run (classify): the cause is the
+// run's footing, not the lane's, so the halt is run-wide, and a relaunch with
+// a driver that offers verification goes on with no release. Never routed to
+// a commit, whatever its confidence.
+function verifyRefusalText(id, label) {
+  return `subtask ${id}: its next step is ${label}: the step asks the driver to run the checks it requested, ` +
+    'and this driver does not run a verification step (ADR-0068 Decision 5, item 11; verify-exec). ' +
+    'Relaunch with a driver that offers verification, or run the requested checks and the subtask\'s next verb interactively';
 }
 
 function landingList(waiting, integrationBranch) {
@@ -814,9 +845,14 @@ function decideLanesStep(view, ctx = {}) {
   const laneStep = (st, id) => ({ ...st, lane: true, newLane: !started.has(id), needsLane: !lanes.has(id) });
   const done = [];
   const waiting = [];
+  // A classified halt of the run's (a verify child, ADR-0068 Decision 5,
+  // item 10) is never a lane's: the run halts on it, and no step of another
+  // lane, forced or not, starts beside it.
+  let runWide = null;
   for (const s of subtasks) {
     if (s?.status !== 'in_progress' || away(s.id) || halted.has(s.id)) continue;
     const c = classify(s, view.children?.[s.id], view.landing?.[s.id]);
+    if (c.kind === 'halt' && c.runWide) { runWide ??= c.halt; continue; }
     if (c.kind === 'halt') { out.laneHalts.push(c.halt); continue; }
     if (c.kind === 'done' || c.kind === 'done-no-commit') { done.push(c.step); continue; }
     if (c.kind === 'waiting') { waiting.push(c.waiting); continue; }
@@ -830,6 +866,7 @@ function decideLanesStep(view, ctx = {}) {
     }
     out.laneSteps.push(laneStep(c.step, s.id));
   }
+  if (runWide) return runWide;
   for (const r of subtaskReadiness(subtasks)) {
     if (!r.ready || away(r.id) || halted.has(r.id)) continue;
     if (!isSafeSubtaskId(r.id)) {

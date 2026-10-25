@@ -313,6 +313,11 @@ async function cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, 
       return { run_id: runId, outcome: 'kept', detail: `${strict.error}, so its unfinished steps are not known; check ${r.dir}, then delete ${file}` };
     }
     const run = r.run;
+    // ADR-0068 Decision 5, item 9 — a newer driver's verification batch is a
+    // line of kind `verify` in the step ledger: no worker step and no cost. It
+    // is never settled, counted in `steps` or `accounted_seqs`, or taken for a
+    // step a peer may come from.
+    strict.steps = strict.steps.filter((s) => s.kind !== 'verify');
     const unfinished = strict.steps.filter((s) => s.event === 'started');
     // Where a peer that names no run may come from: an unfinished step, or a
     // finished one whose peers its run could not account for.

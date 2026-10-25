@@ -261,6 +261,7 @@ function summarizeView(view) {
     children: Object.fromEntries(Object.entries(view.children).map(([id, c]) => [id, {
       location: c.location, workflow: c.workflow_id ?? null, phase: c.current_phase ?? null,
       next_step: c.next_step, awaiting_owner: c.awaiting_owner?.gate ?? null,
+      ...(c.verify ? { verify: c.verify } : {}),
     }])),
     landing: view.landing,
     fingerprint: fingerprint(view),
