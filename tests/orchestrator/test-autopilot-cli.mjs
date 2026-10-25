@@ -13,7 +13,7 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -199,7 +199,10 @@ describe('preview is a dry run', () => {
       ok(report.launcher_install.includes('launcher.template.mjs'));
       deepStrictEqual(report.plugins.engineer.version, version(ENG));
       ok(!existsSync(join(fx.dir, 'claude.log')), 'preview spawned no worker');
-      ok(!existsSync(join(work, '.agentic-plugins', 'runs', 'autopilot')), 'preview wrote no ledger');
+      // The fixture's approval joined the macro's run lock (ADR-0068 Decision 8,
+      // item 3), which leaves the lock's directory: nothing else is there.
+      const autopilotDir = join(work, '.agentic-plugins', 'runs', 'autopilot');
+      ok(!existsSync(autopilotDir) || readdirSync(autopilotDir).every((n) => n === 'locks'), 'preview wrote no ledger');
       const text = await main([], env, work);
       strictEqual(text.code, 0);
       ok(/a dry run: nothing is spawned/.test(text.out));

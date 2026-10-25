@@ -33,7 +33,7 @@ Then run the block with that directory in its `ARGS_DIR` line. The block reads t
 - `commit` ← the value of `--commit=<sha>`: must equal that pull request's merge commit; without a working `gh` it is verified by ancestry only.
 - `correct` ← `--correct`: replace a recorded value deliberately. Needs a reason.
 - `no_commit` ← `--no-commit`: the work legitimately landed no commit (for example an investigation closed with evidence only). Needs a reason. Excludes `--pr`, `--commit` and `--correct`.
-- `waive_dispatch` ← `--waive-dispatch`: complete the subtask in its recorded owner's name without comparing the dispatch that owner records, because no file of it is left to read it from (Phase 2 says when). Needs a reason; the macro records the waiver and the reason.
+- `waive_dispatch` ← `--waive-dispatch`: complete the subtask in its recorded owner's name without comparing the dispatch that owner records, because no file of it is left to read it from (Phase 2 says when); or, when that dispatch is read, complete an archived owner the macro's record cannot vouch for (Phase 3b says when). Needs a reason; the macro records the waiver and the reason.
 - `workflow_id` ← the value of `--workflow=<id>`.
 - `integration_branch` ← the value of `--integration-branch=<b>`; default is the macro's `git_baseline.branch`.
 - `reason` ← the free text after the subtask id and the options, byte for byte; a lone `--` before it lets it name one of done's options. The block writes it to a file of its own, which `state.mjs` reads.
@@ -47,7 +47,7 @@ The parser refuses, and nothing is written: a missing subtask id, an unknown or 
 - A completion writeback MUST supply the matching `engineer_workflow_id` (ADR-0019 §4 ownership, unchanged).
 - A recorded `commit` or `pr_url` is never replaced, and a recorded `closed_at` is kept, unless `--correct` with a reason; the macro body then records the old value, the new value and the reason.
 - `--expect-branch` is always passed, so a plan revision between resolving the landing and writing it is refused.
-- The write completes the subtask in its owner's name, so it always compares the dispatch that owner records (`--expect-dispatch`, ADR-0067 Decision 4, item 5). When it cannot be read, done refuses; only `--waive-dispatch` with a reason writes without the comparison, and the macro body records it.
+- The write completes the subtask in its owner's name, so it always compares the dispatch that owner records (`--expect-dispatch`, ADR-0067 Decision 4, item 5). When it cannot be read, done refuses; only `--waive-dispatch` with a reason writes without the comparison, and the macro body records it. The write also binds the owner only while the macro's record of rebindings vouches for what it was told (ADR-0068 Decision 8, item 4); for an archived owner, which no note reaches, `--waive-dispatch` with a reason is the way out, and the macro body records it.
 - Only active macros are addressed. An archived macro is a frozen record (ADR-0062 §Decision 7).
 
 ---
@@ -75,7 +75,9 @@ Refused while an engineer workflow for this subtask is still **active**: a child
 
 ## Phase 3b — Resolve the landing and record it
 
-`resolve-landing` finds the merged pull request and verifies its merge commit (ADR-0062 §Decision 1); a routine refusal (`not_merged` and the rest) writes nothing. Then the block joins the macro's run lock and writes. A write refused with `dispatch-changed` bound and completed nothing: the owner, recorded or found by Phase 2's scan, was dispatched for the subtask as it was before a plan revision. Report it with the child's id; the user revises the plan back, or dispatches the subtask again. A waived write records `Dispatch not compared (--waive-dispatch)` and the reason in the macro body.
+`resolve-landing` finds the merged pull request and verifies its merge commit (ADR-0062 §Decision 1); a routine refusal (`not_merged` and the rest) writes nothing. Then the block joins the macro's run lock and writes. A write refused with `dispatch-changed` bound and completed nothing: the owner, recorded or found by Phase 2's scan, was dispatched for the subtask as it was before a plan revision. Report it with the child's id and the refusal's `No rebinding applies: …` clause; the user revises the plan back, or dispatches the subtask again, or, when only the subtask's `topic` or `profile` changed, the owner approves the revised plan with `/orchestrator:approve`, which rebinds that child and tells it the change (ADR-0068 Decision 8): this write then accepts it. The clause names why no rebinding applied: the plan is pending approval (a `plan-set` after the approval suspends its rebindings), the approval rebound another child or other words or none, the child has not been told yet (a run tells it at its next boundary, or `state.mjs rebind-deliver`), or the change is to a `branch` or `verb`, which nothing rebinds. A waived write records `Dispatch not compared (--waive-dispatch)` and the reason in the macro body.
+
+Whatever the dispatch comparison found, the write also refuses an owner the macro's record cannot vouch for (`<child> is not bound to subtask …`, ADR-0068 Decision 8, item 4): one a note to which is still pending, one last told other words for the subtask, or, after an approval replaced an unreadable record of rebindings, one whose last words are not known. Report it with the refusal's clause; it names the way out. For an active owner: deliver the note (a run does at the child's next boundary, or `state.mjs rebind-deliver` now), approve the plan as it stands, which tells it, or revise the plan back to the words it was last told. For an archived owner, which no note reaches: revise the plan back, or the user reruns done with `--waive-dispatch` and a reason, which completes it and records `Told check waived (--waive-dispatch)` and the reason in the macro body; the waiver is refused for an active owner, and when the record vouches for the owner (nothing to waive). Do not rerun with it on your own judgment.
 
 `subtask-update` handles ownership, the provenance guard (a different recorded value is refused and names `--correct`), the unblock pass and the auto-terminal pass atomically; surface its JSON envelope. `noop: true` means the record already held these values.
 
@@ -201,16 +203,15 @@ fi
 # --- Phase 2: the owning engineer workflow and the dispatch it records ---
 # ADR-0067 Decision 4, item 5 — the owner and the dispatch it records. Every
 # refusal's reason is printed by owner-dispatch; exit 3 alone (the recorded
-# owner has no file left) may be waived.
+# owner has no file left) may be waived. With the dispatch read, the waiver is
+# of the told check only (ADR-0068 Decision 8, item 4): subtask-update applies
+# it to an archived child the macro's record cannot vouch for, and refuses it
+# for any other.
 OWNER_ARGS=(--repo-root "$REPO_ROOT" --macro-id "$MACRO_ID" --workflow-path "$MACRO_PATH" --subtask-id "$SUBTASK_ID" --host "$DETECTED_HOST")
 [ -n "$EXISTING_ENG_WF_ID" ] && OWNER_ARGS+=(--engineer-workflow-id "$EXISTING_ENG_WF_ID")
 # Under set -e an unguarded nonzero exit would end the block before OWNER_RC.
 OWNER_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" owner-dispatch "${OWNER_ARGS[@]}")" && OWNER_RC=0 || OWNER_RC=$?
 if [ "$OWNER_RC" -eq 0 ]; then
-  if [ "$WAIVE_DISPATCH" = true ]; then
-    echo "✗ --waive-dispatch applies only when the owner's dispatch cannot be read; it was read, and the write compares it. Rerun without --waive-dispatch." >&2
-    exit 1
-  fi
   EXISTING_ENG_WF_ID="$(printf '%s' "$OWNER_JSON" | JSON_KEY=engineer_workflow_id node -e "$JSON_FIELD")" || exit 1
   OWNER_DISPATCH="$(printf '%s' "$OWNER_JSON" | JSON_KEY=dispatch node -e "$JSON_FIELD")" || exit 1
   if [ -z "$EXISTING_ENG_WF_ID" ] || [ -z "$OWNER_DISPATCH" ]; then
@@ -218,6 +219,7 @@ if [ "$OWNER_RC" -eq 0 ]; then
     exit 1
   fi
   DISPATCH_ARGS=(--expect-dispatch="$OWNER_DISPATCH")
+  if [ "$WAIVE_DISPATCH" = true ]; then DISPATCH_ARGS+=(--waive-told); fi
 elif [ "$OWNER_RC" -eq 3 ] && [ "$WAIVE_DISPATCH" = true ]; then
   # The recorded owner's file is gone, and the operator completes in its name
   # anyway; subtask-update records the waiver and the reason in the macro.
@@ -354,8 +356,9 @@ Report one of:
 - `✓ /orchestrator:done was a no-op — subtask <id> already records these values.`
 - `✗ Cannot record <id> yet — <reason>: <detail>` (`not_merged`, `no_pr`, `ambiguous`, `base_mismatch`, `commit_mismatch`, `not_reachable`, `gh_unavailable`, `no_integration_ref`).
 - `✗ Ownership conflict — engineer_workflow_id mismatch (existing=<X>, supplied=<Y>).`
-- `✗ Not recorded — <id> changed after its child was dispatched (dispatch-changed): <what differs>.` Nothing was bound or completed.
+- `✗ Not recorded — <id> changed after its child was dispatched (dispatch-changed): <what differs>; no rebinding applies: <why>.` Nothing was bound or completed.
 - `✗ Not recorded — the recorded owner <X> has no workflow file left, so its dispatch cannot be read.` Repeat that `--waive-dispatch` with a reason completes it without the comparison, and that the macro records both; do not rerun with it on your own judgment.
+- `✗ Not recorded — <child> is not bound to subtask <id>: <why>.` The macro's record cannot vouch for what the owner was told; repeat the way out the refusal names. For an archived owner, `--waive-dispatch` with a reason completes it, and the macro records the waiver; do not rerun with it on your own judgment.
 - `✗ Not recorded — more than one engineer workflow claims <id>.` Repeat the claimants and their binding lines; the user picks the one that did the work.
 - `✗ Not recorded: <holder>.` when the admission join was refused (ADR-0067 Decision 4, item 5) — an autopilot run or another session holds the macro. Repeat the refusal's holder and the command it names; nothing was written.
 

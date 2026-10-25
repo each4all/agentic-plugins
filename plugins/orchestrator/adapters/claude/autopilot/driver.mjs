@@ -56,6 +56,7 @@ import {
 } from './roots.mjs';
 import { observeInChild, offLoop as defaultOffLoop } from './offloop.mjs';
 import { readParks, retiring } from './parks.mjs';
+import { deliverAtBoundary, rebindDue, stillHeldDetail } from './rebind-boundary.mjs';
 import {
   abandonedText, endedUnlooked, foundWaiting, laneBlock, ownChildOnly, peerCancellationOutcome, peerRunnerCommand, peerSettlementOutcome, peersUnlisted,
   reconcileWaiting, reportClosePeersUnlisted, runLanes,
@@ -751,6 +752,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         helpers: { provenanceProblem, newPendingRuns, newPendingTargets },
         wakeIntervalMs: deps.wakeIntervalMs ?? null, quietMs: deps.quietMs ?? null, laneBusy: deps.laneBusy ?? null,
         resolveRoots: deps.resolveRoots ?? null,
+        deliverRebindings: deps.deliverRebindings ?? null,
       });
     }
 
@@ -771,6 +773,42 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         return finish('completed');
       }
       if (d.outcome === 'halt') return finish('halted', d);
+
+      // ADR-0068 Decision 8, item 4 — a note the owner's approval did not
+      // finish telling reaches the child before its next step, never
+      // mid-step (rebind-boundary.mjs). The step is then decided again from a
+      // fresh look, so every check below runs on the child as the note left
+      // it and the step's progress baseline includes the note. A child the
+      // binding writes' told check refuses is not stepped (rebindDue's
+      // 'refused'): the run halts with the check's own way out. That child is
+      // the recorded owner, or, with none, the one this look selected.
+      const due = d.step?.subtaskId
+        ? rebindDue(view.macro?.fm, d.step.subtaskId, { macroPath: view.macro?.path, selected: view.children?.[d.step.subtaskId]?.workflow_id ?? null })
+        : null;
+      if (due) {
+        const told = await (deps.deliverRebindings ?? deliverAtBoundary)({
+          roots, macroPath: view.macro.path, macroId: view.macro.id, subtaskId: d.step.subtaskId, repoRoot, env, runId, token,
+          due: due.due, why: due.why ?? null,
+          // The run's worker while it writes (rebind-boundary.mjs); a group
+          // that outlived SIGKILL keeps the run's entries, which name it.
+          hold: (worker) => { setWorker(worker); return [{ release: () => setWorker(null) }]; },
+          onLingering: () => { lingering = true; },
+        });
+        if (told.lingering) return finish('halted', { reason: 'worker-failed', detail: told.detail });
+        if (interrupted) return finish('halted', { reason: 'interrupted', detail: 'the owner interrupted the run' });
+        if (!told.ok) return finish('halted', { reason: 'owner-choice', detail: told.detail });
+        out(`[${seq}] told subtask ${d.step.subtaskId}'s child the owner's instruction change before its next step`);
+        view = look(view.macro.id);
+        const after = rebindDue(view.macro?.fm, d.step.subtaskId, { macroPath: view.macro?.path, selected: view.children?.[d.step.subtaskId]?.workflow_id ?? null });
+        if (after) {
+          return finish('halted', {
+            reason: 'owner-choice',
+            detail: stillHeldDetail({ macroPath: view.macro?.path, macroId: view.macro?.id, subtaskId: d.step.subtaskId, due: after.due, why: after.why ?? null }),
+          });
+        }
+        seq -= 1;
+        continue;
+      }
 
       // ADR-0067 Decision 6, Budgets: the step is reserved before it spawns,
       // and every end settles it. One reservation at a time: what is spent

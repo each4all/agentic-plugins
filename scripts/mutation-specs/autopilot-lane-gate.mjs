@@ -85,15 +85,15 @@ export const MUTATIONS = [
   },
   {
     id: 'L19', file: POLICY, tests: [TP],
-    from: "  if (form === 'lane') return laneFingerprint(view, subtaskId);",
-    to: "  if (form === 'lane') return laneFingerprint(view, subtaskId, { withoutPeers: true });",
+    from: "  if (form === 'lane') return laneFingerprint(view, subtaskId, { words: true });",
+    to: "  if (form === 'lane') return laneFingerprint(view, subtaskId, { words: true, withoutPeers: true });",
     why: 'a park\'s fingerprint leaves out the peer bookkeeping: a lane parked on a pending ensemble is never picked up once the ensemble is settled',
     killed_by: /a pending peer ensemble settled included, in either form/,
   },
   {
     id: 'L19b', file: POLICY, tests: [TP],
-    from: "  return laneFingerprint({ ...view, git: { branch, head: branchTip, porcelain: 'no worktree' } }, subtaskId);",
-    to: "  return laneFingerprint({ ...view, git: { branch, head: branchTip, porcelain: 'no worktree' } }, subtaskId, { withoutPeers: true });",
+    from: "  return laneFingerprint({ ...view, git: { branch, head: branchTip, porcelain: 'no worktree' } }, subtaskId, { words: true });",
+    to: "  return laneFingerprint({ ...view, git: { branch, head: branchTip, porcelain: 'no worktree' } }, subtaskId, { words: true, withoutPeers: true });",
     why: 'a lane with no worktree parked on a pending ensemble is never picked up once the ensemble is settled',
     killed_by: /a pending peer ensemble settled included, in either form/,
   },
@@ -178,9 +178,9 @@ export const MUTATIONS = [
   },
   {
     id: 'S78', file: SCHED, tests: [TG],
-    from: '    if (inLane && laneBusy(id, view)) {\n      busy.add(id);\n      return { ...refuse(null), again: false, busy: true };\n    }\n    let createdNow = false;',
-    to: '    let createdNow = false;',
-    why: 'a lane is created for a step whose lane has a persona operation open, then removed unused',
+    from: '    if (inLane && laneBusy(id, view)) {\n      busy.add(id);\n      return { ...refuse(null), again: false, busy: true };\n    }\n\n    // ADR-0068 Decision 8',
+    to: '    // ADR-0068 Decision 8',
+    why: 'the creation of a lane whose subtask has a persona operation open is begun: its marker is written, through the park records\' lock, then settled',
     killed_by: /a lane laneBusy holds is neither created nor stepped/,
   },
   {

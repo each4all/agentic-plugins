@@ -66,7 +66,7 @@ export const MUTATIONS = [
   },
   {
     id: 'P3', file: STATE, tests: [T_PROV],
-    from: '    if (changedKeys.length === 0) {',
+    from: "    if (changedKeys.length === 0 && vouchNote === '') {",
     to: '    if (false) {',
     why: 'a call that changes nothing still writes the file and host_history',
   },

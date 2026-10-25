@@ -19,6 +19,7 @@
 
 import { createHash } from 'node:crypto';
 import { subtaskReadiness, VALID_MACRO_OWNER_GATES } from '../../../scripts/state.mjs';
+import { digestOf, parseRebindRecord, REBIND_KEY, wordsDigest } from '../../../scripts/lib/rebind.mjs';
 
 export const VERBS = Object.freeze(['investigate', 'frame', 'decide', 'compose', 'critique', 'refine']);
 export const NEXT_STEP_KINDS = Object.freeze(['verb', 'commit', 'owner-decision', 'done', 'verify']);
@@ -204,21 +205,53 @@ function childTuple(id, c, { withoutPeers = false } = {}) {
   return tuple;
 }
 
+// ADR-0068 Decision 8 — what the macro's record of rebindings says of one
+// subtask (its rebinding, the words its child was told, its pending notes,
+// whether what its child was last told is not known); with `words`, the
+// subtask's words as the plan holds them now, which the told check compares
+// with them (state.mjs childVouchVerdict): a lane parked on that check is
+// reconsidered when the plan is revised back to the words its child was told,
+// though the record changes nothing. Only a park's fingerprint takes them: a
+// revision of the plan is no progress of a step. Null when the record names the subtask nowhere, so a
+// lane the record does not concern keeps the fingerprint it had. The
+// approval's stamp is left out: an approval that changes nothing of this
+// subtask leaves its lane parked.
+function rebindFacts(fm, subtaskId, { words = false } = {}) {
+  const parsed = parseRebindRecord(fm?.[REBIND_KEY]);
+  if (parsed.status !== 'readable') return null;
+  const r = parsed.record;
+  const mine = (e) => e.subtask === subtaskId;
+  const entries = [...r.rebindings.filter(mine), ...r.carried.filter(mine)];
+  const pending = r.pending.filter(mine).map((p) => p.delivery_id);
+  const told = Object.entries(r.told).filter(([, t]) => t.subtask === subtaskId);
+  const unknown = (r.unknown ?? []).includes(subtaskId);
+  if (entries.length === 0 && pending.length === 0 && told.length === 0 && !unknown) return null;
+  const now = words ? { words: wordsDigest((fm?.plan?.subtasks ?? []).find((x) => x?.id === subtaskId)) } : {};
+  return digestOf({ entries, pending, told, ...now, ...(unknown ? { unknown } : {}) });
+}
+
 /**
  * ADR-0067 Decision 6 — the per-lane fingerprint: the lane's git (branch,
  * HEAD, porcelain; `view.git` is the lane's), its engineer child, and only its
  * own subtask's fields (status, engineer_workflow_id, commit, pr_url,
  * closed_at). Another lane's progress, and the macro's own bookkeeping, never
  * satisfy this lane's no-progress check. Steps outside a lane keep
- * `fingerprint`.
+ * `fingerprint`. ADR-0068 Decision 8 — and, when the macro's record of
+ * rebindings names the subtask, what it records of it: an approval that
+ * rebinds or tells a parked lane's child changes the lane's fingerprint, so
+ * the lane is reconsidered (a park the record does not concern compares as
+ * before, whatever version kept it). `opts.words` (a park's) adds the
+ * subtask's words to those facts.
  */
 export function laneFingerprint(view, subtaskId, opts = {}) {
   const s = (view?.macro?.fm?.plan?.subtasks ?? []).find((x) => x?.id === subtaskId) ?? null;
   const c = view?.children?.[subtaskId] ?? null;
+  const rebind = rebindFacts(view?.macro?.fm, subtaskId, { words: opts.words === true });
   return createHash('sha256').update(JSON.stringify({
     git: [view?.git?.branch ?? null, view?.git?.head ?? null, view?.git?.porcelain ?? null],
     subtask: s ? [s.id, s.status ?? null, s.engineer_workflow_id ?? null, s.commit ?? null, s.pr_url ?? null, s.closed_at ?? null] : null,
     child: c ? childTuple(subtaskId, c, opts) : null,
+    ...(rebind ? { rebind } : {}),
   })).digest('hex');
 }
 
@@ -934,8 +967,10 @@ export function haltScope(h, view) {
 
 // The version of what a kept park's fingerprint hashes: a park taken by
 // another version is never compared, and never resumes by itself (Decision 1,
-// item 3). Raise it whenever parkFingerprint's input changes.
-export const PARK_FINGERPRINT_VERSION = 2;
+// item 3). Raise it whenever parkFingerprint's input changes. 3: the
+// rebinding facts (ADR-0068 Decision 8) — a park an older run kept beside a
+// record it did not read is not compared with one that reads it.
+export const PARK_FINGERPRINT_VERSION = 3;
 
 /**
  * A park's fingerprint: the lane's fingerprint, its peer bookkeeping included:
@@ -947,8 +982,8 @@ export const PARK_FINGERPRINT_VERSION = 2;
  * the lane's git.
  */
 export function parkFingerprint(view, subtaskId, { form, branch = null, branchTip = null }) {
-  if (form === 'lane') return laneFingerprint(view, subtaskId);
-  return laneFingerprint({ ...view, git: { branch, head: branchTip, porcelain: 'no worktree' } }, subtaskId);
+  if (form === 'lane') return laneFingerprint(view, subtaskId, { words: true });
+  return laneFingerprint({ ...view, git: { branch, head: branchTip, porcelain: 'no worktree' } }, subtaskId, { words: true });
 }
 
 /**

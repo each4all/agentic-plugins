@@ -869,8 +869,8 @@ export const MUTATIONS = [
   },
   {
     id: 'S13', file: DRIVER, tests: T_SCHED,
-    from: '      view = look(view.macro.id);',
-    to: '      view = observe({ repoRoot, roots, macroId: view.macro.id, fetch: true, env });',
+    from: '      view = look(view.macro.id);\n      // A look that could not read',
+    to: '      view = observe({ repoRoot, roots, macroId: view.macro.id, fetch: true, env });\n      // A look that could not read',
     why: 'the look after a step bypasses the serial look: a branch it found waiting is lost when a retry that fails replaces it (C128 serial mirror of F43)',
     killed_by: T_SERIAL_RETRY,
   },

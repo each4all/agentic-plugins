@@ -409,7 +409,10 @@ export function listLocks(mainRoot, repoRoot = null) {
 // guarded block `check`s its own id; every exit after the join `release`s it.
 // A run's workers pass without an entry, proved by the run's secret.
 
-export const ADMISSION_COMMANDS = Object.freeze(['next', 'done', 'finalize', 'abort', 'resume']);
+// `approve` (ADR-0068 Decision 8, item 3): every plan-approve joins the macro
+// lock, so no approval passes between two looks of a live run, and no run or
+// dispatch starts while one holds it.
+export const ADMISSION_COMMANDS = Object.freeze(['next', 'done', 'finalize', 'abort', 'resume', 'approve']);
 // Shown as stale past this age, for the owner to judge; never expired.
 export const ADMISSION_STALE_MS = 4 * 60 * 60 * 1000;
 const ADMISSION_ID = /^[0-9a-f]{32}$/;
@@ -520,8 +523,11 @@ export function describeAdmission(holder, { now = Date.now() } = {}) {
 export async function joinAdmission({
   command, checkout, macroId, host, sessionId = null, env = process.env,
   now = () => Date.now(), probe = processFingerprint, hooks = {},
+  // false: `checkout` is already the root the locks derive from (state.mjs
+  // plan-approve passes the macro's state root, which need not be a checkout).
+  resolveCheckout = true,
 }) {
-  checkout = checkoutRoot(checkout);
+  checkout = resolveCheckout ? checkoutRoot(checkout) : path.resolve(checkout);
   if (host !== 'claude' && host !== 'codex') throw new AdmissionError(`--host must be claude or codex (got ${JSON.stringify(host)})`, 'usage');
   const locks = admissionLocks({ command, checkout, macroId });
   const seen = [];
@@ -590,8 +596,8 @@ export async function checkAdmission({ checkout, macroId, admissionId, env = pro
 }
 
 /** Remove every entry of `admissionId` from the locks a command can join; the paths removed. '' (a worker) holds none. */
-export function releaseAdmission({ checkout, macroId, admissionId }) {
-  checkout = checkoutRoot(checkout);
+export function releaseAdmission({ checkout, macroId, admissionId, resolveCheckout = true }) {
+  checkout = resolveCheckout ? checkoutRoot(checkout) : path.resolve(checkout);
   if (admissionId === '' || admissionId === undefined || admissionId === null) return [];
   const removed = [];
   for (const lock of admissionLocks({ command: 'next', checkout, macroId })) {
@@ -604,6 +610,34 @@ export function releaseAdmission({ checkout, macroId, admissionId }) {
     }
   }
   return removed;
+}
+
+/**
+ * ADR-0068 Decision 8, item 4 — record on admission `admissionId`'s entry in
+ * the macro lock the process of a note's writer it started (state.mjs
+ * fencedAppend), before that writer begins: { pid, pgid, fingerprint }.
+ * Throws when the entry is gone.
+ */
+export function recordAdmissionWriter({ checkout, macroId, admissionId, writer }) {
+  const lock = macroLockPath(mainWorktreeRoot(path.resolve(checkout)), macroId);
+  const file = admissionEntryPath(lock, admissionId);
+  const own = readEntryOrNull(file);
+  if (!own?.holder || own.holder.admission_id !== admissionId) throw new Error(`admission ${admissionId} is gone from ${lock}`);
+  writeWhole(lock, file, { ...own.holder, writer });
+}
+
+/**
+ * The writer recorded on admission `admissionId`'s entry while it, or
+ * anything left in its process group, may still run (holderAlive's rule for a
+ * worker); null otherwise.
+ */
+export async function admissionWriterAlive({ checkout, macroId, admissionId, resolveCheckout = true, probe = processFingerprint }) {
+  if (admissionId === '' || admissionId === undefined || admissionId === null) return null;
+  checkout = resolveCheckout ? checkoutRoot(checkout) : path.resolve(checkout);
+  const own = readEntryOrNull(admissionEntryPath(macroLockPath(mainWorktreeRoot(checkout), macroId), admissionId));
+  const writer = own?.holder?.writer;
+  if (!writer || typeof writer !== 'object') return null;
+  return (await holderAlive({ worker: writer }, { probe })) ? writer : null;
 }
 
 function readEntryOrNull(file) {

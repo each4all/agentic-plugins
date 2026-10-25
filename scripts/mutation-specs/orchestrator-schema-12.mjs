@@ -167,13 +167,13 @@ export const MUTATIONS = [
     prepare: (copy, tools) => {
       tools.applyEdit(copy, {
         file: STATE,
-        from: "  ensureNotArchived(workflowPath, 'plan-approve');\n  return withFileLock(workflowPath, async ({ lockPath, token }) => {",
-        to: "  ensureNotArchived(workflowPath, 'plan-approve');\n  return (async (fn) => fn({}))(async ({ lockPath, token }) => {",
+        from: "async function writeApproval({ workflowPath, host, expectHash, expectRebind, scanRoot, now }) {\n  return withFileLock(workflowPath, async ({ lockPath, token }) => {",
+        to: "async function writeApproval({ workflowPath, host, expectHash, expectRebind, scanRoot, now }) {\n  return (async (fn) => fn({}))(async ({ lockPath, token }) => {",
       });
       tools.applyEdit(copy, {
         file: STATE,
-        from: '      { lockPath, token },\n    );\n    return { frontmatter, workflowPath, planHash, approvedAt: nowIso, noop: false };',
-        to: '      null,\n    );\n    return { frontmatter, workflowPath, planHash, approvedAt: nowIso, noop: false };',
+        from: '      { lockPath, token },\n    );\n    return {\n      frontmatter, workflowPath, planHash, approvedAt: nowIso, noop: false,',
+        to: '      null,\n    );\n    return {\n      frontmatter, workflowPath, planHash, approvedAt: nowIso, noop: false,',
       });
     },
     why: 'plan-approve writes without the macro lock, racing plan-set and the gate writes',
@@ -254,8 +254,8 @@ export const MUTATIONS = [
   },
   {
     id: 'A4', file: STATE, tests: [T12],
-    from: "      frontmatter.plan_approval_status === 'approved'\n      && frontmatter.plan_approval_plan_hash === planHash\n",
-    to: '      false\n',
+    from: "    const unchanged = frontmatter.plan_approval_status === 'approved'\n      && frontmatter.plan_approval_plan_hash === planHash\n",
+    to: '    const unchanged = false\n',
     why: 'approving the same hash again rewrites the approval time',
   },
   {
@@ -314,8 +314,8 @@ export const MUTATIONS = [
   },
   {
     id: 'R2', file: APPROVE_MD, tests: [TRB],
-    from: '  --expect-hash "$PLAN_HASH" || exit 1',
-    to: '  || exit 1',
+    from: '  --expect-hash "$PLAN_HASH" --expect-rebind "$REBIND_DIGEST" || exit 1',
+    to: '  --expect-rebind "$REBIND_DIGEST" || exit 1',
     why: '/orchestrator:approve approves whatever the plan is by then, not what it showed',
   },
   {
@@ -343,8 +343,8 @@ export const MUTATIONS = [
       });
       tools.applyEdit(copy, {
         file: STATE,
-        from: "  'plan_conflict_cleared_run_id',\n];",
-        to: "  'plan_conflict_cleared_run_id',\n  'terminal_marker',\n];",
+        from: "  'plan_rebindings',\n];",
+        to: "  'plan_rebindings',\n  'terminal_marker',\n];",
       });
     },
     why: 'the 1.2 keys are not at the tail, so every 1.1 reader write reorders them',
