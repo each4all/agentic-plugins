@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.12.3...plugin-founder-v0.13.0) (2026-10-25)
+
+
+### Features
+
+* **founder:** record a step's requested checks and their results in the state CLI (ADR-0068 D5) ([c042275](https://github.com/each4all/agentic-plugins/commit/c042275850d59e5d009433a0d75ca175023a689c))
+
 ## [0.12.3](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.12.2...plugin-founder-v0.12.3) (2026-10-19)
 
 
