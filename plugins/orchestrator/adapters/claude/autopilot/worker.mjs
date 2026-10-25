@@ -76,6 +76,11 @@ const SCRUB_EXACT = Object.freeze([
   // engineer workflow a foreign parent.
   'AGENTIC_PARENT_WORKFLOW', 'AGENTIC_ORIGINATING_SUBTASK', 'AGENTIC_PROFILE', 'AGENTIC_TOPIC',
   'AGENTIC_HOST',
+  // ADR-0068 Decision 5, item 11 — a run's offer of verification: the commit
+  // it started from and the step's number. This driver offers none, so an
+  // inherited pair must not make a worker's step write `verify`; the step's
+  // number is the driver's own (workerEnv).
+  'AGENTIC_AUTOPILOT_VERIFY', 'AGENTIC_AUTOPILOT_STEP',
   // The macro file's path, exported beside the ids (ADR-0067 Decision 3);
   // inherited, it would point the worker's child at a foreign macro file.
   'AGENTIC_PARENT_WORKFLOW_PATH',
@@ -134,7 +139,7 @@ export function pushBlockConfig(base, { fetchUrls = [], pushUrls = [] } = {}) {
   return out;
 }
 
-export function workerEnv(base, { runId, roots, remotes = {}, stateBase = null, autopilotToken = null }) {
+export function workerEnv(base, { runId, seq = null, roots, remotes = {}, stateBase = null, autopilotToken = null }) {
   const env = {};
   for (const [k, v] of Object.entries(base)) {
     if (SCRUB_EXACT.includes(k) || SCRUB_PREFIXES.some((p) => k.startsWith(p))) continue;
@@ -142,6 +147,11 @@ export function workerEnv(base, { runId, roots, remotes = {}, stateBase = null, 
   }
   Object.assign(env, pushBlockConfig(base, remotes));
   env.AGENTIC_AUTOPILOT = runId;
+  // ADR-0068 Decision 5, item 7 — the step's number, the run's sequence
+  // number for the step, which orders a step's writes against the steps
+  // before and after it on the workflow (the persona's attempt mark). It
+  // offers no verification: that takes AGENTIC_AUTOPILOT_VERIFY too.
+  if (Number.isSafeInteger(seq) && seq > 0) env.AGENTIC_AUTOPILOT_STEP = String(seq);
   env.AGENTIC_ORCHESTRATOR_ROOT = roots.orchestrator;
   env.AGENTIC_ENGINEER_ROOT = roots.engineer;
   env.AGENTIC_RUNTIME_ROOT = roots.runtime;
@@ -343,7 +353,7 @@ export function startWorker(o) {
   });
   // Everything that can fail before the worker runs is done before it starts.
   const raw = fs.openSync(o.rawPath, 'a');
-  const workerEnvironment = workerEnv(env, { runId: o.runId, roots: o.roots, remotes: o.remotes ?? {}, stateBase: o.stateBase ?? null, autopilotToken: o.autopilotToken ?? null });
+  const workerEnvironment = workerEnv(env, { runId: o.runId, seq: o.seq, roots: o.roots, remotes: o.remotes ?? {}, stateBase: o.stateBase ?? null, autopilotToken: o.autopilotToken ?? null });
   let child;
   try {
     child = spawn(claudeBin(env), args, {

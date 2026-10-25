@@ -125,6 +125,25 @@ function pendingRows(fm) {
     .map((p) => ({ run_id: p.run_id, phase: typeof p.phase === 'string' ? p.phase : null }));
 }
 
+// ADR-0068 Decision 5 — what a child's request and its recorded results come
+// to, for the fingerprint (a batch's results are a change of the child) and
+// status. Null when the child holds no request, or an engineer older than the
+// keys carries them unread. No failing test name or log reaches it.
+export function verifySummary(fm) {
+  const req = fm.verify_request;
+  if (!req || typeof req !== 'object' || typeof req.id !== 'string') return null;
+  const res = fm.verify_results && typeof fm.verify_results === 'object' && fm.verify_results.request_id === req.id
+    ? fm.verify_results : null;
+  const batches = Array.isArray(res?.batches) ? res.batches : [];
+  return {
+    request_id: req.id,
+    answered_by: typeof req.answered_by === 'string' ? req.answered_by : null,
+    batches: batches.length,
+    results: batches.reduce((n, b) => n + (Array.isArray(b?.results) ? b.results.length : 0), 0),
+    last_end: typeof batches.at(-1)?.end === 'string' ? batches.at(-1).end : null,
+  };
+}
+
 function summarizeChild(fm, location, file, roots) {
   return {
     location,
@@ -151,6 +170,7 @@ function summarizeChild(fm, location, file, roots) {
     ensemble_results: Array.isArray(fm.ensemble_results) ? fm.ensemble_results.length : 0,
     commit_manifest: Array.isArray(fm.commit_manifest) ? fm.commit_manifest.length : 0,
     progress: progressEvents(fm.host_history),
+    verify: verifySummary(fm),
     parent_workflow: fm.parent_workflow ?? null,
     originating_subtask: fm.originating_subtask ?? null,
   };
