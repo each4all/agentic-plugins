@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.32.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.31.3...plugin-engineer-v0.32.0) (2026-10-25)
+
+
+### Features
+
+* **engineer:** record a step's requested checks and their results in the state CLI (ADR-0068 D5) ([27eb041](https://github.com/each4all/agentic-plugins/commit/27eb041e04ca5220a1447418fcae07ce43da6200))
+
 ## [0.31.3](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.31.2...plugin-engineer-v0.31.3) (2026-10-19)
 
 

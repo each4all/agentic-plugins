@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.11.3...plugin-designer-v0.12.0) (2026-10-25)
+
+
+### Features
+
+* **designer:** record a step's requested checks and their results in the state CLI (ADR-0068 D5) ([b90e8da](https://github.com/each4all/agentic-plugins/commit/b90e8daf65153fa58470e57c757a27b01451ec71))
+
 ## [0.11.3](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.11.2...plugin-designer-v0.11.3) (2026-10-19)
 
 
