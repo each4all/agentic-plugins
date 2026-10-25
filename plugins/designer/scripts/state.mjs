@@ -61,7 +61,7 @@ import {
   open,
   lstat,
 } from 'node:fs/promises';
-import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, dirname, basename, isAbsolute, resolve as resolvePath } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { hrtime, pid } from 'node:process';
@@ -78,6 +78,41 @@ import { assertSafePath } from './validate-commit.mjs';
 import { isCliEntry } from './lib/cli-entry.mjs';
 import { capabilityOn, commandPrefix, loadPersona, personaName, personaOrRefuse, stateDirRel } from './lib/persona.mjs';
 import { captureWorkingTree } from './lib/peer-snapshot.mjs';
+import {
+  MAX_REQUEST_BYTES,
+  MAX_RESULTS_BYTES,
+  RECORD_VERSION as VERIFY_RECORD_VERSION,
+  SLOT_TYPES,
+  VERIFY_DECLARATION_PATH,
+  VERIFY_RECORD_CAPABILITY,
+  canonicalJson,
+  carryOver,
+  compareAttempts,
+  endProblem,
+  handoffDigest,
+  handoffState,
+  isNewerRecord,
+  parseBatchStart,
+  parseDeclaration,
+  parseEnd,
+  parseRequestInput,
+  parseResult,
+  previousOf,
+  readResults,
+  requestId as verifyRequestId,
+  resolveCheck,
+  resultProblem,
+  resultsDigest,
+  retainBatches,
+  scalarBytes,
+  stampHandoff,
+  validateStoredAttempt,
+  validateStoredHandoff,
+  validateStoredRequest,
+  validateStoredResults,
+  workerChecksProblem,
+  worstCaseBytes,
+} from './lib/verify.mjs';
 import {
   CRITIQUE_RUN_MARKER,
   ReviewScopeError,
@@ -253,7 +288,16 @@ const VALID_SNAPSHOT_TRIGGERS = new Set(['pre-compact', 'stop']);
 // `duplicate-workflow` has no single workflow file to live in). Which of them
 // a persona can set depends on its capabilities (ADR-0066 Decision 3); a
 // reader accepts all six, so a file is read the same by every persona.
-export const VALID_NEXT_STEP_KINDS = new Set(['verb', 'commit', 'owner-decision', 'done']);
+//
+// ADR-0068 Decision 5 adds `verify`: the step asks the autopilot driver to run
+// the checks its request names (verify_request) before the step that follows
+// them. Every reader accepts it; the only writer is finish-verb
+// --verify-request-file under a run that offers verification (verifyOffer).
+export const VALID_NEXT_STEP_KINDS = new Set(['verb', 'commit', 'owner-decision', 'done', 'verify']);
+// The kinds an agent maps an Active Next-Action Proposal's selected_next to
+// (the reference contract's closed-enum table): every kind but `verify`, which
+// is written only from a request file under the driver's offer.
+export const PROPOSAL_NEXT_STEP_KINDS = new Set([...VALID_NEXT_STEP_KINDS].filter((k) => k !== 'verify'));
 export const VALID_CONFIDENCE = new Set(['HIGH', 'MEDIUM', 'LOW']);
 export const VALID_WORKFLOW_OWNER_GATES = new Set([
   'scope-routing',
@@ -618,7 +662,12 @@ async function withCreationLocks(storage, fn) {
       (sameDirectory(defaultRoot, storage.stateRoot) && repoStorage.home === storage.home)) {
     return withDirectoryLock(storage.stateRoot, fn, { storage });
   }
-  return withDirectoryLock(defaultRoot, () => withDirectoryLock(storage.stateRoot, fn, { storage }), { storage: repoStorage });
+  // `fn` holds both locks, so the write it commits checks both at its commit
+  // (atomicWrite's `outer`): a writer whose repository lock was reclaimed
+  // commits nothing, though it still holds the home's (ADR-0068 Decision 5,
+  // item 7).
+  return withDirectoryLock(defaultRoot, (outer) => withDirectoryLock(storage.stateRoot,
+    (inner) => fn({ ...inner, outer: [{ lockPath: outer.lockPath, token: outer.token }] }), { storage }), { storage: repoStorage });
 }
 
 // -----------------------------------------------------------------------------
@@ -822,8 +871,19 @@ function sleepMs(ms) {
 // our tmp file and abort rather than overwrite the new owner's state.
 // This closes the race where a paused writer's atomicWrite would otherwise
 // rename in stale contents (CRITICAL #2 from Codex review of Stage 2 D).
+// `ownership.outer`, when given, lists the locks the writer took around that
+// one ({ lockPath, token } each, the repository's creation lock under shared
+// creation): each is re-verified the same way, so a write commits only while
+// the writer still holds every lock it took.
+//
+// `precommit`, when given, is the caller's own condition, checked at the
+// same commit boundary, after the token: a write that must commit only while
+// another file still holds what the caller read (the archive's source lock
+// and bytes) passes it here, never as a check made before the write. A
+// condition that fails or throws discards the tmp file, and the error
+// carries `code: 'EPRECOMMIT'`.
 
-async function atomicWrite(targetPath, contents, ownership = null) {
+async function atomicWrite(targetPath, contents, ownership = null, { precommit = null } = {}) {
   const tmpPath = `${targetPath}.${pid}.${randomBytes(4).toString('hex')}.tmp`;
   const handle = await open(tmpPath, 'wx', 0o600);
   try {
@@ -832,8 +892,10 @@ async function atomicWrite(targetPath, contents, ownership = null) {
   } finally {
     await handle.close();
   }
-  if (ownership) {
-    const { lockPath, token } = ownership;
+  // Every lock the writer holds: the one it names, then the locks it took
+  // around that one (`outer`, the repository's creation lock under shared
+  // creation), each with the same check.
+  for (const { lockPath, token } of ownership ? [ownership, ...(ownership.outer ?? [])] : []) {
     const onDisk = await readFile(lockPath, 'utf8').catch(() => null);
     if (onDisk !== token) {
       try { await unlink(tmpPath); } catch {}
@@ -842,6 +904,19 @@ async function atomicWrite(targetPath, contents, ownership = null) {
         `(expected token "${token.slice(0, 16)}...", found "${(onDisk ?? 'NONE').slice(0, 16)}..."). ` +
         `In-flight write to ${targetPath} discarded — another writer reclaimed the lock as stale.`,
       );
+    }
+  }
+  if (precommit) {
+    let holds = false;
+    try { holds = (await precommit()) === true; } catch {}
+    if (!holds) {
+      try { await unlink(tmpPath); } catch {}
+      const err = new Error(
+        `atomicWrite: the condition of the write to ${targetPath} no longer holds immediately before commit; ` +
+          'the in-flight write is discarded',
+      );
+      err.code = 'EPRECOMMIT';
+      throw err;
     }
   }
   await rename(tmpPath, targetPath);
@@ -884,11 +959,20 @@ export async function withDirectoryLock(repoRoot, fn, opts = {}) {
 
 /**
  * Run `fn` while holding the per-file lock for a workflow. `fn` receives
- * `{ lockPath, token }` so it can pass ownership into `atomicWrite()`
- * for pre-commit recheck. Used for appends / snapshot updates /
- * frontmatter edits to an existing workflow file.
+ * `{ lockPath, token, held }` so it can pass ownership into `atomicWrite()`
+ * for pre-commit recheck, and into writeWorkflow. Used for appends / snapshot
+ * updates / frontmatter edits to an existing workflow file, and for the files
+ * kept beside it.
+ *
+ * ADR-0068 Decision 5, item 7 — every writer of a workflow takes this lock,
+ * so the write is admitted here, holding it, to the attempt mark
+ * (admitAttempt) when it is made under an autopilot run (the step's `env`,
+ * on `host`): a stale attempt is refused before `fn` runs. `held` is null
+ * outside any run, and for a file that does not exist yet. `hold: false` is
+ * for a lock on a path that holds no workflow of this one (an archive
+ * destination).
  */
-export async function withFileLock(workflowPath, fn) {
+export async function withFileLock(workflowPath, fn, { env = process.env, host = env.AGENTIC_HOST || 'claude', hold = true } = {}) {
   const lockPath = fileLockPath(workflowPath);
   const token = await acquireLock(lockPath);
   let releaseOk = false;
@@ -896,7 +980,8 @@ export async function withFileLock(workflowPath, fn) {
     // ADR-0067 Decision 4, item 2 — checked holding the lock, so a copy that
     // appears while this writer waits for it is seen.
     await assertSingleCopy(workflowPath);
-    const result = await fn({ lockPath, token });
+    const held = hold ? await admitWrite(workflowPath, { env, host }) : null;
+    const result = await fn({ lockPath, token, held });
     releaseOk = true;
     return result;
   } finally {
@@ -1482,6 +1567,12 @@ const FRONTMATTER_KEY_ORDER = [
 // detach pass (§5); parent_writeback_at is the P10 write-ahead marker.
 const PARENT_LINKAGE_KEYS = Object.freeze(['parent_workflow', 'originating_subtask', 'parent_detached']);
 const DISPATCHED_KEYS = Object.freeze(['dispatched_branch', 'dispatched_verb', 'dispatched_profile', 'dispatched_topic']);
+// `verify_attempt` binds the step that last wrote the workflow under an
+// autopilot run to the handoff it left (admitAttempt), and outlives the
+// request itself: a request and its results go when a verb ends with
+// another next step, the mark does not.
+const VERIFY_RECORD_KEYS = Object.freeze(['verify_request', 'verify_results']);
+const VERIFY_KEYS = Object.freeze(['verify_attempt', 'verify_handoff', ...VERIFY_RECORD_KEYS]);
 let keyOrderCache = null;
 function frontmatterKeyOrder() {
   if (keyOrderCache !== null) return keyOrderCache;
@@ -1505,6 +1596,12 @@ function frontmatterKeyOrder() {
   // for the same carrier reason: a reader that does not know it re-emits it
   // after every key it knows, so its write leaves it in place.
   order.push('awaiting_owner_run_id');
+  // ADR-0068 Decision 5 — a step's request for checks and the driver's results
+  // against it: one JSON document each, in a double-quoted scalar, after every
+  // other key, so a reader that does not know them carries them through its
+  // forward-compat carrier byte for byte once the next step is no longer
+  // `verify` (lib/verify.mjs).
+  order.push(...VERIFY_KEYS);
   keyOrderCache = Object.freeze(order);
   return keyOrderCache;
 }
@@ -1699,6 +1796,12 @@ function serializeFrontmatter(fm) {
           }
         }
       }
+      continue;
+    }
+
+    if (VERIFY_KEYS.includes(key)) {
+      // ADR-0068 Decision 5 — a JSON document in one double-quoted scalar.
+      lines.push(`${key}: ${yamlScalar(JSON.stringify(value))}`);
       continue;
     }
 
@@ -1961,6 +2064,18 @@ export function parseWorkflowFile(text) {
     }
   }
 
+  // ADR-0068 Decision 5 — the verify scalars hold JSON documents; the
+  // validator below reads the decoded objects.
+  for (const key of VERIFY_KEYS) {
+    if (!(key in fm)) continue;
+    if (typeof fm[key] !== 'string') throw new Error(`${key} must be a JSON document in a double-quoted scalar`);
+    try {
+      fm[key] = JSON.parse(fm[key]);
+    } catch (err) {
+      throw new Error(`${key} is not JSON (${err.message})`);
+    }
+  }
+
   // Schema + required-field + nested-key validation per ADR-0011 §2.
   // Without this, future-schema or hand-edited workflow files could be
   // mutated and rewritten as if they were valid schema=1 (Codex Round 1
@@ -2164,6 +2279,15 @@ function validateSchema11Fields(fm) {
  * - the three `awaiting_owner_*` keys appear all or none.
  */
 function validateSchema14Fields(fm) {
+  validateNextStepFields(fm);
+  validateAwaitingOwnerFields(fm);
+  validateVerifyFields(fm);
+}
+
+// The next step's own keys: each enum, and how they pair. A proposal is
+// checked with this alone before a lock is taken; the whole record, the
+// request a `verify` step needs included, is checked once it is assembled.
+function validateNextStepFields(fm) {
   if ('next_step_kind' in fm) {
     validateEnumScalar('next_step_kind', fm.next_step_kind, VALID_NEXT_STEP_KINDS);
   }
@@ -2185,7 +2309,9 @@ function validateSchema14Fields(fm) {
         `next_step_verb=${JSON.stringify(fm.next_step_verb ?? null)}) (ADR-0063 D6)`,
     );
   }
+}
 
+function validateAwaitingOwnerFields(fm) {
   const awaiting = ['awaiting_owner_gate', 'awaiting_owner_since', 'awaiting_owner_pointer'];
   const present = awaiting.filter((k) => k in fm);
   if (present.length > 0 && present.length < awaiting.length) {
@@ -2209,6 +2335,73 @@ function validateSchema14Fields(fm) {
       'awaiting_owner_run_id must be a run id of [A-Za-z0-9_-] starting with a letter or digit, ' +
         `at most 128 characters (got ${JSON.stringify(fm.awaiting_owner_run_id)}) (ADR-0067 Decision 8)`,
     );
+  }
+}
+
+/**
+ * ADR-0068 Decision 5 — the request and its results. Each holds its own
+ * shape (lib/verify.mjs), and together with the next step:
+ * - `next_step_kind: verify` needs `verify_request`, not yet answered, whose
+ *   confidence is the next step's;
+ * - `verify_request` is this workflow's: its `workflow_id` is the one holding
+ *   it, so no record moved from another workflow reads as evidence here;
+ * - `verify_results` are the results of `verify_request`, never of another;
+ * - `verify_attempt` is never older than `verify_request`'s run and step (the
+ *   mark moves on with each write of a later attempt, and stays after the
+ *   request goes); while the request is pending and the mark names its step,
+ *   it records that step as the one that recorded a request. A later step's
+ *   write moves the mark on past a pending request (Phase 7 entered again, a
+ *   gate set), so a late retry of the request is older than the mark.
+ * A request left beside another next step stays readable: the verb the
+ * driver resumes reads its results. A record a later release wrote (a higher
+ * `v`, lib/verify.mjs header) is carried unchecked, and so is every rule that
+ * reads it.
+ */
+function validateVerifyFields(fm) {
+  const current = (key) => key in fm && !isNewerRecord(fm[key]);
+  if (current('verify_attempt')) validateStoredAttempt(fm.verify_attempt);
+  if (current('verify_handoff')) validateStoredHandoff(fm.verify_handoff);
+  if (current('verify_request')) validateStoredRequest(fm.verify_request, { verbs: VALID_VERBS });
+  if (current('verify_results')) validateStoredResults(fm.verify_results);
+  if (current('verify_request') && fm.verify_request.workflow_id !== fm.workflow_id) {
+    throw new Error(
+      `verify_request is workflow ${fm.verify_request.workflow_id}'s, not ${fm.workflow_id}'s, the workflow holding it: ` +
+        'a request and its results are read only in their own workflow (ADR-0068 Decision 5)',
+    );
+  }
+  if (current('verify_request') && !isNewerRecord(fm.verify_attempt)) {
+    const mark = fm.verify_attempt;
+    const req = fm.verify_request;
+    const order = mark ? compareAttempts(req, mark) : Number.NaN;
+    const pending = fm.next_step_kind === 'verify';
+    if (!(order <= 0) || (pending && order === 0 && mark.requested !== true)) {
+      throw new Error(
+        `verify_attempt (${mark ? `${mark.run_id} ${mark.step === undefined ? 'with no step' : `step ${mark.step}`}` : 'none'}) ${order === 0 ? 'names the step of' : 'is older than'} verify_request ` +
+          `(${req.run_id} step ${req.step}) (ADR-0068 Decision 5)`,
+      );
+    }
+  }
+  if (fm.next_step_kind === 'verify') {
+    if (!('verify_request' in fm)) {
+      throw new Error('next_step_kind verify needs verify_request, the checks it asks for (ADR-0068 Decision 5)');
+    }
+    if (current('verify_request') && fm.verify_request.answered_by !== undefined) {
+      throw new Error(`next_step_kind verify names request ${fm.verify_request.id}, which batch ${fm.verify_request.answered_by} already answered`);
+    }
+    if (current('verify_request') && fm.verify_request.confidence !== fm.next_step_confidence) {
+      throw new Error(
+        `next_step_confidence ${fm.next_step_confidence} is not the confidence of request ${fm.verify_request.id} ` +
+          `(${fm.verify_request.confidence}): the next step verify is the request's (ADR-0068 Decision 5)`,
+      );
+    }
+  }
+  if (current('verify_results') && !isNewerRecord(fm.verify_request)) {
+    if (!('verify_request' in fm) || fm.verify_results.request_id !== fm.verify_request.id) {
+      throw new Error(
+        `verify_results are for request ${fm.verify_results.request_id}, which is not this workflow's verify_request ` +
+          `(${fm.verify_request?.id ?? 'none'}): results are never read as another request's (ADR-0068 Decision 5, item 5)`,
+      );
+    }
   }
 }
 
@@ -2363,6 +2556,10 @@ function parseScalar(text) {
 // File assembly
 
 export function assembleWorkflowFile(frontmatter, body) {
+  // ADR-0068 Decision 5 — every workflow write turns its record into text
+  // here, so the handoff generation moves on here, for every writer
+  // (stampHandoff, lib/verify.mjs header).
+  stampHandoff(frontmatter);
   const fmText = serializeFrontmatter(frontmatter);
   const trailingBody = body.endsWith('\n') ? body : `${body}\n`;
   return `${fmText}\n\n${trailingBody}`;
@@ -2376,6 +2573,12 @@ function validateHost(host) {
     throw new Error(`Invalid host: ${host}. Must be one of ${[...VALID_HOSTS].join(', ')}`);
   }
 }
+
+// The host, checked (validateHost), for a writer that takes it optionally.
+const validHost = (host) => {
+  validateHost(host);
+  return host;
+};
 
 function validateHookEvent(event) {
   if (!VALID_HOOK_EVENTS.has(event)) {
@@ -2474,6 +2677,9 @@ export async function createWorkflowUnderLock({
   // self-describing. workflow_type is a primary discriminator, not a
   // presence flag; the persona's `start` macro passes 'start'.
   workflowType = 'verb-chain',
+  // ADR-0068 Decision 5, item 7 — the step's environment: a workflow created
+  // under an autopilot run records the creating step's attempt mark with it.
+  env = process.env,
   now = new Date(),
 }, ownership = null) {
   validateVerb(verb);
@@ -2631,6 +2837,13 @@ export async function createWorkflowUnderLock({
 
   const filePath = join(storage.workflows, `${workflowId}.md`);
   await ensureDir(storage.workflows, 0o700);
+  // A step's first write binds it (admitAttempt): the creation, a verb's
+  // bootstrap Phase 0, records the mark in the same write, so a delayed write
+  // of the creating step is held to the handoff it left like any other. It is
+  // admitted first against the workflows archived on the branch (admitCreation).
+  const attempt = verifyAttemptOf({ env, host });
+  if (attempt !== null) await admitCreation(searched, gitBaseline.branch, attempt);
+  if (attempt !== null) markAttempt(frontmatter, { attempt, before: handoffState(frontmatter), bound: false, mark: undefined });
   await atomicWrite(filePath, assembleWorkflowFile(frontmatter, body), ownership);
 
   return { workflowId, filePath, frontmatter, body };
@@ -2698,8 +2911,8 @@ export function creationPlacement({ repoRoot, parentWorkflow, parentWorkflowPath
 export async function createWorkflow(args) {
   const placement = creationPlacement(args);
   const storage = await resolveWorkflowStorage(placement.root, { mode: 'write' });
-  return withCreationLocks(storage, ({ lockPath, token }) =>
-    createWorkflowUnderLock(args, { lockPath, token, storage }),
+  return withCreationLocks(storage, ({ lockPath, token, outer }) =>
+    createWorkflowUnderLock(args, { lockPath, token, outer, storage }),
   );
 }
 
@@ -2712,7 +2925,7 @@ export async function createWorkflow(args) {
 
 const NEXT_STEP_KEYS = ['next_step_kind', 'next_step_verb', 'next_step_confidence'];
 
-function normalizeNextStep(nextStep) {
+function normalizeNextStep(nextStep, { allowVerify = false } = {}) {
   if (typeof nextStep !== 'object' || nextStep === null || Array.isArray(nextStep)) {
     throw new Error('nextStep must be an object { kind, verb?, confidence }');
   }
@@ -2725,7 +2938,16 @@ function normalizeNextStep(nextStep) {
   if (!('next_step_kind' in fields)) {
     throw new Error('next step kind is required when writing a next step (ADR-0063 D6)');
   }
-  validateSchema14Fields(fields);
+  validateNextStepFields(fields);
+  // ADR-0068 Decision 5, item 11 — `verify` is written only with its request,
+  // by finish-verb under a run that offers verification; no other writer
+  // (append, set-terminal, awaiting-owner-clear) records it.
+  if (fields.next_step_kind === 'verify' && !allowVerify) {
+    throw new Error(
+      'next step verify is written only by finish-verb --verify-request-file, in a step of an autopilot run that ' +
+        'offers verification (ADR-0068 Decision 5, item 11)',
+    );
+  }
   return fields;
 }
 
@@ -2746,10 +2968,17 @@ function resolveNextStepWrite(nextStep, clearNextStep) {
   return normalizeNextStep(nextStep);
 }
 
-function applyNextStepWrite(frontmatter, write) {
+// `dropVerify` (finish-verb with a kind other than verify): the verb ends
+// with no request, so the last request and its results go with the write
+// (ADR-0068 Decision 5, item 7: a verb's own next step replaces them). The
+// attempt mark stays: it is what refuses a late retry of the dropped request.
+// The write is held to the mark at its lock and moves it on once the whole
+// handoff it leaves is known (withFileLock, writeWorkflow).
+function applyNextStepWrite(frontmatter, write, { dropVerify = false } = {}) {
   if (write === null) return;
   for (const k of NEXT_STEP_KEYS) delete frontmatter[k];
   Object.assign(frontmatter, write);
+  if (dropVerify) for (const k of VERIFY_RECORD_KEYS) delete frontmatter[k];
   validateSchema14Fields(frontmatter);
 }
 
@@ -2792,7 +3021,13 @@ export async function appendPhase({
   // `true` turns an inherited terminal marker off: the workflow is not
   // complete (it waits on its owner, or a lifecycle continues it).
   clearTerminalMarker = false,
+  // finish-verb's: a verb that ends with another next step than verify drops
+  // the last request and its results in the same write (ADR-0068 Decision 5).
+  dropVerifyRequest = false,
   event = 'resumed',
+  // The step's environment: under an autopilot run, every write of a
+  // workflow is held to the attempt mark (withFileLock, ADR-0068 Decision 5).
+  env = process.env,
   now = new Date(),
 }) {
   validateHost(host);
@@ -2804,7 +3039,7 @@ export async function appendPhase({
   const nextStepWrite = resolveNextStepWrite(nextStep, clearNextStep);
   const gateFields = ownerGate === undefined ? null : resolveOwnerGateFields({ workflowPath, ownerGate, now });
 
-  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+  return withFileLock(workflowPath, async (ownership) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     const nowIso = isoUtc(now);
@@ -2813,7 +3048,7 @@ export async function appendPhase({
     if (profile !== undefined) frontmatter.profile = profile;
     if (currentPhase !== undefined) frontmatter.current_phase = currentPhase;
     if (nextAction !== undefined) frontmatter.next_action = nextAction;
-    applyNextStepWrite(frontmatter, nextStepWrite);
+    applyNextStepWrite(frontmatter, nextStepWrite, { dropVerify: dropVerifyRequest });
     const replacedRunId = gateFields ? applyOwnerGate(frontmatter, gateFields) : null;
     if (clearTerminalMarker && frontmatter.terminal_marker === true) frontmatter.terminal_marker = false;
     frontmatter.updated_at = nowIso;
@@ -2830,18 +3065,14 @@ export async function appendPhase({
     const run = verb === 'critique' ? `${CRITIQUE_RUN_MARKER}\n${heading === '' && note === '' ? '\n' : ''}` : '';
     const newBody = appendToBody(body, `${run}${heading}${note}`);
 
-    await atomicWrite(
-      workflowPath,
-      assembleWorkflowFile(frontmatter, newBody),
-      { lockPath, token },
-    );
+    await writeWorkflow(workflowPath, frontmatter, newBody, ownership, { nextStep: nextStepWrite !== null });
     // ADR-0067 Decision 8 — a gate set again over itself that names another
     // run, or none, retires the task file of the run it replaced.
     const retired = replacedRunId === null
       ? { retired: null, warning: null }
-      : await retireConsensusTask(workflowPath, frontmatter.workflow_id, replacedRunId, { lockPath, token });
+      : await retireConsensusTask(workflowPath, frontmatter.workflow_id, replacedRunId, ownership);
     return { frontmatter, workflowPath, retired };
-  });
+  }, { env, host });
 }
 
 // -----------------------------------------------------------------------------
@@ -2852,12 +3083,14 @@ export async function snapshot({
   host,
   trigger,
   statusDigest,
+  // As every writer's: the attempt mark (withFileLock, ADR-0068 Decision 5).
+  env = process.env,
   now = new Date(),
 }) {
   validateHost(host);
   validateSnapshotTrigger(trigger);
 
-  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+  return withFileLock(workflowPath, async (ownership) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     const nowIso = isoUtc(now);
@@ -2873,13 +3106,9 @@ export async function snapshot({
       { host, at: nowIso, event: 'snapshot' },
     ];
 
-    await atomicWrite(
-      workflowPath,
-      assembleWorkflowFile(frontmatter, body),
-      { lockPath, token },
-    );
+    await writeWorkflow(workflowPath, frontmatter, body, ownership);
     return { frontmatter, workflowPath };
-  });
+  }, { env, host });
 }
 
 // -----------------------------------------------------------------------------
@@ -2942,6 +3171,10 @@ export async function recordPendingEnsemble({
   ensemble_type,
   run_id,
   started_at,
+  // A pending run is part of the handoff: under an autopilot run the write is
+  // held to the attempt mark (withFileLock, ADR-0068 Decision 5).
+  host = 'claude',
+  env = process.env,
   now = new Date(),
 }) {
   for (const [name, val] of [
@@ -2964,7 +3197,7 @@ export async function recordPendingEnsemble({
       `recordPendingEnsemble: started_at must be a string (got ${typeof started_at})`,
     );
   }
-  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+  return withFileLock(workflowPath, async (ownership) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     const nowIso = isoUtc(now);
@@ -2979,13 +3212,9 @@ export async function recordPendingEnsemble({
       : [];
     frontmatter.pending_ensemble = [...existing, entry];
     frontmatter.updated_at = nowIso;
-    await atomicWrite(
-      workflowPath,
-      assembleWorkflowFile(frontmatter, body),
-      { lockPath, token },
-    );
+    await writeWorkflow(workflowPath, frontmatter, body, ownership);
     return { frontmatter, workflowPath };
-  });
+  }, { env, host });
 }
 
 /**
@@ -3010,6 +3239,10 @@ export async function commitEnsemble({
   completed_at,
   codex_session_id = null,
   cap = ENSEMBLE_RESULTS_RETENTION_CAP,
+  // As recordPendingEnsemble's: the attempt mark (withFileLock, ADR-0068
+  // Decision 5).
+  host = 'claude',
+  env = process.env,
   now = new Date(),
 }) {
   // Required field validation at the call boundary (Codex review M4 —
@@ -3044,7 +3277,7 @@ export async function commitEnsemble({
       `commitEnsemble: completed_at must be a string (got ${typeof completed_at})`,
     );
   }
-  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+  return withFileLock(workflowPath, async (ownership) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     const nowIso = isoUtc(now);
@@ -3080,15 +3313,11 @@ export async function commitEnsemble({
     frontmatter.ensemble_results = pruneEnsembleResults(next, cap);
     frontmatter.updated_at = nowIso;
 
-    await atomicWrite(
-      workflowPath,
-      assembleWorkflowFile(frontmatter, body),
-      { lockPath, token },
-    );
+    await writeWorkflow(workflowPath, frontmatter, body, ownership);
     // `kept`: the entry already recorded for this run id, read under the lock.
     const kept = alreadyCommitted ? existing.find((e) => e.run_id === run_id) : null;
     return { frontmatter, workflowPath, idempotentSkip: alreadyCommitted, kept };
-  });
+  }, { env, host });
 }
 
 // -----------------------------------------------------------------------------
@@ -3164,6 +3393,11 @@ async function recordManifestEntry({
   phase,
   recorded_at,
   now,
+  // The staging set Phase 7 reads: under an autopilot run, held to the
+  // attempt mark as every write is (withFileLock, ADR-0068 Decision 5), on
+  // the caller's host.
+  env = process.env,
+  host,
 }) {
   // Command-mode boundary — see helper-section header above.
   if (workflowPath === undefined || workflowPath === null || workflowPath === '') {
@@ -3193,7 +3427,7 @@ async function recordManifestEntry({
       `recordManifestEntry: recorded_at must be a string (got ${typeof recorded_at})`,
     );
   }
-  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+  return withFileLock(workflowPath, async (ownership) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     const nowIso = isoUtc(now ?? new Date());
@@ -3208,13 +3442,9 @@ async function recordManifestEntry({
       : [];
     frontmatter.commit_manifest = [...existing, entry];
     frontmatter.updated_at = nowIso;
-    await atomicWrite(
-      workflowPath,
-      assembleWorkflowFile(frontmatter, body),
-      { lockPath, token },
-    );
+    await writeWorkflow(workflowPath, frontmatter, body, ownership);
     return { frontmatter, workflowPath, entry };
-  });
+  }, { env, ...(host === undefined ? {} : { host: validHost(host) }) });
 }
 
 /**
@@ -3223,7 +3453,7 @@ async function recordManifestEntry({
  * Write/Edit during a workflow-command sub-step; no-ops when
  * `workflowPath` is empty (standalone-invocation boundary).
  */
-export async function recordComposedFile({ workflowPath, path, op, recorded_at, now } = {}) {
+export async function recordComposedFile({ workflowPath, path, op, recorded_at, now, env, host } = {}) {
   return recordManifestEntry({
     workflowPath,
     path,
@@ -3231,6 +3461,8 @@ export async function recordComposedFile({ workflowPath, path, op, recorded_at, 
     phase: 'compose',
     recorded_at,
     now,
+    env,
+    host,
   });
 }
 
@@ -3240,7 +3472,7 @@ export async function recordComposedFile({ workflowPath, path, op, recorded_at, 
  * Write/Edit during a workflow-command sub-step; no-ops when
  * `workflowPath` is empty (standalone-invocation boundary).
  */
-export async function recordRefineFile({ workflowPath, path, op, recorded_at, now } = {}) {
+export async function recordRefineFile({ workflowPath, path, op, recorded_at, now, env, host } = {}) {
   return recordManifestEntry({
     workflowPath,
     path,
@@ -3248,6 +3480,8 @@ export async function recordRefineFile({ workflowPath, path, op, recorded_at, no
     phase: 'refine',
     recorded_at,
     now,
+    env,
+    host,
   });
 }
 
@@ -3263,13 +3497,15 @@ export async function setCheckpoint({
   workflowPath,
   host,
   summary,
+  // As every writer's: the attempt mark (withFileLock, ADR-0068 Decision 5).
+  env = process.env,
   now = new Date(),
 }) {
   validateHost(host);
   if (typeof summary !== 'string' || summary.length === 0) {
     throw new Error('setCheckpoint: summary must be a non-empty string');
   }
-  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+  return withFileLock(workflowPath, async (ownership) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     const nowIso = isoUtc(now);
@@ -3279,13 +3515,9 @@ export async function setCheckpoint({
       ...(frontmatter.host_history ?? []),
       { host, at: nowIso, event: 'checkpointed' },
     ];
-    await atomicWrite(
-      workflowPath,
-      assembleWorkflowFile(frontmatter, body),
-      { lockPath, token },
-    );
+    await writeWorkflow(workflowPath, frontmatter, body, ownership);
     return { frontmatter, workflowPath };
-  });
+  }, { env, host });
 }
 
 /**
@@ -3306,7 +3538,11 @@ export async function setTerminal({
   // ADR-0063 D6 — `{ kind, verb?, confidence }` replaces all three
   // next_step_* keys with the terminal write; omitted leaves them as they are.
   nextStep,
+  // finish-verb's, as appendPhase's (ADR-0068 Decision 5).
+  dropVerifyRequest = false,
   event = 'updated',
+  // As appendPhase's: the attempt mark (withFileLock, ADR-0068 Decision 5).
+  env = process.env,
   now = new Date(),
   // ADR-0031 amendment (decision 1) / ADR-0043 — fire the session-handoff
   // sidecar from this must-run completion mutation. Opt-in by the production
@@ -3335,26 +3571,22 @@ export async function setTerminal({
     );
   }
   const nextStepWrite = resolveNextStepWrite(nextStep, false);
-  const result = await withFileLock(workflowPath, async ({ lockPath, token }) => {
+  const result = await withFileLock(workflowPath, async (ownership) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     const nowIso = isoUtc(now);
     frontmatter.current_phase = terminalPhase;
     if (nextAction !== undefined) frontmatter.next_action = nextAction;
-    applyNextStepWrite(frontmatter, nextStepWrite);
+    applyNextStepWrite(frontmatter, nextStepWrite, { dropVerify: dropVerifyRequest });
     frontmatter.terminal_marker = terminalMarker;
     frontmatter.updated_at = nowIso;
     frontmatter.host_history = [
       ...(frontmatter.host_history ?? []),
       { host, at: nowIso, event },
     ];
-    await atomicWrite(
-      workflowPath,
-      assembleWorkflowFile(frontmatter, body),
-      { lockPath, token },
-    );
+    await writeWorkflow(workflowPath, frontmatter, body, ownership, { nextStep: nextStepWrite !== null });
     return { frontmatter, workflowPath };
-  });
+  }, { env, host });
   // ADR-0031 amendment (decisions 1, 2, 3, 6) / ADR-0043 §2 — fire the
   // activation sidecar AFTER the terminal mutation succeeded AND the file lock
   // was released (the `withFileLock` above has resolved). Fail-closed +
@@ -3474,6 +3706,16 @@ async function holdsLock({ lockPath, token }) {
   return (await readFile(lockPath, 'utf8').catch(() => null)) === token;
 }
 
+// A move of a file kept beside the workflow (its review ledger), made only
+// while the workflow's lock is still this writer's: a writer whose lock was
+// reclaimed as stale never moves away the file the new owner made current.
+async function renameHeld(from, to, ownership) {
+  if (!(await holdsLock(ownership))) {
+    throw new Error(`the lock on the workflow was reclaimed as stale by another writer: ${from} is not moved`);
+  }
+  await rename(from, to);
+}
+
 // Rename a task file to its `.resolved.md` name, once the write that took its
 // gate away has landed, holding the workflow's lock (`ownership`, as
 // withFileLock gives it). Best effort: an absent file is nothing to retire,
@@ -3510,13 +3752,21 @@ export async function retireConsensusTask(workflowPath, workflowId, runId, owner
  * consensus round the proposal selects, with the file's absolute path.
  */
 export async function writeConsensusTask(args) {
-  return withFileLock(args.workflowPath, (ownership) => writeConsensusTaskUnderLock(args, ownership));
+  // A file kept beside the workflow, held to its attempt mark as every write
+  // under its lock is (withFileLock, ADR-0068 Decision 5): the mark moves on
+  // once the task is checked and before it is published (markBeside).
+  return withFileLock(args.workflowPath, (ownership) => writeConsensusTaskUnderLock(args, ownership, {
+    beforePublish: () => markBeside(args.workflowPath, ownership),
+  }), {
+    env: args.env ?? process.env, host: args.host ?? 'claude',
+  });
 }
 
 // writeConsensusTask's body, for a caller already holding the workflow's lock:
 // the file is published with atomicWrite and the lock's token, so a writer
 // whose lock was reclaimed never overwrites the new owner's task file.
-export async function writeConsensusTaskUnderLock({ workflowPath, runId, text, host = 'claude' }, ownership) {
+// `beforePublish` runs once the task is checked, just before it is published.
+export async function writeConsensusTaskUnderLock({ workflowPath, runId, text, host = 'claude' }, ownership, { beforePublish } = {}) {
   validateHost(host);
   if (!isSafeConsensusRunId(runId)) {
     throw new Error(`consensus-task: ${JSON.stringify(runId)} is not a run id (ADR-0067 Decision 8)`);
@@ -3540,6 +3790,7 @@ export async function writeConsensusTaskUnderLock({ workflowPath, runId, text, h
   if (!paths) {
     throw new Error(`consensus-task: ${JSON.stringify(workflowPath)} is not a workflow file under the ${personaName()} state home`);
   }
+  if (beforePublish) await beforePublish();
   await ensureDir(paths.dir, 0o700);
   await atomicWrite(paths.file, `${scrubSecrets(text).trim()}\n`, ownership);
   return {
@@ -3721,7 +3972,9 @@ function reviewFacts(checkout, frontmatter) {
  * ledger that cannot be read is moved aside and a new one starts, with a full
  * critique.
  */
-export async function openCritiqueScope({ workflowPath, repoRoot, profile = '', now = isoUtc() }) {
+export async function openCritiqueScope({ workflowPath, repoRoot, profile = '', now = isoUtc(), env = process.env, host }) {
+  // The review ledger, held to the workflow's attempt mark as every write
+  // under its lock is (withFileLock, ADR-0068 Decision 5).
   return withFileLock(workflowPath, async (ownership) => {
     const { frontmatter, paths, entries } = await reviewContext(workflowPath, 'critique-scope');
     const checkout = await workflowCheckout(repoRoot, frontmatter);
@@ -3740,6 +3993,9 @@ export async function openCritiqueScope({ workflowPath, repoRoot, profile = '', 
     };
     const unrecorded = { recorded: false, generation: null, mode: 'full', reason: facts.documentReason, ...summary, passages: [], targets: [], findings: [] };
     if (!checkout.ok && checkout.otherBranch) return unrecorded;
+    // Every path below moves or writes the ledger: the mark moves on first, so
+    // a step stopped between the two has already bound the attempt.
+    await markBeside(workflowPath, ownership);
     if (!facts.document) {
       // A ledger a document critique left would hand refine findings this
       // critique, which records nothing, never judged: it is moved aside, and
@@ -3747,7 +4003,7 @@ export async function openCritiqueScope({ workflowPath, repoRoot, profile = '', 
       let superseded = null;
       try {
         superseded = `${paths.file}.superseded-${Date.now()}`;
-        await rename(paths.file, superseded);
+        await renameHeld(paths.file, superseded, ownership);
       } catch (err) {
         if (err.code !== 'ENOENT') throw err;
         superseded = null;
@@ -3762,7 +4018,7 @@ export async function openCritiqueScope({ workflowPath, repoRoot, profile = '', 
     } catch (err) {
       if (!(err instanceof ReviewScopeError)) throw err;
       reset = `${paths.file}.unreadable-${Date.now()}`;
-      await rename(paths.file, reset);
+      await renameHeld(paths.file, reset, ownership);
       ledger = emptyLedger(frontmatter.workflow_id);
     }
     // A critique ran that the ledger never recorded (its critique-scope
@@ -3771,7 +4027,7 @@ export async function openCritiqueScope({ workflowPath, repoRoot, profile = '', 
     // and this critique starts a new one, full.
     if (unrecordedCritique(ledger, entries, 1)) {
       reset = `${paths.file}.superseded-${Date.now()}`;
-      await rename(paths.file, reset);
+      await renameHeld(paths.file, reset, ownership);
       ledger = emptyLedger(frontmatter.workflow_id);
       resetReason = 'unrecorded-critique';
     }
@@ -3804,7 +4060,7 @@ export async function openCritiqueScope({ workflowPath, repoRoot, profile = '', 
       findings: status.findings.filter((f) => f.disposition !== 'resolved' || decision.targets.includes(f.id)),
       ...(reset === null ? {} : { ledger_moved_aside: reset }),
     };
-  });
+  }, { env, ...(host === undefined ? {} : { host: validHost(host) }) });
 }
 
 /**
@@ -3814,7 +4070,7 @@ export async function openCritiqueScope({ workflowPath, repoRoot, profile = '', 
  * or the checkout no longer holds the tree the critique reviewed: the findings
  * would be held to text nobody reviewed.
  */
-export async function closeCritiqueScope({ workflowPath, repoRoot, ledgerId, generation, input, now = isoUtc() }) {
+export async function closeCritiqueScope({ workflowPath, repoRoot, ledgerId, generation, input, now = isoUtc(), env = process.env, host }) {
   return withFileLock(workflowPath, async (ownership) => {
     const { frontmatter, paths } = await reviewContext(workflowPath, 'critique-close');
     const ledger = await readReviewLedger(paths, frontmatter.workflow_id);
@@ -3840,9 +4096,10 @@ export async function closeCritiqueScope({ workflowPath, repoRoot, ledgerId, gen
       );
     }
     const closed = closeGeneration(ledger, generation, input, now);
+    await markBeside(workflowPath, ownership);
     await writeReviewLedger(paths, closed.ledger, ownership);
     return closed.result;
-  });
+  }, { env, ...(host === undefined ? {} : { host: validHost(host) }) });
 }
 
 /**
@@ -3853,7 +4110,7 @@ export async function closeCritiqueScope({ workflowPath, repoRoot, ledgerId, gen
  * was never critiqued as a document) or the checkout cannot be read or is on
  * another branch: the next critique is full.
  */
-export async function recordRefineScope({ workflowPath, repoRoot, targets, now = isoUtc() }) {
+export async function recordRefineScope({ workflowPath, repoRoot, targets, now = isoUtc(), env = process.env, host }) {
   return withFileLock(workflowPath, async (ownership) => {
     const { frontmatter, paths, entries } = await reviewContext(workflowPath, 'refine-record');
     const unrecorded = (reason, extra = {}) => ({ recorded: false, reason, ...extra, verify: { mode: 'full', reason } });
@@ -3870,6 +4127,7 @@ export async function recordRefineScope({ workflowPath, repoRoot, targets, now =
     const checkout = await workflowCheckout(repoRoot, frontmatter);
     if (!checkout.ok) return unrecorded(checkout.reason, { detail: checkout.message });
     const done = recordRefine(ledger, { targets, treeAfter: checkout.tree }, now);
+    await markBeside(workflowPath, ownership);
     await writeReviewLedger(paths, done.ledger, ownership);
     const facts = reviewFacts(checkout, frontmatter);
     let verify = decideScope(done.ledger, { ...facts, defaultProfile: true });
@@ -3883,7 +4141,7 @@ export async function recordRefineScope({ workflowPath, repoRoot, targets, now =
       }
     }
     return { recorded: true, ...done.attempt, verify: { mode: verify.mode, reason: verify.reason } };
-  });
+  }, { env, ...(host === undefined ? {} : { host: validHost(host) }) });
 }
 
 /** Read-only: what the review ledger says, or `{ ledger: false }`. */
@@ -4009,11 +4267,14 @@ export async function setAwaitingOwner({
   anchor,
   since,
   runId,
+  // The gate turns an inherited terminal marker off, a write of the handoff
+  // held to the attempt mark (withFileLock, ADR-0068 Decision 5).
+  env = process.env,
   now = new Date(),
 }) {
   validateHost(host);
   const fields = resolveOwnerGateFields({ workflowPath, ownerGate: { gate, pointer, anchor, since, runId }, now });
-  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+  return withFileLock(workflowPath, async (ownership) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     const nowIso = isoUtc(now);
@@ -4023,16 +4284,12 @@ export async function setAwaitingOwner({
       ...(frontmatter.host_history ?? []),
       { host, at: nowIso, event: 'updated' },
     ];
-    await atomicWrite(
-      workflowPath,
-      assembleWorkflowFile(frontmatter, body),
-      { lockPath, token },
-    );
+    await writeWorkflow(workflowPath, frontmatter, body, ownership);
     const retired = replacedRunId === null
       ? { retired: null, warning: null }
-      : await retireConsensusTask(workflowPath, frontmatter.workflow_id, replacedRunId, { lockPath, token });
+      : await retireConsensusTask(workflowPath, frontmatter.workflow_id, replacedRunId, ownership);
     return { frontmatter, workflowPath, retired };
-  });
+  }, { env, host });
 }
 
 /**
@@ -4072,7 +4329,7 @@ export async function clearAwaitingOwner({
     );
   }
   validateEnumScalar('awaiting_owner_gate', gate, VALID_WORKFLOW_OWNER_GATES);
-  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+  return withFileLock(workflowPath, async (ownership) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     const current = frontmatter.awaiting_owner_gate;
@@ -4099,16 +4356,12 @@ export async function clearAwaitingOwner({
       ...(frontmatter.host_history ?? []),
       { host, at: nowIso, event: 'updated' },
     ];
-    await atomicWrite(
-      workflowPath,
-      assembleWorkflowFile(frontmatter, appendToBody(body, note)),
-      { lockPath, token },
-    );
+    await writeWorkflow(workflowPath, frontmatter, appendToBody(body, note), ownership, { nextStep: nextStepWrite !== null });
     const retired = runId === undefined
       ? { retired: null, warning: null }
-      : await retireConsensusTask(workflowPath, frontmatter.workflow_id, runId, { lockPath, token });
+      : await retireConsensusTask(workflowPath, frontmatter.workflow_id, runId, ownership);
     return { frontmatter, workflowPath, retired };
-  });
+  }, { env, host });
 }
 
 // How each gate this persona can set is resolved, named with the host's
@@ -4262,7 +4515,13 @@ export async function finishVerb({
   // on; a conflict gate names the run whose synthesis set it (ADR-0067
   // Decision 8).
   ownerGate,
+  // ADR-0068 Decision 5 — with the next step `verify`, the request the step's
+  // file holds ({checks, on_pass, confidence}, parsed JSON). Only that kind
+  // takes one.
+  verifyRequest,
   env = process.env,
+  // The checkout the step runs in: the tested tree a request's paths name.
+  cwd = process.cwd(),
   now = new Date(),
   emitHandoff = false,
 }) {
@@ -4273,6 +4532,16 @@ export async function finishVerb({
     throw new Error(
       `an owner gate goes with the next step owner-decision (got ${JSON.stringify(nextStep.kind)}) (ADR-0063 D4)`,
     );
+  }
+  if (nextStep.kind === 'verify') {
+    if (verifyRequest === undefined) {
+      throw new Error('finish-verb --next-step-kind verify takes the request as --verify-request-file (ADR-0068 Decision 5, item 2)');
+    }
+    const result = await recordVerifyRequest({ workflowPath, host, nextAction, nextStep, input: verifyRequest, env, cwd, now });
+    return { ...result, mode: 'autopilot', terminal: false };
+  }
+  if (verifyRequest !== undefined) {
+    throw new Error(`a request file goes with the next step verify (got ${JSON.stringify(nextStep.kind)}) (ADR-0068 Decision 5)`);
   }
   // Under autopilot (dispatch_target on, ADR-0063 D3) a verb records its next
   // step and leaves the terminal marker for the commit surface; a pending peer
@@ -4291,7 +4560,7 @@ export async function finishVerb({
   if (autopilot || ownerGate !== undefined) {
     const result = await appendPhase({
       workflowPath, host, nextAction, nextStep, ownerGate,
-      clearTerminalMarker: true, event: 'updated', now,
+      clearTerminalMarker: true, dropVerifyRequest: true, event: 'updated', env, now,
     });
     return { ...result, mode: autopilot ? 'autopilot' : 'interactive', terminal: false };
   }
@@ -4302,12 +4571,765 @@ export async function finishVerb({
     terminalMarker: true,
     nextAction,
     nextStep,
+    dropVerifyRequest: true,
     event: 'updated',
+    env,
     now,
     emitHandoff,
   });
   return { ...result, mode: 'interactive', terminal: true };
 }
+
+// -----------------------------------------------------------------------------
+// ADR-0068 Decision 5 — the checks a step requests and the driver's results
+// (`verify-record-cli`). The forms are lib/verify.mjs's; this section binds
+// them to a workflow under its lock. Every write records host_history
+// `updated`: the event enum is closed (VALID_HOOK_EVENTS), and an older reader
+// must read the file again once the next step is no longer `verify`.
+
+const STEP_RE = /^[1-9][0-9]{0,8}$/;
+const COMMIT_SHA_RE = /^[0-9a-f]{40}$/;
+
+// git as the verify section reads it: no replace ref stands in for an object
+// (`--no-replace-objects`), and no inherited GIT_* variable (GIT_DIR,
+// GIT_ALTERNATE_OBJECT_DIRECTORIES, GIT_CONFIG_*, ...) points it at another
+// repository, object store or configuration than the checkout's own. What it
+// reads is still the step's own claim (lib/verify.mjs header): the driver
+// reads the declaration itself.
+function gitOut(cwd, args) {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_')));
+  try {
+    return execFileSync('git', ['--no-replace-objects', '-C', cwd, ...args], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 4 * 1024 * 1024 });
+  } catch {
+    return null;
+  }
+}
+
+// The declaration at a commit of the repository `dir` is a checkout of, or
+// `{ problem }`.
+function declarationAt(dir, commit) {
+  const text = gitOut(dir, ['show', `${commit}:${VERIFY_DECLARATION_PATH}`]);
+  if (text === null) return { problem: `the repository's declaration (${VERIFY_DECLARATION_PATH}) at ${commit}` };
+  try {
+    return { declaration: parseDeclaration(text) };
+  } catch (err) {
+    return { problem: `a readable declaration at ${commit} (${err.message})` };
+  }
+}
+
+/**
+ * ADR-0068 Decision 5, item 11 — whether this step may write `verify`: an
+ * autopilot run (autopilotMode active: Claude, dispatch_target on, a run
+ * named) whose driver offers verification, telling the step the commit the
+ * run started from (AGENTIC_AUTOPILOT_VERIFY) and its step number
+ * (AGENTIC_AUTOPILOT_STEP), with the repository's declaration at that
+ * commit. `{ on: true, commit, step, declaration }`, or `{ on: false,
+ * missing }` naming the first part missing. The driver of this release numbers
+ * each step but sets no AGENTIC_AUTOPILOT_VERIFY (its workers' environment
+ * scrubs an inherited one), so no run offers it until verify-exec.
+ */
+export function verifyOffer({ env = process.env, host = 'claude', cwd = process.cwd() } = {}) {
+  const mode = autopilotMode({ env, host });
+  if (!mode.active) {
+    return { on: false, missing: mode.ignored ? mode.reason : 'an autopilot run (AGENTIC_AUTOPILOT names none): an interactive step has no driver to run its checks' };
+  }
+  const commit = env.AGENTIC_AUTOPILOT_VERIFY ?? '';
+  if (!COMMIT_SHA_RE.test(commit)) {
+    return { on: false, missing: 'the run\'s offer (AGENTIC_AUTOPILOT_VERIFY, the 40-hex commit the run started from): this run does not offer verification' };
+  }
+  const stepText = env.AGENTIC_AUTOPILOT_STEP ?? '';
+  if (!STEP_RE.test(stepText)) {
+    return { on: false, missing: 'the step number (AGENTIC_AUTOPILOT_STEP, a positive integer)' };
+  }
+  const read = declarationAt(cwd, commit);
+  if (read.problem) return { on: false, missing: read.problem };
+  return { on: true, commit, step: Number(stepText), runId: env.AGENTIC_AUTOPILOT, declaration: read.declaration };
+}
+
+/**
+ * The attempt a write is made in, under an autopilot run (autopilotMode
+ * active): `{run_id, step}` when the driver numbers its steps (the step's
+ * number, AGENTIC_AUTOPILOT_STEP, well formed), whether or not the run offers
+ * verification: the driver of this release numbers every step it starts. A
+ * driver of an earlier release numbers none, and its steps write `{run_id}`.
+ * Null outside any run (an owner's write, an interactive session's). The
+ * offer and the declaration are not read: a verb ending with another next
+ * step needs neither.
+ */
+export function verifyAttemptOf({ env = process.env, host = 'claude' } = {}) {
+  if (!autopilotMode({ env, host }).active) return null;
+  const run = { run_id: env.AGENTIC_AUTOPILOT };
+  const stepText = env.AGENTIC_AUTOPILOT_STEP ?? '';
+  if (!STEP_RE.test(stepText)) return run;
+  return { ...run, step: Number(stepText) };
+}
+
+const attemptLabel = (a, other) => {
+  const step = a.step === undefined ? 'a step' : `step ${a.step}`;
+  return a.run_id === other.run_id ? step : `${step} of ${a.run_id}`;
+};
+
+/**
+ * ADR-0068 Decision 5, item 7 — a stale attempt never moves the record back.
+ * The attempt mark binds the step that last wrote the workflow under an
+ * autopilot run to the handoff that write left and its generation
+ * (handoffDigest, stampHandoff, lib/verify.mjs header). Every write of a
+ * workflow is held to it at the one point every writer passes, its file lock
+ * (withFileLock): the lock admits the write or refuses it before the writer
+ * reads the record (this function), and the record's write moves the mark on
+ * (markAttempt, writeWorkflow; markBeside for a file kept beside it). No
+ * writer is listed: a checkpoint, a snapshot, a manifest entry, an archive,
+ * the review ledger and a consensus task are held as a next step is, the
+ * files beside the workflow moved on before they are written (markBeside). A
+ * workflow created under a run is admitted against the marks of the workflows
+ * archived on its branch (admitCreation) and records the creating step's mark
+ * in the same write (createWorkflowUnderLock).
+ *
+ * Refused, for a write under an autopilot run (`attempt`), whatever it
+ * changes: when the mark names a later attempt (a later step of the same
+ * run, or a later run: run ids carry their start), or a run started in the
+ * same second, whose order cannot be told; from the step the mark names, when
+ * the record no longer holds the handoff that step last left at the
+ * generation it left it, so any change of the handoff since, whoever made it,
+ * makes the step's attempt stale, even one undone since; and beside a mark or
+ * a generation a later release wrote, which this release does not read.
+ *
+ * A step starts at its first write: every verb's Phase 0 writes the workflow
+ * before anything else, and the driver numbers each step it starts
+ * (AGENTIC_AUTOPILOT_STEP), whether or not the run offers verification. So a
+ * step started after a change is not held to it: an owner who clears a gate
+ * while the run is live leaves the run's next step free to write, and only
+ * the step before it stale. A note alone changes no handoff (handoffDigest),
+ * so it stales no step.
+ *
+ * Not held: a write outside any run (`attempt` null), which leaves the mark
+ * as it is, so a change it makes stales the step the mark names.
+ *
+ * Earlier releases (lib/verify.mjs header): a writer that keeps no
+ * generation moves none, so an A to B and back to A in which it takes part is
+ * not seen; and a driver that numbers no step starts steps that carry only
+ * their run, which order runs only: such a step is taken in the mark's own
+ * run while the mark names no step either, and refused beside a step of its
+ * run, which it cannot be ordered against. The limit ends once both hosts run
+ * this release.
+ */
+function admitAttempt(frontmatter, before, attempt) {
+  const mark = frontmatter.verify_attempt;
+  if ((mark !== undefined && isNewerRecord(mark)) || before.generation === null) {
+    const newer = mark !== undefined && isNewerRecord(mark) ? `verify_attempt (v ${mark.v})` : `verify_handoff (v ${frontmatter.verify_handoff.v})`;
+    throw new Error(
+      `${newer} was written by a later release; this release writes no workflow under an autopilot run beside it ` +
+        '(lib/verify.mjs header)',
+    );
+  }
+  if (mark === undefined) return { bound: false };
+  const order = orderAgainstMark(attempt, mark, 'which last wrote the handoff');
+  if (order === null) return { bound: false };
+  const bound = order === 0;
+  if (bound && (before.digest !== mark.handoff || before.generation !== mark.generation)) {
+    throw new Error(
+      `the handoff changed since step ${attempt.step} last wrote it (the next step, the phase, the verb, the terminal ` +
+        'marker, the owner gate, the pending peer runs, or the request and its results), even if it was changed back: ' +
+        'a late write of that step records nothing, and a later step writes the handoff',
+    );
+  }
+  return { bound };
+}
+
+// The order of `attempt` against `mark` (`what` names the write the mark
+// records): 0 for the step the mark names, positive for a later attempt, null
+// for a step with no number beside a mark of its own run that names none
+// either (it binds nothing). Refused when the attempt is older, or cannot be
+// ordered against the mark.
+function orderAgainstMark(attempt, mark, what) {
+  if (attempt.step === undefined && attempt.run_id === mark.run_id) {
+    if (mark.step === undefined) return null;
+    throw new Error(
+      `a step of ${attempt.run_id} that carries no number cannot be ordered against step ${mark.step} of its own run, ` +
+        `${what}, so nothing is written`,
+    );
+  }
+  // A mark a step with no number moved on orders runs only: every numbered
+  // step of that run comes after it.
+  const order = mark.step === undefined && attempt.run_id === mark.run_id ? 1 : compareAttempts(attempt, mark);
+  if (Number.isNaN(order)) {
+    throw new Error(`${attempt.run_id} and ${mark.run_id}, ${what}, started in the same second: their order cannot be told, so nothing is written`);
+  }
+  if (order < 0) {
+    throw new Error(`${attemptLabel(attempt, mark)} is older than ${attemptLabel(mark, attempt)}, ${what}: a stale attempt records nothing`);
+  }
+  return order;
+}
+
+// The whole text of `file`, or null when it is not a regular file: opened
+// without blocking, so a FIFO is seen, never waited on.
+function readRegularText(file) {
+  const fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0));
+  try {
+    if (!fstatSync(fd).isFile()) return null;
+    return readFileSync(fd, 'utf8');
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * A creation under an autopilot run (`attempt`), admitted against the marks
+ * of the workflows archived on its branch (`roots`, the roots the creation
+ * searches for an active one): a workflow archived by a later step stands, so
+ * a delayed creation of an earlier step, or of an earlier run, is refused
+ * before the file lands (orderAgainstMark), and the branch never holds a
+ * fresh workflow carrying the stale step's request. The step the mark names is
+ * held to the handoff it left (admitAttempt's equal-attempt check), so its late
+ * creation is refused once the handoff changed. A record without a mark is
+ * passed over; one with a mark that cannot be read, or that a later release
+ * wrote, refuses the creation.
+ */
+async function admitCreation(roots, branch, attempt) {
+  for (const root of roots) {
+    for (const home of homeNames()) {
+      const dir = statePaths(root, home).archive;
+      let names;
+      try {
+        names = await readdir(dir);
+      } catch (err) {
+        if (err.code === 'ENOENT') continue;
+        throw err;
+      }
+      for (const name of names.sort()) {
+        if (!name.endsWith('.md')) continue;
+        const file = join(dir, name);
+        // The frontmatter only, from a regular file opened without blocking,
+        // as the workflows home's reader reads it: a FIFO in the archive is
+        // refused, never waited on, and the long body of a record that opens
+        // an LF frontmatter is never read whole.
+        let text;
+        try {
+          text = readFrontmatterText(file);
+          // A record that opens no LF frontmatter (a CRLF one, a note) gives
+          // the head reader no end to stop at, so it is read whole, from a
+          // descriptor of its own, and judged on that text alone, as every
+          // record was before the head reader: whether a read was complete is
+          // never rebuilt from decoded text or a second lookup.
+          if (text !== null && !text.startsWith('---\n')) text = readRegularText(file);
+        } catch (err) {
+          if (err.code === 'ENOENT' || err.code === 'EISDIR') continue;
+          throw err;
+        }
+        // A directory holds no mark, and is passed over, as before.
+        if (text === null && statSync(file, { throwIfNoEntry: false })?.isDirectory()) continue;
+        if (text === null) {
+          throw new Error(
+            `the archived workflow ${safeFilename(file)} is not a regular file, so its attempt mark cannot be read; ` +
+              'a creation under an autopilot run is not admitted beside it. Remove it or replace it with the workflow file.',
+          );
+        }
+        // The mark is sought in the frontmatter the parser reads, up to its
+        // close delimiter ("\n---\n", parseWorkflowFile's), never at a line
+        // that merely opens with "---". A record that opens no LF frontmatter
+        // has none the parser reads, so a mark anywhere in it counts. A line
+        // starts after "\n" only, as the parser splits lines: never after a
+        // U+2028 or U+2029 a request holds, which the `m` flag would take.
+        const end = text.startsWith('---\n') ? text.indexOf('\n---\n', 4) : -1;
+        if (!/(?:^|\n)verify_attempt:/.test(end < 0 ? text : text.slice(0, end))) continue;
+        // The branch exempts a record only from a frontmatter the parser
+        // reads: in one that opens none (a BOM, a preamble), the extractor
+        // would take a branch named in the body, so it is unknown, and the
+        // parse below refuses.
+        const fmBranch = text.startsWith('---\n') ? extractFrontmatterBranch(text) : null;
+        if (fmBranch !== null && fmBranch !== branch) continue;
+        let fm;
+        try {
+          fm = parseWorkflowFile(text).frontmatter;
+        } catch (err) {
+          throw new Error(
+            `the archived workflow ${safeFilename(file)} records an attempt mark that cannot be read (${err.message}); ` +
+              'a creation under an autopilot run is not admitted beside it',
+          );
+        }
+        if (fm.git_baseline?.branch !== branch) continue;
+        const mark = fm.verify_attempt;
+        // The parser is the judge of what the record holds: a record it reads
+        // with no mark is passed over.
+        if (mark === undefined) continue;
+        if (isNewerRecord(mark)) {
+          throw new Error(
+            `the archived workflow ${fm.workflow_id} records verify_attempt (v ${mark.v}), written by a later release; ` +
+              'this release creates no workflow under an autopilot run beside it (lib/verify.mjs header)',
+          );
+        }
+        // The step the mark names is held to the handoff it left, as
+        // admitAttempt holds it: once the owner changed it before archiving,
+        // that step's late creation records nothing.
+        const order = orderAgainstMark(attempt, mark, `which last wrote ${fm.workflow_id}, archived on branch ${branch}`);
+        const left = handoffState(fm);
+        if (order === 0 && (left.digest !== mark.handoff || left.generation !== mark.generation)) {
+          throw new Error(
+            `the handoff of ${fm.workflow_id}, archived on branch ${branch}, changed since step ${attempt.step} last wrote it: ` +
+              'a late creation of that step records nothing',
+          );
+        }
+      }
+    }
+  }
+}
+
+/**
+ * The write half of the hold (admitAttempt): once the record a write admitted
+ * under an autopilot run is whole, move the mark on to its attempt and the
+ * handoff it leaves, when it writes a next step (`nextStep`) or a request,
+ * changes the handoff, or is a later attempt than the mark's, or the first
+ * (whether or not it changes the handoff, so a step of an earlier run is
+ * stale against it). A step with no number moves a mark of its own run that
+ * names none on to the same run, which binds no step. A request is refused from the step that already
+ * recorded one once that request is no longer pending (`since` says what took
+ * it). `held` is what the lock admitted: the attempt, the handoff as found,
+ * whether the mark names this step, and the mark.
+ */
+function markAttempt(frontmatter, held, { nextStep = false, request = false, since = null } = {}) {
+  const { attempt, before, bound, mark } = held;
+  if (bound && request && mark.requested === true && since !== null) {
+    throw new Error(`step ${attempt.step}'s request was ${since} since; a later step records a request of its own`);
+  }
+  if (mark !== undefined) {
+    const changed = nextStep || request || handoffDigest(frontmatter) !== before.digest;
+    if (bound && !changed) return;
+  }
+  stampHandoff(frontmatter, before);
+  frontmatter.verify_attempt = {
+    v: VERIFY_RECORD_VERSION, run_id: attempt.run_id, ...(attempt.step !== undefined ? { step: attempt.step } : {}),
+    requested: request || (bound && mark.requested === true),
+    handoff: frontmatter.verify_handoff.handoff, generation: frontmatter.verify_handoff.generation,
+  };
+  validateSchema14Fields(frontmatter);
+}
+
+/**
+ * Admit a write of `workflowPath` under an autopilot run (admitAttempt),
+ * holding its lock: null outside any run, or for a file that does not exist
+ * yet, else what markAttempt moves the mark on from.
+ */
+async function admitWrite(workflowPath, { env, host }) {
+  const attempt = verifyAttemptOf({ env, host });
+  if (attempt === null) return null;
+  let text;
+  try {
+    text = await readFile(workflowPath, 'utf8');
+  } catch (err) {
+    if (err?.code === 'ENOENT') return null;
+    throw err;
+  }
+  const { frontmatter } = parseWorkflowFile(text);
+  const before = handoffState(frontmatter);
+  const { bound } = admitAttempt(frontmatter, before, attempt);
+  return { attempt, before, bound, mark: frontmatter.verify_attempt };
+}
+
+/**
+ * The text a write of a workflow record leaves: when its lock admitted it
+ * under an autopilot run (`ownership.held`), held to the attempt mark
+ * (markAttempt) first; the handoff stamped in every case
+ * (assembleWorkflowFile).
+ */
+function workflowText(frontmatter, body, ownership, flags) {
+  if (ownership?.held) markAttempt(frontmatter, ownership.held, flags);
+  return assembleWorkflowFile(frontmatter, body);
+}
+
+// Write a workflow record under its lock (`ownership`, as withFileLock gives
+// it): the attempt mark moved on (workflowText), then the atomic write.
+async function writeWorkflow(workflowPath, frontmatter, body, ownership, flags) {
+  await atomicWrite(workflowPath, workflowText(frontmatter, body, ownership, flags), ownership);
+}
+
+// Before a write beside the workflow (its review ledger, a consensus task
+// file, a move of either) that its lock admitted under an autopilot run: the
+// mark moves on as a write of the workflow that changes nothing would, so a
+// step whose first write is one beside the workflow is bound like any other.
+// It comes first, an admitted write of the workflow itself: a failure or a
+// kill before the side write leaves the mark on this step, and the step it
+// replaced stays refused. A step the mark already names (`bound`) leaves it as
+// it is.
+async function markBeside(workflowPath, ownership) {
+  if (!ownership?.held || ownership.held.bound) return;
+  const { frontmatter, body } = parseWorkflowFile(await readFile(workflowPath, 'utf8'));
+  await writeWorkflow(workflowPath, frontmatter, body, ownership);
+}
+
+// The verify commands read and write only records of this release's form; a
+// record a later release wrote (a higher `v`) is carried, never interpreted
+// (lib/verify.mjs header).
+function refuseNewerRecords(frontmatter, what) {
+  const newer = VERIFY_KEYS.filter((k) => isNewerRecord(frontmatter[k]));
+  if (newer.length > 0) {
+    throw new Error(
+      `${newer.map((k) => `${k} (v ${frontmatter[k].v})`).join(', ')} was written by a later release than this one, ` +
+        `which writes v ${VERIFY_RECORD_VERSION}; ${what} is left to that release (lib/verify.mjs header)`,
+    );
+  }
+}
+
+// The tested tree (item 5): the checkout this process runs in, which must be
+// a checkout of the workflow's repository (one git common dir) on the
+// workflow's branch. The stored repo_root is never taken for it.
+function testedTree(cwd, workflowPath, frontmatter) {
+  const top = gitOut(cwd, ['rev-parse', '--show-toplevel'])?.trim();
+  if (!top) throw new Error(`the tested tree cannot be told: ${cwd} is not in a git checkout`);
+  const common = (dir) => {
+    const out = gitOut(dir, ['rev-parse', '--path-format=absolute', '--git-common-dir'])?.trim();
+    if (!out) return null;
+    try { return realpathSync(out); } catch { return out; }
+  };
+  const mine = common(top);
+  const theirs = common(dirname(workflowPath));
+  if (mine === null || theirs === null || mine !== theirs) {
+    throw new Error(`the checkout ${top} is not a checkout of the repository that holds ${workflowPath}; a request is recorded from the workflow's own checkout`);
+  }
+  const branch = gitOut(top, ['branch', '--show-current'])?.trim() ?? '';
+  if (branch !== frontmatter.git_baseline?.branch) {
+    throw new Error(`the checkout ${top} is on ${JSON.stringify(branch)}, not the workflow's branch ${JSON.stringify(frontmatter.git_baseline?.branch)}`);
+  }
+  return top;
+}
+
+// The workflow's own state a request needs: active, waiting on nobody. The
+// phase says whether it is terminal: a marker an interactive verb left on is
+// not the state of a workflow a later verb resumed (its Phase 0 moves the
+// phase on and keeps the marker), and the request turns that marker off.
+function assertRequestable(frontmatter) {
+  if (terminalPhases().has(frontmatter.current_phase)) {
+    throw new Error(`the workflow is terminal (${frontmatter.current_phase}); a request is recorded only by an active workflow`);
+  }
+  if (!noPendingEnsembleCheck(frontmatter)) {
+    throw new Error(
+      `a peer ensemble is still pending (${frontmatter.pending_ensemble.map((e) => e.run_id).join(', ')}); ` +
+        'collect it and settle it first — the next step is published only once the step is settled (ADR-0063 D5)',
+    );
+  }
+  if (frontmatter.awaiting_owner_gate !== undefined) {
+    throw new Error(`owner gate ${frontmatter.awaiting_owner_gate} is set; a workflow waiting on its owner records no request`);
+  }
+}
+
+function historyUpdated(frontmatter, host, nowIso) {
+  frontmatter.updated_at = nowIso;
+  frontmatter.host_history = [...(frontmatter.host_history ?? []), { host, at: nowIso, event: 'updated' }];
+}
+
+/**
+ * finish-verb --next-step-kind verify: record the step's request and the next
+ * step `verify` in one locked write. Every check runs inside the lock: the
+ * offer, the workflow's state, the tested tree, each check against the
+ * declaration at the offer's commit and each path argument against the tree.
+ * A retry of the same request (same id) leaves the stored one untouched,
+ * recorded_at included; a new one replaces it, deletes the old results, and
+ * keeps the old request's last ended batch as `previous`.
+ */
+export async function recordVerifyRequest({
+  workflowPath, host, nextAction, nextStep, input, env = process.env, cwd = process.cwd(), now = new Date(),
+}) {
+  validateHost(host);
+  const fields = normalizeNextStep(nextStep, { allowVerify: true });
+  if ('next_step_verb' in fields) throw new Error('next step verify names no verb: the step that follows a batch is the request\'s on_pass');
+  const parsed = parseRequestInput(input, { verbs: VALID_VERBS });
+  if (parsed.confidence !== fields.next_step_confidence) {
+    throw new Error(`--next-step-confidence ${fields.next_step_confidence} is not the request's confidence ${parsed.confidence}`);
+  }
+  return withFileLock(workflowPath, async (ownership) => {
+    const offer = verifyOffer({ env, host, cwd });
+    if (!offer.on) {
+      throw new Error(`next step verify is refused: missing ${offer.missing} (ADR-0068 Decision 5, item 11)`);
+    }
+    const { frontmatter, body } = parseWorkflowFile(await readFile(workflowPath, 'utf8'));
+    refuseNewerRecords(frontmatter, 'recording a request');
+    assertRequestable(frontmatter);
+    const tree = testedTree(cwd, workflowPath, frontmatter);
+    for (const check of parsed.checks) resolveCheck(offer.declaration, check, { tree });
+    const bound = {
+      workflow_id: frontmatter.workflow_id,
+      run_id: offer.runId,
+      step: offer.step,
+      baseline: offer.commit,
+      declaration_digest: offer.declaration.digest,
+      checks: parsed.checks,
+      on_pass: parsed.on_pass,
+      confidence: parsed.confidence,
+    };
+    const id = verifyRequestId(bound);
+    const stored = frontmatter.verify_request;
+    // A stale attempt never rolls the record back (admitAttempt, markAttempt):
+    // the mark (`verify_attempt`) outlives the request and binds the step that
+    // last wrote the handoff to what it left, so a late retry neither reopens
+    // the driver's writes nor replaces a newer handoff.
+    const pending = frontmatter.next_step_kind === 'verify' && stored !== undefined && stored.answered_by === undefined;
+    const since = pending ? null
+      : stored === undefined ? 'dropped by a verb that ended with another next step'
+        : stored.answered_by !== undefined ? `answered by batch ${stored.answered_by}` : 'taken up by a verb';
+    let unchanged = false;
+    if (stored?.id === id) {
+      unchanged = true;
+    } else {
+      const request = {
+        v: VERIFY_RECORD_VERSION, id, ...bound, recorded_at: isoUtc(now),
+        previous: stored ? previousOf(stored, frontmatter.verify_results) : null,
+      };
+      if (scalarBytes('verify_request', request) > MAX_REQUEST_BYTES) {
+        throw new Error(`the request takes more than ${MAX_REQUEST_BYTES} bytes; ask for fewer checks`);
+      }
+      frontmatter.verify_request = request;
+      delete frontmatter.verify_results;
+    }
+    for (const k of NEXT_STEP_KEYS) delete frontmatter[k];
+    Object.assign(frontmatter, fields);
+    if (nextAction !== undefined) frontmatter.next_action = nextAction;
+    if (frontmatter.terminal_marker === true) frontmatter.terminal_marker = false;
+    historyUpdated(frontmatter, host, isoUtc(now));
+    // The record is checked whole, the mark it moves on included.
+    const text = workflowText(frontmatter, body, ownership, { request: true, since });
+    validateSchema14Fields(frontmatter);
+    await atomicWrite(workflowPath, text, ownership);
+    return { frontmatter, workflowPath, request: frontmatter.verify_request, retried: unchanged };
+  }, { env, host });
+}
+
+// The request a driver write is for: still pending (the next step `verify`,
+// the request named), so a write delayed past the requesting verb's Phase 0,
+// or past a newer request, is refused.
+function pendingRequest(frontmatter, requestId) {
+  if (frontmatter.next_step_kind !== 'verify' || frontmatter.verify_request === undefined) {
+    throw new Error('no request is pending on this workflow (its next step is not verify): a verb has taken it up since');
+  }
+  if (frontmatter.verify_request.id !== requestId) {
+    throw new Error(`the pending request is ${frontmatter.verify_request.id}, not ${requestId}: a newer request replaced it`);
+  }
+  return frontmatter.verify_request;
+}
+
+// The request's own results (they are deleted with a replaced request).
+function ownResults(frontmatter, requestId) {
+  const res = frontmatter.verify_results;
+  return res?.request_id === requestId ? res : null;
+}
+
+const same = (a, b) => canonicalJson(a) === canonicalJson(b);
+const startOf = (b) => ({
+  batch_id: b.batch_id, run_id: b.run_id, continues: b.continues, tree_start: b.tree_start,
+  declaration_commit: b.declaration_commit, declaration_digest: b.declaration_digest,
+  checks: b.checks, checks_digest: b.checks_digest, started_at: b.started_at,
+});
+
+// One locked write for the driver's commands. `apply(frontmatter)` checks and
+// changes the record in place and returns 'changed', or 'unchanged' for a
+// replay identical to what is stored, which writes nothing: a record identical
+// to the stored one is a no-op whatever the state since, and a different one
+// for the same batch or index is refused, so a result is never overwritten.
+async function verifyWrite({ workflowPath, host, now = new Date(), env = process.env }, apply) {
+  validateHost(host);
+  // The driver runs outside any run, so its writes are an owner's to the mark
+  // (withFileLock): one made from a step is held to it.
+  return withFileLock(workflowPath, async (ownership) => {
+    const { frontmatter, body } = parseWorkflowFile(await readFile(workflowPath, 'utf8'));
+    refuseNewerRecords(frontmatter, 'a driver\'s write');
+    if (apply(frontmatter) === 'unchanged') return { unchanged: true };
+    historyUpdated(frontmatter, host, isoUtc(now));
+    // The record is checked whole, the mark it moves on included.
+    const text = workflowText(frontmatter, body, ownership);
+    validateSchema14Fields(frontmatter);
+    await atomicWrite(workflowPath, text, ownership);
+    return { recorded: true };
+  }, { env, host });
+}
+
+// What a start and a restart both hold a batch to, none of it about earlier
+// batches: the declaration at `declaration_commit`, read by the persona and
+// held to `declaration_digest`; the request's worker checks, as it resolves
+// them; and the batch's worst-case results beside `kept`, the batches the
+// write keeps, within the budget, so no later write fails on size.
+function admitStart(workflowPath, request, start, kept) {
+  const read = declarationAt(dirname(workflowPath), start.declaration_commit);
+  if (read.problem) throw new Error(`batch ${start.batch_id}: the persona cannot read ${read.problem}`);
+  if (read.declaration.digest !== start.declaration_digest) {
+    throw new Error(`batch ${start.batch_id}: the declaration at ${start.declaration_commit} has digest ${read.declaration.digest}, not the batch's ${start.declaration_digest}`);
+  }
+  const mismatch = workerChecksProblem(read.declaration, request, start);
+  if (mismatch) throw new Error(mismatch);
+  const worst = worstCaseBytes(kept, start);
+  if (worst > MAX_RESULTS_BYTES) {
+    throw new Error(`batch ${start.batch_id}'s results could take ${worst} bytes, more than the ${MAX_RESULTS_BYTES} a workflow keeps; split the checks`);
+  }
+}
+
+/**
+ * verify-batch-start: the driver starts a batch for the pending request. Its
+ * digest is recomputed from its argv list; its worker checks are the
+ * request's, in order, each with the argv the declaration it names
+ * (read at `declaration_commit`, its digest held to `declaration_digest`)
+ * resolves the request's check to; one batch is open at a time; and the
+ * batch's worst-case results must fit the budget after retention, so no
+ * later write fails on size.
+ *
+ * Item 7: a request's first batch continues nothing, and a later one only
+ * the request's latest batch, ended cut short: a batch that passed, failed or
+ * ended with no evidence is followed by on_pass or the verb, never by another
+ * batch. Taken up on the same tree with the same commands, the continuation
+ * starts with the latest batch's passed results carried into it, and goes on
+ * from its first check that did not pass (`carryOver`). A record the driver
+ * cannot trust is set aside whole with `verify-batch-restart` instead.
+ */
+export async function recordBatchStart({ workflowPath, host, requestId, input, now }) {
+  const start = parseBatchStart(input);
+  return verifyWrite({ workflowPath, host, now }, (fm) => {
+    const known = ownResults(fm, requestId)?.batches.find((b) => b.batch_id === start.batch_id);
+    if (known) {
+      if (same(startOf(known), start)) return 'unchanged';
+      throw new Error(`batch ${start.batch_id} is already recorded with another start; a record is never overwritten`);
+    }
+    const request = pendingRequest(fm, requestId);
+    const batches = ownResults(fm, requestId)?.batches ?? [];
+    const open = batches.find((b) => b.end === undefined);
+    if (open) throw new Error(`batch ${open.batch_id} is still open; it ends before another starts`);
+    const latest = batches.at(-1) ?? null;
+    if (latest && start.started_at < latest.started_at) {
+      throw new Error(`batch ${start.batch_id} starts before batch ${latest.batch_id}, the latest: a stale start`);
+    }
+    if (latest === null && start.continues !== null) {
+      throw new Error(`batch ${start.batch_id} continues ${start.continues}, but request ${requestId} has no batch yet`);
+    }
+    if (latest !== null) {
+      if (latest.end !== 'cut-short') {
+        throw new Error(`batch ${latest.batch_id}, the request's latest, ended ${latest.end}: only a batch cut short is taken up again, and nothing else follows a batch that ended`);
+      }
+      if (start.continues !== latest.batch_id) {
+        throw new Error(`batch ${start.batch_id} continues ${start.continues ?? 'nothing'}, not ${latest.batch_id}, the request's latest batch, cut short`);
+      }
+    }
+    const carried = latest ? carryOver(latest, start) : [];
+    const kept = { v: 1, request_id: requestId, batches: retainBatches(batches) };
+    admitStart(workflowPath, request, start, kept);
+    fm.verify_results = { ...kept, batches: [...kept.batches, { ...start, results: carried }] };
+    return 'changed';
+  });
+}
+
+/**
+ * verify-batch-restart: the driver sets aside the pending request's whole
+ * record (every batch, open or ended, with its results, ends and carried
+ * results) and starts the request again whole, in one write (lib/verify.mjs
+ * header: no untrusted record decides whether a check runs). The batch is a
+ * start that continues nothing and carries nothing, held to every rule of an
+ * ordinary start that is not about earlier batches (the declaration at
+ * `declaration_commit`, the request's worker checks, the digest), its
+ * worst-case results sized against an empty history. `replaces` names the
+ * record the driver read: the sha256 of the stored `verify_results` text
+ * (`results_digest` in verify-results), or null when there is none; any
+ * other record is refused as stale, so a delayed replay never erases later
+ * results. A replay identical to a recorded batch writes nothing.
+ */
+export async function recordBatchRestart({ workflowPath, host, requestId, replaces, input, now }) {
+  const start = parseBatchStart(input);
+  if (start.continues !== null) {
+    throw new Error(`a restart continues nothing (batch ${start.batch_id} continues ${start.continues}): it sets every earlier batch aside`);
+  }
+  if (replaces !== null && !(typeof replaces === 'string' && /^[0-9a-f]{64}$/.test(replaces))) {
+    throw new Error('replaces is not the 64-hex digest of the stored verify_results (results_digest), or null when there are none');
+  }
+  return verifyWrite({ workflowPath, host, now }, (fm) => {
+    const known = ownResults(fm, requestId)?.batches.find((b) => b.batch_id === start.batch_id);
+    if (known) {
+      if (same(startOf(known), start)) return 'unchanged';
+      throw new Error(`batch ${start.batch_id} is already recorded with another start; a record is never overwritten`);
+    }
+    const request = pendingRequest(fm, requestId);
+    const stored = resultsDigest(fm.verify_results);
+    if (replaces !== stored) {
+      throw new Error(`the stored results are ${stored ?? 'none'}, not ${replaces ?? 'none'}, the record this restart sets aside: a stale restart records nothing`);
+    }
+    const empty = { v: 1, request_id: requestId, batches: [] };
+    admitStart(workflowPath, request, start, empty);
+    fm.verify_results = { ...empty, batches: [{ ...start, results: [] }] };
+    return 'changed';
+  });
+}
+
+/** verify-result: one check's result, in index order, never after a check that did not pass. */
+export async function recordResult({ workflowPath, host, requestId, batchId, input, now }) {
+  const result = parseResult(input);
+  return verifyWrite({ workflowPath, host, now }, (fm) => {
+    const known = ownResults(fm, requestId)?.batches.find((b) => b.batch_id === batchId);
+    const stored = known?.results.find((r) => r.index === result.index);
+    if (stored) {
+      if (same(stored, result)) return 'unchanged';
+      throw new Error(`check ${result.index} of batch ${batchId} already has a result; a result is never overwritten`);
+    }
+    pendingRequest(fm, requestId);
+    if (!known) throw new Error(`no batch ${batchId} of request ${requestId} is recorded`);
+    const problem = resultProblem(known, result);
+    if (problem) throw new Error(problem);
+    known.results.push(result);
+    return 'changed';
+  });
+}
+
+/** verify-batch-end: how the batch ended, consistent with its results and trees. */
+export async function recordBatchEnd({ workflowPath, host, requestId, batchId, input, now }) {
+  const end = parseEnd(input);
+  return verifyWrite({ workflowPath, host, now }, (fm) => {
+    const known = ownResults(fm, requestId)?.batches.find((b) => b.batch_id === batchId);
+    if (known?.end !== undefined) {
+      const stored = { tree_end: known.tree_end, end: known.end, cause: known.cause, ended_at: known.ended_at };
+      if (same(stored, end)) return 'unchanged';
+      throw new Error(`batch ${batchId} has already ended (${known.end}); an end is never overwritten`);
+    }
+    pendingRequest(fm, requestId);
+    if (!known) throw new Error(`no batch ${batchId} of request ${requestId} is recorded`);
+    const problem = endProblem(known, end);
+    if (problem) throw new Error(`batch ${batchId}: ${problem}`);
+    Object.assign(known, end);
+    return 'changed';
+  });
+}
+
+/**
+ * verify-pass: the request's latest batch ended `passed`, so its `on_pass`
+ * becomes the next step, and the request records the batch that answered it.
+ * The request and its results stay readable for the step that follows.
+ */
+export async function recordPass({ workflowPath, host, requestId, batchId, now }) {
+  return verifyWrite({ workflowPath, host, now }, (fm) => {
+    if (fm.verify_request?.id === requestId && fm.verify_request.answered_by !== undefined) {
+      if (fm.verify_request.answered_by === batchId) return 'unchanged';
+      throw new Error(`request ${requestId} was answered by batch ${fm.verify_request.answered_by}, not ${batchId}`);
+    }
+    const request = pendingRequest(fm, requestId);
+    const latest = ownResults(fm, requestId)?.batches.at(-1);
+    if (!latest || latest.batch_id !== batchId) throw new Error(`batch ${batchId} is not request ${requestId}'s latest batch`);
+    if (latest.end !== 'passed') throw new Error(`batch ${batchId} ended ${latest.end ?? 'not yet'}, not passed: only a passing batch takes on_pass`);
+    for (const k of NEXT_STEP_KEYS) delete fm[k];
+    fm.next_step_kind = request.on_pass.kind;
+    if (request.on_pass.kind === 'verb') fm.next_step_verb = request.on_pass.verb;
+    fm.next_step_confidence = request.on_pass.confidence;
+    fm.verify_request = { ...request, answered_by: batchId };
+    return 'changed';
+  });
+}
+
+/**
+ * verify-results: the request, its previous answer and its batches, each
+ * check's evidence and whether it applies, and `results_digest`, the record a
+ * restart names as the one it sets aside.
+ */
+export async function readVerifyResults({ workflowPath, treeDigest = null }) {
+  if (treeDigest !== null && !(typeof treeDigest === 'string' && /^[0-9a-f]{64}$/.test(treeDigest))) throw new Error('--tree-digest is not a 64-hex digest');
+  const { frontmatter } = await readWorkflow(workflowPath);
+  refuseNewerRecords(frontmatter, 'reading its results');
+  return {
+    pending: frontmatter.next_step_kind === 'verify',
+    results_digest: resultsDigest(frontmatter.verify_results),
+    ...readResults(frontmatter.verify_request ?? null, frontmatter.verify_results ?? null, { treeDigest }),
+  };
+}
+
+export { VERIFY_RECORD_CAPABILITY };
 
 // ---- capability-only writers (ADR-0066 Decision 3) ---------------------------
 // dispatch_target: the P10 write-ahead marker and the mid-flight detach.
@@ -4326,13 +5348,15 @@ export async function finishVerb({
  */
 export async function setParentWritebackMarker({
   workflowPath, host, at, now = new Date(),
+  // As every writer's: the attempt mark (withFileLock, ADR-0068 Decision 5).
+  env = process.env,
 }) {
   requireCapability('dispatch_target', 'setParentWritebackMarker');
   validateHost(host);
   if (typeof at !== 'string' || at.length === 0) {
     throw new Error('setParentWritebackMarker: at must be a non-empty string');
   }
-  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+  return withFileLock(workflowPath, async (ownership) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     const nowIso = isoUtc(now);
@@ -4342,13 +5366,9 @@ export async function setParentWritebackMarker({
       ...(frontmatter.host_history ?? []),
       { host, at: nowIso, event: 'updated' },
     ];
-    await atomicWrite(
-      workflowPath,
-      assembleWorkflowFile(frontmatter, body),
-      { lockPath, token },
-    );
+    await writeWorkflow(workflowPath, frontmatter, body, ownership);
     return { frontmatter, workflowPath };
-  });
+  }, { env, host });
 }
 
 /**
@@ -4359,11 +5379,11 @@ export async function setParentWritebackMarker({
  * hook's call is the retry.
  */
 export async function clearParentWritebackMarker({
-  workflowPath, host, now = new Date(),
+  workflowPath, host, now = new Date(), env = process.env,
 }) {
   requireCapability('dispatch_target', 'clearParentWritebackMarker');
   validateHost(host);
-  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+  return withFileLock(workflowPath, async (ownership) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     if (!('parent_writeback_at' in frontmatter)) {
@@ -4377,13 +5397,9 @@ export async function clearParentWritebackMarker({
       ...(frontmatter.host_history ?? []),
       { host, at: nowIso, event: 'updated' },
     ];
-    await atomicWrite(
-      workflowPath,
-      assembleWorkflowFile(frontmatter, body),
-      { lockPath, token },
-    );
+    await writeWorkflow(workflowPath, frontmatter, body, ownership);
     return { frontmatter, workflowPath };
-  });
+  }, { env, host });
 }
 
 /**
@@ -4395,10 +5411,12 @@ export async function clearParentWritebackMarker({
  * the half-committed workflow and notes its commit on the parent. Phase 7's
  * own terminal write, after every post-commit gate, turns it back on.
  */
-export async function beginCommit({ workflowPath, host, now = new Date() }) {
+export async function beginCommit({ workflowPath, host, env = process.env, now = new Date() }) {
   requireCapability('commit_surface', 'beginCommit');
   validateHost(host);
-  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+  // A write of the handoff (the phase, the marker), held to the attempt mark
+  // (withFileLock, ADR-0068 Decision 5).
+  return withFileLock(workflowPath, async (ownership) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     const nowIso = isoUtc(now);
@@ -4409,9 +5427,9 @@ export async function beginCommit({ workflowPath, host, now = new Date() }) {
       ...(frontmatter.host_history ?? []),
       { host, at: nowIso, event: 'updated' },
     ];
-    await atomicWrite(workflowPath, assembleWorkflowFile(frontmatter, body), { lockPath, token });
+    await writeWorkflow(workflowPath, frontmatter, body, ownership);
     return { frontmatter, workflowPath };
-  });
+  }, { env, host });
 }
 
 /**
@@ -4446,6 +5464,9 @@ export async function detachArchive({
   host,
   repoRoot,
   now = new Date(),
+  // Both writes, the mark and the archive, held to the attempt mark
+  // (withFileLock, ADR-0068 Decision 5).
+  env = process.env,
 }) {
   requireCapability('dispatch_target', 'detachArchive');
   validateHost(host);
@@ -4457,7 +5478,7 @@ export async function detachArchive({
   // under the per-file lock. The `parent_detached` field is already
   // in FRONTMATTER_KEY_ORDER + validateSchema11Fields (PR-A); we just
   // set the boolean and let the serializer preserve key order.
-  await withFileLock(workflowPath, async ({ lockPath, token }) => {
+  await withFileLock(workflowPath, async (ownership) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     const nowIso = isoUtc(now);
@@ -4472,12 +5493,8 @@ export async function detachArchive({
       ...(frontmatter.host_history ?? []),
       { host, at: nowIso, event: 'updated' },
     ];
-    await atomicWrite(
-      workflowPath,
-      assembleWorkflowFile(frontmatter, body),
-      { lockPath, token },
-    );
-  });
+    await writeWorkflow(workflowPath, frontmatter, body, ownership);
+  }, { env, host });
 
   // Step 2 — archive. archiveWorkflow's withDirectoryLock + withFileLock
   // are acquired+released within its own scope; the step-1 file lock
@@ -4490,6 +5507,7 @@ export async function detachArchive({
     host,
     repoRoot,
     now,
+    env,
   });
   if (!result.archived) {
     return { detached: false, reason: result.reason ?? 'archive-no-op' };
@@ -4545,6 +5563,8 @@ export async function archiveWorkflow({
   archiveDirectory,
   recheck,
   now = new Date(),
+  // As every writer's: the attempt mark (withFileLock, ADR-0068 Decision 5).
+  env = process.env,
 }) {
   validateHost(host);
   if (!repoRoot && !archiveDirectory) {
@@ -4587,7 +5607,7 @@ export async function archiveWorkflow({
 
     await ensureDir(targetDir, 0o700);
 
-    return withFileLock(workflowPath, async ({ lockPath, token }) => {
+    return withFileLock(workflowPath, async (ownership) => {
       // Re-stat under the inner lock — defends against the source being
       // unlinked between the directory-lock pathStat and the file-lock
       // acquire (e.g., a non-cooperating actor or a parallel resume
@@ -4613,7 +5633,48 @@ export async function archiveWorkflow({
         ...(frontmatter.host_history ?? []),
         { host, at: nowIso, event: 'archived' },
       ];
-      const archivedBytes = assembleWorkflowFile(frontmatter, body);
+      const archivedBytes = workflowText(frontmatter, body, ownership);
+      let current = text;
+      // The source lock is still this archive's and the active file still
+      // holds the bytes it read: checked first, at the commit of each write
+      // the archive makes (the mark below and the destination, as their
+      // `precommit`), and again before the source is removed. A writer that
+      // reclaimed the aged lock, or changed the file under the same token,
+      // may have written newer state, so a stale archive refuses and leaves
+      // the active file as it is, never overwriting or archiving away the
+      // newer bytes. A reclaim between that check and the rename is the
+      // window atomicWrite's own token check has at every write.
+      const stillHeld = async () =>
+        (await holdsLock(ownership)) && (await readFile(workflowPath, 'utf8').catch(() => null)) === current;
+      const reclaimed = () =>
+        new Error(
+          `archiveWorkflow: the lock on ${workflowPath} was reclaimed as stale by another writer, or the file changed ` +
+            'since this archive read it: nothing is archived, and the active workflow is left as it is',
+        );
+      // A write whose `precommit` no longer held is this archive's refusal,
+      // reported as the reclaim it is.
+      const precommitted = async (write) => {
+        try {
+          return await write();
+        } catch (err) {
+          if (err?.code === 'EPRECOMMIT') throw reclaimed();
+          throw err;
+        }
+      };
+      if (!(await stillHeld())) throw reclaimed();
+      // Under an autopilot run the archive moves the mark on in the active
+      // file before the destination is published, as markBeside does for a
+      // write beside the workflow: a failure or a kill before the source is
+      // removed leaves this step's mark there, and the step before it
+      // refused. Only the mark moves, so an archive that fails leaves no
+      // `archived` event in a workflow still active.
+      if (ownership?.held && !ownership.held.bound) {
+        const marked = parseWorkflowFile(text);
+        const marking = workflowText(marked.frontmatter, marked.body, ownership);
+        // The mark commits only over the bytes this archive read.
+        await precommitted(() => atomicWrite(workflowPath, marking, ownership, { precommit: stillHeld }));
+        current = marking;
+      }
 
       // Resolve + write the destination under a retry loop. Codex
       // re-review M-2 flagged that pre-lock pathStat + post-lock
@@ -4623,16 +5684,24 @@ export async function archiveWorkflow({
       // destination lock. The retry loop closes that window: under the
       // destination lock we re-stat the path and bail to a fresh
       // candidate if someone won the race.
-      const destination = await archiveCandidateWithRaceRetry({
+      // The destination is published only while the source's lock and bytes
+      // are still this archive's, at the commit itself.
+      const destination = await precommitted(() => archiveCandidateWithRaceRetry({
         targetDir,
         baseName,
         now,
         archivedBytes,
-      });
+        precommit: stillHeld,
+      }));
       // Source-remove is best-effort durable: if it fails after a
       // successful destination write, the workflow is duplicated rather
       // than lost. Caller can re-archive (idempotent — second run sees
-      // source-missing-after-lock).
+      // source-missing-after-lock). A lock lost while the destination was
+      // written takes the destination back.
+      if (!(await stillHeld())) {
+        await unlink(destination).catch(() => {});
+        throw reclaimed();
+      }
       try {
         await unlink(workflowPath);
       } catch (err) {
@@ -4644,11 +5713,11 @@ export async function archiveWorkflow({
       // `withFileLock` finally-block releases this lock; we just ensure
       // its lockPath/token were never used to commit a stale source
       // write.)
-      // Note: we intentionally do NOT atomicWrite to `workflowPath`
-      // here; the source is being deleted. The lockPath/token returned
-      // from this withFileLock callback are only used to satisfy the
-      // outer scope contract, not to commit anything.
-      void lockPath; void token;
+      // Note: we intentionally do NOT atomicWrite the archived bytes to
+      // `workflowPath`; the source is being deleted. The ownership this
+      // withFileLock callback gets admitted the archive (its attempt mark),
+      // and its only write of the source is that mark, before the
+      // destination.
 
       return {
         archived: true,
@@ -4656,7 +5725,7 @@ export async function archiveWorkflow({
         to: destination,
         host,
       };
-    });
+    }, { env, host });
   });
 }
 
@@ -4708,11 +5777,14 @@ async function archiveCandidateWithRaceRetry({
   baseName,
   now,
   archivedBytes,
+  precommit = null,
 }) {
   for (let attempt = 0; attempt < 8; attempt++) {
     const candidate = await resolveArchiveDestination({ targetDir, baseName, now });
     let won = false;
     try {
+      // The destination holds no workflow of this one: the archive was
+      // admitted under the source's lock.
       await withFileLock(candidate, async ({ lockPath, token }) => {
         const existing = await pathStat(candidate);
         if (existing) {
@@ -4721,9 +5793,9 @@ async function archiveCandidateWithRaceRetry({
           // path runs cleanly.
           return;
         }
-        await atomicWrite(candidate, archivedBytes, { lockPath, token });
+        await atomicWrite(candidate, archivedBytes, { lockPath, token }, { precommit });
         won = true;
-      });
+      }, { hold: false });
     } catch (err) {
       throw err;
     }
@@ -5144,6 +6216,17 @@ export function readTextArgumentFile(path, flag) {
   return value;
 }
 
+// A JSON file a command reads its machine data from (ADR-0068 Decision 5):
+// the same reader as a text file, then JSON.
+function readJsonArgumentFile(path, flag) {
+  const text = readTextArgumentFile(path, flag);
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    throw new Error(`${flag}: ${JSON.stringify(path)} is not JSON (${err.message})`);
+  }
+}
+
 // The flags that take a --<name>-file <path> twin: the free-text ones, and
 // --workflow-id, a workflow id the user typed (C134(a)). Other *-file flags
 // (--text-file, --args-file) keep their own readers.
@@ -5332,12 +6415,14 @@ function cliPrintHelp() {
         : []),
       '  ensemble-pending --workflow-path <path> --phase <name>',
       '                   --ensemble-type <name> --run-id <id> [--started-at <iso>]',
+      '                   [--host claude|codex]',
       '    ADR-0017 sub-4 — record a pending ensemble dispatch. Idempotent on run-id.',
+      '    Under an autopilot run (Claude) held to the attempt mark (ADR-0068 Decision 5).',
       '',
       '  ensemble-commit --workflow-path <path> --run-id <id> --phase <name>',
       '                  --ensemble-type <name> --verdict <text> --summary <text>',
       '                  [--completed-at <iso>] [--codex-session-id <id>]',
-      '                  [--cap <n>]',
+      '                  [--cap <n>] [--host claude|codex]',
       '    ADR-0017 sub-4 — three-step atomic commit: pop pending → append result → prune.',
       '    Idempotent on run-id (second commit is a no-op for the results list).',
       '',
@@ -5369,10 +6454,11 @@ function cliPrintHelp() {
         : []),
       '',
       '  finish-verb --workflow-path <path> --host <host> --next-action <text>',
-      '              --next-step-kind verb|commit|owner-decision|done',
+      '              --next-step-kind verb|commit|owner-decision|done|verify',
       '              --next-step-confidence HIGH|MEDIUM|LOW [--next-step-verb <verb>]',
       '              [--owner-gate <gate> --owner-gate-anchor <label>',
       '               [--owner-gate-run-id <run id>]]',
+      '              [--verify-request-file <path>]',
       "    ADR-0063 D3 — a verb's final write: set-terminal summary-complete with",
       '    the terminal marker, plus the next step (commit_surface off: kind commit',
       '    means the owner publishes). --owner-gate needs --next-step-kind',
@@ -5383,6 +6469,31 @@ function cliPrintHelp() {
       ...(capabilityOn('dispatch_target')
         ? ['    Under an autopilot run: the next step only, terminal marker unset, and', '    a pending peer ensemble is refused.']
         : []),
+      '    --next-step-kind verify (ADR-0068 Decision 5) takes --verify-request-file,',
+      '    JSON {checks: [{kind, args}], on_pass: {kind, verb?, confidence}, confidence},',
+      '    and is refused unless the step runs in an autopilot run that offers',
+      '    verification (AGENTIC_AUTOPILOT_VERIFY, AGENTIC_AUTOPILOT_STEP, and the',
+      `    declaration ${VERIFY_DECLARATION_PATH} at that commit). Any other kind`,
+      '    drops the last request and its results.',
+      '',
+      '  verify-batch-start   --workflow-path <p> --host <h> --request-id <id> --input-file <json>',
+      '  verify-batch-restart --workflow-path <p> --host <h> --request-id <id> --replaces <hex|none> --input-file <json>',
+      '  verify-result        --workflow-path <p> --host <h> --request-id <id> --batch-id <id> --input-file <json>',
+      '  verify-batch-end     --workflow-path <p> --host <h> --request-id <id> --batch-id <id> --input-file <json>',
+      '  verify-pass          --workflow-path <p> --host <h> --request-id <id> --batch-id <id>',
+      "    ADR-0068 Decision 5 — the driver's records of the pending request's",
+      '    batches, under the workflow lock; an identical replay is a no-op',
+      '    ({"unchanged":true}), a different record for the same batch or check is',
+      '    refused. verify-batch-restart sets the request\'s whole record aside and',
+      '    starts it again whole, only over the record --replaces names (the',
+      '    results_digest verify-results prints). verify-pass sets the next step to',
+      '    the request\'s on_pass.',
+      '  verify-results --workflow-path <p> [--tree-digest <hex>]',
+      '    The request, its previous answer and its batches (JSON), each check',
+      '    marked evidence (historical) and, with --tree-digest, whether it applies,',
+      '    and results_digest, the record a restart sets aside.',
+      '  verify-capability',
+      `    Print the capability marker (${VERIFY_RECORD_CAPABILITY}) a driver probes.`,
       '',
       ...(capabilityOn('dispatch_target')
         ? [
@@ -5770,12 +6881,14 @@ async function cliRun(subcommand, flags) {
 
       case 'ensemble-pending': {
         cliRequire(flags, ['workflow-path', 'phase', 'ensemble-type', 'run-id']);
+        if (flags.host !== undefined) validateHost(flags.host);
         await recordPendingEnsemble({
           workflowPath: flags['workflow-path'],
           phase: flags.phase,
           ensemble_type: flags['ensemble-type'],
           run_id: flags['run-id'],
           started_at: flags['started-at'],
+          host: flags.host,
         });
         process.stdout.write(`${flags['workflow-path']}\n`);
         return 0;
@@ -5791,6 +6904,7 @@ async function cliRun(subcommand, flags) {
         if (!Number.isInteger(cap) || cap < 0) {
           throw new Error(`--cap must be a non-negative integer (got ${flags.cap})`);
         }
+        if (flags.host !== undefined) validateHost(flags.host);
         await commitEnsemble({
           workflowPath: flags['workflow-path'],
           run_id: flags['run-id'],
@@ -5801,6 +6915,7 @@ async function cliRun(subcommand, flags) {
           completed_at: flags['completed-at'],
           codex_session_id: flags['codex-session-id'] ?? null,
           cap,
+          host: flags.host,
         });
         process.stdout.write(`${flags['workflow-path']}\n`);
         return 0;
@@ -5830,6 +6945,7 @@ async function cliRun(subcommand, flags) {
           path: flags.path,
           op: flags.op,
           recorded_at: flags['recorded-at'],
+          host: flags.host,
         });
         if (!result.skipped) {
           process.stdout.write(`${flags['workflow-path']}\n`);
@@ -5844,6 +6960,7 @@ async function cliRun(subcommand, flags) {
           path: flags.path,
           op: flags.op,
           recorded_at: flags['recorded-at'],
+          host: flags.host,
         });
         if (!result.skipped) {
           process.stdout.write(`${flags['workflow-path']}\n`);
@@ -5984,6 +7101,7 @@ async function cliRun(subcommand, flags) {
           workflowPath: flags['workflow-path'],
           repoRoot: flags['repo-root'],
           profile: flags.profile ?? '',
+          host: flags.host,
         });
         process.stdout.write(`${JSON.stringify(scope, null, 2)}\n`);
         return 0;
@@ -6005,6 +7123,7 @@ async function cliRun(subcommand, flags) {
           ledgerId: flags.ledger,
           generation,
           input,
+          host: flags.host,
         });
         process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
         return 0;
@@ -6017,6 +7136,7 @@ async function cliRun(subcommand, flags) {
           workflowPath: flags['workflow-path'],
           repoRoot: flags['repo-root'],
           targets,
+          host: flags.host,
         });
         process.stdout.write(`${JSON.stringify(attempt, null, 2)}\n`);
         return 0;
@@ -6078,6 +7198,11 @@ async function cliRun(subcommand, flags) {
         if ('owner-gate-run-id' in flags && !('owner-gate' in flags)) {
           throw new Error('--owner-gate-run-id goes with --owner-gate (ADR-0067 Decision 8)');
         }
+        // ADR-0068 Decision 5 — the request of a verify step, read from the
+        // file the step wrote (arguments as data, never on a command line).
+        const verifyRequest = 'verify-request-file' in flags
+          ? readJsonArgumentFile(flags['verify-request-file'], '--verify-request-file')
+          : undefined;
         const result = await finishVerb({
           workflowPath: flags['workflow-path'],
           host: flags.host,
@@ -6086,6 +7211,7 @@ async function cliRun(subcommand, flags) {
           ownerGate: 'owner-gate' in flags
             ? { gate: flags['owner-gate'], anchor: flags['owner-gate-anchor'], runId: flags['owner-gate-run-id'] }
             : undefined,
+          verifyRequest,
           // As for set-terminal: a verb completion fires the ADR-0031
           // session-handoff sidecar.
           emitHandoff: true,
@@ -6100,6 +7226,47 @@ async function cliRun(subcommand, flags) {
           );
         }
         process.stdout.write(`${flags['workflow-path']}\n`);
+        return 0;
+      }
+
+      // ADR-0068 Decision 5 — the driver's records of a request's batches. Each
+      // reads its JSON from the file the driver wrote, writes under the
+      // workflow lock, and prints {"recorded":true} or, for a replay identical
+      // to what is stored, {"unchanged":true}.
+      case 'verify-batch-start':
+      case 'verify-batch-restart':
+      case 'verify-result':
+      case 'verify-batch-end':
+      case 'verify-pass': {
+        const starts = subcommand === 'verify-batch-start' || subcommand === 'verify-batch-restart';
+        const needs = ['workflow-path', 'host', 'request-id'];
+        if (!starts) needs.push('batch-id');
+        if (subcommand !== 'verify-pass') needs.push('input-file');
+        // A restart names the record it sets aside, `none` when there is none.
+        if (subcommand === 'verify-batch-restart') needs.push('replaces');
+        cliRequire(flags, needs);
+        const input = subcommand === 'verify-pass' ? undefined : readJsonArgumentFile(flags['input-file'], '--input-file');
+        const common = { workflowPath: flags['workflow-path'], host: flags.host, requestId: flags['request-id'] };
+        const written = subcommand === 'verify-batch-start' ? await recordBatchStart({ ...common, input })
+          : subcommand === 'verify-batch-restart' ? await recordBatchRestart({ ...common, replaces: flags.replaces === 'none' ? null : flags.replaces, input })
+            : subcommand === 'verify-result' ? await recordResult({ ...common, batchId: flags['batch-id'], input })
+              : subcommand === 'verify-batch-end' ? await recordBatchEnd({ ...common, batchId: flags['batch-id'], input })
+                : await recordPass({ ...common, batchId: flags['batch-id'] });
+        process.stdout.write(`${JSON.stringify(written)}\n`);
+        return 0;
+      }
+
+      case 'verify-results': {
+        cliRequire(flags, ['workflow-path']);
+        const read = await readVerifyResults({ workflowPath: flags['workflow-path'], treeDigest: flags['tree-digest'] ?? null });
+        process.stdout.write(`${JSON.stringify(read, null, 2)}\n`);
+        return 0;
+      }
+
+      // The capability marker a driver probes before it offers verification
+      // (ADR-0068 Decision 5, item 11).
+      case 'verify-capability': {
+        process.stdout.write(`${JSON.stringify({ capability: VERIFY_RECORD_CAPABILITY, slot_types: SLOT_TYPES, declaration: VERIFY_DECLARATION_PATH })}\n`);
         return 0;
       }
 
