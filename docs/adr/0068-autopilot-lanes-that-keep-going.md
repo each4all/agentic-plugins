@@ -1701,6 +1701,83 @@ on Claude (ADR-0063 D9), once the driver offers it (item 11).
    - a verb run in the lane, a person's in a held lane included, replaces the
      request, as its Phase 0 clears any next step.
 
+   Note (2026-10-21, `verify-record-cli`): the rules above bind the batches
+   the driver's own ledger records. A record it does not hold (another
+   writer's batch, open or ended, a result, an end or a carried result) is no
+   evidence and is never taken up: the driver sets the request's whole record
+   aside in one write, `verify-batch-restart`, admitted only over the record
+   it read, and runs the request again whole. A restart is a set-aside, not a
+   take-up, so it never follows a batch the driver's ledger holds as passed or
+   failed. Each write a step makes under an autopilot run binds its attempt
+   to the handoff that write leaves (the next step, the phase, the active
+   verb, the terminal marker, the owner gate, the pending peer runs, the
+   request and its results) and to that handoff's generation, a count every
+   write of this release that changes the handoff moves on by one, in the one
+   function that turns a workflow record into its text. A later write of that
+   step is taken only while the record still holds that handoff at that
+   generation: any change since, by any writer (the driver's batch start,
+   restart or pass, an owner's or interactive session's write, a later step's
+   write that sets no next step, a writer that does not know the mark), makes
+   it stale, even a change undone since. Every write of a workflow is held to
+   the mark at its file lock, the one point every writer passes, whether or
+   not it changes the handoff and whatever it writes (a next step, a
+   checkpoint, a manifest entry, a snapshot, a marker, an archive, the review
+   ledger), so an earlier step or run is stale outright and no writer is
+   listed; a write beside the workflow (its review ledger, a consensus task
+   file, a move of either) moves the mark on as a write of the workflow would,
+   before it lands, so a failure or a kill between the two leaves the newer
+   step's mark, and a move of the ledger is made only while the lock is still
+   the step's; a workflow created under a run is admitted against the marks
+   of the workflows archived on its branch (each from a regular file opened
+   without blocking, as the workflows home's reader reads it, so a FIFO
+   there refuses the creation; a record whose first read opens an LF
+   frontmatter is read up to the close delimiter the parser takes, never a
+   line that merely opens with `---`, its body never read whole, and its
+   mark sought there (a frontmatter that never closes is read whole); one
+   whose first read opens none, a CRLF record or a note, is read whole from a
+   descriptor of its own and judged on that read alone, and while that read
+   still opens no LF frontmatter, a mark at any line start in it counts, with
+   its branch unknown, so the parse refuses it; a line starts after a newline
+   only, as the parser splits lines, never after a U+2028 or U+2029 a request
+   holds. Two limits of records the tool did not write are documented, not
+   fixed (the owner's ruling of 2026-10-25 on uncommon cases): such a
+   non-LF record holding a mark refuses every creation under a run, on every
+   branch, until it is removed or rewritten as the LF workflow file; a
+   record in UTF-16 is read as holding no mark; and a record edited to name
+   two branches is exempted by the first, which the parser does not keep),
+   so a
+   stale step recreates nothing a newer step archived, nor the step a mark
+   names once the handoff it left changed, and records the
+   creating step's mark in the same write, which commits only while the
+   creation still holds every creation lock it took (the repository's and
+   the written home's, with shared creation on and another home written),
+   checked at the commit as the lock token is; and an
+   archive moves the mark on in the active file before it publishes the
+   destination, and each of those two writes commits only while the source's
+   lock and bytes are still the ones the archive read, checked at the commit
+   as the lock token is, so one whose source lock was reclaimed, or whose
+   file changed since it read it, overwrites nothing, archives nothing and
+   deletes nothing (a reclaim between that check and the rename is the
+   window every locked write has). A
+   step's attempt is its run and its number: the driver numbers
+   every step it starts (`AGENTIC_AUTOPILOT_STEP`, its sequence number for the
+   step), whether or not the run offers verification, which also takes
+   `AGENTIC_AUTOPILOT_VERIFY`. A step starts at its first write, every verb's
+   Phase 0, so a step started after an owner's change of the handoff (a gate
+   cleared while the run is live) writes, and only the step before it is
+   stale; a note alone is outside the handoff and stales no step. A newer run's first write records its run in the mark, whether or
+   not it changes the handoff (the persona's `lib/verify.mjs` header). One
+   limit remains while the hosts run mixed releases, an earlier release: a
+   writer from a release before `verify-record-cli` moves no generation, so
+   an A to B and back to A in which such a writer takes part is not seen, and
+   the step's late write then lands on the state it left; and a driver from
+   such a release numbers no step, so its steps order runs only, and the
+   delayed write of one of its steps is not told from its run's next step
+   (one such step writes nothing beside a numbered step of its own run). The
+   limit ends once both hosts run this release. A workflow an interactive verb left with the terminal marker,
+   resumed into a non-terminal phase, records a request: the phase says
+   whether it is terminal, and the request turns the marker off.
+
 8. **How a check runs.** The driver's effect domain grows by one effect,
    amending ADR-0063 D1: it runs a declared check
    - as an argv array built from the declaration and the request's checked

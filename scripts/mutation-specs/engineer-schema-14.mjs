@@ -80,8 +80,8 @@ export const MUTATIONS = [
   // ---- W: the write paths ----------------------------------------------------
   {
     id: 'W1', file: STATE, tests: [T14],
-    from: '  for (const k of NEXT_STEP_KEYS) delete frontmatter[k];',
-    to: '',
+    from: '  for (const k of NEXT_STEP_KEYS) delete frontmatter[k];\n  Object.assign(frontmatter, write);',
+    to: '  Object.assign(frontmatter, write);',
     why: 'a new next step keeps the previous next_step_verb',
   },
   {
@@ -123,8 +123,8 @@ export const MUTATIONS = [
   },
   {
     id: 'W8', file: STATE, tests: [T14],
-    from: '    applyNextStepWrite(frontmatter, nextStepWrite);\n    frontmatter.terminal_marker = terminalMarker;',
-    to: '    applyNextStepWrite(frontmatter, nextStepWrite);\n    frontmatter.schema = SCHEMA_VERSION;\n    frontmatter.terminal_marker = terminalMarker;',
+    from: '    applyNextStepWrite(frontmatter, nextStepWrite, { dropVerify: dropVerifyRequest });\n    frontmatter.terminal_marker = terminalMarker;',
+    to: '    applyNextStepWrite(frontmatter, nextStepWrite, { dropVerify: dropVerifyRequest });\n    frontmatter.schema = SCHEMA_VERSION;\n    frontmatter.terminal_marker = terminalMarker;',
     why: 'set-terminal silently promotes a 1.3 file to 1.4',
   },
 
@@ -162,8 +162,8 @@ export const MUTATIONS = [
 
   {
     id: 'G6', file: STATE, tests: [T14],
-    from: '  Object.assign(frontmatter, fields);\n',
-    to: '  Object.assign(frontmatter, fields);\n  frontmatter.schema = SCHEMA_VERSION;\n',
+    from: '  const replaced = frontmatter.awaiting_owner_run_id;\n  Object.assign(frontmatter, fields);\n',
+    to: '  const replaced = frontmatter.awaiting_owner_run_id;\n  Object.assign(frontmatter, fields);\n  frontmatter.schema = SCHEMA_VERSION;\n',
     why: 'awaiting-owner-set silently promotes a 1.3 file to 1.4',
   },
   {

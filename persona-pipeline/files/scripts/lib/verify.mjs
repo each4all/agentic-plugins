@@ -1,0 +1,1094 @@
+// scripts/lib/verify.mjs — the persona's half of ADR-0068 Decision 5: the
+// repository's check declaration, the checks a step requests, and the batches
+// of results the autopilot driver records against them (`verify-record-cli`).
+//
+// Pure functions only, apart from `resolveCheck`'s lstat and realpath of a
+// path argument in the tested tree: state.mjs takes the workflow lock, reads the file and
+// writes it; this module says what a request, a batch and a result are, and
+// refuses what they are not.
+//
+// The wire form. A request and its results are two flat frontmatter scalars,
+// `verify_request` and `verify_results`, beside the attempt mark
+// `verify_attempt` and the handoff generation `verify_handoff`, each one JSON
+// document in a double-quoted YAML scalar, so a reader older than this
+// release carries them byte for byte through its forward-compat carrier once the next step is no longer `verify` (ADR-0068
+// Decision 5, item 11).
+//
+// The attempt mark. It binds the attempt that last wrote the workflow under
+// an autopilot run (its run, and the step's number the driver gives every
+// step it starts, whether or not the run offers verification) to the handoff
+// that write left behind (`handoff`, handoffDigest: the next step, the
+// phase, the active verb, the terminal marker, the owner gate, the pending
+// peer runs, the request and its results) and to that handoff's generation,
+// and it is kept when the request goes. The generation (`verify_handoff`,
+// stampHandoff) counts the changes of the handoff from the first mark on:
+// every write of this release that changes the handoff moves it on by one, in
+// the one function that turns a record into its text, so a change undone (A
+// to B and back to A) still moves it twice. A later write of that same step
+// is taken only while the record still holds that handoff at that
+// generation: any change since, by any writer (the driver's batch start,
+// restart or pass, an owner's write, a write that sets no next step, a writer
+// that does not know the mark), makes it stale, even one undone since. Every
+// write of a workflow under an autopilot run is held to the mark at the
+// workflow's file lock, the one point every writer passes (state.mjs
+// withFileLock), whether or not it changes the handoff and whatever it
+// writes: an earlier step, or a step of an earlier run, is stale outright. A
+// write beside the workflow (its review ledger, a consensus task file, a move
+// of either) moves the mark on as a write of the workflow would, before it
+// lands, so a failure or a kill between the two leaves the mark on the newer
+// step; a move of the ledger is made only while the lock is still the
+// step's. A workflow created under a run is admitted against the marks of the
+// workflows archived on its branch (each from a regular file opened without
+// blocking, so a FIFO there refuses it; a record whose first read opens an LF
+// frontmatter is read up to the close delimiter the parser takes, never a
+// line that merely opens with ---, its body never read whole, and its mark
+// sought there (a frontmatter that never closes is read whole); one whose
+// first read opens none, a CRLF record or a note, is read whole from a
+// descriptor of its own and judged on that read alone, and while that read
+// still opens no LF frontmatter, a mark at any line start in it counts, with
+// its branch unknown; a line starts after a newline only, as the parser splits
+// lines, never after a U+2028 or U+2029 a request holds),
+// the step a mark names held to the handoff it left,
+// and records the creating step's mark in the same write, which commits only
+// while the creation still holds every creation lock it took (both, with
+// shared creation on and another home written), checked at the commit; an archive
+// moves the mark on in the active file before it publishes the destination,
+// each of the two writes committing only while the source's lock and bytes
+// are still the ones it read (checked at the commit, as the token is), so
+// one whose source lock was reclaimed, or whose file changed since it read
+// it, overwrites nothing and archives nothing. A step starts at its first
+// write (every verb's Phase 0), so a step started after an owner's change of
+// the handoff writes on; a note alone changes no handoff. A later run's first write moves the mark
+// on, or records it when there is none yet, whether or not it changes the
+// handoff.
+//
+// Earlier releases, the one limit. A writer from a release before this one
+// keeps no generation: it carries `verify_handoff` as written, so its own
+// change moves no generation. The digest still sees a change it leaves, but
+// not one it undoes: an A to B and back to A in which such a writer takes
+// part is not seen, and the step's late write then lands on the state it
+// left. And a driver from such a release numbers no step: its steps carry
+// their run only, which orders runs and no step within one, so the delayed
+// write of one of its steps is not told from the run's next step (one such
+// step writes nothing beside a numbered step of its own run). The limit ends
+// once both hosts run this release.
+//
+// Archived records the tool did not write, documented and not fixed (the
+// owner's ruling of 2026-10-25 on uncommon cases). A record that opens no LF
+// frontmatter (a CRLF record, a BOM, a preamble, a note with a line opening
+// verify_attempt:) and holds a mark refuses every creation under a run, on
+// every branch, since the parser cannot read it: remove it, or rewrite it as
+// the LF workflow file. A record in UTF-16 is read as holding no mark. A
+// record edited to name two branches (a second `  branch:` line, or a second
+// git_baseline block) is exempted by the first, which the parser does not
+// keep. The tool writes UTF-8 LF records, one branch each, only.
+//
+// Versions. Each of the four records carries `v`. This release writes and
+// checks `v: 1`, whose fields, outcomes, ends and causes are exactly the ones
+// below. A later release that adds a field or a value to a record writes it
+// with a higher `v`; it never adds one under `v: 1`. This release reads a
+// record with a higher `v` as opaque (`isNewerRecord`): the workflow still
+// reads, and takes every write made outside an autopilot run (an owner's, an
+// interactive session's), the record carried as written (each record is the
+// JSON.stringify of its object, so parsing and writing it again gives the
+// same text); every verify command refuses it, and so does every write under
+// an autopilot run beside a later release's mark or generation, which it
+// cannot be held to. A verb that ends with another next step than verify
+// drops the request and its results, whatever their version (the mark
+// stays), since its own next step replaces them (item 7).
+// A `v` that is not a whole number of 1 or more is malformed, as is a `v: 1`
+// record with a field or value this release does not know.
+//
+// The identity of "the same checks" (item 7) is `checksDigest`: sha256 over
+// the batch's argv arrays as the declaration resolves them, the driver's
+// additions included, in batch order. verify-exec carries a copy for the
+// driver; tests/persona-pipeline/test-verify-record.mjs pins the encoding.
+//
+// No check here is a trust boundary. The workflow file and this CLI are both
+// within reach of the worker whose step recorded the request: it can set the
+// offer's variables itself, edit the file by hand, or call the driver's
+// commands, so a request, a batch, a result, an end and a `carried_from` may
+// each be the worker's own. What the persona checks keeps a cooperating
+// writer's record consistent; the driver that runs the checks (verify-exec)
+// trusts none of it:
+// - the request: before it runs anything it resolves each stored check again
+//   against the declaration it read itself from its own baseline commit, and
+//   compares the request's `baseline` and `declaration_digest` with its own,
+//   and takes the run and step from its own ledger;
+// - batches: it takes up, continues and passes (`verify-pass`) only a batch
+//   its own run ledger records having started, and treats any other batch in
+//   the file (a batch, a result or an end it did not write) as no evidence;
+// - carried results: it counts a carried result (`carried_from`, and each
+//   check's `recorded_by` in `verify-results`) only when its own ledger
+//   records that batch and run having recorded that result;
+// - setting aside: when the request's record holds anything its ledger does
+//   not (a batch, open or ended, a result, an end or a carried result), it
+//   sets the whole record aside with `verify-batch-restart` and runs the
+//   request again whole, so no untrusted record decides whether a check
+//   runs. A restart is one locked write: a batch that continues nothing, with
+//   nothing carried, replacing every earlier batch of the request, admitted
+//   only against the record the driver read (`replaces`, the sha256 of the
+//   stored `verify_results` text that `verify-results` prints as
+//   `results_digest`, or null when there is none), so a delayed replay never
+//   erases later results. The ordinary start keeps its rules for every other
+//   writer: only a batch cut short is taken up again, and nothing follows a
+//   batch that ended;
+// - logs: it reads them only under its own run directory.
+// Two records it cannot set aside, and both fail closed, never as a pass: a
+// malformed record, which fails every read of the workflow, is the owner's
+// to repair, as any malformed field is; a record a later release wrote is
+// refused by every verify command (Versions, above).
+
+import { createHash } from 'node:crypto';
+import { lstatSync, realpathSync } from 'node:fs';
+import { join, sep } from 'node:path';
+
+// The marker a driver checks in the installed persona CLI before it offers
+// verification (Decision 5, item 11): `state.mjs verify-capability` prints it.
+export const VERIFY_RECORD_CAPABILITY = 'verify-record-1';
+
+export const VERIFY_DECLARATION_PATH = '.agentic-plugins/verify-checks.json';
+export const VERIFY_DECLARATION_SCHEMA = 'agentic-verify-checks-1.0';
+
+export const SLOT_TYPES = Object.freeze(['path', 'id']);
+const REPEATS = Object.freeze(['one', 'many', 'optional-many']);
+const JOINS = Object.freeze(['words', 'comma']);
+export const MAX_SLOT_VALUES = 400;
+export const MAX_CHECK_TIMEOUT_S = 14_400;          // 4 hours (item 3)
+export const MAX_REQUEST_CHECKS = 32;
+export const MAX_BATCH_CHECKS = 128;
+export const MAX_REQUEST_BYTES = 16 * 1024;
+export const MAX_RESULTS_BYTES = 192 * 1024;
+export const MAX_FAILING_TESTS = 20;
+export const MAX_FAILING_TEST_CHARS = 200;
+export const MAX_ARGV_WORDS = 512;
+// The longest word of a check's argv. A request is refused when a check it
+// names would resolve to a longer one, so every request recorded can be
+// started as a batch.
+export const MAX_WORD_CHARS = 512;
+
+export const OUTCOMES = Object.freeze(['passed', 'failed', 'timeout', 'not-started', 'refused', 'stopped', 'not-reached']);
+export const ENDS = Object.freeze(['passed', 'failed', 'no-evidence', 'cut-short']);
+export const CUT_CAUSES = Object.freeze(['stop', 'hold', 'drain', 'driver-end']);
+export const NO_EVIDENCE_CAUSES = Object.freeze(['tree-changed', 'tree-unreadable', 'timeout', 'bound']);
+export const ON_PASS_KINDS = Object.freeze(['verb', 'commit', 'done']);
+export const ORIGINS = Object.freeze(['worker', 'driver']);
+
+const KIND_ID_RE = /^[a-z][a-z0-9-]{0,63}$/;
+const SLOT_NAME_RE = /^[a-z][a-z0-9_]{0,31}$/;
+const FIXED_WORD_RE = /^[A-Za-z0-9._:/=@+-]{1,128}$/;
+const SLOT_REF_RE = /^\{([a-z][a-z0-9_]{0,31})\}$/;
+const PATH_RE = /^[A-Za-z0-9._/-]{1,256}$/;
+const ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/;
+const GLOB_RE = /^[A-Za-z0-9._/*-]{1,256}$/;
+const HEX64_RE = /^[0-9a-f]{64}$/;
+const COMMIT_RE = /^[0-9a-f]{40}$/;
+const BATCH_ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/;
+const RUN_ID_RE = /^autopilot-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
+const REQUEST_ID_RE = /^[0-9a-f]{16}$/;
+const SIGNAL_RE = /^SIG[A-Z0-9]{1,12}$/;
+const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+// The control characters a failing test's name loses before it is recorded:
+// a name reaches the next worker as data, never as a line break of its own.
+// eslint-disable-next-line no-control-regex
+const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/g;
+
+const fail = (msg) => { throw new Error(msg); };
+const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
+// Every id, digest and time a record holds is a string before it is matched:
+// RegExp.test converts what it is given, so `["autopilot-…"]`, nested to any
+// depth, would pass as the string it prints, and be stored as an array no
+// size reserve counts.
+const matches = (re, v) => typeof v === 'string' && re.test(v);
+
+// The version of the four records this release writes and checks (header).
+export const RECORD_VERSION = 1;
+
+/**
+ * Whether a stored record was written by a later release than this one: an
+ * object whose `v` is a whole number above RECORD_VERSION. It is carried as
+ * written and never checked; every verify command refuses it (header).
+ */
+export function isNewerRecord(record) {
+  return isObj(record) && Number.isInteger(record.v) && record.v > RECORD_VERSION;
+}
+const isBatchId = (v) => matches(BATCH_ID_RE, v);
+const isIso = (v) => matches(ISO_RE, v) && Number.isFinite(Date.parse(v))
+  && new Date(Date.parse(v)).toISOString().replace(/\.\d{3}Z$/, 'Z') === v;
+
+function onlyKeys(obj, allowed, where) {
+  for (const k of Object.keys(obj)) {
+    if (!allowed.includes(k)) fail(`${where}: unknown field ${JSON.stringify(k)} (expected ${allowed.join(', ')})`);
+  }
+}
+
+/** Canonical JSON: object keys sorted at every depth, so one value has one text. */
+export function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (isObj(value)) {
+    return `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson(value[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+export const sha256 = (text) => createHash('sha256').update(text).digest('hex');
+
+// -----------------------------------------------------------------------------
+// The declaration (Decision 5, item 3)
+
+/**
+ * A repository-relative path in the declaration's alphabet: no leading `-` or
+ * `/`, no empty, `.` or `..` segment. The tested tree decides whether it names
+ * a file (`resolveCheck`).
+ */
+export function pathProblem(value) {
+  if (typeof value !== 'string') return 'is not a string';
+  if (!PATH_RE.test(value)) return 'holds a character outside [A-Za-z0-9._/-] or is longer than 256 characters';
+  if (value.startsWith('-')) return 'begins with -';
+  if (value.startsWith('/')) return 'is absolute';
+  if (value.split('/').some((s) => s === '' || s === '.' || s === '..')) return 'has an empty, . or .. segment';
+  return null;
+}
+
+export function idProblem(value) {
+  if (typeof value !== 'string') return 'is not a string';
+  if (!ID_RE.test(value)) return 'is not 1 to 64 characters of [A-Za-z0-9_-] beginning with a letter, digit or _';
+  return null;
+}
+
+function parseSlot(slot, where) {
+  if (!isObj(slot)) fail(`${where} is not an object`);
+  onlyKeys(slot, ['name', 'type', 'repeat', 'join', 'under', 'suffix', 'lead'], where);
+  if (typeof slot.name !== 'string' || !SLOT_NAME_RE.test(slot.name)) fail(`${where}.name is not a slot name`);
+  if (!SLOT_TYPES.includes(slot.type)) fail(`${where}.type ${JSON.stringify(slot.type)} is not one of ${SLOT_TYPES.join(', ')}`);
+  if (!REPEATS.includes(slot.repeat)) fail(`${where}.repeat is not one of ${REPEATS.join(', ')}`);
+  if (slot.join !== undefined && !JOINS.includes(slot.join)) fail(`${where}.join is not one of ${JOINS.join(', ')}`);
+  if (slot.repeat !== 'one' && slot.join === undefined) fail(`${where}: a repeated slot names its join (${JOINS.join(', ')})`);
+  if (slot.repeat === 'one' && slot.join !== undefined) fail(`${where}: a slot of one value takes no join`);
+  if (slot.under !== undefined) {
+    if (slot.type !== 'path') fail(`${where}.under applies to a path slot only`);
+    if (!Array.isArray(slot.under) || slot.under.length === 0) fail(`${where}.under is not a non-empty list`);
+    for (const u of slot.under) {
+      if (typeof u !== 'string' || !u.endsWith('/') || pathProblem(u.slice(0, -1)) !== null) fail(`${where}.under ${JSON.stringify(u)} is not a directory prefix ending in /`);
+    }
+  }
+  if (slot.suffix !== undefined) {
+    if (slot.type !== 'path') fail(`${where}.suffix applies to a path slot only`);
+    if (typeof slot.suffix !== 'string' || !/^\.[A-Za-z0-9]{1,16}$/.test(slot.suffix)) fail(`${where}.suffix is not a file suffix`);
+  }
+  if (slot.lead !== undefined) {
+    if (slot.repeat !== 'optional-many') fail(`${where}.lead applies to an optional-many slot only`);
+    if (!Array.isArray(slot.lead) || slot.lead.length === 0 || !slot.lead.every((w) => typeof w === 'string' && FIXED_WORD_RE.test(w))) {
+      fail(`${where}.lead is not a non-empty list of fixed words`);
+    }
+  }
+  return Object.freeze({ ...slot });
+}
+
+function parseKind(id, kind) {
+  const where = `kind ${id}`;
+  if (!KIND_ID_RE.test(id)) fail(`${where}: the id is not [a-z][a-z0-9-]{0,63}`);
+  if (!isObj(kind)) fail(`${where} is not an object`);
+  onlyKeys(kind, ['argv', 'slots', 'timeout_s', 'locks_itself', 'adds_on'], where);
+  if (!Array.isArray(kind.argv) || kind.argv.length === 0 || kind.argv.length > 32) fail(`${where}.argv is not a list of 1 to 32 words`);
+  if (!Array.isArray(kind.slots)) fail(`${where}.slots is not a list`);
+  const slots = kind.slots.map((s, i) => parseSlot(s, `${where}.slots[${i}]`));
+  const names = slots.map((s) => s.name);
+  if (new Set(names).size !== names.length) fail(`${where}: a slot name is repeated`);
+  const refs = [];
+  kind.argv.forEach((w, i) => {
+    if (typeof w !== 'string') fail(`${where}.argv[${i}] is not a string`);
+    const ref = SLOT_REF_RE.exec(w);
+    if (ref) refs.push(ref[1]);
+    else if (!FIXED_WORD_RE.test(w)) fail(`${where}.argv[${i}] ${JSON.stringify(w)} is neither a fixed word nor a {slot}`);
+  });
+  if (refs.length !== new Set(refs).size) fail(`${where}: a slot is referenced twice`);
+  if (refs.slice().sort().join() !== names.slice().sort().join()) fail(`${where}: argv references ${refs.join(', ') || 'no slot'}, the slots are ${names.join(', ') || 'none'}`);
+  if (!Number.isInteger(kind.timeout_s) || kind.timeout_s < 1 || kind.timeout_s > MAX_CHECK_TIMEOUT_S) {
+    fail(`${where}.timeout_s is not a whole number of seconds from 1 to ${MAX_CHECK_TIMEOUT_S}`);
+  }
+  if (typeof kind.locks_itself !== 'boolean') fail(`${where}.locks_itself is not a boolean`);
+  if (!Array.isArray(kind.adds_on) || !kind.adds_on.every((g) => typeof g === 'string' && GLOB_RE.test(g) && !g.split('/').includes('..'))) {
+    fail(`${where}.adds_on is not a list of path globs`);
+  }
+  return Object.freeze({ id, argv: Object.freeze([...kind.argv]), slots: Object.freeze(slots), timeout_s: kind.timeout_s, locks_itself: kind.locks_itself, adds_on: Object.freeze([...kind.adds_on]) });
+}
+
+// The first key a JSON object of `text` names twice, or null. `text` has
+// already parsed, so only strings, brackets and commas need telling apart.
+function duplicateKey(text) {
+  const stack = [];
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === '"') {
+      let j = i + 1;
+      while (text[j] !== '"') j += text[j] === '\\' ? 2 : 1;
+      const top = stack.at(-1);
+      if (top?.expectKey) {
+        const key = JSON.parse(text.slice(i, j + 1));
+        if (top.keys.has(key)) return key;
+        top.keys.add(key);
+        top.expectKey = false;
+      }
+      i = j;
+    } else if (ch === '{') stack.push({ keys: new Set(), expectKey: true });
+    else if (ch === '[') stack.push(null);
+    else if (ch === '}' || ch === ']') stack.pop();
+    else if (ch === ',' && stack.at(-1)) stack.at(-1).expectKey = true;
+  }
+  return null;
+}
+
+/**
+ * Parse and check the repository's declaration. The text's sha256 is its
+ * digest: the request records it, and a relaunch's newer declaration resolves
+ * a request again whole (item 7). Throws naming the first problem.
+ */
+export function parseDeclaration(text) {
+  if (typeof text !== 'string') fail('the declaration is not text');
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch (err) {
+    fail(`the declaration is not JSON (${err.message})`);
+  }
+  if (!isObj(raw)) fail('the declaration is not a JSON object');
+  // JSON.parse keeps the last of two equal keys; a declaration that names a
+  // kind (or any key) twice is refused, so nothing is shadowed unseen.
+  const twice = duplicateKey(text);
+  if (twice !== null) fail(`the declaration names the key ${JSON.stringify(twice)} twice in one object`);
+  onlyKeys(raw, ['schema', 'kinds', 'mappings'], 'the declaration');
+  if (raw.schema !== VERIFY_DECLARATION_SCHEMA) fail(`the declaration's schema is not ${VERIFY_DECLARATION_SCHEMA} (got ${JSON.stringify(raw.schema)})`);
+  if (!isObj(raw.kinds) || Object.keys(raw.kinds).length === 0) fail('the declaration declares no kind');
+  const kinds = {};
+  for (const [id, kind] of Object.entries(raw.kinds)) kinds[id] = parseKind(id, kind);
+  // `mappings` are verify-select's (item 4); carried, never interpreted here.
+  if (raw.mappings !== undefined && !Array.isArray(raw.mappings)) fail('the declaration\'s mappings is not a list');
+  return Object.freeze({ schema: raw.schema, kinds: Object.freeze(kinds), mappings: raw.mappings ?? [], digest: sha256(text) });
+}
+
+function slotValues(slot, value, where) {
+  const many = slot.repeat !== 'one';
+  if (value === undefined) {
+    if (slot.repeat === 'optional-many') return [];
+    fail(`${where}: slot ${slot.name} is missing`);
+  }
+  if (!many) {
+    if (typeof value !== 'string') fail(`${where}: slot ${slot.name} takes one value`);
+    return [value];
+  }
+  if (!Array.isArray(value)) fail(`${where}: slot ${slot.name} takes a list`);
+  const min = slot.repeat === 'many' ? 1 : 0;
+  if (value.length < min || value.length > MAX_SLOT_VALUES) fail(`${where}: slot ${slot.name} takes ${min} to ${MAX_SLOT_VALUES} values (got ${value.length})`);
+  return value;
+}
+
+// A path argument names a regular file of the tested tree (lstat: never a
+// link, and its real path inside the tree, so a linked parent directory
+// cannot reach out of it). Uncommitted and untracked files count.
+function pathInTree(tree, value) {
+  const full = join(tree, value);
+  let st;
+  try {
+    st = lstatSync(full);
+  } catch {
+    return 'names no file in the tested tree';
+  }
+  if (st.isSymbolicLink()) return 'is a symbolic link';
+  if (!st.isFile()) return 'is not a regular file';
+  let realTree;
+  let realFile;
+  try {
+    realTree = realpathSync(tree);
+    realFile = realpathSync(full);
+  } catch {
+    return 'cannot be resolved in the tested tree';
+  }
+  if (!realFile.startsWith(`${realTree}${sep}`)) return 'resolves outside the tested tree';
+  return null;
+}
+
+/**
+ * The argv a requested check runs as (item 8): the kind's words with each
+ * {slot} replaced by its checked values. `tree`, when given, is the tested
+ * tree each path argument must name a file in. Throws naming the problem.
+ */
+export function resolveCheck(decl, check, { tree = null } = {}) {
+  if (!isObj(check)) fail('a check is not an object');
+  onlyKeys(check, ['kind', 'args'], 'a check');
+  const kind = decl.kinds[check.kind];
+  if (typeof check.kind !== 'string' || !Object.hasOwn(decl.kinds, check.kind) || !kind) {
+    fail(`check kind ${JSON.stringify(check.kind)} is not declared`);
+  }
+  const where = `check ${check.kind}`;
+  const args = check.args ?? {};
+  if (!isObj(args)) fail(`${where}: args is not an object`);
+  for (const name of Object.keys(args)) {
+    if (!kind.slots.some((s) => s.name === name)) fail(`${where}: no slot ${JSON.stringify(name)}`);
+  }
+  const bySlot = {};
+  for (const slot of kind.slots) {
+    const values = slotValues(slot, args[slot.name], where);
+    values.forEach((v) => {
+      const problem = slot.type === 'path' ? pathProblem(v) : idProblem(v);
+      if (problem) fail(`${where}: ${slot.name} value ${JSON.stringify(v)} ${problem}`);
+      if (slot.type === 'path') {
+        if (slot.under && !slot.under.some((u) => v.startsWith(u))) fail(`${where}: ${slot.name} value ${JSON.stringify(v)} is not under ${slot.under.join(', ')}`);
+        if (slot.suffix && !v.endsWith(slot.suffix)) fail(`${where}: ${slot.name} value ${JSON.stringify(v)} does not end in ${slot.suffix}`);
+        if (tree !== null) {
+          const inTree = pathInTree(tree, v);
+          if (inTree) fail(`${where}: ${slot.name} value ${JSON.stringify(v)} ${inTree}`);
+        }
+      }
+    });
+    if (new Set(values).size !== values.length) fail(`${where}: slot ${slot.name} repeats a value`);
+    bySlot[slot.name] = { slot, values };
+  }
+  const argv = [];
+  for (const w of kind.argv) {
+    const ref = SLOT_REF_RE.exec(w);
+    if (!ref) { argv.push(w); continue; }
+    const { slot, values } = bySlot[ref[1]];
+    if (values.length === 0) continue;
+    if (slot.lead) argv.push(...slot.lead);
+    if (slot.repeat === 'one' || slot.join === 'words') argv.push(...values);
+    else argv.push(values.join(','));
+  }
+  // The bounds a batch start holds its argv to: a request that passes here
+  // can always be started.
+  if (argv.length > MAX_ARGV_WORDS) fail(`${where}: resolves to ${argv.length} words, more than the ${MAX_ARGV_WORDS} a batch runs`);
+  const long = argv.find((w) => w.length > MAX_WORD_CHARS);
+  if (long !== undefined) fail(`${where}: resolves to a word of ${long.length} characters, more than the ${MAX_WORD_CHARS} a batch runs; ask for fewer values`);
+  return argv;
+}
+
+/** The identity of a batch's checks (item 7): sha256 over its argv arrays, in batch order. */
+export function checksDigest(argvList) {
+  return sha256(JSON.stringify(argvList));
+}
+
+// -----------------------------------------------------------------------------
+// The request (items 2 and 5)
+
+function parseOnPass(onPass, verbs, where) {
+  if (!isObj(onPass)) fail(`${where} is not an object`);
+  onlyKeys(onPass, ['kind', 'verb', 'confidence'], where);
+  if (!ON_PASS_KINDS.includes(onPass.kind)) fail(`${where}.kind is not one of ${ON_PASS_KINDS.join(', ')} (verify and owner-decision never follow a batch)`);
+  if (onPass.kind === 'verb') {
+    if (!verbs.has(onPass.verb)) fail(`${where}.verb is not a verb`);
+  } else if (onPass.verb !== undefined && onPass.verb !== null) {
+    fail(`${where}.verb is given for kind ${onPass.kind}`);
+  }
+  if (!['HIGH', 'MEDIUM', 'LOW'].includes(onPass.confidence)) fail(`${where}.confidence is not HIGH, MEDIUM or LOW`);
+  return onPass.kind === 'verb'
+    ? { kind: 'verb', verb: onPass.verb, confidence: onPass.confidence }
+    : { kind: onPass.kind, confidence: onPass.confidence };
+}
+
+/**
+ * The request a step's file holds, before it is bound: `{checks, on_pass,
+ * confidence}`. Returns the normalized form; resolving each check against the
+ * declaration and the tree is the caller's (`resolveCheck`).
+ */
+export function parseRequestInput(input, { verbs }) {
+  if (!isObj(input)) fail('the request is not a JSON object');
+  if (input.kind !== undefined && input.kind !== 'verify') fail(`the request file is for next step ${JSON.stringify(input.kind)}, not verify`);
+  onlyKeys(input, ['kind', 'checks', 'on_pass', 'confidence'], 'the request');
+  if (!Array.isArray(input.checks) || input.checks.length === 0 || input.checks.length > MAX_REQUEST_CHECKS) {
+    fail(`the request names 1 to ${MAX_REQUEST_CHECKS} checks`);
+  }
+  const checks = input.checks.map((c, i) => {
+    if (!isObj(c)) fail(`checks[${i}] is not an object`);
+    onlyKeys(c, ['kind', 'args'], `checks[${i}]`);
+    return c.args === undefined ? { kind: c.kind, args: {} } : { kind: c.kind, args: c.args };
+  });
+  const onPass = parseOnPass(input.on_pass, verbs, 'on_pass');
+  if (!['HIGH', 'MEDIUM', 'LOW'].includes(input.confidence)) fail('the request\'s confidence is not HIGH, MEDIUM or LOW');
+  return { checks, on_pass: onPass, confidence: input.confidence };
+}
+
+/**
+ * The request id: 16 hex of sha256 over what binds it (workflow, run, step,
+ * baseline, declaration, checks, on_pass, and the step's confidence), so a
+ * retry that changes any of them, the confidence included, is a new request.
+ */
+export function requestId({ workflow_id, run_id, step, baseline, declaration_digest, checks, on_pass, confidence }) {
+  return sha256(canonicalJson({ workflow_id, run_id, step, baseline, declaration_digest, checks, on_pass, confidence })).slice(0, 16);
+}
+
+const REQUEST_KEYS = ['v', 'id', 'workflow_id', 'run_id', 'step', 'baseline', 'declaration_digest', 'checks', 'on_pass', 'confidence', 'recorded_at', 'previous', 'answered_by'];
+const PREVIOUS_KEYS = ['request_id', 'checks_digest', 'tree_start', 'tree_end', 'end'];
+
+function checkPrevious(p, where) {
+  if (p === null) return;
+  if (!isObj(p)) fail(`${where} is not an object or null`);
+  onlyKeys(p, PREVIOUS_KEYS, where);
+  if (!matches(REQUEST_ID_RE, p.request_id)) fail(`${where}.request_id is not a request id`);
+  if (!matches(HEX64_RE, p.checks_digest)) fail(`${where}.checks_digest is not a digest`);
+  if (!matches(HEX64_RE, p.tree_start)) fail(`${where}.tree_start is not a digest`);
+  if (!(p.tree_end === null || matches(HEX64_RE, p.tree_end))) fail(`${where}.tree_end is not a digest or null`);
+  if (!ENDS.includes(p.end)) fail(`${where}.end is not an end`);
+}
+
+// A stored check's arguments, without the declaration that types them: each
+// slot's value is one value or a list of at most MAX_SLOT_VALUES, and every
+// value is a path or an id (`pathProblem`, `idProblem`), so none is an option
+// or holds a character outside both alphabets. Which slot takes which type
+// is the declaration's, so the driver resolves each check again (header).
+function storedArgsProblem(args) {
+  for (const [name, value] of Object.entries(args)) {
+    if (!SLOT_NAME_RE.test(name)) return `names no slot (${JSON.stringify(name)})`;
+    const values = Array.isArray(value) ? value : [value];
+    if (Array.isArray(value) && value.length > MAX_SLOT_VALUES) return `slot ${name} holds more than ${MAX_SLOT_VALUES} values`;
+    for (const v of values) {
+      if (pathProblem(v) !== null && idProblem(v) !== null) return `slot ${name} value ${JSON.stringify(v)} is neither a path nor an id`;
+    }
+  }
+  return null;
+}
+
+// The owner gate's keys: a gate set, replaced or cleared is a change of the
+// handoff.
+const AWAITING_OWNER_KEYS = Object.freeze(['awaiting_owner_gate', 'awaiting_owner_since', 'awaiting_owner_pointer', 'awaiting_owner_run_id']);
+
+/**
+ * The handoff a write leaves behind, which the attempt mark binds its step
+ * to (header): sha256 over the next step, the phase, the active verb, the
+ * terminal marker, the owner gate, the pending peer runs, and the request
+ * with its results, as stored. The request and its results are in it because
+ * the driver's writes (a batch start, a restart, a result, the pass) change
+ * them and close the requesting step's attempt even when they leave the next
+ * step as it was; the verb, the gate and the pending runs because a step's
+ * next step is published over them.
+ */
+export function handoffDigest(fm) {
+  return sha256(canonicalJson({
+    next_step_kind: fm.next_step_kind ?? null,
+    next_step_verb: fm.next_step_verb ?? null,
+    next_step_confidence: fm.next_step_confidence ?? null,
+    current_phase: fm.current_phase ?? null,
+    verb: fm.verb ?? null,
+    terminal_marker: fm.terminal_marker === true,
+    ...Object.fromEntries(AWAITING_OWNER_KEYS.map((k) => [k, fm[k] ?? null])),
+    pending_ensemble: fm.pending_ensemble ?? null,
+    verify_request: fm.verify_request ?? null,
+    verify_results: fm.verify_results ?? null,
+  }));
+}
+
+/**
+ * The stored handoff generation `{v, generation, handoff}` (header): how many
+ * times this release's writes have changed the handoff since the first mark,
+ * and the handoff the last of them left (handoffDigest).
+ */
+export function validateStoredHandoff(h) {
+  if (!isObj(h)) fail('verify_handoff is not an object');
+  onlyKeys(h, ['v', 'generation', 'handoff'], 'verify_handoff');
+  if (h.v !== RECORD_VERSION) fail(`verify_handoff.v is not ${RECORD_VERSION}`);
+  if (!Number.isSafeInteger(h.generation) || h.generation < 0) fail('verify_handoff.generation is not a whole number');
+  if (!matches(HEX64_RE, h.handoff)) fail('verify_handoff.handoff is not a digest');
+}
+
+/**
+ * The handoff as a write finds it: its digest, and the stored generation (0
+ * before any mark). A writer that keeps no generation (an earlier release)
+ * leaves the stored one behind its change, which the digest sees. Null for a
+ * generation a later release wrote, which this release does not read.
+ */
+export function handoffState(fm) {
+  const digest = handoffDigest(fm);
+  const h = fm.verify_handoff;
+  if (h === undefined) return { digest, generation: 0 };
+  return { digest, generation: isNewerRecord(h) ? null : h.generation };
+}
+
+/**
+ * Stamp the handoff a write leaves (header): once a workflow holds a
+ * generation, every write that changes the handoff moves it on by one. Run on
+ * every workflow write, in the one function that turns a record into its
+ * text (state.mjs assembleWorkflowFile), so no writer can leave it out; a
+ * write that leaves the handoff as it found it leaves the generation too.
+ * `start` begins the count (the first mark): the handoff the write found, at
+ * its generation.
+ */
+export function stampHandoff(fm, start = null) {
+  if (start !== null && fm.verify_handoff === undefined) {
+    fm.verify_handoff = { v: RECORD_VERSION, generation: start.generation, handoff: start.digest };
+  }
+  const h = fm.verify_handoff;
+  if (h === undefined || isNewerRecord(h)) return;
+  const digest = handoffDigest(fm);
+  if (h.handoff !== digest) fm.verify_handoff = { v: RECORD_VERSION, generation: h.generation + 1, handoff: digest };
+}
+
+/**
+ * The stored attempt mark `{v, run_id, step?, requested, handoff,
+ * generation}`: the run and step of the attempt that last wrote the workflow
+ * under an autopilot run, whether that step recorded a request, and the
+ * handoff its write left (handoffDigest) at its generation (stampHandoff). A
+ * mark with no step was moved on by a step of a driver that numbers none (an
+ * earlier release): it orders runs only, and binds no step.
+ */
+export function validateStoredAttempt(a) {
+  if (!isObj(a)) fail('verify_attempt is not an object');
+  onlyKeys(a, ['v', 'run_id', 'step', 'requested', 'handoff', 'generation'], 'verify_attempt');
+  if (a.v !== RECORD_VERSION) fail(`verify_attempt.v is not ${RECORD_VERSION}`);
+  if (!matches(RUN_ID_RE, a.run_id)) fail('verify_attempt.run_id is not an autopilot run id');
+  if (a.step !== undefined && (!Number.isInteger(a.step) || a.step < 1)) fail('verify_attempt.step is not a positive integer');
+  if (typeof a.requested !== 'boolean') fail('verify_attempt.requested is not a boolean');
+  if (a.requested && a.step === undefined) fail('verify_attempt.requested is true for a mark with no step');
+  if (!matches(HEX64_RE, a.handoff)) fail('verify_attempt.handoff is not a digest');
+  if (!Number.isSafeInteger(a.generation) || a.generation < 0) fail('verify_attempt.generation is not a whole number');
+}
+
+// An autopilot run id carries the UTC second its run started.
+const runStarted = (runId) => /^autopilot-(\d{8}T\d{6}Z)-/.exec(runId)?.[1] ?? null;
+
+/**
+ * The order of two attempts `{run_id, step}`: negative when `a` came before
+ * `b`, 0 when they are the same step of the same run, positive after it. A
+ * later run comes after every step of an earlier one (run ids carry their
+ * start, a UTC second); within a run, steps are numbered in order. NaN when
+ * two runs started in the same second, or for two attempts of one run when
+ * either has no step: their order cannot be told.
+ */
+export function compareAttempts(a, b) {
+  if (a.run_id === b.run_id) {
+    return Number.isInteger(a.step) && Number.isInteger(b.step) ? Math.sign(a.step - b.step) : Number.NaN;
+  }
+  const sa = runStarted(a.run_id);
+  const sb = runStarted(b.run_id);
+  if (sa === null || sb === null || sa === sb) return Number.NaN;
+  return sa < sb ? -1 : 1;
+}
+
+/**
+ * The stored request, as the parser reads it. Throws naming the first problem.
+ * A consistency check, not a trust boundary (header): it holds a request the
+ * persona itself recorded, and the driver resolves each check again.
+ */
+export function validateStoredRequest(r, { verbs }) {
+  if (!isObj(r)) fail('verify_request is not an object');
+  onlyKeys(r, REQUEST_KEYS, 'verify_request');
+  if (r.v !== RECORD_VERSION) fail(`verify_request.v is not ${RECORD_VERSION}`);
+  if (!matches(REQUEST_ID_RE, r.id)) fail('verify_request.id is not 16 hex');
+  if (typeof r.workflow_id !== 'string' || r.workflow_id.length === 0) fail('verify_request.workflow_id is not a workflow id');
+  if (!matches(RUN_ID_RE, r.run_id)) fail('verify_request.run_id is not an autopilot run id');
+  if (!Number.isInteger(r.step) || r.step < 1) fail('verify_request.step is not a positive integer');
+  if (!matches(COMMIT_RE, r.baseline)) fail('verify_request.baseline is not a commit');
+  if (!matches(HEX64_RE, r.declaration_digest)) fail('verify_request.declaration_digest is not a digest');
+  if (!Array.isArray(r.checks) || r.checks.length === 0 || r.checks.length > MAX_REQUEST_CHECKS) fail('verify_request.checks is not a list of checks');
+  r.checks.forEach((c, i) => {
+    if (!isObj(c) || typeof c.kind !== 'string' || !KIND_ID_RE.test(c.kind) || !isObj(c.args)) fail(`verify_request.checks[${i}] is not a check`);
+    onlyKeys(c, ['kind', 'args'], `verify_request.checks[${i}]`);
+    const problem = storedArgsProblem(c.args);
+    if (problem) fail(`verify_request.checks[${i}].args ${problem}`);
+  });
+  parseOnPass(r.on_pass, verbs, 'verify_request.on_pass');
+  if (!['HIGH', 'MEDIUM', 'LOW'].includes(r.confidence)) fail('verify_request.confidence is not HIGH, MEDIUM or LOW');
+  if (!isIso(r.recorded_at)) fail('verify_request.recorded_at is not an ISO UTC time');
+  checkPrevious(r.previous, 'verify_request.previous');
+  if (r.answered_by !== undefined && !matches(BATCH_ID_RE, r.answered_by)) fail('verify_request.answered_by is not a batch id');
+  if (requestId(r) !== r.id) fail('verify_request.id does not match what it binds');
+}
+
+// -----------------------------------------------------------------------------
+// Batches and results (items 5 to 7)
+
+// `declaration_commit` is the commit the driver read its declaration from
+// (the run's baseline): the persona reads it there too, holds its digest to
+// `declaration_digest`, and resolves the request's checks with it.
+const BATCH_START_KEYS = ['batch_id', 'run_id', 'continues', 'tree_start', 'declaration_commit', 'declaration_digest', 'checks', 'checks_digest', 'started_at'];
+const BATCH_KEYS = [...BATCH_START_KEYS, 'results', 'tree_end', 'end', 'cause', 'ended_at'];
+const CHECK_KEYS = ['index', 'kind', 'origin', 'argv'];
+const RESULT_KEYS = ['index', 'outcome', 'exit', 'signal', 'duration_ms', 'failing_tests', 'failing_tests_more', 'log', 'ended_at'];
+// A stored result may also name the batch and run that recorded it, when the
+// persona carried it into a continuation (`carryOver`); the driver never
+// writes it.
+const STORED_RESULT_KEYS = [...RESULT_KEYS, 'carried_from'];
+const END_KEYS = ['tree_end', 'end', 'cause', 'ended_at'];
+
+/** The log pointer: relative to the executing run's directory (runs/autopilot/<run_id>/). */
+export function logProblem(value) {
+  if (value === null) return null;
+  const p = pathProblem(value);
+  return p ? `log ${p}` : null;
+}
+
+/** A failing test's name as recorded: its control characters removed. */
+export function cleanTestName(name) {
+  return typeof name === 'string' ? name.replace(CONTROL_RE, '') : name;
+}
+
+/** Check a batch start the driver writes (`verify-batch-start`); returns its normalized form. */
+export function parseBatchStart(input) {
+  if (!isObj(input)) fail('the batch start is not a JSON object');
+  onlyKeys(input, BATCH_START_KEYS, 'the batch start');
+  if (!isBatchId(input.batch_id)) fail('batch_id is not 1 to 64 characters of [A-Za-z0-9_-]');
+  if (!matches(RUN_ID_RE, input.run_id)) fail('run_id is not an autopilot run id (the run that executes the batch)');
+  const continues = input.continues ?? null;
+  if (continues !== null && !isBatchId(continues)) fail('continues is not a batch id');
+  if (!matches(HEX64_RE, input.tree_start)) fail('tree_start is not a 64-hex digest');
+  if (!matches(COMMIT_RE, input.declaration_commit)) fail('declaration_commit is not a 40-hex commit (the commit the driver read its declaration from)');
+  if (!matches(HEX64_RE, input.declaration_digest)) fail('declaration_digest is not a 64-hex digest');
+  if (!Array.isArray(input.checks) || input.checks.length === 0 || input.checks.length > MAX_BATCH_CHECKS) {
+    fail(`a batch runs 1 to ${MAX_BATCH_CHECKS} checks`);
+  }
+  const checks = input.checks.map((c, i) => {
+    if (!isObj(c)) fail(`checks[${i}] is not an object`);
+    onlyKeys(c, CHECK_KEYS, `checks[${i}]`);
+    if (c.index !== i) fail(`checks[${i}].index is not ${i}: indexes run 0..n-1 in order`);
+    if (typeof c.kind !== 'string' || !KIND_ID_RE.test(c.kind)) fail(`checks[${i}].kind is not a kind id`);
+    if (!ORIGINS.includes(c.origin)) fail(`checks[${i}].origin is not worker or driver`);
+    if (!Array.isArray(c.argv) || c.argv.length === 0 || c.argv.length > MAX_ARGV_WORDS
+      || !c.argv.every((w) => typeof w === 'string' && w.length > 0 && w.length <= MAX_WORD_CHARS && !w.includes('\0'))) {
+      fail(`checks[${i}].argv is not a list of 1 to ${MAX_ARGV_WORDS} words`);
+    }
+    return { index: i, kind: c.kind, origin: c.origin, argv: [...c.argv] };
+  });
+  if (!matches(HEX64_RE, input.checks_digest)) fail('checks_digest is not a 64-hex digest');
+  if (checksDigest(checks.map((c) => c.argv)) !== input.checks_digest) {
+    fail('checks_digest is not the digest of the batch\'s argv list (sha256 over JSON of the argv arrays in batch order)');
+  }
+  if (!isIso(input.started_at)) fail('started_at is not an ISO UTC time');
+  return {
+    batch_id: input.batch_id, run_id: input.run_id, continues, tree_start: input.tree_start,
+    declaration_commit: input.declaration_commit, declaration_digest: input.declaration_digest,
+    checks, checks_digest: input.checks_digest, started_at: input.started_at,
+  };
+}
+
+/**
+ * The worker's checks of a batch are the request's (item 4: the driver adds
+ * checks and never drops one): the same kinds, in order, each with the argv
+ * the declaration the batch names resolves the request's check to. The
+ * problem, or null.
+ */
+export function workerChecksProblem(decl, request, start) {
+  const worker = start.checks.filter((c) => c.origin === 'worker');
+  const asked = request.checks.map((c) => c.kind);
+  if (canonicalJson(worker.map((c) => c.kind)) !== canonicalJson(asked)) {
+    return `the batch's worker checks (${worker.map((c) => c.kind).join(', ') || 'none'}) are not the request's (${asked.join(', ')}), in order; the driver adds checks and never drops one`;
+  }
+  for (let i = 0; i < worker.length; i += 1) {
+    let argv;
+    try {
+      argv = resolveCheck(decl, request.checks[i]);
+    } catch (err) {
+      return `the request's check ${i} does not resolve with the batch's declaration (${err.message})`;
+    }
+    if (canonicalJson(argv) !== canonicalJson(worker[i].argv)) {
+      return `the batch's worker check ${worker[i].index} runs ${JSON.stringify(worker[i].argv)}, not the request's check ${i}, ${JSON.stringify(argv)}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * The results a continuation starts with (item 7): taken up on the tree its
+ * results are for, with the same commands, a batch goes on from its first
+ * check that did not pass, so the passed results before it are carried into
+ * the new batch, each naming the batch and run that recorded it (its log is
+ * relative to that run's directory). On another tree, or with other commands
+ * (a relaunch's newer declaration), it runs again whole and carries nothing.
+ */
+export function carryOver(prior, start) {
+  if (prior.tree_start !== start.tree_start || prior.checks_digest !== start.checks_digest) return [];
+  const carried = [];
+  for (const r of prior.results) {
+    if (r.outcome !== 'passed') break;
+    carried.push({ ...r, carried_from: r.carried_from ?? { batch_id: prior.batch_id, run_id: prior.run_id } });
+  }
+  return carried;
+}
+
+/**
+ * Check a result the driver writes (`verify-result`); returns its normalized
+ * form. `stored` reads one from the workflow file, where a carried result
+ * also names the batch and run that recorded it.
+ */
+export function parseResult(input, { stored = false } = {}) {
+  if (!isObj(input)) fail('the result is not a JSON object');
+  onlyKeys(input, stored ? STORED_RESULT_KEYS : RESULT_KEYS, 'the result');
+  let carried = null;
+  if (input.carried_from !== undefined) {
+    const c = input.carried_from;
+    if (!isObj(c) || !isBatchId(c.batch_id) || !matches(RUN_ID_RE, c.run_id) || Object.keys(c).length !== 2) {
+      fail('carried_from is not {batch_id, run_id}');
+    }
+    if (input.outcome !== 'passed') fail('only a passed result is carried into a continuation');
+    carried = { batch_id: c.batch_id, run_id: c.run_id };
+  }
+  if (!Number.isInteger(input.index) || input.index < 0 || input.index >= MAX_BATCH_CHECKS) fail('index is not a check index');
+  if (!OUTCOMES.includes(input.outcome)) fail(`outcome is not one of ${OUTCOMES.join(', ')}`);
+  const exit = input.exit ?? null;
+  const signal = input.signal ?? null;
+  if (exit !== null && (!Number.isInteger(exit) || exit < 0 || exit > 255)) fail('exit is not 0..255 or null');
+  if (signal !== null && !(typeof signal === 'string' && SIGNAL_RE.test(signal))) fail('signal is not a signal name or null');
+  if (input.outcome === 'passed' && (exit !== 0 || signal !== null)) fail('a passed check exited 0, with no signal');
+  if (input.outcome === 'failed' && !((exit !== null && exit !== 0) || signal !== null)) fail('a failed check exited non-zero, or on a signal');
+  if (!Number.isInteger(input.duration_ms) || input.duration_ms < 0 || input.duration_ms > 7 * 24 * 3600 * 1000) fail('duration_ms is not a duration');
+  const failing = input.failing_tests ?? [];
+  if (!Array.isArray(failing) || failing.length > MAX_FAILING_TESTS) fail(`failing_tests is not a list of at most ${MAX_FAILING_TESTS} names`);
+  const names = failing.map((n, i) => {
+    if (typeof n !== 'string' || !n.isWellFormed()) fail(`failing_tests[${i}] is not text`);
+    const clean = cleanTestName(n);
+    if (clean.length === 0 || clean.length > MAX_FAILING_TEST_CHARS) fail(`failing_tests[${i}] is not 1 to ${MAX_FAILING_TEST_CHARS} characters`);
+    return clean;
+  });
+  const more = input.failing_tests_more ?? 0;
+  if (!Number.isSafeInteger(more) || more < 0) fail('failing_tests_more is not a count');
+  if (input.outcome !== 'failed' && (names.length > 0 || more > 0)) fail('only a failed check names failing tests');
+  const log = input.log ?? null;
+  const lp = logProblem(log);
+  if (lp) fail(`${lp} (a path relative to the run's directory)`);
+  if (!isIso(input.ended_at)) fail('ended_at is not an ISO UTC time');
+  const result = { index: input.index, outcome: input.outcome, exit, signal, duration_ms: input.duration_ms, failing_tests: names, failing_tests_more: more, log, ended_at: input.ended_at };
+  return carried ? { ...result, carried_from: carried } : result;
+}
+
+/** Check a batch end the driver writes (`verify-batch-end`); returns its normalized form. */
+export function parseEnd(input) {
+  if (!isObj(input)) fail('the batch end is not a JSON object');
+  onlyKeys(input, END_KEYS, 'the batch end');
+  const treeEnd = input.tree_end ?? null;
+  if (treeEnd !== null && !matches(HEX64_RE, treeEnd)) fail('tree_end is not a 64-hex digest or null');
+  if (!ENDS.includes(input.end)) fail(`end is not one of ${ENDS.join(', ')}`);
+  const cause = input.cause ?? null;
+  if (cause !== null && !CUT_CAUSES.includes(cause) && !NO_EVIDENCE_CAUSES.includes(cause)) fail('cause is not a cause');
+  if (!isIso(input.ended_at)) fail('ended_at is not an ISO UTC time');
+  return { tree_end: treeEnd, end: input.end, cause, ended_at: input.ended_at };
+}
+
+/**
+ * Whether an end contradicts its batch: what `verify-batch-end` refuses.
+ * Returns the problem, or null.
+ */
+export function endProblem(batch, e) {
+  const results = batch.results;
+  const last = results.at(-1) ?? null;
+  const sameTree = e.tree_end !== null && e.tree_end === batch.tree_start;
+  if (e.tree_end === null && !(e.end === 'no-evidence' && e.cause === 'tree-unreadable')) {
+    return 'an unreadable ending tree (tree_end null) ends no-evidence, cause tree-unreadable';
+  }
+  if (e.cause === 'tree-unreadable' && e.tree_end !== null) return 'cause tree-unreadable goes with tree_end null';
+  if (e.tree_end !== null && !sameTree && !(e.end === 'no-evidence' && e.cause === 'tree-changed')) {
+    return 'a batch whose tree changed ends no-evidence, cause tree-changed';
+  }
+  if (e.cause === 'tree-changed' && sameTree) return 'cause tree-changed names a tree that did not change';
+  switch (e.end) {
+    case 'passed':
+      if (e.cause !== null) return 'a passed batch has no cause';
+      if (results.length !== batch.checks.length || !results.every((r) => r.outcome === 'passed')) return 'a passed batch has every check passed';
+      if (!sameTree) return 'a passed batch ends on the tree it started on';
+      return null;
+    case 'failed':
+      if (e.cause !== null) return 'a failed batch has no cause';
+      if (last?.outcome !== 'failed') return 'a failed batch ends at a failed check';
+      if (!sameTree) return 'a failed batch ends on the tree it started on';
+      return null;
+    case 'cut-short':
+      if (!CUT_CAUSES.includes(e.cause)) return `a batch cut short names its cause (${CUT_CAUSES.join(', ')})`;
+      if (last?.outcome === 'failed') return 'a batch at a failed check ended failed, not cut short';
+      // Item 7: only a batch the stop, a hold, a drain or the driver's end
+      // cut is taken up again. One that reached a check with no evidence of
+      // its own (a timeout, a check that could not start or was refused)
+      // ended there, and resumes the verb.
+      if (last && last.outcome !== 'passed' && last.outcome !== 'stopped') {
+        return `a batch at a check that ended ${last.outcome} ended no-evidence, not cut short: only a stopped check, or none yet, is cut short`;
+      }
+      if (results.length === batch.checks.length && results.every((r) => r.outcome === 'passed')) return 'a batch whose every check passed was not cut short';
+      return null;
+    case 'no-evidence':
+      if (e.cause !== null && !NO_EVIDENCE_CAUSES.includes(e.cause)) return `a batch with no evidence names a cause among ${NO_EVIDENCE_CAUSES.join(', ')}, or none`;
+      if (sameTree && last?.outcome === 'failed') return 'a batch at a failed check on its own tree ended failed';
+      if (sameTree && e.cause === null && !['timeout', 'not-started', 'refused', 'stopped', 'not-reached'].includes(last?.outcome)) {
+        return 'a batch with no evidence and no cause ends at a check with no evidence of its own';
+      }
+      if (e.cause === 'timeout' && last?.outcome !== 'timeout') return 'cause timeout ends at a check that timed out';
+      return null;
+    default:
+      return 'unknown end';
+  }
+}
+
+/**
+ * Whether a result may be recorded next in its batch: in index order, and
+ * never after a check that did not pass (the batch stops there). The problem,
+ * or null.
+ */
+export function resultProblem(batch, r) {
+  if (batch.end !== undefined) return `batch ${batch.batch_id} has ended`;
+  if (r.index !== batch.results.length) return `the next result of batch ${batch.batch_id} is index ${batch.results.length} (got ${r.index})`;
+  if (r.index >= batch.checks.length) return `batch ${batch.batch_id} runs ${batch.checks.length} checks`;
+  const last = batch.results.at(-1);
+  if (last && last.outcome !== 'passed') return `batch ${batch.batch_id} stopped at check ${last.index} (${last.outcome}); no later check runs`;
+  return null;
+}
+
+const VALID_BATCH = (b, i) => {
+  const where = `verify_results.batches[${i}]`;
+  if (!isObj(b)) fail(`${where} is not an object`);
+  onlyKeys(b, BATCH_KEYS, where);
+  const start = parseBatchStart(Object.fromEntries(BATCH_START_KEYS.map((k) => [k, b[k]])));
+  if (!Array.isArray(b.results)) fail(`${where}.results is not a list`);
+  const shell = { ...start, results: [] };
+  b.results.forEach((r, j) => {
+    const parsed = parseResult(r, { stored: true });
+    const problem = resultProblem(shell, parsed);
+    if (problem) fail(`${where}.results[${j}]: ${problem}`);
+    // Carried results lead the batch: none follows one the batch recorded.
+    if (parsed.carried_from && j > 0 && !shell.results[j - 1].carried_from) fail(`${where}.results[${j}]: a carried result follows one this batch recorded`);
+    shell.results.push(parsed);
+  });
+  if (b.end !== undefined) {
+    const e = parseEnd({ tree_end: b.tree_end, end: b.end, cause: b.cause, ended_at: b.ended_at });
+    const problem = endProblem(shell, e);
+    if (problem) fail(`${where}: ${problem}`);
+  } else if (b.tree_end !== undefined || b.cause !== undefined || b.ended_at !== undefined) {
+    fail(`${where}: an open batch records no end fields`);
+  }
+};
+
+/** The stored results, as the parser reads them. Throws naming the first problem. */
+export function validateStoredResults(res) {
+  if (!isObj(res)) fail('verify_results is not an object');
+  onlyKeys(res, ['v', 'request_id', 'batches'], 'verify_results');
+  if (res.v !== RECORD_VERSION) fail(`verify_results.v is not ${RECORD_VERSION}`);
+  if (!matches(REQUEST_ID_RE, res.request_id)) fail('verify_results.request_id is not a request id');
+  if (!Array.isArray(res.batches)) fail('verify_results.batches is not a list');
+  res.batches.forEach(VALID_BATCH);
+  const ids = res.batches.map((b) => b.batch_id);
+  if (new Set(ids).size !== ids.length) fail('verify_results names a batch twice');
+  if (res.batches.filter((b) => b.end === undefined).length > 1) fail('verify_results holds more than one open batch');
+  // Item 7: each later batch continues the one before it, cut short.
+  res.batches.forEach((b, i) => {
+    if (i === 0) return;
+    const prior = res.batches[i - 1];
+    if (prior.end !== 'cut-short' || b.continues !== prior.batch_id) {
+      fail(`verify_results.batches[${i}] follows batch ${prior.batch_id} (ended ${prior.end ?? 'not yet'}) without continuing it cut short`);
+    }
+  });
+}
+
+// -----------------------------------------------------------------------------
+// Retention and the byte budget (R9)
+
+/**
+ * The digest a restart names as the record it replaces: sha256 of the stored
+ * `verify_results` text (the JSON.stringify of the record, the text the file
+ * holds, header), or null when the request has no results.
+ */
+export function resultsDigest(results) {
+  return results === undefined || results === null ? null : sha256(JSON.stringify(results));
+}
+
+/** The bytes a value takes as the frontmatter line `key: "<json>"`. */
+export function scalarBytes(key, value) {
+  return Buffer.byteLength(`${key}: ${JSON.stringify(JSON.stringify(value))}`, 'utf8');
+}
+
+/**
+ * The batches kept when a new one starts, beside the new (open) batch: the
+ * newest ended batch, the one it continues. Older ended batches are evicted.
+ * A continuation stands on nothing older: the results it goes on from are
+ * carried into it, each naming the batch and run that recorded it
+ * (`carryOver`).
+ */
+export function retainBatches(batches) {
+  const ended = batches.filter((b) => b.end !== undefined);
+  return ended.length > 0 ? [ended.at(-1)] : [];
+}
+
+// The largest result a check of a batch can record: every field at its widest
+// form (an exit of null is wider than any exit code), each character of a
+// test name the one JSON escapes widest. Only the one check a batch stops at
+// can be failed, so only one result names tests.
+function worstResult(index, failed) {
+  return {
+    index, outcome: failed ? 'failed' : 'not-reached', exit: null, signal: 'SIGXXXXXXXXXXXX',
+    duration_ms: 7 * 24 * 3600 * 1000,
+    failing_tests: failed ? Array.from({ length: MAX_FAILING_TESTS }, () => '"'.repeat(MAX_FAILING_TEST_CHARS)) : [],
+    failing_tests_more: Number.MAX_SAFE_INTEGER, log: 'x'.repeat(256), ended_at: '2026-01-01T00:00:00Z',
+    carried_from: { batch_id: 'x'.repeat(64), run_id: 'autopilot-20260101T000000Z-000000' },
+  };
+}
+
+/**
+ * The bytes `verify_results` would take once the started batch has recorded
+ * its worst results and its end, or once any batch of its chain of
+ * continuations with the same commands, cut short, is followed by the next
+ * (retention then keeps the two, each with its worst results): the larger of
+ * the two. Every pair of that chain is bounded by one pair whose fields a
+ * link may change are each the widest they can be: `batch_id` and
+ * `continues`, and each check's `kind` (a batch's identity is its argv, so a
+ * continuation may name a driver's check by another kind). The reserve is
+ * computed from those, never from the values this batch happens to carry
+ * (its own `continues` may be null where every later link names a batch);
+ * what a link cannot change (the argv, the run id, trees and times of fixed
+ * width) is this batch's. The
+ * start refuses a batch that would not fit, so a later result or end never
+ * fails on size, and each link of the chain can always be taken up again on
+ * its tree.
+ */
+export function worstCaseBytes(results, start) {
+  const n = start.checks.length;
+  const filled = {
+    ...start,
+    results: Array.from({ length: n }, (_, i) => worstResult(i, i === n - 1)),
+    tree_end: 'f'.repeat(64), end: 'no-evidence', cause: 'tree-unreadable', ended_at: '2026-01-01T00:00:00Z',
+  };
+  const link = {
+    ...filled, batch_id: 'x'.repeat(64), continues: 'x'.repeat(64),
+    checks: filled.checks.map((c) => ({ ...c, kind: 'k'.repeat(64) })),
+  };
+  return Math.max(
+    scalarBytes('verify_results', { ...results, batches: [...results.batches, filled] }),
+    scalarBytes('verify_results', { ...results, batches: [link, link] }),
+  );
+}
+
+/** The previous answer a replaced request leaves (item 7): its last ended batch, or what it carried. */
+export function previousOf(request, results) {
+  const ended = (results?.request_id === request.id ? results.batches : []).filter((b) => b.end !== undefined);
+  const last = ended.at(-1);
+  if (!last) return request.previous ?? null;
+  return { request_id: request.id, checks_digest: last.checks_digest, tree_start: last.tree_start, tree_end: last.tree_end, end: last.end };
+}
+
+// -----------------------------------------------------------------------------
+// Reading (R8)
+
+/**
+ * The request and its results as a step reads them. Each check's result is
+ * `evidence` only when it passed or failed, its batch ended, and the batch
+ * ended on the tree it started on (historical). `applies` says whether that
+ * evidence is about `treeDigest`; null when no tree was given, since the
+ * persona does not compute Decision 2's digest. `recorded_by` names the batch
+ * and run that recorded the result (a carried result's `carried_from`, else
+ * its own batch), the pair verify-exec holds against its own ledger before it
+ * counts the result (header).
+ */
+export function readResults(request, results, { treeDigest = null } = {}) {
+  if (!request) return { request: null, previous: null, batches: [] };
+  const own = results?.request_id === request.id ? results.batches : [];
+  const batches = own.map((b) => {
+    const ended = b.end !== undefined;
+    const sameTree = ended && b.tree_end !== null && b.tree_end === b.tree_start;
+    return {
+      batch_id: b.batch_id, run_id: b.run_id, continues: b.continues, started_at: b.started_at,
+      tree_start: b.tree_start, tree_end: ended ? b.tree_end : null, end: ended ? b.end : null,
+      cause: ended ? b.cause : null, ended_at: ended ? b.ended_at : null, checks_digest: b.checks_digest,
+      checks: b.checks.map((c) => {
+        const result = b.results.find((r) => r.index === c.index) ?? null;
+        const evidence = result !== null && (result.outcome === 'passed' || result.outcome === 'failed') && sameTree;
+        return {
+          ...c, result, evidence,
+          applies: treeDigest === null ? null : evidence && b.tree_start === treeDigest,
+          recorded_by: result === null ? null : (result.carried_from ?? { batch_id: b.batch_id, run_id: b.run_id }),
+        };
+      }),
+    };
+  });
+  return { request, previous: request.previous ?? null, answered_by: request.answered_by ?? null, batches };
+}

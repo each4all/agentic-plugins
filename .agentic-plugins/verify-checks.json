@@ -1,0 +1,57 @@
+{
+  "schema": "agentic-verify-checks-1.0",
+  "kinds": {
+    "test-suite": {
+      "argv": ["npm", "test"],
+      "slots": [],
+      "timeout_s": 7200,
+      "locks_itself": false,
+      "adds_on": []
+    },
+    "test": {
+      "argv": ["npm", "test", "--", "{files}"],
+      "slots": [
+        { "name": "files", "type": "path", "repeat": "many", "join": "words", "under": ["tests/", "companions/tests/", "kit/"], "suffix": ".mjs" }
+      ],
+      "timeout_s": 3600,
+      "locks_itself": false,
+      "adds_on": []
+    },
+    "mutate": {
+      "argv": ["npm", "run", "mutate", "--", "{spec}", "--only", "{ids}"],
+      "slots": [
+        { "name": "spec", "type": "path", "repeat": "one", "under": ["scripts/mutation-specs/"], "suffix": ".mjs" },
+        { "name": "ids", "type": "id", "repeat": "many", "join": "comma" }
+      ],
+      "timeout_s": 14400,
+      "locks_itself": true,
+      "adds_on": []
+    },
+    "mutate-static": {
+      "argv": ["npm", "run", "mutate:static", "{specs}"],
+      "slots": [
+        { "name": "specs", "type": "path", "repeat": "optional-many", "join": "words", "under": ["scripts/mutation-specs/"], "suffix": ".mjs", "lead": ["--"] }
+      ],
+      "timeout_s": 1800,
+      "locks_itself": false,
+      "adds_on": ["scripts/mutation-specs/*.mjs"]
+    },
+    "sync-persona-pipeline": {
+      "argv": ["npm", "run", "sync:persona-pipeline"],
+      "slots": [],
+      "timeout_s": 600,
+      "locks_itself": false,
+      "adds_on": ["persona-pipeline/**"]
+    },
+    "lint-plugin-shape": {
+      "argv": ["npm", "run", "lint:plugin-shape"],
+      "slots": [],
+      "timeout_s": 600,
+      "locks_itself": false,
+      "adds_on": ["plugins/**"]
+    }
+  },
+  "mappings": [
+    { "paths": ["plugins/runtime/**"], "tests": ["tests/plugin-shape/test-runtime-plugin.mjs"] }
+  ]
+}

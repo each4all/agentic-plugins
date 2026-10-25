@@ -317,6 +317,49 @@ describe('cleaning up after a dead run (ADR-0067 Decision 6, Locks)', () => {
     }
   });
 
+  // ADR-0068 Decision 5, item 11 — a newer driver records a verification
+  // batch as a step line of kind `verify`: no worker step, no cost.
+  it('cleaning up after a newer driver\'s batches: a verify line is no step and no cost, and no peer is taken for one; twice changes nothing', { timeout: 60_000 }, async () => {
+    const t = await setup();
+    try {
+      // Mixed: lane A's verb step 2 never finished, a finished batch 3, an
+      // unfinished batch 4, lane B's verb step 5 finished and counted.
+      const mixed = 'autopilot-20261009T010000Z-7e71f1';
+      const dir = await t.deadRun(mixed, { steps: [
+        { seq: 2, subtask_id: 'A', step_budget_usd: 25 },
+        { seq: 3, kind: 'verify', subtask_id: 'A', finished: { outcome: 'passed' } },
+        { seq: 4, kind: 'verify', subtask_id: 'A' },
+        { seq: 5, subtask_id: 'B', step_budget_usd: 25, finished: { cost_usd: 5, cost_charged_usd: 5 } },
+      ] });
+      L.writeRun(dir, { ...L.readRun(t.work, mixed).run, status: 'draining', steps: 2, cost_usd: 8, accounted_seqs: [1, 5] });
+      // Only a batch left unaccounted: the run died during it, every worker
+      // step counted. A peer on A's workflow that names no run, started after
+      // the batch, is not taken for the batch's.
+      const batchOnly = 'autopilot-20261009T010000Z-7e71f2';
+      const dir2 = await t.deadRun(batchOnly, { steps: [
+        { seq: 2, subtask_id: 'A', step_budget_usd: 25, finished: { cost_usd: 4, cost_charged_usd: 4 } },
+        { seq: 3, kind: 'verify', subtask_id: 'A' },
+      ] });
+      L.writeRun(dir2, { ...L.readRun(t.work, batchOnly).run, steps: 2, cost_usd: 7, accounted_seqs: [1, 2] });
+      await t.peer('plan-verify-20261009T010001Z-7e71f3');
+
+      const { lines, of } = await t.cleanup();
+      strictEqual(of(mixed).outcome, 'cleaned', lines.join('\n'));
+      deepStrictEqual(of(mixed).settled.map((s) => [s.seq, s.charged_usd, s.finished]), [[2, 25, false]]);
+      const m = L.readRun(t.work, mixed).run;
+      deepStrictEqual([m.cost_usd, m.accounted_seqs, m.steps, m.cost_complete], [33, [1, 2, 5], 3, false]);
+      strictEqual(of(batchOnly).outcome, 'cleaned', lines.join('\n'));
+      deepStrictEqual([of(batchOnly).settled, of(batchOnly).reported], [[], []]);
+      const b = L.readRun(t.work, batchOnly).run;
+      deepStrictEqual([b.cost_usd, b.accounted_seqs, b.steps, b.cost_complete, b.status], [7, [1, 2], 2, true, 'halted']);
+      // Idempotent: a second cleanup counts nothing twice.
+      await t.cleanup();
+      deepStrictEqual([L.readRun(t.work, mixed).run.cost_usd, L.readRun(t.work, batchOnly).run.cost_usd, L.readRun(t.work, batchOnly).run.steps], [33, 7, 2]);
+    } finally {
+      t.done();
+    }
+  });
+
   it('keeps the record when a peer-run home cannot be resolved for any reason but its absence', { timeout: 60_000 }, async (tt) => {
     if (process.getuid?.() === 0) { tt.skip('root reads through a mode-000 directory'); return; }
     const t = await setup();

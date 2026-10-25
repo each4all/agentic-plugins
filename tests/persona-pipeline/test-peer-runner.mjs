@@ -10,8 +10,13 @@
 // tests/plugin-shape/test-peer-runner-spawn-parity.mjs pins the spawn shape
 // across copies separately.
 //
+// Its fixtures write workflows as the owner, on the default process.env:
+// every inherited AGENTIC_* variable is dropped at load (./_drop-session.mjs),
+// checked under a planted autopilot session at the end of the file.
+//
 // Run via `node --test tests/persona-pipeline/test-peer-runner.mjs`.
 
+import { runPlanted } from './_drop-session.mjs';
 import { describe, it } from 'node:test';
 import { EventEmitter } from 'node:events';
 import { strictEqual, ok, deepStrictEqual, rejects } from 'node:assert/strict';
@@ -29,7 +34,7 @@ import { constants as fsConstants } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { personasFor, personaInfo } from './_personas.mjs';
 import { PIPE_FLOOR_BYTES, pipeEnv, runThroughPipe } from './_pipe-output.mjs';
@@ -167,7 +172,7 @@ for (const persona of personasFor('scripts/peer-runner.mjs')) {
     sweepPeerRuns,
     fingerprintForPid,
   } = await import(pathToFileURL(PEER_RUNNER_PATH).href);
-  const { createWorkflow, readWorkflow } = await import(pathToFileURL(STATE_PATH).href);
+  const { createWorkflow, readWorkflow, appendPhase, commitEnsemble } = await import(pathToFileURL(STATE_PATH).href);
 
   async function withTmpRepo(fn) {
     const dir = await mkdtemp(join(tmpdir(), `${persona}-peer-runner-test-`));
@@ -221,6 +226,37 @@ for (const persona of personasFor('scripts/peer-runner.mjs')) {
   }
 
   describe(`${persona}: peer-runner.mjs — run ledger and handle schema`, () => {
+    if (P.capabilities.dispatch_target === true) {
+      it("an ensemble run's pending entry is its step's own write, held to the step's attempt through runPeer's env, not this process's (ADR-0068 Decision 5)", async () => {
+        await withTmpRepo(async (repoRoot) => {
+          const companionsRoot = await writeFakeCompanions(repoRoot);
+          const step = { AGENTIC_AUTOPILOT: 'autopilot-20261020T010203Z-abcdef', AGENTIC_AUTOPILOT_STEP: '3' };
+          ok(!('AGENTIC_AUTOPILOT' in process.env), 'this process runs outside any run');
+          const { filePath: workflowPath } = await createWorkflow({
+            repoRoot, verb: 'refine', originalRequest: 'pending env', host: 'claude',
+            gitBaseline: { branch: 'main', head: 'abc123', status_digest: '' }, currentPhase: 'phase-1-refine', nextAction: 'refine',
+          });
+          // Step 3's first write records its mark.
+          await appendPhase({ workflowPath, host: 'claude', currentPhase: 'phase-1-refine', clearNextStep: true, env: step });
+          const result = await runPeer({
+            repoRoot, runId: 'refine-verify-env', kind: 'ensemble', workflowPath, phase: 'refine', ensembleType: 'refine-verify',
+            host: 'claude', peer: 'claude', promptText: '<task>hello</task>', outputFormat: 'json', cwd: repoRoot,
+            env: fakeEnv(companionsRoot, step),
+          });
+          strictEqual(result.status, 'completed');
+          const fm = (await readWorkflow(workflowPath)).frontmatter;
+          deepStrictEqual(fm.pending_ensemble.map((e) => e.run_id), ['refine-verify-env']);
+          // The registration was step 3's: the mark moved on with it, so the
+          // record holds the handoff step 3 last left.
+          deepStrictEqual([fm.verify_attempt.step, fm.verify_attempt.handoff, fm.verify_attempt.generation], [3, fm.verify_handoff.handoff, fm.verify_handoff.generation]);
+          // So step 3 settles its run and finishes.
+          await commitEnsemble({ workflowPath, run_id: 'refine-verify-env', phase: 'refine', ensemble_type: 'refine-verify', verdict: 'resolved', summary: 'Settled.', env: step });
+          await appendPhase({ workflowPath, host: 'claude', nextStep: { kind: 'verb', verb: 'critique', confidence: 'HIGH' }, env: step });
+          strictEqual((await readWorkflow(workflowPath)).frontmatter.next_step_verb, 'critique');
+        });
+      });
+    }
+
     it('run creates hidden ledger files, handle schema 1.0, and final envelope', async () => {
       await withTmpRepo(async (repoRoot) => {
         const companionsRoot = await writeFakeCompanions(repoRoot);
@@ -1350,3 +1386,18 @@ setInterval(() => {}, 1000);
     });
   });
 }
+
+describe('peer-runner fixtures write as the owner: no inherited AGENTIC_* variable reaches them', () => {
+  it('under a planted autopilot session the pending-entry probe passes, and fails without the drop (control)', () => {
+    const file = fileURLToPath(import.meta.url);
+    const probe = "an ensemble run's pending entry is its step's own write";
+    const personas = personasFor('scripts/peer-runner.mjs').filter((p) => personaInfo(p).capabilities.dispatch_target === true).length;
+    ok(personas > 0);
+    const planted = runPlanted(file, probe);
+    strictEqual(planted.status, 0, planted.out);
+    deepStrictEqual([planted.pass, planted.fail], [personas, 0], planted.out);
+    const control = runPlanted(file, probe, { control: true });
+    strictEqual(control.status, 1, control.out);
+    deepStrictEqual([control.pass, control.fail], [0, personas], control.out);
+  });
+});
