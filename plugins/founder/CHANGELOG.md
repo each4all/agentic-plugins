@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.13.1...plugin-founder-v0.14.0) (2026-10-26)
+
+
+### Features
+
+* **founder:** persona side of lane holds — operations and held-lane refusals (ADR-0068 D2) ([6b3b463](https://github.com/each4all/agentic-plugins/commit/6b3b463da8c411b4c7ad350f5e2dfa9e25ea6180))
+
 ## [0.13.1](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.13.0...plugin-founder-v0.13.1) (2026-10-25)
 
 

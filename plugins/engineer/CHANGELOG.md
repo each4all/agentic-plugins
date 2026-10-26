@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.33.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.32.1...plugin-engineer-v0.33.0) (2026-10-26)
+
+
+### Features
+
+* **engineer:** persona side of lane holds — operations, held-lane refusals and the hold protocol (ADR-0068 D2) ([99177b4](https://github.com/each4all/agentic-plugins/commit/99177b44f66c9ebf0dc864874c9339e57a48b796))
+
 ## [0.32.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.32.0...plugin-engineer-v0.32.1) (2026-10-25)
 
 
