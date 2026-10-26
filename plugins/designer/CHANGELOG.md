@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.12.1...plugin-designer-v0.13.0) (2026-10-26)
+
+
+### Features
+
+* **designer:** persona side of lane holds — operations and held-lane refusals (ADR-0068 D2) ([d62dade](https://github.com/each4all/agentic-plugins/commit/d62dadefe01d7ae9dcd3e58ecc9173b888b60e53))
+
 ## [0.12.1](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.12.0...plugin-designer-v0.12.1) (2026-10-25)
 
 
