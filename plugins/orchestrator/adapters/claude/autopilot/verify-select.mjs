@@ -759,6 +759,28 @@ export function namesSuffix(text, file) {
   return false;
 }
 
+// The pieces that may match at a segment: those whose first segment is fixed
+// to that text, then those that start with a hole (or hold no segment). A
+// piece whose first segment is fixed to other text never matches there, so
+// covers() tries only these; the order within each kind is the pieces' own.
+const PIECE_INDEX = new WeakMap();
+function piecesAt(pieces, seg) {
+  let idx = PIECE_INDEX.get(pieces);
+  if (!idx) {
+    idx = { byFirst: new Map(), open: [] };
+    for (const p of pieces) {
+      const first = p.segs[0];
+      if (first && first.fixed) {
+        if (!idx.byFirst.has(first.text)) idx.byFirst.set(first.text, []);
+        idx.byFirst.get(first.text).push(p);
+      } else idx.open.push(p);
+    }
+    PIECE_INDEX.set(pieces, idx);
+  }
+  const fixed = idx.byFirst.get(seg);
+  return fixed ? fixed.concat(idx.open) : idx.open;
+}
+
 // (b) M's literals cover `segs` left to right from an ancestor of M's
 // directory: each segment matched by a literal's segment, at most
 // FREE_SEGMENTS of them free (filled by a variable, or matched by a segment
@@ -777,7 +799,7 @@ export function covers(info, segs, modulePath, { minLiteral = 0 } = {}) {
     if (memo.has(key)) return memo.get(key);
     memo.set(key, false);
     let ok = false;
-    for (const p of info.pieces) {
+    for (const p of piecesAt(info.pieces, segs[i])) {
       const len = p.segs.length;
       if (i + len > n) continue;
       let f = free;
