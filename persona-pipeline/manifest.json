@@ -95,6 +95,17 @@
       "requires": []
     },
     {
+      "id": "lib-holds",
+      "source": "files/scripts/lib/holds.mjs",
+      "dest": "scripts/lib/holds.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
       "id": "lib-yaml-mini",
       "source": "files/scripts/lib/yaml-mini.mjs",
       "dest": "scripts/lib/yaml-mini.mjs",

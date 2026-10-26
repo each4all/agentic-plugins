@@ -3229,3 +3229,350 @@ not the driver, is where the owner sees what a rebinding accepts.
 the owner's scope (discussion 4, item 7): it leaves an approved plan whose
 words no longer say what its in-progress subtask is doing, and the gate
 resolution that carried the change is not a record the plan can point to.
+
+## Implementation note 2026-10-25 — hold-persona (the hold protocol)
+
+Decision 2, item 9 ships the persona's half of the holds before the
+orchestrator's (`impl-hold`). The two halves meet only in files, so this note
+fixes the files both read and write, and the order of their writes, before
+either ships. It adds no guarantee: each rule below implements one of
+Decision 2's, and a case it does not settle goes to the owner, not into this
+note. The fixtures under `tests/fixtures/holds-protocol/` hold every reader
+verdict below as data, and both halves test against them.
+
+**N1. The directory.** `<main>/.agentic-plugins/runs/autopilot/holds/<macro-id>/`
+(item 1), where `<main>` is the worktree holding the repository's common git
+dir, as the run locks find it. One subdirectory per record kind, since a
+subtask id admits `.`:
+
+| Path | Written by | Read by the persona |
+|---|---|---|
+| `protocol.json` | the hold-aware orchestrator, once, before its first hold record and before a run of the macro honours holds | yes: activation (N2) |
+| `holds/<subtask>.json` | `hold`, `release`, retirement and orphaning (`impl-hold`) | yes: whether a hold applies (N3) |
+| `handoffs/<subtask>.json`, `releases/<subtask>.json` | the orchestrator (`impl-hold`) | no |
+| `ops/<subtask>/<operation-id>.json` | the persona: published and removed (N4) | yes |
+| `ops/<subtask>/<operation-id>.cleared` | `writer-clear` (`impl-hold`), created once, never rewritten | yes |
+| `parks/<subtask>.json` | the driver (`parks.mjs`, `impl-lane-gate`) | yes: a kept park (N3) |
+
+Every record is written whole (a temporary file renamed over it, or an
+exclusive create) and parsed as JSON; the orchestrator's kinds keep their
+own locks (`impl-hold`).
+
+**N2. Activation.** The holds directory exists once `impl-lane-gate` keeps a
+park, so its existence says nothing about holds. `protocol.json`
+(`{"schema": "agentic-holds-protocol-1", "protocol": 1, "written_by", "at"}`)
+says a hold-aware orchestrator runs for the macro. The persona reads it at
+the first and the last write of each operation of a macro's child, and an
+interactive `finish-verb` reads it holding the workflow's lock, in its write:
+
+- no holds directory, or no `protocol.json` in it: **inactive** — the
+  persona writes as today and refuses nothing (item 9);
+- `protocol.json` of this schema and `protocol` 1: **active**;
+- anything else — a directory or marker that cannot be read, a marker that
+  is a directory, a FIFO or a dangling link, one that does not parse, another
+  schema, a `protocol` above 1: **unreadable** — the persona refuses its
+  operations' first writes, naming the path (item 8), and lets a running
+  operation finish.
+
+The marker is never removed while the macro lives; the macro's end retires
+the directory whole (item 8, `impl-hold`).
+
+**N3. What the persona reads of a hold.** The owner's record
+(`{"schema": "agentic-hold-1", "hold_id", "subtask_id", "branch", "lane",
+"child", "state", "set_by", "set_at"}` plus, once orphaned, `"orphaned":
+{"at", "why"}`; `state` is `held`, `released` or `retired`) **applies** to a
+child when it is readable, its `state` is `held` whether its handoff is
+pending or done, it carries no `orphaned`, its `branch` is the child's, and
+its `child`, when set, is the child's workflow id. A record that cannot be
+read applies (item 8); a missing one does not. The persona never writes the
+owner's record nor its handoff. A **kept park** is any record in `parks/`
+of the subtask, readable or not (Decision 1, item 3). A **live run** of the
+macro is an entry `h-*.json` of its macro lock whose driver process is the
+one recorded, judged as the run locks judge it (the process's start in the C
+locale, a zombie is gone, a pid reused by another process is gone); a lock
+directory or an entry that cannot be read, or that is no regular file, counts
+as live.
+
+**N4. Persona operations.** An operation runs from a command's first write
+of a macro's child (its create, for a bootstrap) to its last (a verb's
+`finish-verb`; a commit's parent writeback after its archive; a gate
+resolution's `finish-verb` after its clear). It has an id
+(`op-<yyyymmddThhmmssZ>-<8 hex>`) carried between the command's shell blocks
+in a program-written transport file, and kept on the child while open:
+`persona_operations`, one JSON document `{"v": 1, "ops": [{"id", "kind",
+"opened_at", "ext"}]}` in a double-quoted scalar at the tail of the
+frontmatter, so an older reader carries it byte for byte. `ext` says whether
+the operation published an external record at its first write.
+
+| Point | Inactive | Active |
+|---|---|---|
+| first write | the entry joins the child's list in that write; overlapping operations each keep their own entry | the record `ops/<subtask>/<id>.json` is created exclusively, **before** the write takes the workflow's lock; then the lane is looked at again, and another open operation (an entry of the child, or a record under `ops/<subtask>/` with no `.cleared` beside it, other than its own, whoever opened it) withdraws the record and refuses, naming it; holding the workflow's lock, the write looks at the child's entries once more and adds its own with `ext: true`. Two first writes at once may both refuse; neither proceeds beside the other |
+| a later write | carries the entry | carries the entry |
+| last write | removes the entry in that write; one with `ext: true` refuses (its marker vanished) | refused when `<id>.cleared` exists, or when `ext` is true and the record is gone; else the write removes the entry, then the record is removed, **after** the workflow's lock is released |
+
+Crash points: a crash before the first write leaves a record no child names
+(the operation is open: the owner clears it, item 7); a crash after the last
+write's entry removal and before the record's removal leaves the record
+open, the same way. A cleared record beats an open entry: the orchestrator
+counts an operation open while its entry or its record is there and no
+`.cleared` names it. An operation that read inactive and met the marker at
+its last write was open before activation (`ext: false`); it closes as
+active, refused only when cleared. An entry the owner cleared goes with the
+lane's next first write, and its own last write stays refused.
+
+The transport is the command's **operation directory**, a private directory
+its first-write block makes (`mktemp -d`) and prints as `OP_DIR=<path>`, which
+the agent sets in the finalize block as it sets `DISPATCH_DIR`; `state.mjs`
+takes it as `--operation-dir` (`create`, `append --open-operation <kind>` at
+a first write; `finish-verb`, `set-terminal`, `append --close-operation true`
+at a last). The first write keeps `operation.json` there (the id, kind,
+macro, subtask, branch and child, and `opening`, `open` or `closed`) before
+it publishes anything, so a first write run again continues its operation,
+and one run again across activation publishes its record and marks its entry
+`ext: true`. A file bound to another child, branch or kind (a bootstrap's,
+once its create landed, names its child), one that ended (or whose entry is
+gone from the child: it ended, or was cleared), or one that cannot be read
+is refused, as is a last write whose file names another kind than the
+child's entry. A first write reads activation again holding the workflow's
+lock and refuses, to be run again, when it changed since its first read. A
+directory that is gone refuses the last write, which the
+person can run with no directory, leaving the operation open for the owner
+to clear. With no directory a write is as before, so a runbook and scripts of
+different releases meet safely: an earlier `state.mjs` ignores the flags, and
+an earlier runbook passes none. A bootstrap dispatched by
+`/orchestrator:next` takes the id the dispatch exported
+(`AGENTIC_OPERATION_ID`), and continues a record of that id already
+published when it names the same kind and lane and no other child. Operation bookkeeping adds no
+`host_history` event and moves no field the lane fingerprint reads, so it is
+not progress (`policy.mjs` `childTuple`).
+
+The other operations:
+
+- **A commit** (`/engineer:commit`, `/engineer:start`'s Phase 7) keeps its id
+  as its entry on the child (kind `commit`), since Phase 7 runs as one program
+  and the Stop hook that ends it has no directory of the command's. Its first
+  write is the commit's `beginCommit` (a close's terminal write, for the
+  no-changes close), and each run of the commit opens its own operation, so a
+  second commit beside a running one, or beside one a crash left open, is
+  refused until that one ends or the owner clears it (item 7). It stays open
+  through the terminal write; the Stop hook's archive carries the entry, and
+  after the parent note a write of the archived file removes it (the newest
+  entry of the kind the owner has not cleared), adding no `host_history` event
+  and moving no `updated_at`, then the record goes. A cleared operation's
+  entry stays on the archived file. A commit that refuses before its terminal
+  write (a post-commit gate, a hook, a subject) has made its last write, so it
+  ends its operation there; one stopped by an error (a throw, a kill) cannot
+  tell what it left and stays open until the owner clears it, as item 7 says.
+  The no-changes close ends its operation in its archive. On a host whose Stop
+  hook does not run (Codex before `/hooks` trust), the operation stays open
+  until the archive runs.
+- **The staging-set gate** an autopilot commit records, **a checkpoint**, and a
+  gate's **clear** given no operation are operations of one write: admitted as
+  a first write is (one at a time in the lane, none while the holds cannot be
+  read) and refused as a last write is (cleared by the owner, or its record
+  gone, while it waited for the workflow's lock), they leave no entry, and the
+  record goes after the write.
+- **A gate resolution** (decide's Owner selection, refine's Owner decision)
+  runs from its clear to the `finish-verb` after it: the clear continues the
+  operation the verb's Phase 0 opened when the block is given its directory,
+  and otherwise opens one (kind `gate`; refine's Fix now opens a `verb`
+  operation, which the refine's phases continue to their finalize) in a
+  directory the block makes. Inside a `/start` lifecycle no `finish-verb`
+  follows: given Phase 0's directory, the clear closes that operation, and
+  given none it is an operation of one write. A clear given a directory whose
+  operation ended is refused before it writes.
+- **`/resume`** writes a macro's child once: its marker is an operation of one
+  write (`append --once-operation resume`), and so is its archive (kind
+  `archive`): `state.mjs archive` makes one on either host. An archive whose
+  workflow is already gone writes nothing and opens nothing.
+- **A consultation** (`/peer-now`) on a macro's child runs from before its
+  launch to its `[Peer]` note (kind `peer`): its run names no workflow, so the
+  lane sees it only as an operation. The dispatch opens it in the operation
+  directory `op` beside its prompt with a write of the entry alone (`state.mjs
+  operation --open-operation peer`: no `host_history` event, no `updated_at`),
+  and a refusal stops the launch. A directory that holds `op` already
+  dispatched a consultation and is refused, so a dispatch run again never
+  launches a second run under the first one's operation. The note goes only to
+  the workflow the dispatch kept as `prompt.xml.workflow` (none, for a
+  standalone consultation) and closes the operation (`append
+  --close-operation true`). A consultation that failed gets no note: its
+  dispatch closes the operation (`state.mjs operation --close-operation true`)
+  once the runner's own result says the run ended (`failed`, `cancelled`,
+  `orphaned`); a runner that left no result (killed, its peer perhaps still
+  running) leaves it open for the owner, as does a dispatch killed before the
+  launch. Scripts that print no `hold-capability` (an earlier release run
+  beside a later runbook) open none. A limit: in a lane a hold-aware
+  orchestrator runs, a person's `/peer-now` on the child while their own
+  verb's operation is open is refused as a second operation (one at a time,
+  above), and nothing is launched. They consult after the verb's
+  `finish-verb`; the verb's own ensemble runs inside its operation.
+  Letting the consultation share the verb's operation would need a point
+  where the note hands it back, which this note does not design.
+- **The Stop hook's sweep**, which archives a terminal child of a branch no
+  worktree has checked out, leaves alone a child whose lane has an operation
+  open (an entry of the child, or a record with no `.cleared`, as the
+  orchestrator counts it), and every child while the holds cannot be read,
+  judged again holding the archive's lock; once the owner cleared the
+  operation, the next sweep archives it. Inactive, it archives as before and
+  ends a commit's operation after the archive.
+- **`/start`** writes no macro's child, so it opens no operation: its
+  bootstrap carries no dispatch linkage, and its resume writes a start
+  workflow only, refusing any other before it writes. In a held lane its
+  bootstrap is refused, as every unlinked one is (below). A lifecycle is
+  never a dispatched child (ADR-0020 Sub-decision 6), so a create of a start
+  workflow with parent linkage, which no runbook makes, is refused in a macro
+  a hold-aware orchestrator runs for or whose marker cannot be read; one made
+  by hand before the macro was marked writes outside any operation, a limit
+  of a workflow no command produces.
+
+**The writer inventory** (item 7). Every lock of a workflow names its
+writer's class (`state.mjs` `LANE_WRITERS`), and a persona test holds every
+lock site, every `state.mjs` subcommand and every script's imports from
+`state.mjs` to a class, so a writer added later fails it until it is
+classified:
+
+- `operation`: a step of an operation above, which judges it.
+- `plain`, every other write of the workflow (a phase note or a terminal write
+  given no operation, a manifest entry, a review ledger, a consensus task, a
+  pending peer run, an owner gate set by hand, the P10 marker, an archive):
+  holding the workflow's lock, it is
+  refused when the macro is active, the subtask's owner hold applies (N3) and
+  no operation the owner has not cleared is open on the child; refused too
+  while the holds cannot be read with none open, and while the child's
+  operations are of a later version than the persona reads. With an operation
+  open on the child it is admitted, whoever runs it: the persona cannot tell
+  that operation's command from another beside it, and the release excludes
+  the operation's whole length either way.
+- `snapshot`: the Stop and PreCompact snapshot, admitted (item 7).
+- `settlement`: `peer-runner settle` or `ensemble-commit` of a run the child
+  records pending or settled, admitted: a step running when the hold was set
+  settles (item 4), and the handoff waits for it. Of any other run it is
+  `plain`.
+- `machine`: a result, end or pass of the driver's verification batch,
+  admitted (item 4).
+- `job`: a batch's start or restart, refused while the subtask's hold applies
+  or the holds cannot be read, whatever operation is open: no machine job
+  starts in a held lane (item 3). `impl-hold`'s driver reads that refusal as
+  the hold it reads before the job.
+- `create`: a bootstrap, judged once written: a linked one with no operation
+  (an earlier runbook, a create by hand) is refused in a held lane and
+  withdrawn, as an unlinked one is (below).
+- `destination`: an archive's destination, which holds no live workflow.
+
+The orchestrator's lifecycle archive (`detach-archive`, which `/orchestrator:abort`
+and `finalize` run) is an operation (kind `archive`) from its mark to its
+archive, which ends it: it archives a held lane's child as item 8 says, is
+refused beside another open operation and while the holds cannot be read, and
+a crash between its two writes leaves it open for the owner. The Stop
+lifecycle leaves a held lane's child that has no operation open (a commit's is
+open through its archive), as its sweep does, and archives it after the
+release.
+
+A pending peer run that a held lane refuses stops its launch before the
+companion is spawned (`peer-runner run` records the run `failed`, error kind
+`held_lane`; `dispatch-peer` returns kind `held_lane`), so no peer runs
+whose settlement the lane would refuse. An archive that ends an operation it
+names (the lifecycle archive's) is refused once that operation is gone, and
+never archives on another operation's entry. Outside the persona, the
+orchestrator's `cutover --move` moves a child's workflow under its own lock:
+it is `impl-hold`'s to hold to this rule (`laneWriterRefusal` is the
+persona's reading of it).
+
+**An unlinked bootstrap** (item 5) is a create with no dispatch linkage to
+the lane that holds its branch: every create of designer and founder, and an
+engineer's with none or another lane's. It reads each macro under `holds/`
+that a hold-aware orchestrator runs for (N2), and is refused, naming the
+macro, the subtask and the hold, when an owner's record of it applies to the
+branch (N3; there is no child to compare). It reads them before it publishes
+anything, and again once the workflow is written, holding the workflow's
+lock: a hold that appeared between the two reads withdraws the workflow, so a
+hold that misses it was set after it was there to be seen. A holds root, a
+macro's directory, marker or owner's record that cannot be read may hold the
+branch, so it refuses every unlinked create in the repository until it reads
+again or the owner discards the record (item 8); a macro with no marker
+refuses nothing. A linked bootstrap's own macro, where it cannot be read, is
+its operation's to judge (N4). How the orchestrator reads a workflow begun on
+a lane's branch before its hold is `impl-hold`'s.
+
+**N5. Locks.** The persona takes no lock in the holds directory: its records
+are exclusive creates and unlinks, published before a write's workflow and
+creation locks are taken and removed after they are released, never inside
+them. The orchestrator reads a child's open operations without its locks and
+judges a held workflow lock by its presence, never by taking it (item 7). It
+takes its own locks in the order worktree lock, macro lock (as the driver
+does, `driver.mjs:661-662`), then a holds-directory lock, then `parks/.lock`,
+and waits on no persona lock while it holds one. An archive takes the
+creation locks before the workflow's lock (`state.mjs:5596-5606`), and a
+create takes the creation locks alone; neither nests a holds-directory lock.
+No cycle can form.
+
+**N6. The content digest.** `state.mjs content-digest --workflow-path <p>`
+prints `{"schema": "agentic-workflow-content-digest-1", "digest"}`: a sha256
+of the parsed frontmatter without the fields a snapshot writes (`updated_at`,
+`last_snapshot`, `host_history` entries whose event is `snapshot`, and the
+`verify_handoff` and `verify_attempt` bookkeeping every write of the workflow
+stamps, a snapshot's included), its
+forward-compat carrier included, and of the body as stored, its leading blank
+lines left out (every write adds one, `state.mjs` `assembleWorkflowFile`). A
+snapshot, whatever re-serializes, leaves it unchanged; any other change moves it. The
+tree's digest and the comparison are `impl-hold`'s.
+
+**N7. Release transitions** are `impl-hold`'s and are frozen here only as
+the states the persona's refusals assume: a release names one `hold_id`; a
+pending hold's release withdraws it with nothing to compare; a held one's
+release records the comparison basis and waits; the driver's comparison
+consumes it (equal) or rejects it (different), each once; a new hold after a
+rejection starts again. The table is
+`tests/fixtures/holds-protocol/release-transitions.json`.
+
+**N8. The capability token.** The persona prints
+`{"capability": "hold-persona-1", "protocol": 1}` for `state.mjs
+hold-capability`, and its scripts carry the token `hold-persona-1`, which the
+driver's lanes capability floor reads (item 9).
+
+**N9. The takeover prototype (item 10).** `tests/acceptance/hold-takeover/`
+drives a takeover end to end before the persona's half ships. The persona
+side is the persona's real scripts, run through the generated blocks of its
+runbooks, with the operation directory carried as their `OP_DIR`. After the
+release, the driver's next step runs the runbook of the verb the child
+recorded. The other side is a scratch orchestrator half beside the test. It is
+not `impl-hold`'s and ships in no package, and its file lists what it leaves
+out. Each acceptance case runs with shared creation off and on (ADR-0067
+Decision 1), and the README states the acceptance. The persona needed no
+change.
+
+For item 10's [unverified] list, it found:
+
+- **Peer runs the session started itself** are operations while they run.
+  The test checks this with the peer held running behind a barrier.
+  - A verb's ensemble runs inside the verb's operation, and stays pending on
+    the child until the verb's finalize settles it.
+  - A consultation is its own operation (N4) until its note.
+  - The release waits for both, after the peer has ended too. Afterwards a
+    consultation's run stays in the ledger, naming no workflow; an ensemble's
+    is settled on the child. The resumed worker's verb settles its own phase
+    beside them.
+- **Session-capture files** are written in the lane's checkout under
+  `.agentic-plugins/state/runtime/session-capture/`. They are outside the
+  content digest, and outside the tree digest where the repository ignores
+  `.agentic-plugins/`. This was measured with a synthetic file at that path;
+  the runtime's writer did not run.
+- **A dirty tree recorded in no manifest** is part of the release's basis, so
+  the comparison consumes it.
+  - When the hand edit is outside the worker's manifest, the resumed worker's
+    autopilot commit stops at the staging-set owner gate (Phase 7's rule for
+    changes outside the manifest), and the lane parks for the owner.
+  - An unstaged hand edit inside a path the worker's manifest names, in a
+    workflow begun on a clean tree, is committed with the worker's change,
+    since Phase 7 stages whole manifest paths. A staged one stops at the gate.
+
+One point is left to `impl-hold` and the owner, and nothing here decides it.
+Suppose a repository does not ignore `.agentic-plugins/`. The session's state
+in the lane's checkout is then made of non-ignored files: its session capture
+always, and the persona's records too when shared creation is off. The
+release tells the person to close the session first, but nothing checks it. A
+session left open after the release writes there, for instance the Stop
+snapshot. The content digest leaves that snapshot out (N6), but the tree
+digest does not, so the release is rejected though nobody edited. The test's
+last case measures this for the snapshot. Leaving the state root out of the
+tree digest would depart from item 7's "every non-ignored file".

@@ -35,11 +35,14 @@ import {
   branchRefState,
   branchTip,
   checkedOutBranch,
+  closeArchivedCommit,
   descendsFrom,
+  laneWriterRefusal,
   listWorkflowFilesAllHomes,
   noActiveChildrenCheck,
   parseWorkflowFile,
   snapshot,
+  sweepLeavesChild,
   terminalMarkerCheck,
   terminalPhaseCheck,
 } from './state.mjs';
@@ -149,6 +152,8 @@ async function runStopArchiveInCheckout({
   headSubject = null,
   stderr = process.stderr,
   archive = archiveWorkflow,
+  // The parent note (tests watch what the commit's operation is at its time).
+  noteParent = noteTerminalOnParent,
 }) {
   // Step 1 — snapshot. Mirrors the legacy stop.mjs behaviour so the
   // last_snapshot + host_history record is written even if the gates
@@ -194,6 +199,16 @@ async function runStopArchiveInCheckout({
     };
   }
 
+  // ADR-0068 Decision 2, item 7 — a held lane's child is archived only by a
+  // persona operation (a commit's, through its archive): with none open, the
+  // archive is left for after the release. Judged again holding the lock
+  // (withFileLock), where a hold set meanwhile refuses it.
+  const held = laneWriterRefusal(workflowPath, frontmatter);
+  if (held !== null) {
+    stderr.write(`${personaName()}/stop-archive: leaves ${workflowPath}: ${held}\n`);
+    return { archived: false, reason: 'held-lane' };
+  }
+
   // Step 4 — archive, the gates re-evaluated on the locked read. Failure here
   // is logged but does not throw past the caller — host stop lifecycle must
   // not be blocked.
@@ -222,7 +237,10 @@ async function runStopArchiveInCheckout({
   // with no cross-plugin side effect: the persona is no dispatch target
   // (ADR-0066 Decision 3).
   if (capabilityOn('dispatch_target')) {
-    await noteTerminalOnParent({ frontmatter, commit: headSha, host, repoRoot, stderr });
+    await noteParent({ frontmatter, commit: headSha, host, repoRoot, stderr, archivedPath: archiveResult.to });
+    // ADR-0068 Decision 2, item 7 — the commit's operation ran through the
+    // archive and the note: this ends it.
+    await closeArchivedCommit({ archivedPath: archiveResult.to, host, stderr });
   }
 
   return { archived: true, to: archiveResult.to };
@@ -367,6 +385,13 @@ async function runStopArchiveOrphanSweepInCheckout({ repoRoot, host, stderr = pr
       continue;
     }
     if (sweepGateFailures(frontmatter).length > 0) continue;
+    // ADR-0068 Decision 2, item 7 — another session's open operation.
+    const leaves = sweepLeavesChild(workflowPath, frontmatter);
+    if (leaves !== null) {
+      stderr.write(`${personaName()}/stop-archive: orphan-sweep leaves ${workflowPath}: ${leaves}\n`);
+      continue;
+    }
+    const recheck = (locked) => [...sweepGateFailures(locked), ...(sweepLeavesChild(workflowPath, locked) === null ? [] : ['open_operation'])];
     const branch = frontmatter?.git_baseline?.branch;
     if (typeof branch !== 'string' || branch.length === 0) continue;
     if (checkout.state === 'branch' && branch === checkout.branch) continue; // the per-branch path owns it
@@ -374,7 +399,7 @@ async function runStopArchiveOrphanSweepInCheckout({ repoRoot, host, stderr = pr
     const refState = branchRefState(repoRoot, branch);
     if (refState === 'present') {
       if (checkout.state === 'unknown' || !elsewhere.ok) continue; // any kept branch could be a checked-out one
-      const result = await archiveOnKeptBranch({ workflowPath, frontmatter, branch, host, repoRoot, stderr, archive });
+      const result = await archiveOnKeptBranch({ workflowPath, frontmatter, branch, host, repoRoot, stderr, archive, recheck });
       if (result) results.push(result);
       continue;
     }
@@ -397,7 +422,10 @@ async function runStopArchiveOrphanSweepInCheckout({ repoRoot, host, stderr = pr
       );
     }
     try {
-      const archiveResult = await archive({ workflowPath, host, repoRoot, recheck: sweepGateFailures });
+      const archiveResult = await archive({ workflowPath, host, repoRoot, recheck });
+      if (archiveResult.archived === true && capabilityOn('dispatch_target')) {
+        await closeArchivedCommit({ archivedPath: archiveResult.to, host, stderr });
+      }
       results.push({
         workflowPath,
         archived: archiveResult.archived === true,
@@ -432,7 +460,7 @@ function sweepGateFailures(frontmatter) {
  * against that branch's tip, and archive it when every gate passes. Returns
  * `null` when it is left alone (nothing was written).
  */
-async function archiveOnKeptBranch({ workflowPath, frontmatter, branch, host, repoRoot, stderr, archive }) {
+async function archiveOnKeptBranch({ workflowPath, frontmatter, branch, host, repoRoot, stderr, archive, recheck: sweepRecheck }) {
   const tip = branchTip(repoRoot, branch);
   if (!tip) return null;
   const verdict = evaluateStopArchive({ frontmatter, headSha: tip.sha, headSubject: tip.subject });
@@ -448,11 +476,16 @@ async function archiveOnKeptBranch({ workflowPath, frontmatter, branch, host, re
       workflowPath,
       host,
       repoRoot,
-      recheck: (locked) => evaluateStopArchive({ frontmatter: locked, headSha: tip.sha, headSubject: tip.subject }).gateFailures,
+      recheck: (locked) => [
+        ...evaluateStopArchive({ frontmatter: locked, headSha: tip.sha, headSubject: tip.subject }).gateFailures,
+        ...sweepRecheck(locked).filter((g) => g === 'open_operation'),
+      ],
     });
-    // The parent note carries the kept branch's own tip (dispatch_target on).
+    // The parent note carries the kept branch's own tip (dispatch_target on);
+    // the commit's operation ends after it (ADR-0068 Decision 2, item 7).
     if (archiveResult.archived === true && capabilityOn('dispatch_target')) {
       await noteTerminalOnParent({ frontmatter, commit: tip.sha, host, repoRoot, stderr });
+      await closeArchivedCommit({ archivedPath: archiveResult.to, host, stderr });
     }
     return {
       workflowPath,

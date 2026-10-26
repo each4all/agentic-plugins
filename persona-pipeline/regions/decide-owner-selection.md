@@ -48,8 +48,19 @@ block clears the gate and stops there: resume the lifecycle, which continues at
 its own phase after decide and makes its one terminal write; elsewhere it ends
 the verb:
 
+{{#capability dispatch_target}}
+Set `OP_DIR` to the operation directory this run's Phase 0 printed
+(`OP_DIR=<path>`) when you resolve the gate in a later run of the verb; leave
+it empty when Phase 0 printed none, and when you resolve it right after this
+verb's own finalize, which closed that operation. The block then opens the
+resolution's own (ADR-0068 Decision 2, item 7).
+
+{{/capability}}
 ```bash
 TEXT_DIR='<directory from step 1>'
+{{#capability dispatch_target}}
+OP_DIR='<the operation directory Phase 0 of this run printed as OP_DIR; empty when it printed none or the finalize of this verb already ran>'
+{{/capability}}
 ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/{{name}} -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
@@ -73,6 +84,26 @@ grep -q '[^[:space:]]' "$TEXT_DIR/resolution.txt" 2>/dev/null || { echo "✗ res
 # records no next step (the lifecycle's resume clears one anyway) and names the
 # resume as the next action; elsewhere the next step is compose. Either way the
 # gate's "Owner: …" next action does not outlive the clear.
+{{#capability dispatch_target}}
+# ADR-0068 Decision 2, item 7 — the clear and the terminal write below are one
+# persona operation of a macro's child: the one this run's Phase 0 opened
+# (OP_DIR set), or, with OP_DIR empty, one the clear opens in a directory this
+# block makes. Inside a /start lifecycle, where no terminal write follows, the
+# clear closes the operation Phase 0 opened, or is its own operation's one
+# write.
+case "$OP_DIR" in
+  *'<'*) echo "✗ OP_DIR is not set to the operation directory this run's Phase 0 printed (empty when it printed none, or when this verb's finalize already ran); nothing was written." >&2; exit 1 ;;
+esac
+OP_ARGS=()
+if [ -n "$OP_DIR" ] && [ "$WF_TYPE" = start ]; then
+  OP_ARGS=(--operation-dir "$OP_DIR" --close-operation true)
+elif [ -n "$OP_DIR" ]; then
+  OP_ARGS=(--operation-dir "$OP_DIR")
+elif [ "$WF_TYPE" != start ]; then
+  OP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-op.XXXXXX")" || exit 1
+  OP_ARGS=(--operation-dir "$OP_DIR" --open-operation gate)
+fi
+{{/capability}}
 if [ "$WF_TYPE" = start ]; then
   NEXT_ACTION="Resume /${PERSONA}:start: the lifecycle continues after decide with the selected direction"
   NEXT_STEP=(--clear-next-step true)
@@ -85,6 +116,9 @@ fi
 # it; the block stops if it fails.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" awaiting-owner-clear \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --gate decide-conflict \
+{{#capability dispatch_target}}
+  "${OP_ARGS[@]}" \
+{{/capability}}
   --resolution-file "$TEXT_DIR/resolution.txt" --next-action "$NEXT_ACTION" \
   "${NEXT_STEP[@]}" || exit $?
 if [ "$WF_TYPE" = start ]; then
@@ -100,6 +134,9 @@ fi
 # core/skills/_shared/references/session-handoff.md § Archive timing.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+{{#capability dispatch_target}}
+  --operation-dir "$OP_DIR" \
+{{/capability}}
   --next-action {{next_action}} \
   --next-step-kind verb --next-step-verb compose \
   --next-step-confidence HIGH || exit $?

@@ -185,9 +185,10 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
     // Contract: the agent running the Owner selection block — one write records
     // the decision, clears the gate and names the next step, and stops on
     // failure; a separate append could publish the step without the decision.
+    // It takes the resolution's persona operation (ADR-0068 Decision 2, item 7).
     const sel = section(text, '## Owner selection (decide-conflict)');
     const block = bashBlocks(sel).find((b) => b.includes('awaiting-owner-clear'));
-    ok(/--gate decide-conflict \\\n\s+--resolution-file "\$TEXT_DIR\/resolution\.txt" --next-action "\$NEXT_ACTION" \\\n\s+"\$\{NEXT_STEP\[@\]\}" \|\| exit \$\?\n/.test(block),
+    ok(/--gate decide-conflict \\\n\s+"\$\{OP_ARGS\[@\]\}" \\\n\s+--resolution-file "\$TEXT_DIR\/resolution\.txt" --next-action "\$NEXT_ACTION" \\\n\s+"\$\{NEXT_STEP\[@\]\}" \|\| exit \$\?\n/.test(block),
       'one write records the decision, clears the gate and names the next step, and stops the block on failure');
     ok(/^ {2}NEXT_STEP=\(--next-step-kind verb --next-step-verb compose --next-step-confidence HIGH\)$/m.test(block), 'outside the lifecycle the next step is compose');
     ok(/^ {2}NEXT_STEP=\(--clear-next-step true\)$/m.test(block), 'inside the lifecycle no next step');
@@ -211,8 +212,8 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
     // stops on failure; a separate append could publish the step without it.
     const blocks = bashBlocks(section(text, '## Owner decision (recurring-finding)')).filter((b) => b.includes('awaiting-owner-clear'));
     strictEqual(blocks.length, 2, 'fix now and defer');
-    ok(blocks.some((b) => /--gate recurring-finding \\\n\s+--resolution-file "\$TEXT_DIR\/resolution\.txt" --next-action "\$NEXT_ACTION" \\\n\s+--next-step-kind verb --next-step-verb refine --next-step-confidence HIGH \|\| exit \$\?\n/.test(b)), 'fix now: one write, naming this refine, stopping the block on failure');
-    ok(blocks.some((b) => /--gate recurring-finding \\\n\s+--resolution-file "\$TEXT_DIR\/resolution\.txt" --next-action "\$NEXT_ACTION" \\\n\s+--next-step-kind commit --next-step-confidence HIGH \|\| exit \$\?\n/.test(b)), 'defer: one write naming commit, stopping the block on failure');
+    ok(blocks.some((b) => /--gate recurring-finding \\\n\s+"\$\{OP_ARGS\[@\]\}" \\\n\s+--resolution-file "\$TEXT_DIR\/resolution\.txt" --next-action "\$NEXT_ACTION" \\\n\s+--next-step-kind verb --next-step-verb refine --next-step-confidence HIGH \|\| exit \$\?\n/.test(b)), 'fix now: one write, naming this refine, stopping the block on failure');
+    ok(blocks.some((b) => /--gate recurring-finding \\\n\s+"\$\{OP_ARGS\[@\]\}" \\\n\s+--resolution-file "\$TEXT_DIR\/resolution\.txt" --next-action "\$NEXT_ACTION" \\\n\s+--next-step-kind commit --next-step-confidence HIGH \|\| exit \$\?\n/.test(b)), 'defer: one write naming commit, stopping the block on failure');
     for (const b of blocks) {
       ok(/ACTIVE="\$\(node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" find-active/.test(b), 'every resolution block resolves the workflow itself');
       ok(!b.includes('state.mjs" append'), 'no separate write can publish the next step without the decision');

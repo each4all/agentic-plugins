@@ -47,7 +47,7 @@
 import { describe, it } from 'node:test';
 import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
 import { mkdtemp, rm, readFile, writeFile, mkdir, realpath } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
@@ -118,6 +118,15 @@ const VERDICT_LINE = "VERDICT='<the synthesis verdict>'";
 // block and checked before its first write.
 const CONFIDENCE_LINE = "CONFIDENCE='<HIGH|MEDIUM|LOW>'";
 const RESOLVE_LINE = "RESOLVE_VERB='<refine|decide|investigate — the next step that resolves the flagged item, when not converged>'";
+// ADR-0068 Decision 2, item 7 (N4): with dispatch_target on, the operation
+// directory the Phase 0 block printed, which the agent sets in the finalize.
+const OP_DIR_LINE = "OP_DIR='<the operation directory the Phase 0 block printed as OP_DIR; empty when it printed none>'";
+// A gate resolution's blocks, with dispatch_target on: the directory this run's
+// Phase 0 printed, or empty (the block then opens the resolution's own).
+const GATE_OP_DIR_RE = /^OP_DIR='<the operation directory Phase 0 of this run printed as OP_DIR; empty when it printed none or the finalize of this (verb|refine) already ran>'$/m;
+const gateOpDir = (block) => block.replace(GATE_OP_DIR_RE, () => "OP_DIR=''");
+const MACRO = 'macro-plan-20261025T000000Z-abcdef';
+const SUBTASK = 'hold-persona';
 // The `text` scaffold a runbook shows for one of the files, after the first
 // sentence that names it: what the agent writes when nothing else applies.
 function scaffold(text, file) {
@@ -221,7 +230,14 @@ for (const persona of PERSONAS) {
 
   // The agent's fills of the finalize's head: the dispatch's directory (empty
   // when no run launched) and the verdict.
-  const filled = (b, runDir = '', verdict = 'agreed') => fill(fill(fill(b, DISPATCH_DIR_LINE, runDir ? `DISPATCH_DIR='${runDir}'` : "DISPATCH_DIR=''"), VERDICT_LINE, `VERDICT='${verdict}'`), CONFIDENCE_LINE, "CONFIDENCE='HIGH'");
+  // With dispatch_target on, also the operation directory (empty when Phase 0
+  // printed none); with it off the block has none.
+  const filled = (b, runDir = '', verdict = 'agreed', opDir = '') => {
+    const s = fill(fill(fill(b, DISPATCH_DIR_LINE, runDir ? `DISPATCH_DIR='${runDir}'` : "DISPATCH_DIR=''"), VERDICT_LINE, `VERDICT='${verdict}'`), CONFIDENCE_LINE, "CONFIDENCE='HIGH'");
+    if (dispatchOn) return fill(s, OP_DIR_LINE, `OP_DIR='${opDir}'`);
+    ok(!s.includes('OP_DIR'), 'no operation directory with dispatch_target off');
+    return s;
+  };
 
   async function withRepo(fn) {
     // realpath: the blocks resolve the repository through git, which reports
@@ -253,7 +269,7 @@ for (const persona of PERSONAS) {
     }
   }
 
-  function createWorkflow(dir, verb, { type = null } = {}) {
+  function createWorkflow(dir, verb, { type = null, parent = false } = {}) {
     const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
     const digest = execFileSync('shasum', ['-a', '256'], {
       input: execFileSync('git', ['status', '--porcelain=v1', '-z', '--untracked-files=normal'], { cwd: dir }),
@@ -261,6 +277,7 @@ for (const persona of PERSONAS) {
     }).trim().split(/\s+/)[0];
     return execFileSync('node', [STATE, 'create', '--repo-root', dir, '--verb', verb, '--host', 'claude',
       ...(type ? ['--workflow-type', type] : []),
+      ...(parent ? ['--parent-workflow', MACRO, '--originating-subtask', SUBTASK] : []),
       '--git-baseline-branch', 'feat/r', '--git-baseline-head', head, '--status-digest', digest,
       '--original-request', 'runbook fixture'], { encoding: 'utf8' }).trim();
   }
@@ -316,8 +333,8 @@ for (const persona of PERSONAS) {
       // that resolves what is still open; the note, the summary and the next
       // action written as files (the scaffold's default next action, unless
       // the case names another).
-      const finalize = async (verb, { converged = true, note = '### Ensemble synthesis: fixture', summary = 'fine', nextAction = verbBlocks(verb).nextAction, runDir = '' } = {}) => {
-        let b = filled(verbBlocks(verb).phase2, runDir);
+      const finalize = async (verb, { converged = true, note = '### Ensemble synthesis: fixture', summary = 'fine', nextAction = verbBlocks(verb).nextAction, runDir = '', opDir = '' } = {}) => {
+        let b = filled(verbBlocks(verb).phase2, runDir, 'agreed', opDir);
         b = await withTexts(b, { 'note.md': note, 'summary.txt': summary, 'next-action.txt': nextAction });
         // Contract: the agent running the finalize — the convergence step it fills exists exactly
         // where the verb waits for convergence; elsewhere it would hold back the terminal write.
@@ -426,6 +443,42 @@ for (const persona of PERSONAS) {
             strictEqual(r.status, 0, r.stderr);
             const fm = (await readWorkflow(wf)).frontmatter;
             deepStrictEqual([fm.next_step_kind, fm.current_phase], [undefined, 'phase-0-resume']);
+          });
+        });
+
+        // ADR-0068 Decision 2, item 7 (N4): the operation a verb's Phase 0
+        // opens on a macro's child, carried to its finalize in the directory
+        // Phase 0 printed, there closed; with the macro's holds active, its
+        // record published and removed.
+        it('Phase 0 prints the operation directory, and the finalize closes the operation there (dispatch_target on; off: no operation directory)', skip('compose'), async () => {
+          await withRepo(async (dir) => {
+            const { resume, phase2 } = verbBlocks('compose');
+            if (!dispatchOn) {
+              ok(!resume.includes('OP_DIR') && !phase2.includes('OP_DIR'), 'no operation directory with dispatch_target off');
+              return;
+            }
+            const holds = join(dir, '.agentic-plugins/runs/autopilot/holds', MACRO);
+            await mkdir(holds, { recursive: true });
+            await writeFile(join(holds, 'protocol.json'), JSON.stringify({ schema: 'agentic-holds-protocol-1', protocol: 1, written_by: 'test', at: '2026-10-25T00:00:00Z' }));
+            const wf = createWorkflow(dir, 'compose', { parent: true });
+            const r = runBlock(shell, dir, fill(resume, '"<profile or empty>"', '""'));
+            strictEqual(r.status, 0, r.stderr);
+            const opDir = /^OP_DIR=(.+)$/m.exec(r.stdout)?.[1];
+            ok(opDir && existsSync(join(opDir, 'operation.json')), r.stdout);
+            const [entry] = (await readWorkflow(wf)).frontmatter.persona_operations.ops;
+            const record = join(holds, 'ops', SUBTASK, `${entry.id}.json`);
+            ok(existsSync(record), 'the record is published');
+            // A value left unfilled stops the finalize before any write.
+            const before = await readFile(wf, 'utf8');
+            const unfilled = (await finalize('compose')).replace("OP_DIR=''", () => OP_DIR_LINE);
+            const u = runBlock(shell, dir, unfilled);
+            strictEqual(u.status, 1);
+            ok(u.stderr.includes('OP_DIR is not set to the operation directory Phase 0 printed'), u.stderr);
+            strictEqual(await readFile(wf, 'utf8'), before);
+            const f = runBlock(shell, dir, await finalize('compose', { opDir }));
+            strictEqual(f.status, 0, f.stderr);
+            const fm = (await readWorkflow(wf)).frontmatter;
+            deepStrictEqual([fm.persona_operations, fm.terminal_marker, existsSync(record)], [undefined, true, false]);
           });
         });
 
@@ -820,7 +873,7 @@ for (const persona of PERSONAS) {
             // The generated block reads the owner's words from the file the agent
             // wrote (ADR-0059's amendment of 2026-10-10), as it read a quoted
             // heredoc before (PC3 U7).
-            const raw = writing(section(docs.decide, '## Owner selection (decide-conflict)'))[0];
+            const raw = gateOpDir(writing(section(docs.decide, '## Owner selection (decide-conflict)'))[0]);
             // Contract: the owner's words reach state.mjs as a file, never as shell text, where `$`,
             // backticks and a delimiter-like line in them would run.
             ok(raw.startsWith(`${TEXT_DIR_LINE}\n`) && raw.includes('--resolution-file "$TEXT_DIR/resolution.txt"') && !raw.includes('OWNER_RESOLUTION'), 'the resolution is the agent\'s file');
@@ -873,7 +926,7 @@ for (const persona of PERSONAS) {
               ok(block.startsWith(`${TEXT_DIR_LINE}\n`) && block.includes('--resolution-file "$TEXT_DIR/resolution.txt"') && !block.includes('OWNER_RESOLUTION'), 'the resolution is the agent\'s file');
               return withTexts(block, { 'resolution.txt': words, ...files });
             };
-            const [rawFix, rawDefer] = writing(section(docs.refine, '## Owner decision (recurring-finding)')).map(dedent);
+            const [rawFix, rawDefer] = writing(section(docs.refine, '## Owner decision (recurring-finding)')).map(dedent).map(gateOpDir);
             const fixNow = await owner(rawFix, 'Owner decision: fix the cache key now');
             const deferWords = await owner(rawDefer, 'Owner decision: defer the cache key — tracked in C99');
             // A refine that closes only once it converged sets the convergence

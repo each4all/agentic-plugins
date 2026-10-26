@@ -765,7 +765,12 @@ for (const persona of PERSONAS) {
         // three accounting flags, which would record peer-now as an ensemble.
         const dispatch = region(skill, 'peer-now-dispatch');
         ok(/--run-id "\$RUN_ID" --kind peer-now/.test(dispatch), 'the peer-now dispatch passes --run-id');
-        for (const flag of ['--workflow-path', '--phase', '--ensemble-type']) ok(!dispatch.includes(flag), `the peer-now dispatch omits ${flag}`);
+        // The runner call alone: with dispatch_target on, the block also opens
+        // the consultation's operation on the workflow it is for (ADR-0068
+        // Decision 2, item 7), a state.mjs call that names it.
+        const runCall = /peer-runner\.mjs" run \\\n(?:[^\n]*\\\n)*[^\n]*\n/.exec(dispatch)?.[0];
+        ok(runCall, 'the runner call');
+        for (const flag of ['--workflow-path', '--phase', '--ensemble-type']) ok(!runCall.includes(flag), `the peer-now dispatch omits ${flag}`);
       });
 
       it(`${label}: the brief ensemble gates before dispatch and collects the runner result first, as the investigate runbook dispatches (RD8, RV10)`, holding(persona, briefRef(persona, 'ensemble')), () => {

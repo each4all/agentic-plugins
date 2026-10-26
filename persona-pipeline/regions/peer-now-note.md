@@ -2,6 +2,11 @@ Run it with `DISPATCH_DIR` set to the directory the dispatch ran with (Phase
 1's step 1): in a fresh shell, it reads the run from the result the runner
 wrote there, `prompt.xml.run.json`, and from the run's handle, and finds the
 workflow again, carrying nothing from Phase 1.
+{{#capability dispatch_target}}
+It appends only to the workflow the dispatch kept there as
+`prompt.xml.workflow`, and closes the consultation's operation in `op`, when
+the dispatch opened one (ADR-0068 Decision 2, item 7).
+{{/capability}}
 
 ```bash
 DISPATCH_DIR='<the directory the dispatch ran with>'
@@ -28,8 +33,25 @@ RUN_ID="$(node -e "$FIELD" "$RUN_JSON" run_id)" \
   && STDOUT_PATH="$(node -e "$FIELD" "$RUN_JSON" stdout_path)" \
   && PEER="$(node -e "$FIELD" "$HANDLE_PATH" peer_host)" \
   || { echo "✗ The run's result in DISPATCH_DIR ($DISPATCH_DIR), or its handle, is missing or unreadable; nothing was written." >&2; exit 1; }
+{{#capability dispatch_target}}
+# ADR-0068 Decision 2, item 7 — the note goes to the workflow the dispatch was
+# for alone (prompt.xml.workflow, empty for none, where the dispatch kept it):
+# a workflow found now that it was not for, a macro's child above all, gets no
+# note it never admitted. The note is the consultation's last write: it ends
+# the operation the dispatch opened in its operation directory, op, when it
+# opened one there.
+if [ -f "$DISPATCH_DIR/prompt.xml.workflow" ]; then
+  FOR_WORKFLOW="$(cat "$DISPATCH_DIR/prompt.xml.workflow")"
+  [ "$FOR_WORKFLOW" = "$ACTIVE" ] || { echo "✗ The consultation in DISPATCH_DIR ($DISPATCH_DIR) was dispatched for ${FOR_WORKFLOW:-no workflow}, not $ACTIVE; no note is appended." >&2; exit 1; }
+fi
+set --
+[ -d "$DISPATCH_DIR/op" ] && set -- --operation-dir "$DISPATCH_DIR/op" --close-operation true
+{{/capability}}
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+{{#capability dispatch_target}}
+  "$@" \
+{{/capability}}
   --phase-label "[Peer] $PEER consultation" \
   --phase-note "peer: $PEER
 run_id: $RUN_ID

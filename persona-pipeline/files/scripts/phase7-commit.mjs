@@ -76,6 +76,7 @@ import {
   autopilotMode as autopilotActivation,
   appendPhase,
   beginCommit,
+  endChildOperation,
   readTextArgumentFile,
 } from './state.mjs';
 
@@ -1587,6 +1588,30 @@ async function runPostCommitGatesOnly({
   });
 }
 
+/**
+ * ADR-0068 Decision 2, item 7 (N4) — the commit's operation, opened by
+ * beginCommit, runs on through the terminal write to the archive and the parent
+ * note after it, which the Stop hook ends. A commit that refuses before its
+ * terminal write (a gate, a hook, a subject: a result that is not ok) has made
+ * its last write, so it ends its operation `id` here, and running the commit
+ * again opens another; an earlier attempt's landed commits stay. One stopped
+ * by an error (a throw, a kill) is left open for the owner to clear
+ * (`writer-clear`, Decision 2, item 7): nothing here can tell what it left.
+ */
+async function underCommitOperation({ workflowPath, flags, stderr, id = null }, fn) {
+  const result = await fn();
+  if (result?.ok !== true) await endCommitOperation({ workflowPath, flags, stderr, id });
+  return result;
+}
+
+async function endCommitOperation({ workflowPath, flags, stderr, id = null }) {
+  try {
+    await endChildOperation({ workflowPath, kind: 'commit', id, host: flags.host });
+  } catch (err) {
+    stderr.write(`⚠ the commit's operation stays open on ${workflowPath}: ${err.message}\n`);
+  }
+}
+
 async function commitStaged({ repoRoot, subject, body, stderr }) {
   // git commit -F message-file. We pass subject + body as a single
   // file because git rejects `-m` and `-F` together (Phase 5 e2e
@@ -1702,15 +1727,15 @@ async function executeMode({
       // (nothing landed THIS run).
       //
       // ADR-0063 — non-terminal until the gates pass, as in the loop below.
-      await beginCommit({ workflowPath, host: flags.host });
-      return await runPostCommitGatesOnly({
+      const { operation: id } = await beginCommit({ workflowPath, host: flags.host });
+      return await underCommitOperation({ workflowPath, flags, stderr, id }, () => runPostCommitGatesOnly({
         workflowPath,
         repoRoot,
         frontmatter,
         flags,
         stderr,
         landedSummary: noChanges.marked_commits.map((s) => `${s} (prior run)`),
-      });
+      }));
     }
     throw new Error(
       'no-changes: working tree is clean and there is nothing to commit. ' +
@@ -1767,7 +1792,6 @@ async function executeMode({
   //   3. compute per-commit diffStat from the just-staged cache and
   //      compose this commit's body
   //   4. commit
-  const landed = [];
   const suggested = flags['suggested-subjects'] === true;
   if (suggested && (typeof flags.subject === 'string' || flags['subject-pkg'].length > 0)) {
     throw new Error('--suggested-subjects excludes --subject and --subject-pkg, and their -file forms.');
@@ -1792,7 +1816,16 @@ async function executeMode({
   // inherited terminal marker (an interactive verb's) with HEAD moved by a
   // first split commit would let the Stop hook archive a half-committed
   // workflow. Phase 7's terminal write after the gates turns it back on.
-  await beginCommit({ workflowPath, host: flags.host });
+  const { operation: id } = await beginCommit({ workflowPath, host: flags.host });
+  return underCommitOperation({ workflowPath, flags, stderr, id }, () => commitAll({
+    workflowPath, repoRoot, frontmatter, flags, stderr, shape, subjects, ensembleSummary,
+  }));
+}
+
+// The commits of an executeMode after its beginCommit, then the post-commit
+// gates and the terminal write.
+async function commitAll({ workflowPath, repoRoot, frontmatter, flags, stderr, shape, subjects, ensembleSummary }) {
+  const landed = [];
   // C84 — the whole staging set is checked before the first git write, so a
   // refusal in a later package's files (an unapproved, recreated or partly
   // staged path) commits nothing, and the index is left as it was.
@@ -2008,9 +2041,13 @@ async function closeMode({ workflowPath, repoRoot, frontmatter, flags, stderr })
     fresh.originating_subtask.length > 0;
   const doneCommand =
     `${flags.host === 'codex' ? '$' : '/'}orchestrator:done ${fresh.originating_subtask} --no-commit`;
+  // ADR-0068 Decision 2, item 7 (N4) — the close is a commit's operation: this
+  // terminal write opens it (or continues one a close stopped short left), and
+  // the archive below ends it.
   await setTerminal({
     workflowPath,
     host: flags.host,
+    childOperation: { point: 'open', kind: 'commit' },
     terminalPhase: 'close-complete',
     terminalMarker: true,
     nextAction: parentLinked
@@ -2026,8 +2063,11 @@ async function closeMode({ workflowPath, repoRoot, frontmatter, flags, stderr })
   // A run stopped between the terminal write and this archive is retried by
   // running close again (it re-derives everything); the Stop hook never notes
   // a close-complete workflow on its parent, because it made no commit.
-  const archived = await archiveWorkflow({ workflowPath, host: flags.host, repoRoot });
+  // An archive that throws stopped by an error: its operation is left for the
+  // owner (Decision 2, item 7); one that refuses ends it.
+  const archived = await archiveWorkflow({ workflowPath, host: flags.host, repoRoot, closeOperationKind: 'commit' });
   if (!archived.archived) {
+    await endCommitOperation({ workflowPath, flags, stderr });
     stderr.write(
       `✗ the workflow was written close-complete but not archived (${archived.reason ?? 'no-op'}); ` +
       'run the close again.\n',
@@ -2135,6 +2175,9 @@ async function autopilotMode({ workflowPath, repoRoot, frontmatter, flags, stder
       nextStep: { kind: 'owner-decision', confidence: 'HIGH' },
       ownerGate: { gate: 'staging-set', anchor: 'phase7-plan' },
       event: 'updated',
+      // ADR-0068 Decision 2, item 7 — the commit's one write: an operation
+      // admitted as any first write is, that leaves no entry.
+      childOperation: { point: 'once', kind: 'commit' },
     });
     stderr.write('⏸ the staging set needs the owner: recorded the staging-set gate; nothing was committed.\n');
     return { ok: true, action: 'staging-set', gate: 'staging-set', staging_set: plan.staging_set, extras: plan.extras };

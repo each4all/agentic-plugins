@@ -160,6 +160,15 @@ under the gate's heading in the note:
 
 The owner-decision form below records the gate with the next step in one
 write and leaves the workflow open, not terminal, until the owner resolves it.
+{{#capability dispatch_target}}
+
+Set `OP_DIR` to the operation directory the Phase 0 bootstrap or resume block
+printed (`OP_DIR=<path>`), or leave it empty when it printed none: the last
+write, `finish-verb` (or, where this block has one, the write that keeps the
+workflow open), closes there the persona operation Phase 0 opened when the
+workflow is a macro's child (ADR-0068 Decision 2, item 7). A value left
+unfilled stops the block before any write.
+{{/capability}}
 
 ```bash
 TEXT_DIR='<directory from step 1>'
@@ -172,6 +181,9 @@ CONFIDENCE='<HIGH|MEDIUM|LOW>'
 # step that resolves the flagged item.
 CONVERGED="<yes|no — from the re-critique verdict; unset means no>"
 RESOLVE_VERB='<refine|decide|investigate — the next step that resolves the flagged item, when not converged>'
+{{#capability dispatch_target}}
+OP_DIR='<the operation directory the Phase 0 block printed as OP_DIR; empty when it printed none>'
+{{/capability}}
 ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/{{name}} -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
@@ -182,6 +194,11 @@ PERSONA={{name}}
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
 [ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch; nothing was written." >&2; exit 1; }
+{{#capability dispatch_target}}
+case "$OP_DIR" in
+  *'<'*) echo "✗ OP_DIR is not set to the operation directory Phase 0 printed (empty when it printed none); nothing was written." >&2; exit 1 ;;
+esac
+{{/capability}}
 case "$VERDICT" in
   ''|*'<'*) echo "✗ VERDICT is not set to the synthesis verdict; nothing was written." >&2; exit 1 ;;
 esac
@@ -320,6 +337,9 @@ if [ "${CONVERGED:-no}" = "yes" ]; then
   # core/skills/_shared/references/session-handoff.md § Archive timing.
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+  {{#capability dispatch_target}}
+    --operation-dir "$OP_DIR" \
+  {{/capability}}
     --next-action-file "$TEXT_DIR/next-action.txt" \
     --next-step-kind verb --next-step-verb {{next_verb}} \
     --next-step-confidence "$CONFIDENCE" || exit $?
@@ -328,6 +348,9 @@ else
   # the flagged item, and a terminal marker an earlier verb left turned off.
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+  {{#capability dispatch_target}}
+    --operation-dir "$OP_DIR" --close-operation true \
+  {{/capability}}
     --current-phase phase-2-presented \
     --next-action-file "$TEXT_DIR/next-action.txt" \
     --next-step-kind verb --next-step-verb "$RESOLVE_VERB" \
@@ -340,6 +363,9 @@ fi
 # open until the owner resolves the gate.
 # node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
 #   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+{{#capability dispatch_target}}
+#   --operation-dir "$OP_DIR" \
+{{/capability}}
 #   --next-action-file "$TEXT_DIR/next-action.txt" \
 #   --next-step-kind owner-decision --next-step-confidence "$CONFIDENCE" \
 #   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' || exit $?

@@ -147,13 +147,21 @@ const VERDICT_LINE = "VERDICT='<the synthesis verdict>'";
 // checked before the first write (`null` leaves a line unfilled).
 const CONFIDENCE_LINE = "CONFIDENCE='<HIGH|MEDIUM|LOW>'";
 const RESOLVE_LINE = "RESOLVE_VERB='<refine|decide|investigate — the next step that resolves the flagged item, when not converged>'";
+// ADR-0068 Decision 2, item 7: with dispatch_target on, the operation
+// directory Phase 0 printed; empty here, no operation (its runs:
+// test-verb-runbook-runs.mjs, test-persona-operation-lifecycle.mjs).
+const OP_DIR_LINE = "OP_DIR='<the operation directory the Phase 0 block printed as OP_DIR; empty when it printed none>'";
+// A gate resolution's blocks take the one this run's Phase 0 printed, or none;
+// filled with `value` (empty: none, so the block opens its own).
+const GATE_OP_DIR_RE = /^OP_DIR='<the operation directory Phase 0 of this run printed as OP_DIR; empty when it printed none or the finalize of this (verb|refine) already ran>'$/m;
+const gateOpDir = (block, value = '') => block.replace(GATE_OP_DIR_RE, () => `OP_DIR='${value}'`);
 function finalizeAs(block, { launched = true, verdict = 'agreed', dir = '"$TEXT_DIR/dispatch"', confidence = 'HIGH', resolve = 'refine' } = {}) {
   ok(block.includes(`${DISPATCH_DIR_LINE}\n${VERDICT_LINE}\n${CONFIDENCE_LINE}\n`), 'the finalize names the dispatch directory, the verdict and the confidence');
   const value = launched ? `DISPATCH_DIR=${dir}` : "DISPATCH_DIR=''";
   let s = block.replace(DISPATCH_DIR_LINE, () => value).replace(VERDICT_LINE, () => `VERDICT='${verdict}'`);
   if (confidence !== null) s = s.replace(CONFIDENCE_LINE, () => `CONFIDENCE='${confidence}'`);
   if (resolve !== null) s = s.replace(RESOLVE_LINE, () => `RESOLVE_VERB='${resolve}'`);
-  return s;
+  return s.replace(OP_DIR_LINE, () => "OP_DIR=''");
 }
 /**
  * The runner's result a dispatch left in its directory, and the run's handle,
@@ -797,9 +805,11 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               // args or text directory, peer-now's peer and prompt file, and a
               // finalize's dispatch directory, synthesis verdict and confidence,
               // and where the verb waits for convergence its convergence, with the
-              // comment saying how it is filled, and its resolving step (R4, K3).
+              // comment saying how it is filled, and its resolving step (R4, K3),
+              // and with dispatch_target on the operation directory Phase 0
+              // printed (ADR-0068 Decision 2, item 7).
               let at = 0;
-              while (/^(ARGS_DIR|TEXT_DIR|DISPATCH_DIR|READ_DIR|VERDICT|CONFIDENCE|RESOLVE_VERB|PEER|PROMPT_FILE)='<[^'>]+>'$|^CONVERGED="<[^">]+>"$|^# /.test(lines[at] ?? '')) at++;
+              while (/^(ARGS_DIR|TEXT_DIR|DISPATCH_DIR|READ_DIR|VERDICT|CONFIDENCE|RESOLVE_VERB|PEER|PROMPT_FILE|OP_DIR)='<[^'>]+>'$|^CONVERGED="<[^">]+>"$|^# /.test(lines[at] ?? '')) at++;
               // Contract: the agent running a block in a fresh shell — without the
               // persona's own override and cache path the block runs another
               // plugin's scripts, or none. A block nested in a list item is indented.
@@ -897,7 +907,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
             it('resume finds, reads, then marks the same workflow; archive acts on the one it resolved', () => {
               const find = shellSites(text, /^ACTIVE="\$\(node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" \\\n\s+find-active --repo-root/m);
               const read = shellSites(text, /state\.mjs" read --workflow-path "\$ACTIVE"/);
-              const mark = shellSites(text, /state\.mjs" append \\\n\s+--workflow-path "\$ACTIVE" [^\n]*\\\n[^\n]*\\\n\s+--event resumed/);
+              const mark = shellSites(text, /state\.mjs" append \\\n\s+--workflow-path "\$ACTIVE" [^\n]*\\\n(?:[^\n]*\\\n)+\s+--event resumed/);
               const archive = shellSites(text, /state\.mjs" archive \\\n\s+--workflow-path "\$WORKFLOW" /);
               deepStrictEqual([find.length, read.length, mark.length, archive.length], [1, 1, 1, 1], 'site counts');
               ok(find[0] < read[0] && read[0] < mark[0], 'find-active, read, append in that order');
@@ -1065,9 +1075,14 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               ok(r.stdout.endsWith(`RECORDED=${id}`), `the run id the dispatch recorded: ${r.stdout}`);
               // R4 (C119, C26): the id is the one this persona's allocator printed,
               // then one runner call keyed with it.
-              deepStrictEqual(r.log, ['new-run-id', 'run'], 'the allocation, then one runner call');
+              // With dispatch_target on, the dispatch finds the workflow the
+              // consultation is for first (ADR-0068 Decision 2, item 7): none
+              // here, so no operation opens.
+              const dispatchOn = declaration(persona).capabilities.dispatch_target === true;
+              deepStrictEqual(r.log, dispatchOn ? ['new-run-id', 'find-active', 'run'] : ['new-run-id', 'run'], 'the allocation, then one runner call');
               ok(r.argv[0].trimEnd().endsWith(' new-run-id --prefix peer-now'), r.argv[0]);
-              for (const part of [` --run-id ${id} `, ' --kind peer-now ', ' --peer codex ', ` --prompt-file ${r.textDir}/prompt.xml `, ' --output-format text ']) ok(r.argv[1].includes(part), `${part}: ${r.argv[1]}`);
+              const runArgv = r.argv[r.log.indexOf('run')];
+              for (const part of [` --run-id ${id} `, ' --kind peer-now ', ' --peer codex ', ` --prompt-file ${r.textDir}/prompt.xml `, ' --output-format text ']) ok(runArgv.includes(part), `${part}: ${runArgv}`);
               for (const shell of SHELLS) {
                 for (const [why, alloc] of [['a refused prefix', { newRunId: '', newRunIdStatus: 2 }], ['an empty id', { newRunId: '' }]]) {
                   const unallocated = await runBlock(shell, block.text, persona, { texts: { 'prompt.xml': 'hi\n' }, ...alloc });
@@ -1758,7 +1773,16 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               strictEqual(shellSites(text, /state\.mjs" (set-terminal|ensemble-commit)\b/).length, 0, 'no set-terminal or ensemble-commit runs beside them');
               // Contract: the agent ending on an owner gate runs this commented form
               // in place of the typical finish — its flags record the gate in one write.
-              ok(/\n# node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" finish-verb \\\n#   --workflow-path "\$ACTIVE" --host "\$\{AGENTIC_HOST:-claude\}" \\\n#   --next-action-file "\$TEXT_DIR\/next-action\.txt" \\\n#   --next-step-kind owner-decision --next-step-confidence "\$CONFIDENCE" \\\n#   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' \|\| exit \$\?\n```$/.test(finalize.text + '\n```'), 'the commented owner-decision form ends the block');
+              // With dispatch_target on, the form closes the verb's operation too.
+              const ownerForm = [
+                '# node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \\',
+                '#   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \\',
+                ...(declaration(persona).capabilities.dispatch_target === true ? ['#   --operation-dir "$OP_DIR" \\'] : []),
+                '#   --next-action-file "$TEXT_DIR/next-action.txt" \\',
+                '#   --next-step-kind owner-decision --next-step-confidence "$CONFIDENCE" \\',
+                "#   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' || exit $?",
+              ].join('\n');
+              ok(`${finalize.text.replace(/\n$/, '')}`.endsWith(`\n${ownerForm}`), 'the commented owner-decision form ends the block');
               // Contract: the --owner-gate and --owner-gate-anchor values that form
               // takes, which state.mjs validates — the gates this verb may end with,
               // each with its anchor, between the last-write paragraph and the block.
@@ -2199,7 +2223,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
                 let s = block;
                 if (dir) s = s.replace(DISPATCH_DIR_LINE, () => 'DISPATCH_DIR="$TEXT_DIR/dispatch"');
                 if (verdict) s = s.replace(VERDICT_LINE, () => "VERDICT='agreed'");
-                return s.replace(CONFIDENCE_LINE, () => "CONFIDENCE='HIGH'");
+                return s.replace(CONFIDENCE_LINE, () => "CONFIDENCE='HIGH'").replace(OP_DIR_LINE, () => "OP_DIR=''");
               };
               const result = (content) => ({ ...runResult(), 'dispatch/prompt.xml.run.json': content });
               const cases = [
@@ -2536,14 +2560,31 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
             // reached there, and is reached where the block falls through.
             const AFTER = '\nnode "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append --workflow-path "$ACTIVE" --host claude';
             if (verb === 'decide') it('Owner selection, run: it finds the workflow, clears decide-conflict with the resolution and the next step, then finishes the verb; a failed find or clear, or no workflow, stops the block (PC2b DD7)', async () => {
-              const block = blockWith(/state\.mjs" awaiting-owner-clear \\/).text;
+              const asCommitted = blockWith(/state\.mjs" awaiting-owner-clear \\/).text;
               // Contract: the agent resolving the gate — the clear comes after the
               // finalize whose owner-decision form records it.
-              ok(text.indexOf(block) > text.indexOf('<!-- pipeline:end decide-finalize -->'), 'after Phase 2, whose owner-decision form records the gate');
+              ok(text.indexOf(asCommitted) > text.indexOf('<!-- pipeline:end decide-finalize -->'), 'after Phase 2, whose owner-decision form records the gate');
+              const dispatchTarget = declaration(persona).capabilities.dispatch_target === true;
+              strictEqual(GATE_OP_DIR_RE.test(asCommitted), dispatchTarget, 'the block takes the operation directory exactly where the persona has operations');
+              const block = gateOpDir(asCommitted);
               const CHAIN = { active: '/w/active.md', readOutput: '{"workflow_type":"verb-chain"}' };
               const r = await runBlock('bash', block, persona, CHAIN);
               strictEqual(r.status, 0, r.stderr);
               deepStrictEqual(r.log, ['find-active', 'read', 'awaiting-owner-clear', 'finish-verb']);
+              // ADR-0068 Decision 2, item 7: with no directory from Phase 0 the
+              // clear opens the resolution's operation in one the block makes, and
+              // the finish-verb closes it there; given Phase 0's, the clear
+              // continues it. Run as committed, the block stops before any write.
+              if (dispatchTarget) {
+                const made = / --operation-dir (\S+) --open-operation gate /.exec(r.argv[2])?.[1];
+                ok(made && r.argv[3].includes(` --operation-dir ${made} `), `one operation across the clear and the finish: ${r.argv[2]} / ${r.argv[3]}`);
+                const carried = await runBlock('bash', gateOpDir(asCommitted, '/op/phase0'), persona, CHAIN);
+                deepStrictEqual(carried.log, ['find-active', 'read', 'awaiting-owner-clear', 'finish-verb']);
+                ok(carried.argv[2].includes(' --operation-dir /op/phase0 ') && !carried.argv[2].includes('--open-operation'), carried.argv[2]);
+                ok(carried.argv[3].includes(' --operation-dir /op/phase0 '), carried.argv[3]);
+                const unfilled = await runBlock('bash', asCommitted, persona, CHAIN);
+                deepStrictEqual([unfilled.status, unfilled.log], [1, ['find-active', 'read']], 'an unfilled OP_DIR stops the block before any write');
+              }
               for (const part of [' --workflow-path /w/active.md ', ' --gate decide-conflict ', ` --resolution-file ${r.textDir}/resolution.txt `, ' --next-step-kind verb --next-step-verb compose --next-step-confidence HIGH']) ok(r.argv[2].includes(part), `${part}: ${r.argv[2]}`);
               deepStrictEqual(r.texts, [['--resolution-file', 'the resolution\n']], 'the resolution the agent wrote');
               ok(r.argv[3].includes(' --workflow-path /w/active.md ') && r.argv[3].includes(' --next-step-kind verb --next-step-verb compose --next-step-confidence HIGH'), r.argv[3]);
@@ -2571,6 +2612,14 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               // follows decide in one persona's lifecycle, explore in another's).
               ok(lifecycle.argv[2].includes(` --next-action Resume /${persona}:start: the lifecycle continues after decide with the selected direction --clear-next-step true`), lifecycle.argv[2]);
               ok(!/ --next-step-(kind|verb|confidence) /.test(lifecycle.argv[2]), `no next step inside the lifecycle: ${lifecycle.argv[2]}`);
+              ok(!lifecycle.argv[2].includes('--operation-dir'), `inside start, with none from Phase 0, the clear is its own one-write operation: ${lifecycle.argv[2]}`);
+              if (dispatchTarget) {
+                // Given Phase 0's directory inside start, where no finish-verb
+                // follows, the clear closes that operation.
+                const carriedStart = await runBlock('bash', gateOpDir(asCommitted, '/op/phase0'), persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
+                deepStrictEqual(carriedStart.log, ['find-active', 'read', 'awaiting-owner-clear']);
+                ok(carriedStart.argv[2].includes(' --operation-dir /op/phase0 --close-operation true '), carriedStart.argv[2]);
+              }
               const stopped = await runBlock('bash', block + AFTER, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
               deepStrictEqual([stopped.status, stopped.log], [0, ['find-active', 'read', 'awaiting-owner-clear']], 'inside start the block exits: nothing after it runs');
               const unread = await runBlock('bash', block, persona, { active: '/w/active.md', readOutput: '', readStatus: 5 });
@@ -2644,9 +2693,11 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
             });
 
             if (verb === 'refine') it('Owner decision, run: fix now clears recurring-finding with this refine next; defer clears it with commit next, then finishes the verb, where the persona waits for convergence only once converged (fail-closed); a failed find or clear, or no workflow, stops each block (PC2b U5b)', async () => {
-              const found = blocks.filter((b) => /state\.mjs" awaiting-owner-clear \\/.test(b.text)).map((b) => b.text);
-              strictEqual(found.length, 2, 'fix now and defer');
-              const [fix, deferAsCommitted] = found;
+              const committedBlocks = blocks.filter((b) => /state\.mjs" awaiting-owner-clear \\/.test(b.text)).map((b) => b.text);
+              strictEqual(committedBlocks.length, 2, 'fix now and defer');
+              const dispatchTarget = declaration(persona).capabilities.dispatch_target === true;
+              for (const b of committedBlocks) strictEqual(GATE_OP_DIR_RE.test(b), dispatchTarget, 'each block takes the operation directory exactly where the persona has operations');
+              const [fix, deferAsCommitted] = committedBlocks.map((b) => gateOpDir(b));
               const waits = convergent(persona, verb);
               // Contract: the test sets the defer block's CONVERGED line to run each
               // case; the agent fills it — without it a deferral always closes.
@@ -2657,13 +2708,24 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               const finalizeEnd = `<!-- pipeline:end ${waits ? 'refine-finalize-convergent' : 'refine-finalize'} -->`;
               // Contract: the agent resolving the gate — the clear comes after the
               // finalize whose owner-decision form records it.
-              ok(text.indexOf(fix) > text.indexOf(finalizeEnd) && text.indexOf(finalizeEnd) > 0, 'after Phase 2, whose owner-decision form records the gate');
+              ok(text.indexOf(committedBlocks[0]) > text.indexOf(finalizeEnd) && text.indexOf(finalizeEnd) > 0, 'after Phase 2, whose owner-decision form records the gate');
               const CHAIN = { active: '/w/active.md', readOutput: '{"workflow_type":"verb-chain"}' };
               const f = await runBlock('bash', fix, persona, CHAIN);
               strictEqual(f.status, 0, f.stderr);
               deepStrictEqual(f.log, ['find-active', 'read', 'awaiting-owner-clear']);
               for (const part of [' --workflow-path /w/active.md ', ' --gate recurring-finding ', ` --resolution-file ${f.textDir}/resolution.txt `, ' --next-action Fix the recurring finding in this refine, then re-critique ', ' --next-step-kind verb --next-step-verb refine --next-step-confidence HIGH']) ok(f.argv[2].includes(part), `${part}: ${f.argv[2]}`);
               deepStrictEqual(f.texts, [['--resolution-file', 'the resolution\n']], 'the resolution the agent wrote');
+              // ADR-0068 Decision 2, item 7: Fix now opens a verb operation the
+              // refine's phases then carry, and prints its directory for their
+              // finalize; given Phase 0's it continues that one.
+              if (dispatchTarget) {
+                const made = / --operation-dir (\S+) --open-operation verb /.exec(f.argv[2])?.[1];
+                ok(made && f.stdout.includes(`OP_DIR=${made}`), `fix now opens and prints its operation: ${f.argv[2]} / ${f.stdout}`);
+                const carried = await runBlock('bash', gateOpDir(committedBlocks[0], '/op/phase0'), persona, CHAIN);
+                ok(carried.argv[2].includes(' --operation-dir /op/phase0 ') && !carried.argv[2].includes('--open-operation'), carried.argv[2]);
+                const unfilled = await runBlock('bash', committedBlocks[0], persona, CHAIN);
+                deepStrictEqual([unfilled.status, unfilled.log], [1, ['find-active', 'read']], 'fix now: an unfilled OP_DIR stops the block before any write');
+              }
               // PC3b U1 (PC3 step-7 peer finding 1): inside a start lifecycle
               // Fix now clears the gate and stops, so this refine's own phases
               // (whose finalize is a terminal write) do not run before the
@@ -2687,6 +2749,10 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               const d = await runBlock('bash', defer, persona, CHAIN);
               strictEqual(d.status, 0, d.stderr);
               deepStrictEqual(d.log, ['find-active', 'read', 'awaiting-owner-clear', 'finish-verb']);
+              if (dispatchTarget) {
+                const made = / --operation-dir (\S+) --open-operation gate /.exec(d.argv[2])?.[1];
+                ok(made && d.argv[3].includes(` --operation-dir ${made} `), `defer: one operation across the clear and the finish: ${d.argv[2]} / ${d.argv[3]}`);
+              }
               for (const part of [' --workflow-path /w/active.md ', ' --gate recurring-finding ', ' --next-step-kind commit --next-step-confidence HIGH']) ok(d.argv[2].includes(part), `${part}: ${d.argv[2]}`);
               // The clear's next action is the one the deferral finishes with.
               const deferNext = / --next-action (.+?) --next-step-kind commit /.exec(d.argv[3])?.[1];

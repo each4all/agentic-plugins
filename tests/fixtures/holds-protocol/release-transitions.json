@@ -1,0 +1,39 @@
+{
+  "schema": "holds-release-transitions-1",
+  "about": "ADR-0068 Decision 2, items 4, 7 and 8; implementation note of 2026-10-25, N7. The states of one hold and its release as the persona's refusals assume them; the orchestrator (impl-hold) implements them. A state with no transition out is terminal for that hold: only a new hold (a new hold_id) gives the lane back.",
+  "states": ["pending", "held", "released-uncompared", "consumed", "rejected", "withdrawn", "retired", "orphaned"],
+  "initial": "pending",
+  "terminal": ["consumed", "rejected", "withdrawn", "retired", "orphaned"],
+  "transitions": [
+    { "from": "pending", "event": "handoff-complete", "to": "held" },
+    { "from": "pending", "event": "release-same-hold-id", "to": "withdrawn" },
+    { "from": "pending", "event": "done", "to": "retired" },
+    { "from": "pending", "event": "orphan", "to": "orphaned" },
+    { "from": "held", "event": "release-same-hold-id", "to": "released-uncompared" },
+    { "from": "held", "event": "done", "to": "retired" },
+    { "from": "held", "event": "orphan", "to": "orphaned" },
+    { "from": "released-uncompared", "event": "compare-equal", "to": "consumed" },
+    { "from": "released-uncompared", "event": "compare-different", "to": "rejected" },
+    { "from": "released-uncompared", "event": "done", "to": "retired" },
+    { "from": "released-uncompared", "event": "orphan", "to": "orphaned" }
+  ],
+  "refused": [
+    { "from": "pending", "event": "release-other-hold-id", "why": "a release names the hold it ends, never a newer one" },
+    { "from": "held", "event": "release-other-hold-id", "why": "a release names the hold it ends, never a newer one" },
+    { "from": "held", "event": "release-while-operation-open", "why": "it refuses while a writer may still be active in the lane" },
+    { "from": "held", "event": "bare-release", "why": "a bare release refuses on a held lane" },
+    { "from": "released-uncompared", "event": "bare-release", "why": "a bare release refuses on a lane whose release has not been compared" },
+    { "from": "rejected", "event": "compare-equal", "why": "a rejected release is not compared again" },
+    { "from": "consumed", "event": "compare-equal", "why": "a release is consumed once" }
+  ],
+  "persona_reads": {
+    "pending": { "record": { "state": "held" }, "applies": true },
+    "held": { "record": { "state": "held" }, "applies": true },
+    "released-uncompared": { "record": { "state": "released" }, "applies": false },
+    "consumed": { "record": { "state": "released" }, "applies": false },
+    "rejected": { "record": { "state": "released" }, "applies": false },
+    "withdrawn": { "record": { "state": "released" }, "applies": false },
+    "retired": { "record": { "state": "retired" }, "applies": false },
+    "orphaned": { "record": { "state": "held", "orphaned": { "at": "2026-10-25T00:00:00Z", "why": "left the plan" } }, "applies": false }
+  }
+}

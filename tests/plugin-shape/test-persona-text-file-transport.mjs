@@ -190,13 +190,13 @@ const FILE_FLAGS = ['--phase-note-file', '--summary-file', '--next-action-file',
 // The variables the retired forms carried agent text in.
 const TEXT_VARS = /^(NOTE|SUMMARY|RESOLUTION|OWNER_RESOLUTION|APPROVED_SUBJECT|SUBJECT|PROMPT_ARG|PROMPT_TEXT|REQUEST)=/;
 // The variables a block may have the agent fill from a placeholder: the
-// directories it created with mktemp (a dispatch's DISPATCH_DIR and a
-// resume's READ_DIR among them, R4), enums it validated (a finalize's VERDICT,
+// directories it created with mktemp (a dispatch's DISPATCH_DIR, a
+// resume's READ_DIR, R4, and a Phase 0's OP_DIR, ADR-0068 Decision 2), enums it validated (a finalize's VERDICT,
 // and its CONFIDENCE and RESOLVE_VERB, each checked by a `case` before any
 // write, R4 K3), and a workflow path a
 // program printed. The user's `archive <workflow-id>` reaches
 // resolve-workflow as a file in TEXT_DIR (C134(a)), never as a variable.
-const PLACEHOLDER_VARS = new Set(['TEXT_DIR', 'ARGS_DIR', 'DISPATCH_DIR', 'READ_DIR', 'VERDICT', 'CONFIDENCE', 'RESOLVE_VERB', 'PEER', 'CONVERGED', 'AGENTIC_DESIGNER_PROFILE', 'WORKFLOW']);
+const PLACEHOLDER_VARS = new Set(['TEXT_DIR', 'ARGS_DIR', 'DISPATCH_DIR', 'OP_DIR', 'READ_DIR', 'VERDICT', 'CONFIDENCE', 'RESOLVE_VERB', 'PEER', 'CONVERGED', 'AGENTIC_DESIGNER_PROFILE', 'WORKFLOW']);
 
 // The inline values a block may give a free-text flag: fixed literals, an
 // enum placeholder (the profile), the expansion of a literal assigned in the

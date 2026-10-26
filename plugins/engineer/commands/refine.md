@@ -84,6 +84,11 @@ unwritten stops it before any write. When `AGENTIC_TOPIC` is set (a dispatched
 run), the block writes it to a file of its own and records that instead, and
 steps 1–2 are not needed.
 
+The block prints `OP_DIR=<path>`, this command's operation directory: when
+the workflow is a macro's child, its write opens the command's persona
+operation there (ADR-0068 Decision 2, item 7). Keep the path for the finalize
+block's `OP_DIR`.
+
 ```bash
 TEXT_DIR='<directory from step 1>'
 ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
@@ -135,6 +140,10 @@ if [ -n "${AGENTIC_TOPIC:-}" ]; then
   printf '%s\n' "$AGENTIC_TOPIC" > "$REQUEST_FILE" || exit 1
 fi
 grep -q '[^[:space:]]' "$REQUEST_FILE" 2>/dev/null || { echo "✗ request.txt in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was written." >&2; exit 1; }
+# ADR-0068 Decision 2, item 7 — this command's operation directory: the
+# create opens the command's persona operation there when it creates a
+# macro's child, and the finalize block's last write closes it.
+OP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-op.XXXXXX")" || exit 1
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
   --repo-root "$REPO_ROOT" \
   --verb 'refine' --host "${AGENTIC_HOST:-claude}" --persona 'engineer' \
@@ -143,13 +152,20 @@ ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
   --original-request-file "$REQUEST_FILE" \
   --current-phase phase-0-bootstrap \
   --next-action "Run ${VERB} skill" \
+  --operation-dir "$OP_DIR" \
   "${PARENT_ARGS[@]}")" || exit $?
+echo "OP_DIR=$OP_DIR"
 ```
 <!-- pipeline:end refine-bootstrap -->
 
 Non-empty `$ACTIVE` → append-on-resume:
 
 <!-- pipeline:begin refine-resume -->
+The block prints `OP_DIR=<path>`, this command's operation directory: when
+the workflow is a macro's child, its write opens the command's persona
+operation there (ADR-0068 Decision 2, item 7). Keep the path for the finalize
+block's `OP_DIR`.
+
 ```bash
 ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
@@ -161,13 +177,19 @@ REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
 [ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
 VERB='refine'
+# ADR-0068 Decision 2, item 7 — this command's operation directory: this
+# first write opens the command's persona operation there when the workflow
+# is a macro's child, and the finalize block's last write closes it.
+OP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-op.XXXXXX")" || exit 1
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --verb 'refine' \
+  --operation-dir "$OP_DIR" --open-operation verb \
   --phase-label "Phase 0: Resume into ${VERB}" \
   --phase-note "Resumed from prior verb." \
   --current-phase phase-0-resume \
   --clear-next-step true \
   --next-action "Run ${VERB} skill" --event resumed || exit $?
+echo "OP_DIR=$OP_DIR"
 ```
 <!-- pipeline:end refine-resume -->
 
@@ -504,11 +526,19 @@ under the gate's heading in the note:
 The owner-decision form below records the gate with the next step in one
 write and leaves the workflow open, not terminal, until the owner resolves it.
 
+Set `OP_DIR` to the operation directory the Phase 0 bootstrap or resume block
+printed (`OP_DIR=<path>`), or leave it empty when it printed none: the last
+write, `finish-verb` (or, where this block has one, the write that keeps the
+workflow open), closes there the persona operation Phase 0 opened when the
+workflow is a macro's child (ADR-0068 Decision 2, item 7). A value left
+unfilled stops the block before any write.
+
 ```bash
 TEXT_DIR='<directory from step 1>'
 DISPATCH_DIR='<the directory the dispatch block ran with; empty when no run launched; the run ledger directory when a run launched and that directory is gone>'
 VERDICT='<the synthesis verdict>'
 CONFIDENCE='<HIGH|MEDIUM|LOW>'
+OP_DIR='<the operation directory the Phase 0 block printed as OP_DIR; empty when it printed none>'
 ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
@@ -519,6 +549,9 @@ PERSONA='engineer'
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
 [ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch; nothing was written." >&2; exit 1; }
+case "$OP_DIR" in
+  *'<'*) echo "✗ OP_DIR is not set to the operation directory Phase 0 printed (empty when it printed none); nothing was written." >&2; exit 1 ;;
+esac
 case "$VERDICT" in
   ''|*'<'*) echo "✗ VERDICT is not set to the synthesis verdict; nothing was written." >&2; exit 1 ;;
 esac
@@ -635,6 +668,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
 # core/skills/_shared/references/session-handoff.md § Archive timing.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+  --operation-dir "$OP_DIR" \
   --next-action-file "$TEXT_DIR/next-action.txt" \
   --next-step-kind verb --next-step-verb 'critique' \
   --next-step-confidence "$CONFIDENCE" || exit $?
@@ -643,6 +677,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
 # open until the owner resolves the gate.
 # node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
 #   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+#   --operation-dir "$OP_DIR" \
 #   --next-action-file "$TEXT_DIR/next-action.txt" \
 #   --next-step-kind owner-decision --next-step-confidence "$CONFIDENCE" \
 #   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' || exit $?
@@ -728,12 +763,21 @@ shell source a quote, `$`, backtick or line of it would be read as code
 Then run the block with `TEXT_DIR` set to that directory; a resolution left
 unwritten stops it before any write.
 
+Set `OP_DIR` in either block to the operation directory this run's Phase 0
+printed (`OP_DIR=<path>`) when you resolve the gate in a later run of the
+verb; leave it empty when Phase 0 printed none, and when you resolve it right
+after this refine's own finalize, which closed that operation. The block then
+opens one (ADR-0068 Decision 2, item 7): Fix now prints its `OP_DIR`, which
+the finalize of the phases it runs takes; Defer closes it with its
+`finish-verb`.
+
 **Fix now.** Clear the gate with this refine as the next step, then run the
 phases above on that finding, as usual (inside a `/engineer:start`
 lifecycle, resume the lifecycle instead):
 
 ```bash
 TEXT_DIR='<directory from step 1>'
+OP_DIR='<the operation directory Phase 0 of this run printed as OP_DIR; empty when it printed none or the finalize of this refine already ran>'
 ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
@@ -760,10 +804,30 @@ if [ "$WF_TYPE" = start ]; then
 else
   NEXT_ACTION='Fix the recurring finding in this refine, then re-critique'
 fi
+# ADR-0068 Decision 2, item 7 — the clear is a write of this refine's persona
+# operation: the one Phase 0 opened (OP_DIR set), or, with OP_DIR empty, one the
+# clear opens in a directory this block makes and prints, which the finalize
+# of the phases below closes. Inside a /start lifecycle, where the phases do
+# not run, the clear closes the operation Phase 0 opened, or is its own
+# operation's one write.
+case "$OP_DIR" in
+  *'<'*) echo "✗ OP_DIR is not set to the operation directory this run's Phase 0 printed (empty when it printed none, or when this refine's finalize already ran); nothing was written." >&2; exit 1 ;;
+esac
+OP_ARGS=()
+if [ -n "$OP_DIR" ] && [ "$WF_TYPE" = start ]; then
+  OP_ARGS=(--operation-dir "$OP_DIR" --close-operation true)
+elif [ -n "$OP_DIR" ]; then
+  OP_ARGS=(--operation-dir "$OP_DIR")
+elif [ "$WF_TYPE" != start ]; then
+  OP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-op.XXXXXX")" || exit 1
+  OP_ARGS=(--operation-dir "$OP_DIR" --open-operation verb)
+fi
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" awaiting-owner-clear \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --gate recurring-finding \
+  "${OP_ARGS[@]}" \
   --resolution-file "$TEXT_DIR/resolution.txt" --next-action "$NEXT_ACTION" \
   --next-step-kind verb --next-step-verb refine --next-step-confidence HIGH || exit $?
+[ -z "$OP_DIR" ] || echo "OP_DIR=$OP_DIR"
 if [ "$WF_TYPE" = start ]; then
   echo "→ Gate cleared. Resume the lifecycle with /${PERSONA}:start (\$${PERSONA}:start on Codex); its refine phase fixes the finding." >&2
   exit 0
@@ -776,6 +840,7 @@ none), then end the verb:
 
 ```bash
 TEXT_DIR='<directory from step 1>'
+OP_DIR='<the operation directory Phase 0 of this run printed as OP_DIR; empty when it printed none or the finalize of this refine already ran>'
 ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
@@ -800,8 +865,26 @@ if [ "$WF_TYPE" = start ]; then
 else
   NEXT_ACTION='Commit the refined change; the recurring finding is deferred'
 fi
+# ADR-0068 Decision 2, item 7 — the clear and the finish-verb below are one
+# persona operation: the one this run's Phase 0 opened (OP_DIR set), or, with
+# OP_DIR empty, one the clear opens in a directory this block makes. Inside a
+# /start lifecycle, where no finish-verb follows, the clear closes the operation
+# Phase 0 opened, or is its own operation's one write.
+case "$OP_DIR" in
+  *'<'*) echo "✗ OP_DIR is not set to the operation directory this run's Phase 0 printed (empty when it printed none, or when this refine's finalize already ran); nothing was written." >&2; exit 1 ;;
+esac
+OP_ARGS=()
+if [ -n "$OP_DIR" ] && [ "$WF_TYPE" = start ]; then
+  OP_ARGS=(--operation-dir "$OP_DIR" --close-operation true)
+elif [ -n "$OP_DIR" ]; then
+  OP_ARGS=(--operation-dir "$OP_DIR")
+elif [ "$WF_TYPE" != start ]; then
+  OP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-op.XXXXXX")" || exit 1
+  OP_ARGS=(--operation-dir "$OP_DIR" --open-operation gate)
+fi
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" awaiting-owner-clear \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --gate recurring-finding \
+  "${OP_ARGS[@]}" \
   --resolution-file "$TEXT_DIR/resolution.txt" --next-action "$NEXT_ACTION" \
   --next-step-kind commit --next-step-confidence HIGH || exit $?
 if [ "$WF_TYPE" = start ]; then
@@ -817,6 +900,7 @@ fi
 # core/skills/_shared/references/session-handoff.md § Archive timing.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+  --operation-dir "$OP_DIR" \
   --next-action 'Commit the refined change; the recurring finding is deferred' \
   --next-step-kind commit --next-step-confidence HIGH || exit $?
 ```

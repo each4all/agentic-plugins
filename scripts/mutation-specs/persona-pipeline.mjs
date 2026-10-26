@@ -415,13 +415,13 @@ export const MUTATIONS = [
   },
   {
     id: 'O24', tests: [T_STOP],
-    prepare: (copy, tools) => canonicalDefect(copy, tools, { dest: 'scripts/stop-archive.mjs', from: 'archive({ workflowPath, host, repoRoot, recheck: sweepGateFailures })', to: 'archive({ workflowPath, host, repoRoot })' }),
+    prepare: (copy, tools) => canonicalDefect(copy, tools, { dest: 'scripts/stop-archive.mjs', from: 'archive({ workflowPath, host, repoRoot, recheck })', to: 'archive({ workflowPath, host, repoRoot })' }),
     killed_by: /the sweep, deleted branch: an owner gate written between/,
     why: 'the sweep archives a deleted branch\'s workflow on the gates of its first read',
   },
   {
     id: 'O25', tests: [T_STOP],
-    prepare: (copy, tools) => canonicalDefect(copy, tools, { dest: 'scripts/stop-archive.mjs', from: '      recheck: (locked) => evaluateStopArchive({ frontmatter: locked, headSha: tip.sha, headSubject: tip.subject }).gateFailures,\n', to: '' }),
+    prepare: (copy, tools) => canonicalDefect(copy, tools, { dest: 'scripts/stop-archive.mjs', from: "      recheck: (locked) => [\n        ...evaluateStopArchive({ frontmatter: locked, headSha: tip.sha, headSubject: tip.subject }).gateFailures,\n        ...sweepRecheck(locked).filter((g) => g === 'open_operation'),\n      ],\n", to: '' }),
     killed_by: /the sweep, kept branch: an owner gate written between/,
     why: 'the sweep archives a kept branch\'s workflow on the gates of its first read',
   },
@@ -963,7 +963,7 @@ export const MUTATIONS = [
   {
     id: 'G46', tests: ['tests/persona-pipeline/test-footer-activation.mjs'],
     prepare: (copy, tools) => {
-      tools.applyEdit(copy, { file: 'persona-pipeline/files/scripts/state.mjs', from: "          // session-handoff sidecar.\n          emitHandoff: true,\n        });\n        if (result.mode === 'autopilot') {", to: "          // session-handoff sidecar.\n          emitHandoff: false,\n        });\n        if (result.mode === 'autopilot') {" });
+      tools.applyEdit(copy, { file: 'persona-pipeline/files/scripts/state.mjs', from: "          // session-handoff sidecar.\n          emitHandoff: true,\n          // ADR-0068 Decision 2 (N4) — the verb's last write closes its operation.\n          operationDir: flags['operation-dir'],\n        });\n        if (result.mode === 'autopilot') {", to: "          // session-handoff sidecar.\n          emitHandoff: false,\n        });\n        if (result.mode === 'autopilot') {" });
       regenerate(copy);
     },
     killed_by: [/CLI finish-verb renders the footer on STDERR like set-terminal/],
@@ -1986,7 +1986,7 @@ export const MUTATIONS = [
   // Dropped with C1 (E1 rule 3): M42 — prose no program reads and no run, order, stop or hand-off depends on.
   {
     id: 'M43', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-finalize-convergent.md', from: "  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" append \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n    --current-phase phase-2-presented \\\n", to: "  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" set-terminal \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n    --terminal-phase summary-complete \\\n" }),
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-finalize-convergent.md', from: "  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" append \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n  {{#capability dispatch_target}}\n    --operation-dir \"$OP_DIR\" --close-operation true \\\n  {{/capability}}\n    --current-phase phase-2-presented \\\n", to: "  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" set-terminal \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n  {{#capability dispatch_target}}\n    --operation-dir \"$OP_DIR\" \\\n  {{/capability}}\n    --terminal-phase summary-complete \\\n" }),
     killed_by: [inSuite('designer/commands/refine.md (committed)', /^refine finalize, run: /)],
     why: 'a refine that did not converge closes the workflow anyway: its paused write becomes a terminal write (PC2b U5b, DD5)',
   },
@@ -2814,8 +2814,8 @@ export const MUTATIONS = [
     id: 'N30', tests: [T_CHAR],
     prepare: (copy, tools) => templateDefect(copy, tools, {
       template: 'regions/verb-bootstrap.md',
-      from: '  --next-action "Run ${VERB} skill" \\\n  "${PARENT_ARGS[@]}")" || exit $?\n',
-      to: '  --next-action "Run ${VERB} skill")" || exit $?\n',
+      from: '  --operation-dir "$OP_DIR" \\\n  "${PARENT_ARGS[@]}")" || exit $?\n',
+      to: '  --operation-dir "$OP_DIR")" || exit $?\n',
     }),
     killed_by: /verb runbook characterization \(PC2a2 T0\) > engineer\/frame > does what the fixture recorded/,
     why: "engineer's frame bootstrap drops the parent linkage, so a subtask /orchestrator:next dispatched records no parent (ADR-0019 §3)",
@@ -2845,8 +2845,8 @@ export const MUTATIONS = [
     id: 'N34', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, {
       template: 'regions/verb-bootstrap-profiled.md',
-      from: '  --next-action "Run ${VERB} skill" \\\n  "${PARENT_ARGS[@]}")" || exit $?\n',
-      to: '  --next-action "Run ${VERB} skill" \\\n  "${PARENT_ARGS[@]}")"\n',
+      from: '  --operation-dir "$OP_DIR" \\\n  "${PARENT_ARGS[@]}")" || exit $?\n',
+      to: '  --operation-dir "$OP_DIR" \\\n  "${PARENT_ARGS[@]}")"\n',
     }),
     killed_by: /engineer\/commands\/compose\.md \(committed\) > bootstrap and resume write the workflow Phase 0 found, after it, and each stops the block when it fails \(PD6\)$/,
     why: "engineer's compose bootstrap no longer stops when create fails",
@@ -2949,8 +2949,8 @@ export const MUTATIONS = [
     id: 'N45', tests: [T_VERB_RB],
     prepare: (copy, tools) => templateDefect(copy, tools, {
       template: 'regions/refine-owner-decision.md',
-      from: '--next-step-kind verb --next-step-verb refine --next-step-confidence HIGH || exit $?\nif [ "$WF_TYPE" = start ]; then\n',
-      to: '--next-step-kind verb --next-step-verb refine --next-step-confidence HIGH || exit $?\nif [ "$WF_TYPE" = never ]; then\n',
+      from: '{{/capability}}\nif [ "$WF_TYPE" = start ]; then\n  echo "→ Gate cleared. Resume the lifecycle with /${PERSONA}:start (\\$${PERSONA}:start on Codex); its refine phase fixes the finding." >&2\n',
+      to: '{{/capability}}\nif [ "$WF_TYPE" = never ]; then\n  echo "→ Gate cleared. Resume the lifecycle with /${PERSONA}:start (\\$${PERSONA}:start on Codex); its refine phase fixes the finding." >&2\n',
     }),
     killed_by: /(?:^| > )engineer: verb runbook blocks \(bash, committed\) > refine's Owner decision: each block resolves the workflow itself/,
     why: "engineer's Fix now inside an /engineer:start lifecycle goes on to run the refine's own phases, whose finalize makes the terminal write before the lifecycle's Phase 7",
