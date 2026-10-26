@@ -75,6 +75,17 @@ the catalog pin has moved to it, before sharing a gated workflow. Recovery
 goes forward only: upgrade the host that is behind, never rewrite the file
 for an older one.
 
+## Held lanes (ADR-0068 Decision 2)
+
+founder is not a target of `/orchestrator:next`, so no founder workflow is
+a macro's child. Once a hold-aware orchestrator marks a macro's holds
+directory, founder refuses to bootstrap a workflow on the branch of a lane
+the owner holds, and anywhere in the repository while a hold record that
+may hold the branch cannot be read
+([ADR-0068](../../docs/adr/0068-autopilot-lanes-that-keep-going.md), its
+implementation note of 2026-10-25). A `persona_operations` field in a founder
+workflow file is kept as it is, never read.
+
 ## Roadmap status (ADR-0036 §Implementation Roadmap)
 
 | PR | Scope | Status |
