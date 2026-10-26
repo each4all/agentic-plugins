@@ -46,8 +46,16 @@ if [ -z "$BASE_HEAD_CHECK" ] || ! git cat-file -e "$BASE_HEAD_CHECK^{commit}" 2>
 else
   # The note the agent wrote with its file tool: state.mjs reads it itself.
   grep -q '[^[:space:]]' "$TEXT_DIR/note.md" 2>/dev/null || { echo "✗ note.md in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was written." >&2; exit 1; }
+{{#capability dispatch_target}}
+  # ADR-0068 Decision 2, item 7 — the marker is this command's one write: on
+  # a macro's child, an operation of one write (kind resume), never beside
+  # another operation open in its lane.
+{{/capability}}
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+{{#capability dispatch_target}}
+    --once-operation resume \
+{{/capability}}
     --phase-label "Resume" --phase-note-file "$TEXT_DIR/note.md" \
     --event resumed
 fi

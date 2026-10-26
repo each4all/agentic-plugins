@@ -839,7 +839,7 @@ for (const persona of personasFor('scripts/state.mjs')) {
       await mkdir(join(readerDir, '.claude-plugin'));
       await writeFile(join(scripts, 'state.mjs'), src.replace(keyLine, '').replace(kinds, "new Set(['verb', 'commit', 'owner-decision', 'done'])"));
       await copyFile(P.path('scripts/validate-commit.mjs'), join(scripts, 'validate-commit.mjs'));
-      for (const lib of ['cli-entry.mjs', 'persona.mjs', 'state-root.mjs', 'review-scope.mjs', 'peer-snapshot.mjs', 'process-identity.mjs', 'verify.mjs']) {
+      for (const lib of ['cli-entry.mjs', 'persona.mjs', 'state-root.mjs', 'review-scope.mjs', 'peer-snapshot.mjs', 'process-identity.mjs', 'verify.mjs', 'holds.mjs']) {
         await copyFile(P.path(`scripts/lib/${lib}`), join(scripts, 'lib', lib));
       }
       await copyFile(P.path('persona.json'), join(readerDir, 'persona.json'));

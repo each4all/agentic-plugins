@@ -80,6 +80,11 @@ unwritten stops it before any write. When `AGENTIC_TOPIC` is set (a dispatched
 run), the block writes it to a file of its own and records that instead, and
 steps 1–2 are not needed.
 
+The block prints `OP_DIR=<path>`, this command's operation directory: when
+the workflow is a macro's child, its write opens the command's persona
+operation there (ADR-0068 Decision 2, item 7). Keep the path for the finalize
+block's `OP_DIR`.
+
 ```bash
 TEXT_DIR='<directory from step 1>'
 ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
@@ -131,6 +136,10 @@ if [ -n "${AGENTIC_TOPIC:-}" ]; then
   printf '%s\n' "$AGENTIC_TOPIC" > "$REQUEST_FILE" || exit 1
 fi
 grep -q '[^[:space:]]' "$REQUEST_FILE" 2>/dev/null || { echo "✗ request.txt in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was written." >&2; exit 1; }
+# ADR-0068 Decision 2, item 7 — this command's operation directory: the
+# create opens the command's persona operation there when it creates a
+# macro's child, and the finalize block's last write closes it.
+OP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-op.XXXXXX")" || exit 1
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
   --repo-root "$REPO_ROOT" \
   --verb 'frame' --host "${AGENTIC_HOST:-claude}" --persona 'engineer' \
@@ -139,13 +148,20 @@ ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
   --original-request-file "$REQUEST_FILE" \
   --current-phase phase-0-bootstrap \
   --next-action "Run ${VERB} skill" \
+  --operation-dir "$OP_DIR" \
   "${PARENT_ARGS[@]}")" || exit $?
+echo "OP_DIR=$OP_DIR"
 ```
 <!-- pipeline:end frame-bootstrap -->
 
 Non-empty `$ACTIVE` → append-on-resume:
 
 <!-- pipeline:begin frame-resume -->
+The block prints `OP_DIR=<path>`, this command's operation directory: when
+the workflow is a macro's child, its write opens the command's persona
+operation there (ADR-0068 Decision 2, item 7). Keep the path for the finalize
+block's `OP_DIR`.
+
 ```bash
 ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
@@ -157,13 +173,19 @@ REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
 [ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
 VERB='frame'
+# ADR-0068 Decision 2, item 7 — this command's operation directory: this
+# first write opens the command's persona operation there when the workflow
+# is a macro's child, and the finalize block's last write closes it.
+OP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-op.XXXXXX")" || exit 1
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --verb 'frame' \
+  --operation-dir "$OP_DIR" --open-operation verb \
   --phase-label "Phase 0: Resume into ${VERB}" \
   --phase-note "Resumed from prior verb." \
   --current-phase phase-0-resume \
   --clear-next-step true \
   --next-action "Run ${VERB} skill" --event resumed || exit $?
+echo "OP_DIR=$OP_DIR"
 ```
 <!-- pipeline:end frame-resume -->
 
@@ -410,11 +432,19 @@ under the gate's heading in the note:
 The owner-decision form below records the gate with the next step in one
 write and leaves the workflow open, not terminal, until the owner resolves it.
 
+Set `OP_DIR` to the operation directory the Phase 0 bootstrap or resume block
+printed (`OP_DIR=<path>`), or leave it empty when it printed none: the last
+write, `finish-verb` (or, where this block has one, the write that keeps the
+workflow open), closes there the persona operation Phase 0 opened when the
+workflow is a macro's child (ADR-0068 Decision 2, item 7). A value left
+unfilled stops the block before any write.
+
 ```bash
 TEXT_DIR='<directory from step 1>'
 DISPATCH_DIR='<the directory the dispatch block ran with; empty when no run launched; the run ledger directory when a run launched and that directory is gone>'
 VERDICT='<the synthesis verdict>'
 CONFIDENCE='<HIGH|MEDIUM|LOW>'
+OP_DIR='<the operation directory the Phase 0 block printed as OP_DIR; empty when it printed none>'
 ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
@@ -425,6 +455,9 @@ PERSONA='engineer'
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
 [ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch; nothing was written." >&2; exit 1; }
+case "$OP_DIR" in
+  *'<'*) echo "✗ OP_DIR is not set to the operation directory Phase 0 printed (empty when it printed none); nothing was written." >&2; exit 1 ;;
+esac
 case "$VERDICT" in
   ''|*'<'*) echo "✗ VERDICT is not set to the synthesis verdict; nothing was written." >&2; exit 1 ;;
 esac
@@ -541,6 +574,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
 # core/skills/_shared/references/session-handoff.md § Archive timing.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+  --operation-dir "$OP_DIR" \
   --next-action-file "$TEXT_DIR/next-action.txt" \
   --next-step-kind verb --next-step-verb 'decide' \
   --next-step-confidence "$CONFIDENCE" || exit $?
@@ -549,6 +583,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
 # open until the owner resolves the gate.
 # node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
 #   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+#   --operation-dir "$OP_DIR" \
 #   --next-action-file "$TEXT_DIR/next-action.txt" \
 #   --next-step-kind owner-decision --next-step-confidence "$CONFIDENCE" \
 #   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' || exit $?

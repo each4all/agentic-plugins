@@ -124,6 +124,11 @@ Then run the block with `TEXT_DIR` set to that directory and `PEER` to the
 dispatch. Keep the directory: the runner writes its result there,
 `prompt.xml.run.json`, and its stderr, `prompt.xml.err`; the `[Peer]` note
 step reads the run from the result.
+The block also keeps there the workflow the consultation is for,
+`prompt.xml.workflow` (empty for none), to which alone the note step appends,
+and, on a macro's child, the consultation's operation directory, `op`
+(ADR-0068 Decision 2, item 7). A directory that holds `op` already dispatched
+a consultation: the block refuses it, so take a fresh one for each.
 
 ```bash
 TEXT_DIR='<directory from step 1>'
@@ -145,6 +150,28 @@ echo "peer-now run_id=$RUN_ID" >&2
 # line or path of it is shell source. The runner reads it.
 PROMPT_FILE="$TEXT_DIR/prompt.xml"
 grep -q '[^[:space:]]' "$PROMPT_FILE" 2>/dev/null || { echo "✗ prompt.xml in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was dispatched." >&2; exit 1; }
+# ADR-0068 Decision 2, item 7 — a consultation on a macro's child is a persona
+# operation (kind peer), registered before the launch: its run names no
+# workflow, so the lane sees it only so. It opens in its operation directory,
+# op beside the prompt, with a write of the entry alone; a refusal (another
+# operation open in the lane, holds that cannot be read) stops the launch, and
+# the [Peer] note step, or a failure below, ends it. Scripts that do not know
+# holds (no hold-capability) open none.
+ACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" \
+  || { echo "✗ find-active failed (its error is above); resolve it with the resume skill first. Nothing was dispatched." >&2; exit 1; }
+# The workflow this consultation is for: the note step appends to it alone.
+printf '%s\n' "$ACTIVE" > "$TEXT_DIR/prompt.xml.workflow" || { echo "✗ Could not record the consultation's workflow in TEXT_DIR ($TEXT_DIR); nothing was dispatched." >&2; exit 1; }
+OP_DIR=''
+if [ -n "$ACTIVE" ] && node "<plugin-root>/scripts/state.mjs" hold-capability >/dev/null 2>&1; then
+  OP_DIR="$TEXT_DIR/op"
+  # A fresh directory for each consultation: run again from this one, the
+  # block would launch a second run under the first one's operation.
+  mkdir -m 700 "$OP_DIR" || { echo "✗ TEXT_DIR ($TEXT_DIR) already holds a consultation's operation directory, or op cannot be made there: dispatch each consultation from a fresh directory. Nothing was dispatched." >&2; exit 1; }
+  node "<plugin-root>/scripts/state.mjs" operation \
+    --workflow-path "$ACTIVE" --host "$HOST" \
+    --operation-dir "$OP_DIR" --open-operation peer >/dev/null \
+    || { echo "✗ The consultation's operation could not open on $ACTIVE (the reason is above); nothing was dispatched." >&2; exit 1; }
+fi
 
 node "<plugin-root>/scripts/peer-runner.mjs" run \
   --repo-root "$REPO_ROOT" --run-id "$RUN_ID" --kind peer-now \
@@ -157,6 +184,20 @@ STDOUT_PATH="$(node -e 'try{process.stdout.write((JSON.parse(require("fs").readF
 STDERR_PATH="$(node -e 'try{process.stdout.write((JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).stderr_path)||"")}catch{}' "$RUN_JSON")"
 HANDLE_PATH="$(node -e 'try{process.stdout.write((JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).handle_path)||"")}catch{}' "$RUN_JSON")"
 ERROR_KIND="$(node -e 'try{process.stdout.write((JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).error_kind)||"")}catch{}' "$RUN_JSON")"
+# A failed consultation gets no note, so its operation ends here, once the
+# runner's own result says the run ended. A runner that left no result (it was
+# killed, and its peer may still run) leaves the operation open for the owner.
+RUN_STATUS="$(node -e 'try{process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).status||""))}catch{}' "$RUN_JSON")"
+if [ "$RUN_RC" -ne 0 ] && [ -n "$OP_DIR" ]; then
+  case "$RUN_STATUS" in
+    failed|cancelled|orphaned)
+      node "<plugin-root>/scripts/state.mjs" operation \
+        --workflow-path "$ACTIVE" --host "$HOST" \
+        --operation-dir "$OP_DIR" --close-operation true \
+        || { echo "✗ The consultation's operation on $ACTIVE could not end (the reason is above); it stays open until the owner clears it." >&2; } ;;
+    *) echo "✗ peer-now run $RUN_ID left no ended result, so its operation on $ACTIVE stays open: once the run is over (peer-runner.mjs status), the owner clears it." >&2 ;;
+  esac
+fi
 # The runner's exit status is this block's own (R4 J3): a failed consultation
 # stops here, where the agent sees it, and the [Peer] note step refuses it too.
 [ "$RUN_RC" -eq 0 ] || { echo "✗ peer-now run $RUN_ID failed (exit $RUN_RC${ERROR_KIND:+, $ERROR_KIND}); $RUN_ERR${STDERR_PATH:+ and $STDERR_PATH} say why. No note is appended for it." >&2; exit "$RUN_RC"; }
@@ -201,6 +242,13 @@ Locate the active workflow with `state.mjs find-active`:
   `find-active` itself, and reads the run from that result file. Append only
   when that file reads `ok: true`: any other result is a failed consultation,
   reported, with no note (R4 J3).
+  Append only to the workflow the dispatch kept in its directory as
+  `prompt.xml.workflow` (empty for none): a workflow found now that the
+  consultation was not for gets no note. When the dispatch's directory holds
+  `op`, the operation directory the dispatch opened the consultation's
+  operation in, pass `--operation-dir <that directory>/op --close-operation
+  true` with the append: the note is its last write (ADR-0068 Decision 2,
+  item 7).
 - **Per-branch duplicate error** → reject with a hint pointing at the
   `resume` meta skill. Do NOT pick a workflow yourself.
 <!-- pipeline:end peer-now-label -->

@@ -93,6 +93,26 @@ current release ships:
   on ([ADR-0067](../../docs/adr/0067-autopilot-worktree-lanes-and-proposals.md)
   Decision 1; [`docs/runbooks/state-root-cutover.md`](../../docs/runbooks/state-root-cutover.md)).
   Git queries (branch, HEAD, the clean check) stay on the checkout.
+- **Held lanes** ([ADR-0068](../../docs/adr/0068-autopilot-lanes-that-keep-going.md)
+  Decision 2, the persona's half; its implementation note of 2026-10-25).
+  Nothing changes until a hold-aware orchestrator marks a macro's holds
+  directory (its `protocol.json`). From then on the verbs,
+  `/engineer:commit`, a checkpoint, a gate resolution, `/engineer:resume`
+  and `/engineer:peer-now` run on that macro's child as persona operations,
+  one at a time in a lane; one that spans several writes is recorded on
+  the child (`persona_operations`) until its last. An operation's first
+  write is refused while the marker or the operation records cannot be
+  read. A `finish-verb`
+  leaves the workflow open while the owner holds the lane, a park is kept,
+  or a macro run is live. In a lane the owner holds, a write to the child is
+  refused unless an operation the owner has not cleared is open on it, or
+  it is a Stop or PreCompact snapshot, the settlement of a peer run the
+  child records, or a verification step's result (a verification batch's
+  start is refused even then). An unlinked bootstrap is refused on a held
+  lane's branch, and anywhere in the repository while a hold record that
+  may hold its branch cannot be read.
+  `state.mjs hold-capability` and `state.mjs content-digest` are what the
+  orchestrator reads.
 
 Both hosts can invoke engineer verbs in **command-invoked mode**
 (local subagent dispatch + peer ensemble dispatch). On Claude Code

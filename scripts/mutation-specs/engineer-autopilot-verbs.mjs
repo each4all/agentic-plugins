@@ -36,8 +36,8 @@ const COMMIT_MD = 'plugins/engineer/commands/commit.md';
 export const TESTS = [T_AV, T_EC, T_RB, T_SH, T_CR];
 
 // beginCommit precedes the whole-set index check and the commit loop (C84).
-const BEGIN_COMMIT_LOOP = '  await beginCommit({ workflowPath, host: flags.host });\n  // C84 — the whole staging set is checked';
-const LOOP_ONLY = '  // C84 — the whole staging set is checked';
+const BEGIN_COMMIT_LOOP = '  const { operation: id } = await beginCommit({ workflowPath, host: flags.host });\n  return underCommitOperation({ workflowPath, flags, stderr, id }, () => commitAll({';
+const LOOP_ONLY = '  const id = null;\n  return underCommitOperation({ workflowPath, flags, stderr, id }, () => commitAll({';
 // T_EC wraps its cases in a persona loop (ADR-0066 Stage 3), two spaces deeper.
 const PHASE_ASSERT = "        deepStrictEqual([fm.current_phase, fm.terminal_marker], ['phase-7-commit', false]);\n";
 const INHERITED_MARKER_SETUP =

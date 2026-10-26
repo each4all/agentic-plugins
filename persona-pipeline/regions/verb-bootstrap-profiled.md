@@ -20,6 +20,13 @@ unwritten stops it before any write. When `AGENTIC_TOPIC` is set (a dispatched
 run), the block writes it to a file of its own and records that instead, and
 steps 1–2 are not needed.
 
+{{#capability dispatch_target}}
+The block prints `OP_DIR=<path>`, this command's operation directory: when
+the workflow is a macro's child, its write opens the command's persona
+operation there (ADR-0068 Decision 2, item 7). Keep the path for the finalize
+block's `OP_DIR`.
+
+{{/capability}}
 ```bash
 TEXT_DIR='<directory from step 1>'
 ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
@@ -74,6 +81,12 @@ if [ -n "${AGENTIC_TOPIC:-}" ]; then
   printf '%s\n' "$AGENTIC_TOPIC" > "$REQUEST_FILE" || exit 1
 fi
 grep -q '[^[:space:]]' "$REQUEST_FILE" 2>/dev/null || { echo "✗ request.txt in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was written." >&2; exit 1; }
+{{#capability dispatch_target}}
+# ADR-0068 Decision 2, item 7 — this command's operation directory: the
+# create opens the command's persona operation there when it creates a
+# macro's child, and the finalize block's last write closes it.
+OP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-op.XXXXXX")" || exit 1
+{{/capability}}
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
   --repo-root "$REPO_ROOT" \
   --verb {{verb}} --host "${AGENTIC_HOST:-claude}" --persona {{name}} \
@@ -87,6 +100,8 @@ ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
 {{/capability}}
 {{#capability dispatch_target}}
   --next-action "Run ${VERB} skill" \
+  --operation-dir "$OP_DIR" \
   "${PARENT_ARGS[@]}")" || exit $?
+echo "OP_DIR=$OP_DIR"
 {{/capability}}
 ```

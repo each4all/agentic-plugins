@@ -8121,6 +8121,454 @@
         ]
       },
       "why": "R4 (C119, C26) the runner allocates the run id the dispatch passes, so no shell arithmetic or hand-written date makes it, and an allocation that prints nothing stops the block before the dispatch"
+    },
+    {
+      "runbooks": [
+        "engineer/compose",
+        "engineer/critique",
+        "engineer/decide",
+        "engineer/frame",
+        "engineer/investigate",
+        "engineer/refine"
+      ],
+      "op": "add-flag",
+      "where": "call:state.mjs create:--operation-dir",
+      "from": "--next-action",
+      "to": "$OP_DIR",
+      "why": "HP ADR-0068 Decision 2, item 7 (implementation note N4): with dispatch_target on, the first write opens the command's persona operation in the operation directory it makes and prints, and the last write closes it there (the bootstrap)"
+    },
+    {
+      "runbooks": [
+        "engineer/compose",
+        "engineer/critique",
+        "engineer/decide",
+        "engineer/frame",
+        "engineer/investigate",
+        "engineer/refine"
+      ],
+      "op": "add-flag",
+      "where": "call:state.mjs append#1:--operation-dir",
+      "from": "--verb",
+      "to": "$OP_DIR",
+      "why": "HP ADR-0068 Decision 2, item 7 (implementation note N4): with dispatch_target on, the first write opens the command's persona operation in the operation directory it makes and prints, and the last write closes it there (the resume)"
+    },
+    {
+      "runbooks": [
+        "engineer/compose",
+        "engineer/critique",
+        "engineer/decide",
+        "engineer/frame",
+        "engineer/investigate",
+        "engineer/refine"
+      ],
+      "op": "add-flag",
+      "where": "call:state.mjs append#1:--open-operation",
+      "from": "--operation-dir",
+      "to": "verb",
+      "why": "HP ADR-0068 Decision 2, item 7 (implementation note N4): with dispatch_target on, the first write opens the command's persona operation in the operation directory it makes and prints, and the last write closes it there (the resume opens a verb operation)"
+    },
+    {
+      "runbooks": [
+        "engineer/compose",
+        "engineer/critique",
+        "engineer/decide",
+        "engineer/frame",
+        "engineer/investigate",
+        "engineer/refine"
+      ],
+      "op": "add-flag",
+      "where": "call:state.mjs finish-verb#1:--operation-dir",
+      "from": "--host",
+      "to": "<the operation directory the Phase 0 block printed as OP_DIR; empty when it printed none>",
+      "why": "HP ADR-0068 Decision 2, item 7 (implementation note N4): with dispatch_target on, the first write opens the command's persona operation in the operation directory it makes and prints, and the last write closes it there (the typical last write)"
+    },
+    {
+      "runbooks": [
+        "engineer/critique",
+        "engineer/decide",
+        "engineer/investigate"
+      ],
+      "op": "add-flag",
+      "where": "call:state.mjs finish-verb#2:--operation-dir",
+      "from": "--host",
+      "to": "<the operation directory the Phase 0 block printed as OP_DIR; empty when it printed none>",
+      "why": "HP ADR-0068 Decision 2, item 7 (implementation note N4): with dispatch_target on, the first write opens the command's persona operation in the operation directory it makes and prints, and the last write closes it there (the conflict gate's last write)"
+    },
+    {
+      "runbooks": [
+        "engineer/decide"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs awaiting-owner-clear",
+      "from": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "decide-conflict"
+          ],
+          [
+            "--resolution-file",
+            "<directory from step 1>/resolution.txt"
+          ],
+          [
+            "--next-action",
+            "Compose the artifact for the chosen direction"
+          ],
+          [
+            null,
+            "${NEXT_STEP[@]}"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "decide-conflict"
+          ],
+          [
+            null,
+            "${OP_ARGS[@]}"
+          ],
+          [
+            "--resolution-file",
+            "<directory from step 1>/resolution.txt"
+          ],
+          [
+            "--next-action",
+            "Compose the artifact for the chosen direction"
+          ],
+          [
+            null,
+            "${NEXT_STEP[@]}"
+          ]
+        ]
+      },
+      "why": "HP ADR-0068 Decision 2, item 7 (implementation note N4): a gate resolution is one persona operation across its clear and the finish-verb after it, so the clear takes the operation this run's Phase 0 opened, or opens one in a directory the block makes"
+    },
+    {
+      "runbooks": [
+        "engineer/decide"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs finish-verb#3",
+      "from": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--next-action",
+            "Compose the artifact for the chosen direction"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "compose"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--operation-dir",
+            "<the operation directory Phase 0 of this run printed as OP_DIR; empty when it printed none or the finalize of this verb already ran>"
+          ],
+          [
+            "--next-action",
+            "Compose the artifact for the chosen direction"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "compose"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "why": "HP ADR-0068 Decision 2, item 7 (implementation note N4): the finish-verb after a gate's clear closes the resolution's persona operation in its directory"
+    },
+    {
+      "runbooks": [
+        "engineer/refine"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs awaiting-owner-clear#1",
+      "from": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "recurring-finding"
+          ],
+          [
+            "--resolution-file",
+            "<directory from step 1>/resolution.txt"
+          ],
+          [
+            "--next-action",
+            "Fix the recurring finding in this refine, then re-critique"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "refine"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "recurring-finding"
+          ],
+          [
+            null,
+            "${OP_ARGS[@]}"
+          ],
+          [
+            "--resolution-file",
+            "<directory from step 1>/resolution.txt"
+          ],
+          [
+            "--next-action",
+            "Fix the recurring finding in this refine, then re-critique"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "refine"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "why": "HP ADR-0068 Decision 2, item 7 (implementation note N4): a gate resolution is one persona operation across its clear and the finish-verb after it, so the clear takes the operation this run's Phase 0 opened, or opens one in a directory the block makes"
+    },
+    {
+      "runbooks": [
+        "engineer/refine"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs awaiting-owner-clear#2",
+      "from": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "recurring-finding"
+          ],
+          [
+            "--resolution-file",
+            "<directory from step 1>/resolution.txt"
+          ],
+          [
+            "--next-action",
+            "Commit the refined change; the recurring finding is deferred"
+          ],
+          [
+            "--next-step-kind",
+            "commit"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "recurring-finding"
+          ],
+          [
+            null,
+            "${OP_ARGS[@]}"
+          ],
+          [
+            "--resolution-file",
+            "<directory from step 1>/resolution.txt"
+          ],
+          [
+            "--next-action",
+            "Commit the refined change; the recurring finding is deferred"
+          ],
+          [
+            "--next-step-kind",
+            "commit"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "why": "HP ADR-0068 Decision 2, item 7 (implementation note N4): a gate resolution is one persona operation across its clear and the finish-verb after it, so the clear takes the operation this run's Phase 0 opened, or opens one in a directory the block makes"
+    },
+    {
+      "runbooks": [
+        "engineer/refine"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs finish-verb#2",
+      "from": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--next-action",
+            "Commit the refined change; the recurring finding is deferred"
+          ],
+          [
+            "--next-step-kind",
+            "commit"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--operation-dir",
+            "<the operation directory Phase 0 of this run printed as OP_DIR; empty when it printed none or the finalize of this refine already ran>"
+          ],
+          [
+            "--next-action",
+            "Commit the refined change; the recurring finding is deferred"
+          ],
+          [
+            "--next-step-kind",
+            "commit"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "why": "HP ADR-0068 Decision 2, item 7 (implementation note N4): the finish-verb after a gate's clear closes the resolution's persona operation in its directory"
     }
   ],
   "runbooks": {

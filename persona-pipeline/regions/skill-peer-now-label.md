@@ -19,5 +19,14 @@ Locate the active workflow with `state.mjs find-active`:
   `find-active` itself, and reads the run from that result file. Append only
   when that file reads `ok: true`: any other result is a failed consultation,
   reported, with no note (R4 J3).
+{{#capability dispatch_target}}
+  Append only to the workflow the dispatch kept in its directory as
+  `prompt.xml.workflow` (empty for none): a workflow found now that the
+  consultation was not for gets no note. When the dispatch's directory holds
+  `op`, the operation directory the dispatch opened the consultation's
+  operation in, pass `--operation-dir <that directory>/op --close-operation
+  true` with the append: the note is its last write (ADR-0068 Decision 2,
+  item 7).
+{{/capability}}
 - **Per-branch duplicate error** → reject with a hint pointing at the
   `resume` meta skill. Do NOT pick a workflow yourself.

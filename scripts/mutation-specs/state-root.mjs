@@ -479,8 +479,8 @@ export const MUTATIONS = [
   // ---- U: one writable copy (U2b) -------------------------------------------
   {
     id: 'U1', file: STATE, tests: [T_WRITERS],
-    from: "    await assertSingleCopy(workflowPath);\n    const held = ",
-    to: "    const held = ",
+    from: "    await assertSingleCopy(workflowPath);\n    // ADR-0068 Decision 2, item 7 — checked holding the lock, so a hold set\n    // while this writer waits for it is seen.\n    await admitLaneWriter(workflowPath, { writer, runId });\n    const held = ",
+    to: "    // ADR-0068 Decision 2, item 7 — checked holding the lock, so a hold set\n    // while this writer waits for it is seen.\n    await admitLaneWriter(workflowPath, { writer, runId });\n    const held = ",
     why: "a write goes to one of two copies of a workflow",
     killed_by: /a workflow held at one relative path under two roots refuses every write to either file/,
   },
@@ -800,8 +800,8 @@ export const MUTATIONS = [
   },
   {
     id: 'V18', file: STATE, tests: [T_WRITERS],
-    from: "hold = true } = {}) {\n  const lockPath = fileLockPath(workflowPath);\n  const token = await acquireLock(lockPath);\n  let releaseOk = false;\n  try {\n    // ADR-0067 Decision 4, item 2 — checked holding the lock, so a copy that\n    // appears while this writer waits for it is seen.\n    await assertSingleCopy(workflowPath);",
-    to: "hold = true } = {}) {\n  await assertSingleCopy(workflowPath);\n  const lockPath = fileLockPath(workflowPath);\n  const token = await acquireLock(lockPath);\n  let releaseOk = false;\n  try {",
+    from: "(LANE_WRITERS)`);\n  const lockPath = fileLockPath(workflowPath);\n  const token = await acquireLock(lockPath);\n  let releaseOk = false;\n  try {\n    // ADR-0067 Decision 4, item 2 — checked holding the lock, so a copy that\n    // appears while this writer waits for it is seen.\n    await assertSingleCopy(workflowPath);",
+    to: "(LANE_WRITERS)`);\n  await assertSingleCopy(workflowPath);\n  const lockPath = fileLockPath(workflowPath);\n  const token = await acquireLock(lockPath);\n  let releaseOk = false;\n  try {",
     why: 'the copy check runs before the lock, so a copy made while the writer waits is missed',
     killed_by: /the copy check runs holding the lock/,
   },
@@ -2862,8 +2862,8 @@ export const MUTATIONS = [
   ...lockMutations_RE('RE', 5, ORCH_RE, [O_RE], TWO_LOCKS_RE),
   // M9 — a writer forced onto the single-lock path at its call site.
   { id: 'RE9', file: ENG_RE, tests: [W_RE],
-    from: 'return withCreationLocks(storage, ({ lockPath, token, outer }) =>',
-    to: 'return withDirectoryLock(storage.stateRoot, ({ lockPath, token, outer }) =>',
+    from: 'withOperation(operation, () => withCreationLocks(storage, ({ lockPath, token, outer }) =>',
+    to: 'withOperation(operation, () => withDirectoryLock(storage.stateRoot, ({ lockPath, token, outer }) =>',
     why: 'persona create takes only the record home lock', killed_by: /create waits on the repository's creation lock/ },
   { id: 'RE10', file: ENG_RE, tests: [W_RE],
     from: 'return withCreationLocks(sourceStorage, async () => {',

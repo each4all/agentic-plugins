@@ -39,6 +39,7 @@ import {
   ENSEMBLE_RESULTS_RETENTION_CAP,
   assertWorkflowWritable,
   commitEnsemble,
+  LANE_WRITER_REFUSED,
   parseWorkflowFile,
   readTextArgumentFile,
   recordPendingEnsemble,
@@ -621,9 +622,12 @@ async function materializePrompt({ paths, promptText, promptFile, retainPrompt }
 }
 
 // `env` is the run's (runPeer's `env`): the step's, whose attempt the pending
-// entry is held to (ADR-0068 Decision 5), never this process's own.
+// entry is held to (ADR-0068 Decision 5), never this process's own. A held
+// lane's refusal (ADR-0068 Decision 2, item 7) is returned, so the run stops
+// before its companion is spawned; any other failure is reported and the run
+// goes on, as before.
 async function recordPendingIfEnsemble(handle, env) {
-  if (handle.kind !== 'ensemble') return;
+  if (handle.kind !== 'ensemble') return null;
   try {
     await recordPendingEnsemble({
       workflowPath: handle.workflow_path,
@@ -635,10 +639,12 @@ async function recordPendingIfEnsemble(handle, env) {
       env,
     });
   } catch (err) {
+    if (err?.code === LANE_WRITER_REFUSED) return err;
     process.stderr.write(
       `peer-runner: pending registration failed (continuing): ${err.message}\n`,
     );
   }
+  return null;
 }
 
 async function verifiedProcessForHandle(handle) {
@@ -806,7 +812,17 @@ async function runPeerInCheckout(args) {
     });
     promptCleanup = prompt.cleanup;
 
-    await recordPendingIfEnsemble(await readHandle(paths.handle), options.env);
+    const refused = await recordPendingIfEnsemble(await readHandle(paths.handle), options.env);
+    if (refused !== null) {
+      process.stderr.write(`peer-runner: ${refused.message}\n`);
+      const failed = await updateHandle(paths.handle, (h) => {
+        h.status = 'failed';
+        h.completed_at = nowIso();
+        h.exit_code = 3;
+        h.error_kind = 'held_lane';
+      });
+      return runResult(paths, failed, { ok: false, companionPath: null });
+    }
 
     const companion = await resolveCompanion(options.peer, { env: options.env });
     const companionPath = companion.path;

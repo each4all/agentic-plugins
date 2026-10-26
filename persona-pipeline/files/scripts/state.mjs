@@ -60,7 +60,7 @@ import {
 } from 'node:fs/promises';
 import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, dirname, basename, isAbsolute, resolve as resolvePath } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { hrtime, pid } from 'node:process';
 // ADR-0018 §sub-2 — `currentGitBranch` shells out to `git branch
 // --show-current` for branch-keyed active workflow lookup. This is
@@ -75,6 +75,27 @@ import { assertSafePath } from './validate-commit.mjs';
 import { isCliEntry } from './lib/cli-entry.mjs';
 import { capabilityOn, commandPrefix, loadPersona, personaName, personaOrRefuse, stateDirRel } from './lib/persona.mjs';
 import { captureWorkingTree } from './lib/peer-snapshot.mjs';
+import {
+  HOLD_PERSONA_CAPABILITY,
+  HOLDS_PROTOCOL,
+  OPERATION_ID_RE,
+  heldLaneOfBranch,
+  holdApplies,
+  isSafeMacroId,
+  isSafeSubtaskId,
+  laneHoldFacts,
+  mainWorktreeRoot as holdsMainRoot,
+  newOperationId,
+  operationCleared,
+  opRecordState,
+  publishOpRecord,
+  readActivation,
+  readOperationTransport,
+  readOps,
+  readOwnerHold,
+  removeOpRecord,
+  writeOperationTransport,
+} from './lib/holds.mjs';
 import {
   MAX_REQUEST_BYTES,
   MAX_RESULTS_BYTES,
@@ -968,8 +989,16 @@ export async function withDirectoryLock(repoRoot, fn, opts = {}) {
  * outside any run, and for a file that does not exist yet. `hold: false` is
  * for a lock on a path that holds no workflow of this one (an archive
  * destination).
+ *
+ * `writer` names the write's class in the inventory of ADR-0068 Decision 2,
+ * item 7 (LANE_WRITERS): holding the lock, a write of a macro's child outside
+ * any persona operation is refused while its subtask is held (admitLaneWriter);
+ * `runId` is the run a settlement settles.
  */
-export async function withFileLock(workflowPath, fn, { env = process.env, host = env.AGENTIC_HOST || 'claude', hold = true } = {}) {
+export async function withFileLock(workflowPath, fn, {
+  env = process.env, host = env.AGENTIC_HOST || 'claude', hold = true, writer = LANE_WRITERS.plain, runId = null,
+} = {}) {
+  if (!LANE_WRITER_CLASSES.has(writer)) throw new Error(`withFileLock: ${JSON.stringify(writer)} is no writer class (LANE_WRITERS)`);
   const lockPath = fileLockPath(workflowPath);
   const token = await acquireLock(lockPath);
   let releaseOk = false;
@@ -977,6 +1006,9 @@ export async function withFileLock(workflowPath, fn, { env = process.env, host =
     // ADR-0067 Decision 4, item 2 — checked holding the lock, so a copy that
     // appears while this writer waits for it is seen.
     await assertSingleCopy(workflowPath);
+    // ADR-0068 Decision 2, item 7 — checked holding the lock, so a hold set
+    // while this writer waits for it is seen.
+    await admitLaneWriter(workflowPath, { writer, runId });
     const held = hold ? await admitWrite(workflowPath, { env, host }) : null;
     const result = await fn({ lockPath, token, held });
     releaseOk = true;
@@ -1570,6 +1602,9 @@ const DISPATCHED_KEYS = Object.freeze(['dispatched_branch', 'dispatched_verb', '
 // another next step, the mark does not.
 const VERIFY_RECORD_KEYS = Object.freeze(['verify_request', 'verify_results']);
 const VERIFY_KEYS = Object.freeze(['verify_attempt', 'verify_handoff', ...VERIFY_RECORD_KEYS]);
+const PERSONA_OPERATIONS_KEY = 'persona_operations';
+// The JSON-document scalars: decoded at parse, encoded at serialize.
+const JSON_DOCUMENT_KEYS = Object.freeze([...VERIFY_KEYS, PERSONA_OPERATIONS_KEY]);
 let keyOrderCache = null;
 function frontmatterKeyOrder() {
   if (keyOrderCache !== null) return keyOrderCache;
@@ -1599,6 +1634,12 @@ function frontmatterKeyOrder() {
   // forward-compat carrier byte for byte once the next step is no longer
   // `verify` (lib/verify.mjs).
   order.push(...VERIFY_KEYS);
+  // ADR-0068 Decision 2, item 9 (implementation note of 2026-10-25, N4) —
+  // the persona operations open on a macro's child: one JSON document in a
+  // double-quoted scalar, last of all, so a reader that does not know it
+  // (an earlier release, or a persona with dispatch_target off) carries it
+  // through its forward-compat carrier byte for byte.
+  if (capabilityOn('dispatch_target')) order.push(PERSONA_OPERATIONS_KEY);
   keyOrderCache = Object.freeze(order);
   return keyOrderCache;
 }
@@ -1796,8 +1837,8 @@ function serializeFrontmatter(fm) {
       continue;
     }
 
-    if (VERIFY_KEYS.includes(key)) {
-      // ADR-0068 Decision 5 — a JSON document in one double-quoted scalar.
+    if (JSON_DOCUMENT_KEYS.includes(key)) {
+      // ADR-0068 Decisions 2 and 5 — a JSON document in one double-quoted scalar.
       lines.push(`${key}: ${yamlScalar(JSON.stringify(value))}`);
       continue;
     }
@@ -2061,9 +2102,11 @@ export function parseWorkflowFile(text) {
     }
   }
 
-  // ADR-0068 Decision 5 — the verify scalars hold JSON documents; the
-  // validator below reads the decoded objects.
-  for (const key of VERIFY_KEYS) {
+  // ADR-0068 Decisions 2 and 5 — the verify scalars and the persona
+  // operations hold JSON documents; the validator below reads the decoded
+  // objects. Only a key this persona knows is decoded: with dispatch_target
+  // off, persona_operations stays in the carrier, opaque.
+  for (const key of JSON_DOCUMENT_KEYS) {
     if (!(key in fm)) continue;
     if (typeof fm[key] !== 'string') throw new Error(`${key} must be a JSON document in a double-quoted scalar`);
     try {
@@ -2279,6 +2322,39 @@ function validateSchema14Fields(fm) {
   validateNextStepFields(fm);
   validateAwaitingOwnerFields(fm);
   validateVerifyFields(fm);
+  if (PERSONA_OPERATIONS_KEY in fm) validatePersonaOperations(fm[PERSONA_OPERATIONS_KEY]);
+}
+
+// ADR-0068 Decision 2 (implementation note of 2026-10-25, N4) — the open
+// persona operations of a macro's child: `{v: 1, ops: [{id, kind, opened_at,
+// ext}]}`. A document of a later version (`v` above 1) is carried as read,
+// never interpreted: the operation commands refuse beside it.
+export const PERSONA_OPERATIONS_VERSION = 1;
+const PERSONA_OPERATION_KINDS = new Set(['verb', 'commit', 'checkpoint', 'gate', 'peer', 'resume', 'archive']);
+function validatePersonaOperations(doc) {
+  const where = PERSONA_OPERATIONS_KEY;
+  if (doc === null || typeof doc !== 'object' || Array.isArray(doc) || !Number.isInteger(doc.v) || doc.v < 1) {
+    throw new Error(`${where} must be a document {v, ops} with a positive integer v`);
+  }
+  if (doc.v > PERSONA_OPERATIONS_VERSION) return;
+  for (const k of Object.keys(doc)) {
+    if (k !== 'v' && k !== 'ops') throw new Error(`${where}: unknown field ${JSON.stringify(k)} (expected v, ops)`);
+  }
+  if (!Array.isArray(doc.ops)) throw new Error(`${where}.ops must be a list`);
+  const ids = new Set();
+  for (const [i, op] of doc.ops.entries()) {
+    const at = `${where}.ops[${i}]`;
+    if (op === null || typeof op !== 'object' || Array.isArray(op)) throw new Error(`${at} must be an object`);
+    for (const k of Object.keys(op)) {
+      if (!['id', 'kind', 'opened_at', 'ext'].includes(k)) throw new Error(`${at}: unknown field ${JSON.stringify(k)}`);
+    }
+    if (typeof op.id !== 'string' || !OPERATION_ID_RE.test(op.id)) throw new Error(`${at}.id is not an operation id (op-<yyyymmddThhmmssZ>-<8 hex>)`);
+    if (ids.has(op.id)) throw new Error(`${at}.id ${op.id} is listed twice`);
+    ids.add(op.id);
+    if (!PERSONA_OPERATION_KINDS.has(op.kind)) throw new Error(`${at}.kind must be one of ${[...PERSONA_OPERATION_KINDS].join(', ')}`);
+    validateIsoUtc(`${at}.opened_at`, op.opened_at);
+    if (typeof op.ext !== 'boolean') throw new Error(`${at}.ext must be true or false`);
+  }
 }
 
 // The next step's own keys: each enum, and how they pair. A proposal is
@@ -2678,6 +2754,9 @@ export async function createWorkflowUnderLock({
   // under an autopilot run records the creating step's attempt mark with it.
   env = process.env,
   now = new Date(),
+  // ADR-0068 Decision 2 (N4) — the operation the bootstrap opens, from
+  // createWorkflow (prepareOperation): it joins the child in this write.
+  operation = NO_OPERATION,
 }, ownership = null) {
   validateVerb(verb);
   validateHost(host);
@@ -2823,6 +2902,21 @@ export async function createWorkflowUnderLock({
     frontmatter.dispatched_profile = dispatchSelection.profile ?? '';
     frontmatter.dispatched_topic = dispatchSelection.topic ?? '';
   }
+  // ADR-0020 Sub-decision 6 — a /start lifecycle is engineer-internal and
+  // never a dispatched child; in a macro a hold-aware orchestrator runs for
+  // (N2), one made a child by hand would write it outside any persona
+  // operation (ADR-0068 Decision 2, item 7), so it is refused there.
+  if (workflowType === 'start' && 'parent_workflow' in frontmatter && isSafeMacroId(frontmatter.parent_workflow)) {
+    const activation = readActivation(holdsMainRoot(repoRoot), frontmatter.parent_workflow);
+    if (activation.state !== 'inactive') {
+      throw new Error(
+        `Cannot create workflow — a /start lifecycle is never a macro's child (ADR-0020 Sub-decision 6), and in ` +
+          `${frontmatter.parent_workflow}, which a hold-aware orchestrator runs for (${activation.state}: ${activation.path}), ` +
+          `it would write the child outside any persona operation (ADR-0068 Decision 2, item 7). Create it with no ` +
+          `parent linkage, or as the verb the dispatch names. Nothing was written.`,
+      );
+    }
+  }
 
   const title = bodyTitle ?? `${persona}:${verb}`;
   const body =
@@ -2841,9 +2935,57 @@ export async function createWorkflowUnderLock({
   const attempt = verifyAttemptOf({ env, host });
   if (attempt !== null) await admitCreation(searched, gitBaseline.branch, attempt);
   if (attempt !== null) markAttempt(frontmatter, { attempt, before: handoffState(frontmatter), bound: false, mark: undefined });
-  await atomicWrite(filePath, assembleWorkflowFile(frontmatter, body), ownership);
+  operation.inLock(frontmatter);
+  // ADR-0068 Decision 2, item 5 — read again once the workflow is published,
+  // holding its lock: a hold set after createWorkflow's first read and before
+  // this one withdraws it, so a hold that misses the workflow is one set after
+  // it was there to be seen.
+  await withFileLock(filePath, async () => {
+    await atomicWrite(filePath, assembleWorkflowFile(frontmatter, body), ownership);
+    try {
+      assertNotUnlinkedInHeldLane(repoRoot, gitBaseline.branch, frontmatter);
+      // Item 7 — a linked bootstrap is its operation's first write: one with
+      // none (an earlier runbook, a create by hand) is refused in a held lane.
+      const refusal = laneWriterRefusal(filePath, frontmatter, { writer: writerOf(operation) });
+      if (refusal !== null) throw laneWriterError(refusal);
+    } catch (err) {
+      await unlink(filePath);
+      throw err;
+    }
+  }, { env, host, hold: false, writer: LANE_WRITERS.create });
 
   return { workflowId, filePath, frontmatter, body };
+}
+
+/**
+ * Decision 2, item 5 — refuses a bootstrap of `branch` that carries no
+ * dispatch linkage to the lane holding it (heldLaneOfBranch): every bootstrap
+ * of designer and founder, and an engineer's with none or another lane's.
+ * Inert where no hold-aware orchestrator runs (N2, item 9); refused while a
+ * holds directory or record that may hold the branch cannot be read (item 8).
+ */
+function assertNotUnlinkedInHeldLane(repoRoot, branch, { parent_workflow: macroId, originating_subtask: subtaskId }) {
+  const linked = capabilityOn('dispatch_target') && isSafeMacroId(macroId) && isSafeSubtaskId(subtaskId)
+    ? { macroId, subtaskId }
+    : null;
+  const lane = heldLaneOfBranch(holdsMainRoot(repoRoot), branch, { linked });
+  if (lane.state === 'held') {
+    throw new Error(
+      `Cannot create workflow — branch '${branch}' is a held lane of ${lane.macroId} (subtask ${lane.subtaskId}: ` +
+        `${lane.why}), and a workflow begun there with no dispatch linkage is one the driver could not resume ` +
+        `(ADR-0068 Decision 2, item 5). Work the lane's active child, when it has one; otherwise work the lane by ` +
+        `hand (a commit, a push), or have the owner release it for the driver ` +
+        `(release ${lane.subtaskId} --hold ${lane.holdId}). Nothing was written.`,
+    );
+  }
+  if (lane.state === 'unreadable') {
+    throw new Error(
+      `Cannot create workflow on branch '${branch}' — ${lane.path} cannot be read (${lane.error}), so whether the ` +
+        `branch is a held lane cannot be told (ADR-0068 Decision 2, items 5 and 8). Run it again once it reads; ` +
+        `an owner's record that cannot be read is the owner's to discard ` +
+        `(release <subtask-id> --discard-unreadable). Nothing was written.`,
+    );
+  }
 }
 
 // What is wrong with a dispatch selection for a workflow created for
@@ -2905,12 +3047,29 @@ export function creationPlacement({ repoRoot, parentWorkflow, parentWorkflowPath
   return placement;
 }
 
-export async function createWorkflow(args) {
+export async function createWorkflow({ operationDir, operationKind = 'verb', ...args }) {
+  // ADR-0068 Decision 2, item 5 — a bootstrap with no dispatch linkage in a
+  // held lane is refused before anything is published: the driver could not
+  // resume a workflow it does not know. A linked bootstrap continues its own
+  // lane's dispatch, admitted as its operation (N4). Read again once the
+  // workflow is written (createWorkflowUnderLock).
+  assertNotUnlinkedInHeldLane(args.repoRoot, args.gitBaseline?.branch, {
+    parent_workflow: args.parentWorkflow, originating_subtask: args.originatingSubtask,
+  });
   const placement = creationPlacement(args);
   const storage = await resolveWorkflowStorage(placement.root, { mode: 'write' });
-  return withCreationLocks(storage, ({ lockPath, token, outer }) =>
-    createWorkflowUnderLock(args, { lockPath, token, outer, storage }),
-  );
+  // ADR-0068 Decision 2 (N4, N5) — a bootstrap of a macro's child opens its
+  // operation: its record is published before the creation locks are taken,
+  // and withdrawn after they are released when the create is refused.
+  const operation = await prepareOperation({
+    point: 'open', kind: operationKind, operationDir, host: args.host, env: args.env ?? process.env, now: args.now ?? new Date(),
+    create: {
+      repoRoot: args.repoRoot, parentWorkflow: args.parentWorkflow, originatingSubtask: args.originatingSubtask, branch: args.gitBaseline?.branch,
+    },
+  });
+  return withOperation(operation, () => withCreationLocks(storage, ({ lockPath, token, outer }) =>
+    createWorkflowUnderLock({ ...args, operation }, { lockPath, token, outer, storage }),
+  ));
 }
 
 // -----------------------------------------------------------------------------
@@ -3022,6 +3181,16 @@ export async function appendPhase({
   // the last request and its results in the same write (ADR-0068 Decision 5).
   dropVerifyRequest = false,
   event = 'resumed',
+  // ADR-0068 Decision 2 (N4) — the command's operation directory, and whether
+  // this write opens its operation (`openOperation`, the kind) or closes it
+  // (`closeOperation`). Without a directory the write is as before.
+  operationDir,
+  openOperation,
+  closeOperation = false,
+  // N4 — or a point of a child operation (`{ point, kind }`,
+  // prepareChildOperation): the staging-set gate an autopilot commit records
+  // is its operation's one write.
+  childOperation,
   // The step's environment: under an autopilot run, every write of a
   // workflow is held to the attempt mark (withFileLock, ADR-0068 Decision 5).
   env = process.env,
@@ -3030,16 +3199,30 @@ export async function appendPhase({
   validateHost(host);
   validateHookEvent(event);
   if (verb !== undefined) validateVerb(verb);
+  if (openOperation !== undefined && closeOperation) {
+    throw new Error('a write opens its operation or closes it, not both');
+  }
+  if (childOperation !== undefined && (openOperation !== undefined || closeOperation || operationDir !== undefined)) {
+    throw new Error('a write takes an operation directory or a child operation, not both');
+  }
   if (typeof clearTerminalMarker !== 'boolean') {
     throw new Error(`clearTerminalMarker must be a boolean (got ${typeof clearTerminalMarker})`);
   }
   const nextStepWrite = resolveNextStepWrite(nextStep, clearNextStep);
   const gateFields = ownerGate === undefined ? null : resolveOwnerGateFields({ workflowPath, ownerGate, now });
+  const operation = childOperation !== undefined
+    ? await prepareChildOperation({ ...childOperation, workflowPath, host, env, now })
+    : openOperation !== undefined || closeOperation
+      ? await prepareOperation({
+        point: closeOperation ? 'close' : 'open', kind: openOperation, operationDir, workflowPath, host, env, now,
+      })
+      : NO_OPERATION;
 
-  return withFileLock(workflowPath, async (ownership) => {
+  return withOperation(operation, () => withFileLock(workflowPath, async (ownership) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     const nowIso = isoUtc(now);
+    operation.inLock(frontmatter);
 
     if (verb !== undefined) frontmatter.verb = verb;
     if (profile !== undefined) frontmatter.profile = profile;
@@ -3069,7 +3252,7 @@ export async function appendPhase({
       ? { retired: null, warning: null }
       : await retireConsensusTask(workflowPath, frontmatter.workflow_id, replacedRunId, ownership);
     return { frontmatter, workflowPath, retired };
-  }, { env, host });
+  }, { env, host, writer: writerOf(operation) }));
 }
 
 // -----------------------------------------------------------------------------
@@ -3105,7 +3288,7 @@ export async function snapshot({
 
     await writeWorkflow(workflowPath, frontmatter, body, ownership);
     return { frontmatter, workflowPath };
-  }, { env, host });
+  }, { env, host, writer: LANE_WRITERS.snapshot });
 }
 
 // -----------------------------------------------------------------------------
@@ -3211,7 +3394,7 @@ export async function recordPendingEnsemble({
     frontmatter.updated_at = nowIso;
     await writeWorkflow(workflowPath, frontmatter, body, ownership);
     return { frontmatter, workflowPath };
-  }, { env, host });
+  }, { env, host, writer: LANE_WRITERS.plain });
 }
 
 /**
@@ -3314,7 +3497,7 @@ export async function commitEnsemble({
     // `kept`: the entry already recorded for this run id, read under the lock.
     const kept = alreadyCommitted ? existing.find((e) => e.run_id === run_id) : null;
     return { frontmatter, workflowPath, idempotentSkip: alreadyCommitted, kept };
-  }, { env, host });
+  }, { env, host, writer: LANE_WRITERS.settlement, runId: run_id });
 }
 
 // -----------------------------------------------------------------------------
@@ -3441,7 +3624,7 @@ async function recordManifestEntry({
     frontmatter.updated_at = nowIso;
     await writeWorkflow(workflowPath, frontmatter, body, ownership);
     return { frontmatter, workflowPath, entry };
-  }, { env, ...(host === undefined ? {} : { host: validHost(host) }) });
+  }, { env, ...(host === undefined ? {} : { host: validHost(host) }), writer: LANE_WRITERS.plain });
 }
 
 /**
@@ -3502,10 +3685,15 @@ export async function setCheckpoint({
   if (typeof summary !== 'string' || summary.length === 0) {
     throw new Error('setCheckpoint: summary must be a non-empty string');
   }
-  return withFileLock(workflowPath, async (ownership) => {
+  // ADR-0068 Decision 2, item 7 — a checkpoint is an operation of one write:
+  // admitted as any first write is (one operation at a time in a lane, and
+  // none while the holds cannot be read), it leaves no entry.
+  const operation = await prepareChildOperation({ point: 'once', kind: 'checkpoint', workflowPath, host, env, now });
+  return withOperation(operation, () => withFileLock(workflowPath, async (ownership) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     const nowIso = isoUtc(now);
+    operation.inLock(frontmatter);
     frontmatter.latest_checkpoint = { at: nowIso, summary };
     frontmatter.updated_at = nowIso;
     frontmatter.host_history = [
@@ -3514,7 +3702,7 @@ export async function setCheckpoint({
     ];
     await writeWorkflow(workflowPath, frontmatter, body, ownership);
     return { frontmatter, workflowPath };
-  }, { env, host });
+  }, { env, host, writer: writerOf(operation) }));
 }
 
 /**
@@ -3551,9 +3739,23 @@ export async function setTerminal({
   // sidecar writes the handoff slot and runs git; derived from the working
   // directory when omitted (commandCheckout).
   checkout,
+  // ADR-0068 Decision 2, item 6 — finish-verb's: decide, holding the
+  // workflow's lock, whether a hold keeps the workflow open (holdKeepsOpen);
+  // when it does, the write records the next step and leaves the workflow
+  // open, and no terminal handoff is emitted.
+  holdAware = false,
+  // ADR-0068 Decision 2 (N4) — the command's operation directory: this
+  // write, the command's last, closes the operation it names.
+  operationDir,
+  // N4 — or a point of the commit's operation (`{ point, kind }`,
+  // prepareChildOperation): Phase 7's close opens it here, its first write.
+  childOperation,
 }) {
   validateHost(host);
   validateHookEvent(event);
+  if (operationDir !== undefined && childOperation !== undefined) {
+    throw new Error('setTerminal takes an operation directory or a child operation, not both');
+  }
   if (!terminalPhases().has(terminalPhase)) {
     const allowed = [...terminalPhases()].join(', ');
     throw new Error(
@@ -3568,22 +3770,31 @@ export async function setTerminal({
     );
   }
   const nextStepWrite = resolveNextStepWrite(nextStep, false);
-  const result = await withFileLock(workflowPath, async (ownership) => {
+  const operation = childOperation !== undefined
+    ? await prepareChildOperation({ ...childOperation, workflowPath, host, env, now })
+    : await prepareOperation({ point: 'close', operationDir, workflowPath, host, env, now });
+  const result = await withOperation(operation, () => withFileLock(workflowPath, async (ownership) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     const nowIso = isoUtc(now);
-    frontmatter.current_phase = terminalPhase;
+    operation.inLock(frontmatter);
+    const held = holdAware ? holdKeepsOpenOf(workflowPath, frontmatter) : null;
+    if (held === null) {
+      frontmatter.current_phase = terminalPhase;
+      frontmatter.terminal_marker = terminalMarker;
+    } else if (frontmatter.terminal_marker === true) {
+      frontmatter.terminal_marker = false;
+    }
     if (nextAction !== undefined) frontmatter.next_action = nextAction;
     applyNextStepWrite(frontmatter, nextStepWrite, { dropVerify: dropVerifyRequest });
-    frontmatter.terminal_marker = terminalMarker;
     frontmatter.updated_at = nowIso;
     frontmatter.host_history = [
       ...(frontmatter.host_history ?? []),
       { host, at: nowIso, event },
     ];
     await writeWorkflow(workflowPath, frontmatter, body, ownership, { nextStep: nextStepWrite !== null });
-    return { frontmatter, workflowPath };
-  }, { env, host });
+    return { frontmatter, workflowPath, held };
+  }, { env, host, writer: writerOf(operation) }));
   // ADR-0031 amendment (decisions 1, 2, 3, 6) / ADR-0043 §2 — fire the
   // activation sidecar AFTER the terminal mutation succeeded AND the file lock
   // was released (the `withFileLock` above has resolved). Fail-closed +
@@ -3593,7 +3804,7 @@ export async function setTerminal({
   // (orchestrator parity, Codex Plan-verify): un-marking a workflow
   // (`--terminal-marker false`) is not a terminal transition and must not
   // emit a terminal handoff.
-  if (emitHandoff && terminalMarker === true) {
+  if (emitHandoff && terminalMarker === true && result.held === null) {
     try {
       // Resolve a relative --workflow-path before home inference — the
       // canonical-needle match requires an absolute spelling, and a relative
@@ -3755,7 +3966,7 @@ export async function writeConsensusTask(args) {
   return withFileLock(args.workflowPath, (ownership) => writeConsensusTaskUnderLock(args, ownership, {
     beforePublish: () => markBeside(args.workflowPath, ownership),
   }), {
-    env: args.env ?? process.env, host: args.host ?? 'claude',
+    env: args.env ?? process.env, host: args.host ?? 'claude', writer: LANE_WRITERS.plain,
   });
 }
 
@@ -4057,7 +4268,7 @@ export async function openCritiqueScope({ workflowPath, repoRoot, profile = '', 
       findings: status.findings.filter((f) => f.disposition !== 'resolved' || decision.targets.includes(f.id)),
       ...(reset === null ? {} : { ledger_moved_aside: reset }),
     };
-  }, { env, ...(host === undefined ? {} : { host: validHost(host) }) });
+  }, { env, ...(host === undefined ? {} : { host: validHost(host) }), writer: LANE_WRITERS.plain });
 }
 
 /**
@@ -4096,7 +4307,7 @@ export async function closeCritiqueScope({ workflowPath, repoRoot, ledgerId, gen
     await markBeside(workflowPath, ownership);
     await writeReviewLedger(paths, closed.ledger, ownership);
     return closed.result;
-  }, { env, ...(host === undefined ? {} : { host: validHost(host) }) });
+  }, { env, ...(host === undefined ? {} : { host: validHost(host) }), writer: LANE_WRITERS.plain });
 }
 
 /**
@@ -4138,7 +4349,7 @@ export async function recordRefineScope({ workflowPath, repoRoot, targets, now =
       }
     }
     return { recorded: true, ...done.attempt, verify: { mode: verify.mode, reason: verify.reason } };
-  }, { env, ...(host === undefined ? {} : { host: validHost(host) }) });
+  }, { env, ...(host === undefined ? {} : { host: validHost(host) }), writer: LANE_WRITERS.plain });
 }
 
 /** Read-only: what the review ledger says, or `{ ledger: false }`. */
@@ -4286,7 +4497,7 @@ export async function setAwaitingOwner({
       ? { retired: null, warning: null }
       : await retireConsensusTask(workflowPath, frontmatter.workflow_id, replacedRunId, ownership);
     return { frontmatter, workflowPath, retired };
-  }, { env, host });
+  }, { env, host, writer: LANE_WRITERS.plain });
 }
 
 /**
@@ -4312,10 +4523,28 @@ export async function clearAwaitingOwner({
   // The owner's decision in words (the direction chosen, a deferral and its
   // reason). It lands in the resolved note of the same write.
   resolution,
+  // ADR-0068 Decision 2, item 7 (N4) — a gate resolution is one operation
+  // across its clear and the finish-verb after it: this clear opens it in an
+  // operation directory (`openOperation`, the kind), or, given only the
+  // directory, is a later write of the operation open there (the verb whose
+  // Phase 0 opened it resolves the gate); the finish-verb, given the same
+  // directory, closes it. With neither the clear is an operation of its own
+  // one write. Inside a /start lifecycle, where no finish-verb follows, a clear
+  // given Phase 0's directory is that operation's last write
+  // (`closeOperation`).
+  operationDir,
+  openOperation,
+  closeOperation = false,
   env = process.env,
   now = new Date(),
 }) {
   validateHost(host);
+  if ((openOperation !== undefined || closeOperation) && (operationDir === undefined || operationDir === '')) {
+    throw new Error('a clear opens or closes its operation in an operation directory: --open-operation and --close-operation take --operation-dir');
+  }
+  if (openOperation !== undefined && closeOperation) {
+    throw new Error('a clear opens its operation or closes it, not both');
+  }
   const nextStepWrite = resolveNextStepWrite(nextStep, clearNextStep);
   if (resolution !== undefined && (typeof resolution !== 'string' || resolution.trim().length === 0)) {
     throw new Error('resolution must be non-empty text when given');
@@ -4326,7 +4555,12 @@ export async function clearAwaitingOwner({
     );
   }
   validateEnumScalar('awaiting_owner_gate', gate, VALID_WORKFLOW_OWNER_GATES);
-  return withFileLock(workflowPath, async (ownership) => {
+  const operation = operationDir !== undefined && operationDir !== ''
+    ? await prepareOperation({
+      point: openOperation !== undefined ? 'open' : closeOperation ? 'close' : 'carry', kind: openOperation, operationDir, workflowPath, host, env, now,
+    })
+    : await prepareChildOperation({ point: 'once', kind: 'gate', workflowPath, host, env, now });
+  return withOperation(operation, () => withFileLock(workflowPath, async (ownership) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     const current = frontmatter.awaiting_owner_gate;
@@ -4336,6 +4570,7 @@ export async function clearAwaitingOwner({
     if (current !== gate) {
       throw new Error(`the owner gate set on this workflow is ${current}, not ${gate}`);
     }
+    operation.inLock(frontmatter);
     const nowIso = isoUtc(now);
     // ADR-0067 Decision 8 — the run id goes with the gate's other keys, and
     // the task file of that run is retired once this write has landed.
@@ -4358,7 +4593,7 @@ export async function clearAwaitingOwner({
       ? { retired: null, warning: null }
       : await retireConsensusTask(workflowPath, frontmatter.workflow_id, runId, ownership);
     return { frontmatter, workflowPath, retired };
-  }, { env, host });
+  }, { env, host, writer: writerOf(operation) }));
 }
 
 // How each gate this persona can set is resolved, named with the host's
@@ -4488,6 +4723,656 @@ export async function autopilotPreflight({
   };
 }
 
+// -----------------------------------------------------------------------------
+// ADR-0068 Decision 2 — the persona's half of hold and release (the
+// implementation note of 2026-10-25). Every rule here is inert until a
+// hold-aware orchestrator marks the macro's holds directory (N2): until then
+// the persona writes as today and refuses nothing (item 9).
+
+/**
+ * The macro, subtask and holds directory a workflow is a child of, or null:
+ * only with dispatch_target on, for a workflow that records the dispatch
+ * linkage (parent_workflow, originating_subtask) in their forms.
+ */
+function macroChildOf(workflowPath, frontmatter) {
+  if (!capabilityOn('dispatch_target')) return null;
+  const macroId = frontmatter.parent_workflow;
+  const subtaskId = frontmatter.originating_subtask;
+  if (!isSafeMacroId(macroId) || !isSafeSubtaskId(subtaskId)) return null;
+  const stateRoot = workflowStateRoot(workflowPath) ?? dirname(workflowPath);
+  return { macroId, subtaskId, mainRoot: holdsMainRoot(stateRoot) };
+}
+
+/**
+ * Decision 2, item 6 — why a verb's last write keeps a macro's child open, or
+ * null when it closes it as today. Open while the subtask's hold applies, it
+ * has a kept park, or a run of its macro is live (N3), and while the holds
+ * directory cannot be read (whether it holds a hold cannot be told). Nothing
+ * keeps it open before a hold-aware orchestrator ran for the macro (N2).
+ */
+export async function holdKeepsOpen(workflowPath, { probe } = {}) {
+  const { frontmatter } = await readWorkflow(workflowPath);
+  return holdKeepsOpenOf(workflowPath, frontmatter, { probe });
+}
+
+function holdKeepsOpenOf(workflowPath, frontmatter, { probe } = {}) {
+  const child = macroChildOf(workflowPath, frontmatter);
+  if (child === null) return null;
+  const facts = laneHoldFacts({
+    ...child, branch: frontmatter.git_baseline?.branch ?? '', workflowId: frontmatter.workflow_id, probe,
+  });
+  if (facts.activation.state === 'inactive') return null;
+  if (facts.activation.state === 'unreadable') return { why: `the holds directory cannot be read (${facts.activation.error})` };
+  if (facts.applies.applies) return { why: `subtask ${child.subtaskId} is held: ${facts.applies.why}` };
+  if (facts.park.kept) return { why: `subtask ${child.subtaskId} has ${facts.park.why}` };
+  if (facts.run.live) return { why: `a run of ${child.macroId} is live: ${facts.run.why}` };
+  return null;
+}
+
+// The frontmatter fields a snapshot writes (snapshot(): updated_at,
+// last_snapshot, a host_history entry of event snapshot; writeWorkflow:
+// verify_handoff, verify_attempt), which the content digest leaves out.
+export const CONTENT_DIGEST_SCHEMA = 'agentic-workflow-content-digest-1';
+
+/**
+ * N6 — the workflow part of a release's content digest: the sha256 of the
+ * parsed frontmatter without the fields a snapshot writes, the forward-compat
+ * carrier included (each unknown key with its raw scalar), and of the body as
+ * stored, its leading blank lines left out. A snapshot leaves it unchanged, whoever re-serializes the file; any
+ * other change moves it.
+ */
+export async function contentDigest(workflowPath) {
+  const text = await readFile(workflowPath, 'utf8');
+  const { frontmatter, body } = parseWorkflowFile(text);
+  const fm = { ...frontmatter };
+  delete fm.updated_at;
+  delete fm.last_snapshot;
+  // A snapshot is a write of the workflow (writeWorkflow), so it stamps the
+  // handoff generation and, under an autopilot run, moves the attempt mark on
+  // (markAttempt, stampHandoff): both are left out, as fields a snapshot writes.
+  delete fm.verify_handoff;
+  delete fm.verify_attempt;
+  if (Array.isArray(fm.host_history)) fm.host_history = fm.host_history.filter((h) => h?.event !== 'snapshot');
+  const unknowns = (frontmatter[FORWARD_COMPAT_UNKNOWNS] ?? []).map((u) => ({ key: u.key, raw: u.raw }));
+  // Every write puts one more blank line between the frontmatter and the body
+  // (assembleWorkflowFile), so the body's leading blank lines are left out.
+  const digest = createHash('sha256').update(canonicalJson({ frontmatter: fm, unknowns, body: body.replace(/^\n+/, '') })).digest('hex');
+  return { schema: CONTENT_DIGEST_SCHEMA, digest };
+}
+
+/** N8 — what the persona's half of the holds answers to the driver's floor. */
+export function holdCapability() {
+  return { capability: HOLD_PERSONA_CAPABILITY, protocol: HOLDS_PROTOCOL };
+}
+
+/**
+ * Decision 2, item 7 — why the Stop hook's sweep, which archives a terminal
+ * workflow of a branch no worktree has checked out, leaves a macro's child
+ * alone, or null. Its open operation is another session's: once a hold-aware
+ * orchestrator runs (N2), the sweep never archives beside it, nor while the
+ * holds directory cannot be read; the operation's own session ends it, or
+ * the owner clears it (`writer-clear`) and the next sweep archives the child.
+ * Inactive, it archives as before.
+ */
+export function sweepLeavesChild(workflowPath, frontmatter) {
+  const child = macroChildOf(workflowPath, frontmatter);
+  if (child === null) return null;
+  const activation = readActivation(child.mainRoot, child.macroId);
+  if (activation.state === 'inactive') return null;
+  if (activation.state === 'unreadable') return `the holds directory of ${child.macroId} cannot be read (${activation.error})`;
+  // A document of a later version cannot be read for its operations: they
+  // are taken as open.
+  const doc = frontmatter[PERSONA_OPERATIONS_KEY];
+  if (doc !== undefined && doc.v > PERSONA_OPERATIONS_VERSION) return `its ${PERSONA_OPERATIONS_KEY} is a later version (v ${doc.v})`;
+  // An entry of the child, or a record of the lane with no .cleared beside it
+  // (one published before its first write, or left by a crash), as the
+  // orchestrator counts it.
+  const open = otherOpenOperation(child, null, doc?.ops ?? []);
+  if (open !== null) return `${open} is open in its lane`;
+  // Nor, with none open, a child its owner holds: the sweep is no operation.
+  return laneWriterRefusal(workflowPath, frontmatter);
+}
+
+/**
+ * Decision 2, item 7 — the inventory of the writers of a workflow: every lock
+ * of one names its class (withFileLock's `writer`), so a writer with no class
+ * of its own is `plain`.
+ *
+ * - `plain`: refused in a held lane outside any persona operation
+ *   (laneWriterRefusal).
+ * - `operation`: a step of a persona operation, which admits it (N4).
+ * - `snapshot`: the Stop and PreCompact snapshot, which writes only the fields
+ *   the content digest leaves out (N6): not a writer the release excludes.
+ * - `settlement`: the settlement of a run the child records pending or
+ *   settled: a step running when the hold was set still settles (item 4), and
+ *   the handoff waits for it. Of any other run it is `plain`.
+ * - `machine`: a result, end or pass of the driver's verification batch, which
+ *   started before the hold (item 4).
+ * - `job`: a batch's start or restart, refused while the subtask's hold
+ *   applies whatever operation is open: no machine job starts in a held lane
+ *   (item 3).
+ * - `create`: a bootstrap, judged once its workflow is written
+ *   (createWorkflowUnderLock).
+ * - `destination`: an archive's destination, which holds no live workflow.
+ */
+export const LANE_WRITERS = Object.freeze({
+  plain: 'plain',
+  operation: 'operation',
+  snapshot: 'snapshot',
+  settlement: 'settlement',
+  machine: 'machine',
+  job: 'job',
+  create: 'create',
+  destination: 'destination',
+});
+const LANE_WRITER_CLASSES = new Set(Object.values(LANE_WRITERS));
+// The classes a held lane judges; the others are judged elsewhere or exempt.
+const LANE_WRITERS_CHECKED = new Set([LANE_WRITERS.plain, LANE_WRITERS.settlement, LANE_WRITERS.job]);
+
+// The class of a write an operation may step: `operation` when the command
+// has one, else `plain`.
+const writerOf = (operation) => (operation.id === null ? LANE_WRITERS.plain : LANE_WRITERS.operation);
+
+/**
+ * Decision 2, item 7 — why a write of class `writer` (LANE_WRITERS) of the
+ * macro's child `frontmatter` is refused, or null. Every command that writes a
+ * macro's child is a persona operation or refuses in a held lane: a `plain`
+ * write is refused while the subtask's hold applies (N3) and no operation is
+ * open on the child (an entry the owner has not cleared), and while the holds
+ * directory cannot be read with none open (whether the subtask is held cannot
+ * be told). Inert before a hold-aware orchestrator ran for the macro (N2).
+ */
+export function laneWriterRefusal(workflowPath, frontmatter, { writer = LANE_WRITERS.plain, runId = null } = {}) {
+  if (!LANE_WRITERS_CHECKED.has(writer)) return null;
+  const child = macroChildOf(workflowPath, frontmatter);
+  if (child === null) return null;
+  if (writer === LANE_WRITERS.settlement && typeof runId === 'string'
+    && [frontmatter.pending_ensemble, frontmatter.ensemble_results].some((rows) => Array.isArray(rows) && rows.some((e) => e?.run_id === runId))) {
+    return null;
+  }
+  const { mainRoot, macroId, subtaskId } = child;
+  const activation = readActivation(mainRoot, macroId);
+  if (activation.state === 'inactive') return null;
+  // A write of an operation open on the child: the command that opened it,
+  // or one it runs (a review ledger, a manifest entry, a peer's launch).
+  const doc = frontmatter[PERSONA_OPERATIONS_KEY];
+  const later = doc !== undefined && doc.v > PERSONA_OPERATIONS_VERSION;
+  // No machine job starts in a held lane, whatever operation is open (item 3).
+  const job = writer === LANE_WRITERS.job;
+  if (!job && !later && (doc?.ops ?? []).some((o) => !operationCleared(mainRoot, macroId, subtaskId, o.id))) return null;
+  if (activation.state === 'unreadable') {
+    return `the holds directory of ${macroId} cannot be read (${activation.error}), so whether subtask ${subtaskId} is held cannot be told` +
+      (job ? '' : `, and no persona operation is open on ${frontmatter.workflow_id}`);
+  }
+  const applies = holdApplies(readOwnerHold(mainRoot, macroId, subtaskId), {
+    branch: frontmatter.git_baseline?.branch ?? '', workflowId: frontmatter.workflow_id ?? null,
+  });
+  if (!applies.applies) return null;
+  if (job) return `subtask ${subtaskId} of ${macroId} is held (${applies.why}), and no machine job starts in a held lane (item 3)`;
+  return later
+    ? `subtask ${subtaskId} of ${macroId} is held (${applies.why}), and the operations of ${frontmatter.workflow_id} are a later ` +
+      `version (v ${doc.v}) than this ${personaName()} reads`
+    : `subtask ${subtaskId} of ${macroId} is held (${applies.why}), and no persona operation is open on ${frontmatter.workflow_id}`;
+}
+
+// withFileLock's check, holding the workflow's lock: a path with no workflow
+// yet (a create's, an archive's destination) is no write of a child.
+async function admitLaneWriter(workflowPath, { writer, runId }) {
+  if (!LANE_WRITERS_CHECKED.has(writer)) return;
+  if (!capabilityOn('dispatch_target')) return;
+  let text;
+  try {
+    text = await readFile(workflowPath, 'utf8');
+  } catch (err) {
+    if (err?.code === 'ENOENT') return;
+    throw err;
+  }
+  const refusal = laneWriterRefusal(workflowPath, parseWorkflowFile(text).frontmatter, { writer, runId });
+  if (refusal !== null) throw laneWriterError(refusal);
+}
+
+// The code a launch helper reads to stop before it spawns anything.
+export const LANE_WRITER_REFUSED = 'AGENTIC_LANE_WRITER_REFUSED';
+const laneWriterError = (refusal) => Object.assign(operationRefusal(
+  `${refusal}: a write of a held lane's child outside a persona operation is refused. Work the lane through its ` +
+    `active child's verbs, /engineer:commit or a gate resolution, or have the owner release it; nothing was written`,
+), { code: LANE_WRITER_REFUSED });
+
+// --- persona operations (N4) --------------------------------------------------
+//
+// An operation runs from a command's first write of a macro's child to its
+// last. Its id travels between the command's shell blocks in a transport file
+// the first write leaves in the command's operation directory
+// (`--operation-dir`), and stays on the child (persona_operations) while open.
+// A command passes no directory, or works on no macro's child: no operation,
+// and every write is as before.
+
+const operationRefusal = (message) => new Error(`${message} (ADR-0068 Decision 2, item 7)`);
+
+// The child's open operations, or a refusal for a document of a later
+// version, which this persona carries but never rewrites.
+function childOperations(frontmatter) {
+  const doc = frontmatter[PERSONA_OPERATIONS_KEY];
+  if (doc === undefined) return [];
+  if (doc.v > PERSONA_OPERATIONS_VERSION) {
+    throw operationRefusal(
+      `${PERSONA_OPERATIONS_KEY} of ${frontmatter.workflow_id} is a later version (v ${doc.v}) than this ` +
+        `${personaName()} writes: install the ${personaName()} release that wrote it; nothing was written`,
+    );
+  }
+  return doc.ops;
+}
+
+// No operation left: the key goes, so a child no operation touched again
+// reads as one that never had any.
+function setChildOperations(frontmatter, ops) {
+  if (ops.length === 0) delete frontmatter[PERSONA_OPERATIONS_KEY];
+  else frontmatter[PERSONA_OPERATIONS_KEY] = { v: PERSONA_OPERATIONS_VERSION, ops };
+}
+
+// Another operation open in the lane than `ownId`: an entry of the child, or
+// a record under ops/<subtask>/ with no `.cleared` beside it, whoever opened
+// it (N4). A description of it, or null.
+function otherOpenOperation({ mainRoot, macroId, subtaskId }, ownId, entries, { records = true } = {}) {
+  if (records) {
+    const read = readOps(mainRoot, macroId, subtaskId);
+    if (read.state === 'unreadable') return `the operation records of subtask ${subtaskId} cannot be read (${read.error})`;
+    for (const e of read.ops) {
+      if (e.id === ownId || e.cleared) continue;
+      return `operation ${e.id}${typeof e.record?.kind === 'string' ? ` (${e.record.kind})` : ''}`;
+    }
+  }
+  for (const e of entries) {
+    if (e.id === ownId || operationCleared(mainRoot, macroId, subtaskId, e.id)) continue;
+    return `operation ${e.id} (${e.kind})`;
+  }
+  return null;
+}
+
+const NO_OPERATION = Object.freeze({ id: null, inLock() {}, async after() {} });
+
+// What runs after the write: never fails the command, whose write has landed
+// (or was refused); what it could not do is said.
+function afterWrite(what, fn) {
+  try {
+    fn();
+  } catch (err) {
+    process.stderr.write(`${personaName()}: ${what}: ${err.message}\n`);
+  }
+}
+
+/**
+ * N4 — the operation a command's first write opens (`point: 'open'`) or its
+ * last write closes (`'close'`), as a step of that write: `inLock(frontmatter)`
+ * runs holding the workflow's lock, before the write, and throws to refuse
+ * it; `after(ok)` runs once the lock is released. With no operation directory,
+ * or for a workflow that is no macro's child (or a persona with
+ * dispatch_target off), there is none and the write is as before.
+ *
+ * `create` ({ repoRoot, parentWorkflow, originatingSubtask }) for a bootstrap,
+ * whose child does not exist yet; else `workflowPath`.
+ */
+export async function prepareOperation({
+  point, kind = 'verb', operationDir, workflowPath, create = null, host = 'claude', env = process.env, now = new Date(),
+}) {
+  if (operationDir === undefined || operationDir === null || operationDir === '') return NO_OPERATION;
+  if (typeof operationDir !== 'string' || !isAbsolute(operationDir)) {
+    throw new Error(`the operation directory must be an absolute path (got ${JSON.stringify(operationDir)})`);
+  }
+  if (point !== 'open' && point !== 'close' && point !== 'carry') {
+    throw new Error(`an operation point is open, carry or close (got ${JSON.stringify(point)})`);
+  }
+  // Only a macro's child has operations: for any other workflow, and with
+  // dispatch_target off, the directory is not looked at and the write is as
+  // before.
+  let child = null;
+  let frontmatter = null;
+  if (create !== null) {
+    if (capabilityOn('dispatch_target') && isSafeMacroId(create.parentWorkflow) && isSafeSubtaskId(create.originatingSubtask)) {
+      child = { macroId: create.parentWorkflow, subtaskId: create.originatingSubtask, mainRoot: holdsMainRoot(create.repoRoot) };
+    }
+  } else {
+    ({ frontmatter } = await readWorkflow(workflowPath));
+    child = macroChildOf(workflowPath, frontmatter);
+  }
+  if (child === null) return NO_OPERATION;
+  let dirStat = null;
+  try { dirStat = statSync(operationDir); } catch { /* below */ }
+  if (dirStat === null || !dirStat.isDirectory()) {
+    throw new Error(
+      `the operation directory ${operationDir} is not a directory; nothing was written` +
+        (point === 'close'
+          ? '. When it is lost, run the write with no operation directory: the operation it opened stays open on the workflow until the owner clears it'
+          : ''),
+    );
+  }
+  if (point === 'open' && !PERSONA_OPERATION_KINDS.has(kind)) {
+    throw new Error(`an operation kind is one of ${[...PERSONA_OPERATION_KINDS].join(', ')} (got ${JSON.stringify(kind)})`);
+  }
+  const transport = readOperationTransport(operationDir);
+  if (transport.error) throw operationRefusal(`the operation file cannot be used: ${transport.error}; nothing was written`);
+  const store = dirStore(operationDir);
+  if (point === 'carry') return carryOperation({ child, operationDir, transport, frontmatter });
+  return point === 'open'
+    ? openOperation({ child, kind, operationDir, store, transport, frontmatter, create, host, env, now })
+    : closeOperation({ child, operationDir, store, transport, frontmatter, now });
+}
+
+// A later write of the operation the directory names (`point: 'carry'`): it
+// must be open on this child, so a write that means to continue an operation
+// never lands once that operation ended, or for another child.
+function carryOperation({ child, operationDir, transport, frontmatter }) {
+  const t = transport.value;
+  if (t === undefined || t.state !== 'open') {
+    throw operationRefusal(
+      `no open operation in ${operationDir}${t === undefined ? '' : ` (operation ${t.operation_id} is ${t.state})`}: ` +
+        'a write that continues an operation takes the directory of one still open; nothing was written',
+    );
+  }
+  if (t.macro_id !== child.macroId || t.subtask_id !== child.subtaskId || t.branch !== frontmatter.git_baseline?.branch
+    || t.workflow_id !== frontmatter.workflow_id) {
+    throw operationRefusal(
+      `the operation file in ${operationDir} is operation ${t.operation_id} of ${t.workflow_id ?? 'a bootstrap'} in ${t.macro_id}/${t.subtask_id}, ` +
+        `not of ${frontmatter.workflow_id}; nothing was written`,
+    );
+  }
+  return {
+    id: t.operation_id,
+    inLock(fm) {
+      if (!childOperations(fm).some((o) => o.id === t.operation_id)) {
+        throw operationRefusal(`operation ${t.operation_id} is no longer open on ${fm.workflow_id}: it ended, or the owner cleared it; nothing was written`);
+      }
+    },
+    async after() {},
+  };
+}
+
+// Where an operation's id is kept between the writes of its command: the
+// transport file of an operation directory, or, for a commit (`childStore`),
+// the child's own entry.
+function dirStore(operationDir) {
+  return { write: (value) => writeOperationTransport(operationDir, value), announce: true };
+}
+
+/**
+ * N4 — the commit's operation (`kind` commit), whose id is its entry on the
+ * child: Phase 7 runs as one program, and the Stop hook that archives the
+ * commit and sends its parent note after it finds the entry there, with no
+ * directory of the command's. `point` is `open` (the first write: always a
+ * new operation, so a second commit beside a running one is refused, and one
+ * a crash left open is the owner's to clear, item 7), `close` (the last: the
+ * operation `id` names, or, for the Stop hook, which knows no id, the newest
+ * entry of the kind the owner has not cleared), or `once`, a command whose
+ * one write is both (the staging-set gate an autopilot commit records, a
+ * checkpoint): admitted as a first write is and refused as a last write is,
+ * it leaves no entry.
+ */
+export async function prepareChildOperation({ point, kind, id = null, workflowPath, host = 'claude', env = process.env, now = new Date() }) {
+  if (point !== 'open' && point !== 'close' && point !== 'once') {
+    throw new Error(`a child operation point is open, close or once (got ${JSON.stringify(point)})`);
+  }
+  if (!PERSONA_OPERATION_KINDS.has(kind)) {
+    throw new Error(`an operation kind is one of ${[...PERSONA_OPERATION_KINDS].join(', ')} (got ${JSON.stringify(kind)})`);
+  }
+  const { frontmatter } = await readWorkflow(workflowPath);
+  const child = macroChildOf(workflowPath, frontmatter);
+  if (child === null) return NO_OPERATION;
+  const label = `${frontmatter.workflow_id}'s ${kind} operation`;
+  const store = { write() {}, announce: false, label };
+  let entry;
+  if (point === 'close') {
+    const ofKind = childOperations(frontmatter).filter((o) => o.kind === kind && (id === null || o.id === id));
+    entry = ofKind.filter((o) => !operationCleared(child.mainRoot, child.macroId, child.subtaskId, o.id)).at(-1) ?? ofKind.at(-1);
+  }
+  const transport = entry === undefined
+    ? { absent: true }
+    : {
+      value: {
+        operation_id: entry.id, kind, macro_id: child.macroId, subtask_id: child.subtaskId,
+        branch: frontmatter.git_baseline?.branch, workflow_id: frontmatter.workflow_id, opened_at: entry.opened_at, state: 'open',
+      },
+    };
+  if (point === 'close') {
+    if (transport.absent) return NO_OPERATION;
+    return closeOperation({ child, operationDir: label, store, transport, frontmatter, now });
+  }
+  const opened = openOperation({ child, kind, operationDir: label, store, transport, frontmatter, create: null, host, env, now });
+  if (point === 'open') return opened;
+  return {
+    id: opened.id,
+    inLock(fm) {
+      opened.inLock(fm);
+      // Its one write is its last as well: refused, as any last write is, once
+      // the owner cleared it, or when its record is gone (N4).
+      if (opened.ext && operationCleared(child.mainRoot, child.macroId, child.subtaskId, opened.id)) {
+        throw operationRefusal(`operation ${opened.id} was cleared by the owner (writer-clear) while it waited for the workflow's lock; nothing was written`);
+      }
+      if (opened.ext && opRecordState(child.mainRoot, child.macroId, child.subtaskId, opened.id) === 'absent') {
+        throw operationRefusal(`the record of operation ${opened.id} is gone from the holds of ${child.macroId}; nothing was written`);
+      }
+      setChildOperations(fm, childOperations(fm).filter((o) => o.id !== opened.id));
+    },
+    async after() {
+      if (opened.ext) afterWrite('removing the operation record', () => removeOpRecord(child.mainRoot, child.macroId, child.subtaskId, opened.id));
+    },
+  };
+}
+
+function openOperation({ child, kind, operationDir, store, transport, frontmatter, create, host, env, now }) {
+  const { mainRoot, macroId, subtaskId } = child;
+  const workflowId = frontmatter?.workflow_id ?? null;
+  const branch = create !== null ? create.branch : frontmatter.git_baseline?.branch;
+  let id;
+  let openedAt;
+  const replay = transport.value !== undefined;
+  const replayOpen = transport.value?.state === 'open';
+  if (replay) {
+    // The same command's first write again (a block run twice, or after a
+    // crash): it continues its operation. Any other is refused: another
+    // child's or kind's, and a bootstrap's once its create landed (the file
+    // then names the child, and a create never runs again from it).
+    const t = transport.value;
+    if (t.state === 'closed') {
+      throw operationRefusal(
+        `operation ${t.operation_id} in ${operationDir} has ended: a command's first write takes a fresh operation directory; nothing was written`,
+      );
+    }
+    if (t.macro_id !== macroId || t.subtask_id !== subtaskId || t.kind !== kind || t.branch !== branch
+      || t.workflow_id !== workflowId) {
+      throw operationRefusal(
+        `the operation file in ${operationDir} is operation ${t.operation_id} (${t.kind}) of ${t.workflow_id ?? 'a bootstrap'} in ` +
+          `${t.macro_id}/${t.subtask_id}, not this one; use a fresh operation directory; nothing was written`,
+      );
+    }
+    id = t.operation_id;
+    openedAt = t.opened_at;
+  } else {
+    // A dispatched bootstrap continues the operation /orchestrator:next's
+    // dispatch began, under the id it exported.
+    const dispatched = create !== null ? env.AGENTIC_OPERATION_ID : undefined;
+    if (dispatched !== undefined && dispatched !== '') {
+      if (!OPERATION_ID_RE.test(dispatched)) {
+        throw operationRefusal(`AGENTIC_OPERATION_ID ${JSON.stringify(dispatched)} is not an operation id; nothing was written`);
+      }
+      id = dispatched;
+    } else {
+      id = newOperationId(now);
+    }
+    openedAt = isoUtc(now);
+  }
+  const binding = { operation_id: id, kind, macro_id: macroId, subtask_id: subtaskId, branch, workflow_id: workflowId, opened_at: openedAt };
+  const activation = readActivation(mainRoot, macroId);
+  if (activation.state === 'unreadable') {
+    throw operationRefusal(
+      `the holds directory of ${macroId} cannot be read, so whether subtask ${subtaskId} is held cannot be told: ` +
+        `${activation.error}; nothing was written (ADR-0068 Decision 2, item 8)`,
+    );
+  }
+  // The id is kept before anything names it: a crash from here on leaves a
+  // first write the same command continues.
+  store.write({ ...binding, state: transport.value?.state === 'open' ? 'open' : 'opening' });
+  const ext = activation.state === 'active';
+  let published = false;
+  if (ext) {
+    // Published before the write takes its locks, then the lane is looked at
+    // again: two first writes at once may both refuse, never both proceed.
+    const pub = publishOpRecord(mainRoot, macroId, subtaskId, { ...binding, host, pid: process.pid });
+    // A record of the id already there is this operation's (its first write
+    // run again, or the dispatch's own record a dispatched bootstrap
+    // continues) only when it names this kind, lane and child, or no child yet.
+    const ex = pub.existing;
+    if (!pub.published && (ex === null || ex.kind !== kind || (ex.macro_id ?? macroId) !== macroId
+      || (ex.subtask_id ?? subtaskId) !== subtaskId || (ex.workflow_id != null && ex.workflow_id !== workflowId))) {
+      throw operationRefusal(`${pub.path} is not a record of this operation ${id} (${kind}); nothing was written`);
+    }
+    published = pub.published;
+    const other = otherOpenOperation(child, id, frontmatter === null ? [] : childOperations(frontmatter));
+    if (other !== null) {
+      if (published) afterWrite('withdrawing the operation record', () => removeOpRecord(mainRoot, macroId, subtaskId, id));
+      throw operationRefusal(
+        `${other} is open in subtask ${subtaskId} of ${macroId}: one persona operation at a time in a lane; ` +
+          'wait for it to end, or, when its session is gone, have the owner clear it (agentic-autopilot writer-clear); nothing was written',
+      );
+    }
+  }
+  let boundWorkflow = workflowId;
+  return {
+    id,
+    ext,
+    inLock(fm) {
+      let ops = childOperations(fm);
+      // Whether the macro's holds are active is read again holding the lock:
+      // a first write that read them inactive, and meets them active (or
+      // unreadable) here, would join a lane it never looked at.
+      const atLock = readActivation(mainRoot, macroId);
+      if (atLock.state !== activation.state) {
+        throw operationRefusal(
+          `the holds of ${macroId} turned ${atLock.state} while this write waited for the workflow's lock; run it again; nothing was written`,
+        );
+      }
+      const own = ops.find((o) => o.id === id);
+      // A first write run again after its operation ended (its last write ran,
+      // or the owner cleared it) does not open it again.
+      if (replayOpen && own === undefined) {
+        throw operationRefusal(
+          `operation ${id} in ${operationDir} is no longer open on ${fm.workflow_id}: it ended, or the owner cleared it; a command's first write takes a fresh operation directory; nothing was written`,
+        );
+      }
+      if (ext) {
+        const other = otherOpenOperation(child, id, ops, { records: false });
+        if (other !== null) {
+          throw operationRefusal(
+            `${other} is open on ${fm.workflow_id}: one persona operation at a time in a lane; nothing was written`,
+          );
+        }
+        // An entry the owner cleared is no longer open: it goes with this
+        // write, its own last write being refused whatever it finds.
+        ops = ops.filter((o) => o.id === id || !operationCleared(mainRoot, macroId, subtaskId, o.id));
+      }
+      // Run again across activation, the entry records the record this run
+      // published, so its last write removes it.
+      if (own === undefined) ops = [...ops, { id, kind, opened_at: openedAt, ext }];
+      else if (ext && !own.ext) ops = ops.map((o) => (o === own ? { ...o, ext: true } : o));
+      setChildOperations(fm, ops);
+      boundWorkflow = fm.workflow_id;
+    },
+    async after(ok) {
+      if (ok) {
+        afterWrite('recording the operation', () => store.write({ ...binding, workflow_id: boundWorkflow, state: 'open' }));
+        if (store.announce) process.stderr.write(`operation ${id} (${kind}) is open; its directory is ${operationDir}\n`);
+      } else if (published) {
+        afterWrite('withdrawing the operation record', () => removeOpRecord(mainRoot, macroId, subtaskId, id));
+      }
+    },
+  };
+}
+
+function closeOperation({ child, operationDir, store, transport, frontmatter, now }) {
+  const { mainRoot, macroId, subtaskId } = child;
+  if (transport.absent) {
+    // This command opened no operation here (an earlier runbook, or no
+    // first write of its own): the write is as before, and an operation the
+    // child keeps open stays open.
+    const doc = frontmatter[PERSONA_OPERATIONS_KEY];
+    const open = doc?.v === PERSONA_OPERATIONS_VERSION ? doc.ops : [];
+    if (open.length > 0) {
+      process.stderr.write(
+        `${personaName()}: no operation file in ${operationDir}; ${open.map((o) => o.id).join(', ')} stays open on ${frontmatter.workflow_id}\n`,
+      );
+    }
+    return NO_OPERATION;
+  }
+  const t = transport.value;
+  const id = t.operation_id;
+  if (t.macro_id !== macroId || t.subtask_id !== subtaskId || t.branch !== frontmatter.git_baseline?.branch
+    || (t.workflow_id !== null && t.workflow_id !== frontmatter.workflow_id)) {
+    throw operationRefusal(
+      `the operation file in ${operationDir} is operation ${id} of ${t.workflow_id ?? 'a bootstrap'} in ${t.macro_id}/${t.subtask_id}, ` +
+        `not of ${frontmatter.workflow_id}; nothing was written`,
+    );
+  }
+  if (t.state === 'closed') {
+    throw operationRefusal(`operation ${id} has ended: its last write already ran; nothing was written`);
+  }
+  let ext = false;
+  return {
+    id,
+    inLock(fm) {
+      const ops = childOperations(fm);
+      // Read at the write, holding its lock: the owner's clear, and the
+      // record's presence, as they are now.
+      const activation = readActivation(mainRoot, macroId);
+      if (activation.state === 'active' && operationCleared(mainRoot, macroId, subtaskId, id)) {
+        throw operationRefusal(
+          `operation ${id} was cleared by the owner (writer-clear), so its last write is refused: another command may ` +
+            `be writing in the lane now; nothing was written`,
+        );
+      }
+      const entry = ops.find((o) => o.id === id);
+      if (entry === undefined) {
+        throw operationRefusal(`operation ${id} is not open on ${fm.workflow_id}: its last write already ran; nothing was written`);
+      }
+      if (entry.kind !== t.kind) {
+        throw operationRefusal(`operation ${id} is a ${entry.kind} operation on ${fm.workflow_id}, not the ${t.kind} its file names; nothing was written`);
+      }
+      if (activation.state === 'active') {
+        if (entry.ext && opRecordState(mainRoot, macroId, subtaskId, id) === 'absent') {
+          throw operationRefusal(`the record of operation ${id} is gone from the holds of ${macroId}, so its last write is refused; nothing was written`);
+        }
+      } else if (activation.state === 'inactive' && entry.ext) {
+        throw operationRefusal(
+          `operation ${id} registered with the holds of ${macroId}, whose marker is gone, so its last write is refused; nothing was written`,
+        );
+      }
+      // Unreadable: a running operation finishes (N2).
+      setChildOperations(fm, ops.filter((o) => o !== entry));
+      ext = entry.ext;
+    },
+    async after(ok) {
+      if (!ok) return;
+      if (ext) afterWrite('removing the operation record', () => removeOpRecord(mainRoot, macroId, subtaskId, id));
+      const { schema: _schema, ...kept } = t;
+      afterWrite('recording the operation ended', () => store.write({
+        ...kept, workflow_id: kept.workflow_id ?? frontmatter.workflow_id, state: 'closed', closed_at: isoUtc(now),
+      }));
+    },
+  };
+}
+
+// The write `fn` with the operation's steps: after(true) once it landed,
+// after(false) when it threw.
+async function withOperation(operation, fn) {
+  let result;
+  try {
+    result = await fn();
+  } catch (err) {
+    await operation.after(false);
+    throw err;
+  }
+  await operation.after(true);
+  return result;
+}
+
 /**
  * ADR-0063 D3 — a verb's final state write. With commit_surface off (PC2b
  * DD3) the kinds read: `verb` a next verb; `commit` the owner publishes (saves
@@ -4521,6 +5406,9 @@ export async function finishVerb({
   cwd = process.cwd(),
   now = new Date(),
   emitHandoff = false,
+  // ADR-0068 Decision 2 (N4) — the verb's operation directory: finish-verb is
+  // its last write, and closes the operation its first write opened.
+  operationDir,
 }) {
   if (nextStep === undefined || nextStep === null) {
     throw new Error('finish-verb records the next step: the kind and the confidence are required (ADR-0063 D6)');
@@ -4534,7 +5422,7 @@ export async function finishVerb({
     if (verifyRequest === undefined) {
       throw new Error('finish-verb --next-step-kind verify takes the request as --verify-request-file (ADR-0068 Decision 5, item 2)');
     }
-    const result = await recordVerifyRequest({ workflowPath, host, nextAction, nextStep, input: verifyRequest, env, cwd, now });
+    const result = await recordVerifyRequest({ workflowPath, host, nextAction, nextStep, input: verifyRequest, env, cwd, now, operationDir });
     return { ...result, mode: 'autopilot', terminal: false };
   }
   if (verifyRequest !== undefined) {
@@ -4558,9 +5446,15 @@ export async function finishVerb({
     const result = await appendPhase({
       workflowPath, host, nextAction, nextStep, ownerGate,
       clearTerminalMarker: true, dropVerifyRequest: true, event: 'updated', env, now,
+      operationDir, closeOperation: Boolean(operationDir),
     });
     return { ...result, mode: autopilot ? 'autopilot' : 'interactive', terminal: false };
   }
+  // ADR-0068 Decision 2, item 6 — an interactive verb of a macro's child
+  // leaves the terminal marker unset, as under autopilot, while its subtask is
+  // held or has a kept park, or a run of its macro is live; only once a
+  // hold-aware orchestrator runs for the macro. Decided holding the lock, in
+  // the write itself (setTerminal holdAware).
   const result = await setTerminal({
     workflowPath,
     host,
@@ -4573,8 +5467,12 @@ export async function finishVerb({
     env,
     now,
     emitHandoff,
+    holdAware: true,
+    operationDir,
   });
-  return { ...result, mode: 'interactive', terminal: true };
+  if (result.held !== null) return { ...result, mode: 'interactive', terminal: false };
+  const { held: _none, ...closed } = result;
+  return { ...closed, mode: 'interactive', terminal: true };
 }
 
 // -----------------------------------------------------------------------------
@@ -5024,6 +5922,8 @@ function historyUpdated(frontmatter, host, nowIso) {
  */
 export async function recordVerifyRequest({
   workflowPath, host, nextAction, nextStep, input, env = process.env, cwd = process.cwd(), now = new Date(),
+  // ADR-0068 Decision 2 (N4) — as setTerminal's: the last write closes it.
+  operationDir,
 }) {
   validateHost(host);
   const fields = normalizeNextStep(nextStep, { allowVerify: true });
@@ -5032,7 +5932,8 @@ export async function recordVerifyRequest({
   if (parsed.confidence !== fields.next_step_confidence) {
     throw new Error(`--next-step-confidence ${fields.next_step_confidence} is not the request's confidence ${parsed.confidence}`);
   }
-  return withFileLock(workflowPath, async (ownership) => {
+  const operation = await prepareOperation({ point: 'close', operationDir, workflowPath, host, env, now });
+  return withOperation(operation, () => withFileLock(workflowPath, async (ownership) => {
     const offer = verifyOffer({ env, host, cwd });
     if (!offer.on) {
       throw new Error(`next step verify is refused: missing ${offer.missing} (ADR-0068 Decision 5, item 11)`);
@@ -5040,6 +5941,7 @@ export async function recordVerifyRequest({
     const { frontmatter, body } = parseWorkflowFile(await readFile(workflowPath, 'utf8'));
     refuseNewerRecords(frontmatter, 'recording a request');
     assertRequestable(frontmatter);
+    operation.inLock(frontmatter);
     const tree = testedTree(cwd, workflowPath, frontmatter);
     for (const check of parsed.checks) resolveCheck(offer.declaration, check, { tree });
     const bound = {
@@ -5086,7 +5988,7 @@ export async function recordVerifyRequest({
     validateSchema14Fields(frontmatter);
     await atomicWrite(workflowPath, text, ownership);
     return { frontmatter, workflowPath, request: frontmatter.verify_request, retried: unchanged };
-  }, { env, host });
+  }, { env, host, writer: writerOf(operation) }));
 }
 
 // The request a driver write is for: still pending (the next step `verify`,
@@ -5120,7 +6022,10 @@ const startOf = (b) => ({
 // replay identical to what is stored, which writes nothing: a record identical
 // to the stored one is a no-op whatever the state since, and a different one
 // for the same batch or index is refused, so a result is never overwritten.
-async function verifyWrite({ workflowPath, host, now = new Date(), env = process.env }, apply) {
+// `writer` (LANE_WRITERS): a batch's start or restart is `job`, so none starts
+// in a held lane (ADR-0068 Decision 2, item 3); its results, end and pass are
+// `machine`, a job that was running when the hold was set (item 4).
+async function verifyWrite({ workflowPath, host, now = new Date(), env = process.env, writer = LANE_WRITERS.job }, apply) {
   validateHost(host);
   // The driver runs outside any run, so its writes are an owner's to the mark
   // (withFileLock): one made from a step is held to it.
@@ -5134,7 +6039,7 @@ async function verifyWrite({ workflowPath, host, now = new Date(), env = process
     validateSchema14Fields(frontmatter);
     await atomicWrite(workflowPath, text, ownership);
     return { recorded: true };
-  }, { env, host });
+  }, { env, host, writer });
 }
 
 // What a start and a restart both hold a batch to, none of it about earlier
@@ -5251,7 +6156,7 @@ export async function recordBatchRestart({ workflowPath, host, requestId, replac
 /** verify-result: one check's result, in index order, never after a check that did not pass. */
 export async function recordResult({ workflowPath, host, requestId, batchId, input, now }) {
   const result = parseResult(input);
-  return verifyWrite({ workflowPath, host, now }, (fm) => {
+  return verifyWrite({ workflowPath, host, now, writer: LANE_WRITERS.machine }, (fm) => {
     const known = ownResults(fm, requestId)?.batches.find((b) => b.batch_id === batchId);
     const stored = known?.results.find((r) => r.index === result.index);
     if (stored) {
@@ -5270,7 +6175,7 @@ export async function recordResult({ workflowPath, host, requestId, batchId, inp
 /** verify-batch-end: how the batch ended, consistent with its results and trees. */
 export async function recordBatchEnd({ workflowPath, host, requestId, batchId, input, now }) {
   const end = parseEnd(input);
-  return verifyWrite({ workflowPath, host, now }, (fm) => {
+  return verifyWrite({ workflowPath, host, now, writer: LANE_WRITERS.machine }, (fm) => {
     const known = ownResults(fm, requestId)?.batches.find((b) => b.batch_id === batchId);
     if (known?.end !== undefined) {
       const stored = { tree_end: known.tree_end, end: known.end, cause: known.cause, ended_at: known.ended_at };
@@ -5292,7 +6197,7 @@ export async function recordBatchEnd({ workflowPath, host, requestId, batchId, i
  * The request and its results stay readable for the step that follows.
  */
 export async function recordPass({ workflowPath, host, requestId, batchId, now }) {
-  return verifyWrite({ workflowPath, host, now }, (fm) => {
+  return verifyWrite({ workflowPath, host, now, writer: LANE_WRITERS.machine }, (fm) => {
     if (fm.verify_request?.id === requestId && fm.verify_request.answered_by !== undefined) {
       if (fm.verify_request.answered_by === batchId) return 'unchanged';
       throw new Error(`request ${requestId} was answered by batch ${fm.verify_request.answered_by}, not ${batchId}`);
@@ -5365,7 +6270,7 @@ export async function setParentWritebackMarker({
     ];
     await writeWorkflow(workflowPath, frontmatter, body, ownership);
     return { frontmatter, workflowPath };
-  }, { env, host });
+  }, { env, host, writer: LANE_WRITERS.plain });
 }
 
 /**
@@ -5396,7 +6301,7 @@ export async function clearParentWritebackMarker({
     ];
     await writeWorkflow(workflowPath, frontmatter, body, ownership);
     return { frontmatter, workflowPath };
-  }, { env, host });
+  }, { env, host, writer: LANE_WRITERS.plain });
 }
 
 /**
@@ -5411,12 +6316,17 @@ export async function clearParentWritebackMarker({
 export async function beginCommit({ workflowPath, host, env = process.env, now = new Date() }) {
   requireCapability('commit_surface', 'beginCommit');
   validateHost(host);
+  // ADR-0068 Decision 2, item 7 (N4) — the commit's first write opens its
+  // operation, which runs through the archive and the parent note after it
+  // (closeArchivedCommit), or ends where the commit stops (endChildOperation).
+  const operation = await prepareChildOperation({ point: 'open', kind: 'commit', workflowPath, host, env, now });
   // A write of the handoff (the phase, the marker), held to the attempt mark
   // (withFileLock, ADR-0068 Decision 5).
-  return withFileLock(workflowPath, async (ownership) => {
+  return withOperation(operation, () => withFileLock(workflowPath, async (ownership) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     const nowIso = isoUtc(now);
+    operation.inLock(frontmatter);
     frontmatter.current_phase = 'phase-7-commit';
     if (frontmatter.terminal_marker === true) frontmatter.terminal_marker = false;
     frontmatter.updated_at = nowIso;
@@ -5425,8 +6335,80 @@ export async function beginCommit({ workflowPath, host, env = process.env, now =
       { host, at: nowIso, event: 'updated' },
     ];
     await writeWorkflow(workflowPath, frontmatter, body, ownership);
-    return { frontmatter, workflowPath };
-  }, { env, host });
+    return { frontmatter, workflowPath, operation: operation.id };
+  }, { env, host, writer: writerOf(operation) }));
+}
+
+/**
+ * N4 — end the child's open operation of `kind` with a write of its own, the
+ * operation's last: only the entry goes (no `host_history` event, no
+ * `updated_at`), so it is no progress (`policy.mjs` `childTuple`). Phase 7
+ * calls it where a commit stops before its terminal write, and the Stop hook
+ * after an archived commit's parent note (closeArchivedCommit); an archived
+ * workflow (`archived`) holds no workflow of a run, so its lock admits no
+ * attempt. `{ closed: true, id }`, or `{ closed: false }` when the child keeps
+ * no such operation; a refused close (cleared by the owner, or its record
+ * gone) throws, leaving the entry.
+ */
+export async function endChildOperation({ workflowPath, kind, id = null, host, env = process.env, now = new Date(), archived = false }) {
+  validateHost(host);
+  const operation = await prepareChildOperation({ point: 'close', kind, id, workflowPath, host, env, now });
+  if (operation.id === null) return { closed: false };
+  await withOperation(operation, () => withFileLock(workflowPath, async (ownership) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    operation.inLock(frontmatter);
+    await writeWorkflow(workflowPath, frontmatter, body, ownership);
+  }, archived ? { hold: false, writer: writerOf(operation) } : { env, host, writer: writerOf(operation) }));
+  return { closed: true, id: operation.id };
+}
+
+/**
+ * N4 — open (`openOperation`, the kind) or close (`closeOperation`) the
+ * command's operation in its operation directory with a write of its own that
+ * moves only the child's entry (no `host_history` event, no `updated_at`), so
+ * it is no progress (`policy.mjs` `childTuple`): /peer-now registers its
+ * consultation before the launch, since nothing it does before writes the
+ * workflow, and ends it so when no note follows. A workflow that is no
+ * macro's child is not written. `{ written, id }`.
+ */
+export async function bookkeepOperation({
+  workflowPath, host, operationDir, openOperation, closeOperation = false, env = process.env, now = new Date(),
+}) {
+  validateHost(host);
+  if ((openOperation !== undefined) === closeOperation) {
+    throw new Error('an operation write opens its operation (--open-operation <kind>) or closes it (--close-operation true)');
+  }
+  if (operationDir === undefined || operationDir === null || operationDir === '') {
+    throw new Error('an operation write takes the command\'s operation directory (--operation-dir)');
+  }
+  const operation = await prepareOperation({
+    point: closeOperation ? 'close' : 'open', kind: openOperation, operationDir, workflowPath, host, env, now,
+  });
+  if (operation.id === null) return { written: false, id: null };
+  await withOperation(operation, () => withFileLock(workflowPath, async (ownership) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    operation.inLock(frontmatter);
+    await writeWorkflow(workflowPath, frontmatter, body, ownership);
+  }, { env, host, writer: writerOf(operation) }));
+  return { written: true, id: operation.id };
+}
+
+/**
+ * ADR-0068 Decision 2, item 7 — the commit's operation runs through its
+ * archive and the parent note after it: the Stop hook calls this once both
+ * ran, on the archived file. A refusal (the owner cleared the operation, or
+ * its record is gone) is reported and leaves the entry; it never fails the
+ * hook.
+ */
+export async function closeArchivedCommit({ archivedPath, host, stderr = process.stderr, now = new Date() }) {
+  try {
+    return await endChildOperation({ workflowPath: archivedPath, kind: 'commit', host, now, archived: true });
+  } catch (err) {
+    stderr.write(`${personaName()}: the commit's operation on ${archivedPath} stays open: ${err.message}\n`);
+    return { closed: false, error: err.message };
+  }
 }
 
 /**
@@ -5471,14 +6453,23 @@ export async function detachArchive({
     throw new Error('detachArchive: repoRoot is required (non-empty string)');
   }
 
+  // ADR-0068 Decision 2, items 7 and 8 — the orchestrator's lifecycle archive
+  // (abort, finalize) is a persona operation (kind `archive`) from the mark to
+  // the archive, which ends it: admitted as a first write is (one at a time in
+  // the lane, none while the holds cannot be read), so abort and finalize
+  // archive a held lane's child, and a crash between the two leaves it open
+  // for the owner (item 7).
+  const operation = await prepareChildOperation({ point: 'open', kind: 'archive', workflowPath, host, env, now });
+
   // Step 1 — mark `parent_detached: true` + `terminal_marker: false`
   // under the per-file lock. The `parent_detached` field is already
   // in FRONTMATTER_KEY_ORDER + validateSchema11Fields (PR-A); we just
   // set the boolean and let the serializer preserve key order.
-  await withFileLock(workflowPath, async (ownership) => {
+  await withOperation(operation, () => withFileLock(workflowPath, async (ownership) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     const nowIso = isoUtc(now);
+    operation.inLock(frontmatter);
     frontmatter.parent_detached = true;
     // Explicitly set `false` (not absent) so a stop-archive evaluation
     // post-detach reads the gate as "did not pass" rather than "missing
@@ -5491,7 +6482,7 @@ export async function detachArchive({
       { host, at: nowIso, event: 'updated' },
     ];
     await writeWorkflow(workflowPath, frontmatter, body, ownership);
-  }, { env, host });
+  }, { env, host, writer: writerOf(operation) }));
 
   // Step 2 — archive. archiveWorkflow's withDirectoryLock + withFileLock
   // are acquired+released within its own scope; the step-1 file lock
@@ -5505,6 +6496,8 @@ export async function detachArchive({
     repoRoot,
     now,
     env,
+    // Its last write: the entry leaves with the archived bytes.
+    ...(operation.id === null ? {} : { closeOperationKind: 'archive', closeOperationId: operation.id }),
   });
   if (!result.archived) {
     return { detached: false, reason: result.reason ?? 'archive-no-op' };
@@ -5562,10 +6555,59 @@ export async function archiveWorkflow({
   now = new Date(),
   // As every writer's: the attempt mark (withFileLock, ADR-0068 Decision 5).
   env = process.env,
+  // ADR-0068 Decision 2 (N4) — the kind of the child's operation this archive
+  // ends, as its last write (Phase 7's close: `commit`): its entry leaves
+  // with the archived bytes, and its record goes once the archive's locks are
+  // released.
+  closeOperationKind,
+  // N4 — or the kind of the operation this archive is the one write of
+  // (/resume archive: `archive`): admitted as a first write, refused as a last.
+  onceOperationKind,
+  // That operation's step holding the source's lock (the call above passes it).
+  inLock = () => {},
+  // The id of the operation `closeOperationKind` ends, when the caller knows it
+  // (detachArchive); else the newest of the kind the owner has not cleared.
+  closeOperationId = null,
+  // ADR-0068 Decision 2, item 7 — the source lock's writer class
+  // (LANE_WRITERS): `operation` when the call above steps one, else `plain`,
+  // so an archive of a held lane's child outside any operation is refused.
+  writer = LANE_WRITERS.plain,
 }) {
   validateHost(host);
   if (!repoRoot && !archiveDirectory) {
     throw new Error('archiveWorkflow: repoRoot or archiveDirectory is required');
+  }
+  if (closeOperationKind !== undefined && onceOperationKind !== undefined) {
+    throw new Error('archiveWorkflow: an archive closes an operation or is one, not both');
+  }
+  if (closeOperationKind !== undefined || onceOperationKind !== undefined) {
+    // A source already gone is no write: no operation is opened for it.
+    if (onceOperationKind !== undefined && !(await pathStat(workflowPath))) {
+      return { archived: false, reason: 'source-missing', workflowPath };
+    }
+    const operation = await prepareChildOperation(closeOperationKind !== undefined
+      ? { point: 'close', kind: closeOperationKind, id: closeOperationId, workflowPath, host, env, now }
+      : { point: 'once', kind: onceOperationKind, workflowPath, host, env, now });
+    // The operation the caller names ends here or the archive does not run:
+    // gone (cleared, and a later first write took its entry away), it is no
+    // longer the caller's to end, and an archive outside it could ride
+    // another operation's entry.
+    if (closeOperationId !== null && operation.id === null) {
+      throw operationRefusal(
+        `operation ${closeOperationId} (${closeOperationKind}) is no longer open on ${workflowPath}: the owner cleared it, or it ended; nothing was archived`,
+      );
+    }
+    let result;
+    try {
+      result = await archiveWorkflow({
+        workflowPath, host, repoRoot, archiveDirectory, recheck, now, env, inLock: operation.inLock, writer: writerOf(operation),
+      });
+    } catch (err) {
+      await operation.after(false);
+      throw err;
+    }
+    await operation.after(result.archived === true);
+    return result;
   }
   // ADR-0067 Decision 4, item 2 — the record's own home wins over the
   // caller's checkout: a workflow under the default state root, archived by
@@ -5624,6 +6666,7 @@ export async function archiveWorkflow({
           return { archived: false, reason: 'gate-not-met-under-lock', gateFailures, workflowPath };
         }
       }
+      inLock(frontmatter);
       const nowIso = isoUtc(now);
       frontmatter.updated_at = nowIso;
       frontmatter.host_history = [
@@ -5722,7 +6765,7 @@ export async function archiveWorkflow({
         to: destination,
         host,
       };
-    }, { env, host });
+    }, { env, host, writer });
   });
 }
 
@@ -5792,7 +6835,7 @@ async function archiveCandidateWithRaceRetry({
         }
         await atomicWrite(candidate, archivedBytes, { lockPath, token }, { precommit });
         won = true;
-      }, { hold: false });
+      }, { hold: false, writer: LANE_WRITERS.destination });
     } catch (err) {
       throw err;
     }
@@ -6637,6 +7680,26 @@ function cliPrintHelp() {
       '      {archived: true, to: <archive-path>} on archive success',
       '      {archived: false, reason: <reason>, gateFailures?: [...]} otherwise',
       '',
+      '  hold-capability',
+      '    Read-only (ADR-0068 Decision 2, item 9). Print the hold-aware persona\'s',
+      '    capability token and the holds protocol it reads, as JSON.',
+      '',
+      '  content-digest --workflow-path <p>',
+      '    Read-only (ADR-0068 Decision 2, item 7). Print the digest of the',
+      '    workflow without the fields a snapshot writes, as JSON.',
+      '',
+      '  Persona operations (ADR-0068 Decision 2, item 7; N4): create, append,',
+      '  set-terminal and finish-verb take [--operation-dir <absolute dir>], the',
+      '  command\'s operation directory. create [--operation-kind <kind>, default',
+      '  verb] and append --open-operation <kind> open the operation there;',
+      '  append --close-operation true, set-terminal and finish-verb close it.',
+      '  operation --workflow-path <p> --host <host> --operation-dir <dir>',
+      '  (--open-operation <kind> | --close-operation true) opens or closes it with',
+      '  a write of the entry alone (peer-now). append --once-operation <kind> is',
+      '  a command whose one write it is (the resume marker), as an archive is.',
+      '  Only a macro\'s child has operations: on any other workflow, and with no',
+      '  directory, the write is as before.',
+      '',
       '  state-root --repo-root <checkout>',
       '    Read-only (ADR-0067 Decision 6). Print the default state root, the read',
       '    set, the shared-creation switch, where a record would be created (or why',
@@ -6802,6 +7865,10 @@ async function cliRun(subcommand, flags) {
           // can only collect string values, so the enum gate fires inside
           // createWorkflowUnderLock for invalid values.
           workflowType: flags['workflow-type'],
+          // ADR-0068 Decision 2 (N4) — the bootstrap opens the command's
+          // operation when it creates a macro's child.
+          operationDir: flags['operation-dir'],
+          operationKind: flags['operation-kind'],
         });
         process.stdout.write(`${result.filePath}\n`);
         return 0;
@@ -6822,8 +7889,27 @@ async function cliRun(subcommand, flags) {
           clearNextStep: cliBoolean(flags, 'clear-next-step', false),
           clearTerminalMarker: cliBoolean(flags, 'clear-terminal-marker', false),
           event: flags.event ?? 'resumed',
+          // ADR-0068 Decision 2 (N4).
+          operationDir: flags['operation-dir'],
+          openOperation: flags['open-operation'],
+          closeOperation: cliBoolean(flags, 'close-operation', false),
+          // N4 — a command whose one write this is (the resume marker).
+          childOperation: flags['once-operation'] === undefined ? undefined : { point: 'once', kind: flags['once-operation'] },
         });
         process.stdout.write(`${flags['workflow-path']}\n`);
+        return 0;
+      }
+
+      case 'operation': {
+        cliRequire(flags, ['workflow-path', 'host', 'operation-dir']);
+        const result = await bookkeepOperation({
+          workflowPath: flags['workflow-path'],
+          host: flags.host,
+          operationDir: flags['operation-dir'],
+          openOperation: flags['open-operation'],
+          closeOperation: cliBoolean(flags, 'close-operation', false),
+        });
+        process.stdout.write(`${JSON.stringify(result)}\n`);
         return 0;
       }
 
@@ -7028,6 +8114,8 @@ async function cliRun(subcommand, flags) {
           // production completion entry point (verb Phase 2 finalize + the
           // start macro's terminal step); fire the sidecar.
           emitHandoff: true,
+          // ADR-0068 Decision 2 (N4) — a terminal write is its command's last.
+          operationDir: flags['operation-dir'],
         });
         process.stdout.write(`${flags['workflow-path']}\n`);
         return 0;
@@ -7065,6 +8153,9 @@ async function cliRun(subcommand, flags) {
           clearNextStep: cliBoolean(flags, 'clear-next-step', false),
           nextAction: flags['next-action'],
           resolution: flags.resolution,
+          operationDir: flags['operation-dir'],
+          openOperation: flags['open-operation'],
+          closeOperation: cliBoolean(flags, 'close-operation', false),
         });
         if (cleared.retired.warning) process.stderr.write(`warning: ${cleared.retired.warning}\n`);
         process.stdout.write(`${flags['workflow-path']}\n`);
@@ -7212,10 +8303,16 @@ async function cliRun(subcommand, flags) {
           // As for set-terminal: a verb completion fires the ADR-0031
           // session-handoff sidecar.
           emitHandoff: true,
+          // ADR-0068 Decision 2 (N4) — the verb's last write closes its operation.
+          operationDir: flags['operation-dir'],
         });
         if (result.mode === 'autopilot') {
           process.stderr.write(
             `autopilot: next step recorded; the terminal marker is left for ${commandPrefix()}commit (ADR-0063 D3)\n`,
+          );
+        } else if (result.held) {
+          process.stderr.write(
+            `next step recorded; the workflow stays open (ADR-0068 Decision 2, item 6): ${result.held.why}\n`,
           );
         } else if (result.terminal === false) {
           process.stderr.write(
@@ -7267,12 +8364,28 @@ async function cliRun(subcommand, flags) {
         return 0;
       }
 
+      // ADR-0068 Decision 2 (implementation note of 2026-10-25, N6 and N8).
+      case 'hold-capability': {
+        process.stdout.write(`${JSON.stringify(holdCapability())}\n`);
+        return 0;
+      }
+
+      case 'content-digest': {
+        cliRequire(flags, ['workflow-path']);
+        process.stdout.write(`${JSON.stringify(await contentDigest(flags['workflow-path']))}\n`);
+        return 0;
+      }
+
       case 'archive': {
         cliRequire(flags, ['workflow-path', 'host', 'repo-root']);
+        // N4 — /resume archive's one write: a macro's child is archived as an
+        // operation of one write (kind archive), so never beside another
+        // operation open in its lane.
         const result = await archiveWorkflow({
           workflowPath: flags['workflow-path'],
           host: flags.host,
           repoRoot: flags['repo-root'],
+          onceOperationKind: 'archive',
         });
         if (result.archived) {
           process.stdout.write(`${result.to}\n`);
