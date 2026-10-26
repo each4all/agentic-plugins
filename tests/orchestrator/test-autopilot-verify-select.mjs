@@ -370,6 +370,15 @@ describe('verify-select — what a module may read (R4)', () => {
     assert.equal(covers(src, 'scripts/mutation-specs/x.mjs', 'plugins/orchestrator/adapters/claude/autopilot/policy.mjs'), true);
   });
 
+  // A hole inside a segment makes no rest piece, so only the piece itself,
+  // tried where its first segment begins, covers the path; a fixed piece that
+  // begins with the same segment is tried there too.
+  it('(b) a hole inside the first segment, beside a fixed piece of that segment', () => {
+    const src = "const a = 'codex-cli/README.md';\nconst p = `${name}-cli/index.mjs`;";
+    assert.equal(covers(src, 'companions/x.mjs', 'companions/codex-cli/index.mjs'), true);
+    assert.equal(covers(src, 'companions/x.mjs', 'companions/codex-srv/index.mjs'), false);
+  });
+
   it('(c) a directory the module walks, which its literals name together', () => {
     const walk = "for (const f of readdirSync(join(ROOT, 'tests', 'fixtures'))) use(f);";
     assert.equal(vs.mayRead(info(walk), 'tests/fixtures/deep/b.json', 'tests/x/test-a.mjs'), 'dir');
@@ -1123,6 +1132,11 @@ describe('verify-select — on this repository', () => {
     // harness, whose spec loading reaches persona-pipeline.mjs's TESTS and
     // through them the docs walk of test-set-terminal-archive-timing.mjs
     // (measured 2026-10-21: blanking that name in that spec alone leaves 3).
+    // On CI the bound was met by a narrowing margin as the tree grew (10.1 to
+    // 11.9 s of CPU for budget.mjs in three of four pull requests, 2026-10-25/26,
+    // where this machine took 5.5 to 6.9 s): covers() tried every piece at
+    // every segment. Indexed by first segment, the same selections take about
+    // 3.1 to 4.5 s here, with identical results on 18 changes across the tree.
     const tree = fsTree(REPO_ROOT);
     const all = vs.discoverTests(tree).length;
     const run = (p) => {

@@ -103,6 +103,12 @@ export const MUTATIONS = [
     /a directory of one segment, which a walk takes/, 'a directory named from the module\'s own is named from every ancestor'),
   m('T29', '    const whole = !oneLiteral && (info.deepWalk || len === segs.length - 1);', '    const whole = !oneLiteral;',
     /a plain readdir reads the files directly in the directory/, 'a plain readdir reads the whole tree under it'),
+  m('T32', '  return fixed ? fixed.concat(idx.open) : idx.open;', '  return fixed ?? idx.open;',
+    /a hole inside the first segment, beside a fixed piece of that segment/, 'a piece that begins with a hole is not tried where a fixed piece begins with the same segment'),
+  m('T33', '      if (first && first.fixed) {', '      if (first) {',
+    /a hole inside the first segment, beside a fixed piece of that segment/, 'a piece that begins with a hole is indexed under its own text, so it is never tried'),
+  m('T34', '  return fixed ? fixed.concat(idx.open) : idx.open;', '  return idx.open;',
+    /\(b\) from the module's own directory or an ancestor/, 'a piece that begins with a fixed segment is never tried'),
 
   // ── E: discovery and the import graph ───────────────────────────────────
   m('E1', '        for (const y of importEdges(x)) visit(y);', '        for (const y of importEdges(x)) seen.add(y);',
