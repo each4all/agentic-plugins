@@ -39,7 +39,7 @@ import { realpathSync } from 'node:fs';
 import { join, isAbsolute, resolve, dirname, relative, basename } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { constants as osConstants, homedir, tmpdir } from 'node:os';
-import { recordPendingEnsemble } from './state.mjs';
+import { LANE_WRITER_REFUSED, recordPendingEnsemble } from './state.mjs';
 import { absorbOutputErrors, exitAfterFlush, isCliEntry } from './lib/cli-entry.mjs';
 import { personaName, personaOrRefuse } from './lib/persona.mjs';
 import { createRunCancellation, fingerprintForPid, stopProcessGroup } from './lib/process-identity.mjs';
@@ -532,7 +532,7 @@ export function validateEnvelopeShape(env) {
  *   stdout: string,
  *   stderr: string,
  *   envelope: object|null,
- *   kind?: string,
+ *   kind?: string, // held_lane: a held lane refused the pending registration (ADR-0068 Decision 2, item 7); nothing was spawned
  *   companionPath?: string,
  * }>}
  */
@@ -595,6 +595,11 @@ export async function dispatchPeer({
         env,
       });
     } catch (err) {
+      // A held lane's refusal (ADR-0068 Decision 2, item 7) stops the dispatch
+      // before the companion is spawned.
+      if (err?.code === LANE_WRITER_REFUSED) {
+        return { ok: false, status: 'companion_error', exitCode: 3, stdout: '', stderr: `dispatch-peer: ${err.message}`, envelope: null, kind: 'held_lane' };
+      }
       process.stderr.write(
         `dispatch-peer: pending registration failed (continuing): ${err.message}\n`,
       );
