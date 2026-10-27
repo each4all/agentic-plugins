@@ -12,7 +12,12 @@
 //                       whose driver died, empty its worker groups and clean
 //                       up after it (dead-runs.mjs)
 //   release <subtask>   end a lane's kept park (ADR-0068 Decision 1, item 4),
-//                       with or without a live run (parks.mjs)
+//                       with or without a live run (parks.mjs); with --hold,
+//                       give a held lane back; with --discard-unreadable,
+//                       discard a record that cannot be read (holds-cli.mjs)
+//   hold <subtask>      hold a lane for a person (ADR-0068 Decision 2)
+//   writer-clear <subtask> --operation <id>
+//                       the owner's word that an operation's session is gone
 //   heavy -- <command>  run a command under the repository's heavy-work lock
 //                       (ADR-0068 Decision 6, lib/heavy-run.mjs); exempt from
 //                       the host refusal below, since the lock is host-neutral
@@ -38,6 +43,8 @@ import { expandArgsFile } from '../../../scripts/lib/args-file.mjs';
 import { holderName, holderOf } from '../../../scripts/lib/heavy-lock.mjs';
 import { HeavyUsageError, parseHeavy, runHeavy } from '../../../scripts/lib/heavy-run.mjs';
 import { describeAdmission } from '../../../scripts/lib/run-locks.mjs';
+import { holdStateOf, holdTransition, liveRuns } from '../../../scripts/lib/holds.mjs';
+import { discardCmd, holdCmd, holdsStatusLines, releaseHoldCmd, writerClearCmd } from './holds-cli.mjs';
 import { isAutopilotRun } from '../../../scripts/state.mjs';
 import { MIN_STEP_BUDGET_USD } from './budget.mjs';
 import { cleanupDeadRuns } from './dead-runs.mjs';
@@ -46,7 +53,7 @@ import { landingLabel } from './landing-ready.mjs';
 import { gatherLaneFacts, laneHome, lanePath, lanesRequirements, planReconciliation } from './lanes.mjs';
 import { launchProposals, proposalLines, reportEntries } from './launch-proposals.mjs';
 import {
-  holderAlive, listLocks, listRuns, macroLockPath, mainWorktreeRoot, provablySame, readLockEntries, readOpenRun, readRun, relaunchCommand,
+  autopilotDir, holderAlive, listLocks, listRuns, macroLockPath, mainWorktreeRoot, provablySame, readLockEntries, readOpenRun, readRun, relaunchCommand,
 } from './ledger.mjs';
 import { deletePark, readPark, readParks, retiring } from './parks.mjs';
 import { resolveRoots } from './roots.mjs';
@@ -59,22 +66,34 @@ import {
 import { MAX_STEP_TIMEOUT_SEC, terminateGroup } from './worker.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const SUBCOMMANDS = ['preview', 'start', 'status', 'stop', 'release'];
+const SUBCOMMANDS = ['preview', 'start', 'status', 'stop', 'release', 'hold', 'writer-clear'];
+// The subcommands that name a subtask as their one positional argument.
+const SUBTASK_SUBCOMMANDS = ['release', 'hold', 'writer-clear'];
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,63}$/;
 
-export const USAGE = `Usage: autopilot [preview|start|status|stop|release] [options]
+export const USAGE = `Usage: autopilot [preview|start|status|stop|release|hold|writer-clear] [options]
        autopilot heavy [--purpose <text>] [--repo <dir>] [--declaration-ref <rev>] -- <command> [args...]
 
   preview                 observe, decide and print the posture; spawns nothing (default)
   start                   preview, plus how to execute
   start --execute         run the autopilot until the macro completes or a halt
-  status [--run <id>]     the latest run (or that run) and whether it still holds its lock
+  status [--run <id>] [--macro <id>]
+                          the latest run (or that run) and whether it still holds its lock; with --macro,
+                          that macro's holds too, from any checkout, with or without a run
   stop [--macro <id>]     stop the run that drives a macro (SIGTERM; it records an interrupted halt), or
                           clean up after one whose driver died (its peers, its unfinished step, its halt)
   release <subtask> --macro <id>
                           end a parked lane's kept park, with or without a live run: a live run picks the
                           lane up at its next tick, the next run judges it afresh
+  release <subtask> --macro <id> --hold <hold id>
+                          give a held lane back: the driver compares it once before it steps
+  release <subtask> --macro <id> --discard-unreadable
+                          keep a copy of a hold record that cannot be read and replace it, never unguarded
+  hold <subtask> --macro <id>
+                          hold a lane for a person: the driver leaves it alone once it shows held
+  writer-clear <subtask> --macro <id> --operation <operation id>
+                          a persona operation whose session is gone no longer keeps the lane
   heavy -- <command>      run a command under the repository's heavy-work lock, one heavy job at a time
                           across worktrees (heavy --help for its options and exit codes)
 
@@ -131,7 +150,7 @@ export function parseCli(argv) {
     maxSteps: DEFAULTS.maxSteps, maxCostUsd: DEFAULTS.maxCostUsd, stepBudgetUsd: DEFAULTS.stepBudgetUsd,
     stepTimeoutSec: DEFAULTS.stepTimeoutSec,
     forced: null, forcedText: null, forcedPairs: null, lanes: 1, notifyLocal: false, json: false, help: false,
-    subtask: null, hold: null,
+    subtask: null, hold: null, operation: null, discardUnreadable: false,
   };
   // --lane <id> --next "<step>" pairs, in order; a --next with no --lane
   // before it names no lane.
@@ -145,9 +164,10 @@ export function parseCli(argv) {
   }
   for (; i < words.length; i += 1) {
     const word = words[i];
-    // release names its subtask as its one positional argument.
-    if (o.sub === 'release' && o.subtask === null && !word.startsWith('-')) {
-      if (!isSafeSubtaskId(word)) throw new UsageError(`release ${JSON.stringify(word)}: not a subtask id`);
+    // release, hold and writer-clear name their subtask as their one
+    // positional argument.
+    if (SUBTASK_SUBCOMMANDS.includes(o.sub) && o.subtask === null && !word.startsWith('-')) {
+      if (!isSafeSubtaskId(word)) throw new UsageError(`${o.sub} ${JSON.stringify(word)}: not a subtask id`);
       o.subtask = word;
       continue;
     }
@@ -194,6 +214,8 @@ export function parseCli(argv) {
       case '--notify-local': o.notifyLocal = flag(); break;
       case '--json': o.json = flag(); break;
       case '--hold': o.hold = value(); break;
+      case '--operation': o.operation = value(); break;
+      case '--discard-unreadable': o.discardUnreadable = flag(); break;
       case '--help': case '-h': o.help = true; break;
       default: throw new UsageError(`unknown option ${JSON.stringify(word)}`);
     }
@@ -201,8 +223,14 @@ export function parseCli(argv) {
   if (o.execute && o.sub !== 'start') throw new UsageError('--execute applies only to start');
   if (o.run !== null && o.sub !== 'status') throw new UsageError('--run applies only to status');
   if (o.hold !== null && o.sub !== 'release') throw new UsageError('--hold applies only to release');
+  if (o.hold !== null && !/^[0-9a-f]{16}$/.test(o.hold)) throw new UsageError(`--hold ${JSON.stringify(o.hold)} is not a hold id`);
+  if (o.operation !== null && o.sub !== 'writer-clear') throw new UsageError('--operation applies only to writer-clear');
+  if (o.discardUnreadable && o.sub !== 'release') throw new UsageError('--discard-unreadable applies only to release');
+  if (o.discardUnreadable && o.hold !== null) throw new UsageError('--discard-unreadable and --hold do not go together');
   if (o.sub === 'release' && o.subtask === null) throw new UsageError('release needs the subtask whose lane it releases');
-  if (o.sub === 'release' && o.macro === null) throw new UsageError('release needs --macro <id>');
+  if (SUBTASK_SUBCOMMANDS.includes(o.sub) && o.subtask === null) throw new UsageError(`${o.sub} needs the subtask whose lane it acts on`);
+  if (SUBTASK_SUBCOMMANDS.includes(o.sub) && o.macro === null) throw new UsageError(`${o.sub} needs --macro <id>`);
+  if (o.sub === 'writer-clear' && o.operation === null) throw new UsageError('writer-clear needs --operation <operation id>');
   if (o.models !== null && !MODEL_PLANS.includes(o.models)) throw new UsageError(`--models must be one of ${MODEL_PLANS.join(', ')}`);
   if (o.model !== null && !MODEL_RE.test(o.model)) throw new UsageError(`--model ${JSON.stringify(o.model)} is not a model name`);
   if (o.effort !== null && !EFFORTS.includes(o.effort)) throw new UsageError(`--effort must be one of ${EFFORTS.join(', ')}`);
@@ -540,14 +568,19 @@ function printAdmissions(admissions, out) {
 async function statusCmd(o, repoRoot, out, err) {
   const runs = listRuns(repoRoot);
   const admissions = sessionAdmissions(repoRoot);
+  // ADR-0068 Decision 2, item 4 (P8) — the macro's holds, macro-scoped: from
+  // any checkout, with or without a run here.
+  const holds = o.macro ? await holdsStatusLines(mainWorktreeRoot(repoRoot), o.macro) : [];
   if (runs.length === 0) {
-    if (o.json) out(JSON.stringify({ runs: [], admissions }));
+    if (o.json) out(JSON.stringify({ runs: [], admissions, holds }));
     else {
       out(`no autopilot runs in ${repoRoot}`);
       printAdmissions(admissions, out);
+      for (const l of holds) out(l);
     }
     return 0;
   }
+  if (!o.json) for (const l of holds) out(l);
   const id = o.run ?? runs.at(-1);
   if (!runs.includes(id)) { err(`✗ no run ${id} in ${repoRoot}`); return 1; }
   const r = readRun(repoRoot, id);
@@ -572,7 +605,7 @@ async function statusCmd(o, repoRoot, out, err) {
       : `gone (the driver exited without recording an end: it crashed or was killed)${pendingText}`)
     : `${r.run.status}${pendingText}`;
   if (o.json) {
-    out(JSON.stringify({ run: r.run, steps: r.steps, landing: r.landing, lanes: r.lanes, halt: r.halt, live, worker_groups: groups, cleanup_pending: cleanupPending, admissions }, null, 2));
+    out(JSON.stringify({ run: r.run, steps: r.steps, landing: r.landing, lanes: r.lanes, halt: r.halt, live, worker_groups: groups, cleanup_pending: cleanupPending, admissions, holds }, null, 2));
     return 0;
   }
   out(`${r.run.run_id} · ${liveness} · macro ${r.run.macro_id ?? '-'} · steps ${r.run.steps} · $${Number(r.run.cost_usd ?? 0).toFixed(2)}`);
@@ -769,12 +802,13 @@ async function stopCmd(o, repoRoot, out, err, { wait = 30_000, env = process.env
   return 1;
 }
 
-// The run that holds a macro's lock while its driver lives, or null.
+// The run that holds a macro's lock while its driver lives, or null. A lock
+// or an entry that cannot be read counts as a live run (ADR-0068 Decision 2,
+// N3), named for what could not be read.
 async function liveRun(mainRoot, macroId) {
-  let entries = [];
-  try { entries = readLockEntries(macroLockPath(mainRoot, macroId)); } catch { return null; }
-  for (const e of entries) if (!e.session && e.holder?.run_id && await holderAlive(e.holder)) return e.holder.run_id;
-  return null;
+  const r = await liveRuns(mainRoot, macroId);
+  if (!r.live) return null;
+  return r.runs.find((x) => x.run_id)?.run_id ?? `a run that cannot be named (${r.why})`;
 }
 
 /**
@@ -790,31 +824,55 @@ async function releaseCmd(o, repoRoot, env, out, err, hooks = {}) {
     err(`✗ AGENTIC_AUTOPILOT=${env.AGENTIC_AUTOPILOT}: a step of an autopilot run never releases a lane, its own included`);
     return 1;
   }
-  if (o.hold !== null) {
-    err('✗ --hold names a hold, and holds are not part of this release (ADR-0068 Decision 2): release a parked lane with no --hold');
+  if (o.hold !== null) return releaseHoldCmd(o, repoRoot, { out, err, env, engineerRoot: await engineerRootOf(env) });
+  if (o.discardUnreadable) return discardCmd(o, repoRoot, { out, err });
+  const mainRoot = mainWorktreeRoot(repoRoot);
+  // ADR-0068 Decision 2, item 7 — a bare release ends a kept park only: it
+  // refuses on a held lane, and on one whose release is uncompared or was
+  // rejected.
+  const hs = holdStateOf(mainRoot, o.macro, o.subtask);
+  const holdId = hs.hold?.record?.hold_id;
+  if (hs.state === 'pending' || hs.state === 'held') {
+    err(`✗ ${holdTransition('held', 'bare-release').refused}: give it back with agentic-autopilot release ${o.subtask} --macro ${o.macro} --hold ${holdId}`);
     return 1;
   }
-  const mainRoot = mainWorktreeRoot(repoRoot);
+  if (hs.state === 'unreadable') {
+    err(`✗ the hold records of ${o.subtask} cannot be read: agentic-autopilot release ${o.subtask} --macro ${o.macro} --discard-unreadable`);
+    return 1;
+  }
+  if (hs.state === 'released-uncompared') {
+    err(`✗ ${holdTransition('released-uncompared', 'bare-release').refused}: the driver compares hold ${holdId}'s release before the lane steps`);
+    return 1;
+  }
+  if (hs.state === 'rejected') {
+    err(`✗ hold ${holdId}'s release was rejected: the lane changed after its release; stop editing, close the session, then hold and release it again`);
+    return 1;
+  }
   const cur = readPark(mainRoot, o.macro, o.subtask);
   if (cur.state === 'absent') {
-    err(`✗ subtask ${o.subtask} of macro ${o.macro} has no kept park: there is nothing to release`);
+    err(`✗ subtask ${o.subtask} of macro ${o.macro} is neither held nor parked: there is nothing to release`);
+    return 1;
+  }
+  // A park that cannot be read is never deleted by a bare release: the owner
+  // discards it, which keeps a copy (Decision 2, item 8).
+  if (cur.state === 'unreadable') {
+    err(`✗ subtask ${o.subtask}'s kept park cannot be read (${cur.error}); it is not deleted: agentic-autopilot release ${o.subtask} --macro ${o.macro} --discard-unreadable keeps a copy and ends it`);
     return 1;
   }
   const live = await liveRun(mainRoot, o.macro);
   if (hooks.afterLiveRun) await hooks.afterLiveRun();
-  if (cur.state === 'ok' && cur.record.state !== 'parked' && live && live === cur.record.run_id) {
+  if (cur.record.state !== 'parked' && live && live === cur.record.run_id) {
     err(`✗ run ${live} has a step of subtask ${o.subtask} under way (${cur.record.state}): its lane is not parked; wait for the step to end`);
     return 1;
   }
-  // Only the record read above, across the await: a record id, or the bytes
-  // of one that cannot be read, so a marker a relaunch wrote meanwhile stays.
-  const read = cur.state === 'ok' ? { expect: cur.record.record_id } : { expectDigest: cur.digest ?? null };
-  const r = await deletePark(mainRoot, o.macro, o.subtask, { ...read, event: 'released', fields: { by: 'owner', live_run: live } });
+  // Only the record read above, across the await, so a marker a relaunch
+  // wrote meanwhile stays.
+  const r = await deletePark(mainRoot, o.macro, o.subtask, { expect: cur.record.record_id, event: 'released', fields: { by: 'owner', live_run: live } });
   if (!r.ok) {
     err(`✗ subtask ${o.subtask}'s park changed while it was released (${r.current.state === 'ok' ? `now record ${r.current.record.record_id}, ${r.current.record.state}` : r.current.state}); run release again`);
     return 1;
   }
-  const what = cur.state === 'ok' ? `${cur.record.reason} — ${cur.record.detail}` : `an unreadable record (${cur.error})`;
+  const what = `${cur.record.reason} — ${cur.record.detail}`;
   out(`✓ released subtask ${o.subtask}'s lane of macro ${o.macro} (it was parked: ${what})`);
   out(live
     ? `  run ${live} picks it up at its next tick`
@@ -863,6 +921,15 @@ export async function main(argv = process.argv.slice(2), { env = process.env, io
     case 'status': return statusCmd(o, repoRoot, out, err);
     case 'stop': return stopCmd(o, repoRoot, out, err, { env });
     case 'release': return releaseCmd(o, repoRoot, env, out, err, hooks);
+    case 'hold':
+    case 'writer-clear': {
+      if (isAutopilotRun(env)) {
+        err(`✗ AGENTIC_AUTOPILOT=${env.AGENTIC_AUTOPILOT}: a step of an autopilot run never holds a lane or clears a writer, its own included`);
+        return 1;
+      }
+      if (o.sub === 'writer-clear') return writerClearCmd(o, repoRoot, { out, err });
+      return holdCmd(o, repoRoot, { out, err, env, engineerRoot: await engineerRootOf(env), runDirs: [autopilotDir(repoRoot), autopilotDir(mainWorktreeRoot(repoRoot))] });
+    }
     default: return 1;
   }
 }
@@ -884,3 +951,10 @@ if (invokedAsCli()) {
   });
 }
 
+
+// The engineer the autopilot launcher pins (AGENTIC_ENGINEER_ROOT), else the
+// one the roots resolve to: the engineer holds' activation requires.
+async function engineerRootOf(env) {
+  if (typeof env.AGENTIC_ENGINEER_ROOT === 'string' && env.AGENTIC_ENGINEER_ROOT !== '') return env.AGENTIC_ENGINEER_ROOT;
+  try { return (await resolveRoots({ env })).roots.engineer ?? null; } catch { return null; }
+}

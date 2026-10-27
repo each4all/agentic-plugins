@@ -611,7 +611,7 @@ export const MUTATIONS = [
       const file = join(copy, DRIVER);
       const t = readFileSync(file, 'utf8');
       const look = '    view = look(macroId);\n';
-      const locks = '    const record = { run_id: runId, repo: repoRoot, macro_id: macroId, started_at: run.started_at, token_digest: tokenDigest(token) };\n';
+      const locks = '    const record = { run_id: runId, repo: repoRoot, macro_id: macroId, started_at: run.started_at, token_digest: tokenDigest(token), capabilities: run.capabilities, lanes };\n';
       if (t.split(look).length !== 2 || t.split(locks).length !== 2) throw new Error('D15: anchors moved');
       writeFileSync(file, t.replace(look, '').replace(locks, `${look}${locks}`));
     },

@@ -106,6 +106,17 @@ REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 # holder, and nothing is written.
 ADMISSION="$(node "<orchestrator-plugin-root>/scripts/state.mjs" admission join \
   --macro "$MACRO_ID" --checkout "$REPO_ROOT" --command finalize --host codex)" || exit 1
+# ADR-0068 Decision 2, item 8 — the holds are checked before the first bulk
+# status write: an open persona operation in a lane, a busy lane, holds that
+# cannot be read, or (the holds on) an engineer whose archive is not
+# hold-aware stops here, naming each, and nothing is written.
+HOLDS_ENGINEER_ROOT="$(node "<orchestrator-plugin-root>/scripts/discover-engineer.mjs" discover 2>/dev/null)" || HOLDS_ENGINEER_ROOT=''
+node "<orchestrator-plugin-root>/scripts/state.mjs" holds-preflight \
+  --workflow-path "$MACRO_PATH" --engineer-root "$HOLDS_ENGINEER_ROOT" || {
+  node "<orchestrator-plugin-root>/scripts/state.mjs" admission release \
+    --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION"
+  exit 1
+}
 node "<orchestrator-plugin-root>/scripts/state.mjs" bulk-subtask-status \
   --workflow-path "$MACRO_PATH" \
   --host codex \
@@ -146,7 +157,13 @@ For each child:
 - if the child's branch HEAD exists and the child is terminal, invoke
   engineer `state.mjs stop-archive` with the child's branch HEAD;
 - otherwise invoke engineer `state.mjs detach-archive`;
-- count failures and stop before Phase 3 if any child failed to archive.
+- when `stop-archive` answers with an envelope of `archived: false`, whatever
+  its `reason` (`gate-not-met`, or `held-lane` for a child in a held lane,
+  ADR-0068 Decision 2, item 7), invoke engineer `state.mjs detach-archive`
+  for that child, as `commands/finalize.md` does: that answer is not a
+  failure;
+- count failures (a `stop-archive` or `detach-archive` that fails, or prints
+  no envelope) and stop before Phase 3 if any child failed to archive.
 
 Every engineer-side CLI invocation must use `$ENGINEER_PLUGIN_ROOT` in
 argv. Do not rely on a rebound `$CLAUDE_PLUGIN_ROOT` for engineer
@@ -200,7 +217,12 @@ node "<orchestrator-plugin-root>/scripts/state.mjs" set-terminal \
   --host codex \
   --terminal-phase finalized \
   --terminal-marker true \
-  --next-action archive
+  --next-action archive || exit $?
+# ADR-0068 Decision 2, item 8 — only after the terminal write, the macro's
+# holds retire: its holds directory goes. One that waits says why on stderr,
+# and a later Stop retries it.
+node "<orchestrator-plugin-root>/scripts/state.mjs" holds-retire \
+  --workflow-path "$MACRO_PATH" --macro-end true || true
 ```
 
 The macro now passes A1/A2/A3. A4 passes only when no active engineer

@@ -283,17 +283,20 @@ export const MUTATIONS = [
   },
   {
     id: 'A2', file: STATE, tests: [TR],
-    from: "  return names.filter((n) => n !== 'parks').map(",
-    to: '  return names.filter((n) => false).map(',
-    killed_by: [/a hold or release record refuses a rebinding approval and a delivery/],
+    from: '  return rebindRefusals({ ...ctx, subtaskId, branch, childPaths });',
+    to: '  return [];',
+    killed_by: [/a hold or release record refuses a rebinding approval and a delivery/, /a pending or held subtask, or one whose release awaits its comparison, refuses/],
     why: 'a held subtask is rebound and told',
   },
   {
-    id: 'A3', file: STATE, tests: [TR],
-    from: "  return names.filter((n) => n !== 'parks').map(",
-    to: '  return names.filter((n) => true).map(',
-    killed_by: [/a hold or release record refuses a rebinding approval and a delivery/],
-    why: 'the park records count as a hold, and refuse every rebinding',
+    // impl-hold's reader (2026-10-26) reads the records by kind, so no park
+    // can count as a hold; what refuses everything now is a reader that
+    // takes every state for one that applies.
+    id: 'A3', file: 'plugins/orchestrator/scripts/lib/hold-ops.mjs', tests: [TR],
+    from: "    default: break;\n  }\n  const hold = st.hold?.state === 'ok' ? st.hold.record : null;",
+    to: "    default: if (st.state !== 'none') why.push(st.state); break;\n  }\n  const hold = st.hold?.state === 'ok' ? st.hold.record : null;",
+    killed_by: [/a retired, consumed, rejected, withdrawn or orphaned hold permits rebinding again/],
+    why: 'a hold that ended (retired, consumed, rejected, withdrawn, orphaned) refuses every rebinding of its subtask for good',
   },
   {
     id: 'A4', file: STATE, tests: [TR],
@@ -304,8 +307,8 @@ export const MUTATIONS = [
   },
   {
     id: 'A5', file: STATE, tests: [TR],
-    from: '      ...view.rebindings.map((e) => e.subtask), ...view.deliveries.filter((d) => !d.untouched).map((d) => d.subtask),\n',
-    to: '      ...view.rebindings.map((e) => e.subtask),\n',
+    from: '      ...view.deliveries.filter((d) => !d.untouched).map((d) => d.subtask),\n    ]);',
+    to: '    ]);',
     killed_by: [/a hold refuses an approval that only tells the held subtask/],
     why: 'an approval that only tells a held subtask (a return to its dispatch, which rebinds nothing) writes its note past the hold',
   },
@@ -524,8 +527,8 @@ export const MUTATIONS = [
   },
   {
     id: 'B10', file: SCHED, tests: [TA],
-    from: '    if (inLane && laneBusy(id, view)) {\n      busy.add(id);\n      return { ...refuse(null), again: false, busy: true };\n    }\n\n    // ADR-0068 Decision 8',
-    to: '    if (inLane && laneBusy(id, view) && !rebindDue(view.macro?.fm, id, { macroPath: view.macro?.path })) {\n      busy.add(id);\n      return { ...refuse(null), again: false, busy: true };\n    }\n\n    // ADR-0068 Decision 8',
+    from: '    const occupied = inLane ? laneBusy(id, view) : false;\n    if (occupied) {\n      holdBack(id, occupied);\n      return { ...refuse(null), again: false, busy: true };\n    }\n\n    // ADR-0068 Decision 8',
+    to: '    const occupied = inLane ? laneBusy(id, view) : false;\n    if (occupied && !rebindDue(view.macro?.fm, id, { macroPath: view.macro?.path })) {\n      holdBack(id, occupied);\n      return { ...refuse(null), again: false, busy: true };\n    }\n\n    // ADR-0068 Decision 8',
     killed_by: [/the idle lane's child is told before its step while the other lane runs/],
     why: 'a note is written into a lane with a persona operation open',
   },
@@ -1005,7 +1008,7 @@ export const MUTATIONS = [
   },
   {
     id: 'B20', file: SCHED, tests: [TA],
-    from: '        hold: holdAt(repoRoot),',
+    from: '        hold: holdAt(repoRoot, id),',
     to: '        hold: null,',
     killed_by: [/the idle lane's child is told before its step while the other lane runs/],
     why: 'a lane\'s boundary delivery runs off the run\'s locks',

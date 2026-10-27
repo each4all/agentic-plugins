@@ -12,6 +12,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { readRegular } from './holds-records.mjs';
 import { fingerprintsMatch, isProcessAlive } from './process-identity.mjs';
 
 export const AUTOPILOT_DIR_REL = '.agentic-plugins/runs/autopilot';
@@ -212,17 +213,15 @@ export async function provablySame(pid, recorded, { probe = processFingerprint }
   return Boolean(current && current.kind !== 'none' && current.zombie !== true && fingerprintsMatch(recorded, current));
 }
 
-// One entry as it is now, or null once it is gone.
+// One entry as it is now, or null once it is gone. Opened without blocking
+// and only as a regular file (ADR-0068 Decision 2, impl-hold): an entry that
+// is a FIFO is never waited on, and one that is a link to nothing is not
+// taken for gone; either throws, naming it, as any other read that fails.
 function readEntry(file) {
-  let text;
-  let mtimeMs = 0;
-  try {
-    text = fs.readFileSync(file, 'utf8');
-    mtimeMs = fs.statSync(file).mtimeMs;
-  } catch (err) {
-    if (err.code === 'ENOENT') return null;
-    throw err;
-  }
+  const r = readRegular(file);
+  if (r.absent) return null;
+  if (r.error) throw new Error(r.error);
+  const { text, mtimeMs } = r;
   let holder = null;
   try { holder = JSON.parse(text); } catch { /* debris, or not ours */ }
   return { file, text, holder, mtimeMs, session: ADMISSION_ENTRY.test(path.basename(file)) };
@@ -498,8 +497,13 @@ function ageText(ms) {
 
 // A session's admission, as a refusal and `status` show it: its command,
 // checkout, host, session id when recorded, age (stale past 4 h) and id, with
-// the command that releases it once the owner knows that session is gone.
+// the command that releases it once the owner knows that session is gone. A
+// hold's fence names the hold and its release instead (ADR-0068 Decision 2,
+// item 4): only the hold's own commands remove it.
 export function describeAdmission(holder, { now = Date.now() } = {}) {
+  if (isFence(holder)) {
+    return `a hold of subtask ${holder.subtask_id} fences this lane (hold ${holder.hold_id}, checkout ${holder.checkout ?? '?'}). Give the lane back with: ${fenceReleaseCommand(holder)}`;
+  }
   const acquired = Date.parse(holder?.acquired_at ?? '');
   const age = Number.isFinite(acquired) ? now - acquired : null;
   const parts = [
@@ -595,12 +599,23 @@ export async function checkAdmission({ checkout, macroId, admissionId, env = pro
   return { ok: true };
 }
 
-/** Remove every entry of `admissionId` from the locks a command can join; the paths removed. '' (a worker) holds none. */
+/**
+ * Remove every entry of `admissionId` from the locks a command can join; the
+ * paths removed. '' (a worker) holds none. A hold's fence is refused, before
+ * anything is removed: `release` ends the hold and its fence together.
+ */
 export function releaseAdmission({ checkout, macroId, admissionId, resolveCheckout = true }) {
   checkout = resolveCheckout ? checkoutRoot(checkout) : path.resolve(checkout);
   if (admissionId === '' || admissionId === undefined || admissionId === null) return [];
   const removed = [];
-  for (const lock of admissionLocks({ command: 'next', checkout, macroId })) {
+  const locks = admissionLocks({ command: 'next', checkout, macroId });
+  for (const lock of locks) {
+    const own = readEntryOrNull(admissionEntryPath(lock, admissionId));
+    if (isFence(own?.holder)) {
+      throw new AdmissionError(`admission ${admissionId} is a hold's fence, not a session's: ${fenceReleaseCommand(own.holder)}`, 'fence');
+    }
+  }
+  for (const lock of locks) {
     const file = admissionEntryPath(lock, admissionId);
     try {
       fs.unlinkSync(file);
@@ -646,4 +661,112 @@ function readEntryOrNull(file) {
   } catch {
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// The hold's fence (ADR-0068 Decision 2, item 4; implementation note I3)
+//
+// A held lane's worktree lock carries an admission entry for the hold,
+// written before the lane shows held: named as a session's, so every reader
+// (an older driver included) reads it as an entry and judges it live until
+// it is removed. Its id derives from the hold id, so a handoff retried after
+// a crash finds its own fence, and nothing else's.
+
+/** The fence's admission id for a hold: 32 hex, derived from the hold id. */
+export function fenceAdmissionId(holdId) {
+  if (!/^[0-9a-f]{16}$/.test(holdId ?? '')) throw new AdmissionError(`not a hold id: ${JSON.stringify(holdId)}`, 'usage');
+  return createHash('sha256').update(`agentic-hold-fence:${holdId}`).digest('hex').slice(0, 32);
+}
+
+/** Whether a lock entry's holder is a hold's fence. */
+export function isFence(holder) {
+  return Boolean(holder && holder.kind === 'session' && holder.command === 'hold' && typeof holder.hold_id === 'string');
+}
+
+/** The command that gives a fenced lane back. */
+export function fenceReleaseCommand(holder) {
+  return `agentic-autopilot release ${holder?.subtask_id ?? '<subtask>'} --macro ${holder?.macro_id ?? '<macro>'} --hold ${holder?.hold_id ?? '<hold id>'}`;
+}
+
+/** The fence entry's path in the lane's worktree lock. */
+export function fencePath(laneRoot, holdId) {
+  return admissionEntryPath(worktreeLockPath(path.resolve(laneRoot)), fenceAdmissionId(holdId));
+}
+
+/**
+ * Write a hold's fence in the lane's worktree lock (whole, a rename): the
+ * entry's path. Rewriting one that is there is harmless.
+ */
+export function writeFence({ laneRoot, holdId, subtaskId, macroId, now = () => Date.now() }) {
+  const lock = worktreeLockPath(path.resolve(laneRoot));
+  fs.mkdirSync(lock, { recursive: true });
+  const admissionId = fenceAdmissionId(holdId);
+  const file = admissionEntryPath(lock, admissionId);
+  writeWhole(lock, file, {
+    kind: 'session', command: 'hold', admission_id: admissionId, hold_id: holdId, subtask_id: subtaskId,
+    macro_id: macroId, checkout: path.resolve(laneRoot), host: null, session_id: null,
+    acquired_at: new Date(now()).toISOString(),
+  });
+  return file;
+}
+
+/** Whether a hold's fence is in the lane's lock: 'present', 'absent' or 'other' (its name holds no fence of this hold). */
+export function fenceState(laneRoot, holdId) {
+  const e = readEntryOrNull(fencePath(laneRoot, holdId));
+  if (!e) return 'absent';
+  return isFence(e.holder) && e.holder.hold_id === holdId ? 'present' : 'other';
+}
+
+/** Remove a hold's fence, and only this hold's; true when one was removed. */
+export function removeFence(laneRoot, holdId) {
+  const file = fencePath(laneRoot, holdId);
+  const e = readEntryOrNull(file);
+  if (!e) return false;
+  if (!isFence(e.holder) || e.holder.hold_id !== holdId) return false;
+  unlinkQuiet(file);
+  return true;
+}
+
+/**
+ * The live entries of a lane's worktree lock other than this hold's fence:
+ * runs', sessions' and other holds' — what a handoff must find none of, both
+ * before its fence and after it (an admission's two looks).
+ */
+export async function laneLockRivals(laneRoot, { holdId = null, probe = processFingerprint, now = () => Date.now() } = {}) {
+  const lock = worktreeLockPath(path.resolve(laneRoot));
+  const exclude = holdId ? fencePath(laneRoot, holdId) : null;
+  const judged = await judgeEntries(lock, { exclude, probe, now, phase: 'check' });
+  return judged.filter((e) => e.state !== 'gone');
+}
+
+/**
+ * Repair a hold's fence (Decision 2, item 4): a held hold whose fence an
+ * older orchestrator's `admission release` removed gets it back; a hold no
+ * longer held loses its leftover. 'written', 'removed' or 'none'.
+ */
+export function repairFence({ laneRoot, holdId, subtaskId, macroId, held }) {
+  const state = fenceState(laneRoot, holdId);
+  if (held && state === 'absent') {
+    writeFence({ laneRoot, holdId, subtaskId, macroId });
+    return 'written';
+  }
+  if (!held && state === 'present') return removeFence(laneRoot, holdId) ? 'removed' : 'none';
+  return 'none';
+}
+
+/**
+ * Remove the fences of a subtask's earlier holds from its lane's lock: every
+ * fence entry naming this macro and subtask whose hold id is not `keepHoldId`
+ * (I3: a hold replaced, or a discarded record whose id cannot be read, never
+ * strands its fence). The paths removed.
+ */
+export function removeSubtaskFences(laneRoot, { macroId, subtaskId, keepHoldId = null }) {
+  const removed = [];
+  for (const e of readLockEntries(worktreeLockPath(path.resolve(laneRoot)))) {
+    if (!isFence(e.holder) || e.holder.macro_id !== macroId || e.holder.subtask_id !== subtaskId) continue;
+    if (e.holder.hold_id === keepHoldId) continue;
+    unlinkQuiet(e.file);
+    removed.push(e.file);
+  }
+  return removed;
 }

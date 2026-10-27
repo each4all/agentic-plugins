@@ -10,7 +10,8 @@
 // retried on its unchanged record, in this run or the next, until the owner
 // releases it; a creation refused before any worker starts parks that lane
 // while the other starts; no worker spawns into a lane with a persona
-// operation open; what changes while a step's marker waits for the park
+// operation open, and a run with nothing running waits on one only as long
+// as a step may take; what changes while a step's marker waits for the park
 // records' lock (an interrupt, a write, a worker that ended) is asked again,
 // and the run returns only once its queued park changes are done. The run's ends — drains, a crash, the end's last pass, a
 // release as it ends — are in test-autopilot-scheduler-lane-ends.mjs.
@@ -18,7 +19,7 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, match, ok, strictEqual } from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { AP, bySubtask, COMMIT, markOn, setup, stepsOf } from './fixtures/autopilot-lanes-run.mjs';
@@ -28,6 +29,16 @@ const W = await import(resolve(AP, 'worker.mjs'));
 const OL = await import(resolve(AP, 'offloop.mjs'));
 const C = await import(resolve(AP, 'cli.mjs'));
 const RL = await import(resolve(AP, '../../../scripts/lib/run-locks.mjs'));
+const HL = await import(resolve(AP, '../../../scripts/lib/holds.mjs'));
+// ADR-0068 Decision 2, item 7 — a person's operation in the lane (the owner's
+// gate resolution, from its clear to its finish-verb), opened now and closed
+// `ms` later; the time it was opened.
+const openOperationFor = (t, id, ms) => {
+  const op = HL.newOperationId();
+  HL.publishOpRecord(t.work, t.fx.macroId, id, { operation_id: op, kind: 'gate' });
+  setTimeout(() => HL.removeOpRecord(t.work, t.fx.macroId, id, op), ms);
+  return Date.now();
+};
 const ENG = resolve(AP, '../../../../engineer');
 const pause = (ms) => new Promise((r) => { setTimeout(r, ms); });
 const GATE = 'scope-routing';
@@ -251,6 +262,39 @@ describe('no worker spawns into a lane with a persona operation open', () => {
   });
 });
 
+describe('a run with nothing running does not wait on an open operation without bound', () => {
+  it('an operation that never closes (its worker killed) holds its lane for as long as a step may take, then the run ends naming it and its writer-clear', async () => {
+    const t = await setup({ subtasks: [{ id: 'A' }], scenario: { A: { next: [COMMIT], file: true } } });
+    const op = HL.newOperationId();
+    HL.publishOpRecord(t.work, t.fx.macroId, 'A', { operation_id: op, kind: 'verb' });
+    // A run that would wait for ever is interrupted, which this test refuses.
+    let stuck = false;
+    const guard = setTimeout(() => { stuck = true; t.signals.emit('SIGINT'); }, 15_000);
+    // The wait is measured from its own line, not from the driver's start,
+    // whose setup alone can outlast the bound.
+    let waitAt = null;
+    const push = t.lines.push.bind(t.lines);
+    t.lines.push = (line) => {
+      if (waitAt === null && /^ {2}nothing runs: waiting up to /.test(line)) waitAt = Date.now();
+      return push(line);
+    };
+    try {
+      strictEqual(await t.run({}, { wakeIntervalMs: 300, busyWaitMs: 1500 }), 2, t.lines.join('\n'));
+      const endedAt = Date.now();
+      ok(!stuck, `the run waited on the open operation without bound:\n${t.lines.join('\n')}`);
+      ok(waitAt !== null && endedAt - waitAt >= 1500, `it waited the bound first (${waitAt === null ? 'no wait line' : `${endedAt - waitAt} ms`})`);
+      const r = t.latest();
+      deepStrictEqual(r.steps, [], 'no worker spawned into the lane');
+      deepStrictEqual([r.halt.reason, r.halt.subtask_id], ['owner-choice', 'A']);
+      match(r.halt.detail, new RegExp(`every lane left waits on an open persona operation: lane A: .*${op}.*agentic-autopilot writer-clear A --macro ${t.fx.macroId} --operation ${op}`));
+      ok(t.lines.some((l) => /^ {2}nothing runs: waiting up to 2 s for the operation open in lane A; then the run ends/.test(l)), t.lines.join('\n'));
+    } finally {
+      clearTimeout(guard);
+      t.fx.cleanup();
+    }
+  });
+});
+
 describe('a parked lane is woken for every change after the facts of its park', () => {
   it('a gate cleared between the decision\'s look and the park\'s own look wakes the lane while the other lane is mid-step', async () => {
     const t = await setup({
@@ -356,11 +400,10 @@ describe('a lane picked up again is reconciled first', () => {
   });
 });
 
-describe('no worker spawns into a lane whose engineer record another hand is writing', () => {
-  it('a write to the lane\'s record during its admission holds the spawn until the quiet period has passed since', async () => {
+describe('no worker spawns into a lane where another hand has an operation open', () => {
+  it('an operation opened during the lane\'s admission holds the spawn until it closes', async () => {
     const t = await setup({ subtasks: [{ id: 'A' }], scenario: { A: { next: [COMMIT], file: true }, actions: { 1: `gate:${GATE}` } } });
     let touchedAt = null;
-    const childPath = () => readFileSync(join(t.dir, `child-${'A'}.path`), 'utf8');
     // The owner's finish-verb, seconds after the clear: here, while the
     // admission of A's next step looks at its lane.
     const observeAsync = async (a, o) => {
@@ -368,9 +411,7 @@ describe('no worker spawns into a lane whose engineer record another hand is wri
         // After the look returns: the write is the last thing before the
         // admission's checks.
         const v = await OL.observeInChild(a, o);
-        const now = new Date();
-        utimesSync(childPath(), now, now);
-        touchedAt = now.getTime();
+        touchedAt = openOperationFor(t, 'A', 3000);
         return v;
       }
       return OL.observeInChild(a, o);
@@ -385,11 +426,11 @@ describe('no worker spawns into a lane whose engineer record another hand is wri
     try {
       strictEqual(await t.run({}, { observeAsync, wakeIntervalMs: 300, quietMs: 3000 }), 2, t.lines.join('\n'));
       ok(await owner);
-      ok(touchedAt !== null, 'the record was written during the admission');
+      ok(touchedAt !== null, 'the operation opened during the admission');
       const r = t.latest();
       const a = r.steps.find((x) => x.kind === 'commit');
-      ok(a, 'A stepped once its record was quiet');
-      ok(Date.parse(a.started_at) >= touchedAt + 2900, `A's commit started ${Date.parse(a.started_at) - touchedAt} ms after the write, not a whole quiet period`);
+      ok(a, 'A stepped once the operation closed');
+      ok(Date.parse(a.started_at) >= touchedAt + 2900, `A's commit started ${Date.parse(a.started_at) - touchedAt} ms after the write, before the operation closed`);
       strictEqual(r.halt.reason, 'awaiting-landing');
     } finally {
       t.fx.cleanup();
@@ -430,11 +471,10 @@ describe('what changes while a step\'s marker waits for the park records\' lock 
     }
   });
 
-  it('a write to the lane\'s record while the step\'s marker waits for its lock holds the spawn until the quiet period has passed since', async () => {
+  it('an operation opened while the step\'s marker waits for its lock holds the spawn until it closes', async () => {
     const t = await setup({ subtasks: [{ id: 'A' }], scenario: { A: { next: [COMMIT], file: true }, actions: { 1: `gate:${GATE}` } } });
     let touchedAt = null;
     let holding = false;
-    const childPath = () => readFileSync(join(t.dir, 'child-A.path'), 'utf8');
     // A's next admission, once A was picked up again: after its look the
     // owner holds the park records' lock, writes A's record while the
     // step's marker waits, then lets go.
@@ -444,9 +484,7 @@ describe('what changes while a step\'s marker waits for the park records\' lock 
         holding = true;
         const held = await RL.acquireLock(lockOf(t), { record: { run_id: 'the owner' } });
         setTimeout(() => {
-          const now = new Date();
-          utimesSync(childPath(), now, now);
-          touchedAt = now.getTime();
+          touchedAt = openOperationFor(t, 'A', 3000);
           setTimeout(() => held.release(), 100);
         }, 400);
       }
@@ -462,10 +500,10 @@ describe('what changes while a step\'s marker waits for the park records\' lock 
     try {
       strictEqual(await t.run({}, { observeAsync, wakeIntervalMs: 300, quietMs: 3000 }), 2, t.lines.join('\n'));
       ok(await owner);
-      ok(touchedAt !== null, 'the record was written while the marker waited');
+      ok(touchedAt !== null, 'the operation opened while the marker waited');
       const a = t.latest().steps.find((x) => x.kind === 'commit');
       ok(a, 'A stepped once its record was quiet');
-      ok(Date.parse(a.started_at) >= touchedAt + 2900, `A's commit started ${Date.parse(a.started_at) - touchedAt} ms after the write, not a whole quiet period`);
+      ok(Date.parse(a.started_at) >= touchedAt + 2900, `A's commit started ${Date.parse(a.started_at) - touchedAt} ms after the write, before the operation closed`);
     } finally {
       t.fx.cleanup();
     }
@@ -558,7 +596,7 @@ describe('what changes while a step\'s marker waits for the park records\' lock 
     }
   });
 
-  it('a write to the lane\'s record while its creation\'s marker waits for its lock holds the creation until the quiet period has passed since', async () => {
+  it('an operation opened while its creation\'s marker waits for its lock holds the creation until it closes', async () => {
     // A is in progress with no lane (dispatched by hand, its branch cut), its
     // next step the commit: the commit's admission creates the lane.
     const t = await setup({ subtasks: [{ id: 'A' }], scenario: { A: { next: [COMMIT], file: true } } });
@@ -578,9 +616,7 @@ describe('what changes while a step\'s marker waits for the park records\' lock 
         holding = true;
         const held = await RL.acquireLock(lockOf(t), { record: { run_id: 'the owner' } });
         setTimeout(() => {
-          const now = new Date();
-          utimesSync(a.path, now, now);
-          touchedAt = now.getTime();
+          touchedAt = openOperationFor(t, 'A', 3000);
           setTimeout(() => held.release(), 100);
         }, 400);
       }
@@ -589,11 +625,11 @@ describe('what changes while a step\'s marker waits for the park records\' lock 
     mkdirSync(PK.parksDir(t.work, t.fx.macroId), { recursive: true });
     try {
       strictEqual(await t.run({}, { observeAsync, wakeIntervalMs: 300, quietMs: 3000 }), 2, t.lines.join('\n'));
-      ok(touchedAt !== null, 'the record was written while the marker waited');
+      ok(touchedAt !== null, 'the operation opened while the marker waited');
       const r = t.latest();
       const created = r.lanes.find((e) => e.event === 'created' && e.subtask_id === 'A');
       ok(created, JSON.stringify(r.lanes));
-      ok(Date.parse(created.at) >= touchedAt + 2900, `A's lane was created ${Date.parse(created.at) - touchedAt} ms after the write, not a whole quiet period`);
+      ok(Date.parse(created.at) >= touchedAt + 2900, `A's lane was created ${Date.parse(created.at) - touchedAt} ms after the write, before the operation closed`);
       // Its step then ran there (what the scripted commit makes of a child
       // written by hand is not this test's).
       deepStrictEqual(stepsOf(r).map((x) => [x[1], x[2]]), [['A', 'commit']]);

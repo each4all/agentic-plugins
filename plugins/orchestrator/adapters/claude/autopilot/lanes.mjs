@@ -41,6 +41,7 @@ import { appendLaneEvent } from './ledger.mjs';
 import { isSafeBranch, isSafeMacroId, isSafeSubtaskId } from './policy.mjs';
 import { subtaskReadiness } from '../../../scripts/state.mjs';
 import { acquireLock, AUTOPILOT_DIR_REL, holderAlive, readLockEntries, worktreeLockPath } from '../../../scripts/lib/run-locks.mjs';
+import { holdStateOf } from '../../../scripts/lib/holds-records.mjs';
 import {
   attestationChecks, checkStateBase, gitCommonDir, isUnderLanesDirectory, lanesDirectory, readSharedCreation, sameDirectory,
   SHARED_HOMES, STATE_BASE_ENV,
@@ -431,7 +432,26 @@ export function gatherLaneFacts({ home, checkout, macroId, view, baseline, env =
     const holder = worktrees.find((w) => w.branch === s.branch) ?? null;
     branches[s.branch] = { tip: branchTip(checkout, s.branch, env), heldBy: holder ? holder.path : null };
   }
-  const baseTip = git(checkout, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${baseline}^{commit}`], { env });
+  const baseRead = git(checkout, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${baseline}^{commit}`], { env });
+  const baseTip = baseRead.code === 0 && baseRead.stdout ? baseRead.stdout : null;
+  // ADR-0062 Decision 2, amendment of 2026-10-27 (ADR-0068 Decision 2): the
+  // tip a consumed release of a pending subtask's current hold recorded, and,
+  // for each tip off the baseline, whether it contains the baseline and
+  // whether it carries commits the baseline lacks (rows 4 and 12).
+  const handedBack = {};
+  for (const s of subtasks) {
+    if (s?.status !== 'pending' || !isSafeSubtaskId(s.id) || !isSafeBranch(s.branch)) continue;
+    let st;
+    try { st = holdStateOf(home.mainRoot, macroId, s.id); } catch { continue; }
+    const tip = st.state === 'consumed' ? st.release.record.basis?.branch_tip : null;
+    if (typeof tip === 'string' && st.hold.record.branch === s.branch) handedBack[s.id] = { tip, holdId: st.hold.record.hold_id };
+  }
+  const ancestry = {};
+  const isAncestor = (a, b) => git(checkout, ['merge-base', '--is-ancestor', a, b], { env }).code === 0;
+  for (const tip of [...Object.values(branches).map((b) => b.tip), ...ours.map((l) => l.head)]) {
+    if (typeof tip !== 'string' || baseTip === null || tip === baseTip || ancestry[tip]) continue;
+    ancestry[tip] = { containsBase: isAncestor(baseTip, tip), beyondBase: !isAncestor(tip, baseTip) };
+  }
   const sw = readSharedCreation(home.mainRoot);
   return {
     sharedCreation: sw.state,
@@ -453,11 +473,39 @@ export function gatherLaneFacts({ home, checkout, macroId, view, baseline, env =
     readiness: subtaskReadiness(subtasks),
     branches,
     baseline,
-    baseTip: baseTip.code === 0 && baseTip.stdout ? baseTip.stdout : null,
+    baseTip,
+    handedBack,
+    ancestry,
   };
 }
 
 const claimsOf = (facts, id) => facts.claims.filter((c) => c?.originating_subtask === id);
+
+/**
+ * ADR-0062 Decision 2, amendment of 2026-10-27 (ADR-0068 Decision 2): a
+ * pending subtask's branch at `tip`, which is not the baseline's tip, is taken
+ * up only when a consumed release of the subtask's current hold recorded that
+ * tip (a person's work, handed back) and the tip contains the baseline (it
+ * carries every landed predecessor). `{ ok: true }`, or `{ why }`: the halt's
+ * reason, which never advises discarding a branch that carries commits the
+ * baseline lacks. `behind` is the halt's text for a branch with none.
+ */
+function judgeOffBaseline(facts, id, branch, tip, behind) {
+  const base = `refs/remotes/origin/${facts.baseline}`;
+  const at = `${branch} is at ${tip.slice(0, 12)}`;
+  const hold = `agentic-autopilot hold ${id} --macro ${facts.macroId}`;
+  if (facts.baseTip === null) return { why: `${at}, and ${base} is missing, so whether it carries every landed predecessor cannot be told: fetch it (git fetch origin ${facts.baseline}), then relaunch` };
+  const a = facts.ancestry[tip] ?? { containsBase: false, beyondBase: true };
+  const vouched = facts.handedBack[id];
+  if (vouched && vouched.tip === tip) {
+    if (a.containsBase) return { ok: true };
+    return { why: `${at}, the tip the consumed release of hold ${vouched.holdId} handed back, but it does not contain ${base} (${facts.baseTip.slice(0, 12)}), so it would omit a landed predecessor (ADR-0062 Decision 2, amendment of 2026-10-27): hold it again (${hold}), rebase ${branch} onto origin/${facts.baseline}, then release it` };
+  }
+  if (a.beyondBase) {
+    return { why: `${at}, which is not ${base} (${facts.baseTip.slice(0, 12)}), and it carries commits that are not on it; no consumed release of a hold on subtask ${id} handed that tip back (ADR-0062 Decision 2, amendment of 2026-10-27). If they are this subtask's work, hold it (${hold}), rebase ${branch} onto origin/${facts.baseline} unless it contains it, then release it; nothing needs to be removed or reset` };
+  }
+  return { why: behind };
+}
 
 /**
  * The subtask rows (10–12) for one subtask the run would give a lane, or
@@ -496,12 +544,14 @@ export function judgeSubtask(facts, subtask) {
       return { halt: halt(`subtask ${id} is pending, but the engineer workflow ${claims[0].id ?? claims[0].path} claims it: the dispatch stopped before it recorded the subtask in progress; re-attach it with /orchestrator:next ${id}`, { subtaskId: id }) };
     }
     // Row 12: pending, its branch exists, no workflow of the macro claims it.
+    // Taken up at the baseline's tip, or at a tip a person handed back that
+    // contains the baseline (judgeOffBaseline).
     if (b.tip !== null) {
       if (facts.baseTip !== null && b.tip === facts.baseTip) return { row: 12, action: 'existing-branch' };
-      return {
-        row: 12,
-        halt: halt(`subtask ${id}'s branch ${branch} exists at ${b.tip.slice(0, 12)}, which is not refs/remotes/origin/${facts.baseline} (${facts.baseTip ? facts.baseTip.slice(0, 12) : 'missing'}): a branch behind would omit a landed predecessor, one ahead would carry foreign history (ADR-0062 Decision 2); remove or reset it, then relaunch`, { subtaskId: id }),
-      };
+      const off = judgeOffBaseline(facts, id, branch, b.tip,
+        `${branch} is at ${b.tip.slice(0, 12)}, behind refs/remotes/origin/${facts.baseline} (${facts.baseTip?.slice(0, 12)}), so it would omit a landed predecessor (ADR-0062 Decision 2); it carries no commit the baseline lacks: reset it to origin/${facts.baseline} (or delete it), then relaunch`);
+      if (off.ok) return { row: 12, action: 'existing-branch' };
+      return { row: 12, halt: halt(`subtask ${id}'s branch ${off.why}`, { subtaskId: id }) };
     }
     return { action: 'new-branch', path: lanePathFor };
   }
@@ -560,7 +610,19 @@ export function planReconciliation(facts) {
       if (facts.baseTip !== null && l.head === facts.baseTip) {
         plan.lanes.push({ ...entry, row: 4, action: 'prepared', ready: facts.readiness.find((r) => r?.id === s.id)?.ready === true });
       } else {
-        plan.halts.push({ row: 4, ...halt(`the prepared lane ${l.path} (subtask ${s.id}, branch ${s.branch}) is at ${l.head?.slice(0, 12) ?? '?'}, but refs/remotes/origin/${facts.baseline} is at ${facts.baseTip?.slice(0, 12) ?? 'missing'}: the baseline moved since the lane was cut; remove the lane and its branch, then relaunch`, { subtaskId: s.id }) });
+        // A prepared lane is dispatched only at the baseline's tip (the
+        // admission checks it again). Commits the baseline lacks are kept:
+        // with the lane gone, row 12 judges the branch, and takes up work a
+        // person handed back (ADR-0062 Decision 2, amendment of 2026-10-27).
+        // Only a branch shown to carry no such commit is told to go: with no
+        // baseline ref, whether it does cannot be told.
+        const beyond = typeof l.head === 'string' && facts.baseTip !== null && (facts.ancestry[l.head]?.beyondBase ?? true);
+        const behind = typeof l.head === 'string' && facts.baseTip !== null && !beyond;
+        const at = `the prepared lane ${l.path} (subtask ${s.id}, branch ${s.branch}) is at ${l.head?.slice(0, 12) ?? '?'}, but refs/remotes/origin/${facts.baseline} is at ${facts.baseTip?.slice(0, 12) ?? 'missing'}`;
+        plan.halts.push({ row: 4, ...halt(beyond
+          ? `${at}, and the lane's branch carries commits that are not on it: a prepared lane is dispatched only at the baseline's tip. Keep the branch: remove only the lane (git worktree unlock ${l.path} && git worktree remove ${l.path}; the branch keeps its commits), then relaunch, and the branch is judged as one with no lane (row 12)`
+          : behind ? `${at}: the baseline moved since the lane was cut; remove the lane and its branch, then relaunch`
+            : `${at}: whether the lane's branch carries commits the baseline lacks cannot be told; fetch the baseline (git fetch origin ${facts.baseline}), then relaunch, and keep the branch`, { subtaskId: s.id }) });
         plan.lanes.push({ ...entry, row: 4, action: 'halt' });
       }
       continue;
@@ -823,8 +885,15 @@ export function createLane({ home, checkout, macroId, subtask, view, baseline, r
  * view observed after the locks were taken. Each removal and relock reads the
  * lane's ownership again where it acts; `hooks` are test seams (removeLane's,
  * and `beforeRelock(path)` before row 9 locks a lane again).
+ *
+ * ADR-0068 Decision 2, item 11 — `passBy(subtaskId)` names why a subtask is
+ * the owner's (held, its handoff done or pending, its records unreadable, its
+ * release not compared yet or rejected), or null: no row acts on such a
+ * subtask's lane (no lane id written, no removal intent finished or relocked,
+ * no prepared dispatch, no adoption, no removal, no new lane, no halt). It is
+ * reported and passed by, listed in `passedBy`.
  */
-export async function reconcileLanes({ home, checkout, macroId, view, baseline, runId = null, runDir = null, now = () => Date.now(), env = process.env, out = () => {}, protect = [], hooks = {} }) {
+export async function reconcileLanes({ home, checkout, macroId, view, baseline, runId = null, runDir = null, now = () => Date.now(), env = process.env, out = () => {}, protect = [], hooks = {}, passBy = () => null }) {
   const fetched = fetchBaseline({ checkout, baseline, env });
   if (!fetched.ok) {
     const h = { ...fetched.halt, scope: 'run' };
@@ -834,11 +903,32 @@ export async function reconcileLanes({ home, checkout, macroId, view, baseline, 
   const at = () => new Date(now()).toISOString();
   const record = (event, fields) => { if (runDir) appendLaneEvent(runDir, { event, run_id: runId, at: at(), ...fields }); };
   if (fetched.warning) record('fetch-warning', { warning: fetched.warning });
+  // Read right before each action (Decision 2, item 3): a hold set while the
+  // pass runs stops every later action on its lane. A subtask once passed by
+  // stays passed by for the whole pass, so what it reports holds together.
+  const passedBy = [];
+  const reports = [];
+  const gated = (id) => {
+    if (typeof id !== 'string') return null;
+    const p = passedBy.find((x) => x.subtaskId === id);
+    return p ? p.why : (passBy(id) ?? null);
+  };
+  const passed = (subtaskId, where) => {
+    if (typeof subtaskId !== 'string') return false;
+    if (passedBy.some((p) => p.subtaskId === subtaskId)) return true;
+    const why = passBy(subtaskId) ?? null;
+    if (!why) return false;
+    passedBy.push({ subtaskId, why, path: where ?? null });
+    reports.push(`passed by ${where ? `the lane ${where} of ` : ''}subtask ${subtaskId}: ${why}`);
+    record('passed-by', { path: where ?? null, subtask_id: subtaskId, why });
+    return true;
+  };
 
   let facts = gatherLaneFacts({ home, checkout, macroId, view, baseline, env });
   // The pre-pass, then a fresh look: an identity written now is read by the rows.
   const first = planReconciliation(facts);
   for (const p of first.prepass) {
+    if (passed(p.intent?.subtask_id ?? p.lane?.subtaskId, p.intent?.path ?? p.lane?.path)) continue;
     if (p.kind === 'mark-first-run') {
       let m;
       try { m = markLanesFirstRun(home.mainRoot, { now: new Date(now()) }); } catch (err) {
@@ -865,16 +955,20 @@ export async function reconcileLanes({ home, checkout, macroId, view, baseline, 
   };
   const status = new Map((facts.subtasks ?? []).map((s) => [s?.id, s?.status]));
   for (const l of facts.ours) {
-    if (l.present && status.get(l.subtaskId) === 'completed') l.removal = await removable(l.path);
+    if (l.present && status.get(l.subtaskId) === 'completed' && !passed(l.subtaskId, l.path)) l.removal = await removable(l.path);
   }
-  for (const w of facts.atOurPaths) if (w.present) w.removal = await removable(w.path);
+  // An unlocked worktree at a lane path is judged by the subtask its open
+  // intent names: a held one's gets no removal check (its git status runs in
+  // the owner's lane).
+  const intentAt = (w) => facts.intents.find((i) => real(i.path) === real(w.path)) ?? null;
+  for (const w of facts.atOurPaths) if (w.present && !passed(intentAt(w)?.subtask_id, w.path)) w.removal = await removable(w.path);
   const plan = planReconciliation(facts);
 
   const lanes = new Map();
-  const reports = [];
   for (const e of plan.lanes) {
     const l = e.lane;
     const laneId = l.identity?.identity?.lane_id ?? null;
+    if (passed(e.subtaskId, l.path)) continue;
     if (e.action === 'adopt' || e.action === 'prepared') {
       // The preflight per lane, before the lane's first step in this run: a
       // lane adopted or reused may sit on a branch whose ignore rules changed.
@@ -898,6 +992,7 @@ export async function reconcileLanes({ home, checkout, macroId, view, baseline, 
   }
   for (const u of plan.unlocked) {
     const w = u.worktree;
+    if (passed(u.intent?.subtask_id, w.path)) continue;
     if (u.action === 'finish-removal') {
       const r = await unlockAndRemove({ mainRoot: home.mainRoot, macroId, subtaskId: u.intent.subtask_id, lane: w.path, laneId: u.intent.lane_id, runId, runDir, now, env, intentWritten: true, hooks });
       reports.push(r.outcome === 'removed' ? `finished removing the lane ${w.path}` : `kept the lane ${w.path}: ${r.why}`);
@@ -925,8 +1020,11 @@ export async function reconcileLanes({ home, checkout, macroId, view, baseline, 
     reports.push(o.report);
     record('reported', { path: o.worktree.path, row: o.row, why: o.report });
   }
-  const toCreate = plan.subtasks.filter((s) => s.action === 'existing-branch' || s.action === 'new-branch');
-  return { halt: plan.halts[0] ?? null, halts: plan.halts, lanes, toCreate, reports, plan };
+  for (const s of plan.subtasks) passed(s.subtaskId, null);
+  const toCreate = plan.subtasks.filter((s) => (s.action === 'existing-branch' || s.action === 'new-branch') && !gated(s.subtaskId));
+  // A halt of a subtask passed by is no halt (item 11), whichever row found it.
+  plan.halts = plan.halts.filter((h) => !gated(h.subtaskId));
+  return { halt: plan.halts[0] ?? null, halts: plan.halts, lanes, toCreate, reports, plan, passedBy };
 }
 
 /**

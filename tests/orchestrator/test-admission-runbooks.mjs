@@ -648,16 +648,17 @@ describe('/orchestrator:next joins the run locks before it switches (ADR-0067 De
   for (const shell of FRESH_SHELLS) {
     it(`${shell}: every block of next.md, each in a fresh shell given only the text directory, dispatches the subtask Phase 1 selected and records it`, async () => {
       // Contract: the blocks the agent runs, in order — Phase 0, Phase 1's
-      // selection, validation and gate, Phase 2, Phase 3, Phase 3b, Phase 4's
-      // prelude, Phase 5. A block that no longer opens with its TEXT_DIR line
-      // drops out of this list and fails here.
-      strictEqual(NEXT_BLOCKS.length, 9, 'nine blocks read the text directory');
-      const [phase0, selection, validation, gate, phase2, phase3, joinSwitch, preludeBlock, writebackBlock] = NEXT_BLOCKS;
+      // selection, validation, approval gate and hold gate, Phase 2, Phase 3,
+      // Phase 3b, Phase 4's prelude, Phase 5. A block that no longer opens
+      // with its TEXT_DIR line drops out of this list and fails here.
+      strictEqual(NEXT_BLOCKS.length, 10, 'ten blocks read the text directory');
+      const [phase0, selection, validation, gate, holdGate, phase2, phase3, joinSwitch, preludeBlock, writebackBlock] = NEXT_BLOCKS;
+      ok(holdGate.includes('state.mjs" hold-gate'), 'the fifth block is the hold gate');
       for (const topic of TOPICS) {
         // Each topic from the state beforeEach leaves: no child, no lock.
         for (const root of [main, lane]) rmSync(join(root, '.agentic-plugins'), { recursive: true, force: true });
         if (branch() !== 'feat/x') git(lane, 'switch', '-q', 'feat/x');
-        await dispatchEndToEnd(shell, topic, { before: [phase0, selection, validation, gate, phase2, phase3, joinSwitch], prelude: preludeBlock, writeback: writebackBlock });
+        await dispatchEndToEnd(shell, topic, { before: [phase0, selection, validation, gate, holdGate, phase2, phase3, joinSwitch], prelude: preludeBlock, writeback: writebackBlock });
       }
     });
 
@@ -666,16 +667,17 @@ describe('/orchestrator:next joins the run locks before it switches (ADR-0067 De
     // the switch, Phase 3's prelude, Phase 4's writeback.
     it(`${shell}: every block of the Codex next skill, each in a fresh shell given only the text directory, dispatches the subtask Phase 1 selected and records it`, async () => {
       const blocks = CODEX_BLOCKS.filter((b) => b.startsWith("TEXT_DIR='<directory from mktemp>'\n")).map((b) => b.replaceAll('<orchestrator-plugin-root>', ORCH_ROOT));
-      // Contract: the eight blocks of the skill, in order; the standalone
-      // release (the fifth) runs only when stopping before Phase 4.
-      strictEqual(blocks.length, 8, 'eight blocks read the text directory');
-      const [phase1, gate, ownership, join_, release, switchBlock, preludeBlock, writebackBlock] = blocks;
-      ok(release.includes('admission release') && !release.includes('trap'), 'the fifth block is the standalone release');
+      // Contract: the nine blocks of the skill, in order; the standalone
+      // release (the sixth) runs only when stopping before Phase 4.
+      strictEqual(blocks.length, 9, 'nine blocks read the text directory');
+      const [phase1, gate, holdGate, ownership, join_, release, switchBlock, preludeBlock, writebackBlock] = blocks;
+      ok(holdGate.includes('state.mjs" hold-gate'), 'the third block is the hold gate');
+      ok(release.includes('admission release') && !release.includes('trap'), 'the sixth block is the standalone release');
       for (const topic of TOPICS) {
         // Each topic from the state beforeEach leaves: no child, no lock.
         for (const root of [main, lane]) rmSync(join(root, '.agentic-plugins'), { recursive: true, force: true });
         if (branch() !== 'feat/x') git(lane, 'switch', '-q', 'feat/x');
-        await dispatchEndToEnd(shell, topic, { before: [phase1, gate, ownership, join_, switchBlock], prelude: preludeBlock, writeback: writebackBlock });
+        await dispatchEndToEnd(shell, topic, { before: [phase1, gate, holdGate, ownership, join_, switchBlock], prelude: preludeBlock, writeback: writebackBlock });
       }
     });
   }

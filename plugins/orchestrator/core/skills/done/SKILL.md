@@ -272,6 +272,11 @@ if [ "$SUBTASK_STATUS" = "deferred" ] || [ "$SUBTASK_STATUS" = "abandoned" ]; th
 fi
 if [ "$SUBTASK_STATUS" = "completed" ] && [ "$CORRECT" != true ]; then
   echo "✓ Subtask $SUBTASK_ID is already completed at $EXISTING_CLOSED_AT with commit ${EXISTING_COMMIT:-<none>}. Nothing to do; to change the record, rerun with --correct and a reason." >&2
+  # ADR-0068 Decision 2, item 8 — a retirement of its hold records that
+  # waited (a persona operation open, or a run process in the lane) is
+  # finished here; one that still waits says why.
+  node "<orchestrator-plugin-root>/scripts/state.mjs" holds-retire \
+    --workflow-path "$MACRO_PATH" --subtask-id "$SUBTASK_ID" || true
   exit 0
 fi
 

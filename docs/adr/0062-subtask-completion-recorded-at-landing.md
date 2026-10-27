@@ -123,6 +123,44 @@ another one. Records written before this decision stay as written.
 > `state.mjs resolve-landing` reports the merge, and halts `awaiting-landing`
 > when nothing else can be dispatched (ADR-0063 D3a).
 
+> **Amendment of 2026-10-27 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md)
+> Decision 2, owner decision).** A subtask branch that already exists when its
+> subtask is still pending is reused by the autopilot only at the tip of the
+> integration branch's remote-tracking ref (ADR-0067 Decision 5, row 12): a
+> branch behind it would omit a landed predecessor, and one ahead would carry
+> foreign history. A person who held an undispatched subtask (ADR-0068
+> Decision 2) and committed on its branch would therefore have the work
+> refused once the hold was given back. One more tip is now accepted:
+>
+> 1. A release of a held subtask records its branch's tip in its basis
+>    (`branch_tip`).
+> 2. A pending subtask's branch whose tip is not `refs/remotes/origin/<baseline>`
+>    is reused only when both hold: (a) the tip equals the tip recorded by a
+>    consumed release of the subtask's current hold, and (b)
+>    `refs/remotes/origin/<baseline>` is an ancestor of that tip (`git
+>    merge-base --is-ancestor`), so the work carries every landed predecessor.
+> 3. When (a) holds and (b) does not, the run halts the lane, telling the
+>    person to hold the subtask again, rebase the branch onto
+>    `origin/<baseline>` and release it. It never advises removing or
+>    resetting the branch.
+> 4. When (a) does not hold, the halt stands as before, but its message never
+>    advises discarding a branch that carries commits the baseline lacks: it
+>    tells the person to hold the subtask and release it, rebasing where the
+>    branch does not contain the baseline. Only a branch with no such commit
+>    (one behind) is told to reset. A prepared lane of the run's own (row 4)
+>    whose branch carries such commits is told to remove only its worktree,
+>    which leaves the branch to rule 2; with no baseline ref to tell, it is
+>    told to fetch and keep the branch. The admission's refusal of a prepared
+>    lane whose baseline moved after reconciliation names deleting the branch
+>    only when `git rev-list <baseline ref>..<branch>` prints nothing.
+>
+> A released branch is a person's statement that the work is the subtask's,
+> and the comparison that consumed the release proved nothing moved since; the
+> ancestor condition keeps this decision's reason for the rule, that a
+> successor never starts without its landed predecessors.
+> `/orchestrator:next` is unchanged: it switches to an existing branch and
+> creates a new one from the remote-tracking ref.
+
 ### 3. A recorded value is not replaced silently
 
 - `updateSubtask` refuses to replace a recorded `commit` or `pr_url` and

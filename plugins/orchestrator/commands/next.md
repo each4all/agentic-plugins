@@ -311,6 +311,29 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" approval-gate \
   --subtask-json "$SUBTASK_JSON" >/dev/null || exit 1
 ```
 
+Then the hold gate (ADR-0068 Decision 2, item 5): a held subtask is never
+dispatched by hand, from whatever checkout this runs in. `state.mjs hold-gate`
+refuses a subtask whose hold is pending, held or cannot be read, whose release
+no run has compared yet or was rejected, and one with a persona operation open
+in its lane, naming the exit (the owner's `agentic-autopilot release`, a run
+that compares the release, or `writer-clear` for an operation whose session is
+gone). It only reads, and prints nothing for a macro whose holds are not on.
+Phase 3b judges it again under the admission.
+
+```bash
+TEXT_DIR='<directory from step 1>'
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+REPO_ROOT="$(cat "$TEXT_DIR/repo-root")" || exit 1
+MACRO_PATH="$(cat "$TEXT_DIR/macro-path")" || exit 1
+JSON_FIELD='let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const v=JSON.parse(d)[process.env.JSON_KEY];process.stdout.write(v==null?"":String(v))})'
+SUBTASK_ID="$(JSON_KEY=id node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
+SUBTASK_BRANCH="$(JSON_KEY=branch node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" hold-gate \
+  --workflow-path "$MACRO_PATH" --subtask-id "$SUBTASK_ID" \
+  --branch "$SUBTASK_BRANCH" --checkout "$REPO_ROOT" || exit 1
+```
+
 ---
 
 ## Phase 2 — Branch precondition (ADR-0019 §1 lines 122-185, fixed order)
@@ -431,6 +454,18 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/discover-engineer.mjs" preflight \
   echo "✗ engineer install at $ENGINEER_PLUGIN_ROOT does not satisfy ADR-0019 PR-A minimum (preflight failed; see preceding diagnostic for cause)." >&2
   exit 1
 }
+# ADR-0068 Decision 2, item 9 — while the macro's holds are on, the engineer
+# this dispatches into must be hold-aware: an older one writes terminal and
+# leaves no operation a hold would see. Nothing for a macro whose holds are off.
+REPO_ROOT="$(cat "$TEXT_DIR/repo-root")" || exit 1
+MACRO_PATH="$(cat "$TEXT_DIR/macro-path")" || exit 1
+JSON_FIELD='let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const v=JSON.parse(d)[process.env.JSON_KEY];process.stdout.write(v==null?"":String(v))})'
+SUBTASK_ID="$(JSON_KEY=id node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
+SUBTASK_BRANCH="$(JSON_KEY=branch node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" hold-gate \
+  --workflow-path "$MACRO_PATH" --subtask-id "$SUBTASK_ID" \
+  --branch "$SUBTASK_BRANCH" --checkout "$REPO_ROOT" \
+  --engineer-root "$ENGINEER_PLUGIN_ROOT" || exit 1
 ```
 
 The `preflight` subcommand prints the precise reason on its own stderr — surface it as-is.
@@ -450,6 +485,18 @@ workflow, the selected subtask's status, engineer workflow id, branch, verb,
 profile and topic, and for a pending subtask whether it still waits on
 nothing) and switches. Every exit from the join until the switch has succeeded releases the
 admission.
+
+Before the switch it judges the hold gate again, under the holds lock, and,
+for a subtask with no engineer workflow yet and a macro whose holds are on,
+publishes the dispatch's **mark** (ADR-0068 Decision 2, item 5; N4): an
+operation record of the lane that the engineer's bootstrap continues under the
+id Phase 4 exports (`AGENTIC_OPERATION_ID`). A hold the owner sets from here on
+waits for the dispatch to finish, so this command never records a subtask in
+progress that its engineer then refuses. The block keeps the mark in the text
+directory (`dispatch-mark.json`); every exit from its publication on withdraws
+a mark no child carries (this block's on a refusal, Phase 5's on every path).
+A re-attach publishes none: the engineer's resume opens its own operation,
+which the mark would refuse.
 
 ```bash
 TEXT_DIR='<directory from step 1>'
@@ -474,7 +521,17 @@ SUBTASK_STATUS="$(JSON_KEY=status node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.jso
 ADMISSION="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" admission join \
   --macro "$MACRO_ID" --checkout "$REPO_ROOT" --command next \
   --host "$DETECTED_HOST" --session-id "${CLAUDE_CODE_SESSION_ID:-}")" || exit 1
+# ADR-0068 Decision 2, item 5 — a dispatch mark kept in the text directory
+# goes with every exit that releases the admission, unless the engineer's
+# bootstrap took it over.
+withdraw_mark() {
+  [ -f "$TEXT_DIR/dispatch-mark.json" ] || return 0
+  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" dispatch-mark-withdraw \
+    --workflow-path "$MACRO_PATH" --subtask-id "$SUBTASK_ID" --branch "$SUBTASK_BRANCH" \
+    --checkout "$REPO_ROOT" --mark-file "$TEXT_DIR/dispatch-mark.json"
+}
 release_admission() {
+  withdraw_mark
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" admission release \
     --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION"
 }
@@ -515,6 +572,16 @@ if [ "$SUBTASK_STATUS" = "pending" ]; then
     exit 1
   fi
 fi
+# ADR-0068 Decision 2, item 5 — the hold gate again, under the holds lock, and
+# the dispatch's mark for a bootstrap; a re-attach gets none. A mark an earlier
+# run of this block left goes first.
+withdraw_mark
+REATTACH=false
+if [ -n "$EXISTING_ENG_PATH" ]; then REATTACH=true; fi
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" dispatch-mark-publish \
+  --workflow-path "$MACRO_PATH" --subtask-id "$SUBTASK_ID" --branch "$SUBTASK_BRANCH" \
+  --checkout "$REPO_ROOT" --host "$DETECTED_HOST" --reattach "$REATTACH" \
+  --mark-file "$TEXT_DIR/dispatch-mark.json" || exit 1
 
 # The switch. The user lands on $SUBTASK_BRANCH whether or not
 # we re-attached — engineer's resume keys on `git branch --show-current`.
@@ -592,6 +659,19 @@ SUBTASK_TOPIC="$(JSON_KEY=topic node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json"
 # releases what is left of it).
 node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" admission check \
   --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION" || exit 1
+# ADR-0068 Decision 2, item 5 — the hold gate once more, beside the dispatch's
+# own mark; then the mark's id for the engineer's bootstrap to continue
+# (AGENTIC_OPERATION_ID), none for a re-attach or a macro whose holds are off.
+node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" dispatch-mark-check \
+  --workflow-path "$MACRO_PATH" --subtask-id "$SUBTASK_ID" --branch "$SUBTASK_BRANCH" \
+  --checkout "$REPO_ROOT" --mark-file "$TEXT_DIR/dispatch-mark.json" \
+  --engineer-root "$ENGINEER_PLUGIN_ROOT" || exit 1
+DISPATCH_OPERATION_ID="$(JSON_KEY=operation_id node -e "$JSON_FIELD" < "$TEXT_DIR/dispatch-mark.json")" || exit 1
+if [ -n "$DISPATCH_OPERATION_ID" ]; then
+  export AGENTIC_OPERATION_ID="$DISPATCH_OPERATION_ID"
+else
+  unset AGENTIC_OPERATION_ID
+fi
 
 export CLAUDE_PLUGIN_ROOT="$ENGINEER_PLUGIN_ROOT"
 export AGENTIC_PARENT_WORKFLOW="$MACRO_ID"
@@ -629,7 +709,7 @@ export AGENTIC_TOPIC="${SUBTASK_TOPIC:-}"
 # them to state.mjs create (parent linkage + host + profile + topic).
 ```
 
-**Important**: the LLM following this runbook MUST read engineer's command markdown and execute its bash snippets in the same Bash tool invocation as the exports above, OR re-emit this prelude — its `TEXT_DIR` line, the `admission check` and the AGENTIC_* exports — at the top of each engineer Phase 0 bash block. The simplest and most robust shape is a single Bash tool call that begins with the prelude and proceeds through engineer's Phase 0+verb body inline.
+**Important**: the LLM following this runbook MUST read engineer's command markdown and execute its bash snippets in the same Bash tool invocation as the exports above, OR re-emit this prelude — its `TEXT_DIR` line, the `admission check` and the AGENTIC_* exports — at the top of each engineer Phase 0 bash block. The simplest and most robust shape is a single Bash tool call that begins with the prelude and proceeds through engineer's Phase 0+verb body inline. Re-emitted, the prelude's hold check passes once the engineer's own operation holds the lane, whatever hold was set since (ADR-0068 Decision 2, item 5).
 
 Whatever the engineer runbook's outcome — it finished, stopped at a gate, or one of its blocks exited non-zero (a `create` the repository-wide check refused, for one) — go on to Phase 5: the engineer's exits cannot release this command's admission, and Phase 5 releases it on every path.
 
@@ -663,7 +743,20 @@ ADMISSION="$(cat "$TEXT_DIR/admission")" || exit 1
 # ADR-0067 Decision 4, item 5 — every exit of this block releases the
 # admission Phase 3b joined; the writeback, which writes the macro, checks it
 # first. From the writeback on, the driver's own claim rules see the subtask.
+# ADR-0068 Decision 2, item 5 — and withdraws the dispatch's mark Phase 3b
+# kept, unless the engineer's bootstrap took it over (its last write removes
+# it then). It reads the subtask itself: an exit may come before the reads
+# below.
+withdraw_mark() {
+  [ -f "$TEXT_DIR/dispatch-mark.json" ] || return 0
+  MARK_SUBTASK="$(node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).id||""))' "$TEXT_DIR/subtask.json")" || return 0
+  MARK_BRANCH="$(node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).branch||""))' "$TEXT_DIR/subtask.json")" || return 0
+  node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" dispatch-mark-withdraw \
+    --workflow-path "$MACRO_PATH" --subtask-id "$MARK_SUBTASK" --branch "$MARK_BRANCH" \
+    --checkout "$REPO_ROOT" --mark-file "$TEXT_DIR/dispatch-mark.json"
+}
 release_admission() {
+  withdraw_mark
   node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" admission release \
     --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION"
 }
@@ -675,6 +768,16 @@ SUBTASK_BRANCH="$(JSON_KEY=branch node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.jso
 SUBTASK_VERB="$(JSON_KEY=verb node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
 SUBTASK_PROFILE="$(JSON_KEY=profile node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
 SUBTASK_TOPIC="$(JSON_KEY=topic node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
+# ADR-0068 Decision 2, item 5 — only a dispatch whose check before the
+# engineer passed is recorded, the holds on or off: a refused one is not (its
+# refusal removes any earlier pass), nor one whose switch left no mark to check.
+if [ ! -f "$TEXT_DIR/dispatch-mark.json" ]; then
+  echo "✗ $TEXT_DIR/dispatch-mark.json is missing, so no check before the engineer passed for this dispatch; subtask $SUBTASK_ID is not recorded in progress. A mark the switch published, if it did, stays open in subtask $SUBTASK_ID's lane until the owner clears it (agentic-autopilot status --macro $MACRO_ID names it; agentic-autopilot writer-clear ends it)." >&2
+  exit 1
+elif [ ! -f "$TEXT_DIR/dispatch-mark.json.checked" ]; then
+  echo "✗ The hold check before the engineer did not pass for this dispatch; subtask $SUBTASK_ID is not recorded in progress. Rerun /orchestrator:next once it is free." >&2
+  exit 1
+fi
 ACTIVE_PATH="$(node "$ENGINEER_PLUGIN_ROOT/scripts/state.mjs" \
   find-active --repo-root "$REPO_ROOT" --branch "$SUBTASK_BRANCH" 2>/dev/null)"
 if [ -z "$ACTIVE_PATH" ]; then
@@ -705,7 +808,7 @@ node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" subtask-update \
   --event=updated
 ```
 
-Surface the orchestrator JSON envelope. The block ends by releasing the admission, whatever the writeback's outcome; a failed `admission check` means the admission was released meanwhile (a run or another session may hold the macro now), and the child stays unrecorded until a later `/orchestrator:next` re-attaches it. PR-C0 handles single-writer ownership rejection, absorbing-completed precondition, and unblock/auto-terminal passes — surface its stderr verbatim on any non-zero exit.
+Surface the orchestrator JSON envelope. The block ends by withdrawing the dispatch's mark when no child carries it (the engineer's bootstrap refused or never ran) and releasing the admission, whatever the writeback's outcome; a failed `admission check` means the admission was released meanwhile (a run or another session may hold the macro now), and the child stays unrecorded until a later `/orchestrator:next` re-attaches it. PR-C0 handles single-writer ownership rejection, absorbing-completed precondition, and unblock/auto-terminal passes — surface its stderr verbatim on any non-zero exit.
 
 The admission keeps out a run and the other commands that join, not a plan revision (`/orchestrator:plan` stays available, ADR-0067 Decision 4): Phase 3b's re-read catches one made before it, and the writeback's expectations one made since; the child's recorded dispatch also refuses a re-attached child an earlier dispatch made for the subtask as it was then. A refused writeback names the field that changed. The child it would have bound was dispatched for the subtask as Phase 1 read it, so it stays unrecorded: report the refusal and the child's workflow id, and leave the choice to the user (archive the child with `/engineer:resume archive <id>` on its branch and rerun `/orchestrator:next`, or revise the plan back). A change of only the subtask's `topic` or `profile` has a third exit: the owner approves the revised plan with `/orchestrator:approve`, which rebinds the child to the words approved and tells it the change (ADR-0068 Decision 8); the re-attach then binds it. The refusal's `No rebinding applies: …` clause says why it was not rebound: the plan is pending approval or changed since, the approval rebound another child or other words, or the child has not been told yet. Whatever its dispatch, the re-attach also refuses a child the macro's record cannot vouch for (ADR-0068 Decision 8, item 4): one a note to which is still pending (`has not been told the subtask's words yet`), one last told other words for the subtask (`was last told other words`), and, after an approval replaced an unreadable record of rebindings, one whose last words are not known (`what <child> was last told is not known`). Its exits: deliver the note (a run does at the child's next boundary, or `state.mjs rebind-deliver` now); approve the plan as it stands, which tells the child the subtask's words (in full, when it replaced the record and can read the child); or revise the plan back to the words the child was last told. An archived child, which no note reaches, is completed by `/orchestrator:done --waive-dispatch` with a reason, which the macro records. A run asks the same check at the child's step boundary, of the child the step would run (the recorded owner, or, when none is recorded, the child the run selected): it does not step a child the check refuses (its lane parks, or a serial run halts) and names the same exits. An approval tells only the child it would rebind: when the subtask records no owner and several workflows claim it, the refusal names recording the child its owner first (`subtask-update --expect-dispatch`, which `/orchestrator:done` prints).
 
@@ -721,6 +824,7 @@ Report one of:
 - `✓ Subtask <id> already in_progress — re-attached to existing engineer workflow <id>.` (idempotent re-attach.)
 - `✓ Subtask <id> auto-promoted: engineer Stop hook had already completed it; macro now terminal_marker=true.` (rare race; PR-C0 auto-terminal pass fired.)
 - `✗ Not dispatched: <holder>.` when Phase 3b's join was refused — an autopilot run or another session holds this checkout or the macro. Repeat the refusal's holder and the command it names (`/orchestrator:autopilot status` in the run's checkout, or the release command for a session the owner knows is gone); nothing was switched or written.
+- `✗ Not dispatched: subtask <id> is held.` when a hold gate refused (Phase 1, 3, 3b or 4): the owner holds the subtask, its release waits for a run's comparison or was rejected, a persona operation is open in its lane, or the macro's holds are on and the engineer is not hold-aware. Repeat the refusal's reason and the exit it names (the owner's `agentic-autopilot release`, a run, `writer-clear`, the engineer release to install); nothing was recorded, and the dispatch's mark is withdrawn.
 - `✗ Not recorded: subtask <id> changed after its dispatch (<field>).` when Phase 5's writeback was refused — the plan was revised after Phase 1 read the subtask. Name the child's engineer workflow id, which stays unrecorded, and the choice Phase 5 leaves to the user.
 - `✗ Not dispatched: the working tree is not clean.` when Phase 2's first check refused. The proposal below selects the worktree `worktree-proposal` printed (its commands, then the `/orchestrator:next` inside it) and rejects commit, stash or revert here with their reason. When it printed no worktree because the subtask's branch is checked out here with the subtask in progress, select continuing that subtask's engineer workflow on this branch (`/engineer:resume`), and reject commit, stash or revert by hand and a new worktree; when it printed none for another reason, name the reason and select commit, stash or revert.
 

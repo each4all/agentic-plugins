@@ -297,8 +297,8 @@ describe('start conditions with lanes', () => {
       writeFileSync(join(bare, 'scripts', 'state.mjs'), 'process.exit(2)\n');
       writeFileSync(join(bare, 'scripts', 'lib', 'entry-brief-readers.mjs'), '// no read set\n');
       const problems = RT.lanesCapabilityProblems({ orchestrator: ORCH, engineer: bare, runtime: bare }, t.work, { env: t.env });
-      deepStrictEqual(problems.map((p) => /state-root --repo-root|--parent-workflow-path|shared state root/.exec(p)?.[0]),
-        ['state-root --repo-root', '--parent-workflow-path', 'shared state root']);
+      deepStrictEqual(problems.map((p) => /state-root --repo-root|--parent-workflow-path|shared state root|hold-aware persona/.exec(p)?.[0]),
+        ['state-root --repo-root', '--parent-workflow-path', 'shared state root', 'hold-aware persona']);
     } finally {
       rmSync(bare, { recursive: true, force: true });
       t.fx.cleanup();
@@ -424,6 +424,10 @@ describe('what changes while a step is admitted', () => {
       const r = t.latest();
       strictEqual(r.steps.length, 0, 'no dispatch into a lane cut from an old baseline');
       match(r.halt.detail, /the baseline moved since the lane was cut/);
+      // Never the branch unconditionally (ADR-0062 Decision 2, amendment of
+      // 2026-10-27): only when it carries no commit the baseline lacks.
+      match(r.halt.detail, /remove the lane \(git worktree unlock .* && git worktree remove .*\), then relaunch\. Delete feat\/a too only when git rev-list refs\/remotes\/origin\/main\.\.feat\/a prints nothing/);
+      ok(!/remove the lane and its branch/.test(r.halt.detail), r.halt.detail);
     } finally {
       t.fx.cleanup();
     }

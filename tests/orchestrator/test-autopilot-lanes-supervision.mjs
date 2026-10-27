@@ -216,7 +216,7 @@ describe('what changes while a lane is admitted', () => {
       const r = t.latest();
       ok(!r.steps.some((x) => x.lane === 'B'), 'no dispatch from an old baseline');
       strictEqual(r.halt.subtask_id, 'B');
-      match(r.halt.detail, /subtask B's branch feat\/b exists at [0-9a-f]{12}, which is not refs\/remotes\/origin\/main/);
+      match(r.halt.detail, /subtask B's branch feat\/b is at [0-9a-f]{12}, behind refs\/remotes\/origin\/main \([0-9a-f]{12}\), so it would omit a landed predecessor .*it carries no commit the baseline lacks: reset it to origin\/main/);
       ok(!existsSync(t.lane('B')), 'the unused lane was removed');
     } finally {
       t.fx.cleanup();

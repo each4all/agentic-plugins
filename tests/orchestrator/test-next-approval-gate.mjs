@@ -368,14 +368,16 @@ async function codexGateBlock() {
 }
 
 describe('/orchestrator:next runbook shape', () => {
-  it('Phase 1 ends with the gate, after the dispatch-ready validation and before Phase 2', async () => {
+  it('Phase 1 ends with the gates, after the dispatch-ready validation and before Phase 2', async () => {
     const blocks = await phase1Blocks();
     // Contract: the agent running /orchestrator:next runs Phase 1 in this order — the
-    // gate last, after validation, so nothing is dispatched past a refusal. The
-    // end-to-end tests below take the three blocks in this order.
-    strictEqual(blocks.length, 3, 'selection, validation, gate');
+    // approval gate after validation, then the hold gate (ADR-0068 Decision 2,
+    // item 5), so nothing is dispatched past a refusal. The end-to-end tests
+    // below take the first three blocks in this order.
+    strictEqual(blocks.length, 4, 'selection, validation, approval gate, hold gate');
     ok(blocks[1].includes('case "$SUBTASK_STATUS" in'), 'the second block validates the subtask');
-    ok(blocks[2].includes('approval-gate'), 'the last Phase 1 block is the gate');
+    ok(blocks[2].includes('approval-gate'), 'the third Phase 1 block is the approval gate');
+    ok(blocks[3].includes('state.mjs" hold-gate'), 'the last Phase 1 block is the hold gate');
     // Contract: the gate call's arguments and stop — no run below shows a Claude block
     // passing the wrong --host (which would name the Codex command in its refusal).
     ok(blocks[2].includes('--workflow-path "$MACRO_PATH" --host claude \\\n  --subtask-json "$SUBTASK_JSON" >/dev/null || exit 1'), blocks[2]);
