@@ -21,6 +21,7 @@ import { acquireLock, joinAdmission, macroLockPath, readLockEntries, tokenDigest
 import { acknowledgeInRecord, deliveryNote, deriveRebindView, parseRebindRecord, REBIND_RECORD_MAX_BYTES, vouchVerdict } from '../../plugins/orchestrator/scripts/lib/rebind.mjs';
 import { rebindDue } from '../../plugins/orchestrator/adapters/claude/autopilot/rebind-boundary.mjs';
 import { childCopies } from '../../plugins/orchestrator/scripts/state.mjs';
+import * as HR from '../../plugins/orchestrator/scripts/lib/holds-records.mjs';
 
 const STATE = resolve(ORCH, 'scripts/state.mjs');
 const OWNER = {};
@@ -2572,6 +2573,13 @@ describe('ADR-0068 Decision 8, item 2 — the approval approves what it showed',
 
 // ---------------------------------------------------------------------------
 describe('ADR-0068 Decision 8, item 3 — only with nothing in flight', () => {
+  // A hold record of subtask A that cannot be read, where the owner's command
+  // writes one (holds/<macro>/holds/A.json): it applies, so it refuses.
+  const unreadableHold = (fx) => {
+    const file = HR.recordPath(fx.work, fx.macroId, 'holds', 'A');
+    mkdirSync(join(file, '..'), { recursive: true });
+    writeFileSync(file, '{}');
+  };
   const lockOf = (fx) => macroLockPath(fx.work, fx.macroId);
 
   it('refused beside a live run\'s lock: a plan-set and an approval between two looks never pass', async () => {
@@ -2678,12 +2686,12 @@ setTimeout(() => writeFileSync(process.env.SLOW_DONE, 'late'), 2500);
       await approve(fx);
       await revise(fx, 'A', { topic: 'B words' });
       await approve(fx);
-      writeFileSync(join(holds, 'A.json'), '{}');
+      unreadableHold(fx);
       await revise(fx, 'A', { topic: 'C words' });
       await rejects(() => approve(fx), /would rebind or tell A, which is held/);
-      rmSync(join(holds, 'A.json'));
+      rmSync(HR.recordPath(fx.work, fx.macroId, 'holds', 'A'));
       await approve(fx);
-      writeFileSync(join(holds, 'A.json'), '{}');
+      unreadableHold(fx);
       const out = JSON.parse(cli(fx, ['rebind-deliver', '--workflow-path', fx.macroPath, '--host', H, '--engineer-root', ENG]));
       deepStrictEqual(out.deliveries.map((d) => d.status), ['blocked']);
     });
@@ -2699,17 +2707,17 @@ setTimeout(() => writeFileSync(process.env.SLOW_DONE, 'late'), 2500);
       await revise(fx, 'A', { topic: 'do A' });
       deepStrictEqual(fx.orch.planRebindView({ workflowPath: fx.macroPath }).rows.map((r) => [r.kind, r.delivery?.fields]), [['matches', ['topic']]]);
       mkdirSync(holds, { recursive: true });
-      writeFileSync(join(holds, 'A.json'), '{}');
+      unreadableHold(fx);
       const before = macroText(fx);
       await rejects(() => approve(fx), /would rebind or tell A, which is held/);
       strictEqual(macroText(fx), before);
-      rmSync(join(holds, 'A.json'));
+      rmSync(HR.recordPath(fx.work, fx.macroId, 'holds', 'A'));
       await approve(fx);
       // Its note pending and its child unreadable for now: an approval of
       // another subtask carries the note as it was, and the hold does not stop it.
       const good = childText(child.path);
       writeFileSync(child.path, good.replace(/^---\n/, '--x\n'));
-      writeFileSync(join(holds, 'A.json'), '{}');
+      unreadableHold(fx);
       await revise(fx, 'B', { topic: 'B changed, A untouched' });
       const r = await approve(fx);
       strictEqual(r.noop, false);
@@ -2717,6 +2725,265 @@ setTimeout(() => writeFileSync(process.env.SLOW_DONE, 'late'), 2500);
       deepStrictEqual(r.deliveries.map((d) => d.status), ['blocked']);
       strictEqual((await record(fx)).record.pending.length, 1);
       writeFileSync(child.path, good);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// impl-hold's reader at both entry points (the approval, state.mjs approvePlan,
+// and the delivery, deliverPendingRebindings): the subtask's own hold, release
+// and lane operations, as the owner's commands and a run leave them (ADR-0068
+// implementation note I1, I8).
+describe('ADR-0068 Decision 8, item 3 — the holds', () => {
+  const BASIS = { fingerprint_version: 3, fingerprint: 'f', tree_digest: 't', content_digest: 'c', child: null };
+  const holdsOf = (fx) => join(fx.work, '.agentic-plugins/runs/autopilot/holds', fx.macroId);
+  // The records of subtask `id`'s hold in fixture state `state` (holdStateOf),
+  // replacing any before; resolves to the hold's id.
+  async function holdIn(fx, id, state) {
+    const main = fx.work;
+    const { branch } = await fx.subtask(id);
+    HR.writeProtocol(main, fx.macroId, { writtenBy: 'test' });
+    for (const kind of ['handoffs', 'releases']) HR.unlinkQuiet(HR.recordPath(main, fx.macroId, kind, id));
+    const holdId = HR.newRecordId();
+    const at = '2026-10-26T00:00:00.000Z';
+    const owner = {
+      schema: HR.HOLD_SCHEMA, hold_id: holdId, subtask_id: id, branch, lane: null, child: null, set_by: 'owner', set_at: at,
+      state: { retired: 'retired', pending: 'held', held: 'held', orphaned: 'held' }[state] ?? 'released',
+      ...(state === 'orphaned' ? { orphaned: { at, why: 'the plan no longer holds it' } } : {}),
+    };
+    HR.writeWhole(HR.recordPath(main, fx.macroId, 'holds', id), owner);
+    if (state === 'held') {
+      HR.writeWhole(HR.recordPath(main, fx.macroId, 'handoffs', id), { schema: HR.HANDOFF_SCHEMA, hold_id: holdId, subtask_id: id, state: 'acked', fence: null, at });
+    }
+    if (owner.state === 'released') {
+      const release = { uncompared: 'uncompared', 'released-uncompared': 'uncompared', consumed: 'consumed', rejected: 'rejected', withdrawn: 'withdrawn' }[state];
+      HR.writeWhole(HR.recordPath(main, fx.macroId, 'releases', id), {
+        schema: HR.RELEASE_SCHEMA, release_id: HR.newRecordId(), hold_id: holdId, subtask_id: id, state: release,
+        basis: release === 'withdrawn' ? null : BASIS, park_record_id: null, park_ended: false, released_at: at, compared_at: null,
+      });
+    }
+    strictEqual(HR.holdStateOf(main, fx.macroId, id).state, state, `the records stand for ${state}`);
+    return holdId;
+  }
+  const deliver = (fx) => JSON.parse(cli(fx, ['rebind-deliver', '--workflow-path', fx.macroPath, '--host', H, '--engineer-root', ENG])).deliveries;
+  // The engineer's own operation on the child, opened as a verb's Phase 0 does.
+  const openOperation = (fx, child) => {
+    const dir = mkdtempSync(join(tmpdir(), 'rebind-op-'));
+    execFileSync(process.execPath, [resolve(ENG, 'scripts/state.mjs'), 'operation', '--workflow-path', child.path, '--host', H, '--operation-dir', dir, '--open-operation', 'verb'],
+      { encoding: 'utf8', env: fx.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const id = /op-\d{8}T\d{6}Z-[0-9a-f]{8}/.exec(childText(child.path).match(/^persona_operations: (.*)$/m)?.[1] ?? '')?.[0];
+    ok(id, 'the child carries the operation it opened');
+    return id;
+  };
+
+  it('a pending or held subtask, or one whose release awaits its comparison, refuses its rebinding approval, naming the hold and its way out', async () => {
+    await withRepo(async (fx) => {
+      await dispatch(fx, 'A');
+      await revise(fx, 'A', { topic: 'B words' });
+      const way = (id) => `agentic-autopilot release A --macro ${fx.macroId} --hold ${id}`;
+      for (const [state, why] of [
+        ['pending', (id) => `subtask A is held \\(hold ${id}, its handoff pending\\); the owner gives it back with ${way(id)}`],
+        ['held', (id) => `subtask A is held \\(hold ${id}\\); the owner gives it back with ${way(id)}`],
+        ['released-uncompared', (id) => `subtask A's release \\(hold ${id}\\) awaits its comparison, whose digest the note would change`],
+      ]) {
+        const id = await holdIn(fx, 'A', state);
+        const before = macroText(fx);
+        await rejects(() => approve(fx, { engineerRoot: ENG }), new RegExp(`would rebind or tell A, which is held .*${why(id)}.*Nothing was written`, 's'), state);
+        strictEqual(macroText(fx), before, `${state}: nothing written`);
+      }
+    });
+  });
+
+  it('a retired, consumed, rejected, withdrawn or orphaned hold permits rebinding again, at the approval and at the delivery', async () => {
+    await withRepo(async (fx) => {
+      await dispatch(fx, 'A');
+      for (const state of ['retired', 'consumed', 'rejected', 'withdrawn', 'orphaned']) {
+        await holdIn(fx, 'A', state);
+        await revise(fx, 'A', { topic: `${state} words` });
+        const r = await approve(fx);
+        strictEqual(r.noop, false, `${state}: approved`);
+        deepStrictEqual(deliver(fx).map((d) => d.status), ['delivered'], `${state}: delivered`);
+      }
+    });
+  });
+
+  it('a delivery waits while its subtask is held or its release awaits its comparison, and completes once the hold is retired', async () => {
+    await withRepo(async (fx) => {
+      await dispatch(fx, 'A');
+      await revise(fx, 'A', { topic: 'B words' });
+      await approve(fx);
+      for (const [state, why] of [['held', /subtask A is held \(hold [0-9a-f]{16}\)/], ['released-uncompared', /subtask A's release \(hold [0-9a-f]{16}\) awaits its comparison/]]) {
+        await holdIn(fx, 'A', state);
+        const out = deliver(fx);
+        deepStrictEqual(out.map((d) => d.status), ['blocked'], state);
+        ok(why.test(out[0].detail), out[0].detail);
+      }
+      strictEqual((await record(fx)).record.pending.length, 1, 'the note stays pending');
+      await holdIn(fx, 'A', 'retired');
+      deepStrictEqual(deliver(fx).map((d) => d.status), ['delivered']);
+    });
+  });
+
+  it("another subtask's hold blocks neither the approval nor the delivery", async () => {
+    await withRepo(async (fx) => {
+      await dispatch(fx, 'A');
+      await holdIn(fx, 'B', 'held');
+      await revise(fx, 'A', { topic: 'B words' });
+      const r = await approve(fx);
+      strictEqual(r.noop, false);
+      deepStrictEqual(deliver(fx).map((d) => d.status), ['delivered']);
+    });
+  });
+
+  it('a persona operation open in the lane refuses the approval and the delivery, the holds off or on; cleared by the owner, it does not', async () => {
+    await withRepo(async (fx) => {
+      const child = await dispatch(fx, 'A');
+      await revise(fx, 'A', { topic: 'B words' });
+      // The engineer's own entry on the child, with no holds directory at all.
+      const entry = openOperation(fx, child);
+      strictEqual(existsSync(holdsOf(fx)), false);
+      await rejects(() => approve(fx), new RegExp(`would rebind or tell A, .*a persona operation is open in subtask A's lane: ${entry}.*writer-clear A --macro ${fx.macroId}`, 's'));
+      HR.clearOperation(fx.work, fx.macroId, 'A', entry, { by: 'owner' });
+      await approve(fx);
+      // An operation record of the lane (a dispatch's mark), the holds on.
+      HR.writeProtocol(fx.work, fx.macroId, { writtenBy: 'test' });
+      const mark = 'op-20261026T000000Z-0123abcd';
+      HR.publishOpRecord(fx.work, fx.macroId, 'A', {
+        operation_id: mark, kind: 'verb', subtask_id: 'A', workflow_id: null, persona: 'orchestrator', host: H, opened_at: '2026-10-26T00:00:00Z',
+      });
+      const out = deliver(fx);
+      deepStrictEqual(out.map((d) => d.status), ['blocked']);
+      ok(out[0].detail.includes(`a persona operation is open in subtask A's lane: ${mark}`), out[0].detail);
+      HR.clearOperation(fx.work, fx.macroId, 'A', mark, { by: 'owner' });
+      deepStrictEqual(deliver(fx).map((d) => d.status), ['delivered']);
+    });
+  });
+
+  it('an approval of another subtask carries a rebinding of a held subtask as it was; a change of that rebinding is refused', async () => {
+    await withRepo(async (fx) => {
+      await dispatch(fx, 'A');
+      await revise(fx, 'A', { topic: 'B words' });
+      await approve(fx, { engineerRoot: ENG });
+      await holdIn(fx, 'A', 'held');
+      await revise(fx, 'B', { topic: 'B changed, A untouched' });
+      const r = await approve(fx, { engineerRoot: ENG });
+      strictEqual(r.noop, false);
+      deepStrictEqual((await record(fx)).record.rebindings.map((e) => [e.subtask, e.fields]), [['A', ['topic']]], 'the rebinding is carried');
+      await revise(fx, 'A', { topic: 'C words' });
+      await rejects(() => approve(fx, { engineerRoot: ENG }), /would rebind or tell A, which is held .*subtask A is held/s);
+    });
+  });
+
+  it('a holds marker that cannot be read refuses; an approval with no holds makes no holds directory', async () => {
+    await withRepo(async (fx) => {
+      await dispatch(fx, 'A');
+      await revise(fx, 'A', { topic: 'B words' });
+      const { digest } = fx.orch.planRebindView({ workflowPath: fx.macroPath });
+      mkdirSync(holdsOf(fx), { recursive: true });
+      writeFileSync(join(holdsOf(fx), 'protocol.json'), '{not json');
+      await rejects(() => approve(fx), new RegExp(`the holds directory of ${fx.macroId} cannot be read`));
+      rmSync(holdsOf(fx), { recursive: true });
+      await fx.orch.approvePlan({ workflowPath: fx.macroPath, host: H, env: OWNER, expectRebind: digest, engineerRoot: ENG });
+      strictEqual(existsSync(holdsOf(fx)), false, 'read-only: nothing made');
+    });
+  });
+
+  // Review of 2026-10-26: the release's fingerprint reads the record's
+  // rebinding of its subtask, the child's state included.
+  it('a carried rebinding whose child archived since is recorded anew: refused beside its hold, so a release is never rejected by an approval of another subtask', async () => {
+    await withRepo(async (fx) => {
+      const child = await dispatch(fx, 'A');
+      await revise(fx, 'A', { topic: 'B words' });
+      await approve(fx, { engineerRoot: ENG });
+      await fx.eng.archiveWorkflow({ workflowPath: child.path, host: H, repoRoot: fx.work });
+      await holdIn(fx, 'A', 'released-uncompared');
+      await revise(fx, 'B', { topic: 'B changed, A untouched' });
+      const before = macroText(fx);
+      await rejects(() => approve(fx), /would rebind or tell A, .*subtask A's release \(hold [0-9a-f]{16}\) awaits its comparison/s);
+      strictEqual(macroText(fx), before);
+      await holdIn(fx, 'A', 'consumed');
+      await approve(fx);
+      deepStrictEqual((await record(fx)).record.rebindings.map((e) => [e.subtask, e.child_state]), [['A', 'archived']]);
+    });
+  });
+
+  it("a change of an archived child's rebinding, which sends no note, is refused beside its hold; the rebinding carried as it is, it is not", async () => {
+    await withRepo(async (fx) => {
+      const child = await dispatch(fx, 'A');
+      await fx.eng.archiveWorkflow({ workflowPath: child.path, host: H, repoRoot: fx.work });
+      await revise(fx, 'A', { topic: 'B words' });
+      await approve(fx);
+      await holdIn(fx, 'A', 'held');
+      await revise(fx, 'B', { topic: 'B changed, A untouched' });
+      strictEqual((await approve(fx)).noop, false, 'carried as it is');
+      await revise(fx, 'A', { topic: 'C words' });
+      deepStrictEqual(fx.orch.planRebindView({ workflowPath: fx.macroPath }).rows.filter((r) => r.subtask === 'A').map((r) => [r.kind, r.delivery]), [['rebind', null]]);
+      await rejects(() => approve(fx), /would rebind or tell A, which is held .*subtask A is held/s);
+    });
+  });
+
+  it('a delivery waits beside an operation its child alone carries (the engineer\'s own), and completes once it closes', async () => {
+    await withRepo(async (fx) => {
+      const child = await dispatch(fx, 'A');
+      await revise(fx, 'A', { topic: 'B words' });
+      await approve(fx);
+      const dir = mkdtempSync(join(tmpdir(), 'rebind-op-'));
+      const op = (flag, value) => execFileSync(process.execPath, [resolve(ENG, 'scripts/state.mjs'), 'operation', '--workflow-path', child.path, '--host', H,
+        '--operation-dir', dir, flag, value], { encoding: 'utf8', env: fx.env, stdio: ['ignore', 'pipe', 'pipe'] });
+      op('--open-operation', 'verb');
+      const out = deliver(fx);
+      deepStrictEqual(out.map((d) => d.status), ['blocked']);
+      ok(/a persona operation is open in subtask A's lane: op-\d{8}T\d{6}Z-[0-9a-f]{8} \(verb\)/.test(out[0].detail), out[0].detail);
+      op('--close-operation', 'true');
+      deepStrictEqual(deliver(fx).map((d) => d.status), ['delivered']);
+    });
+  });
+
+  it('a child in the legacy workflow home is read directly: its open operation refuses the approval and the delivery', async () => {
+    await withRepo(async (fx) => {
+      const child = await dispatch(fx, 'A');
+      await revise(fx, 'A', { topic: 'B words' });
+      await approve(fx);
+      openOperation(fx, child);
+      const legacy = join(fx.work, '.claude', 'agentic-engineer', 'workflows', `${child.id}.md`);
+      mkdirSync(join(legacy, '..'), { recursive: true });
+      renameSync(child.path, legacy);
+      const out = deliver(fx);
+      deepStrictEqual(out.map((d) => [d.status, /a persona operation is open in subtask A's lane/.test(d.detail)]), [['blocked', true]], out[0]?.detail);
+      await revise(fx, 'A', { topic: 'C words' });
+      await rejects(() => approve(fx), /would rebind or tell A, .*a persona operation is open in subtask A's lane: op-/s);
+    });
+  });
+
+  // The plan takes any id; a hold record is kept only under a hold key, and
+  // the persona opens no operation for any other id.
+  it('a plan id that is no hold key is approved and told, the holds on', async () => {
+    await withRepo(async (fx) => {
+      await dispatch(fx, 'task:13');
+      HR.writeProtocol(fx.work, fx.macroId, { writtenBy: 'test' });
+      await holdIn(fx, 'B', 'held');
+      await revise(fx, 'task:13', { topic: 'B words' });
+      strictEqual((await approve(fx)).noop, false);
+      deepStrictEqual(deliver(fx).map((d) => d.status), ['delivered']);
+    }, { subtasks: [{ id: 'task:13', branch: 'feat/a' }, { id: 'B' }] });
+  });
+
+  it('with several subtasks held, the approval names the one whose rebinding it changes and writes nothing; the one it carries is not named', async () => {
+    await withRepo(async (fx) => {
+      await dispatch(fx, 'A');
+      await dispatch(fx, 'B');
+      await revise(fx, 'A', { topic: 'A words' });
+      await revise(fx, 'B', { topic: 'B words' });
+      await approve(fx, { engineerRoot: ENG });
+      await holdIn(fx, 'A', 'held');
+      await holdIn(fx, 'B', 'held');
+      await revise(fx, 'B', { topic: 'B words again' });
+      const before = macroText(fx);
+      let message = '';
+      await rejects(() => approve(fx, { engineerRoot: ENG }), (err) => { message = err.message; return true; });
+      ok(/would rebind or tell B, which is held .*subtask B is held/s.test(message), message);
+      ok(!/subtask A is held/.test(message), message);
+      strictEqual(macroText(fx), before);
     });
   });
 });

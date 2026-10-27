@@ -141,6 +141,14 @@ release_admission() {
     --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION"
 }
 trap 'release_admission' EXIT
+# ADR-0068 Decision 2, item 8 — the holds are checked before the first bulk
+# status write: an open persona operation in a lane, a busy lane, holds that
+# cannot be read, or (the holds on) an engineer whose archive is not
+# hold-aware stops /orchestrator:abort here, naming each, and nothing is written. A macro
+# whose holds are off prints nothing.
+HOLDS_ENGINEER_ROOT="$(node "$ORCH_PLUGIN_ROOT/scripts/discover-engineer.mjs" discover 2>/dev/null)" || HOLDS_ENGINEER_ROOT=''
+node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" holds-preflight \
+  --workflow-path "$MACRO_PATH" --engineer-root "$HOLDS_ENGINEER_ROOT" || exit 1
 node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" \
   bulk-subtask-status \
   --workflow-path "$MACRO_PATH" \
@@ -351,6 +359,11 @@ node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" \
   --terminal-phase aborted \
   --terminal-marker true \
   --next-action archive || exit $?
+# ADR-0068 Decision 2, item 8 — only after the terminal write, the macro's
+# holds retire: its holds directory goes. One that waits says why on stderr,
+# and a later Stop retries it.
+node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" holds-retire \
+  --workflow-path "$MACRO_PATH" --macro-end true || true
 echo "✓ macro $MACRO_ID marked terminal (current_phase=aborted, terminal_marker=true)."
 echo "  Next Stop event will evaluate A1-A4 and auto-archive the macro file."
 ```

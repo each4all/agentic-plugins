@@ -23,10 +23,17 @@ export const CODEX_TEXT_DIR_LINE = "TEXT_DIR='<directory from mktemp>'";
  * macro file and the parsed arguments (Phase 0; `args` is the argument text
  * as typed, parsed by next's grammar as Phase 0 parses it, ADR-0059, C134(a)), the selected subtask as read-subtask or
  * next-ready printed it (Phase 1), the engineer root and the workflow the
- * ownership check saw (Phase 2), the admission (Phase 3b). A key left out is
- * not written, as when its phase has not run.
+ * ownership check saw (Phase 2), the admission and the dispatch's mark
+ * (Phase 3b; with an admission, the mark of a macro whose holds are off unless
+ * `dispatchMark` names another, ADR-0068 Decision 2, item 5), and, with a
+ * mark, the pass Phase 4's check leaves beside it (`dispatch-mark.json.checked`;
+ * `checked: false` leaves it out, as when that check refused). A key left out
+ * is not written, as when its phase has not run.
  */
-export function carriedTextDir({ repoRoot, macroPath, args = '', subtask, engineerRoot, engineerWorkflow, admission } = {}, parent = tmpdir()) {
+export const NO_MARK = Object.freeze({ active: false, operation_id: null, reattach: false });
+export function carriedTextDir({
+  repoRoot, macroPath, args = '', subtask, engineerRoot, engineerWorkflow, admission, dispatchMark = admission === undefined ? undefined : NO_MARK, checked = true,
+} = {}, parent = tmpdir()) {
   const dir = mkdtempSync(join(parent, 'agentic-text.'));
   const put = (name, value) => {
     if (value !== undefined) writeFileSync(join(dir, name), value);
@@ -39,6 +46,8 @@ export function carriedTextDir({ repoRoot, macroPath, args = '', subtask, engine
   put('engineer-root', engineerRoot);
   put('engineer-workflow', engineerWorkflow);
   put('admission', admission);
+  put('dispatch-mark.json', dispatchMark === undefined ? undefined : `${JSON.stringify(dispatchMark)}\n`);
+  put('dispatch-mark.json.checked', dispatchMark === undefined || !checked ? undefined : `${JSON.stringify({ operation_id: dispatchMark.operation_id, seen: [] })}\n`);
   return dir;
 }
 

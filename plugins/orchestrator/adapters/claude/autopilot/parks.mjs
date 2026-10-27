@@ -35,8 +35,13 @@ import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { isSafeMacroId, isSafeSubtaskId } from './policy.mjs';
-import { acquireLock, AUTOPILOT_DIR_REL, LockHeldError, processFingerprint } from '../../../scripts/lib/run-locks.mjs';
+import { acquireLock, LockHeldError, processFingerprint } from '../../../scripts/lib/run-locks.mjs';
+// The paths, identifier forms and the safe reader come from the shared holds
+// records (no import back into state.mjs or policy.mjs, so the holds library
+// can import this module's records without a cycle).
+import { holdsDir, isSafeSubtaskId, readRegular } from '../../../scripts/lib/holds-records.mjs';
+
+export { holdsDir };
 
 export const PARK_SCHEMA = 'agentic-autopilot-park-1.0';
 export const PARK_STATES = Object.freeze(['creating', 'in-flight', 'parked']);
@@ -51,12 +56,6 @@ export function setLockWaitMs(ms) {
 const RECORD_ID_RE = /^[0-9a-f]{16}$/;
 
 export const newRecordId = () => randomBytes(8).toString('hex');
-
-/** The macro's holds directory, beside its lock (ADR-0068 Decision 2, item 1). */
-export function holdsDir(mainRoot, macroId) {
-  if (!isSafeMacroId(macroId)) throw new Error(`not a macro id: ${JSON.stringify(macroId)}`);
-  return path.join(mainRoot, AUTOPILOT_DIR_REL, 'holds', macroId);
-}
 
 export const parksDir = (mainRoot, macroId) => path.join(holdsDir(mainRoot, macroId), 'parks');
 
@@ -77,13 +76,12 @@ function valid(record, subtaskId) {
  */
 export function readPark(mainRoot, macroId, subtaskId) {
   const file = parkPath(mainRoot, macroId, subtaskId);
-  let text;
-  try {
-    text = fs.readFileSync(file, 'utf8');
-  } catch (err) {
-    if (err.code === 'ENOENT') return { state: 'absent' };
-    return { state: 'unreadable', error: `cannot read ${file} (${err.code || err.message})`, digest: null };
-  }
+  // Opened without blocking and only as a regular file: a FIFO is seen, never
+  // waited on, and a link to nothing is unreadable, not absent.
+  const r = readRegular(file);
+  if (r.absent) return { state: 'absent' };
+  if (r.error) return { state: 'unreadable', error: r.error, digest: null };
+  const text = r.text;
   const digest = createHash('sha256').update(text).digest('hex');
   let record;
   try { record = JSON.parse(text); } catch (err) {

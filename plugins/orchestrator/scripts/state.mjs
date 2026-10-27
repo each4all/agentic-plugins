@@ -81,9 +81,15 @@ import {
   writerRoots,
 } from './lib/state-root.mjs';
 import {
-  AUTOPILOT_DIR_REL, LockHeldError, admissionWriterAlive, checkAdmission, joinAdmission, mainWorktreeRoot, processFingerprint,
+  AdmissionError, LockHeldError, admissionWriterAlive, checkAdmission, joinAdmission, mainWorktreeRoot, processFingerprint,
   recordAdmissionWriter, releaseAdmission,
 } from './lib/run-locks.mjs';
+import { HOLD_PERSONA_CAPABILITY, HOLDS_CAPABILITY, HOLDS_PROTOCOL, isSafeSubtaskId, OPERATION_ID_RE } from './lib/holds-records.mjs';
+import {
+  branchLane, childOperationIds, closeRefusals, dispatchHandedOver, endedMacroHolds, handDispatchRefusal, HoldRefusal, markProblem, orphanStale, publishDispatchMark, rebindRefusals,
+  retireMacroHolds, retireSubtaskHolds, withdrawDispatchMark,
+} from './lib/hold-ops.mjs';
+import { engineerHoldProblem } from './lib/hold-activation.mjs';
 import {
   APPROVAL_ID_KEY, REBIND_KEY, REBINDABLE_FIELDS, deliveryHeading, deliveryNote, deriveRebindView, digestOf, holdsDeliveryNote,
   acknowledgeInRecord, archivedExit, copiesRefusal, isEmptyRecord, newApprovalId, newDeliveryId, parseRebindRecord, rebindingVerdict, serializeRebindRecord,
@@ -4075,13 +4081,28 @@ async function writeApproval({ workflowPath, host, expectHash, expectRebind, sca
       }
     }
     // Item 3 — an approval that records or changes a rebinding, or a note,
-    // waits while that subtask is held or its release awaits its comparison.
-    // A note carried as it was, for a child no row decides, is not changed.
+    // waits while that subtask is held, its release awaits its comparison, or
+    // a persona operation is open in its lane. A note carried as it was, for a
+    // child no row decides, is not changed; nor is a rebinding the readable
+    // record holds already, every field of it the same (its child, the child's
+    // state, the words from and to, the fields changed): no note follows it
+    // and nothing a release's comparison reads of it changes, so an approval
+    // of another subtask's change proceeds beside its hold. The record is
+    // taken as it reads, its stamp current or not: an approval re-recording
+    // what it holds changes nothing either way.
+    const held = previous.status === 'readable' ? previous.record.rebindings : [];
+    const kept = (e) => held.some((h) => h.subtask === e.subtask && h.child === e.child && h.child_state === e.child_state
+      && h.from_digest === e.from_digest && h.to_digest === e.to_digest && canonicalJson(h.fields) === canonicalJson(e.fields));
     const touched = new Set([
-      ...view.rebindings.map((e) => e.subtask), ...view.deliveries.filter((d) => !d.untouched).map((d) => d.subtask),
+      ...view.rebindings.filter((e) => !kept(e)).map((e) => e.subtask),
+      ...view.deliveries.filter((d) => !d.untouched).map((d) => d.subtask),
     ]);
     for (const subtaskId of touched) {
-      const blockers = rebindBlockers({ workflowPath, subtaskId });
+      const branch = subtasks.find((s) => s?.id === subtaskId)?.branch ?? null;
+      // The child files this approval found for it, read directly, whatever
+      // home they are in (the lane scan lists the state homes only).
+      const childPaths = [...new Set(view.rows.filter((r) => r.subtask === subtaskId && typeof r.path === 'string').map((r) => r.path))];
+      const blockers = rebindBlockers({ workflowPath, subtaskId, branch, childPaths });
       if (blockers.length > 0) {
         throw new Error(
           `plan-approve: the approval would rebind or tell ${subtaskId}, which is held or has a release awaiting ` +
@@ -4836,6 +4857,128 @@ export async function updateSubtask(opts) {
     await fireMacroHandoffSidecar(workflowPath, host);
   }
   return result;
+}
+
+// -----------------------------------------------------------------------------
+// ADR-0068 Decision 2, item 8 — retirement (implementation note I3)
+//
+// `/orchestrator:done` retires every record of the subtask it completes (the
+// hold, a release, a kept park), so a completed lane never parks on a
+// release; a macro that ended retires all of its records. A retirement waits
+// while a persona operation is open in the lane or a process of a run lives
+// there, and the hold applies until then; the next done, `holds-retire`,
+// status, Stop or run retries it. It never fails the write that completed the
+// subtask: what it did, or why it waits, goes to `write` (stderr).
+
+/** The main checkout and the state roots a macro's holds are judged from, or null. */
+function holdsContext(macroPath) {
+  const stateRoot = workflowStateRoot(macroPath);
+  if (stateRoot === null) return null;
+  const mainRoot = mainWorktreeRoot(stateRoot);
+  let roots = [mainRoot];
+  try { roots = [...new Set([mainRoot, ...repositoryRoots(mainRoot)])]; } catch { /* the main checkout alone */ }
+  return { mainRoot, macroId: basename(macroPath, '.md'), stateRoots: roots };
+}
+
+// The macro's plan as its file holds it now, or null when it cannot be read:
+// a retirement judges the plan under the holds lock, never a copy read before
+// it (a plan revised since may reuse the id, and a hold be set on it).
+async function planNowOf(macroPath) {
+  try {
+    const { frontmatter } = await readWorkflow(macroPath);
+    return Array.isArray(frontmatter.plan?.subtasks) ? frontmatter.plan.subtasks : [];
+  } catch {
+    return null;
+  }
+}
+
+export async function retireCompletedHolds({ macroPath, subtaskId, branch = null, macroEnded = false, write = (s) => process.stderr.write(s) }) {
+  const ctx = holdsContext(macroPath);
+  if (ctx === null) return { subtask: null, macro: null };
+  const exceptRun = process.env.AGENTIC_AUTOPILOT || null;
+  const out = { subtask: null, macro: null };
+  try {
+    if (subtaskId !== null) {
+      const stillCompleted = async () => {
+        const s = (await planNowOf(macroPath))?.find((x) => x?.id === subtaskId);
+        return s?.status === 'completed' && (branch === null || s.branch === branch);
+      };
+      out.subtask = await retireSubtaskHolds({ ...ctx, subtaskId, branch, exceptRun, stillCompleted });
+      if (out.subtask.state === 'retired') {
+        write(`retired the hold records of subtask ${subtaskId}${out.subtask.holdId ? ` (hold ${out.subtask.holdId})` : ''}` +
+          `${out.subtask.left.length ? `; left what cannot be read: ${out.subtask.left.join(', ')}` : ''}\n`);
+      } else if (out.subtask.state === 'waiting' || out.subtask.state === 'unreadable') {
+        write(`⚠ the hold records of subtask ${subtaskId} are not retired yet: ${out.subtask.why}. The hold applies until they are; ` +
+          `\`state.mjs holds-retire --workflow-path <macro> --subtask-id ${subtaskId}\`, a later done, status, the next Stop or the next run retires them (ADR-0068 Decision 2, item 8).\n`);
+      }
+    }
+    if (macroEnded) {
+      out.macro = await retireMacroHolds({ mainRoot: ctx.mainRoot, macroId: ctx.macroId, subtasks: (await planNowOf(macroPath)) ?? [], stateRoots: ctx.stateRoots, exceptRun });
+      if (out.macro.state === 'retired') write(`retired the holds directory of ${ctx.macroId}: the macro ended\n`);
+      else if (out.macro.state !== 'none') {
+        write(`⚠ the holds directory of ${ctx.macroId} is not retired yet: ${out.macro.why}. ` +
+          `\`state.mjs holds-retire --workflow-path <macro> --macro-end true\`, status, or the next Stop retires it (ADR-0068 Decision 2, item 8).\n`);
+      }
+    }
+  } catch (err) {
+    write(`⚠ the holds of ${ctx.macroId} could not be retired (${err.message}); a later done, holds-retire, status or Stop retries it\n`);
+  }
+  return out;
+}
+
+/**
+ * The Stop sweep (I3): for each macro of the repository with a holds
+ * directory, read where its file is. One archived (in an orchestrator archive
+ * home of some root, in no workflow home) has its directory retired; one that
+ * lives has its completed subtasks' records retired, a retirement that waited
+ * at done included, and, ended (terminal), its directory. A home that cannot
+ * be looked at may hold the macro: nothing is retired then.
+ */
+export async function retireEndedMacroHolds({ checkout, write = () => {} }) {
+  const mainRoot = mainWorktreeRoot(checkout);
+  // No macro has a holds directory: nothing is looked up.
+  if (endedMacroHolds(mainRoot, () => true).length === 0) return [];
+  let roots;
+  try { roots = [...new Set([mainRoot, ...repositoryRoots(checkout)])]; } catch { return []; }
+  // The file of macro `id` under `sub` in each root: 'yes', 'no', or 'unknown'
+  // when a home cannot be looked at.
+  const where = (id, sub) => {
+    let found = null;
+    let unknown = false;
+    for (const r of roots) {
+      const file = join(r, '.agentic-plugins/state/orchestrator', sub, `${id}.md`);
+      try {
+        if (statSync(file).isFile()) found ??= file;
+      } catch (err) {
+        if (err.code !== 'ENOENT' && err.code !== 'ENOTDIR') unknown = true;
+      }
+    }
+    return found ? { state: 'yes', file: found } : { state: unknown ? 'unknown' : 'no' };
+  };
+  const done = [];
+  for (const id of endedMacroHolds(mainRoot, () => true)) {
+    try {
+      const live = where(id, 'workflows');
+      if (live.state === 'yes') {
+        const plan = await planNowOf(live.file);
+        if (plan === null) continue;
+        for (const s of plan.filter((x) => x?.status === 'completed')) await retireCompletedHolds({ macroPath: live.file, subtaskId: s.id, branch: s.branch ?? null, write });
+        if ((await readWorkflow(live.file)).frontmatter.terminal_marker === true) {
+          const r = await retireCompletedHolds({ macroPath: live.file, subtaskId: null, macroEnded: true, write });
+          if (r.macro?.state === 'retired') done.push(id);
+        }
+        continue;
+      }
+      if (live.state !== 'no') continue;
+      const archived = where(id, 'archive');
+      if (archived.state !== 'yes') continue;
+      const r = await retireMacroHolds({ mainRoot, macroId: id, subtasks: (await planNowOf(archived.file)) ?? [], stateRoots: roots });
+      if (r.state === 'retired') { done.push(id); write(`retired the holds directory of archived macro ${id}\n`); }
+    } catch (err) {
+      write(`⚠ the holds of macro ${id} could not be retired (${err.message})\n`);
+    }
+  }
+  return done;
 }
 
 // -----------------------------------------------------------------------------
@@ -6426,27 +6569,18 @@ function rebindAudit({ view, record, previous, acknowledged }) {
 
 /**
  * ADR-0068 Decision 8, item 3 — what keeps an approval from rebinding or
- * telling `subtaskId`, and a delivery from completing: a hold on the subtask,
- * a release awaiting its comparison (Decision 2, item 7), or a persona
- * operation open in its lane. Until the hold records land, any entry of the
- * macro's holds directory other than the park records refuses (fail closed),
- * and an unreadable directory refuses. Persona operations are not visible yet
- * (Decision 2, item 9): none is reported, as Decision 8, item 7 says.
+ * telling `subtaskId`, and a delivery from completing: a hold of that subtask
+ * (pending, held, or records that cannot be read), a release of it awaiting
+ * its comparison (Decision 2, item 7), or a persona operation open in its lane
+ * on `branch` or in its child files `childPaths` (hold-ops.mjs
+ * rebindRefusals). Another subtask's records, a retired, consumed, rejected,
+ * withdrawn or orphaned hold, and a kept park permit. Read-only, as the
+ * approval calls it holding the macro's file lock.
  */
-export function rebindBlockers({ workflowPath, subtaskId }) {
-  const stateRoot = workflowStateRoot(workflowPath);
-  if (stateRoot === null) return [`${workflowPath} is under no state home, so its holds cannot be read`];
-  const macroId = basename(workflowPath, '.md');
-  const dir = join(mainWorktreeRoot(stateRoot), AUTOPILOT_DIR_REL, 'holds', macroId);
-  let names;
-  try {
-    names = readdirSync(dir);
-  } catch (err) {
-    if (err.code === 'ENOENT') return [];
-    return [`the macro's holds directory ${dir} cannot be read (${err.code ?? err.message})`];
-  }
-  return names.filter((n) => n !== 'parks').map((n) => `${join(dir, n)} is a hold or release record this orchestrator ` +
-    `cannot judge for ${subtaskId} yet, so it refuses`);
+export function rebindBlockers({ workflowPath, subtaskId, branch = null, childPaths = [] }) {
+  const ctx = holdsContext(workflowPath);
+  if (ctx === null) return [`${workflowPath} is under no state home, so its holds cannot be read`];
+  return rebindRefusals({ ...ctx, subtaskId, branch, childPaths });
 }
 
 // Whether the engineer plugin at `root` writes a phase note from a file
@@ -6573,12 +6707,16 @@ export async function deliverPendingRebindings({
       wait('stale', 'the plan no longer holds the words it tells: approve the plan again');
       continue;
     }
-    const blockers = rebindBlockers({ workflowPath, subtaskId: p.subtask });
+    // The child is found first, so the blockers read its file directly
+    // whatever home it is in; a blocker is still reported before a child
+    // that is not the one told.
+    const info = scanRoot === null ? { status: 'unreadable', detail: 'no state root' } : rebindChildInfo({ repoRoot: scanRoot, macroId, subtask: s });
+    const childPaths = typeof info.path === 'string' ? [info.path] : [];
+    const blockers = rebindBlockers({ workflowPath, subtaskId: p.subtask, branch: s.branch ?? null, childPaths });
     if (blockers.length > 0) {
       wait('blocked', blockers.join('; '));
       continue;
     }
-    const info = scanRoot === null ? { status: 'unreadable', detail: 'no state root' } : rebindChildInfo({ repoRoot: scanRoot, macroId, subtask: s });
     if (info.status !== 'found' || info.child !== p.child) {
       wait('no-child', `the child it tells is not the subtask's child now (${info.detail ?? info.status})`);
       continue;
@@ -7444,7 +7582,16 @@ async function cliRun(subcommand, flags) {
             );
             return 1;
           }
-          const removed = releaseAdmission({ checkout: flags.checkout, macroId: flags.macro, admissionId: flags.admission });
+          let removed;
+          try {
+            removed = releaseAdmission({ checkout: flags.checkout, macroId: flags.macro, admissionId: flags.admission });
+          } catch (err) {
+            // ADR-0068 Decision 2, item 4 — a hold's fence is the hold's own
+            // commands' to remove.
+            if (!(err instanceof AdmissionError) || err.code !== 'fence') throw err;
+            process.stderr.write(`state.mjs admission release: refused: ${err.message}\n`);
+            return 1;
+          }
           process.stderr.write(`released ${removed.length} admission entr${removed.length === 1 ? 'y' : 'ies'}\n`);
           return 0;
         }
@@ -7456,6 +7603,205 @@ async function cliRun(subcommand, flags) {
       // toplevel, each directory once, as a JSON array. Fails (exit 1) when
       // the worktrees cannot be listed: a scan that skipped one could miss a
       // child.
+      // ADR-0068 Decision 2, item 9 — this orchestrator honours holds: the
+      // token a run records in run.json, printed for whoever checks it.
+      case 'hold-capability': {
+        process.stdout.write(`${JSON.stringify({ capability: HOLDS_CAPABILITY, protocol: HOLDS_PROTOCOL })}\n`);
+        return 0;
+      }
+
+      // ADR-0068 Decision 2, item 5 — /orchestrator:next never dispatches a
+      // held subtask by hand. `hold-gate` (Phase 1, read-only) refuses, exit
+      // 1 with the reason and its exit on stderr, a subtask whose hold applies
+      // or cannot be read, whose release no run has compared or was rejected,
+      // or whose lane has a persona operation open, and, the holds on, an
+      // engineer that is not hold-aware; it prints nothing for a macro whose
+      // holds are not on. `dispatch-mark-publish` (Phase 3b, under the
+      // admission) judges it again under the holds lock and publishes the
+      // dispatch's mark (none for `--reattach true`), first writing
+      // {"active", "operation_id", "reattach"} to `--mark-file`, which the
+      // later two read; `dispatch-mark-check` (Phase 4, before the
+      // engineer) judges it once more beside the mark; `dispatch-mark-withdraw`
+      // (every exit after the publication) removes a mark no child carries.
+      case 'hold-gate':
+      case 'dispatch-mark-publish':
+      case 'dispatch-mark-check':
+      case 'dispatch-mark-withdraw': {
+        cliRequire(flags, ['workflow-path', 'subtask-id', 'branch', 'checkout']);
+        // A check takes its earlier pass away before it judges anything, and
+        // before any discovery that can fail (the state root, the
+        // repository's worktrees), and writes it back only when it passes: a
+        // refusal, or an error (a mark file that cannot be read, a worktree
+        // list that cannot be read), leaves no pass for Phase 5 to record. A
+        // publication takes away a check no mark of its own passed.
+        const checkedFile = `${flags['mark-file'] ?? ''}.checked`;
+        let earlierText = null;
+        if (subcommand === 'dispatch-mark-check' && flags['mark-file']) {
+          try { earlierText = readFileSync(checkedFile, 'utf8'); } catch { /* no pass yet */ }
+        }
+        if ((subcommand === 'dispatch-mark-check' || subcommand === 'dispatch-mark-publish') && flags['mark-file']) {
+          rmSync(checkedFile, { force: true });
+        }
+        const macroPath = flags['workflow-path'];
+        const stateRoot = workflowStateRoot(macroPath);
+        if (stateRoot === null) throw new Error(`${macroPath} is under no state home, so its holds cannot be read`);
+        const mainRoot = mainWorktreeRoot(stateRoot);
+        const macroId = basename(macroPath, '.md');
+        // A plan id that is no hold key is judged as a macro whose holds are
+        // off: no hold is kept for it (hold-ops.mjs handDispatchRefusal).
+        const subtaskId = flags['subtask-id'];
+        const branch = flags.branch;
+        const stateRoots = [...new Set([mainRoot, ...repositoryRoots(flags.checkout)])];
+        const refuse = (why) => {
+          const after = subcommand === 'dispatch-mark-check' ? 'Nothing was dispatched.' : 'Nothing was switched or written.';
+          process.stderr.write(`✗ Subtask ${subtaskId} is not dispatched by hand: ${why} (ADR-0068 Decision 2, item 5). ${after}\n`);
+          return 1;
+        };
+        let mark = null;
+        if (subcommand === 'dispatch-mark-check' || subcommand === 'dispatch-mark-withdraw') {
+          cliRequire(flags, ['mark-file']);
+          try {
+            mark = JSON.parse(readFileSync(flags['mark-file'], 'utf8'));
+          } catch (err) {
+            throw new Error(`the dispatch mark file ${flags['mark-file']} cannot be read (${err.code ?? err.message})`);
+          }
+          const id = mark?.operation_id;
+          if (mark === null || typeof mark !== 'object' || typeof mark.active !== 'boolean' || typeof mark.reattach !== 'boolean'
+            || (id !== null && !OPERATION_ID_RE.test(String(id)))) {
+            throw new Error(`the dispatch mark file ${flags['mark-file']} is not one dispatch-mark-publish wrote`);
+          }
+        }
+        if (subcommand === 'dispatch-mark-withdraw') {
+          if (mark.operation_id === null) return 0;
+          const w = await withdrawDispatchMark({ mainRoot, macroId, subtaskId, branch, stateRoots, operationId: mark.operation_id });
+          process.stderr.write({
+            withdrawn: `withdrew the dispatch mark ${mark.operation_id} of subtask ${subtaskId}\n`,
+            carried: `the dispatch mark ${mark.operation_id} of subtask ${subtaskId} is its engineer's operation now\n`,
+            gone: '',
+          }[w.state]);
+          return 0;
+        }
+        if (subcommand === 'dispatch-mark-publish') {
+          // The mark file is written before the record is published, so every
+          // exit after it has the id to withdraw.
+          cliRequire(flags, ['mark-file']);
+          const reattach = flags.reattach === 'true';
+          // A check this mark did not pass is no check of it: taken away
+          // above, before any discovery.
+          try {
+            await publishDispatchMark({
+              mainRoot, macroId, subtaskId, branch, stateRoots, host: flags.host || null, mark: !reattach,
+              keep: (m) => writeFileSync(flags['mark-file'], `${JSON.stringify({ active: m.active, operation_id: m.operationId, reattach })}\n`),
+            });
+          } catch (err) {
+            if (err instanceof HoldRefusal) return refuse(err.message);
+            throw err;
+          }
+          return 0;
+        }
+        // Phase 4's check passed: Phase 5 records the dispatch only then. The
+        // first pass keeps the operation ids the subtask's children carried
+        // then (`seen`): one begun since is the engineer's.
+        let earlier = null;
+        if (mark !== null && earlierText !== null) {
+          try {
+            const c = JSON.parse(earlierText);
+            if (c && c.operation_id === mark.operation_id && Array.isArray(c.seen)) earlier = c;
+          } catch { /* no pass of this mark */ }
+        }
+        const passed = () => {
+          if (mark !== null) {
+            const seen = earlier?.seen ?? (isSafeSubtaskId(subtaskId) ? childOperationIds({ macroId, subtaskId, branch, stateRoots }) : []);
+            writeFileSync(checkedFile, `${JSON.stringify({ operation_id: mark.operation_id, seen })}\n`);
+          }
+          return 0;
+        };
+        const check = subcommand === 'dispatch-mark-check';
+        // The prelude runs again before each engineer block: once a check
+        // passed and the engineer holds the lane (its operation on the child:
+        // the mark's id, or, with no mark, one begun since that pass), the
+        // dispatch's check is done, and a hold set since waits for that
+        // operation. That holds for a dispatch whose holds were off at the
+        // switch too: its engineer's operation is open before the hold.
+        if (check && earlier !== null && dispatchHandedOver({ mainRoot, macroId, subtaskId, branch, stateRoots, operationId: mark.operation_id, seen: earlier.seen })) {
+          return passed();
+        }
+        if (check && mark.operation_id !== null) {
+          const problem = markProblem({ mainRoot, macroId, subtaskId, operationId: mark.operation_id });
+          if (problem) return refuse(`${problem}, so the engineer's bootstrap has no record to continue; run /orchestrator:next again`);
+        }
+        const gate = handDispatchRefusal({ mainRoot, macroId, subtaskId, branch, stateRoots, ownOperationId: mark?.operation_id ?? null });
+        if (!gate.active) return passed();
+        if (mark !== null && mark.active === false && !mark.reattach) {
+          return refuse(`the holds of ${macroId} turned on after the dispatch judged them off, so it carries no mark a hold would wait for; run /orchestrator:next again`);
+        }
+        if (gate.why) return refuse(gate.why);
+        if (flags['engineer-root']) {
+          const problem = engineerHoldProblem(flags['engineer-root']);
+          if (problem) {
+            return refuse(`the holds of ${macroId} are on, and ${problem}: an engineer that is not hold-aware writes terminal and leaves no operation ` +
+              `a hold would see; install the engineer release with ${HOLD_PERSONA_CAPABILITY}`);
+          }
+        }
+        return passed();
+      }
+
+      // ADR-0068 Decision 2, item 8 — `holds-retire` retires what a done or a
+      // macro's end left waiting: `--subtask-id` a completed subtask's records
+      // (done's no-op path runs it), `--macro-end true` the holds directory of
+      // a macro whose terminal write is made (abort and finalize run it after
+      // theirs); with neither, it orphans the holds the plan no longer matches
+      // and retires every completed subtask's records. What waits is said on
+      // stderr; exit 0. `holds-preflight` is abort's and finalize's check
+      // before their first bulk status write: exit 1, naming each, while a
+      // persona operation is open in a lane or a lane is busy, the holds
+      // cannot be read, or (the holds on) the engineer is not hold-aware; it
+      // prints nothing for a macro whose holds are off.
+      case 'holds-retire':
+      case 'holds-preflight': {
+        cliRequire(flags, ['workflow-path']);
+        const macroPath = flags['workflow-path'];
+        const ctx = holdsContext(macroPath);
+        if (ctx === null) throw new Error(`${macroPath} is under no state home, so its holds cannot be read`);
+        const { frontmatter } = await readWorkflow(macroPath);
+        const subtasks = Array.isArray(frontmatter.plan?.subtasks) ? frontmatter.plan.subtasks : [];
+        const archived = basename(dirname(macroPath)) === 'archive';
+        if (subcommand === 'holds-preflight') {
+          // The close's own worker, under an autopilot run, is the caller: its
+          // lock entry names no lane, and would make every lane busy (as
+          // retirement's exceptRun, retireCompletedHolds).
+          const r = await closeRefusals({ mainRoot: ctx.mainRoot, macroId: ctx.macroId, subtasks, stateRoots: ctx.stateRoots, exceptRun: process.env.AGENTIC_AUTOPILOT || null });
+          if (!r.active) return 0;
+          const why = [...r.why];
+          if (why.length === 0) {
+            const problem = flags['engineer-root'] ? engineerHoldProblem(flags['engineer-root']) : 'no engineer plugin was found to check';
+            if (problem) why.push(`the holds of ${ctx.macroId} are on, and ${problem}: the children's archive must be hold-aware; install the engineer release with ${HOLD_PERSONA_CAPABILITY}`);
+          }
+          if (why.length === 0) return 0;
+          process.stderr.write(`✗ ${ctx.macroId} is not closed while its lanes may still be written (ADR-0068 Decision 2, item 8):\n${why.map((w) => `  - ${w}\n`).join('')}  Nothing was written.\n`);
+          return 1;
+        }
+        const ended = archived || frontmatter.terminal_marker === true;
+        if (flags['subtask-id'] !== undefined) {
+          const subtaskId = flags['subtask-id'];
+          const s = subtasks.find((x) => x?.id === subtaskId);
+          if (!s) throw new Error(`subtask ${JSON.stringify(subtaskId)} is not in ${ctx.macroId}'s plan`);
+          if (s.status !== 'completed') throw new Error(`subtask ${subtaskId} is ${s.status}: only a completed subtask's hold records retire (ADR-0068 Decision 2, item 8)`);
+          await retireCompletedHolds({ macroPath, subtaskId, branch: s.branch ?? null, macroEnded: ended });
+          return 0;
+        }
+        if (flags['macro-end'] === 'true') {
+          if (!ended) throw new Error(`${ctx.macroId} has made no terminal write: its holds retire only after it (ADR-0068 Decision 2, item 8)`);
+          await retireCompletedHolds({ macroPath, subtaskId: null, macroEnded: true });
+          return 0;
+        }
+        const orphaned = await orphanStale({ ...ctx, planNow: () => planNowOf(macroPath), laneOf: (s) => branchLane(ctx.mainRoot, s.branch) });
+        for (const o of orphaned) process.stderr.write(`orphaned the hold ${o.holdId} of subtask ${o.subtaskId}: ${o.why}\n`);
+        for (const s of subtasks.filter((x) => x?.status === 'completed')) await retireCompletedHolds({ macroPath, subtaskId: s.id, branch: s.branch ?? null });
+        if (ended) await retireCompletedHolds({ macroPath, subtaskId: null, macroEnded: true });
+        return 0;
+      }
+
       case 'scan-roots': {
         cliRequire(flags, ['repo-root']);
         process.stdout.write(`${JSON.stringify(repositoryRoots(flags['repo-root']))}\n`);
@@ -8180,6 +8526,16 @@ async function cliRun(subcommand, flags) {
         // including the auto-terminal signal AND the skip signal
         // (deferred/abandoned precondition path returns skipped=true
         // with skipReason).
+        // ADR-0068 Decision 2, item 8 — a completed subtask retires its hold
+        // records (a no-op completion too: it finishes a retirement that
+        // waited), and a macro whose end this write made, or found, retires
+        // its holds directory, after the terminal write.
+        if (flags.status === 'completed' && result.updatedSubtask?.status === 'completed') {
+          await retireCompletedHolds({
+            macroPath: flags['workflow-path'], subtaskId: flags['subtask-id'], branch: result.updatedSubtask.branch ?? null,
+            macroEnded: result.autoTerminal === true || result.frontmatter?.terminal_marker === true,
+          });
+        }
         const envelope = {
           workflowPath: result.workflowPath,
           updatedSubtask: result.updatedSubtask,

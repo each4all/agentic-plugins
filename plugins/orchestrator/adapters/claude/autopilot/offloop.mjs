@@ -8,8 +8,9 @@
 // (observe() and its CLIs, a network call up to 120 s), a lane's creation (a
 // baseline fetch up to 120 s, then git per plan subtask), a prepared lane's
 // baseline check, a lane's removal, the landing-ready report (merge-tree
-// checks up to 120 s) and a peer run's cancellation or settlement (peer-runner,
-// up to 60 s each). Run in process while a worker is in flight, any of it would stop that
+// checks up to 120 s), a peer run's cancellation or settlement (peer-runner,
+// up to 60 s each) and a released lane's basis (a look, git over a temporary
+// index, the engineer's content digest; ADR-0068 Decision 2). Run in process while a worker is in flight, any of it would stop that
 // supervision for as long as it ran; the serial driver never had the problem,
 // since it does such work only between steps. So during the scheduler's loop
 // each one runs here, in a child, while the loop goes on serving its workers.
@@ -104,6 +105,15 @@ export const TASKS = {
   settlePeerRuns: async (a, env) => {
     const { settleAbandonedPeers } = await import(DRIVER);
     return settleAbandonedPeers(a.targets, { roots: a.roots, checkout: a.checkout, env });
+  },
+  // ADR-0068 Decision 2, item 7 — a released lane's basis, as its release
+  // recorded it, for the driver's one comparison: the lane's fingerprint, its
+  // tree digest (git over a temporary index) and its child's content digest
+  // (the pinned engineer's CLI).
+  releaseBasis: async (a, env) => {
+    const { basisFor, releaseFingerprint } = await import('./holds-cli.mjs');
+    const fingerprintOf = releaseFingerprint({ mainRoot: a.mainRoot, macroId: a.macroId, subtaskId: a.subtaskId, env, roots: a.roots });
+    return basisFor({ engineerRoot: a.roots.engineer, fingerprintOf })({ laneRoot: a.laneRoot, childPath: a.childPath, hold: a.hold });
   },
 };
 

@@ -91,7 +91,10 @@ async function failingOrchestrator(dir) {
   await mkdir(join(root, 'scripts'), { recursive: true });
   await writeFile(join(root, 'scripts', 'state.mjs'), [
     "import { spawnSync } from 'node:child_process';",
-    "if (process.argv[2] === 'admission' || process.argv[2] === 'command-args') {",
+    // The reads before the first write (the admission, the arguments, the
+    // holds' check, ADR-0068 Decision 2, item 8) are the real ones: the
+    // write is what fails.
+    "if (['admission', 'command-args', 'holds-preflight'].includes(process.argv[2])) {",
     `  const r = spawnSync(process.execPath, [${JSON.stringify(resolve(ORCH_ROOT, 'scripts/state.mjs'))}, ...process.argv.slice(2)], { stdio: 'inherit' });`,
     '  process.exit(r.status ?? 1);',
     '}',

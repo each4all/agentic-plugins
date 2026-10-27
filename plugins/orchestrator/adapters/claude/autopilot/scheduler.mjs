@@ -36,6 +36,14 @@
 // (a gate resolution writes twice, seconds apart), so a lane is picked up
 // without waiting for another lane's worker to end.
 //
+// ADR-0068 Decision 2 — a held subtask is left alone (hold-ops.mjs
+// `holdGate`, read right before each action), its handoff completed at the
+// loop's settlement boundary. A release is compared once before its lane
+// steps, at the run's start, at each turn and before the run ends: equal
+// consumes it and gives the lane back; different rejects it, and the lane
+// parks until a new hold and release. The tick also watches the owner's hold
+// records and retries each pending handoff.
+//
 // A run-wide halt — version drift, an exhausted budget, an invalidated plan
 // approval, a gate on the macro, a halt that names no lane, the run's
 // footing, a step outside every lane, a worker group that outlived SIGKILL —
@@ -90,6 +98,11 @@ import { createTaskRunner, offLoop as defaultOffLoop } from './offloop.mjs';
 import {
   deletePark, newRecordId, PARK_SCHEMA, readPark, readParks, retiring, stepVerdict, writePark,
 } from './parks.mjs';
+import { describeOperations, holdStateOf, listRecordIds, openOperations, recordPath, withHoldsLock } from '../../../scripts/lib/holds.mjs';
+import {
+  branchLane, compareRelease, completeHandoff, finishConsumption, holdGate, orphanStale, repairHoldFence, retireSubtaskHolds, sweepDeadExclusions,
+} from '../../../scripts/lib/hold-ops.mjs';
+import { parseWorkflowFile } from '../../../scripts/state.mjs';
 import {
   afterUnread, checkoutProblem, compareKept, consensusProposals, decideLanes, fingerprint, forcedForLanes, haltScope,
   laneFingerprint, modelFor, PARK_FINGERPRINT_VERSION, parkFingerprint, peersOnlyProgress, proposalsAtEnd, renderStep,
@@ -119,13 +132,17 @@ export const WAKE_INTERVAL_MS = 30_000;
  * ADR-0068 Decision 1, item 9 — the closed vocabulary of a lane's `state` in
  * halt.json, run.json and the final report; `note` keeps the detail.
  */
-export const LANE_STATES = Object.freeze(['active', 'parked', 'waiting-to-land', 'removed', 'kept', 'creation-failed', 'not-created', 'halted']);
+export const LANE_STATES = Object.freeze(['active', 'parked', 'held', 'waiting-to-land', 'removed', 'kept', 'creation-failed', 'not-created', 'halted']);
 const NOTE_STATES = Object.freeze({
   created: 'active', adopted: 'active', prepared: 'active', resumed: 'active', 'created, not used': 'active',
   removed: 'removed', 'removed (no step used it)': 'removed', 'creation failed': 'creation-failed', 'never created': 'not-created',
   halted: 'halted',
 });
 export function laneState(entry, { parked = false } = {}) {
+  // ADR-0068 Decision 2, item 11 — the owner's lane: held, its handoff done or
+  // pending, its records unreadable, or its release not compared yet. A
+  // rejected release parks its lane, and is `parked`.
+  if (entry.held) return 'held';
   if (parked) return 'parked';
   if (entry.waiting) return 'waiting-to-land';
   const note = entry.note ?? null;
@@ -410,8 +427,10 @@ export function abandonedText(w) {
  *           startWorker, terminateGroup, helpers: { provenanceProblem, newPendingRuns, newPendingTargets },
  *           test seams: wakeIntervalMs (WAKE_INTERVAL_MS), quietMs (how long a parked lane's digest stays
  *           unchanged before it is judged; the wake interval by default), laneBusy(id, view) (whether a
- *           persona operation is open in the lane; by default, its engineer record written outside the run
- *           less than the quiet period ago), resolveRoots (the drift check) }
+ *           persona operation is open in the lane; by default, the child's operation entries and the
+ *           macro's operation records, holds.mjs openOperations), busyWaitMs (how long a run with nothing
+ *           running waits on lanes laneBusy holds back before it ends; the step timeout by default),
+ *           resolveRoots (the drift check) }
  */
 export async function runLanes(c) {
   const { repoRoot, options, env, out, now, roots, pinned, stateRoot, runId, runDir, run, macroId, record, mainRoot } = c;
@@ -425,7 +444,38 @@ export async function runLanes(c) {
   const baseline = c.view.macro?.fm?.git_baseline?.branch ?? null;
   const wakeMs = c.wakeIntervalMs ?? WAKE_INTERVAL_MS;
   const quietMs = c.quietMs ?? wakeMs;
-  const laneBusy = c.laneBusy ?? ((id, view) => childWrittenOutside(id, view));
+  // ADR-0068 Decision 2, item 7 — a persona operation open in the lane: the
+  // child's entries and the records under the macro's ops directory, read
+  // fresh (an operation that writes nothing for a long while is still seen).
+  // What it answers names them, and the owner's way out when one's session
+  // is gone (`holdBack` prints it): an open operation has no expiry.
+  const laneBusy = c.laneBusy ?? ((id, view) => {
+    const childPath = view?.children?.[id]?.path ?? lastGlobal?.children?.[id]?.path ?? null;
+    const open = openOperations({ mainRoot, macroId, subtaskId: id, childPath }).open;
+    if (open.length === 0) return false;
+    const clears = open.filter((o) => !o.error).map((o) => `agentic-autopilot writer-clear ${id} --macro ${macroId} --operation ${o.id}`);
+    return `a persona operation is open in it: ${describeOperations(open)}; when its session is gone, the owner clears it: ${clears.length ? clears.join('; ') : `agentic-autopilot writer-clear ${id} --macro ${macroId} --operation <id>`}`;
+  });
+  // ADR-0068 Decision 2, item 3 — the hold, read right before each action on
+  // a lane: null, or why the driver leaves the subtask alone.
+  const gateOf = (id) => (id ? holdGate({ mainRoot, macroId, subtaskId: id }) : null);
+  // What the report says of a lane the owner holds (Decision 2, item 11): why,
+  // and the command that gives it back; null for a lane that is not held, or
+  // whose release was rejected (its park says what to do).
+  const heldOf = (id) => {
+    const why = gateOf(id);
+    if (!why) return null;
+    const ids = listRecordIds(mainRoot, macroId, 'holds');
+    if (ids.state === 'unreadable') return { why, release: null };
+    const st = holdStateOf(mainRoot, macroId, id);
+    if (st.state === 'rejected') return null;
+    if (st.state === 'unreadable') return { why, release: `agentic-autopilot release ${id} --macro ${macroId} --discard-unreadable` };
+    if (st.state === 'released-uncompared') return { why, release: null };
+    return { why, release: `agentic-autopilot release ${id} --macro ${macroId} --hold ${st.hold.record.hold_id}` };
+  };
+  // The lanes reconciliation passed by at the run's start (Decision 2, item
+  // 11): the run holds none of them, and one given back is reconciled first.
+  const passedBy = new Set();
   const resolveRootsNow = c.resolveRoots ?? resolveRoots;
   // No removal takes what the run needs (Decision 2).
   const protect = [repoRoot, runDir, stateRoot.root];
@@ -449,6 +499,15 @@ export async function runLanes(c) {
   const markers = new Map();
   const busy = new Set();
   let busyDue = false;
+  // What each lane laneBusy holds back waits for, as last printed.
+  const busyNotes = new Map();
+  // Since when nothing has run or started while a lane laneBusy holds back
+  // remained (null while anything runs): an open operation has no expiry, but
+  // a run with every remaining lane waiting still ends. It waits for one as
+  // long as a step may take (a person's verb in the lane, a gate's resolution),
+  // then ends naming each operation and its writer-clear (ADR-0068 I13).
+  let busyIdleSince = null;
+  const busyWaitMs = c.busyWaitMs ?? (options.stepTimeoutSec ?? 3600) * 1000;
   // The lanes whose child the run told at their boundary and whose step has
   // not been admitted since (ADR-0068 Decision 8, item 4): one still held
   // then parks, as the serial run halts, instead of being told again.
@@ -459,24 +518,6 @@ export async function runLanes(c) {
   // Parked lanes to judge again before the next decision: a release, or a
   // digest that changed and has stayed so for a whole interval.
   const candidates = new Set();
-  // ADR-0068 Decision 1, item 6 — a persona operation open in a lane, as far
-  // as the run can tell before the persona records its operations (Decision
-  // 2, item 9): the lane's engineer record was written by someone other than
-  // the run, after the run started and after its last step in that lane was
-  // settled, less than the quiet period ago. An owner's gate resolution (its
-  // clear, then its finish-verb, seconds apart) is then left to finish before
-  // a worker spawns there. An operation that writes nothing for longer than
-  // the quiet period is not seen: that is the persona's record of its open
-  // operations, which this run does not have yet. File times are wall-clock.
-  const runStartedMs = Date.now();
-  const ownWrites = new Map(); // subtask id → when the run settled its lane's last step (wall clock)
-  const childWrittenOutside = (id, view) => {
-    const p = view?.children?.[id]?.path ?? lastGlobal?.children?.[id]?.path ?? null;
-    if (!p) return false;
-    let mtime;
-    try { mtime = statSync(p).mtimeMs; } catch { return false; }
-    return mtime > Math.max(runStartedMs, ownWrites.get(id) ?? 0) && Date.now() - mtime < quietMs;
-  };
   let tickTimer = null;
   let quietTimer = null;
   // The last look of the driver's checkout that read the macro: what a halt's
@@ -521,6 +562,9 @@ export async function runLanes(c) {
   // a lane's while the run holds it, otherwise the driver's.
   // A task group that outlived SIGKILL keeps the run's locks, and nothing
   // more starts beside it: it drains the run (ADR-0068 Decision 1, item 1).
+  // Each group records the subtask it acts for, whatever checkout it runs in
+  // (ADR-0068 Decision 2, item 4): a hold's handoff judges a lane busy by it,
+  // and a group that names none keeps every lane of the run busy.
   const tasks = createTaskRunner({
     offLoop: c.offLoop ?? defaultOffLoop,
     onLingering: () => {
@@ -533,19 +577,19 @@ export async function runLanes(c) {
     for (const [id, l] of lanes) if (l.lock && canonical(l.path) === where) return { lock: l.lock, lane: id };
     return { lock: c.driverLock, lane: null };
   };
-  const holdAt = (at) => async (group) => {
+  const holdAt = (at, subtaskId = null) => async (group) => {
     const { lock, lane: laneId } = lockAt(at);
     const added = [];
     try {
-      for (const l of [c.macroLock, lock]) added.push(l.addWorkerGroup({ ...group, lane: laneId, cwd: at }));
+      for (const l of [c.macroLock, lock]) added.push(l.addWorkerGroup({ ...group, lane: laneId, subtask_id: subtaskId ?? laneId, cwd: at }));
     } catch (e) {
       for (const a of added) a.release();
       throw e;
     }
     return added;
   };
-  const runAt = (at) => (name, args, o = {}) => tasks.run(name, args, { ...o, hold: holdAt(at) });
-  const task = (name, args, at = repoRoot) => runAt(at)(name, args, { env, cwd: at });
+  const runAt = (at, subtaskId = null) => (name, args, o = {}) => tasks.run(name, args, { ...o, hold: holdAt(at, subtaskId) });
+  const task = (name, args, at = repoRoot, subtaskId = null) => runAt(at, subtaskId)(name, args, { env, cwd: at });
   // After an interrupt a look reads what is here, without the fetch. Every
   // look feeds the run's list of waiting subtasks as it returns, before its
   // report (C128): an interrupt, an error or a later look can then no longer
@@ -685,7 +729,13 @@ export async function runLanes(c) {
   // A claim problem's repair, /orchestrator:next, is refused beside a live
   // run, and the claiming workflow lies outside the lane's record (Decision 1,
   // items 3 and 4).
-  const resolutionOf = (h, id, releaseOnly) => ({
+  // A rejected release (Decision 2, item 7) is resolved by a new hold and
+  // release only: a bare release refuses on it, and no record change passes it.
+  const resolutionOf = (h, id, releaseOnly) => (h.rejectedRelease ? {
+    pointer: null,
+    change: `stop editing and close the session, then hold the lane and release it again: agentic-autopilot hold ${id} --macro ${macroId}`,
+    release: null, relaunch: relaunchCommand({ macroId, lanes: N, repoRoot }), release_only: true,
+  } : {
     pointer: h.pointer ?? null,
     change: h.claim ? `stop the run, re-attach the claiming workflow with /orchestrator:next ${id} or archive it with /engineer:resume on its branch`
       : releaseOnly ? null : 'a change to the lane\'s record picks it up again: clear its gate, record a next step, commit, or move its branch',
@@ -741,6 +791,7 @@ export async function runLanes(c) {
       release_only: releaseOnly, form: fp.form, fingerprint: fp.fingerprint, fingerprint_version: PARK_FINGERPRINT_VERSION,
       lane_path: pathOf(id), branch: subtaskOf(id)?.branch ?? null, seq: h.seq ?? null, step_kind: h.stepKind ?? null,
       since: at(), resolution: resolutionOf(h, id, releaseOnly),
+      ...(h.rejectedRelease ? { rejected_release: h.rejectedRelease } : {}),
     });
     let kept = true;
     const expect = markers.get(id) ?? null;
@@ -769,8 +820,259 @@ export async function runLanes(c) {
     if (h.proposals?.length) lane(id).proposals = h.proposals;
     appendLaneEvent(runDir, { event: 'parked', subtask_id: id, reason: h.reason, detail: h.detail, record_id: rec.record_id, form: fp.form, fingerprint: fp.fingerprint, release_only: releaseOnly, run_id: runId, at: rec.since });
     out(`■ lane ${id}: ${h.reason} — ${h.detail}`);
-    out(`  other lanes continue${releaseOnly ? `; this lane waits for the owner's release: ${rec.resolution.release}` : ''}`);
+    out(`  other lanes continue${releaseOnly ? `; this lane waits for the owner${rec.resolution?.release ? `'s release: ${rec.resolution.release}` : ''}` : ''}`);
     publish();
+  }
+
+  // ADR-0068 Decision 2, item 3 — the subtasks the decision leaves out, as a
+  // lane with a step in flight is: held, pending, unreadable, a release not
+  // compared yet or rejected.
+  function heldSubtasks(view) {
+    const plan = Array.isArray(view?.macro?.fm?.plan?.subtasks) ? view.macro.fm.plan.subtasks : [];
+    return plan.map((x) => x?.id).filter((id) => typeof id === 'string' && gateOf(id));
+  }
+
+  // ADR-0068 Decision 2, item 4 — complete each pending handoff at the loop's
+  // settlement boundary: a lane with a step in flight stays pending (the step
+  // runs to its end, settled and recorded, first). The run's own lane-lock
+  // entry is handed over beside the fence, never a rival of it.
+  const announcedHeld = new Set();
+  const pendingNotes = new Map();
+  // A hold set after the run's last handoffs, while its lock entries were
+  // still there, saw a live run and left its handoff to it: once every entry
+  // of the run is gone (`finish`, or the driver's error path, removed them),
+  // the run tries each pending handoff once more, as a command with no live
+  // run does, whatever ended it (an interrupt and an error included). A hold
+  // set after this finds no live run and no entry of it, and completes its
+  // own handoff. A group that outlived SIGKILL keeps its entries, and the
+  // lane stays busy (laneBusy).
+  const lastHandoffs = () => handoffs({ after: true }).catch((e) => out(`⚠ the holds' handoffs after the run could not run (${e?.message ?? e})`));
+  c.afterRelease?.(lastHandoffs);
+  async function handoffs({ after = false } = {}) {
+    const ids = listRecordIds(mainRoot, macroId, 'holds');
+    if (ids.state !== 'ok') return;
+    for (const id of ids.ids) {
+      const st = holdStateOf(mainRoot, macroId, id);
+      if (after ? st.state !== 'pending' : (st.state !== 'pending' && !(st.state === 'held' && !announcedHeld.has(st.hold.record.hold_id)))) continue;
+      // A handoff that cannot run now (the holds lock another command holds,
+      // a record it cannot write) stays pending, and the tick tries it again:
+      // it never stops the run's other lanes.
+      let r;
+      try {
+        r = await completeHandoff({
+          mainRoot, macroId, subtaskId: id, stateRoots: [...new Set([mainRoot, stateRoot.root])],
+          // After the run, every step it had in flight is torn down: what is
+          // left of one (a group that outlived SIGKILL) is laneBusy's to judge.
+          busy: (sid) => (!after && [...inflight.values()].some((e) => e.subtaskId === sid) ? `a step of subtask ${sid} is in flight` : null),
+          exclude: [lanes.get(id)?.lock?.entry].filter(Boolean),
+        });
+      } catch (e) {
+        r = { state: 'pending', holdId: st.hold.record.hold_id, blocker: `the handoff could not run (${e?.message ?? e})` };
+      }
+      // What a pending handoff waits for, printed when it changes.
+      if (r.state === 'pending' && r.blocker && pendingNotes.get(id) !== r.blocker) {
+        pendingNotes.set(id, r.blocker);
+        out(`  lane ${id}: hold ${r.holdId} waits for its handoff: ${r.blocker}`);
+      }
+      if (r.state === 'held' && !announcedHeld.has(r.holdId)) {
+        announcedHeld.add(r.holdId);
+        appendLaneEvent(runDir, { event: 'held', subtask_id: id, hold_id: r.holdId, run_id: runId, at: at() });
+        out(`  lane ${id}: held (hold ${r.holdId}) — the owner's to work; release: agentic-autopilot release ${id} --macro ${macroId} --hold ${r.holdId}`);
+        Object.assign(lane(id), { note: 'held' });
+      }
+    }
+  }
+
+  // ADR-0068 Decision 2, item 7 — the driver's one comparison of each release
+  // not compared yet, before its lane steps: behind the writer exclusion and
+  // under the holds lock (hold-ops.mjs `compareRelease`), with the lane's
+  // basis taken off the loop. Equal consumes it: the kept park it recorded
+  // ends, by that record's id only, and a lane the run knows is reconsidered
+  // (Decision 1, item 4). Different rejects it for good: the lane parks
+  // `owner-choice`, a park only a new hold and release end. A consumption a
+  // crash left part way is finished, and a rejection whose park went is parked
+  // again (I3). Resolves to whether a lane changed state.
+  const stateRoots = [...new Set([mainRoot, stateRoot.root])];
+  // The releases a pass left to do (a comparison an open operation refused,
+  // or one that failed; a consumption whose park's end failed), which the
+  // tick tries again, and what each last printed.
+  const releaseRetry = new Set();
+  const releaseNotes = new Map();
+  const releaseDue = (id) => {
+    const st = holdStateOf(mainRoot, macroId, id);
+    return st.state === 'released-uncompared' || (st.state === 'consumed' && st.release.record.park_ended !== true);
+  };
+  const noteRelease = (id, line) => {
+    if (releaseNotes.get(id) !== line) out(line);
+    releaseNotes.set(id, line);
+  };
+  const releaseBasis = c.releaseBasis ?? (async (id, a) => {
+    const r = await task('releaseBasis', { ...a, mainRoot, macroId, subtaskId: id, roots }, repoRoot, id);
+    if (r.error) throw new Error(r.error);
+    return r.value;
+  });
+  const endParkOf = (id) => (recordId) => parkOp(() => deletePark(mainRoot, macroId, id, {
+    expect: recordId, event: 'resumed', fields: { run_id: runId, why: 'its release was consumed' },
+  }));
+  // ADR-0068 Decision 2, items 8 and 11 — at the run's start, before any
+  // release is compared or any row acts: a hold its subtask no longer matches
+  // (the subtask left the plan, or its branch changed) is orphaned, and the
+  // records a completed subtask kept (its hold, release, kept park) are
+  // retired, unless a persona operation or a process still holds its lane.
+  // What it cannot do is said, and tried again by the next run or done.
+  // The plan as the macro's file holds it now (null when it cannot be read):
+  // each retirement judges it under the holds lock, never the run's look.
+  const planNow = () => {
+    try {
+      const fm = parseWorkflowFile(readFileSync(c.view.macro.path, 'utf8')).frontmatter;
+      return Array.isArray(fm.plan?.subtasks) ? fm.plan.subtasks : [];
+    } catch {
+      return null;
+    }
+  };
+  async function retireEnded() {
+    const subtasks = Array.isArray(c.view.macro?.fm?.plan?.subtasks) ? c.view.macro.fm.plan.subtasks : [];
+    try {
+      const laneOf = (s) => branchLane(mainRoot, s.branch);
+      for (const o of await orphanStale({ mainRoot, macroId, planNow, stateRoots, laneOf, now: () => new Date(now()) })) {
+        out(`  lane ${o.subtaskId}: its hold ${o.holdId} is orphaned: ${o.why}`);
+        appendLaneEvent(runDir, { event: 'orphaned', subtask_id: o.subtaskId, hold_id: o.holdId, why: o.why, run_id: runId, at: at() });
+      }
+      for (const s of subtasks.filter((x) => x?.status === 'completed' && typeof x.id === 'string')) {
+        const stillCompleted = () => planNow()?.find((x) => x?.id === s.id)?.status === 'completed';
+        const r = await retireSubtaskHolds({ mainRoot, macroId, subtaskId: s.id, branch: s.branch ?? null, stateRoots, exceptRun: runId, stillCompleted, now: () => new Date(now()) });
+        if (r.state === 'retired') {
+          out(`  lane ${s.id}: completed: its hold records are retired`);
+          appendLaneEvent(runDir, { event: 'retired', subtask_id: s.id, hold_id: r.holdId, run_id: runId, at: at() });
+        } else if (r.state === 'waiting' || r.state === 'unreadable') {
+          out(`  lane ${s.id}: completed, but its hold records are not retired yet: ${r.why}`);
+        }
+      }
+    } catch (e) {
+      out(`⚠ the macro's ended holds could not be retired (${e?.message ?? e}); the next run or done tries again`);
+    }
+  }
+  async function consumeReleases() {
+    const ids = listRecordIds(mainRoot, macroId, 'releases');
+    if (ids.state !== 'ok') return false;
+    let changed = false;
+    for (const id of ids.ids) {
+      if (c.interrupted() || draining) break;
+      try {
+        // I3 — what a crash left first: the exclusion record of a release or
+        // a comparison whose process is gone, and a released hold's fence.
+        await withHoldsLock(mainRoot, macroId, () => sweepDeadExclusions({ mainRoot, macroId, subtaskId: id }));
+        await repairHoldFence({ mainRoot, macroId, subtaskId: id });
+      } catch (e) {
+        noteRelease(id, `⚠ lane ${id}: what a stopped release left could not be cleared (${e?.message ?? e}); it is tried again`);
+      }
+      const st = holdStateOf(mainRoot, macroId, id);
+      const holdId = st.hold?.record?.hold_id ?? null;
+      try {
+        if (st.state === 'consumed' && st.release.record.park_ended !== true) {
+          const f = await finishConsumption({ mainRoot, macroId, subtaskId: id, endPark: endParkOf(id) });
+          if (f.finished && await givenBack(id, st.release.record.park_record_id)) changed = true;
+          continue;
+        }
+        if (st.state === 'rejected') {
+          if (await parkRejected(id, holdId, st.release.record.release_id)) changed = true;
+          continue;
+        }
+        if (st.state !== 'released-uncompared') continue;
+        const r = await compareRelease({
+          mainRoot, macroId, subtaskId: id, stateRoots, endPark: endParkOf(id), now: () => new Date(now()),
+          basisOf: (a) => releaseBasis(id, a),
+        });
+        if (r.verdict === 'refused') {
+          noteRelease(id, `  lane ${id}: its release waits to be compared: ${r.why}`);
+          continue;
+        }
+        if (r.verdict !== 'consumed' && r.verdict !== 'rejected') continue;
+        appendLaneEvent(runDir, { event: 'released', subtask_id: id, hold_id: holdId, release_id: r.release.release_id, verdict: r.verdict, run_id: runId, at: at() });
+        changed = true;
+        if (r.verdict === 'consumed') {
+          out(`  lane ${id}: its release (hold ${holdId}) is consumed: the lane is the run's again`);
+          await givenBack(id, r.release.park_record_id);
+        } else {
+          await parkRejected(id, holdId, r.release.release_id);
+        }
+      } catch (e) {
+        noteRelease(id, `⚠ lane ${id}: its release could not be compared or settled (${e?.message ?? e}); it is tried again before the lane steps`);
+      } finally {
+        if (releaseDue(id)) releaseRetry.add(id);
+        else { releaseRetry.delete(id); releaseNotes.delete(id); }
+      }
+    }
+    return changed;
+  }
+  // A consumed release gives the lane back: a lane the run parked or holds is
+  // reconsidered, its kept park (the one the release recorded) already ended;
+  // one it knows nothing of is judged from the next look, as any other (a
+  // lane the relaunch passed by is reconciled by `passedBack`, the turn's
+  // next pass). A park other than the one the release recorded stands.
+  async function givenBack(id, parkRecordId) {
+    const p = parked.get(id);
+    // A park the run could not keep in the records is its own, and goes with
+    // the release; a kept one other than the release's stands.
+    if (p && p.kept !== false && (p.record_id === null || p.record_id !== parkRecordId)) return false;
+    if (!p && !lanes.has(id)) return true;
+    return resume(id, 'its release was consumed', { parkEnded: true });
+  }
+  // A lane the relaunch passed by whose gate went (its release consumed, or
+  // its hold ended without one: a pending hold withdrawn, a hold retired or
+  // orphaned) is the run's again: its rows are judged before its next step,
+  // never a lane created over its worktree. It stays passed by until then,
+  // through any new hold. Resolves to whether one was taken back.
+  async function passedBack() {
+    let changed = false;
+    for (const id of [...passedBy]) {
+      if (c.interrupted() || draining) break;
+      if (gateOf(id)) continue;
+      // A park the lane keeps stands (one `givenBack` left, or one the relaunch
+      // applied): its own resolution picks the lane up, through `resume`,
+      // which judges its rows then.
+      if (parked.has(id)) continue;
+      if (await resume(id, 'its hold ended')) changed = true;
+    }
+    return changed;
+  }
+  // The park of a rejected release, its own, replacing any the lane had.
+  async function parkRejected(id, holdId, releaseId) {
+    // Applied already: kept, or one the records could not take, whose record
+    // is written again as it is. That is no change of the lane (it is parked
+    // already, and the run's judgment of it stands, never watched afresh), so
+    // a park that still cannot be kept never keeps the run from ending.
+    const mine = parked.get(id);
+    if (mine?.rejected_release === releaseId) {
+      if (mine.kept !== false) return false;
+      const { kept: _, ...rec } = mine;
+      try {
+        const w = await parkOp(() => writePark(mainRoot, macroId, rec, { expect: null }));
+        if (w.ok) {
+          parked.set(id, { ...mine, kept: true });
+          lane(id).park = showPark({ ...mine, kept: true });
+        }
+      } catch { /* the next pass tries it again */ }
+      return false;
+    }
+    const cur = readPark(mainRoot, macroId, id);
+    if (cur.state === 'ok') {
+      if (cur.record.rejected_release === releaseId && cur.record.state === 'parked') {
+        // Kept by an earlier run: applied again as it is (Decision 1, item 3).
+        parked.set(id, { ...cur.record, kept: true });
+        watch(id);
+        Object.assign(lane(id), { park: showPark(cur.record), halt: { reason: cur.record.reason, detail: cur.record.detail } });
+        return true;
+      }
+      markers.set(id, cur.record.record_id);
+    }
+    parked.delete(id);
+    seen.delete(id);
+    await park({
+      reason: 'owner-choice', subtaskId: id, releaseOnly: true, rejectedRelease: releaseId,
+      detail: `the lane changed after its release (hold ${holdId}); stop editing, close the session, then hold and release it again`,
+    });
+    return true;
   }
 
   // A parked lane picked up again: its kept park ends, it is a new lane for
@@ -779,9 +1081,23 @@ export async function runLanes(c) {
   // lock, its identity, its branch) are judged again before its next step, as
   // at a run's start. Resolves to false when it parked again, or the run
   // drains.
-  async function resume(id, why) {
+  async function resume(id, why, { parkEnded = false } = {}) {
+    // A held lane is passed by: no row acts on it (Decision 2, items 3, 11).
+    // A kept park the owner released meanwhile is no park of the run's any
+    // more: it is let go, unjudged, and the hold alone keeps the lane (judged
+    // again, a record that is gone would wake the run at every tick).
+    if (gateOf(id)) {
+      if (why === 'released') {
+        parked.delete(id);
+        seen.delete(id);
+        Object.assign(lane(id), { park: null, halt: null });
+        publish();
+      }
+      return false;
+    }
     const rec = parked.get(id);
-    if (why !== 'released' && rec?.kept && rec.record_id) {
+    // A release (bare, or consumed) has ended the kept park already.
+    if (why !== 'released' && !parkEnded && rec?.kept && rec.record_id) {
       try {
         await parkOp(() => deletePark(mainRoot, macroId, id, { expect: rec.record_id, event: 'resumed', fields: { run_id: runId, why } }));
       } catch (e) {
@@ -791,6 +1107,9 @@ export async function runLanes(c) {
     parked.delete(id);
     seen.delete(id);
     started.delete(id);
+    // A lane the relaunch passed by is the run's again only once its rows
+    // are judged here: a new gate before this keeps it passed by.
+    passedBy.delete(id);
     appendLaneEvent(runDir, { event: 'resumed', subtask_id: id, why, record_id: rec?.record_id ?? null, run_id: runId, at: at() });
     out(`  lane ${id}: picked up again (${why})`);
     Object.assign(lane(id), { park: null, halt: null, resumed_at: at() });
@@ -803,7 +1122,7 @@ export async function runLanes(c) {
       lanes.delete(id);
     }
     if (p && existsSync(p)) {
-      const r = await task('reconcileLane', { home, checkout: repoRoot, macroId, view: lastGlobal, baseline, subtaskId: id, runId, runDir, nowMs: now() });
+      const r = await task('reconcileLane', { home, checkout: repoRoot, macroId, view: lastGlobal, baseline, subtaskId: id, runId, runDir, nowMs: now() }, repoRoot, id);
       if (r.error) {
         await halted({ reason: 'owner-choice', detail: `subtask ${id}'s lane ${p} could not be reconciled: ${r.error}`, subtaskId: id });
         return false;
@@ -870,7 +1189,9 @@ export async function runLanes(c) {
         try { cur = readPark(mainRoot, macroId, id); } catch { cur = null; }
         if (cur && (cur.state === 'absent' || (cur.state === 'ok' && cur.record.record_id !== rec.record_id))) why = 'released';
       }
-      if (!why && rec.state === 'parked') {
+      // A gated lane is never judged by its fingerprint: the comparison, or
+      // a new hold and release, decides it (pollWake).
+      if (!why && rec.state === 'parked' && !gateOf(id)) {
         // Judged at the digest read before the look, from before the look: a
         // tick during it that reads a later digest makes the lane a candidate
         // only once that digest has been quiet for a whole interval, never
@@ -889,9 +1210,26 @@ export async function runLanes(c) {
     return resumed;
   }
 
+  // ADR-0068 Decision 2 — the owner's hold records as the tick watches them:
+  // each subtask's record under `holds/`, by identity, size and time. `hold`
+  // and `release` write there, and the driver never does: its handoffs, its
+  // comparisons, its exclusion records and the holds lock lie elsewhere, so
+  // its own activity wakes nothing.
+  const holdsKey = () => {
+    const ids = listRecordIds(mainRoot, macroId, 'holds');
+    if (ids.state !== 'ok') return ids.state;
+    return ids.ids.map((id) => `${id}=${statKey(recordPath(mainRoot, macroId, 'holds', id))}`).join('|');
+  };
+  let holdsSeen = holdsKey();
+  const pendingHandoffs = () => {
+    const ids = listRecordIds(mainRoot, macroId, 'holds');
+    return ids.state === 'ok' ? ids.ids.filter((id) => holdStateOf(mainRoot, macroId, id).state === 'pending') : [];
+  };
+
   // The tick (Decision 1, item 6): a release, a parked lane quiet for a whole
-  // interval since its digest changed, or a lane laneBusy held back, wakes
-  // the loop. It reads files only, and never judges: the loop's look does.
+  // interval since its digest changed, a lane laneBusy held back, or a hold
+  // record the owner wrote, wakes the loop. It reads files only, and never
+  // judges: the loop's look does.
   const pollWake = () => {
     // A lane laneBusy held back is due again once a tick has passed; the loop
     // lets it go at its next decision. The tick never clears it itself: one
@@ -899,6 +1237,17 @@ export async function runLanes(c) {
     // and the run would end beside it.
     let found = busy.size > 0;
     if (found) busyDue = true;
+    // The owner's hold records (Decision 2): a hold set, a release.
+    const hk = holdsKey();
+    if (hk !== holdsSeen) { holdsSeen = hk; found = true; }
+    // A handoff still pending is retried at each tick (Decision 1, item 6),
+    // what blocks it can go away without touching a source; one whose lane
+    // has a step in flight waits for that step's end, which wakes the loop.
+    else if (pendingHandoffs().some((id) => !subtasksInFlight().has(id))) found = true;
+    // So is a release a pass left to do: what refused or failed it (an open
+    // operation, a lock, a basis that could not be taken) goes away without
+    // touching a hold record either.
+    else if ([...releaseRetry].some(releaseDue)) found = true;
     const t = now();
     for (const [id, rec] of parked) {
       if (rec.kept) {
@@ -909,6 +1258,10 @@ export async function runLanes(c) {
           continue;
         }
       }
+      // A lane a hold or an unconsumed release keeps from stepping is the
+      // owner's: its changes are the person's work, never a resolution, and
+      // what ends its gate (a hold record, a comparison) wakes the loop.
+      if (gateOf(id)) continue;
       const s = seen.get(id);
       if (!s) continue;
       const d = digestOf(id);
@@ -938,6 +1291,9 @@ export async function runLanes(c) {
     let left = 0;
     for (const [id, s] of seen) {
       if (!parked.has(id)) continue;
+      // A gated lane's changes are its person's, never its resolution: the
+      // run does not wait on them (pollWake).
+      if (gateOf(id)) continue;
       const d = digestOf(id);
       if (d !== s.digest) { s.digest = d; s.at = t; }
       // A lane not judged since its park waits only on a change since then:
@@ -1021,6 +1377,19 @@ export async function runLanes(c) {
       }
       const rec = e.record;
       if (rec.state !== 'parked') { await recover(rec); continue; }
+      // A lane a hold or an unconsumed release keeps from stepping (Decision
+      // 2, items 7 and 11) keeps its park as it is, never compared: the
+      // release's consumption ends it, a rejection's park replaces it, and no
+      // change the person made while it was held picks it up.
+      if (gateOf(id)) {
+        // A rejection's park this run's first comparison wrote is applied already.
+        if (parked.get(id)?.record_id === rec.record_id) continue;
+        parked.set(id, { ...rec, kept: true });
+        watch(id);
+        Object.assign(lane(id), { park: showPark(rec), halt: { reason: rec.reason, detail: rec.detail }, ...(rec.proposals?.length ? { proposals: rec.proposals } : {}) });
+        out(`■ lane ${id}: ${rec.reason} — ${rec.detail} (kept since run ${rec.run_id}; ${gateOf(id)})`);
+        continue;
+      }
       // The digest before the look the fingerprint is taken from (`watch`).
       const before = digestOf(id, rec.reason);
       const fp = await fingerprintNow(id);
@@ -1085,6 +1454,19 @@ export async function runLanes(c) {
   // ---------------------------------------------------------------------
   // One step: admitted, placed, checked, spawned.
 
+  // A lane laneBusy holds back until the next tick, and what it waits for,
+  // printed when it changes and kept in its report: the run never waits on
+  // an open operation without naming it.
+  function holdBack(id, why) {
+    busy.add(id);
+    const line = typeof why === 'string' ? why : 'a persona operation is open in it';
+    if (busyNotes.get(id) === line) return;
+    busyNotes.set(id, line);
+    out(`  lane ${id}: waits: ${line}`);
+    lane(id).waits_for = line;
+    publish();
+  }
+
   async function admit(s, view) {
     if (!STEP_KINDS.includes(s.kind)) throw new Error(`policy returned an unknown step kind ${s.kind}`);
     const r = budget.reserve();
@@ -1122,6 +1504,9 @@ export async function runLanes(c) {
 
   async function launch(s, view, reservation, refuse) {
     const id = s.subtaskId ?? null;
+    // A held subtask is never dispatched, stepped or recorded done: a hold set
+    // between the decision and this admission stops it here.
+    if (gateOf(id)) return { ...refuse(null), again: false, held: true };
     const inLane = s.lane === true;
 
     // A lane is created once its first step is admitted (Decision 5), and
@@ -1131,8 +1516,9 @@ export async function runLanes(c) {
     // operation open, and no lane is created for one; the lane waits for the
     // next tick. Asked again after the creation's marker, which awaits a
     // lock, and right before the spawn.
-    if (inLane && laneBusy(id, view)) {
-      busy.add(id);
+    const occupied = inLane ? laneBusy(id, view) : false;
+    if (occupied) {
+      holdBack(id, occupied);
       return { ...refuse(null), again: false, busy: true };
     }
 
@@ -1157,7 +1543,7 @@ export async function runLanes(c) {
     if (due) {
       const told = await (c.deliverRebindings ?? deliverAtBoundary)({
         roots, macroPath: view.macro.path, macroId, subtaskId: id, repoRoot, env, runId, token: c.token, due: due.due, why: due.why ?? null,
-        hold: holdAt(repoRoot),
+        hold: holdAt(repoRoot, id),
         // A group that outlived SIGKILL keeps the run's locks, and nothing
         // more starts beside it: it drains the run, as a task's does.
         onLingering: () => c.markLingering(),
@@ -1177,11 +1563,15 @@ export async function runLanes(c) {
       // again before the creation, and a refusal settles it (`admit`).
       await mark(id, 'creating', { step_kind: s.kind });
       if (mustYield() || (s.newLane && !gate().start)) return refuse(null);
-      if (laneBusy(id, view)) {
-        busy.add(id);
+      // A hold that appeared while the marker awaited its lock stops the
+      // creation here (Decision 2, item 3).
+      if (gateOf(id)) return { ...refuse(null), again: false, held: true };
+      const occupiedNow = laneBusy(id, view);
+      if (occupiedNow) {
+        holdBack(id, occupiedNow);
         return { ...refuse(null), again: false, busy: true };
       }
-      const created = await task('createLane', { home, checkout: repoRoot, macroId, subtask, view, baseline, runId, runDir, nowMs: now() });
+      const created = await task('createLane', { home, checkout: repoRoot, macroId, subtask, view, baseline, runId, runDir, nowMs: now() }, repoRoot, id);
       const made = created.error
         ? { ok: false, failed: true, halt: { reason: 'owner-choice', detail: `subtask ${id}'s lane could not be created: ${created.error}` } }
         : created.value;
@@ -1239,8 +1629,11 @@ export async function runLanes(c) {
       if (fetched.error) return refuse({ reason: 'owner-choice', detail: `the baseline of the prepared lane ${cwd} could not be read: ${fetched.error}`, subtaskId: id, scope: 'run' });
       const f = fetched.value;
       if (!f.ok) return refuse({ ...f.halt, subtaskId: id, scope: 'run' });
+      // Its branch is never advised away unconditionally: one the baseline
+      // was rewound under carries commits it lacks (ADR-0062 Decision 2,
+      // amendment of 2026-10-27).
       if (before.git.head !== f.tip) {
-        return refuse({ reason: 'owner-choice', detail: `the prepared lane ${cwd} (subtask ${id}, branch ${held.branch}) is at ${before.git.head?.slice(0, 12) ?? '?'}, but ${f.ref} is at ${f.tip.slice(0, 12)}: the baseline moved since the lane was cut; remove the lane and its branch, then relaunch`, subtaskId: id });
+        return refuse({ reason: 'owner-choice', detail: `the prepared lane ${cwd} (subtask ${id}, branch ${held.branch}) is at ${before.git.head?.slice(0, 12) ?? '?'}, but ${f.ref} is at ${f.tip.slice(0, 12)}: the baseline moved since the lane was cut; remove the lane (git worktree unlock ${cwd} && git worktree remove ${cwd}), then relaunch. Delete ${held.branch} too only when git rev-list ${f.ref}..${held.branch} prints nothing: otherwise it carries commits the baseline lacks, and the next run judges it as a branch with no lane (row 12)`, subtaskId: id });
       }
     }
     // The lane's marker names this step before its worker exists (ADR-0068
@@ -1264,8 +1657,10 @@ export async function runLanes(c) {
     }
     const place = stepPlacement(s, { lanes, checkout: repoRoot, stateRoot });
     if (place.problem) return refuse({ reason: 'owner-choice', detail: place.problem, subtaskId: id });
-    if (inLane && laneBusy(id, before)) {
-      busy.add(id);
+    if (gateOf(id)) return { ...refuse(null), again: false, held: true };
+    const occupiedLast = inLane ? laneBusy(id, before) : false;
+    if (occupiedLast) {
+      holdBack(id, occupiedLast);
       return { ...refuse(null), again: false, busy: true };
     }
     // The whole per-step timeout, however long the lane took to prepare: no
@@ -1279,6 +1674,8 @@ export async function runLanes(c) {
     if (inLane) {
       started.add(id);
       unused.delete(id);
+      busyNotes.delete(id);
+      delete lane(id).waits_for;
     }
     const command = renderStep(s, { macroId, runId });
     const { model, effort } = modelFor(s, { plan: options.models, override: { model: options.model, effort: options.effort } });
@@ -1315,7 +1712,7 @@ export async function runLanes(c) {
     if (Number.isInteger(w.pid)) {
       const group = {
         pid: w.pid, pgid: process.platform === 'win32' ? null : w.pid, fingerprint: await processFingerprint(w.pid),
-        session_id: sessionId, lane: inLane ? id : null, cwd,
+        session_id: sessionId, lane: inLane ? id : null, subtask_id: id, cwd,
       };
       for (const l of [c.macroLock, inLane ? held.lock : c.driverLock]) entry.groups.push(l.addWorkerGroup(group));
     }
@@ -1384,7 +1781,7 @@ export async function runLanes(c) {
     if (verdict && (w.aborted || verdict.reason === 'worker-failed' || verdict.reason === 'interrupted')) {
       const runIds = c.helpers.newPendingRuns(ownChildOnly(entry.before, id), ownChildOnly(after, id), id);
       if (runIds.length > 0) {
-        const r = await task('cancelPeerRuns', { runIds, roots, checkout: entry.cwd }, entry.cwd);
+        const r = await task('cancelPeerRuns', { runIds, roots, checkout: entry.cwd }, entry.cwd, entry.subtaskId ?? null);
         cancelled = r.error ? runIds.map((runId) => ({ run_id: runId, exit: null, result: r.error })) : r.value;
       }
       // A peer whose cancellation did not go through, or that the look could
@@ -1407,7 +1804,7 @@ export async function runLanes(c) {
       } else {
         const { targets, conflicts } = c.helpers.newPendingTargets(ownChildOnly(entry.before, id), ownChildOnly(after, id), id);
         if (targets.length > 0) {
-          const r = await task('settlePeerRuns', { targets, roots, checkout: entry.cwd }, entry.cwd);
+          const r = await task('settlePeerRuns', { targets, roots, checkout: entry.cwd }, entry.cwd, entry.subtaskId ?? null);
           settlements = r.error
             ? targets.map((t) => ({ ...t, cancel: { exit: null, result: r.error }, settle: null, command: peerRunnerCommand(roots, ['cancel', '--run-id', t.run_id, '--repo-root', entry.cwd]) }))
             : r.value;
@@ -1440,9 +1837,6 @@ export async function runLanes(c) {
       outcome: verdict ? verdict.reason : 'ok', halt_scope: scope,
     });
     writeRun(runDir, run);
-    // What the step and its settlement wrote to the lane's record is the
-    // run's own (`childWrittenOutside`).
-    if (id) ownWrites.set(id, Date.now());
     const pct = w.peakPct == null ? '?' : `${(w.peakPct * 100).toFixed(1)}%`;
     out(`    [${entry.seq}]${entry.lane ? ` lane ${id}` : ''} exit=${w.exitCode ?? w.signal} cost=$${(w.costUsd ?? cost).toFixed(2)}${w.costUsd === null ? ' (unreported; budget charged)' : ''} peak=${w.peakCtx} (${pct}) denials=${w.denials.length}${abandonedText(w)}${verdict ? ` → ${verdict.reason}` : ''}`);
     if (id && report.get(id)?.last_step?.seq === entry.seq) report.get(id).last_step.outcome = verdict ? verdict.reason : 'ok';
@@ -1475,10 +1869,12 @@ export async function runLanes(c) {
   // completed, or once the run that created it ends or yields without
   // using it (`unusedLane`); the run lets go of its lock either way.
   async function retire(id, { unusedLane = false } = {}) {
+    // A held subtask's lane is never removed.
+    if (gateOf(id)) { lane(id).note = 'held: kept'; return; }
     const l = lanes.get(id) ?? null;
     lanes.delete(id);
     const where = l?.path ?? lane(id).path ?? pathOf(id);
-    const removed = await task('removeLane', { home, macroId, subtaskId: id, runId, runDir, nowMs: now(), ownLaneLock: l?.lock?.entry ?? null, protect });
+    const removed = await task('removeLane', { home, macroId, subtaskId: id, runId, runDir, nowMs: now(), ownLaneLock: l?.lock?.entry ?? null, protect }, repoRoot, id);
     letGo(l);
     // A removal that failed keeps the lane: the next reconciliation judges it.
     const r = removed.error ? { outcome: 'kept', why: `its removal failed (${removed.error})` } : removed.value;
@@ -1506,6 +1902,9 @@ export async function runLanes(c) {
       if (r.halt) { await halted(r.halt, null, view); return !draining && !c.interrupted(); }
       // A lane laneBusy holds back waits for the tick; the others go on.
       if (r.busy) return true;
+      // So does a lane a hold set since the decision stops (Decision 2, item
+      // 3): the others go on, and the run decides again, without it.
+      if (r.held) { res.again = true; return true; }
       if (r.stop) { if (r.again) res.again = true; return false; }
       return true;
     };
@@ -1582,6 +1981,12 @@ export async function runLanes(c) {
     }
     for (const r of report.values()) delete r.waiting;
     for (const w of waiting) lane(w.subtaskId).waiting = { branch: w.branch, reason: w.reason, commit: w.commit ?? null, sync: w.sync ?? null };
+    const plan = (lastGlobal?.macro?.fm?.plan?.subtasks ?? []).map((x) => x?.id).filter((id) => typeof id === 'string');
+    for (const id of new Set([...plan, ...report.keys()])) {
+      const h = heldOf(id);
+      if (h) lane(id).held = h;
+      else if (report.has(id)) delete report.get(id).held;
+    }
     for (const [id, r] of report) {
       if (!parked.has(id)) r.park = null;
       r.state = laneState(r, { parked: parked.has(id) });
@@ -1589,10 +1994,12 @@ export async function runLanes(c) {
     return [...report.values()].sort((a, b) => String(a.subtask_id).localeCompare(String(b.subtask_id)));
   }
 
-  // The halt of the first lane still parked, in plan order (Decision 1, item 9).
+  // The halt of the first lane still parked, in plan order (Decision 1, item
+  // 9). A held lane's kept park is no halt (Decision 2, item 11): it is listed
+  // held, with its release.
   const firstParked = () => {
     const order = (lastGlobal?.macro?.fm?.plan?.subtasks ?? []).map((x) => x?.id);
-    const ids = [...parked.keys()].sort((a, b) => (order.indexOf(a) === -1 ? 1e9 : order.indexOf(a)) - (order.indexOf(b) === -1 ? 1e9 : order.indexOf(b)));
+    const ids = [...parked.keys()].filter((id) => !heldOf(id)).sort((a, b) => (order.indexOf(a) === -1 ? 1e9 : order.indexOf(a)) - (order.indexOf(b) === -1 ? 1e9 : order.indexOf(b)));
     if (ids.length === 0) return null;
     const p = parked.get(ids[0]);
     return {
@@ -1601,9 +2008,45 @@ export async function runLanes(c) {
     };
   };
 
+  // Every lane the owner holds as the run ends, in plan order, each with the
+  // command that gives it back (Decision 2, item 11).
+  function heldAtEnd() {
+    const order = (lastGlobal?.macro?.fm?.plan?.subtasks ?? []).map((x) => x?.id).filter((id) => typeof id === 'string');
+    return order.map((id) => [id, heldOf(id)]).filter(([, h]) => h)
+      .map(([id, h]) => ({ reason: 'owner-choice', detail: h.release ? `${h.why}; release: ${h.release}` : h.why, subtask_id: id, held: true, release: h.release }));
+  }
+  // The end of a run whose lanes left are the owner's (Decision 1, item 7;
+  // Decision 2, item 11): the first held lane names it, every other one is in
+  // its `also`, each with its release.
+  function firstHeld() {
+    const h = heldAtEnd()[0];
+    if (!h) return null;
+    return { outcome: 'halt', reason: 'owner-choice', detail: `every lane left waits on the owner: ${h.detail}`, subtaskId: h.subtask_id, resolution: h.release ? { release: h.release } : null };
+  }
+
+  // Every lane laneBusy still holds back as the run ends, in plan order, each
+  // with what it waits for (its operations and their writer-clear).
+  function busyAtEnd() {
+    const order = (lastGlobal?.macro?.fm?.plan?.subtasks ?? []).map((x) => x?.id);
+    return [...busy].filter((id) => !parked.has(id) && !heldOf(id))
+      .sort((a, b) => (order.indexOf(a) === -1 ? 1e9 : order.indexOf(a)) - (order.indexOf(b) === -1 ? 1e9 : order.indexOf(b)))
+      .map((id) => ({ reason: 'owner-choice', detail: busyNotes.get(id) ?? 'a persona operation is open in it', subtask_id: id, busy: true }));
+  }
+  function firstBusy() {
+    const b = busyAtEnd()[0];
+    if (!b) return null;
+    return { outcome: 'halt', reason: 'owner-choice', detail: `every lane left waits on an open persona operation: lane ${b.subtask_id}: ${b.detail}`, subtaskId: b.subtask_id, resolution: null };
+  }
+
   async function end(status, d = null) {
     clearTimeout(resetTimer);
     stopTick();
+    // A holds directory that cannot be read gates every lane (holdGate): the
+    // run ends, and says so.
+    const holdsRead = listRecordIds(mainRoot, macroId, 'holds');
+    if (holdsRead.state === 'unreadable') out(`⚠ the holds of ${macroId} cannot be read (${holdsRead.error}): every lane was left alone; repair the directory, then relaunch`);
+    // The run's last handoffs (Decision 2, item 4), before its records end.
+    await handoffs().catch((e) => out(`⚠ the holds' last handoffs could not run (${e?.message ?? e})`));
     // Before the run ends, any end but an interrupt, every lane it created
     // that no step used is removed (Decision 5): the backstop for an
     // admission's own removal (every refusal goes through admit today, so
@@ -1621,7 +2064,9 @@ export async function runLanes(c) {
     if (d) {
       const also = [
         ...halts.filter((h) => h !== d).map((h) => ({ reason: h.reason, detail: h.detail, subtask_id: h.subtaskId ?? null })),
-        ...[...parked.values()].filter((p) => p.subtask_id !== d.subtaskId).map((p) => ({ reason: p.reason, detail: p.detail, subtask_id: p.subtask_id, parked: true, release_only: p.release_only === true })),
+        ...[...parked.values()].filter((p) => p.subtask_id !== d.subtaskId && !heldOf(p.subtask_id)).map((p) => ({ reason: p.reason, detail: p.detail, subtask_id: p.subtask_id, parked: true, release_only: p.release_only === true })),
+        ...heldAtEnd().filter((x) => x.subtask_id !== d.subtaskId),
+        ...busyAtEnd().filter((x) => x.subtask_id !== d.subtaskId),
       ];
       if (also.length) d = { ...d, also };
     }
@@ -1645,7 +2090,9 @@ export async function runLanes(c) {
     run.rate_limit = throttleSnapshot(throttle, nowSec);
     // Every change to the kept parks this run started is done before its locks go.
     await parkOps;
-    return c.finish(status, d, { lanes: run.lanes.lanes, rateLimit: throttleText(throttle, nowSec) });
+    const code = c.finish(status, d, { lanes: run.lanes.lanes, rateLimit: throttleText(throttle, nowSec) });
+    await lastHandoffs();
+    return code;
   }
 
   // ---------------------------------------------------------------------
@@ -1654,9 +2101,21 @@ export async function runLanes(c) {
   try {
     out(`  lanes: up to ${N} at a time · ${throttleText(throttle, now() / 1000)}`);
     // --next with lanes is judged per lane (Forced resume).
+    // ADR-0068 Decision 2, item 7 — every release not compared yet is
+    // compared first, so a forced step and the kept parks see what it gave
+    // back; nothing of the run holds a lane yet. Ended holds go before it.
+    await retireEnded();
+    await consumeReleases();
     if (options.forcedPairs?.length) {
       const f = forcedForLanes(options.forcedPairs, c.view);
       if (f.halt) return await end('halted', f.halt);
+      // A forced step on a held lane, or one whose release was rejected or
+      // could not be compared, is refused (Decision 1, item 8): the owner's
+      // release, or a new hold and release, gives it back.
+      for (const id of f.forced.keys()) {
+        const g = gateOf(id);
+        if (g) return await end('halted', asHalt({ reason: 'owner-choice', subtaskId: id, detail: `--next does not apply: ${g}; ${/rejected/.test(g) ? `hold and release it again: agentic-autopilot hold ${id} --macro ${macroId}` : 'release it first'}` }));
+      }
       forced = f.forced;
     }
     // ADR-0068 Decision 1, item 3 — the kept parks, before the lanes: a
@@ -1670,9 +2129,17 @@ export async function runLanes(c) {
     // under it. Each lane the run drives is held with its worktree lock. A
     // parked lane is held as any other, and its rows' halts pass it by: it
     // already waits on its kept park. A row's halt of another lane parks it.
-    const rec = await reconcileLanes({ home, checkout: repoRoot, macroId, view: c.view, baseline, runId, runDir, now, env, out: (x) => out(`  ${x}`), protect });
+    // A held lane, and one whose release is not compared yet or was rejected,
+    // is passed by (Decision 2, item 11): no row acts on it.
+    const rec = await reconcileLanes({ home, checkout: repoRoot, macroId, view: c.view, baseline, runId, runDir, now, env, out: (x) => out(`  ${x}`), protect, passBy: gateOf });
     for (const line of rec.reports) out(`  ${line}`);
+    for (const p of rec.passedBy ?? []) {
+      passedBy.add(p.subtaskId);
+      Object.assign(lane(p.subtaskId), { ...(p.path ? { path: p.path } : {}), note: 'passed by' });
+    }
     for (const e of rec.plan?.lanes ?? []) {
+      // What its row would have done is not what happened to a lane passed by.
+      if (passedBy.has(e.subtaskId)) continue;
       Object.assign(lane(e.subtaskId), { path: e.lane.path, branch: e.lane.branch, note: { adopt: 'adopted', prepared: 'prepared', keep: 'kept', remove: 'removed', halt: 'halted' }[e.action] ?? e.action });
     }
     for (const [id, l] of rec.lanes) {
@@ -1727,6 +2194,11 @@ export async function runLanes(c) {
         await reconsider();
         if (c.interrupted() || draining || ended.length > 0) continue;
       }
+      await handoffs();
+      // A release is compared before its lane steps (Decision 2, item 7).
+      await consumeReleases();
+      await passedBack();
+      if (c.interrupted() || draining || ended.length > 0) continue;
       const view = await lookGlobal();
       if (c.interrupted() || ended.length > 0) continue;
       // While a done or finalize is in flight the macro is that step's to
@@ -1745,7 +2217,7 @@ export async function runLanes(c) {
       // decided again (`pollWake`).
       if (busyDue) { busy.clear(); busyDue = false; }
       const d = decideLanes(view, {
-        inFlight: subtasksInFlight(), parked: new Set([...parked.keys(), ...busy]), driverBusy: driverBusy(), lanes, started, forced, finalizeAttempted,
+        inFlight: subtasksInFlight(), parked: new Set([...parked.keys(), ...busy, ...heldSubtasks(view)]), driverBusy: driverBusy(), lanes, started, forced, finalizeAttempted,
       });
       if (d.outcome === 'completed') {
         if (inflight.size > 0) { await nextEvent(); continue; }
@@ -1756,20 +2228,31 @@ export async function runLanes(c) {
 
       const r = await startWhatMay(d, view);
       if (draining || c.interrupted()) continue;
-      if (inflight.size > 0 || ended.length > 0) { await nextEvent(); continue; }
+      if (inflight.size > 0 || ended.length > 0) { busyIdleSince = null; await nextEvent(); continue; }
       if (r.waitUntilSec) {
+        busyIdleSince = null;
         armReset(r.waitUntilSec);
         await nextEvent();
         continue;
       }
       if (r.again || candidates.size > 0) continue;
       // Nothing runs and nothing can start (Decision 1, item 7). A parked lane
-      // in the middle of its resolution, or one laneBusy holds back, is waited
-      // for; then every pending release is consumed and each parked lane's
-      // fingerprint taken again, so a lane fixed without a wake-up is picked
-      // up. The end lists what waits: the first lane still parked, in plan
-      // order, before the idle halt.
-      if (busy.size > 0) { await nextEvent(); continue; }
+      // in the middle of its resolution is waited for, and one laneBusy holds
+      // back for as long as a step may take (`busyWaitMs`: an operation left
+      // open by a worker that was killed never closes by itself); then every
+      // pending release is consumed and each parked lane's fingerprint taken
+      // again, so a lane fixed without a wake-up is picked up. The end lists
+      // what waits: the first lane still parked, in plan order, then the
+      // first held and the first held back, before the idle halt.
+      if (busy.size > 0) {
+        if (busyIdleSince === null) {
+          busyIdleSince = now();
+          out(`  nothing runs: waiting up to ${Math.round(busyWaitMs / 1000)} s for the operation${busy.size === 1 ? '' : 's'} open in lane${busy.size === 1 ? '' : 's'} ${[...busy].sort().join(', ')}; then the run ends`);
+        }
+        if (now() - busyIdleSince < busyWaitMs) { await nextEvent(); continue; }
+      } else {
+        busyIdleSince = null;
+      }
       const left = quietLeft();
       if (left > 0) {
         clearTimeout(quietTimer);
@@ -1779,7 +2262,11 @@ export async function runLanes(c) {
       }
       if (await reconsider(true)) continue;
       if (draining || c.interrupted()) continue;
-      return await end('halted', firstParked() ?? d.idle);
+      // A release recorded since this turn's comparison, its last look
+      // included, is not lost (Decision 1, item 7): every pending one is
+      // compared before the run ends.
+      if (await consumeReleases()) continue;
+      return await end('halted', firstParked() ?? (d.idle?.reason !== 'awaiting-landing' ? firstHeld() ?? firstBusy() : null) ?? d.idle);
     }
   } catch (e) {
     // The run cannot go on: every step in flight is torn down and settled,
@@ -1816,6 +2303,13 @@ export async function runLanes(c) {
 export function laneBlock(l) {
   const lines = [`  lane ${l.subtask_id}${l.branch ? ` · ${l.branch}` : ''}${l.path ? ` · ${l.path}` : ''} · ${l.state ?? 'not-created'}${l.note && l.note !== l.state ? ` (${l.note})` : ''}`];
   if (l.last_step) lines.push(`      last [${l.last_step.seq}] ${l.last_step.command} → ${l.last_step.outcome}`);
+  if (l.held) {
+    // The owner's lane (ADR-0068 Decision 2, item 11): why, and its release.
+    lines.push(`      held: ${l.held.why}`);
+    if (l.held.release) lines.push(`      give it back: ${l.held.release}`);
+  }
+  // A lane held back while a persona operation is open (Decision 1, item 6).
+  if (l.waits_for) lines.push(`      waits: ${l.waits_for}`);
   if (l.waiting) {
     const state = { ready: 'ready', 'needs-sync': 'needs a sync with the integration branch', unknown: 'freshness unknown' }[l.waiting.sync?.state];
     lines.push(`      waiting to land: ${l.waiting.branch} (${l.waiting.reason})${l.waiting.commit ? ` at ${l.waiting.commit}` : ''}${state ? ` · ${state}` : ''}`);

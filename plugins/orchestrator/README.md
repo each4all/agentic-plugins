@@ -31,7 +31,7 @@ Ships `/orchestrator:plan` (macro plan + Plan-verify opposite-host peer ensemble
 | `/orchestrator:checkpoint <summary>` | ✅ shipping | Write `latest_checkpoint: {at, summary}` on the active macro workflow. Claude SessionStart re-injects it after compact (`matcher: "compact"`, so not on an arbitrary new session and not on `claude --continue`); Codex does the same once the bundled hooks load (generic `[features].hooks`) and are reviewed/trusted in `/hooks`. |
 | `/orchestrator:peer-now --peer <claude\|codex> (...)` | ✅ shipping | Raw side-channel peer consultation through `peer-runner.mjs --kind peer-now`; optionally appends a `[Peer]` note and stays out of `ensemble_results`. |
 | `/orchestrator:audit <findings>` | ✅ shipping | Audit follow-up alias that canonicalizes to `/orchestrator:plan Audit follow-up: ...`; state remains `verb=plan`, `workflow_id=macro-plan-...`. |
-| `/orchestrator:autopilot [preview\|start [--execute]\|status\|stop\|release <subtask>] [options]` | ✅ shipping (Claude Code only) | Drive an approved macro without relaying commands between sessions (ADR-0063): each step runs as one command in a fresh `claude -p` worker, decided from closed-enum state only, and the run halts at owner judgment (an unapproved plan, an owner gate, a next step below HIGH confidence, a subtask waiting for its pull request to merge, a step that changed nothing). Dry-run by default; `start --execute` runs it and asks for the model plan first. See [Autopilot](#autopilot-claude-code-only). |
+| `/orchestrator:autopilot [preview\|start [--execute]\|status\|stop\|release <subtask> [--hold <id>\|--discard-unreadable]\|hold <subtask>\|writer-clear <subtask> --operation <id>] [options]` | ✅ shipping (Claude Code only) | Drive an approved macro without relaying commands between sessions (ADR-0063): each step runs as one command in a fresh `claude -p` worker, decided from closed-enum state only, and the run halts at owner judgment (an unapproved plan, an owner gate, a next step below HIGH confidence, a subtask waiting for its pull request to merge, a step that changed nothing). Dry-run by default; `start --execute` runs it and asks for the model plan first. `hold` takes a lane over for a person while the other lanes go on (ADR-0068 Decision 2). See [Autopilot](#autopilot-claude-code-only) and [Holds](#holds). |
 
 ## Autopilot (Claude Code only)
 
@@ -122,15 +122,20 @@ the steps stay manual**, and the host-neutral state it reads (`next_step_*`,
   step that wrote nothing on its unchanged record; every 30 s a tick reads a cheap digest
   of what resolves a park, and a lane whose record changed (and stayed so for one interval)
   or that the owner released (`release <subtask> --macro <id>`) is picked up again, its
-  rows reconciled first, and no worker spawns into a lane whose engineer record was
-  written outside the run less than one interval ago. The park records' lock is
+  rows reconciled first (a lane the owner holds, or whose release was rejected, is not
+  picked up by a change of its record: its release, or a new hold and release, gives it
+  back), and no worker spawns into a lane while a persona operation is
+  open there (the child's operation entries and the macro's operation records, read
+  fresh; ADR-0068 Decision 2, item 7). The park records' lock is
   `run-locks.mjs`'s, so a live writer is never taken over. A
   run-wide halt — version drift, an exhausted budget, a revoked approval, a macro gate, a
   halt that names no lane, the baseline or rollback fence, the driver's own steps, a group
   that outlived SIGKILL — drains the run: steps in flight finish and are recorded, nothing
   new starts. The run ends, exit 2, on a drain or once every remaining lane waits (parked,
-  waiting to land, or behind those), with `halt.json` naming the first open park and
-  listing the others, one entry per lane with its state and resolution. SIGINT, SIGTERM
+  held, waiting to land, or behind those), with `halt.json` naming the first open park,
+  or the first held lane when only held lanes are left, and listing the others, one
+  entry per lane with its state and resolution (a held lane's release command). A
+  release after the run has ended starts nothing: relaunch. SIGINT, SIGTERM
   and SIGHUP (a closed terminal) abort every worker instead. The work the scheduler runs in a child process while workers
   run (`offloop.mjs`: a look, a lane's creation and removal, a baseline fetch, the
   landing-ready report, a peer cancellation) is held as a worker is: each task's process
@@ -143,8 +148,8 @@ the steps stay manual**, and the host-neutral state it reads (`next_step_*`,
   `--lane <subtask> --next "<step>"` forces one lane's first step. Lanes need shared
   creation on, the default state root, and the macro there; `preview --lanes 2` shows the
   reconciliation and the first wave. Absent or 1, the run is serial, and it refuses to
-  start while a lane of the macro holds a subtask that is not completed, or the macro
-  keeps a park.
+  start while a lane of the macro holds a subtask that is not completed, the macro
+  keeps a park, or a hold of it applies ([Holds](#holds)).
 - **Bounds.** Steps, total cost, and each step's budget and wall clock
   (`--max-steps`, `--max-cost`, `--step-budget`, `--step-timeout`); a halt or `stop`
   ends a run too. The run itself has no clock, so a step started late gets its whole
@@ -159,7 +164,92 @@ the steps stay manual**, and the host-neutral state it reads (`next_step_*`,
   engineer carries ADR-0063 S3+S4 (0.24.0) and orchestrator S6 (0.16.0); the plugin
   code a worker loads must not live inside the repository the run drives (on a
   directory marketplace, drive a separate worktree), and it must be the version the
-  run pinned. Launch from the home worktree (below).
+  run pinned. Launch from the home worktree (below). Holds need more (below).
+
+### Holds
+
+`hold` gives one lane to a person while the run's other lanes go on
+([ADR-0068](../../docs/adr/0068-autopilot-lanes-that-keep-going.md) Decision 2; the
+records, locks and crash recovery are its implementation note of 2026-10-26, I1-I14).
+Holds are a lanes feature: a serial run does not start beside one, and `hold` refuses
+beside a live run that does not honour them (`stop` it first).
+
+```bash
+agentic-autopilot hold <subtask> --macro <id>                 # take the lane
+agentic-autopilot status --macro <id>                         # wait until its hold line says held
+claude --resume <session>                                     # in the lane, as hold printed it
+agentic-autopilot release <subtask> --macro <id> --hold <hold id>   # give it back
+```
+
+- **Hold.** The driver leaves the subtask alone: no dispatch, adoption,
+  reconciliation, step (its done included) or removal; a landing-ready report may still
+  name its branch. The hold is *pending* until nothing of the lane is in flight and no
+  persona operation is open there (a step already running finishes first, never
+  aborted), then *held*, with a fence in the lane's worktree lock that an older driver
+  reads as a session's admission. Start only once the hold's own line in `status --macro`
+  says `held`: the run's lane table shows a lane `held` from the moment the hold is set,
+  its handoff pending included. `hold` prints the
+  hold id, the lane, its last session, the engineer the person needs and the release
+  command; it warns when the subtask has no lane yet (nothing fences it) and when the
+  lane does not ignore `.agentic-plugins/{state,runs}/` (a session left open after the
+  release would reject it).
+- **Work.** Work the lane's active child (the engineer workflow the dispatch linked to
+  the subtask) with the hold-aware engineer, whose verbs keep their operations visible
+  to the release, and record the next step the run should take (`finish-verb`, a
+  commit, an owner decision). The engineer refuses to begin a workflow with no dispatch
+  linkage in a held lane: with no active child, work by hand (a commit, a push), or
+  release the lane for the driver.
+- **Release.** Stop editing and close the session first: `release --hold` refuses while
+  a persona operation is open, a peer ensemble is pending or the child's workflow is
+  locked, then records the lane's fingerprint, tree digest and the child's content
+  digest. The run compares them once before the lane steps: equal gives the lane back
+  (its kept park ends) and the run continues from the child's record; a change made
+  after the release and still there at the comparison rejects it, and the lane parks
+  until a new hold and release. An edit after the comparison is not seen. A pending
+  hold is withdrawn with nothing to compare; one set over a release not compared yet
+  or rejected puts that release back, so a rejection is never lost. Worked in a
+  worktree of your own (not the run's lane)? Commit there and remove it (`git worktree
+  remove <path>`) before the release, which refuses while it has the branch: the run
+  steps the subtask only in its own lane. A subtask not dispatched yet is dispatched
+  on its branch at the baseline's tip, or at the tip its consumed release recorded
+  when that tip contains `origin/<baseline>`: rebase your work onto it before the
+  release. A recorded tip that does not contain it halts the lane, naming a new hold,
+  the rebase and a release; no halt advises discarding commits the baseline lacks
+  ([ADR-0062](../../docs/adr/0062-subtask-completion-recorded-at-landing.md)
+  Decision 2, amendment of 2026-10-27).
+- **Repairs.** `writer-clear <subtask> --macro <id> --operation <op id>` is the owner's
+  word that an operation's session is gone; a run that waits on an open operation names
+  it and this command. `release --discard-unreadable` keeps the
+  text of a record that cannot be read (only a line saying why, for one that is no
+  regular file) and replaces it without giving the lane back unguarded: a discarded
+  release counts as rejected, so the lane needs a new hold and release, and a hold whose
+  record, handoff or release was discarded is released with a comparison, never withdrawn.
+  A bare `release` ends a kept park only; it never deletes one it cannot
+  read. `status --macro <id>` works from any checkout with or without a run, and with
+  no live run completes a pending handoff and repairs a fence.
+- **Exits.** `/orchestrator:done` records the subtask completed and then retires its
+  hold; while an operation is open, a process lives in the lane or a record cannot be
+  read, the retirement waits and the hold still applies, and a later done, `status`,
+  the Stop hook or the next run retries it. `abort` and `finalize`
+  stop beside an open operation, a busy lane or a hold record that cannot be read, and
+  retire the macro's holds after their
+  terminal write; a hold whose subtask left the plan, or whose branch, lane or child
+  changed, is orphaned. `/orchestrator:next` refuses a held subtask, and a rebinding
+  (Decision 8) waits for it.
+- **Requirements.** Holds turn on for a macro only once the hold-aware engineer
+  (`state.mjs hold-capability` prints `hold-persona-1`) is installed in both hosts'
+  caches and pinned by the launcher (`AGENTIC_ENGINEER_ROOT`); the refusal names what to
+  install or move. A run with lanes records `holds-1` in `run.json`.
+- **Limits.** Rolling the orchestrator back below the release that added holds while a
+  hold exists is unsupported: a hold on a subtask with no lane has no fence an older
+  driver would respect. An edit to an ignored file is outside the tree digest, so the
+  comparison does not see it unless it is the child's workflow or the run's own record
+  of the lane, which are compared apart from git. A hold on a subtask whose branch the
+  main checkout has (a hand dispatch) is unfenced, and an edit left uncommitted there
+  is not compared.
+  Whether `claude --resume` of a lane's last session works from the lane is
+  unverified; the acceptance (`tests/acceptance/hold-takeover/`) pins the session id
+  and working directory `hold` prints.
 
 ### The home worktree
 

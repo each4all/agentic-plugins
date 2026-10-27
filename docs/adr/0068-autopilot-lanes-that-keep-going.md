@@ -57,7 +57,8 @@ Proposed 2026-10-19.
     while its subtask is held or parked, or a run of its macro is live
     (Decision 2, item 6);
   - holds are a lanes feature, and a serial run does not start beside a
-    hold or a kept park (Decision 2, item 2);
+    hold, a release awaiting its comparison, or a kept park (Decision 2,
+    item 2);
   - a person works a held lane only through its active child; a held lane
     with none, or whose child archived, is worked by hand or released; a
     held subtask is never dispatched by hand (Decision 2, item 5);
@@ -784,13 +785,53 @@ start beside a hold or a kept park (Decision 2, item 2). With lanes:
    - The driver never sets or clears a hold. Its own stops are parks
      (Decision 1).
    - Both commands work with or without a live run. A hold on a subtask that
-     has no lane yet means: do not dispatch it.
+     has no lane yet means: do not dispatch it. Its record's `lane` is null,
+     never the path a run would create, so a worktree the person makes for
+     the branch does not orphan it; a worktree that holds the branch by the
+     handoff (a run's lane created meanwhile, or the person's own) is taken
+     then, and fenced, and one made after the handoff is taken at the
+     release, whose basis covers it (amendment of 2026-10-27).
+   - A person's own worktree goes back to the run in one order: commit the
+     work there, remove the worktree, then release. A run steps a subtask
+     only in its own lane and parks it while another worktree has its branch
+     (row 11), and a release whose basis names a worktree the person removes
+     afterwards is rejected at the comparison, for the wrong cause. So a
+     held hold's release refuses while its lane is a worktree that is not the
+     run's lane for the subtask, naming that order, and `hold` says it up
+     front; once the worktree is gone the release's basis is the branch's
+     tip, which the run compares (amendment of 2026-10-27, critique round 5).
+     A run's lane is judged as reconciliation judges it: the worktree locked
+     with the run's lock reason for the macro and subtask, wherever it is,
+     never by its path. A withdrawal (a pending hold, never handed over) is
+     not refused. A dispatched subtask's lane is taken up again (its live
+     child, its branch checked out nowhere: row 10). A subtask not dispatched
+     yet is dispatched on a branch at the baseline's tip, or at the tip a
+     consumed release of its current hold recorded (`branch_tip` in the
+     basis) when the baseline is an ancestor of that tip; a recorded tip that
+     does not contain the baseline halts the lane, naming a new hold, a rebase
+     onto the baseline and a release, and no halt of row 12 or row 4 advises
+     discarding a branch that carries commits the baseline lacks
+     ([ADR-0062](0062-subtask-completion-recorded-at-landing.md) Decision 2,
+     amendment of 2026-10-27, owner decision, which replaces the limit this
+     item recorded at critique round 5). A prepared lane of the run's own
+     (row 4) is still dispatched only at the baseline's tip: commits a person
+     made there halt it, naming the removal of the lane's worktree alone, and
+     row 12 then judges the branch; the admission's refusal of a prepared
+     lane names deleting the branch only once it is shown to carry no commit
+     the baseline lacks.
    - **Holds are a lanes feature.** A serial run drives one shared checkout,
      the one the person would work in, and its next dispatch switches that
      checkout's branch. So `hold` refuses beside a live serial run (`stop`
      it instead), and a serial run refuses to start while the macro has a
      hold that applies (held, pending, or unreadable) or a kept park,
-     naming each: release it, or run with `--lanes`.
+     naming each: release it, or run with `--lanes`. Nor beside a release
+     awaiting its comparison (released and not compared, or compared equal
+     with its park not ended yet): only a run with lanes compares one before
+     its lane steps, so the refusal names that relaunch (amendment of
+     2026-10-27). Nor beside a rejected release, its park kept or not (a
+     crash before the park was written, a discard): only a new hold and
+     release give that lane back, so the refusal names them, as the driver's
+     gate does (amendment of 2026-10-27, critique round 5).
    - `hold` refuses a subtask the plan has recorded completed.
 
 3. **The driver leaves a held subtask alone.** It is never dispatched,
@@ -3576,3 +3617,507 @@ snapshot. The content digest leaves that snapshot out (N6), but the tree
 digest does not, so the release is rejected though nobody edited. The test's
 last case measures this for the snapshot. Leaving the state root out of the
 tree digest would depart from item 7's "every non-ignored file".
+
+## Implementation note 2026-10-26 — impl-hold (the orchestrator's half)
+
+The orchestrator's half of Decision 2, on the protocol the note above fixed.
+It adds no guarantee. This head fixes the records and the persisted
+intermediate states of every multi-file change before the code that writes
+them: per-file atomic writes are no transaction, so each change is a sequence
+of whole-file writes, and each state a crash can leave between two of them
+has one recovery, which the next hold-aware command or run performs.
+
+**I1. The records** (beside N1's, all under the macro's holds directory):
+
+| Path | Schema | Fields |
+|---|---|---|
+| `holds/<subtask>.json` | `agentic-hold-1` (N3) | `hold_id` (16 hex), `subtask_id`, `branch`, `lane` (worktree path or null), `child` (workflow id or null), `state` (`held`, `released`, `retired`), `set_by`, `set_at`, and once set `released_at`, `retired_at`, `orphaned {at, why}` |
+| `handoffs/<subtask>.json` | `agentic-hold-handoff-1` | `hold_id`, `subtask_id`, `state` (`acked`), `fence` (the fence entry's path, or null for a lane with no worktree), `at` |
+| `releases/<subtask>.json` | `agentic-hold-release-1` | `release_id` (16 hex), `hold_id`, `subtask_id`, `state` (`uncompared`, `consumed`, `rejected`, `withdrawn`), `basis {fingerprint_version, fingerprint, tree_digest, content_digest, child}` (null for a withdrawal), `park_record_id` (the kept park the release ends, or null), `park_ended` (bool), `released_at`, `compared_at` |
+| `ops/<subtask>/<id>.json` | `agentic-persona-op-1` (N4) | also the orchestrator's own exclusion records, kind `release`, `compare`, `retire` or `cutover` (I10), with the writer's `pid` and `fingerprint` |
+| `discarded/<kind>-<subtask>-<stamp>.json` | the bytes discarded | a copy kept by `release --discard-unreadable` |
+| `events.jsonl` | one line per event | `held`, `released`, `consumed`, `rejected`, `retired`, `orphaned`, `discarded`, appended whether a run lives or not; a run's `lanes.jsonl` has its own lane events (I12) |
+| `.lock` | a run-locks lock | the holds lock |
+
+The fixture states map onto them: *pending* is an owner record `held` with no
+`acked` handoff of its hold id; *held* one with it; *released-uncompared*,
+*consumed*, *rejected* and *withdrawn* an owner record `released` with a
+release of its hold id in that state; *retired* and *orphaned* the owner
+record's own fields.
+
+**I2. Lock order.** Worktree lock, macro lock, holds lock (`.lock`), then
+`parks/.lock` (N5). The holds lock is taken with a short retry and never held
+while waiting on a persona lock; a workflow lock is judged by its presence.
+
+**I3. Crash states and their recovery.**
+
+| Change | Writes, in order | State a crash leaves | Recovery |
+|---|---|---|---|
+| `hold` | owner record `held` (new id), removal of an older handoff and a withdrawn, consumed or rejected release of an older id | owner `held`, older records left | the older records name another hold id and are ignored; the next write of the subtask removes them |
+| handoff | fence entry, recheck, `acked` handoff | fence written, no ack | a retry finds its own fence (its name derives from the hold id) and redoes every blocker check before it acks, never acks at once; a blocker found then withdraws the fence |
+| handoff | — | ack written, fence gone (an older `admission release`) | the next hold-aware command repairs the fence (Decision 2, item 4) |
+| release of a pending hold | `withdrawn` release, owner `released`, fence removal | withdrawn release, owner still `held` | the hold still applies; the retried release finds its own withdrawn release of the hold id and finishes |
+| release of a held hold | own exclusion record, basis, `uncompared` release, owner `released`, fence removal, exclusion record removal | release written, owner still `held` | never compared: the driver compares only a release whose owner record says `released` with its hold id; a retried release recomputes the basis and replaces it |
+| | | owner `released`, fence present | any hold-aware command removes that hold's fence only, never another hold's |
+| | | exclusion record left by a dead writer | the next orchestrator command that finds a `release` or `compare` record whose recorded process is gone removes it; a live one is open |
+| consumption | own exclusion record, digest, release `consumed` (`park_ended: false`), the park's end by `park_record_id`, `park_ended: true`, exclusion record removal | `consumed`, park end pending | the next run finishes it by the recorded park id only (a conditional delete), never a newer park |
+| rejection | own exclusion record, digest, release `rejected`, park `owner-choice` | `rejected`, no park | the rejection alone keeps the lane from stepping; the next run rebuilds the park; a forced `--next` and a `record changed` resumption do not pass it |
+| discard | copy under `discarded/`, then the replacement (a new hold; a release counted rejected; a handoff's removal, so the lane is handed over again; I12) | copy written, replacement pending | the unreadable record still guards the subtask; a retry keeps a new copy and replaces it, never passes the lane unguarded |
+| retirement (`done`) | owner `retired`, release and handoff removal, the kept park's deletion, fence removal | owner `retired`, others left | retired never applies again; any reader removes records of a retired hold id; the retry is idempotent |
+| retirement (macro end) | the macro's terminal write, then the directory's removal | terminal written, directory left | `stop-archive`, `done`, `status` and the next run retire the directory of an archived macro too |
+| `hold` beside a starting run | owner record `held`, then a second look at the live runs | a run that does not honour holds took its locks between the two looks | the second look withdraws the unhanded hold; the serial run's own look after its locks sees any hold published before it |
+| any | — | a handoff or release record of a held hold that cannot be read | the hold is unreadable, not pending: nothing withdraws or repairs it until the owner discards the record |
+
+**I4. What the comparison leaves out.** The lane's worktree lock
+(`.agentic-plugins/runs/autopilot/worktree.lock/`) is the orchestrator's
+bookkeeping, not the lane's content: a release removes its own fence after it
+records the basis, so the tree digest leaves the lock out even where the lane
+does not ignore its runs. The temporary index is dated a second after the
+epoch, so git compares every file's content rather than trusting a stat an
+edit of the same size, or one whose times were put back, would leave alike.
+
+**I5. A relaunch and a run's end.** Reconciliation reads each subtask's gate
+before any row acts, and again before each later action on a subtask that
+passed (the same `holdGate` the run reads before its own actions); a subtask
+it passes by stays passed by for that reconciliation: a gated subtask's lane gets no pre-pass item, no removal check, no
+row and no halt; it is reported and recorded `passed-by` in `lanes.jsonl`,
+and the run takes no lock in it. A passed-by lane given back while the run
+lives, its release consumed or its hold ended without one, is reconciled by
+the per-lane entry point before its next step, never created over its
+worktree. A lane the owner holds is `held` in `halt.json`, `run.json` and the
+report (held beats parked: a held lane's kept park waits for its release, and
+is no halt), with its release (`--hold <id>`, or `--discard-unreadable`); a
+run whose lanes left are all held ends on the first of them, an
+awaiting-landing halt keeping its reason with the held lanes in its `also`.
+At the end the run makes its last handoffs, writes `halt.json`, removes its
+lock entries (its lanes', then the macro's run lock, which `liveRuns` reads,
+then the driver's own worktree lock), then tries each pending handoff once more as a
+command with no live run would, so a hold set between its last handoffs and
+its entries' removal is handed over; one set after finds no live run.
+
+**I6. `/orchestrator:next` (item 5).** `state.mjs hold-gate` refuses, naming
+the exit, a subtask whose hold is pending, held or cannot be read, whose
+release no run has compared yet or was rejected, or whose lane has a persona
+operation open (the records under `ops/<subtask>/` and the entries of every
+child linked to it on its branch, active or archived, the rule retirement, a
+close and a rebinding read the lane by); with the holds on and `--engineer-root`
+given, an engineer that is not hold-aware. It runs in Phase 1 and, with the
+engineer's root, in Phase 3, and prints nothing for a macro whose holds are
+off. Phase 3b, under the admission, judges the gate again under the holds lock
+(a macro whose holds are off is judged without it, so no holds directory is
+made) and, for a bootstrap (no engineer workflow on the branch yet) of a macro
+whose holds are on, publishes the dispatch's mark: an operation record of kind
+`verb`, no child, `dispatched_by: orchestrator:next`, whose id it first keeps
+in the text directory (`dispatch-mark.json`, with whether the holds were on and
+whether this is a re-attach); then it looks again for any other open
+operation, which withdraws the mark and refuses. A hold set from then on stays
+pending, its handoff seeing the operation open. Phase 4 judges the gate once
+more beside its own mark (which must still be a readable, uncleared dispatch
+record), refuses when the holds turned on after Phase 3b judged them off (no
+mark is there for a hold to wait for) and, the holds on, an engineer that is
+not hold-aware (holds may have turned on after Phase 3 passed it), and exports
+the mark's id as `AGENTIC_OPERATION_ID` (unsetting any other), which the
+engineer's bootstrap continues (N4). A pass leaves `dispatch-mark.json.checked`,
+naming the operation ids the subtask's children carried then; each check
+takes the earlier pass away before it judges and writes it back only when it
+passes, so a refusal or an error leaves none, and Phase 5 records the subtask in
+progress only beside it, the holds on or off (a dispatch whose mark file is
+gone is not recorded either). The prelude runs again before each later
+engineer block: once a check has passed and a linked child carries the mark's
+id (with no mark, a re-attach or a dispatch whose holds were off at the
+switch, an operation the owner has not cleared that the pass did not see: the
+engineer's, begun since), the lane is the engineer's and the check passes, a
+hold set since waiting for that operation (amendment of 2026-10-27: a
+dispatch whose holds were off was refused by every later prelude once a hold
+turned them on, though its engineer held the lane). Every exit after the publication, Phase 3b's own refusal and every
+exit of Phase 5, withdraws the mark unless a child linked to the subtask,
+active or archived, carries its id (or one cannot be read): the engineer took
+it over, and its last write removes it. A Phase 5 that finds no mark file
+says that a published mark stays open for the owner to clear. A re-attach publishes no mark, since the
+engineer's resume opens an operation of its own, which the mark would refuse.
+Limits: a hold acknowledged between Phase 4's check and a re-attached
+engineer's first write lets that person's verb run in the held lane, as any
+person's operation may (the driver still stays off); so does the first hold of
+a macro whose holds were off, set between Phase 4's check and an engineer
+bootstrap's first write, since no mark was published for it to wait for. Both
+windows span the agent's steps between the prelude and that write. A session that stops between Phase 3b and Phase 5 leaves the
+mark open, like its admission, until the owner clears it (`writer-clear`).
+
+**I7. Every hold's exit (item 8).** *Retirement.* `/orchestrator:done`'s write
+(`state.mjs subtask-update --status completed`, the same on both hosts)
+retires the subtask's records after it completes the subtask, in I3's order:
+the owner record `retired`, its release and handoff removed (one that cannot
+be read is left and named), its kept park ended under `parks/.lock`, its
+fences removed. It runs under the holds lock and behind an exclusion record of
+its own in the lane (kind `retire`, I10), looking again once the record is
+published, so no persona operation begins while it retires; it reads the plan
+again under the lock, so a plan revised since the caller looked (the id
+reused, a new hold set on it) retires nothing. It waits while a persona
+operation is open in the lane (the records under `ops/<subtask>/`, and the
+entries of every child linked to it, active or archived, an entry-only
+operation begun before the holds turned on included) or a worker of a run
+lives there, the caller's own run excepted (a worker of it records the lane
+done); an exclusion record whose process is gone is swept first. The subtask
+is recorded completed either way, and the hold applies until the retirement
+runs, which done's no-op path (`holds-retire --subtask-id`), `status`, the
+Stop hook and a run's start retry. A retry also removes a fence a crash left
+after the owner record turned `retired`. A hold record that cannot be read is
+not retired: the owner discards it, and the next of those retires it. A write
+that ends the macro, or finds it ended, retires the macro's holds directory
+too. *A macro's end.* Under the holds lock, behind an exclusion record in every
+lane, and after a second look, every hold's fence is removed and the
+directory is renamed aside in one step, then removed; it waits while a run of
+the macro other than the caller's lives, an operation is open (child entries
+included), a lane is busy, or a hold's owner, handoff or release record cannot
+be read (its fence and its bytes would go with the directory: the owner
+discards it first). `/orchestrator:abort` and `finalize`, on both hosts, run
+`holds-preflight` after their admission and before their first bulk status
+write: an open operation, a busy lane, a record or directory that cannot be
+read, or (the holds on) an engineer that is not hold-aware stops them, naming
+each, before anything is written (under an autopilot run, its own worker, the
+caller, is not a busy lane, as in retirement: amendment of 2026-10-27); a held
+lane alone does not, since their
+child pass archives its child through the engineer's lifecycle archive (N4).
+After their terminal write they run `holds-retire --macro-end`, which refuses a
+macro that has made none. `status` retires the directory of a macro that has
+ended (terminal or archived). The Stop hook, after its loop over live macros,
+reads where each macro with a holds directory is: one archived (in an archive
+home of some root, in no workflow home) has its directory retired; one live has
+its completed subtasks' records retired and, ended, its directory; a workflow
+home that cannot be looked at retires nothing. *Orphaning.* A run's start
+(before any release is compared), `status` and `holds-retire` with neither
+option mark `orphaned {at, why}` on an owner record that is pending, held or
+released-uncompared when, by the plan read under the holds lock, its subtask
+left the plan, the plan's branch for it differs, its lane (the worktree holding
+the branch) differs from the one it was held in, or the one child linked to it
+differs from the one it was held on; a lane or child that is absent or not
+known, or a plan that cannot be read, never orphans, and the fence goes with
+it. Each also removes what an ended hold (retired or orphaned) left: its
+handoff, its release and its fence. `hold` refuses a subtask the plan has
+closed (`completed`, `deferred`, `abandoned`) and a macro that has ended.
+*The orchestrator's writers of a child.* `cutover --move` and its rollback
+refuse, before they write a manifest and again before they move an open
+manifest's pairs (the rollback before its switch goes off), a child, active or
+archived (a commit's operation is open through its archive), whose subtask's
+hold applies or that has a persona operation open, and any child while its
+macro's holds cannot be read; and each child's move, under its own lock,
+judges it again behind an exclusion record (kind `cutover`), so a hold or an
+operation that came after those checks refuses the move. Limits: a waiter on
+the holds lock of a macro whose directory was just retired makes the directory
+again; no hold is written there then, since `hold` refuses an ended macro, and
+asks again under the holds lock before any write of its record (the macro,
+the subtask and the holds' activation, which a retired directory no longer
+has: amendment of 2026-10-27), and abort, finalize and done have checked the
+lanes, and the next Stop retires it. A `hold` whose activation, taken before
+that lock, lands after the retirement leaves its protocol marker there and
+nothing else; the hold itself refuses, and the next Stop retires the
+directory. The Stop sweep reads only the roots the stopping checkout can list.
+`/orchestrator:done` does not address an archived macro, so a retirement that
+waited at done for an archived macro is finished by `status` or the Stop
+sweep.
+
+**I8. A rebinding beside a hold (Decision 8, item 3).** impl-rebind's interim
+reader, which refused any entry of the macro's holds directory but `parks/`,
+whatever subtask it named, is replaced at both of its entry points, the
+approval (`plan-approve`, when it records or changes a rebinding or a note)
+and the delivery (`rebind-deliver`: an approval's own, one run by hand, and a
+run's at the child's boundary), by `rebindRefusals` (hold-ops.mjs). It reads
+the subtask's own records only. It refuses a hold that is pending, held or
+cannot be read (naming its release command, or `--discard-unreadable`), a
+release of it awaiting its comparison (whose content digest the note would
+change; a run compares it), a holds marker that cannot be read, and a persona
+operation open in its lane: the records under `ops/<subtask>/`, the entries of
+every child linked to it on the plan's branch, active or archived, and the
+entries of the child files the rebinding found, read directly, so a child in
+the legacy workflow home counts too; `writer-clear` is the way out for one
+whose session is gone, and a cleared operation does not refuse whichever side
+names it. A retired, consumed, rejected, withdrawn or orphaned hold, a kept
+park and another subtask's records permit. The operation check runs whether
+the macro's holds are on or not: the persona writes its entries either way,
+the visibility Decision 8, item 7 waited for. A plan id that is no hold key
+(the plan takes any string) has nothing to read, since no hold record is kept
+for it and the persona opens no operation for it. The reader is read-only (no
+lock, no repair, no directory made), since the approval calls it holding the
+macro's file lock. An approval refuses only for a subtask whose rebinding it
+records anew or changes, or that it tells. A rebinding the readable record
+already holds with every field the same (child, the child's state, the words
+from and to, the fields changed) is carried: no note follows it and nothing a
+release's comparison reads of it changes, so an approval of another
+subtask's change proceeds beside its hold. The record is taken as it reads,
+its stamp current or not, since re-recording what it holds changes nothing.
+A rebinding whose child archived since is recorded anew, and so refused
+beside a hold: the release's fingerprint reads the child's state. Limit: the
+check is a look, not an exclusion. A persona operation that begins between
+it and the note's append meets the note mid-step, as before the holds.
+
+**I9. The fence, a live run and a busy lane (items 2 and 4).** The fence is
+an admission entry in the lane's worktree lock
+(`.agentic-plugins/runs/autopilot/worktree.lock/`), named as a session's so
+every reader, an older driver included, reads it as an entry and judges it
+live until it is removed. Its holder is `{kind: session, command: hold,
+hold_id, subtask_id, macro_id, checkout}`, and its admission id is derived
+from the hold id (run-locks.mjs `fenceAdmissionId`), so a retried handoff
+finds its own fence and no other. `describeAdmission` prints the hold's
+release command for it, and `admission release` refuses it before it removes
+anything: only the hold's own commands end it. A lock entry is read only as a
+regular file, opened without blocking, so a FIFO is never waited on and a link
+to nothing is not taken for gone. *Repair.* A held hold whose fence is
+missing (an older orchestrator's `admission release`) gets it back, and a
+released, retired or orphaned hold's leftover fence is removed, only that
+hold's, by `status` and by a run (its handoffs and its pass over the
+releases), under the holds lock, so a handoff between its fence and its ack is never judged from
+outside. *Live.* A run is live while its driver lives (`liveRuns`, from the
+macro's run lock): a lock or entry that cannot be read, or one too fresh to
+have been written whole, counts as live, with capabilities unknown. *Busy.*
+Seen from outside a driver (`laneBusy`), a lane is busy while a worker or
+task group of any run of the macro lives and names its subtask, or names
+none (every lane of that run is then busy), or while a run whose driver died
+left a step of the lane unfinished in its ledger; what cannot be read is
+busy. A task the scheduler runs for a named lane records the subtask it
+acts for; a look it takes of a worktree not yet among the run's lanes may
+record none, which errs toward busy. A live driver judges its own steps in
+flight and settlements under way. The driver keeps its own lane-lock entry
+beside the fence: the handoff leaves that entry out of the rivals it judges,
+and a lane the release gives back is stepped under the same entry.
+
+**I10. The release's basis and the comparison (item 7).** A release records,
+and the driver's comparison recomputes, four values: the lane's fingerprint
+as a park takes it (policy.mjs `parkFingerprint`, peer bookkeeping included,
+with its `fingerprint_version`; with no worktree, a look of the main checkout
+with the branch's tip), the tree digest, the child's content digest, and the
+id of the child those were read from (the one the hold names, else the one
+its handoff found when it acked, active or, with none active, the latest
+archived child linked to the subtask on its branch, so a hold set while the
+dispatch step ran knows its child; the comparison finds it again by that id once it has
+archived). Equal in all four consumes the release; any difference rejects
+it, and a fingerprint version that differs is a difference. *Tree digest*
+(lane-digest.mjs, versioned `1:`): `git add -A` and `git write-tree` through a
+temporary index copied from the lane's, its assume-unchanged and
+skip-worktree bits cleared, every inherited `GIT_*` variable scrubbed; each
+checked-out submodule through its own index, recursively, and an
+uninitialized one by its gitlink. The lane's autopilot worktree lock is left
+out (I4). The lane's real index is never touched. A lane with no worktree has
+no tree digest (`no worktree`): its fingerprint (with the branch's tip), the
+content digest and the child are compared.
+*Content digest*: the pinned engineer's `state.mjs content-digest` (N6), its
+schema checked; `no child` when there is none. The driver takes the basis
+off the loop, as a task of the lane. *The exclusion* (the persona's two looks
+from the orchestrator's side): before it takes a basis, a release, a
+comparison, a retirement or a move of a child publishes its own exclusive
+operation record under `ops/<subtask>/` (persona `orchestrator`, kind
+`release`, `compare`, `retire` or `cutover`, with its process's pid and
+fingerprint), so a persona operation's first write refuses beside it, then
+looks again for any other open operation, which withdraws the record and
+refuses. A comparison first refuses on what would refuse the release (the
+writer checks: another workflow on the branch, one that cannot be read, the
+child's pending peers or workflow lock, an open operation) and, beside its
+record, looks at the branch again (amendment of 2026-10-27: it judged only the
+open operations, so a workflow begun on a released lane's branch had the
+release consumed beside it). The record goes when it is done, and one whose process is gone is
+swept (I3) by the next release, comparison, retirement or move of the
+subtask (`sweepDeadExclusions`; a macro's end, and a cutover or rollback for
+each child it moves, sweep before their first look, which would count it
+open), not by a read: until then `status`, the
+handoff and the gates see it open. A persona first write racing a digest
+and the digest never both proceed: one side refuses, or both do. *Before the exclusion*, `release` also refuses while
+the child has a pending peer ensemble or its workflow file lock is present
+(judged by presence, never waited on). A comparison the exclusion refuses
+leaves the release uncompared and the lane unstepped; the tick retries it.
+*Consumption* ends the kept park the release recorded, by that record id
+(`park_record_id`) and only it, then reconsiders the lane from the child's
+`next_step`, landing or dispatch. *Rejection* is final for that release:
+the lane parks `owner-choice`, and a forced `--next`, a `record changed`
+resumption, a missing park and a discard do not pass it; a new hold and
+release do. *Wake-ups.* The tick watches each subtask's owner record under
+`holds/` by identity, size and time, which `hold`, `release` and a discard
+write, and retirement and orphaning change (I7) once, each ending a hold;
+the handoffs, comparisons, exclusion records and the holds lock lie
+elsewhere, so the driver's bookkeeping wakes nothing. A pending
+handoff whose lane has no step in flight, and a release a pass left to do,
+are retried at each tick, since what blocks them can go away without
+touching a hold record. A bare release ends a kept park, which the park
+digest already watches.
+
+**I11. Turning holds on (item 9).** Holds turn on per macro: the marker
+`protocol.json` (`agentic-holds-protocol-1`, protocol 1) in its holds
+directory, which tells the persona a hold-aware orchestrator runs for it. It
+is written before the first hold record, by `hold`, and at the start of a run
+with lanes before its first dispatch, and only once the hold-aware persona is
+where it would run: each host's newest engineer in its own install cache
+(`~/.claude/plugins/cache/agentic-plugins/engineer/`, and Codex's under
+`$CODEX_HOME` or `~/.codex`), probed strictly, with no environment override
+and no fallback to the other host, and the engineer the launcher pins
+(`AGENTIC_ENGINEER_ROOT`); each must print `hold-persona-1` from `state.mjs
+hold-capability`. A refusal names what to install or which pin to move; a run
+whose check fails keeps holds off and says so, and its lanes run as before.
+Completing the persona subtask is not enough: a person's session loads its
+own host's engineer. A marker that cannot be read is never overwritten. A run
+with lanes records `capabilities: ["holds-1"]` in `run.json` and in its
+run-lock entry; a serial run records none. The orchestrator's `state.mjs
+hold-capability` prints `holds-1`, and the lanes capability floor
+(roots.mjs) requires the pinned engineer's `hold-persona-1`. A serial run
+refuses to start while a hold of the macro applies (pending, held or
+unreadable), a release awaits its comparison, or the holds cannot be read,
+naming each hold's release (a release awaiting its comparison, the relaunch
+with lanes), and
+looks again after it takes its locks, so a hold published between its first
+look and its locks still stops it. `hold` refuses beside a live run that
+does not honour holds, or whose capabilities cannot be read, and looks again
+after it publishes: a run of that kind that took its locks in between
+withdraws the unhanded hold. `next`, `abort` and `finalize` check the
+engineer's capability when the macro's holds are on (I6, I7).
+
+**I12. The owner's commands (items 2, 5 and 8).** `agentic-autopilot` (and
+`/orchestrator:autopilot`, its arguments through the args file, ADR-0059)
+gains `hold`, `release --hold <id>`, `release --discard-unreadable` and
+`writer-clear --operation <id>`; `status --macro` reports holds. `hold`,
+`release` and `writer-clear` refuse inside an autopilot worker
+(`AGENTIC_AUTOPILOT`); `status` does not. `hold` refuses an ended macro, a
+subtask not in the plan, closed or with no branch, an owner record it cannot
+read and a hold already held (a handoff or release record it cannot read is
+left as it is, and the new hold is unreadable until the owner discards it); it activates holds (I11), records the subtask's
+branch, lane (the worktree its branch is checked out in; none when that is
+the main checkout, where a hand dispatch works and the driver's own lock
+lies, so that hold is unfenced; with no worktree, none, and the worktree
+that holds the branch by its handoff or its release is taken then into the
+owner record, so the fence, the release's basis and the comparison cover it:
+amendment of 2026-10-27, which replaced "the one a run would create", a path
+a worktree of the person's own orphaned) and child, and, set over a release still in force (not compared yet,
+or rejected), that release as `prior`, and, with no live run,
+attempts the handoff at once (a live run's loop does it at its next
+settlement boundary). It prints the hold id, the handoff's state and what it
+waits for, the lane, the lane's last session from this macro's run ledgers
+(`claude --resume <session>`, the latest step started), the engineer the
+person needs, the release command, and two warnings: a subtask with no lane
+is unfenced (only "do not dispatch it"), and a lane that does not ignore its
+generated state paths will reject a release a session left open writes after.
+`release --hold <id>` names the hold it ends (another id is refused): a pending
+hold is withdrawn with nothing to compare, and its `prior` comes back with
+its hold, the new hold's fence removed first, while its record still names
+it (so does `hold`'s own withdrawal beside a blind run), so a rejection
+is never lost and an uncompared release is still compared; a held one is refused while a
+writer may be active (an open operation, a pending ensemble, the child's
+workflow lock, another workflow on the branch, several children linked to
+the subtask), else records
+the basis behind the exclusion (I10), turns the owner record `released`,
+removes the fence, and wakes a live run. The bare `release` ends a kept park
+only: it refuses a held lane, a release not compared yet or rejected, and a
+park it cannot read, which it never deletes (that was cli.mjs's bare
+release); it points at `--discard-unreadable`. `--discard-unreadable` keeps,
+under `discarded/`, the text of each record that cannot be read (for one
+that is no regular file, or cannot be opened, a line saying so, not its
+bytes), then replaces it so the lane is never given back unguarded: an
+owner's record becomes a new hold (`set_by: discard`) on the branch and lane
+the plan names, refused when the plan names none, the old record's fences
+removed from every worktree of the repository (its lane cannot be read, and a
+plan revision may have moved the subtask; when git cannot list them, the record
+is not replaced, and a retry does it); a release becomes a
+rejected one; a handoff goes, so the lane is handed over again; an
+unreadable park is deleted only while its bytes are those copied. Whether a
+hold whose record, handoff or release was discarded had been handed over
+cannot be told, so its owner record carries `compare_on_release: true`,
+written before the handoff or release record it depends on changes, and
+its release, pending or not, is a held one's: the writer checks, the basis and
+a comparison, never a withdrawal with nothing to compare (amendment of
+2026-10-27: a withdrawal could give back a lane its person still edits, or
+write over a discarded release's rejection). Item 8's
+"compared again" for a discarded release is met this way: its basis cannot
+be read, so there is nothing to compare the lane with, and whether it was
+rejected cannot be told; counted rejected, the lane is compared again only
+through a new hold and release, so a rejection is never lost and a lane
+that changed never steps. `writer-clear` writes the
+operation's `.cleared` exclusively, also for an operation known only from a
+child's entry: the owner's word that its session is gone. `status --macro`
+works from any checkout and with no run history: each hold's state, what its
+handoff waits for, its open operations and its release; with no live run it
+completes pending handoffs, repairs fences, orphans and retires (I7), and
+retires an ended macro's directory. The macro's events (`held`, `released`,
+`consumed`, `rejected`, `retired`, `orphaned`, `discarded`) are appended to
+`events.jsonl` (I1) whether a run lives or not; a run writes its own lane
+events to its `lanes.jsonl` (`held`, `passed-by`, and `released` with the
+comparison's verdict), and does not copy the macro's.
+
+**I13. The driver beside a hold (items 3, 4 and 11).** The scheduler reads
+`holdGate` (hold-ops.mjs) on entering each path that acts on a lane: a
+creation, an admission, a spawn, a removal, a resumption, a forced `--next`,
+the reconciliation rows (I5). A path the gate
+let in runs to its end (a resumption's park end, its reconciliation and its
+lock): handoffs run only at the loop's settlement boundary, after it, so a
+hold set meanwhile stays pending until the path is done, and the next path
+is gated. A landing-ready report (ADR-0067 Decision 7) is a look, not an
+action on the lane, and may still name a held lane's branch. The gate
+refuses a hold that is pending, held or unreadable, a release not compared
+yet or rejected, and, run-wide, a holds directory that cannot be read. The
+decision leaves a gated subtask out as it leaves out a lane with a step in
+flight, so no step is chosen for it, its done included. A step already in flight when
+a hold is set is never aborted: it runs to its end and its settlement, then
+the handoff runs at the loop's settlement boundary. The spawn's hold-back on
+a lane whose engineer record was written outside the run less than one tick
+ago (the old mtime quiet period) is replaced by the open persona operations
+(`openOperations`: the child's entries and the records under
+`ops/<subtask>/`, read fresh), so an operation that writes nothing for a long
+while still keeps the worker out, and a gate resolution's clear and its
+`finish-verb` are one operation. The park digest's own quiet interval, which
+lets a parked lane's change settle before it is judged, is unchanged. A lane
+held back by an open operation says which, and the owner's `writer-clear`
+for one whose session is gone, once per change, in the output and the
+lane's report (`waits`): an open operation has no expiry. A run with
+nothing running and nothing able to start waits on such a lane for as long as
+a step may take (`--step-timeout`), then ends, naming each operation and its
+`writer-clear`: an operation left open by a worker that was killed never
+closes by itself, and a run with every remaining lane waiting still ends
+(amendment of 2026-10-27). A hold set
+between the decision and an admission stops that lane only: the wave goes on
+with the others and the run decides again. A held lane whose kept park the
+owner released is let go, not judged again; a lane the relaunch passed by
+whose hold ends keeps a park that still stands, which its own resolution
+ends; and a rejected release whose park the records cannot take is parked
+once, its record written again at each pass, never a new park. A lane
+state `held` joins `halt.json`, `run.json`, `status` and the report (I5).
+
+**I14. The open point, limits and hand-offs.** *The open point* (N9's last
+paragraph): the tree digest keeps item 7's "every non-ignored file", the
+lane's worktree lock excepted (I4). `hold`
+warns, naming the paths (lane-digest.mjs `unignoredStatePaths`), when the lane
+does not ignore its generated state paths (`.agentic-plugins/state/`,
+`.agentic-plugins/runs/`); this repository and the setup the README requires
+ignore them, and a lane that does not gets this documented limit, not an
+amendment. *Limits.* Rolling the orchestrator back below this release while a
+hold exists is unsupported: a hold on a subtask with no lane has no fence an
+older driver would respect, and `hold` says so when it sets one. An ignored
+file is not in the tree digest, so an edit to one is not seen by the
+comparison, unless it is the child's workflow or something the fingerprint
+reads, which are compared apart from git. A hand edit made after the
+comparison is not seen either (item 7). A hold whose branch the main checkout
+has is compared in the no-worktree form (the branch's tip), so an edit the
+person leaves uncommitted there is not seen. Every scan of a lane's
+workflows reads the legacy engineer home (`.claude/agentic-engineer`) too,
+and counts open a workflow it cannot read, an archived one or one with a
+quoted scalar that does not parse included, naming it; for a hold that names
+no child, the handoff, the release and the comparison look for its archived
+child, and an archived workflow or archive directory that cannot be read
+blocks them, since it may be that child; for one that names its child, a place
+the child's archived file may be that cannot be looked at blocks them, never
+read as its absence (amendment of 2026-10-27), and every state root is looked
+in before a copy is accepted: a copy in a later root that cannot be looked
+at, or a second readable copy, blocks them too (amendment of 2026-10-27, the
+refine's fourth pass). A lane's worktree is gone only when its stat says it is
+absent (ENOENT): one that cannot be looked at blocks the handoff, refuses a
+release, a withdrawal and a new hold, and keeps a fence repair, a retirement,
+an orphaning and a macro's end waiting, so no fence in it is passed over. A
+dispatch's Phase 4 check takes its earlier pass away before any discovery
+that can fail (same amendment). A plan id that is
+no hold key (`task:13`: the plan takes any string, `hold` only
+`[A-Za-z0-9._-]`) is dispatched and retired as with the holds off: no hold
+can be kept for it. The I6, I7 and I8 limits stand. `claude --resume` of a lane's
+last session stays [unverified]: the acceptance pins the session id and cwd
+`hold` prints. *The prototype* (item 10) is
+`tests/acceptance/hold-takeover/`: the persona's prototype against a scratch
+half, and `test-hold-takeover-orchestrator.mjs`, the same routes against this
+half (a person's verb with its ensemble, a next step recorded, an owner
+decision, a commit through its archive and the parent writeback, a rejection
+and relaunch, a dirty manifest, a peer consultation, no child, and shared
+creation off); its README maps the persona-side cases to the persona tests
+that hold them. *Hand-off.* `holdGate` is exported for verify-exec (Decision
+5), which is to read it before each machine job's start; verify-exec wires
+it, not this release.

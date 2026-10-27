@@ -66,6 +66,8 @@ import {
 } from './worker.mjs';
 import { checkStateBase, creationRoot, STATE_BASE_ENV } from '../../../scripts/lib/state-root.mjs';
 import { tokenDigest } from '../../../scripts/lib/run-locks.mjs';
+import { holdStateOf, HOLDS_CAPABILITY, listRecordIds } from '../../../scripts/lib/holds-records.mjs';
+import { activateHolds } from '../../../scripts/lib/hold-activation.mjs';
 
 // Owner decision D10 (2026-10-01): "don't worry about the budget". ADR-0063 D1
 // still requires bounds, so they are finite but out of the way.
@@ -415,7 +417,7 @@ export function withLanding(d, report, waiting) {
 // ADR-0068 Decision 2, item 2: nor does it start beside a kept park, which
 // only a run with lanes honours (parks.mjs); one that no longer applies (its
 // subtask completed or gone) does not count.
-function serialRefusal({ repoRoot, macroId, view, env }) {
+export function serialRefusal({ repoRoot, macroId, view, env }) {
   if (!macroId) return [];
   const problems = [];
   const held = lanesHoldingWork({ checkout: repoRoot, macroId, view, env });
@@ -424,7 +426,43 @@ function serialRefusal({ repoRoot, macroId, view, env }) {
     problems.push(`a lane of macro ${macroId} holds work that is not completed (${held.lanes.map((l) => `${l.subtaskId}=${l.status} at ${l.path}`).join(', ')}): ` +
       `a serial run does not drive lanes. Run it with lanes: ${relaunchCommand({ macroId, lanes: 2, repoRoot })}`);
   }
-  const kept = readParks(mainWorktreeRoot(repoRoot), macroId);
+  // ADR-0068 Decision 2, item 2 — holds are a lanes feature: a serial run
+  // refuses while the macro has a hold that applies (held, pending or
+  // unreadable), naming each, or a release awaiting its comparison.
+  const main = mainWorktreeRoot(repoRoot);
+  const holds = listRecordIds(main, macroId, 'holds');
+  if (holds.state === 'unreadable') {
+    problems.push(`whether macro ${macroId} has a hold cannot be told (${holds.error}): a serial run does not start beside a hold`);
+  } else {
+    const applying = holds.ids.map((id) => [id, holdStateOf(main, macroId, id)])
+      .filter(([, s]) => s.state === 'pending' || s.state === 'held' || s.state === 'unreadable');
+    if (applying.length > 0) {
+      problems.push(`macro ${macroId} has ${applying.length} hold${applying.length === 1 ? '' : 's'} that appl${applying.length === 1 ? 'ies' : 'y'} (${applying.map(([id, s]) => `${id}: ${s.state}${s.hold?.record?.hold_id ? ` (hold ${s.hold.record.hold_id})` : ''}`).join('; ')}): ` +
+        `a serial run drives the checkout a person would work in. Release each (${applying.map(([id, s]) => `agentic-autopilot release ${id} --macro ${macroId}${s.hold?.record?.hold_id ? ` --hold ${s.hold.record.hold_id}` : ' --discard-unreadable'}`).join('; ')}), or run with lanes: ${relaunchCommand({ macroId, lanes: 2, repoRoot })}`);
+    }
+    // Nor beside a release awaiting its comparison (released, not compared
+    // yet; or compared equal, its park not ended yet): only a run with lanes
+    // compares a release before the lane steps (I10), and a serial step would
+    // run on what the person left without that comparison.
+    const due = holds.ids.map((id) => [id, holdStateOf(main, macroId, id)])
+      .filter(([, s]) => s.state === 'released-uncompared' || (s.state === 'consumed' && s.release?.record?.park_ended !== true));
+    if (due.length > 0) {
+      problems.push(`macro ${macroId} has ${due.length} release${due.length === 1 ? '' : 's'} awaiting the driver's comparison (${due.map(([id, s]) => `${id}: ${s.state} (hold ${s.hold.record.hold_id})`).join('; ')}): ` +
+        `a serial run does not compare releases. Run with lanes, which compares each before its lane steps: ${relaunchCommand({ macroId, lanes: 2, repoRoot })}`);
+    }
+    // Nor beside a rejected release, kept park or none (a crash before the
+    // park was written, a discard): the lane changed after its release, and
+    // only a new hold and release give it back (I10), as holdGate says. One
+    // whose subtask completed or left the plan does not count, as a kept park
+    // of it does not (`retiring`): no new hold could be set on it.
+    const settled = new Set(retiring(holds.ids.map((id) => ({ subtaskId: id })), view));
+    const rejected = holds.ids.filter((id) => !settled.has(id)).map((id) => [id, holdStateOf(main, macroId, id)]).filter(([, s]) => s.state === 'rejected');
+    if (rejected.length > 0) {
+      problems.push(`macro ${macroId} has ${rejected.length} rejected release${rejected.length === 1 ? '' : 's'} (${rejected.map(([id, s]) => `${id}: rejected (hold ${s.hold?.record?.hold_id})`).join('; ')}): ` +
+        `the lane changed after its release, and a serial run does not step it. Hold it and release it again once the lane is as it should be (${rejected.map(([id]) => `agentic-autopilot hold ${id} --macro ${macroId}`).join('; ')})`);
+    }
+  }
+  const kept = readParks(main, macroId);
   if (kept.problem) {
     problems.push(`whether macro ${macroId} keeps a parked lane cannot be told (${kept.problem}): a serial run does not start beside a kept park`);
   } else {
@@ -447,7 +485,7 @@ function serialRefusal({ repoRoot, macroId, view, env }) {
  * @param a.out, a.err  line printers
  * @param a.deps      test seams: { observe, observeAsync, offLoop, startWorker, cancelPeerRuns, settleAbandonedPeers, now, signals,
  *                    checkClaude, terminateGroupsSync, resolveRoots (the drift check between steps), createBudget,
- *                    wakeIntervalMs, quietMs and laneBusy (a run with lanes: scheduler.mjs) }
+ *                    wakeIntervalMs, quietMs, laneBusy and busyWaitMs (a run with lanes: scheduler.mjs) }
  */
 export async function startRun({ repoRoot, options, env = process.env, out = console.log, err = console.error, deps = {} }) {
   const observe = deps.observe ?? defaultObserve;
@@ -536,6 +574,9 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       forced: options.forcedText ?? null, notify_local: options.notifyLocal === true, lanes,
     },
     claude_version: pre.claude,
+    // ADR-0068 Decision 2, item 9 — a run with lanes honours holds; a serial
+    // run refuses to start beside one.
+    capabilities: lanes >= 2 ? [HOLDS_CAPABILITY] : [],
     roots,
     versions: pinned.versions,
     sources: pinned.sources,
@@ -565,6 +606,9 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
   // peers are unknown, and the next run's cleanup cancels the ones that name
   // it (scheduler.mjs, and the serial loop below).
   let keepRecord = false;
+  // ADR-0068 Decision 2, item 4 — what a run with lanes does once its lock
+  // entries are gone, whatever ended it (scheduler.mjs, its last handoffs).
+  let afterRelease = null;
   const release = () => {
     if (lingering) locks.length = 0;
     while (locks.length) locks.pop().release();
@@ -658,7 +702,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     // interactive commands' admission with it. Only its digest is written
     // (the lock files are readable); the secret goes to the workers' env.
     const token = deps.token ?? randomBytes(16).toString('hex');
-    const record = { run_id: runId, repo: repoRoot, macro_id: macroId, started_at: run.started_at, token_digest: tokenDigest(token) };
+    const record = { run_id: runId, repo: repoRoot, macro_id: macroId, started_at: run.started_at, token_digest: tokenDigest(token), capabilities: run.capabilities, lanes };
     try {
       locks.push(await acquireLock(worktreeLockPath(repoRoot), { record, now }));
       if (macroId) locks.push(await acquireLock(macroLockPath(mainRoot, macroId), { record, now }));
@@ -673,6 +717,20 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     view = look(macroId);
     if ((view.macro?.id ?? null) !== macroId) {
       return finish('halted', { reason: 'owner-choice', detail: `the macro changed while the run took its locks (${macroId ?? 'none'} → ${view.macro?.id ?? 'none'})` });
+    }
+    // ADR-0068 Decision 2, item 2 — the serial refusal again, under the
+    // locks: a hold set between the first look and the locks (P10).
+    if (lanes < 2 && macroId) {
+      const again = serialRefusal({ repoRoot, macroId, view, env });
+      if (again.length > 0) return finish('halted', { reason: 'owner-choice', detail: again.join('; ') });
+    }
+    // ADR-0068 Decision 2, item 9 (P7) — a run with lanes turns holds on
+    // before its first dispatch, so a person's interactive finish-verb in a
+    // lane sees its live run and parks. Not a refusal: with the persona not
+    // yet installed everywhere, no hold can be set (`hold` activates too).
+    if (lanes >= 2 && macroId) {
+      const a = activateHolds({ mainRoot, macroId, pinnedEngineerRoot: roots.engineer, env, writtenBy: `autopilot ${runId}` });
+      if (!a.ok) out(`  holds stay off for macro ${macroId}: ${a.problems.join('; ')}`);
     }
 
     // ADR-0067 Decision 6, Locks: before its first spawn the run cleans up
@@ -742,6 +800,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         finish, reportLanding: reportLandingOffLoop, landing: () => landing, withLanding: (d, w) => withLanding(d, landing, w),
         waiting: () => waiting,
         markLingering: () => { lingering = true; },
+        afterRelease: (fn) => { afterRelease = fn; },
         keepOpenRecord: () => { keepRecord = true; },
         setLastSessionId: (id) => { lastSessionId = id ?? lastSessionId; },
         interrupted: () => interrupted,
@@ -750,8 +809,9 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         observeAsync: deps.observeAsync ?? (deps.observe ? async (a) => deps.observe(a) : observeInChild),
         offLoop, startWorker, terminateGroup: deps.terminateGroup ?? null,
         helpers: { provenanceProblem, newPendingRuns, newPendingTargets },
-        wakeIntervalMs: deps.wakeIntervalMs ?? null, quietMs: deps.quietMs ?? null, laneBusy: deps.laneBusy ?? null,
+        wakeIntervalMs: deps.wakeIntervalMs ?? null, quietMs: deps.quietMs ?? null, laneBusy: deps.laneBusy ?? null, busyWaitMs: deps.busyWaitMs ?? null,
         resolveRoots: deps.resolveRoots ?? null,
+        releaseBasis: deps.releaseBasis ?? null,
         deliverRebindings: deps.deliverRebindings ?? null,
       });
     }
@@ -990,6 +1050,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     }
     writeRun(runDir, run);
     release();
+    if (afterRelease) await afterRelease().catch(() => {});
     detach();
     throw e;
   }

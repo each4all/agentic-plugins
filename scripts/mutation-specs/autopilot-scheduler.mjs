@@ -381,7 +381,7 @@ export const MUTATIONS = [
   },
   {
     id: 'S6', file: SCHED, tests: TS,
-    from: "      if (r.waitUntilSec) {\n        armReset(r.waitUntilSec);\n        await nextEvent();\n        continue;\n      }\n",
+    from: "      if (r.waitUntilSec) {\n        busyIdleSince = null;\n        armReset(r.waitUntilSec);\n        await nextEvent();\n        continue;\n      }\n",
     to: "",
     why: "throttled with nothing running, the run halts idle instead of waiting for the reset",
     killed_by: /waits for the reset, then starts the new lane/,
@@ -542,7 +542,7 @@ export const MUTATIONS = [
   },
   {
     id: 'S29', file: SCHED, tests: [TLS],
-    from: "      const created = await task('createLane', { home, checkout: repoRoot, macroId, subtask, view, baseline, runId, runDir, nowMs: now() });",
+    from: "      const created = await task('createLane', { home, checkout: repoRoot, macroId, subtask, view, baseline, runId, runDir, nowMs: now() }, repoRoot, id);",
     to: "      const created = { value: (await import('./offloop.mjs')).TASKS.createLane({ home, checkout: repoRoot, macroId, subtask, view, baseline, runId, runDir, nowMs: now() }, env) };",
     why: 'a lane is created on the scheduler\'s event loop: no worker in flight is supervised (its timeout, a signal) until the creation ends',
     killed_by: /a lane's creation runs off the loop/,
@@ -570,8 +570,11 @@ export const MUTATIONS = [
   },
   // S33 (a lane this run created and did not use, dispatched into later from
   // an old baseline) is gone with its case: such a lane is removed at once
-  // (S35), and `!createdNow` now differs from `state === 'prepared'` in no
-  // state a run reaches.
+  // (S35), so `!createdNow` still agrees with `state === 'prepared'`. What
+  // row 12 added (ADR-0062 Decision 2, amendment of 2026-10-27) is a lane
+  // created now at a handed-back tip off the baseline, which the check must
+  // skip: impl-hold.mjs U4 removes the clause, and the hold-takeover
+  // acceptance's dispatch on the person's commit kills it.
   {
     id: 'S34', file: SCHED, tests: [TLS],
     from: "    const r = removed.error ? { outcome: 'kept', why: `its removal failed (${removed.error})` } : removed.value;",
@@ -602,15 +605,15 @@ export const MUTATIONS = [
   },
   {
     id: 'S38', file: SCHED, tests: [TLS],
-    from: '      for (const l of [c.macroLock, lock]) added.push(l.addWorkerGroup({ ...group, lane: laneId, cwd: at }));',
-    to: '      for (const l of [c.macroLock]) added.push(l.addWorkerGroup({ ...group, lane: laneId, cwd: at }));',
+    from: '      for (const l of [c.macroLock, lock]) added.push(l.addWorkerGroup({ ...group, lane: laneId, subtask_id: subtaskId ?? laneId, cwd: at }));',
+    to: '      for (const l of [c.macroLock]) added.push(l.addWorkerGroup({ ...group, lane: laneId, subtask_id: subtaskId ?? laneId, cwd: at }));',
     why: 'a task\'s group is not on the lock of the checkout it acts in: a dead driver\'s task runs on while another run or session drives that checkout',
     killed_by: /SIGTERM with a look in flight stops the look at once/,
   },
   {
     id: 'S43', file: SCHED, tests: [TLS],
-    from: '      for (const l of [c.macroLock, lock]) added.push(l.addWorkerGroup({ ...group, lane: laneId, cwd: at }));',
-    to: '      for (const l of [lock]) added.push(l.addWorkerGroup({ ...group, lane: laneId, cwd: at }));',
+    from: '      for (const l of [c.macroLock, lock]) added.push(l.addWorkerGroup({ ...group, lane: laneId, subtask_id: subtaskId ?? laneId, cwd: at }));',
+    to: '      for (const l of [lock]) added.push(l.addWorkerGroup({ ...group, lane: laneId, subtask_id: subtaskId ?? laneId, cwd: at }));',
     why: 'a task\'s group is not on the macro lock: a dead driver\'s task runs beside the next run\'s cleanup and reconciliation',
     killed_by: /SIGTERM with a look in flight stops the look at once/,
   },

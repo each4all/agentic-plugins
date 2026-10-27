@@ -173,6 +173,10 @@ export function lanesCapabilityProblems(roots, checkout, { env = process.env } =
   const tokens = [
     ['engineer', 'scripts/state.mjs', 'parent-workflow-path', 'create --parent-workflow-path (ADR-0067 PL)'],
     ['runtime', 'scripts/lib/entry-brief-readers.mjs', 'stateReadSet', 'an entry brief that reads the shared state root (ADR-0067 RR)'],
+    // ADR-0068 Decision 2, item 9 (N8) — the hold-aware persona: a run with
+    // lanes honours holds, and its workers' verbs must leave a held lane's
+    // operations visible and never write terminal there.
+    ['engineer', 'scripts/lib/holds.mjs', 'hold-persona-1', 'the hold-aware persona (ADR-0068 Decision 2, N8)'],
   ];
   for (const [plugin, file, token, what] of tokens) {
     const root = roots[plugin];

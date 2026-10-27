@@ -1244,6 +1244,13 @@ cutover (the tuple on both hosts, any move, then the shared-creation switch)
   also run mid-run for that lane alone when it is reconsidered, planned from
   the facts of the whole macro (ADR-0068 Decision 1, item 4).
 
+  *Note 2026-10-27 ([ADR-0062](0062-subtask-completion-recorded-at-landing.md)
+  §Decision 2, amendment of 2026-10-27):* row 12 also reuses a branch whose
+  tip a consumed release of the subtask's current hold recorded, when the
+  baseline ref is an ancestor of it; its halts, row 4's and the admission's
+  refusal of a prepared lane never advise discarding a branch that carries
+  commits the baseline lacks, or one not shown to carry none.
+
 - **Preflight per lane.** The four `.agentic-plugins/` directories must be
   ignored in each lane, as in the driven checkout (`driver.mjs:55`, `:97-99`).
 

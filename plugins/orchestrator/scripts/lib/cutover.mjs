@@ -39,6 +39,7 @@ import {
   samePhysicalFile,
   workflowIdOfText,
 } from './state-root.mjs';
+import { childWriteRefusal, excludeChildWriters, HoldRefusal, sweepChildExclusions } from './hold-ops.mjs';
 
 export const CUTOVER_PLAN_SCHEMA = 'agentic-state-cutover-plan-1.0';
 export const CUTOVER_VERIFY_SCHEMA = 'agentic-state-cutover-verify-1.0';
@@ -455,9 +456,22 @@ function homeHolding(root, plugin, file) {
 // the checkout's (Decision 2's order). A cutover pair goes from its
 // source_checkout to the root; a rollback pair from the root to its
 // destination_checkout.
-async function movePair(pair, root, { withFileLock, withDirectoryLock }) {
+async function movePair(pair, root, { withFileLock, withDirectoryLock, main }) {
+  // ADR-0068 Decision 2, item 7 — a child's file moves behind the writer
+  // exclusion, judged again under the move's own lock: a hold or a persona
+  // operation that came after the checks before it refuses the move.
+  const guarded = async () => {
+    const withdraw = main && (pair.kind === 'workflow' || pair.kind === 'archive')
+      ? await excludeChildWriters({ mainRoot: main, childPath: pair.source })
+      : () => {};
+    try {
+      renameInto(pair.source, pair.destination);
+    } finally {
+      withdraw();
+    }
+  };
   if (pair.kind === 'workflow') {
-    await withFileLock(pair.source, async () => renameInto(pair.source, pair.destination));
+    await withFileLock(pair.source, guarded);
     return;
   }
   const back = typeof pair.destination_checkout === 'string';
@@ -466,9 +480,26 @@ async function movePair(pair, root, { withFileLock, withDirectoryLock }) {
   const atCheckout = back ? pair.destination : pair.source;
   const first = homeStorage(root, pair.plugin, homeHolding(root, pair.plugin, atRoot));
   const second = homeStorage(checkout, pair.plugin, homeHolding(checkout, pair.plugin, atCheckout));
-  await withDirectoryLock(root, () => withDirectoryLock(checkout, async () => {
-    renameInto(pair.source, pair.destination);
-  }, { storage: second }), { storage: first });
+  await withDirectoryLock(root, () => withDirectoryLock(checkout, guarded, { storage: second }), { storage: first });
+}
+
+// ADR-0068 Decision 2, item 7 — a cutover and its rollback write a macro's
+// child (they move its workflow file), so each refuses, before it changes
+// anything, a child whose subtask is held or that has a persona operation
+// open (hold-ops.mjs `childWriteRefusal`): a workflow, active or archived
+// (a commit's operation stays open through its archive), never moves under a
+// person working in a held lane, nor under an operation's writes. Each move
+// judges its child again behind the exclusion (`movePair`). An exclusion a
+// crashed move left is swept first (I3): it is no writer.
+async function heldChildRefusals(main, pairs) {
+  const out = [];
+  for (const pair of Array.isArray(pairs) ? pairs : []) {
+    if (!['workflow', 'archive'].includes(pair?.kind) || typeof pair.source !== 'string' || !present(pair.source)) continue;
+    await sweepChildExclusions({ mainRoot: main, childPath: pair.source });
+    const why = childWriteRefusal({ mainRoot: main, childPath: pair.source });
+    if (why) out.push({ code: 'held-lane', detail: why });
+  }
+  return out;
 }
 
 // Every pair judged before any moves: source only, move it; destination only,
@@ -564,6 +595,8 @@ export async function moveCutover(checkout, { withFileLock, withDirectoryLock, n
     if (plan.pairs.length === 0) {
       return { ok: true, manifest: null, moved: [], resumed: false, notes: [...plan.notes, 'nothing to move'] };
     }
+    const held = await heldChildRefusals(main, plan.pairs);
+    if (held.length > 0) return { ok: false, refusals: held, plan };
     const at = isoUtc(now);
     const file = path.join(root, CUTOVER_RUNS_REL, `${at.replace(/[-:]/g, '')}-${randomBytes(3).toString('hex')}.json`);
     const doc = {
@@ -584,7 +617,17 @@ export async function moveCutover(checkout, { withFileLock, withDirectoryLock, n
   }
   const { judged, refusals } = judgePairs(file, doc.pairs);
   if (refusals.length > 0) return { ok: false, manifest: file, refusals };
-  const movedNow = await moveJudged(file, doc, judged, root, { withFileLock, withDirectoryLock });
+  const held = await heldChildRefusals(main, doc.pairs);
+  if (held.length > 0) return { ok: false, manifest: file, refusals: held };
+  // A move refused behind the writer exclusion refuses the command; the pairs
+  // moved before it stay recorded, and a rerun continues the manifest.
+  let movedNow;
+  try {
+    movedNow = await moveJudged(file, doc, judged, root, { withFileLock, withDirectoryLock, main });
+  } catch (err) {
+    if (!(err instanceof HoldRefusal)) throw err;
+    return { ok: false, manifest: file, refusals: [{ code: 'held-lane', detail: err.message }] };
+  }
   const left = doc.pairs.filter((p) => present(p.source));
   if (left.length > 0) {
     return {
@@ -956,6 +999,8 @@ export async function moveRollback(checkout, { withFileLock, withDirectoryLock, 
   if (!open) {
     const plan = await planRollback(main, { readWorkflow });
     if (!plan.ok) return { ok: false, refusals: plan.refusals, plan };
+    const held = await heldChildRefusals(main, plan.pairs);
+    if (held.length > 0) return { ok: false, refusals: held, plan };
     const at = isoUtc(now);
     const file = path.join(root, CUTOVER_RUNS_REL, `${at.replace(/[-:]/g, '')}-${randomBytes(3).toString('hex')}.json`);
     const doc = {
@@ -975,11 +1020,23 @@ export async function moveRollback(checkout, { withFileLock, withDirectoryLock, 
   if (!Array.isArray(doc.pairs) || !Array.isArray(doc.moved)) {
     throw new StateRootError(`${file} has no pairs or moved list: repair or remove it by hand`, 'manifest-invalid');
   }
+  // Before the switch goes off: a held lane's child, or one with an
+  // operation open, refuses the whole rollback, and nothing has changed.
+  const held = await heldChildRefusals(main, doc.pairs);
+  if (held.length > 0) return { ok: false, manifest: file, refusals: held };
   // Nothing more is created under the default state root from here on.
   const switched = disableSharedCreation({ checkout: main, now });
   const { judged, refusals } = judgePairs(file, doc.pairs);
   if (refusals.length > 0) return { ok: false, manifest: file, refusals };
-  const movedNow = await moveJudged(file, doc, judged, root, { withFileLock, withDirectoryLock });
+  // A move refused behind the writer exclusion refuses the command; the pairs
+  // moved before it stay recorded, and a rerun continues the manifest.
+  let movedNow;
+  try {
+    movedNow = await moveJudged(file, doc, judged, root, { withFileLock, withDirectoryLock, main });
+  } catch (err) {
+    if (!(err instanceof HoldRefusal)) throw err;
+    return { ok: false, manifest: file, refusals: [{ code: 'held-lane', detail: err.message }] };
+  }
   const left = doc.pairs.filter((p) => present(p.source));
   if (left.length > 0) {
     return { ok: false, manifest: file, refusals: left.map((p) => ({ code: 'source-left', detail: `${p.source} still exists after the move` })) };

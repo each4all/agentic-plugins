@@ -1,6 +1,6 @@
 ---
 description: Run an approved macro unattended — one fresh Claude worker per step, halting at owner judgment (ADR-0063, Claude only; dry-run by default)
-argument-hint: "[preview|start [--execute]|status|stop|release <subtask>] [--macro <id>] [--models owner-default|mixed|sonnet] [--model <m>] [--effort <e>] [--max-steps <n>] [--max-cost <usd>] [--step-budget <usd>] [--step-timeout <s>] [--lanes <n>] [--next \"<step>\"] [--lane <subtask> --next \"<step>\"] [--notify-local] [--json]"
+argument-hint: "[preview|start [--execute]|status|stop|release <subtask> [--hold <id>|--discard-unreadable]|hold <subtask>|writer-clear <subtask> --operation <id>] [--macro <id>] [--models owner-default|mixed|sonnet] [--model <m>] [--effort <e>] [--max-steps <n>] [--max-cost <usd>] [--step-budget <usd>] [--step-timeout <s>] [--lanes <n>] [--next \"<step>\"] [--lane <subtask> --next \"<step>\"] [--notify-local] [--json]"
 ---
 
 # Orchestrator · Autopilot
@@ -72,20 +72,24 @@ again, within about a minute while the run lives or at the next relaunch, once
 its record changes (the owner clears its gate, records a next step, settles a
 pending peer ensemble, commits or moves its branch) or once the owner releases
 it with `release <subtask> --macro <id>`, with or without a live run; its lane
-is reconciled again first, as at a run's start. No worker spawns into a lane
-whose engineer record was written outside the run less than that quiet period
-ago, so a gate resolution (its clear, then its next step) finishes first; an
-operation that writes nothing for longer is not seen until the persona records
-its open operations (ADR-0068 Decision 2, item 9). A run-wide halt (version drift, an
+is reconciled again first, as at a run's start. A lane the owner holds, or
+whose release was rejected, is not picked up by a change of its record: its
+`release --hold`, or a new hold and release, gives it back. No worker spawns into a lane
+while a persona operation is open there (ADR-0068 Decision 2, item 7): the
+child's operation entries and the macro's operation records, read fresh, so a
+gate resolution (its clear, then its next step) finishes first, however long
+it writes nothing. A run-wide halt (version drift, an
 exhausted budget, a plan change that revokes the approval, a gate on the macro,
 a halt that names no lane, the baseline or the rollback fence, the driver's
 own done or finalize, a worker group that outlived SIGKILL) lets the steps in
 flight finish, then reports every lane and exits 2. The run also ends, exit 2,
-once nothing runs and nothing can start: every remaining lane parked, waiting
-to land, or behind one of those; `halt.json` names the first lane still parked
-(after a run-wide halt), lists the other parks under `also`, and gives each
-lane's state and what resolves it, and `status` shows each parked lane's
-reason and since when. A serial run does not start beside a kept park: release
+once nothing runs and nothing can start: every remaining lane parked, held,
+waiting to land, or behind one of those; `halt.json` names the first lane
+still parked (after a run-wide halt), or the first held lane when only held
+lanes are left, lists the others under `also`, and gives each lane's state
+and what resolves it (a held lane's release command), and `status` shows each
+parked lane's reason and since when. A release after the run has ended starts
+nothing: relaunch. A serial run does not start beside a kept park: release
 it, or run with lanes. Ctrl-C, `stop` or a closed terminal
 (SIGINT, SIGTERM, SIGHUP) ends it at once instead: a lane's creation or removal,
 or a peer run's cancellation, already under way gets 15 s to finish, the workers
@@ -118,7 +122,43 @@ on Codex the steps stay manual.
   run judges it afresh. It refuses inside an autopilot worker, a subtask with
   no kept park, and a step a live run has under way. A park whose cause lies
   outside the lane's record (another worktree holds its branch, another session
-  holds its lock, its record cannot be read) waits for this release.
+  holds its lock) waits for this release. A park whose record cannot be read
+  is never deleted by it: `release <subtask> --macro <id> --discard-unreadable`
+  keeps a copy and ends it. It refuses on a held lane, and on a lane whose
+  release the driver has not compared yet or rejected.
+- `hold <subtask> --macro <id>` holds a lane for a person (ADR-0068 Decision
+  2): the driver leaves the subtask alone (no dispatch, adoption,
+  reconciliation, step or removal) while other lanes go on. The hold is
+  *pending* until nothing of the lane is in flight and no persona operation is
+  open there, then *held*, its lane fenced in its worktree lock; start once
+  the hold's own line in `status --macro <id>` says held (the run's lane table
+  shows the lane held from the moment the hold is set). Work the lane's active
+  child: the engineer refuses to begin an unlinked workflow in a held lane. A
+  step already running is never aborted:
+  it runs to its end first. `hold` prints the hold id, the lane, its last
+  session (`claude --resume <id>`) and the engineer the person needs. It refuses
+  beside a live run that does not honour holds (a serial run: `stop` it), a
+  completed subtask, an owner record it cannot read, and until the hold-aware engineer
+  is installed on both hosts and pinned by the launcher.
+- `release <subtask> --macro <id> --hold <hold id>` gives a held lane back:
+  it refuses while a persona operation is open there, a peer ensemble is
+  pending or the child's workflow is locked. Stop editing and close the
+  session first: the driver compares the lane once before it steps, and an
+  edit after the release still there at the comparison rejects it (the lane
+  parks until a new hold and release); one after the comparison is not seen.
+  A pending hold is
+  withdrawn, with nothing to compare.
+- `writer-clear <subtask> --macro <id> --operation <operation id>` is the
+  owner's word that the session of an operation stopped by an error is gone:
+  the operation no longer keeps the lane.
+- `status --macro <id>` adds the macro's holds, from any checkout, with or
+  without a run, with each hold's state, what blocks its handoff, its open
+  operations and the release command; with no live run it completes a pending
+  handoff and repairs a fence an older orchestrator removed.
+- Holds, releases and writer-clear refuse inside an autopilot worker. Rolling
+  the orchestrator back below the release that added holds while a hold
+  exists is unsupported: a hold on a subtask with no lane has no fence an
+  older driver would respect.
 
 Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
 from `AGENTIC_ORCHESTRATOR_ROOT` when that is set, else from the plugin path
@@ -153,7 +193,7 @@ as text. It removes the args file and its directory once it has read them.
 
 ---
 
-## preview, status, stop, release, and start without --execute
+## preview, status, stop, release, hold, writer-clear, and start without --execute
 
 Run this block when the arguments do not contain `start` together with
 `--execute`:
@@ -165,8 +205,8 @@ CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 node "$CLAUDE_PLUGIN_ROOT/adapters/claude/autopilot/cli.mjs" --args-file "$ARGS_DIR/args.json"
 ```
 
-Show the output as it is. Exit 0: the preview would proceed (or status, stop
-or release succeeded). Exit 2: the preview would halt — the reason and its pointer are in
+Show the output as it is. Exit 0: the preview would proceed (or status, stop,
+release, hold or writer-clear succeeded). Exit 2: the preview would halt — the reason and its pointer are in
 the output. Exit 1: an error or a start condition that fails; the output names
 it.
 

@@ -52,6 +52,7 @@ import {
   macroTerminalPhaseCheck,
   noActiveEngineerChildrenScan,
   parseWorkflowFile,
+  retireEndedMacroHolds,
   snapshot,
   terminalMarkerCheck,
 } from './state.mjs';
@@ -304,6 +305,15 @@ async function runMacroStopArchiveAllInCheckout({
       stderr,
     });
     results.push({ workflowPath, ...result });
+  }
+  // ADR-0068 Decision 2, item 8 — a macro that ended retires its holds: one
+  // archived now, and one archived earlier whose holds directory a crash or a
+  // retirement that waited left (I3). The sweep reaches archived macros,
+  // which the loop above, over live ones, never sees.
+  try {
+    await retireEndedMacroHolds({ checkout: repoRoot, write: (s) => stderr.write(`orchestrator/stop-archive: ${s}`) });
+  } catch (err) {
+    stderr.write(`orchestrator/stop-archive: the holds of ended macros could not be retired: ${err.message}\n`);
   }
   return results;
 }

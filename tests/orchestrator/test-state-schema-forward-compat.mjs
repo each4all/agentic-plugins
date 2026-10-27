@@ -542,9 +542,10 @@ async function importSchema11Reader(dir, { alsoUnknown = [] } = {}) {
   await writeFile(join(dir, 'state.mjs'), reader);
   await copyFile(resolve(REPO_ROOT, 'plugins/orchestrator/scripts/landing.mjs'), join(dir, 'landing.mjs'));
   // The state root, run locks, cutover and proposals (ADR-0067), and the
-  // command-argument grammar with its codec (C134(a)), the script imports beside it.
+  // command-argument grammar with its codec (C134(a)), and the holds next's
+  // hold gate reads (ADR-0068 Decision 2, item 5), the script imports beside it.
   await mkdir(join(dir, 'lib'), { recursive: true });
-  for (const lib of ['state-root.mjs', 'run-locks.mjs', 'process-identity.mjs', 'cutover.mjs', 'lane-advice.mjs', 'worktree-proposal.mjs', 'command-args.mjs', 'args-file.mjs', 'rebind.mjs']) {
+  for (const lib of ['state-root.mjs', 'run-locks.mjs', 'process-identity.mjs', 'cutover.mjs', 'lane-advice.mjs', 'worktree-proposal.mjs', 'command-args.mjs', 'args-file.mjs', 'rebind.mjs', 'holds-records.mjs', 'holds.mjs', 'hold-ops.mjs', 'hold-activation.mjs']) {
     await copyFile(resolve(REPO_ROOT, 'plugins/orchestrator/scripts/lib', lib), join(dir, 'lib', lib));
   }
   return import(pathToFileURL(join(dir, 'state.mjs')).href);

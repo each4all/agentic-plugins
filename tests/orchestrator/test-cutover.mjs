@@ -1164,3 +1164,143 @@ describe('state.mjs cutover (ADR-0067 Decision 4, item 4)', () => {
     match(r.stderr, /exactly one of --plan, --move and --verify/);
   });
 });
+
+// ADR-0068 Decision 2, item 7 (impl-hold Task 12): a cutover and its rollback
+// move a macro's child, so each refuses, before it changes anything, a child
+// whose subtask is held or that has a persona operation open.
+describe('state.mjs cutover beside holds (ADR-0068 Decision 2, item 7)', async () => {
+  const holds = await import(new URL('../../plugins/orchestrator/scripts/lib/holds.mjs', import.meta.url).href);
+  const ops = await import(new URL('../../plugins/orchestrator/scripts/lib/hold-ops.mjs', import.meta.url).href);
+  const opRecord = (r, id) => holds.publishOpRecord(r.main, r.macroId, 'T1', {
+    operation_id: id, kind: 'verb', subtask_id: 'T1', workflow_id: r.childId, persona: 'engineer', host: 'claude', opened_at: '2026-10-26T00:00:00Z',
+  });
+
+  it("--move refuses a held lane's child and one with an operation open, moving nothing; once neither, it moves", async () => {
+    const r = setup();
+    try {
+      holds.writeProtocol(r.main, r.macroId, { writtenBy: 'test' });
+      const h = await ops.setHold({ mainRoot: r.main, macroId: r.macroId, subtaskId: 'T1', branch: 'autopilot/home', child: r.childId });
+      const held = cutover(r.main, 'move');
+      strictEqual(held.status, 1, held.stdout);
+      deepStrictEqual(codes(held), ['held-lane']);
+      match(held.json.refusals[0].detail, new RegExp(`${r.childId} is the child of subtask T1 of ${r.macroId}, which is held \\(hold ${h.hold_id} is held\\)`));
+      ok(existsSync(r.child) && existsSync(r.macro), 'nothing moved');
+      strictEqual(manifestIn(r.main), null, 'no manifest written');
+      // The hold ended (a pending one withdrawn), an operation open instead.
+      await ops.releaseHold({ mainRoot: r.main, macroId: r.macroId, subtaskId: 'T1', holdId: h.hold_id, stateRoots: [r.main, r.home], basisOf: async () => null });
+      opRecord(r, 'op-20261026T000000Z-0000aaaa');
+      const open = cutover(r.main, 'move');
+      strictEqual(open.status, 1, open.stdout);
+      // The subtask's archived child too: an operation of the lane is open on both.
+      deepStrictEqual(codes(open), ['held-lane', 'held-lane']);
+      match(open.json.refusals[0].detail, /a persona operation is open on .*op-20261026T000000Z-0000aaaa \(verb\)/);
+      ok(existsSync(r.child), 'nothing moved');
+      holds.clearOperation(r.main, r.macroId, 'T1', 'op-20261026T000000Z-0000aaaa', { by: 'test' });
+      const moved = cutover(r.main, 'move');
+      strictEqual(moved.status, 0, moved.stderr);
+      ok(!existsSync(r.child), 'moved once neither holds');
+    } finally {
+      rmSync(r.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--move whose earlier move crashed with its exclusion published moves the child: that exclusion is swept, not counted open", async () => {
+    const r = setup();
+    try {
+      holds.writeProtocol(r.main, r.macroId, { writtenBy: 'test' });
+      const { spawnSync } = await import('node:child_process');
+      const DEAD = spawnSync(process.execPath, ['-e', ''], { encoding: 'utf8' }).pid;
+      holds.publishOpRecord(r.main, r.macroId, 'T1', {
+        operation_id: 'op-20261026T000000Z-0000dead', kind: 'cutover', subtask_id: 'T1', workflow_id: null, persona: 'orchestrator',
+        host: null, opened_at: '2026-10-26T00:00:00Z', pid: DEAD, fingerprint: { kind: 'none' },
+      });
+      const moved = cutover(r.main, 'move');
+      strictEqual(moved.status, 0, moved.stdout + moved.stderr);
+      ok(!existsSync(r.child), 'the child moved');
+      deepStrictEqual(holds.readOps(r.main, r.macroId, 'T1').ops, [], 'the dead exclusion is gone');
+    } finally {
+      rmSync(r.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a hold set after the checks, before the child's move, refuses that move under its lock; nothing moves the child", async () => {
+    const r = setup();
+    try {
+      const { moveCutover } = await import(new URL('../../plugins/orchestrator/scripts/lib/cutover.mjs', import.meta.url).href);
+      holds.writeProtocol(r.main, r.macroId, { writtenBy: 'test' });
+      let held = null;
+      const res = await moveCutover(r.main, {
+        // The child's write lock taken: the hold lands now, after every check before the move.
+        withFileLock: async (file, fn) => {
+          if (file === r.child) held = await ops.setHold({ mainRoot: r.main, macroId: r.macroId, subtaskId: 'T1', branch: 'autopilot/home', child: r.childId });
+          return fn();
+        },
+        withDirectoryLock: async (_root, fn) => fn(),
+      });
+      ok(held, 'the hold was set inside the move');
+      strictEqual(res.ok, false, JSON.stringify(res));
+      deepStrictEqual(res.refusals.map((x) => x.code), ['held-lane']);
+      ok(existsSync(r.child), 'the held child did not move');
+      deepStrictEqual(holds.readOps(r.main, r.macroId, 'T1').ops, [], 'its exclusion record withdrawn');
+    } finally {
+      rmSync(r.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a rerun of an open manifest refuses a held lane's child before it moves the rest", async () => {
+    const r = setup();
+    try {
+      const planned = cutover(r.main, 'plan');
+      strictEqual(planned.status, 0, planned.stderr);
+      holds.writeProtocol(r.main, r.macroId, { writtenBy: 'test' });
+      // An interrupted move: the manifest written, the macro moved, the child not yet.
+      const file = join(r.main, '.agentic-plugins/runs/cutover', '20261026T000000Z-abcdef.json');
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, JSON.stringify({ schema: 'agentic-state-cutover-1.0', kind: 'cutover', created_at: '2026-10-26T00:00:00Z', main_checkout: r.main, pairs: planned.json.pairs, moved: [], inventory: null }));
+      await ops.setHold({ mainRoot: r.main, macroId: r.macroId, subtaskId: 'T1', branch: 'autopilot/home', child: r.childId });
+      const again = cutover(r.main, 'move');
+      strictEqual(again.status, 1, again.stdout);
+      deepStrictEqual(codes(again), ['held-lane']);
+      strictEqual(again.json.manifest, file, 'refused on the open manifest it continues');
+      ok(existsSync(r.child) && existsSync(r.macro) && existsSync(r.archived), 'no pair moved');
+    } finally {
+      rmSync(r.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--rollback --move refuses a held lane's child before the switch goes off, moving nothing", async () => {
+    const r = setup();
+    try {
+      must(orch(['cutover', '--repo-root', r.main, '--move']));
+      must(orch(['shared-creation', '--repo-root', r.main, '--enable', '--versions', '{"orchestrator":"test"}']));
+      const childAtRoot = join(r.main, ENG_HOME, 'workflows', basename(r.child));
+      ok(existsSync(childAtRoot));
+      holds.writeProtocol(r.main, r.macroId, { writtenBy: 'test' });
+      await ops.setHold({ mainRoot: r.main, macroId: r.macroId, subtaskId: 'T1', branch: 'autopilot/home', child: r.childId });
+      const res = orch(['cutover', '--repo-root', r.main, '--rollback', '--move']);
+      strictEqual(res.status, 1, res.stdout);
+      const json = JSON.parse(res.stdout);
+      deepStrictEqual(json.refusals.map((x) => x.code), ['held-lane']);
+      ok(existsSync(childAtRoot) && !existsSync(r.child), 'nothing moved back');
+      strictEqual(JSON.parse(must(orch(['state-root', '--repo-root', r.main]))).shared_creation.state, 'on', 'the switch is still on');
+      const runs = join(r.main, '.agentic-plugins/runs/cutover');
+      const rollbacks = () => readdirSync(runs).filter((n) => n.endsWith('.json')).map((n) => JSON.parse(readFileSync(join(runs, n), 'utf8'))).filter((d) => d.kind === 'rollback');
+      deepStrictEqual(rollbacks(), [], 'no rollback manifest written');
+      // A rollback interrupted before its switch: its open manifest is
+      // refused too, before the switch goes off.
+      const plan = JSON.parse(must(orch(['cutover', '--repo-root', r.main, '--rollback', '--plan'])));
+      writeFileSync(join(runs, '29991231T000000Z-abcdef.json'), JSON.stringify({
+        schema: 'agentic-state-cutover-1.0', kind: 'rollback', created_at: '2999-12-31T00:00:00Z', main_checkout: r.main,
+        cutover_manifests: plan.cutover_manifests, pairs: plan.pairs, moved: [], completed_at: null,
+      }));
+      const resumed = orch(['cutover', '--repo-root', r.main, '--rollback', '--move']);
+      strictEqual(resumed.status, 1, resumed.stdout);
+      deepStrictEqual(JSON.parse(resumed.stdout).refusals.map((x) => x.code), ['held-lane']);
+      strictEqual(JSON.parse(resumed.stdout).manifest, join(runs, '29991231T000000Z-abcdef.json'), 'refused on the open manifest');
+      ok(existsSync(childAtRoot) && !existsSync(r.child), 'nothing moved back');
+      strictEqual(JSON.parse(must(orch(['state-root', '--repo-root', r.main]))).shared_creation.state, 'on', 'the switch is still on');
+    } finally {
+      rmSync(r.dir, { recursive: true, force: true });
+    }
+  });
+});

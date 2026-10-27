@@ -1,4 +1,16 @@
-# The hold takeover prototype (ADR-0068 Decision 2, item 10)
+# The hold takeover (ADR-0068 Decision 2, item 10)
+
+Two tests drive a takeover of a lane end to end:
+
+- `test-hold-takeover-orchestrator.mjs`, the acceptance: the persona half
+  against the real orchestrator half (impl-hold, Task 14). See
+  [The acceptance against the orchestrator](#the-acceptance-against-the-orchestrator)
+  below.
+- `test-hold-takeover.mjs`, the prototype: the persona half against a scratch
+  orchestrator half, before the persona shipped. The rest of this file up to
+  that section describes it.
+
+## The prototype
 
 This is a named artifact of the hold-persona subtask (Task 12 of its plan). It
 drives a takeover of a lane end to end before the persona's half of holds
@@ -15,7 +27,7 @@ fixtures alone cannot prove a takeover.
   digest, the lane fingerprint, live-run and worker checks, and crash
   recovery.
 
-## What runs
+### What runs
 
 The persona half is the real engineer scripts. The test runs them through the
 generated blocks of the engineer runbooks (`commands/compose.md`,
@@ -45,7 +57,7 @@ works from the lane stays [unverified] (item 5). The parent writeback of a
 commit is a probe in the Stop hook's `noteParent` slot, not the orchestrator's
 writer.
 
-## Acceptance
+### Acceptance
 
 The prototype passes when each of these holds against the scratch half:
 
@@ -106,7 +118,7 @@ The prototype passes when each of these holds against the scratch half:
 Mutations: group T of `scripts/mutation-specs/hold-persona.mjs`. Each one is a
 persona defect that the end-to-end path has to catch.
 
-## Findings
+### Findings
 
 What the prototype found, and where each finding went:
 
@@ -134,3 +146,115 @@ What the prototype found, and where each finding went:
   with `last_snapshot` counted in the content digest, and mutation T2
   survived. The post-release snapshot now runs a minute later, and the test
   asserts that it rewrote the field.
+
+## The acceptance against the orchestrator
+
+`test-hold-takeover-orchestrator.mjs` replaces the scratch half with
+`plugins/orchestrator`'s own:
+
+- The owner's `hold`, `status` and `release` run through `agentic-autopilot`
+  (`cli.mjs`), from the driver's checkout.
+- The driver is the real scheduler with lanes. Its worker is the scripted
+  worker the scheduler's own tests use
+  (`tests/orchestrator/fixtures/autopilot-scripted-worker.mjs`), through the
+  fake `claude`.
+- The person's session runs the generated blocks of the released engineer's
+  runbooks (`_runbook.mjs`, a copy of the prototype's transport; the
+  prototype keeps its own, which mutation group T of `hold-persona.mjs`
+  proves). That engineer is installed in both hosts' caches, so holds turn on.
+- The driver path runs with shared creation on, since real lanes need it.
+  One case runs with it off: the commands and the persona alone, the child
+  in the lane's own checkout.
+
+No `claude` is spawned. Whether `claude --resume` of the lane's last session
+works stays [unverified]. The test pins the session id and the cwd that `hold`
+prints for it: the step's own, from the run ledger, and the lane.
+
+### Acceptance
+
+1. **A person's verb.** The run's step dispatches A in its lane. The owner
+   holds A while the step is still running, and the hold stays pending until
+   the run hands the lane over after the step ends. The person resumes the
+   verb, and its ensemble waits on a barrier. The release refuses while the
+   operation is open, naming it and the pending ensemble, and `status` names
+   the operation. After the peer ends, the release still names the pending
+   ensemble until the finalize settles it. The person's
+   `finish-verb` stays open and records refine. The release is taken, and the
+   session's last Stop snapshot follows it. The next run consumes the release
+   once, and its first step for A is `/engineer:refine`.
+2. **Routes.**
+   - When the person's next step is a commit, the driver's commit step commits
+     the person's file with the worker's.
+   - When the person records an owner decision, the release is consumed and
+     the driver parks the lane on the gate. A file at the runtime's
+     session-capture path, in the lane's ignored state root, is written again
+     after the release (a synthetic file; the runtime's writer does not run):
+     it is outside both digests.
+3. **A committed child.** The person's `/engineer:commit` stays an operation,
+   and the release refuses it. The engineer's real Stop hook then archives
+   the child and calls the orchestrator's writer for the parent's note, which
+   the test keeps waiting on the macro's file lock. Inside that slot the
+   archived child still carries the commit's operation, and the release
+   refuses it. Once the note is written the operation ends, the release is
+   compared, and the run halts `awaiting-landing` with the lane
+   `waiting-to-land` at the person's commit, no park.
+4. **Rejected.** A hand edit after the release rejects it. The lane parks
+   owner-choice, and `status` says why. Putting the tree back gives nothing
+   back: a relaunch keeps the same rejection, uncompared, and the same park,
+   and steps nothing. A new hold and release do give it back.
+5. **A dirty tree in no manifest.** A hand edit of a tracked file the
+   worker's manifest does not name is compared in. The resumed worker's
+   commit then stops at the staging-set gate, and the lane parks.
+6. **A peer run the session started itself** (`/engineer:peer-now`). While
+   the peer runs, and after it ends until the consultation's note, the
+   release refuses, naming the consultation's operation. The run's ledger
+   names no workflow. The next run consumes the release and steps the
+   child's recorded verb, then its commit, beside that ledger.
+7. **No child.** A hold set before the run keeps A from being dispatched,
+   and the lane is never created. A bootstrap on A's branch is refused
+   (item 5). The release is consumed, and the driver dispatches A.
+8. **Shared creation off.** `hold` waits on the dispatched verb's operation.
+   `status` completes the handoff once the operation closes. The release
+   refuses beside the person's operation, and its basis is the digest of the
+   child in the lane's checkout.
+
+Mutations: group T of `scripts/mutation-specs/impl-hold.mjs` (T11 is proved by
+`tests/orchestrator/test-autopilot-holds-cli.mjs`, the last-session lookup
+across macros).
+
+A test that fails while a run it started is still going stops that run and
+waits for it, and waits for every block it left running, before its
+directories go. The person's shell blocks make their temporary directories
+under the test's own `TMPDIR`.
+
+### What the persona's own tests hold
+
+The prototype's persona-side cases need no orchestrator. Each stays with the
+persona test that holds it:
+
+| Case | Test |
+|---|---|
+| An operation begun before activation (an entry, no record) | `tests/persona-pipeline/test-persona-operation-lifecycle.mjs` ("an entry opened before activation counts open; …") and the prototype's last acceptance case |
+| A writer cleared by the owner while it waited | `test-hold-resume-peer-operation.mjs`, `test-hold-gate-operation.mjs` ("cleared by the owner while it waited …") |
+| A commit whose archive failed | `test-hold-commit-operation.mjs` ("a commit whose archive gate fails stays open for the next Stop") |
+| The Stop orphan sweep beside a held lane | `test-hold-writer-inventory.mjs` ("the orphan sweep from another lane's session leaves a held lane's child") |
+
+### Findings
+
+- **Where the hold meets the dispatch.** The scripted worker creates the
+  child directly. It publishes no dispatch mark, so it opens no operation. A
+  hold set before that create makes the persona refuse it as a write of a
+  held lane's child outside an operation, and the step ends `worker-failed`
+  (measured). The real `/orchestrator:next` meets such a hold earlier, at its
+  hold gate before the mark. After the mark, the engineer's bootstrap
+  continues the mark's operation, and the handoff waits for it.
+  `tests/orchestrator/test-next-holds.mjs` holds both. So the cases above set
+  the hold once the step has recorded its child's next step, while the step
+  is still running. The step then runs to its end, as item 4 says.
+- **A branch is not worked ahead of its dispatch here.** A pending
+  subtask's branch is taken up at the baseline's tip, or at the tip a
+  consumed release of its current hold recorded when that tip contains the
+  baseline (ADR-0062 Decision 2, amendment of 2026-10-27; row 12 of
+  `judgeSubtask` in `lanes.mjs`). That path is tested in
+  `tests/orchestrator/test-autopilot-holds-cli.mjs`, not run here: in the
+  no-child case the person leaves no commit on the branch.

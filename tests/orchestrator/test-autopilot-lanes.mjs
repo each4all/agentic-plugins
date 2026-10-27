@@ -165,7 +165,7 @@ describe('creation', () => {
       gitIn(t.fx, t.fx.work, 'update-ref', 'refs/heads/feat/b', foreign);
       const b = t.create({ id: 'B', branch: 'feat/b', status: 'pending' });
       strictEqual(b.ok, false);
-      match(b.halt.detail, /feat\/b exists at .* which is not refs\/remotes\/origin\/main/);
+      match(b.halt.detail, /feat\/b is at .* which is not refs\/remotes\/origin\/main .*carries commits that are not on it/);
       strictEqual(t.worktree(t.lane('B')), null, 'no lane was created');
     } finally {
       t.fx.cleanup();
@@ -584,6 +584,32 @@ describe('reconciliation', () => {
       strictEqual(r.halt?.row, 4);
       match(r.halt.detail, /the baseline moved since the lane was cut/);
       ok(existsSync(t.lane('A')), 'the lane is kept for the owner');
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  // ADR-0062 Decision 2, amendment of 2026-10-27: commits the baseline lacks
+  // are never advised away; with the lane gone, row 12 judges the branch.
+  it('halts on a prepared lane whose branch carries commits the baseline lacks naming only the lane\'s removal, never the branch\'s (row 4)', async () => {
+    const t = await setup();
+    try {
+      const p = t.rawLane('A', 'feat/a');
+      writeFileSync(join(p, 'work.txt'), 'work\n');
+      gitIn(t.fx, p, 'add', 'work.txt');
+      gitIn(t.fx, p, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'work');
+      const r = await t.reconcile(viewOf([{ id: 'A', branch: 'feat/a', status: 'pending' }]));
+      strictEqual(r.halt?.row, 4);
+      match(r.halt.detail, /the lane's branch carries commits that are not on it: .*Keep the branch: remove only the lane \(git worktree unlock .* && git worktree remove .*\), then relaunch, and the branch is judged as one with no lane \(row 12\)/);
+      ok(!/remove the lane and its branch/.test(r.halt.detail), r.halt.detail);
+      // With no baseline ref (a preview gathers the facts without a fetch),
+      // whether the branch carries such commits cannot be told: it is kept.
+      gitIn(t.fx, t.fx.work, 'update-ref', '-d', 'refs/remotes/origin/main');
+      const view = viewOf([{ id: 'A', branch: 'feat/a', status: 'pending' }]);
+      const plan = LN.planReconciliation(LN.gatherLaneFacts({ home: t.home, checkout: t.fx.work, macroId: t.fx.macroId, view, baseline: 'main', env: t.fx.env }));
+      const h = plan.halts.find((x) => x.row === 4);
+      match(h?.detail ?? '', /cannot be told; fetch the baseline \(git fetch origin main\), then relaunch, and keep the branch/);
+      ok(!/remove the lane and its branch/.test(h.detail), h.detail);
     } finally {
       t.fx.cleanup();
     }
