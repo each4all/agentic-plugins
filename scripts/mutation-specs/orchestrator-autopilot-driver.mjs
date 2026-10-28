@@ -571,7 +571,7 @@ export const MUTATIONS = [
   {
     id: 'D8', file: DRIVER, tests: [TD],
     from: "      const d = decide(view, ctx);\n      if (d.outcome === 'completed') {",
-    to: "      if (seq > options.maxSteps) return finish('halted', { reason: 'budget', detail: 'cap' });\n      const d = decide(view, ctx);\n      if (d.outcome === 'completed') {",
+    to: "      if (seq > options.maxSteps) return await finish('halted', { reason: 'budget', detail: 'cap' });\n      const d = decide(view, ctx);\n      if (d.outcome === 'completed') {",
     why: 'completion on the last step the cap allowed is reported as a budget halt',
   },
   {
@@ -661,8 +661,8 @@ export const MUTATIONS = [
   },
   {
     id: 'D17', file: DRIVER, tests: [TD],
-    from: "      const r = budget.reserve();\n      if (!r.ok) return finish('halted', { reason: 'budget', detail: r.detail ?? r.why });",
-    to: "      const r = now() - startedAt > 86_400_000 ? { detail: 'the run reached its wall clock (86400 s)' } : budget.reserve();\n      if (!r.ok) return finish('halted', { reason: 'budget', detail: r.detail ?? r.why });",
+    from: "      const r = budget.reserve();\n      if (!r.ok) return await finish('halted', { reason: 'budget', detail: r.detail ?? r.why });",
+    to: "      const r = now() - startedAt > 86_400_000 ? { detail: 'the run reached its wall clock (86400 s)' } : budget.reserve();\n      if (!r.ok) return await finish('halted', { reason: 'budget', detail: r.detail ?? r.why });",
     why: 'a run clock comes back in the serial run: a run three days old halts budget though its steps and cost are far from their caps',
     killed_by: /a step started three days into the run gets the whole step timeout/,
   },
@@ -710,15 +710,15 @@ export const MUTATIONS = [
   },
   {
     id: 'D26', file: DRIVER, tests: [TD],
-    from: "      if (interrupted) {\n        budget.settle(reservation, { spawned: false });\n        reservation = null;\n        return finish('halted', { reason: 'interrupted', detail: 'the owner interrupted the run' });\n      }\n      if (drift.length > 0) {",
+    from: "      if (interrupted) {\n        budget.settle(reservation, { spawned: false });\n        reservation = null;\n        return await finish('halted', { reason: 'interrupted', detail: 'the owner interrupted the run' });\n      }\n      if (drift.length > 0) {",
     to: '      if (drift.length > 0) {',
     why: 'a signal during the drift check before a spawn starts the next worker anyway (C123)',
     killed_by: /starts no worker and no step, releases the step's reservation/,
   },
   {
     id: 'D27', file: DRIVER, tests: [TD],
-    from: "      if (interrupted) {\n        budget.settle(reservation, { spawned: false });\n        reservation = null;\n        return finish('halted', { reason: 'interrupted'",
-    to: "      if (interrupted) {\n        reservation = null;\n        return finish('halted', { reason: 'interrupted'",
+    from: "      if (interrupted) {\n        budget.settle(reservation, { spawned: false });\n        reservation = null;\n        return await finish('halted', { reason: 'interrupted'",
+    to: "      if (interrupted) {\n        reservation = null;\n        return await finish('halted', { reason: 'interrupted'",
     why: 'the interrupted step\'s reservation is never released (C123)',
     killed_by: /starts no worker and no step, releases the step's reservation/,
   },

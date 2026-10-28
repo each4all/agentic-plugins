@@ -36,6 +36,8 @@ const PLAN = 'plugins/orchestrator/commands/plan.md';
 const ENG_START = 'plugins/engineer/commands/start.md';
 const AP = 'plugins/orchestrator/adapters/claude/autopilot';
 const POLICY = `${AP}/policy.mjs`;
+// The owner gates the policy re-exports live in codes.mjs.
+const CODES = `${AP}/codes.mjs`;
 const DRIVER = `${AP}/driver.mjs`;
 const OBSERVE = `${AP}/observe.mjs`;
 const SCHED = `${AP}/scheduler.mjs`;
@@ -304,7 +306,7 @@ export const MUTATIONS = [
 
   // ---- A: the autopilot policy -----------------------------------------------
   {
-    id: 'A1', file: POLICY, tests: [TA],
+    id: 'A1', file: CODES, tests: [TA],
     from: "  'scope-routing', 'decide-conflict', 'peer-conflict', 'recurring-finding', 'staging-set', 'pr-handling',",
     to: "  'scope-routing', 'decide-conflict', 'recurring-finding', 'staging-set', 'pr-handling',",
     why: 'the driver halts owner-choice on an unknown gate instead of awaiting-owner:peer-conflict',

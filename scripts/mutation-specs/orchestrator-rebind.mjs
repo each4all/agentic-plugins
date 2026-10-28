@@ -562,7 +562,7 @@ export const MUTATIONS = [
   },
   {
     id: 'B15', file: DRIVER, tests: [TA],
-    from: "        if (told.lingering) return finish('halted', { reason: 'worker-failed', detail: told.detail });\n",
+    from: "        if (told.lingering) return await finish('halted', { reason: 'worker-failed', detail: told.detail });\n",
     to: '',
     killed_by: [/a delivery whose group outlived SIGKILL halts the run, which keeps its locks/],
     why: 'a serial run halts on a lingering delivery group as on a note it could not tell, as the owner\'s choice',
@@ -1085,8 +1085,8 @@ export const MUTATIONS = [
   },
   {
     id: 'B31', file: DRIVER, tests: [TA],
-    from: '        if (after) {\n          return finish(\'halted\', {',
-    to: '        if (false) {\n          return finish(\'halted\', {',
+    from: '        if (after) {\n          return await finish(\'halted\', {',
+    to: '        if (false) {\n          return await finish(\'halted\', {',
     killed_by: [/a note reported told that the macro still holds stops the step \(serial\), not a second delivery/],
     why: 'a serial run whose note was reported told while the macro still holds it is told again, in a loop',
   },

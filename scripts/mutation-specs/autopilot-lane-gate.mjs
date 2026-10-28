@@ -227,8 +227,8 @@ export const MUTATIONS = [
   },
   {
     id: 'S89', file: SCHED, tests: [TG],
-    from: "        if (compareKept(rec, fp) === 'changed') why = 'its record changed';\n      }",
-    to: "        if (compareKept(rec, fp) === 'changed') why = 'its record changed';\n        else if (s) s.judged = s.digest;\n      }",
+    from: "        if (compareKept(rec, fp) === 'changed') [why, cause] = ['its record changed', 'record-changed'];\n      }",
+    to: "        if (compareKept(rec, fp) === 'changed') [why, cause] = ['its record changed', 'record-changed'];\n        else if (s) s.judged = s.digest;\n      }",
     why: 'a lane judged unchanged takes as judged a digest a tick read during the judging look: a gate cleared then never wakes it',
     killed_by: /a gate cleared after the judging look read the lane/,
   },
@@ -262,8 +262,8 @@ export const MUTATIONS = [
   },
   {
     id: 'S90', file: SCHED, tests: [TE],
-    from: "        if (compareKept(rec, fp) === 'changed') why = 'its record changed';\n      }",
-    to: "        if (compareKept(rec, fp) === 'changed') why = 'its record changed';\n        else if (s && fp.unread) s.judged = null;\n      }",
+    from: "        if (compareKept(rec, fp) === 'changed') [why, cause] = ['its record changed', 'record-changed'];\n      }",
+    to: "        if (compareKept(rec, fp) === 'changed') [why, cause] = ['its record changed', 'record-changed'];\n        else if (s && fp.unread) s.judged = null;\n      }",
     why: 'a park whose fingerprint cannot be read, which only a release resumes, is judged again at every tick: the run never reaches its end',
     killed_by: /a park whose cause lies outside its record waits for a release only/,
   },
@@ -302,8 +302,8 @@ export const MUTATIONS = [
   },
   {
     id: 'S91', file: SCHED, tests: [TE],
-    from: "        if (compareKept(rec, fp) === 'changed') why = 'its record changed';\n      }",
-    to: "        if (compareKept(rec, fp) === 'changed') why = 'its record changed';\n        else if (s && fp.unread) s.judged = null;\n      }",
+    from: "        if (compareKept(rec, fp) === 'changed') [why, cause] = ['its record changed', 'record-changed'];\n      }",
+    to: "        if (compareKept(rec, fp) === 'changed') [why, cause] = ['its record changed', 'record-changed'];\n        else if (s && fp.unread) s.judged = null;\n      }",
     why: 'a parked lane whose judging look cannot be read is asked again at every tick: the run never reaches its end',
     killed_by: /but whose looks now fail, is not asked again at every tick/,
   },
@@ -330,8 +330,8 @@ export const MUTATIONS = [
   },
   {
     id: 'S96', file: SCHED, tests: [TG],
-    from: '    await parkOps;\n    const code = c.finish(',
-    to: '    const code = c.finish(',
+    from: "    await parkOps;\n    // The driver's finish",
+    to: "    // The driver's finish",
     why: 'the run returns, and its locks go, before the park changes it queued are done: a settled marker outlives the run',
     killed_by: /the run returns only once the park changes it queued are done/,
   },
