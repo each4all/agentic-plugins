@@ -106,7 +106,7 @@ const T_SERIAL_ERROR = /a serial run that stops on an error before any halt reco
 const T_HALT_UNIT = /an awaiting-landing halt lists the run's list as its end left it, not the list of the look that decided it/;
 
 const MERGE_CHECK = '    const answer = mergeCheck(scratch, a, b, { timeout: r.timeout });';
-const AFTER_STEP = "      // A commit stands whatever the verdict on its step.\n      reportLanding(view, seq);\n      if (verdict) return finish('halted', verdict);";
+const AFTER_STEP = "      // A commit stands whatever the verdict on its step.\n      reportLanding(view, seq);\n      if (verdict) return await finish('halted', { ...verdict, seq });";
 const CAPTURE = "    .map((w) => ({ ...w, commit: resolveCommit(repoRoot, typeof w.branch === 'string' && w.branch ? `refs/heads/${w.branch}` : null, env) }))";
 const BASE_CHECK = '        base: { ref: baseRef, commit: baseCommit, ...check(baseCommit, e.commit, e.commit ? baseMissing : noCommit(e)) },';
 const REPORT = '        landing = reportLandingReady({ repoRoot, mainRoot, runDir, runId, seq, view: v, out, now, cache: mergeChecks, env, notice });';
@@ -131,7 +131,7 @@ export const MUTATIONS = [
   {
     id: 'D1', file: DRIVER, tests: [T],
     from: AFTER_STEP,
-    to: "      if (verdict) return finish('halted', verdict);",
+    to: "      if (verdict) return await finish('halted', { ...verdict, seq });",
     why: 'a commit is reported only when a run starts: C118 again, a commit waits unreported while the run dispatches',
     killed_by: T_DISPATCHING,
   },
@@ -145,7 +145,7 @@ export const MUTATIONS = [
   {
     id: 'D3', file: DRIVER, tests: [T],
     from: AFTER_STEP,
-    to: "      if (verdict) return finish('halted', verdict);\n      reportLanding(view, seq);",
+    to: "      if (verdict) return await finish('halted', { ...verdict, seq });\n      reportLanding(view, seq);",
     why: 'a commit whose step the driver judges failed or interrupted goes unreported until the next run',
     killed_by: T_FAILED,
   },

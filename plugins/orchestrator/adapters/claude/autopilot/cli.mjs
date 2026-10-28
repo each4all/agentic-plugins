@@ -18,6 +18,9 @@
 //   hold <subtask>      hold a lane for a person (ADR-0068 Decision 2)
 //   writer-clear <subtask> --operation <id>
 //                       the owner's word that an operation's session is gone
+//   events (--macro <id> | --checkout <dir>) --after <run-id>:<seq> [--follow]
+//                       print a run's events after a cursor, and with --follow
+//                       watch for more (ADR-0068 Decision 4, events-reader.mjs)
 //   heavy -- <command>  run a command under the repository's heavy-work lock
 //                       (ADR-0068 Decision 6, lib/heavy-run.mjs); exempt from
 //                       the host refusal below, since the lock is host-neutral
@@ -33,13 +36,14 @@
 // Claude-only (D9): refused on any other host.
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, fstatSync, readFileSync, realpathSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import readline from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 
 import { expandArgsFile } from '../../../scripts/lib/args-file.mjs';
+import { absorbOutputErrors } from '../../../scripts/lib/cli-entry.mjs';
 import { holderName, holderOf } from '../../../scripts/lib/heavy-lock.mjs';
 import { HeavyUsageError, parseHeavy, runHeavy } from '../../../scripts/lib/heavy-run.mjs';
 import { describeAdmission } from '../../../scripts/lib/run-locks.mjs';
@@ -48,12 +52,14 @@ import { discardCmd, holdCmd, holdsStatusLines, releaseHoldCmd, writerClearCmd }
 import { isAutopilotRun } from '../../../scripts/state.mjs';
 import { MIN_STEP_BUDGET_USD } from './budget.mjs';
 import { cleanupDeadRuns } from './dead-runs.mjs';
+import { eventsPath } from './events.mjs';
+import { parseCursor, readEvents } from './events-reader.mjs';
 import { DEFAULTS, posture, preflight, startRun } from './driver.mjs';
 import { landingLabel } from './landing-ready.mjs';
 import { gatherLaneFacts, laneHome, lanePath, lanesRequirements, planReconciliation } from './lanes.mjs';
 import { launchProposals, proposalLines, reportEntries } from './launch-proposals.mjs';
 import {
-  autopilotDir, holderAlive, listLocks, listRuns, macroLockPath, mainWorktreeRoot, provablySame, readLockEntries, readOpenRun, readRun, relaunchCommand,
+  autopilotDir, holderAlive, listLocks, listOpenRuns, listRuns, macroLockPath, mainWorktreeRoot, provablySame, readLockEntries, readOpenRun, readRun, relaunchCommand,
 } from './ledger.mjs';
 import { deletePark, readPark, readParks, retiring } from './parks.mjs';
 import { resolveRoots } from './roots.mjs';
@@ -66,13 +72,13 @@ import {
 import { MAX_STEP_TIMEOUT_SEC, terminateGroup } from './worker.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const SUBCOMMANDS = ['preview', 'start', 'status', 'stop', 'release', 'hold', 'writer-clear'];
+const SUBCOMMANDS = ['preview', 'start', 'status', 'stop', 'release', 'hold', 'writer-clear', 'events'];
 // The subcommands that name a subtask as their one positional argument.
 const SUBTASK_SUBCOMMANDS = ['release', 'hold', 'writer-clear'];
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,63}$/;
 
-export const USAGE = `Usage: autopilot [preview|start|status|stop|release|hold|writer-clear] [options]
+export const USAGE = `Usage: autopilot [preview|start|status|stop|release|hold|writer-clear|events] [options]
        autopilot heavy [--purpose <text>] [--repo <dir>] [--declaration-ref <rev>] -- <command> [args...]
 
   preview                 observe, decide and print the posture; spawns nothing (default)
@@ -94,6 +100,10 @@ export const USAGE = `Usage: autopilot [preview|start|status|stop|release|hold|w
                           hold a lane for a person: the driver leaves it alone once it shows held
   writer-clear <subtask> --macro <id> --operation <operation id>
                           a persona operation whose session is gone no longer keeps the lane
+  events (--macro <id> | --checkout <dir>) --after <run-id>:<seq> [--after ...] [--follow]
+                          print the events of a macro's runs (or a verb chain's, in that checkout) after
+                          the cursor, one JSON line each, and with --follow keep watching; <run-id>:0 is
+                          from that run's first line, whenever it arrives (the Monitor recipe)
   heavy -- <command>      run a command under the repository's heavy-work lock, one heavy job at a time
                           across worktrees (heavy --help for its options and exit codes)
 
@@ -151,6 +161,7 @@ export function parseCli(argv) {
     stepTimeoutSec: DEFAULTS.stepTimeoutSec,
     forced: null, forcedText: null, forcedPairs: null, lanes: 1, notifyLocal: false, json: false, help: false,
     subtask: null, hold: null, operation: null, discardUnreadable: false,
+    checkout: null, after: [], follow: false,
   };
   // --lane <id> --next "<step>" pairs, in order; a --next with no --lane
   // before it names no lane.
@@ -216,6 +227,15 @@ export function parseCli(argv) {
       case '--hold': o.hold = value(); break;
       case '--operation': o.operation = value(); break;
       case '--discard-unreadable': o.discardUnreadable = flag(); break;
+      case '--checkout': o.checkout = value(); break;
+      case '--after': {
+        const raw = value();
+        const c = parseCursor(raw);
+        if (!c) throw new UsageError(`--after ${JSON.stringify(raw)} is not <run-id>:<seq>`);
+        o.after.push(c);
+        break;
+      }
+      case '--follow': o.follow = flag(); break;
       case '--help': case '-h': o.help = true; break;
       default: throw new UsageError(`unknown option ${JSON.stringify(word)}`);
     }
@@ -231,6 +251,9 @@ export function parseCli(argv) {
   if (SUBTASK_SUBCOMMANDS.includes(o.sub) && o.subtask === null) throw new UsageError(`${o.sub} needs the subtask whose lane it acts on`);
   if (SUBTASK_SUBCOMMANDS.includes(o.sub) && o.macro === null) throw new UsageError(`${o.sub} needs --macro <id>`);
   if (o.sub === 'writer-clear' && o.operation === null) throw new UsageError('writer-clear needs --operation <operation id>');
+  if (o.sub !== 'events' && (o.checkout !== null || o.after.length > 0 || o.follow)) throw new UsageError('--checkout, --after and --follow apply only to events');
+  if (o.sub === 'events' && (o.macro === null) === (o.checkout === null)) throw new UsageError('events needs one of --macro <id> or --checkout <dir>');
+  if (o.sub === 'events' && o.after.length === 0) throw new UsageError('events needs --after <run-id>:<seq> (<run-id>:0 for a run\'s first line)');
   if (o.models !== null && !MODEL_PLANS.includes(o.models)) throw new UsageError(`--models must be one of ${MODEL_PLANS.join(', ')}`);
   if (o.model !== null && !MODEL_RE.test(o.model)) throw new UsageError(`--model ${JSON.stringify(o.model)} is not a model name`);
   if (o.effort !== null && !EFFORTS.includes(o.effort)) throw new UsageError(`--effort must be one of ${EFFORTS.join(', ')}`);
@@ -595,8 +618,14 @@ async function statusCmd(o, repoRoot, out, err) {
   const driverAlive = liveEntries.length > 0 && await provablySame(liveEntries[0].pid, liveEntries[0].fingerprint);
   // A run that is not live but keeps its open-run record has not been
   // cleaned up after yet (ADR-0067 Decision 6, Locks).
+  // A record whose own driver lives is a run ending (its locks released, its
+  // last handoffs and run-ended under way), not one to clean up after.
   let cleanupPending = false;
-  try { cleanupPending = !live && readOpenRun(mainWorktreeRoot(repoRoot), id) !== null; } catch { /* no record */ }
+  if (!live) {
+    let left = null;
+    try { left = readOpenRun(mainWorktreeRoot(repoRoot), id); } catch { /* no record */ }
+    cleanupPending = left !== null && !(await recordDriverAlive(left));
+  }
   // An error, or a group that outlived SIGKILL, leaves the record too.
   const pendingText = cleanupPending ? '; its cleanup is pending: /orchestrator:autopilot stop, or the next run of its macro, cleans up after it' : '';
   const liveness = r.run.status === 'running'
@@ -669,6 +698,10 @@ const groupLabel = (w) => {
   const where = [w.task ? `task ${w.task}` : null, w.lane ? `lane ${w.lane}${w.cwd ? `, ${w.cwd}` : ''}` : null].filter(Boolean);
   return `${w.pid}${where.length ? ` (${where.join(', ')})` : ''}`;
 };
+
+// Whether the process an open-run record names is still its driver (its pid
+// and fingerprint, as the record has them).
+const recordDriverAlive = (rec) => holderAlive({ pid: rec.pid, fingerprint: rec.fingerprint, worker: null });
 
 async function stopCmd(o, repoRoot, out, err, { wait = 30_000, env = process.env } = {}) {
   const mainRoot = mainWorktreeRoot(repoRoot);
@@ -756,6 +789,39 @@ async function stopCmd(o, repoRoot, out, err, { wait = 30_000, env = process.env
     runs.get(l.holder.run_id).push(l.holder);
   }
   if (runs.size === 0) {
+    // A run in scope past its locks whose run.json records its end and whose
+    // record's own process is still its driver is ending (its last handoffs,
+    // notification and run-ended), not dead: stop waits for its record to go,
+    // within its bound, before it cleans up after anything (ADR-0068
+    // Decision 4). One still running, its lock unread, is the cleanup's to
+    // report live.
+    const ended = (record) => {
+      try {
+        const run = JSON.parse(readFileSync(join(record.run_dir, 'run.json'), 'utf8'));
+        return run?.run_id === record.run_id && !['running', 'draining'].includes(run.status);
+      } catch {
+        return false;
+      }
+    };
+    const ending = async () => {
+      const left = [];
+      for (const { record } of listOpenRuns(mainRoot)) {
+        if (!record || (o.macro && record.macro_id !== o.macro) || typeof record.run_dir !== 'string' || !ended(record)) continue;
+        if (await recordDriverAlive(record)) left.push(record.run_id);
+      }
+      return left;
+    };
+    const deadline = Date.now() + wait;
+    let left = await ending();
+    if (left.length > 0) out(`run ${left.join(', ')} is ending; waiting for it`);
+    while (left.length > 0 && Date.now() < deadline) {
+      await new Promise((r) => { setTimeout(r, 200); });
+      left = await ending();
+    }
+    if (left.length > 0) {
+      err(`✗ run ${left.join(', ')} is still ending: its driver lives past its locks; run stop again once it has exited`);
+      return 1;
+    }
     out('no autopilot run is active');
     return (await cleanUp(o.macro)).code;
   }
@@ -783,6 +849,14 @@ async function stopCmd(o, repoRoot, out, err, { wait = 30_000, env = process.env
       let left = null;
       try { left = readOpenRun(mainRoot, holder.run_id); } catch { /* none */ }
       if (left === null) { out('it stopped; its halt is recorded as interrupted'); return 0; }
+      // A driver that ends cleanly releases its locks first, then runs its
+      // last handoffs, its notification and its run-ended, and only then
+      // removes the record (ADR-0068 Decision 4): while the record's own
+      // process lives, it is ending, not dead.
+      if (await recordDriverAlive(left)) {
+        await new Promise((r) => { setTimeout(r, 200); });
+        continue;
+      }
       out('its driver exited without recording its end; cleaning up after it');
       return (await cleanUp(holder.macro_id ?? o.macro, holder.run_id)).code;
     }
@@ -880,7 +954,26 @@ async function releaseCmd(o, repoRoot, env, out, err, hooks = {}) {
   return 0;
 }
 
-export async function main(argv = process.argv.slice(2), { env = process.env, io = process, out = (s) => process.stdout.write(`${s}\n`), err = (s) => process.stderr.write(`${s}\n`), hooks = {} } = {}) {
+// The process's own printer of one stream. A write that fails (EPIPE from a
+// reader gone, EIO from a closed terminal) is no throw: the stream reports it
+// later as an 'error' event, which would kill the driver wherever it stood,
+// short of its run-ended or past it with another exit than its own.
+// absorbOutputErrors keeps that error on the stream, and every later line is
+// dropped: the run's outcome is its records', whatever its output met
+// (ADR-0068 Decision 4). `failed` says whether a write has failed, and
+// `stream` is the stream, for a command whose output is its whole work (the
+// events reader, which stops once nobody reads it).
+export function printerOf(stream) {
+  absorbOutputErrors([stream]);
+  let failed = false;
+  stream.on('error', () => { failed = true; });
+  const print = (s) => { if (!failed) stream.write(`${s}\n`); };
+  print.stream = stream;
+  Object.defineProperty(print, 'failed', { get: () => failed });
+  return print;
+}
+
+export async function main(argv = process.argv.slice(2), { env = process.env, io = process, out = printerOf(process.stdout), err = printerOf(process.stderr), hooks = {} } = {}) {
   // The wrapper parses its own words, and nothing after its `--`; it is
   // exempt from the host and autopilot refusals below: the lock is
   // repository-level and host-neutral, and ADR-0063 D9 is about the driver.
@@ -921,6 +1014,7 @@ export async function main(argv = process.argv.slice(2), { env = process.env, io
     case 'status': return statusCmd(o, repoRoot, out, err);
     case 'stop': return stopCmd(o, repoRoot, out, err, { env });
     case 'release': return releaseCmd(o, repoRoot, env, out, err, hooks);
+    case 'events': return eventsCmd(o, repoRoot, out, hooks);
     case 'hold':
     case 'writer-clear': {
       if (isAutopilotRun(env)) {
@@ -932,6 +1026,131 @@ export async function main(argv = process.argv.slice(2), { env = process.env, io
     }
     default: return 1;
   }
+}
+
+/**
+ * ADR-0068 Decision 4, item 6 — a macro's event file (or a verb chain's, in
+ * its checkout), read after the cursors (events-reader.mjs). The reader finds
+ * a run's records from its run-started line, its open-run record, or, for a
+ * run with no line on file, the checkouts of the repository. `hooks.events`
+ * are test seams (follow's signal and intervals).
+ */
+async function eventsCmd(o, repoRoot, out, hooks = {}) {
+  const checkout = o.checkout === null ? null : (repoRootOf(resolve(o.checkout)) ?? resolve(o.checkout));
+  const mainRoot = mainWorktreeRoot(checkout ?? repoRoot);
+  const file = eventsPath({ mainRoot, macroId: o.macro, checkout });
+  // A reader whose output is gone (Monitor stopped, a pipe's reader closed)
+  // stops following at its next poll (outputProbe): its printer drops every
+  // line, and polling on would only keep the process alive for nobody.
+  const checkouts = checkoutsOf(mainRoot, checkout);
+  return readEvents({
+    file, cursors: o.after, follow: o.follow, out, runFacts: runFactsFor({ mainRoot, checkout, checkouts }),
+    isRoot: checkouts.isRoot, outputOpen: outputProbe(out), ...(hooks.events ?? {}),
+  });
+}
+
+// The repository's checkouts, as `git worktree list` names them (the main
+// worktree, and --checkout, when it cannot list them), compared by their real
+// paths: a path field of an event is printed only when it names a record
+// under one of them, and null otherwise (events.mjs shownEvent), so no word
+// of a path's own reaches the session. A directory not among them
+// lists them again, once per directory, so a checkout added since the arm (a
+// relaunch from a new worktree) is found.
+function checkoutsOf(mainRoot, checkout) {
+  const real = (p) => { try { return realpathSync(p); } catch { return p; } };
+  let list = null;
+  let known = new Set();
+  const misses = new Set();
+  const read = () => {
+    const r = spawnSync('git', ['-C', mainRoot, 'worktree', 'list', '--porcelain'], { encoding: 'utf8', timeout: 30_000 });
+    list = r.status === 0 ? r.stdout.split('\n').filter((l) => l.startsWith('worktree ')).map((l) => l.slice('worktree '.length)) : [mainRoot];
+    known = new Set([...list, mainRoot, ...(checkout ? [checkout] : [])].map(real));
+  };
+  return {
+    list: () => { if (!list) read(); return list; },
+    isRoot: (dir) => {
+      if (!list) read();
+      const r = real(dir);
+      if (known.has(dir) || known.has(r)) return true;
+      if (misses.has(r)) return false;
+      read();
+      if (known.has(r)) return true;
+      misses.add(r);
+      return false;
+    },
+  };
+}
+
+// A follow's probe of its output at each poll (ADR-0068 Decision 4): gone
+// once a line's write failed (the printer's `failed`), and, while the file is
+// idle, once a write of no bytes to a stdout that is a pipe or socket fails
+// (EPIPE: its reader is gone), where the system checks the reader first
+// (macOS); Linux takes a null write to a pipe as done, so there a follow
+// notices a gone reader only at its next line. A terminal or a file is not
+// written to.
+export function outputProbe(print, fd = 1) {
+  let probed = false;
+  try { probed = print.stream === process.stdout && (fstatSync(fd).isFIFO() || fstatSync(fd).isSocket()); } catch { /* not probed */ }
+  return () => {
+    if (print.failed) return false;
+    if (!probed) return true;
+    try {
+      writeSync(fd, Buffer.alloc(0));
+      return true;
+    } catch (e) {
+      return !['EPIPE', 'EIO', 'ENOTCONN'].includes(e?.code);
+    }
+  };
+}
+
+// What the reader needs of a run: its run.json, whether its driver lives
+// (its open-run record's process, or a lock entry of it: a run holds its
+// locks before it writes the record), whether that record is there, whether
+// a cleanup of it is under way.
+function runFactsFor({ mainRoot, checkout, checkouts }) {
+  return async (runId, { runDir }) => {
+    let open = null;
+    try { open = readOpenRun(mainRoot, runId); } catch { /* none */ }
+    const dirs = [runDir, open?.run_dir, ...(checkout ? [checkout] : checkouts.list()).map((w) => join(autopilotDir(w), runId))];
+    let found = null;
+    for (const d of dirs.filter((x) => typeof x === 'string')) {
+      const p = join(d, 'run.json');
+      try {
+        const run = JSON.parse(readFileSync(p, 'utf8'));
+        if (run?.run_id === runId) { found = { runJsonPath: p, run }; break; }
+      } catch { /* not there */ }
+    }
+    if (!found) return null;
+    let live = open ? await holderAlive({ pid: open.pid, fingerprint: open.fingerprint, worker: null }) : false;
+    if (!live) {
+      try {
+        for (const l of listLocks(mainRoot, checkout)) {
+          if (l.holder?.run_id === runId && await holderAlive({ pid: l.holder.pid, fingerprint: l.holder.fingerprint, worker: null })) live = true;
+        }
+      } catch {
+        live = true; // a lock that cannot be read may hide it: never judged dead
+      }
+    }
+    // The record again, read after the locks: a driver writes it before it
+    // releases them and removes it after its run-ended, so a record written
+    // since the first read and locks released before the scan are not both
+    // missed.
+    if (!live) {
+      let again = null;
+      try { again = readOpenRun(mainRoot, runId); } catch { /* none */ }
+      if (again) {
+        open = again;
+        live = await holderAlive({ pid: again.pid, fingerprint: again.fingerprint, worker: null });
+      }
+    }
+    let cleaning = false;
+    try {
+      for (const e of readLockEntries(join(autopilotDir(mainRoot), 'open', `${runId}.cleanup.lock`))) if (await holderAlive(e.holder)) cleaning = true;
+    } catch {
+      cleaning = true;
+    }
+    return { ...found, live, open: Boolean(open), cleaning };
+  };
 }
 
 // For tests: the wrapper's parser, reached through this entry.

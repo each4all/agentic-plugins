@@ -27,6 +27,13 @@
 //      as spent in the run's run.json, once, by its seq, and a finished step
 //      whose charge the driver had no time to write there;
 //   3. record the run halted (interrupted), and only then remove the record.
+//      A run that took part in the event file (its run.json's `events`,
+//      events.mjs) gets its `run-ended` there first, marked `cleanup`, with
+//      the outcome run.json records: a run that recorded its end and died
+//      before its line keeps that end. The writer appends it only when the
+//      file holds none of that run, so a cleanup retried after a crash, or
+//      one that meets the driver's own line, writes no second one
+//      (ADR-0068 Decision 4).
 //
 // Each part is idempotent, and whoever cleans up holds the record's cleanup
 // lock (`open/<run-id>.cleanup.lock`, beside it), so a `stop` and a starting
@@ -44,6 +51,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { listOpenRuns, openRunsDir, readRun, relaunchCommand, removeOpenRun, writeHalt, writeRun } from './ledger.mjs';
+import { createEventWriter, eventsPath, isHaltCode, RUN_STATUSES } from './events.mjs';
 import { ENGINEER_STATE_HOMES } from './observe.mjs';
 import {
   acquireLock, holderAlive, LockHeldError, macroLockPath, processFingerprint, readLockEntries, worktreeLockPath,
@@ -394,7 +402,12 @@ async function cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, 
     };
     // A run that died draining (its lanes' in-flight steps finishing after a
     // halt) died running too.
+    // Whether halt.json holds the halt run.json records: the driver's own, or
+    // one this cleanup writes; a halt.json the driver wrote before it died
+    // recording the end is another halt (ADR-0068 Decision 4).
+    let haltFile = run.status === 'halted' && Boolean(r.halt);
     if (complete && (run.status === 'running' || run.status === 'draining')) {
+      haltFile = !r.halt;
       const last = unfinished.at(-1) ?? null;
       run.status = 'halted';
       run.ended_at = at;
@@ -412,6 +425,7 @@ async function cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, 
       if (!r.halt) writeHalt(r.dir, run.halt);
     }
     writeRun(r.dir, run);
+    if (complete && !publishEnd({ mainRoot, record, run, dir: r.dir, now, haltFile })) writeRun(r.dir, run);
     if (complete) removeOpenRun(mainRoot, runId);
     return {
       run_id: runId,
@@ -426,6 +440,28 @@ async function cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, 
       try { fs.rmdirSync(lockDir); } catch { /* not empty, or gone */ }
     }
   }
+}
+
+// A dead run's `run-ended`, once, for a run that took part in the event
+// file, after its run.json records the end it names. False when the write
+// failed: it is counted in run.json, which the caller writes again.
+function publishEnd({ mainRoot, record, run, dir, now, haltFile }) {
+  if (!run.events || typeof run.events !== 'object') return true;
+  const macroId = run.macro_id ?? record.macro_id ?? null;
+  let file;
+  try {
+    file = eventsPath({ mainRoot, macroId, checkout: record.checkout });
+  } catch {
+    file = null;
+  }
+  const count = () => { run.events.failed_writes = (Number.isInteger(run.events.failed_writes) ? run.events.failed_writes : 0) + 1; };
+  if (!file) { count(); return false; }
+  const status = RUN_STATUSES.includes(run.status) ? run.status : 'halted';
+  return createEventWriter({ file, runId: run.run_id, macroId, now, onFailure: count }).emit('run-ended', {
+    status, reason: isHaltCode(run.halt?.reason) ? run.halt.reason : null,
+    exit: status === 'completed' ? 0 : status === 'error' ? 1 : 2,
+    pointer: path.join(dir, haltFile ? 'halt.json' : 'run.json'), cleanup: true,
+  }).ok;
 }
 
 // The lines a cleanup prints for one record.

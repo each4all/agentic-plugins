@@ -4121,3 +4121,198 @@ creation off); its README maps the persona-side cases to the persona tests
 that hold them. *Hand-off.* `holdGate` is exported for verify-exec (Decision
 5), which is to read it before each machine job's start; verify-exec wires
 it, not this release.
+
+## Implementation note 2026-10-28 — impl-events (Decision 4)
+
+The orchestrator's implementation of Decision 4. It adds no guarantee; it
+fixes what the decision left to the implementation (the file's lock, the
+next `seq`, the run that took part, the reader's terminal rule) and names
+where each event is published.
+
+**E1. The writer** (`adapters/claude/autopilot/events.mjs`). The file's lock is
+a file beside it, `<file>.lock`, holding its writer's pid and a token, written
+to a file of its own and linked into place (which fails when a lock is
+there), so it appears whole or not at all and no live writer's lock is ever
+read empty. It is taken for one read and one append and waited for up to 2 s
+on a clock that moves (never the run's event clock, which a test may freeze),
+the bound checked on every retry, whatever sent it round.
+One whose pid is dead, or one that does not read and is older than 2 s, is
+taken over, removed only while it still holds what was judged (one that
+cannot be removed, its directory not writable, is waited on to the bound,
+then the write fails and is counted); one whose
+writer lives is never taken, however old (a writer suspended holding it
+still holds it), and a writer's release removes the lock only while it holds
+its own token. The
+writer is synchronous, so a process's lines are in the order of its calls.
+Under the lock it reads the file and takes as its run's next `seq` one above
+the highest it has chosen, its write landed or not, and above every parseable
+line of its run on file, a last line with no newline that holds complete JSON
+included; a write refused at the lock chose none. `run-ended` is appended only
+when the file holds none of the run, and `lane-released` only when no line
+holds its release id, each counted only when it is a line a reader delivers
+(E5): a forged one suppresses nothing; a writer that finds one appends nothing for it but ends
+a torn last line, so a reader holding that line delivers it. A writer closes at
+its run's `run-ended`, written, refused or failed, and the driver writes that
+line last: after the last handoffs once its locks are gone (Decision 2, item
+4), whose `lane-held` is the run's, and after its final output, but before
+its open-run record goes. That output never fails the run: the CLI's printer
+keeps a write's error on its stream (`absorbOutputErrors`: an EPIPE from a
+reader gone, an EIO from a closed terminal, both reported after the write as
+an 'error' event, never thrown) and drops the line, so the driver neither dies
+short of its `run-ended` nor exits with another code than the one that line
+records. Only an embedding caller's printer that throws can still end the run
+`error`, exit 1, before the line. A run that ends before it writes that record (a halt or
+an error at its start, after it joined the file) has no last handoffs and
+keeps its locks until its `run-ended` is written, so a lock entry names its
+live driver until then. A lock entry that cannot be removed never stops that
+line: it is printed (on the error path, passed over for the run's own error),
+and names a driver judged gone once it exits. The driver's signal handlers
+stay until after the line, so a signal while the end is notified (a closed
+terminal) interrupts nothing rather than killing the driver short of it. Once
+it is written nothing changes the run's outcome: what is left (a lock entry,
+the open-run record) is removed under a guard, and a warning that cannot be
+printed is dropped. No call throws: a failure is returned and counted.
+Between the release of its locks and the removal of its record, a run that
+ends cleanly still runs (its last handoffs, its notification, its
+`run-ended`): `stop` and `status` take a record whose own process is still
+its driver (its pid and fingerprint) for a run ending, never one to clean up
+after, so stop waits for it within its bound, whether it signalled the run
+or found it past its locks already, and status shows no cleanup pending.
+
+**E2. The fields.** Each kind's own, against an allow-list; anything else, a
+value outside its set or text, is refused and counted as a failed write. The
+codes come from `codes.mjs` (the halt reasons and owner gates the policy
+shares) and `events.mjs` (the rest); ids by alphabet (run, macro, subtask; a
+hold's and a release's 16 hex; a commit's 40 or 64 hex). A path field
+(`run_dir`, `pointer`, `step_record`) names a record the driver writes, and
+nothing else: a checkout, absolute and normalized, with no control, format
+(a bidi override) or line-separator character, then its
+`.agentic-plugins/runs/autopilot/` tree and under it a run's directory
+(`<run-id>`, `run_dir` only), one of its records (`<run-id>/` and `run.json`,
+`halt.json`, `steps.jsonl`, `lanes.jsonl` or `landing.jsonl`), the macro's
+landing log (`landing/<macro-id>.jsonl`) or a lane's kept park
+(`holds/<macro-id>/parks/<subtask-id>.json`). `stall`'s `verdict` is one of
+Decision 3's `active`, `stalled`, `unknown`, and its `mode` one of `log`,
+`on`; impl-stall adds a code to those sets before it writes it.
+
+| Kind | Fields |
+|---|---|
+| `run-started` | `lanes`, `detector` (`off` until `impl-stall`), `run_dir`, `pointer` (run.json) |
+| `halt` | `reason`, `step` (or null), `pointer` (run.json), `step_record` (steps.jsonl, or null) |
+| `lane-parked` | `reason`, `step` (or null), `kept`, `pointer` (the kept park, or lanes.jsonl when the records could not take it) |
+| `lane-resumed` | `cause` (`record-changed`, `release`, `hold-ended`, `forced`), `pointer` (lanes.jsonl) |
+| `lane-held` | `hold_id`, `pointer` (lanes.jsonl) |
+| `lane-released` | `hold_id`, `release_id`, `verdict` (`consumed`, `rejected`), `pointer` (lanes.jsonl) |
+| `step-failed` | `step`, `reason` (a halt code, or `error`), `abort` (the worker's kind, or null), `pointer` (steps.jsonl) |
+| `commit-finished` | `step`, `commit`, `readiness` (`ready`, `needs-sync`, `unknown`), `pointer` (this run's landing.jsonl when the report appended the line, else the macro's landing log) |
+| `stall` | `impl-stall`'s: `step`, `verdict` (`active`, `stalled`, `unknown`), `mode` (`log`, `on`), `waiting`, `quiet_ms`, `window_cpu_ms`, `pointer` |
+| `run-ended` | `status` (`completed`, `halted`, `error`), `reason` (or null), `exit`, `pointer` (halt.json for a run that halted, else run.json), `cleanup`, `terminal: true` |
+
+`hold-ended` is a cause item 3 does not name: a lane a relaunch passed by whose
+hold ended with no release (a pending hold withdrawn, a hold retired or
+orphaned) is the run's again, which is neither a release nor a change of its
+record; one given back by its consumed release is `release`. Each path that
+resumes a lane names its cause code itself: none is read from the lanes.jsonl
+wording, which a reword would change silently.
+
+**E3. Where each is published.** run.json records `events: {path,
+failed_writes}` right after the locks, before `run-started`: a run that took
+part is told by it from a launch refused at its locks, which has none. The
+driver holds it in memory only once that write succeeded, so a failed write
+leaves the run out of the event file in every later record. The
+driver prints `events <path>` and `watch: <command>` then. A serial run
+publishes `step-failed` beside a step's `finished` line, and for the step in
+flight when the run stops on an error; `commit-finished` once the first
+landing report after a commit step that passed holds the subtask's commit (a
+report that could not be recorded proves nothing, and the commit waits for the
+next); its `halt` once halt.json and run.json record it, before its output;
+its `run-ended` as E1 says. A run that stops on an error after its halt was
+recorded publishes that halt if a record write threw before its publication, and its
+`run-ended` (`error`) points at run.json. A run with lanes publishes a `halt` at each
+drain, once run.json records the run draining, and the halt that ends it
+(an idle end, a refusal, an interrupt no drain published) from the driver's
+finish, once run.json and halt.json record it, never before the end's
+handoffs, removals and park changes (a record write of finish that throws
+first leaves it to the error path, which publishes it once run.json holds
+it, then the `run-ended` `error`); each once by what it says (the owner's
+interrupt once, any other once per reason and lane);
+`lane-parked`, `lane-resumed` and `lane-held` beside their lanes.jsonl lines;
+`lane-released` at the comparison, and at the recovery of a consumption whose
+park's end failed after it was recorded, or of a rejection, once per release
+id, after the run records the recovery in its own lanes.jsonl (`recovered:
+true`); `step-failed` beside a lane's `finished`
+line, and for each step in flight, or being settled (its worker ended, its
+`finished` line not written), when the run stops on an error; `commit-finished` as a serial run does, from a later look's report when
+the lane's own did not fetch. A commit step that failed publishes
+`step-failed` only.
+
+**E4. A dead run's cleanup** (`dead-runs.mjs`) appends the `run-ended`
+(`cleanup: true`) of a run whose run.json has `events`, after it writes that
+run.json, with the status and reason it holds then: a run that recorded its
+end and died before its line keeps that end; only one still running or
+draining becomes halted `interrupted`. The line points at halt.json only when
+halt.json holds that halt (the driver's own, or one the cleanup wrote); a
+halt.json a driver wrote before it died recording the end is another halt, so
+the line points at run.json. The file is the macro's, or the record's
+checkout's for a verb chain. A failed write is counted in that run.json.
+
+**E5. The reader** (`events-reader.mjs`, `agentic-autopilot events`) polls
+every 500 ms. The file is append-only for anyone who can write it, so the
+writer's allow-lists protect it only once the reader holds each line to them
+again (`events.mjs` `eventOfLine`): this schema, an identity, a known kind,
+the writer's `at`, macro and subtask ids, exactly its kind's fields with
+values in their sets (E2's paths and codes), and `terminal: true` on a
+terminal kind only; the writer's dedupe takes the same lines, so a line it
+counts is one every reader delivers. The CLI prints a path field only when its
+checkout is one of the repository's (`git worktree list`, compared by real
+path, listed again for a directory not among them, so a relaunch from a
+worktree added since the arm is found), and prints it null otherwise (a
+directory named by text, or a checkout removed since): the line is still the
+event it is, for its cursor and its run's end, as whether a line is an event
+never depends on the checkouts there are now. A line
+that fails is a `reader-skipped` with its offset alone: it is never printed,
+folded into a summary, taken for a run's end or found as a cursor's line. A
+`reader-terminal-missing` repeats a run.json `status` only from the driver's
+set. A follow whose stdout fails (Monitor stopped, a pipe's reader gone)
+stops: the printer drops every line after it, so polling on would serve
+nobody. While the file is idle, each poll also writes no bytes to a stdout
+that is a pipe or a socket: where the system checks the reader first (macOS)
+that write fails once the reader is gone, and the follow stops then; Linux
+takes a write of no bytes as done, so there an idle follow notices a gone
+reader only at its next line (E6). `<run-id>:0` starts at the run's first line on file or the first
+line whose `at` is at or after the run id's stamp, whichever comes first; with
+several cursors it starts at the earliest. A file that shrinks or is replaced
+by another while followed is a `reader-error`. A run is reported missing its
+terminal event when its run.json has `events`, a fresh read of the file holds
+no `run-ended` of it on a complete line (a line still waiting for its newline
+does not count, whatever it holds: delivery holds it, so the run is reported
+until the newline comes; a read that fails, but for a file not there, tells
+nothing), no open-run record
+or lock entry of it names a live driver (a run holds its locks before it
+writes its record, and one that ends before writing it holds them until its
+`run-ended` is on file, E1), and no live process holds its cleanup lock. Its run.json is found from its `run-started` line's `run_dir`,
+its open-run record, or the checkouts `git worktree list` names
+(`--checkout`: that checkout). The runs watched are the cursors' and every run
+with a line on file and no `run-ended` there, before the cursor too, until
+their `run-ended`: a re-arm from any one line's cursor keeps every run still
+owed its end that has a line on file, and a run whose end write failed while
+no reader watched is reported at each arm until its end is on file (a session
+drops one already handled by its `run_id`). `reader-armed` names the latest
+run by its id's stamp, of those on file and those the cursors name. A gap among
+folded `stall` lines is still a `reader-gap` line. The stall budget is 20 per
+delivery window (the backlog, or one poll's lines); a line passed on between
+bursts flushes the summary and does not reset it.
+
+**E6. Limits.** A commit step's `commit-finished` waits for a report that holds
+its commit; a run that ends before one publishes none (the landing log keeps
+the observation). Taking over a dead writer's lock is a check, then a
+removal: two writers that judge the same dead lock at once could both go on,
+and choose one `seq`. A lock is left only when its writer died within the few
+milliseconds it holds it, and the writers are one run's driver and a dead
+run's cleanup, so this is documented, not guarded. A run with no line on file
+(every write it made failed) is watched only while a cursor names it: an arm
+whose cursors name it reports it once its driver is gone, and a re-arm from
+another run's line does not see it. On Linux an idle `events --follow` whose
+pipe reader is gone (`… --follow | head -1`) runs until the file's next line,
+which, for a macro whose runs have all ended, may be the next launch: end it
+yourself.

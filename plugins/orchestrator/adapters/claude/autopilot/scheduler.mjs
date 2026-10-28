@@ -96,7 +96,7 @@ import {
 } from './ledger.mjs';
 import { createTaskRunner, offLoop as defaultOffLoop } from './offloop.mjs';
 import {
-  deletePark, newRecordId, PARK_SCHEMA, readPark, readParks, retiring, stepVerdict, writePark,
+  deletePark, newRecordId, PARK_SCHEMA, parkPath, readPark, readParks, retiring, stepVerdict, writePark,
 } from './parks.mjs';
 import { describeOperations, holdStateOf, listRecordIds, openOperations, recordPath, withHoldsLock } from '../../../scripts/lib/holds.mjs';
 import {
@@ -434,6 +434,35 @@ export function abandonedText(w) {
  */
 export async function runLanes(c) {
   const { repoRoot, options, env, out, now, roots, pinned, stateRoot, runId, runDir, run, macroId, record, mainRoot } = c;
+  // ADR-0068 Decision 4 — the driver's publications (driver.mjs): each event
+  // beside the record it points at. A halt is published once run.json records
+  // it, by a drain as it is met or by the driver's finish for the halt that
+  // ends the run, once by what it says: the owner's interrupt once, any other
+  // once per reason and lane. A release once per release id.
+  const pub = c.publish ?? { emit: () => {}, halt: () => {}, stepEnd: () => {}, stepFailed: () => {}, lanesFile: join(runDir, 'lanes.jsonl') };
+  const publishedHalts = new Set();
+  const publishHalt = (h) => {
+    const key = h.reason === 'interrupted' ? 'interrupted' : `${h.reason}\0${h.subtaskId ?? ''}`;
+    if (publishedHalts.has(key)) return;
+    publishedHalts.add(key);
+    pub.halt(h);
+  };
+  const publishedReleases = new Set();
+  // A release a crash left part way (its comparison recorded, its park's
+  // end not done; or rejected) is recorded here first when this run finishes
+  // it, so its line points at a lane event of this run.
+  const publishRelease = (id, holdId, releaseId, verdict, { recovered = false } = {}) => {
+    if (publishedReleases.has(releaseId)) return;
+    publishedReleases.add(releaseId);
+    if (recovered) appendLaneEvent(runDir, { event: 'released', subtask_id: id, hold_id: holdId ?? null, release_id: releaseId, verdict, recovered: true, run_id: runId, at: at() });
+    pub.emit('lane-released', { hold_id: holdId ?? null, release_id: releaseId, verdict, pointer: pub.lanesFile }, id);
+  };
+  // A resumption's cause, a code each caller names (ADR-0068 Decision 4, item
+  // 3): `record-changed`, `release` (bare, consumed, or one before its park
+  // was recorded), `hold-ended` (its hold ended without one), `forced`. Never
+  // read from the lanes.jsonl wording, which a reword would change silently;
+  // a code outside the set is refused by the writer and counted.
+  const publishResumed = (id, cause) => pub.emit('lane-resumed', { cause, pointer: pub.lanesFile }, id);
   // No look the run takes refreshes an index (ADR-0068 Decision 1, item 6):
   // the wake digest reads a parked lane's index, and the run's own looks must
   // not wake it.
@@ -490,6 +519,10 @@ export async function runLanes(c) {
   const unused = new Set(); // the lanes this run created that no step has used yet (Decision 5)
   const inflight = new Map(); // seq → the step in flight
   const ended = []; // steps whose worker ended, not yet settled here
+  // The step being settled, out of `inflight`, until its finished line is
+  // written: a run that stops on an error meanwhile publishes its step-failed,
+  // as the serial run does for its `active` step (driver.mjs).
+  let settling = null;
   const halts = []; // the run-wide halts the run met (the first drains it)
   // ADR-0068 Decision 1 — the parked lanes: subtask id → the park record the
   // run keeps (parks.mjs), `kept` false when the macro's records could not
@@ -650,6 +683,8 @@ export async function runLanes(c) {
     } else {
       out(`  also ${hh.subtaskId ? `lane ${hh.subtaskId}: ` : ''}${hh.reason} — ${hh.detail}`);
     }
+    // Once run.json records the run draining (the first halt).
+    publishHalt(hh);
   };
   // ADR-0068 Decision 1, item 1 — a halt by its scope: a lane halt parks its
   // lane, any other drains the run. `hint` is a look of the lane the halt
@@ -802,6 +837,7 @@ export async function runLanes(c) {
         // recorded: the release stands, and the lane is judged afresh.
         markers.delete(id);
         appendLaneEvent(runDir, { event: 'resumed', subtask_id: id, why: 'released before its park was recorded', record_id: expect, run_id: runId, at: at() });
+        publishResumed(id, 'release');
         out(`  lane ${id}: released while its park was recorded; it is judged afresh`);
         return;
       }
@@ -819,6 +855,8 @@ export async function runLanes(c) {
     Object.assign(lane(id), { halt: { reason: h.reason, detail: h.detail }, park: showPark({ ...rec, kept }) });
     if (h.proposals?.length) lane(id).proposals = h.proposals;
     appendLaneEvent(runDir, { event: 'parked', subtask_id: id, reason: h.reason, detail: h.detail, record_id: rec.record_id, form: fp.form, fingerprint: fp.fingerprint, release_only: releaseOnly, run_id: runId, at: rec.since });
+    // The kept park, or, when the records could not take it, the lane event.
+    pub.emit('lane-parked', { reason: h.reason, step: Number.isInteger(h.seq) ? h.seq : null, kept, pointer: kept ? parkPath(mainRoot, macroId, id) : pub.lanesFile }, id);
     out(`■ lane ${id}: ${h.reason} — ${h.detail}`);
     out(`  other lanes continue${releaseOnly ? `; this lane waits for the owner${rec.resolution?.release ? `'s release: ${rec.resolution.release}` : ''}` : ''}`);
     publish();
@@ -877,6 +915,7 @@ export async function runLanes(c) {
       if (r.state === 'held' && !announcedHeld.has(r.holdId)) {
         announcedHeld.add(r.holdId);
         appendLaneEvent(runDir, { event: 'held', subtask_id: id, hold_id: r.holdId, run_id: runId, at: at() });
+        pub.emit('lane-held', { hold_id: r.holdId, pointer: pub.lanesFile }, id);
         out(`  lane ${id}: held (hold ${r.holdId}) — the owner's to work; release: agentic-autopilot release ${id} --macro ${macroId} --hold ${r.holdId}`);
         Object.assign(lane(id), { note: 'held' });
       }
@@ -970,11 +1009,15 @@ export async function runLanes(c) {
       const holdId = st.hold?.record?.hold_id ?? null;
       try {
         if (st.state === 'consumed' && st.release.record.park_ended !== true) {
+          // A comparison whose park's end failed after it was recorded
+          // consumed: its line, once (by release id), if it was not written.
+          publishRelease(id, holdId, st.release.record.release_id, 'consumed', { recovered: true });
           const f = await finishConsumption({ mainRoot, macroId, subtaskId: id, endPark: endParkOf(id) });
           if (f.finished && await givenBack(id, st.release.record.park_record_id)) changed = true;
           continue;
         }
         if (st.state === 'rejected') {
+          publishRelease(id, holdId, st.release.record.release_id, 'rejected', { recovered: true });
           if (await parkRejected(id, holdId, st.release.record.release_id)) changed = true;
           continue;
         }
@@ -989,6 +1032,7 @@ export async function runLanes(c) {
         }
         if (r.verdict !== 'consumed' && r.verdict !== 'rejected') continue;
         appendLaneEvent(runDir, { event: 'released', subtask_id: id, hold_id: holdId, release_id: r.release.release_id, verdict: r.verdict, run_id: runId, at: at() });
+        publishRelease(id, holdId, r.release.release_id, r.verdict);
         changed = true;
         if (r.verdict === 'consumed') {
           out(`  lane ${id}: its release (hold ${holdId}) is consumed: the lane is the run's again`);
@@ -1016,7 +1060,7 @@ export async function runLanes(c) {
     // the release; a kept one other than the release's stands.
     if (p && p.kept !== false && (p.record_id === null || p.record_id !== parkRecordId)) return false;
     if (!p && !lanes.has(id)) return true;
-    return resume(id, 'its release was consumed', { parkEnded: true });
+    return resume(id, 'its release was consumed', 'release', { parkEnded: true });
   }
   // A lane the relaunch passed by whose gate went (its release consumed, or
   // its hold ended without one: a pending hold withdrawn, a hold retired or
@@ -1032,7 +1076,10 @@ export async function runLanes(c) {
       // applied): its own resolution picks the lane up, through `resume`,
       // which judges its rows then.
       if (parked.has(id)) continue;
-      if (await resume(id, 'its hold ended')) changed = true;
+      // Its gate went with its release consumed (givenBack leaves a lane the
+      // run neither parks nor holds to this pass), or with no release.
+      const consumed = holdStateOf(mainRoot, macroId, id).state === 'consumed';
+      if (await resume(id, consumed ? 'its release was consumed' : 'its hold ended', consumed ? 'release' : 'hold-ended')) changed = true;
     }
     return changed;
   }
@@ -1081,7 +1128,7 @@ export async function runLanes(c) {
   // lock, its identity, its branch) are judged again before its next step, as
   // at a run's start. Resolves to false when it parked again, or the run
   // drains.
-  async function resume(id, why, { parkEnded = false } = {}) {
+  async function resume(id, why, cause, { parkEnded = false } = {}) {
     // A held lane is passed by: no row acts on it (Decision 2, items 3, 11).
     // A kept park the owner released meanwhile is no park of the run's any
     // more: it is let go, unjudged, and the hold alone keeps the lane (judged
@@ -1111,6 +1158,7 @@ export async function runLanes(c) {
     // are judged here: a new gate before this keeps it passed by.
     passedBy.delete(id);
     appendLaneEvent(runDir, { event: 'resumed', subtask_id: id, why, record_id: rec?.record_id ?? null, run_id: runId, at: at() });
+    publishResumed(id, cause);
     out(`  lane ${id}: picked up again (${why})`);
     Object.assign(lane(id), { park: null, halt: null, resumed_at: at() });
     const p = pathOf(id);
@@ -1184,10 +1232,11 @@ export async function runLanes(c) {
       const rec = parked.get(id);
       if (!rec) continue;
       let why = null;
+      let cause = null;
       if (rec.kept) {
         let cur;
         try { cur = readPark(mainRoot, macroId, id); } catch { cur = null; }
-        if (cur && (cur.state === 'absent' || (cur.state === 'ok' && cur.record.record_id !== rec.record_id))) why = 'released';
+        if (cur && (cur.state === 'absent' || (cur.state === 'ok' && cur.record.record_id !== rec.record_id))) [why, cause] = ['released', 'release'];
       }
       // A gated lane is never judged by its fingerprint: the comparison, or
       // a new hold and release, decides it (pollWake).
@@ -1203,9 +1252,9 @@ export async function runLanes(c) {
         const s = seen.get(id);
         if (s) s.judged = digests.get(id);
         const fp = await fingerprintNow(id, await hintFor(id), null, { fresh: true });
-        if (compareKept(rec, fp) === 'changed') why = 'its record changed';
+        if (compareKept(rec, fp) === 'changed') [why, cause] = ['its record changed', 'record-changed'];
       }
-      if (why && await resume(id, why)) resumed = true;
+      if (why && await resume(id, why, cause)) resumed = true;
     }
     return resumed;
   }
@@ -1361,6 +1410,7 @@ export async function runLanes(c) {
       if (forced.has(id)) {
         await parkOp(() => deletePark(mainRoot, macroId, id, { ...read, event: 'forced', fields: { run_id: runId } }));
         appendLaneEvent(runDir, { event: 'resumed', subtask_id: id, why: 'forced', record_id: rid ?? null, run_id: runId, at: at() });
+        publishResumed(id, 'forced');
         out(`  lane ${id}: its kept park ends: --lane ${id} --next names it`);
         continue;
       }
@@ -1398,6 +1448,7 @@ export async function runLanes(c) {
       if (cmp === 'changed') {
         await parkOp(() => deletePark(mainRoot, macroId, id, { expect: rec.record_id, event: 'resumed', fields: { run_id: runId, why: 'its record changed' } }));
         appendLaneEvent(runDir, { event: 'resumed', subtask_id: id, why: `its record changed since run ${rec.run_id} parked it`, record_id: rec.record_id, run_id: runId, at: at() });
+        publishResumed(id, 'record-changed');
         out(`  lane ${id}: picked up again (its record changed since run ${rec.run_id} parked it)`);
         continue;
       }
@@ -1727,6 +1778,7 @@ export async function runLanes(c) {
     const { step: s, subtaskId: id } = entry;
     const w = entry.w;
     inflight.delete(entry.seq);
+    settling = entry;
     if (w.groupTeardown === 'lingering') c.markLingering();
     else for (const g of entry.groups) g.release();
     entry.groups = [];
@@ -1836,6 +1888,8 @@ export async function runLanes(c) {
       fingerprint_after: entry.lane ? laneFingerprint(after, id) : fingerprint(after),
       outcome: verdict ? verdict.reason : 'ok', halt_scope: scope,
     });
+    settling = null;
+    pub.stepEnd(entry.seq, s, id, verdict, w.aborted);
     writeRun(runDir, run);
     const pct = w.peakPct == null ? '?' : `${(w.peakPct * 100).toFixed(1)}%`;
     out(`    [${entry.seq}]${entry.lane ? ` lane ${id}` : ''} exit=${w.exitCode ?? w.signal} cost=$${(w.costUsd ?? cost).toFixed(2)}${w.costUsd === null ? ' (unreported; budget charged)' : ''} peak=${w.peakCtx} (${pct}) denials=${w.denials.length}${abandonedText(w)}${verdict ? ` → ${verdict.reason}` : ''}`);
@@ -2039,6 +2093,11 @@ export async function runLanes(c) {
   }
 
   async function end(status, d = null) {
+    // A halt that ends the run and no drain published (an idle end, a
+    // refusal, an interrupt): published by the driver's finish once run.json
+    // records it, never before (the handoffs and removals below take time,
+    // and may throw).
+    const endHalt = d;
     clearTimeout(resetTimer);
     stopTick();
     // A holds directory that cannot be read gates every lane (holdGate): the
@@ -2090,9 +2149,11 @@ export async function runLanes(c) {
     run.rate_limit = throttleSnapshot(throttle, nowSec);
     // Every change to the kept parks this run started is done before its locks go.
     await parkOps;
-    const code = c.finish(status, d, { lanes: run.lanes.lanes, rateLimit: throttleText(throttle, nowSec) });
-    await lastHandoffs();
-    return code;
+    // The driver's finish runs the last handoffs (afterRelease) once the run's
+    // lock entries are gone, before the run's run-ended.
+    return await c.finish(status, d, {
+      lanes: run.lanes.lanes, rateLimit: throttleText(throttle, nowSec), publishHalt: () => { if (endHalt) publishHalt(endHalt); },
+    });
   }
 
   // ---------------------------------------------------------------------
@@ -2276,6 +2337,9 @@ export async function runLanes(c) {
     // the next run.
     clearTimeout(resetTimer);
     stopTick();
+    // The step the error met while it was settled: its worker has ended, and
+    // its finished line was not written; it fails with the run.
+    if (settling) pub.stepFailed(settling.seq, settling.subtaskId, 'error', settling.w?.aborted ?? null);
     const open = [...inflight.values()];
     for (const entry of open) if (running(entry)) entry.worker?.abort('interrupted');
     await Promise.all(open.map((entry) => entry.done ?? Promise.resolve()));
@@ -2286,6 +2350,7 @@ export async function runLanes(c) {
         const charged = budget.settle(entry.reservation, { spawned: true, costUsd: entry.w?.costUsd ?? null });
         run.accounted_seqs.push(entry.seq);
         appendStep(runDir, { event: 'finished', seq: entry.seq, lane: entry.lane, ended_at: new Date(now()).toISOString(), aborted: entry.w?.aborted ?? 'error', cost_usd: entry.w?.costUsd ?? null, cost_charged_usd: charged, group_teardown: entry.w?.groupTeardown ?? null, outcome: 'error' });
+        pub.stepFailed(entry.seq, entry.subtaskId, 'error', entry.w?.aborted ?? null);
       } catch { /* the dead-run cleanup counts what was not written */ }
     }
     run.steps = budget.taken;

@@ -14,19 +14,23 @@
 // a plan whose subtask id carries anything else halts instead of reaching a
 // prompt. Free text in state (`next_action`, phase notes) is never read here.
 //
-// Engineer's enums are copied below, not imported (ADR-0010 §5);
-// tests/plugin-shape/test-autopilot-enum-parity.mjs holds the copies equal.
+// Engineer's enums are copied below and in codes.mjs (the owner gates), not
+// imported (ADR-0010 §5); tests/plugin-shape/test-autopilot-enum-parity.mjs
+// holds the copies equal.
 
 import { createHash } from 'node:crypto';
-import { subtaskReadiness, VALID_MACRO_OWNER_GATES } from '../../../scripts/state.mjs';
+import { subtaskReadiness } from '../../../scripts/state.mjs';
 import { digestOf, parseRebindRecord, REBIND_KEY, wordsDigest } from '../../../scripts/lib/rebind.mjs';
+import {
+  ENGINEER_OWNER_GATES, HALT_REASONS, isSafeMacroId, isSafeSubtaskId, MACRO_OWNER_GATES, OWNER_GATES,
+} from './codes.mjs';
+
+// The closed sets and id alphabets the event file shares (codes.mjs).
+export { ENGINEER_OWNER_GATES, HALT_REASONS, isSafeMacroId, isSafeSubtaskId, MACRO_OWNER_GATES, OWNER_GATES };
 
 export const VERBS = Object.freeze(['investigate', 'frame', 'decide', 'compose', 'critique', 'refine']);
 export const NEXT_STEP_KINDS = Object.freeze(['verb', 'commit', 'owner-decision', 'done', 'verify']);
 export const CONFIDENCES = Object.freeze(['HIGH', 'MEDIUM', 'LOW']);
-export const ENGINEER_OWNER_GATES = Object.freeze([
-  'scope-routing', 'decide-conflict', 'peer-conflict', 'recurring-finding', 'staging-set', 'pr-handling',
-]);
 // Engineer's TERMINAL_PHASES. commit-complete and close-complete are written
 // only by /engineer:commit, so they are outcomes; summary-complete and
 // fix-complete are an interactive verb's end and still carry a live next step.
@@ -34,19 +38,6 @@ export const ENGINEER_TERMINAL_PHASES = Object.freeze([
   'commit-complete', 'summary-complete', 'fix-complete', 'close-complete',
 ]);
 const COMMIT_SURFACE_PHASES = new Set(['commit-complete', 'close-complete']);
-export const MACRO_OWNER_GATES = Object.freeze([...VALID_MACRO_OWNER_GATES]);
-// `duplicate-workflow` is never stored (no single file owns it); it reaches
-// the driver as an entry-brief owner-choice-required and halts owner-choice.
-export const OWNER_GATES = Object.freeze([...MACRO_OWNER_GATES, ...ENGINEER_OWNER_GATES]);
-
-// DESIGN §6.2 / ADR-0063 D4. `awaiting-owner` is reported as
-// `awaiting-owner:<gate>`.
-export const HALT_REASONS = Object.freeze([
-  'owner-choice', 'awaiting-owner', 'low-confidence', 'owner-decision', 'plan-unapproved',
-  'awaiting-landing', 'dirty-tree', 'no-progress', 'worker-failed', 'permission-denied',
-  'compaction-imminent', 'budget', 'version-drift', 'interrupted',
-]);
-
 export const STEP_KINDS = Object.freeze(['dispatch', 'verb', 'commit', 'done', 'done-no-commit', 'finalize']);
 
 // The entry-brief leads a step-table position may legitimately show between
@@ -57,16 +48,13 @@ export const ALLOWED_LEAD_COMMANDS = Object.freeze([
   '/runtime:context status --slot',
 ]);
 
-// Identifiers that may enter a worker prompt or a printed command.
-const SUBTASK_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-const MACRO_ID_RE = /^macro-[a-z][a-z0-9-]*-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
+// Identifiers that may enter a worker prompt or a printed command (the
+// subtask's and the macro's alphabets are codes.mjs's).
 const ENGINEER_ID_RE = /^(?!macro-)[a-z][a-z0-9-]*-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const RUN_ID_RE = /^autopilot-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 // A branch the owner is told to push: a git ref name in a closed alphabet.
 const SAFE_BRANCH_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
 
-export const isSafeSubtaskId = (id) => typeof id === 'string' && SUBTASK_ID_RE.test(id);
-export const isSafeMacroId = (id) => typeof id === 'string' && MACRO_ID_RE.test(id);
 export function isSafeBranch(branch) {
   return typeof branch === 'string' && SAFE_BRANCH_RE.test(branch) && !branch.includes('..')
     && !branch.includes('//') && !branch.endsWith('/') && !branch.endsWith('.')

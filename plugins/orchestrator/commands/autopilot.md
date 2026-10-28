@@ -1,6 +1,6 @@
 ---
 description: Run an approved macro unattended — one fresh Claude worker per step, halting at owner judgment (ADR-0063, Claude only; dry-run by default)
-argument-hint: "[preview|start [--execute]|status|stop|release <subtask> [--hold <id>|--discard-unreadable]|hold <subtask>|writer-clear <subtask> --operation <id>] [--macro <id>] [--models owner-default|mixed|sonnet] [--model <m>] [--effort <e>] [--max-steps <n>] [--max-cost <usd>] [--step-budget <usd>] [--step-timeout <s>] [--lanes <n>] [--next \"<step>\"] [--lane <subtask> --next \"<step>\"] [--notify-local] [--json]"
+argument-hint: "[preview|start [--execute]|status|stop|release <subtask> [--hold <id>|--discard-unreadable]|hold <subtask>|writer-clear <subtask> --operation <id>|events (--macro <id>|--checkout <dir>) --after <run-id>:<seq> [--follow]] [--macro <id>] [--models owner-default|mixed|sonnet] [--model <m>] [--effort <e>] [--max-steps <n>] [--max-cost <usd>] [--step-budget <usd>] [--step-timeout <s>] [--lanes <n>] [--next \"<step>\"] [--lane <subtask> --next \"<step>\"] [--notify-local] [--json]"
 ---
 
 # Orchestrator · Autopilot
@@ -155,6 +155,9 @@ on Codex the steps stay manual.
   without a run, with each hold's state, what blocks its handoff, its open
   operations and the release command; with no live run it completes a pending
   handoff and repairs a fence an older orchestrator removed.
+- `events --macro <id> --after <run-id>:<seq> [--follow]` prints the run's
+  events after that one, one JSON line each, and with `--follow` keeps
+  watching, across relaunches: the Monitor recipe below (ADR-0068 Decision 4).
 - Holds, releases and writer-clear refuse inside an autopilot worker. Rolling
   the orchestrator back below the release that added holds while a hold
   exists is unsupported: a hold on a subtask with no lane has no fence an
@@ -193,7 +196,7 @@ as text. It removes the args file and its directory once it has read them.
 
 ---
 
-## preview, status, stop, release, hold, writer-clear, and start without --execute
+## preview, status, stop, release, hold, writer-clear, events, and start without --execute
 
 Run this block when the arguments do not contain `start` together with
 `--execute`:
@@ -206,7 +209,7 @@ node "$CLAUDE_PLUGIN_ROOT/adapters/claude/autopilot/cli.mjs" --args-file "$ARGS_
 ```
 
 Show the output as it is. Exit 0: the preview would proceed (or status, stop,
-release, hold or writer-clear succeeded). Exit 2: the preview would halt — the reason and its pointer are in
+release, hold, writer-clear or events succeeded). Exit 2: the preview would halt — the reason and its pointer are in
 the output. Exit 1: an error or a start condition that fails; the output names
 it.
 
@@ -254,7 +257,9 @@ node "$CLAUDE_PLUGIN_ROOT/adapters/claude/autopilot/cli.mjs" --args-file "$ARGS_
 4. Tell the owner the run started: its id and ledger path (the first lines of
    the task's output), that `/orchestrator:autopilot status` shows progress and
    `/orchestrator:autopilot stop` stops it, and that the session is notified
-   when it ends. Do not poll it.
+   when it ends. Do not poll it: arm the Monitor on its event file instead
+   ([Watching a run](#watching-a-run-the-event-file), below), with the
+   `<run-id>:0` its `watch:` line printed.
 5. When the task ends, read its output and report, without adding to it:
    - exit 0 — the macro completed (it is archived);
    - exit 2 — the halt: its reason, detail and pointer, and each branch it
@@ -267,3 +272,90 @@ node "$CLAUDE_PLUGIN_ROOT/adapters/claude/autopilot/cli.mjs" --args-file "$ARGS_
 
 Do not resolve a halt yourself. Each one names what the owner decides; the
 relaunch continues from the state that decision leaves.
+
+## Watching a run (the event file)
+
+Every run writes its events to one file per macro,
+`.agentic-plugins/runs/autopilot/events/<macro-id>.jsonl` under the main
+worktree (a verb chain's is `.agentic-plugins/runs/autopilot/events.jsonl` in
+its checkout), and prints at its start the path and the command that watches
+it (ADR-0068 Decision 4):
+
+```text
+  events <path>
+  watch: agentic-autopilot events --macro <id> --after <run-id>:0 --follow
+```
+
+Each line is one JSON object of machine data: the run's start, a run-wide
+halt, a lane parked or picked up again, held or released, a step that failed,
+a commit step that finished, and the run's end, `run-ended`, the only line
+with `"terminal": true`. No line carries what a worker, a peer or a person
+wrote: each points at the record that holds the rest (`run.json`,
+`steps.jsonl`, `lanes.jsonl`, a kept park, the landing log, and `halt.json`
+from the `run-ended` of a run that halted; the reader prints a pointer null
+when its checkout is no longer one of the repository's). A relaunch writes to
+the same file. The reader adds lines of its own, each with `cursor`, the identity of the
+last event it passed on: `reader-armed` at each arm (the latest run, live or
+ended, its last `seq`, its failed writes); `reader-gap` (a `seq` missing, a
+hint); `reader-skipped` (a line that does not parse, or is no line the writer
+could have written: its offset only, never its content); `reader-terminal-missing`
+(a run that ended or died with no `run-ended` on file: read its `run.json`, or
+`status`); `reader-summary` (`stall` lines folded past a burst); and
+`reader-error`, after which it exits 1 (the file cannot be read, was truncated
+or replaced, or the cursor names no line).
+
+Once the start block runs, arm the host's Monitor on the run, so the session
+hears each event as it happens:
+
+1. Create a new args directory, and `args.json` in it, as the two steps
+   before the first block of this page say (the private directory, then the
+   file), with `text` set to
+   `events --macro <id> --after <run-id>:0 --follow`, the macro and the
+   `<run-id>:0` the run printed (for a verb chain, `--checkout <dir>` in place
+   of `--macro <id>`). The CLI removes the directory once it has read it:
+   every arm, and every re-arm below, takes a new one.
+2. Run the block below with Monitor, `timeout_ms` 1800000 (its maximum,
+   30 minutes). Its `2>&1` hands the session what the CLI prints on stderr
+   too: an args file it cannot read, or an `--after` it refuses, ends it
+   before the reader starts, with no reader line.
+
+```bash
+ARGS_DIR='<directory from step 1>'
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+node "$CLAUDE_PLUGIN_ROOT/adapters/claude/autopilot/cli.mjs" --args-file "$ARGS_DIR/args.json" 2>&1
+```
+
+3. The reader is the filter: add none. A session that narrows it anyway
+   keeps every line the pattern below matches, so no run's end and no word
+   of the reader's own is dropped. It pipes the block's output through this
+   filter, as written (an extended pattern, and each line passed on as it
+   comes, not when the reader exits):
+
+```text
+grep -E --line-buffered '"terminal":true|"kind":"reader-'
+```
+
+4. When the Monitor expires, or stops early for any cause other than a
+   `reader-error`, re-arm it with the cursor of the last line it received:
+   an event's `<run_id>:<seq>`, or a reader line's `cursor`; with none
+   received, the `<run-id>:0` the run printed. Each re-arm is steps 1 and 2
+   again, with a new args directory. An exit 1 with no reader line (the CLI
+   refused before the reader started: what it printed says why) counts as a
+   `reader-error`: never re-arm the same arguments. A re-arm neither repeats nor skips an event, across a relaunch
+   too, and keeps watching every run with a line on file whose `run-ended`
+   is not there, before the cursor too: such a run is reported
+   (`reader-terminal-missing`) at each arm until its end is on file, so drop
+   one already handled by its `run_id`. After a `reader-error` (the reader
+   exits 1), never re-arm from its `cursor`, which fails the same way: re-arm
+   once with `--after <run-id>:0` for every run of the macro not seen end, as
+   step 5 does, dropping what was already handled; when that ends in a
+   `reader-error` too, stop re-arming and report it to the owner.
+5. After a restart of the session (its cursor lost), re-arm with
+   `--after <run-id>:0` for every run of the macro not seen end (`--after`
+   repeats), and drop by `run_id` and `seq` the events already handled.
+
+Stop the Monitor once the run's `run-ended` has arrived and its task has
+ended. The event file is a signal beside the run's records: a write that
+fails is printed and counted in `run.json`, never stops the run, and is
+reported by the reader as a run missing its end.

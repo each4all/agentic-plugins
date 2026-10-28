@@ -73,6 +73,20 @@ the steps stay manual**, and the host-neutral state it reads (`next_step_*`,
   A halt on a conflict gate carries `proposals[]`: the bounded consensus round
   (`/runtime:consensus plan --task-file <file> --peers claude,codex --max-rounds 2`)
   proposed before the owner decides, display only (ADR-0067 Decision 8).
+- **The event file** ([ADR-0068](../../docs/adr/0068-autopilot-lanes-that-keep-going.md)
+  Decision 4, `events.mjs`). Once it holds its locks a run appends one JSON line of
+  machine data per event to `<main>/.agentic-plugins/runs/autopilot/events/<macro-id>.jsonl`
+  (a verb chain's in its checkout, `.agentic-plugins/runs/autopilot/events.jsonl`): its
+  start, a run-wide halt, a lane parked or picked up, held or released, a step that
+  failed, a commit step that finished, and its end, `run-ended`, the one line marked
+  `"terminal": true`, written once between the driver and a dead run's cleanup. Each line
+  is identified by its run and `seq`, carries codes, ids, numbers and paths only, and
+  points at the record that holds the rest. A write that fails never stops the run: it is
+  printed and counted in `run.json`. The run prints the path and the command that watches
+  it; `agentic-autopilot events --macro <id> --after <run-id>:<seq> [--follow]`
+  (`events-reader.mjs`) prints what follows a cursor and keeps watching across relaunches,
+  with lines of its own for a gap, a line it cannot parse, a run that ended with no
+  `run-ended` on file, and an error. `commands/autopilot.md` has the Monitor recipe.
 - **Locks, stop and peers.** A run holds its macro's lock, under the main worktree, and
   the lock of each checkout it drives. A worker group in flight may have an entry of its
   own in the macro lock (ADR-0067 Decision 6), so a driver that died while any group runs

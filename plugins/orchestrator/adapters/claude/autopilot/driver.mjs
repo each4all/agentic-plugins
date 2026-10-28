@@ -40,7 +40,8 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 
 import { createBudget } from './budget.mjs';
 import { cleanupDeadRuns, summary as cleanupSummary } from './dead-runs.mjs';
-import { mergeOrderRecord, orderText, overlapText, reportLandingReady, syncText } from './landing-ready.mjs';
+import { ABORT_KINDS, createEventWriter, eventsPath, isHaltCode, READINESS, watchCommand } from './events.mjs';
+import { landingLogPath, mergeOrderRecord, orderText, overlapText, reportLandingReady, syncText } from './landing-ready.mjs';
 import { lanesHoldingWork, lanesRequirements } from './lanes.mjs';
 import { launchProposals, mainCheckoutProposal, proposalLines } from './launch-proposals.mjs';
 import { observe as defaultObserve } from './observe.mjs';
@@ -372,10 +373,11 @@ function haltRecord({ runId, d, lastSessionId, repoRoot, macroId, lanes }) {
   };
 }
 
-function notifyLocal(options, title, message) {
-  if (!options.notifyLocal || process.platform !== 'darwin') return;
+// `platform` and `spawn` are test seams (deps.platform, deps.notifySpawn).
+function notifyLocal(options, title, message, { platform = process.platform, spawn = spawnSync } = {}) {
+  if (!options.notifyLocal || platform !== 'darwin') return;
   // D9: driver-local only — a fixed AppleScript, the payload as argv, no egress.
-  spawnSync('osascript', [
+  spawn('osascript', [
     '-e', 'on run argv', '-e', 'display notification (item 1 of argv) with title (item 2 of argv)', '-e', 'end run',
     message.slice(0, 180), title,
   ], { stdio: 'ignore', timeout: 5000 });
@@ -485,7 +487,8 @@ export function serialRefusal({ repoRoot, macroId, view, env }) {
  * @param a.out, a.err  line printers
  * @param a.deps      test seams: { observe, observeAsync, offLoop, startWorker, cancelPeerRuns, settleAbandonedPeers, now, signals,
  *                    checkClaude, terminateGroupsSync, resolveRoots (the drift check between steps), createBudget,
- *                    wakeIntervalMs, quietMs, laneBusy and busyWaitMs (a run with lanes: scheduler.mjs) }
+ *                    wakeIntervalMs, quietMs, laneBusy and busyWaitMs (a run with lanes: scheduler.mjs),
+ *                    platform and notifySpawn (--notify-local's) }
  */
 export async function startRun({ repoRoot, options, env = process.env, out = console.log, err = console.error, deps = {} }) {
   const observe = deps.observe ?? defaultObserve;
@@ -606,6 +609,9 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
   // peers are unknown, and the next run's cleanup cancels the ones that name
   // it (scheduler.mjs, and the serial loop below).
   let keepRecord = false;
+  // Whether the run's open-run record is written: until then its locks are
+  // all that names its live driver, to the event reader as to everyone.
+  let openRecorded = false;
   // ADR-0068 Decision 2, item 4 — what a run with lanes does once its lock
   // entries are gone, whatever ended it (scheduler.mjs, its last handoffs).
   let afterRelease = null;
@@ -616,6 +622,9 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
   const setWorker = (worker) => { for (const l of locks) l.setWorker(worker); };
   let lastSessionId = null;
   let current = null;
+  // The step whose started line is written and whose finished line is not:
+  // an error in between publishes its `step-failed` (ADR-0068 Decision 4).
+  let active = null;
   // The step's reservation while it is open (budget.mjs).
   let reservation = null;
   // The last landing-ready report.
@@ -639,6 +648,59 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
   const onExit = () => {
     (deps.terminateGroupsSync ?? terminateGroupsSync)([...(Number.isInteger(current?.pid) ? [current.pid] : []), ...groupsInFlight()]);
   };
+  // ADR-0068 Decision 4 — the run's event file (events.mjs): opened once the
+  // run holds its locks, so a launch refused at them writes no line, and
+  // closed by its `run-ended`, its last line: what the run does after its
+  // locks are gone (its last handoffs) comes before it.
+  // A write that fails never stops the run: it is printed and counted in
+  // run.json (`events.failed_writes`), which the reader reports.
+  let events = null;
+  const runFile = join(runDir, 'run.json');
+  const stepsFile = join(runDir, 'steps.jsonl');
+  const publish = (kind, fields, subtaskId = null) => events?.emit(kind, fields, { subtaskId });
+  // A halt the run met, pointing at run.json (halt.json is written only at
+  // the run's end), and at the step's line when a step met it.
+  // The publication of the halt that ends the run, from the moment finish
+  // takes it until it is published: a record write that throws in between
+  // leaves it to the error path, which publishes it once the records hold it.
+  let pendingEndHalt = null;
+  const publishHalt = (d) => {
+    const step = Number.isInteger(d.seq) ? d.seq : null;
+    publish('halt', { reason: d.reason, step, pointer: runFile, step_record: step === null ? null : stepsFile }, d.subtaskId ?? null);
+  };
+  const publishStepFailed = (seq, subtaskId, reason, aborted) => publish('step-failed', {
+    step: seq, reason, abort: ABORT_KINDS.includes(aborted) ? aborted : null, pointer: stepsFile,
+  }, subtaskId ?? null);
+  // A commit step that passed waits for the first landing report that holds
+  // its subtask's commit (a lane's look does not fetch, so a later look may
+  // be the first): its `commit-finished` is published then, once, pointing at
+  // this run's landing.jsonl when that report appended the line, else at the
+  // macro's landing log, which holds the observation already reported. A
+  // report whose publication failed proves neither: the commit waits for the
+  // next report, which records what this one missed.
+  const committed = new Map(); // seq → subtask id
+  const publishCommits = (report) => {
+    if (!report || committed.size === 0 || report.publishError) return;
+    for (const [seq, id] of [...committed]) {
+      const entry = (report.entries ?? []).find((e) => e?.subtaskId === id && e.commit && !e.withheld);
+      if (!entry) continue;
+      committed.delete(seq);
+      const readiness = READINESS.includes(entry.sync?.state) ? entry.sync.state : 'unknown';
+      const pointer = (report.reported ?? []).includes(id) || !macroId ? join(runDir, 'landing.jsonl') : landingLogPath(mainRoot, macroId);
+      publish('commit-finished', { step: seq, commit: entry.commit, readiness, pointer }, id);
+    }
+  };
+  // How a step ended, published beside its finished line.
+  const publishStepEnd = (seq, s, subtaskId, verdict, aborted) => {
+    if (verdict) publishStepFailed(seq, subtaskId, verdict.reason, aborted);
+    else if (s.kind === 'commit' && subtaskId) committed.set(seq, subtaskId);
+  };
+  // halt.json only for a run that ended halted; run.json holds an error.
+  const runEnded = (status, halt, exit) => publish('run-ended', {
+    status, reason: isHaltCode(halt?.reason) ? halt.reason : null, exit,
+    pointer: halt && status === 'halted' ? join(runDir, 'halt.json') : runFile, cleanup: false,
+  });
+
   const signals = deps.signals ?? process;
   signals.on('SIGINT', onSignal);
   signals.on('SIGTERM', onSignal);
@@ -653,7 +715,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
 
   // A run with lanes passes its lanes (one report block each) and its
   // rate-limit line (scheduler.mjs).
-  const finish = (status, d = null, laneReport = null) => {
+  const finish = async (status, d = null, laneReport = null) => {
     // A run with lanes reports what waits per lane, and its end builds its
     // halt's list (scheduler.mjs). A serial run's halt is built here and
     // nowhere else, whatever ended it (C128): from the run's list, which every
@@ -666,8 +728,20 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     run.status = status;
     run.ended_at = new Date(now()).toISOString();
     if (d) {
+      pendingEndHalt = laneReport?.publishHalt ?? (() => publishHalt(d));
       run.halt = haltRecord({ runId, d: laneReport ? { ...d, lanes: laneReport.lanes } : d, lastSessionId, repoRoot, macroId, lanes });
       writeHalt(runDir, run.halt);
+    }
+    writeRun(runDir, run);
+    // ADR-0068 Decision 4 — the halt that ends the run, once run.json records
+    // it: a serial run's here; a run with lanes' through its scheduler, which
+    // publishes each halt once (a drain's was published as it was met).
+    if (pendingEndHalt) {
+      const publishEnd = pendingEndHalt;
+      pendingEndHalt = null;
+      publishEnd();
+    }
+    if (d) {
       printHalt(out, d);
       for (const line of run.halt.resume) out(`  ${line}`);
     } else {
@@ -675,8 +749,55 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     }
     for (const l of laneReport?.lanes ?? []) for (const line of laneBlock(l)) out(line);
     if (laneReport?.rateLimit) out(`  ${laneReport.rateLimit}`);
-    writeRun(runDir, run);
-    release();
+    // A run that ends before its open-run record is written (a halt or a
+    // refusal at its start) has only its locks to show the reader it lives:
+    // it keeps them until its run-ended is on file (ADR-0068 Decision 4).
+    const unrecorded = !openRecorded;
+    // A lock entry that cannot be removed never stops the run's end: it names
+    // a driver that exits soon after, which every reader of the locks then
+    // judges gone, and the next run takes the lock.
+    if (!unrecorded) {
+      try {
+        release();
+      } catch (e) {
+        out(`⚠ a lock entry of the run could not be removed (${e?.message ?? e}); it names this driver until it exits, and the next run then takes the lock`);
+      }
+    }
+    // A run with lanes' last handoffs, once its lock entries are gone
+    // (scheduler.mjs): before its run-ended, so a hold they complete is
+    // published as the run's.
+    if (afterRelease) {
+      const last = afterRelease;
+      afterRelease = null;
+      await last().catch(() => {});
+    }
+    out(`  run ${runId} · steps=${run.steps} · cost=$${run.cost_usd.toFixed(2)}${run.cost_complete ? '' : ' (at least: a killed step reported no cost, so its budget was counted)'} · ledger ${runDir}`);
+    notifyLocal(options, `autopilot: ${status}`, d ? `${d.reason} — ${d.detail}` : 'the macro completed', {
+      ...(deps.platform ? { platform: deps.platform } : {}), ...(deps.notifySpawn ? { spawn: deps.notifySpawn } : {}),
+    });
+    // ADR-0068 Decision 4 — the run's last line, once nothing that could still
+    // fail it (its output) is left, and before its open-run record goes, so a
+    // reader never takes a terminal append in progress for a missing one. The
+    // signal handlers stay until after it: a signal before it (a closed
+    // terminal while the notification runs) interrupts nothing, where the
+    // default action would kill the driver short of its end.
+    runEnded(status, d ? run.halt : null, status === 'completed' ? 0 : 2);
+    // Its end is published, and nothing after it changes the run's outcome:
+    // what is left is cleanup, each step guarded, and a warning that cannot be
+    // printed is dropped. A lock entry left now is a dead driver's, which every
+    // reader of the locks judges gone.
+    const late = (s) => {
+      try {
+        out(s);
+      } catch { /* the published end stands */ }
+    };
+    if (unrecorded) {
+      try {
+        release();
+      } catch (e) {
+        late(`⚠ a lock entry of the run could not be removed (${e?.message ?? e}); it names a driver that has exited, and the next run takes the lock`);
+      }
+    }
     // The run ended with every worker group empty, so nothing is left for a
     // cleanup to find. A group that outlived SIGKILL keeps the record, as it
     // keeps the lock entries, and so does a step whose peers the run could
@@ -685,12 +806,10 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       try {
         removeOpenRun(mainRoot, runId);
       } catch (e) {
-        out(`⚠ the run's open-run record could not be removed (${e?.message ?? e}); stop, or the next run of the macro, cleans it up`);
+        late(`⚠ the run's open-run record could not be removed (${e?.message ?? e}); stop, or the next run of the macro, cleans it up`);
       }
     }
     detach();
-    out(`  run ${runId} · steps=${run.steps} · cost=$${run.cost_usd.toFixed(2)}${run.cost_complete ? '' : ' (at least: a killed step reported no cost, so its budget was counted)'} · ledger ${runDir}`);
-    notifyLocal(options, `autopilot: ${status}`, d ? `${d.reason} — ${d.detail}` : 'the macro completed');
     return status === 'completed' ? 0 : 2;
   };
 
@@ -708,21 +827,42 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       if (macroId) locks.push(await acquireLock(macroLockPath(mainRoot, macroId), { record, now }));
     } catch (e) {
       if (!(e instanceof LockHeldError)) throw e;
-      return finish('halted', { reason: 'owner-choice', detail: e.message });
+      return await finish('halted', { reason: 'owner-choice', detail: e.message });
     }
+
+    // ADR-0068 Decision 4 — the run holds its locks: run.json records first
+    // that it takes part in the event file (the reader judges a missing
+    // terminal event only for such a run), then `run-started`.
+    // In memory once run.json records it: a write that fails leaves the run
+    // out of the event file, and the error path's record of it says so.
+    const evFile = eventsPath({ mainRoot, macroId, checkout: repoRoot });
+    const evRecord = { path: evFile, failed_writes: 0 };
+    writeRun(runDir, { ...run, events: evRecord });
+    run.events = evRecord;
+    events = createEventWriter({
+      file: evFile, runId, macroId, now, ...(deps.eventsWriteSync ? { writeSync: deps.eventsWriteSync } : {}),
+      onFailure: (why) => {
+        run.events.failed_writes += 1;
+        out(`⚠ the event file could not take a line (${why}); the run goes on, and run.json counts it`);
+        try { writeRun(runDir, run); } catch { /* the next write of run.json records it */ }
+      },
+    });
+    publish('run-started', { lanes, detector: 'off', run_dir: runDir, pointer: runFile });
+    out(`  events ${evFile}`);
+    out(`  watch: ${watchCommand({ macroId, checkout: repoRoot, runId })}`);
 
     // The view above was taken before the locks. Another run may have changed
     // the state and released its locks in between, so the first step is
     // decided from what the state says now, under the locks (round 6).
     view = look(macroId);
     if ((view.macro?.id ?? null) !== macroId) {
-      return finish('halted', { reason: 'owner-choice', detail: `the macro changed while the run took its locks (${macroId ?? 'none'} → ${view.macro?.id ?? 'none'})` });
+      return await finish('halted', { reason: 'owner-choice', detail: `the macro changed while the run took its locks (${macroId ?? 'none'} → ${view.macro?.id ?? 'none'})` });
     }
     // ADR-0068 Decision 2, item 2 — the serial refusal again, under the
     // locks: a hold set between the first look and the locks (P10).
     if (lanes < 2 && macroId) {
       const again = serialRefusal({ repoRoot, macroId, view, env });
-      if (again.length > 0) return finish('halted', { reason: 'owner-choice', detail: again.join('; ') });
+      if (again.length > 0) return await finish('halted', { reason: 'owner-choice', detail: again.join('; ') });
     }
     // ADR-0068 Decision 2, item 9 (P7) — a run with lanes turns holds on
     // before its first dispatch, so a person's interactive finish-verb in a
@@ -751,6 +891,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     writeOpenRun(mainRoot, {
       runId, macroId, checkout: repoRoot, runDir, pid: process.pid, fingerprint: await processFingerprint(process.pid), startedAt: run.started_at,
     });
+    openRecorded = true;
 
     // ADR-0067 Decision 7: after each look under the locks, every subtask
     // committed and not landed whose observation changed is reported, a
@@ -768,6 +909,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     const reportLanding = (v, seq) => {
       try {
         landing = reportLandingReady({ repoRoot, mainRoot, runDir, runId, seq, view: v, out, now, cache: mergeChecks, env, notice });
+        publishCommits(landing);
       } catch (e) {
         reportFailed(e?.message ?? e);
       }
@@ -793,6 +935,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         mergeChecks.clear();
         for (const [k, a] of r.value.cache) mergeChecks.set(k, a);
         landing = r.value.report;
+        publishCommits(landing);
       };
       return await runLanes({
         repoRoot, options: { ...options, lanes }, env, out, now, roots, pinned, remotes, stateRoot, token, record,
@@ -813,6 +956,10 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         resolveRoots: deps.resolveRoots ?? null,
         releaseBasis: deps.releaseBasis ?? null,
         deliverRebindings: deps.deliverRebindings ?? null,
+        publish: {
+          emit: publish, halt: publishHalt, stepEnd: publishStepEnd,
+          stepFailed: publishStepFailed, lanesFile: join(runDir, 'lanes.jsonl'),
+        },
       });
     }
 
@@ -824,15 +971,15 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     });
     const resolveRootsNow = deps.resolveRoots ?? resolveRoots;
     for (let seq = 1; ; seq += 1) {
-      if (interrupted) return finish('halted', { reason: 'interrupted', detail: 'the owner interrupted the run' });
+      if (interrupted) return await finish('halted', { reason: 'interrupted', detail: 'the owner interrupted the run' });
       // What the state says comes first: completion on the last step the
       // budget allowed is completion, and a halt is the halt it is.
       const d = decide(view, ctx);
       if (d.outcome === 'completed') {
         out(`[${seq}] ${d.detail}`);
-        return finish('completed');
+        return await finish('completed');
       }
-      if (d.outcome === 'halt') return finish('halted', d);
+      if (d.outcome === 'halt') return await finish('halted', d);
 
       // ADR-0068 Decision 8, item 4 — a note the owner's approval did not
       // finish telling reaches the child before its next step, never
@@ -854,14 +1001,14 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
           hold: (worker) => { setWorker(worker); return [{ release: () => setWorker(null) }]; },
           onLingering: () => { lingering = true; },
         });
-        if (told.lingering) return finish('halted', { reason: 'worker-failed', detail: told.detail });
-        if (interrupted) return finish('halted', { reason: 'interrupted', detail: 'the owner interrupted the run' });
-        if (!told.ok) return finish('halted', { reason: 'owner-choice', detail: told.detail });
+        if (told.lingering) return await finish('halted', { reason: 'worker-failed', detail: told.detail });
+        if (interrupted) return await finish('halted', { reason: 'interrupted', detail: 'the owner interrupted the run' });
+        if (!told.ok) return await finish('halted', { reason: 'owner-choice', detail: told.detail });
         out(`[${seq}] told subtask ${d.step.subtaskId}'s child the owner's instruction change before its next step`);
         view = look(view.macro.id);
         const after = rebindDue(view.macro?.fm, d.step.subtaskId, { macroPath: view.macro?.path, selected: view.children?.[d.step.subtaskId]?.workflow_id ?? null });
         if (after) {
-          return finish('halted', {
+          return await finish('halted', {
             reason: 'owner-choice',
             detail: stillHeldDetail({ macroPath: view.macro?.path, macroId: view.macro?.id, subtaskId: d.step.subtaskId, due: after.due, why: after.why ?? null }),
           });
@@ -874,7 +1021,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       // and every end settles it. One reservation at a time: what is spent
       // and the steps taken decide.
       const r = budget.reserve();
-      if (!r.ok) return finish('halted', { reason: 'budget', detail: r.detail ?? r.why });
+      if (!r.ok) return await finish('halted', { reason: 'budget', detail: r.detail ?? r.why });
       reservation = r.reservation;
       const drift = seq > 1 ? driftOf(pinned, await resolveRootsNow({ env })) : [];
       // C123: a signal that came during the await above finds no worker to
@@ -885,12 +1032,12 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       if (interrupted) {
         budget.settle(reservation, { spawned: false });
         reservation = null;
-        return finish('halted', { reason: 'interrupted', detail: 'the owner interrupted the run' });
+        return await finish('halted', { reason: 'interrupted', detail: 'the owner interrupted the run' });
       }
       if (drift.length > 0) {
         budget.settle(reservation, { spawned: false });
         reservation = null;
-        return finish('halted', { reason: 'version-drift', detail: drift.join('; ') });
+        return await finish('halted', { reason: 'version-drift', detail: drift.join('; ') });
       }
 
       const s = d.step;
@@ -909,6 +1056,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         session_id: sessionId, model, effort, step_budget_usd: stepBudgetUsd, step_timeout_sec: stepTimeoutSec,
         started_at: new Date(now()).toISOString(), fingerprint_before: fpBefore,
       });
+      active = { seq, subtaskId: s.subtaskId ?? null, aborted: null };
       out(`[${seq}] ${command}${s.subtaskId ? ` (subtask ${s.subtaskId})` : ''}${model || effort ? ` · ${model ?? 'default'}/${effort ?? 'default'}` : ''}`);
 
       current = startWorker({
@@ -1009,12 +1157,14 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         peer_cancellations: cancelled, peer_settlements: settlements, peers_unaccounted: unaccounted,
         fingerprint_after: fingerprint(view), outcome: verdict ? verdict.reason : 'ok',
       });
+      active = null;
+      publishStepEnd(seq, s, id, verdict, w.aborted);
       writeRun(runDir, run);
       const pct = w.peakPct == null ? '?' : `${(w.peakPct * 100).toFixed(1)}%`;
       out(`    exit=${w.exitCode ?? w.signal} cost=$${(w.costUsd ?? cost).toFixed(2)}${w.costUsd === null ? ' (unreported; budget charged)' : ''} peak=${w.peakCtx} (${pct}) denials=${w.denials.length}${abandonedText(w)}`);
       // A commit stands whatever the verdict on its step.
       reportLanding(view, seq);
-      if (verdict) return finish('halted', verdict);
+      if (verdict) return await finish('halted', { ...verdict, seq });
     }
   } catch (e) {
     // The run could not go on: record it, release the locks, and let the CLI
@@ -1026,8 +1176,10 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       current.abort('interrupted');
       const w = await current.done;
       if (w?.groupTeardown === 'lingering') lingering = true;
+      if (active) active.aborted = w?.aborted ?? null;
       current = null;
     }
+    if (active) publishStepFailed(active.seq, active.subtaskId, 'error', active.aborted);
     run.status = 'error';
     run.ended_at = new Date(now()).toISOString();
     run.error = e?.message ?? String(e);
@@ -1049,8 +1201,28 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       run.waiting = endedUnlooked(waiting, why);
     }
     writeRun(runDir, run);
-    release();
-    if (afterRelease) await afterRelease().catch(() => {});
+    // The halt that ends the run, recorded and not yet published (a record
+    // write of finish threw first): published now the records hold it, a
+    // run with lanes' through its scheduler, which publishes each halt once.
+    if (run.halt && pendingEndHalt) {
+      const publishEnd = pendingEndHalt;
+      pendingEndHalt = null;
+      publishEnd();
+    }
+    // As in finish: with no open-run record yet, the locks go after the
+    // run-ended. Either release is guarded: a lock entry that cannot be
+    // removed is a dead driver's once this one exits, and never stops the
+    // run-ended or replaces the run's own error, the one thrown.
+    if (openRecorded) {
+      try {
+        release();
+      } catch { /* judged gone once the driver exits */ }
+      if (afterRelease) await afterRelease().catch(() => {});
+    }
+    runEnded('error', run.halt, 1);
+    try {
+      release();
+    } catch { /* a dead driver's entry, judged gone; the run's own error is the one thrown */ }
     detach();
     throw e;
   }

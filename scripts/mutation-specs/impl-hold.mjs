@@ -560,7 +560,7 @@ export const MUTATIONS = [
   },
   {
     id: 'W12', file: SCH, tests: [TRR],
-    from: "    return resume(id, 'its release was consumed', { parkEnded: true });\n",
+    from: "    return resume(id, 'its release was consumed', 'release', { parkEnded: true });\n",
     to: "    return false;\n",
     why: 'a lane the run parked stays parked after its release is consumed',
     killed_by: /held and released again in the same run is consumed and stepped/,
@@ -665,9 +665,11 @@ export const MUTATIONS = [
     killed_by: /listed in the halt's also, with its release/,
   },
   {
-    id: 'L8', file: SCH, tests: [TLH],
-    from: "    await lastHandoffs();\n    return code;\n",
-    to: "    return code;\n",
+    // The last handoffs run in the driver's finish, once the lock entries
+    // are gone (impl-events: before the run's run-ended).
+    id: 'L8', file: 'plugins/orchestrator/adapters/claude/autopilot/driver.mjs', tests: [TLH],
+    from: "      await last().catch(() => {});\n",
+    to: '',
     why: 'a hold set as the run ends, beside its lock entries, stays pending: no one hands it over',
     killed_by: /handed over once they are gone/,
   },
@@ -1578,8 +1580,8 @@ export const MUTATIONS = [
   },
   {
     id: 'V25', file: SCH, tests: [TSV],
-    from: "      if (parked.has(id)) continue;\n      if (await resume(id, 'its hold ended')) changed = true;",
-    to: "      if (await resume(id, 'its hold ended')) changed = true;",
+    from: "      if (parked.has(id)) continue;\n      // Its gate went",
+    to: "      // Its gate went",
     why: 'a lane the relaunch passed by whose hold ends has the park that still stands deleted, and steps though nothing resolved it',
     killed_by: /keeps the park that still stands/,
   },
