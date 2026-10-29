@@ -124,6 +124,29 @@ export function appendStep(runDir, record) {
 }
 
 /**
+ * A `stall` line (ADR-0068 Decision 3, item 7): whole, or not at all. Its
+ * failure is counted and the run goes on, so a write cut short is taken back
+ * (the file truncated to its size before it), never left for the step's
+ * `finished` line to join. Throws the write's error, after the truncation.
+ * `writeSync` is a test seam.
+ */
+export function appendStallLine(runDir, record, { writeSync = fs.writeSync } = {}) {
+  const fd = fs.openSync(path.join(runDir, 'steps.jsonl'), 'a');
+  try {
+    const size = fs.fstatSync(fd).size;
+    const buf = Buffer.from(`${JSON.stringify(record)}\n`);
+    try {
+      for (let off = 0; off < buf.length;) off += writeSync(fd, buf, off, buf.length - off);
+    } catch (e) {
+      try { fs.ftruncateSync(fd, size); } catch { /* the reader passes a torn last line over */ }
+      throw e;
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
  * Append one line to a JSONL file, creating it and its directory. A torn last
  * line (a writer that died mid-line) is ended first, so the two never join
  * and the next record still parses. A short write is continued from the byte
@@ -271,20 +294,27 @@ export function listOpenRuns(mainRoot) {
 /**
  * One run's records: run.json, the steps (started/finished paired by seq), the
  * landing-ready records and the lane events in the order they were written,
- * halt.json.
+ * halt.json. A step's `stall` lines (ADR-0068 Decision 3) are observations,
+ * never part of its lifecycle: each step lists them in `stalls`, in order.
  */
 export function readRun(repoRoot, runId) {
   const dir = path.join(autopilotDir(repoRoot), runId);
   const run = readJson(path.join(dir, 'run.json'));
   if (!run) return null;
   const steps = new Map();
+  const stalls = new Map();
   for (const rec of readLines(path.join(dir, 'steps.jsonl'))) {
+    if (rec.event === 'stall') {
+      if (!stalls.has(rec.seq)) stalls.set(rec.seq, []);
+      stalls.get(rec.seq).push(rec);
+      continue;
+    }
     const prev = steps.get(rec.seq) ?? {};
     steps.set(rec.seq, rec.event === 'finished' ? { ...prev, ...rec } : { ...rec, ...prev });
   }
   return {
     dir, run,
-    steps: [...steps.values()].sort((a, b) => a.seq - b.seq),
+    steps: [...steps.values()].sort((a, b) => a.seq - b.seq).map((s) => ({ ...s, stalls: stalls.get(s.seq) ?? [] })),
     landing: readLines(path.join(dir, 'landing.jsonl')),
     lanes: readLines(path.join(dir, 'lanes.jsonl')),
     halt: readJson(path.join(dir, 'halt.json')),

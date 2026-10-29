@@ -7,7 +7,13 @@
 // background task or follow-up turn is pending (probe D2), a PreCompact event
 // and a timeout abort the step and kill the whole process group, the context
 // sensor counts main-thread messages only, the posture never escalates, the
-// environment is scrubbed, and network pushes fail at the git level.
+// environment is scrubbed, and network pushes fail at the git level. The
+// stall watch (ADR-0068 Decision 3, items 7, 8 and 10) against a fake sampler
+// on a clock the test moves: log mode records and never stops the step; `on`
+// aborts a stalled step as a timeout does; a worker that ignores an idle close
+// of stdin is judged until it exits; a close on a finished report, an abort
+// and the worker's exit end the watch. The run's sampler:
+// test-autopilot-stall-sampler.mjs.
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert/strict';
@@ -20,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const W = await import(resolve(REPO_ROOT, 'plugins/orchestrator/adapters/claude/autopilot/worker.mjs'));
 const FAKE = resolve(REPO_ROOT, 'tests/orchestrator/fixtures/autopilot-fake-claude.mjs');
+const SM = await import(resolve(REPO_ROOT, 'plugins/orchestrator/adapters/claude/autopilot/stall-sampler.mjs'));
 chmodSync(FAKE, 0o755);
 
 const RUN = 'autopilot-20261001T000000Z-123456';
@@ -620,5 +627,260 @@ describe('fixture', () => {
   it('answers --version and --help like the real CLI does for preflight', () => {
     ok(/Fake Claude/.test(execFileSync(FAKE, ['--version'], { encoding: 'utf8' })));
     ok(execFileSync(FAKE, ['--help'], { encoding: 'utf8' }).includes('--permission-prompts'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ADR-0068 Decision 3 — the stall watch.
+
+const WALL0 = Date.parse('2026-10-29T00:00:00.000Z');
+// The detector, scaled: a 1 s window, a sample every 100 ms.
+const SCALED = { windowMs: 1000, intervalMs: 100, cpuThresholdMs: 10, heartbeatGraceMs: 500 };
+const pause = (ms) => new Promise((r) => { setTimeout(r, ms); });
+const table = (procs = []) => ({ ok: true, procs, unreadable: [], exited: [], resolutionMs: 10 });
+// Wait until the worker's raw stream holds a line `match` takes.
+async function lineIn(t, match, ms = 10_000) {
+  const file = join(t.dir, 'worker-1.jsonl');
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    const text = existsSync(file) ? readFileSync(file, 'utf8') : '';
+    for (const l of text.split('\n')) {
+      try { if (l && match(JSON.parse(l))) return; } catch { /* torn */ }
+    }
+    await pause(20);
+  }
+  throw new Error('the line never came');
+}
+const assistantIn = (t) => lineIn(t, (e) => e.type === 'assistant');
+
+// A sampler whose clock and samples the test drives.
+function fakeSampler() {
+  let mono = 0;
+  const ls = new Set();
+  return {
+    clock: { mono: () => mono, wall: () => WALL0 + mono },
+    get size() { return ls.size; },
+    register(l) { ls.add(l); return { unregister() { ls.delete(l); } }; },
+    // Move the clock by `ms`, one sample every 100 ms of it.
+    samples(ms, snap = table()) {
+      for (let t = 0; t < ms; t += 100) {
+        mono += 100;
+        for (const l of [...ls]) l(typeof snap === 'function' ? snap() : snap, mono, WALL0 + mono);
+      }
+    },
+  };
+}
+
+function start(mode, { stall = 'log', sampler = fakeSampler(), env = {}, over = {} } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'autopilot-stall-worker-'));
+  const records = [];
+  const handle = W.startWorker({
+    cwd: dir, prompt: '/engineer:critique', stepKind: 'verb', runId: RUN, seq: 1, roots: ROOTS,
+    stepBudgetUsd: 1, stepTimeoutSec: 30, model: null, effort: null, rawPath: join(dir, 'worker-1.jsonl'),
+    env: { ...process.env, AUTOPILOT_CLAUDE_BIN: FAKE, FAKE_CLAUDE_MODE: mode, ...env },
+    stall: { mode: stall, sampler, detector: SCALED }, onStall: (r) => records.push(r),
+    timing: { closeDebounceMs: 100, reportExitGraceMs: 400, killGraceMs: 300 },
+    ...over,
+  });
+  handle.begin();
+  return { handle, records, sampler, dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+describe('the worker\'s watch (Decision 3, items 7, 8 and 10)', () => {
+  it('log mode records a stall through onStall and never stops the step', async () => {
+    const t = start('events', { env: { FAKE_EVENTS: JSON.stringify([{ delay: 900, event: { result: null } }]) } });
+    try {
+      await assistantIn(t); // init and the first message are in
+      t.sampler.samples(1200);
+      deepStrictEqual(t.records.map((r) => r.verdict), ['stalled']);
+      const w = await t.handle.done;
+      deepStrictEqual([w.aborted, w.exitCode], [null, 0], 'the step ended as it would have');
+      deepStrictEqual(t.records.map((r) => r.verdict), ['stalled', 'active'], 'its result is activity');
+      strictEqual(w.stall.mode, 'log');
+      deepStrictEqual(w.stall.summary.verdict_counts, { active: 2, stalled: 1, unknown: 0 });
+      strictEqual(w.stall.last.verdict, 'active');
+      ok(Number.isInteger(w.stall.summary.longest_quiet_ms));
+      strictEqual(t.sampler.size, 0, 'unregistered at the watch\'s end');
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('with the detector on, a stalled verdict aborts the step (`stalled`) and its group is torn down', async () => {
+    const t = start('events', { stall: 'on', env: { FAKE_EVENTS: '[]' } });
+    try {
+      await assistantIn(t);
+      t.sampler.samples(1200);
+      const w = await t.handle.done;
+      strictEqual(w.aborted, 'stalled');
+      ok(/^the step stalled: no stream activity/.test(w.abortDetail), w.abortDetail);
+      ok(['empty', 'terminated', 'killed'].includes(w.groupTeardown), w.groupTeardown);
+      strictEqual(w.costUsd, null, 'no result: the driver charges the reservation');
+      strictEqual(w.stall.mode, 'on');
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('a failing probe is unknown and never aborts, even with the detector on', async () => {
+    const t = start('events', { stall: 'on', env: { FAKE_EVENTS: JSON.stringify([{ delay: 800, event: { result: null } }]) } });
+    try {
+      await assistantIn(t);
+      t.sampler.samples(1200, { ok: false, why: 'failed' });
+      deepStrictEqual(t.records.map((r) => [r.verdict, r.why]), [['unknown', 'failed']]);
+      const w = await t.handle.done;
+      strictEqual(w.aborted, null);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('a detector that throws on a sample reads it as unknown (`probe-error`), never as the step\'s error', async () => {
+    const t = start('events', { env: { FAKE_EVENTS: JSON.stringify([{ delay: 600, event: { result: null } }]) } });
+    try {
+      await assistantIn(t);
+      // A table whose procs throw when read.
+      const bad = { ok: true, unreadable: [], exited: [], get procs() { throw new Error('boom'); } };
+      t.sampler.samples(1200, bad);
+      deepStrictEqual(t.records.map((r) => [r.verdict, r.why]), [['unknown', 'probe-error']]);
+      const w = await t.handle.done;
+      strictEqual(w.aborted, null);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('a throwing onStall never changes the step\'s outcome', async () => {
+    const t = start('events', { over: { onStall: () => { throw new Error('driver bug'); } }, env: { FAKE_EVENTS: JSON.stringify([{ delay: 600, event: { result: null } }]) } });
+    try {
+      await assistantIn(t);
+      t.sampler.samples(1200);
+      const w = await t.handle.done;
+      deepStrictEqual([w.aborted, w.exitCode], [null, 0]);
+      strictEqual(w.stall.summary.verdict_counts.stalled, 1);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('a worker that ignores an idle close of stdin is judged until it exits', async () => {
+    const t = start('simple', { stall: 'on', env: { FAKE_IGNORE_STDIN_CLOSE: '1' } });
+    try {
+      // The result, then the idle close after the debounce, which the fake ignores.
+      await lineIn(t, (e) => e.subtype === 'fake_stdin_closed');
+      strictEqual(t.sampler.size, 1, 'an idle EOF keeps the watch');
+      t.sampler.samples(1200);
+      const w = await t.handle.done;
+      strictEqual(w.aborted, 'stalled');
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('a close on a finished report ends the watch; one armed and not yet fired does not', async () => {
+    const report = { outcome: 'completed', workflow: null, next_step: null, awaiting_owner: null, summary: 's', waiting_on_background: false };
+    const t = start('background-forever', {
+      env: { FAKE_REPORT: JSON.stringify(report), FAKE_IGNORE_STDIN_CLOSE: '1' },
+      over: { timing: { closeDebounceMs: 700, reportExitGraceMs: 300, killGraceMs: 300 } },
+    });
+    try {
+      await lineIn(t, (e) => e.type === 'result'); // the close is armed for 700 ms
+      t.sampler.samples(1200);
+      deepStrictEqual(t.records.map((r) => r.verdict), ['stalled'], 'judged while the close is only armed');
+      await pause(700);
+      strictEqual(t.sampler.size, 0, 'the close itself ended the watch');
+      t.sampler.samples(1500, { ok: false, why: 'failed' });
+      const w = await t.handle.done;
+      strictEqual(w.closedOnReport, true);
+      deepStrictEqual(t.records.map((r) => r.verdict), ['stalled'], 'nothing judged after it');
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('the worker\'s exit ends the watch before its output closes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'autopilot-stall-holder-'));
+    const pidfile = join(dir, 'holder.pid');
+    const t = start('events', { env: { FAKE_EVENTS: JSON.stringify([{ delay: 0, event: { exit: 0, holdPipes: true } }]), FAKE_CLAUDE_PIDFILE: pidfile } });
+    try {
+      await pause(500);
+      strictEqual(t.sampler.size, 0, 'exited, its pipes still held');
+      const w = await t.handle.done;
+      strictEqual(w.exitCode, 0);
+    } finally {
+      if (existsSync(pidfile)) { try { process.kill(Number(readFileSync(pidfile, 'utf8')), 'SIGKILL'); } catch { /* gone */ } }
+      rmSync(dir, { recursive: true, force: true });
+      t.cleanup();
+    }
+  });
+
+  it('an abort ends the watch: a PreCompact abort, then samples, judge nothing while the worker is still there', async () => {
+    // The worker ignores SIGTERM, so it outlives the abort by the kill grace.
+    const t = start('precompact', { stall: 'on', env: { FAKE_IGNORE_SIGTERM: '1' }, over: { timing: { closeDebounceMs: 100, reportExitGraceMs: 400, killGraceMs: 3000 } } });
+    try {
+      await lineIn(t, (e) => e.subtype === 'hook_started');
+      await pause(100);
+      strictEqual(t.sampler.size, 0, 'the abort ended the watch, the worker still running');
+      t.sampler.samples(1200);
+      deepStrictEqual(t.records, []);
+      const w = await t.handle.done;
+      strictEqual(w.aborted, 'compaction-imminent');
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('the wall clock stays the step\'s stop in log mode, and with the detector on an unknown step runs to it', async () => {
+    for (const mode of ['log', 'on']) {
+      const t = start('events', { stall: mode, env: { FAKE_EVENTS: '[]' }, over: { stepTimeoutSec: 1 } });
+      try {
+        await assistantIn(t);
+        t.sampler.samples(1200, { ok: false, why: 'timeout' });
+        const w = await t.handle.done;
+        strictEqual(w.aborted, 'timeout', mode);
+        deepStrictEqual(t.records.map((r) => r.verdict), ['unknown'], mode);
+      } finally {
+        t.cleanup();
+      }
+    }
+  });
+
+  it('no sampler, no watch: the step is hosted as before, `stall` null', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'autopilot-stall-none-'));
+    try {
+      const h = W.startWorker({
+        cwd: dir, prompt: 'x', stepKind: 'verb', runId: RUN, seq: 1, roots: ROOTS, stepBudgetUsd: 1, stepTimeoutSec: 30,
+        rawPath: join(dir, 'w.jsonl'), env: { ...process.env, AUTOPILOT_CLAUDE_BIN: FAKE, FAKE_CLAUDE_MODE: 'simple' },
+      });
+      h.begin();
+      const w = await h.done;
+      strictEqual(w.stall, null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a real descendant that burns CPU keeps a quiet step active (the probe and the tree, end to end)', { skip: !['darwin', 'linux'].includes(process.platform) }, async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'autopilot-stall-busy-'));
+    const pidfile = join(dir, 'busy.pid');
+    const sampler = SM.createStallSampler({ intervalMs: 200 });
+    const records = [];
+    try {
+      const h = W.startWorker({
+        cwd: dir, prompt: 'x', stepKind: 'verb', runId: RUN, seq: 1, roots: ROOTS, stepBudgetUsd: 1, stepTimeoutSec: 30,
+        rawPath: join(dir, 'w.jsonl'),
+        env: { ...process.env, AUTOPILOT_CLAUDE_BIN: FAKE, FAKE_CLAUDE_MODE: 'events', FAKE_CLAUDE_PIDFILE: pidfile, FAKE_EVENTS: JSON.stringify([{ delay: 5000, event: { result: null } }]), FAKE_BUSY_CHILD: '1' },
+        stall: { mode: 'on', sampler, detector: { windowMs: 2000, intervalMs: 200, cpuThresholdMs: 100 } }, onStall: (r) => records.push(r),
+      });
+      h.begin();
+      const w = await h.done;
+      strictEqual(w.aborted, null, `a busy child is activity: ${JSON.stringify(records)}`);
+      deepStrictEqual(records.filter((r) => r.verdict === 'stalled'), []);
+      ok(w.stall.summary.lowest_window_cpu_ms >= 100, JSON.stringify(w.stall.summary));
+    } finally {
+      sampler.stop();
+      if (existsSync(pidfile)) { try { process.kill(Number(readFileSync(pidfile, 'utf8')), 'SIGKILL'); } catch { /* gone */ } }
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

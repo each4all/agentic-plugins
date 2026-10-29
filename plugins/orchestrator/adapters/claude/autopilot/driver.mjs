@@ -40,7 +40,7 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 
 import { createBudget } from './budget.mjs';
 import { cleanupDeadRuns, summary as cleanupSummary } from './dead-runs.mjs';
-import { ABORT_KINDS, createEventWriter, eventsPath, isHaltCode, READINESS, watchCommand } from './events.mjs';
+import { ABORT_KINDS, createEventWriter, eventsPath, isHaltCode, READINESS, STALL_LOCK_WAIT_MS, stallEventFields, watchCommand } from './events.mjs';
 import { landingLogPath, mergeOrderRecord, orderText, overlapText, reportLandingReady, syncText } from './landing-ready.mjs';
 import { lanesHoldingWork, lanesRequirements } from './lanes.mjs';
 import { launchProposals, mainCheckoutProposal, proposalLines } from './launch-proposals.mjs';
@@ -49,7 +49,7 @@ import {
   afterUnread, decide, fingerprint, modelFor, peersOnlyProgress, proposalLines as haltProposalLines, renderStep, verifyStep, STEP_KINDS,
 } from './policy.mjs';
 import {
-  appendStep, acquireLock, createRunDir, LockHeldError, macroLockPath, mainWorktreeRoot, newRunId,
+  appendStallLine, appendStep, acquireLock, createRunDir, LockHeldError, macroLockPath, mainWorktreeRoot, newRunId,
   processFingerprint, relaunchCommand, releaseCommand, removeOpenRun, workerStreamPath, worktreeLockPath, writeHalt, writeOpenRun, writeRun,
 } from './ledger.mjs';
 import {
@@ -58,6 +58,8 @@ import {
 import { observeInChild, offLoop as defaultOffLoop } from './offloop.mjs';
 import { readParks, retiring } from './parks.mjs';
 import { deliverAtBoundary, rebindDue, stillHeldDetail } from './rebind-boundary.mjs';
+import { stallStepLine } from './stall.mjs';
+import { createStallSampler } from './stall-sampler.mjs';
 import {
   abandonedText, endedUnlooked, foundWaiting, laneBlock, ownChildOnly, peerCancellationOutcome, peerRunnerCommand, peerSettlementOutcome, peersUnlisted,
   reconcileWaiting, reportClosePeersUnlisted, runLanes,
@@ -77,7 +79,14 @@ export const DEFAULTS = Object.freeze({
   maxCostUsd: 250,
   stepBudgetUsd: 25,
   stepTimeoutSec: 3600,
+  // ADR-0068 Decision 3, item 7 — the stall detector records and never acts
+  // until the owner switches it on (`--stall-detector on`, item 8).
+  stallDetector: 'log',
 });
+export const STALL_DETECTOR_MODES = Object.freeze(['log', 'on']);
+// Decision 3, item 8 — with the detector on, the step clock's default is the
+// emergency cap (8 h); an explicit --step-timeout still wins.
+export const EMERGENCY_CAP_SEC = 28800;
 // The Claude Code flags the worker host depends on (verified on 2.1.281 and
 // 2.1.286).
 const REQUIRED_CLAUDE_FLAGS = ['--input-format', '--permission-prompts', '--include-hook-events', '--max-budget-usd', '--json-schema'];
@@ -488,7 +497,8 @@ export function serialRefusal({ repoRoot, macroId, view, env }) {
  * @param a.deps      test seams: { observe, observeAsync, offLoop, startWorker, cancelPeerRuns, settleAbandonedPeers, now, signals,
  *                    checkClaude, terminateGroupsSync, resolveRoots (the drift check between steps), createBudget,
  *                    wakeIntervalMs, quietMs, laneBusy and busyWaitMs (a run with lanes: scheduler.mjs),
- *                    platform and notifySpawn (--notify-local's) }
+ *                    platform and notifySpawn (--notify-local's), stallSampler (the run's sampler, stall-sampler.mjs),
+ *                    stallDetector (its detector's options, stall.mjs), stallWriteSync (a stall line's write) }
  */
 export async function startRun({ repoRoot, options, env = process.env, out = console.log, err = console.error, deps = {} }) {
   const observe = deps.observe ?? defaultObserve;
@@ -560,6 +570,14 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
   // on, and proposes the home worktree to launch from next time.
   const onMain = mainCheckoutProposal({ repoRoot, view, options: { ...options, lanes }, roots, env, home: env.HOME || homedir() });
   for (const line of proposalLines(onMain ? [onMain] : [])) out(line);
+  // ADR-0068 Decision 3 — the detector's mode, and the run's one sampler of
+  // the process table, made at its first step's spawn and stopped at its end.
+  const stallMode = STALL_DETECTOR_MODES.includes(options.stallDetector) ? options.stallDetector : DEFAULTS.stallDetector;
+  let stallSampler = null;
+  const sampler = () => {
+    stallSampler ??= deps.stallSampler ?? createStallSampler();
+    return stallSampler;
+  };
   const runId = newRunId(new Date(now()));
   const runDir = createRunDir(repoRoot, runId);
   const startedAt = now();
@@ -575,6 +593,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       step_timeout_sec: options.stepTimeoutSec,
       model_plan: options.models, model_override: { model: options.model ?? null, effort: options.effort ?? null },
       forced: options.forcedText ?? null, notify_local: options.notifyLocal === true, lanes,
+      stall_detector: stallMode,
     },
     claude_version: pre.claude,
     // ADR-0068 Decision 2, item 9 — a run with lanes honours holds; a serial
@@ -657,7 +676,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
   let events = null;
   const runFile = join(runDir, 'run.json');
   const stepsFile = join(runDir, 'steps.jsonl');
-  const publish = (kind, fields, subtaskId = null) => events?.emit(kind, fields, { subtaskId });
+  const publish = (kind, fields, subtaskId = null, write = {}) => events?.emit(kind, fields, { subtaskId, ...write });
   // A halt the run met, pointing at run.json (halt.json is written only at
   // the run's end), and at the step's line when a step met it.
   // The publication of the halt that ends the run, from the moment finish
@@ -695,6 +714,26 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     if (verdict) publishStepFailed(seq, subtaskId, verdict.reason, aborted);
     else if (s.kind === 'commit' && subtaskId) committed.set(seq, subtaskId);
   };
+  // ADR-0068 Decision 3, item 7 — a step's verdict changes: each a `stall`
+  // line in steps.jsonl, then an event pointing at it. Each is its own guarded
+  // attempt: a line that cannot be appended is counted in run.json
+  // (`stall_record_failures`), an event the writer refuses is counted by it,
+  // and neither changes the step's outcome. The event waits on no other
+  // writer of the event file (STALL_LOCK_WAIT_MS): this runs in the step's
+  // sampler and stream callbacks, where a wait would hold every lane.
+  const stallOf = ({ seq, lane = null, subtaskId = null }) => ({
+    stall: { mode: stallMode, sampler: sampler(), ...(deps.stallDetector ? { detector: deps.stallDetector } : {}) },
+    onStall: (record) => {
+      try {
+        appendStallLine(runDir, stallStepLine(record, { seq, lane, mode: stallMode }), deps.stallWriteSync ? { writeSync: deps.stallWriteSync } : {});
+      } catch (e) {
+        run.stall_record_failures = (run.stall_record_failures ?? 0) + 1;
+        try { out(`⚠ step ${seq}'s stall verdict could not be recorded (${e?.message ?? e}); the step goes on, and run.json counts it`); } catch { /* the printer's */ }
+        try { writeRun(runDir, run); } catch { /* the next write of run.json records it */ }
+      }
+      try { publish('stall', stallEventFields(record, { step: seq, mode: stallMode, pointer: stepsFile }), subtaskId, { lockWaitMs: STALL_LOCK_WAIT_MS }); } catch { /* counted by the writer */ }
+    },
+  });
   // halt.json only for a run that ended halted; run.json holds an error.
   const runEnded = (status, halt, exit) => publish('run-ended', {
     status, reason: isHaltCode(halt?.reason) ? halt.reason : null, exit,
@@ -707,6 +746,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
   signals.on('SIGHUP', onSignal);
   signals.on('exit', onExit);
   const detach = () => {
+    try { stallSampler?.stop(); } catch { /* the sampler's */ }
     signals.off?.('SIGINT', onSignal);
     signals.off?.('SIGTERM', onSignal);
     signals.off?.('SIGHUP', onSignal);
@@ -847,7 +887,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         try { writeRun(runDir, run); } catch { /* the next write of run.json records it */ }
       },
     });
-    publish('run-started', { lanes, detector: 'off', run_dir: runDir, pointer: runFile });
+    publish('run-started', { lanes, detector: stallMode, run_dir: runDir, pointer: runFile });
     out(`  events ${evFile}`);
     out(`  watch: ${watchCommand({ macroId, checkout: repoRoot, runId })}`);
 
@@ -960,6 +1000,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
           emit: publish, halt: publishHalt, stepEnd: publishStepEnd,
           stepFailed: publishStepFailed, lanesFile: join(runDir, 'lanes.jsonl'),
         },
+        stallOf,
       });
     }
 
@@ -1054,7 +1095,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       appendStep(runDir, {
         event: 'started', seq, kind: s.kind, command, subtask_id: s.subtaskId ?? null, forced: s.forced === true,
         session_id: sessionId, model, effort, step_budget_usd: stepBudgetUsd, step_timeout_sec: stepTimeoutSec,
-        started_at: new Date(now()).toISOString(), fingerprint_before: fpBefore,
+        stall_detector: stallMode, started_at: new Date(now()).toISOString(), fingerprint_before: fpBefore,
       });
       active = { seq, subtaskId: s.subtaskId ?? null, aborted: null };
       out(`[${seq}] ${command}${s.subtaskId ? ` (subtask ${s.subtaskId})` : ''}${model || effort ? ` · ${model ?? 'default'}/${effort ?? 'default'}` : ''}`);
@@ -1065,6 +1106,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         stateBase: stateRoot.root,
         autopilotToken: token,
         checkInit: (plugins) => provenanceProblem(plugins, { pinned, repoRoot, loaded }),
+        ...stallOf({ seq, subtaskId: s.subtaskId ?? null }),
         ...(deps.terminateGroup ? { terminateGroup: deps.terminateGroup } : {}),
       });
       // The worker is on the locks before it has anything to do: a driver
@@ -1155,6 +1197,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         group_teardown: w.groupTeardown,
         report_eof: w.reportEof === true, closed_on_report: w.closedOnReport === true, abandoned_background: w.abandonedBackground ?? [], report_teardown: w.reportTeardown ?? null,
         peer_cancellations: cancelled, peer_settlements: settlements, peers_unaccounted: unaccounted,
+        stall: w.stall ?? null,
         fingerprint_after: fingerprint(view), outcome: verdict ? verdict.reason : 'ok',
       });
       active = null;

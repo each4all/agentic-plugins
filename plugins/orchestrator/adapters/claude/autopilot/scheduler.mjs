@@ -430,7 +430,9 @@ export function abandonedText(w) {
  *           persona operation is open in the lane; by default, the child's operation entries and the
  *           macro's operation records, holds.mjs openOperations), busyWaitMs (how long a run with nothing
  *           running waits on lanes laneBusy holds back before it ends; the step timeout by default),
- *           resolveRoots (the drift check) }
+ *           resolveRoots (the drift check),
+ *           stallOf({ seq, lane, subtaskId }) => { stall, onStall }: the run's stall detector for a step
+ *           (driver.mjs, ADR-0068 Decision 3) }
  */
 export async function runLanes(c) {
   const { repoRoot, options, env, out, now, roots, pinned, stateRoot, runId, runDir, run, macroId, record, mainRoot } = c;
@@ -1734,6 +1736,7 @@ export async function runLanes(c) {
     appendStep(runDir, {
       event: 'started', seq: mine, lane: inLane ? id : null, kind: s.kind, command, subtask_id: id, forced: s.forced === true,
       session_id: sessionId, model, effort, step_budget_usd: reservation.usd, step_timeout_sec: timeoutSec, cwd,
+      stall_detector: options.stallDetector === 'on' ? 'on' : 'log',
       started_at: new Date(now()).toISOString(), fingerprint_before: inLane ? laneFingerprint(before, id) : fingerprint(before),
     });
     out(`[${mine}] ${inLane ? `lane ${id}: ` : ''}${command}${!inLane && id ? ` (subtask ${id})` : ''}${model || effort ? ` · ${model ?? 'default'}/${effort ?? 'default'}` : ''}`);
@@ -1747,6 +1750,9 @@ export async function runLanes(c) {
         stepBudgetUsd: reservation.usd, stepTimeoutSec: timeoutSec, model, effort, rawPath: workerStreamPath(runDir, mine), env,
         remotes: c.remotes, stateBase: place.stateBase, autopilotToken: c.token, onRateLimit,
         checkInit: checkInit(cwd),
+        // ADR-0068 Decision 3 — the run's sampler and this step's recorder
+        // of its verdicts (driver.mjs stallOf).
+        ...(c.stallOf ? c.stallOf({ seq: mine, lane: inLane ? id : null, subtaskId: id }) : {}),
         ...(c.terminateGroup ? { terminateGroup: c.terminateGroup } : {}),
       });
     } catch (e) {
@@ -1885,6 +1891,7 @@ export async function runLanes(c) {
       group_teardown: w.groupTeardown, rate_limit: w.rateLimit ?? null,
       report_eof: w.reportEof === true, closed_on_report: w.closedOnReport === true, abandoned_background: w.abandonedBackground ?? [], report_teardown: w.reportTeardown ?? null,
       peer_cancellations: cancelled, peer_settlements: settlements, peers_unaccounted: unaccounted,
+      stall: w.stall ?? null,
       fingerprint_after: entry.lane ? laneFingerprint(after, id) : fingerprint(after),
       outcome: verdict ? verdict.reason : 'ok', halt_scope: scope,
     });
@@ -2349,7 +2356,7 @@ export async function runLanes(c) {
         else for (const g of entry.groups) g.release();
         const charged = budget.settle(entry.reservation, { spawned: true, costUsd: entry.w?.costUsd ?? null });
         run.accounted_seqs.push(entry.seq);
-        appendStep(runDir, { event: 'finished', seq: entry.seq, lane: entry.lane, ended_at: new Date(now()).toISOString(), aborted: entry.w?.aborted ?? 'error', cost_usd: entry.w?.costUsd ?? null, cost_charged_usd: charged, group_teardown: entry.w?.groupTeardown ?? null, outcome: 'error' });
+        appendStep(runDir, { event: 'finished', seq: entry.seq, lane: entry.lane, ended_at: new Date(now()).toISOString(), aborted: entry.w?.aborted ?? 'error', cost_usd: entry.w?.costUsd ?? null, cost_charged_usd: charged, group_teardown: entry.w?.groupTeardown ?? null, stall: entry.w?.stall ?? null, outcome: 'error' });
         pub.stepFailed(entry.seq, entry.subtaskId, 'error', entry.w?.aborted ?? null);
       } catch { /* the dead-run cleanup counts what was not written */ }
     }

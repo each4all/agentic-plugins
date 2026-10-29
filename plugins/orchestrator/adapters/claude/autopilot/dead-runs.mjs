@@ -164,7 +164,7 @@ function pendingPeers({ dirs, unreadable: unresolvedHomes }) {
 // line that does not parse before its last, cannot say which steps were left
 // unfinished. A last line cut short is a write a crash interrupted, before
 // the spawn it announced. Started and finished lines are paired by seq, as
-// readRun pairs them.
+// readRun pairs them; a `stall` line is an observation, never a step's.
 function readStepsStrictly(runDir) {
   let text = '';
   try {
@@ -184,6 +184,7 @@ function readStepsStrictly(runDir) {
       return { error: `line ${i + 1} of its step log does not parse` };
     }
     if (!Number.isInteger(rec?.seq)) return { error: `line ${i + 1} of its step log has no seq` };
+    if (rec.event === 'stall') continue;
     const prev = bySeq.get(rec.seq) ?? {};
     bySeq.set(rec.seq, rec.event === 'finished' ? { ...prev, ...rec } : { ...rec, ...prev });
   }

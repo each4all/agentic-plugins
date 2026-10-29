@@ -54,7 +54,7 @@ import { MIN_STEP_BUDGET_USD } from './budget.mjs';
 import { cleanupDeadRuns } from './dead-runs.mjs';
 import { eventsPath } from './events.mjs';
 import { parseCursor, readEvents } from './events-reader.mjs';
-import { DEFAULTS, posture, preflight, startRun } from './driver.mjs';
+import { DEFAULTS, EMERGENCY_CAP_SEC, posture, preflight, startRun, STALL_DETECTOR_MODES } from './driver.mjs';
 import { landingLabel } from './landing-ready.mjs';
 import { gatherLaneFacts, laneHome, lanePath, lanesRequirements, planReconciliation } from './lanes.mjs';
 import { launchProposals, proposalLines, reportEntries } from './launch-proposals.mjs';
@@ -117,6 +117,10 @@ Options:
   --step-budget <usd>     default ${DEFAULTS.stepBudgetUsd}
   --step-timeout <s>      default ${DEFAULTS.stepTimeoutSec} (at least 60, at most ${MAX_STEP_TIMEOUT_SEC}); the run itself has
                           no clock: steps, cost, this timeout, a halt or stop end it
+  --stall-detector <mode> log (default): judge each step stalled, active or unknown and record each verdict
+                          change, never stopping a step; on: a stalled step is aborted as a timed-out one is,
+                          and the step clock's default becomes the emergency cap, ${EMERGENCY_CAP_SEC} s (an explicit
+                          --step-timeout still wins). ADR-0068 Decision 3: switching it on is the owner's review
   --lanes <n>             run up to n subtasks at once, each in its own git worktree (a lane); 1 or absent:
                           one subtask at a time in this checkout. The owner's default with lanes is 2
                           (ADR-0067 Decision 6); a larger n spends the rate limit faster
@@ -151,6 +155,13 @@ const atLeast = (name, raw, min, max = Infinity) => {
   return n;
 };
 
+/** A step's stall summary, in one line (ADR-0068 Decision 3, item 7). */
+export function stallSummaryText(sm) {
+  const c = sm.verdict_counts ?? {};
+  const sec = (ms) => (typeof ms === 'number' ? `${Math.round(ms / 1000)} s` : '?');
+  return `last ${sm.last ?? '?'} · stalled ${c.stalled ?? 0}× · unknown ${c.unknown ?? 0}× (${sec(sm.unknown_ms)}) · longest quiet ${sec(sm.longest_quiet_ms)} · lowest 10-min CPU ${sm.lowest_window_cpu_ms === null || sm.lowest_window_cpu_ms === undefined ? '-' : `${(sm.lowest_window_cpu_ms / 1000).toFixed(2)} s`} · longest owed answer ${sec(sm.answer_owed_max_ms)}`;
+}
+
 /** Parse the command line (after any --args-file expansion). */
 export function parseCli(argv) {
   const words = expandArgsFile(argv);
@@ -158,7 +169,7 @@ export function parseCli(argv) {
     sub: 'preview', execute: false, repo: null, macro: null, run: null,
     models: null, model: null, effort: null,
     maxSteps: DEFAULTS.maxSteps, maxCostUsd: DEFAULTS.maxCostUsd, stepBudgetUsd: DEFAULTS.stepBudgetUsd,
-    stepTimeoutSec: DEFAULTS.stepTimeoutSec,
+    stepTimeoutSec: DEFAULTS.stepTimeoutSec, stepTimeoutExplicit: false, stallDetector: DEFAULTS.stallDetector,
     forced: null, forcedText: null, forcedPairs: null, lanes: 1, notifyLocal: false, json: false, help: false,
     subtask: null, hold: null, operation: null, discardUnreadable: false,
     checkout: null, after: [], follow: false,
@@ -212,7 +223,16 @@ export function parseCli(argv) {
         // never spawned, so a per-step cap below it could never run one.
         if (o.stepBudgetUsd < MIN_STEP_BUDGET_USD) throw new UsageError(`${name} must be at least ${MIN_STEP_BUDGET_USD} (got ${o.stepBudgetUsd})`);
         break;
-      case '--step-timeout': o.stepTimeoutSec = atLeast(name, value(), MIN_SECONDS, MAX_STEP_TIMEOUT_SEC); break;
+      case '--step-timeout':
+        o.stepTimeoutSec = atLeast(name, value(), MIN_SECONDS, MAX_STEP_TIMEOUT_SEC);
+        o.stepTimeoutExplicit = true;
+        break;
+      case '--stall-detector': {
+        const mode = value();
+        if (!STALL_DETECTOR_MODES.includes(mode)) throw new UsageError(`--stall-detector must be one of ${STALL_DETECTOR_MODES.join(', ')} (got ${JSON.stringify(mode)})`);
+        o.stallDetector = mode;
+        break;
+      }
       case '--lanes': o.lanes = positive(name, value(), { integer: true }); break;
       case '--lane': {
         const id = value();
@@ -261,6 +281,10 @@ export function parseCli(argv) {
     throw new UsageError(`--macro ${JSON.stringify(o.macro)} is not a macro workflow id`);
   }
   if (pendingLane !== null) throw new UsageError(`--lane ${pendingLane} needs a --next after it`);
+  // ADR-0068 Decision 3, item 8 — with the detector on, the default step
+  // clock is the emergency cap; a --step-timeout given, before or after it,
+  // still wins.
+  if (o.stallDetector === 'on' && !o.stepTimeoutExplicit) o.stepTimeoutSec = EMERGENCY_CAP_SEC;
   if (pairs.length > 0) {
     if (o.lanes < 2) {
       if (pairs.some((p) => p.lane !== null)) throw new UsageError('--lane applies only with --lanes 2 or more');
@@ -511,6 +535,7 @@ async function previewCmd(o, repoRoot, env, out) {
     if (lanesPreview) printLanesPreview(lanesPreview, out);
     out(`posture: --permission-mode manual · --permission-prompts none · model plan ${p.model_plan ?? '(asked at start)'}${p.model_override.model || p.model_override.effort ? ` · override ${p.model_override.model ?? '-'}/${p.model_override.effort ?? '-'}` : ''}`);
     out(`  budgets: ${o.maxSteps} steps · $${o.maxCostUsd} per run · $${o.stepBudgetUsd} and ${o.stepTimeoutSec} s per step${o.lanes >= 2 ? ` · each step's budget reserved before it spawns, up to ${o.lanes} at once` : ''}`);
+    out(`  stall detector: ${o.stallDetector === 'on' ? `on (a stalled step is aborted; the step clock is ${o.stepTimeoutSec} s${o.stepTimeoutExplicit ? '' : ', the emergency cap'})` : 'log (verdicts recorded, no step stopped; the step clock stops a step)'}`);
     out(`  allowed: ${p.allowed_tools.join(' ')}`);
     out(`  denied: ${p.denied_tools.join(' ')} (+ ${p.denied_on_non_commit_steps.join(' ')} except on /engineer:commit)`);
     for (const w of pre.warnings) out(`⚠ ${w}`);
@@ -639,6 +664,7 @@ async function statusCmd(o, repoRoot, out, err) {
   }
   out(`${r.run.run_id} · ${liveness} · macro ${r.run.macro_id ?? '-'} · steps ${r.run.steps} · $${Number(r.run.cost_usd ?? 0).toFixed(2)}`);
   out(`  started ${r.run.started_at}${r.run.ended_at ? ` · ended ${r.run.ended_at}` : ''} · ledger ${r.dir}`);
+  if (r.run.options?.stall_detector) out(`  stall detector ${r.run.options.stall_detector} · step clock ${r.run.options.step_timeout_sec ?? '?'} s${r.run.stall_record_failures ? ` · ${r.run.stall_record_failures} stall verdict${r.run.stall_record_failures === 1 ? '' : 's'} not recorded` : ''}`);
   for (const g of groups) out(`  worker group ${groupLabel(g)}${g.session_id ? ` · session ${g.session_id}` : ''}`);
   const c = r.run.dead_run_cleanup;
   if (c) {
@@ -649,6 +675,10 @@ async function statusCmd(o, repoRoot, out, err) {
   for (const s of r.steps) {
     const pct = typeof s.peak_pct === 'number' ? ` ${(s.peak_pct * 100).toFixed(1)}%` : '';
     out(`  [${s.seq}] ${s.lane ? `lane ${s.lane}: ` : ''}${s.command} → ${s.outcome ?? (s.event === 'started' ? 'running or interrupted' : '?')}${typeof s.cost_usd === 'number' ? ` · $${s.cost_usd.toFixed(2)}` : ''}${pct} · session ${s.session_id}`);
+    // ADR-0068 Decision 3 — the step's last verdict, while it runs, or its summary.
+    const lastStall = s.stalls?.at(-1);
+    if (s.stall?.summary) out(`      stall: ${stallSummaryText(s.stall.summary)}`);
+    else if (lastStall) out(`      stall: ${lastStall.verdict} since ${lastStall.at} (quiet ${Math.round(lastStall.quiet_ms / 1000)} s)`);
   }
   // A record from before freshness (no sync) reads as landing-ready, as it was written.
   for (const l of r.landing) {

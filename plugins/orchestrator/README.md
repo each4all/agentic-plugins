@@ -164,6 +164,17 @@ the steps stay manual**, and the host-neutral state it reads (`next_step_*`,
   reconciliation and the first wave. Absent or 1, the run is serial, and it refuses to
   start while a lane of the macro holds a subtask that is not completed, the macro
   keeps a park, or a hold of it applies ([Holds](#holds)).
+- **The stall detector** ([ADR-0068](../../docs/adr/0068-autopilot-lanes-that-keep-going.md)
+  Decision 3, `adapters/claude/autopilot/stall.mjs`, `procs.mjs`, `stall-sampler.mjs`).
+  One sample of the process table every 10 s for the run (`ps` in the C locale on macOS,
+  `/proc/<pid>/stat` on Linux) and each worker's stream judge every step `active`,
+  `stalled` (10 minutes of nothing but heartbeats and hook events, and under 1 s of
+  descendant CPU) or `unknown`. `--stall-detector log`, the default, records each
+  verdict change in `steps.jsonl` and the event file and a summary on each `finished`
+  line, and never stops a step; observe with `--step-timeout 10800` or more.
+  `--stall-detector on`, the owner's switch after reviewing those records, aborts a
+  stalled step (`worker-failed`) and makes the step clock's default the 8-hour
+  emergency cap. `commands/autopilot.md` has the details.
 - **Bounds.** Steps, total cost, and each step's budget and wall clock
   (`--max-steps`, `--max-cost`, `--step-budget`, `--step-timeout`); a halt or `stop`
   ends a run too. The run itself has no clock, so a step started late gets its whole

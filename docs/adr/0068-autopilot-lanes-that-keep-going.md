@@ -4208,6 +4208,11 @@ Decision 3's `active`, `stalled`, `unknown`, and its `mode` one of `log`,
 | `stall` | `impl-stall`'s: `step`, `verdict` (`active`, `stalled`, `unknown`), `mode` (`log`, `on`), `waiting`, `quiet_ms`, `window_cpu_ms`, `pointer` |
 | `run-ended` | `status` (`completed`, `halted`, `error`), `reason` (or null), `exit`, `pointer` (halt.json for a run that halted, else run.json), `cleanup`, `terminal: true` |
 
+*2026-10-29:* impl-stall fixed the two rows it owned: `run-started`'s
+`detector` is the run's mode (`log` or `on`; `off` is still read), and
+`stall`'s fields are its S7's, the wait's three facts and the window's
+unknown time in place of `waiting`.
+
 `hold-ended` is a cause item 3 does not name: a lane a relaunch passed by whose
 hold ended with no release (a pending hold withdrawn, a hold retired or
 orphaned) is the run's again, which is neither a release nor a change of its
@@ -4316,3 +4321,123 @@ another run's line does not see it. On Linux an idle `events --follow` whose
 pipe reader is gone (`… --follow | head -1`) runs until the file's next line,
 which, for a macro whose runs have all ended, may be the next launch: end it
 yourself.
+
+## Implementation note 2026-10-29 — impl-stall (Decision 3)
+
+The orchestrator's implementation of Decision 3, log-only as item 7 ships it.
+It adds no guarantee; it fixes what the decision left to the implementation
+(the probe's sources and parse rules, how a window is summed, the sampler's
+cadence, how the wait's facts are read, where the watch ends) and names where
+each verdict is recorded.
+
+**S1. The probe** (`adapters/claude/autopilot/procs.mjs`). One read of the
+whole table: `{ pid, ppid, pgid, key, ageMs, cpuMs }` per process, or a failed
+read (`failed`, `timeout`, `parse`, `coarse`). macOS runs `ps -A -o
+pid=,ppid=,pgid=,etime=,lstart=,time=` with `LC_ALL` and `LANG` set to `C`;
+the CPU time is `[[dd-]hh:]mm:ss.cc`, minutes past 59 included (`298:41.42`),
+with no fraction coarse; any line that does not parse fails the whole read
+(under ko_KR or de_DE `lstart` is localized, measured 2026-10-29). Linux reads
+`/proc/<pid>/stat` after the command name's last `)`, utime + stime only,
+`CLK_TCK` from `getconf` once per process, the age from `/proc/uptime`; a
+stat that is gone (ENOENT, ESRCH) is an exit, one that cannot be read
+(EACCES) or reads malformed is `unreadable`. A process absent from the listing
+was not alive throughout it, so the listing is a snapshot on both platforms.
+The identity is the pid with `lstart` (macOS) or `starttime` (Linux). The read
+and getconf share one 5 s deadline; a read past it answers `timeout` and is
+told to stop (the walk at its next process, `ps` and getconf killed at the
+same bound), and until it has, a new read answers `slow` and starts nothing.
+
+**S2. Membership and completeness** (`stall.mjs`). A worker's members in a
+known table: its children by ppid, every process in its group, every identity
+a known table showed as a member, and their descendants, the worker itself
+excluded. An identity leaves when a table no longer lists it, unless the
+table could not read its pid. A table that could not read a pid is unknown
+for every worker, stricter than item 4's "a live member": an unreadable entry
+carries no start time, so no pid can be ruled out of a tree by it, not even
+one the previous table read outside it, whose pid a descendant may have
+reused in between. macOS reads no pid unreadable; on Linux it is a stat that
+fails other than by the process's exit, or does not parse. What the rule cannot see stays as §Consequences says: a descendant that
+detached before any sample saw it.
+
+**S3. The window.** Each pair of samples is an interval, its CPU the growth of
+the identities the earlier sample held plus the CPU of each identity first
+seen that started inside the window (its etime within the window, 1 s slack
+for macOS's whole seconds), attributed to the interval it was first seen in
+(a scan that missed a young process does not lose it; the over-count can only
+make a window `active`); one first seen that is older is a baseline only. The
+spawn is the first sample, known and empty. An interval is unknown when either
+sample is, when it is longer than three sample intervals, when the wall clock
+moved more than an interval further than the monotonic one, or when a
+member's counter went back. A window sums the intervals that end inside it,
+one straddling its start whole (an over-count that can only make it
+`active`); any unknown one makes it unknown, as does no sample for over three
+intervals (the unknown time it records is the window's at most). A window's
+CPU is known only up to its last sample, so `stalled` is decided at a
+sample; a stream event or the watch's end turns a verdict `active` or
+`unknown`, never `stalled`. The comparisons are in full precision; the
+records round to whole milliseconds.
+
+**S4. The sampler** (`stall-sampler.mjs`). One per run, made at its first step
+and stopped at its end, ticking every 10 s whatever a read takes: a read
+still running at a tick makes that tick `slow` for every worker and starts no
+second one; a read past its deadline is `timeout`, and its late answer is
+dropped. Each snapshot goes to the workers registered when its read began,
+each judging its own tree. A worker registers at its spawn and unregisters at
+the watch's end.
+
+**S5. The wait.** `pending_tasks` is the length of the last
+`background_tasks_changed`. `tool_running`: a heartbeat whose
+`parent_tool_use_id` is a tool a main-thread message asked for (a subagent's
+tool is the subagent's), until its `tool_result` or 75 s after its last
+heartbeat. `answer_owed`: set at the spawn (the prompt), at a main-thread tool
+result and at a task notification; cleared by a main-thread message of the
+model and by a result. Every observation judges again, so a stall ended by
+activity is recorded at the activity.
+
+**S6. The watch's end** (`worker.mjs`). The watch ends at the close on a
+finished report (when it fires, not when it is armed), at an abort, and at the
+worker's exit (before its output closes); an idle close of stdin keeps it.
+At its end the detector closes with a final verdict and its summary. A sample
+or a detector that throws is an unknown sample (`probe-error`); a callback
+that throws is the driver's.
+
+**S7. The records.** Each verdict change is a steps.jsonl line `{event:
+'stall', seq, lane, at, mode, verdict, quiet_ms, window_cpu_ms, unknown_ms,
+pending_tasks, tool_running, answer_owed, why}`, then a `stall` event with the
+same values but `why`. The line is written whole or not at all: a write cut
+short is taken back (the file truncated to its size before it), so the
+step's `finished` line never joins a torn one. The event's fields, which E2 left as `waiting`, are the
+wait's three facts and the window's unknown time: `step`, `verdict`, `mode`,
+`quiet_ms`, `window_cpu_ms` (null when unknown), `unknown_ms`,
+`pending_tasks`, `tool_running`, `answer_owed`, `pointer`; `run-started`'s
+`detector` is the run's mode (`off` is still read, from runs before this
+release). The `started` line has `stall_detector`, the `finished` line
+`stall: {mode, summary, last}` (also on a lane's finished line written as the
+run stops on an error), where the summary is `longest_quiet_ms`,
+`lowest_window_cpu_ms`, `unknown_ms`, `verdict_counts`, `answer_owed_max_ms`,
+`stalled_waits` (up to 20, each `at` and the wait) and
+`stalled_waits_truncated`. A line that cannot be appended is counted in
+run.json (`stall_record_failures`, written at once), an event the writer
+refuses is counted as any; neither changes the step. A `stall` event waits on
+no other writer of the event file: written from inside the running step, on
+the event loop every lane shares, it takes the lock when it is free and is
+refused otherwise (`STALL_LOCK_WAIT_MS`), the step's line its record. `readRun` lists a step's lines in `stalls`,
+never merging them into the step; the dead-run cleanup passes them over.
+`status` prints the mode, the step clock and each step's summary.
+
+**S8. Upgrade and rollback.** A reader older than this release holds a line to
+its own allow-lists, so it skips as `reader-skipped` a `stall` line with the
+new fields and a `run-started` naming `log` or `on` (it finds that run's
+run.json from its open-run record or the checkouts instead): re-arm a watch
+after installing, before the next launch. After a rollback the old reader
+reads the files this release wrote the same way; a cursor naming one of those
+lines is no line it delivers, so its arm ends with a `reader-error`, and the
+watch is re-armed from `<run-id>:0`.
+
+**S9. The modes.** `--stall-detector log` is the default; `on` aborts a
+`stalled` step with abort reason `stalled`, which the policy halts
+`worker-failed` with the detail naming the quiet time, the window's CPU and
+the wait, charged as a timeout is and scoped by Decision 1; with `on` and no
+`--step-timeout`, the step clock is 28800 s (`EMERGENCY_CAP_SEC`), and an
+explicit one wins whatever the order. The observation configuration (item
+7): `--stall-detector log --step-timeout 10800`, or longer.
