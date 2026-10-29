@@ -1287,6 +1287,9 @@ export function verifyStep({ step: s, worker: w, before, after }) {
   if (w.aborted === 'interrupted') return halt('interrupted', 'the owner interrupted the run');
   if (w.aborted === 'compaction-imminent') return halt('compaction-imminent', 'a PreCompact hook event appeared in the worker stream; the step was aborted');
   if (w.aborted === 'timeout') return halt('worker-failed', `the step exceeded its wall clock (${w.timeoutSec ?? '?'} s) and its process group was killed`);
+  // ADR-0068 Decision 3, item 8 — with the stall detector on, a stalled step
+  // ends as a timed-out one does; its detail names the stall and the wait.
+  if (w.aborted === 'stalled') return halt('worker-failed', w.abortDetail ?? 'the step stalled and its process group was killed');
   if (w.aborted === 'provenance') return halt(w.abortReason ?? 'version-drift', w.abortDetail ?? 'the worker loaded plugins other than the ones this run pinned');
   if (w.aborted) return halt('worker-failed', `the step was aborted (${w.aborted})`);
   if (w.spawnError) return halt('worker-failed', `the worker could not start: ${w.spawnError}`);

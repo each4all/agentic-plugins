@@ -458,8 +458,8 @@ export const MUTATIONS = [
   },
   {
     id: 'S17', file: CLI, tests: [TC],
-    from: "  if (pendingLane !== null) throw new UsageError(`--lane ${pendingLane} needs a --next after it`);\n  if (pairs.length > 0) {",
-    to: "  if (pairs.length > 0) {",
+    from: "  if (pendingLane !== null) throw new UsageError(`--lane ${pendingLane} needs a --next after it`);\n  // ADR-0068 Decision 3, item 8",
+    to: "  // ADR-0068 Decision 3, item 8",
     why: "a --lane with no --next after it is dropped silently: the owner's forced step never runs",
     killed_by: /reads --lanes, and --lane <subtask> --next/,
   },

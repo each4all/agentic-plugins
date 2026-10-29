@@ -30,6 +30,14 @@
 //
 // On timeout or abort the driver kills only the process group it spawned (the
 // ADR-0035 §4 child-only rule, the peer-runner pattern).
+//
+// ADR-0068 Decision 3 — the stall detector (stall.mjs) watches the step from
+// its spawn to the worker's exit: every stream line and every sample of the
+// run's sampler (stall-sampler.mjs) is fed to it, and each verdict change goes
+// to `onStall`. In `log` mode that is all it does; with `on`, a `stalled`
+// verdict aborts the step (`stalled`) as a timeout does. An idle close of
+// stdin keeps the watch (a worker that ignores the EOF is judged like any);
+// only the close on a finished report, an abort and the worker's exit end it.
 
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -37,6 +45,7 @@ import fs from 'node:fs';
 import readline from 'node:readline';
 
 import { reportSaysFinished, STEP_REPORT_SCHEMA } from './policy.mjs';
+import { createStallDetector, roundedSummary, stalledDetail } from './stall.mjs';
 
 export const claudeBin = (env = process.env) => env.AUTOPILOT_CLAUDE_BIN || 'claude';
 
@@ -340,6 +349,10 @@ export function terminateGroupsSync(pgids, { graceMs = KILL_GRACE_MS } = {}) {
  * @param o.checkInit      (plugins) => null | {reason, detail}: refuse the loaded plugins
  * @param o.onRateLimit    (rate_limit_info) => void: each rate_limit_event, as it comes (throttle.mjs)
  * @param o.timing         { closeDebounceMs, reportExitGraceMs, killGraceMs } (a test seam)
+ * @param o.stall          { mode: 'log' | 'on', sampler, detector } or null: the stall
+ *                         detector's mode, the run's sampler (stall-sampler.mjs) and
+ *                         the detector's options (stall.mjs, a test seam)
+ * @param o.onStall        (record) => void: each verdict change, as it comes
  */
 export function startWorker(o) {
   const env = o.env ?? process.env;
@@ -392,6 +405,57 @@ export function startWorker(o) {
     closeResult: null, abandoned: [], reportTimers: [], reportTeardown: null, reportSignalledAt: null,
   };
 
+  // ADR-0068 Decision 3 — the step's detector, while the watch lasts. A
+  // detector or sample that throws is an unknown sample, never the step's
+  // error; a callback that throws is the driver's.
+  const stallMode = o.stall?.mode === 'on' ? 'on' : 'log';
+  let stall = null;
+  if (o.stall?.sampler && Number.isInteger(child.pid)) {
+    const clock = o.stall.sampler.clock ?? { mono: () => performance.now(), wall: () => Date.now() };
+    stall = {
+      clock, watching: true, last: null, summary: null, registration: null,
+      detector: createStallDetector({ ...(o.stall.detector ?? {}), workerPid: child.pid, startMono: clock.mono(), startWall: clock.wall() }),
+    };
+  }
+
+  // A verdict change: recorded through onStall, and, with the detector on, a
+  // `stalled` one aborts the step. None is acted on once the watch ended.
+  const onVerdict = (record, act = true) => {
+    if (!record || !stall) return;
+    stall.last = record;
+    if (o.onStall) {
+      try { o.onStall(record); } catch { /* the driver's, not the step's */ }
+    }
+    if (act && stallMode === 'on' && record.verdict === 'stalled' && stall.watching) abort('stalled', { detail: stalledDetail(record) });
+  };
+  const feed = (fn) => {
+    if (!stall?.watching) return;
+    let record = null;
+    try {
+      record = fn();
+    } catch {
+      try { record = stall.detector.observeSample({ ok: false, why: 'probe-error' }, stall.clock.mono(), stall.clock.wall()); } catch { record = null; }
+    }
+    onVerdict(record);
+  };
+  // The watch's end: the detector's final verdict and summary, once.
+  function endWatch() {
+    if (!stall?.watching) return;
+    stall.watching = false;
+    try { stall.registration?.unregister(); } catch { /* the sampler's */ }
+    let closed = null;
+    try { closed = stall.detector.close(stall.clock.mono(), stall.clock.wall()); } catch { closed = null; }
+    stall.summary = closed?.summary ?? null;
+    onVerdict(closed?.record ?? null, false);
+  }
+  if (stall) {
+    try {
+      stall.registration = o.stall.sampler.register((snapshot, mono, wall) => feed(() => stall.detector.observeSample(snapshot, mono, wall)));
+    } catch {
+      stall.registration = null;
+    }
+  }
+
   const killGroup = (signal) => {
     try { process.kill(-child.pid, signal); } catch { try { child.kill(signal); } catch { /* gone */ } }
   };
@@ -401,6 +465,8 @@ export function startWorker(o) {
   };
   const abort = (reason, detail = null) => {
     if (st.aborted) return;
+    // An abort under way ends the stall watch (Decision 3, item 10).
+    endWatch();
     st.aborted = reason;
     st.abortedAt = Date.now();
     if (detail) { st.abortReason = detail.reason ?? null; st.abortDetail = detail.detail ?? null; }
@@ -429,6 +495,9 @@ export function startWorker(o) {
     st.abandoned = st.tasks.map((t) => ({
       task_id: t?.task_id ?? null, task_type: t?.task_type ?? null, description: t?.description ?? null, run_id: t?.run_id ?? null,
     }));
+    // The close on a finished report has its own bounded teardown: it ends
+    // the stall watch, where an idle close of stdin does not.
+    endWatch();
     closeStdin();
     st.reportTimers.push(setTimeout(() => {
       if (st.exit !== null || st.aborted) return;
@@ -473,6 +542,7 @@ export function startWorker(o) {
     writeRaw(line);
     const ev = parseJson(line);
     if (!ev || typeof ev !== 'object') return;
+    if (stall?.watching) feed(() => stall.detector.observeEvent(ev, stall.clock.mono(), stall.clock.wall()));
     if (ev.type === 'assistant') {
       // A subagent's messages carry its own context, not the step's.
       if (!ev.parent_tool_use_id) {
@@ -521,6 +591,7 @@ export function startWorker(o) {
     const finish = async (code, signal, spawnError) => {
       if (settled) return;
       settled = true;
+      endWatch();
       clearTimeout(timer);
       clearTimeout(st.closeTimer);
       clearReportTimers();
@@ -593,11 +664,15 @@ export function startWorker(o) {
         reportTeardown: st.reportTeardown,
         groupTeardown,
         pgid: spawnError || process.platform === 'win32' ? null : child.pid,
+        // ADR-0068 Decision 3, item 7 — the detector's mode, its summary (whole
+        // ms) and its last verdict's record; null when no sampler watched.
+        stall: stall ? { mode: stallMode, summary: roundedSummary(stall.summary), last: stall.last } : null,
       });
     };
     child.on('error', (err) => finish(null, null, err.message));
     child.on('exit', (code, signal) => {
       st.exit = { code, signal };
+      endWatch();
       setTimeout(() => finish(code, signal), DRAIN_AFTER_EXIT_MS).unref?.();
     });
     child.on('close', (code, signal) => finish(st.exit?.code ?? code, st.exit?.signal ?? signal));

@@ -1,6 +1,6 @@
 ---
 description: Run an approved macro unattended — one fresh Claude worker per step, halting at owner judgment (ADR-0063, Claude only; dry-run by default)
-argument-hint: "[preview|start [--execute]|status|stop|release <subtask> [--hold <id>|--discard-unreadable]|hold <subtask>|writer-clear <subtask> --operation <id>|events (--macro <id>|--checkout <dir>) --after <run-id>:<seq> [--follow]] [--macro <id>] [--models owner-default|mixed|sonnet] [--model <m>] [--effort <e>] [--max-steps <n>] [--max-cost <usd>] [--step-budget <usd>] [--step-timeout <s>] [--lanes <n>] [--next \"<step>\"] [--lane <subtask> --next \"<step>\"] [--notify-local] [--json]"
+argument-hint: "[preview|start [--execute]|status|stop|release <subtask> [--hold <id>|--discard-unreadable]|hold <subtask>|writer-clear <subtask> --operation <id>|events (--macro <id>|--checkout <dir>) --after <run-id>:<seq> [--follow]] [--macro <id>] [--models owner-default|mixed|sonnet] [--model <m>] [--effort <e>] [--max-steps <n>] [--max-cost <usd>] [--step-budget <usd>] [--step-timeout <s>] [--stall-detector log|on] [--lanes <n>] [--next \"<step>\"] [--lane <subtask> --next \"<step>\"] [--notify-local] [--json]"
 ---
 
 # Orchestrator · Autopilot
@@ -272,6 +272,33 @@ node "$CLAUDE_PLUGIN_ROOT/adapters/claude/autopilot/cli.mjs" --args-file "$ARGS_
 
 Do not resolve a halt yourself. Each one names what the owner decides; the
 relaunch continues from the state that decision leaves.
+
+## The stall detector
+
+Every step is judged `active`, `stalled` or `unknown` while it runs
+(ADR-0068 Decision 3): stalled when, for its last 10 minutes, its stream
+carried nothing but heartbeats and hook events and its descendants used under
+1 s of CPU, every 10 s sample of the process table known. A sample that fails,
+is slow, coarse or late, or cannot read a process, is unknown, never zero.
+
+- `--stall-detector log`, the default, records and never acts: each verdict
+  change is a `stall` line in the run's `steps.jsonl` and a `stall` event,
+  and each step's `finished` line carries a summary (its longest quiet gap,
+  its lowest known 10-minute CPU window, the time spent unknown, the count of
+  each verdict, the longest gap while an answer of the model was owed, and the
+  wait at each stalled verdict). The step clock stays the stop: 3600 s, or
+  `--step-timeout`.
+- **The observation configuration:** `--stall-detector log --step-timeout
+  10800` (or more), so the long legitimate quiet waits are observed rather
+  than cut at 60 minutes. `status` prints each step's summary.
+- `--stall-detector on` is the owner's switch, after the review Decision 3,
+  item 8 names (enough judged quiet waits, Codex peer waits among them, no
+  false positive, the model's longest owed gap well under 10 minutes): a
+  stalled step is aborted as a timed-out one is, halts `worker-failed` with
+  a detail naming the stall and the wait, and parks its lane (a stalled
+  `done` or `finalize` stays the run's); `unknown` never aborts. With it on,
+  the step clock's default is the emergency cap, 28800 s; an explicit
+  `--step-timeout` still wins.
 
 ## Watching a run (the event file)
 

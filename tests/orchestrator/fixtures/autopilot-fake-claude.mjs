@@ -39,6 +39,8 @@
 //               output pipes (its pid to FAKE_CLAUDE_PIDFILE) when holdPipes
 //
 // FAKE_IGNORE_STDIN_CLOSE=1: stdin closing does not end this process.
+// FAKE_BUSY_CHILD=1: after init, a child in this process group that burns CPU
+// for up to a minute (its pid to FAKE_CLAUDE_PIDFILE): quiet but busy.
 // FAKE_IGNORE_SIGTERM=1: this process ignores SIGTERM.
 //
 // FAKE_MODEL_USAGE, a JSON object, replaces the result's `modelUsage` (the
@@ -107,6 +109,10 @@ readline.createInterface({ input: process.stdin })
     if (process.env.FAKE_RATE_LIMIT) {
       const infos = [JSON.parse(process.env.FAKE_RATE_LIMIT)].flat();
       for (const info of infos) emit({ type: 'rate_limit_event', rate_limit_info: info, uuid: 'fake', session_id: 'fake' });
+    }
+    if (process.env.FAKE_BUSY_CHILD === '1') {
+      const busy = spawn(process.execPath, ['-e', 'const end = Date.now() + 60000; while (Date.now() < end) {}'], { stdio: 'ignore' });
+      if (process.env.FAKE_CLAUDE_PIDFILE) fs.writeFileSync(process.env.FAKE_CLAUDE_PIDFILE, String(busy.pid));
     }
     if (mode === 'noresult') process.exit(3);
     emit({ type: 'assistant', message: { model, usage: usage(40000), content: [] } });

@@ -98,7 +98,7 @@ export const MUTATIONS = [
   },
   {
     id: 'W7', file: EV, tests: [TW],
-    from: '        release = lockEventFile(file, { waitMs: lockWaitMs });',
+    from: '        release = lockEventFile(file, { waitMs });',
     to: '        release = () => {};',
     why: 'appends are not serialized: two writers choose the same seq',
     killed_by: /lines of two writers in two processes appending at once/,
@@ -168,8 +168,8 @@ export const MUTATIONS = [
   },
   {
     id: 'W19', file: EV, tests: [TW],
-    from: '        release = lockEventFile(file, { waitMs: lockWaitMs });',
-    to: '        release = lockEventFile(file, { waitMs: lockWaitMs, clockMs: now });',
+    from: '        release = lockEventFile(file, { waitMs });',
+    to: '        release = lockEventFile(file, { waitMs, clockMs: now });',
     why: 'the lock\'s bound is measured on the run\'s event clock, which a frozen clock never moves past',
     killed_by: /a frozen event clock still ends the wait/,
   },

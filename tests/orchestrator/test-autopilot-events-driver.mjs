@@ -104,7 +104,7 @@ describe('a serial run\'s events (ADR-0068 Decision 4)', () => {
       wellFormed(e1);
       deepStrictEqual(e1.map((e) => e.kind), ['run-started', 'commit-finished', 'halt', 'run-ended']);
       const [started, commit, halt, ended] = e1;
-      deepStrictEqual([started.lanes, started.detector, started.run_dir, started.pointer, started.macro_id], [1, 'off', r1.dir, join(r1.dir, 'run.json'), t.fx.macroId]);
+      deepStrictEqual([started.lanes, started.detector, started.run_dir, started.pointer, started.macro_id], [1, 'log', r1.dir, join(r1.dir, 'run.json'), t.fx.macroId]);
       deepStrictEqual([commit.subtask_id, commit.step, commit.commit, commit.readiness, commit.pointer],
         ['A', 2, t.fx.git('rev-parse', 'feat/a'), r1.landing[0].sync.state, join(r1.dir, 'landing.jsonl')]);
       deepStrictEqual([halt.reason, halt.step, halt.pointer, halt.step_record], ['awaiting-landing', null, join(r1.dir, 'run.json'), null]);

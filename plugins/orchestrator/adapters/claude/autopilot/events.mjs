@@ -61,15 +61,24 @@ export const READINESS = Object.freeze(['ready', 'needs-sync', 'unknown']);
 // The worker's abort kinds (worker.mjs; `stalled` is Decision 3's).
 export const ABORT_KINDS = Object.freeze(['timeout', 'stalled', 'interrupted', 'compaction-imminent', 'provenance']);
 // Decision 3's verdicts, and the detector's modes that write a `stall` line
-// (`--stall-detector log`, the default once impl-stall ships, and `on`).
+// (`--stall-detector log`, the default, and `on`). A run-started line names
+// the run's mode; `off` is what a run before impl-stall wrote, still read.
 export const STALL_VERDICTS = Object.freeze(['active', 'stalled', 'unknown']);
 export const STALL_MODES = Object.freeze(['log', 'on']);
+export const DETECTOR_MODES = Object.freeze(['off', ...STALL_MODES]);
 // The records a path field names, each in a run's directory.
 export const RUN_RECORDS = Object.freeze(['run.json', 'halt.json', 'steps.jsonl', 'lanes.jsonl', 'landing.jsonl']);
 // A step's outcome: a halt code, or `error` when the run stopped on one.
 export const STEP_OUTCOMES = Object.freeze([...HALT_REASONS, 'error']);
 // The lock is held for one read and one append; a writer waits this long.
 export const LOCK_WAIT_MS = 2000;
+// A `stall` event is written from inside a running step, on the event loop
+// every lane's stream and timers share (Decision 3, item 7: the detector
+// records and never acts), so it waits on no other writer: it takes the lock
+// when it is free (a held one costs it one 10 ms pause), and is otherwise
+// refused and counted. Its record is the step's `stall` line in steps.jsonl,
+// written first; the event only points at it.
+export const STALL_LOCK_WAIT_MS = 0;
 // A lock that does not read (its writer died between creating and filling
 // it) is taken over once it is this old.
 const LOCK_TORN_MS = 2000;
@@ -126,7 +135,7 @@ export const PATH_FIELDS = Object.freeze(['run_dir', 'pointer', 'step_record']);
 
 // Each kind's own fields, and nothing else.
 const FIELDS = Object.freeze({
-  'run-started': { lanes: int(1), detector: oneOf(['off', 'on']), run_dir: runDirPath, pointer: recordPath },
+  'run-started': { lanes: int(1), detector: oneOf(DETECTOR_MODES), run_dir: runDirPath, pointer: recordPath },
   halt: { reason: isHaltCode, step: nullable(int(1)), pointer: recordPath, step_record: nullable(recordPath) },
   'lane-parked': { reason: isHaltCode, step: nullable(int(1)), kept: bool, pointer: recordPath },
   'lane-resumed': { cause: oneOf(RESUME_CAUSES), pointer: recordPath },
@@ -138,11 +147,13 @@ const FIELDS = Object.freeze({
   },
   'step-failed': { step: int(1), reason: oneOf(STEP_OUTCOMES), abort: nullable(oneOf(ABORT_KINDS)), pointer: recordPath },
   'commit-finished': { step: int(1), commit: (v) => typeof v === 'string' && COMMIT_RE.test(v), readiness: oneOf(READINESS), pointer: recordPath },
-  // Decision 3's (impl-stall), closed here: a code that slice adds joins
-  // STALL_VERDICTS or STALL_MODES first.
+  // Decision 3's (impl-stall): the verdict, the mode, the quiet time, the
+  // window's CPU (null when unknown) and the unknown time in it, in whole ms,
+  // and the wait's three facts (stallEventFields).
   stall: {
     step: int(1), verdict: oneOf(STALL_VERDICTS), mode: oneOf(STALL_MODES),
-    waiting: nullable(bool), quiet_ms: int(0), window_cpu_ms: nullable(int(0)), pointer: recordPath,
+    quiet_ms: int(0), window_cpu_ms: nullable(int(0)), unknown_ms: int(0),
+    pending_tasks: int(0), tool_running: bool, answer_owed: bool, pointer: recordPath,
   },
   'run-ended': {
     status: oneOf(RUN_STATUSES), reason: nullable(isHaltCode), exit: oneOf([0, 1, 2]), pointer: recordPath, cleanup: bool,
@@ -165,6 +176,22 @@ export function eventProblem(kind, subtaskId, fields) {
     if (!check(fields[k])) return `${kind}: field ${k} is not a value it takes`;
   }
   return null;
+}
+
+const wholeMs = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.round(v) : v);
+
+/**
+ * A detector's record (stall.mjs) as a `stall` event's fields: times rounded
+ * to whole ms (the detector compares in full precision), the mode added, the
+ * record's `why` left to steps.jsonl, which the pointer names.
+ */
+export function stallEventFields(record, { step, mode, pointer }) {
+  return {
+    step, verdict: record.verdict, mode,
+    quiet_ms: wholeMs(record.quiet_ms), window_cpu_ms: record.window_cpu_ms === null ? null : wholeMs(record.window_cpu_ms),
+    unknown_ms: wholeMs(record.unknown_ms), pending_tasks: record.pending_tasks,
+    tool_running: record.tool_running === true, answer_owed: record.answer_owed === true, pointer,
+  };
 }
 
 /** The event file of a run: its macro's, under the main worktree, or its checkout's. */
@@ -352,9 +379,10 @@ export function lockEventFile(file, { waitMs = LOCK_WAIT_MS, clockMs = () => per
  * @param a.macroId    its macro, or null
  * @param a.now        the clock (ms)
  * @param a.onFailure  called with the error of each failed write
- * @param a.lockWaitMs how long a write waits for the lock
+ * @param a.lockWaitMs how long a write waits for the lock (emit's own
+ *                     `lockWaitMs` overrides it for one write)
  * @param a.writeSync  appendLine's write (a test seam)
- * @returns { emit(kind, fields, { subtaskId }), close(), closed, failures }
+ * @returns { emit(kind, fields, { subtaskId, lockWaitMs }), close(), closed, failures }
  */
 export function createEventWriter({
   file, runId, macroId = null, now = () => Date.now(), onFailure = () => {}, lockWaitMs = LOCK_WAIT_MS, writeSync,
@@ -371,7 +399,7 @@ export function createEventWriter({
     get closed() { return closed; },
     get failures() { return failures; },
     close() { closed = true; },
-    emit(kind, fields, { subtaskId = null } = {}) {
+    emit(kind, fields, { subtaskId = null, lockWaitMs: waitMs = lockWaitMs } = {}) {
       if (closed) return { ok: false, closed: true };
       if (kind === 'run-ended') closed = true;
       const problem = !isRunId(runId) ? `invalid run id ${runId}`
@@ -380,7 +408,7 @@ export function createEventWriter({
       if (problem) return fail(problem);
       let release = null;
       try {
-        release = lockEventFile(file, { waitMs: lockWaitMs });
+        release = lockEventFile(file, { waitMs });
         let text = '';
         try { text = fs.readFileSync(file, 'utf8'); } catch (e) { if (e?.code !== 'ENOENT') throw e; }
         let max = 0;

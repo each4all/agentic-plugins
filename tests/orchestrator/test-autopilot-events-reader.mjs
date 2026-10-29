@@ -47,7 +47,7 @@ const line = (run, seq, kind = 'lane-held', extra = {}) => JSON.stringify({
   schema: E.EVENT_SCHEMA, run_id: run, seq, at: extra.at ?? `${run.slice(10, 14)}-${run.slice(14, 16)}-${run.slice(16, 18)}T${run.slice(19, 21)}:${run.slice(21, 23)}:${run.slice(23, 25)}.500Z`,
   kind, macro_id: MACRO, subtask_id: null,
   ...(kind === 'run-ended' ? { status: 'halted', reason: 'interrupted', exit: 2, pointer: P, cleanup: false, terminal: true } : {}),
-  ...(kind === 'stall' ? { step: 1, verdict: extra.verdict ?? 'active', mode: 'log', waiting: false, quiet_ms: 1, window_cpu_ms: null, pointer: P } : {}),
+  ...(kind === 'stall' ? { step: 1, verdict: extra.verdict ?? 'active', mode: 'log', quiet_ms: 1, window_cpu_ms: null, unknown_ms: 0, pending_tasks: 0, tool_running: false, answer_owed: false, pointer: P } : {}),
   ...(kind === 'lane-held' ? { hold_id: '0123456789abcdef', pointer: P } : {}),
 });
 const put = (file, ...ls) => appendFileSync(file, ls.map((l) => `${l}\n`).join(''));
@@ -554,7 +554,7 @@ describe('a line the writer could not have written (Decision 4, item 2)', () => 
       deepStrictEqual(r.reader.filter((x) => x.kind === 'reader-summary').map((x) => x.verdicts), [{ active: 1, stalled: 1 }, { unknown: 1 }]);
       for (const s of [...odd, 'merge-now']) ok(!JSON.stringify(r.lines).includes(s), s);
       const { w, failures } = (() => { const f = []; return { w: E.createEventWriter({ file: t.file, runId: R2, macroId: MACRO, onFailure: (e) => f.push(e) }), failures: f }; })();
-      strictEqual(w.emit('stall', { step: 1, verdict: 'approve-and-merge-everything', mode: 'log', waiting: null, quiet_ms: 0, window_cpu_ms: null, pointer: P }).ok, false);
+      strictEqual(w.emit('stall', { step: 1, verdict: 'approve-and-merge-everything', mode: 'log', quiet_ms: 0, window_cpu_ms: null, unknown_ms: 0, pending_tasks: 0, tool_running: false, answer_owed: false, pointer: P }).ok, false);
       strictEqual(failures.length, 1, 'the writer refuses it too');
     } finally {
       t.cleanup();
