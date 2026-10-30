@@ -4441,3 +4441,216 @@ the wait, charged as a timeout is and scoped by Decision 1; with `on` and no
 `--step-timeout`, the step clock is 28800 s (`EMERGENCY_CAP_SEC`), and an
 explicit one wins whatever the order. The observation configuration (item
 7): `--stall-detector log --step-timeout 10800`, or longer.
+
+## Implementation note 2026-10-30 — verify-exec (Decision 5, the driver's half)
+
+The orchestrator's implementation of Decision 5, items 1, 3 and 6 to 10, and
+of Decision 6, items 5 and 7, beside the persona's half (`verify-record-cli`).
+It adds no guarantee; it fixes what the decision left to the implementation,
+and it replaces the explicit refusal `verify-record-cli` added: a run that
+offers verification runs a `verify` child's checks, and one that does not
+still halts on it run-wide, its detail naming why.
+
+**V1. The offer** (`adapters/claude/autopilot/verify-run.mjs`
+`verifyOfferFor`, `roots.mjs` `verifyCapabilityProblem`). Made once at the
+run's start, never a refusal: the pinned engineer carries `verify-record-1`
+(`scripts/lib/verify.mjs`) and `verify-batch-restart` (`scripts/state.mjs`),
+and the declaration parses at `run.json` `git_baseline.head`, read with
+`git --no-replace-objects` and no inherited `GIT_*` variable. `run.json`
+records `verify` (`offered`, the baseline and the declaration's digest, or
+`why` not); each worker of an offering run gets `AGENTIC_AUTOPILOT_VERIFY`
+(the baseline) and a seventh line of its rules. The declaration is the
+driver's own copy of the parser (`verify-decl.mjs`), held to the persona's by
+a parity corpus (`tests/orchestrator/test-autopilot-verify-decl.mjs`).
+
+**V2. The journal and trust** (`verify-journal.mjs`). One file per engineer
+workflow under the main checkout's orchestrator state
+(`.agentic-plugins/state/orchestrator/verify-journal/<workflow_id>.jsonl`), so
+a run in any checkout reads an earlier run's after its open-run record is
+gone. Every persona write the driver makes (start, restart, result, end,
+pass) is first a line of it, synced, with the write's exact payload (a line a
+write that died left torn is taken back before the next is appended, back to
+its start however long it is: a start line can near the persona's results
+cap); a start
+keeps the requesting verb (the child's `verb`), the selection base and the
+checks' digest beside it. A stored batch, result, end or answer is trusted
+only when a line holds that payload (canonical JSON) for that request and
+batch, a carried result only when a line holds it for the batch and run it
+names and it is a pass carried into a batch that continues that one (through
+the journal's starts, no restart between), every hop on the destination's
+tree and with its checks' digest, as the persona carries; anything else sets the request's whole record aside in one
+`verify-batch-restart` over its `results_digest`. An intent the record does
+not hold is a write that may not have landed: the write is made again, or,
+for a result, the check runs again. A request is run only when its run and
+step are a `started` line of that run's `steps.jsonl` for the subtask, in
+the driver's checkout, the main one or, failing both, any checkout `git
+worktree list` names (a run launched from a linked checkout keeps its ledger
+there): a request a worker wrote by hand, naming a step no run took, halts
+the lane. The driver's persona writes run with no
+`AGENTIC_AUTOPILOT*` variable and no state base: they are an owner's writes to
+the attempt mark. The journal tells the driver's writes from a record edited
+alone, not from a forger: it lives in state a worker's process can write, so
+matching edits to the record and the journal pass (a limit, below).
+
+**V3. What a step does** (`planVerify`, pure). On the record as the persona
+holds it, the journal and the lane's tree digest now (Decision 2's):
+
+| The request's latest batch | The step |
+|---|---|
+| none, and the workflow's last batch the journal ended passed or failed has these checks (the driver's additions included) and this tree | halt the lane `no-progress`, nothing runs (`--next verify` runs it once) |
+| none otherwise | a batch |
+| open (a driver died) | end it from its trusted results, as `endProblem` takes them: the last failed, `failed`; a timeout, `no-evidence` cause `timeout`; not started or refused, `no-evidence`; all passed, `passed`; none yet, or a check stopped, `cut-short` `driver-end`; another tree `tree-changed`, an unreadable one `tree-unreadable`; then judge again |
+| `cut-short` | a batch that continues it (the persona carries the passed results when the tree and the commands are the same) |
+| `passed`, on the tree it started on | `verify-pass`: `on_pass` is the next step |
+| `passed` on another tree, `failed`, `no-evidence` | the step writes a `resume` line (no persona write), and the policy dispatches the requesting verb from it |
+
+The table is judged before any new batch is prepared, so a batch to end or
+follow never waits on a selection or a declaration that would refuse a new
+one. The policy (`policy.mjs` `classify`) takes from the journal
+(`verifyFacts`) what it cannot compute, and never judges the record itself:
+a pending request whose latest batch, as the record names it, has a
+`resume` line yields the requesting verb, and only while the record is the
+one that line was decided on (the line keeps the digest of the request and
+its results, `recordDigest`, which the child's summary carries): the step
+writes it only after the whole record passed the trust check, and a record
+edited since is the next step's to set aside;
+an answered request (`answered_by`) whose next step is still its `on_pass`
+yields the requesting verb instead when the lane's tree changed since the
+batch passed, or when the journal holds no such pass or cannot be read (P7),
+until the next worker's first write clears the next step, and never over the
+recovery of a commit the `on_pass` began (that commit kept the answer and
+changed the tree): `/engineer:commit` recovers it; these facts are
+read whether or not the run offers verification. Below `HIGH` a request halts
+`low-confidence`; a run that does not offer verification halts `owner-choice`,
+run-wide. A verification step that changes nothing twice on one request
+halts its lane `no-progress`.
+
+**V4. A batch** (`startVerify`). The checks are the request's, each resolved
+again against the run's declaration and the lane's tree, and the driver's
+additions (`verify-select.mjs`, against `git merge-base HEAD
+refs/remotes/origin/<integration>`, the local branch when there is no remote
+one, the run's baseline when neither reads), placed before the worker's first
+check whose kind takes the heavy-work lock itself, else last. Over the
+persona's worst-case results size the driver's `test` additions widen to
+`test-suite`; still over, or a check that does not resolve, the lane halts
+`owner-choice` and nothing is written or run (P15). Each check: an idle
+supervisor (heavy-run.mjs's) leads a new process group in the lane's checkout,
+with the worker's environment minus `AGENTIC_AUTOPILOT`, its token, step,
+offer, state base and any heavy-lock proof; the group is put on the run's
+locks as a worker group of its lane (the macro lock and the lane's or driven
+checkout's) before the supervisor's go, and a registration that fails kills it
+with nothing run; a hold, a drain or the driver's signal that came meanwhile
+stops it before the go. A throw while it is supervised kills the group first. The supervisor runs the wrapper (`heavy-entry.mjs`, the
+CLI's `heavy` with no driver loaded) with `--status-file` and `--go-file`, or
+the command itself when it takes the lock itself. The wrapper, once it holds
+the lock and has its command's group registered, idle, writes `ready` with
+that group, and starts the command only once the go file exists: the driver
+reads the holds and the drain, puts that group too on the run's locks as a
+worker group of the lane, reads them again, and only then writes it, so a
+hold or a drain that comes while the check waits for the lock, its
+acquisition included, stops it with nothing run. A ready line the status
+file does not take is no go: the wrapper kills its idle command group and
+refuses (125). The declared timeout runs from that go (from the supervisor's
+go for a command that locks itself); the whole wait for the go, the lock's
+and the ready line's, is bounded at 8 hours and ended by a hold or a drain; the batch has
+6 hours of running checks. A stop is SIGTERM to the wrapper's group, which
+the wrapper passes to its command's, then SIGKILL to both after 5 s; either
+group, or a supervisor that does not exit, still there 5 s later is no
+result, and the run halts run-wide with its locks kept, the group's id
+carried on the error when the supervision itself threw. Outcomes: the status file's (or the supervisor's) `code` 0
+passed, any other code or a signal failed, `error` not-started, `refused`
+refused, a stop stopped, a bound timeout (cause `bound`). The failing tests are
+the TAP `not ok` and spec `✖` lines of the check's log
+(`runs/autopilot/<run>/verify/<batch>/<index>.log`), at most 20 of 200
+characters, never cut inside a surrogate pair. A hold, a drain (with lanes, an
+exhausted budget too) or the driver's end is read before each check, and
+before the batch's start or restart: one that came while the batch was
+prepared (the persona read, the tree digest, the selection) starts none, and
+the step yields (`stopped`, its cause) with nothing more written, the request
+waiting; a start the persona refuses is read again the same way, and a
+refusal for a held lane is a hold whatever the read says by then, so a hold
+that came between the driver's read and the persona's yields too, withdrawn
+or released before the refusal reached the driver or not. An owner's rerun
+the step carried stays for the batch that runs. The cause
+rides on the step's result, so its settle parks nothing whether or not the
+hold is still set by then. A yield the driver's own read saw is the owner's
+hold (or a drain), however often holds come and go. A yield that only the
+persona's refusal explains (the step's `refusal`), with no hold, drain or
+spent budget the run reads at the settle either (a hold withdrawn since, or a
+holds marker the persona cannot read), is decided again; with lanes a second such yield in a row on the same request parks the
+lane `no-progress`, each lane keeping its own last step that changed nothing,
+and a serial run, which honours no hold, halts `owner-choice` on the first: a
+batch is no step of `--max-steps`, so nothing else would bound it. Only the
+driver's signal stops a running check.
+The tree digest is taken as the batch starts and as it ends.
+
+**V5. In the run.** A batch takes a seq and two lines of `steps.jsonl`, kind
+`verify`, cost 0; no reservation, no `run.steps` (now the worker steps the
+budget counted), no `accounted_seqs`, no event. An exhausted budget starts
+none, and the request stays for the relaunch. With lanes (`scheduler.mjs`) the
+decision's `verify` steps form the queue each turn, ordered by the request's
+`recorded_at`; one batch at a time, outside `room()`; each admitted to its
+lane as a worker step is (`launch`): a lane the run does not hold is made for
+it, a persona operation open in it holds it back (Decision 1, item 6), an
+owner's rebinding due is told before it (Decision 8, item 4), and the plan's
+approval and the lane's checkout are read; the throttle of new workers does
+not hold it back, and, spawning no worker, it does not make its lane one the
+run started: the lane's first worker of the run is still a new lane's, which
+the throttle gates; it writes no in-flight marker (a run that dies during
+it leaves the batch open, which the next run's step ends from the journal,
+where a marker would park the lane); its lane is left out of
+the decision while its batch is open; the owner's interrupt is judged before
+what the batch returned and after the run's look at the lane, as a worker
+step's is, so a Ctrl-C that fails the batch's persona write, or comes during
+that look, drains the run and parks no lane (Decision 1, item 1); a hold's handoff waits for it, a queued
+request does not; the run does not end before it; its tree digests and
+selection run off the loop (`offloop.mjs` `verifyTree`, `verifySelect`).
+`status` shows each batch's end and how many checks ran, and `run.json`
+`verifying` a lane verifying or waiting for the lock with its holder.
+
+**Limits, documented and not fixed** (the owner's ruling of 2026-10-25 on
+uncommon cases): a request whose run was launched from a linked checkout
+removed since is unknown, its ledger gone with it, and halts the lane. The
+`stop` command stops a batch as the
+driver's signal does, recorded cut short by `driver-end`, not `stop`. A tree
+digest that cannot be read before a batch halts the lane rather than binding
+a batch to it. The owner's explicit rerun reruns a pending request (one
+recorded again after a pass or a failure, which the repeat rule would halt),
+not an answered one: once `verify-pass` made `on_pass` the next step, the
+persona's batch writes refuse the request, so an answered request is rerun by
+a verb recording it again and `--next verify`. A worker that orders its own
+mutation run before its own tests keeps that order (the persona refuses a
+batch whose worker checks are reordered); the harness refuses a mutation whose
+control is not green. Preview tells the policy the offer a start would make,
+not the journal's facts. The journal is no provenance a worker cannot write
+(V2): a worker that edits both its record and the journal to match forges a
+pass the driver takes (`passed-before`, then `on_pass`) for checks it never
+ran; the trust check catches a record edited alone, the natural failure, not
+a deliberate forger with write access to the main checkout's state. Two cases are held by construction, not by a test:
+a group that outlives SIGKILL after a throw in the supervision (no test can
+make a group unkillable), and a real driver killed while a check runs or
+waits for the lock (the check's groups are worker entries of the run's locks,
+which every reader judges by those groups).
+
+Tests: `tests/orchestrator/test-autopilot-verify-{decl,run,driver,lanes}.mjs`,
+the `--status-file` and `--go-file` cases of `test-heavy-lock-wrapper.mjs`, and the refusal's
+updated suite; each new case is bitten by a mutation of
+`scripts/mutation-specs/verify-exec.mjs` or `verify-exec-driver.mjs` that
+names it in `killed_by`. The owner's rerun is tested end to end, serial
+(`--next verify`) and with lanes (`--lane A --next verify`), from the CLI's
+parse to the batch; a hold set while a lane's batch is prepared, with the hold
+protocol on and withdrawn before the settle (seen by the driver, or told only
+by the persona's refusal; and two in a row, each seen by the driver), a rerun that yields to such a hold, lock
+contention between two lanes (lane B's worker holding the heavy-work lock
+while lane A's batch waits for it), a start refused for a hold the run does
+not read (a holds marker the persona cannot read), and a lane whose only step of
+the run was a batch meeting a closed throttle, are tested end to end with
+lanes; a start refused as a held lane's in a serial run is tested end to end
+too; and the step's recovery of a pass whose driver died before
+`verify-pass`, on the tree it passed on, on the real persona CLI. The verify
+fixtures scrub the inherited `GIT_*` names and
+put back the git isolation every autopilot fixture carries (no system or
+global config) for their own git and the processes they start, which a probe
+of the isolated global file proves; the driver's own reads (the declaration,
+the selection base, the tree digest) drop every inherited `GIT_*` name by
+design, the isolation's included, and write nothing.

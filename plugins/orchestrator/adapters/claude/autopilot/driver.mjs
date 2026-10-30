@@ -65,8 +65,12 @@ import {
   reconcileWaiting, reportClosePeersUnlisted, runLanes,
 } from './scheduler.mjs';
 import {
-  ALLOWED_TOOLS, COMMIT_DENY, DENIED_TOOLS, claudeBin, startWorker as defaultStartWorker, terminateGroupsSync,
+  ALLOWED_TOOLS, COMMIT_DENY, DENIED_TOOLS, claudeBin, startWorker as defaultStartWorker, terminateGroupsSync, workerEnv,
 } from './worker.mjs';
+import {
+  checkEnvOf, offerRecord, personaEnvOf, requestKnownIn, selectionBase, startVerify as defaultStartVerify, verifyFacts, verifyOfferFor,
+} from './verify-run.mjs';
+import { DEFAULT_OPS as VERIFY_OPS } from './verify-ops.mjs';
 import { checkStateBase, creationRoot, STATE_BASE_ENV } from '../../../scripts/lib/state-root.mjs';
 import { tokenDigest } from '../../../scripts/lib/run-locks.mjs';
 import { holdStateOf, HOLDS_CAPABILITY, listRecordIds } from '../../../scripts/lib/holds-records.mjs';
@@ -578,6 +582,10 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     stallSampler ??= deps.stallSampler ?? createStallSampler();
     return stallSampler;
   };
+  // ADR-0068 Decision 5, item 11 — the run's offer of verification, made once
+  // from the pinned persona's capability and the declaration at the commit the
+  // run starts from (verify-run.mjs verifyOfferFor); run.json records it.
+  const offer = (deps.verifyOffer ?? verifyOfferFor)({ roots, repoRoot, baseline: view.git.head });
   const runId = newRunId(new Date(now()));
   const runDir = createRunDir(repoRoot, runId);
   const startedAt = now();
@@ -605,6 +613,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     loaded_plugins: null,
     state_root: stateRoot,
     git_baseline: { branch: view.git.branch, head: view.git.head },
+    verify: offerRecord(offer),
     steps: 0,
     cost_usd: 0,
     cost_complete: true,
@@ -653,6 +662,8 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
   // them with its tasks' groups (scheduler.mjs).
   let onInterrupt = null;
   let groupsInFlight = () => [];
+  // The process groups of a serial run's verification checks in flight.
+  const checkGroups = new Set();
   // SIGHUP too: a closed terminal (tmux kill-pane, an ssh drop) interrupts
   // the run as Ctrl-C does, rather than killing the driver and leaving its
   // groups to run on.
@@ -665,7 +676,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
   // that failed after SIGHUP): every group still in flight is emptied
   // (SIGTERM, a grace, SIGKILL). On every other end none is left.
   const onExit = () => {
-    (deps.terminateGroupsSync ?? terminateGroupsSync)([...(Number.isInteger(current?.pid) ? [current.pid] : []), ...groupsInFlight()]);
+    (deps.terminateGroupsSync ?? terminateGroupsSync)([...(Number.isInteger(current?.pid) ? [current.pid] : []), ...groupsInFlight(), ...checkGroups]);
   };
   // ADR-0068 Decision 4 — the run's event file (events.mjs): opened once the
   // run holds its locks, so a launch refused at them writes no line, and
@@ -889,6 +900,9 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     });
     publish('run-started', { lanes, detector: stallMode, run_dir: runDir, pointer: runFile });
     out(`  events ${evFile}`);
+    out(offer.offered
+      ? `  verification: offered (declaration ${offer.declaration.digest.slice(0, 12)} at ${String(offer.baseline).slice(0, 12)})`
+      : `  verification: not offered (${offer.why})`);
     out(`  watch: ${watchCommand({ macroId, checkout: repoRoot, runId })}`);
 
     // The view above was taken before the locks. Another run may have changed
@@ -1001,6 +1015,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
           stepFailed: publishStepFailed, lanesFile: join(runDir, 'lanes.jsonl'),
         },
         stallOf,
+        verify: { offer, startVerify: deps.startVerify ?? defaultStartVerify, ops: deps.verifyOps ?? null, bounds: deps.verifyBounds ?? null },
       });
     }
 
@@ -1011,8 +1026,107 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       stepTimeoutSec: options.stepTimeoutSec,
     });
     const resolveRootsNow = deps.resolveRoots ?? resolveRoots;
+    const startVerify = deps.startVerify ?? defaultStartVerify;
+    // Two verification steps in a row that changed nothing on the same request
+    // halt (a decision the journal and the record keep returning to).
+    let verifyNoop = null;
+
+    // ADR-0068 Decision 5 — one verification step: no reservation, no cost,
+    // no step of --max-steps; the admission stage before it (an exhausted
+    // budget, a signal, drift) as before any step (P8). Its checks are worker
+    // groups of the run's locks while they live.
+    const runVerification = async (seq, s) => {
+      const spentOut = budget.exhausted();
+      if (spentOut) return { halt: { reason: 'budget', detail: spentOut } };
+      const drift = seq > 1 ? driftOf(pinned, await resolveRootsNow({ env })) : [];
+      if (interrupted) return { halt: { reason: 'interrupted', detail: 'the owner interrupted the run' } };
+      if (drift.length > 0) return { halt: { reason: 'version-drift', detail: drift.join('; ') } };
+      const child = view.children?.[s.subtaskId];
+      const id = s.subtaskId;
+      appendStep(runDir, {
+        event: 'started', seq, kind: 'verify', command: renderStep(s, { macroId: view.macro.id, runId }), subtask_id: id, forced: s.forced === true,
+        lane: null, cwd: repoRoot, step_budget_usd: 0, started_at: new Date(now()).toISOString(), fingerprint_before: fingerprint(view),
+      });
+      active = { seq, subtaskId: id, aborted: null };
+      ctx.forced = null;
+      out(`[${seq}] verify (subtask ${id})${s.forced ? ' · the owner\'s rerun' : ''}`);
+      const job = {
+        runId, seq, runDir, mainRoot, workflowPath: child.path, workflowId: child.workflow_id, subtaskId: id, lane: repoRoot,
+        engineerRoot: roots.engineer, offer, verb: child.verb ?? null, forcedRerun: s.forced === true && s.rerun === true,
+        requestKnown: requestKnownIn([repoRoot, mainRoot], id),
+        base: selectionBase({ lane: repoRoot, integration: view.macro?.fm?.git_baseline?.branch ?? null, baseline: offer.baseline }),
+        checkEnv: checkEnvOf(workerEnv(env, { runId, seq, roots, remotes, stateBase: stateRoot.root, autopilotToken: token })),
+        personaEnv: personaEnvOf(env),
+      };
+      const note = (state) => {
+        run.verifying = state === null ? null : { seq, subtask_id: id, ...state };
+        try { writeRun(runDir, run); } catch { /* the next write records it */ }
+      };
+      note({ state: 'running' });
+      current = startVerify({
+        job, now, ops: deps.verifyOps ?? VERIFY_OPS,
+        ...(deps.verifyBounds ? { bounds: deps.verifyBounds } : {}),
+        // A hold, a drain and a stop are a run with lanes'; a serial run's
+        // owner interrupts it (onSignal aborts the step).
+        stopCause: () => null,
+        onWait: (w) => note(w ? { state: 'waiting', holder: w.holder, holder_pid: w.pid ?? null } : { state: 'running' }),
+        register: async (g) => {
+          const group = { pid: g.pid, pgid: g.pgid, fingerprint: await processFingerprint(g.pid), lane: null, subtask_id: id, cwd: repoRoot, verify: true };
+          const entries = locks.map((l) => l.addWorkerGroup(group));
+          checkGroups.add(g.pgid);
+          return [{ release: () => { checkGroups.delete(g.pgid); for (const e of entries) e.release(); } }];
+        },
+      });
+      const r = await current.done;
+      current = null;
+      note(null);
+      let verdict = null;
+      if (r.lingering) {
+        lingering = true;
+        verdict = { reason: 'worker-failed', detail: `a verification check's process group (${r.lingering}) is still there after SIGKILL; the run keeps its locks until that group is empty (ps -g ${r.lingering})`, scope: 'run' };
+      } else if (interrupted) {
+        verdict = { reason: 'interrupted', detail: 'the owner interrupted the run' };
+      } else if (r.outcome === 'halt') {
+        verdict = { ...r.halt, subtaskId: id };
+      } else if (r.outcome === 'error') {
+        verdict = { reason: 'owner-choice', detail: `the verification step of subtask ${id} failed: ${r.detail}`, subtaskId: id };
+      } else if (r.outcome === 'stopped') {
+        // A serial run reads no hold, drain or stop of its own (stopCause is
+        // null above, and its interrupt is judged first), so a batch yields
+        // here only when the persona refused its start as a held lane's: a
+        // hold published as this run started, which could no longer be
+        // withdrawn (holds-cli.mjs). Deciding again would meet the same
+        // refusal, with no step of --max-steps to end it: the owner resolves it.
+        verdict = { reason: 'owner-choice', detail: `the verification step of subtask ${id} did not start: ${r.detail}. A serial run does not honour holds: stop it, then release the hold, or run with lanes`, subtaskId: id };
+      } else if (!r.wrote && (r.outcome === 'none' || r.outcome === 'resume')) {
+        const key = `${id}:${child.verify?.request_id ?? ''}:${r.outcome}`;
+        if (verifyNoop === key) verdict = { reason: 'no-progress', detail: `the verification step of subtask ${id} changed nothing twice (${r.detail ?? r.outcome})`, subtaskId: id };
+        verifyNoop = key;
+      } else {
+        verifyNoop = null;
+      }
+      view = look(view.macro.id);
+      appendStep(runDir, {
+        event: 'finished', seq, kind: 'verify', ended_at: new Date(now()).toISOString(), cost_usd: 0, cost_charged_usd: 0,
+        verify: {
+          outcome: r.outcome, follow: r.follow ?? null,
+          batch: r.batch ? { batch_id: r.batch.batch_id, continues: r.batch.continues ?? null, restart: r.batch.restart === true, end: r.batch.end ?? null, cause: r.batch.cause ?? null, checks: r.batch.checks ?? [], total: r.batch.total ?? null } : null,
+        },
+        fingerprint_after: fingerprint(view), outcome: verdict ? verdict.reason : 'ok',
+      });
+      active = null;
+      writeRun(runDir, run);
+      out(`    verify ${r.batch ? `batch ${r.batch.batch_id}: ${r.batch.end ?? 'open'} after ${(r.batch.checks ?? []).length} of ${r.batch.total ?? '?'} check(s)` : r.outcome}${verdict ? ` → ${verdict.reason}` : ''}`);
+      return verdict ? { halt: { ...verdict, seq } } : {};
+    };
+
     for (let seq = 1; ; seq += 1) {
       if (interrupted) return await finish('halted', { reason: 'interrupted', detail: 'the owner interrupted the run' });
+      // ADR-0068 Decision 5 — what the policy takes from the journal (a batch
+      // that ended, an answer's tree), for a run that offers verification.
+      // The facts guard an answered request's on_pass whether or not this
+      // run offers verification.
+      ctx.verify = { offered: offer.offered, why: offer.why ?? null, facts: await verifyFacts({ view, mainRoot, treeOf: (deps.verifyOps ?? VERIFY_OPS).treeDigest }) };
       // What the state says comes first: completion on the last step the
       // budget allowed is completion, and a halt is the halt it is.
       const d = decide(view, ctx);
@@ -1055,6 +1169,12 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
           });
         }
         seq -= 1;
+        continue;
+      }
+
+      if (d.step.kind === 'verify') {
+        const v = await runVerification(seq, d.step);
+        if (v.halt) return await finish('halted', v.halt);
         continue;
       }
 
@@ -1105,6 +1225,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         stepBudgetUsd, stepTimeoutSec, model, effort, rawPath: workerStreamPath(runDir, seq), env, remotes,
         stateBase: stateRoot.root,
         autopilotToken: token,
+        verifyBaseline: offer.offered ? offer.baseline : null,
         checkInit: (plugins) => provenanceProblem(plugins, { pinned, repoRoot, loaded }),
         ...stallOf({ seq, subtaskId: s.subtaskId ?? null }),
         ...(deps.terminateGroup ? { terminateGroup: deps.terminateGroup } : {}),
@@ -1128,11 +1249,13 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         }
         if (!run.loaded_plugins) run.loaded_plugins = { ...loaded };
       }
-      run.steps = seq;
       // A step that reported no cost (killed, or a spawn error) is charged its
       // whole reservation.
       const cost = budget.settle(reservation, { spawned: true, costUsd: w.costUsd });
       reservation = null;
+      // The worker steps taken: a verification step is none (ADR-0068
+      // Decision 5, item 9), though it takes a seq.
+      run.steps = budget.taken;
       run.cost_complete = budget.costComplete;
       run.cost_usd = budget.spent;
       run.accounted_seqs.push(seq);

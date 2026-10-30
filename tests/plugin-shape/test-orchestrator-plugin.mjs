@@ -492,7 +492,7 @@ describe('plugins/orchestrator Claude-only commands', () => {
   it('the autopilot adapter ships its entry and launcher executable, and the rest as modules', async () => {
     const dir = resolve(PLUGIN_ROOT, 'adapters/claude/autopilot');
     const entries = (await readdir(dir)).sort();
-    deepStrictEqual(entries, ['budget.mjs', 'cli.mjs', 'codes.mjs', 'dead-runs.mjs', 'driver.mjs', 'events-reader.mjs', 'events.mjs', 'holds-cli.mjs', 'landing-ready.mjs', 'lanes.mjs', 'launch-proposals.mjs', 'launcher.template.mjs', 'ledger.mjs', 'observe.mjs', 'offloop.mjs', 'parks.mjs', 'policy.mjs', 'procs.mjs', 'rebind-boundary.mjs', 'roots.mjs', 'scheduler.mjs', 'stall-sampler.mjs', 'stall.mjs', 'throttle.mjs', 'verify-select.mjs', 'worker.mjs']);
+    deepStrictEqual(entries, ['budget.mjs', 'cli.mjs', 'codes.mjs', 'dead-runs.mjs', 'driver.mjs', 'events-reader.mjs', 'events.mjs', 'heavy-entry.mjs', 'holds-cli.mjs', 'landing-ready.mjs', 'lanes.mjs', 'launch-proposals.mjs', 'launcher.template.mjs', 'ledger.mjs', 'observe.mjs', 'offloop.mjs', 'parks.mjs', 'policy.mjs', 'procs.mjs', 'rebind-boundary.mjs', 'roots.mjs', 'scheduler.mjs', 'stall-sampler.mjs', 'stall.mjs', 'throttle.mjs', 'verify-decl.mjs', 'verify-journal.mjs', 'verify-ops.mjs', 'verify-run.mjs', 'verify-select.mjs', 'worker.mjs']);
     // Contract: the runbook and the launcher exec these files directly — without the
     // executable bit and a node shebang the exec fails.
     for (const exe of ['cli.mjs', 'launcher.template.mjs']) {

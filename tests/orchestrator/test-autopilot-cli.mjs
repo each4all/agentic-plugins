@@ -161,8 +161,9 @@ describe('heavy', () => {
 
   it('reads its options before --, and nothing after it', () => {
     deepStrictEqual(parseHeavy(['--purpose', 'the suite', '--repo', '/r', '--declaration-ref', 'abc', '--', 'npm', 'test', '--', '--purpose']), {
-      purpose: 'the suite', repo: '/r', declarationRef: 'abc', command: ['npm', 'test', '--', '--purpose'], help: false,
+      purpose: 'the suite', repo: '/r', declarationRef: 'abc', statusFile: null, goFile: null, command: ['npm', 'test', '--', '--purpose'], help: false,
     });
+    strictEqual(parseHeavy(['--status-file', '/s', '--', 'true']).statusFile, '/s');
     deepStrictEqual(parseHeavy(['--', '--help']).command, ['--help']);
     strictEqual(parseHeavy(['--help']).help, true);
     for (const words of [[], ['npm', 'test'], ['--'], ['--', ''], ['--purpose'], ['--purpose', '--', 'x'], ['--bogus', '--', 'x']]) {

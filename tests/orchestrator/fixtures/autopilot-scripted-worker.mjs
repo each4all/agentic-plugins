@@ -23,7 +23,10 @@
 // start, up to 60 s for the file <name> beside the scenario; one that runs out
 // writes <name>.timeout), "stop-wait:<name>" (the same wait, once the step's
 // work is done and before the Stop hooks run), "mark-start:<name>" (write it at
-// the start) and "mark:<name>" (write it at the end). `"events": { "<seq>":
+// the start) and "mark:<name>" (write it at the end); "pause:<ms>" waits that
+// long at the start, after its waits; "heavy:<name>" holds the heavy-work
+// lock from the start until <name>.release appears (see below). An action keyed "dispatch:<subtask>"
+// applies to that subtask's dispatch, whatever its seq. `"events": { "<seq>":
 // [<rate_limit_info>…] }` emits those rate_limit_events into the step's stream
 // before its Stop hooks run (the stream's first one, after init, is the fake's
 // FAKE_RATE_LIMIT).
@@ -35,6 +38,11 @@
 // "kill-driver" SIGKILLs the driver (this worker's parent) once the step's
 // work is done, before the worker reports: the driver dies between the step's
 // end and its verdict. It fires once per scenario.
+//
+// ADR-0068 Decision 5 (verify-exec): a `next` entry of kind verify carries its
+// request, `{ kind: 'verify', confidence, checks, on_pass }`, which the verb
+// records through finish-verb --verify-request-file's API under the offer the
+// driver exported; its report names only the next step.
 
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -59,7 +67,10 @@ export async function perform({ prompt, cwd, env }) {
     seq = String(count.steps);
   }
   const ledgerCheck = path.join(dir, `ledger-${seq}.json`);
-  const actionList = [scenario.actions?.[seq] ?? []].flat();
+  // A dispatch's actions may be keyed by its subtask too ("dispatch:<id>"),
+  // which no admission order moves.
+  const dispatched = /^\/orchestrator:next (\S+) /.exec(prompt)?.[1] ?? null;
+  const actionList = [scenario.actions?.[seq] ?? [], dispatched ? scenario.actions?.[`dispatch:${dispatched}`] ?? [] : []].flat();
   for (const a of actionList) {
     if (a.startsWith('mark-start:')) fs.writeFileSync(path.join(dir, a.slice('mark-start:'.length)), seq);
   }
@@ -69,8 +80,28 @@ export async function perform({ prompt, cwd, env }) {
     // A wait that ran out is on record: the order a test set up did not happen.
     if (!fs.existsSync(file)) fs.writeFileSync(`${file}.timeout`, seq);
   };
+  // "heavy:<name>" holds the heavy-work lock of the step's checkout (one per
+  // repository, its lanes included) at the start, as a heavy command the
+  // worker runs would: it writes <name> beside the scenario, holding this
+  // process's pid, once it holds the lock, and lets go once <name>.release
+  // appears there (the same 60 s wait).
+  for (const a of actionList) {
+    if (!a.startsWith('heavy:')) continue;
+    const name = a.slice('heavy:'.length);
+    const { acquire } = await import(path.join(env.AGENTIC_ORCHESTRATOR_ROOT, 'scripts', 'lib', 'heavy-lock.mjs'));
+    const held = await acquire(cwd, { kind: 'harness', purpose: `lane ${dispatched ?? seq}'s worker`, log: () => {}, pollMs: 20, env: {} });
+    try {
+      fs.writeFileSync(path.join(dir, name), String(process.pid));
+      await waitFor(`${name}.release`);
+    } finally {
+      held.release();
+    }
+  }
   for (const a of actionList) {
     if (a.startsWith('wait:')) await waitFor(a.slice('wait:'.length));
+  }
+  for (const a of actionList) {
+    if (a.startsWith('pause:')) await new Promise((r) => { setTimeout(r, Number(a.slice('pause:'.length))); });
   }
 
   // D1: the spawn is on record before it starts — the session id this
@@ -94,7 +125,7 @@ export async function perform({ prompt, cwd, env }) {
   const git = (...args) => execFileSync('git', ['-C', cwd, ...args], { env, encoding: 'utf8' }).trim();
   const engCli = path.join(env.AGENTIC_ENGINEER_ROOT, 'scripts', 'state.mjs');
   const orchCli = path.join(env.AGENTIC_ORCHESTRATOR_ROOT, 'scripts', 'state.mjs');
-  const action = actionList.find((a) => !/^(wait|stop-wait|mark|mark-start):/.test(a) && a !== 'kill-driver') ?? null;
+  const action = actionList.find((a) => !/^(wait|stop-wait|mark|mark-start|pause|heavy):/.test(a) && a !== 'kill-driver') ?? null;
   const stateBase = env.AGENTIC_STATE_BASE || cwd;
   const finish = (r) => {
     for (const a of actionList) if (a.startsWith('mark:')) fs.writeFileSync(path.join(dir, a.slice('mark:'.length)), seq);
@@ -147,6 +178,11 @@ export async function perform({ prompt, cwd, env }) {
     await eng.recordPendingEnsemble({ workflowPath: filePath, phase: 'compose', ensemble_type: 'plan-verify', run_id: peerId });
     return [{ task_id: 'bt4', run_id: 'r-bt4', task_type: 'local_bash', description: 'the peer and a monitor' }];
   };
+  // A verify next step's request rides beside it (verify-exec).
+  const reported = (ns) => (ns ? { kind: ns.kind, verb: ns.verb ?? null, confidence: ns.confidence } : ns);
+  const stepOf = (ns) => (ns?.kind === 'verify'
+    ? { nextStep: { kind: 'verify', confidence: ns.confidence }, verifyRequest: { checks: ns.checks, on_pass: ns.on_pass, confidence: ns.confidence } }
+    : { nextStep: ns });
   const verbReport = (wf, ns) => ({ outcome: 'completed', workflow: wf, next_step: ns, awaiting_owner: null, summary: 'scripted verb', waiting_on_background: false });
   const plainReport = { outcome: 'completed', workflow: null, next_step: null, awaiting_owner: null, summary: 'scripted step', waiting_on_background: false };
 
@@ -257,7 +293,7 @@ export async function perform({ prompt, cwd, env }) {
       await stopHooks();
       return finish({ report: { ...verbReport(wf, { kind: 'owner-decision', verb: null, confidence: 'HIGH' }), outcome: 'needs_owner', awaiting_owner: 'peer-conflict' } });
     }
-    await eng.finishVerb({ workflowPath: filePath, host: 'claude', nextAction: 'next', nextStep: ns });
+    await eng.finishVerb({ workflowPath: filePath, host: 'claude', nextAction: 'next', ...stepOf(ns) });
     // C127: a peer run left pending after the verb's last write (finish-verb
     // refuses one pending before it under autopilot), and the step ends on a
     // finished report with a background task still pending. The peer's run
@@ -274,7 +310,7 @@ export async function perform({ prompt, cwd, env }) {
       fs.writeFileSync(manifest, JSON.stringify(j));
     }
     await stopHooks();
-    return finish({ report: verbReport(wf, ns), ...(background ? { background } : {}) });
+    return finish({ report: verbReport(wf, reported(ns)), ...(background ? { background } : {}) });
   }
 
   m = /^\/engineer:([a-z]+)$/.exec(prompt);
@@ -291,9 +327,9 @@ export async function perform({ prompt, cwd, env }) {
     }
     await eng.appendPhase({ workflowPath: active, host: 'claude', verb: m[1], phaseLabel: `Phase 0: Resume into ${m[1]}`, currentPhase: 'phase-0-resume', clearNextStep: true, nextAction: 'run', event: 'resumed' });
     const ns = nextFor(fm.originating_subtask);
-    await eng.finishVerb({ workflowPath: active, host: 'claude', nextAction: 'next', nextStep: ns });
+    await eng.finishVerb({ workflowPath: active, host: 'claude', nextAction: 'next', ...stepOf(ns) });
     await stopHooks();
-    return finish({ report: verbReport(fm.workflow_id, ns) });
+    return finish({ report: verbReport(fm.workflow_id, reported(ns)) });
   }
 
   if (prompt === '/engineer:commit') {

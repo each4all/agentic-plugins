@@ -69,6 +69,19 @@ import {
   decide, decideLanes, fingerprint, forcedForLanes, haltScope, isSafeSubtaskId, MODEL_PLANS, parseForcedStep, proposalLines as haltProposalLines, proposalsOnce,
   renderStep, withProposals,
 } from './policy.mjs';
+import { verifyOfferFor } from './verify-run.mjs';
+
+// What preview tells the policy of verification: the offer a start would make.
+// The journal's facts are read only by a run, so a request whose batch ended
+// previews as its verification step, which the run then follows.
+function previewVerify(roots, repoRoot, view) {
+  try {
+    const o = verifyOfferFor({ roots, repoRoot, baseline: view?.git?.head ?? null });
+    return { offered: o.offered === true, why: o.why ?? null, facts: {} };
+  } catch {
+    return null;
+  }
+}
 import { MAX_STEP_TIMEOUT_SEC, terminateGroup } from './worker.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
@@ -414,7 +427,7 @@ export function previewLanes(o, repoRoot, view, pre, env = process.env) {
   }
   // A forced lane's kept park ends at the start; every other one stays out.
   const parked = new Set([...result.kept.map((k) => k.subtask_id).filter((id) => !forced.has(id)), ...result.parks.map((p) => p.subtask_id)]);
-  const d = decideLanes(view, { lanes: held, forced, parked });
+  const d = decideLanes(view, { lanes: held, forced, parked, verify: previewVerify(pre.roots.roots, repoRoot, view) });
   if (d.outcome === 'halt') {
     result.halt ??= d;
     result.proposals = d.proposals ?? [];
@@ -481,7 +494,7 @@ async function previewCmd(o, repoRoot, env, out) {
   if (pre.roots && pre.roots.problems.length === 0) {
     view = observe({ repoRoot, roots: pre.roots.roots, macroId: o.macro, fetch: false, env });
     if (o.lanes >= 2) lanesPreview = previewLanes(o, repoRoot, view, pre, env);
-    else decision = decide(view, { runId: 'autopilot-00000000T000000Z-000000', macroId: view.macro?.id ?? null, forced: o.forced });
+    else decision = decide(view, { runId: 'autopilot-00000000T000000Z-000000', macroId: view.macro?.id ?? null, forced: o.forced, verify: previewVerify(pre.roots.roots, repoRoot, view) });
   }
   let command = null;
   if (decision?.outcome === 'step') command = previewCommand(decision.step, view.macro.id);
@@ -664,6 +677,7 @@ async function statusCmd(o, repoRoot, out, err) {
   }
   out(`${r.run.run_id} · ${liveness} · macro ${r.run.macro_id ?? '-'} · steps ${r.run.steps} · $${Number(r.run.cost_usd ?? 0).toFixed(2)}`);
   out(`  started ${r.run.started_at}${r.run.ended_at ? ` · ended ${r.run.ended_at}` : ''} · ledger ${r.dir}`);
+  if (r.run.verify) out(`  verification ${r.run.verify.offered ? `offered (declaration ${String(r.run.verify.declaration_digest).slice(0, 12)})` : `not offered (${r.run.verify.why})`}`);
   if (r.run.options?.stall_detector) out(`  stall detector ${r.run.options.stall_detector} · step clock ${r.run.options.step_timeout_sec ?? '?'} s${r.run.stall_record_failures ? ` · ${r.run.stall_record_failures} stall verdict${r.run.stall_record_failures === 1 ? '' : 's'} not recorded` : ''}`);
   for (const g of groups) out(`  worker group ${groupLabel(g)}${g.session_id ? ` · session ${g.session_id}` : ''}`);
   const c = r.run.dead_run_cleanup;
@@ -672,7 +686,20 @@ async function statusCmd(o, repoRoot, out, err) {
       `cancelled ${c.cancelled?.length ? c.cancelled.join(', ') : 'no peer run'} · steps counted as spent ${c.settled?.length ? c.settled.map((s) => `[${s.seq}]`).join(' ') : 'none'}` +
       `${c.reported?.length ? ` · reported, not cancelled (they name no run): ${c.reported.join(', ')}` : ''}${c.unresolved?.length ? ` · not cancelled: ${c.unresolved.join(', ')}` : ''}`);
   }
+  // ADR-0068 Decision 5, item 10 — a lane verifying, or waiting for the
+  // heavy-work lock with its holder while the driver itself waits.
+  const v = r.run.verifying;
+  if (v && r.run.status === 'running') {
+    out(`  [${v.seq}] ${v.subtask_id ? `lane ${v.subtask_id}: ` : ''}${v.state === 'waiting' ? `verification waits for the heavy-work lock, held by ${v.holder ?? 'another holder'}${v.holder_pid ? ` (pid ${v.holder_pid})` : ''}` : 'verifying'}`);
+  }
   for (const s of r.steps) {
+    // A verification batch: no worker, no session and no cost; its end and
+    // how many of its checks ran, never a failing test's name or a log.
+    if (s.kind === 'verify') {
+      const b = s.verify?.batch;
+      out(`  [${s.seq}] ${s.lane ? `lane ${s.lane}: ` : ''}verify → ${s.outcome ?? (s.event === 'started' ? 'running or interrupted' : '?')}${b ? ` · batch ${b.end ?? 'open'}${b.cause ? ` (${b.cause})` : ''}, ${(b.checks ?? []).length} of ${b.total ?? '?'} check(s) run` : s.verify?.outcome ? ` · ${s.verify.outcome}` : ''} · no cost`);
+      continue;
+    }
     const pct = typeof s.peak_pct === 'number' ? ` ${(s.peak_pct * 100).toFixed(1)}%` : '';
     out(`  [${s.seq}] ${s.lane ? `lane ${s.lane}: ` : ''}${s.command} → ${s.outcome ?? (s.event === 'started' ? 'running or interrupted' : '?')}${typeof s.cost_usd === 'number' ? ` · $${s.cost_usd.toFixed(2)}` : ''}${pct} · session ${s.session_id}`);
     // ADR-0068 Decision 3 — the step's last verdict, while it runs, or its summary.

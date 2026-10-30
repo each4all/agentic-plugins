@@ -44,6 +44,7 @@ import { createLane, fetchBaseline, reconcileLane, removeLane } from './lanes.mj
 import { processFingerprint } from './ledger.mjs';
 import { observe } from './observe.mjs';
 import { terminateGroup } from './worker.mjs';
+import { DEFAULT_OPS as VERIFY_OPS } from './verify-ops.mjs';
 
 const SELF = pathToFileURL(fileURLToPath(import.meta.url)).href;
 const DRIVER = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), 'driver.mjs')).href;
@@ -106,6 +107,11 @@ export const TASKS = {
     const { settleAbandonedPeers } = await import(DRIVER);
     return settleAbandonedPeers(a.targets, { roots: a.roots, checkout: a.checkout, env });
   },
+  // ADR-0068 Decision 5 (verify-exec) — a verification batch's tree digest
+  // (git over a temporary index) and its selection (the import graph of the
+  // lane's tests), which would stop the supervision of every worker in flight.
+  verifyTree: (a) => VERIFY_OPS.treeDigest(a.lane),
+  verifySelect: (a) => VERIFY_OPS.select({ lane: a.lane, base: a.base, requested: a.requested, declaration: a.declaration }),
   // ADR-0068 Decision 2, item 7 — a released lane's basis, as its release
   // recorded it, for the driver's one comparison: the lane's fingerprint, its
   // tree digest (git over a temporary index) and its child's content digest

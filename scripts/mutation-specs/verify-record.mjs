@@ -1176,8 +1176,8 @@ export const MUTATIONS = [
     id: 'O6', file: `${AP}/worker.mjs`, tests: [T_ORCH],
     from: "  'AGENTIC_AUTOPILOT_VERIFY', 'AGENTIC_AUTOPILOT_STEP',\n",
     to: '',
-    why: "an inherited offer reaches a worker of a driver that runs no batch, so its step writes verify",
-    killed_by: /never reach a worker of this driver/,
+    why: "an inherited offer reaches a worker, so its step writes verify in a run that may not offer it",
+    killed_by: /never reach a worker: only the run's own offer does/,
   },
   {
     id: 'O11', file: `${AP}/worker.mjs`, tests: [T_ORCH, T_WORK],
