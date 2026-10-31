@@ -519,7 +519,8 @@ item, `RESOLVE_VERB` in the block (`refine`, `decide` or `investigate`), and
 turns off a terminal marker an earlier verb left, so the workflow stays open
 and the Stop hook cannot archive it; its `next-action.txt` is the one step 2
 describes for that case. Not converged, a `RESOLVE_VERB` left unfilled stops
-the block before any write.
+the block before any write. An owner gate named in `OWNER_GATE`, where the
+block has one, is the last write either way.
 
 The last write, `finish-verb`, records the proposal's next step in closed-enum
 form: `--next-step-kind` `verb` (with `--next-step-verb`), `commit` (the owner
