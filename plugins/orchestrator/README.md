@@ -420,6 +420,12 @@ next step `verify` and a request; the driver runs the checks itself
   shows each batch's end and how many of its checks ran, and a lane verifying or waiting
   for the heavy-work lock with its holder; no failing test's name reaches the main
   session or the event file, which gains no kind.
+- **The worker's side.** Under the offer, rule 7 of the worker's rules (and engineer's
+  runbooks and skills, § Long checks) has a step run only quick checks and hand the
+  long ones (the whole suite, a broad `npm test`, a mutation run) to the driver: the
+  agent writes `verify-request.json` in the finalize's text directory, the finalize
+  checks it before any write (`state.mjs verify-request-check`) and ends with next step
+  `verify`; the verb the driver resumes prints the results in its Phase 0.
 
 ## Workflow file shape
 

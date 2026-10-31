@@ -760,7 +760,9 @@ const groupLabel = (w) => {
 // and fingerprint, as the record has them).
 const recordDriverAlive = (rec) => holderAlive({ pid: rec.pid, fingerprint: rec.fingerprint, worker: null });
 
-async function stopCmd(o, repoRoot, out, err, { wait = 30_000, env = process.env } = {}) {
+// `hooks.listedEntries` is a test seam between a read's listing of the locks
+// and its judgment of each entry (the race the wait loop's rereads close).
+async function stopCmd(o, repoRoot, out, err, { wait = 30_000, env = process.env, hooks = {} } = {}) {
   const mainRoot = mainWorktreeRoot(repoRoot);
   // ADR-0067 Decision 6, Locks: once no worker group of a dead driver runs,
   // stop cleans up after it from its open-run record (dead-runs.mjs): it
@@ -789,7 +791,9 @@ async function stopCmd(o, repoRoot, out, err, { wait = 30_000, env = process.env
   // flight, and a dead driver with any group alive still holds the lock.
   const liveEntriesOf = async (runId) => {
     const live = [];
-    for (const l of listLocks(mainRoot, repoRoot)) {
+    const listed = listLocks(mainRoot, repoRoot);
+    if (hooks.listedEntries) await hooks.listedEntries(runId);
+    for (const l of listed) {
       if (l.holder?.run_id === runId && await holderAlive(l.holder)) live.push(l.holder);
     }
     return live;
@@ -898,8 +902,13 @@ async function stopCmd(o, repoRoot, out, err, { wait = 30_000, env = process.env
   const deadline = Date.now() + wait;
   while (Date.now() < deadline) {
     // Read again each time: a worker group the run registered after stop
-    // listed its entries counts as much as one listed before.
-    const live = await liveEntriesOf(holder.run_id);
+    // listed its entries counts as much as one listed before. A read lists
+    // the entries before it judges each: a driver that adds a group's entry
+    // and dies between the two leaves one the list missed and none alive.
+    // Once none lives, the driver is dead and adds none: a second read is
+    // complete.
+    let live = await liveEntriesOf(holder.run_id);
+    if (live.length === 0) live = await liveEntriesOf(holder.run_id);
     if (live.length === 0) {
       // A driver that died instead of recording its end (a crash on the way
       // out) leaves its open-run record: clean up after it now.
@@ -919,8 +928,11 @@ async function stopCmd(o, repoRoot, out, err, { wait = 30_000, env = process.env
     }
     // Its driver gone and a group of it left: no driver will empty that group.
     // An entry read while the driver still ran may be only its own, ended
-    // since: with no group among them, the next read decides.
+    // since: with no group among them, the next read decides. The driver
+    // dead, it adds no entry: read again, so a group it added after the read
+    // above, beside one that read found, is stopped too.
     if (!(await holderAlive({ pid: holder.pid, fingerprint: holder.fingerprint, worker: null }))) {
+      live = await liveEntriesOf(holder.run_id);
       const n = workerGroups(live).length;
       if (n > 0) {
         out(`its driver exited, but ${n === 1 ? 'a worker group' : `${n} worker groups`} of it still run${n === 1 ? 's' : ''}`);
@@ -1069,7 +1081,7 @@ export async function main(argv = process.argv.slice(2), { env = process.env, io
     case 'preview': return previewCmd(o, repoRoot, env, out);
     case 'start': return startCmd(o, repoRoot, env, out, err, io);
     case 'status': return statusCmd(o, repoRoot, out, err);
-    case 'stop': return stopCmd(o, repoRoot, out, err, { env });
+    case 'stop': return stopCmd(o, repoRoot, out, err, { env, hooks });
     case 'release': return releaseCmd(o, repoRoot, env, out, err, hooks);
     case 'events': return eventsCmd(o, repoRoot, out, hooks);
     case 'hold':

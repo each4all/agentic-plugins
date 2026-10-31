@@ -190,11 +190,15 @@ export function systemAppend({ runId, seq, stepKind, verifyOffered = false }) {
     '1. Run exactly the requested command for this one step, then stop. Do not start the next verb or command yourself.',
     '2. Never ask the user or wait for an answer. When the runbook needs an owner judgment, record it the way the runbook says (an owner gate, or next step owner-decision) and report it.',
     '3. Ceremony prompts resolve by default: take the recommendation, present in batch, use the suggested conventional subject.',
-    '4. Run peer ensembles and other long work as host background tasks, wait for their notifications, and collect them before you finish. Never sleep-poll.',
+    // verify-runbooks — under the offer, long checks are rule 7's, never a
+    // background task the step waits on.
+    verifyOffered
+      ? '4. Run peer ensembles as host background tasks, wait for their notifications, and collect them before you finish. Never sleep-poll. Long checks are not background work here: rule 7 hands them to the driver.'
+      : '4. Run peer ensembles and other long work as host background tasks, wait for their notifications, and collect them before you finish. Never sleep-poll.',
     `5. ${commit} Never push, open, update or merge pull requests, and take no other outward action.`,
     '6. End with the structured step report. A report the host takes when you end a turn to wait for a background task is provisional: set waiting_on_background = true in it, and when its notification re-invokes you, carry on with the runbook to its end and file a new report. Only the last report counts. In your last report set waiting_on_background = false: the host then ends the step and stops every background task still running, so set it only once nothing you started is still needed. workflow = the id of the engineer workflow this step worked in (null when it ran no engineer verb). next_step = that workflow\'s next_step_kind / next_step_verb / next_step_confidence exactly as the verb wrote them with finish-verb (null when it ran no verb) — not the macro-level proposal /orchestrator:next prints at its end. awaiting_owner = the owner gate this step recorded, or null. summary = one line.',
     ...(verifyOffered
-      ? ['7. This run offers verification (ADR-0068 Decision 5): hand long checks (the whole test suite, a mutation run) to next step verify, as the runbook says, instead of running them or waiting for the heavy-work lock in this step; the driver runs them and the next step reads their results.']
+      ? ['7. This run offers verification (ADR-0068 Decision 5): run only quick checks (a few test files the change touches) in this step, and hand long checks (the whole test suite, a broad npm test, a mutation run) to next step verify with the finalize\'s verify form, as the runbook says, instead of running them or waiting for the heavy-work lock in this step; the driver runs them and the next step reads their results. When this step resumes a verb after a verification batch, read the results its Phase 0 prints before acting: the failing tests named there are the evidence.']
       : []),
   ].join('\n');
 }
