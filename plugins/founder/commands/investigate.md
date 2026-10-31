@@ -475,7 +475,8 @@ gate. With `VERDICT` set to
 digit, then letters, digits, `_` and `-`, 128 at most, as the runbook's
 dispatch makes them; and on every path an id opening with `--` stops the
 block, since the verdict read takes it as a flag. Both stop it before any
-write.
+write, as does an owner gate named in `OWNER_GATE`, where the block has one,
+beside `VERDICT` `conflict`: the conflict ends on its own gate.
 
 The last write, `finish-verb`, records the proposal's next step in closed-enum
 form: `--next-step-kind` `verb` (with `--next-step-verb`), `commit` (the owner
