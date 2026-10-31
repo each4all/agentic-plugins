@@ -404,14 +404,33 @@ describe('stop, when the driver is gone', () => {
     const { spawn } = await import('node:child_process');
     const fingerprintForPid = L.processFingerprint;
     const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    const { fingerprintsMatch } = await import(join(REPO_ROOT, 'plugins/orchestrator/scripts/lib/run-locks.mjs'));
+    // What the grandchild is as stop returns, judged then, with no grace: null
+    // when it is gone, a zombie or exiting (SIGKILL ended it and launchd, its
+    // parent now, has yet to reap it: kill(pid, 0) still answers), or another
+    // process that took its pid; otherwise what ps says of it. A process that
+    // answers and cannot be read runs on.
+    const runsOn = async (pid, recorded) => {
+      if (!alive(pid)) return null;
+      const now = await fingerprintForPid(pid);
+      const ps = spawnSync('ps', ['-o', 'stat=,ppid=,pgid=', '-p', String(pid)], { encoding: 'utf8', timeout: 5000 });
+      const line = ps.status === 0 && typeof ps.stdout === 'string' ? ps.stdout.trim() : '';
+      // Darwin writes E (exiting) after the state and its other flags.
+      if (now.zombie === true || /^\S*[ZE]/.test(line)) return null;
+      if (now.kind !== 'none' && !fingerprintsMatch(recorded, now)) return null;
+      if (!alive(pid)) return null;
+      return `${line || `ps unreadable (${ps.error?.code ?? `status ${ps.status}`})`}; fingerprint ${now.kind}`;
+    };
     await withRepo(async (fx, env, work) => {
       const pidfile = join(fx.dir, 'grandchild.pid');
       // A worker as the driver leaves it: a process-group leader that exits on
-      // SIGTERM, with a member that does not.
+      // SIGTERM, with a member that does not. The member publishes its pid once
+      // its handler is in place, whole (a rename), so the stop never meets one
+      // that SIGTERM would still end.
+      const member = `process.on('SIGTERM', () => {}); const fs = require('node:fs'); fs.writeFileSync(process.argv[1] + '.tmp', String(process.pid)); fs.renameSync(process.argv[1] + '.tmp', process.argv[1]); setInterval(() => {}, 1000);`;
       const leader = spawn(process.execPath, ['-e', `
         const { spawn } = require('node:child_process');
-        const g = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { stdio: 'ignore' });
-        setTimeout(() => require('node:fs').writeFileSync(process.argv[1], String(g.pid)), 300);
+        spawn(process.execPath, ['-e', ${JSON.stringify(member)}, process.argv[1]], { stdio: 'ignore' });
         setInterval(() => {}, 1000);
       `, pidfile], { detached: true, stdio: 'ignore' });
       try {
@@ -419,6 +438,8 @@ describe('stop, when the driver is gone', () => {
         if (fingerprint.kind === 'none') { t.skip('no process fingerprint on this platform'); return; }
         for (let i = 0; i < 50 && !existsSync(pidfile); i += 1) await new Promise((r) => { setTimeout(r, 100); });
         const grandchild = Number(readFileSync(pidfile, 'utf8'));
+        const grandchildPrint = await fingerprintForPid(grandchild);
+        ok(grandchildPrint.kind !== 'none' && grandchildPrint.zombie !== true, `the grandchild ${grandchild} runs and can be read`);
         const deadDriver = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }).stdout;
         const lock = L.worktreeLockPath(work);
         mkdirSync(lock, { recursive: true });
@@ -430,7 +451,8 @@ describe('stop, when the driver is gone', () => {
         strictEqual(r.code, 0, r.err + r.out);
         ok(/process group is empty \(killed\)/.test(r.out), r.out);
         ok(!alive(leader.pid), 'the worker is gone');
-        ok(!alive(grandchild), `grandchild ${grandchild}, which ignores SIGTERM, outlived a stop that reported success`);
+        const left = await runsOn(grandchild, grandchildPrint);
+        strictEqual(left, null, `grandchild ${grandchild}, which ignores SIGTERM, outlived a stop that reported success (ps stat, ppid, pgid: ${left})`);
       } finally {
         try { process.kill(-leader.pid, 'SIGKILL'); } catch { /* gone */ }
       }

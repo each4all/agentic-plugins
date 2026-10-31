@@ -572,22 +572,33 @@ function specTools(repoRoot) {
 }
 
 // Every test file the selected cases are scored against, which the control
-// runs; a spec that names none is refused.
+// runs; a spec that names none is refused. A case that names its own `tests`
+// is scored against those alone, so the spec default joins the control only
+// for a selected case that names none: `--only` one case of a spec whose
+// default is slow runs that case's files, not the whole default. A selected
+// case scored against no file is refused too, whatever the others name: `node
+// --test` with no file discovers the whole suite, a set the control never
+// ran, and any failure in it would score the case KILLED.
 function controlTestsOf(specPath, spec, mutations) {
-  const tests = [...new Set([
-    ...(spec.TESTS ?? []),
-    ...mutations.flatMap((m) => m.tests ?? []),
-  ])];
+  const tests = [...new Set(mutations.flatMap((m) => m.tests ?? spec.TESTS ?? []))];
   if (tests.length === 0) {
     throw new MutationHarnessError(`${specPath} names no test files — there is nothing to score against`);
+  }
+  const bare = mutations.filter((m) => (m.tests ?? spec.TESTS ?? []).length === 0).map((m) => m.id);
+  if (bare.length > 0) {
+    throw new MutationHarnessError(
+      `${specPath} scores ${bare.join(', ')} against no test file — node --test would run the whole suite, which the control never ran`,
+    );
   }
   return tests;
 }
 
 // The checks a case must pass before its tests run, then its edit, in `dir`:
 // a refusal is a harness error, never a verdict. `runSpec` and `checkSpecs`
-// share it, so the static check refuses exactly what a run would. Returns the
-// case's killers.
+// share it, so the static check refuses every case a run would refuse; it is
+// stricter in one way, failing closed: it also checks a spec's TESTS, which a
+// run whose cases each name their own tests never uses. Returns the case's
+// killers.
 function applyMutation(dir, mutation, tools) {
   const expect = mutation.expect ?? 'KILLED';
   const killers = [mutation.killed_by ?? []].flat();

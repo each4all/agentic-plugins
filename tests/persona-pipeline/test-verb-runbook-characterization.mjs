@@ -43,7 +43,8 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
       // C120: the review ledger of a document deliverable (ADR-0063, amendment of 2026-10-14).
       // R4: each block runs in a fresh shell (C75), finding the workflow and the run itself.
       // HP: the persona operation a verb opens and closes (ADR-0068 Decision 2, hold-persona).
-      ok(/^(?:PC2(?:a[234]|b)|PC3b?|ADR-0067-WP|CP|C130|C120|R4|HP) /.test(d.why), `${d.where}: a change with its reason`);
+      // VR: the verify form and the results on resume (ADR-0068 Decision 5, verify-runbooks).
+      ok(/^(?:PC2(?:a[234]|b)|PC3b?|ADR-0067-WP|CP|C130|C120|R4|HP|VR) /.test(d.why), `${d.where}: a change with its reason`);
       if (structural) ok(STRUCTURAL_OPS.includes(d.op), `${d.where}: a known op`);
       else ok(typeof d.from === 'string' && typeof d.to === 'string' && d.from !== d.to && d.from.length > 0, `${d.where}: a string change`);
     }
@@ -283,7 +284,10 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
           // engineer's authored finalize, ensemble-commit and finish-verb.
           const settled = of('peer-runner.mjs', 'settle').length > 0;
           const commit = settled ? index('peer-runner.mjs', 'settle') : index('state.mjs', 'ensemble-commit');
-          const terminal = settled || persona === 'engineer' ? index('state.mjs', 'finish-verb') : index('state.mjs', 'set-terminal');
+          // The typical finish-verb, the verb form: with dispatch_target on,
+          // the owner-decision form OWNER_GATE selects comes first (C2-M1).
+          const verbForm = of('state.mjs', 'finish-verb').find(([c]) => c.args.some(([f, v]) => f === '--next-step-kind' && v === 'verb'));
+          const terminal = settled || persona === 'engineer' ? (verbForm ? verbForm[1] : index('state.mjs', 'finish-verb')) : index('state.mjs', 'set-terminal');
           // R4 G1: settle, the one judge of the run, is the settled finalize's
           // first write, so its refusal comes before the note is appended.
           ok(find < create && create < resume && resume < run && (settled

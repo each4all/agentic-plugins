@@ -61,7 +61,8 @@ import {
   open,
   lstat,
 } from 'node:fs/promises';
-import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { closeSync, constants as fsConstants, copyFileSync, existsSync, fstatSync, lstatSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, statSync, utimesSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname, basename, isAbsolute, resolve as resolvePath } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import { hrtime, pid } from 'node:process';
@@ -4629,6 +4630,16 @@ const AUTOPILOT_RULES =
   'next_step and leaves the terminal marker unset; never run git commit, push, or ' +
   'open a pull request; when a genuine owner judgment is needed, record the owner ' +
   'gate and stop. Rules: core/skills/_shared/references/autopilot-mode.md.';
+// ADR-0068 Decision 5 — the verb banner's last sentence, the one signal a
+// step's runbook names for which branch of its long-check guidance applies.
+const AUTOPILOT_VERIFY_OFFERED =
+  'This run offers verification: run only quick checks in this step, never wait ' +
+  'for the heavy-work lock, and hand the long ones (the whole test suite, a broad ' +
+  'npm test, mutation runs) to the driver with the finalize\'s verify form ' +
+  '(verify-request.json).';
+const AUTOPILOT_VERIFY_NOT_OFFERED =
+  'This run does not offer verification: run the checks this step needs in it, ' +
+  'and end with the verb form.';
 
 /**
  * A verb's (or the commit surface's) Phase 0 check, before any write: the run
@@ -4650,6 +4661,8 @@ export async function autopilotPreflight({
   // whose rules differ: it is the one surface that commits and closes.
   surface = 'verb',
   env = process.env,
+  // The checkout the offer's declaration is read from (verifyOffer).
+  cwd = process.cwd(),
   scriptPath = fileURLToPath(import.meta.url),
 }) {
   validateHost(host);
@@ -4683,11 +4696,19 @@ export async function autopilotPreflight({
     };
   }
   if (mode.active) {
+    // ADR-0068 Decision 5 — a verb's banner says whether this run offers
+    // verification, the signal its runbooks' long-check guidance and verify
+    // form name; the commit surface hands no checks over.
+    const offer = surface === 'verb' ? verifyOffer({ env, host, cwd }) : null;
+    const verification = offer === null ? ''
+      : offer.on ? ` ${AUTOPILOT_VERIFY_OFFERED}`
+        : ` ${AUTOPILOT_VERIFY_NOT_OFFERED}`;
     return {
       mode: 'autopilot',
       gate: null,
       refuse: false,
-      stdout: `Autopilot run ${env.AGENTIC_AUTOPILOT} (ADR-0063 D4): ${surface === 'commit' ? AUTOPILOT_COMMIT_RULES : AUTOPILOT_RULES}\n`,
+      verify_offered: offer === null ? undefined : offer.on,
+      stdout: `Autopilot run ${env.AGENTIC_AUTOPILOT} (ADR-0063 D4): ${surface === 'commit' ? AUTOPILOT_COMMIT_RULES : AUTOPILOT_RULES}${verification}\n`,
       stderr: '',
     };
   }
@@ -5522,9 +5543,10 @@ function declarationAt(dir, commit) {
  * run started from (AGENTIC_AUTOPILOT_VERIFY) and its step number
  * (AGENTIC_AUTOPILOT_STEP), with the repository's declaration at that
  * commit. `{ on: true, commit, step, declaration }`, or `{ on: false,
- * missing }` naming the first part missing. The driver of this release numbers
- * each step but sets no AGENTIC_AUTOPILOT_VERIFY (its workers' environment
- * scrubs an inherited one), so no run offers it until verify-exec.
+ * missing }` naming the first part missing. The driver numbers each step and,
+ * when it offers verification, sets AGENTIC_AUTOPILOT_VERIFY to the commit the
+ * run started from (worker.mjs); its workers' environment scrubs an inherited
+ * one, so only the driver's offer reaches a step.
  */
 export function verifyOffer({ env = process.env, host = 'claude', cwd = process.cwd() } = {}) {
   const mode = autopilotMode({ env, host });
@@ -5894,13 +5916,17 @@ function testedTree(cwd, workflowPath, frontmatter) {
 // phase says whether it is terminal: a marker an interactive verb left on is
 // not the state of a workflow a later verb resumed (its Phase 0 moves the
 // phase on and keeps the marker), and the request turns that marker off.
-function assertRequestable(frontmatter) {
+// `settling` (verify-request-check only) names the peer run the finalize
+// settles before its last write: that one pending entry is not counted.
+function assertRequestable(frontmatter, { settling = null } = {}) {
   if (terminalPhases().has(frontmatter.current_phase)) {
     throw new Error(`the workflow is terminal (${frontmatter.current_phase}); a request is recorded only by an active workflow`);
   }
-  if (!noPendingEnsembleCheck(frontmatter)) {
+  const pending = (Array.isArray(frontmatter.pending_ensemble) ? frontmatter.pending_ensemble : [])
+    .filter((e) => settling === null || settling === '' || e?.run_id !== settling);
+  if (pending.length > 0) {
     throw new Error(
-      `a peer ensemble is still pending (${frontmatter.pending_ensemble.map((e) => e.run_id).join(', ')}); ` +
+      `a peer ensemble is still pending (${pending.map((e) => e.run_id).join(', ')}); ` +
         'collect it and settle it first — the next step is published only once the step is settled (ADR-0063 D5)',
     );
   }
@@ -5912,6 +5938,82 @@ function assertRequestable(frontmatter) {
 function historyUpdated(frontmatter, host, nowIso) {
   frontmatter.updated_at = nowIso;
   frontmatter.host_history = [...(frontmatter.host_history ?? []), { host, at: nowIso, event: 'updated' }];
+}
+
+// The request's own rules, before any workflow is read: the next step is
+// `verify` with no verb, the file parses as a request, and its confidence is
+// the next step's. Shared by finish-verb and verify-request-check.
+function verifyRequestInput(nextStep, input) {
+  const fields = normalizeNextStep(nextStep, { allowVerify: true });
+  if ('next_step_verb' in fields) throw new Error('next step verify names no verb: the step that follows a batch is the request\'s on_pass');
+  const parsed = parseRequestInput(input, { verbs: VALID_VERBS });
+  if (parsed.confidence !== fields.next_step_confidence) {
+    throw new Error(`--next-step-confidence ${fields.next_step_confidence} is not the request's confidence ${parsed.confidence}`);
+  }
+  return { fields, parsed };
+}
+
+// The request bound to this step and this workflow, as finish-verb records
+// it: the offer, the workflow's state, the tested tree, each check against the
+// declaration at the offer's commit and each path argument against the tree.
+// One function for the write and for verify-request-check, so the check a
+// finalize runs before its first write refuses exactly what the last write
+// would (`settling` aside: the peer run the finalize settles first). The
+// record a new request becomes (`request`, null for a retry of the stored
+// one) is built here too, so its size is held to the cap in both.
+function bindVerifyRequest(frontmatter, { workflowPath, parsed, env, host, cwd, settling = null, now = new Date() }) {
+  const offer = verifyOffer({ env, host, cwd });
+  if (!offer.on) {
+    throw new Error(`next step verify is refused: missing ${offer.missing} (ADR-0068 Decision 5, item 11)`);
+  }
+  refuseNewerRecords(frontmatter, 'recording a request');
+  assertRequestable(frontmatter, { settling });
+  const tree = testedTree(cwd, workflowPath, frontmatter);
+  for (const check of parsed.checks) resolveCheck(offer.declaration, check, { tree });
+  const bound = {
+    workflow_id: frontmatter.workflow_id,
+    run_id: offer.runId,
+    step: offer.step,
+    baseline: offer.commit,
+    declaration_digest: offer.declaration.digest,
+    checks: parsed.checks,
+    on_pass: parsed.on_pass,
+    confidence: parsed.confidence,
+  };
+  const id = verifyRequestId(bound);
+  const stored = frontmatter.verify_request;
+  if (stored?.id === id) return { bound, id, request: null };
+  const request = {
+    v: VERIFY_RECORD_VERSION, id, ...bound, recorded_at: isoUtc(now),
+    previous: stored ? previousOf(stored, frontmatter.verify_results) : null,
+  };
+  if (scalarBytes('verify_request', request) > MAX_REQUEST_BYTES) {
+    throw new Error(`the request takes more than ${MAX_REQUEST_BYTES} bytes; ask for fewer checks`);
+  }
+  // The record is held to its reader's rules here, the ones every later read
+  // of the workflow applies, so no request passes the check that the stored
+  // record would refuse.
+  validateStoredRequest(request, { verbs: VALID_VERBS });
+  return { bound, id, request };
+}
+
+/**
+ * verify-request-check: whether finish-verb --next-step-kind verify would
+ * take this request now, written nowhere. A finalize runs it before its first
+ * write (the peer run's settle), so a request the last write would refuse
+ * stops the block with the workflow as it was, never with half a handoff
+ * written (ADR-0068 Decision 5, `verify-runbooks`). `settling` is the peer
+ * run that settle pops first, the one pending entry not counted. Returns
+ * `{ ok: true, request_id }`; throws finish-verb's message otherwise.
+ */
+export async function checkVerifyRequest({
+  workflowPath, host, nextStep, input, env = process.env, cwd = process.cwd(), settling = null,
+}) {
+  validateHost(host);
+  const { parsed } = verifyRequestInput(nextStep, input);
+  const { frontmatter } = parseWorkflowFile(await readFile(workflowPath, 'utf8'));
+  const { id } = bindVerifyRequest(frontmatter, { workflowPath, parsed, env, host, cwd, settling });
+  return { ok: true, request_id: id };
 }
 
 /**
@@ -5929,35 +6031,12 @@ export async function recordVerifyRequest({
   operationDir,
 }) {
   validateHost(host);
-  const fields = normalizeNextStep(nextStep, { allowVerify: true });
-  if ('next_step_verb' in fields) throw new Error('next step verify names no verb: the step that follows a batch is the request\'s on_pass');
-  const parsed = parseRequestInput(input, { verbs: VALID_VERBS });
-  if (parsed.confidence !== fields.next_step_confidence) {
-    throw new Error(`--next-step-confidence ${fields.next_step_confidence} is not the request's confidence ${parsed.confidence}`);
-  }
+  const { fields, parsed } = verifyRequestInput(nextStep, input);
   const operation = await prepareOperation({ point: 'close', operationDir, workflowPath, host, env, now });
   return withOperation(operation, () => withFileLock(workflowPath, async (ownership) => {
-    const offer = verifyOffer({ env, host, cwd });
-    if (!offer.on) {
-      throw new Error(`next step verify is refused: missing ${offer.missing} (ADR-0068 Decision 5, item 11)`);
-    }
     const { frontmatter, body } = parseWorkflowFile(await readFile(workflowPath, 'utf8'));
-    refuseNewerRecords(frontmatter, 'recording a request');
-    assertRequestable(frontmatter);
+    const { request } = bindVerifyRequest(frontmatter, { workflowPath, parsed, env, host, cwd, now });
     operation.inLock(frontmatter);
-    const tree = testedTree(cwd, workflowPath, frontmatter);
-    for (const check of parsed.checks) resolveCheck(offer.declaration, check, { tree });
-    const bound = {
-      workflow_id: frontmatter.workflow_id,
-      run_id: offer.runId,
-      step: offer.step,
-      baseline: offer.commit,
-      declaration_digest: offer.declaration.digest,
-      checks: parsed.checks,
-      on_pass: parsed.on_pass,
-      confidence: parsed.confidence,
-    };
-    const id = verifyRequestId(bound);
     const stored = frontmatter.verify_request;
     // A stale attempt never rolls the record back (admitAttempt, markAttempt):
     // the mark (`verify_attempt`) outlives the request and binds the step that
@@ -5968,16 +6047,9 @@ export async function recordVerifyRequest({
       : stored === undefined ? 'dropped by a verb that ended with another next step'
         : stored.answered_by !== undefined ? `answered by batch ${stored.answered_by}` : 'taken up by a verb';
     let unchanged = false;
-    if (stored?.id === id) {
+    if (request === null) {
       unchanged = true;
     } else {
-      const request = {
-        v: VERIFY_RECORD_VERSION, id, ...bound, recorded_at: isoUtc(now),
-        previous: stored ? previousOf(stored, frontmatter.verify_results) : null,
-      };
-      if (scalarBytes('verify_request', request) > MAX_REQUEST_BYTES) {
-        throw new Error(`the request takes more than ${MAX_REQUEST_BYTES} bytes; ask for fewer checks`);
-      }
       frontmatter.verify_request = request;
       delete frontmatter.verify_results;
     }
@@ -6223,15 +6295,124 @@ export async function recordPass({ workflowPath, host, requestId, batchId, now }
  * check's evidence and whether it applies, and `results_digest`, the record a
  * restart names as the one it sets aside.
  */
-export async function readVerifyResults({ workflowPath, treeDigest = null }) {
+export async function readVerifyResults({ workflowPath, treeDigest = null, currentTree = false, cwd = process.cwd() }) {
+  if (treeDigest !== null && currentTree) throw new Error('--tree-digest and --current-tree are two answers to one question: give one');
   if (treeDigest !== null && !(typeof treeDigest === 'string' && /^[0-9a-f]{64}$/.test(treeDigest))) throw new Error('--tree-digest is not a 64-hex digest');
   const { frontmatter } = await readWorkflow(workflowPath);
   refuseNewerRecords(frontmatter, 'reading its results');
+  // The tree is digested only when there is a result to judge: with no
+  // request a resume prints nothing, and reads no tree for it.
+  const digest = currentTree && frontmatter.verify_request !== undefined ? currentTreeDigest(testedTree(cwd, workflowPath, frontmatter)) : treeDigest;
   return {
     pending: frontmatter.next_step_kind === 'verify',
     results_digest: resultsDigest(frontmatter.verify_results),
-    ...readResults(frontmatter.verify_request ?? null, frontmatter.verify_results ?? null, { treeDigest }),
+    ...(currentTree ? { tree_digest: digest } : {}),
+    ...readResults(frontmatter.verify_request ?? null, frontmatter.verify_results ?? null, { treeDigest: digest }),
   };
+}
+
+// The orchestrator's lock fence in a lane: its bookkeeping, not the lane's
+// content (lane-digest.mjs).
+const LANE_WORKTREE_LOCK_REL = '.agentic-plugins/runs/autopilot/worktree.lock';
+
+/**
+ * The tested tree's digest as the driver takes it at a batch's start and end
+ * (Decision 2, item 7; the orchestrator's scripts/lib/lane-digest.mjs
+ * treeDigest, version 1): sha256 over `git write-tree` of every non-ignored
+ * file, through a temporary index seeded from a copy of the checkout's own
+ * (its assume-unchanged and skip-worktree bits cleared, every entry racily
+ * clean), the orchestrator's lock fence left out, HEAD, and each checked-out
+ * submodule's own digest (an uninitialized one by its gitlink). The two are
+ * held equal by tests/persona-pipeline/test-verify-runbooks.mjs: a result
+ * `applies` now only when its batch's tree is this one. No inherited GIT_*
+ * variable reaches git; the checkout's real index is never touched.
+ */
+export function currentTreeDigest(top) {
+  const unscoped = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_')));
+  const git = (cwd, args, extra = {}) => execFileSync('git', ['-C', cwd, ...args], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...unscoped, ...extra }, maxBuffer: 256 * 1024 * 1024, timeout: 120_000,
+  });
+  const root = git(top, ['rev-parse', '--show-toplevel']).trim();
+  const realIndex = resolvePath(root, git(root, ['rev-parse', '--git-path', 'index']).trim());
+  const dir = mkdtempSync(join(tmpdir(), 'agentic-tree-digest-'));
+  const index = join(dir, 'index');
+  try {
+    if (existsSync(realIndex)) {
+      copyFileSync(realIndex, index);
+      utimesSync(index, 1, 1);
+    }
+    const withIndex = { GIT_INDEX_FILE: index };
+    const hidden = git(root, ['ls-files', '-v', '-z'], withIndex).split('\0').filter(Boolean)
+      .filter((l) => /^[a-zS] /.test(l)).map((l) => l.slice(2));
+    for (const flag of ['--no-assume-unchanged', '--no-skip-worktree']) {
+      for (let i = 0; i < hidden.length; i += 500) git(root, ['update-index', flag, '--', ...hidden.slice(i, i + 500)], withIndex);
+    }
+    git(root, ['add', '-A', '--', '.'], withIndex);
+    git(root, ['rm', '-r', '-q', '--cached', '--ignore-unmatch', '--', LANE_WORKTREE_LOCK_REL], withIndex);
+    const tree = git(root, ['write-tree'], withIndex).trim();
+    let head = null;
+    try { head = git(root, ['rev-parse', '--verify', '-q', 'HEAD']).trim(); } catch { head = null; }
+    const h = createHash('sha256').update(`tree ${tree}\nhead ${head ?? 'none'}\n`);
+    const links = git(root, ['ls-files', '-s', '-z'], withIndex).split('\0').filter((l) => l.startsWith('160000 '));
+    for (const l of links.sort()) {
+      const rel = l.slice(l.indexOf('\t') + 1);
+      const sub = join(root, rel);
+      h.update(`submodule ${rel} ${existsSync(join(sub, '.git')) ? currentTreeDigest(sub) : `gitlink ${l.split(' ')[1]}`}\n`);
+    }
+    return h.digest('hex');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const SUMMARY_FAILING_SHOWN = 5;
+
+/**
+ * The resume's summary of verify-results (`--format text`): a few lines a verb
+ * reads before it acts, bounded (the latest batch only, at most five failing
+ * tests a check, each as the driver cut it). Empty when the workflow holds no
+ * request. It names, for each check, its kind and command, its outcome, whether
+ * it is evidence (it ran to its end on an unchanged tree) and whether it
+ * applies to the tree now, its failing tests, and its log under the run
+ * directory of the run that recorded it.
+ */
+export function formatVerifySummary(read) {
+  if (!read.request) return '';
+  const q = read.request;
+  const state = read.pending ? 'pending: the driver has not answered it yet'
+    : read.answered_by ? `answered by batch ${read.answered_by}, which passed`
+      : 'taken up: the driver resumed this verb with its results';
+  const last = read.batches.at(-1);
+  // The rows below list the last batch's checks: the request's, and those the
+  // driver added (origin driver), counted apart.
+  const added = last ? last.checks.filter((c) => c.origin === 'driver').length : 0;
+  const counted = `${q.checks.length} check(s) requested${added > 0 ? `, ${added} added by the driver` : ''}`;
+  const lines = [`Verification request ${q.id} (step ${q.step} of run ${q.run_id}; ${counted}; on_pass ${q.on_pass.kind}${q.on_pass.verb ? ` ${q.on_pass.verb}` : ''}): ${state}.`];
+  if (!last) {
+    lines.push('- No batch has run yet.');
+  } else {
+    const tree = last.tree_end !== null && last.tree_end !== last.tree_start ? '; the tree changed during the batch, so none of it is evidence' : '';
+    lines.push(`- Batch ${last.batch_id}: ${last.end === null ? 'still open (no end recorded)' : `ended ${last.end}${last.cause ? ` (${last.cause})` : ''}`}${tree}.`);
+    for (const c of last.checks) {
+      const r = c.result;
+      const command = Array.isArray(c.argv) ? c.argv.join(' ') : c.kind;
+      const outcome = r === null ? 'not run' : `${r.outcome}${r.exit !== null && r.exit !== undefined ? ` (exit ${r.exit})` : r.signal ? ` (${r.signal})` : ''}`;
+      const applies = c.applies === null ? 'unknown' : c.applies ? 'yes' : 'no';
+      lines.push(`  ${c.index + 1}. ${c.kind} [${c.origin}] ${command}: ${outcome}; evidence ${c.evidence ? 'yes' : 'no'}; applies to the tree now: ${applies}.`);
+      if (r && r.failing_tests.length > 0) {
+        const shown = r.failing_tests.slice(0, SUMMARY_FAILING_SHOWN);
+        const more = r.failing_tests.length - shown.length + (r.failing_tests_more ?? 0);
+        lines.push(`     failing: ${shown.join(' | ')}${more > 0 ? ` (and ${more} more)` : ''}`);
+      }
+      if (r && c.recorded_by) {
+        lines.push(typeof r.log === 'string' && r.log !== ''
+          ? `     log: .agentic-plugins/runs/autopilot/${c.recorded_by.run_id}/${r.log} (in the checkout the run was launched from)`
+          : '     log: none was kept for this check');
+      }
+    }
+  }
+  if (read.previous) lines.push(`- The request before it ended ${read.previous.end}.`);
+  return `${lines.join('\n')}\n`;
 }
 
 export { VERIFY_RECORD_CAPABILITY };
@@ -7519,6 +7700,13 @@ function cliPrintHelp() {
       `    declaration ${VERIFY_DECLARATION_PATH} at that commit). Any other kind`,
       '    drops the last request and its results.',
       '',
+      '  verify-request-check --workflow-path <p> --host <h> --request-file <path>',
+      '              --next-step-confidence HIGH|MEDIUM|LOW [--settling-run-id <id>]',
+      '    Whether finish-verb --next-step-kind verify would take the request now,',
+      '    writing nothing: the same checks, with the same messages. A finalize runs',
+      '    it before its first write; --settling-run-id names the peer run it',
+      '    settles first, whose pending entry is not counted.',
+      '',
       '  verify-batch-start   --workflow-path <p> --host <h> --request-id <id> --input-file <json>',
       '  verify-batch-restart --workflow-path <p> --host <h> --request-id <id> --replaces <hex|none> --input-file <json>',
       '  verify-result        --workflow-path <p> --host <h> --request-id <id> --batch-id <id> --input-file <json>',
@@ -7531,10 +7719,12 @@ function cliPrintHelp() {
       '    starts it again whole, only over the record --replaces names (the',
       '    results_digest verify-results prints). verify-pass sets the next step to',
       '    the request\'s on_pass.',
-      '  verify-results --workflow-path <p> [--tree-digest <hex>]',
+      '  verify-results --workflow-path <p> [--tree-digest <hex> | --current-tree true] [--format json|text]',
       '    The request, its previous answer and its batches (JSON), each check',
       '    marked evidence (historical) and, with --tree-digest, whether it applies,',
-      '    and results_digest, the record a restart sets aside.',
+      '    and results_digest, the record a restart sets aside. --current-tree takes',
+      '    the digest of the checkout it runs in, as the driver takes a batch\'s;',
+      '    --format text prints a few lines instead, nothing when there is no request.',
       '  verify-capability',
       `    Print the capability marker (${VERIFY_RECORD_CAPABILITY}) a driver probes.`,
       '',
@@ -8353,10 +8543,31 @@ async function cliRun(subcommand, flags) {
         return 0;
       }
 
+      // ADR-0068 Decision 5 (`verify-runbooks`) — the finalize's check, before
+      // its first write, that finish-verb would take the request: writes
+      // nothing, and refuses with finish-verb's own message.
+      case 'verify-request-check': {
+        cliRequire(flags, ['workflow-path', 'host', 'request-file', 'next-step-confidence']);
+        const checked = await checkVerifyRequest({
+          workflowPath: flags['workflow-path'],
+          host: flags.host,
+          nextStep: { kind: 'verify', confidence: flags['next-step-confidence'] },
+          input: readJsonArgumentFile(flags['request-file'], '--request-file'),
+          settling: flags['settling-run-id'] ?? null,
+        });
+        process.stdout.write(`${JSON.stringify(checked)}\n`);
+        return 0;
+      }
+
       case 'verify-results': {
         cliRequire(flags, ['workflow-path']);
-        const read = await readVerifyResults({ workflowPath: flags['workflow-path'], treeDigest: flags['tree-digest'] ?? null });
-        process.stdout.write(`${JSON.stringify(read, null, 2)}\n`);
+        if ('format' in flags && flags.format !== 'json' && flags.format !== 'text') throw new Error('--format is json or text');
+        // `--current-tree` is true or false: any other word (yes, 1, TRUE) is
+        // refused, never read as false.
+        if ('current-tree' in flags && flags['current-tree'] !== 'true' && flags['current-tree'] !== 'false') throw new Error('--current-tree is true or false');
+        const read = await readVerifyResults({ workflowPath: flags['workflow-path'], treeDigest: flags['tree-digest'] ?? null, currentTree: flags['current-tree'] === 'true' });
+        // `--format text`: the few lines a verb's resume prints (verify-runbooks).
+        process.stdout.write(flags.format === 'text' ? formatVerifySummary(read) : `${JSON.stringify(read, null, 2)}\n`);
         return 0;
       }
 

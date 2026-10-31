@@ -113,6 +113,17 @@ current release ships:
   may hold its branch cannot be read.
   `state.mjs hold-capability` and `state.mjs content-digest` are what the
   orchestrator reads.
+- **Long checks** ([ADR-0068](../../docs/adr/0068-autopilot-lanes-that-keep-going.md)
+  Decision 5; its implementation note of 2026-10-31, `verify-runbooks`).
+  Under an autopilot run that offers verification a verb runs only its
+  quick checks, writes the long ones (the whole suite, a broad `npm test`,
+  a mutation run) as `verify-request.json` in its finalize's text
+  directory, and ends with next step `verify`: the finalize checks the
+  request before any write (`state.mjs verify-request-check`), the driver
+  runs the checks, and the verb it resumes prints the results in Phase 0
+  (`verify-results --current-tree true --format text`). Interactively a
+  long check runs under the heavy-work lock (`agentic-autopilot heavy --`);
+  compose, refine and critique carry the guidance (§ Long checks).
 
 Both hosts can invoke engineer verbs in **command-invoked mode**
 (local subagent dispatch + peer ensemble dispatch). On Claude Code

@@ -527,10 +527,16 @@ export const MUTATIONS = [
   },
   {
     id: 'D25', file: CLI, tests: [TDR],
-    from: '    const live = await liveEntriesOf(holder.run_id);',
-    to: '    const live = []; for (const h of entries) if (await holderAlive(h)) live.push(h);',
+    // Both reads: the second alone would read the entries again.
+    from: '    let live = await liveEntriesOf(holder.run_id);\n    if (live.length === 0) live = await liveEntriesOf(holder.run_id);',
+    // `let`: the wait loop below reassigns `live`.
+    to: '    let live = []; for (const h of entries) if (await holderAlive(h)) live.push(h);',
     why: 'stop waits on the entries it listed before the SIGTERM, and misses a group registered after',
-    killed_by: /reads the run's entries again while it waits/,
+    // The seam's race tests, not the --group-on-term one: there the reread
+    // once the driver is found dead (D31's line) finds the group whenever the
+    // stale listing catches the driver still alive, so that test can pass
+    // (verify batch autopilot-20261031T164648Z-8868ed-s2-7250eb).
+    killed_by: /reads again when its first read finds nothing alive|reads again once its driver is found dead/,
   },
   {
     id: 'D26', file: CLI, tests: [TDR],
@@ -573,5 +579,19 @@ export const MUTATIONS = [
     to: "env: { ...fx.env, ...extraEnv }, out:",
     why: "the runners a dead-run cleanup starts in the suite judge the system's listing, not the peer snapshot suites' (C142 O-F2, refine-verify of 2026-10-22)",
     killed_by: /a peer whose runner lives keeps the dead run's record; one proven over is cancelled and its snapshot removed/,
+  },
+  {
+    id: 'D30', file: CLI, tests: [TDR],
+    from: '    if (live.length === 0) live = await liveEntriesOf(holder.run_id);\n',
+    to: '',
+    why: 'stop takes a first read that found nothing alive for complete, and misses a group whose entry the driver added after the listing as it died',
+    killed_by: /reads again when its first read finds nothing alive/,
+  },
+  {
+    id: 'D31', file: CLI, tests: [TDR],
+    from: '      live = await liveEntriesOf(holder.run_id);\n      const n = workerGroups(live).length;',
+    to: '      const n = workerGroups(live).length;',
+    why: 'stop empties only the groups its read found once the driver is dead, and leaves one the driver added after the listing',
+    killed_by: /reads again once its driver is found dead/,
   },
 ];

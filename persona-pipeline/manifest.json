@@ -807,6 +807,14 @@
       }
     },
     {
+      "id": "compose-long-checks",
+      "template": "regions/long-checks.md",
+      "dest": "commands/compose.md",
+      "personas": [
+        "engineer"
+      ]
+    },
+    {
       "id": "compose-dispatch",
       "template": "regions/verb-dispatch.md",
       "dest": "commands/compose.md",
@@ -1855,6 +1863,14 @@
       }
     },
     {
+      "id": "refine-long-checks",
+      "template": "regions/long-checks.md",
+      "dest": "commands/refine.md",
+      "personas": [
+        "engineer"
+      ]
+    },
+    {
       "id": "refine-scope-record",
       "template": "regions/refine-scope-record.md",
       "dest": "commands/refine.md",
@@ -2265,6 +2281,14 @@
         "field": "peer.images",
         "equals": false
       }
+    },
+    {
+      "id": "critique-long-checks",
+      "template": "regions/long-checks.md",
+      "dest": "commands/critique.md",
+      "personas": [
+        "engineer"
+      ]
     },
     {
       "id": "critique-scope-prepare",
@@ -2847,6 +2871,14 @@
       }
     },
     {
+      "id": "compose-long-checks",
+      "template": "regions/long-checks.md",
+      "dest": "core/skills/compose/SKILL.md",
+      "personas": [
+        "engineer"
+      ]
+    },
+    {
       "id": "compose-present",
       "template": "regions/skill-verb-present.md",
       "dest": "core/skills/compose/SKILL.md",
@@ -3015,6 +3047,14 @@
       }
     },
     {
+      "id": "critique-long-checks",
+      "template": "regions/long-checks.md",
+      "dest": "core/skills/critique/SKILL.md",
+      "personas": [
+        "engineer"
+      ]
+    },
+    {
       "id": "critique-finish",
       "template": "regions/skill-verb-finish.md",
       "dest": "core/skills/critique/SKILL.md",
@@ -3069,6 +3109,14 @@
         "field": "peer.images",
         "equals": false
       }
+    },
+    {
+      "id": "refine-long-checks",
+      "template": "regions/long-checks.md",
+      "dest": "core/skills/refine/SKILL.md",
+      "personas": [
+        "engineer"
+      ]
     },
     {
       "id": "refine-finish",

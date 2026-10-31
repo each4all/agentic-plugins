@@ -884,3 +884,29 @@ describe('the worker\'s watch (Decision 3, items 7, 8 and 10)', () => {
     }
   });
 });
+
+// ADR-0068 Decision 5 (`verify-runbooks`): the rules a worker gets follow the
+// run's offer. Under it, long checks are rule 7's (handed to next step verify,
+// never a background task the step waits on), and a resumed verb reads the
+// results first; without it, rule 4 keeps all long work as background tasks
+// and there is no rule 7.
+describe('the worker rules follow the run\'s verification offer', () => {
+  const rules = (verifyOffered) => W.systemAppend({ runId: 'autopilot-x', seq: 3, stepKind: 'verb', verifyOffered }).split('\n');
+  const rule = (lines, n) => lines.find((l) => l.startsWith(`${n}. `)) ?? null;
+  it('offered: rule 4 keeps peer ensembles as background tasks and sends long checks to rule 7, which hands them over and reads the results', () => {
+    const on = rules(true);
+    ok(/^4\. Run peer ensembles as host background tasks/.test(rule(on, 4)), rule(on, 4));
+    ok(!rule(on, 4).includes('other long work'), 'long work is not a background task under the offer');
+    ok(rule(on, 4).includes('rule 7 hands them to the driver'), rule(on, 4));
+    const seven = rule(on, 7);
+    ok(seven && /run only quick checks/.test(seven) && /hand long checks \(the whole test suite, a broad npm test, a mutation run\) to next step verify/.test(seven), seven);
+    ok(/instead of running them or waiting for the heavy-work lock in this step/.test(seven), seven);
+    ok(/read the results its Phase 0 prints before acting/.test(seven), seven);
+  });
+  it('not offered: rule 4 as before, and no rule 7', () => {
+    const off = rules(false);
+    strictEqual(rule(off, 4), '4. Run peer ensembles and other long work as host background tasks, wait for their notifications, and collect them before you finish. Never sleep-poll.');
+    strictEqual(rule(off, 7), null);
+    deepStrictEqual(off.filter((l) => /^\d\. /.test(l)).map((l) => l[0]), ['1', '2', '3', '4', '5', '6']);
+  });
+});
