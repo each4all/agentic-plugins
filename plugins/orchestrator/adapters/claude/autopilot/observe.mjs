@@ -33,6 +33,8 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { recordDigest } from './verify-journal.mjs';
+
 export const ENGINEER_STATE_HOMES = Object.freeze(['.agentic-plugins/state/engineer', '.claude/agentic-engineer']);
 export const ORCHESTRATOR_STATE_HOMES = Object.freeze(['.agentic-plugins/state/orchestrator', '.claude/agentic-orchestrator']);
 
@@ -141,6 +143,14 @@ export function verifySummary(fm) {
     batches: batches.length,
     results: batches.reduce((n, b) => n + (Array.isArray(b?.results) ? b.results.length : 0), 0),
     last_end: typeof batches.at(-1)?.end === 'string' ? batches.at(-1).end : null,
+    // verify-exec: the latest batch, which the driver holds against its own
+    // journal (verify-journal.mjs resumeFact). An id, no result.
+    last_batch: typeof batches.at(-1)?.batch_id === 'string' ? batches.at(-1).batch_id : null,
+    // When the request was recorded: a run with lanes runs batches in that order.
+    recorded_at: typeof req.recorded_at === 'string' ? req.recorded_at : null,
+    // The record as stored, digested: a `resume` line of the journal holds
+    // only for the record it was decided on (verify-journal.mjs resumeFact).
+    record_digest: recordDigest(req, fm.verify_results),
   };
 }
 
@@ -150,6 +160,9 @@ function summarizeChild(fm, location, file, roots) {
     path: file,
     relPath: relTo(roots, file),
     workflow_id: fm.workflow_id ?? null,
+    // ADR-0068 Decision 5, item 6 — the active verb: the one that recorded a
+    // pending request, which the driver resumes after a batch that did not pass.
+    verb: typeof fm.verb === 'string' ? fm.verb : null,
     branch: fm.git_baseline?.branch ?? null,
     current_phase: fm.current_phase ?? null,
     terminal_marker: fm.terminal_marker === true,

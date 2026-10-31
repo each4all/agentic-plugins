@@ -122,7 +122,7 @@ export const MUTATIONS = [
   },
   {
     id: 'S70', file: SCHED, tests: [TE],
-    from: "    if (id && (inLane || DONE_KINDS.has(s.kind))) await mark(id, 'in-flight', { seq: seq + 1, step_kind: s.kind });\n",
+    from: "    else if (id && (inLane || DONE_KINDS.has(s.kind))) await mark(id, 'in-flight', { seq: seq + 1, step_kind: s.kind });\n",
     to: '',
     why: 'no marker names a lane step before its spawn: a driver killed before the verdict leaves a relaunch that dispatches the lane again on its unchanged record',
     killed_by: /a driver killed during a later step of a lane that already exists/,
@@ -281,13 +281,13 @@ export const MUTATIONS = [
     prepare: (copy, tools) => {
       tools.applyEdit(copy, {
         file: SCHED,
-        from: "    if (id && (inLane || DONE_KINDS.has(s.kind))) await mark(id, 'in-flight', { seq: seq + 1, step_kind: s.kind });\n    const drift = await driftNow();",
+        from: "    else if (id && (inLane || DONE_KINDS.has(s.kind))) await mark(id, 'in-flight', { seq: seq + 1, step_kind: s.kind });\n    const drift = await driftNow();",
         to: '    const drift = await driftNow();',
       });
       tools.applyEdit(copy, {
         file: SCHED,
-        from: '      return { ...refuse(null), again: false, busy: true };\n    }\n    // The whole per-step timeout',
-        to: "      return { ...refuse(null), again: false, busy: true };\n    }\n    if (id && (inLane || DONE_KINDS.has(s.kind))) {\n      await mark(id, 'in-flight', { seq: seq + 1, step_kind: s.kind });\n      if (mustYield()) return refuse(null);\n    }\n    // The whole per-step timeout",
+        from: '      return { ...refuse(null), again: false, busy: true };\n    }\n    if (batch) {',
+        to: "      return { ...refuse(null), again: false, busy: true };\n    }\n    if (id && (inLane || DONE_KINDS.has(s.kind))) {\n      await mark(id, 'in-flight', { seq: seq + 1, step_kind: s.kind });\n      if (mustYield()) return refuse(null);\n    }\n    if (batch) {",
       });
     },
     why: 'the step\'s marker is awaited after the admission\'s checks: an operation opened while it awaits its lock is not asked about, and the worker spawns beside it',

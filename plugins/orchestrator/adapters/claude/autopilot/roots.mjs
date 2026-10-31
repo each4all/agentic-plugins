@@ -141,6 +141,28 @@ export async function capabilityProblems(roots) {
   return problems;
 }
 
+// ADR-0068 Decision 5, item 11 (verify-exec) — the persona capability the
+// driver's offer of verification needs, probed beside the floor above and
+// never part of it: a persona without it runs as before, its workers checking
+// in their steps. The marker lib/verify.mjs carries (and `state.mjs
+// verify-capability` prints), and the restart the driver sets an untrusted
+// record aside with.
+const VERIFY_PROBES = Object.freeze([
+  ['scripts/lib/verify.mjs', 'verify-record-1', 'the verification record CLI (ADR-0068 Decision 5, verify-record-cli)'],
+  ['scripts/state.mjs', "'verify-batch-restart'", 'verify-batch-restart (verify-record-cli)'],
+]);
+
+/** Why the pinned persona cannot record a verification batch, or null when it can. */
+export function verifyCapabilityProblem(roots) {
+  const root = roots?.engineer;
+  if (!root) return 'no engineer root is pinned';
+  for (const [file, token, what] of VERIFY_PROBES) {
+    const text = read(join(root, file));
+    if (text === null || !text.includes(token)) return `engineer at ${root} lacks ${what} (${file})`;
+  }
+  return null;
+}
+
 // The report `state-root` prints (orchestrator's and engineer's
 // lib/state-root.mjs, STATE_ROOT_REPORT_SCHEMA).
 const STATE_ROOT_REPORT = 'agentic-state-root-1.0';

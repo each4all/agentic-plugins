@@ -1,8 +1,9 @@
 // tests/orchestrator/test-autopilot-verify-refusal.mjs
 //
-// ADR-0068 Decision 5, items 10 and 11 — the orchestrator released beside the
-// persona's `verify` names the kind and refuses it explicitly: this driver
-// runs no verification step yet (verify-exec does).
+// ADR-0068 Decision 5, items 10 and 11 — a run that does not offer
+// verification (verify-exec: the persona lacks the capability, or the
+// baseline has no declaration) names the kind and refuses it explicitly; the
+// steps of a run that offers it are test-autopilot-verify-*.mjs's.
 //
 // Covers:
 //   - policy: a child whose next step is `verify` halts the run owner-choice,
@@ -39,6 +40,7 @@ const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const AP = resolve(REPO_ROOT, 'plugins/orchestrator/adapters/claude/autopilot');
 const P = await import(join(AP, 'policy.mjs'));
 const O = await import(join(AP, 'observe.mjs'));
+const { recordDigest } = await import(join(AP, 'verify-journal.mjs'));
 const W = await import(join(AP, 'worker.mjs'));
 
 const MACRO = 'macro-plan-20261001T000000Z-abcdef';
@@ -88,7 +90,7 @@ const lanesAB = (nextA, nextB = { kind: 'verb', verb: 'refine', confidence: 'HIG
   children: { A: child(ENG_A, { next_step: nextA }), B: child(ENG_B, { branch: 'feat/b', originating_subtask: 'B', next_step: nextB }) },
 });
 
-describe('the policy refuses a verify next step by name (ADR-0068 Decision 5, item 11)', () => {
+describe('a run that does not offer verification refuses a verify next step by name (ADR-0068 Decision 5, item 11)', () => {
   it('names verify among the next-step kinds, as the persona does', () => {
     ok(P.NEXT_STEP_KINDS.includes('verify'));
   });
@@ -98,7 +100,7 @@ describe('the policy refuses a verify next step by name (ADR-0068 Decision 5, it
       const d = P.decide(serialA(verifyStep(confidence)), {});
       strictEqual(d.outcome, 'halt', JSON.stringify(d));
       strictEqual(d.reason, 'owner-choice');
-      match(d.detail, /subtask A: its next step is verify @ (HIGH|MEDIUM|LOW).*this driver does not run a verification step \(ADR-0068 Decision 5, item 11; verify-exec\)/);
+      match(d.detail, /subtask A: its next step is verify @ (HIGH|MEDIUM|LOW).*this run does not offer verification \(ADR-0068 Decision 5, items 10 and 11\)/);
       strictEqual(d.subtaskId, 'A');
       strictEqual(d.pointer, `.agentic-plugins/state/engineer/workflows/${ENG_A}.md#next_step`);
     }
@@ -225,16 +227,21 @@ describe('observe: the verify summary', () => {
   const batch = (id, results, end) => ({ batch_id: id, results: Array.from({ length: results }, (_, i) => ({ index: i, failing_tests: ['secret > name'], log: 'l' })), ...(end ? { end } : {}) });
 
   it('counts batches and results of the request\'s own results, never a name or a log', () => {
-    const s = O.verifySummary({ verify_request: request, verify_results: { request_id: request.id, batches: [batch('b1', 2, 'cut-short'), batch('b2', 3, 'passed')] } });
-    deepStrictEqual(s, { request_id: request.id, answered_by: 'b2', batches: 2, results: 5, last_end: 'passed' });
+    const results = { request_id: request.id, batches: [batch('b1', 2, 'cut-short'), batch('b2', 3, 'passed')] };
+    const s = O.verifySummary({ verify_request: request, verify_results: results });
+    deepStrictEqual(s, { request_id: request.id, answered_by: 'b2', batches: 2, results: 5, last_end: 'passed', last_batch: 'b2', recorded_at: null, record_digest: recordDigest(request, results) });
     ok(!JSON.stringify(s).includes('secret'));
+    // The digest is of the record whole: a failing test's name edited moves it.
+    const edited = structuredClone(results);
+    edited.batches[1].results[0].failing_tests = ['another name'];
+    ok(O.verifySummary({ verify_request: request, verify_results: edited }).record_digest !== s.record_digest);
   });
 
   it('null with no request; results of another request count for nothing', () => {
     strictEqual(O.verifySummary({}), null);
     strictEqual(O.verifySummary({ verify_request: 'carried text' }), null);
     deepStrictEqual(O.verifySummary({ verify_request: { id: request.id }, verify_results: { request_id: 'ffffffffffffffff', batches: [batch('b1', 2, 'passed')] } }),
-      { request_id: request.id, answered_by: null, batches: 0, results: 0, last_end: null });
+      { request_id: request.id, answered_by: null, batches: 0, results: 0, last_end: null, last_batch: null, recorded_at: null, record_digest: recordDigest({ id: request.id }, null) });
   });
 });
 
@@ -263,7 +270,9 @@ describe('observe reads a real child\'s request and results into the view (Decis
       });
       const requestId = (await fx.eng.readWorkflow(c.path)).frontmatter.verify_request.id;
       let v = look();
-      deepStrictEqual(v.children.A.verify, { request_id: requestId, answered_by: null, batches: 0, results: 0, last_end: null });
+      const recorded = (await fx.eng.readWorkflow(c.path)).frontmatter.verify_request.recorded_at;
+      const fmNow = (await fx.eng.readWorkflow(c.path)).frontmatter;
+      deepStrictEqual(v.children.A.verify, { request_id: requestId, answered_by: null, batches: 0, results: 0, last_end: null, last_batch: null, recorded_at: recorded, record_digest: recordDigest(fmNow.verify_request, fmNow.verify_results) });
       const d = P.decide(v, { runId: run });
       deepStrictEqual([d.outcome, d.reason], ['halt', 'owner-choice']);
       match(d.detail, /subtask A: its next step is verify @ HIGH/);
@@ -293,8 +302,8 @@ describe('observe reads a real child\'s request and results into the view (Decis
   });
 });
 
-describe('the worker environment scrubs a run\'s offer of verification, and numbers the step', () => {
-  it('an inherited AGENTIC_AUTOPILOT_VERIFY and AGENTIC_AUTOPILOT_STEP never reach a worker of this driver', () => {
+describe('the worker environment scrubs an inherited offer of verification, and numbers the step', () => {
+  it('an inherited AGENTIC_AUTOPILOT_VERIFY and AGENTIC_AUTOPILOT_STEP never reach a worker: only the run\'s own offer does', () => {
     const env = W.workerEnv({ AGENTIC_AUTOPILOT_VERIFY: 'a'.repeat(40), AGENTIC_AUTOPILOT_STEP: '3', KEEP_ME: 'yes' },
       { runId: 'autopilot-20261001T000000Z-123456', roots: { orchestrator: '/o', engineer: '/e', runtime: '/r' } });
     ok(!('AGENTIC_AUTOPILOT_VERIFY' in env));
@@ -309,6 +318,15 @@ describe('the worker environment scrubs a run\'s offer of verification, and numb
     ok(!('AGENTIC_AUTOPILOT_VERIFY' in env), 'a numbered step is not offered verification');
     // startWorker hands its step's seq on: test-autopilot-worker.mjs reads it
     // in the spawned worker's environment.
+  });
+
+  it('the run\'s own offer (verify-exec) is the one a worker gets, a 40-hex commit or none, and its rules say so', () => {
+    const roots = { orchestrator: '/o', engineer: '/e', runtime: '/r' };
+    const env = W.workerEnv({ AGENTIC_AUTOPILOT_VERIFY: 'a'.repeat(40) }, { runId: 'autopilot-20261001T000000Z-123456', roots, seq: 2, verifyBaseline: 'b'.repeat(40) });
+    strictEqual(env.AGENTIC_AUTOPILOT_VERIFY, 'b'.repeat(40));
+    ok(!('AGENTIC_AUTOPILOT_VERIFY' in W.workerEnv({}, { runId: 'autopilot-20261001T000000Z-123456', roots, verifyBaseline: 'HEAD' })));
+    ok(W.systemAppend({ runId: 'r', seq: 1, stepKind: 'verb', verifyOffered: true }).includes('This run offers verification'));
+    ok(!W.systemAppend({ runId: 'r', seq: 1, stepKind: 'verb' }).includes('offers verification'));
   });
 });
 

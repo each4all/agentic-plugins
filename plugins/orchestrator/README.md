@@ -318,7 +318,7 @@ which every harness copy honors; its code is `scripts/lib/heavy-lock.mjs`. Its h
 are the mutation harness and the wrapper:
 
 ```bash
-agentic-autopilot heavy [--purpose <text>] [--repo <dir>] [--declaration-ref <rev>] -- <command> [args...]
+agentic-autopilot heavy [--purpose <text>] [--repo <dir>] [--declaration-ref <rev>] [--status-file <path> [--go-file <path>]] -- <command> [args...]
 ```
 
 (or `node adapters/claude/autopilot/cli.mjs heavy -- …`). It takes the lock, runs the
@@ -362,6 +362,64 @@ minutes. It runs on any host and inside an autopilot step: the lock is host-neut
   the lock: under a parent that never reaps them, such as a PID 1 with no init in a
   container started without one, the lock is kept until that parent reaps them or
   exits. On macOS launchd reaps orphans, and on Linux an init does.
+- **The status file.** With `--status-file <path>` the wrapper appends one JSON line per
+  stage, for the driver that started it: `acquired`, `running` (with the group), and last
+  `ended` with the command's `code` or `signal`, the `error` that kept it from
+  executing (so a command that exits 127 is told from one that was not found), the
+  wrapper's `refused`, or `stopped` by a signal to the wrapper. With `--go-file <path>`
+  too, the wrapper, once it holds the lock, writes `ready` with its command's group and
+  starts the command only once that file exists: the driver's go.
+
+### Verification batches
+
+A run offers verification ([ADR-0068](../../docs/adr/0068-autopilot-lanes-that-keep-going.md)
+Decision 5) when the pinned engineer has the record CLI (`verify-record-1`) and the
+repository's declaration, `.agentic-plugins/verify-checks.json`, parses at the commit
+the run started from; `run.json` records the offer (`verify`), and each worker gets it
+as `AGENTIC_AUTOPILOT_VERIFY` and a line of its rules. A verb's step may then end with
+next step `verify` and a request; the driver runs the checks itself
+(`adapters/claude/autopilot/verify-run.mjs`), with no worker and no cost:
+
+- **What runs.** The declaration is read from the run's baseline, never a lane's tree,
+  and each check is resolved again against it, as an argv array; the driver adds the
+  tests that may read a changed file and the declared checks a changed file triggers
+  (`verify-select.mjs`, against the lane's fork point from the integration branch),
+  before the worker's first check that takes the heavy-work lock itself. A check that
+  does not resolve, or a batch too large to record, halts the lane `owner-choice` and
+  runs nothing.
+- **How.** In the lane's checkout, with a worker's environment minus the run's token,
+  autopilot flag, step, offer, state base and any heavy-work lock proof; in a process
+  group of its own, put on the run's locks as a worker group of its lane before its
+  command starts; through the wrapper, whose command group the driver puts on the locks
+  too before its go (a hold or a drain while the check waits for the lock stops it with
+  nothing run), or directly for a command that takes the lock itself. Each check its
+  declared timeout (from its go), the wait for the lock 8 hours, a batch 6 hours of
+  running checks; then SIGTERM, and SIGKILL to both groups 5 s later. A group that
+  outlives SIGKILL halts the run, which keeps its locks.
+- **Results.** The batch stops at the first check that does not pass. Each result goes
+  to the workflow through the engineer's CLI, after a line of the driver's journal
+  (`.agentic-plugins/state/orchestrator/verify-journal/<workflow>.jsonl` in the main
+  checkout), which is what the driver trusts: a record the journal does not hold whole
+  is set aside and run again. A batch that passed on an unchanged tree makes the
+  request's `on_pass` the next step; any other end resumes the requesting verb, which
+  reads the results. A hold, a drain or an interrupt between checks cuts the batch
+  short, and the next look takes it up from its first check that did not pass; one that
+  comes while a batch is prepared starts none, and parks nothing. A start the persona
+  refuses as a held lane's, with no hold the run reads, halts a serial run
+  `owner-choice`; with lanes it is tried again, and a second such refusal in a row parks
+  the lane `no-progress`. The same
+  checks recorded again on an unchanged tree after a pass or a failure halt the lane
+  `no-progress`; `--next verify` (or `--lane <subtask> --next verify`) reruns them once.
+- **Records.** A batch is a seq of `steps.jsonl` of kind `verify`, with no cost: it
+  takes no reservation and is no step of `--max-steps`. With lanes, batches run one at a
+  time in the order their requests were recorded, and hold no worker slot; each is
+  admitted to its lane as a worker step is (the lane made again if it was removed, a
+  persona operation open in it waited out, an owner's rebinding told first). A batch is
+  no worker: a lane whose only step of the run was a batch is still new for the
+  throttle. `status`
+  shows each batch's end and how many of its checks ran, and a lane verifying or waiting
+  for the heavy-work lock with its holder; no failing test's name reaches the main
+  session or the event file, which gains no kind.
 
 ## Workflow file shape
 

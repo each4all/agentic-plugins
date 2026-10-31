@@ -183,6 +183,11 @@ describe('decide — the D3 step table', () => {
       produced.add(d.step.kind);
       ok(renderStep(d.step, { macroId: MACRO, runId: RUN }).startsWith('/'));
     }
+    // ADR-0068 Decision 5 — the driver's own step, in a run that offers
+    // verification: a label in the step ledger, never a worker's prompt.
+    const v = decide(inProgressA({ next_step: { kind: 'verify', verb: null, confidence: 'HIGH' } }), { ...ctx(), verify: { offered: true, facts: {} } });
+    produced.add(v.step.kind);
+    strictEqual(renderStep(v.step, { macroId: MACRO, runId: RUN }), 'verify');
     deepStrictEqual([...produced].sort(), [...STEP_KINDS].sort());
   });
 });
@@ -303,6 +308,19 @@ describe('decide — the order its rules apply in', () => {
   it('an interrupted commit (phase-7-commit) recovers through /engineer:commit, not the stale next step', () => {
     const d = decide(inProgressA({ current_phase: 'phase-7-commit', next_step: { kind: 'verb', verb: 'critique', confidence: 'HIGH' } }), ctx());
     deepStrictEqual([d.step.kind, d.step.recovery], ['commit', true]);
+  });
+
+  it('a commit an answered request\'s on_pass began recovers through /engineer:commit, never the P7 guard\'s verb (ADR-0068 Decision 5)', () => {
+    // beginCommit keeps the next step and the request's answer, and the commit
+    // changed the tree the guard reads: the guard would resume the requesting
+    // verb on a half-committed workflow.
+    const answered = { request_id: 'r1', answered_by: 'b1', batches: 1, results: 1, last_end: 'passed', last_batch: 'b1', recorded_at: null };
+    const guard = { verify: { offered: true, facts: { A: { guard: { batch_id: 'b1', verb: 'compose', why: 'the tree changed after its batch passed' } } } } };
+    const mid = decide(inProgressA({ current_phase: 'phase-7-commit', verify: answered, next_step: { kind: 'commit', verb: null, confidence: 'HIGH' } }), ctx(guard));
+    deepStrictEqual([mid.step.kind, mid.step.recovery], ['commit', true]);
+    // Before the commit began, the guard holds.
+    const before = decide(inProgressA({ verify: answered, next_step: { kind: 'commit', verb: null, confidence: 'HIGH' } }), ctx(guard));
+    deepStrictEqual([before.step.kind, before.step.verb, before.step.resume], ['verb', 'compose', 'verify']);
   });
 
   it('a live commit-complete workflow (its archive did not run) recovers through /engineer:commit', () => {

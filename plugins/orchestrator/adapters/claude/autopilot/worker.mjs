@@ -86,9 +86,9 @@ const SCRUB_EXACT = Object.freeze([
   'AGENTIC_PARENT_WORKFLOW', 'AGENTIC_ORIGINATING_SUBTASK', 'AGENTIC_PROFILE', 'AGENTIC_TOPIC',
   'AGENTIC_HOST',
   // ADR-0068 Decision 5, item 11 — a run's offer of verification: the commit
-  // it started from and the step's number. This driver offers none, so an
-  // inherited pair must not make a worker's step write `verify`; the step's
-  // number is the driver's own (workerEnv).
+  // it started from and the step's number. Only the driver that runs the
+  // checks offers it (workerEnv, verify-exec): an inherited pair must never
+  // make a worker's step write `verify`; the step's number is the driver's own.
   'AGENTIC_AUTOPILOT_VERIFY', 'AGENTIC_AUTOPILOT_STEP',
   // The macro file's path, exported beside the ids (ADR-0067 Decision 3);
   // inherited, it would point the worker's child at a foreign macro file.
@@ -148,7 +148,7 @@ export function pushBlockConfig(base, { fetchUrls = [], pushUrls = [] } = {}) {
   return out;
 }
 
-export function workerEnv(base, { runId, seq = null, roots, remotes = {}, stateBase = null, autopilotToken = null }) {
+export function workerEnv(base, { runId, seq = null, roots, remotes = {}, stateBase = null, autopilotToken = null, verifyBaseline = null }) {
   const env = {};
   for (const [k, v] of Object.entries(base)) {
     if (SCRUB_EXACT.includes(k) || SCRUB_PREFIXES.some((p) => k.startsWith(p))) continue;
@@ -161,6 +161,10 @@ export function workerEnv(base, { runId, seq = null, roots, remotes = {}, stateB
   // before and after it on the workflow (the persona's attempt mark). It
   // offers no verification: that takes AGENTIC_AUTOPILOT_VERIFY too.
   if (Number.isSafeInteger(seq) && seq > 0) env.AGENTIC_AUTOPILOT_STEP = String(seq);
+  // verify-exec — the offer, only when the run makes it (driver.mjs
+  // verifyOfferFor): the commit the run started from, whose declaration the
+  // driver read. The step may then end with next step verify.
+  if (typeof verifyBaseline === 'string' && /^[0-9a-f]{40}$/.test(verifyBaseline)) env.AGENTIC_AUTOPILOT_VERIFY = verifyBaseline;
   env.AGENTIC_ORCHESTRATOR_ROOT = roots.orchestrator;
   env.AGENTIC_ENGINEER_ROOT = roots.engineer;
   env.AGENTIC_RUNTIME_ROOT = roots.runtime;
@@ -176,7 +180,7 @@ export function workerEnv(base, { runId, seq = null, roots, remotes = {}, stateB
 // The rules each worker gets on top of its runbook. No plugin roots: the
 // runbooks resolve AGENTIC_<PLUGIN>_ROOT themselves since S0, and the
 // capability floor (roots.mjs) requires releases that carry it.
-export function systemAppend({ runId, seq, stepKind }) {
+export function systemAppend({ runId, seq, stepKind, verifyOffered = false }) {
   const commit = stepKind === 'commit'
     ? 'This is the /engineer:commit step: commit through it as its runbook says.'
     : 'Do not commit: only the /engineer:commit step commits (git commit is denied on this step).';
@@ -189,6 +193,9 @@ export function systemAppend({ runId, seq, stepKind }) {
     '4. Run peer ensembles and other long work as host background tasks, wait for their notifications, and collect them before you finish. Never sleep-poll.',
     `5. ${commit} Never push, open, update or merge pull requests, and take no other outward action.`,
     '6. End with the structured step report. A report the host takes when you end a turn to wait for a background task is provisional: set waiting_on_background = true in it, and when its notification re-invokes you, carry on with the runbook to its end and file a new report. Only the last report counts. In your last report set waiting_on_background = false: the host then ends the step and stops every background task still running, so set it only once nothing you started is still needed. workflow = the id of the engineer workflow this step worked in (null when it ran no engineer verb). next_step = that workflow\'s next_step_kind / next_step_verb / next_step_confidence exactly as the verb wrote them with finish-verb (null when it ran no verb) — not the macro-level proposal /orchestrator:next prints at its end. awaiting_owner = the owner gate this step recorded, or null. summary = one line.',
+    ...(verifyOffered
+      ? ['7. This run offers verification (ADR-0068 Decision 5): hand long checks (the whole test suite, a mutation run) to next step verify, as the runbook says, instead of running them or waiting for the heavy-work lock in this step; the driver runs them and the next step reads their results.']
+      : []),
   ].join('\n');
 }
 
@@ -205,7 +212,7 @@ export function assertNoEscalation(args) {
   }
 }
 
-export function workerArgs({ sessionId, stepKind, runId, seq, stepBudgetUsd, model, effort }) {
+export function workerArgs({ sessionId, stepKind, runId, seq, stepBudgetUsd, model, effort, verifyOffered = false }) {
   // One space-joined string per list: Claude Code splits a tool list on
   // commas and spaces outside parentheses (2.1.286), so `Bash(gh pr:*)` stays
   // one rule.
@@ -216,7 +223,7 @@ export function workerArgs({ sessionId, stepKind, runId, seq, stepBudgetUsd, mod
     '--permission-mode', 'manual', '--permission-prompts', 'none',
     '--allowedTools', ALLOWED_TOOLS.join(' '),
     '--disallowedTools', denied.join(' '),
-    '--append-system-prompt', systemAppend({ runId, seq, stepKind }),
+    '--append-system-prompt', systemAppend({ runId, seq, stepKind, verifyOffered }),
     '--json-schema', JSON.stringify(STEP_REPORT_SCHEMA),
     '--max-budget-usd', String(stepBudgetUsd),
   ];
@@ -362,11 +369,11 @@ export function startWorker(o) {
   const sessionId = o.sessionId ?? randomUUID();
   const args = workerArgs({
     sessionId, stepKind: o.stepKind, runId: o.runId, seq: o.seq,
-    stepBudgetUsd: o.stepBudgetUsd, model: o.model, effort: o.effort,
+    stepBudgetUsd: o.stepBudgetUsd, model: o.model, effort: o.effort, verifyOffered: typeof o.verifyBaseline === 'string',
   });
   // Everything that can fail before the worker runs is done before it starts.
   const raw = fs.openSync(o.rawPath, 'a');
-  const workerEnvironment = workerEnv(env, { runId: o.runId, seq: o.seq, roots: o.roots, remotes: o.remotes ?? {}, stateBase: o.stateBase ?? null, autopilotToken: o.autopilotToken ?? null });
+  const workerEnvironment = workerEnv(env, { runId: o.runId, seq: o.seq, roots: o.roots, remotes: o.remotes ?? {}, stateBase: o.stateBase ?? null, autopilotToken: o.autopilotToken ?? null, verifyBaseline: o.verifyBaseline ?? null });
   let child;
   try {
     child = spawn(claudeBin(env), args, {

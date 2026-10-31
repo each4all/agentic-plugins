@@ -38,7 +38,10 @@ export const ENGINEER_TERMINAL_PHASES = Object.freeze([
   'commit-complete', 'summary-complete', 'fix-complete', 'close-complete',
 ]);
 const COMMIT_SURFACE_PHASES = new Set(['commit-complete', 'close-complete']);
-export const STEP_KINDS = Object.freeze(['dispatch', 'verb', 'commit', 'done', 'done-no-commit', 'finalize']);
+// ADR-0068 Decision 5, item 10 — `verify` is a step the driver runs itself,
+// with no worker and no LLM (verify-run.mjs): its "command" is a label in the
+// step ledger, never a prompt.
+export const STEP_KINDS = Object.freeze(['dispatch', 'verb', 'commit', 'done', 'done-no-commit', 'finalize', 'verify']);
 
 // The entry-brief leads a step-table position may legitimately show between
 // steps. Any other lead (orchestrator:plan, a founder or designer workflow)
@@ -99,6 +102,9 @@ export function renderStep(s, { macroId, runId }) {
     }
     case 'finalize':
       return `/orchestrator:finalize --workflow=${macroId}`;
+    case 'verify':
+      needId();
+      return 'verify';
     default:
       throw new Error(`renderStep: unknown step kind ${JSON.stringify(s.kind)}`);
   }
@@ -122,7 +128,7 @@ export function parseForcedStep(text) {
   const [cmd, ...rest] = words;
   const bad = () => new Error(
     `--next ${JSON.stringify(text)} is not a step command. Accepted: /engineer:<verb>, /engineer:commit, ` +
-      '/orchestrator:next [<subtask>].',
+      '/orchestrator:next [<subtask>], verify.',
   );
   const verb = /^\/engineer:([a-z]+)$/.exec(cmd ?? '');
   if (verb && rest.length === 0) {
@@ -130,6 +136,9 @@ export function parseForcedStep(text) {
     if (VERBS.includes(verb[1])) return { kind: 'verb', verb: verb[1] };
     throw bad();
   }
+  // ADR-0068 Decision 5, item 7 — the owner's explicit rerun: the pending
+  // request's checks run once more, whole, past the repeat rule.
+  if (cmd === 'verify' && rest.length === 0) return { kind: 'verify' };
   if (cmd === '/orchestrator:next') {
     if (rest.length === 0) return { kind: 'dispatch', subtaskId: null };
     if (rest.length === 1 && isSafeSubtaskId(rest[0])) return { kind: 'dispatch', subtaskId: rest[0] };
@@ -335,7 +344,7 @@ function briefGuard(view) {
  * `active` carries either a step or a judgment halt (`judgment: true`), which
  * an owner's --next may replace; any other halt stands.
  */
-function classify(subtask, child, landing) {
+function classify(subtask, child, landing, verify = null) {
   const id = subtask.id;
   const stop = (reason, detail, extra = {}) => ({ kind: 'halt', halt: halt(reason, detail, { subtaskId: id, ...extra }) });
   if (!child) return stop('owner-choice', `subtask ${id} is in_progress but was not observed`);
@@ -384,17 +393,42 @@ function classify(subtask, child, landing) {
     // A commit begun beside a pending request is a state no current writer
     // leaves, so the owner judges it. The halt is the run's (`runWide`, scope
     // 'run'): a run with lanes starts nothing beside it.
+    // ADR-0068 Decision 5, items 2, 6 and 10 — with the run offering
+    // verification, a request at HIGH yields the driver's verification step,
+    // or, once the journal holds its batch ended failed or with no evidence,
+    // the requesting verb, which reads the results; below HIGH it halts
+    // low-confidence before anything runs. A run that offers none halts.
+    const vf = verify?.facts?.[id] ?? null;
     if (ns?.kind === 'verify') {
       const label = `verify @ ${ns.confidence}`;
-      return { kind: 'halt', runWide: true, halt: halt('owner-choice', verifyRefusalText(id, label), { subtaskId: id, pointer: pointerOf('next_step'), scope: 'run' }) };
+      if (verify?.offered !== true) {
+        return { kind: 'halt', runWide: true, halt: halt('owner-choice', verifyRefusalText(id, label, verify?.why ?? null), { subtaskId: id, pointer: pointerOf('next_step'), scope: 'run' }) };
+      }
+      if (!CONFIDENCES.includes(ns.confidence)) return stop('owner-choice', `subtask ${id}: next step ${JSON.stringify(ns)} is outside the closed enums`);
+      if (ns.confidence !== 'HIGH') {
+        return { kind: 'active', judgment: true, halt: halt('low-confidence', `subtask ${id}: ${label}: the requested checks are not run below HIGH`, { subtaskId: id, pointer: pointerOf('next_step') }) };
+      }
+      if (vf?.resume && vf.resume.request_id === child.verify?.request_id && VERBS.includes(vf.resume.verb)) {
+        return { kind: 'active', step: { kind: 'verb', verb: vf.resume.verb, subtaskId: id, branch: child.branch, resume: 'verify' } };
+      }
+      return { kind: 'active', step: { kind: 'verify', subtaskId: id, branch: child.branch } };
     }
     // The outcome table (ADR-0063 S3+S4 note): a live file in a commit phase
     // is an interrupted commit (beginCommit leaves phase-7-commit and keeps the
     // old next step) or a commit whose archive did not run. /engineer:commit
-    // recovers both, so neither follows the stale next step.
+    // recovers both, so neither follows the stale next step, nor the P7 guard
+    // below: the commit an answered request's on_pass began keeps the
+    // request's answer, and its own commit changed the tree the guard reads.
     if (child.current_phase === 'phase-7-commit'
       || (child.terminal_marker === true && COMMIT_SURFACE_PHASES.has(child.current_phase))) {
       return { kind: 'active', step: { kind: 'commit', subtaskId: id, branch: child.branch, recovery: true } };
+    }
+    // P7 — a request a batch of this driver answered: its on_pass is taken
+    // only while the lane's tree is the one the batch passed on; otherwise
+    // (or when the answer is not one the journal holds) the requesting verb
+    // resumes. It holds until the next worker's first write clears the step.
+    if (vf?.guard && ns && child.verify?.answered_by === vf.guard.batch_id && VERBS.includes(vf.guard.verb)) {
+      return { kind: 'active', step: { kind: 'verb', verb: vf.guard.verb, subtaskId: id, branch: child.branch, resume: 'verify' } };
     }
     if (!ns) {
       return { kind: 'active', judgment: true, halt: halt('owner-choice', `subtask ${id}: no next step is recorded — the last verb did not finish (its Phase 0 clears next_step)`, { subtaskId: id, pointer: pointerOf('next_step') }) };
@@ -442,16 +476,16 @@ function classify(subtask, child, landing) {
   return stop('owner-choice', `subtask ${id}: landing refused (${landing.reason}): ${landing.detail ?? ''}`);
 }
 
-// ADR-0068 Decision 5, items 10 and 11 — this driver does not run a
-// verification step yet (verify-exec does), so it offers none, and a child
-// whose next step is `verify` halts the run (classify): the cause is the
-// run's footing, not the lane's, so the halt is run-wide, and a relaunch with
-// a driver that offers verification goes on with no release. Never routed to
-// a commit, whatever its confidence.
-function verifyRefusalText(id, label) {
+// ADR-0068 Decision 5, items 10 and 11 — a run that does not offer
+// verification (the installed persona lacks the capability, or the
+// repository's baseline has no declaration) halts on a child whose next step
+// is `verify` (classify): the cause is the run's footing, not the lane's, so
+// the halt is run-wide, and a relaunch that offers it goes on with no release.
+// Never routed to a commit, whatever its confidence.
+function verifyRefusalText(id, label, why) {
   return `subtask ${id}: its next step is ${label}: the step asks the driver to run the checks it requested, ` +
-    'and this driver does not run a verification step (ADR-0068 Decision 5, item 11; verify-exec). ' +
-    'Relaunch with a driver that offers verification, or run the requested checks and the subtask\'s next verb interactively';
+    `and this run does not offer verification${why ? ` (${why})` : ''} (ADR-0068 Decision 5, items 10 and 11). ` +
+    'Relaunch once the run offers it, or run the requested checks and the subtask\'s next verb interactively';
 }
 
 function landingList(waiting, integrationBranch) {
@@ -584,7 +618,7 @@ function decideStep(view, ctx = {}) {
 
   // Classify every in_progress subtask.
   const classified = subtasks.filter((s) => s?.status === 'in_progress').map((s) => ({
-    subtask: s, ...classify(s, view.children?.[s.id], view.landing?.[s.id]),
+    subtask: s, ...classify(s, view.children?.[s.id], view.landing?.[s.id], ctx.verify ?? null),
   }));
   const active = classified.filter((c) => c.kind === 'active');
   if (active.length > 1) {
@@ -673,6 +707,13 @@ function forcedApplies(forced, { view, subtasks, classified, active }) {
       const child = view.children?.[active[0].subtask.id];
       return { kind: forced.kind, verb: forced.verb, subtaskId: active[0].subtask.id, branch: child?.branch ?? active[0].subtask.branch };
     }
+    case 'verify': {
+      if (active.length !== 1) return nope(`verify needs exactly one active engineer workflow; there are ${active.length}`);
+      const child = view.children?.[active[0].subtask.id];
+      if (child?.next_step?.kind !== 'verify') return nope(`subtask ${active[0].subtask.id}'s next step is ${nsLabel(child?.next_step ?? null)}, not verify`);
+      if (active[0].halt && !active[0].judgment) return { halt: active[0].halt };
+      return { kind: 'verify', subtaskId: active[0].subtask.id, branch: child.branch ?? active[0].subtask.branch, rerun: true };
+    }
     case 'dispatch': {
       if (active.length > 0) return nope(`subtask ${active[0].subtask.id} still has an active engineer workflow`);
       const id = forced.subtaskId ?? view.ready?.ready?.id ?? null;
@@ -692,7 +733,7 @@ function forcedApplies(forced, { view, subtasks, classified, active }) {
 
 function finishForced(t, view) {
   if (t.kind === 'dispatch' && !view.git.clean) return dirtyTree(view, t.subtaskId);
-  if ((t.kind === 'verb' || t.kind === 'commit') && t.branch !== view.git.branch) {
+  if ((t.kind === 'verb' || t.kind === 'commit' || t.kind === 'verify') && t.branch !== view.git.branch) {
     return halt('owner-choice', `subtask ${t.subtaskId}'s engineer workflow is on ${t.branch}, but ${view.git.branch} is checked out`, { subtaskId: t.subtaskId });
   }
   const { kind, ...rest } = t;
@@ -758,6 +799,11 @@ export function forcedForLanes(pairs, view) {
         if (!active.includes(id)) return nope(`subtask ${id} has no active engineer workflow`);
         forced.set(id, { kind: f.kind, ...(f.kind === 'verb' ? { verb: f.verb } : {}), subtaskId: id, branch: view.children[id].branch ?? s.branch });
         break;
+      case 'verify':
+        if (!active.includes(id)) return nope(`subtask ${id} has no active engineer workflow`);
+        if (view.children[id].next_step?.kind !== 'verify') return nope(`subtask ${id}'s next step is not verify`);
+        forced.set(id, { kind: 'verify', subtaskId: id, branch: view.children[id].branch ?? s.branch, rerun: true });
+        break;
       case 'dispatch': {
         if (active.includes(id)) return nope(`subtask ${id} still has an active engineer workflow`);
         if (s.status !== 'pending') return nope(`subtask ${id} is ${s.status}, not pending`);
@@ -785,8 +831,8 @@ export function forcedForLanes(pairs, view) {
  *        parked (ADR-0068 Decision 1, item 2: left out as a lane in flight is,
  *        and holding no capacity), driverBusy (a done or finalize in
  *        flight: the macro's terminal marker waits for it), lanes: Map<subtaskId, lane>
- *        the run holds, started: Set<subtaskId> whose lane stepped in this
- *        run, forced: Map<subtaskId, step> (forcedForLanes), finalizeAttempted }
+ *        the run holds, started: Set<subtaskId> whose lane's worker stepped
+ *        in this run (a verification batch is no worker), forced: Map<subtaskId, step> (forcedForLanes), finalizeAttempted }
  *
  * Returns { outcome: 'completed' } | a run-wide halt (approval, a macro gate,
  * the terminal marker, a claim that names no subtask of the plan; each
@@ -872,7 +918,7 @@ function decideLanesStep(view, ctx = {}) {
   let runWide = null;
   for (const s of subtasks) {
     if (s?.status !== 'in_progress' || away(s.id) || halted.has(s.id)) continue;
-    const c = classify(s, view.children?.[s.id], view.landing?.[s.id]);
+    const c = classify(s, view.children?.[s.id], view.landing?.[s.id], ctx.verify ?? null);
     if (c.kind === 'halt' && c.runWide) { runWide ??= c.halt; continue; }
     if (c.kind === 'halt') { out.laneHalts.push(c.halt); continue; }
     if (c.kind === 'done' || c.kind === 'done-no-commit') { done.push(c.step); continue; }

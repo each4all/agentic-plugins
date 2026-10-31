@@ -72,8 +72,8 @@ export const MUTATIONS = [
   },
   {
     id: 'P6', file: POLICY, tests: [TP],
-    from: "    if (ns.confidence !== 'HIGH') {",
-    to: '    if (false) {',
+    from: "    if (ns.confidence !== 'HIGH') {\n      return { kind: 'active', judgment: true, halt: halt('low-confidence', `subtask ${id}: ${label}`",
+    to: "    if (false) {\n      return { kind: 'active', judgment: true, halt: halt('low-confidence', `subtask ${id}: ${label}`",
     why: 'a next step below HIGH confidence runs (R4)',
   },
   {
@@ -551,8 +551,8 @@ export const MUTATIONS = [
   },
   {
     id: 'D5', file: DRIVER, tests: [TD],
-    from: '      const drift = seq > 1 ? driftOf(pinned, await resolveRootsNow({ env })) : [];',
-    to: '      const drift = [];',
+    from: '      const drift = seq > 1 ? driftOf(pinned, await resolveRootsNow({ env })) : [];\n      // C123',
+    to: '      const drift = [];\n      // C123',
     why: 'an install that changed mid-run is used without notice',
   },
   {

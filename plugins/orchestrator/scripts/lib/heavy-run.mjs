@@ -46,8 +46,31 @@
 // (`locks_itself`): an older harness under a holder would wait on its own
 // holder. It reads the committed declaration at `--declaration-ref` (the
 // driver passes its run's baseline) or HEAD, never the working tree.
+//
+// THE STATUS FILE (ADR-0068 Decision 5, item 9; verify-exec). With
+// `--status-file <path>` the wrapper appends one JSON line to the file at each
+// stage, for the driver that started it: `{"state":"acquired","joined":…}`
+// once it holds or joins the lock, `{"state":"running","pgid":…}` once the
+// command's group has its go, and last `{"state":"ended", …}` with one of
+// `code` (the command's own exit status), `signal` (the signal that ended
+// it), `error` (the code of the failure that kept it from executing: a
+// command that exits 127 is told from one that was not found) or `refused`
+// (the wrapper's own refusal or failure, 125), and `stopped` when a signal to
+// the wrapper stopped it. A status file that cannot be written changes
+// nothing else the wrapper does.
+//
+// THE GO FILE (verify-exec). With `--go-file <path>` as well, the wrapper,
+// once it holds the lock and has its command's group registered, idle,
+// appends `{"state":"ready","pgid":…,"started":…}` (the command's own group
+// and its leader's start) and starts the command only once `<path>` exists:
+// the driver first puts that group on its own run's locks and reads its holds
+// and drain, and a stop that came while the wrapper waited for the lock ends
+// the check before its command runs. A signal while it waits for the go stops
+// it as one before the go does; a driver that dies takes the wrapper's group,
+// and so the idle command group's supervisor, with it.
 
 import { spawn, spawnSync } from 'node:child_process';
+import { appendFileSync, existsSync } from 'node:fs';
 import { constants as osConstants } from 'node:os';
 import { resolve } from 'node:path';
 
@@ -63,7 +86,7 @@ const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 export const POLL_ENV = 'AGENTIC_HEAVY_LOCK_POLL_MS';
 export const REPORT_ENV = 'AGENTIC_HEAVY_LOCK_REPORT_MS';
 
-export const HEAVY_USAGE = `Usage: agentic-autopilot heavy [--purpose <text>] [--repo <dir>] [--declaration-ref <rev>] -- <command> [args...]
+export const HEAVY_USAGE = `Usage: agentic-autopilot heavy [--purpose <text>] [--repo <dir>] [--declaration-ref <rev>] [--status-file <path> [--go-file <path>]] -- <command> [args...]
 
 Takes the repository's heavy-work lock (ADR-0068 Decision 6), runs the command,
 and releases the lock once the command and its process group have stopped.
@@ -72,6 +95,8 @@ Inside another holder's ownership it joins it and waits for nothing.
   --purpose <text>         what the lock's holder is named by (default: the command line)
   --repo <dir>             the repository whose lock to take (default: the current one)
   --declaration-ref <rev>  read the check declaration at this commit (default: HEAD)
+  --status-file <path>     append each stage as a JSON line to this file (for the driver)
+  --go-file <path>         with --status-file: once ready, start the command only when this file exists
 
 Exit: the command's status · 128+n for signal n · 125 the wrapper's own failure or refusal
       · 126 the command cannot be executed · 127 the command is not found`;
@@ -80,7 +105,7 @@ export class HeavyUsageError extends Error {}
 
 /** Parse the words after `heavy`: options, then `--` and the command. */
 export function parseHeavy(words) {
-  const o = { purpose: null, repo: null, declarationRef: null, command: [], help: false };
+  const o = { purpose: null, repo: null, declarationRef: null, statusFile: null, goFile: null, command: [], help: false };
   const value = (i, name) => {
     if (i >= words.length || words[i] === '--') throw new HeavyUsageError(`${name} takes a value`);
     return words[i];
@@ -93,11 +118,14 @@ export function parseHeavy(words) {
     else if (w === '--purpose') o.purpose = value(++i, '--purpose');
     else if (w === '--repo') o.repo = value(++i, '--repo');
     else if (w === '--declaration-ref') o.declarationRef = value(++i, '--declaration-ref');
+    else if (w === '--status-file') o.statusFile = value(++i, '--status-file');
+    else if (w === '--go-file') o.goFile = value(++i, '--go-file');
     else throw new HeavyUsageError(`unknown option ${shown(w)}; the command follows --`);
   }
   if (o.help) return o;
   if (i >= words.length) throw new HeavyUsageError('the command follows --');
   if (o.command.length === 0 || o.command[0] === '') throw new HeavyUsageError('no command after --');
+  if (o.goFile !== null && o.statusFile === null) throw new HeavyUsageError('--go-file takes --status-file: its ready line is the driver\'s cue');
   return o;
 }
 
@@ -169,6 +197,8 @@ export const SUPERVISOR = [
 ].join('\n');
 
 const signalNumber = (signal) => osConstants.signals[signal] ?? 1;
+// How often the wrapper looks for the driver's go file.
+const GO_POLL_MS = 25;
 
 // The system out of processes, memory or descriptors: the command was never
 // tried, so this is the wrapper's own failure, as `timeout` treats a failed
@@ -212,11 +242,21 @@ export async function runHeavy(words, {
     return 125;
   }
   if (o.help) { out(HEAVY_USAGE); return 0; }
-  if (process.platform === 'win32') { err('heavy: process groups are POSIX; this wrapper does not run on Windows'); return 125; }
+  // The status file's lines (THE STATUS FILE above); a write that fails is dropped.
+  // Whether the line was written (true with no status file).
+  const status = (line) => {
+    if (o.statusFile === null) return true;
+    try { appendFileSync(o.statusFile, `${JSON.stringify(line)}\n`); return true; } catch { return false; /* the wrapper's work goes on */ }
+  };
+  const refused = (code, why) => {
+    status({ state: 'ended', refused: String(why).slice(0, 400) });
+    return code;
+  };
+  if (process.platform === 'win32') { err('heavy: process groups are POSIX; this wrapper does not run on Windows'); return refused(125, 'process groups are POSIX'); }
   const repoRoot = toplevel(resolve(cwd, o.repo ?? '.'));
-  if (repoRoot === null) { err(`heavy: ${shown(o.repo ?? cwd)} is not inside a git repository`); return 125; }
+  if (repoRoot === null) { err(`heavy: ${shown(o.repo ?? cwd)} is not inside a git repository`); return refused(125, 'not inside a git repository'); }
   const refusal = selfLockingRefusal(repoRoot, o.declarationRef ?? 'HEAD', o.command);
-  if (refusal !== null) { err(`heavy: ✗ ${refusal}`); return 125; }
+  if (refusal !== null) { err(`heavy: ✗ ${refusal}`); return refused(125, refusal); }
   const purpose = o.purpose ?? o.command.join(' ');
   const pollMs = tuned(env, POLL_ENV, 2000);
   const reportMs = tuned(env, REPORT_ENV, WAIT_REPORT_MS);
@@ -248,18 +288,22 @@ export async function runHeavy(words, {
         kind: 'wrapper', purpose, log: err, prefix: 'heavy', signal: cancel.signal, env, mint: true, pollMs, reportMs,
       });
     } catch (e) {
-      if (received !== null) return 128 + signalNumber(received);
+      if (received !== null) {
+        status({ state: 'ended', stopped: received });
+        return 128 + signalNumber(received);
+      }
       err(`heavy: ${e.message}`);
-      return 125;
+      return refused(125, e.message);
     }
+    status({ state: 'acquired', joined: handle.joined === true });
     try {
       return await runHeld(handle, o.command, {
-        env, err, pollMs, reportMs, beforeGo, received: () => received, started: (g) => { group = g; },
+        env, err, pollMs, reportMs, beforeGo, received: () => received, started: (g) => { group = g; }, status, goFile: o.goFile,
       });
     } catch (e) {
       if (!(e instanceof HeavyLockError)) throw e;
       err(`heavy: ${e.message}`);
-      return 125;
+      return refused(125, e.message);
     }
   } finally {
     clearTimeout(killTimer);
@@ -269,7 +313,7 @@ export async function runHeavy(words, {
 
 // With the lock held or joined: run the command in its group, wait for the
 // group and what registered under it to end, then release.
-async function runHeld(handle, command, { env, err, pollMs, reportMs, beforeGo, received, started }) {
+async function runHeld(handle, command, { env, err, pollMs, reportMs, beforeGo, received, started, status = () => {}, goFile = null }) {
   const releaseLock = async () => {
     if (handle.joined) return;
     for (let said = 0; ;) {
@@ -288,6 +332,7 @@ async function runHeld(handle, command, { env, err, pollMs, reportMs, beforeGo, 
   };
   if (received() !== null) {
     await releaseLock();
+    status({ state: 'ended', stopped: received() });
     return 128 + signalNumber(received());
   }
   let sup;
@@ -301,6 +346,7 @@ async function runHeld(handle, command, { env, err, pollMs, reportMs, beforeGo, 
     // Thrown, not emitted: an argument list the system refuses (E2BIG).
     await releaseLock();
     err(`heavy: cannot start the command's supervisor: ${shown(e.message)}`);
+    status({ state: 'ended', refused: 'the command\'s supervisor could not start' });
     return 125;
   }
   const closed = new Promise((done) => {
@@ -312,6 +358,7 @@ async function runHeld(handle, command, { env, err, pollMs, reportMs, beforeGo, 
     const { error } = await closed;
     await releaseLock();
     err(`heavy: cannot start the command's supervisor: ${error?.message ?? 'no pid'}`);
+    status({ state: 'ended', refused: 'the command\'s supervisor could not start' });
     return 125;
   }
   sup.stdin.on('error', () => { /* the supervisor has exited */ });
@@ -326,13 +373,24 @@ async function runHeld(handle, command, { env, err, pollMs, reportMs, beforeGo, 
     await closed;
     await releaseLock();
     err(`heavy: ${e.message}; the command was not started`);
+    status({ state: 'ended', refused: e.message });
     return 125;
   }
   const g = { pgid: sup.pid, started: entry.leaderStarted };
   started(g);
   await beforeGo();
-  if (received() === null) sup.stdin.write('go\n');
-  else signalGroup(g.pgid, g.started, 'SIGKILL');
+  // THE GO FILE: the driver's go, once it has the group on its run's locks.
+  // A ready line that cannot be written is no go: the driver would never see
+  // the group, so the command never runs (fail closed).
+  let unready = false;
+  if (goFile !== null && received() === null) {
+    unready = !status({ state: 'ready', pgid: g.pgid, started: g.started ?? null });
+    while (!unready && received() === null && !existsSync(goFile)) await sleep(GO_POLL_MS);
+  }
+  if (received() === null && !unready) {
+    sup.stdin.write('go\n');
+    status({ state: 'running', pgid: g.pgid });
+  } else signalGroup(g.pgid, g.started, 'SIGKILL');
   await closed;
   // What is left of the group ends with the command.
   for (let said = Date.now(); groupState(g.pgid, g.started) === 'running';) {
@@ -357,18 +415,32 @@ async function runHeld(handle, command, { env, err, pollMs, reportMs, beforeGo, 
   }
   entry.unregister();
   await releaseLock();
-  if (received() !== null) return 128 + signalNumber(received());
+  if (received() !== null) {
+    status({ state: 'ended', stopped: received() });
+    return 128 + signalNumber(received());
+  }
+  if (unready) {
+    err('heavy: the status file did not take the ready line; the command was not started');
+    status({ state: 'ended', refused: 'the status file did not take the ready line' });
+    return 125;
+  }
   const line = reportText.split('\n').find((l) => l !== '');
   let report = null;
   try { report = line === undefined ? null : JSON.parse(line); } catch { /* none */ }
   if (report === null) {
     err('heavy: the command\'s supervisor ended without reporting how the command ended');
+    status({ state: 'ended', refused: 'the command\'s supervisor ended without reporting how the command ended' });
     return 125;
   }
   if (report.error !== undefined) {
     err(`heavy: cannot run ${shown(command[0])}: ${shown(report.error)}`);
+    status({ state: 'ended', error: String(report.error) });
     return startFailureStatus(report.error);
   }
-  if (Number.isInteger(report.code)) return report.code;
+  if (Number.isInteger(report.code)) {
+    status({ state: 'ended', code: report.code });
+    return report.code;
+  }
+  status({ state: 'ended', signal: report.signal });
   return 128 + signalNumber(report.signal);
 }

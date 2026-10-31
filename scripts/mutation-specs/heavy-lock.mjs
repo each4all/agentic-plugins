@@ -477,8 +477,8 @@ export const MUTATIONS = [
   },
   {
     id: 'W7', file: RUN,
-    from: "    err('heavy: the command\\'s supervisor ended without reporting how the command ended');\n    return 125;\n",
-    to: "    err('heavy: the command\\'s supervisor ended without reporting how the command ended');\n    return 0;\n",
+    from: "    status({ state: 'ended', refused: 'the command\\'s supervisor ended without reporting how the command ended' });\n    return 125;\n",
+    to: "    status({ state: 'ended', refused: 'the command\\'s supervisor ended without reporting how the command ended' });\n    return 0;\n",
     why: 'a supervisor that died with no report reads as a command that passed',
     tests: [TW],
     killed_by: T_NO_REPORT,
@@ -525,8 +525,8 @@ export const MUTATIONS = [
   },
   {
     id: 'W13', file: RUN,
-    from: '  if (refusal !== null) { err(`heavy: ✗ ${refusal}`); return 125; }',
-    to: '  if (false) { err(`heavy: ✗ ${refusal}`); return 125; }',
+    from: '  if (refusal !== null) { err(`heavy: ✗ ${refusal}`); return refused(125, refusal); }',
+    to: '  if (false) { err(`heavy: ✗ ${refusal}`); return refused(125, refusal); }',
     why: 'a command declared as taking the lock itself runs under the wrapper: an older harness waits on its own holder',
     tests: [TW],
     killed_by: [T_DECLARED, T_DECLARED_PARSE],

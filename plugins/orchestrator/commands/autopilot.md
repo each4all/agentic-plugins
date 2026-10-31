@@ -95,7 +95,12 @@ it, or run with lanes. Ctrl-C, `stop` or a closed terminal
 or a peer run's cancellation, already under way gets 15 s to finish, the workers
 and everything else in flight are stopped, and the lanes are kept for the next
 run. With more than one subtask in progress,
-`--next` needs `--lane <subtask>` before it (one pair per lane). Lanes need
+`--next` needs `--lane <subtask>` before it (one pair per lane). A run offers
+verification when the pinned engineer has the record CLI and the repository's
+committed `.agentic-plugins/verify-checks.json` parses at the run's baseline: a
+step that ends with next step `verify` then has its checks run by the driver,
+with no worker and no cost, and `--next verify` reruns a request once past the
+repeat rule (ADR-0068 Decision 5; the README's *Verification batches*). Lanes need
 shared creation on (`docs/runbooks/state-root-cutover.md`); `preview --lanes 2`
 shows the lanes it would reconcile and the first steps. A halt prints the
 relaunch command with the run's `--macro` and `--lanes`.

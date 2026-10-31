@@ -126,6 +126,79 @@ describe('exit status', () => {
     strictEqual(await run(['no-such-command-anywhere']), 127);
   });
 
+  it('--status-file: acquired, running and ended, a command that exits 127 told from one that was not found (verify-exec)', BOUNDED, async () => {
+    const { S, root } = setUp();
+    const statusOf = async (name, command) => {
+      const file = join(S, `${name}.status`);
+      const r = await heavy(['--status-file', file, '--', ...command], { cwd: root, track: t }).exited;
+      return { code: r.code, out: r.out, states: lines(file).map((l) => JSON.parse(l)) };
+    };
+    const exits127 = await statusOf('exits', ['sh', '-c', 'exit 127']);
+    const missing = await statusOf('missing', [join(S, 'missing')]);
+    strictEqual(exits127.code, 127);
+    strictEqual(missing.code, 127);
+    deepStrictEqual(exits127.states.map((x) => x.state), ['acquired', 'running', 'ended'], 'with no --go-file, no ready line and no wait');
+    deepStrictEqual(exits127.states.at(-1), { state: 'ended', code: 127 });
+    deepStrictEqual(missing.states.at(-1), { state: 'ended', error: 'ENOENT' });
+    ok(Number.isInteger(exits127.states[1].pgid), JSON.stringify(exits127.states));
+    const signalled = await statusOf('signalled', [process.execPath, '-e', "process.kill(process.pid, 'SIGTERM')"]);
+    deepStrictEqual(signalled.states.at(-1), { state: 'ended', signal: 'SIGTERM' }, signalled.out);
+    // A refusal before the lock: the declaration names the command as taking it itself.
+    const refusedFile = join(S, 'refused.status');
+    const r = await heavy(['--status-file', refusedFile, '--repo', join(S, 'nowhere'), '--', 'true'], { cwd: root, track: t }).exited;
+    strictEqual(r.code, 125, r.out);
+    ok(lines(refusedFile).map((l) => JSON.parse(l)).at(-1).refused, lines(refusedFile).join('\n'));
+  });
+
+  it('--go-file: ready with the command\'s group, and the command starts only once the go file exists; a signal before it stops the wrapper, nothing run (verify-exec)', BOUNDED, async () => {
+    const { S, root } = setUp();
+    const log = join(S, 'ran.log');
+    const command = ['sh', '-c', `echo ran >> ${JSON.stringify(log)}`];
+    const statusFile = join(S, 'a.status');
+    const goFile = join(S, 'a.go');
+    const w = heavy(['--status-file', statusFile, '--go-file', goFile, '--', ...command], { cwd: root, track: t });
+    const states = (file) => lines(file).map((l) => JSON.parse(l));
+    ok(await until(() => states(statusFile).some((x) => x.state === 'ready')), lines(statusFile).join('\n'));
+    const readyLine = states(statusFile).find((x) => x.state === 'ready');
+    // The leader's start, or null where the system will not tell it (a sandbox denying ps).
+    ok(Number.isInteger(readyLine.pgid) && (typeof readyLine.started === 'string' || readyLine.started === null), JSON.stringify(readyLine));
+    await sleep(400);
+    strictEqual(existsSync(log), false, 'the command waits for the go');
+    writeFileSync(goFile, 'go\n');
+    const r = await w.exited;
+    strictEqual(r.code, 0, r.out);
+    strictEqual(readFileSync(log, 'utf8'), 'ran\n');
+    deepStrictEqual(states(statusFile).map((x) => x.state), ['acquired', 'ready', 'running', 'ended']);
+
+    const stopped = join(S, 'b.status');
+    const w2 = heavy(['--status-file', stopped, '--go-file', join(S, 'b.go'), '--', ...command], { cwd: root, track: t });
+    ok(await until(() => states(stopped).some((x) => x.state === 'ready')), lines(stopped).join('\n'));
+    w2.child.kill('SIGTERM');
+    const r2 = await w2.exited;
+    strictEqual(r2.code, 128 + osConstants.signals.SIGTERM, r2.out);
+    deepStrictEqual(states(stopped).at(-1), { state: 'ended', stopped: 'SIGTERM' });
+    strictEqual(readFileSync(log, 'utf8'), 'ran\n', 'the stopped command never ran');
+    // --go-file without --status-file is a usage error: nothing tells the driver to give the go.
+    strictEqual((await heavy(['--go-file', join(S, 'c.go'), '--', 'true'], { cwd: root, track: t }).exited).code, 125);
+  });
+
+  it('--go-file: a ready line the status file does not take is no go: the command never runs, and the wrapper refuses (verify-exec)', BOUNDED, async () => {
+    const { S, root } = setUp();
+    const log = join(S, 'ran.log');
+    const statusFile = join(S, 'd.status');
+    // A go that comes late anyway: a wrapper that waited for it on a ready
+    // line nobody saw would run the command then, and not hang the test.
+    const late = setTimeout(() => writeFileSync(join(S, 'd.go'), 'go\n'), 2000);
+    // Between the group's registration and the ready line, the status file
+    // stops taking lines: the driver would never see the group to give its go.
+    const code = await runHeavy(['--status-file', statusFile, '--go-file', join(S, 'd.go'), '--', 'sh', '-c', `echo ran >> ${JSON.stringify(log)}`], {
+      cwd: root, env: testEnv(), err: () => {}, beforeGo: async () => { chmodSync(statusFile, 0o444); },
+    }).finally(() => clearTimeout(late));
+    strictEqual(code, 125);
+    strictEqual(existsSync(log), false, 'the command never ran');
+    deepStrictEqual(lines(statusFile).map((l) => JSON.parse(l).state), ['acquired']);
+  });
+
   it('126 for an exec failure Node throws (ENOEXEC, ENOTDIR); 125 when the system has no room to start it', BOUNDED, async () => {
     const { S, root, path } = setUp();
     const run = (command, env) => heavy(['--', ...command], { cwd: root, track: t, env }).exited;

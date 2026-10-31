@@ -109,6 +109,8 @@ import {
   RUN_WIDE_REASONS, STEP_KINDS, verifyStep, waitingToLand,
 } from './policy.mjs';
 import { driftOf, PLUGINS, resolveRoots } from './roots.mjs';
+import { checkEnvOf, personaEnvOf, requestKnownIn, selectionBase, verifyFacts } from './verify-run.mjs';
+import { workerEnv } from './worker.mjs';
 import {
   applyRateLimitEvent, createThrottleState, gateNewLane, judgeThrottle, throttleSnapshot, throttleText,
 } from './throttle.mjs';
@@ -517,7 +519,7 @@ export async function runLanes(c) {
   const throttle = createThrottleState();
   const lanes = new Map(); // subtask id → { path, laneId, branch, subtaskId, state, lock }
   const report = new Map(); // subtask id → what the final report says of its lane
-  const started = new Set(); // the lanes that stepped in this run (the throttle gates their first step only)
+  const started = new Set(); // the lanes whose worker stepped in this run (the throttle gates their first worker only; a verification batch is none)
   const unused = new Set(); // the lanes this run created that no step has used yet (Decision 5)
   const inflight = new Map(); // seq → the step in flight
   const ended = []; // steps whose worker ended, not yet settled here
@@ -561,6 +563,9 @@ export async function runLanes(c) {
   const loaded = {};
   let forced = new Map();
   let draining = null;
+  // The verification batch in flight (ADR-0068 Decision 5): { seq, subtaskId,
+  // cwd, handle, result, state, waiting, groups }, or null.
+  let verifyActive = null;
   let seq = 0;
   let finalizeAttempted = false;
   // C128 — the run's one list of waiting subtasks: the driver's, which its
@@ -642,12 +647,13 @@ export async function runLanes(c) {
   const running = (e) => !e.w;
   c.onInterrupt(() => {
     for (const e of inflight.values()) if (running(e)) e.worker?.abort('interrupted');
+    verifyActive?.handle?.abort('interrupted');
     tasks.interrupt();
     wake();
   });
   // What the driver's exit kills when the run could not unwind: every worker
   // and task group in flight.
-  c.groupsInFlight?.(() => [...[...inflight.values()].filter((e) => running(e) || e.w.groupTeardown === 'lingering').map((e) => e.worker?.pid), ...tasks.groups()].filter(Number.isInteger));
+  c.groupsInFlight?.(() => [...[...inflight.values()].filter((e) => running(e) || e.w.groupTeardown === 'lingering').map((e) => e.worker?.pid), ...tasks.groups(), ...(verifyActive ? [...verifyActive.groups] : [])].filter(Number.isInteger));
   const pathOf = (id) => {
     try { return home.problem ? null : lanePath(home, macroId, id); } catch { return null; }
   };
@@ -903,7 +909,8 @@ export async function runLanes(c) {
           mainRoot, macroId, subtaskId: id, stateRoots: [...new Set([mainRoot, stateRoot.root])],
           // After the run, every step it had in flight is torn down: what is
           // left of one (a group that outlived SIGKILL) is laneBusy's to judge.
-          busy: (sid) => (!after && [...inflight.values()].some((e) => e.subtaskId === sid) ? `a step of subtask ${sid} is in flight` : null),
+          busy: (sid) => (!after && [...inflight.values()].some((e) => e.subtaskId === sid) ? `a step of subtask ${sid} is in flight`
+            : !after && verifyActive?.subtaskId === sid ? `a verification check of subtask ${sid} is in flight` : null),
           exclude: [lanes.get(id)?.lock?.entry].filter(Boolean),
         });
       } catch (e) {
@@ -1475,8 +1482,207 @@ export async function runLanes(c) {
 
   // Every subtask with a step in flight, the done's own included (Decision 6:
   // left alone until that step ends).
-  const subtasksInFlight = () => new Set([...inflight.values()].filter((e) => e.subtaskId).map((e) => e.subtaskId));
+  // A lane whose verification batch is open is left out of the decision, as
+  // a lane with a step in flight is (ADR-0068 Decision 5, P10).
+  const subtasksInFlight = () => new Set([...[...inflight.values()].filter((e) => e.subtaskId).map((e) => e.subtaskId), ...(verifyActive ? [verifyActive.subtaskId] : [])]);
   const driverBusy = () => [...inflight.values()].some((e) => !e.lane);
+
+  // -------------------------------------------------------------------
+  // ADR-0068 Decision 5 — verification batches (verify-run.mjs). One at a
+  // time across the lanes, in the order their requests were recorded. A batch
+  // waiting or running holds no worker capacity (room() counts workers), takes
+  // no reservation and is charged nothing, and is no step of --max-steps. Only
+  // a running check is in flight: a hold's handoff waits for it and the run
+  // does not end before it; a request that waits in the queue is not in
+  // flight, and the workflow keeps it for the next decision or run. A hold, a
+  // drain or the run's interrupt is read before each check (the interrupt
+  // also stops a running one); the tree digest and the selection run off the
+  // loop, and the persona's writes in child processes, so the run's other
+  // workers are supervised meanwhile.
+  const vcfg = c.verify ?? { offer: { offered: false, why: 'this driver was given no offer' } };
+  const offer = vcfg.offer;
+  const verifyQueue = new Map(); // subtask id → { step, recordedAt, view }
+  // Each lane's last verification step that changed nothing (its request and
+  // outcome): one slot per lane, so two lanes whose such steps alternate are
+  // each still caught on their second in a row.
+  const verifyNoop = new Map(); // subtask id → key
+  const verifyOps = vcfg.ops ?? {
+    treeDigest: async (lanePath) => {
+      const r = await task('verifyTree', { lane: lanePath }, lanePath);
+      if (r.error) throw new Error(r.error);
+      return r.value;
+    },
+    select: async (a) => {
+      const r = await task('verifySelect', a, a.lane);
+      if (r.error) throw new Error(r.error);
+      return r.value;
+    },
+  };
+  // The queue is the decision's: each turn, the lanes it gives a verification
+  // step, each kept with the time its request was recorded; a request a person
+  // replaced (a held lane's verb) leaves it. A batch spawns no worker, so the
+  // throttle of new workers never holds it back (`newLane`).
+  const syncVerifyQueue = (steps, view) => {
+    const now1 = new Set(steps.map((x) => x.subtaskId));
+    for (const id of [...verifyQueue.keys()]) if (!now1.has(id)) verifyQueue.delete(id);
+    for (const x of steps) {
+      const recordedAt = view.children?.[x.subtaskId]?.verify?.recorded_at ?? at();
+      const was = verifyQueue.get(x.subtaskId);
+      verifyQueue.set(x.subtaskId, { step: { ...x, newLane: false }, recordedAt: was?.recordedAt === recordedAt ? was.recordedAt : recordedAt, view });
+    }
+  };
+  // The first request in order whose lane admits it starts (`admit`, as a
+  // worker step's: the lane prepared, no persona operation open in it, an
+  // owner's rebinding told first); a lane laneBusy holds back, or a hold
+  // stops, waits, and the next request may start. A refusal that halts parks
+  // its lane or drains the run; a yield ends the turn's pump, and the run
+  // decides again (`again`).
+  async function pumpVerify() {
+    if (verifyActive || draining || c.interrupted() || verifyQueue.size === 0) return { again: false };
+    // An exhausted budget starts nothing, a batch included; the request survives.
+    if (budget.exhausted()) return { again: false };
+    const order = [...verifyQueue.entries()].sort((a, b) => String(a[1].recordedAt).localeCompare(String(b[1].recordedAt)) || String(a[0]).localeCompare(String(b[0])));
+    for (const [id, q] of order) {
+      if (gateOf(id) || parked.has(id)) continue;
+      const r = await admit(q.step, q.view);
+      if (r.admitted) { verifyQueue.delete(id); return { again: false }; }
+      if (r.halt) {
+        verifyQueue.delete(id);
+        await halted(r.halt, null, q.view);
+        if (draining || c.interrupted()) return { again: false };
+        continue;
+      }
+      if (r.busy || r.held) continue;
+      return { again: r.again === true };
+    }
+    return { again: false };
+  }
+  // A verification batch, once its admission passed (`launch`, Admitted).
+  function startVerifyStep(s, held, view, before) {
+    const id = s.subtaskId;
+    const child = view.children?.[id];
+    seq += 1;
+    const mine = seq;
+    // The owner's forced step is taken here, and given back when the batch
+    // yields before it starts (`stopped`): it has not run yet.
+    const forcedStep = s.forced ? forced.get(id) ?? null : null;
+    if (s.forced) forced.delete(id);
+    // A batch spawns no worker: the lane's first worker in this run is still
+    // a new lane's, which the throttle gates (`started` is the workers').
+    unused.delete(id);
+    busyNotes.delete(id);
+    delete lane(id).waits_for;
+    const command = renderStep(s, { macroId, runId });
+    appendStep(runDir, {
+      event: 'started', seq: mine, lane: id, kind: 'verify', command, subtask_id: id, forced: s.forced === true, cwd: held.path,
+      step_budget_usd: 0, started_at: new Date(now()).toISOString(), fingerprint_before: laneFingerprint(before, id),
+    });
+    out(`[${mine}] lane ${id}: verify${s.forced ? ' · the owner\'s rerun' : ''}`);
+    lane(id).last_step = { seq: mine, kind: 'verify', verb: null, command, outcome: 'running' };
+    const job = {
+      runId, seq: mine, runDir, mainRoot, workflowPath: child.path, workflowId: child.workflow_id, subtaskId: id, lane: held.path,
+      engineerRoot: roots.engineer, offer, verb: child.verb ?? null, forcedRerun: s.forced === true && s.rerun === true,
+      requestKnown: requestKnownIn([repoRoot, mainRoot], id),
+      base: selectionBase({ lane: held.path, integration: baseline, baseline: offer.baseline }),
+      checkEnv: checkEnvOf(workerEnv(env, { runId, seq: mine, roots, remotes: c.remotes ?? {}, stateBase: stateRoot.root, autopilotToken: c.token })),
+      personaEnv: personaEnvOf(env),
+    };
+    const entry = { seq: mine, subtaskId: id, cwd: held.path, before: view, result: null, state: 'running', waiting: null, groups: new Set(), forcedStep };
+    const note = () => {
+      run.verifying = { seq: mine, subtask_id: id, state: entry.state, ...(entry.waiting ? { holder: entry.waiting.holder, holder_pid: entry.waiting.pid ?? null } : {}) };
+      try { writeRun(runDir, run); } catch { /* the next write records it */ }
+    };
+    entry.handle = vcfg.startVerify({
+      job, ops: verifyOps, now, ...(vcfg.bounds ? { bounds: vcfg.bounds } : {}),
+      // An exhausted budget drains the run (another lane's step may have spent
+      // the last of it): no check starts after it.
+      stopCause: () => (gateOf(id) ? 'hold' : (draining || budget.exhausted()) ? 'drain' : null),
+      onWait: (w) => {
+        entry.state = w ? 'waiting' : 'running';
+        entry.waiting = w;
+        if (w) out(`  lane ${id}: verification waits for the heavy-work lock, held by ${w.holder}${w.pid ? ` (pid ${w.pid})` : ''}`);
+        note();
+      },
+      register: async (g) => {
+        const group = { pid: g.pid, pgid: g.pgid, fingerprint: await processFingerprint(g.pid), session_id: null, lane: id, subtask_id: id, cwd: held.path, verify: true };
+        const added = [];
+        try {
+          for (const l of [c.macroLock, held.lock]) added.push(l.addWorkerGroup(group));
+        } catch (e) {
+          for (const a of added) a.release();
+          throw e;
+        }
+        entry.groups.add(g.pgid);
+        return [{ release: () => { entry.groups.delete(g.pgid); for (const a of added) a.release(); } }];
+      },
+    });
+    verifyActive = entry;
+    note();
+    entry.handle.done.then((r) => { entry.result = r; wake(); });
+    return { admitted: true };
+  }
+  async function settleVerify(entry) {
+    verifyActive = null;
+    const r = entry.result;
+    const id = entry.subtaskId;
+    // A group that outlived SIGKILL keeps the run's locks from now. The look
+    // comes next, and the verdict after it: an interrupt that comes while it
+    // awaits is judged as one that came during the batch.
+    if (r.lingering) c.markLingering();
+    // A batch that yielded before it started ran nothing: the owner's rerun
+    // it carried stays for the batch that runs.
+    if (r.outcome === 'stopped' && entry.forcedStep && !forced.has(id)) forced.set(id, entry.forcedStep);
+    const after = await look(entry.cwd, false);
+    let verdict = null;
+    if (r.lingering) {
+      verdict = { reason: 'worker-failed', detail: `a verification check's process group (${r.lingering}) is still there after SIGKILL; the run keeps its locks until that group is empty (ps -g ${r.lingering})`, scope: 'run' };
+    } else if (c.interrupted()) {
+      // The owner's interrupt is judged before what the step returned: a
+      // Ctrl-C reaches the persona's writes too, and the step they fail is no
+      // lane's to park (ADR-0068 Decision 1, item 1), as a worker step's
+      // settle (after its look) and the serial driver judge it.
+      verdict = { reason: 'interrupted', detail: 'the owner interrupted the run' };
+    } else if (r.outcome === 'halt') {
+      verdict = { ...r.halt, subtaskId: id };
+    } else if (r.outcome === 'error') {
+      verdict = { reason: 'owner-choice', detail: `the verification step of subtask ${id} failed: ${r.detail}`, subtaskId: id };
+    } else if (r.outcome === 'stopped') {
+      // A batch that yielded before it started. One the driver's own read
+      // stopped is the owner's hold (or a drain), however often it comes and
+      // goes; a hold this run reads keeps the request queued (pumpVerify
+      // passes a held lane by), and a drain or a spent budget starts no batch
+      // again. One that only the persona's refusal named, which this run does
+      // not read at the settle either (a hold withdrawn since, or a hold
+      // protocol the run cannot read), is decided again; a second such yield
+      // in a row on the same request parks the lane no-progress rather than
+      // loop, a verification step being no step of --max-steps.
+      const key = `${id}:${entry.before.children?.[id]?.verify?.request_id ?? ''}:stopped:${r.cause ?? ''}`;
+      if (r.refusal !== true || gateOf(id) || draining || budget.exhausted()) verifyNoop.delete(id);
+      else {
+        if (verifyNoop.get(id) === key) verdict = { reason: 'no-progress', detail: `the verification step of subtask ${id} yielded twice in a row to a ${r.cause ?? 'stop'} this run does not read (${r.detail}): the persona refuses the lane's writes as a held lane's`, subtaskId: id };
+        verifyNoop.set(id, key);
+      }
+    } else if (!r.wrote && (r.outcome === 'none' || r.outcome === 'resume')) {
+      const key = `${id}:${entry.before.children?.[id]?.verify?.request_id ?? ''}:${r.outcome}`;
+      if (verifyNoop.get(id) === key) verdict = { reason: 'no-progress', detail: `the verification step of subtask ${id} changed nothing twice (${r.detail ?? r.outcome})`, subtaskId: id };
+      verifyNoop.set(id, key);
+    } else {
+      verifyNoop.delete(id);
+    }
+    appendStep(runDir, {
+      event: 'finished', seq: entry.seq, lane: id, kind: 'verify', ended_at: new Date(now()).toISOString(), cost_usd: 0, cost_charged_usd: 0,
+      verify: {
+        outcome: r.outcome, follow: r.follow ?? null,
+        batch: r.batch ? { batch_id: r.batch.batch_id, continues: r.batch.continues ?? null, restart: r.batch.restart === true, end: r.batch.end ?? null, cause: r.batch.cause ?? null, checks: r.batch.checks ?? [], total: r.batch.total ?? null } : null,
+      },
+      fingerprint_after: after.lookError ? null : laneFingerprint(after, id), outcome: verdict ? verdict.reason : 'ok',
+    });
+    run.verifying = null;
+    writeRun(runDir, run);
+    if (report.get(id)?.last_step?.seq === entry.seq) report.get(id).last_step.outcome = verdict ? verdict.reason : 'ok';
+    out(`    [${entry.seq}] lane ${id} verify ${r.batch ? `batch ${r.batch.batch_id}: ${r.batch.end ?? 'open'} after ${(r.batch.checks ?? []).length} of ${r.batch.total ?? '?'} check(s)` : r.outcome}${verdict ? ` → ${verdict.reason}` : ''}`);
+    if (verdict) await halted({ ...verdict, seq: entry.seq, stepKind: 'verify' }, after.lookError ? null : after);
+  }
 
   const driftNow = async () => (seq > 0 ? driftOf(pinned, await resolveRootsNow({ env })) : []);
   // The plugin code the first worker loaded is pinned at its init, not at its
@@ -1522,14 +1728,19 @@ export async function runLanes(c) {
 
   async function admit(s, view) {
     if (!STEP_KINDS.includes(s.kind)) throw new Error(`policy returned an unknown step kind ${s.kind}`);
+    // A verification batch takes no reservation (Decision 5): it is charged
+    // nothing, and the queue has already asked the budget.
+    if (s.kind === 'verify') return admitWith(s, view, null);
     const r = budget.reserve();
     if (r.exhausted) return { halt: asHalt({ reason: 'budget', detail: r.detail }) };
     if (r.wait) return { stop: true, why: r.why };
-    const reservation = r.reservation;
+    return admitWith(s, view, r.reservation);
+  }
+  async function admitWith(s, view, reservation) {
     // A refusal with no halt is a yield: something changed while the step was
     // admitted, and the run decides again.
     const refuse = (h) => {
-      budget.settle(reservation, { spawned: false });
+      if (reservation) budget.settle(reservation, { spawned: false });
       return h ? { halt: asHalt(h) } : { stop: true, again: true };
     };
     try {
@@ -1550,7 +1761,7 @@ export async function runLanes(c) {
     } catch (e) {
       // An error before the step was in flight releases its reservation; one
       // after is the unwind's (every step in flight is settled there).
-      if (!inflight.has(seq) || inflight.get(seq).reservation !== reservation) budget.settle(reservation, { spawned: false });
+      if (reservation && (!inflight.has(seq) || inflight.get(seq).reservation !== reservation)) budget.settle(reservation, { spawned: false });
       throw e;
     }
   }
@@ -1561,6 +1772,12 @@ export async function runLanes(c) {
     // between the decision and this admission stops it here.
     if (gateOf(id)) return { ...refuse(null), again: false, held: true };
     const inLane = s.lane === true;
+    // A verification batch is admitted to its lane as a worker step is, and
+    // only there: the lane prepared, the persona operations and the owner's
+    // rebinding asked, the plan's approval and the checkout read (ADR-0068
+    // Decision 5, items 1 and 9). It spawns no worker, so the step's
+    // placement is not its (its persona writes take no state base).
+    const batch = s.kind === 'verify';
 
     // A lane is created once its first step is admitted (Decision 5), and
     // only while that step may still start: a draining or throttled run
@@ -1695,8 +1912,12 @@ export async function runLanes(c) {
     // A done's too: a done whose worker could not spawn parks its lane. It
     // is written before the admission's last await, so every check below
     // runs after it, with nothing awaited between them and the spawn; a
-    // refusal settles it (`admit`).
-    if (id && (inLane || DONE_KINDS.has(s.kind))) await mark(id, 'in-flight', { seq: seq + 1, step_kind: s.kind });
+    // refusal settles it (`admit`). A batch has none: a run that dies during
+    // it leaves the batch open, which the next run's step ends from the
+    // journal (Decision 5, item 10), where a marker would park the lane; the
+    // marker of the lane's creation is settled before it.
+    if (batch) await unmark(id);
+    else if (id && (inLane || DONE_KINDS.has(s.kind))) await mark(id, 'in-flight', { seq: seq + 1, step_kind: s.kind });
     const drift = await driftNow();
     if (drift.length > 0) return refuse({ reason: 'version-drift', detail: drift.join('; ') });
     // What changed while this admission awaited: a step ended (settled
@@ -1708,13 +1929,18 @@ export async function runLanes(c) {
       const g = gate();
       if (!g.start) { noteThrottle(g.why); return refuse(null); }
     }
-    const place = stepPlacement(s, { lanes, checkout: repoRoot, stateRoot });
+    const place = batch ? {} : stepPlacement(s, { lanes, checkout: repoRoot, stateRoot });
     if (place.problem) return refuse({ reason: 'owner-choice', detail: place.problem, subtaskId: id });
     if (gateOf(id)) return { ...refuse(null), again: false, held: true };
     const occupiedLast = inLane ? laneBusy(id, before) : false;
     if (occupiedLast) {
       holdBack(id, occupiedLast);
       return { ...refuse(null), again: false, busy: true };
+    }
+    if (batch) {
+      const child = view.children?.[id];
+      if (!inLane || !child?.path || !child.workflow_id) return refuse({ reason: 'owner-choice', detail: `subtask ${id}'s verification step has no lane or no workflow to run in`, subtaskId: id });
+      return startVerifyStep(s, held, view, before);
     }
     // The whole per-step timeout, however long the lane took to prepare: no
     // run clock takes from it (ADR-0063 D1, amendment of 2026-10-13).
@@ -1749,6 +1975,8 @@ export async function runLanes(c) {
         cwd, prompt: command, stepKind: s.kind, runId, seq: mine, roots, sessionId,
         stepBudgetUsd: reservation.usd, stepTimeoutSec: timeoutSec, model, effort, rawPath: workerStreamPath(runDir, mine), env,
         remotes: c.remotes, stateBase: place.stateBase, autopilotToken: c.token, onRateLimit,
+        // ADR-0068 Decision 5, item 11 — the run's offer, to every worker.
+        verifyBaseline: offer.offered ? offer.baseline : null,
         checkInit: checkInit(cwd),
         // ADR-0068 Decision 3 — the run's sampler and this step's recorder
         // of its verdicts (driver.mjs stallOf).
@@ -1953,8 +2181,19 @@ export async function runLanes(c) {
   // ---------------------------------------------------------------------
   // What a turn may start.
 
-  async function startWhatMay(d, view) {
+  async function startWhatMay(d0, view) {
     const res = { waitUntilSec: null, again: false };
+    // Verification steps go to the batch queue, outside the workers' room;
+    // each is admitted to its lane as a worker step is (`pumpVerify`).
+    const vsteps = d0.laneSteps.filter((x) => x.kind === 'verify');
+    const d = { ...d0, laneSteps: d0.laneSteps.filter((x) => x.kind !== 'verify') };
+    syncVerifyQueue(vsteps, view);
+    if ((await pumpVerify()).again) res.again = true;
+    if (vsteps.length > 0 && !verifyActive && inflight.size === 0) {
+      const spentOut = budget.exhausted();
+      if (spentOut) { drain({ reason: 'budget', detail: spentOut }); return res; }
+    }
+    if (draining || c.interrupted()) return res;
     const room = () => N - inflight.size;
     // A refusal that parks its lane leaves the wave going (ADR-0068
     // Decision 1, item 2); one that drains the run ends it.
@@ -2227,8 +2466,9 @@ export async function runLanes(c) {
     for (;;) {
       // Every step that ended is settled before anything new starts.
       while (ended.length > 0) await settle(ended.shift());
+      if (verifyActive?.result) await settleVerify(verifyActive);
       if (c.interrupted()) {
-        if (inflight.size > 0) { await nextEvent(); continue; }
+        if (inflight.size > 0 || verifyActive) { await nextEvent(); continue; }
         return await end('halted', asHalt({
           reason: 'interrupted',
           detail: draining ? `the owner interrupted the run while it drained after ${draining.reason}: ${draining.detail}` : 'the owner interrupted the run',
@@ -2236,7 +2476,7 @@ export async function runLanes(c) {
         }));
       }
       if (draining) {
-        if (inflight.size > 0) { await nextEvent(); continue; }
+        if (inflight.size > 0 || verifyActive) { await nextEvent(); continue; }
         // A lane's look after its step does not fetch, so the report holds
         // back a commit the stale tip calls ready (landing-ready.mjs), for a
         // later look that fetches; a drain takes no later look, so it takes
@@ -2284,11 +2524,16 @@ export async function runLanes(c) {
       // The lanes laneBusy held back, once a tick has passed since, are
       // decided again (`pollWake`).
       if (busyDue) { busy.clear(); busyDue = false; }
+      // ADR-0068 Decision 5 — what the policy takes from the journal and the
+      // lanes' trees, for a run that offers verification.
+      const vfacts = await verifyFacts({ view, mainRoot, laneOf: (id) => lanes.get(id)?.path ?? null, treeOf: verifyOps.treeDigest });
+      if (c.interrupted() || ended.length > 0 || verifyActive?.result) continue;
       const d = decideLanes(view, {
         inFlight: subtasksInFlight(), parked: new Set([...parked.keys(), ...busy, ...heldSubtasks(view)]), driverBusy: driverBusy(), lanes, started, forced, finalizeAttempted,
+        verify: { offered: offer.offered === true, why: offer.why ?? null, facts: vfacts },
       });
       if (d.outcome === 'completed') {
-        if (inflight.size > 0) { await nextEvent(); continue; }
+        if (inflight.size > 0 || verifyActive) { await nextEvent(); continue; }
         out(`[${seq + 1}] ${d.detail}`);
         return await end('completed');
       }
@@ -2296,7 +2541,7 @@ export async function runLanes(c) {
 
       const r = await startWhatMay(d, view);
       if (draining || c.interrupted()) continue;
-      if (inflight.size > 0 || ended.length > 0) { busyIdleSince = null; await nextEvent(); continue; }
+      if (inflight.size > 0 || ended.length > 0 || verifyActive) { busyIdleSince = null; await nextEvent(); continue; }
       if (r.waitUntilSec) {
         busyIdleSince = null;
         armReset(r.waitUntilSec);
@@ -2349,6 +2594,17 @@ export async function runLanes(c) {
     if (settling) pub.stepFailed(settling.seq, settling.subtaskId, 'error', settling.w?.aborted ?? null);
     const open = [...inflight.values()];
     for (const entry of open) if (running(entry)) entry.worker?.abort('interrupted');
+    // A verification batch in flight is cut short by the driver's end, and
+    // its checks' groups leave the locks as they end (verify-run.mjs).
+    const batch = verifyActive;
+    if (batch) {
+      batch.handle?.abort('interrupted');
+      await batch.handle?.done.catch(() => {});
+      try {
+        appendStep(runDir, { event: 'finished', seq: batch.seq, lane: batch.subtaskId, kind: 'verify', ended_at: new Date(now()).toISOString(), cost_usd: 0, cost_charged_usd: 0, outcome: 'error' });
+      } catch { /* the next run's journal recovery reads the batch */ }
+      verifyActive = null;
+    }
     await Promise.all(open.map((entry) => entry.done ?? Promise.resolve()));
     for (const entry of open) {
       try {
