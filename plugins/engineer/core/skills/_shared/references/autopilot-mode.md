@@ -77,6 +77,10 @@ write; the driver must also check that the installed engineer carries them
 - **Publish a next step with a peer still pending.** `finish-verb` refuses
   while `pending_ensemble` is non-empty.
 - **Sleep-poll for a peer.** See Peer ensembles below.
+- **Run a long check in a run that offers verification.** No whole test
+  suite, no broad `npm test`, no mutation run, and no wait for the heavy-work
+  lock in the step: hand them to the driver with the verify form (Verification
+  below).
 
 ## `next_step`
 
@@ -99,6 +103,41 @@ verb said `done` and nothing was ever committed. Phase 0 of every verb clears
 the next step first, and each Phase 0 and Phase 2 write stops the block when
 it fails, so a verb that stops before `finish-verb` leaves no next step, and
 the driver halts rather than repeat the previous verb.
+
+## Verification (ADR-0068 Decision 5)
+
+A run may offer verification: its driver runs long checks itself, with no
+LLM, between steps. Phase 0's preflight banner says whether this run does: its
+last sentence is `This run offers verification` or `This run does not offer
+verification` (`state.mjs autopilot-preflight` reads the offer the driver
+gives the step: `AGENTIC_AUTOPILOT_VERIFY`, the commit the run started from,
+with the step number and the repository's declaration at that commit). Under
+an offering run:
+
+- **The step runs only its quick checks** (a few test files the change
+  touches, minutes of work) and hands the long ones over: each verb's skill
+  says which are which (§ Long checks).
+- **The handoff is a request, not a proposal kind.** `verify` is not a
+  `selected_next` of the table above: the proposal still names the step that
+  follows the checks, which becomes the request's `on_pass`. The agent writes
+  `verify-request.json` in the finalize's text directory, and the finalize's
+  last write records it with the next step `verify` in one write
+  (`finish-verb --next-step-kind verify --verify-request-file`), after
+  checking it before any write (`state.mjs verify-request-check`).
+- **What follows.** When every check passed on the unchanged tree, the driver
+  dispatches `on_pass`; otherwise it resumes the requesting verb, whose
+  Phase 0 prints the results (`verify-results --format text`): each check's
+  outcome, whether it is evidence and applies to the tree now, its failing
+  tests and its log. Failing tests are the evidence to work from; a check with
+  no evidence (a timeout, one cut short or never reached) says nothing about
+  the code.
+- **Repeats.** The same checks recorded again on an unchanged tree, after they
+  all passed or one failed, halt the lane `no-progress` and run nothing; after
+  a batch that ended with no evidence they run again. A flaky check is rerun
+  only after a change, or by the owner (`--next verify`).
+
+A run that does not offer verification takes no request (`finish-verb`
+refuses one), and its steps check as before.
 
 ## Outcomes the driver reads
 
@@ -136,7 +175,10 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
 ```
 
 That records the gate and the next step in one write and leaves the workflow
-open: recording any gate turns an inherited terminal marker off. The Stop hook
+open: recording any gate turns an inherited terminal marker off. In a verb's
+Phase 2 finalize block, setting `OWNER_GATE` to the gate makes this the
+block's last write, with the anchor the table names; a note holding a gate's
+heading while `OWNER_GATE` is empty stops the block before any write. The Stop hook
 never archives a workflow with a gate pending, not even once its branch is
 gone, and `/engineer:commit` refuses to commit or close over one.
 
