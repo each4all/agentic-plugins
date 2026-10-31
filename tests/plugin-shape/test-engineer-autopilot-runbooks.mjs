@@ -21,7 +21,7 @@
 
 import { describe, it } from 'node:test';
 import { ok, strictEqual, deepStrictEqual } from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -94,7 +94,9 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
       const gen = generated(text, verb);
       const append = block.indexOf('state.mjs" append');
       const commit = block.indexOf(gen ? 'peer-runner.mjs" settle' : 'state.mjs" ensemble-commit');
-      const finish = block.indexOf('state.mjs" finish-verb');
+      // The verb form's finish-verb; with dispatch_target on, OWNER_GATE's
+      // owner-decision form comes first (C2-M1).
+      const finish = [...block.matchAll(/state\.mjs" finish-verb \\\n(?:[^\n]*\\\n)*?[^\n]*--next-step-kind (\S+)/g)].find((m) => m[1] === 'verb')?.index ?? -1;
       if (gen) {
         // R4 J2/J4: generated, the settle is the first write and the one judge
         // of the run, so a refusal stops the block before the phase note, and
@@ -176,9 +178,12 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
     // CONFLICT left unrecorded lets autopilot pick a direction only the owner can.
     if (generated(text, 'decide')) {
       // PC3 U7: the generated finalize names each gate with its heading and
-      // anchor above the block, and the block's owner-decision form takes it.
+      // anchor above the block. C2-M1: OWNER_GATE selects the block's
+      // owner-decision form, which takes the gate with its anchor
+      // (tests/persona-pipeline/test-verify-runbooks.mjs runs it).
       ok(/^- `decide-conflict` \(the `Ensemble synthesis` heading, anchor\n  `ensemble-synthesis`\): [^\n]*\n[^\n]*CONFLICT remained/m.test(phase2), phase2);
-      ok(/#   --next-step-kind owner-decision --next-step-confidence "\$CONFIDENCE" \\\n#   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' \|\| exit \$\?\n/.test(phase2), phase2);
+      ok(/^ {2}decide-conflict\) \[ 'decide' != decide \] \|\| OWNER_GATE_ANCHOR=ensemble-synthesis ;;$/m.test(phase2), phase2);
+      ok(/ {4}--next-step-kind owner-decision --next-step-confidence "\$CONFIDENCE" \\\n {6}--owner-gate "\$OWNER_GATE" --owner-gate-anchor "\$OWNER_GATE_ANCHOR" \|\| exit \$\?\n/.test(phase2), phase2);
     } else {
       ok(/#   --next-step-kind owner-decision --next-step-confidence "<HIGH\|MEDIUM\|LOW>" \\\n#   --owner-gate decide-conflict --owner-gate-anchor ensemble-synthesis\n/.test(phase2), phase2);
     }
@@ -203,7 +208,8 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
     // Contract: the agent finishing refine — the owner-decision form records the
     // gate and stops the block when the write fails.
     if (generated(text, 'refine')) {
-      ok(phase2.includes("#   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' || exit $?\n"), phase2);
+      ok(/^ {2}recurring-finding\) \[ 'refine' != refine \] \|\| OWNER_GATE_ANCHOR=recurring-finding ;;$/m.test(phase2), phase2);
+      ok(phase2.includes('    --owner-gate "$OWNER_GATE" --owner-gate-anchor "$OWNER_GATE_ANCHOR" || exit $?\n'), phase2);
     } else {
       ok(/#   --owner-gate recurring-finding --owner-gate-anchor recurring-finding\n/.test(phase2));
     }
@@ -226,6 +232,55 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
 // with no bypass flag and the driver modes are checked for every persona that
 // declares the capability on, in tests/persona-pipeline/test-runbook-contracts.mjs
 // and test-skill-contracts.mjs, and run in test-commit-runbook.mjs.
+
+// ADR-0068 Decision 5 (`verify-runbooks`): a verb hands its long checks to
+// the driver's verification step. The behaviour is run end to end in
+// tests/persona-pipeline/test-verify-runbooks.mjs; this pins where each
+// runbook makes the calls.
+describe('verb runbooks — the verify form (ADR-0068 Decision 5)', () => {
+  for (const verb of VERBS) {
+    it(`${verb}: the request is checked before the first write, and the verify form is the last write only when it was`, async () => {
+      const text = await read(`commands/${verb}.md`);
+      const block = bashBlocks(section(text, '## Phase 2 — State finalize')).find((b) => b.includes('state.mjs" finish-verb'));
+      const check = block.indexOf('state.mjs" verify-request-check');
+      const settle = block.indexOf('peer-runner.mjs" settle');
+      ok(check >= 0 && check < settle, 'verify-request-check runs before settle, the first write');
+      ok(/--next-step-confidence "\$CONFIDENCE" \\\n\s+--settling-run-id "\$RUN_ID" > \/dev\/null \\\n\s+\|\| \{ echo "✗ The last write would refuse verify-request\.json/.test(block.slice(check)), 'the check stops the block when it refuses');
+      const bind = block.indexOf('"$TEXT_DIR/finalize-verify.json" "$VERIFY_FILE"');
+      ok(bind > check && bind < settle, 'the form is kept in TEXT_DIR before settle');
+      // The verb form is the then branch, the verify form the else.
+      const calls = [...block.matchAll(/state\.mjs" finish-verb \\\n((?:[^\n]*\\\n)*[^\n]*\n)/g)].map((m) => ({ at: m.index, text: m[1] }));
+      const verbCall = calls.find((c) => c.text.includes('--next-step-kind verb '));
+      const verifyCall = calls.find((c) => c.text.includes('--next-step-kind verify '));
+      ok(verbCall && verifyCall && verbCall.at < verifyCall.at, 'the verb form, then the verify form');
+      const between = block.slice(block.lastIndexOf('if [ -z "$VERIFY_FORM" ]; then', verbCall.at), verifyCall.at);
+      ok(between.startsWith('if [ -z "$VERIFY_FORM" ]; then') && /\n\s*else\n/.test(between), 'if no request was checked, the verb form; else the verify form');
+      for (const flag of ['--operation-dir "$OP_DIR"', '--next-action-file "$TEXT_DIR/next-action.txt"', '--next-step-kind verify --next-step-confidence "$CONFIDENCE"', '--verify-request-file "$VERIFY_FILE" || exit $?']) {
+        ok(verifyCall.text.includes(flag), `${flag}: ${verifyCall.text}`);
+      }
+      ok(!/--next-step-verb|--terminal-marker|--owner-gate/.test(verifyCall.text), verifyCall.text);
+    });
+
+    it(`${verb}: the resume prints the recorded results after its append, and a failed read only warns`, async () => {
+      const resume = bashBlocks(section(await read(`commands/${verb}.md`), '## Phase 0')).find((b) => b.includes('state.mjs" append'));
+      const append = resume.indexOf('state.mjs" append');
+      const results = resume.indexOf('state.mjs" verify-results');
+      ok(results > append, 'after the append');
+      ok(/verify-results \\\n\s+--workflow-path "\$ACTIVE" --current-tree true --format text \\\n\s+\|\| echo "⚠ /.test(resume.slice(results)), 'read against the tree now; a failed read warns and the block goes on');
+    });
+  }
+
+  it('no runbook block runs the whole suite or a mutation run in a step', async () => {
+    const commands = (await readdir(resolve(ENG, 'commands'))).filter((f) => f.endsWith('.md'));
+    ok(commands.length >= VERBS.length + 4, 'every engineer runbook is read');
+    for (const file of commands) {
+      const verb = file.replace(/\.md$/, '');
+      for (const block of bashBlocks(await read(`commands/${file}`))) {
+        ok(!/(?:^|[;&|(]\s*|\s)npm (?:test|run (?:mutate|mutate:static))\b/m.test(block), `${verb}: ${block.slice(0, 200)}`);
+      }
+    }
+  });
+});
 
 describe('owner-gate anchors', () => {
   it('every owner-gate anchor the runbooks and scripts record is the one the routing contract tables', async () => {

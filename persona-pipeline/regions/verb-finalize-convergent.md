@@ -126,7 +126,8 @@ item, `RESOLVE_VERB` in the block (`refine`, `decide` or `investigate`), and
 turns off a terminal marker an earlier verb left, so the workflow stays open
 and the Stop hook cannot archive it; its `next-action.txt` is the one step 2
 describes for that case. Not converged, a `RESOLVE_VERB` left unfilled stops
-the block before any write.
+the block before any write. An owner gate named in `OWNER_GATE`, where the
+block has one, is the last write either way.
 
 The last write, `finish-verb`, records the proposal's next step in closed-enum
 {{^capability commit_surface}}
@@ -168,6 +169,58 @@ write, `finish-verb` (or, where this block has one, the write that keeps the
 workflow open), closes there the persona operation Phase 0 opened when the
 workflow is a macro's child (ADR-0068 Decision 2, item 7). A value left
 unfilled stops the block before any write.
+
+**The verify form** (ADR-0068 Decision 5). Under an autopilot run that offers
+verification (Phase 0's preflight banner says so: `This run offers
+verification`), the long checks this verb's change
+needs are not run in its step: the driver runs them, with no LLM, after the
+step ends (§ Long checks in `/{{persona}}:compose`, `/{{persona}}:refine` and
+`/{{persona}}:critique` says which are long).
+To hand them over, write `verify-request.json` in the text directory with your
+file-writing tool before the block; the block then ends with the next step
+`verify` and the request, in place of the verb form. The request is JSON: an
+ordered list of `checks`, each a `kind` the repository declares
+(`.agentic-plugins/verify-checks.json` at the run's baseline) with its `args`
+as data (the files of the tested tree a check names, a mutation spec and its
+case ids); `on_pass`, the next step once every check passed on the unchanged
+tree (`verb` with its `verb`, `commit` or `done`, and its confidence); and
+`confidence`, which is the proposal's and `CONFIDENCE`'s. For example:
+
+```json
+{
+  "checks": [
+    { "kind": "test", "args": { "files": ["tests/persona-pipeline/test-verify-record.mjs"] } },
+    { "kind": "mutate", "args": { "spec": "scripts/mutation-specs/verify-runbooks.mjs", "ids": ["K1", "F1"] } }
+  ],
+  "on_pass": { "kind": "verb", "verb": "critique", "confidence": "HIGH" },
+  "confidence": "HIGH"
+}
+```
+
+Then `next-action.txt` names the verification (for example `Verify: the
+changed tests and the mutation cases, then critique`). When every check
+passed, the driver dispatches `on_pass`; otherwise it resumes this verb, whose
+Phase 0 prints the results. The block checks the request before its first
+write with the last write's own checks (`state.mjs verify-request-check`), so
+a request it would refuse (a run that offers no verification, a kind not
+declared, a path not in the tree, a confidence that is not `CONFIDENCE`)
+stops it with nothing written: fix the request, or remove the file to end
+with the verb form. A conflict takes no request, and neither does any other
+owner gate: a step that ends on its owner's judgment writes no
+`verify-request.json`, since the driver would otherwise run the checks and
+then `on_pass` past the judgment. Set `OWNER_GATE` in the block to the gate
+whenever the step ends on one: the last write is then the owner-decision
+form, which records that gate with the anchor the gate list above names, in
+place of the verb or verify form. A gate this verb does not end on with it, a
+request beside it, and a note that holds the heading of `recurring-finding`,
+`scope-routing` or `pr-handling` while `OWNER_GATE` is empty each stop the
+block before any write. Once every other check has passed, just before
+settle, the block keeps the form it took in the text directory
+(`finalize-verify.json`: the request's sha256, or none), so a run those checks
+stop keeps none and may add a request: run again with the same `TEXT_DIR`
+after a write, it takes the same form and the same request, and a request
+added, removed or changed since stops it before any write. With no `verify-request.json`, the block ends with the verb form as
+always.
 {{/capability}}
 
 ```bash
@@ -183,6 +236,9 @@ CONVERGED="<yes|no — from the re-critique verdict; unset means no>"
 RESOLVE_VERB='<refine|decide|investigate — the next step that resolves the flagged item, when not converged>'
 {{#capability dispatch_target}}
 OP_DIR='<the operation directory the Phase 0 block printed as OP_DIR; empty when it printed none>'
+# The owner gate this step ends on, when it ends on one; empty otherwise.
+# Naming it selects the last write's owner-decision form, which records it.
+OWNER_GATE=''
 {{/capability}}
 ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
@@ -216,6 +272,28 @@ if [ "${CONVERGED:-no}" != "yes" ]; then
     *) echo "✗ CONVERGED is not yes, and RESOLVE_VERB is not refine, decide or investigate, the next step that resolves the flagged item; nothing was written." >&2; exit 1 ;;
   esac
 fi
+{{#capability dispatch_target}}
+# The owner gate selects the last write's owner-decision form, with the anchor
+# the gate list names; a gate this verb does not end on with it stops the block
+# here, before settle, its first write. A note holding a gate's heading names
+# a gate too: with OWNER_GATE empty the verb form would close the step past
+# the owner's judgment, so it stops the block as well. A heading indented by up
+# to three spaces, or with more than one space or a tab after its ###, is still
+# one (CommonMark); one quoted in a fenced example
+# matches too, a limit that fails closed (the block stops, nothing written).
+OWNER_GATE_ANCHOR=''
+case "$OWNER_GATE" in
+  '') ;;
+  scope-routing) OWNER_GATE_ANCHOR=routing-recommendation ;;
+  pr-handling) OWNER_GATE_ANCHOR=pr-handling ;;
+  recurring-finding) [ {{verb}} != refine ] || OWNER_GATE_ANCHOR=recurring-finding ;;
+  decide-conflict) [ {{verb}} != decide ] || OWNER_GATE_ANCHOR=ensemble-synthesis ;;
+esac
+[ -z "$OWNER_GATE" ] || [ -n "$OWNER_GATE_ANCHOR" ] \
+  || { echo "✗ OWNER_GATE is $OWNER_GATE, which is not a gate this verb ends on with the owner-decision form (the gate list above names them); nothing was written." >&2; exit 1; }
+[ -n "$OWNER_GATE" ] || ! grep -Eq '^ {0,3}###[[:blank:]]+(Recurring finding|Routing recommendation|Outward action needed)([[:space:]]|$)' "$TEXT_DIR/note.md" 2>/dev/null \
+  || { echo "✗ note.md in TEXT_DIR ($TEXT_DIR) records an owner gate (its heading), but OWNER_GATE is empty: set OWNER_GATE to that gate, and the last write records it. Nothing was written." >&2; exit 1; }
+{{/capability}}
 # The run's id, from the result the runner wrote beside the dispatch's prompt,
 # or, when DISPATCH_DIR is the run's own ledger directory (no result there,
 # its handle.json instead), from that handle, the directory naming the run. An empty
@@ -270,6 +348,29 @@ case $? in
   8) echo "✗ Could not keep the run in TEXT_DIR ($TEXT_DIR) as finalize-run.json; nothing was written." >&2; exit 1 ;;
   *) echo "✗ Could not check finalize-run.json in TEXT_DIR ($TEXT_DIR); nothing was written." >&2; exit 1 ;;
 esac
+{{#capability dispatch_target}}
+# ADR-0068 Decision 5 — the verify form: a request the agent wrote in
+# TEXT_DIR (verify-request.json) makes the last write record it with the next
+# step verify, in place of the verb form. It is checked here with the last
+# write's own checks (verify-request-check; the run settle pops first is not
+# counted), before settle, the first write, so a request the last write would
+# refuse stops the block with nothing written; a conflict takes none, nor
+# does an owner gate (OWNER_GATE, which a note holding a gate's heading has
+# already required above), and an entry the check cannot read (a dangling
+# link) refuses too. The form is kept just before settle (below).
+VERIFY_FILE="$TEXT_DIR/verify-request.json"
+VERIFY_FORM=''
+if [ -e "$VERIFY_FILE" ] || [ -L "$VERIFY_FILE" ]; then
+  VERIFY_FORM=verify
+  [ "$VERDICT" != conflict ] || { echo "✗ verify-request.json is in TEXT_DIR ($TEXT_DIR), but VERDICT is conflict: a conflict ends on its gate and takes no request. Remove the file; nothing was written." >&2; exit 1; }
+  [ -z "$OWNER_GATE" ] || { echo "✗ verify-request.json is in TEXT_DIR ($TEXT_DIR), but OWNER_GATE is $OWNER_GATE: a step that ends on its owner's judgment takes no request, or the driver would run on past it. Remove the file, and the owner-decision form records the gate; nothing was written." >&2; exit 1; }
+  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" verify-request-check \
+    --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+    --request-file "$VERIFY_FILE" --next-step-confidence "$CONFIDENCE" \
+    --settling-run-id "$RUN_ID" > /dev/null \
+    || { echo "✗ The last write would refuse verify-request.json in TEXT_DIR ($TEXT_DIR), for the reason above; nothing was written. Fix the request, or remove it to end with the verb form, and run this block again." >&2; exit 1; }
+fi
+{{/capability}}
 # The texts the agent wrote with its file tool (ADR-0059, amendment of
 # 2026-10-10): each script reads its file itself, so no line of the note is
 # shell source. The append reads the note only after settle has written,
@@ -279,6 +380,21 @@ esac
 for TEXT_FILE in note.md summary.txt next-action.txt; do
   node -e 'let t;try{t=new TextDecoder("utf-8",{fatal:true}).decode(require("fs").readFileSync(process.argv[1]))}catch{process.exit(1)}process.exit(t.includes("\0")||t.trim()===""?1:0)' "$TEXT_DIR/$TEXT_FILE" || { echo "✗ $TEXT_FILE in TEXT_DIR ($TEXT_DIR) is missing, blank or not UTF-8 text; write it with the file tool first. Nothing was written." >&2; exit 1; }
 done
+{{#capability dispatch_target}}
+# The verify form, kept in TEXT_DIR (finalize-verify.json: the request's
+# sha256, or null for the verb form) at the first run, after every check
+# above, so a run they stop keeps no form and runs again with a request added:
+# run again after a write, the block takes the same form and the same request,
+# and a request added, removed or changed since (exit 3) stops it before any
+# write.
+node -e 'const [rec,f]=process.argv.slice(1);const fs=require("fs");let now=null;try{now=require("crypto").createHash("sha256").update(fs.readFileSync(f)).digest("hex")}catch(e){if(!(e&&e.code==="ENOENT"))process.exit(1)}let m;try{m=JSON.parse(fs.readFileSync(rec,"utf8"))}catch(e){if(!(e&&e.code==="ENOENT"))process.exit(7);try{fs.writeFileSync(rec,JSON.stringify({request_sha256:now})+"\n")}catch{process.exit(8)}process.exit(0)}if(m===null||typeof m!=="object"||!(m.request_sha256===null||typeof m.request_sha256==="string"&&/^[0-9a-f]{64}$/.test(m.request_sha256)))process.exit(7);process.exit(m.request_sha256===now?0:3)' "$TEXT_DIR/finalize-verify.json" "$VERIFY_FILE"
+case $? in
+  0) ;;
+  3) echo "✗ finalize-verify.json in TEXT_DIR ($TEXT_DIR), left by an earlier run of this block, keeps another form than verify-request.json there gives now (the request was added, removed or changed since); nothing was written. Put the request back as it was, or finalize from a fresh TEXT_DIR." >&2; exit 1 ;;
+  7) echo "✗ finalize-verify.json in TEXT_DIR ($TEXT_DIR) is malformed; nothing was written. Use a fresh TEXT_DIR for each finalize." >&2; exit 1 ;;
+  *) echo "✗ Could not read verify-request.json, or keep the form as finalize-verify.json, in TEXT_DIR ($TEXT_DIR); nothing was written." >&2; exit 1 ;;
+esac
+{{/capability}}
 
 # ADR-0066 PC2b — settle the ensemble attempt from its ledger (never launched,
 # launched and failed, completed). It is the first write and the one judge of
@@ -302,6 +418,29 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
 # FAIL-CLOSED: only a CONVERGED of yes, assigned at the top of the block,
 # closes the verb.
 if [ "${CONVERGED:-no}" = "yes" ]; then
+  {{#capability dispatch_target}}
+  # The owner-decision form when OWNER_GATE names a gate; otherwise, ADR-0068
+  # Decision 5, the verb form unless a request was checked above, and the
+  # verify form after the last else.
+  if [ -n "$OWNER_GATE" ]; then
+    # The gate and the next step owner-decision in one write: the workflow
+    # stays open until the owner resolves the gate.
+    # A limit (ADR-0068 VR6): interactively, with another owner gate already
+    # pending, this write refuses after settle and the note, so a rerun appends
+    # the note again; an autopilot run's preflight refuses a pending gate first.
+    # ARCHIVE TIMING — with an owner gate this write is never terminal, so the
+    # Stop hook, which fires at EVERY turn end on Claude, leaves the workflow
+    # active (it refuses to archive while a gate is pending); the
+    # `--terminal-marker false` escape is not needed. On Codex the Stop hook runs
+    # only once the plugin hooks are trusted (`/hooks`).
+    node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
+      --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+      --operation-dir "$OP_DIR" \
+      --next-action-file "$TEXT_DIR/next-action.txt" \
+      --next-step-kind owner-decision --next-step-confidence "$CONFIDENCE" \
+      --owner-gate "$OWNER_GATE" --owner-gate-anchor "$OWNER_GATE_ANCHOR" || exit $?
+  elif [ -z "$VERIFY_FORM" ]; then
+  {{/capability}}
   # ADR-0029 §1 / completion-output contract §2 — next-action.txt, which the
   # append above and this terminal write record, holds the COMPACT form of the
   # proposal above (selected_next + one-line why + next_command) so the
@@ -343,7 +482,47 @@ if [ "${CONVERGED:-no}" = "yes" ]; then
     --next-action-file "$TEXT_DIR/next-action.txt" \
     --next-step-kind verb --next-step-verb {{next_verb}} \
     --next-step-confidence "$CONFIDENCE" || exit $?
+  {{#capability dispatch_target}}
+  else
+    # The verify form: the request and the next step verify in one write; the
+    # driver runs the checks, then dispatches the request's on_pass, or resumes
+    # this verb with the results.
+    # ARCHIVE TIMING — this write is never terminal (an autopilot run only, and
+    # it turns the marker off), so the Stop hook, which fires at EVERY turn end
+    # on Claude, leaves the workflow active; the `--terminal-marker false`
+    # escape is not needed. On Codex no run offers verification.
+    node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
+      --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+      --operation-dir "$OP_DIR" \
+      --next-action-file "$TEXT_DIR/next-action.txt" \
+      --next-step-kind verify --next-step-confidence "$CONFIDENCE" \
+      --verify-request-file "$VERIFY_FILE" || exit $?
+  fi
+  {{/capability}}
 else
+  {{#capability dispatch_target}}
+  # Not converged, a named owner gate is still the last write. A limit
+  # (ADR-0068 VR6), latent while no persona renders this variant with
+  # dispatch_target: a checked verify-request.json is not recorded here.
+  if [ -n "$OWNER_GATE" ]; then
+    # The gate and the next step owner-decision in one write: the workflow
+    # stays open until the owner resolves the gate.
+    # A limit (ADR-0068 VR6): interactively, with another owner gate already
+    # pending, this write refuses after settle and the note, so a rerun appends
+    # the note again; an autopilot run's preflight refuses a pending gate first.
+    # ARCHIVE TIMING — with an owner gate this write is never terminal, so the
+    # Stop hook, which fires at EVERY turn end on Claude, leaves the workflow
+    # active (it refuses to archive while a gate is pending); the
+    # `--terminal-marker false` escape is not needed. On Codex the Stop hook runs
+    # only once the plugin hooks are trusted (`/hooks`).
+    node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
+      --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+      --operation-dir "$OP_DIR" \
+      --next-action-file "$TEXT_DIR/next-action.txt" \
+      --next-step-kind owner-decision --next-step-confidence "$CONFIDENCE" \
+      --owner-gate "$OWNER_GATE" --owner-gate-anchor "$OWNER_GATE_ANCHOR" || exit $?
+  else
+  {{/capability}}
   # Not converged: the workflow stays open, with the next step that resolves
   # the flagged item, and a terminal marker an earlier verb left turned off.
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
@@ -357,16 +536,18 @@ else
     --next-step-confidence "$CONFIDENCE" \
     --clear-terminal-marker true --event updated || exit $?
   echo "→ PAUSED (not converged): the workflow stays open, not terminal. Resolve the flagged item, then run the next step recorded above." >&2
+  {{#capability dispatch_target}}
+  fi
+  {{/capability}}
 fi
+{{^capability dispatch_target}}
 # The owner-decision form, for an owner gate named above this block: it
 # records the gate with the next step in one write, and the workflow stays
 # open until the owner resolves the gate.
 # node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
 #   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-{{#capability dispatch_target}}
-#   --operation-dir "$OP_DIR" \
-{{/capability}}
 #   --next-action-file "$TEXT_DIR/next-action.txt" \
 #   --next-step-kind owner-decision --next-step-confidence "$CONFIDENCE" \
 #   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' || exit $?
+{{/capability}}
 ```

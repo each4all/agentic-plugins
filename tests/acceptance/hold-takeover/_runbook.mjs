@@ -109,7 +109,7 @@ export function dispatchEnsemble(lane, env) {
 // A verb's Phase 2 finalize (compose's unless named; no run launched, or the
 // run dispatched from `dispatchDir`). Its finish-verb records the runbook's
 // typical next step, or `next`: { verb }, { commit: true } or { gate: true }
-// (the owner-decision form, gate scope-routing).
+// (OWNER_GATE scope-routing, which selects the owner-decision form).
 export function finalize(lane, env, opDir, next = {}, dispatchDir = '', verb = 'compose') {
   const note = `### Ensemble skipped: ${verb} (local-only)\n\nlocal${next.gate ? '\n\n### Routing recommendation\n\nThis belongs in another subtask.' : ''}`;
   let block = fill(regionBlock(`commands/${verb}.md`, `${verb}-finalize`), [
@@ -122,7 +122,7 @@ export function finalize(lane, env, opDir, next = {}, dispatchDir = '', verb = '
   const typical = /--next-step-kind verb --next-step-verb '[a-z]+'( \\\n\s*--next-step-confidence "\$CONFIDENCE")/;
   ok(typical.test(block), 'the typical finish-verb');
   if (next.commit) block = block.replace(typical, '--next-step-kind commit$1');
-  else if (next.gate) block = block.replace(typical, "--next-step-kind owner-decision$1 --owner-gate 'scope-routing' --owner-gate-anchor 'routing-recommendation'");
+  else if (next.gate) block = fill(block, [["OWNER_GATE=''", "OWNER_GATE='scope-routing'"]]);
   else if (next.verb) block = block.replace(typical, `--next-step-kind verb --next-step-verb '${next.verb}'$1`);
   return runBlock(lane, block, env);
 }

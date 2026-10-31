@@ -1502,7 +1502,10 @@ export const MUTATIONS = [
     id: 'M1', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, edits: [
       { from: COMMIT_STEP, to: '' },
-      { from: '  --next-step-confidence "$CONFIDENCE" || exit $?\n# The owner-decision form', to: `  --next-step-confidence "$CONFIDENCE" || exit $?\n\n${COMMIT_STEP.trimEnd()}\n# The owner-decision form` },
+      // verify-runbooks: the terminal write now ends with the owner-decision,
+      // verb and verify forms' branch (dispatch_target on), so the settle
+      // moves after all three.
+      { from: '    --verify-request-file "$VERIFY_FILE" || exit $?\nfi\n{{/capability}}\n{{^capability dispatch_target}}\n# The owner-decision form', to: `    --verify-request-file "$VERIFY_FILE" || exit $?\nfi\n{{/capability}}\n\n${COMMIT_STEP.trimEnd()}\n{{^capability dispatch_target}}\n# The owner-decision form` },
     ] }),
     killed_by: templateCaught(FINALIZE, FINALIZE_ORDER),
     why: 'the terminal write runs before settle: the workflow archives with its ensemble attempt still unsettled',

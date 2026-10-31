@@ -301,6 +301,100 @@ export const MUTATIONS = [
     }
   });
 
+  // Measured in an autopilot verify batch: `--only R3` of
+  // consensus-proposal.mjs ran a control over the spec default's seven files,
+  // though R3 is scored against one of its own, and the control passed the
+  // 900 s timeout with no verdict.
+  it("runs the control over the selected cases' files only, the spec default for a case that names none", async () => {
+    const root = makeScoringRepo();
+    const workDirs = [1, 2, 3].map((n) => join(root, '..', `harness-work-only${n}-${process.pid}`));
+    // A file only the spec default names, broken: a control that ran it fails.
+    write(
+      root,
+      'tests/test-default-only.mjs',
+      "import { test } from 'node:test';\n"
+      + "test('default only', () => { throw new Error('only the spec default names this suite'); });\n",
+    );
+    write(
+      root,
+      'tests/test-own.mjs',
+      "import { test } from 'node:test';\n"
+      + "import { strictEqual } from 'node:assert/strict';\n"
+      + "import { VALUE } from '../src/value.mjs';\n"
+      + "test('own value is 1', () => strictEqual(VALUE, 1));\n",
+    );
+    write(root, 'spec.mjs', `
+export const TESTS = ['tests/test-value.mjs', 'tests/test-default-only.mjs'];
+export const MUTATIONS = [
+  { id: 'K', file: 'src/value.mjs', from: 'VALUE = 1', to: 'VALUE = 2',
+    tests: ['tests/test-own.mjs'], why: 'scored against its own file alone' },
+  { id: 'D', file: 'src/value.mjs', from: 'VALUE = 1', to: 'VALUE = 2',
+    why: 'scored against the spec default' },
+  { id: 'B', file: 'src/value.mjs', from: 'VALUE = 1', to: 'VALUE = 2',
+    tests: ['tests/test-default-only.mjs'], why: 'scored against a broken file of its own' },
+];
+`);
+    try {
+      const lines = [];
+      const { results } = await runSpec(join(root, 'spec.mjs'), { repoRoot: root, workDir: workDirs[0], only: ['K'], log: (l) => lines.push(l) });
+      deepStrictEqual(results.map((r) => [r.id, r.verdict]), [['K', 'KILLED']]);
+      ok(lines.some((l) => /^CONTROL\s+exit=0\s+failing=0\s+files=1$/.test(l)), lines.join('\n'));
+      // The case that names no file is scored against the default, so its
+      // control runs the broken file and refuses.
+      await rejects(
+        () => runSpec(join(root, 'spec.mjs'), { repoRoot: root, workDir: workDirs[1], only: ['D'], log: () => {} }),
+        (err) => err instanceof MutationHarnessError && /UNMUTATED copy is not green/.test(err.message),
+      );
+      // Two selected cases: the control runs both sets, the second's broken
+      // file included, not only the first case's.
+      await rejects(
+        () => runSpec(join(root, 'spec.mjs'), { repoRoot: root, workDir: workDirs[2], only: ['K', 'B'], log: () => {} }),
+        (err) => err instanceof MutationHarnessError && /UNMUTATED copy is not green/.test(err.message),
+      );
+    } finally {
+      for (const d of workDirs) rmSync(d, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // `node --test` with no file discovers the whole suite, a set the control
+  // never ran: a case scored against none would be KILLED by any failure in it.
+  it('refuses a selected case scored against no test file, beside one that names a passing file', async () => {
+    const root = makeScoringRepo();
+    const workDirs = [1, 2].map((n) => join(root, '..', `harness-work-bare${n}-${process.pid}`));
+    // A failure only discovery reaches: it would score the bare case KILLED.
+    write(
+      root,
+      'tests/test-broken-elsewhere.mjs',
+      "import { test } from 'node:test';\n"
+      + "test('elsewhere', () => { throw new Error('a failure the mutation did not cause'); });\n",
+    );
+    write(root, 'spec.mjs', `
+export const TESTS = ['tests/test-value.mjs'];
+export const MUTATIONS = [
+  { id: 'K', file: 'src/value.mjs', from: 'VALUE = 1', to: 'VALUE = 2',
+    why: 'scored against the spec default' },
+  { id: 'E', file: 'src/value.mjs', from: 'a comment nobody asserts on', to: 'a different comment',
+    tests: [], why: 'scored against no file' },
+];
+`);
+    try {
+      const lines = [];
+      await rejects(
+        () => runSpec(join(root, 'spec.mjs'), { repoRoot: root, workDir: workDirs[0], log: (l) => lines.push(l) }),
+        (err) => err instanceof MutationHarnessError && /scores E against no test file/.test(err.message),
+      );
+      ok(!lines.some((l) => /^CONTROL/.test(l)), `refused before the control: ${lines.join('\n')}`);
+      // The static pass refuses what a run would.
+      const { specs, drift } = await checkSpecs([join(root, 'spec.mjs')], { repoRoot: root, workDir: workDirs[1], log: () => {} });
+      ok(/scores E against no test file/.test(specs[0].error), specs[0].error);
+      strictEqual(drift, 1);
+    } finally {
+      for (const d of workDirs) rmSync(d, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // A nonzero exit is not evidence that the intended contract caught the
   // defect; killed_by names the test that must (PC2a2 T8).
   it('killed_by: a kill counts only when a named test fails, nested names included', async () => {

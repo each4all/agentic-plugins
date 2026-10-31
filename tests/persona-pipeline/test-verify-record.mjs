@@ -2926,6 +2926,122 @@ for (const persona of personasFor('scripts/state.mjs')) {
       });
     });
   });
+
+  // `verify-runbooks`: a finalize runs verify-request-check before its first
+  // write, so the check must refuse exactly what finish-verb refuses, with its
+  // message, and write nothing. (A persona with dispatch_target off left the
+  // loop above: it renders no verify form.)
+  describe(`${persona}: verify-request-check refuses what finish-verb --next-step-kind verify refuses, writing nothing`, () => {
+    const check = (wf, dir, sha, input = REQ, { env = offerEnv(sha), host = 'claude', cwd = dir, confidence = input.confidence ?? 'HIGH', settling = null } = {}) => S.checkVerifyRequest({
+      workflowPath: wf, host, nextStep: { kind: 'verify', confidence }, input, env, cwd, settling,
+    });
+    const messageOf = async (p) => { try { await p; return null; } catch (err) { return err.message; } };
+
+    it('each refusal of finish-verb, with the same message; an accepted request passes both, with one id', async () => {
+      const withFile = (f) => ({ ...REQ, checks: [{ kind: 'test', args: { files: [f] } }] });
+      const cases = [
+        ['interactive', {}, (o) => ({ ...o, env: {} })],
+        ['on Codex', {}, (o) => ({ ...o, host: 'codex' })],
+        ['no offer', {}, (o) => ({ ...o, env: offerEnv(o.sha, { AGENTIC_AUTOPILOT_VERIFY: 'f'.repeat(40) }) })],
+        ['no step number', {}, (o) => ({ ...o, env: Object.fromEntries(Object.entries(offerEnv(o.sha)).filter(([k]) => k !== 'AGENTIC_AUTOPILOT_STEP')) })],
+        ['bad structure', { input: { checks: 'all', on_pass: REQ.on_pass, confidence: 'HIGH' } }, (o) => o],
+        ['confidence mismatch', {}, (o) => ({ ...o, confidence: 'MEDIUM' })],
+        ['undeclared kind', { input: { ...REQ, checks: [{ kind: 'rm-rf' }] } }, (o) => o],
+        ['path not in the tree', { input: withFile('tests/gone.mjs') }, (o) => o],
+        ['path outside the alphabet', { input: withFile('tests/a;b.mjs') }, (o) => o],
+        ['on_pass verify', { input: { ...REQ, on_pass: { kind: 'verify', confidence: 'HIGH' } } }, (o) => o],
+        // The kind resolves with null args as with none, but the record would
+        // keep null, which its reader refuses: the check holds the record to
+        // that reader too.
+        ['args null', { input: { ...REQ, checks: [{ kind: 'lint-plugin-shape', args: null }] } }, (o) => o],
+      ];
+      for (const [label, { input = REQ }, shape] of cases) {
+        await withWorkflow(async ({ wf, dir, sha }) => {
+          const o = shape({ sha, env: offerEnv(sha), host: 'claude', cwd: dir, confidence: input.confidence ?? 'HIGH' });
+          const before = await readFile(wf, 'utf8');
+          const checked = await messageOf(check(wf, dir, sha, input, o));
+          const written = await messageOf(S.finishVerb({
+            workflowPath: wf, host: o.host, nextAction: 'Verify the change',
+            nextStep: { kind: 'verify', confidence: o.confidence }, verifyRequest: input, env: o.env, cwd: o.cwd,
+          }));
+          ok(checked !== null, `${label}: the check refuses`);
+          strictEqual(checked, written, `${label}: the check's message is finish-verb's`);
+          strictEqual(await readFile(wf, 'utf8'), before, `${label}: nothing was written`);
+        });
+      }
+      await withWorkflow(async ({ wf, dir, sha }) => {
+        const before = await readFile(wf, 'utf8');
+        const r = await check(wf, dir, sha);
+        strictEqual(await readFile(wf, 'utf8'), before, 'the check writes nothing');
+        await finish(wf, dir, sha);
+        strictEqual(r.request_id, (await read(wf)).verify_request.id, 'the id the check names is the one finish-verb records');
+      });
+    });
+
+    it('a request over the byte cap: the check refuses it with finish-verb\'s message, writing nothing', async () => {
+      await withWorkflow(async ({ wf, dir, sha }) => {
+        // Files of the tree, so only the size rule refuses the request.
+        const files = Array.from({ length: 350 }, (_, i) => `tests/over-the-cap-${String(i).padStart(3, '0')}-${'x'.repeat(30)}.mjs`);
+        for (const f of files) await writeFile(join(dir, f), '// fixture\n');
+        const big = { ...REQ, checks: [{ kind: 'test', args: { files } }] };
+        const before = await readFile(wf, 'utf8');
+        const m = await messageOf(check(wf, dir, sha, big));
+        ok(/the request takes more than 16384 bytes/.test(String(m)), String(m));
+        strictEqual(m, await messageOf(finish(wf, dir, sha, big)));
+        strictEqual(await readFile(wf, 'utf8'), before);
+      });
+    });
+
+    it('the workflow\'s state: terminal, an owner gate and a pending peer run refuse; the run being settled is not counted', async () => {
+      await withWorkflow(async ({ wf, dir, sha }) => {
+        await S.setAwaitingOwner({ workflowPath: wf, host: 'claude', gate: 'scope-routing', anchor: 'routing' });
+        const m = await messageOf(check(wf, dir, sha));
+        ok(/owner gate scope-routing is set/.test(String(m)), String(m));
+        strictEqual(m, await messageOf(finish(wf, dir, sha)));
+      });
+      await withWorkflow(async ({ wf, dir, sha }) => {
+        await S.recordPendingEnsemble({ workflowPath: wf, phase: 'compose', ensemble_type: 'plan-verify', run_id: 'r1', started_at: '2026-10-20T01:00:00Z' });
+        const m = await messageOf(check(wf, dir, sha));
+        strictEqual(m, await messageOf(finish(wf, dir, sha)));
+        ok(/a peer ensemble is still pending \(r1\)/.test(String(m)), String(m));
+        // The finalize settles r1 before its last write: only that entry is
+        // set aside, and any other still refuses.
+        strictEqual((await check(wf, dir, sha, REQ, { settling: 'r1' })).ok, true);
+        await rejects(check(wf, dir, sha, REQ, { settling: 'r2' }), /a peer ensemble is still pending \(r1\)/);
+        await rejects(check(wf, dir, sha, REQ, { settling: '' }), /a peer ensemble is still pending \(r1\)/);
+      });
+      await withWorkflow(async ({ wf, dir, sha }) => {
+        await S.setTerminal({ workflowPath: wf, host: 'claude', terminalPhase: 'summary-complete', env: {} });
+        const m = await messageOf(check(wf, dir, sha));
+        ok(/the workflow is terminal/.test(String(m)), String(m));
+        strictEqual(m, await messageOf(finish(wf, dir, sha)));
+      });
+    });
+
+    it('the CLI: verify-request-check prints the id and exits 0, or exits 1 with the message, writing nothing', async () => {
+      await withWorkflow(async ({ wf, dir, sha }) => {
+        const file = join(dir, '..', `${persona}-${Date.now()}-check.json`);
+        repos.push(file);
+        await writeFile(file, JSON.stringify(REQ));
+        const before = await readFile(wf, 'utf8');
+        const cli = (env, ...more) => spawnSync(process.execPath, [STATE_PATH, 'verify-request-check', '--workflow-path', wf, '--host', 'claude', '--request-file', file, ...more], {
+          cwd: dir, encoding: 'utf8', env: { ...gitEnv(), ...env },
+        });
+        const ok1 = cli(offerEnv(sha), '--next-step-confidence', 'HIGH');
+        strictEqual(ok1.status, 0, ok1.stderr);
+        strictEqual(JSON.parse(ok1.stdout).ok, true);
+        const low = cli(offerEnv(sha), '--next-step-confidence', 'LOW');
+        strictEqual(low.status, 1);
+        ok(/is not the request's confidence HIGH/.test(low.stderr), low.stderr);
+        const off = cli({}, '--next-step-confidence', 'HIGH');
+        strictEqual(off.status, 1);
+        ok(/next step verify is refused: missing an autopilot run/.test(off.stderr), off.stderr);
+        const missing = cli(offerEnv(sha));
+        ok(missing.status !== 0 && /--next-step-confidence/.test(missing.stderr), missing.stderr);
+        strictEqual(await readFile(wf, 'utf8'), before);
+      });
+    });
+  });
 }
 
 describe("the fixtures' git reaches no other repository", () => {

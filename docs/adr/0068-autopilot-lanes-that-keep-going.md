@@ -4654,3 +4654,131 @@ global config) for their own git and the processes they start, which a probe
 of the isolated global file proves; the driver's own reads (the declaration,
 the selection base, the tree digest) drop every inherited `GIT_*` name by
 design, the isolation's included, and write nothing.
+
+## Implementation note 2026-10-31 — verify-runbooks (Decision 5, item 1: the runbooks)
+
+The persona runbooks' half of Decision 5, item 1, beside `verify-record-cli`
+and `verify-exec`. It adds no guarantee; it fixes what the decision left to
+the implementation, and only where the persona renders the verify form:
+engineer, the one persona with `dispatch_target` on (designer and founder
+render none of it, their runbooks unchanged).
+
+**VR1. The check before the first write** (`state.mjs verify-request-check`).
+A finalize's first write is the peer run's settle, and its note follows; a
+request that `finish-verb` refused after them would leave half a handoff. So
+the finalize checks the request first with the last write's own checks: one
+function (`bindVerifyRequest`: the offer, the newer-record refusal, the
+workflow's state, the tested tree, each check against the declaration at the
+offer's commit, and the record a new request becomes, held to its size cap
+and to the stored record's own reader, `validateStoredRequest`) serves the
+check and the write, so they cannot drift, and the
+check refuses with the write's message and writes nothing. It counts every
+pending peer run but the one the finalize settles first
+(`--settling-run-id`). A refusal by the write itself after the check passed
+(a change between the two, the attempt mark) is the window every multi-write
+block has.
+
+**VR2. The verify form** (`regions/verb-finalize.md` and its consensus and
+convergent variants, inside `dispatch_target`). A `verify-request.json` the
+agent wrote in the finalize's text directory selects it: the block checks it
+before settle (a conflict verdict takes none, and neither does any other
+owner gate, since the driver would run `on_pass` past the judgment: the block
+refuses a request beside `OWNER_GATE`, a variable the step sets to the gate it
+ends on; decide's owner selection or veto records `decide-conflict` under its
+ordinary synthesis heading, so only the variable names it), keeps its sha256 beside
+`finalize-run.json` (`finalize-verify.json`, null for the verb form) just
+before settle, once every other check has passed (a run they stop keeps none,
+so the same text directory may then add a request), so a rerun after a write
+takes the same form and the same request and stops before any write when the
+file was added, removed or changed since,
+and its last write is `finish-verb --next-step-kind verify
+--verify-request-file`, with the operation directory, the next action and the
+proposal's confidence. Without the file the verb form is unchanged. The form
+renders in every engineer verb's finalize, compose, refine and critique
+included, since the templates are shared: a verb with no long check simply
+writes no request. In the consensus variant it lives in the non-conflict
+branch only. A request entry the check cannot read (a dangling link) refuses
+rather than reading as the verb form.
+
+`OWNER_GATE` is also what records the gate: set, it selects a third form of
+the last write, `finish-verb --next-step-kind owner-decision --owner-gate
+"$OWNER_GATE"` with the anchor the gate list names, in place of the verb and
+verify forms (in the convergent variant, of the not-converged one too), so the
+selection and the write are one edit, not two. Before settle the block refuses
+a gate the verb does not end on with that form (refine's `recurring-finding`
+and decide's `decide-conflict` belong to those verbs; a conflict gate is the
+conflict branch's, through `VERDICT`), a gate beside `VERDICT` `conflict`
+(consensus), and a note holding the heading of `recurring-finding`,
+`scope-routing` or `pr-handling` (flush or indented by up to three spaces, with
+any run of blanks after its `###`, as CommonMark reads a heading) while
+`OWNER_GATE` is empty. The commented
+owner-decision form stays only in the personas without `dispatch_target`.
+
+**VR3. Results on resume** (`regions/verb-resume*.md`). After its append, a
+verb's Phase 0 prints `state.mjs verify-results --current-tree true --format
+text`: the request, its latest batch's end and cause, each check's kind and
+command, outcome, whether it is evidence and whether it applies to the tree
+now, at most five failing tests and the log under the recording run's
+directory; nothing with no request, for which no tree is read.
+`--current-tree` takes the digest of the
+checkout it runs in as the driver takes a batch's (`currentTreeDigest`, a copy
+of the orchestrator's `lane-digest.mjs` `treeDigest`, version 1, held equal by
+a parity test), so a result `applies` only on the tree it was recorded for. A
+read that fails (a record a later release wrote) warns and the verb goes on;
+a later release's attempt mark still refuses the append itself, as before.
+
+**VR4. The long-check guidance** (`regions/long-checks.md`, engineer's
+compose, refine and critique commands and skills). Quick checks are a few
+test files the change touches, minutes of work; long ones are the whole
+suite, a broad `npm test`, a test file known to run long and every mutation
+run. Under an offering run the step runs only the quick ones, hands the long
+ones over with the verify form and never waits for the heavy-work lock;
+without the offer, as before; interactively, a long check runs under
+`agentic-autopilot heavy --` (a `locks_itself` command directly, and with no
+orchestrator installed, directly). Which branch applies the step reads from
+Phase 0's preflight banner: under an autopilot run its last sentence says
+whether the run offers verification (`autopilot-preflight`, from the offer
+`finish-verb` checks). The verify form, which renders in decide, frame and
+investigate too, points at § Long checks in compose, refine and critique,
+the runbooks that carry it. The skills carry it because
+`/engineer:start` runs the skills, not the commands; their "run the test
+suite" lines point to it. `autopilot-mode.md` gains § Verification: `verify`
+is a request-mediated handoff, not a proposal kind (the closed-enum table is
+unchanged), `on_pass` is the step after it, and the repeat rule is the
+driver's (`no-progress`, the owner's `--next verify`).
+
+**VR5. The worker's rules** (`worker.mjs` `systemAppend`). Under the offer,
+rule 4 keeps peer ensembles as background tasks and sends long checks to
+rule 7, which names quick against long and tells a resumed verb to read the
+printed results first; without it, both rules are as before.
+
+**VR6. Limits** (the owner's rule of 2026-10-25: a case that needs a
+hand-made or exotic arrangement is recorded, not fixed). The gate-heading
+check also matches a heading quoted in a fenced example inside the note: it
+fails closed (the block stops with nothing written, and its message says
+what to do). Interactively, with another owner gate already pending, the
+owner-decision form's `finish-verb` refuses after settle and the note
+("owner gate … is already set"), so a rerun appends the note twice; the state
+stays consistent, autopilot never meets it (its preflight refuses a pending
+gate first), and the commented form it replaced refused at the same point.
+In the convergent variant, a checked request with `CONVERGED` not `yes`
+and no gate is dropped for the not-converged branch: latent, since only
+designer renders that variant and it has no `dispatch_target`.
+
+Tests: `tests/persona-pipeline/test-verify-runbooks.mjs` (the engineer
+blocks run in bash on a macro's child with the operation Phase 0 opened: the
+verify form, the verb form, each refusal before any write, the rerun binding,
+the results on resume, the digest parity, and the prose: no instruction to run
+the suite outside the guidance), `test-verify-record.mjs` (the check refuses
+what `finish-verb` refuses, with its message), the Phase 2 and Phase 0 cases
+of `tests/plugin-shape/test-engineer-autopilot-runbooks.mjs` (and, per the
+decision, no engineer runbook block runs `npm test` or a mutation run), the
+characterization fixture's `VR` differences, and `test-autopilot-worker.mjs`.
+The behavioural guarantees are bitten by the mutations of
+`scripts/mutation-specs/verify-runbooks.mjs`, each naming the case that kills
+it in `killed_by`: the check (K), the verify form, among them a real peer run
+settled before the request (F), the results and the digest (R), the guidance
+(G) and the worker's rules (W). The plugin-shape cases are position pins of
+the same branch, with no mutation of their own. `consensus-proposal.mjs` R3,
+`persona-pipeline.mjs` M1 and `verify-record.mjs` Q5 keep their defects on
+the anchors the verify branch moved.

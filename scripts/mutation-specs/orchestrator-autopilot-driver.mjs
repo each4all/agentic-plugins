@@ -782,4 +782,24 @@ export const MUTATIONS = [
     why: 'a step timeout past the longest timer the worker host holds is accepted, and its timer fires at once',
     killed_by: /refuses what it does not know/,
   },
+  {
+    // C5's mutant already fails on the reported outcome; this one reports the
+    // group killed, so only the grandchild's own check can catch it, and what
+    // that check forgives (a zombie, an exiting process, a reused pid) must not
+    // forgive a process running on.
+    id: 'C9', file: CLI, tests: [TC],
+    from: '      const outcome = await terminateGroup(w.pid);',
+    to: "      try { process.kill(-w.pid, 'SIGTERM'); } catch { /* gone */ }\n      await new Promise((r) => { setTimeout(r, 500); });\n      const outcome = 'killed';",
+    why: 'stop reports an orphaned worker\'s group killed, having sent SIGTERM only, while a member that ignores it runs on (round 3)',
+    killed_by: /empties the orphaned worker's whole process group/,
+  },
+  {
+    // The grandchild's check is made as stop returns, with no grace: a stop
+    // that empties the group only after it reported success fails it.
+    id: 'C10', file: CLI, tests: [TC],
+    from: '      const outcome = await terminateGroup(w.pid);',
+    to: "      try { process.kill(-w.pid, 'SIGTERM'); } catch { /* gone */ }\n      await new Promise((r) => { setTimeout(r, 500); });\n      setTimeout(() => { try { process.kill(-w.pid, 'SIGKILL'); } catch { /* gone */ } }, 5000).unref();\n      const outcome = 'killed';",
+    why: 'stop reports an orphaned worker\'s group killed while a member that ignores SIGTERM still runs, and kills it only after (round 3)',
+    killed_by: /empties the orphaned worker's whole process group/,
+  },
 ];

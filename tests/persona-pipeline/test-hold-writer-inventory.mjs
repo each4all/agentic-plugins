@@ -450,7 +450,7 @@ const WRITER_SUBCOMMANDS = [
 ];
 const READER_SUBCOMMANDS = [
   'find-active', 'resolve-workflow', 'list-workflows', 'dispatch-selection', 'read', 'review-status', 'ensemble-verdict',
-  'consensus-proposal', 'autopilot-preflight', 'verify-results', 'verify-capability', 'hold-capability', 'content-digest',
+  'consensus-proposal', 'autopilot-preflight', 'verify-request-check', 'verify-results', 'verify-capability', 'hold-capability', 'content-digest',
   'diagnose-redundancy', 'check-clean-baseline', 'state-root', 'shared-creation',
 ];
 

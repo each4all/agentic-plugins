@@ -190,8 +190,10 @@ export const MUTATIONS = [
   },
   {
     id: 'R3', file: VARIANT, tests: [TR],
-    from: '    --next-step-confidence "$CONFIDENCE" || exit $?\nelse\n',
-    to: '    --next-step-confidence "$CONFIDENCE"\nelse\n',
+    // verify-runbooks: the verify form's branch (dispatch_target on) follows
+    // the verb form inside the variant's first branch.
+    from: '    --next-step-confidence "$CONFIDENCE" || exit $?\n  {{#capability dispatch_target}}\n  else\n',
+    to: '    --next-step-confidence "$CONFIDENCE"\n  {{#capability dispatch_target}}\n  else\n',
     why: 'the variant\'s typical last write drifts from the plain one\'s text (nothing runs after it, so the block still exits with finish-verb\'s status: the text contracts see the drift, not a run)',
     killed_by: /verb-finalize-consensus\.md: rebuilt from verb-finalize\.md/,
   },

@@ -148,8 +148,9 @@ export const MUTATIONS = [
   },
   {
     id: 'Q5', file: STATE, tests: [T_REC],
-    from: "        previous: stored ? previousOf(stored, frontmatter.verify_results) : null,",
-    to: '        previous: null,',
+    // verify-runbooks: built in bindVerifyRequest, shared with the check.
+    from: "    previous: stored ? previousOf(stored, frontmatter.verify_results) : null,",
+    to: '    previous: null,',
     why: "the replaced request's last batch is lost, so verify-exec cannot tell a repeat on an unchanged tree",
     killed_by: /keeps the old last batch as previous/,
   },

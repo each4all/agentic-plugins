@@ -566,6 +566,72 @@ describe('stop reports a run stopped only once nothing of it runs', () => {
       t.done();
     }
   });
+
+  // The race each reread closes, made certain by the seam between a read's
+  // listing and its judgment (`hooks.listedEntries`): on the wait loop's
+  // first read, after it listed the locks, the driver adds a group's entry
+  // and dies (SIGTERM ends this fixture driver).
+  const raceAtFirstRead = async (flag) => {
+    const t = await setup();
+    const runDir = L.createRunDir(t.work, DEAD);
+    L.writeRun(runDir, { run_id: DEAD, repo: t.work, macro_id: t.fx.macroId, status: 'running', steps: 0, cost_usd: 0, roots: { engineer: ENG } });
+    const ready = join(t.fx.dir, 'driver-ready.json');
+    const lock = L.macroLockPath(t.mainRoot, t.fx.macroId);
+    const driver = spawn(process.execPath, [resolve(REPO_ROOT, 'tests/orchestrator/fixtures/autopilot-lane-driver.mjs'), lock, ready, DEAD, t.fx.macroId, t.work, t.work, ...(flag ? [flag] : [])], { stdio: 'ignore', env: t.fx.env });
+    const exited = new Promise((r) => driver.on('exit', r));
+    ok(await until(() => existsSync(ready)), 'the driver took its lock and put its record down');
+    const { groups } = JSON.parse(readFileSync(ready, 'utf8'));
+    t.pids.push(...groups.map((g) => -g));
+    const late = sleeper();
+    t.pids.push(-late);
+    let reads = 0;
+    const hooks = {
+      listedEntries: async () => {
+        reads += 1;
+        if (reads !== 1) return;
+        writeFileSync(join(lock, `h-${driver.pid}-0a0b0c0d0e09.json`), JSON.stringify({
+          run_id: DEAD, macro_id: t.fx.macroId, pid: driver.pid, fingerprint: { kind: 'none' },
+          worker: { pid: late, pgid: late, fingerprint: await L.processFingerprint(late), lane: 'A', cwd: t.work },
+        }));
+        await exited;
+      },
+    };
+    const lines = [];
+    const say = (s) => lines.push(s);
+    const code = await C.main(['stop', '--repo', t.work], { env: t.fx.env, out: say, err: say, hooks });
+    return { t, driver, late, groups, code, lines, reads: () => reads };
+  };
+  const groupGone = (pid) => { try { process.kill(-pid, 0); return false; } catch { return true; } };
+
+  it('reads again when its first read finds nothing alive: a group whose entry came after the listing, its driver dead before the judgment, is emptied', { timeout: 60_000 }, async () => {
+    const r = await raceAtFirstRead('--no-groups');
+    try {
+      ok(r.reads() >= 1, 'the seam ran on the first read');
+      ok(r.lines.some((l) => /its driver exited, but a worker group of it still runs/.test(l)), r.lines.join('\n'));
+      strictEqual(r.code, 0, r.lines.join('\n'));
+      ok(await until(() => groupGone(r.late)), `the group whose entry the first read missed is empty:\n${r.lines.join('\n')}`);
+      const run = L.readRun(r.t.work, DEAD).run;
+      deepStrictEqual([run.status, run.halt?.reason, run.dead_run_cleanup?.by], ['halted', 'interrupted', 'stop']);
+    } finally {
+      r.driver.kill('SIGKILL');
+      r.t.done();
+    }
+  });
+
+  it('reads again once its driver is found dead: a group whose entry came after the listing is emptied beside the ones that read found', { timeout: 60_000 }, async () => {
+    const r = await raceAtFirstRead(null);
+    try {
+      strictEqual(r.groups.length, 2, 'the driver started its two groups');
+      strictEqual(r.code, 0, r.lines.join('\n'));
+      ok(r.lines.some((l) => /its driver exited, but 3 worker groups of it still run/.test(l)), r.lines.join('\n'));
+      ok(await until(() => groupGone(r.late)), `the group whose entry the first read missed is empty:\n${r.lines.join('\n')}`);
+      for (const g of r.groups) ok(groupGone(g), `the group ${g} the first read found is empty`);
+      strictEqual(L.readOpenRun(r.t.mainRoot, DEAD), null);
+    } finally {
+      r.driver.kill('SIGKILL');
+      r.t.done();
+    }
+  });
 });
 
 describe('a driver that dies on the SIGTERM stop sent it', () => {

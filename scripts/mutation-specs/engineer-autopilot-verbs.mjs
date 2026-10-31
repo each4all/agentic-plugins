@@ -91,8 +91,10 @@ export const MUTATIONS = [
   },
   {
     id: 'S6', file: STATE, tests: [T_AV, T_RB],
-    from: "  if (mode.active) {\n    return {\n      mode: 'autopilot',\n      gate: null,",
-    to: "  if (true) {\n    return {\n      mode: 'autopilot',\n      gate: null,",
+    // The branch's condition alone: its body (since ADR-0068 Decision 5, the
+    // verification offer before the return) is no part of the anchor.
+    from: '  if (mode.active) {',
+    to: '  if (true) {',
     why: 'the rules banner prints interactively, so an interactive run follows autopilot rules',
   },
   {
