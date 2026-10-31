@@ -424,3 +424,41 @@ discovery at that commit, each file once.
 guards and the mutation spec go back together. The restored single job
 meets the 25-minute step bound again, so a rollback that has to hold should
 also raise that bound.
+
+### 2026-10-31 — four shards, weights recorded again
+
+**Trigger**: PR #1010 (macro 5 subtask `verify-exec`). Its shard 2 of 3 hit
+the 20-minute step bound with no test failing, still running persona
+runbook files. The other two took 10 and 19 minutes. On PR #1008 a day
+earlier the three shards took 12, 16 and 18 m 45 s. The weights had not been
+recorded since 2026-10-19, and the suite had grown from 244 to 297 files.
+
+**What changed.**
+
+- `full-tests.yml` runs `shard: [1, 2, 3, 4]`; nothing else in the workflow
+  changes. The bounds (step 20 minutes, job 25) stay hang bounds.
+- `scripts/data/test-weights.json` was recorded again with
+  `shard-tests.mjs record`, from one local run of this tree (a 10-core Mac,
+  Node 24.11.1 at default concurrency, 297 files, 13,669 tests: 13,478
+  passed, 191 skipped, none failed, 1,895 s from start to finish). The
+  recorded file times add up to 12,458 s; four shards each hold about 3,152
+  s of weight, and the heaviest file
+  (`tests/persona-pipeline/test-verb-runbook-runs.mjs`, 961 s) is under a
+  quarter of the suite.
+- `scripts/mutation-specs/full-tests-shards.mjs` W6 and W7 anchor on the new
+  matrix line and keep their defects (one shard never started; the shards
+  not 1..N).
+
+**Why four, not refreshed weights alone.** Balanced at three, the shards of
+the October 30 runs would have taken about 17 minutes each, three minutes
+inside the step bound, with the suite still growing. A fourth shard costs one
+more runner per push and keeps each well inside it. Raising the bound
+instead would keep the wall time and hide a hang for longer.
+
+**What the measurement does not show.** As on 2026-10-19, the weights are
+shares from one Mac run, not predictions of a 4-core runner's time. A file
+added after this recording gets the fixed estimate until the next
+recording; record again when the shards drift apart.
+
+**Rollback.** Revert the commit: the matrix, the weights and the two
+mutation anchors go back together.
