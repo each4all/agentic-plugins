@@ -4,6 +4,15 @@ the workflow is a macro's child, its write opens the command's persona
 operation there (ADR-0068 Decision 2, item 7). Keep the path for the finalize
 block's `OP_DIR`.
 
+After the append, the block prints the results of the checks a verification
+step ran for this workflow (ADR-0068 Decision 5), and nothing when it holds no
+request: the latest batch, each check's outcome, whether it is evidence (it
+ran to its end on an unchanged tree) and whether it applies to the tree now,
+its failing tests and its log. Read them before you act: a failing test named
+there is the evidence to work from, and a check with no evidence (a timeout,
+one cut short or never reached) says nothing about the code. A read that fails
+prints a warning and the verb goes on without them.
+
 {{/capability}}
 ```bash
 ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
@@ -34,5 +43,10 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --next-action "Run ${VERB} skill" --event resumed || exit $?
 {{#capability dispatch_target}}
 echo "OP_DIR=$OP_DIR"
+# ADR-0068 Decision 5 — the results a verification step recorded, read
+# against the tree as it is now; nothing when the workflow holds no request.
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" verify-results \
+  --workflow-path "$ACTIVE" --current-tree true --format text \
+  || echo "⚠ The verification results could not be read (the error is above); ${VERB} goes on without them." >&2
 {{/capability}}
 ```

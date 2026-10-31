@@ -663,6 +663,13 @@ const HOSTILE_NEXT = 'Critique "it" — $(touch pwned) or `touch pwned2`; it\'s 
 describe('each convergent variant is its plain template plus the convergence check, nothing else', () => {
   const LAST = 'The last write, `finish-verb`, records';
   const TERMINAL_COMMENT = '# ADR-0029 §1 / completion-output contract §2';
+  // ADR-0068 Decision 5 (verify-runbooks): with dispatch_target on, the plain
+  // terminal write opens on the branch between the verb form and the verify
+  // form, so the variants carry both.
+  const terminalStart = (plain) => {
+    const verify = plain.indexOf(VERIFY_BRANCH);
+    return verify >= 0 && verify < plain.indexOf(TERMINAL_COMMENT) ? verify : plain.indexOf(TERMINAL_COMMENT);
+  };
   // R4 (C133): the finalize asks for the not-converged next action in its
   // step 2, before the block runs, as lines of its own after the shared ones.
   const FINALIZE_STEP2 = ['   scripts remove; nothing deletes the files.\n', '\n   When the re-critique did not converge (below), `next-action.txt` holds the\n   flagged item and the next step that resolves it.\n'];
@@ -675,7 +682,7 @@ describe('each convergent variant is its plain template plus the convergence che
   // convergence paragraph precedes, where the plain terminal part opens, and
   // the variant's own lines elsewhere: [the plain line they follow, the lines]]
   const PAIRS = [
-    ['verb-finalize.md', 'verb-finalize-convergent.md', 'This verb closes only once it converged', LAST, (plain) => plain.indexOf(TERMINAL_COMMENT), [FINALIZE_STEP2, FINALIZE_TOP, FINALIZE_CHECKS]],
+    ['verb-finalize.md', 'verb-finalize-convergent.md', 'This verb closes only once it converged', LAST, terminalStart, [FINALIZE_STEP2, FINALIZE_TOP, FINALIZE_CHECKS]],
     ['start-terminal.md', 'start-terminal-convergent.md', 'This lifecycle closes only once Phase 4 converged', LAST, (plain) => plain.indexOf(TERMINAL_COMMENT)],
     // The deferral's clear and terminal write: the Defer block's second clear.
     ['refine-owner-decision.md', 'refine-owner-decision-convergent.md', 'This refine closes only once it converged', '**Fix now.**', (plain) => plain.lastIndexOf('node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" awaiting-owner-clear \\\n')],
@@ -688,7 +695,7 @@ describe('each convergent variant is its plain template plus the convergence che
       const para = variant.slice(variant.indexOf(opening), variant.indexOf(before));
       ok(variant.indexOf(opening) >= 0 && para.endsWith('.\n\n'), `the convergence paragraph, right before ${before}`);
       const terminalAt = terminalFrom(plain);
-      const ownerForm = plain.indexOf('# The owner-decision form, for an owner gate');
+      const ownerForm = OWNER_FORM_AT(plain);
       const terminal = plain.slice(terminalAt, ownerForm >= 0 ? ownerForm : plain.indexOf('\n```\n', terminalAt) + 1);
       ok(terminalAt > 0 && /\nnode "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" finish-verb \\\n/.test(terminal), 'the plain terminal write, comment and call');
       const indented = terminal.replace(/^(?=.)/gm, '  ');
@@ -717,6 +724,13 @@ describe('each convergent variant is its plain template plus the convergence che
 // comment and call, indented in the first branch of a check on the recorded
 // verdict, the conflict gate in the other. Its own lines are bound by the
 // conflict run.
+// The owner-decision and verify forms' branch (ADR-0068 Decision 5,
+// verify-runbooks; C2-M1, OWNER_GATE selects the owner-decision form), which
+// opens the plain finalize's terminal write with dispatch_target on; the
+// commented owner-decision form after it renders only with dispatch_target off.
+const VERIFY_BRANCH = '{{#capability dispatch_target}}\n# The owner-decision form when OWNER_GATE names a gate; otherwise, ADR-0068\n';
+const OWNER_FORM_AT = (plain) => { const off = plain.indexOf('{{^capability dispatch_target}}\n# The owner-decision form, for an owner gate'); return off >= 0 ? off : plain.indexOf('# The owner-decision form, for an owner gate'); };
+
 // Contract: the sync renders it for decide, critique and investigate — a
 // shared line that drifts changes what those verbs' last write runs while
 // compose, frame and refine stay right.
@@ -729,8 +743,10 @@ describe('the consensus variant is the plain finalize plus the conflict branch, 
     const opening = 'A synthesis verdict of `conflict` ends this verb on its conflict gate';
     const para = variant.slice(variant.indexOf(opening), variant.indexOf(LAST));
     ok(variant.indexOf(opening) >= 0 && para.endsWith('.\n\n'), 'the conflict paragraph, right before the last-write paragraph');
-    const terminalAt = plain.indexOf('# ADR-0029 §1 / completion-output contract §2');
-    const terminal = plain.slice(terminalAt, plain.indexOf('# The owner-decision form, for an owner gate'));
+    const comment = plain.indexOf('# ADR-0029 §1 / completion-output contract §2');
+    const verify = plain.indexOf(VERIFY_BRANCH);
+    const terminalAt = verify >= 0 && verify < comment ? verify : comment;
+    const terminal = plain.slice(terminalAt, OWNER_FORM_AT(plain));
     ok(terminalAt > 0 && /\nnode "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" finish-verb \\\n/.test(terminal), 'the plain terminal write, comment and call');
     const indented = terminal.replace(/^(?=.)/gm, '  ');
     // The recorded-verdict check, between the settle and the note.
@@ -749,12 +765,14 @@ describe('the consensus variant is the plain finalize plus the conflict branch, 
     const rest = variant.slice(restAt, variant.indexOf('\nfi\n', restAt) + '\nfi\n'.length);
     ok(rest.startsWith('else\n'), 'the conflict gate follows');
     // R4: a conflict's contested.md is checked with the other texts, before any
-    // write — the variant's own lines right after the plain check loop.
-    const LOOP_END = 'done\n\n# ADR-0066 PC2b — settle the ensemble attempt from its ledger';
+    // write — the variant's own lines right after the plain check loop, before
+    // the verify form is kept (C3-m12: the last check before settle).
+    const KEEP = '{{#capability dispatch_target}}\n# The verify form, kept in TEXT_DIR';
+    const LOOP_END = `done\n${KEEP}`;
     const precheckAt = variant.indexOf('# The contested items a conflict ends on');
     // R4 K1, K2, L1, L2: then the run id this variant's later steps read, and
     // every result this phase recorded with the gate, up to settle.
-    const precheck = variant.slice(precheckAt, variant.indexOf('\n\n# ADR-0066 PC2b', precheckAt) + 1);
+    const precheck = variant.slice(precheckAt, variant.indexOf(KEEP, precheckAt));
     ok(precheckAt > 0 && precheck.includes('"$TEXT_DIR/contested.md"') && precheck.includes('state.mjs" read --workflow-path "$ACTIVE"'), 'the contested.md check, the run-id checks and the last result read');
     strictEqual(plain.split(LOOP_END).length - 1, 1, 'the plain check loop, then settle');
     const rebuilt = plain.replace(LAST, () => `${para}${LAST}`).replace(APPEND, () => `${check}${APPEND}`).replace(terminal, () => `${FIRST}${indented}${rest}`)
@@ -807,9 +825,11 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               // and where the verb waits for convergence its convergence, with the
               // comment saying how it is filled, and its resolving step (R4, K3),
               // and with dispatch_target on the operation directory Phase 0
-              // printed (ADR-0068 Decision 2, item 7).
+              // printed (ADR-0068 Decision 2, item 7) and the owner gate the
+              // step ends on, empty unless the agent sets it (ADR-0068
+              // Decision 5, verify-runbooks).
               let at = 0;
-              while (/^(ARGS_DIR|TEXT_DIR|DISPATCH_DIR|READ_DIR|VERDICT|CONFIDENCE|RESOLVE_VERB|PEER|PROMPT_FILE|OP_DIR)='<[^'>]+>'$|^CONVERGED="<[^">]+>"$|^# /.test(lines[at] ?? '')) at++;
+              while (/^(ARGS_DIR|TEXT_DIR|DISPATCH_DIR|READ_DIR|VERDICT|CONFIDENCE|RESOLVE_VERB|PEER|PROMPT_FILE|OP_DIR)='<[^'>]+>'$|^OWNER_GATE=''$|^CONVERGED="<[^">]+>"$|^# /.test(lines[at] ?? '')) at++;
               // Contract: the agent running a block in a fresh shell — without the
               // persona's own override and cache path the block runs another
               // plugin's scripts, or none. A block nested in a list item is indented.
@@ -840,7 +860,11 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               // decision (U5b) finish the verb a second way.
               // The consensus variant's conflict branch (ADR-0067 Decision 8) records
               // its gate with one more finish-verb, which carries the note too.
-              deepStrictEqual([timing.sites, timing.problems], [(['commands/decide.md', 'commands/refine.md'].includes(dest) ? 2 : 1) + (Object.hasOwn(CONFLICT_GATES, verbOf(dest)) ? 1 : 0), []], 'each terminal write carries its archive-timing note');
+              // With dispatch_target on, the verify form (ADR-0068 Decision 5) and
+              // the owner-decision form OWNER_GATE selects (C2-M1) are two more
+              // finish-verbs, never terminal, each carrying the note too.
+              const verifyForm = declaration(persona).capabilities.dispatch_target === true ? 2 : 0;
+              deepStrictEqual([timing.sites, timing.problems], [(['commands/decide.md', 'commands/refine.md'].includes(dest) ? 2 : 1) + (Object.hasOwn(CONFLICT_GATES, verbOf(dest)) ? 1 : 0) + verifyForm, []], 'each terminal write carries its archive-timing note');
             }
           });
 
@@ -1773,16 +1797,22 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               strictEqual(shellSites(text, /state\.mjs" (set-terminal|ensemble-commit)\b/).length, 0, 'no set-terminal or ensemble-commit runs beside them');
               // Contract: the agent ending on an owner gate runs this commented form
               // in place of the typical finish — its flags record the gate in one write.
-              // With dispatch_target on, the form closes the verb's operation too.
-              const ownerForm = [
-                '# node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \\',
-                '#   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \\',
-                ...(declaration(persona).capabilities.dispatch_target === true ? ['#   --operation-dir "$OP_DIR" \\'] : []),
-                '#   --next-action-file "$TEXT_DIR/next-action.txt" \\',
-                '#   --next-step-kind owner-decision --next-step-confidence "$CONFIDENCE" \\',
-                "#   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' || exit $?",
-              ].join('\n');
-              ok(`${finalize.text.replace(/\n$/, '')}`.endsWith(`\n${ownerForm}`), 'the commented owner-decision form ends the block');
+              // With dispatch_target on (C2-M1), OWNER_GATE selects a live
+              // owner-decision form instead, which closes the verb's operation too
+              // (tests/persona-pipeline/test-verify-runbooks.mjs runs it).
+              if (declaration(persona).capabilities.dispatch_target === true) {
+                ok(!finalize.text.includes("--owner-gate '<gate>'"), 'no commented form beside the live one');
+                ok(/^ *if \[ -n "\$OWNER_GATE" \]; then\n(?: *#[^\n]*\n)* *node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" finish-verb \\\n *--workflow-path "\$ACTIVE" --host "\$\{AGENTIC_HOST:-claude\}" \\\n *--operation-dir "\$OP_DIR" \\\n *--next-action-file "\$TEXT_DIR\/next-action\.txt" \\\n *--next-step-kind owner-decision --next-step-confidence "\$CONFIDENCE" \\\n *--owner-gate "\$OWNER_GATE" --owner-gate-anchor "\$OWNER_GATE_ANCHOR" \|\| exit \$\?\n/m.test(finalize.text), 'OWNER_GATE selects the owner-decision form, which records the gate in one write');
+              } else {
+                const ownerForm = [
+                  '# node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \\',
+                  '#   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \\',
+                  '#   --next-action-file "$TEXT_DIR/next-action.txt" \\',
+                  '#   --next-step-kind owner-decision --next-step-confidence "$CONFIDENCE" \\',
+                  "#   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' || exit $?",
+                ].join('\n');
+                ok(`${finalize.text.replace(/\n$/, '')}`.endsWith(`\n${ownerForm}`), 'the commented owner-decision form ends the block');
+              }
               // Contract: the --owner-gate and --owner-gate-anchor values that form
               // takes, which state.mjs validates — the gates this verb may end with,
               // each with its anchor, between the last-write paragraph and the block.
@@ -1909,7 +1939,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
             // so no retry appends the phase note a second time over them.
             if (VERB_DESTS.includes(dest)) it('the finalize, run: a confidence, or where the verb waits for convergence a resolving step, that the last write would refuse stops the block before any write (R4 K3)', async () => {
               const block = blockWith(/peer-runner\.mjs" settle \\/).text;
-              ok(block.includes('#   --next-step-kind owner-decision --next-step-confidence "$CONFIDENCE" \\\n'), 'the owner-decision form records the confidence checked at the top');
+              ok(/^(?:#   | +)--next-step-kind owner-decision --next-step-confidence "\$CONFIDENCE" \\\n/m.test(block), 'the owner-decision form records the confidence checked at the top');
               strictEqual(block.split('"<HIGH|MEDIUM|LOW>"').length - 1, 0, 'no write carries a confidence of its own');
               for (const confidence of [null, 'high', 'HIGH ', '', 'NONE']) {
                 const r = await runBlock('bash', `${STALE}${finalizeAs(converged(block, persona, verb), { confidence })}`, persona, { note: 'n', active: FOUND, texts: runResult() });
@@ -2328,8 +2358,13 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
                   ok(unallocated.stderr.includes('new-run-id allocated no run id'), `${shell}, ${why}: ${unallocated.stderr}`);
                 }
                 const resumed = await runBlock(shell, `${STALE}${resume}`, persona, { active: FOUND });
-                deepStrictEqual([resumed.status, resumed.log], [0, ['find-active', 'append']], `${shell}: ${resumed.stderr}`);
+                // With dispatch_target on, the resume then prints the results a
+                // verification step recorded, for the workflow it found
+                // (ADR-0068 Decision 5).
+                const readsResults = declaration(persona).capabilities.dispatch_target === true;
+                deepStrictEqual([resumed.status, resumed.log], [0, ['find-active', 'append', ...(readsResults ? ['verify-results'] : [])]], `${shell}: ${resumed.stderr}`);
                 ok(resumed.argv[1].includes(' --workflow-path /w/active.md '), `${shell}: ${resumed.argv[1]}`);
+                if (readsResults) ok(resumed.argv[2].includes(' --workflow-path /w/active.md --current-tree true --format text'), `${shell}: ${resumed.argv[2]}`);
               }
               for (const [name, block] of [['the dispatch', dispatch], ['the resume append', resume]]) {
                 for (const [why, find] of [['no workflow found', { active: '' }], ['a failed find', { active: '', findStatus: 3 }]]) {

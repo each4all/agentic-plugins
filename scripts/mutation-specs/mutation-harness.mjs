@@ -17,7 +17,8 @@
 // group of its own cannot be stopped at its timeout, so its test hangs instead
 // of failing; and a zombie holder is not a case a test can make, since node
 // reaps the children it spawns. S is the static check (`--static`): the cases
-// it reports, the copy each case gets, and its CLI.
+// it reports, the copy each case gets, and its CLI. C is the files the control
+// runs.
 
 import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -59,6 +60,8 @@ const T_STATIC_COPY = /^gives each case the copy as it was: what an earlier case
 const T_STATIC_DANGLING = /^replaces a copy whose root became a link that points nowhere, and goes on$/;
 const T_STATIC_COARSE = /^tells a same-size rewrite of a file just put back, on a filesystem whose times are coarse$/;
 const T_STATIC_CLI = /^the CLI checks every spec in scripts\/mutation-specs by default, and exits 1 on drift$/;
+const T_CONTROL_ONLY = /^runs the control over the selected cases' files only, the spec default for a case that names none$/;
+const T_CONTROL_BARE = /^refuses a selected case scored against no test file, beside one that names a passing file$/;
 
 export const TESTS = [T];
 
@@ -476,5 +479,35 @@ export const MUTATIONS = [
     to: '  else rmSync(abs, { recursive: true, force: true });\n',
     why: 'a link that points nowhere is left in place: it stays for the cases after it, and one where the copy was aborts the check',
     killed_by: T_STATIC_DANGLING,
+  },
+
+  // ---- C: the control's files -----------------------------------------------
+  {
+    id: 'C1', file: H,
+    from: '  const tests = [...new Set(mutations.flatMap((m) => m.tests ?? spec.TESTS ?? []))];\n',
+    to: '  const tests = [...new Set([...(spec.TESTS ?? []), ...mutations.flatMap((m) => m.tests ?? [])])];\n',
+    why: 'the control runs the spec default for a case scored against its own files: --only one case of a slow spec passes the timeout with no verdict',
+    killed_by: T_CONTROL_ONLY,
+  },
+  {
+    id: 'C2', file: H,
+    from: '  const tests = [...new Set(mutations.flatMap((m) => m.tests ?? spec.TESTS ?? []))];\n',
+    to: '  const tests = [...new Set(mutations.flatMap((m) => m.tests ?? []))];\n',
+    why: 'a case that names no file of its own is scored against a default the control never ran',
+    killed_by: T_CONTROL_ONLY,
+  },
+  {
+    id: 'C3', file: H,
+    from: '  const tests = [...new Set(mutations.flatMap((m) => m.tests ?? spec.TESTS ?? []))];\n',
+    to: '  const tests = [...new Set(mutations[0]?.tests ?? spec.TESTS ?? [])];\n',
+    why: 'the control runs the first selected case\'s files only: a second case is scored against a set the control never ran',
+    killed_by: T_CONTROL_ONLY,
+  },
+  {
+    id: 'C4', file: H,
+    from: '  if (bare.length > 0) {\n',
+    to: '  if (false) {\n',
+    why: 'a case scored against no file runs node --test with none, the whole suite the control never ran: a failure anywhere in it scores the case KILLED',
+    killed_by: T_CONTROL_BARE,
   },
 ];

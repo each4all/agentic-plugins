@@ -8569,6 +8569,390 @@
         ]
       },
       "why": "HP ADR-0068 Decision 2, item 7 (implementation note N4): the finish-verb after a gate's clear closes the resolution's persona operation in its directory"
+    },
+    {
+      "runbooks": [
+        "engineer/compose",
+        "engineer/critique",
+        "engineer/frame",
+        "engineer/investigate",
+        "engineer/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs append#1",
+      "from": "state.mjs find-active",
+      "to": {
+        "script": "state.mjs",
+        "sub": "verify-results",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--current-tree",
+            "true"
+          ],
+          [
+            "--format",
+            "text"
+          ]
+        ]
+      },
+      "why": "VR ADR-0068 Decision 5 (verify-runbooks): with dispatch_target on, the resume prints the results a verification step recorded, read against the tree now"
+    },
+    {
+      "runbooks": [
+        "engineer/decide"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs append#1",
+      "from": "decide-registry.mjs resolve",
+      "to": {
+        "script": "state.mjs",
+        "sub": "verify-results",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--current-tree",
+            "true"
+          ],
+          [
+            "--format",
+            "text"
+          ]
+        ]
+      },
+      "why": "VR ADR-0068 Decision 5 (verify-runbooks): with dispatch_target on, the resume prints the results a verification step recorded, read against the tree now"
+    },
+    {
+      "runbooks": [
+        "engineer/compose",
+        "engineer/frame"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#4",
+      "from": "peer-runner.mjs settle",
+      "to": {
+        "script": "state.mjs",
+        "sub": "verify-request-check",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--request-file",
+            "$VERIFY_FILE"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ],
+          [
+            "--settling-run-id",
+            "$RUN_ID"
+          ]
+        ]
+      },
+      "why": "VR ADR-0068 Decision 5 (verify-runbooks): with dispatch_target on, a request the agent wrote is checked with the last write's own checks before settle, the first write"
+    },
+    {
+      "runbooks": [
+        "engineer/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#6",
+      "from": "peer-runner.mjs settle",
+      "to": {
+        "script": "state.mjs",
+        "sub": "verify-request-check",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--request-file",
+            "$VERIFY_FILE"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ],
+          [
+            "--settling-run-id",
+            "$RUN_ID"
+          ]
+        ]
+      },
+      "why": "VR ADR-0068 Decision 5 (verify-runbooks): with dispatch_target on, a request the agent wrote is checked with the last write's own checks before settle, the first write"
+    },
+    {
+      "runbooks": [
+        "engineer/decide",
+        "engineer/investigate"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#4",
+      "from": "state.mjs read",
+      "to": {
+        "script": "state.mjs",
+        "sub": "verify-request-check",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--request-file",
+            "$VERIFY_FILE"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ],
+          [
+            "--settling-run-id",
+            "$RUN_ID"
+          ]
+        ]
+      },
+      "why": "VR ADR-0068 Decision 5 (verify-runbooks): with dispatch_target on, a request the agent wrote is checked with the last write's own checks before settle, the first write"
+    },
+    {
+      "runbooks": [
+        "engineer/critique"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#6",
+      "from": "state.mjs read",
+      "to": {
+        "script": "state.mjs",
+        "sub": "verify-request-check",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--request-file",
+            "$VERIFY_FILE"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ],
+          [
+            "--settling-run-id",
+            "$RUN_ID"
+          ]
+        ]
+      },
+      "why": "VR ADR-0068 Decision 5 (verify-runbooks): with dispatch_target on, a request the agent wrote is checked with the last write's own checks before settle, the first write"
+    },
+    {
+      "runbooks": [
+        "engineer/compose",
+        "engineer/frame"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs finish-verb#1",
+      "from": "",
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--operation-dir",
+            "<the operation directory the Phase 0 block printed as OP_DIR; empty when it printed none>"
+          ],
+          [
+            "--next-action-file",
+            "<directory from step 1>/next-action.txt"
+          ],
+          [
+            "--next-step-kind",
+            "verify"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ],
+          [
+            "--verify-request-file",
+            "$VERIFY_FILE"
+          ]
+        ]
+      },
+      "why": "VR ADR-0068 Decision 5 (verify-runbooks): with dispatch_target on, the verify form, the last write when a request was checked: the request and the next step verify in one write"
+    },
+    {
+      "runbooks": [
+        "engineer/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs finish-verb#1",
+      "from": "state.mjs find-active",
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--operation-dir",
+            "<the operation directory the Phase 0 block printed as OP_DIR; empty when it printed none>"
+          ],
+          [
+            "--next-action-file",
+            "<directory from step 1>/next-action.txt"
+          ],
+          [
+            "--next-step-kind",
+            "verify"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ],
+          [
+            "--verify-request-file",
+            "$VERIFY_FILE"
+          ]
+        ]
+      },
+      "why": "VR ADR-0068 Decision 5 (verify-runbooks): with dispatch_target on, the verify form, the last write when a request was checked: the request and the next step verify in one write"
+    },
+    {
+      "runbooks": [
+        "engineer/critique",
+        "engineer/decide",
+        "engineer/investigate"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs finish-verb#1",
+      "from": "state.mjs finish-verb",
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--operation-dir",
+            "<the operation directory the Phase 0 block printed as OP_DIR; empty when it printed none>"
+          ],
+          [
+            "--next-action-file",
+            "<directory from step 1>/next-action.txt"
+          ],
+          [
+            "--next-step-kind",
+            "verify"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ],
+          [
+            "--verify-request-file",
+            "$VERIFY_FILE"
+          ]
+        ]
+      },
+      "why": "VR ADR-0068 Decision 5 (verify-runbooks): with dispatch_target on, the verify form, the last write when a request was checked: the request and the next step verify in one write"
+    },
+    {
+      "runbooks": [
+        "engineer/compose",
+        "engineer/critique",
+        "engineer/decide",
+        "engineer/frame",
+        "engineer/investigate",
+        "engineer/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs append#2",
+      "from": "state.mjs finish-verb",
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--operation-dir",
+            "<the operation directory the Phase 0 block printed as OP_DIR; empty when it printed none>"
+          ],
+          [
+            "--next-action-file",
+            "<directory from step 1>/next-action.txt"
+          ],
+          [
+            "--next-step-kind",
+            "owner-decision"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ],
+          [
+            "--owner-gate",
+            ""
+          ],
+          [
+            "--owner-gate-anchor",
+            ""
+          ]
+        ]
+      },
+      "why": "VR ADR-0068 Decision 5 (verify-runbooks, C2-M1): with dispatch_target on, OWNER_GATE selects the owner-decision form of the last write, which records the gate the step ends on, with the anchor its gate list names, in place of the verb and verify forms"
     }
   ],
   "runbooks": {
