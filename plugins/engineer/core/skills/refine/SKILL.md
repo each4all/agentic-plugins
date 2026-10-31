@@ -70,7 +70,9 @@ choose silently — route through `/engineer:decide` first.
 
 ### Step 3: Verify
 
-1. Run the relevant test suite (if available) and confirm green.
+1. Run the relevant tests (if available) and confirm green: the
+   quick ones in the step, the long ones as the long-check guidance
+   below says.
 2. If the fix transformed a pattern (rename, refactor), Grep for
    the old pattern to confirm 0 remaining occurrences.
 3. Run any additional sanity checks the change calls for (a build,
@@ -78,6 +80,41 @@ choose silently — route through `/engineer:decide` first.
 
 If verification fails, return to Step 2 and report the failure to
 the user. Do NOT mark the refinement complete on a failed verify.
+
+<!-- pipeline:begin refine-long-checks -->
+### Long checks (ADR-0068 Decision 5)
+
+Sort the checks a change needs by the work they are expected to take:
+
+- **Quick:** a few test files the change touches, expected to finish within
+  minutes. Run them in the step, as always, and get them green first.
+- **Long:** the whole test suite, a broad `npm test` (a directory, a glob,
+  many files), any test file known to run long, and every mutation run
+  (`npm run mutate`, and `npm run mutate:static` over every spec).
+
+Where a long check runs depends on the session:
+
+- **Under an autopilot run that offers verification** (Phase 0's preflight
+  banner ends `This run offers verification`): run no long check in the
+  step, and never wait for the heavy-work lock there — a wait on a lock is
+  quiet and idle, which the driver judges stalled. Hand the long checks to the driver instead, with the finalize's
+  verify form (`verify-request.json`): it runs them with no LLM after the step
+  ends, and the step that follows reads their results, which Phase 0 prints.
+  Failing tests named there are the evidence to work from; a check that ended
+  with no evidence (a timeout, one cut short or never reached) says nothing
+  about the code. Recording the same checks again on an unchanged tree, after
+  they passed or one failed, halts the lane `no-progress`: change the code
+  first (the owner reruns a flaky check with `--next verify`).
+- **Under an autopilot run that does not offer it** (the banner ends `This
+  run does not offer verification`): in the step, as before.
+- **Interactively:** run a long check under the repository's heavy-work lock,
+  so it does not run beside another session's heavy work:
+  `agentic-autopilot heavy -- <command>` (or `node <orchestrator plugin
+  root>/adapters/claude/autopilot/cli.mjs heavy -- <command>`). A command that
+  takes the lock itself, as the mutation harness does (`locks_itself` in
+  `.agentic-plugins/verify-checks.json`), runs directly: the wrapper refuses
+  it. With no orchestrator installed, run the check directly.
+<!-- pipeline:end refine-long-checks -->
 
 ### Step 4: Present the result
 
@@ -135,7 +172,8 @@ The peer call is automatic (always-max policy); skills do not pass
 
 After both sides return:
 
-1. Run the test suite.
+1. Run the tests: the quick ones in the step, the long ones as the
+   long-check guidance (§ Long checks) says.
 2. Collect the peer review.
 3. Synthesize per
    `../_shared/references/ensemble-protocol.md` §Base Synthesis
