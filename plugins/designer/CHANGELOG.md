@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.13.0...plugin-designer-v0.14.0) (2026-11-01)
+
+
+### Features
+
+* **designer:** check a verify request before the first write and print recorded results as text in the state CLI (ADR-0068 D5) ([18a97b2](https://github.com/each4all/agentic-plugins/commit/18a97b20b4f50ba60ac7f690ff1ad8830dc8b42c))
+
 ## [0.13.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.12.1...plugin-designer-v0.13.0) (2026-10-26)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.14.0...plugin-founder-v0.15.0) (2026-11-01)
+
+
+### Features
+
+* **founder:** check a verify request before the first write and print recorded results as text in the state CLI (ADR-0068 D5) ([9796e24](https://github.com/each4all/agentic-plugins/commit/9796e241641547e527b7ea93868a7dadb1392d59))
+
 ## [0.14.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.13.1...plugin-founder-v0.14.0) (2026-10-26)
 
 
