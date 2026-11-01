@@ -41,8 +41,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/designer",
-        "ref": "plugin-designer-v0.13.0",
-        "sha": "2b7be7c23045deb515293b74c0778d1618825a23"
+        "ref": "plugin-designer-v0.14.0",
+        "sha": "2569c469add9b59490589066358ea2598e72ce94"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -56,8 +56,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/engineer",
-        "ref": "plugin-engineer-v0.33.0",
-        "sha": "2b7be7c23045deb515293b74c0778d1618825a23"
+        "ref": "plugin-engineer-v0.34.0",
+        "sha": "2569c469add9b59490589066358ea2598e72ce94"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -71,8 +71,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/founder",
-        "ref": "plugin-founder-v0.14.0",
-        "sha": "2b7be7c23045deb515293b74c0778d1618825a23"
+        "ref": "plugin-founder-v0.15.0",
+        "sha": "2569c469add9b59490589066358ea2598e72ce94"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -101,8 +101,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/orchestrator",
-        "ref": "plugin-orchestrator-v0.35.0",
-        "sha": "9dc74d3baf6ad863bd34b4397c53ce6b0ce0c4b0"
+        "ref": "plugin-orchestrator-v0.36.0",
+        "sha": "2569c469add9b59490589066358ea2598e72ce94"
       },
       "policy": {
         "installation": "AVAILABLE",
