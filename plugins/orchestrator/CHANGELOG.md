@@ -18,6 +18,13 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.36.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.35.0...plugin-orchestrator-v0.36.0) (2026-11-01)
+
+
+### Features
+
+* **orchestrator:** worker rules send long checks to the verification step, and stop reads the locks again before it judges a dead driver's groups (ADR-0068 D5) ([072ecd1](https://github.com/each4all/agentic-plugins/commit/072ecd1a3db5fba63501cb66bf1ce4c50ded1672))
+
 ## [0.35.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.34.0...plugin-orchestrator-v0.35.0) (2026-10-31)
 
 

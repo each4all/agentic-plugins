@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.34.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.33.0...plugin-engineer-v0.34.0) (2026-11-01)
+
+
+### Features
+
+* **engineer:** runbooks hand long checks to the autopilot's verification step and read its results on resume (ADR-0068 D5) ([6c53a7c](https://github.com/each4all/agentic-plugins/commit/6c53a7cbf01ce96a7804c02afa62e435f3f5fc38))
+
 ## [0.33.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.32.1...plugin-engineer-v0.33.0) (2026-10-26)
 
 
