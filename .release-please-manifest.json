@@ -6,6 +6,6 @@
   "plugins/engineer": "0.34.0",
   "plugins/founder": "0.15.0",
   "plugins/image": "0.4.1",
-  "plugins/orchestrator": "0.37.0",
+  "plugins/orchestrator": "0.37.1",
   "plugins/runtime": "0.103.4"
 }
