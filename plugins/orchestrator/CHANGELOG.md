@@ -18,6 +18,13 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.37.1](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.37.0...plugin-orchestrator-v0.37.1) (2026-11-03)
+
+
+### Bug Fixes
+
+* **orchestrator:** a heavy check records how its supervisor ended, and tests no longer kill their own process group from an empty pid file (C169) ([#1020](https://github.com/each4all/agentic-plugins/issues/1020)) ([37ac20b](https://github.com/each4all/agentic-plugins/commit/37ac20be316699cf58d3b858714c78a3df362854))
+
 ## [0.37.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.36.0...plugin-orchestrator-v0.37.0) (2026-11-03)
 
 
