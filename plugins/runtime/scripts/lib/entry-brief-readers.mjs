@@ -52,9 +52,10 @@ export const ENTRY_READER_CAPS = Object.freeze({
   // Bytes read from one `workflows/` directory, across its listings.
   MAX_HOME_TOTAL_BYTES: 2 * 1024 * 1024,
   // Listings of one `workflows/` directory before a file that keeps vanishing
-  // between the listing and its read degrades the source (ADR-0067 Decision 4,
-  // item 1: another lane's archive moving a file out is routine once state is
-  // shared).
+  // between the listing and its read, or keeps being replaced while it is
+  // read, degrades the source (ADR-0067 Decision 4, item 1: another lane's
+  // archive moving a file out, and its write renaming a new file over one, are
+  // routine once state is shared; C171).
   MAX_SCAN_ATTEMPTS: 3,
   HANDOFF_FRESHNESS_MS: 10 * 60 * 1000,
   FUTURE_SKEW_MS: 60 * 1000,
@@ -461,21 +462,26 @@ async function insideHomes(real, roots, io) {
 //
 // The file opened is the checked real path, with O_NOFOLLOW, and the handle's
 // identity must be the one checked: a final component swapped for a link is
-// refused at the open, and a different file at the path by identity. Then the
-// path is judged again, after the open: the walk must still find no link and
-// a home above it, and the path must still name the handle's file. So one
-// rename, at any point, never yields a file other than the one checked inside
-// a home: before the open it is refused, the checked file moved out with its
-// directory and reached through a link included (critique MAJOR); after the
-// open the handle already holds the checked file, which a rename can only
-// move (renamed during the second walk, it is read where it now lies; a
-// different file put in its place fails the final identity check). LIMIT: the
+// refused at the open, and a different file at the path is `replaced`. Then
+// the path is judged again, after the open: the walk must still find no link
+// and a home above it, and the path must still name the handle's file, else
+// it is `replaced` too. So one rename, at any point, never yields a file other
+// than the one checked inside a home: before the open it is refused or
+// replaced, the checked file moved out with its directory and reached through
+// a link included (critique MAJOR); after the open the handle already holds
+// the checked file, which a rename can only move (renamed during the second
+// walk, it is read where it now lies; a different file put in its place is
+// replaced). A replaced entry is never read: its directory is listed again
+// and the name read anew, through every check above (C171: each persona
+// workflow write is a temporary file renamed over the old one, and lanes
+// share one state root, so another lane's ordinary write lands here). LIMIT: the
 // walk and the lookups are separate path lookups (Node has no openat), so
 // renames alternating out and back, each timed to a lookup, can reach another
 // file, as path-containment.mjs states for the same reason. A file
 // hard-linked into a home is in it: a hard link has no target to contain.
 // Whoever can rename the directories of a state home already controls the
 // state.
+const REPLACED = Object.freeze({ state: 'replaced', reason: 'workflow-identity-changed' });
 async function readWorkflowEntry(path, ctx) {
   const { caps, io, roots, cache } = ctx;
   let entry;
@@ -515,7 +521,7 @@ async function readWorkflowEntry(path, ctx) {
   try {
     const opened = await handle.stat({ bigint: true });
     if (!opened.isFile()) return { state: 'refused', reason: 'not-a-regular-file' };
-    if (identityOf(opened) !== identityOf(checked)) return { state: 'refused', reason: 'workflow-identity-changed' };
+    if (identityOf(opened) !== identityOf(checked)) return REPLACED;
     if (!(await insideHomes(real, roots, io))) return { state: 'refused', reason: 'symlink-outside-state' };
     let after;
     try {
@@ -524,7 +530,7 @@ async function readWorkflowEntry(path, ctx) {
       return error?.code === 'ENOENT' ? { state: 'vanished' } : { state: 'refused', reason: 'stat-failed' };
     }
     if (after.isSymbolicLink() || identityOf(after) !== identityOf(opened)) {
-      return { state: 'refused', reason: 'workflow-identity-changed' };
+      return REPLACED;
     }
     const head = await readFrontmatterHead(handle, caps);
     if (head.state === 'refused') return { state: 'refused', reason: head.reason };
@@ -539,8 +545,11 @@ async function readWorkflowEntry(path, ctx) {
 }
 
 // Lists one `workflows/` directory and reads each `.md` entry in it. A file
-// that disappears between the listing and its read is listed again, up to
-// MAX_SCAN_ATTEMPTS listings; every other failure degrades at once (a
+// that disappears between the listing and its read, or is replaced by another
+// file (renamed over it) while it is read, is listed again, up to
+// MAX_SCAN_ATTEMPTS listings; after the last, the source degrades with the
+// reason of the last relist (`workflow-file-vanished` or
+// `workflow-identity-changed`). Every other failure degrades at once (a
 // workflow file we cannot read might be the active one on this branch — the
 // owners throw here; we degrade, the fail-closed mirror). The byte budget
 // covers every listing of the directory, charged with the bytes each read
@@ -548,20 +557,25 @@ async function readWorkflowEntry(path, ctx) {
 // counts.
 async function readWorkflowDir(dir, ctx) {
   const { caps, io } = ctx;
+  let relist = null;
   let dirBytes = 0;
   for (let attempt = 0; attempt < caps.MAX_SCAN_ATTEMPTS; attempt++) {
     const listing = await io.listDir(dir, caps);
     if (listing.state === 'absent') return { state: 'ok', entries: [] };
     if (listing.state !== 'ok') return { state: 'refused', reason: listing.reason };
     const entries = [];
-    let vanished = false;
+    relist = null;
     for (const listed of listing.entries) {
       if (!listed.name.endsWith('.md')) continue;
       const path = join(dir, listed.name);
       const read = await readWorkflowEntry(path, ctx);
       if (read.state === 'gone') continue;
       if (read.state === 'vanished') {
-        vanished = true;
+        relist = { reason: 'workflow-file-vanished' };
+        break;
+      }
+      if (read.state === 'replaced') {
+        relist = read;
         break;
       }
       if (read.state !== 'ok') return { state: 'refused', reason: read.reason };
@@ -569,9 +583,10 @@ async function readWorkflowDir(dir, ctx) {
       if (dirBytes > caps.MAX_HOME_TOTAL_BYTES) return { state: 'refused', reason: 'read-budget-exceeded' };
       entries.push({ path, identity: read.identity, link: read.link, lines: read.lines });
     }
-    if (!vanished) return { state: 'ok', entries };
+    if (relist === null) return { state: 'ok', entries };
   }
-  return { state: 'refused', reason: 'workflow-file-vanished' };
+  // No listing at all (a bound of 0 in injected caps) reads as nothing found.
+  return { state: 'refused', reason: relist?.reason ?? 'workflow-file-vanished' };
 }
 
 // Every home of `persona` in the read set, scanned: each name listed in a
