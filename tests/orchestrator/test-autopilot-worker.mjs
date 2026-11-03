@@ -18,10 +18,12 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { publishPid, readPid } from '../_pidfile.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const W = await import(resolve(REPO_ROOT, 'plugins/orchestrator/adapters/claude/autopilot/worker.mjs'));
@@ -163,16 +165,18 @@ describe('stream-json hosting', () => {
     // instead of hanging the run: it kills the holder after 20 s.
     let watchdog = null;
     const watch = (async () => {
-      for (let i = 0; i < 100 && !existsSync(pidfile); i += 1) await new Promise((r) => { setTimeout(r, 50); });
-      const pid = Number(readFileSync(pidfile, 'utf8'));
-      watchdog = setTimeout(() => { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }, 20_000);
+      // readPid, never Number(readFileSync(...)): an empty file reads as 0,
+      // and kill(0) is this runner's own group (tests/_pidfile.mjs).
+      for (let i = 0; i < 100 && readPid(pidfile) === null; i += 1) await new Promise((r) => { setTimeout(r, 50); });
+      const pid = readPid(pidfile);
+      if (pid !== null) watchdog = setTimeout(() => { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }, 20_000);
     })();
     try {
       const t0 = Date.now();
       const { w } = await run('pipe-holder', { stepTimeoutSec: 60 }, { FAKE_CLAUDE_PIDFILE: pidfile });
       await watch;
       clearTimeout(watchdog);
-      holder = Number(readFileSync(pidfile, 'utf8'));
+      holder = readPid(pidfile);
       ok(alive(holder), 'the holder is outside the worker\'s group and still holds the pipes');
       deepStrictEqual([w.exitCode, w.turns, w.aborted], [0, 1, null]);
       ok(Date.now() - t0 < 20_000, `the step ended ${Date.now() - t0} ms after it started`);
@@ -190,9 +194,11 @@ describe('stream-json hosting', () => {
     // of hanging the run.
     let watchdog = null;
     const watch = (async () => {
-      for (let i = 0; i < 100 && !existsSync(pidfile); i += 1) await new Promise((r) => { setTimeout(r, 50); });
-      const pid = Number(readFileSync(pidfile, 'utf8'));
-      watchdog = setTimeout(() => { try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ } }, 20_000);
+      // readPid, never Number(readFileSync(...)): an empty file reads as 0,
+      // and kill(-0) is this runner's own group (tests/_pidfile.mjs).
+      for (let i = 0; i < 100 && readPid(pidfile) === null; i += 1) await new Promise((r) => { setTimeout(r, 50); });
+      const pid = readPid(pidfile);
+      if (pid !== null) watchdog = setTimeout(() => { try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ } }, 20_000);
     })();
     try {
       const t0 = Date.now();
@@ -409,7 +415,8 @@ describe('C127: a finished report ends the step, whatever background tasks are p
       });
       deepStrictEqual([w.exitCode, w.reportEof, w.closedOnReport], [1, false, false]);
     } finally {
-      try { process.kill(Number(readFileSync(pidfile, 'utf8')), 'SIGKILL'); } catch { /* gone */ }
+      const pid = readPid(pidfile);
+      if (pid !== null) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -628,6 +635,32 @@ describe('fixture', () => {
     ok(/Fake Claude/.test(execFileSync(FAKE, ['--version'], { encoding: 'utf8' })));
     ok(execFileSync(FAKE, ['--help'], { encoding: 'utf8' }).includes('--permission-prompts'));
   });
+
+  // A pid file read as 0 would make a test's kill signal its own runner's
+  // group (tests/_pidfile.mjs): readPid gives null for every file that does
+  // not hold a whole positive pid, and publishPid, which the fixture writes its
+  // pids with, replaces the file by a rename, so it is never seen empty.
+  it('a pid file that is empty, missing or not a positive pid reads as null; a published pid replaces the file whole', () => {
+    const dir = scratch();
+    try {
+      const file = join(dir, 'x.pid');
+      strictEqual(readPid(file), null, 'missing');
+      for (const text of ['', '\n', '0', '-1', '-0', '12x', ' ', '1e3', '9007199254740993']) {
+        writeFileSync(file, text);
+        strictEqual(readPid(file), null, JSON.stringify(text));
+      }
+      writeFileSync(file, '4242\n');
+      strictEqual(readPid(file), 4242);
+      // A rename gives the path a new file; writing in place would keep the
+      // old one, whose length is 0 between the open and the write.
+      const before = statSync(file).ino;
+      publishPid(file, 4343);
+      strictEqual(readPid(file), 4343);
+      ok(statSync(file).ino !== before, 'the pid file was replaced, not rewritten in place');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -808,7 +841,8 @@ describe('the worker\'s watch (Decision 3, items 7, 8 and 10)', () => {
       const w = await t.handle.done;
       strictEqual(w.exitCode, 0);
     } finally {
-      if (existsSync(pidfile)) { try { process.kill(Number(readFileSync(pidfile, 'utf8')), 'SIGKILL'); } catch { /* gone */ } }
+      const pid = readPid(pidfile);
+      if (pid !== null) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
       rmSync(dir, { recursive: true, force: true });
       t.cleanup();
     }
@@ -879,7 +913,8 @@ describe('the worker\'s watch (Decision 3, items 7, 8 and 10)', () => {
       ok(w.stall.summary.lowest_window_cpu_ms >= 100, JSON.stringify(w.stall.summary));
     } finally {
       sampler.stop();
-      if (existsSync(pidfile)) { try { process.kill(Number(readFileSync(pidfile, 'utf8')), 'SIGKILL'); } catch { /* gone */ } }
+      const pid = readPid(pidfile);
+      if (pid !== null) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
       rmSync(dir, { recursive: true, force: true });
     }
   });

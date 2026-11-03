@@ -381,15 +381,22 @@ for (const { label: persona, path: cliEntryPath } of COPIES) {
       });
     });
 
-    it('a stream that never drains: the fallback exits with the code once it fires', async () => {
+    it('a stream that never drains: the fallback exits with the code once it fires', async (t) => {
       await keepingExitCode(async () => {
         const { exitAfterFlush } = await fresh();
         const { stream } = heldStream();
         const spy = exitSpy();
-        const started = Date.now();
+        // Mocked timers: the fallback fires at exactly 200 ms of mocked time,
+        // never sooner. A wall-clock bound (Date.now() before the call against
+        // the exit's) failed once at 199 ms in a full-suite run.
+        t.mock.timers.enable({ apis: ['setTimeout'] });
         exitAfterFlush(4, { streams: [stream], exit: spy.exit, fallbackMs: 200 });
-        strictEqual(await within(spy.exited, 5000, 'fallback'), 4);
-        ok(spy.calls[0].at - started >= 200, 'not before the fallback');
+        strictEqual(spy.calls.length, 0, 'no exit at once: the stream has not drained');
+        t.mock.timers.tick(199);
+        strictEqual(spy.calls.length, 0, 'not before the fallback');
+        t.mock.timers.tick(1);
+        strictEqual(spy.calls.length, 1, 'the fallback exits once it fires');
+        strictEqual(spy.calls[0].code, 4);
       });
     });
   });

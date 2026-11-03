@@ -31,7 +31,7 @@ Ships `/orchestrator:plan` (macro plan + Plan-verify opposite-host peer ensemble
 | `/orchestrator:checkpoint <summary>` | ✅ shipping | Write `latest_checkpoint: {at, summary}` on the active macro workflow. Claude SessionStart re-injects it after compact (`matcher: "compact"`, so not on an arbitrary new session and not on `claude --continue`); Codex does the same once the bundled hooks load (generic `[features].hooks`) and are reviewed/trusted in `/hooks`. |
 | `/orchestrator:peer-now --peer <claude\|codex> (...)` | ✅ shipping | Raw side-channel peer consultation through `peer-runner.mjs --kind peer-now`; optionally appends a `[Peer]` note and stays out of `ensemble_results`. |
 | `/orchestrator:audit <findings>` | ✅ shipping | Audit follow-up alias that canonicalizes to `/orchestrator:plan Audit follow-up: ...`; state remains `verb=plan`, `workflow_id=macro-plan-...`. |
-| `/orchestrator:autopilot [preview\|start [--execute]\|status\|stop\|release <subtask> [--hold <id>\|--discard-unreadable]\|hold <subtask>\|writer-clear <subtask> --operation <id>] [options]` | ✅ shipping (Claude Code only) | Drive an approved macro without relaying commands between sessions (ADR-0063): each step runs as one command in a fresh `claude -p` worker, decided from closed-enum state only, and the run halts at owner judgment (an unapproved plan, an owner gate, a next step below HIGH confidence, a subtask waiting for its pull request to merge, a step that changed nothing). Dry-run by default; `start --execute` runs it and asks for the model plan first. `hold` takes a lane over for a person while the other lanes go on (ADR-0068 Decision 2). See [Autopilot](#autopilot-claude-code-only) and [Holds](#holds). |
+| `/orchestrator:autopilot [preview\|start [--execute]\|status\|stop\|release <subtask> [--hold <id>\|--discard-unreadable]\|hold <subtask>\|writer-clear <subtask> --operation <id>\|instruct <subtask> --note-file <path> [--next <step>]] [options]` | ✅ shipping (Claude Code only) | Drive an approved macro without relaying commands between sessions (ADR-0063): each step runs as one command in a fresh `claude -p` worker, decided from closed-enum state only, and the run halts at owner judgment (an unapproved plan, an owner gate, a next step below HIGH confidence, a subtask waiting for its pull request to merge, a step that changed nothing). Dry-run by default; `start --execute` runs it and asks for the model plan first. `hold` takes a lane over for a person while the other lanes go on (ADR-0068 Decision 2); `instruct` tells a lane's child a note and a next step at its next step boundary (ADR-0068 Decision 7). See [Autopilot](#autopilot-claude-code-only) and [Holds](#holds). |
 
 ## Autopilot (Claude Code only)
 
@@ -275,6 +275,58 @@ agentic-autopilot release <subtask> --macro <id> --hold <hold id>   # give it ba
   Whether `claude --resume` of a lane's last session works from the lane is
   unverified; the acceptance (`tests/acceptance/hold-takeover/`) pins the session id
   and working directory `hold` prints.
+
+### Instructions
+
+`agentic-autopilot instruct <subtask> --macro <id> --note-file <path> [--next <step>]`
+(also `/orchestrator:autopilot instruct`) tells one lane's child something while the run
+goes on ([ADR-0068](../../docs/adr/0068-autopilot-lanes-that-keep-going.md) Decision 7):
+a note, through a file, and at most one next step, `/engineer:<verb>` or
+`/engineer:commit`.
+
+- **Where it lives.** `holds/<macro>/instructions/<subtask>.json`, beside the holds and
+  under their lock, never in the child: a worker's `finish-verb` that ends after it is
+  written leaves it as it was. Each instruction keeps its id, revision, the branch and
+  child it was written for, the child's gate witness, its note (at most 16 KiB of UTF-8)
+  and its state: pending, applying, applied, superseded, dropped or withdrawn.
+- **When it applies.** At the lane's next step boundary, never mid-step: no step or
+  verification batch of the lane in flight, no settlement pending, no persona operation
+  open, not held, no release awaiting its comparison, no commit begun and unfinished.
+  A run with lanes applies it within the poll (the records are wake sources), a serial
+  run at its next look, and with no run live the command applies it itself. Applying it
+  is one engineer `append` (the notes as one phase note named `Owner instructions
+  <application id>`, the step at HIGH) behind a receipt, so a crash applies it once and
+  never loses it; the step ledger line of the step it chose names the application. An
+  application left pending for a reason that may pass (a child that moved or cannot be
+  read, an append refused, a workflow home, the instructions directory or the
+  repository's worktrees that cannot be read or listed) keeps the lane's recorded step
+  from running over it: the run
+  tries again (a run with lanes at its next tick, a serial run a few seconds later) and,
+  after the third attempt on the same record, halts the lane for the owner with the
+  reason. A failed `instruct-apply` command parks its lane once. A lane at no boundary
+  only for now (an operation open, a child that cannot be read) keeps its recorded step
+  waiting too, tried again until the boundary opens (a run with lanes parks it after as
+  long as it waits for a busy lane); an interrupted commit or a pending settlement is the
+  lane's own step, which runs first. A queued verification request, and
+  what is left of a batch a hold cut short, is replaced by an instruction's step and runs
+  after a note alone; a started batch, waiting for the heavy-work lock or between its
+  checks, keeps the instruction until it ends.
+- **What wins.** The instruction's step replaces the child's next step, a judgment halt
+  included; the last of several wins and the earlier ones are superseded. A gate set or
+  resolved after it was written supersedes its step (its note still applies), a forced
+  `--next` beside a pending step is refused, and one written while a run still carries
+  its untaken forced step waits for that step.
+- **When it applies to nothing.** It is dropped, with its cause, when the subtask leaves
+  the plan, changes branch, is completed by `/orchestrator:done` or closed, when its child
+  archives or a different child takes the lane, and when the macro ends.
+- **Records.** The run writes an `instruction` event (codes, ids and counts) and a
+  `lanes.jsonl` line, and `halt.json` lists each instruction's state; `status --macro`
+  shows them. The note appears in none of them. A run of this release records
+  `instructions-1` in `run.json`; `instruct` beside a live run without it warns that the
+  instruction waits.
+- **Requirements.** As for holds, an instruction is applied only once the hold-aware
+  engineer is installed on both hosts, so its write is a visible operation; otherwise it
+  stays pending. An older driver never reads the records.
 
 ### The home worktree
 

@@ -49,6 +49,7 @@ import { HeavyUsageError, parseHeavy, runHeavy } from '../../../scripts/lib/heav
 import { describeAdmission } from '../../../scripts/lib/run-locks.mjs';
 import { holdStateOf, holdTransition, liveRuns } from '../../../scripts/lib/holds.mjs';
 import { discardCmd, holdCmd, holdsStatusLines, releaseHoldCmd, writerClearCmd } from './holds-cli.mjs';
+import { applyNowWith, instructCmd, instructionStatusLines } from './instruct-cli.mjs';
 import { isAutopilotRun } from '../../../scripts/state.mjs';
 import { MIN_STEP_BUDGET_USD } from './budget.mjs';
 import { cleanupDeadRuns } from './dead-runs.mjs';
@@ -85,13 +86,13 @@ function previewVerify(roots, repoRoot, view) {
 import { MAX_STEP_TIMEOUT_SEC, terminateGroup } from './worker.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const SUBCOMMANDS = ['preview', 'start', 'status', 'stop', 'release', 'hold', 'writer-clear', 'events'];
+const SUBCOMMANDS = ['preview', 'start', 'status', 'stop', 'release', 'hold', 'writer-clear', 'instruct', 'events'];
 // The subcommands that name a subtask as their one positional argument.
-const SUBTASK_SUBCOMMANDS = ['release', 'hold', 'writer-clear'];
+const SUBTASK_SUBCOMMANDS = ['release', 'hold', 'writer-clear', 'instruct'];
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,63}$/;
 
-export const USAGE = `Usage: autopilot [preview|start|status|stop|release|hold|writer-clear|events] [options]
+export const USAGE = `Usage: autopilot [preview|start|status|stop|release|hold|writer-clear|instruct|events] [options]
        autopilot heavy [--purpose <text>] [--repo <dir>] [--declaration-ref <rev>] -- <command> [args...]
 
   preview                 observe, decide and print the posture; spawns nothing (default)
@@ -113,6 +114,12 @@ export const USAGE = `Usage: autopilot [preview|start|status|stop|release|hold|w
                           hold a lane for a person: the driver leaves it alone once it shows held
   writer-clear <subtask> --macro <id> --operation <operation id>
                           a persona operation whose session is gone no longer keeps the lane
+  instruct <subtask> --macro <id> --note-file <path> [--next "<step>"] [--revises <id>:<revision>]
+                          the owner's instruction to a lane, with or without a live run: the note reaches
+                          its child as a phase note at the lane's next step boundary, and the step
+                          (/engineer:<verb>, /engineer:commit) replaces the child's next one (ADR-0068 Decision 7)
+  instruct <subtask> --macro <id> --withdraw <instruction id>
+                          withdraw a pending instruction
   events (--macro <id> | --checkout <dir>) --after <run-id>:<seq> [--after ...] [--follow]
                           print the events of a macro's runs (or a verb chain's, in that checkout) after
                           the cursor, one JSON line each, and with --follow keep watching; <run-id>:0 is
@@ -185,6 +192,7 @@ export function parseCli(argv) {
     stepTimeoutSec: DEFAULTS.stepTimeoutSec, stepTimeoutExplicit: false, stallDetector: DEFAULTS.stallDetector,
     forced: null, forcedText: null, forcedPairs: null, lanes: 1, notifyLocal: false, json: false, help: false,
     subtask: null, hold: null, operation: null, discardUnreadable: false,
+    noteFile: null, instructNext: null, revises: null, withdraw: null,
     checkout: null, after: [], follow: false,
   };
   // --lane <id> --next "<step>" pairs, in order; a --next with no --lane
@@ -254,7 +262,13 @@ export function parseCli(argv) {
         pendingLane = id;
         break;
       }
-      case '--next': pairs.push({ lane: pendingLane, text: value() }); pendingLane = null; break;
+      case '--next':
+        // instruct's step is the instruction's, never a relaunch's forced step.
+        if (o.sub === 'instruct') { o.instructNext = value(); break; }
+        pairs.push({ lane: pendingLane, text: value() }); pendingLane = null; break;
+      case '--note-file': o.noteFile = value(); break;
+      case '--revises': o.revises = value(); break;
+      case '--withdraw': o.withdraw = value(); break;
       case '--notify-local': o.notifyLocal = flag(); break;
       case '--json': o.json = flag(); break;
       case '--hold': o.hold = value(); break;
@@ -284,6 +298,13 @@ export function parseCli(argv) {
   if (SUBTASK_SUBCOMMANDS.includes(o.sub) && o.subtask === null) throw new UsageError(`${o.sub} needs the subtask whose lane it acts on`);
   if (SUBTASK_SUBCOMMANDS.includes(o.sub) && o.macro === null) throw new UsageError(`${o.sub} needs --macro <id>`);
   if (o.sub === 'writer-clear' && o.operation === null) throw new UsageError('writer-clear needs --operation <operation id>');
+  if (o.sub !== 'instruct' && (o.noteFile !== null || o.revises !== null || o.withdraw !== null)) throw new UsageError('--note-file, --revises and --withdraw apply only to instruct');
+  if (o.sub === 'instruct') {
+    if (o.withdraw !== null && (o.noteFile !== null || o.instructNext !== null || o.revises !== null)) throw new UsageError('--withdraw takes no --note-file, --next or --revises');
+    if (o.withdraw !== null && !/^[0-9a-f]{16}$/.test(o.withdraw)) throw new UsageError(`--withdraw ${JSON.stringify(o.withdraw)} is not an instruction id`);
+    if (o.withdraw === null && o.noteFile === null) throw new UsageError('instruct needs --note-file <path> (the note goes through a file, ADR-0059), or --withdraw <instruction id>');
+    if (pendingLane !== null || pairs.length > 0) throw new UsageError('instruct takes no --lane');
+  }
   if (o.sub !== 'events' && (o.checkout !== null || o.after.length > 0 || o.follow)) throw new UsageError('--checkout, --after and --follow apply only to events');
   if (o.sub === 'events' && (o.macro === null) === (o.checkout === null)) throw new UsageError('events needs one of --macro <id> or --checkout <dir>');
   if (o.sub === 'events' && o.after.length === 0) throw new UsageError('events needs --after <run-id>:<seq> (<run-id>:0 for a run\'s first line)');
@@ -631,7 +652,8 @@ async function statusCmd(o, repoRoot, out, err) {
   const admissions = sessionAdmissions(repoRoot);
   // ADR-0068 Decision 2, item 4 (P8) — the macro's holds, macro-scoped: from
   // any checkout, with or without a run here.
-  const holds = o.macro ? await holdsStatusLines(mainWorktreeRoot(repoRoot), o.macro) : [];
+  // ADR-0068 Decision 7, item 4 — and its instructions, ids and states only.
+  const holds = o.macro ? [...await holdsStatusLines(mainWorktreeRoot(repoRoot), o.macro), ...instructionStatusLines(mainWorktreeRoot(repoRoot), o.macro, { runDirs: [autopilotDir(repoRoot), autopilotDir(mainWorktreeRoot(repoRoot))] })] : [];
   if (runs.length === 0) {
     if (o.json) out(JSON.stringify({ runs: [], admissions, holds }));
     else {
@@ -1085,12 +1107,14 @@ export async function main(argv = process.argv.slice(2), { env = process.env, io
     case 'release': return releaseCmd(o, repoRoot, env, out, err, hooks);
     case 'events': return eventsCmd(o, repoRoot, out, hooks);
     case 'hold':
+    case 'instruct':
     case 'writer-clear': {
       if (isAutopilotRun(env)) {
-        err(`✗ AGENTIC_AUTOPILOT=${env.AGENTIC_AUTOPILOT}: a step of an autopilot run never holds a lane or clears a writer, its own included`);
+        err(`✗ AGENTIC_AUTOPILOT=${env.AGENTIC_AUTOPILOT}: a step of an autopilot run never holds or instructs a lane or clears a writer, its own included`);
         return 1;
       }
       if (o.sub === 'writer-clear') return writerClearCmd(o, repoRoot, { out, err });
+      if (o.sub === 'instruct') return instructCmd(o, repoRoot, { out, err, applyNow: applyNowWith({ engineerRoot: await engineerRootOf(env), env }) });
       return holdCmd(o, repoRoot, { out, err, env, engineerRoot: await engineerRootOf(env), runDirs: [autopilotDir(repoRoot), autopilotDir(mainWorktreeRoot(repoRoot))] });
     }
     default: return 1;

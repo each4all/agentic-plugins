@@ -63,9 +63,9 @@ describe('holds rollout: the tokens', () => {
     ok(ROOTS.lanesCapabilityProblems({ engineer: old }, REPO_ROOT).some((p) => /hold-aware persona/.test(p)));
   }));
 
-  it('a run with lanes records holds-1 in run.json and its lock entry; a serial run records none', () => {
+  it('a run with lanes records holds-1 in run.json and its lock entry; a serial run records none; every run records instructions-1 (Decision 7, item 9)', () => {
     const src = readFileSync(join(AP, 'driver.mjs'), 'utf8');
-    ok(/capabilities: lanes >= 2 \? \[HOLDS_CAPABILITY\] : \[\],/.test(src));
+    ok(/capabilities: \[\.\.\.\(lanes >= 2 \? \[HOLDS_CAPABILITY\] : \[\]\), INSTRUCTIONS_CAPABILITY\],/.test(src));
     ok(/token_digest: tokenDigest\(token\), capabilities: run\.capabilities, lanes \};/.test(src));
   });
 });

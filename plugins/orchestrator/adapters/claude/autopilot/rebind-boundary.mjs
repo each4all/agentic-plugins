@@ -167,8 +167,9 @@ const DELIVERY_TIMEOUT_MS = 120_000;
 // Run the command in its own process group, on the run's locks from before it
 // begins (the line `start` on its stdin) until its group is empty (signalled
 // at the timeout, and emptied once the command has exited). Resolves to
-// { err, stdout, stderr, lingering }; never rejects.
-async function runHeld(args, { env, hold, terminate }) {
+// { err, stdout, stderr, lingering }; never rejects. The instructions'
+// writer runs the same way (instruct-boundary.mjs).
+export async function runHeld(args, { env, hold, terminate }) {
   const detached = process.platform !== 'win32';
   const child = spawn(process.execPath, args, { env, detached, stdio: ['pipe', 'pipe', 'pipe'] });
   // A child gone before the line is written: its exit says why.
@@ -179,7 +180,7 @@ async function runHeld(args, { env, hold, terminate }) {
   child.stderr.setEncoding('utf8').on('data', (c) => { stderr += c; });
   const exited = new Promise((resolve) => {
     child.on('error', (err) => resolve({ err }));
-    child.on('close', (code, signal) => resolve(code === 0 ? { err: null } : { err: new Error(`rebind-deliver exited ${code ?? signal}`) }));
+    child.on('close', (code, signal) => resolve(code === 0 ? { err: null } : { err: new Error(`${args[1] ?? 'the writer'} exited ${code ?? signal}`) }));
   });
   let held = [];
   if (hold && Number.isInteger(child.pid)) {

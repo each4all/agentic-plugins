@@ -92,6 +92,11 @@ import { createBudget } from './budget.mjs';
 import { holdLane, laneGitDir, laneHome, lanePath, reconcileLanes, refTip, stepPlacement } from './lanes.mjs';
 import { deliverAtBoundary, rebindDue, stillHeldDetail } from './rebind-boundary.mjs';
 import {
+  admissionRecheck, applicationLine, applyAtBoundary, countDeferral, DEFER_STATES, deferredHaltDetail, INSTRUCT_DEFER_TRIES, instructedStep, instructionEvent,
+  forcedStepRefusal, instructionLedger, instructionsDue, instructionsKey, instructionsWatch, launchEntries, launchPending, pendingInstructionSteps, stepApplication,
+} from './instruct-boundary.mjs';
+import { instructionsDigest, readInstructions } from '../../../scripts/lib/instructions.mjs';
+import {
   appendLaneEvent, appendStep, LockHeldError, processFingerprint, relaunchCommand, releaseCommand, workerStreamPath, writeRun,
 } from './ledger.mjs';
 import { createTaskRunner, offLoop as defaultOffLoop } from './offloop.mjs';
@@ -549,6 +554,23 @@ export async function runLanes(c) {
   // not been admitted since (ADR-0068 Decision 8, item 4): one still held
   // then parks, as the serial run halts, instead of being told again.
   const toldLanes = new Set();
+  // ADR-0068 Decision 7, item 3 — the lanes whose verification batch has
+  // started and not ended (between two of its checks included): at no
+  // boundary for an instruction. And, per lane, the record as the last
+  // attempt that applied nothing left it, with that attempt's result and the
+  // loop pass it was made in (`instructPass`), so an attempt is not repeated
+  // on a record left as it was while what it met cannot have changed (see
+  // applyInstructions); one whose command failed (`failed`) is not tried
+  // again while its lane stays parked on that record.
+  // And the lanes whose last attempt left their instructions pending for a
+  // reason that may pass (instruct-boundary.mjs DEFER_STATES): their recorded
+  // step is not started over them, and each is tried again at the next tick,
+  // the attempts on one record counted (`{ key, tries }`) up to
+  // INSTRUCT_DEFER_TRIES, when the lane parks.
+  const openBatches = new Set();
+  const instructTried = new Map();
+  let instructPass = 0;
+  const instructDeferred = new Map();
   // Per parked lane, its wake digest as the tick last read it, since when,
   // and the digest it was last judged at (the park's own, at first).
   const seen = new Map();
@@ -562,6 +584,10 @@ export async function runLanes(c) {
   let lastGlobal = c.view;
   const loaded = {};
   let forced = new Map();
+  // The instructions pending when the run took its forced steps
+  // (instruct-boundary.mjs launchPending): a lane whose pending entries are
+  // all among them has them applied before its untaken forced step.
+  let launchInstructions = new Map();
   let draining = null;
   // The verification batch in flight (ADR-0068 Decision 5): { seq, subtaskId,
   // cwd, handle, result, state, waiting, groups }, or null.
@@ -989,6 +1015,14 @@ export async function runLanes(c) {
       for (const s of subtasks.filter((x) => x?.status === 'completed' && typeof x.id === 'string')) {
         const stillCompleted = () => planNow()?.find((x) => x?.id === s.id)?.status === 'completed';
         const r = await retireSubtaskHolds({ mainRoot, macroId, subtaskId: s.id, branch: s.branch ?? null, stateRoots, exceptRun: runId, stillCompleted, now: () => new Date(now()) });
+        // Decision 7, item 6 — what done's completion dropped, published.
+        if (r.instructionsDropped?.length) {
+          const dropped = r.instructionsDropped.map((id) => ({ id, cause: 'completed' }));
+          out(`  lane ${s.id}: completed: ${dropped.length} instruction(s) none applied dropped`);
+          appendLaneEvent(runDir, { event: 'instruction', subtask_id: s.id, ...instructionLedger({ state: 'none', dropped }), run_id: runId, at: at() });
+          const ev = instructionEvent({ state: 'none', dropped }, pub.lanesFile);
+          if (ev) pub.emit('instruction', ev, s.id);
+        }
         if (r.state === 'retired') {
           out(`  lane ${s.id}: completed: its hold records are retired`);
           appendLaneEvent(runDir, { event: 'retired', subtask_id: s.id, hold_id: r.holdId, run_id: runId, at: at() });
@@ -1213,6 +1247,146 @@ export async function runLanes(c) {
     return true;
   }
 
+  // ADR-0068 Decision 7, item 3 — apply each lane's pending instructions at
+  // its boundary: no step of it in flight, no verification batch of it
+  // started and not ended, no forced step of it untaken when an instruction
+  // was written after the run took it (item 5; one pending then is applied
+  // before it), not held and no release of it awaiting its comparison
+  // (holds.mjs holdGate; the writer checks again, with the open operations,
+  // the pending settlement, a batch the child records open and an
+  // interrupted commit, state.mjs applyLaneInstructions). The writer is a
+  // worker group of the run while it writes. A draining run applies none.
+  // Resolves to whether the loop should look again (something applied, or a
+  // halt).
+  async function applyInstructions() {
+    if (draining || c.interrupted()) return false;
+    const plan = lastGlobal?.macro ?? c.view.macro;
+    if (!plan?.path) return false;
+    let again = false;
+    // The records as this pass reads them, before it reads what is due: a
+    // write that lands while it runs still wakes the loop (item 3).
+    const seenThrough = instructionsSeen.begin();
+    const due = instructionsDue(mainRoot, macroId, plan.fm?.plan?.subtasks);
+    // A deferral lasts only while the lane has an instruction pending.
+    const dueIds = new Set(due.map((x) => x.subtaskId));
+    for (const id of [...instructDeferred.keys()]) if (!dueIds.has(id)) instructDeferred.delete(id);
+    for (const { subtaskId: id } of due) {
+      if (draining || c.interrupted()) break;
+      // A lane at no boundary is not deferred either: its step in flight, its
+      // batch, its forced step or its hold comes first (item 5). An untaken
+      // forced step waits only for what was written after the run took it:
+      // instructions already pending then are applied before it (item 3),
+      // and the application takes those alone (`onlyEntries`).
+      const onlyEntries = forced.has(id) ? launchEntries(mainRoot, macroId, id, launchInstructions) : null;
+      const forcedFirst = onlyEntries !== null && onlyEntries.length === 0;
+      if (subtasksInFlight().has(id) || openBatches.has(id) || verifyActive?.subtaskId === id || forcedFirst || gateOf(id)) {
+        instructDeferred.delete(id);
+        continue;
+      }
+      const key = instructionsKey(mainRoot, macroId, id);
+      // A record left as it was is tried again only once what the last
+      // attempt met may have changed: a lane whose attempt applied nothing is
+      // decided as before (its step is what the instruction waits for), so a
+      // skip that outlived that attempt's cause would let the lane's recorded
+      // step start over the instruction (item 5). `not-at-boundary` (an
+      // operation open, a settlement pending) is tried at every call, the
+      // boundary opening at any time; `no-child` and `none` once per loop
+      // pass (nothing between the pass's two calls makes a child or an entry,
+      // and a step's end starts a new pass); `inactive` (a persona that
+      // cannot make the write visible, which no step changes) and a deferral
+      // (its lane parked in the decision until then) once per tick. One whose
+      // command failed parked its lane: it is tried again once the owner
+      // changes the record (the tick then forgets every attempt) or the lane
+      // is no longer parked.
+      const tried = instructTried.get(id);
+      if (tried && tried.key === key) {
+        if (tried.failed && parked.has(id)) continue;
+        if ((tried.state === 'inactive' || DEFER_STATES.has(tried.state)) && now() - tried.at < wakeMs) continue;
+        if ((tried.state === 'no-child' || tried.state === 'none') && tried.pass === instructPass) continue;
+      }
+      const held = lanes.get(id);
+      const a = await (c.applyInstructions ?? applyAtBoundary)({
+        roots, macroPath: plan.path, subtaskId: id, env, runId, token: c.token,
+        hold: holdAt(held?.path ?? repoRoot, id),
+        onLingering: () => c.markLingering(),
+        ...(onlyEntries ? { onlyEntries } : {}),
+      });
+      if (a.lingering) { await halted({ reason: 'worker-failed', detail: a.detail, subtaskId: id, scope: 'run' }); return true; }
+      if (!a.ok) {
+        instructTried.set(id, { key, at: now(), failed: true });
+        instructDeferred.delete(id);
+        await halted({ reason: 'owner-choice', detail: a.detail, subtaskId: id });
+        again = true;
+        continue;
+      }
+      const r = a.result;
+      const changed = r.state === 'applied' || (r.dropped ?? []).length > 0;
+      if (changed) {
+        out(`  lane ${id}: ${applicationLine(id, r)}`);
+        appendLaneEvent(runDir, { event: 'instruction', subtask_id: id, ...instructionLedger(r), run_id: runId, at: at() });
+        const ev = instructionEvent(r, pub.lanesFile);
+        if (ev) pub.emit('instruction', ev, id);
+        // Its fingerprint changed: a parked lane is judged again (Decision 1,
+        // item 4), from a fresh look.
+        if (parked.has(id)) candidates.add(id);
+        again = true;
+      }
+      if (DEFER_STATES.has(r.state)) {
+        // Left pending for a reason that may pass: the lane's recorded step
+        // is not started over the instructions (decideLanes takes the lane
+        // as parked), and the next tick tries again; the last attempt parks
+        // the lane for the owner.
+        const tries = countDeferral(instructDeferred, id, key);
+        instructTried.set(id, { key, at: now(), pass: instructPass, state: r.state });
+        if (!changed) out(`  lane ${id}: ${applicationLine(id, r)}`);
+        if (tries >= INSTRUCT_DEFER_TRIES) {
+          instructDeferred.delete(id);
+          instructTried.set(id, { key, at: now(), failed: true });
+          await halted({ reason: 'owner-choice', detail: deferredHaltDetail(id, macroId, r, tries, mainRoot), subtaskId: id });
+          again = true;
+        }
+        continue;
+      }
+      if (r.state === 'not-at-boundary' && r.step_first !== true) {
+        // At no boundary only for now (an operation open, a hold the writer
+        // saw, a child that cannot be read): the lane's recorded step is not
+        // started over the instructions either, or one that closes between
+        // this attempt and the step's start would let it run first. The lane
+        // waits as a deferred one, tried again at every call (the tick wakes
+        // it); no attempt is counted, and after as long as a lane laneBusy
+        // holds back is waited for (an operation left open by a killed worker
+        // never closes by itself) the lane parks for the owner.
+        const was = instructDeferred.get(id);
+        const since = was?.boundarySince ?? now();
+        instructDeferred.set(id, { key, tries: 0, boundarySince: since });
+        const line = applicationLine(id, r);
+        instructTried.set(id, { key, at: now(), pass: instructPass, state: r.state, line });
+        if (tried?.line !== line) out(`  lane ${id}: ${line}`);
+        if (now() - since >= busyWaitMs) {
+          instructDeferred.delete(id);
+          instructTried.set(id, { key, at: now(), failed: true });
+          await halted({ reason: 'owner-choice', detail: deferredHaltDetail(id, macroId, r, `${Math.round((now() - since) / 1000)} s of`, mainRoot), subtaskId: id });
+          again = true;
+        }
+        continue;
+      }
+      instructDeferred.delete(id);
+      if (changed) {
+        instructTried.delete(id);
+        continue;
+      }
+      // Said once while it stays the same: a lane at no boundary is tried at
+      // every call.
+      const line = applicationLine(id, r);
+      instructTried.set(id, { key, at: now(), pass: instructPass, state: r.state, line });
+      if (r.state !== 'none' && tried?.line !== line) out(`  lane ${id}: ${line}`);
+    }
+    // The driver's own writes are no wake (the digest leaves them out), and
+    // what the pass read at its start is seen; a write since is not.
+    seenThrough();
+    return again;
+  }
+
   // Judge parked lanes again (R9: only in the loop's body, every ended step
   // settled, before the decision): the tick's candidates, or, as the run
   // would end, every one. A lane whose record the owner released, or whose
@@ -1279,6 +1453,12 @@ export async function runLanes(c) {
     return ids.ids.map((id) => `${id}=${statKey(recordPath(mainRoot, macroId, 'holds', id))}`).join('|');
   };
   let holdsSeen = holdsKey();
+  // Decision 7, item 3 — the instruction records are wake sources: one
+  // written, revised or withdrawn wakes the loop within the poll.
+  const instructionsSeen = instructionsWatch(() => instructionsDigest(mainRoot, macroId));
+  // And at a step's admission: an instruction written since the lane's last
+  // application attempt yields the step (launch; impl-instruct critique 9 F1).
+  const instructionsUntried = admissionRecheck(mainRoot, macroId);
   const pendingHandoffs = () => {
     const ids = listRecordIds(mainRoot, macroId, 'holds');
     return ids.state === 'ok' ? ids.ids.filter((id) => holdStateOf(mainRoot, macroId, id).state === 'pending') : [];
@@ -1295,8 +1475,12 @@ export async function runLanes(c) {
     // and the run would end beside it.
     let found = busy.size > 0;
     if (found) busyDue = true;
+    // A lane whose instructions an attempt left pending is tried again at
+    // the tick (Decision 7, item 3), its step deferred until then.
+    if (instructDeferred.size > 0) found = true;
     // The owner's hold records (Decision 2): a hold set, a release.
     const hk = holdsKey();
+    if (instructionsSeen.poll()) { instructTried.clear(); found = true; }
     if (hk !== holdsSeen) { holdsSeen = hk; found = true; }
     // A handoff still pending is retried at each tick (Decision 1, item 6),
     // what blocks it can go away without touching a source; one whose lane
@@ -1579,10 +1763,29 @@ export async function runLanes(c) {
     });
     out(`[${mine}] lane ${id}: verify${s.forced ? ' · the owner\'s rerun' : ''}`);
     lane(id).last_step = { seq: mine, kind: 'verify', verb: null, command, outcome: 'running' };
+    // A pending instruction with a next step, which replaces a request not
+    // running, or a record that cannot be read (whether it holds one cannot
+    // be told); never beside the owner's rerun, which one written since waits
+    // for.
+    const stepPending = () => {
+      if (s.forced === true) return false;
+      const p = pendingInstructionSteps(mainRoot, macroId, id, { subtask: (view.macro?.fm?.plan?.subtasks ?? []).find((x) => x?.id === id) });
+      return Boolean(p?.entries || p?.unreadable);
+    };
     const job = {
       runId, seq: mine, runDir, mainRoot, workflowPath: child.path, workflowId: child.workflow_id, subtaskId: id, lane: held.path,
       engineerRoot: roots.engineer, offer, verb: child.verb ?? null, forcedRerun: s.forced === true && s.rerun === true,
       requestKnown: requestKnownIn([repoRoot, mainRoot], id),
+      // Decision 7, item 5 — once a batch a dead driver left open is ended,
+      // what is left of it is a request not running, which a pending
+      // instruction with a step replaces: the step gives the lane back
+      // rather than continue it. Not for the owner's rerun, which an
+      // instruction written since waits for.
+      yieldsToInstruction: stepPending,
+      // Item 5 at the batch's start (impl-instruct critique 10 F1): one
+      // written while the batch was prepared, after this admission's
+      // recheck, replaces the request too; once per record, as there.
+      instructionWrittenSince: () => stepPending() && instructionsUntried(id, instructTried.get(id)?.key ?? null),
       base: selectionBase({ lane: held.path, integration: baseline, baseline: offer.baseline }),
       checkEnv: checkEnvOf(workerEnv(env, { runId, seq: mine, roots, remotes: c.remotes ?? {}, stateBase: stateRoot.root, autopilotToken: c.token })),
       personaEnv: personaEnvOf(env),
@@ -1625,6 +1828,8 @@ export async function runLanes(c) {
     verifyActive = null;
     const r = entry.result;
     const id = entry.subtaskId;
+    if (r.batch && !r.batch.end) openBatches.add(id);
+    else openBatches.delete(id);
     // A group that outlived SIGKILL keeps the run's locks from now. The look
     // comes next, and the verdict after it: an interrupt that comes while it
     // awaits is judged as one that came during the batch.
@@ -1662,6 +1867,11 @@ export async function runLanes(c) {
         if (verifyNoop.get(id) === key) verdict = { reason: 'no-progress', detail: `the verification step of subtask ${id} yielded twice in a row to a ${r.cause ?? 'stop'} this run does not read (${r.detail}): the persona refuses the lane's writes as a held lane's`, subtaskId: id };
         verifyNoop.set(id, key);
       }
+    } else if (r.instruction === true) {
+      // A batch that yielded to an instruction written while it was prepared
+      // (item 5): each such yield takes an owner's write, so it is no step
+      // that changed nothing.
+      verifyNoop.delete(id);
     } else if (!r.wrote && (r.outcome === 'none' || r.outcome === 'resume')) {
       const key = `${id}:${entry.before.children?.[id]?.verify?.request_id ?? ''}:${r.outcome}`;
       if (verifyNoop.get(id) === key) verdict = { reason: 'no-progress', detail: `the verification step of subtask ${id} changed nothing twice (${r.detail ?? r.outcome})`, subtaskId: id };
@@ -1932,6 +2142,20 @@ export async function runLanes(c) {
     const place = batch ? {} : stepPlacement(s, { lanes, checkout: repoRoot, stateRoot });
     if (place.problem) return refuse({ reason: 'owner-choice', detail: place.problem, subtaskId: id });
     if (gateOf(id)) return { ...refuse(null), again: false, held: true };
+    // ADR-0068 Decision 7, item 3 — the owner's instructions are applied
+    // before the run chooses the lane's next step: one written since the
+    // lane's last application attempt (during the look, the landing report or
+    // this admission) yields the step, and the next pass applies it, or
+    // defers the lane, before the decision (impl-instruct critique 9 F1).
+    // Nothing is awaited from here to the spawn. A lane a pass does not try
+    // is left out, as applyInstructions leaves it: its batch open, or its
+    // untaken forced step first.
+    if (id && !openBatches.has(id) && verifyActive?.subtaskId !== id
+      && !(forced.has(id) && launchEntries(mainRoot, macroId, id, launchInstructions).length === 0)
+      && instructionsUntried(id, instructTried.get(id)?.key ?? null)) {
+      out(`  lane ${id}: an instruction written since its last application attempt comes before this step; deciding again`);
+      return refuse(null);
+    }
     const occupiedLast = inLane ? laneBusy(id, before) : false;
     if (occupiedLast) {
       holdBack(id, occupiedLast);
@@ -1961,6 +2185,7 @@ export async function runLanes(c) {
     const sessionId = randomUUID();
     appendStep(runDir, {
       event: 'started', seq: mine, lane: inLane ? id : null, kind: s.kind, command, subtask_id: id, forced: s.forced === true,
+      ...(() => { const ia = stepApplication(mainRoot, macroId, s, before.children?.[id]?.path); return ia ? { instruction_application: ia } : {}; })(),
       session_id: sessionId, model, effort, step_budget_usd: reservation.usd, step_timeout_sec: timeoutSec, cwd,
       stall_detector: options.stallDetector === 'on' ? 'on' : 'log',
       started_at: new Date(now()).toISOString(), fingerprint_before: inLane ? laneFingerprint(before, id) : fingerprint(before),
@@ -2419,11 +2644,26 @@ export async function runLanes(c) {
       // A forced step on a held lane, or one whose release was rejected or
       // could not be compared, is refused (Decision 1, item 8): the owner's
       // release, or a new hold and release, gives it back.
+      // What is pending as the run takes its forced steps, read before the
+      // refusal below: an entry written after this look waits for the forced
+      // step; one already here is applied before it (Decision 7, items 3, 5).
+      const launch = launchPending(mainRoot, macroId);
       for (const id of f.forced.keys()) {
         const g = gateOf(id);
         if (g) return await end('halted', asHalt({ reason: 'owner-choice', subtaskId: id, detail: `--next does not apply: ${g}; ${/rejected/.test(g) ? `hold and release it again: agentic-autopilot hold ${id} --macro ${macroId}` : 'release it first'}` }));
+        // ADR-0068 Decision 7, item 5 — refused beside a pending instruction
+        // that carries a next step and still applies (item 6), naming it: a
+        // verb, the commit and the owner's rerun of a verification alike (a
+        // dispatch's lane has no child, so no instruction with a step).
+        const step = f.forced.get(id);
+        const subtask = (c.view.macro?.fm?.plan?.subtasks ?? []).find((x) => x?.id === id);
+        const refused = step && step.kind !== 'dispatch'
+          ? forcedStepRefusal(pendingInstructionSteps(mainRoot, macroId, id, { subtask }), { what: `--lane ${id} --next`, subtaskId: id, macroId })
+          : null;
+        if (refused) return await end('halted', asHalt({ reason: 'owner-choice', subtaskId: id, detail: refused }));
       }
       forced = f.forced;
+      launchInstructions = launch;
     }
     // ADR-0068 Decision 1, item 3 — the kept parks, before the lanes: a
     // relaunch parks again at once each lane whose record is unchanged, and a
@@ -2494,6 +2734,13 @@ export async function runLanes(c) {
         return await end('halted', draining);
       }
 
+      // ADR-0068 Decision 7, item 3 — the owner's instructions are applied
+      // before the parked lanes are judged again and before the decision
+      // (P7), to idle and parked lanes alike: a lane they changed is a
+      // candidate, judged from a fresh look. Each turn of the loop is a pass of
+      // its own (applyInstructions' once-per-pass attempts).
+      instructPass += 1;
+      if (await applyInstructions()) continue;
       // A look the loop sets aside here (an interrupt, a step that ended) has
       // already fed the run's list, as every look does when it returns.
       // The parked lanes the tick found released, or changed and quiet since,
@@ -2507,6 +2754,10 @@ export async function runLanes(c) {
       await consumeReleases();
       await passedBack();
       if (c.interrupted() || draining || ended.length > 0) continue;
+      // ADR-0068 Decision 7, item 5 — a held lane's instruction is applied
+      // once its release's comparison has been consumed, before the lane is
+      // decided: the comparison above may have just given it back.
+      if (await applyInstructions()) continue;
       const view = await lookGlobal();
       if (c.interrupted() || ended.length > 0) continue;
       // While a done or finalize is in flight the macro is that step's to
@@ -2528,8 +2779,13 @@ export async function runLanes(c) {
       // lanes' trees, for a run that offers verification.
       const vfacts = await verifyFacts({ view, mainRoot, laneOf: (id) => lanes.get(id)?.path ?? null, treeOf: verifyOps.treeDigest });
       if (c.interrupted() || ended.length > 0 || verifyActive?.result) continue;
+      // P2 — an instruction's step, with no worker step since, replaces the
+      // step an answered batch would have dispatched (Decision 7, item 5).
+      for (const [id, f] of Object.entries(vfacts ?? {})) {
+        if (f?.guard && instructedStep(mainRoot, macroId, id, view.children?.[id]?.path)) vfacts[id] = { ...f, guard: null };
+      }
       const d = decideLanes(view, {
-        inFlight: subtasksInFlight(), parked: new Set([...parked.keys(), ...busy, ...heldSubtasks(view)]), driverBusy: driverBusy(), lanes, started, forced, finalizeAttempted,
+        inFlight: subtasksInFlight(), parked: new Set([...parked.keys(), ...busy, ...heldSubtasks(view), ...instructDeferred.keys()]), driverBusy: driverBusy(), lanes, started, forced, finalizeAttempted,
         verify: { offered: offer.offered === true, why: offer.why ?? null, facts: vfacts },
       });
       if (d.outcome === 'completed') {
@@ -2566,6 +2822,10 @@ export async function runLanes(c) {
       } else {
         busyIdleSince = null;
       }
+      // A lane whose instructions an attempt left pending is waited for: the
+      // tick tries it again, and the last attempt parks it (Decision 7, item
+      // 3), so the run never ends beside an instruction it did not try.
+      if (instructDeferred.size > 0) { await nextEvent(); continue; }
       const left = quietLeft();
       if (left > 0) {
         clearTimeout(quietTimer);
@@ -2579,6 +2839,13 @@ export async function runLanes(c) {
       // included, is not lost (Decision 1, item 7): every pending one is
       // compared before the run ends.
       if (await consumeReleases()) continue;
+      // So is an instruction the owner wrote since the last pass read the
+      // records (Decision 7, item 3): one written during this turn's looks,
+      // the end's own included, is applied before the run ends, though a
+      // tick's poll took it as seen and the wake it queued is not waited for
+      // here (impl-instruct critique 8 F1). It forgets every attempt, as the
+      // tick does at an owner write.
+      if (instructionsSeen.sincePass()) { instructTried.clear(); continue; }
       return await end('halted', firstParked() ?? (d.idle?.reason !== 'awaiting-landing' ? firstHeld() ?? firstBusy() : null) ?? d.idle);
     }
   } catch (e) {

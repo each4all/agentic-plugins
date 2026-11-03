@@ -34,8 +34,13 @@ process.on('exit', () => rmSync(oldRoot, { recursive: true, force: true }));
 {
   const tag = spawnSync('git', ['-C', REPO_ROOT, 'rev-parse', '--verify', '-q', `${PREVIOUS}^{commit}`], { encoding: 'utf8' });
   if (tag.status !== 0) throw new Error(`${PREVIOUS} is not in this clone: fetch the tags (CI checks out with fetch-depth 0); this test fails rather than skip`);
-  const tar = execFileSync('git', ['-C', REPO_ROOT, 'archive', '--format=tar', PREVIOUS, 'plugins/founder'], { maxBuffer: 64 * 1024 * 1024 });
-  execFileSync('tar', ['-xf', '-', '-C', oldRoot], { input: tar });
+  // Through a file, never tar's stdin: bsdtar exits at the end-of-archive
+  // blocks, before reading git archive's record padding, so a write still in
+  // flight fails with EPIPE.
+  const archive = join(oldRoot, '.release.tar');
+  execFileSync('git', ['-C', REPO_ROOT, 'archive', '--format=tar', '-o', archive, PREVIOUS, 'plugins/founder']);
+  execFileSync('tar', ['-xf', archive, '-C', oldRoot]);
+  rmSync(archive);
 }
 const OLD = join(oldRoot, 'plugins/founder');
 const NEW = personaInfo('founder');

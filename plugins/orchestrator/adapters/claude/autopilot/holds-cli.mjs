@@ -519,7 +519,10 @@ export async function holdsStatusLines(mainRoot, macroId) {
     const subtasks = Array.isArray(macro.fm?.plan?.subtasks) ? macro.fm.plan.subtasks : [];
     if (macro.archived || macro.fm?.terminal_marker === true) {
       const r = await retireMacroHolds({ mainRoot, macroId, subtasks, stateRoots: roots });
-      if (r.state === 'retired') return [`holds of ${macroId}: retired (the macro ${macro.archived ? 'is archived' : 'has ended'})`];
+      if (r.state === 'retired') {
+        return [`holds of ${macroId}: retired (the macro ${macro.archived ? 'is archived' : 'has ended'})`,
+          ...(r.instructionsDropped ?? []).map((d) => `  ${d.subtask_id}: instruction ${d.id ?? '(unreadable record)'} dropped, never applied: the macro ended`)];
+      }
       if (r.state !== 'none') lines.push(`the macro has ended; its holds are not retired yet: ${r.why}`);
     } else if (macro.fm) {
       const laneNow = (s) => branchLane(mainRoot, s.branch);
@@ -528,6 +531,7 @@ export async function holdsStatusLines(mainRoot, macroId) {
         const stillCompleted = () => planNow()?.find((x) => x?.id === s.id)?.status === 'completed';
         const r = await retireSubtaskHolds({ mainRoot, macroId, subtaskId: s.id, branch: s.branch ?? null, stateRoots: roots, stillCompleted });
         if (r.state === 'retired') lines.push(`${s.id}: completed: its hold records retired now`);
+        if (r.instructionsDropped?.length) lines.push(`${s.id}: completed: ${r.instructionsDropped.length} instruction(s) none applied dropped (${r.instructionsDropped.join(', ')})`);
         else if (r.state === 'waiting' || r.state === 'unreadable') lines.push(`${s.id}: completed; its hold records retire once nothing writes the lane: ${r.why}`);
       }
     }

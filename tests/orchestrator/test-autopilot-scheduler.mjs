@@ -49,7 +49,9 @@ describe('two lanes', () => {
       strictEqual(steps.length, 4);
       // Each lane step ran in its lane, never in the driver's checkout.
       for (const s of r.steps) strictEqual(s.cwd, t.lane(s.lane));
-      strictEqual(r.halt.reason, 'awaiting-landing');
+      // The halt and the run's lines on a failure: a rare end other than
+      // awaiting-landing under a loaded suite (C167) is otherwise unreadable.
+      strictEqual(r.halt.reason, 'awaiting-landing', `${JSON.stringify(r.halt)}\n${t.lines.join('\n')}`);
       deepStrictEqual(r.halt.waiting.map((w) => w.subtaskId).sort(), ['A', 'B']);
       deepStrictEqual(Object.keys(bySubtask(r)).sort(), ['A', 'B']);
       deepStrictEqual(r.halt.lanes.map((l) => l.subtask_id), ['A', 'B'], 'halt.json has one entry per lane');

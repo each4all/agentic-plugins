@@ -8,7 +8,12 @@
 //                       baseline, macro, status, step count, cost, halt
 //   steps.jsonl         a `started` line written BEFORE the worker is spawned
 //                       (D1: every spawn is on record before it starts), then a
-//                       `finished` line after it
+//                       `finished` line after it; between them, observations
+//                       of no step's lifecycle: a step's `stall` lines
+//                       (ADR-0068 Decision 3), and a serial run's
+//                       `instruction` lines (Decision 7), each carrying the
+//                       seq of the step about to start, which every reader
+//                       keeps out of that step's record
 //   landing.jsonl       a `landing-ready` line for each observation of a
 //                       committed subtask the run reported, whatever its
 //                       readiness: its `ready` field, not the event name, says
@@ -296,6 +301,9 @@ export function listOpenRuns(mainRoot) {
  * landing-ready records and the lane events in the order they were written,
  * halt.json. A step's `stall` lines (ADR-0068 Decision 3) are observations,
  * never part of its lifecycle: each step lists them in `stalls`, in order.
+ * So are a serial run's `instruction` lines (Decision 7): the run lists them
+ * in `instructions`, in order, and none is merged into the step of its seq
+ * (it would hide that step's `started`).
  */
 export function readRun(repoRoot, runId) {
   const dir = path.join(autopilotDir(repoRoot), runId);
@@ -303,10 +311,15 @@ export function readRun(repoRoot, runId) {
   if (!run) return null;
   const steps = new Map();
   const stalls = new Map();
+  const instructions = [];
   for (const rec of readLines(path.join(dir, 'steps.jsonl'))) {
     if (rec.event === 'stall') {
       if (!stalls.has(rec.seq)) stalls.set(rec.seq, []);
       stalls.get(rec.seq).push(rec);
+      continue;
+    }
+    if (rec.event === 'instruction') {
+      instructions.push(rec);
       continue;
     }
     const prev = steps.get(rec.seq) ?? {};
@@ -315,6 +328,7 @@ export function readRun(repoRoot, runId) {
   return {
     dir, run,
     steps: [...steps.values()].sort((a, b) => a.seq - b.seq).map((s) => ({ ...s, stalls: stalls.get(s.seq) ?? [] })),
+    instructions,
     landing: readLines(path.join(dir, 'landing.jsonl')),
     lanes: readLines(path.join(dir, 'lanes.jsonl')),
     halt: readJson(path.join(dir, 'halt.json')),

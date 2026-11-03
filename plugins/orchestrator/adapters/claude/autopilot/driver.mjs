@@ -58,6 +58,11 @@ import {
 import { observeInChild, offLoop as defaultOffLoop } from './offloop.mjs';
 import { readParks, retiring } from './parks.mjs';
 import { deliverAtBoundary, rebindDue, stillHeldDetail } from './rebind-boundary.mjs';
+import {
+  admissionRecheck, applicationLine, applyAtBoundary, countDeferral, DEFER_STATES, deferredHaltDetail, INSTRUCT_DEFER_TRIES, INSTRUCT_RETRY_MS, instructedStep,
+  forcedStepRefusal, instructionEvent, instructionLedger, instructionsDue, instructionsKey, instructionsSummary, launchEntries, launchPending, pendingInstructionSteps, stepApplication,
+} from './instruct-boundary.mjs';
+import { INSTRUCTIONS_CAPABILITY } from '../../../scripts/lib/instructions.mjs';
 import { stallStepLine } from './stall.mjs';
 import { createStallSampler } from './stall-sampler.mjs';
 import {
@@ -606,7 +611,9 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     claude_version: pre.claude,
     // ADR-0068 Decision 2, item 9 — a run with lanes honours holds; a serial
     // run refuses to start beside one.
-    capabilities: lanes >= 2 ? [HOLDS_CAPABILITY] : [],
+    // ADR-0068 Decision 7, item 9 — every run of this release applies the
+    // owner's instructions, serial or with lanes.
+    capabilities: [...(lanes >= 2 ? [HOLDS_CAPABILITY] : []), INSTRUCTIONS_CAPABILITY],
     roots,
     versions: pinned.versions,
     sources: pinned.sources,
@@ -781,6 +788,11 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     if (d) {
       pendingEndHalt = laneReport?.publishHalt ?? (() => publishHalt(d));
       run.halt = haltRecord({ runId, d: laneReport ? { ...d, lanes: laneReport.lanes } : d, lastSessionId, repoRoot, macroId, lanes });
+      // ADR-0068 Decision 7, items 6 and 8 — the macro's instructions and
+      // what became of each (a dropped one with its cause), ids only.
+      let instructions = [];
+      try { instructions = macroId ? instructionsSummary(mainRoot, macroId) : []; } catch { instructions = []; }
+      if (instructions.length) run.halt = { ...run.halt, instructions };
       writeHalt(runDir, run.halt);
     }
     writeRun(runDir, run);
@@ -1010,6 +1022,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         resolveRoots: deps.resolveRoots ?? null,
         releaseBasis: deps.releaseBasis ?? null,
         deliverRebindings: deps.deliverRebindings ?? null,
+        applyInstructions: deps.applyInstructions ?? null,
         publish: {
           emit: publish, halt: publishHalt, stepEnd: publishStepEnd,
           stepFailed: publishStepFailed, lanesFile: join(runDir, 'lanes.jsonl'),
@@ -1021,6 +1034,27 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
 
     const loaded = {};
     const ctx = { runId, macroId, forced: options.forced ?? null, finalizeAttempted: false };
+    // ADR-0068 Decision 7, item 5 — a forced step beside a pending instruction
+    // that carries a next step is refused, naming it, so the earlier of the
+    // two words is never lost to the later by the order the code looks in. A
+    // verb, the commit and the owner's rerun of a verification alike; a
+    // dispatch's subtask has no child, so no instruction with a step. Only
+    // the subtasks the forced step can name are read: those whose child is
+    // active (policy.mjs forcedApplies takes the one). A sibling whose child
+    // has archived, awaiting its landing, keeps an instruction only until
+    // its drop (child-archived), and never refuses another's step; nor does
+    // an entry of the subtask itself that applies to nothing now (item 6:
+    // bound to a child that archived, or that another took the lane from).
+    // What is pending as the run takes its forced step is read first: an
+    // entry written after this look waits for the forced step, one already
+    // here is applied before it (items 3 and 5).
+    const launch = ctx.forced && view.macro?.id ? launchPending(mainRoot, view.macro.id) : new Map();
+    if (ctx.forced && ctx.forced.kind !== 'dispatch' && view.macro?.id) {
+      for (const s of (view.macro.fm?.plan?.subtasks ?? []).filter((x) => x?.status === 'in_progress' && view.children?.[x.id]?.location === 'active')) {
+        const refused = forcedStepRefusal(pendingInstructionSteps(mainRoot, view.macro.id, s.id, { subtask: s }), { what: `--next ${options.forcedText ?? ''}`, subtaskId: s.id, macroId: view.macro.id });
+        if (refused) return await finish('halted', { reason: 'owner-choice', subtaskId: s.id, detail: refused });
+      }
+    }
     const budget = (deps.createBudget ?? createBudget)({
       maxSteps: options.maxSteps, maxCostUsd: options.maxCostUsd, stepBudgetUsd: options.stepBudgetUsd,
       stepTimeoutSec: options.stepTimeoutSec,
@@ -1030,6 +1064,33 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     // Two verification steps in a row that changed nothing on the same request
     // halt (a decision the journal and the record keep returning to).
     let verifyNoop = null;
+    // ADR-0068 Decision 7, item 3 — the subtask whose verification batch has
+    // started and not ended: its lane is at no boundary for an instruction,
+    // between two of its checks included.
+    let openBatchOf = null;
+    // ADR-0068 Decision 7, item 3 — the subtasks whose last application left
+    // their instructions pending for a reason that may pass
+    // (instruct-boundary.mjs DEFER_STATES): their step, or their halt, is not
+    // taken over the instructions; the run waits a moment and tries again,
+    // the attempts on one record counted (`{ key, tries }`) up to
+    // INSTRUCT_DEFER_TRIES, then halts naming them.
+    const instructDeferred = new Map();
+    const instructRetryMs = deps.instructRetryMs ?? INSTRUCT_RETRY_MS;
+    // Item 3 at a step's admission (impl-instruct critique 9 F1): each
+    // subtask's record as this turn's application attempt met it, and the
+    // recheck right before a step starts. An instruction written since (while
+    // the run read the journal, decided, or resolved its roots) yields the
+    // step: the turn is taken again at the same seq, and its pass applies it.
+    const instructKeys = new Map();
+    const instructionsUntried = admissionRecheck(mainRoot, macroId);
+    const instructionYields = (s) => {
+      const id = s?.subtaskId ?? null;
+      if (!id || !view.macro?.id || id === openBatchOf) return false;
+      // An untaken forced step's lane takes only the entries pending at the
+      // launch (the pass's filter): one written since waits for the step.
+      if (ctx.forced !== null && launchEntries(mainRoot, view.macro.id, id, launch).length === 0) return false;
+      return instructionsUntried(id, instructKeys.get(id) ?? null);
+    };
 
     // ADR-0068 Decision 5 — one verification step: no reservation, no cost,
     // no step of --max-steps; the admission stage before it (an exhausted
@@ -1041,6 +1102,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       const drift = seq > 1 ? driftOf(pinned, await resolveRootsNow({ env })) : [];
       if (interrupted) return { halt: { reason: 'interrupted', detail: 'the owner interrupted the run' } };
       if (drift.length > 0) return { halt: { reason: 'version-drift', detail: drift.join('; ') } };
+      if (instructionYields(s)) return { again: true };
       const child = view.children?.[s.subtaskId];
       const id = s.subtaskId;
       appendStep(runDir, {
@@ -1050,10 +1112,29 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       active = { seq, subtaskId: id, aborted: null };
       ctx.forced = null;
       out(`[${seq}] verify (subtask ${id})${s.forced ? ' · the owner\'s rerun' : ''}`);
+      // A pending instruction with a next step, which replaces a request not
+      // running, or a record that cannot be read (whether it holds one cannot
+      // be told); never beside the owner's rerun, which one written since
+      // waits for.
+      const stepPending = () => {
+        if (s.forced === true) return false;
+        const p = pendingInstructionSteps(mainRoot, view.macro.id, id, { subtask: (view.macro.fm?.plan?.subtasks ?? []).find((x) => x?.id === id) });
+        return Boolean(p?.entries || p?.unreadable);
+      };
       const job = {
         runId, seq, runDir, mainRoot, workflowPath: child.path, workflowId: child.workflow_id, subtaskId: id, lane: repoRoot,
         engineerRoot: roots.engineer, offer, verb: child.verb ?? null, forcedRerun: s.forced === true && s.rerun === true,
         requestKnown: requestKnownIn([repoRoot, mainRoot], id),
+        // Decision 7, item 5 — once a batch a dead driver left open is ended,
+        // what is left of it is a request not running, which a pending
+        // instruction with a step replaces: the step gives the lane back
+        // rather than continue it. Not for the owner's rerun, which an
+        // instruction written since waits for.
+        yieldsToInstruction: stepPending,
+        // Item 5 at the batch's start (impl-instruct critique 10 F1): one
+        // written while the batch was prepared, after this admission's
+        // recheck, replaces the request too; once per record, as there.
+        instructionWrittenSince: () => stepPending() && instructionsUntried(id, instructKeys.get(id) ?? null),
         base: selectionBase({ lane: repoRoot, integration: view.macro?.fm?.git_baseline?.branch ?? null, baseline: offer.baseline }),
         checkEnv: checkEnvOf(workerEnv(env, { runId, seq, roots, remotes, stateBase: stateRoot.root, autopilotToken: token })),
         personaEnv: personaEnvOf(env),
@@ -1080,6 +1161,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       const r = await current.done;
       current = null;
       note(null);
+      openBatchOf = r.batch && !r.batch.end ? id : null;
       let verdict = null;
       if (r.lingering) {
         lingering = true;
@@ -1098,6 +1180,11 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         // withdrawn (holds-cli.mjs). Deciding again would meet the same
         // refusal, with no step of --max-steps to end it: the owner resolves it.
         verdict = { reason: 'owner-choice', detail: `the verification step of subtask ${id} did not start: ${r.detail}. A serial run does not honour holds: stop it, then release the hold, or run with lanes`, subtaskId: id };
+      } else if (r.instruction === true) {
+        // A batch that yielded to an instruction written while it was
+        // prepared (item 5): each such yield takes an owner's write, so it is
+        // no step that changed nothing.
+        verifyNoop = null;
       } else if (!r.wrote && (r.outcome === 'none' || r.outcome === 'resume')) {
         const key = `${id}:${child.verify?.request_id ?? ''}:${r.outcome}`;
         if (verifyNoop === key) verdict = { reason: 'no-progress', detail: `the verification step of subtask ${id} changed nothing twice (${r.detail ?? r.outcome})`, subtaskId: id };
@@ -1126,13 +1213,88 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       // that ended, an answer's tree), for a run that offers verification.
       // The facts guard an answered request's on_pass whether or not this
       // run offers verification.
+      // ADR-0068 Decision 7, item 3 — the owner's instructions pending for a
+      // lane are applied when the run next looks at it, before it chooses the
+      // next step, never mid-step: a serial run has no step in flight here
+      // (and no batch: runVerification ends its batch before it returns).
+      // While this run still carries its untaken forced step, a subtask's
+      // instructions are applied only when every one pending was already
+      // pending as the run took the step (item 3: before it acts on the lane);
+      // one written since waits for that step (item 5). Applied, the step is
+      // decided from a fresh look, on the child as the instruction left it.
+      if (view.macro?.id) {
+        let applied = false;
+        // Beside the untaken forced step, each subtask's entries pending at
+        // the launch (launchEntries), and the application takes those alone.
+        instructKeys.clear();
+        const dueNow = instructionsDue(mainRoot, view.macro.id, view.macro.fm?.plan?.subtasks)
+          .map((x) => ({ ...x, only: ctx.forced === null ? null : launchEntries(mainRoot, view.macro.id, x.subtaskId, launch) }))
+          .filter((x) => x.subtaskId !== openBatchOf && (x.only === null || x.only.length > 0));
+        // A deferral lasts only while the subtask has an instruction pending.
+        for (const id of [...instructDeferred.keys()]) if (!dueNow.some((x) => x.subtaskId === id)) instructDeferred.delete(id);
+        for (const due of dueNow) {
+          const key = instructionsKey(mainRoot, view.macro.id, due.subtaskId);
+          const a = await (deps.applyInstructions ?? applyAtBoundary)({
+            roots, macroPath: view.macro.path, subtaskId: due.subtaskId, env, runId, token,
+            hold: (worker) => { setWorker(worker); return [{ release: () => setWorker(null) }]; },
+            onLingering: () => { lingering = true; },
+            ...(due.only ? { onlyEntries: due.only } : {}),
+          });
+          if (a.lingering) return await finish('halted', { reason: 'worker-failed', detail: a.detail });
+          if (interrupted) return await finish('halted', { reason: 'interrupted', detail: 'the owner interrupted the run' });
+          if (!a.ok) return await finish('halted', { reason: 'owner-choice', subtaskId: due.subtaskId, detail: a.detail });
+          // The record as the attempt met it, read before the attempt: one read
+          // after it would take a write that landed while the applier's
+          // process group was torn down as tried (critique 9 F1's refine).
+          instructKeys.set(due.subtaskId, key);
+          if (a.result.state === 'none' && !(a.result.dropped ?? []).length) { instructDeferred.delete(due.subtaskId); continue; }
+          out(`[${seq}] ${applicationLine(due.subtaskId, a.result)}`);
+          appendStep(runDir, { event: 'instruction', seq, subtask_id: due.subtaskId, at: new Date(now()).toISOString(), ...instructionLedger(a.result) });
+          const ev = instructionEvent(a.result, join(runDir, 'steps.jsonl'));
+          if (ev) publish('instruction', ev, due.subtaskId);
+          if (a.result.state === 'applied' || (a.result.dropped ?? []).length) applied = true;
+          // A lane at no boundary only for now (an operation open, a child
+          // that cannot be read: not-at-boundary, its step not first) waits as
+          // a deferred one: its recorded step would otherwise run over the
+          // instructions. An interrupted commit or a pending settlement is the
+          // step's own (step_first), decided as before.
+          const waits = DEFER_STATES.has(a.result.state) || (a.result.state === 'not-at-boundary' && a.result.step_first !== true);
+          if (!waits) { instructDeferred.delete(due.subtaskId); continue; }
+          const tries = countDeferral(instructDeferred, due.subtaskId, key);
+          if (tries >= INSTRUCT_DEFER_TRIES) {
+            return await finish('halted', { reason: 'owner-choice', subtaskId: due.subtaskId, detail: deferredHaltDetail(due.subtaskId, view.macro.id, a.result, tries, mainRoot) });
+          }
+        }
+        if (applied) view = look(view.macro.id);
+      }
       ctx.verify = { offered: offer.offered, why: offer.why ?? null, facts: await verifyFacts({ view, mainRoot, treeOf: (deps.verifyOps ?? VERIFY_OPS).treeDigest }) };
+      // P2 — an instruction's step, recorded with no write to the child since,
+      // replaces the step an answered batch would have dispatched (item 5).
+      for (const [id, f] of Object.entries(ctx.verify.facts ?? {})) {
+        if (f?.guard && view.macro?.id && instructedStep(mainRoot, view.macro.id, id, view.children?.[id]?.path)) ctx.verify.facts[id] = { ...f, guard: null };
+      }
       // What the state says comes first: completion on the last step the
       // budget allowed is completion, and a halt is the halt it is.
       const d = decide(view, ctx);
       if (d.outcome === 'completed') {
         out(`[${seq}] ${d.detail}`);
         return await finish('completed');
+      }
+      // Decision 7, item 3 — a subtask whose instructions the last attempt
+      // left pending (waiting, failed, unreadable) takes neither its recorded
+      // step nor its halt over them: the run waits a moment and tries the
+      // application again from a fresh look, the same seq; the attempts are
+      // bounded above. A forced step waits too: while it is untaken only the
+      // instructions pending at the launch are tried, and item 3 applies
+      // those before the run acts on the lane.
+      const deferredId = d.outcome === 'halt' ? d.subtaskId : d.step?.subtaskId;
+      if (deferredId && instructDeferred.has(deferredId)) {
+        const { tries } = instructDeferred.get(deferredId);
+        out(`[${seq}] subtask ${deferredId}'s next ${d.outcome === 'halt' ? 'judgment' : 'step'} waits for its instructions (attempt ${tries} of ${INSTRUCT_DEFER_TRIES}); trying them again in ${Math.round(instructRetryMs / 1000)} s`);
+        await new Promise((r) => { setTimeout(r, instructRetryMs); });
+        view = look(view.macro.id);
+        seq -= 1;
+        continue;
       }
       if (d.outcome === 'halt') return await finish('halted', d);
 
@@ -1175,6 +1337,11 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       if (d.step.kind === 'verify') {
         const v = await runVerification(seq, d.step);
         if (v.halt) return await finish('halted', v.halt);
+        if (v.again) {
+          out(`[${seq}] subtask ${d.step.subtaskId}: an instruction written since its last application attempt comes before this step; deciding again`);
+          view = look(view.macro.id);
+          seq -= 1;
+        }
         continue;
       }
 
@@ -1200,6 +1367,18 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         reservation = null;
         return await finish('halted', { reason: 'version-drift', detail: drift.join('; ') });
       }
+      // ADR-0068 Decision 7, item 3 — an instruction written since this
+      // turn's application attempt comes before the step decided without it
+      // (impl-instruct critique 9 F1): the turn is taken again, at the same
+      // seq, from a fresh look. Nothing is awaited from here to the spawn.
+      if (instructionYields(d.step)) {
+        budget.settle(reservation, { spawned: false });
+        reservation = null;
+        out(`[${seq}] subtask ${d.step.subtaskId}: an instruction written since its last application attempt comes before this step; deciding again`);
+        view = look(view.macro.id);
+        seq -= 1;
+        continue;
+      }
 
       const s = d.step;
       if (!STEP_KINDS.includes(s.kind)) throw new Error(`policy returned an unknown step kind ${s.kind}`);
@@ -1214,6 +1393,9 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       // D1: the spawn is on record before it starts.
       appendStep(runDir, {
         event: 'started', seq, kind: s.kind, command, subtask_id: s.subtaskId ?? null, forced: s.forced === true,
+        // P2 — the application this step's next step comes from, read from the
+        // receipts and the child (restart-safe, an owner's application included).
+        ...(() => { const ia = stepApplication(mainRoot, view.macro.id, s, view.children?.[s.subtaskId]?.path); return ia ? { instruction_application: ia } : {}; })(),
         session_id: sessionId, model, effort, step_budget_usd: stepBudgetUsd, step_timeout_sec: stepTimeoutSec,
         stall_detector: stallMode, started_at: new Date(now()).toISOString(), fingerprint_before: fpBefore,
       });

@@ -1119,7 +1119,7 @@ describe('verify-select — on this repository', () => {
     assert.deepEqual(r.reasons.entries.filter((e) => e.rule === 'fallback').map((e) => e.path), [unknown]);
   });
 
-  it('stays bounded: a module selects at most a third of the tests, the ADR the suite or ten, each in under 10 s of CPU', () => {
+  it('stays bounded: a module selects at most two fifths of the tests, the ADR the suite or ten, each in under 10 s of CPU', () => {
     // A test that copies a whole plugin, the tests and the generator that walk
     // every plugin's tree, and a mutation spec's TESTS reach a module beyond
     // its importers: measured 2026-10-21, budget.mjs selects 62 of 249 tests
@@ -1137,6 +1137,13 @@ describe('verify-select — on this repository', () => {
     // where this machine took 5.5 to 6.9 s): covers() tried every piece at
     // every segment. Indexed by first segment, the same selections take about
     // 3.1 to 4.5 s here, with identical results on 18 changes across the tree.
+    // The bound was a third until 2026-11-01, when policy.mjs selected 101 of
+    // 302 (the third, rounded up, exactly) and ADR-0068 Decision 7's tests
+    // added four that read it for real (the instructions' grammar is checked
+    // against its parseForcedStep; the others import the CLI, the driver or
+    // the scheduler): 105 of 307. The selection grows with the autopilot's
+    // own tests, so the bound is two fifths: text read as an edge, the defect
+    // it is for, selects nine tenths.
     const tree = fsTree(REPO_ROOT);
     const all = vs.discoverTests(tree).length;
     const run = (p) => {
@@ -1148,7 +1155,7 @@ describe('verify-select — on this repository', () => {
     for (const p of ['plugins/orchestrator/adapters/claude/autopilot/budget.mjs', 'plugins/orchestrator/adapters/claude/autopilot/policy.mjs']) {
       const { r, ms } = run(p);
       assert.ok(r.tests.files, `${p} selects files, not the suite`);
-      assert.ok(r.tests.files.length <= Math.ceil(all / 3), `${p} selects ${r.tests.files.length} of ${all}`);
+      assert.ok(r.tests.files.length <= Math.ceil((all * 2) / 5), `${p} selects ${r.tests.files.length} of ${all}`);
       assert.ok(ms < 10000, `${p} took ${ms} ms of CPU`);
     }
     const { r } = run('docs/adr/0068-autopilot-lanes-that-keep-going.md');
