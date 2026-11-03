@@ -11,13 +11,15 @@ import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { constants as osConstants } from 'node:os';
 import { join } from 'node:path';
+import { spawn } from 'node:child_process';
 
 import {
   BOUNDED, CLI, HARNESS, LAUNCHER, REPO_ROOT, addLane, barrierCommand, git, heavy, letGo, lines, lockOf,
-  makeRepo, ready, registeredGroups, running, sleep, spawnNode, testEnv, tracker, until, write,
+  makeRepo, publishPidSource, ready, registeredGroups, running, sleep, spawnNode, testEnv, tracker, until, write,
 } from './_heavy-lock-fixtures.mjs';
+import { readPid } from '../_pidfile.mjs';
 import { acquire, closeOwnership } from '../../plugins/orchestrator/scripts/lib/heavy-lock.mjs';
-import { runHeavy } from '../../plugins/orchestrator/scripts/lib/heavy-run.mjs';
+import { SUPERVISOR, readSupervisorReport, runHeavy } from '../../plugins/orchestrator/scripts/lib/heavy-run.mjs';
 
 let t;
 afterEach(() => t?.cleanUp());
@@ -42,6 +44,10 @@ const groupCommand = (pidFile, { ignoreTerm = false, trap = null } = {}) => {
     note,
   ].join('\n')];
 };
+
+// An ended line without how the supervisor ended, and that alone (C169).
+const bare = ({ supervisor: _s, ...rest }) => rest;
+const stopOf = (line) => line.supervisor?.stop ?? null;
 
 const pidsIn = (file) => (existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).map(Number) : []);
 
@@ -138,11 +144,12 @@ describe('exit status', () => {
     strictEqual(exits127.code, 127);
     strictEqual(missing.code, 127);
     deepStrictEqual(exits127.states.map((x) => x.state), ['acquired', 'running', 'ended'], 'with no --go-file, no ready line and no wait');
-    deepStrictEqual(exits127.states.at(-1), { state: 'ended', code: 127 });
-    deepStrictEqual(missing.states.at(-1), { state: 'ended', error: 'ENOENT' });
+    deepStrictEqual(bare(exits127.states.at(-1)), { state: 'ended', code: 127 });
+    deepStrictEqual(bare(missing.states.at(-1)), { state: 'ended', error: 'ENOENT' });
+    deepStrictEqual([stopOf(exits127.states.at(-1)), stopOf(missing.states.at(-1))], ['command-exit', 'spawn-error']);
     ok(Number.isInteger(exits127.states[1].pgid), JSON.stringify(exits127.states));
     const signalled = await statusOf('signalled', [process.execPath, '-e', "process.kill(process.pid, 'SIGTERM')"]);
-    deepStrictEqual(signalled.states.at(-1), { state: 'ended', signal: 'SIGTERM' }, signalled.out);
+    deepStrictEqual(bare(signalled.states.at(-1)), { state: 'ended', signal: 'SIGTERM' }, signalled.out);
     // A refusal before the lock: the declaration names the command as taking it itself.
     const refusedFile = join(S, 'refused.status');
     const r = await heavy(['--status-file', refusedFile, '--repo', join(S, 'nowhere'), '--', 'true'], { cwd: root, track: t }).exited;
@@ -176,7 +183,7 @@ describe('exit status', () => {
     w2.child.kill('SIGTERM');
     const r2 = await w2.exited;
     strictEqual(r2.code, 128 + osConstants.signals.SIGTERM, r2.out);
-    deepStrictEqual(states(stopped).at(-1), { state: 'ended', stopped: 'SIGTERM' });
+    deepStrictEqual(bare(states(stopped).at(-1)), { state: 'ended', stopped: 'SIGTERM' });
     strictEqual(readFileSync(log, 'utf8'), 'ran\n', 'the stopped command never ran');
     // --go-file without --status-file is a usage error: nothing tells the driver to give the go.
     strictEqual((await heavy(['--go-file', join(S, 'c.go'), '--', 'true'], { cwd: root, track: t }).exited).code, 125);
@@ -246,6 +253,81 @@ describe('exit status', () => {
     strictEqual(r.code, 125, r.out);
     ok(existsSync(ran), 'the command ran');
     ok(!existsSync(path));
+  });
+});
+
+describe('how the command\'s supervisor ended (C169): evidence, which changes no outcome', () => {
+  const supervisorMatch = "process.execArgv[0] === '-e' && String(process.execArgv[1]).includes('JSON.parse(process.argv[1])')";
+  const endedOf = async (S, root, name, command, env) => {
+    const file = join(S, `${name}.status`);
+    const r = await heavy(['--status-file', file, '--', ...command], { cwd: root, track: t, env }).exited;
+    return { code: r.code, out: r.out, ended: lines(file).map((l) => JSON.parse(l)).at(-1) };
+  };
+
+  it('a normal end keeps its report: the supervisor reported, then its own stop killed it', BOUNDED, async () => {
+    const { S, root } = setUp();
+    const r = await endedOf(S, root, 'normal', ['sh', '-c', 'exit 3']);
+    strictEqual(r.code, 3, r.out);
+    deepStrictEqual(r.ended, {
+      state: 'ended', code: 3,
+      supervisor: { code: null, signal: 'SIGKILL', stop: 'command-exit', report_bytes: Buffer.byteLength('{"code":3,"signal":null}\n{"stop":"command-exit"}\n') },
+    });
+  });
+
+  it('a supervisor killed by a signal it did not send (its group signalled from inside) is refused, and says so in its status and its log', BOUNDED, async () => {
+    const { S, root, path } = setUp();
+    const r = await endedOf(S, root, 'group', [process.execPath, '-e', "process.kill(0, 'SIGKILL'); setInterval(() => {}, 1000);"]);
+    strictEqual(r.code, 125, r.out);
+    deepStrictEqual(r.ended, {
+      state: 'ended', refused: 'the command\'s supervisor ended without reporting how the command ended',
+      supervisor: { code: null, signal: 'SIGKILL', stop: null, report_bytes: 0 },
+    });
+    ok(r.out.includes('heavy: the command\'s supervisor ended without reporting how the command ended (the supervisor ended by signal SIGKILL, no stop line received (most likely a signal it did not send), 0 report bytes)'), r.out);
+    ok(!existsSync(path), 'the wrapper released');
+  });
+
+  it('a supervisor that exits before its go, and one whose report is malformed: no evidence, their ends recorded', BOUNDED, async () => {
+    const { S, root } = setUp();
+    const early = write(S, 'early.cjs', `if (${supervisorMatch}) process.exit(9);\n`);
+    const e = await endedOf(S, root, 'early', ['true'], testEnv({ NODE_OPTIONS: `--require ${JSON.stringify(early)}` }));
+    strictEqual(e.code, 125, e.out);
+    deepStrictEqual(e.ended.supervisor, { code: 9, signal: null, stop: null, report_bytes: 0 });
+    ok(e.out.includes('(the supervisor ended by exit code 9, no stop line received, 0 report bytes)'), e.out);
+    // The report's line replaced by one that is no JSON: the stop line after it
+    // stands, and the report stays missing.
+    const garble = write(S, 'garble.cjs', [
+      `if (${supervisorMatch}) {`,
+      "  const fs = require('node:fs'); const w = fs.writeSync; let first = true;",
+      "  fs.writeSync = (fd, data, ...rest) => { if (fd === 3 && first) { first = false; return w(fd, 'not json\\n'); } return w(fd, data, ...rest); };",
+      '}',
+      '',
+    ].join('\n'));
+    const g = await endedOf(S, root, 'garbled', ['true'], testEnv({ NODE_OPTIONS: `--require ${JSON.stringify(garble)}` }));
+    strictEqual(g.code, 125, g.out);
+    strictEqual(g.ended.refused, 'the command\'s supervisor ended without reporting how the command ended');
+    deepStrictEqual(g.ended.supervisor, { code: null, signal: 'SIGKILL', stop: 'command-exit', report_bytes: Buffer.byteLength('not json\n{"stop":"command-exit"}\n'), report_head: 'not json\n{"stop":"command-exit"}\n' });
+  });
+
+  it('the supervisor names its stop: its lifeline ended, or a line that is no go', BOUNDED, async () => {
+    const stopFor = async (input) => {
+      const sup = spawn(process.execPath, ['-e', SUPERVISOR, '--', JSON.stringify(['true'])], { detached: true, stdio: ['pipe', 'ignore', 'ignore', 'pipe'] });
+      t.group(sup.pid);
+      let text = '';
+      sup.stdio[3].setEncoding('utf8');
+      sup.stdio[3].on('data', (c) => { text += c; });
+      const close = new Promise((done) => sup.on('close', (code, signal) => done({ code, signal })));
+      input(sup.stdin);
+      return { close: await close, text };
+    };
+    t = tracker();
+    const ended = await stopFor((stdin) => stdin.end());
+    deepStrictEqual(ended.close, { code: null, signal: 'SIGKILL' });
+    deepStrictEqual(readSupervisorReport(ended.text), { report: null, stop: 'stdin-end', candidate: null });
+    const bad = await stopFor((stdin) => stdin.write('nope\n'));
+    deepStrictEqual(readSupervisorReport(bad.text), { report: null, stop: 'bad-go', candidate: null });
+    // The report is the first line that is no stop line, wherever the stop is.
+    deepStrictEqual(readSupervisorReport('{"stop":"x"}\n{"code":0,"signal":null}\n').report, { code: 0, signal: null });
+    strictEqual(readSupervisorReport('[1]\n{"code":0}\n').report, null, 'the first line that is no stop line is the report, or none');
   });
 });
 
@@ -342,14 +424,14 @@ describe('a holder and the wrappers that joined it', () => {
       "const { spawn } = require('node:child_process');",
       `const kid = spawn(process.execPath, [${JSON.stringify(CLI)}, 'heavy', '--purpose', 'joined', '--', ...${JSON.stringify(barrierCommand(S, 'j', log))}], { stdio: 'ignore', detached: true });`,
       'kid.unref();',
-      `require('node:fs').writeFileSync(${JSON.stringify(join(S, 'kid'))}, String(kid.pid));`,
+      publishPidSource(join(S, 'kid'), 'kid.pid'),
       `const t = setInterval(() => { if (require('node:fs').existsSync(${JSON.stringify(join(S, 'j.ready'))})) clearInterval(t); }, 10);`,
     ].join('\n');
     const holder = heavy(['--purpose', 'holder', '--', process.execPath, '-e', detach], {
       cwd: root, track: t, env: testEnv({ AGENTIC_HEAVY_LOCK_REPORT_MS: '200' }),
     });
     ok(await until(() => ready(S, 'j')), holder.output());
-    t.pid(Number(readFileSync(join(S, 'kid'), 'utf8')));
+    t.pid(readPid(join(S, 'kid')));
     ok(await until(() => holder.output().includes('of this lock\'s ownership still runs; the lock is kept until it ends')), holder.output());
     await sleep(200);
     strictEqual(holder.child.exitCode, null, 'the holder waits');
@@ -503,13 +585,14 @@ describe('the command\'s group', () => {
     const leftFile = join(S, 'left');
     const command = [process.execPath, '-e', [
       "const { spawn } = require('node:child_process');",
-      `const c = spawn(process.execPath, ['-e', ${JSON.stringify(`require('node:fs').writeFileSync(${JSON.stringify(leftFile)}, String(process.pid)); setInterval(() => {}, 1000)`)}], { stdio: 'ignore' });`,
+      // Published at once, never read empty (docket C169).
+      `const c = spawn(process.execPath, ['-e', ${JSON.stringify(`${publishPidSource(leftFile)} setInterval(() => {}, 1000)`)}], { stdio: 'ignore' });`,
       'c.unref();',
       `const t = setInterval(() => { if (require('node:fs').existsSync(${JSON.stringify(leftFile)})) process.exit(0); }, 10);`,
     ].join('\n')];
     const w = heavy(['--', ...command], { cwd: root, track: t, env: testEnv({ NODE_OPTIONS: `--require ${JSON.stringify(preload)}` }) });
-    ok(await until(() => existsSync(leftFile)), w.output());
-    const left = t.pid(Number(readFileSync(leftFile, 'utf8')));
+    ok(await until(() => readPid(leftFile) !== null), w.output());
+    const left = t.pid(readPid(leftFile));
     let aliveAtRelease = null;
     while (aliveAtRelease === null) {
       if (!existsSync(path) || w.child.exitCode !== null) aliveAtRelease = running(left);

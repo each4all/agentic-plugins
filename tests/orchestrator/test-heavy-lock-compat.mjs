@@ -15,8 +15,9 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { acquire } from '../../plugins/orchestrator/scripts/lib/heavy-lock.mjs';
+import { readPid } from '../_pidfile.mjs';
 import {
-  BOUNDED, OLD_HARNESS, REPO_ROOT, barrierCommand, heavy, letGo, lockOf, makeRepo, ready, running, sleep,
+  BOUNDED, OLD_HARNESS, REPO_ROOT, barrierCommand, heavy, letGo, lockOf, makeRepo, publishPidSource, ready, running, sleep,
   spawnNode, testEnv, tracker, until, write,
 } from './_heavy-lock-fixtures.mjs';
 
@@ -126,12 +127,14 @@ describe('a holder killed with SIGKILL', () => {
     ].join('\n'));
     const command = [process.execPath, '-e', [
       "const { spawn } = require('node:child_process');",
-      `const c = spawn(process.execPath, ['-e', ${JSON.stringify(`require('node:fs').writeFileSync(${JSON.stringify(join(S, 'child'))}, String(process.pid)); setInterval(() => {}, 1000)`)}], { stdio: 'ignore' });`,
+      // Published at once, never read empty: an empty read is 0, and a kill
+      // of 0 is one of the test runner's own group (docket C169).
+      `const c = spawn(process.execPath, ['-e', ${JSON.stringify(`${publishPidSource(join(S, 'child'))} setInterval(() => {}, 1000)`)}], { stdio: 'ignore' });`,
       'setInterval(() => {}, 1000);',
     ].join('\n')];
     const w = heavy(['--purpose', 'killed', '--', ...command], { cwd: root, track: t, env: testEnv({ NODE_OPTIONS: `--require ${JSON.stringify(preload)}` }) });
-    ok(await until(() => existsSync(join(S, 'child'))), w.output());
-    const child = t.pid(Number(readFileSync(join(S, 'child'), 'utf8')));
+    ok(await until(() => readPid(join(S, 'child')) !== null), w.output());
+    const child = t.pid(readPid(join(S, 'child')));
     const killedAt = Date.now();
     w.child.kill('SIGKILL');
     await w.exited;
@@ -149,8 +152,8 @@ describe('a holder killed with SIGKILL', () => {
     // wrapper is dead, though the group lives. Measured, not bounded.
     const w2 = heavy(['--purpose', 'killed again', '--', ...command], { cwd: root, track: t, env: testEnv({ NODE_OPTIONS: `--require ${JSON.stringify(preload)}` }) });
     rmSync(join(S, 'child'), { force: true });
-    ok(await until(() => existsSync(join(S, 'child'))), w2.output());
-    const child2 = t.pid(Number(readFileSync(join(S, 'child'), 'utf8')));
+    ok(await until(() => readPid(join(S, 'child')) !== null), w2.output());
+    const child2 = t.pid(readPid(join(S, 'child')));
     const killed2 = Date.now();
     w2.child.kill('SIGKILL');
     await w2.exited;
@@ -193,12 +196,13 @@ describe('a process that left its holder\'s group', () => {
     const spawnDetached = [process.execPath, '-e', [
       "const { spawn } = require('node:child_process');",
       "const d = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', detached: true });",
-      `require('node:fs').writeFileSync(${JSON.stringify(join(S, 'wrapper-detached'))}, String(d.pid));`,
+      publishPidSource(join(S, 'wrapper-detached'), 'd.pid'),
       'd.unref();',
     ].join('\n')];
     const w = await heavy(['--', ...spawnDetached], { cwd: root, track: t }).exited;
     strictEqual(w.code, 0, w.out);
-    const fromWrapper = t.pid(Number(readFileSync(join(S, 'wrapper-detached'), 'utf8')));
+    const fromWrapper = t.pid(readPid(join(S, 'wrapper-detached')));
+    ok(fromWrapper !== null, 'the wrapper\'s command published its detached descendant');
     ok(!existsSync(lockOf(root)), 'the wrapper released');
     await sleep(500);
     ok(running(fromWrapper), 'the detached descendant of a wrapper survived its release');

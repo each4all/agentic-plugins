@@ -154,6 +154,29 @@ describe('verify-run: order, stops and the step that follows', () => {
     deepStrictEqual(ran(m.log), [], 'nothing after it ran');
   });
 
+  it('how a check\'s supervisor ended is the driver\'s record alone: its status file, its log and its journal entry, never the persona\'s result (C169)', BOUNDED, async () => {
+    // A command that signals its own group (pid 0) kills the wrapper's
+    // supervisor with it, before any report: the check is refused, no evidence.
+    const t = await setUp([{ kind: 'pass' }, { kind: 'groupkill' }, { kind: 'pass2' }]);
+    const r = await runStep(t.job());
+    strictEqual(r.batch.end, 'no-evidence');
+    const fm = await readWorkflow(t.wf);
+    const b = latest(fm);
+    deepStrictEqual(b.results.map((x) => x.outcome), ['passed', 'refused']);
+    ok(b.results.every((x) => !('supervisor' in x)), 'the persona\'s result holds no supervisor');
+    const results = journalOf(t.dir, t.wf).filter((e) => e.op === 'result');
+    // A normal end: the report, then the supervisor's own stop, which kills it.
+    deepStrictEqual(results[0].supervisor, { code: null, signal: 'SIGKILL', stop: 'command-exit', report_bytes: results[0].supervisor.report_bytes });
+    ok(results[0].supervisor.report_bytes > 0);
+    // Killed by a signal it did not send: no report, no stop line.
+    deepStrictEqual(results[1].supervisor, { code: null, signal: 'SIGKILL', stop: null, report_bytes: 0 });
+    const dir = join(t.job().runDir, 'verify', b.batch_id);
+    const ended = readFileSync(join(dir, '1.status'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).at(-1);
+    deepStrictEqual(ended, { state: 'ended', refused: 'the command\'s supervisor ended without reporting how the command ended', supervisor: results[1].supervisor });
+    match(readFileSync(join(t.job().runDir, b.results[1].log), 'utf8'), /ended without reporting how the command ended \(the supervisor ended by signal SIGKILL, no stop line received \(most likely a signal it did not send\), 0 report bytes\)/);
+    strictEqual(VJ.untrustedProblem({ request: fm.verify_request, results: fm.verify_results, entries: journalOf(t.dir, t.wf) }), null, 'the journal still holds the record whole');
+  });
+
   it('a check gets the worker\'s environment without the run\'s token, flag, step, offer or state base', BOUNDED, async () => {
     const t = await setUp([{ kind: 'env' }]);
     const envFile = join(t.logs, 'env.json');

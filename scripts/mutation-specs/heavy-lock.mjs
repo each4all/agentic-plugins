@@ -477,15 +477,15 @@ export const MUTATIONS = [
   },
   {
     id: 'W7', file: RUN,
-    from: "    status({ state: 'ended', refused: 'the command\\'s supervisor ended without reporting how the command ended' });\n    return 125;\n",
-    to: "    status({ state: 'ended', refused: 'the command\\'s supervisor ended without reporting how the command ended' });\n    return 0;\n",
+    from: "    ended({ refused: 'the command\\'s supervisor ended without reporting how the command ended' });\n    return 125;\n",
+    to: "    ended({ refused: 'the command\\'s supervisor ended without reporting how the command ended' });\n    return 0;\n",
     why: 'a supervisor that died with no report reads as a command that passed',
     tests: [TW],
     killed_by: T_NO_REPORT,
   },
   {
     id: 'W8', file: RUN,
-    from: "  \"process.stdin.on('end', stop);\",\n",
+    from: "  \"process.stdin.on('end', () => stop('stdin-end'));\",\n",
     to: '',
     why: 'the supervisor ignores the end of its lifeline: a wrapper killed with SIGKILL leaves its command running',
     tests: [TW],
@@ -597,7 +597,7 @@ export const MUTATIONS = [
   },
   {
     id: 'W22', file: RUN,
-    from: "  \"try { run = spawn(command, args, { stdio: ['ignore', 'inherit', 'inherit'] }); } catch (err) { report({ error: err.code ?? err.message }); stop(); return; }\",",
+    from: "  \"try { run = spawn(command, args, { stdio: ['ignore', 'inherit', 'inherit'] }); } catch (err) { report({ error: err.code ?? err.message }); stop('spawn-error'); return; }\",",
     to: "  \"run = spawn(command, args, { stdio: ['ignore', 'inherit', 'inherit'] });\",",
     why: 'an exec failure Node throws (ENOEXEC, ENOTDIR) crashes the supervisor with no report: 125 where it is 126',
     tests: [TW],

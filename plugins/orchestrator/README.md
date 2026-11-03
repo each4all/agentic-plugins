@@ -418,7 +418,15 @@ minutes. It runs on any host and inside an autopilot step: the lock is host-neut
   stage, for the driver that started it: `acquired`, `running` (with the group), and last
   `ended` with the command's `code` or `signal`, the `error` that kept it from
   executing (so a command that exits 127 is told from one that was not found), the
-  wrapper's `refused`, or `stopped` by a signal to the wrapper. With `--go-file <path>`
+  wrapper's `refused`, or `stopped` by a signal to the wrapper. Once the command's
+  supervisor has started, `ended` also carries `supervisor`: its exit `code` and
+  `signal`, the `stop` reason it wrote before it ended its group (`command-exit`,
+  `spawn-error`, `stdin-end`, `stdin-error`, `bad-go`; null when no stop line came), its `report_bytes`, and the first bytes of a report that does not parse. A
+  supervisor ended by SIGKILL with no stop line received most likely took a signal it
+  did not send (its stop line could also have been lost); the wrapper's refusal says so
+  on stderr, and the driver keeps the record in its verify journal beside the check's
+  result. It is evidence only: no outcome changes, and no signal's sender is named
+  (Node reports none). With `--go-file <path>`
   too, the wrapper, once it holds the lock, writes `ready` with its command's group and
   starts the command only once that file exists: the driver's go.
 

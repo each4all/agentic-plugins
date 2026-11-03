@@ -78,7 +78,7 @@ import {
 import {
   appendJournal, endPayload, isoSeconds, journalPath, lastEnded, passOf, readJournal, recordDigest, resultPayload, resumeFact, startEntry, startPayload, untrustedProblem,
 } from './verify-journal.mjs';
-import { SUPERVISOR } from '../../../scripts/lib/heavy-run.mjs';
+import { SUPERVISOR, readSupervisorReport, supervisorEnd } from '../../../scripts/lib/heavy-run.mjs';
 import { groupState, holderName, lockPath, readLock, signalGroup as signalLeader } from '../../../scripts/lib/heavy-lock.mjs';
 import { verifyCapabilityProblem } from './roots.mjs';
 import { VERIFY_DECLARATION_PATH, readDeclarationAt } from './verify-decl.mjs';
@@ -479,7 +479,8 @@ async function runCheck({ check, lane, env, baseline, logFile, statusFile, goFil
   sup.stdio[3]?.setEncoding('utf8');
   sup.stdio[3]?.on('data', (c) => { report += c; });
   sup.stdin.on('error', () => {});
-  const closed = new Promise((r) => { sup.on('close', () => r()); sup.on('error', () => r()); });
+  let closeOf = null;
+  const closed = new Promise((r) => { sup.on('close', (code, signal) => { closeOf = { code, signal }; r(); }); sup.on('error', () => r()); });
   if (!Number.isInteger(sup.pid)) {
     await closed;
     return { outcome: 'not-started', exit: null, signal: null, durationMs: 0, runMs: 0, detail: 'no pid' };
@@ -623,17 +624,22 @@ async function runCheck({ check, lane, env, baseline, logFile, statusFile, goFil
   const durationMs = Date.now() - t0;
   const runMs = acquiredAt === null ? 0 : Date.now() - acquiredAt;
   const base = { durationMs, runMs, lingering, pgid: lingeringPgid };
+  // How the command's supervisor ended (C169), whatever ended the check: the
+  // wrapper's ended line, or for a command run directly its own close and fd 3.
+  // It rides beside the result, for the driver's journal only.
+  const endLine = viaWrapper ? statusLines(statusFile).find((x) => x.state === 'ended') ?? null : null;
+  const s = endLine?.supervisor;
+  const supervisor = viaWrapper
+    ? (s !== null && typeof s === 'object' && !Array.isArray(s) ? s : null)
+    : (closeOf === null ? null : supervisorEnd(closeOf, report));
+  if (supervisor !== null) base.supervisor = supervisor;
   if (killed === 'unregistered') return { ...base, outcome: 'not-started', exit: null, signal: null, detail: unregistered };
   if (killed === 'timeout') return { ...base, outcome: 'timeout', exit: null, signal: null };
   if (killed === 'bound') return { ...base, outcome: 'timeout', exit: null, signal: null, bound: true };
   if (killed === 'stopped' || killed === 'aborted') return { ...base, outcome: 'stopped', exit: null, signal: null };
   // How the command ended: the wrapper's status file, or the supervisor's
   // report for a command run directly.
-  let end = null;
-  if (viaWrapper) end = statusLines(statusFile).find((x) => x.state === 'ended') ?? null;
-  else {
-    try { end = JSON.parse(report.split('\n').find((l) => l !== '') ?? 'null'); } catch { end = null; }
-  }
+  const end = viaWrapper ? endLine : readSupervisorReport(report).report;
   if (!end) return { ...base, outcome: 'not-started', exit: null, signal: null };
   if (end.refused !== undefined) return { ...base, outcome: 'refused', exit: null, signal: null, detail: end.refused };
   if (end.error !== undefined) return { ...base, outcome: 'not-started', exit: null, signal: null, detail: end.error };
@@ -902,7 +908,9 @@ async function runStep({ job, ctl, ops, bounds, now, abortedBy }) {
     });
     // A check whose group outlived SIGKILL has no result (header).
     if (lingering !== null) break;
-    await write('result', 'verify-result', ['--batch-id', batchId, '--input-file', inputFile(dir, `result-${i}.json`, payload)], { batch_id: batchId, index: i, payload });
+    // How the check's supervisor ended (C169) is the journal's alone, beside
+    // the payload the persona records and the journal is compared on.
+    await write('result', 'verify-result', ['--batch-id', batchId, '--input-file', inputFile(dir, `result-${i}.json`, payload)], { batch_id: batchId, index: i, payload, ...(r.supervisor ? { supervisor: r.supervisor } : {}) });
     results.push(payload);
     ran.push({ index: i, kind: check.kind, origin: check.origin, outcome: r.outcome, duration_ms: r.durationMs });
     if (r.bound) bound = true;

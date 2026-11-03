@@ -461,8 +461,8 @@ export const MUTATIONS = [
   // ---- W: the wrapper's status channel ------------------------------------------
   {
     id: 'W1', file: 'plugins/orchestrator/scripts/lib/heavy-run.mjs', tests: [T_WRAP],
-    from: "    status({ state: 'ended', error: String(report.error) });",
-    to: "    status({ state: 'ended', code: startFailureStatus(report.error) });",
+    from: "    ended({ error: String(report.error) });",
+    to: "    ended({ code: startFailureStatus(report.error) });",
     why: 'the status channel reports a command that was not found as one that exited 127',
     killed_by: /--status-file: acquired, running and ended/,
   },
