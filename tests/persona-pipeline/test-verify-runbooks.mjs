@@ -519,7 +519,7 @@ for (const persona of PERSONAS.filter((p) => personaInfo(p).capabilities.dispatc
         ok(/1\. test \[worker\] npm test -- tests\/a\.mjs: failed \(exit 1\); evidence yes; applies to the tree now: yes\./.test(r.stdout), r.stdout);
         ok(r.stdout.includes('failing: suite > the changed case fails'), r.stdout);
         ok(r.stdout.includes(`log: .agentic-plugins/runs/autopilot/${RUN}/verify/b1/0.log`), r.stdout);
-        ok(/2\. mutate \[worker\] npm run mutate -- scripts\/mutation-specs\/s\.mjs --only S1: not run/.test(r.stdout), r.stdout);
+        ok(/2\. mutate \[worker\] npm run mutate -- scripts\/mutation-specs\/s\.mjs --only S1 --timeout 1800: not run/.test(r.stdout), r.stdout);
       });
     });
 

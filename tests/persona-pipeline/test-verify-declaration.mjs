@@ -91,7 +91,7 @@ for (const persona of personasFor('scripts/lib/verify.mjs')) {
       deepStrictEqual(resolveCheck(d, { kind: 'test', args: { files: ['tests/a.mjs', 'tests/sub/b.mjs', 'kit/c.mjs'] } }, { tree: dir }),
         ['npm', 'test', '--', 'tests/a.mjs', 'tests/sub/b.mjs', 'kit/c.mjs']);
       deepStrictEqual(resolveCheck(d, { kind: 'mutate', args: { spec: 'scripts/mutation-specs/s.mjs', ids: ['V1', 'W_2'] } }, { tree: dir }),
-        ['npm', 'run', 'mutate', '--', 'scripts/mutation-specs/s.mjs', '--only', 'V1,W_2']);
+        ['npm', 'run', 'mutate', '--', 'scripts/mutation-specs/s.mjs', '--only', 'V1,W_2', '--timeout', '1800']);
       deepStrictEqual(resolveCheck(d, { kind: 'mutate-static', args: {} }, { tree: dir }), ['npm', 'run', 'mutate:static']);
       deepStrictEqual(resolveCheck(d, { kind: 'mutate-static', args: { specs: ['scripts/mutation-specs/s.mjs', 'scripts/mutation-specs/t.mjs'] } }, { tree: dir }),
         ['npm', 'run', 'mutate:static', '--', 'scripts/mutation-specs/s.mjs', 'scripts/mutation-specs/t.mjs']);
