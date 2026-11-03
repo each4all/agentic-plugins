@@ -323,6 +323,27 @@ ADR-0001 final note.
   (or `MUTATION_HARNESS_TIMEOUT`, default 900); a run past it is TIMEOUT, no
   verdict. Runs in worktrees of one repository take turns: a second run
   waits for the first.
+
+  **A `mutate` check handed to the autopilot driver** (the `mutate` kind of
+  `.agentic-plugins/verify-checks.json`) runs with `--timeout 1800`, and the
+  whole check has its `timeout_s` of 14400 seconds (4 hours). The harness
+  runs the control and then each named case one after another, each up to
+  1800 seconds, and the disposable copies, their cleanup and the wait for
+  the heavy-work lock take from the same 4 hours, for which the sizing keeps
+  1800 seconds. So **one `mutate` check names at most 6 case ids**: split a
+  larger set into several checks of 6 or fewer, each with its own control.
+  Six is a ceiling, not a guarantee: the control runs every test file the
+  named cases select, together, so group cases whose files are few or fast,
+  and give a case whose files alone take long a check of its own. The batch's
+  6 hours bound every check of it together, the ones the driver adds before
+  a `mutate` check included, so a full-size `mutate` check may not get its
+  4 hours in a batch that runs much else first, and a check the bound stops
+  or never reaches says nothing. The margin is an allowance, not a deadline
+  of its own: a long wait for the lock may use it up, and the check then
+  ends TIMEOUT at its overall bound, with no verdict, never a wrong one. The
+  value and the rule change together:
+  `tests/orchestrator/test-autopilot-verify-mutate-timeout.mjs` holds the
+  declaration, this paragraph and the arithmetic equal.
 - `npm run mutate:static` — apply every mutation of every spec (or of the
   specs named after `--`), each to the tree as it is, and run no test: it
   reports each case a run would refuse (a drifted anchor, a `prepare` that

@@ -18,7 +18,7 @@
       "adds_on": []
     },
     "mutate": {
-      "argv": ["npm", "run", "mutate", "--", "{spec}", "--only", "{ids}"],
+      "argv": ["npm", "run", "mutate", "--", "{spec}", "--only", "{ids}", "--timeout", "1800"],
       "slots": [
         { "name": "spec", "type": "path", "repeat": "one", "under": ["scripts/mutation-specs/"], "suffix": ".mjs" },
         { "name": "ids", "type": "id", "repeat": "many", "join": "comma" }
