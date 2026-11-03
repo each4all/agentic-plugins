@@ -497,7 +497,7 @@ versioned tolerant parser. Per-source tolerance, normative:
 
 | Source | Accepts | Degrades to `indeterminate` on |
 | --- | --- | --- |
-| Persona workflows (engineer/founder/designer; canonical + legacy homes where a legacy home exists, in each state root of the read set) | frontmatter schema `1.x` string, or the legacy unquoted numeric `1` | unreadable dir (non-ENOENT), a home that exists and cannot be resolved, overlaps another persona's home or holds a state directory, an entry whose real path lies outside this persona's homes, unreadable file, a frontmatter not closed within 256 KiB, unparseable frontmatter, missing/invalid `git_baseline.branch`, unsupported schema on a **this-branch** file, invalid `terminal_marker`/`parent_detached`, same-home duplicate actives, dual-home ambiguity, this branch's workflow in both state roots, this branch's workflow id or pointer spelling in a second file, a file still vanishing after the last listing, scan overflow, read-budget overflow |
+| Persona workflows (engineer/founder/designer; canonical + legacy homes where a legacy home exists, in each state root of the read set) | frontmatter schema `1.x` string, or the legacy unquoted numeric `1` | unreadable dir (non-ENOENT), a home that exists and cannot be resolved, overlaps another persona's home or holds a state directory, an entry whose real path lies outside this persona's homes, unreadable file, a frontmatter not closed within 256 KiB, unparseable frontmatter, missing/invalid `git_baseline.branch`, unsupported schema on a **this-branch** file, invalid `terminal_marker`/`parent_detached`, same-home duplicate actives, dual-home ambiguity, this branch's workflow in both state roots, this branch's workflow id or pointer spelling in a second file, a file still vanishing or being replaced after the last listing, scan overflow, read-budget overflow |
 | Orchestrator macros (own-branch active + subtask-branch bridge, in each state root of the read set) | `workflow_type: macro`, schema `1.x` string ("1.0" parses but is **not dispatch-actionable** — carried as a closed boolean) | same file-level failures; malformed subtask rows (id/branch/status/blocked_by) fail the whole macro closed; two active macros on one branch; two macros (or two subtasks) bridging one branch; a matched macro's id or pointer spelling in a second file; a second macro on the bridged macro's integration branch (one active macro per integration branch per repository) |
 | Persona handoff slots (`last-session-handoff.json` ×4) | JSON object whose `workflow_kind` matches its home | unreadable/oversized/non-JSON slot, kind mismatch, unreadable or uninterpretable marker |
 | ADR-0044 `entry.json` | validates against `runtime-session-entry-1.0` | validation failure ⇒ source `invalid` (skipped, counted — **never** suppresses leadership) |
@@ -511,8 +511,9 @@ prefix. Reads are handle-based (`O_NOFOLLOW | O_NONBLOCK`, fstat on the
 handle): FIFOs, oversized JSON files and a JSON file that is itself a
 symlink are refused (a workflow `.md` follows the rule below). A file listed in
 `workflows/` that is gone when it is read (another checkout's archive moved
-it) lists the directory again, at most 3 listings (`MAX_SCAN_ATTEMPTS`),
-before the source degrades.
+it), or is replaced by another file while it is read (another checkout's
+write renamed a new file over it, C171), lists the directory again, at most
+3 listings (`MAX_SCAN_ATTEMPTS`), before the source degrades.
 
 **Workflow files** (amended 2026-10-13, docket C124 and C122). A workflow
 `.md` is read only as far as its frontmatter closes: the first line is
@@ -551,17 +552,23 @@ else stays the operator's layout. A home that exists and cannot be resolved
 (EACCES, ELOOP, ENOTDIR, on it or a directory above it) ⇒
 `home-unresolvable`. A path is judged before it is opened, so nothing
 outside the homes is opened. The file opened is the checked real path, with
-`O_NOFOLLOW`, and the handle's identity must equal the checked one (else
-`workflow-identity-changed`); then the path is judged again: the walk must
-still find no symlink and a home above it (else `symlink-outside-state`), and
-the path must still name the handle's file (else
-`workflow-identity-changed`). So one rename, at any point, never yields a
-file other than the one checked inside a home: a rename that moves the
-checked file's directory out and leaves a link in its place is refused when
-it comes before the open, and after the open the handle already holds the
-checked file, which a rename can only move (renamed during the second walk,
-it is read where it now lies; another file put in its place fails the final
-identity check). **Limit:** the walk and the lookups are separate path
+`O_NOFOLLOW`, and the handle's identity must equal the checked one; then the
+path is judged again: the walk must still find no symlink and a home above it
+(else `symlink-outside-state`), and the path must still name the handle's
+file. A file whose identity fails either comparison has been replaced (a
+persona workflow write is a temporary file renamed over the old one, and
+lanes share one state root, so another lane's ordinary write does this): it
+is never read; its `workflows/` directory is listed again and the name read
+anew, through every check here, within the same bound of listings and the
+same byte budget as a file that vanishes; once the bound is spent on a file
+still being replaced ⇒ `workflow-identity-changed` (C171). So one rename, at
+any point, never yields a file other than the one checked inside a home: a
+rename that moves the checked file's directory out and leaves a link in its
+place is refused, or listed again and refused, when it comes before the
+open, and after the open the handle already holds the checked file, which a
+rename can only move (renamed during the second walk, it is read where it now
+lies; another file put in its place is never read as the one checked).
+**Limit:** the walk and the lookups are separate path
 lookups (Node has no `openat`), so renames alternating out and back, each
 timed to a lookup, can reach another file. A file hard-linked into a home is
 in it (a hard link has no target to contain). Whoever can rename the

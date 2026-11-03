@@ -1060,6 +1060,8 @@ async function outsideFile(body) {
 }
 
 const OUTSIDE_ID = 'frame-20260719T080000Z-0ff51d';
+// A file inside the home renamed over a workflow (C171).
+const REPLACED_ID = 'frame-20260719T081500Z-5e1ace';
 
 describe('entry-brief readers — workflow links and homes (C122)', () => {
   it('refuses a link out of the state homes, named, and quotes nothing of what it names', async () => {
@@ -1304,7 +1306,8 @@ describe('entry-brief readers — workflow links and homes (C122)', () => {
       deepStrictEqual([b.status, b.reason], ['indeterminate', 'symlink-refused'], order);
 
       // Its directory swapped for a link outside: the opened file is not the
-      // one checked.
+      // one checked, so it is never read; the directory listed again through
+      // the link names a file outside the homes (C171).
       const ancestor = await setup();
       const c = await read(ancestor, async (t) => {
         const workflows = join(personaHome(t.root, 'engineer'), 'workflows');
@@ -1313,7 +1316,7 @@ describe('entry-brief readers — workflow links and homes (C122)', () => {
         await rename(workflows, `${workflows}.moved`);
         await symlink(decoy, workflows);
       });
-      deepStrictEqual([c.status, c.reason], ['indeterminate', 'workflow-identity-changed'], order);
+      deepStrictEqual([c.status, c.reason], ['indeterminate', 'symlink-outside-state'], order);
       results.push(a, b, c);
     }
 
@@ -1380,19 +1383,22 @@ describe('entry-brief readers — workflow links and homes (C122)', () => {
     deepStrictEqual([a.status, a.reason], ['indeterminate', 'symlink-outside-state']);
 
     // After the open: another file renamed over the checked name, so the
-    // path no longer names the file the handle holds.
+    // path no longer names the file the handle holds. The handle's file is
+    // not read as the one checked: the name is read anew, and what it names
+    // now, a file inside the home, is read (C171).
     const replaced = await setup();
     const b = await read(replaced, atOpen(replaced, async (t) => {
-      await writeFile(`${t.insideReal}.new`, personaFm({ id: OUTSIDE_ID, branch: 'feat/x' }));
+      await writeFile(`${t.insideReal}.new`, personaFm({ id: REPLACED_ID, branch: 'feat/x' }));
       await rename(`${t.insideReal}.new`, t.insideReal);
     }, { after: true }));
     ok(replaced.swapped, 'the swap happened');
-    deepStrictEqual([b.status, b.reason], ['indeterminate', 'workflow-identity-changed']);
+    deepStrictEqual([b.status, b.active?.workflow_id], ['ok', REPLACED_ID]);
 
     // During the second walk, after it has passed `workflows/` (peer verify):
     // the handle already holds the checked file, so a rename can only move it
     // (read where it lies, the checked file still), and another file put in
-    // its place through a link fails the final identity check.
+    // its place through a link fails the final identity check, and the
+    // directory listed again through that link names a file outside (C171).
     const duringWalk = async (swap) => {
       const t = await setup();
       const workflowsReal = await realpath(t.workflows);
@@ -1428,7 +1434,7 @@ describe('entry-brief readers — workflow links and homes (C122)', () => {
       await rename(t.workflows, `${t.workflows}.moved`);
       await symlink(decoy, t.workflows);
     });
-    deepStrictEqual([decoyDuring.status, decoyDuring.reason], ['indeterminate', 'workflow-identity-changed']);
+    deepStrictEqual([decoyDuring.status, decoyDuring.reason], ['indeterminate', 'symlink-outside-state']);
     for (const result of [a, b, movedDuring, decoyDuring]) ok(!JSON.stringify(result).includes(OUTSIDE_ID));
   });
 
@@ -1466,8 +1472,178 @@ describe('entry-brief readers — workflow links and homes (C122)', () => {
         };
       },
     };
+    // The fake differs on every listing, so the file reads as replaced each
+    // time, and the bound ends it.
     const result = await readPersonaWorkflowSource({ repoRoot: root, persona: 'engineer', branch: 'feat/x', io });
     deepStrictEqual([result.status, result.reason], ['indeterminate', 'workflow-identity-changed']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C171 — a workflow replaced by rename (every persona workflow write is a
+// temporary file renamed over the old one, and lanes share one state root) is
+// read again from a fresh listing, never failed at once and never read as the
+// file checked.
+
+describe('entry-brief readers — a workflow replaced by rename (C171)', () => {
+  const OLD = 'terminal_marker: false';
+  const NEW = 'terminal_marker: true';
+  // a.md is another branch's workflow, b.md this branch's; `replaceB` renames
+  // a new b.md over the old one, inside the home, as a writer does.
+  const setup = async () => {
+    const root = await makeRepo();
+    const a = await writeWorkflowFile(root, { persona: 'engineer', file: 'a.md', body: personaFm({ id: 'compose-20260719T080000Z-aaa111', branch: 'other' }) });
+    const b = await writeWorkflowFile(root, { persona: 'engineer', file: 'b.md', body: personaFm({ branch: 'feat/x', terminalLine: OLD }) });
+    return { root, aReal: await realpath(a), bReal: await realpath(b), replacements: 0 };
+  };
+  const replaceB = async (t) => {
+    t.replacements++;
+    await writeFile(`${t.bReal}.tmp`, personaFm({ branch: 'feat/x', terminalLine: NEW }));
+    await rename(`${t.bReal}.tmp`, t.bReal);
+  };
+  // A handle that counts its reads, so a test can tell a descriptor set aside
+  // unread from one read and discarded.
+  const counted = (handle, into) => {
+    const record = { reads: 0 };
+    into.push(record);
+    return {
+      stat: (...args) => handle.stat(...args),
+      read: (...args) => { record.reads++; return handle.read(...args); },
+      close: () => handle.close(),
+    };
+  };
+  // Replaces b.md at its first `times` opens, before or after the open; lists
+  // in name order (the filesystem's order differs by platform), counting the
+  // listings, the opens of each file and the reads of each b.md handle.
+  const replacing = (t, { times, after }) => {
+    t.listings = 0;
+    t.opens = new Map();
+    t.bHandles = [];
+    return {
+      ...ENTRY_READER_IO,
+      listDir: async (dir, caps) => {
+        const listing = await ENTRY_READER_IO.listDir(dir, caps);
+        if (listing.state !== 'ok') return listing;
+        t.listings++;
+        return { ...listing, entries: [...listing.entries].sort((x, y) => (x.name < y.name ? -1 : 1)) };
+      },
+      openReadOnly: async (path) => {
+        t.opens.set(path, (t.opens.get(path) ?? 0) + 1);
+        if (path !== t.bReal) return ENTRY_READER_IO.openReadOnly(path);
+        if (t.replacements >= times) return counted(await ENTRY_READER_IO.openReadOnly(path), t.bHandles);
+        if (!after) await replaceB(t);
+        const handle = await ENTRY_READER_IO.openReadOnly(path);
+        if (after) await replaceB(t);
+        return counted(handle, t.bHandles);
+      },
+    };
+  };
+  const read = (t, io, caps = ENTRY_READER_CAPS) =>
+    readPersonaWorkflowSource({ repoRoot: t.root, persona: 'engineer', branch: 'feat/x', io, caps });
+
+  for (const after of [false, true]) {
+    const when = after ? 'after its open' : 'before its open';
+
+    it(`reads a workflow replaced ${when} again from a fresh listing, never the file it checked`, async () => {
+      const t = await setup();
+      const result = await read(t, replacing(t, { times: 1, after }));
+      strictEqual(t.replacements, 1, 'the replacement happened');
+      strictEqual(result.status, 'ok', `${result.status} ${result.reason}`);
+      strictEqual(result.active.workflow_id, 'compose-20260719T090000Z-abc123');
+      strictEqual(result.active.terminal_marker, true, 'the replacement is read, not the file the open reached first');
+      strictEqual(t.listings, 2, 'the directory is listed again, not the entry read through a stale check');
+      strictEqual(t.opens.get(t.bReal), 2, 'the new b.md is opened anew');
+      deepStrictEqual(t.bHandles.map(({ reads }) => reads > 0), [false, true], 'the descriptor set aside is never read; the one reopened is');
+    });
+
+    it(`reads a workflow replaced ${when} on the last permitted listing`, async () => {
+      const t = await setup();
+      const result = await read(t, replacing(t, { times: ENTRY_READER_CAPS.MAX_SCAN_ATTEMPTS - 1, after }));
+      strictEqual(t.replacements, ENTRY_READER_CAPS.MAX_SCAN_ATTEMPTS - 1);
+      strictEqual(result.status, 'ok', `${result.status} ${result.reason}`);
+      strictEqual(result.active.terminal_marker, true);
+      strictEqual(t.listings, ENTRY_READER_CAPS.MAX_SCAN_ATTEMPTS);
+    });
+
+    it(`keeps refusing a workflow replaced ${when} at every listing once the bound is spent`, async () => {
+      const t = await setup();
+      const result = await read(t, replacing(t, { times: Infinity, after }));
+      deepStrictEqual([result.status, result.reason], ['indeterminate', 'workflow-identity-changed']);
+      strictEqual(t.listings, ENTRY_READER_CAPS.MAX_SCAN_ATTEMPTS, 'no listing past the bound');
+      strictEqual(t.replacements, ENTRY_READER_CAPS.MAX_SCAN_ATTEMPTS);
+      ok(t.bHandles.every(({ reads }) => reads === 0), 'no replaced descriptor is read');
+    });
+  }
+
+  it('degrades with the reason of the last relist when a file vanishes and is replaced by turns', async () => {
+    const enoent = () => Object.assign(new Error('gone'), { code: 'ENOENT' });
+    // Each b.md open does what its turn says: vanish (the open finds nothing)
+    // or be replaced before the open.
+    const turns = async (sequence) => {
+      const t = await setup();
+      let open = 0;
+      const io = {
+        ...ENTRY_READER_IO,
+        openReadOnly: async (path) => {
+          if (path !== t.bReal) return ENTRY_READER_IO.openReadOnly(path);
+          const turn = sequence[open++];
+          if (turn === 'vanished') throw enoent();
+          if (turn === 'replaced') await replaceB(t);
+          return ENTRY_READER_IO.openReadOnly(path);
+        },
+      };
+      const result = await read(t, io);
+      strictEqual(open, ENTRY_READER_CAPS.MAX_SCAN_ATTEMPTS, 'every listing reached b.md');
+      return [result.status, result.reason];
+    };
+    strictEqual(ENTRY_READER_CAPS.MAX_SCAN_ATTEMPTS, 3, 'the sequences below spend a bound of three');
+    deepStrictEqual(await turns(['replaced', 'replaced', 'vanished']), ['indeterminate', 'workflow-file-vanished']);
+    deepStrictEqual(await turns(['vanished', 'vanished', 'replaced']), ['indeterminate', 'workflow-identity-changed']);
+  });
+
+  it('charges a relist after a replacement with what it reads: the new file once, a file already read nothing', async () => {
+    const t = await setup();
+    const aBytes = (await readFile(t.aReal)).length;
+    const newB = Buffer.byteLength(personaFm({ branch: 'feat/x', terminalLine: NEW }));
+    // The replaced b.md is never read, so it costs nothing; a.md, read on the
+    // first listing, is served from the cache on the second.
+    const fits = await read(t, replacing(t, { times: 1, after: true }), { ...ENTRY_READER_CAPS, MAX_HOME_TOTAL_BYTES: aBytes + newB });
+    strictEqual(fits.status, 'ok', `control: a.md and the new b.md fit (${fits.reason})`);
+    strictEqual(t.listings, 2);
+    strictEqual(t.opens.get(t.aReal), 1, 'a.md is read once, its second listing served from the cache');
+
+    const u = await setup();
+    const over = await read(u, replacing(u, { times: 1, after: true }), { ...ENTRY_READER_CAPS, MAX_HOME_TOTAL_BYTES: aBytes + newB - 1 });
+    strictEqual(u.listings, 2, 'the byte past the budget is found on the relist');
+    deepStrictEqual([over.status, over.reason], ['indeterminate', 'read-budget-exceeded']);
+  });
+
+  it('never reads outside content when a replacement leaves the name reaching outside the homes', async () => {
+    // The relist reads the name through every check again: a workflows
+    // directory swapped for a link outside at the open is refused there.
+    const t = await setup();
+    const workflows = join(personaHome(t.root, 'engineer'), 'workflows');
+    let swapped = false;
+    const decoyHandles = [];
+    const io = {
+      ...ENTRY_READER_IO,
+      openReadOnly: async (path) => {
+        if (path === t.bReal && !swapped) {
+          swapped = true;
+          const decoy = await mkdtemp(join(tmpdir(), 'entry-brief-decoy-'));
+          await writeFile(join(decoy, 'b.md'), personaFm({ id: OUTSIDE_ID, branch: 'feat/x' }));
+          await rename(workflows, `${workflows}.moved`);
+          await symlink(decoy, workflows);
+          return counted(await ENTRY_READER_IO.openReadOnly(path), decoyHandles);
+        }
+        return ENTRY_READER_IO.openReadOnly(path);
+      },
+    };
+    const result = await read(t, io);
+    ok(swapped, 'the swap happened');
+    deepStrictEqual(decoyHandles.map(({ reads }) => reads), [0], 'the descriptor that reached outside is never read');
+    deepStrictEqual([result.status, result.reason], ['indeterminate', 'symlink-outside-state']);
+    ok(!JSON.stringify(result).includes(OUTSIDE_ID));
   });
 });
 

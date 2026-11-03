@@ -1,5 +1,5 @@
-// Mutation spec — do the entry-brief reader tests catch the defects C124 and
-// C122 exist for?
+// Mutation spec — do the entry-brief reader tests catch the defects C124,
+// C122 and C171 exist for?
 //
 // Run: npm run mutate -- scripts/mutation-specs/entry-brief-readers.mjs
 //
@@ -42,8 +42,8 @@ export const MUTATIONS = [
     id: 'K23', file: READERS,
     from: '    if (after.isSymbolicLink() || identityOf(after) !== identityOf(opened)) {',
     to: '    if (false) {',
-    why: 'after the open the path is not held to name the file the handle holds, so a file renamed over it is read as the one checked',
-    killed_by: /judges the path again after the open/,
+    why: 'after the open the path is not held to name the file the handle holds, so a file renamed over it is read as the one checked, and the brief reports the state the writer replaced (C171)',
+    killed_by: [/judges the path again after the open/, /reads a workflow replaced after its open again from a fresh listing/],
   },
   {
     id: 'K28', file: READERS,
@@ -68,10 +68,60 @@ export const MUTATIONS = [
   },
   {
     id: 'K2', file: READERS,
-    from: "    if (identityOf(opened) !== identityOf(checked)) return { state: 'refused', reason: 'workflow-identity-changed' };",
+    from: '    if (identityOf(opened) !== identityOf(checked)) return REPLACED;',
     to: '    void opened;',
-    why: 'the file opened is not checked to be the file whose path was checked, so an ancestor swapped for a link outside yields outside content',
-    killed_by: /never yields outside content when a path is swapped/,
+    why: 'the file opened is not checked to be the file whose path was checked, so a file renamed over it before the open is read under the checked file\'s identity instead of from a fresh listing',
+    killed_by: [/reads a workflow replaced before its open again from a fresh listing/, /compares identities as bigints/],
+  },
+  // C171 — a workflow replaced by rename is listed again, within the bound.
+  {
+    id: 'K29', file: READERS,
+    from: "      if (read.state === 'replaced') {\n        relist = read;\n        break;\n      }\n",
+    to: '',
+    why: 'a workflow another lane rewrote (a temporary file renamed over it) fails the whole home at once, the brief goes indeterminate and an autopilot lane parks with no cause (C171)',
+    killed_by: [/reads a workflow replaced before its open again from a fresh listing/, /reads a workflow replaced after its open again from a fresh listing/, /charges a relist after a replacement with what it reads/],
+  },
+  {
+    id: 'K30', file: READERS,
+    from: "  return { state: 'refused', reason: relist?.reason ?? 'workflow-file-vanished' };",
+    to: "  return { state: 'refused', reason: 'workflow-file-vanished' };",
+    why: 'a file still being replaced after the last listing is reported as vanished, so the degraded source names the wrong cause',
+    killed_by: [/keeps refusing a workflow replaced before its open/, /keeps refusing a workflow replaced after its open/, /compares identities as bigints/, /degrades with the reason of the last relist/],
+  },
+  {
+    id: 'K31', file: READERS,
+    from: '  for (let attempt = 0; attempt < caps.MAX_SCAN_ATTEMPTS; attempt++) {',
+    to: '  for (let attempt = 0; attempt < caps.MAX_SCAN_ATTEMPTS - 1; attempt++) {',
+    why: 'the last permitted listing is never made, so a workflow replaced on every listing but the last degrades the source',
+    killed_by: [/reads a workflow replaced before its open on the last permitted listing/, /reads a workflow replaced after its open on the last permitted listing/],
+  },
+  {
+    id: 'K32', file: READERS,
+    from: '  for (let attempt = 0; attempt < caps.MAX_SCAN_ATTEMPTS; attempt++) {',
+    to: '  for (let attempt = 0; attempt <= caps.MAX_SCAN_ATTEMPTS; attempt++) {',
+    why: 'a workflow that keeps being replaced is listed past the bound, so the bound does not bound the work a look takes',
+    killed_by: [/keeps refusing a workflow replaced before its open/, /keeps refusing a workflow replaced after its open/],
+  },
+  {
+    id: 'K34', file: READERS,
+    from: '    if (identityOf(opened) !== identityOf(checked)) return REPLACED;',
+    to: '    if (identityOf(opened) !== identityOf(checked)) { await readFrontmatterHead(handle, caps); return REPLACED; }',
+    why: 'a descriptor that is not the file checked is read before it is set aside, so content the containment check never vouched for is read (the guarantee the relist keeps: a replaced file is never read)',
+    killed_by: [/reads a workflow replaced before its open again from a fresh listing/, /never reads outside content when a replacement leaves the name reaching outside the homes/],
+  },
+  {
+    id: 'K35', file: READERS,
+    from: '      return REPLACED;\n    }',
+    to: '      await readFrontmatterHead(handle, caps);\n      return REPLACED;\n    }',
+    why: 'a descriptor whose path no longer names it is read before it is set aside, so the file a writer replaced is read although the relist reads the name anew',
+    killed_by: /reads a workflow replaced after its open again from a fresh listing/,
+  },
+  {
+    id: 'K33', file: READERS,
+    from: '    const entries = [];\n    relist = null;',
+    to: '    const entries = [];',
+    why: 'a listing that reads every file still counts the earlier listing\'s replacement, so the directory is listed until the bound and degrades after one replaced file',
+    killed_by: [/reads a workflow replaced before its open again from a fresh listing/, /reads a workflow replaced after its open again from a fresh listing/],
   },
   {
     id: 'K3', file: READERS,
