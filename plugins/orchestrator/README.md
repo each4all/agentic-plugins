@@ -470,6 +470,17 @@ next step `verify` and a request; the driver runs the checks itself
   the lane `no-progress`. The same
   checks recorded again on an unchanged tree after a pass or a failure halt the lane
   `no-progress`; `--next verify` (or `--lane <subtask> --next verify`) reruns them once.
+- **Below HIGH.** A request below HIGH halts the lane `low-confidence` and runs nothing.
+  The owner's `--next verify` (or `--lane <subtask> --next verify`) on it authorizes that
+  request: its batch's journal start says the owner's step began it, and the next looks
+  follow its results as at HIGH, so a batch that fails or gives no evidence resumes the
+  requesting verb, and one left open or cut short is ended and continued, with no second
+  `--next`. A pass makes `on_pass` the next step at its own confidence: HIGH is
+  dispatched, MEDIUM halts. The authorization ends when the request is replaced, answered
+  or set aside (a record the journal does not hold whole is then run again only on the
+  owner's rerun); a new request, an instruction's step or another lane never inherits it.
+  A journal written before this rule marks no batch forced, so its batches read as
+  unforced.
 - **Records.** A batch is a seq of `steps.jsonl` of kind `verify`, with no cost: it
   takes no reservation and is no step of `--max-steps`. With lanes, batches run one at a
   time in the order their requests were recorded, and hold no worker slot; each is

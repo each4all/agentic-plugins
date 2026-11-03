@@ -140,8 +140,12 @@ export const readWorkflow = async (wf) => (await S.readWorkflow(wf)).frontmatter
 // (a defect under test) ends the test, cause bound, rather than hanging it.
 export const FAST = Object.freeze({ secondMs: 100, killGraceMs: 300, lingerMs: 500, pollMs: 25, batchMs: 15_000 });
 
-/** The job of a verification step on `wf` in `dir`, with the run's directory under it. */
-export function jobFor({ dir, sha, wf, seq = 4, log, envFile = null, extraEnv = {}, forcedRerun = false, verb = 'compose', runId = RUN }) {
+/**
+ * The job of a verification step on `wf` in `dir`, with the run's directory
+ * under it. `forced`: the owner's forced step (C168); `subtaskId`: the lane's
+ * subtask, which the journal's starts record.
+ */
+export function jobFor({ dir, sha, wf, seq = 4, log, envFile = null, extraEnv = {}, forcedRerun = false, forced = false, subtaskId = undefined, verb = 'compose', runId = RUN }) {
   const decl = VD.readDeclarationAt(dir, sha).declaration;
   const runDir = join(dir, '.agentic-plugins/runs/autopilot', runId);
   mkdirSync(runDir, { recursive: true });
@@ -149,7 +153,8 @@ export function jobFor({ dir, sha, wf, seq = 4, log, envFile = null, extraEnv = 
   const base = { ...process.env, VERIFY_FIXTURE_LOG: log, ...(envFile ? { VERIFY_FIXTURE_ENV: envFile } : {}), ...extraEnv };
   return {
     runId, seq, runDir, mainRoot: dir, workflowPath: wf, workflowId, lane: dir, engineerRoot: ENGINEER_ROOT,
-    offer: { baseline: sha, declaration: decl }, base: sha, verb, forcedRerun,
+    offer: { baseline: sha, declaration: decl }, base: sha, verb, forcedRerun, forced,
+    ...(subtaskId !== undefined ? { subtaskId } : {}),
     checkEnv: VR.checkEnvOf({ ...base, AGENTIC_AUTOPILOT: runId, AGENTIC_AUTOPILOT_TOKEN: 'secret', AGENTIC_AUTOPILOT_STEP: String(seq), AGENTIC_AUTOPILOT_VERIFY: sha, AGENTIC_STATE_BASE: dir }),
     personaEnv: VR.personaEnvOf(base),
   };

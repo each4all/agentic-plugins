@@ -28,7 +28,12 @@
 //     of the workflow's last batch the journal ended passed or failed, on the
 //     same tree: a repeat, which halts the lane `no-progress` and runs nothing
 //     (after a batch with no evidence it runs again whole; the owner's
-//     explicit rerun, `--next verify`, runs it once).
+//     explicit rerun, `--next verify`, runs it once);
+//   - a request below HIGH (C168): nothing, unless the owner's forced step
+//     runs it (its batch's journal start says so, `meta.forced`) or the
+//     record's latest batch continues such a batch; then everything above
+//     applies as at HIGH, except a record set aside, which ends the owner's
+//     authorization and runs nothing.
 //
 // HOW A CHECK RUNS (item 8). As an argv array, never a shell string: the
 // declaration's words with the request's checked arguments, resolved again by
@@ -76,7 +81,7 @@ import {
   MAX_BATCH_CHECKS, MAX_FAILING_TEST_CHARS, MAX_FAILING_TESTS, MAX_RESULTS_BYTES, canonicalJson, checksDigest, resolveCheck, sha256, worstCaseBytes,
 } from './verify-decl.mjs';
 import {
-  appendJournal, endPayload, isoSeconds, journalPath, lastEnded, passOf, readJournal, recordDigest, resultPayload, resumeFact, startEntry, startPayload, untrustedProblem,
+  appendJournal, endPayload, forcedAuthority, isoSeconds, journalPath, lastEnded, passOf, readJournal, recordDigest, resultPayload, resumeFact, startEntry, startPayload, untrustedProblem,
 } from './verify-journal.mjs';
 import { SUPERVISOR, readSupervisorReport, supervisorEnd } from '../../../scripts/lib/heavy-run.mjs';
 import { groupState, holderName, lockPath, readLock, signalGroup as signalLeader } from '../../../scripts/lib/heavy-lock.mjs';
@@ -208,8 +213,11 @@ export const offerRecord = (o) => (o.offered
  * ended failed or with no evidence, the record and the journal agreeing: the
  * requesting verb) or `guard` (an answered request whose tree changed since
  * the batch passed, or whose answer the journal does not hold: the requesting
- * verb before its on_pass). `laneOf(id)` names a lane's checkout (null: the
- * view's own), `treeOf` digests one.
+ * verb before its on_pass), and, for a pending request, `forced` (C168: the
+ * batch of the owner's forced step its latest batch continues, which lets the
+ * policy follow a request below HIGH; verify-journal.mjs forcedAuthority).
+ * `laneOf(id)` names a lane's checkout (null: the view's own), `treeOf`
+ * digests one.
  */
 export async function verifyFacts({ view, mainRoot, laneOf = () => null, treeOf }) {
   const facts = {};
@@ -233,7 +241,10 @@ export async function verifyFacts({ view, mainRoot, laneOf = () => null, treeOf 
     }
     if (c.next_step?.kind === 'verify') {
       const r = resumeFact({ summary: c.verify, entries, latestBatchId: c.verify.last_batch ?? null });
-      if (r) facts[id] = { resume: r };
+      // C168 — the owner's forced step authorized this request's checks below
+      // HIGH: the policy then follows its results as at HIGH.
+      const f = forcedAuthority(entries, { requestId: c.verify.request_id, batchId: c.verify.last_batch ?? null, subtaskId: id });
+      if (r || f) facts[id] = { ...(r ? { resume: r } : {}), ...(f ? { forced: f } : {}) };
       continue;
     }
     if (!c.verify.answered_by || !c.next_step) continue;
@@ -743,11 +754,39 @@ async function runStep({ job, ctl, ops, bounds, now, abortedBy }) {
     fs.writeFileSync(f, `${JSON.stringify(value)}\n`);
     return f;
   };
-  const replan = (digest) => planVerify({ pending, request, results: fm.verify_results, entries, treeNow, checksDigest: digest, verb: job.verb, forcedRerun: job.forcedRerun === true });
+  // C168 (ADR-0068 implementation note 2026-11-03) — below HIGH, the checks
+  // run only on the owner's word: the owner's forced step itself, or a step
+  // its authorization covers (the record's latest batch continues, through
+  // the journal's starts, a batch the forced step started). Any other step
+  // runs nothing; the policy halts such a request before it gets here.
+  const below = fm.next_step_confidence !== 'HIGH';
+  const ownerForced = job.forced === true;
+  if (below && !ownerForced) {
+    const latest = own(request, fm.verify_results).at(-1)?.batch_id ?? null;
+    if (forcedAuthority(entries, { requestId: request.id, batchId: latest, subtaskId: job.subtaskId ?? null }) === null) {
+      return { outcome: 'halt', halt: { reason: 'low-confidence', detail: `the request is ${fm.next_step_confidence ?? 'not'} HIGH and the owner's forced step did not start a batch of it; nothing ran` }, wrote: false };
+    }
+  }
 
   // What the record and the journal say first, before any batch is prepared:
   // a batch a dead driver left open is ended, and one that ended is followed,
   // whatever a newer declaration or selection would make of a new batch.
+  // Every plan, the one made after an open batch is ended included (the
+  // record is read again there, and an edit that came meanwhile can make it a
+  // restart), is held to the authorization's end: below HIGH, a step that is
+  // not the owner's never sets the record aside (which ends the
+  // authorization) and never starts a batch that continues none.
+  const replan = (digest) => {
+    const p = planVerify({ pending, request, results: fm.verify_results, entries, treeNow, checksDigest: digest, verb: job.verb, forcedRerun: job.forcedRerun === true });
+    if (!below || ownerForced) return p;
+    if (p.action === 'restart') {
+      return { action: 'halt', reason: 'low-confidence', detail: `the request's record is set aside (${p.why}), which ends the owner's authorization of it below HIGH; nothing ran. Rerun it with --next verify` };
+    }
+    if (p.action === 'start' && !p.continues) {
+      return { action: 'halt', reason: 'low-confidence', detail: 'a new batch of a request below HIGH starts only on the owner\'s forced step; nothing ran. Run it with --next verify' };
+    }
+    return p;
+  };
   let plan = replan(null);
   if (plan.action === 'end') {
     const dir = path.join(job.runDir, 'verify', plan.batch.batch_id);
@@ -833,7 +872,12 @@ async function runStep({ job, ctl, ops, bounds, now, abortedBy }) {
     checks, checksDigest: digest, startedAt: iso(),
   });
   if (restart && treeNow === null) return { outcome: 'halt', halt: { reason: 'owner-choice', detail: 'the lane\'s tree cannot be read, so no batch can be bound to it' }, wrote };
-  const meta = { verb: (plan.prior ? startEntry(entries, request.id, plan.prior.batch_id)?.meta?.verb : null) ?? job.verb, base: job.base, checks_digest: digest, subtask_id: job.subtaskId ?? null };
+  // `forced`: the owner's forced step started this batch (C168), which
+  // authorizes the request's checks below HIGH (forcedAuthority).
+  const meta = {
+    verb: (plan.prior ? startEntry(entries, request.id, plan.prior.batch_id)?.meta?.verb : null) ?? job.verb, base: job.base, checks_digest: digest, subtask_id: job.subtaskId ?? null,
+    ...(ownerForced ? { forced: true } : {}),
+  };
   // A hold, a drain or the driver's end that came while the batch was
   // prepared starts none: the step yields, writing nothing more, and the
   // request waits (the persona refuses a batch's start in a held lane). One

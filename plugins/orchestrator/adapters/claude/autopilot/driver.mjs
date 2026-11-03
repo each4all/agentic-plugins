@@ -1124,6 +1124,9 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       const job = {
         runId, seq, runDir, mainRoot, workflowPath: child.path, workflowId: child.workflow_id, subtaskId: id, lane: repoRoot,
         engineerRoot: roots.engineer, offer, verb: child.verb ?? null, forcedRerun: s.forced === true && s.rerun === true,
+        // C168: the owner's forced step, whose batch authorizes the request's
+        // checks below HIGH (verify-journal.mjs forcedAuthority).
+        forced: s.forced === true,
         requestKnown: requestKnownIn([repoRoot, mainRoot], id),
         // Decision 7, item 5 — once a batch a dead driver left open is ended,
         // what is left of it is a request not running, which a pending

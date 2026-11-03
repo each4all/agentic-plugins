@@ -12,8 +12,9 @@
 // payload, appended and synced BEFORE the write (write-ahead): a driver that
 // dies between the two leaves an intent the record may or may not hold, and
 // never a record the journal does not hold. A start also keeps what the
-// persona's record does not: the requesting verb, the selection base, and the
-// subtask.
+// persona's record does not: the requesting verb, the selection base, the
+// subtask, and whether the owner's forced step started it (C168,
+// forcedAuthority).
 //
 // TRUST. The persona's record is no trust boundary (its lib/verify.mjs header):
 // the worker whose step recorded the request can write any batch, result, end
@@ -262,6 +263,44 @@ export function passOf(entries, requestId, batchId) {
   if (!pass) return null;
   const start = startEntry(entries, requestId, batchId);
   return start ? { pass, start } : null;
+}
+
+/**
+ * C168 (ADR-0068 implementation note 2026-11-03) — the owner's authorization
+ * of a request below HIGH: the batch the owner's forced verification step
+ * (`--next verify`) started for it, which its journal start marks
+ * (`meta.forced`, driver metadata the persona's record never holds), reached
+ * from `batchId`, the latest batch the record names, back through the batches
+ * the journal started for the request, each continuing the one before. A
+ * restart continues nothing, so a record set aside ends the authorization
+ * unless the owner's own rerun set it aside; a start the journal does not
+ * hold, or one of another subtask, ends it too. A request recorded anew has
+ * another id, so it never inherits one. Journals written before this release
+ * hold no `meta.forced`: their batches read as unforced. `{ request_id,
+ * batch_id }` (the forced batch), or null.
+ *
+ * The record names the batch the walk starts from, and the record is the
+ * worker's to write: `batchId` must be the last batch the journal started for
+ * the request, so a record put back to an earlier batch (one a continuation
+ * since passed and answered) revives nothing. A start the journal took whose
+ * persona write never landed (a driver that died between the two) fails
+ * closed the same way: the owner forces the request again.
+ */
+export function forcedAuthority(entries, { requestId, batchId, subtaskId = null }) {
+  if (typeof requestId !== 'string' || typeof batchId !== 'string') return null;
+  const last = entries.filter((e) => (e.op === 'start' || e.op === 'restart') && e.request_id === requestId).at(-1);
+  if (!last || last.batch_id !== batchId) return null;
+  const seen = new Set();
+  for (let cur = batchId; typeof cur === 'string' && !seen.has(cur); ) {
+    seen.add(cur);
+    const start = startEntry(entries, requestId, cur);
+    if (!start) return null;
+    if (subtaskId !== null && start.meta?.subtask_id !== subtaskId) return null;
+    if (start.meta?.forced === true) return { request_id: requestId, batch_id: cur };
+    if (start.op === 'restart') return null;
+    cur = start.payload?.continues ?? null;
+  }
+  return null;
 }
 
 /**
