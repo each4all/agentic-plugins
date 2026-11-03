@@ -18,6 +18,13 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.37.2](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.37.1...plugin-orchestrator-v0.37.2) (2026-11-03)
+
+
+### Bug Fixes
+
+* **orchestrator:** an owner-forced verify below HIGH resumes the requesting verb after a failed or no-evidence batch, instead of halting low-confidence again (C168) ([#1022](https://github.com/each4all/agentic-plugins/issues/1022)) ([62d127f](https://github.com/each4all/agentic-plugins/commit/62d127f30082b79f0821214ab3208269c4d0c7c8))
+
 ## [0.37.1](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.37.0...plugin-orchestrator-v0.37.1) (2026-11-03)
 
 
