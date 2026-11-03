@@ -18,6 +18,13 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.37.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.36.0...plugin-orchestrator-v0.37.0) (2026-11-03)
+
+
+### Features
+
+* **orchestrator:** owner instructions for a lane — a note and a next step recorded while the run goes on, applied at the lane's next step boundary (ADR-0068 D7) ([#1015](https://github.com/each4all/agentic-plugins/issues/1015)) ([c4994af](https://github.com/each4all/agentic-plugins/commit/c4994af5183dfcb4fa16b4eada048bccf4b4f5ac))
+
 ## [0.36.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.35.0...plugin-orchestrator-v0.36.0) (2026-11-01)
 
 
