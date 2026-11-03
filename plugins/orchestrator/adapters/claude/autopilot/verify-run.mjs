@@ -753,6 +753,17 @@ async function runStep({ job, ctl, ops, bounds, now, abortedBy }) {
     fm.verify_request = again.verify_request;
     fm.verify_results = again.verify_results;
     plan = replan(null);
+    // ADR-0068 Decision 7, item 5 — the batch is ended, and what is left of
+    // it is a request not running, which a pending instruction with a step
+    // replaces: the step gives the lane back (its next boundary applies the
+    // instruction) rather than continue the batch. A note alone leaves it,
+    // and the batch continues.
+    if (plan.action === 'start' && typeof job.yieldsToInstruction === 'function' && job.yieldsToInstruction()) {
+      return {
+        outcome: 'none', detail: `batch ${plan.continues} was ended ${payload.end}; a pending instruction with a next step replaces what is left of it (ADR-0068 Decision 7, item 5)`,
+        batch: { batch_id: plan.continues, end: payload.end, cause: payload.cause, checks: [] }, wrote,
+      };
+    }
   }
   if (plan.action === 'none') return { outcome: 'none', detail: plan.why, wrote };
   if (plan.action === 'halt') return { outcome: 'halt', halt: { reason: plan.reason, detail: plan.detail }, wrote };
@@ -831,6 +842,21 @@ async function runStep({ job, ctl, ops, bounds, now, abortedBy }) {
   const yielded = (cause, refusal = false) => ({ outcome: 'stopped', cause, refusal, detail: `a ${cause === 'driver-end' ? 'stop of the driver' : cause} came before the batch started; nothing ran`, wrote });
   const before = stopNow();
   if (before) return yielded(before);
+  // ADR-0068 Decision 7, item 5 — a request not running is replaced by an
+  // instruction's step, and a batch is running only once its start is
+  // recorded (item 3). The admission's recheck (II16) came before this
+  // preparation awaited the record, the tree and the selection: an
+  // instruction with a step the owner wrote meanwhile starts no batch either
+  // (impl-instruct critique 10 F1). The step writes nothing more and gives
+  // the lane back, and the next pass applies the instruction, whose step
+  // replaces the request. Nothing is awaited from here to the start's write.
+  // The driver's hook answers each record once, so an instruction a pass
+  // leaves pending costs one turn, never a loop; `instruction` tells the
+  // settle so, which then counts no step that changed nothing (each such
+  // yield takes an owner's write).
+  if (typeof job.instructionWrittenSince === 'function' && job.instructionWrittenSince()) {
+    return { outcome: 'none', instruction: true, detail: 'an instruction with a next step was written while the batch was prepared; its step replaces the request, and no batch started (ADR-0068 Decision 7, item 5)', wrote };
+  }
   try {
     if (restart) {
       await write('restart', 'verify-batch-restart', ['--replaces', plan.replaces ?? 'none', '--input-file', inputFile(dir, 'start.json', start)], { batch_id: batchId, payload: start, replaces: plan.replaces, meta });

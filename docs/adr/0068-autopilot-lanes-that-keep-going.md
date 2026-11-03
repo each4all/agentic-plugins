@@ -4782,3 +4782,700 @@ settled before the request (F), the results and the digest (R), the guidance
 the same branch, with no mutation of their own. `consensus-proposal.mjs` R3,
 `persona-pipeline.mjs` M1 and `verify-record.mjs` Q5 keep their defects on
 the anchors the verify branch moved.
+
+## Implementation note 2026-11-01 — impl-instruct (Decision 7)
+
+The orchestrator's implementation of Decision 7, one release of the
+orchestrator package (item 9: the persona's existing `append` applies an
+instruction, so no persona changes). It adds no guarantee; it fixes what
+§Left to the implementation (slice 4) names.
+
+**II1. The record** (`scripts/lib/instructions.mjs`). One file per subtask,
+`holds/<macro>/instructions/<subtask>.json` (`agentic-instructions-1`), a
+record kind beside the holds, written whole under the holds lock. Its
+`entries` keep the lane's instructions in the order written; each has a
+16-hex `id`, a `revision` from 1, the `branch` and `child` it was written for
+(`null` before the dispatch), its `step` (the forced-step grammar less the
+dispatch and the rerun, restated from `policy.mjs` and held equal by test),
+the note itself with its sha256 (at most 16 KiB, strict UTF-8, no NUL, read as
+the engineer reads `--phase-note-file`: one trailing newline removed), the
+child's gate witness at the write (`awaiting_owner_gate`, and the count of
+`### Owner gate resolved: <gate> at <iso>` headings outside the owner's
+notes an application appended to that child, II10 and II11), and its `state`:
+`pending`, `applying` (naming its receipt), `applied`, `superseded` (cause
+`later-step` or `gate`), `dropped` (its cause) or `withdrawn`, with the
+acknowledgement (when, by what, the application id, the step it replaced).
+The transitions are a table, as the holds' are. A revision replaces a pending
+entry in its place and is refused unless it names the current revision; an
+entry being applied, or ended, is neither revised nor withdrawn. Every reader
+answers with a code (`dir`, `file`, `parse`, `schema`), never an excerpt: a
+JSON.parse message quotes the text it failed on. The wake source's digest is
+the sha256 of every record's name and what the owner writes in it (each
+entry's id, revision and whether it is withdrawn; a record the readers
+refuse, its bytes), so a run's own reservation, application, rollback or
+drop wakes nothing (II14). A record keeps at most 64 entries.
+
+**II2. The application** (`scripts/lib/instruct-apply.mjs`), one transaction
+with a durable receipt. Under the holds lock the applier reserves the lane's
+pending entries bound to the child (`applying`) and writes a receipt beside
+them (the entries, the effective step, the supersessions, the child's next
+step it replaces, the child file's sha256, its own pid and fingerprint); it
+releases the lock (I2: never held across a persona lock), checks the child's
+bytes are still the reserved ones (a write that slipped in rolls the
+reservation back, and the next boundary judges the child as it is), runs one
+engineer `append` (`--phase-label "Owner instructions <application id>"`, the
+notes as one phase note, `--once-operation checkpoint`, and the effective step
+at HIGH), reads the child back for the heading, and under the lock finalizes
+the entries and the receipt. The next application reconciles a receipt a
+crash left `reserved` before anything else: the heading on the child
+finalizes it (never written twice), its absence with the applier gone rolls
+the entries back to `pending` (never lost), and an applier still alive is
+waited for. The ended receipts kept are the last 16. Precedence: an entry
+whose witness differs from the child's now has its step superseded (`gate`),
+its note still appended; of the rest the last step wins, the earlier ones
+superseded (`later-step`). Limit: the window between the byte check and the
+engineer's own lock is not closed; a write landing there is a session's, which
+opens a persona operation the boundary check sees at the next look, and its
+step stands until then only if the engineer orders it after the append.
+
+**II3. Binding and drops.** An entry applies to the child it names. A note
+written before the dispatch binds to the first child linked to the subtask on
+its branch whose id time is at or after the write's second, active or
+archived, and never to a later one (a same-second child created before the
+write would bind too: a limit). The lifecycle sweep, before each application,
+drops a pending entry whose subtask left the plan (`left-plan`), is completed
+(`completed`) or closed (`closed`), changed branch (`branch-changed`), whose
+child archived (`child-archived`) or was replaced (`child-replaced`); homes
+that cannot all be read, or two active children, drop nothing.
+`/orchestrator:done` drops with `completed` (a subtask with only an
+instructions record retires it too), and the macro's end drops every pending
+one (`macro-ended`) before its holds directory goes, the summary returned to
+the caller, which prints it (done, finalize, abort, status).
+
+**II4. The boundary.** `boundaryRefusal`: held or a release uncompared
+(`holdGate`), a persona operation open, a peer settlement pending, a
+verification batch the child records started and not ended (II13), a commit
+begun and unfinished (`phase-7-commit` or terminal). The run adds what only it
+knows: a step of the lane in flight, a verification batch started and not
+ended (the serial driver and the scheduler keep the lane whose last check left
+its batch open), and, for an instruction written after the run took its
+forced step, that untaken forced step (one already pending then is applied
+before it, II13). The command adds a dead run's
+leftovers (`laneBusy`). Before applying, the macro's holds protocol is turned
+on (`activateHolds`), so the write is a visible operation in every mode; where
+the persona cannot make it visible the instruction stays pending
+(`inactive`).
+
+**II5. Who applies.** `state.mjs instruct-apply` (`applyLaneInstructions`)
+joins an admission of `instruct` (a new ADMISSION_COMMANDS member): the owner
+command with no run live holds the macro lock while its fenced writer (as an
+approval's note) writes, so no run starts beside it; a run's worker passes on
+the run's own lock. A run starts it idle (`--await-start`) as a worker group
+of its locks (`instruct-boundary.mjs`, `rebind-boundary.mjs runHeld`), and the
+engineer append runs outside the run's step numbering (`personaEnv`, P9). The
+serial driver applies at the top of each turn, before the decision, and decides
+from a fresh look; the scheduler applies before its parked lanes are judged
+again, nominates a parked lane it changed, and retries a lane its last attempt
+left as it was at most once per tick. An application's step carries
+`instruction_application` on its `started` ledger line; while the child's next
+step is the application's and its bytes are the ones it left, the policy's P7
+guard of an answered request is passed over for it, so the instruction's step
+replaces `on_pass`.
+
+**II6. Records.** The event kind `instruction` (`action` applied or dropped,
+`application_id`, counts, `step_set`, a pointer to `lanes.jsonl` or
+`steps.jsonl`); the `instruction` line of `lanes.jsonl` and of the serial
+run's step ledger (codes and ids); `halt.json`'s `instructions` (each entry's
+id, revision, state, step, cause and application); `status --macro` (states
+and outcomes, the note's size only, and for an applied step whether a run's
+ledger shows it ran, or a later application replaced it before it ran); and `run.json`'s `instructions-1`, which
+every run of this release records. The owner command writes no event.
+
+Tests: `test-instructions-records.mjs` (the record, the grammar held equal to
+the forced steps, the note's bounds, the codes, the witness, the digest, the
+retirement), `test-instruct-apply.mjs` (the transaction through the real
+engineer `append`, the precedence, the crash before and after the write, the
+binding and the drops), `test-autopilot-instruct-cli.mjs` (the command, its
+refusals, its own application, a held and a released lane, a persona that
+cannot make it visible), `test-autopilot-instruct-serial.mjs` (an idle lane,
+a lane mid-step, a forced step) and `test-autopilot-instruct-lanes.mjs` (a
+parked lane within the poll, the event, a relaunch's `--lane --next`; the
+serial file also a run ending after an application and before its step). Each is
+bitten by a mutation of `scripts/mutation-specs/impl-instruct.mjs` naming it
+in `killed_by`. **II7. What the code review found** (Plan-verify of the code, 2026-11-01),
+each fixed and, but for the two named below, pinned by a mutation of group P:
+the public application reconciles a crashed receipt before any other exit
+(an entry left `applying` was otherwise stuck); the due list adds every
+record of a subtask the plan no longer holds, so the sweep drops it
+(`left-plan`); the macro's end keeps every instruction's outcome beside the
+holds root (`holds/ended/<macro>.instructions.json`), which `status` and
+`halt.json` read once the directory is gone, and a run's own retirement
+publishes what done dropped; a step's provenance is read from the receipts
+and the child (the latest application that set a step, with no `### Phase 0`
+heading after its own), so it survives a relaunch and names an owner's
+application, in both modes; the boundary takes only a commit phase for an
+interrupted commit, as the policy does, never an interactive verb's terminal
+end; each note is appended inside a fence longer than any backtick run it
+holds, so a fence or a heading in it neither hides nor forges a gate
+resolution; and the scheduler applies again after a release's comparison,
+before the lane is decided, and passes the P7 guard over for an instructed
+step as the serial driver does (both tested since, II8).
+
+**II8. What the slice's critique found** (2026-11-01), each fixed and pinned by
+a mutation of group F:
+- The serial run's `instruction` line in its step ledger carries the seq of
+  the step about to start; `readRun` and the dead-run cleanup now keep it out
+  of that step's record (`readRun` lists such lines in `instructions`), so a
+  step in flight still reads as started and is settled when its run dies.
+- A failed `instruct-apply` command parks the lane once: the scheduler does
+  not try it again while the lane stays parked on a record left as it was
+  (the owner's change of the record, or the lane's release, tries again), so
+  the other lanes are decided.
+- An application left pending for a reason that may pass (`waiting`,
+  `failed`, `unreadable`; `instruct-boundary.mjs` DEFER_STATES) defers the
+  lane's recorded step, and in a serial run its judgment halt: the scheduler
+  takes the lane as parked in that decision and tries again at the next
+  tick, waiting for it before an idle end; the serial run waits
+  (`INSTRUCT_RETRY_MS`) and decides again at the same seq. After the third
+  attempt on the same record (`INSTRUCT_DEFER_TRIES`) the lane halts
+  `owner-choice` with the reason, the instruction still pending. `inactive`,
+  `not-at-boundary` (an interrupted commit runs again) and `no-child` leave
+  the lane decided as before.
+- The recovery rolls a crash's receipt back only on the positive absence of
+  its heading: a persona home or a child copy that cannot be read keeps it
+  reserved (`waiting`), and so does an application whose child cannot be read
+  back after its append, so a note is never appended twice.
+- The P2 scan for a worker's step since an application walks each
+  application's own note to its end through its fences, so a `### Phase 0`
+  heading the owner quoted is not taken for a worker's; the rest of the child
+  is read as before.
+- The refine's own verification (peer run
+  refine-verify-20261101T102042Z-91591d) found three more, fixed the same way:
+  a record that cannot be read was skipped by the due list, which forgot its
+  deferral, so the old step ran over it — it is due now (`unreadable`), the
+  application is tried, and the lane halts naming the record to repair; the
+  recovery took a child not found for absence, and read only the first root's
+  copy of a child — it now reads every copy under every root
+  (`linkedChildren` `allCopies`), and keeps the receipt reserved when none is
+  found; and a later note quoting an application's heading could start the
+  scan inside its fence — the scan now starts at the heading's first
+  occurrence (its id did not exist before the append) and enters an
+  application's note only there. The halt of a deferred lane names its
+  release, which a run with lanes needs to give the lane back (a withdrawal
+  changes nothing its park's fingerprint reads).
+- Tests added: the step ledger read back, a failed command and a deferred
+  application with lanes (another lane running, and none), a record that turns
+  unreadable in either driver, a deferred application that applies at its
+  retry starting one step at the seq it waited at, a deferred application and an interrupted commit in
+  a serial run, the receipt beside an unreadable child, a child not found and
+  a stale copy under an earlier root, the quoted Phase 0 and the quoted
+  application heading,
+  the scheduler's application right after a release's comparison, and the P7
+  guard passed over for an instructed step in either driver
+  (`test-autopilot-verify-driver.mjs`, `test-autopilot-verify-lanes.mjs`).
+
+Not yet tested here (all but the draining run tested since, II9): a lane kept
+between its batch's checks and while the
+batch waits for the heavy-work lock, a queued request or a
+hold-cut batch replaced by a step, and a draining run applying nothing (the
+loop's drain block continues before the application pass, so the pass's own
+`draining` guard is equivalent and not mutated). Limits: a child file that
+vanishes between the listing and its read in the recovery is kept reserved
+by a branch no test reaches on demand; the tick's wake for a deferred lane is
+not mutated (a mutation leaves a run waiting with no wake, a timeout, not a
+verdict).
+
+**II9. What the slice's second critique found** (2026-11-01), each fixed and
+pinned by a mutation of group G:
+- The scheduler skipped a lane whose attempt applied nothing for a whole tick
+  on a record left as it was, whatever the attempt met: a lane at no boundary
+  (an operation open) whose boundary opened within the tick was decided with
+  its recorded step, which started over the instruction. Now the skip follows
+  the attempt's result: `not-at-boundary` is tried at every call (the
+  boundary opens at any time), `no-child` and `none` once per loop pass (a
+  step's end starts a new one), `inactive` and a deferral once per tick, and a
+  failed command not while its lane stays parked on that record. A result
+  that stays the same is printed once. That only narrowed the race: an
+  operation that closes between the last attempt and the step's start still
+  let the step run first (the refine's peer, refine-verify-20261101T143310Z-170659,
+  reproduced it, and in a serial run a step ran with the operation open
+  throughout). So a `not-at-boundary` result now says whether the lane's own
+  step is what the instruction waits for (`step_first`: an interrupted
+  commit runs again, a pending settlement is the step's to settle;
+  instruct-apply.mjs boundaryState): with it the lane is decided as before;
+  without it (an operation open, a hold the writer saw, a child that cannot
+  be read) the lane's recorded step waits as a deferred one. A run with lanes
+  tries it at every call and parks it, naming the reason, after as long as it
+  waits for a lane laneBusy holds back; a serial run counts it as any
+  deferral (INSTRUCT_DEFER_TRIES).
+- Reads that could not know were taken for "nothing to do", the mirror of
+  II8's: a workflow home or file that cannot be read (any persona's, workflows
+  or archive: the entries' child may be in it) made every entry unbound, so
+  the application read `none`; the lane's own child whose file cannot be read
+  read as `no-child`; and worktrees git cannot list narrowed the search to
+  the main checkout, where a child in a worktree's state root went unseen.
+  Each now answers `waiting` (DEFER_STATES), naming what could not be read,
+  and the owner's `instruct` refuses a write while the worktrees cannot be
+  listed. An instructions directory that cannot be listed makes every open
+  subtask of the plan due, `unreadable`, where it made none due: which lanes
+  have one cannot be told. Found by the refine's peer, the same way: a child
+  file linked to the subtask that names no workflow id was skipped, so a
+  child still active read as gone and the sweep dropped its instruction
+  `child-archived` (it is now counted as a file that cannot be read); and an
+  entry left `applying` that no reserved receipt names (a record edited by
+  hand) read as nothing pending (`none`): the application now waits, naming
+  the record to repair.
+- Tests added: an unrelated archive file, the lane's own child and the
+  worktrees list that cannot be read (`test-autopilot-instruct-cli.mjs`); the
+  directory that cannot be listed (`test-instructions-records.mjs`); a lane
+  whose boundary opens within the tick (`test-autopilot-instruct-lanes.mjs`);
+  and, beside verification (`test-autopilot-verify-lanes.mjs`), an
+  instruction written while a started batch waits for the heavy-work lock and
+  then between its checks (kept until the batch ends, which runs whole, and
+  its step then replaces `on_pass`), a queued request replaced by a step and
+  run after a note alone, and what is left of a batch a hold cut short
+  replaced by a step and run after a note alone, the instruction applied once
+  the release is compared; a lane at no boundary kept from its recorded step,
+  and one whose own step comes first decided as before, in a run with lanes
+  and a serial one; the id-less child and the orphan `applying` entry. The
+  open-batch test writes a second instruction while the batch's checks run,
+  which wakes the loop there: without it no turn looked at the lane during
+  the checks, and a mutation protecting the batch only while it waits for the
+  lock survived (the peer's).
+
+Limits: a lane's batch is kept from the application by the scheduler's
+in-flight set (`verifyActive` is in it) as well as by its batch
+exclusion; the exclusion's `openBatches` (a batch whose handle ended with
+no end recorded) is reached by no test on demand. The verify queue's own
+drop of a request the decision no longer gives is not mutated: the batch's
+admission reads the child again and starts none for a request no longer
+pending, so a mutation of it is equivalent. Severity reads left with the
+owner (the window between the byte check and the engineer's lock, receipt
+pruning, retirement beside a reserved receipt) stand as II2 and the MINOR
+findings of the second critique say. The fail-closed reads are broad: one
+unrelated file that cannot be read in any persona home keeps every
+instructed lane of the repository waiting, and parks it after the third
+attempt naming the file; a narrower proof (an explicitly bound child found
+active) would spare those lanes, and is not taken. The queued-request tests
+wait a fixed second after B's dispatch ends for the decision that queues it:
+on a machine slower than that the instruction applies before the queue, and
+the test passes without testing a queued request (the peer confirmed the
+queue on this machine).
+
+**II10. What the slice's third critique found** (2026-11-01), fixed and
+pinned by the mutations of group N. The gate witness walked fences across
+the child's whole body, so one fence a worker's note left unclosed hid every
+later `### Owner gate resolved:` heading. An instruction written before a gate
+that was set and resolved then kept its step over the owner's resolution: the
+precedence item 5 names. The review's peer reproduced this end to end. The
+P2 scan (workerStepSince) already read the child by the rule this needs.
+That rule now lives in one place, instructions.mjs linesOutsideApplications,
+and both scans read by it: the fences of an application's note, which the
+orchestrator built, are walked to the note's end, and every other line is
+read as it is, so an unclosed fence in a worker's note hides nothing after
+it. Since a worker's fences no longer hide what they quote, the witness
+counts only the heading's whole shape as awaiting-owner-clear writes it
+(`### Owner gate resolved: <gate> at <iso>`). A shorter line opening with the
+words is not counted.
+
+The refine's peer (refine-verify-20261101T172448Z-543b20) then found the
+same blindness one step over. The scan took a heading for an application on
+its shape and its first occurrence in the child, and a worker's closed fence
+quoting another lane's application heading is that heading's first
+occurrence there. The quote's closing fence then opened a fence, which hid
+every later resolution and Phase 0. That was in workerStepSince before this
+refine as well. Now a heading is taken for an application only when its id is
+one of the lane's own (laneApplicationIds, the receipts of the subtask's
+instruction record), and still only at its first occurrence. Every reader
+passes those ids. The owner command reads the record for the witness it stores
+(and refuses the write while the record cannot be read: whose notes are the
+owner's cannot be told). The application reads the ids from the record it
+holds under the lock, and instructedStep from the record it read. So the
+witness at the write and at the application are read by one rule.
+
+Tests added: a resolution past a worker's unclosed fence, before and after an
+application's note, and past a closed quote of another lane's heading
+(`test-instructions-records.mjs`, `test-instruct-apply.mjs`); both end to end
+through the engineer's append and clear, where the resolution supersedes the
+instruction's step (`test-instruct-apply.mjs`); and through the owner command,
+an earlier owner note quoting a whole resolution heading that forges none at
+the write or at the application (`test-autopilot-instruct-cli.mjs`).
+
+Limits:
+- A worker's note that quotes a whole resolution heading at column 0, fenced
+  or not, counts as a resolution. When it is written between an
+  instruction's write and its application, the instruction's step is
+  superseded (cause `gate`), its note is still applied, and the child keeps
+  its own step.
+- A worker's quoted `### Phase 0` heading is taken for a step by the P2 scan
+  in the same way. That costs the instruction its provenance, and while a
+  verification request is answered, the policy's P7 guard may then resume the
+  requesting verb over the child's recorded step (policy.mjs). This is P2's
+  behavior before this note too.
+- An application whose receipt was pruned (only the last 16 ended receipts
+  are kept) is read as a worker's note: a heading the owner
+  quoted in it is then counted as a resolution or a step.
+
+**II11. What the slice's fourth critique found** (2026-11-01), fixed and
+pinned by the mutations N3a–N3e. II10's fix took the ids of every receipt in the
+lane's record, whatever child a receipt was for. The first-occurrence rule
+proves a heading is an application's note only in the child the note was
+appended to. In a replacement child (after the lane's first child archived,
+or a rebinding) the first `### Owner instructions <id>` of the earlier
+child's application can only be a quote, and the quote's closing fence then
+opened a fence that hid every later resolution and Phase 0. The review's peer
+reproduced both through the real state APIs: refine overwrote the owner's
+resolution to commit, and the P2 scan kept a stale provenance past a real
+Phase 0. Now laneApplicationIds(record, child) takes only the receipts naming
+the child being read (its workflow id), and no child gives no ids. Every
+reader already knew the child: the owner command (the linked child's
+workflow id), the application (the child it holds), and instructedStep (the
+child whose last receipt it reads).
+
+The refine's peer (refine-verify-20261101T213133Z-3cb1da) found the same
+over-trust in one more receipt kind: a `rolled-back` receipt was ended on proof
+that its child held no such heading (every rollback in instruct-apply.mjs
+reads the child whole first), so its heading in the child later is a quote.
+Only a receipt that may have written its note now counts, `done` or
+`reserved` (a crash's, which the recovery settles); any other state counts as
+none.
+
+Tests added: the ids scoped by child and by state, and a witness past a
+replacement child's quote of its predecessor's heading and past a quote of a
+rolled-back heading (`test-instructions-records.mjs`); end to end, a
+replacement child whose worker quotes the earlier child's application
+heading, then a gate set and resolved to commit, where the resolution
+supersedes the instruction's step, and the same quote before a worker's
+Phase 0, which ends the instruction's provenance (`test-instruct-apply.mjs`);
+and through the owner command, the same quote and a resolution before the
+owner's write, where nothing is superseded because the write and the
+application read one witness (`test-autopilot-instruct-cli.mjs`). One
+mutation per reader (N3c–N3e) keeps each caller passing the child.
+
+Limits:
+- A copy of the child restored from before an application, with the same
+  workflow id, that later quotes that application's heading is read as
+  holding the note. Restoring a workflow file by hand is outside the run.
+- A receipt with no `child` (a hand-edited record; receipts are not
+  validated) names no note: its note is then read as a worker's, and a
+  heading the owner quoted in it counts as a resolution or a step. That fails
+  toward the gate (cause `gate`), as II10's pruning limit does.
+
+**II12. What the slice's fifth critique found** (2026-11-01), fixed and
+pinned by the mutations Q1a–Q3c.
+
+- The owner's rerun beside an instruction. Both drivers refused a forced step
+  beside a pending instruction with a step only when the forced step was a
+  verb or the commit. `--next verify` (`--lane <id> --next verify` with lanes)
+  was taken: its batch ran, and the instruction's step then replaced its
+  `on_pass`. Item 5 refuses every forced step there, and now both drivers do,
+  the dispatch alone excepted (its subtask has no child, so no instruction
+  with a step). Tests: a serial run and a run with lanes, each after a
+  request parked on an unchanged tree, refuse the rerun naming the
+  instruction, and start no check and no worker
+  (`test-autopilot-verify-driver.mjs`, `test-autopilot-verify-lanes.mjs`;
+  Q2a, Q2b). The refine's peer (refine-verify-20261101T230438Z-e15420) found
+  the serial check read every subtask in progress, not the one the forced
+  step names: a sibling whose child had archived, awaiting its landing, with
+  an instruction left pending until its drop (`child-archived`), refused the
+  active child's forced step. The serial run now reads only the subtasks
+  whose child is active, as `forcedApplies` does; a run with lanes already
+  read the forced pair's lane alone (`test-autopilot-instruct-serial.mjs`;
+  Q2c).
+- An instruction to a lane mid-step, with lanes. In a run with lanes the
+  step in flight (`subtasksInFlight`) is the only thing that keeps an
+  application off a lane during its step: no persona operation is open
+  between a verb's writes, so the writer's boundary check does not see it.
+  The serial test cannot fail there (the serial loop waits on its worker), and
+  no lanes test wrote an instruction while a lane's worker ran. One now does:
+  the instruction stays pending over several ticks while the step runs, is
+  applied after it, and replaces the step the worker's finish-verb wrote
+  (`test-autopilot-instruct-lanes.mjs`; Q1a).
+- The malformed-step refusals. R1 changed only the dispatch's own code. Now
+  one mutation drops the trailing-word check, one the verb list
+  (`test-instructions-records.mjs` and `test-autopilot-instruct-cli.mjs`;
+  Q3a, Q3b), and one the owner command's refusal of a step the parser
+  refused (`test-autopilot-instruct-cli.mjs`; Q3c).
+
+**II13. What the slice's sixth critique found** (2026-11-02), fixed and
+pinned by the mutations of group T.
+
+- A batch a dead driver left open. Item 3 keeps a lane from an instruction
+  while a batch has started there and not ended, but both drivers knew an
+  open batch only from their own run (`openBatches`, `openBatchOf`), which
+  starts empty. At a relaunch the application replaced the pending `verify`
+  first, the instructed verb ran, and the batch stayed open in the record:
+  only the lane's verify step ends it (verify-run.mjs, `end`). Now the
+  writer's boundary reads the child's own record (`openBatchOf`: a request
+  pending and its latest batch with no `end`, as `planVerify` reads it) and
+  answers `not-at-boundary` with `step_first`, in every mode, the owner
+  command's included: the run decides the lane as before, and its verify
+  step ends the batch (cut short, `driver-end`). Results that cannot be read
+  beside a pending request count as open: the verify step judges them. The
+  refine's peer (refine-verify-20261102T053552Z-d9e3f8) found the step then
+  continued what was left of the batch at once, so the instruction waited
+  through another batch, where item 5 has a request not running replaced by
+  its step. Now the verify step, once it has ended such a batch, asks the
+  driver whether an instruction with a step applies to the lane
+  (`yieldsToInstruction`, `pendingInstructionSteps`), and if one does it
+  gives the lane back (`none`) rather than continue; the instruction is
+  applied at the boundary after it, its step replacing the request. A note
+  alone leaves it, and the batch continues; so does the owner's rerun (a
+  forced step, which an instruction written since waits for). Tests: the
+  boundary on such a record, ended, with no batch and unreadable
+  (`test-instruct-apply.mjs`); the step's yield (`test-autopilot-verify-run.mjs`);
+  and a relaunch over a dead driver's batch in each driver
+  (`test-autopilot-verify-driver.mjs`, `test-autopilot-verify-lanes.mjs`).
+  T1a and T1b are one defect, split by driver so that each run's unmutated
+  control stays within the harness's default timeout; T1c, T1d and T1e
+  remove the yield in the step and in each driver.
+- The forced-step refusal read every pending entry with a step, whatever it
+  applied to. An entry bound to a child that archived, or that another child
+  took the lane from, applies to nothing (item 6) and is dropped at the next
+  boundary, yet it refused the relaunch's forced step. Now
+  `pendingInstructionSteps` passes over an entry the lifecycle sweep would
+  drop (`dropCause`, against the plan, the linked children and the active
+  one); an entry being applied, and every entry while the homes or the
+  worktrees cannot all be read or two children are active, still refuses.
+  The two MINOR findings at the same site are taken with it: a record that
+  cannot be read refuses the forced step, naming the record (everywhere else
+  such a record counts as possibly holding a step), and every refusing entry
+  is named, so one refusal lists every withdrawal it needs. Tests: in each
+  driver, a forced step taken beside an entry bound to a child the lane no
+  longer has, which is then dropped `child-replaced`, and in a serial run a
+  record that cannot be read refusing it (`test-autopilot-instruct-serial.mjs`,
+  `test-autopilot-instruct-lanes.mjs`; T2a, T2b).
+- The order beside a forced step. Item 3 applies what is pending when no run
+  is live "before it acts on the lane", and item 5 delays only an
+  instruction written while a live run still carries an untaken forced step.
+  The code delayed every pending instruction behind the forced step, those
+  pending at the launch included, and II4 said so; a test pinned that order.
+  Now each driver reads, as it takes its forced steps and before its refusal,
+  what is pending (`launchPending`: each record's pending entries by id and
+  revision). Beside its untaken forced step a lane's entries still pending
+  from that look (`launchEntries`) are applied before the step, and the
+  application reserves those alone (`instruct-apply --only-entries`,
+  planApplication's `only`), so an entry written or revised since, before
+  the look or between the look and the reservation, stays pending: it waits
+  for the forced step, and is applied at the boundary after it, its step
+  replacing the one the forced step's finish-verb wrote. Beside a forced step
+  every entry pending at the launch is a note (one with a step refuses the
+  launch), so the forced step still runs. A serial run's forced step also
+  waits while that application is deferred (`waiting`, `failed`,
+  `unreadable`), as a lane's recorded step does, up to the attempts' bound. The
+  refine's peer found the first version of this checked the launch entries
+  outside the reservation (an entry written in between was applied before
+  the forced step, and one written before the check held the launch's notes
+  back) and let a serial forced step pass a deferred launch note; both are
+  fixed as described. Tests: the reservation of the given entries alone
+  (`test-instruct-apply.mjs`), the serial test inverted (the note pending at
+  the launch is applied at the forced step's seq, before it), a note pending
+  at the launch and an instruction written after the launch in a serial run,
+  a deferred launch note holding the forced step, and both orders in a run
+  with lanes with the later instruction written between the look and the
+  reservation (`test-autopilot-instruct-serial.mjs`,
+  `test-autopilot-instruct-lanes.mjs`; T3a–T3g). D2, which applied every
+  instruction before the forced step, is T3b's defect and is folded into it;
+  D1, L2, N2c, N3d, Q1a, Q2a and G4a–G4d are re-anchored on the changed
+  lines, and F1a names the inverted test. The verification that followed
+  found G4a and G4d surviving: F1's writer refuses an application while the
+  child records a batch open, so with the run's own rule gone (it attempts no
+  application on a lane whose batch has started) the entries stayed pending
+  all the same, and the test, which read only their state, passed. The test
+  now also asserts that the run attempts no application on the lane while the
+  batch waits for the heavy-work lock or runs its checks; both mutations fail
+  that assertion.
+
+**II14. What the slice's seventh critique found** (2026-11-02), fixed and
+pinned by the mutations of group T4.
+
+- An owner's write that landed while a pass ran woke nothing. Item 3 says an
+  instruction written, revised or withdrawn wakes the loop within the poll.
+  A run with lanes read what was due at the start of its pass of
+  applications, but took the records as seen at its end, after it had run
+  `instruct-apply` for each due lane. A write that landed in between was in
+  neither: not applied in that pass, and no change at the next poll. A
+  parked lane's digest does not cover the records, so the lane stayed parked
+  until something unrelated woke the run. The fix reads the records before
+  the pass reads what is due, and takes that as seen at its end
+  (`instructionsWatch` in instruct-boundary.mjs). A poll during the pass
+  that took a later digest is left as it is. Reading at the start alone
+  would make the run's own writes wake it. Each would cost an extra pass,
+  and the poll's wake forgets every attempt, so a lane whose application
+  failed would be tried again for a receipt the run wrote itself. So the
+  digest now covers only what the owner writes (II1): each entry's id,
+  revision and withdrawal, and what keeps a record or the directory from
+  being read. The serial driver keeps no digest and was not affected.
+  Tests: the watch across a pass, with a write during it, a write before it
+  and a poll during it, and the digest at the owner's writes and at a run's
+  own (`test-instructions-records.mjs`; T4b–T4e). A run with lanes also gets
+  a test: a parked lane whose application finds its own step first is tried
+  again within the poll after the owner's second note lands during the
+  pass's second call, while another lane's step still runs
+  (`test-autopilot-instruct-lanes.mjs`; T4a). R10 and L1 are re-anchored on
+  the changed lines. A test of the failed-application path does not pin the
+  narrowed digest: that path asks for another pass, whose own start reads
+  the receipt, so the unit test is T4d's killer. The refine's peer
+  (refine-verify-20261102T130640Z-e000a8) found the narrowed digest blind to
+  a hand edit the readers refuse that kept every id and revision (a note no
+  longer matching its sha256): its corruption and its repair woke nothing.
+  Now a record the readers refuse (readInstructions: it does not parse, or
+  is no well-formed record of its subtask) is digested by its bytes, as one
+  that does not parse was (T4f).
+
+**II15. What the slice's eighth critique found** (2026-11-02), fixed and
+pinned by the mutations of group T5.
+
+- A run with lanes could end beside an instruction the owner had just
+  written. When nothing runs and nothing can start, the idle end consumes
+  every pending release and judges every parked lane again from a fresh
+  look before it halts, but it never read the instruction records again.
+  A write that landed after the iteration's second pass of applications had
+  read what was due, during the decision's look or the end's own looks,
+  reached the run only as a wake: the tick's poll took the digest as seen
+  and queued one, and an end that does not wait never reads it. The usual
+  case is the owner unparking the last parked lane: the run halted on that
+  lane's park, the instruction still `pending`, though the command had said
+  the live run applies it (the critique's peer, review-20261102T154101Z-d817ca,
+  reproduced it with the real command and driver). The record was kept, so
+  a relaunch applied it. Now the end asks the records themselves before it
+  halts (`instructionsWatch().sincePass()`): whether they changed since the
+  last pass read them at its start, whatever a poll took as seen. A change
+  forgets every attempt, as the tick's does, and the loop runs again, so the
+  instruction is applied before the run ends. Each change is told once, so
+  an end that cannot run a pass is asked again only after another write. A
+  write in the instant between that read and the halt's record is left to
+  the relaunch, which the halt lists it for. The `completed` end needs no
+  such read: it ends only on an archived macro, whose instructions are
+  dropped. Tests: the watch's answer to the end, with a write the pass read,
+  one a poll took as seen, and the answer given once
+  (`test-instructions-records.mjs`; T5b–T5d), and a run whose only lane parks
+  and whose owner writes during a fresh look of that lane's worktree after
+  the park, three ticks long: the instruction is applied and the lane steps
+  by it before the run ends (`test-autopilot-instruct-lanes.mjs`; T5a).
+
+**II16. What the slice's ninth critique found** (2026-11-02), fixed and
+pinned by the mutations of group T6.
+
+- An instruction could lose to the step it was written to prevent. Both
+  drivers apply a lane's instructions in a pass before they look, report
+  the landing and decide. A run with lanes then admits the step with a
+  check of the lane's hold and the owner's rebinding, but none of its
+  instructions. A write that landed after the pass, during the look, the
+  report or the admission, met a step decided without it. The costly case is
+  the usual one: a lane's critique ends with commit as its recorded step, the
+  owner writes `/engineer:refine` to it, and the commit runs, archives the
+  child and drops the instruction `child-archived`, its step never run (the
+  critique's peer, review-20261102T172202Z-98dbc6, reproduced it with the
+  real command and a write during the landing report). The serial driver had
+  the same window, from its turn's application to the spawn. Now each driver
+  asks, right before a step starts with nothing awaited after it, whether the
+  lane's record holds an entry pending, or cannot be read, on a record other
+  than the one its last application attempt met (`admissionRecheck` in
+  instruct-boundary.mjs). If it does, the step yields: a run with lanes
+  decides again (the admission's `refuse(null)`), and a serial run takes the
+  turn again at the same seq, its reservation settled. The pass then applies
+  the instruction, or defers the lane, before the decision. The record an
+  attempt met is read before the attempt: the scheduler's `instructTried`
+  key, and in the serial driver the key the turn records for each attempt.
+  The serial driver first read it after the attempt returned; the refine's
+  peer (refine-verify-20261102T180122Z-9b7e48) reproduced an owner write
+  that landed while the applier's process group was torn down, which that
+  read took as tried, and the commit ran over it. A lane whose own step comes
+  first (an interrupted commit) is therefore not held back by an instruction
+  the pass already tried. The admission leaves out a lane the pass leaves
+  out: its batch open, or its untaken forced step first. It answers each
+  record once, so a lane a pass did not try costs one more turn, never a
+  loop. A tick's poll at an owner write forgets every attempt, so after a
+  write to one lane another lane's next step may yield once too. The serial
+  driver asks the same question in its verification step, after its drift
+  check. No permanent test reaches that call, or the removal of a lane a
+  yielding admission created; the refine's peer probed both (no batch
+  started, the seq kept; the unused lane removed, its marker gone). II17
+  adds a test of the verification call. Tests: the admission's answer for no
+  record, a record no attempt met (once), the record the attempt met, a
+  write since, every entry withdrawn and a record that cannot be read
+  (`test-instructions-records.mjs`; T6e, T6f). A run with lanes and a serial
+  run each get a test in which A's critique ends with commit and the owner
+  writes `/engineer:refine` after the passes: in the second landing report
+  after the step's end (the first is the step's own settlement, before the
+  passes), and in the serial drift check's root resolution. The instruction
+  is applied, A steps by `/engineer:refine`, and no commit runs
+  (`test-autopilot-instruct-lanes.mjs`, `test-autopilot-instruct-serial.mjs`;
+  T6a, T6c). The lanes test of a lane whose own step comes first, and the
+  serial test of an interrupted commit, now also assert that no admission
+  yields there (T6b, T6d). A serial run whose owner writes
+  `/engineer:refine` after the turn's application of a note has written and
+  before it returns applies the refine, and no commit runs
+  (`test-autopilot-instruct-serial.mjs`; T6g).
+
+**II17. What the slice's tenth critique found** (2026-11-02), fixed and
+pinned by the mutations of group T7.
+
+- An instruction with a step did not replace a verification request whose
+  batch was being prepared. Both drivers recheck a lane's instructions at a
+  step's admission (II16) and then hand a verification step to
+  `startVerify`. Before that writes the batch's start, it awaits the
+  workflow's record, the lane's tree digest and the checks' selection, a
+  task process. Its only check after those awaits was for a hold, a drain
+  or the driver's end. An instruction the owner wrote meanwhile met a batch
+  that ran whole, which could take the full suite and mutation runs and
+  hold the heavy-work lock, and only then replaced `on_pass`. Item 5 says a
+  request not running is replaced by an instruction's step, and item 3 says
+  a batch has started only once its start is recorded. The critique's peer
+  (review-20261102T211754Z-d36d59) reproduced it with the real command in
+  both modes. Now `startVerify` asks the driver's
+  `instructionWrittenSince` hook right before the start's write, after the
+  stop check, with nothing awaited between them. The hook answers true when
+  the lane has an instruction with a step pending, or a record that cannot
+  be read (whether it holds one cannot be told, as `pendingInstructionSteps`
+  says), on a record the last application attempt did not meet. That is the
+  recovery path's `yieldsToInstruction`, which now counts an unreadable
+  record too, and it never answers beside the owner's rerun. It uses II16's
+  `admissionRecheck`, so it answers each record once. Then the step writes
+  nothing more and returns `none` with `instruction: true`, and the next
+  pass applies the instruction, whose step replaces the request. An
+  instruction a pass leaves pending costs one turn, never a loop. A note
+  alone replaces no request, so the batch runs and the note waits for its
+  end, as item 5 says. The admission's recheck still applies a note written
+  before the admission first. A step that yields this way is not counted
+  toward the "changed nothing twice" rule (`no-progress`): each such yield
+  takes an owner's write. The refine's peer
+  (refine-verify-20261102T215736Z-58ad2d) reproduced the first version
+  halting a serial run, and parking a lane, after two writes in a row, the
+  first withdrawn before the pass. It also reproduced that first version
+  starting the batch beside a record it could not read. Both are fixed
+  here. The peer also found a limit: a batch that is open and untrusted
+  still comes first. The first preparation yields, and the application
+  refuses with `step_first` (the open-batch precedence of item 3). The next
+  attempt, on the same record, then runs the restart before the instruction
+  applies. Tests: a serial run and a
+  run with lanes whose owner writes `/engineer:refine` during the checks'
+  selection. No check runs, no batch start is journalled, and the verify
+  step ends `none` with no batch. The instruction is applied with
+  `replaced_step: verify`, and A steps by `/engineer:refine`
+  (`test-autopilot-verify-driver.mjs`, `test-autopilot-verify-lanes-instruct.mjs`;
+  T7a, T7b, T7c). A serial run whose owner writes a note while the drift check
+  of a verification step resolves the roots yields that step, applies the
+  note, then runs the batch (`test-autopilot-verify-driver.mjs`; T7d, the
+  verification call II16 left untested). In each mode, a test has two batches
+  in a row yield to an instruction, and the lane goes on to its batch and
+  commit, with no `no-progress` (T7e, T7f). In each mode, a test damages the
+  record during the selection and repairs it before the pass: no batch
+  starts until the record is repaired (T7g, T7h). T1d and T1e now anchor on
+  the recovery hook alone (`yieldsToInstruction: stepPending`).
+- The verification batch after this fix
+  (autopilot-20261102T142858Z-309f46-s14-aa57f8) ended T7c with no verdict:
+  its run of the whole lanes file passed the harness's 900 s timeout. On
+  its own the mutation is caught: the item-5 suite fails it in under four
+  minutes, its two critique-10 tests failing as stated, and no test of the
+  suite hangs. The lanes file took about eleven minutes in that batch, so
+  every case that ran it sat near the timeout. The run with lanes' item-5
+  tests (the owner's instruction beside an answered request) are now a file
+  of their own, `test-autopilot-verify-lanes-instruct.mjs`, with the helpers
+  both files share in `_verify-lanes-helpers.mjs`; the tests moved
+  unchanged. The impl-instruct cases that target them (F6d, G4a–G4d, T1b,
+  T1e, T7c, T7f, T7h) run that file alone; Q2a, whose rerun test stayed,
+  and verify-exec-driver's lanes cases still run
+  `test-autopilot-verify-lanes.mjs`. The lanes tests that II8, II9 and II13
+  name in `test-autopilot-verify-lanes.mjs` are in the new file now.

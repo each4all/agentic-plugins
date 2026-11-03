@@ -8,8 +8,11 @@
 // The script's modes: pass, fail (prints a TAP failure and a spec failure),
 // hang, stubborn (ignores SIGTERM), exit127, touch (writes a file into the
 // tree, then passes), env (writes its environment's AGENTIC_* names), slow
-// (passes after a while). Each appends `<mode>` to $VERIFY_FIXTURE_LOG when
-// it starts, so a test reads which checks ran, and in what order.
+// (passes after $VERIFY_FIXTURE_SLOW_MS, or, when $VERIFY_FIXTURE_SLOW_UNTIL
+// names a file, once that file exists: a test that orders events around the
+// check's end releases it itself rather than racing a timer). Each appends
+// `<mode>` to $VERIFY_FIXTURE_LOG when it starts, so a test reads which checks
+// ran, and in what order.
 
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -51,7 +54,13 @@ switch (mode) {
   case 'exit127': process.exit(127);
   case 'touch': fs.writeFileSync('touched.txt', String(Date.now())); process.exit(0);
   case 'env': fs.writeFileSync(process.env.VERIFY_FIXTURE_ENV, JSON.stringify(Object.keys(process.env).filter((k) => k.startsWith('AGENTIC_')).sort())); process.exit(0);
-  case 'slow': setTimeout(() => { if (process.env.VERIFY_FIXTURE_LOG) fs.appendFileSync(process.env.VERIFY_FIXTURE_LOG, 'slow-end\\n'); process.exit(0); }, Number(process.env.VERIFY_FIXTURE_SLOW_MS ?? 600)); break;
+  case 'slow': {
+    const end = () => { if (process.env.VERIFY_FIXTURE_LOG) fs.appendFileSync(process.env.VERIFY_FIXTURE_LOG, 'slow-end\\n'); process.exit(0); };
+    const until = process.env.VERIFY_FIXTURE_SLOW_UNTIL;
+    if (until) { const poll = setInterval(() => { if (fs.existsSync(until)) { clearInterval(poll); end(); } }, 50); }
+    else setTimeout(end, Number(process.env.VERIFY_FIXTURE_SLOW_MS ?? 600));
+    break;
+  }
   default: process.exit(2);
 }
 `;

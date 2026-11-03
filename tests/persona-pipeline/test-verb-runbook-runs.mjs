@@ -418,8 +418,13 @@ for (const persona of PERSONAS) {
             try {
               // The whole plugin, as an install holds it: a release whose
               // scripts read the persona declaration needs persona.json beside them.
-              const tar = execFileSync('git', ['-C', REPO_ROOT, 'archive', tag, `plugins/${persona}`, '.claude-plugin/marketplace.json'], { maxBuffer: 256 * 1024 * 1024 });
-              execFileSync('tar', ['-x', '-C', old], { input: tar });
+              // Through a file, never tar's stdin: bsdtar exits at the
+              // end-of-archive blocks, before reading git archive's record
+              // padding, so a write still in flight fails with EPIPE.
+              const archive = join(old, '.release.tar');
+              execFileSync('git', ['-C', REPO_ROOT, 'archive', '--format=tar', '-o', archive, tag, `plugins/${persona}`, '.claude-plugin/marketplace.json']);
+              execFileSync('tar', ['-xf', archive, '-C', old]);
+              await rm(archive);
               const wf = createWorkflow(dir, 'critique');
               const before = await readFile(wf, 'utf8');
               const { find } = verbBlocks('critique');

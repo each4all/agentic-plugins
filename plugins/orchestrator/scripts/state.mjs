@@ -89,7 +89,11 @@ import {
   branchLane, childOperationIds, closeRefusals, dispatchHandedOver, endedMacroHolds, handDispatchRefusal, HoldRefusal, markProblem, orphanStale, publishDispatchMark, rebindRefusals,
   retireMacroHolds, retireSubtaskHolds, withdrawDispatchMark,
 } from './lib/hold-ops.mjs';
-import { engineerHoldProblem } from './lib/hold-activation.mjs';
+import { activateHolds, engineerHoldProblem } from './lib/hold-activation.mjs';
+import { holdGate } from './lib/hold-ops.mjs';
+import { branchWorkflows, openOperations } from './lib/holds.mjs';
+import { applyInstructions, boundaryState, plainAppend, reconcileReceipts, sweepInstructions } from './lib/instruct-apply.mjs';
+import { readInstructions } from './lib/instructions.mjs';
 import {
   APPROVAL_ID_KEY, REBIND_KEY, REBINDABLE_FIELDS, deliveryHeading, deliveryNote, deriveRebindView, digestOf, holdsDeliveryNote,
   acknowledgeInRecord, archivedExit, copiesRefusal, isEmptyRecord, newApprovalId, newDeliveryId, parseRebindRecord, rebindingVerdict, serializeRebindRecord,
@@ -3999,7 +4003,7 @@ export async function approvePlan({
 // command that releases it. `fn` gets the admission ({ stateRoot, macroId,
 // admissionId, keep }); it sets `keep` when a delivery writer it started may
 // outlive it (fencedAppend), and the entry then stays for the owner to release.
-async function withApprovalAdmission({ workflowPath, host, env, caller }, fn) {
+async function withApprovalAdmission({ workflowPath, host, env, caller, command = 'approve' }, fn) {
   const stateRoot = workflowStateRoot(workflowPath);
   if (stateRoot === null) {
     throw new Error(`${caller}: ${workflowPath} is under no state home, so the macro's run lock cannot be found`);
@@ -4008,7 +4012,7 @@ async function withApprovalAdmission({ workflowPath, host, env, caller }, fn) {
   let joined;
   try {
     joined = await joinAdmission({
-      command: 'approve', checkout: stateRoot, macroId, host, env, resolveCheckout: false,
+      command, checkout: stateRoot, macroId, host, env, resolveCheckout: false,
     });
   } catch (err) {
     if (!(err instanceof LockHeldError)) throw err;
@@ -4904,6 +4908,10 @@ export async function retireCompletedHolds({ macroPath, subtaskId, branch = null
         return s?.status === 'completed' && (branch === null || s.branch === branch);
       };
       out.subtask = await retireSubtaskHolds({ ...ctx, subtaskId, branch, exceptRun, stillCompleted });
+      // ADR-0068 Decision 7, item 6 — done drops what no boundary applied.
+      if (out.subtask.instructionsDropped?.length) {
+        write(`dropped ${out.subtask.instructionsDropped.length} instruction(s) of subtask ${subtaskId} none applied (${out.subtask.instructionsDropped.join(', ')}): the subtask is completed\n`);
+      }
       if (out.subtask.state === 'retired') {
         write(`retired the hold records of subtask ${subtaskId}${out.subtask.holdId ? ` (hold ${out.subtask.holdId})` : ''}` +
           `${out.subtask.left.length ? `; left what cannot be read: ${out.subtask.left.join(', ')}` : ''}\n`);
@@ -4914,6 +4922,10 @@ export async function retireCompletedHolds({ macroPath, subtaskId, branch = null
     }
     if (macroEnded) {
       out.macro = await retireMacroHolds({ mainRoot: ctx.mainRoot, macroId: ctx.macroId, subtasks: (await planNowOf(macroPath)) ?? [], stateRoots: ctx.stateRoots, exceptRun });
+      // ADR-0068 Decision 7, item 6 — the instructions the macro's end dropped.
+      for (const d of out.macro.instructionsDropped ?? []) {
+        write(`dropped instruction ${d.id ?? '(unreadable record)'}${d.revision ? ` r${d.revision}` : ''} of subtask ${d.subtask_id}, never applied: the macro ended\n`);
+      }
       if (out.macro.state === 'retired') write(`retired the holds directory of ${ctx.macroId}: the macro ended\n`);
       else if (out.macro.state !== 'none') {
         write(`⚠ the holds directory of ${ctx.macroId} is not retired yet: ${out.macro.why}. ` +
@@ -6863,6 +6875,90 @@ async function fencedAppend(args, admission) {
   return { ok: true };
 }
 
+/**
+ * ADR-0068 Decision 7, item 3 — apply a lane's pending instructions to its
+ * child at a boundary (scripts/lib/instruct-apply.mjs): the owner command with
+ * no run live, or a run's worker group (`state.mjs instruct-apply
+ * --await-start`, adapters/claude/autopilot/instruct-boundary.mjs). Under an
+ * admission of `instruct` (a run's worker passes on the run's own lock), so
+ * no run starts while the writer is at the child; the append is fenced to the
+ * admission as an approval's note is (fencedAppend). It drops first what
+ * applies to nothing (the lifecycle sweep), turns the macro's holds protocol
+ * on, so the write is a visible operation in every mode (item 9; a persona
+ * that cannot make it visible leaves the instructions pending), and applies
+ * only at a boundary. `laneBusy` (async, the command's) adds a run's
+ * leftovers. Resolves to `{ state, detail?, dropped, ... }`: `none`,
+ * `applied`, `not-at-boundary`, `inactive`, `waiting`, `failed`,
+ * `unreadable`, `no-child`.
+ */
+export async function applyLaneInstructions({
+  workflowPath, host, engineerRoot, subtaskId, env = process.env, home, by = 'instruct', laneBusyOf = null, admitted = false, admission = null, onlyEntries = null,
+}) {
+  validateHost(host);
+  if (!admitted) {
+    return withApprovalAdmission({ workflowPath, host, env, caller: 'instruct-apply', command: 'instruct' }, (joined) => applyLaneInstructions({
+      workflowPath, host, engineerRoot, subtaskId, env, home, by, laneBusyOf, admitted: true, admission: joined, onlyEntries,
+    }));
+  }
+  const stateRoot = workflowStateRoot(workflowPath);
+  const mainRoot = mainWorktreeRoot(stateRoot);
+  const macroId = basename(workflowPath, '.md');
+  // Every root a lane's child may be in: worktrees git cannot list now are no
+  // proof that no child is there (a child missed would be dropped
+  // child-archived, or a crash's receipt rolled back over the heading its copy
+  // holds), so the instructions wait (a DEFER_STATES result).
+  let stateRoots;
+  try {
+    stateRoots = [...new Set([mainRoot, ...repositoryRoots(mainRoot)])];
+  } catch (err) {
+    return { state: 'waiting', detail: `the repository's worktrees cannot be listed (${err.message}), so subtask ${subtaskId}'s child cannot be looked for in them`, dropped: [] };
+  }
+  const { frontmatter } = await readWorkflow(workflowPath);
+  const subtask = (frontmatter.plan?.subtasks ?? []).find((x) => x?.id === subtaskId);
+  // A receipt a crash left reserved is reconciled before anything else reads
+  // the record (P1): its entries are `applying`, which no other exit below
+  // would ever end.
+  const reconciled = await reconcileReceipts({ mainRoot, macroId, subtaskId, stateRoots });
+  if (reconciled.waiting.length) return { state: 'waiting', detail: `application ${reconciled.waiting.join(', ')} is still being written by a live process, or its child cannot be read now`, dropped: [] };
+  const dropped = await sweepInstructions({ mainRoot, macroId, subtaskId, subtask, stateRoots, by });
+  const read = readInstructions(mainRoot, macroId, subtaskId);
+  if (read.state === 'unreadable') return { state: 'unreadable', detail: `the instructions record of subtask ${subtaskId} cannot be read (${read.code})`, dropped };
+  // An entry left applying that no reserved receipt names (a record edited by
+  // hand, a receipt lost) is neither applied nor pending: whether its note
+  // reached the child cannot be told here, so the lane waits, and the run
+  // parks it naming the record, never reading it as nothing to do.
+  const orphan = read.state === 'ok' ? read.record.entries.find((e) => e.state === 'applying') : null;
+  if (orphan) {
+    return { state: 'waiting', detail: `instruction ${orphan.id} of subtask ${subtaskId} is applying, and no reserved receipt names it (${orphan.receipt ?? 'none'}): repair the record ${read.path}`, dropped };
+  }
+  if (read.state === 'absent' || !read.record.entries.some((e) => e.state === 'pending')) return { state: 'none', dropped, ...(reconciled.finalized.length ? { recovered: reconciled.finalized } : {}) };
+  if (!subtask || typeof subtask.branch !== 'string') return { state: 'none', dropped };
+  const wf = branchWorkflows({ stateRoots, branch: subtask.branch, macroId, subtaskId });
+  // A workflow file or home that cannot be read may be the lane's child: no
+  // child found then is no proof there is none.
+  if (wf.unreadable.length) {
+    return { state: 'waiting', detail: `the workflow homes subtask ${subtaskId}'s child may be in cannot all be read (${wf.unreadable.map((u) => u.file).join(', ')})`, dropped };
+  }
+  if (wf.linked.length !== 1) return { state: 'no-child', detail: wf.linked.length ? 'more than one active child' : 'no active child yet: a note waits for the dispatch', dropped };
+  const childPath = wf.linked[0];
+  const act = activateHolds({ mainRoot, macroId, pinnedEngineerRoot: engineerRoot, env, ...(home ? { home } : {}), writtenBy: `state.mjs instruct-apply (${by})` });
+  if (!act.ok) {
+    return { state: 'inactive', detail: `the lane's operations cannot be made visible, so nothing is applied (ADR-0068 Decision 7, item 9): ${act.problems.join('; ')}`, dropped };
+  }
+  // `step_first`: the lane's recorded step is what the instruction waits
+  // for (an interrupted commit, a pending settlement), so a run decides the
+  // lane as before; without it the run keeps the lane's step waiting.
+  const refusal = boundaryState({ mainRoot, macroId, subtaskId, childPath, holdGate, openOperations });
+  if (refusal) return { state: 'not-at-boundary', detail: refusal.why, step_first: refusal.stepFirst, dropped };
+  if (laneBusyOf) {
+    const b = await laneBusyOf({ mainRoot, macroId, subtaskId });
+    if (b?.busy) return { state: 'not-at-boundary', detail: b.why, dropped };
+  }
+  const runAppend = admission?.admissionId ? (args) => fencedAppend(args, admission) : (args) => plainAppend(args, { env });
+  const r = await applyInstructions({ mainRoot, macroId, subtaskId, childPath, engineerRoot, host, by, stateRoots, runAppend, onlyEntries });
+  return { ...r, dropped, childPath };
+}
+
 // ADR-0068 Decision 8, item 4 — `rebind-deliver --await-start`: a run starts
 // the command idle and sends the line `start` only once its process is on the
 // run's locks (adapters/claude/autopilot/rebind-boundary.mjs), as a worker
@@ -8076,6 +8172,33 @@ async function cliRun(subcommand, flags) {
         });
         cliReportDeliveries(results, flags.host);
         process.stdout.write(`${JSON.stringify({ deliveries: results })}\n`);
+        return 0;
+      }
+
+      // ADR-0068 Decision 7, item 3 — apply a lane's instructions at its
+      // boundary (applyLaneInstructions). Exit 0 with the result as JSON (no
+      // note text); exit 1 on a refusal.
+      case 'instruct-apply': {
+        cliRequire(flags, ['workflow-path', 'host', 'subtask-id']);
+        // Item 5 — beside a run's untaken forced step, only the entries
+        // pending at its launch (`<id>:<revision>` keys, comma-separated):
+        // the reservation takes no other, so one written since waits.
+        let onlyEntries = null;
+        if ('only-entries' in flags) {
+          onlyEntries = String(flags['only-entries'] ?? '').split(',').filter(Boolean);
+          const bad = onlyEntries.find((k) => !/^[0-9a-f]{16}:[1-9][0-9]*$/.test(k));
+          if (bad !== undefined) throw new Error(`--only-entries takes <id>:<revision> keys, not ${JSON.stringify(bad)}`);
+        }
+        if ('await-start' in flags) await awaitStartLine();
+        const result = await applyLaneInstructions({
+          workflowPath: flags['workflow-path'],
+          host: flags.host,
+          engineerRoot: await cliEngineerRoot(flags),
+          subtaskId: flags['subtask-id'],
+          by: flags.by || 'run',
+          onlyEntries,
+        });
+        process.stdout.write(`${JSON.stringify({ instructions: { ...result, dropped: (result.dropped ?? []).map((e) => ({ id: e.id, cause: e.ack?.cause ?? null })) } })}\n`);
         return 0;
       }
 

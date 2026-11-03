@@ -18,8 +18,8 @@
 // runbooks.
 
 import { execFileSync } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, rmSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const TR = 'tests/orchestrator/test-plan-rebind.mjs';
@@ -46,10 +46,17 @@ export const TESTS = [TR];
 const SOURCE = fileURLToPath(new URL('../..', import.meta.url));
 const RELEASED_TAG = 'plugin-orchestrator-v0.27.0';
 function supplyReleased(copy) {
-  const tar = execFileSync('git', ['-C', SOURCE, 'archive', RELEASED_TAG, 'plugins/orchestrator/scripts'], { maxBuffer: 64 * 1024 * 1024 });
-  const dest = join(copy, '.released', RELEASED_TAG);
+  // Absolute: git -C SOURCE resolves a relative -o against SOURCE, and the
+  // harness accepts a relative --work-dir.
+  const dest = resolve(copy, '.released', RELEASED_TAG);
   mkdirSync(dest, { recursive: true });
-  execFileSync('tar', ['-x', '-C', dest], { input: tar });
+  // Through a file, never tar's stdin: bsdtar exits at the end-of-archive
+  // blocks, before reading git archive's record padding, so a write still in
+  // flight fails with EPIPE.
+  const archive = join(dest, '.release.tar');
+  execFileSync('git', ['-C', SOURCE, 'archive', '--format=tar', '-o', archive, RELEASED_TAG, 'plugins/orchestrator/scripts']);
+  execFileSync('tar', ['-xf', archive, '-C', dest]);
+  rmSync(archive);
 }
 
 export const MUTATIONS = [
@@ -276,8 +283,11 @@ export const MUTATIONS = [
   // ---- A: the admission and the blockers -------------------------------------
   {
     id: 'A1', file: STATE, tests: [TR],
-    from: "    joined = await joinAdmission({\n      command: 'approve',",
-    to: "    joined = { admissionId: '' }; if (false) await joinAdmission({\n      command: 'approve',",
+    // impl-instruct (2026-11-01) passes the admission's command in
+    // (`command = 'approve'`, instruct-apply's `instruct`), so the join reads
+    // `command,`; an approval still takes it by default.
+    from: "    joined = await joinAdmission({\n      command, checkout: stateRoot,",
+    to: "    joined = { admissionId: '' }; if (false) await joinAdmission({\n      command, checkout: stateRoot,",
     killed_by: [/refused beside a live run's lock/, /refused beside an admitted interactive \/orchestrator:next/, /a killed approval leaves its entry/],
     why: 'an approval joins no lock and passes between two looks of a live run',
   },
@@ -541,8 +551,10 @@ export const MUTATIONS = [
   },
   {
     id: 'B12', file: STATE, tests: [TR],
-    from: "        if ('await-start' in flags) await awaitStartLine();\n",
-    to: '',
+    // impl-instruct's `instruct-apply` waits for its start line too, so the
+    // anchor names rebind-deliver's own case.
+    from: "      case 'rebind-deliver': {\n        cliRequire(flags, ['workflow-path', 'host']);\n        if ('await-start' in flags) await awaitStartLine();\n",
+    to: "      case 'rebind-deliver': {\n        cliRequire(flags, ['workflow-path', 'host']);\n",
     killed_by: [/rebind-deliver --await-start writes nothing when its stdin closes before the start line/],
     why: 'rebind-deliver begins at once, whatever the run that started it has done',
   },
@@ -1001,8 +1013,10 @@ export const MUTATIONS = [
   },
   {
     id: 'B19', file: DRIVER, tests: [TA],
-    from: '          hold: (worker) => { setWorker(worker); return [{ release: () => setWorker(null) }]; },',
-    to: '          hold: null,',
+    // impl-instruct's boundary passes the same hold, indented deeper, so the
+    // anchor takes the comment above the rebinding's.
+    from: "          // that outlived SIGKILL keeps the run's entries, which name it.\n          hold: (worker) => { setWorker(worker); return [{ release: () => setWorker(null) }]; },",
+    to: "          // that outlived SIGKILL keeps the run's entries, which name it.\n          hold: null,",
     killed_by: [/an unfinished return to the dispatched words is told before the next step/],
     why: 'a serial run\'s boundary delivery runs off the run\'s locks',
   },

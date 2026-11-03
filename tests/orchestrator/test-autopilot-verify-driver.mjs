@@ -24,12 +24,16 @@
 //   - a batch start the persona refuses as a held lane's (a hold published as
 //     the serial run started) halts the run owner-choice, with no loop;
 //   - records: no failing test name reaches the main session or the event
-//     file, and the batch adds no event kind.
+//     file, and the batch adds no event kind;
+//   - the owner's instruction (ADR-0068 Decision 7, item 5): one applied after
+//     the batch passed, the tree changed since, replaces on_pass, and the P7
+//     guard does not resume the requesting verb over it; the owner's rerun
+//     (`--next verify`) beside one with a step is refused.
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, match, ok, strictEqual } from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -235,6 +239,36 @@ describe('verify-driver: the owner\'s rerun', () => {
       t.cleanup();
     }
   });
+
+  it('`--next verify` beside a pending instruction that carries a next step is refused, naming it: no check and no worker starts (ADR-0068 Decision 7, item 5)', BOUNDED, async () => {
+    const t = await setup({ scenario: { A: { next: [verify([{ kind: 'pass' }, { kind: 'fail' }]), verify([{ kind: 'pass' }, { kind: 'fail' }]), COMMIT], file: true } } });
+    try {
+      strictEqual(await t.run(), 2, t.lines.join('\n'));
+      strictEqual(t.latest().halt.reason, 'no-progress', JSON.stringify(t.latest().halt));
+      deepStrictEqual(t.ran(), ['pass', 'fail']);
+      // The owner's instruction to the lane, with a step, while the request waits.
+      const I = await import(resolve(REPO_ROOT, 'plugins/orchestrator/scripts/lib/instructions.mjs'));
+      const dir = join(t.work, '.agentic-plugins/state/engineer/workflows');
+      const text = readdirSync(dir).filter((n) => n.endsWith('.md')).map((n) => readFileSync(join(dir, n), 'utf8')).find((x) => x.includes('originating_subtask: "A"'));
+      ok(text, 'the lane\'s child');
+      const e = await I.writeInstruction({
+        mainRoot: t.work, macroId: t.fx.macroId, subtaskId: 'A', branch: 'feat/a', child: /workflow_id: "([^"]+)"/.exec(text)[1], step: '/engineer:refine',
+        note: I.checkNoteBytes(Buffer.from('refine instead of the rerun')), witness: I.gateWitnessOf(text), writtenBy: 'owner',
+      });
+      const workersBefore = t.workers().length;
+      const { parseForcedStep } = await import(resolve(AP, 'policy.mjs'));
+      await t.run({ forced: parseForcedStep('verify'), forcedText: 'verify' });
+      const r2 = t.latest();
+      strictEqual(r2.halt.reason, 'owner-choice', t.lines.join('\n'));
+      ok(new RegExp(`subtask A has instruction ${e.id} r1 pending with the next step /engineer:refine`).test(r2.halt.detail), r2.halt.detail);
+      deepStrictEqual(r2.steps, [], 'no batch and no step');
+      deepStrictEqual(t.ran(), ['pass', 'fail'], 'no check ran');
+      strictEqual(t.workers().length, workersBefore, 'no worker started');
+      strictEqual(I.readInstructions(t.work, t.fx.macroId, 'A').record.entries[0].state, 'pending');
+    } finally {
+      t.cleanup();
+    }
+  });
 });
 
 describe('verify-driver: a check group that outlives SIGKILL', () => {
@@ -304,6 +338,260 @@ describe('verify-driver: the offer', () => {
       deepStrictEqual(r.steps.map((s) => [s.kind, s.outcome]), [['dispatch', 'ok'], ['verify', 'ok'], ['commit', 'ok']]);
       strictEqual(readFileSync(join(t.work, '.agentic-plugins/verify-checks.json'), 'utf8').trim(), 'A', 'the worker replaced the declaration in its tree');
       deepStrictEqual(t.ran(), ['pass', 'suite']);
+    } finally {
+      t.cleanup();
+    }
+  });
+});
+
+describe('verify-driver: the owner\'s instruction beside an answered request (ADR-0068 Decision 7, item 5)', () => {
+  it('an instruction applied after the batch passed, the tree changed since, replaces on_pass, and the P7 guard does not resume the requesting verb over it', BOUNDED, async () => {
+    const { pathToFileURL } = await import('node:url');
+    const I = await import(pathToFileURL(join(REPO_ROOT, 'plugins/orchestrator/scripts/lib/instructions.mjs')).href);
+    const t = await setup({ scenario: { A: { next: [verify([{ kind: 'pass' }]), COMMIT, COMMIT], file: true } } });
+    try {
+      const VRUN = await import(resolve(AP, 'verify-run.mjs'));
+      let written = null;
+      const startVerify = (a) => {
+        const h = VRUN.startVerify(a);
+        return {
+          ...h,
+          // The owner writes an instruction while the batch runs: it is
+          // applied once the batch has ended, at the lane's next boundary.
+          done: h.done.then(async (r) => {
+            // The hold-aware engineer on both hosts (item 9), once the
+            // dispatch, which reads the installed persona, has run.
+            for (const host of ['.claude', '.codex']) {
+              const dir = join(t.env.HOME, host, 'plugins/cache/agentic-plugins/engineer/0.33.0', 'scripts');
+              mkdirSync(dir, { recursive: true });
+              writeFileSync(join(dir, 'state.mjs'), "if (process.argv[2] === 'hold-capability') console.log(JSON.stringify({ capability: 'hold-persona-1', protocol: 1 })); else process.exit(2);\n");
+            }
+            // The owner also changes the tree after the pass, so the P7 guard
+            // would resume the requesting verb over the on_pass.
+            writeFileSync(join(t.work, 'owner-edit.txt'), 'an edit of the owner\n');
+            const wf = a.job.workflowPath;
+            const text = readFileSync(wf, 'utf8');
+            written = await I.writeInstruction({
+              mainRoot: t.work, macroId: t.fx.macroId, subtaskId: 'A', branch: 'feat/a', child: /workflow_id: "([^"]+)"/.exec(text)[1], step: '/engineer:refine',
+              note: I.checkNoteBytes(Buffer.from('refine before the commit')), witness: I.gateWitnessOf(text), writtenBy: 'owner',
+            });
+            return r;
+          }),
+        };
+      };
+      await t.run({ maxSteps: 2 }, { startVerify });
+      const r = t.latest();
+      ok(written, t.lines.join('\n'));
+      deepStrictEqual(r.steps.map((s) => [s.kind, s.command?.replace(/ .*/, '') ?? null]), [['dispatch', '/orchestrator:next'], ['verify', 'verify'], ['verb', '/engineer:refine']], `${JSON.stringify(r.steps.map((s) => [s.kind, s.command]))}\n${t.lines.join('\n')}`);
+      strictEqual(r.steps[1].verify.batch.end, 'passed');
+      const e = I.readInstructions(t.work, t.fx.macroId, 'A').record.entries[0];
+      strictEqual(e.state, 'applied');
+      strictEqual(r.steps[2].instruction_application, e.ack.application_id, 'the step carries the application');
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('a relaunch ends the batch a dead driver left open before it applies an instruction with a step, which then replaces what is left of it (F1)', BOUNDED, async () => {
+    const { pathToFileURL } = await import('node:url');
+    const I = await import(pathToFileURL(join(REPO_ROOT, 'plugins/orchestrator/scripts/lib/instructions.mjs')).href);
+    const { S, VD, VJ, digestOf } = await import('./_verify-fixtures.mjs');
+    const t = await setup({ scenario: { A: { next: [verify([{ kind: 'pass' }, { kind: 'pass2' }]), COMMIT, COMMIT], file: true } } });
+    try {
+      // Run 1: the dispatch records the request, and the run ends there.
+      await t.run({ maxSteps: 1 });
+      const dir = join(t.work, '.agentic-plugins/state/engineer/workflows');
+      const wf = readdirSync(dir).filter((n) => n.endsWith('.md')).map((n) => join(dir, n)).find((f) => readFileSync(f, 'utf8').includes('originating_subtask: "A"'));
+      ok(wf, `the lane's child\n${t.lines.join('\n')}`);
+      const fm = (await S.readWorkflow(wf)).frontmatter;
+      strictEqual(fm.next_step_kind, 'verify', t.lines.join('\n'));
+      // A batch of the request a driver started and died in: the journal and
+      // the record hold its start, and nothing ended it.
+      const sha = t.fx.git('rev-parse', 'HEAD');
+      const decl = VD.readDeclarationAt(t.work, sha).declaration;
+      const checks = fm.verify_request.checks.map((c) => ({ kind: c.kind, origin: 'worker', argv: VD.resolveCheck(decl, c) }));
+      const start = VJ.startPayload({ batchId: 'dead-1', runId: L.listRuns(t.work).at(-1), treeStart: await digestOf(t.work), declarationCommit: sha, declarationDigest: decl.digest, checks, checksDigest: VD.checksDigest(checks.map((c) => c.argv)), startedAt: '2026-10-20T01:00:00Z' });
+      VJ.appendJournal(VJ.journalPath(t.work, fm.workflow_id), { op: 'start', request_id: fm.verify_request.id, batch_id: 'dead-1', payload: start, meta: { verb: fm.verb, base: sha, checks_digest: start.checks_digest } });
+      await S.recordBatchStart({ workflowPath: wf, host: 'claude', requestId: fm.verify_request.id, input: start });
+      // The hold-aware engineer on both hosts (item 9), and the owner's
+      // instruction with a step, written while the batch is open.
+      for (const host of ['.claude', '.codex']) {
+        const d = join(t.env.HOME, host, 'plugins/cache/agentic-plugins/engineer/0.33.0', 'scripts');
+        mkdirSync(d, { recursive: true });
+        writeFileSync(join(d, 'state.mjs'), "if (process.argv[2] === 'hold-capability') console.log(JSON.stringify({ capability: 'hold-persona-1', protocol: 1 })); else process.exit(2);\n");
+      }
+      const text = readFileSync(wf, 'utf8');
+      const e = await I.writeInstruction({
+        mainRoot: t.work, macroId: t.fx.macroId, subtaskId: 'A', branch: 'feat/a', child: fm.workflow_id, step: '/engineer:refine',
+        note: I.checkNoteBytes(Buffer.from('refine after the batch')), witness: I.gateWitnessOf(text), writtenBy: 'owner',
+      });
+      await t.run({ maxSteps: 1 });
+      const r = t.latest();
+      deepStrictEqual(r.steps.map((s) => [s.kind, s.command?.replace(/ .*/, '') ?? null]), [['verify', 'verify'], ['verb', '/engineer:refine']], `${JSON.stringify(r.steps.map((s) => [s.kind, s.command]))}\n${t.lines.join('\n')}`);
+      // The verify step ends the batch and gives the lane back: what is left
+      // of it is a request not running, which the instruction's step replaces
+      // (item 5), so no check runs.
+      deepStrictEqual([r.steps[0].verify.outcome, r.steps[0].verify.batch?.batch_id, r.steps[0].verify.batch?.end], ['none', 'dead-1', 'cut-short'], JSON.stringify(r.steps[0].verify));
+      deepStrictEqual(t.ran(), [], 'nothing of the batch ran');
+      // The refine's own finish-verb clears the request from the record; the
+      // journal keeps the batch's end.
+      const ends = VJ.readJournal(VJ.journalPath(t.work, fm.workflow_id)).entries.filter((x) => x.op === 'end').map((x) => [x.batch_id, x.payload?.end, x.payload?.cause ?? null]);
+      deepStrictEqual(ends, [['dead-1', 'cut-short', 'driver-end']], 'the open batch was ended, never left open');
+      const applied = I.readInstructions(t.work, t.fx.macroId, 'A').record.entries[0];
+      strictEqual(applied.id, e.id);
+      strictEqual(applied.state, 'applied');
+      strictEqual(applied.ack.replaced_step, 'verify', 'its step replaced the request');
+      strictEqual(r.steps[1].instruction_application, applied.ack.application_id);
+      ok(t.lines.some((l) => /verification batch dead-1 is open on subtask A's child/.test(l)), t.lines.join('\n'));
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('an instruction with a step written while a batch is prepared, after the admission, starts no batch: its step replaces the request (critique 10 F1)', BOUNDED, async () => {
+    const { pathToFileURL } = await import('node:url');
+    const I = await import(pathToFileURL(join(REPO_ROOT, 'plugins/orchestrator/scripts/lib/instructions.mjs')).href);
+    const VO = await import(resolve(AP, 'verify-ops.mjs'));
+    const VJ = await import(resolve(AP, 'verify-journal.mjs'));
+    const t = await setup({ scenario: { A: { next: [verify([{ kind: 'pass' }]), COMMIT, COMMIT], file: true } } });
+    try {
+      let written = null;
+      const verifyOps = {
+        treeDigest: VO.DEFAULT_OPS.treeDigest,
+        // The owner writes the instruction during the checks' selection, an
+        // await of the batch's preparation, after the step's admission.
+        select: async (a) => {
+          if (!written) {
+            for (const host of ['.claude', '.codex']) {
+              const dir = join(t.env.HOME, host, 'plugins/cache/agentic-plugins/engineer/0.33.0', 'scripts');
+              mkdirSync(dir, { recursive: true });
+              writeFileSync(join(dir, 'state.mjs'), "if (process.argv[2] === 'hold-capability') console.log(JSON.stringify({ capability: 'hold-persona-1', protocol: 1 })); else process.exit(2);\n");
+            }
+            const dir = join(t.work, '.agentic-plugins/state/engineer/workflows');
+            const wf = readdirSync(dir).filter((n) => n.endsWith('.md')).map((n) => join(dir, n)).find((f) => readFileSync(f, 'utf8').includes('originating_subtask: "A"'));
+            const text = readFileSync(wf, 'utf8');
+            written = await I.writeInstruction({
+              mainRoot: t.work, macroId: t.fx.macroId, subtaskId: 'A', branch: 'feat/a', child: /workflow_id: "([^"]+)"/.exec(text)[1], step: '/engineer:refine',
+              note: I.checkNoteBytes(Buffer.from('refine instead of the checks')), witness: I.gateWitnessOf(text), writtenBy: 'owner',
+            });
+          }
+          return VO.DEFAULT_OPS.select(a);
+        },
+      };
+      await t.run({ maxSteps: 2 }, { verifyOps });
+      const r = t.latest();
+      ok(written, t.lines.join('\n'));
+      deepStrictEqual(r.steps.map((s) => [s.kind, s.command?.replace(/ .*/, '') ?? null]), [['dispatch', '/orchestrator:next'], ['verify', 'verify'], ['verb', '/engineer:refine']], `${JSON.stringify(r.steps.map((s) => [s.kind, s.command]))}\n${t.lines.join('\n')}`);
+      deepStrictEqual([r.steps[1].verify.outcome, r.steps[1].verify.batch], ['none', null], JSON.stringify(r.steps[1].verify));
+      deepStrictEqual(t.ran(), [], 'no check ran');
+      const e = I.readInstructions(t.work, t.fx.macroId, 'A').record.entries[0];
+      strictEqual(e.id, written.id);
+      strictEqual(e.state, 'applied');
+      strictEqual(e.ack.replaced_step, 'verify', 'its step replaced the request');
+      strictEqual(r.steps[2].instruction_application, e.ack.application_id);
+      // Nothing of a batch was written: not even the journal's intent.
+      const starts = VJ.readJournal(VJ.journalPath(t.work, e.child)).entries.filter((x) => x.op === 'start' || x.op === 'restart');
+      deepStrictEqual(starts, [], 'no batch start was recorded');
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('two batches in a row that yield to an instruction written while each was prepared are no steps that changed nothing: the run goes on (critique 10 F1\'s refine)', BOUNDED, async () => {
+    const t = await setup({ scenario: { A: { next: [verify([{ kind: 'pass' }]), COMMIT], file: true } } });
+    try {
+      const VRUN = await import(resolve(AP, 'verify-run.mjs'));
+      // Two owner writes, each withdrawn before the pass could apply it, as
+      // startVerify answers them; the third batch runs.
+      let yields = 0;
+      const startVerify = (a) => {
+        if (yields < 2) {
+          yields += 1;
+          return { abort: () => {}, done: Promise.resolve({ outcome: 'none', instruction: true, detail: 'an instruction with a next step was written while the batch was prepared', wrote: false }) };
+        }
+        return VRUN.startVerify(a);
+      };
+      await t.run({ maxSteps: 2 }, { startVerify });
+      const r = t.latest();
+      deepStrictEqual(r.steps.map((s) => [s.kind, s.verify?.outcome ?? null]), [['dispatch', null], ['verify', 'none'], ['verify', 'none'], ['verify', 'ran'], ['commit', null]], `${JSON.stringify(r.steps.map((s) => [s.kind, s.outcome]))}\n${t.lines.join('\n')}`);
+      strictEqual(r.halt.reason, 'awaiting-landing', t.lines.join('\n'));
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('an instruction record that cannot be read while a batch is prepared starts no batch, as one with a pending step (critique 10 F1\'s refine)', BOUNDED, async () => {
+    const { pathToFileURL } = await import('node:url');
+    const I = await import(pathToFileURL(join(REPO_ROOT, 'plugins/orchestrator/scripts/lib/instructions.mjs')).href);
+    const IB = await import(resolve(AP, 'instruct-boundary.mjs'));
+    const VO = await import(resolve(AP, 'verify-ops.mjs'));
+    const t = await setup({ scenario: { A: { next: [verify([{ kind: 'pass' }]), COMMIT], file: true } } });
+    try {
+      const file = I.instructionsPath(t.work, t.fx.macroId, 'A');
+      let damaged = false;
+      let repaired = false;
+      const verifyOps = {
+        treeDigest: VO.DEFAULT_OPS.treeDigest,
+        // The record is damaged during the checks' selection.
+        select: async (a) => {
+          if (!damaged) { mkdirSync(join(file, '..'), { recursive: true }); writeFileSync(file, '{'); damaged = true; }
+          return VO.DEFAULT_OPS.select(a);
+        },
+      };
+      // ...and repaired (removed) before the next pass applies it.
+      const applyInstructions = async (a) => {
+        if (damaged && !repaired) { rmSync(file, { force: true }); repaired = true; }
+        return IB.applyAtBoundary(a);
+      };
+      await t.run({ maxSteps: 2 }, { verifyOps, applyInstructions });
+      const r = t.latest();
+      ok(damaged && repaired, t.lines.join('\n'));
+      deepStrictEqual(r.steps.map((s) => [s.kind, s.verify?.outcome ?? null]), [['dispatch', null], ['verify', 'none'], ['verify', 'ran'], ['commit', null]], `${JSON.stringify(r.steps.map((s) => [s.kind, s.outcome]))}\n${t.lines.join('\n')}`);
+      deepStrictEqual(t.ran().filter((x) => x === 'pass'), ['pass'], 'the batch ran once, after the record was repaired');
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('a note written while the run resolves its roots for a verification step, after the turn\'s application, is applied before the batch, which then runs (II16, the serial verification admission)', BOUNDED, async () => {
+    const { pathToFileURL } = await import('node:url');
+    const I = await import(pathToFileURL(join(REPO_ROOT, 'plugins/orchestrator/scripts/lib/instructions.mjs')).href);
+    const R = await import(resolve(AP, 'roots.mjs'));
+    const t = await setup({ scenario: { A: { next: [verify([{ kind: 'pass' }]), COMMIT], file: true } } });
+    try {
+      // A's dispatch records the request. The turn after it applies
+      // instructions (none) and decides the verification step; the owner
+      // writes a note while its drift check resolves the roots. A note
+      // replaces no request, so only the step's admission applies it first.
+      let written = null;
+      const resolveRoots = async (o) => {
+        const dir = join(t.work, '.agentic-plugins/state/engineer/workflows');
+        let wf = null;
+        try { wf = readdirSync(dir).filter((n) => n.endsWith('.md')).map((n) => join(dir, n)).find((f) => readFileSync(f, 'utf8').includes('originating_subtask: "A"')); } catch { wf = null; }
+        const text = wf ? readFileSync(wf, 'utf8') : '';
+        if (!written && /next_step_kind: "?verify/.test(text)) {
+          for (const host of ['.claude', '.codex']) {
+            const d = join(t.env.HOME, host, 'plugins/cache/agentic-plugins/engineer/0.33.0', 'scripts');
+            mkdirSync(d, { recursive: true });
+            writeFileSync(join(d, 'state.mjs'), "if (process.argv[2] === 'hold-capability') console.log(JSON.stringify({ capability: 'hold-persona-1', protocol: 1 })); else process.exit(2);\n");
+          }
+          written = await I.writeInstruction({
+            mainRoot: t.work, macroId: t.fx.macroId, subtaskId: 'A', branch: 'feat/a', child: /workflow_id: "([^"]+)"/.exec(text)[1], step: null,
+            note: I.checkNoteBytes(Buffer.from('a note for the verified change')), witness: I.gateWitnessOf(text), writtenBy: 'owner',
+          });
+        }
+        return R.resolveRoots(o);
+      };
+      await t.run({ maxSteps: 2 }, { resolveRoots });
+      const r = t.latest();
+      ok(written, `the note was written during a drift check after the dispatch\n${t.lines.join('\n')}`);
+      deepStrictEqual(r.steps.map((s) => [s.kind, s.verify?.batch?.end ?? null]), [['dispatch', null], ['verify', 'passed'], ['commit', null]], `${JSON.stringify(r.steps.map((s) => [s.kind, s.command]))}\n${t.lines.join('\n')}`);
+      const e = I.readInstructions(t.work, t.fx.macroId, 'A').record.entries[0];
+      strictEqual(e.state, 'applied', JSON.stringify(e));
+      const yieldAt = t.lines.findIndex((l) => /subtask A: an instruction written since its last application attempt comes before this step/.test(l));
+      const appliedAt = t.lines.findIndex((l) => /applied subtask A's instructions/.test(l));
+      const verifyAt = t.lines.findIndex((l) => /verify \(subtask A\)/.test(l));
+      ok(yieldAt >= 0 && appliedAt > yieldAt && verifyAt > appliedAt, `the step yielded, the note was applied, then the batch started\n${t.lines.join('\n')}`);
     } finally {
       t.cleanup();
     }

@@ -62,7 +62,9 @@ export const holdEventsPath = (mainRoot, macroId) => path.join(holdsDir(mainRoot
 export const discardedDir = (mainRoot, macroId) => path.join(holdsDir(mainRoot, macroId), 'discarded');
 
 // Each record kind has its own subdirectory: a subtask id admits `.`.
-export const RECORD_KINDS = Object.freeze(['holds', 'handoffs', 'releases', 'parks']);
+// `instructions` holds the owner's instructions to a lane (Decision 7,
+// scripts/lib/instructions.mjs).
+export const RECORD_KINDS = Object.freeze(['holds', 'handoffs', 'releases', 'parks', 'instructions']);
 
 export function recordPath(mainRoot, macroId, kind, subtaskId) {
   if (!RECORD_KINDS.includes(kind)) throw new Error(`not a record kind: ${JSON.stringify(kind)}`);

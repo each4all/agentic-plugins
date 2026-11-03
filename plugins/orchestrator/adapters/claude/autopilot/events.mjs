@@ -45,7 +45,7 @@ export const EVENT_SCHEMA = 'agentic-autopilot-event/1';
 export const READER_SCHEMA = 'agentic-autopilot-reader/1';
 export const EVENT_KINDS = Object.freeze([
   'run-started', 'halt', 'lane-parked', 'lane-resumed', 'lane-held', 'lane-released',
-  'step-failed', 'commit-finished', 'stall', 'run-ended',
+  'step-failed', 'commit-finished', 'stall', 'instruction', 'run-ended',
 ]);
 // Only `run-ended` is terminal: the one line of a run a watcher must see.
 export const TERMINAL_KINDS = Object.freeze(['run-ended']);
@@ -79,6 +79,10 @@ export const LOCK_WAIT_MS = 2000;
 // refused and counted. Its record is the step's `stall` line in steps.jsonl,
 // written first; the event only points at it.
 export const STALL_LOCK_WAIT_MS = 0;
+// Decision 7, item 8 — what a driver did with a lane's instructions: applied
+// them (some superseded within), or dropped one that applies to nothing.
+export const INSTRUCTION_ACTIONS = Object.freeze(['applied', 'dropped']);
+const APPLICATION_ID_RE = /^app-\d{8}T\d{6}Z-[0-9a-f]{8}$/;
 // A lock that does not read (its writer died between creating and filling
 // it) is taken over once it is this old.
 const LOCK_TORN_MS = 2000;
@@ -154,6 +158,11 @@ const FIELDS = Object.freeze({
     step: int(1), verdict: oneOf(STALL_VERDICTS), mode: oneOf(STALL_MODES),
     quiet_ms: int(0), window_cpu_ms: nullable(int(0)), unknown_ms: int(0),
     pending_tasks: int(0), tool_running: bool, answer_owed: bool, pointer: recordPath,
+  },
+  // Decision 7, item 8 (impl-instruct): codes, ids and counts, never a note.
+  instruction: {
+    action: oneOf(INSTRUCTION_ACTIONS), application_id: nullable((v) => typeof v === 'string' && APPLICATION_ID_RE.test(v)),
+    applied: int(0), superseded: int(0), dropped: int(0), step_set: bool, pointer: recordPath,
   },
   'run-ended': {
     status: oneOf(RUN_STATUSES), reason: nullable(isHaltCode), exit: oneOf([0, 1, 2]), pointer: recordPath, cleanup: bool,

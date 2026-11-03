@@ -23,6 +23,9 @@ import {
   fenceState, holderAlive, laneLockRivals, processFingerprint, removeFence, removeSubtaskFences, repairFence, writeFence,
 } from './run-locks.mjs';
 import { worktreeHoldingBranch } from './state-root.mjs';
+import {
+  dropInstructions, InstructionRefusal, listInstructionIds, pendingEntries, readInstructions, summarizeEntry, writeEndedInstructions,
+} from './instructions.mjs';
 
 /**
  * Whether a lane's worktree is there. Only absence (ENOENT) reads as not
@@ -942,14 +945,28 @@ export async function retireSubtaskHolds({
 }) {
   // A plan id that is no hold key has no record to retire (handDispatchRefusal).
   if (!isSafeSubtaskId(subtaskId) || dirState(holdsDir(mainRoot, macroId)).state === 'absent') return { state: 'none' };
-  // No record of the subtask at all: nothing to retire, and no lock taken.
+  // No record of the subtask at all (an instruction none applied counts:
+  // Decision 7, item 6): nothing to retire, and no lock taken.
+  const instr = readInstructions(mainRoot, macroId, subtaskId);
+  const instructed = instr.state === 'ok' && pendingEntries(instr.record).length > 0;
   if (['holds', 'handoffs', 'releases'].every((k) => readRecord(mainRoot, macroId, k, subtaskId).state === 'absent')
-    && !readKeptPark(mainRoot, macroId, subtaskId).kept) return { state: 'none' };
+    && !readKeptPark(mainRoot, macroId, subtaskId).kept && !instructed) return { state: 'none' };
   return withHoldsLock(mainRoot, macroId, async () => {
     // I3 — an exclusion a crash left (a release's, a comparison's, an
     // earlier retirement's) is no writer.
     await sweepDeadExclusions({ mainRoot, macroId, subtaskId });
     if (!(await stillCompleted())) return { state: 'none', why: `the plan no longer records subtask ${subtaskId} completed` };
+    // Decision 7, item 6 — `done` completes the subtask: an instruction not
+    // applied yet is dropped, never applied to anything (one being applied
+    // is left to its receipt). A record that cannot be read is left as it
+    // is, and named.
+    let instructionsDropped = [];
+    try {
+      instructionsDropped = await dropInstructions({ mainRoot, macroId, subtaskId, cause: () => 'completed', by: 'done', now: now(), locked: true });
+    } catch (err) {
+      if (!(err instanceof InstructionRefusal)) throw err;
+    }
+    const withDrops = (r) => (instructionsDropped.length ? { ...r, instructionsDropped: instructionsDropped.map((e) => e.id) } : r);
     const hold = readOwnerHold(mainRoot, macroId, subtaskId);
     const handoff = readRecord(mainRoot, macroId, 'handoffs', subtaskId);
     const release = readRecord(mainRoot, macroId, 'releases', subtaskId);
@@ -971,7 +988,7 @@ export async function retireSubtaskHolds({
     if (!park.kept && handoff.state === 'absent' && release.state === 'absent' && (hold.state === 'absent' || retired)) {
       // I3 — a retirement a crash stopped before its fence's removal.
       if (retired) fenced();
-      return { state: 'none' };
+      return withDrops({ state: 'none' });
     }
     if (hold.state === 'unreadable') {
       return { state: 'unreadable', why: `the hold record of ${subtaskId} cannot be read (${hold.error}): \`agentic-autopilot release ${subtaskId} --macro ${macroId} --discard-unreadable\` keeps a copy and replaces it, and the next done retires it` };
@@ -995,7 +1012,7 @@ export async function retireSubtaskHolds({
       if (park.kept) await removeKeptPark(mainRoot, macroId, subtaskId, { event: 'retired', fields: { by: 'retirement' } });
       fenced();
       appendHoldEvent(mainRoot, macroId, { event: 'retired', subtask_id: subtaskId, hold_id: h?.hold_id ?? null });
-      return { state: 'retired', holdId: h?.hold_id ?? null, left };
+      return withDrops({ state: 'retired', holdId: h?.hold_id ?? null, left });
     } finally {
       removeOpRecord(mainRoot, macroId, subtaskId, own);
     }
@@ -1105,7 +1122,7 @@ export async function retireMacroHolds({ mainRoot, macroId, subtasks = [], state
   if (d.state === 'unreadable') return { state: 'unreadable', why: d.error };
   const lanes = () => {
     const ids = new Map((Array.isArray(subtasks) ? subtasks : []).filter((s) => isSafeSubtaskId(s?.id)).map((s) => [s.id, s.branch ?? null]));
-    for (const kind of ['holds', 'handoffs', 'releases', 'parks']) for (const id of listRecordIds(mainRoot, macroId, kind).ids) if (!ids.has(id)) ids.set(id, null);
+    for (const kind of ['holds', 'handoffs', 'releases', 'parks', 'instructions']) for (const id of listRecordIds(mainRoot, macroId, kind).ids) if (!ids.has(id)) ids.set(id, null);
     const o = dirState(path.join(dir, 'ops'));
     for (const n of o.names ?? []) if (isSafeSubtaskId(n) && !ids.has(n)) ids.set(n, null);
     return ids;
@@ -1141,6 +1158,7 @@ export async function retireMacroHolds({ mainRoot, macroId, subtasks = [], state
   if (before.length) return { state: 'waiting', why: before.join('; ') };
   const aside = path.join(holdsRoot(mainRoot), `.retired-${macroId}-${randomBytes(4).toString('hex')}`);
   if (hooks.beforeLock) await hooks.beforeLock();
+  const instructionsDropped = [];
   const result = await withHoldsLock(mainRoot, macroId, async () => {
     const own = new Map();
     let moved = false;
@@ -1166,6 +1184,27 @@ export async function retireMacroHolds({ mainRoot, macroId, subtasks = [], state
         }
       }
       for (const [id, l] of fenced) removeSubtaskFences(l, { macroId, subtaskId: id, keepHoldId: null });
+      // Decision 7, item 6 — the macro's end drops every instruction none
+      // applied, recorded before the directory goes, so the summary the
+      // caller shows (status, halt.json) names each one and its cause.
+      for (const id of listInstructionIds(mainRoot, macroId).ids) {
+        try {
+          for (const e of await dropInstructions({ mainRoot, macroId, subtaskId: id, cause: () => 'macro-ended', by: 'retirement', locked: true })) {
+            instructionsDropped.push({ subtask_id: id, id: e.id, revision: e.revision, cause: 'macro-ended' });
+          }
+        } catch (err) {
+          if (!(err instanceof InstructionRefusal)) throw err;
+          instructionsDropped.push({ subtask_id: id, id: null, revision: null, cause: 'unreadable' });
+        }
+      }
+      // Every instruction's outcome survives the directory (status, halt.json).
+      const ended = [];
+      for (const id of listInstructionIds(mainRoot, macroId).ids) {
+        const r = readInstructions(mainRoot, macroId, id);
+        if (r.state === 'ok') for (const e of r.record.entries) ended.push(summarizeEntry(id, e));
+      }
+      for (const d of instructionsDropped.filter((x) => x.id === null)) ended.push({ subtask_id: d.subtask_id, id: null, revision: null, state: 'unreadable', step: null, cause: 'unreadable', application_id: null });
+      if (ended.length) writeEndedInstructions(mainRoot, macroId, ended);
       // Renamed while the lock is held: no hold or release lands between the
       // last look and the directory's going, and a persona first write meets
       // either this exclusion or no holds at all (inactive).
@@ -1176,7 +1215,7 @@ export async function retireMacroHolds({ mainRoot, macroId, subtasks = [], state
         throw err;
       }
       moved = true;
-      return { state: 'retired' };
+      return instructionsDropped.length ? { state: 'retired', instructionsDropped } : { state: 'retired' };
     } finally {
       if (!moved) for (const [id, op] of own) removeOpRecord(mainRoot, macroId, id, op);
     }

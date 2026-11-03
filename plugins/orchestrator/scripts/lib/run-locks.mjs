@@ -411,7 +411,10 @@ export function listLocks(mainRoot, repoRoot = null) {
 // `approve` (ADR-0068 Decision 8, item 3): every plan-approve joins the macro
 // lock, so no approval passes between two looks of a live run, and no run or
 // dispatch starts while one holds it.
-export const ADMISSION_COMMANDS = Object.freeze(['next', 'done', 'finalize', 'abort', 'resume', 'approve']);
+// `instruct` (ADR-0068 Decision 7, item 3): the owner command that applies a
+// lane's instructions with no run live joins the macro lock, so no run starts
+// while its writer is at the child.
+export const ADMISSION_COMMANDS = Object.freeze(['next', 'done', 'finalize', 'abort', 'resume', 'approve', 'instruct']);
 // Shown as stale past this age, for the owner to judge; never expired.
 export const ADMISSION_STALE_MS = 4 * 60 * 60 * 1000;
 const ADMISSION_ID = /^[0-9a-f]{32}$/;

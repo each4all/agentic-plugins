@@ -105,7 +105,7 @@ describe('an owner gate stops only its lane', () => {
       ok(Date.parse(a3.started_at) < Date.parse(b2.ended_at), 'A\'s commit started before B\'s dispatch ended');
       ok(t.lines.some((l) => /^ {2}lane A: picked up again \(its record changed\)/.test(l)), t.lines.join('\n'));
       deepStrictEqual(events(r, 'A'), ['parked', 'resumed']);
-      strictEqual(r.halt.reason, 'awaiting-landing');
+      strictEqual(r.halt.reason, 'awaiting-landing', `${JSON.stringify(r.halt)}\n${t.lines.join('\n')}`);
       deepStrictEqual(PK.readParks(t.work, t.fx.macroId).records, [], 'the kept park ended');
     } finally {
       t.fx.cleanup();
@@ -130,7 +130,7 @@ describe('a park is taken from the facts its halt was decided from', () => {
       ok(cleared);
       const r = t.latest();
       deepStrictEqual(stepsOf(r).map((x) => [x[1], x[2], x[4]]), [['A', 'dispatch', 'ok'], ['A', 'commit', 'ok']]);
-      strictEqual(r.halt.reason, 'awaiting-landing');
+      strictEqual(r.halt.reason, 'awaiting-landing', `${JSON.stringify(r.halt)}\n${t.lines.join('\n')}`);
     } finally {
       t.fx.cleanup();
     }
@@ -167,7 +167,7 @@ describe('a failure that wrote nothing is never retried on an unchanged record',
       strictEqual(await t.run(), 2, t.lines.join('\n'));
       r = t.latest();
       deepStrictEqual(stepsOf(r).map((x) => [x[1], x[2], x[4]]), [['A', 'dispatch', 'ok'], ['A', 'commit', 'ok']]);
-      strictEqual(r.halt.reason, 'awaiting-landing');
+      strictEqual(r.halt.reason, 'awaiting-landing', `${JSON.stringify(r.halt)}\n${t.lines.join('\n')}`);
     } finally {
       t.fx.cleanup();
     }
@@ -199,7 +199,9 @@ describe('a failure that wrote nothing is never retried on an unchanged record',
       const r = t.latest();
       deepStrictEqual(stepsOf(r).filter((x) => x[1] === 'A').map((x) => [x[0], x[2], x[4]]).slice(0, 2), [[1, 'dispatch', 'worker-failed'], [3, 'dispatch', 'ok']]);
       ok(t.lines.some((l) => /^ {2}lane A: picked up again \(released\)/.test(l)), t.lines.join('\n'));
-      strictEqual(r.halt.reason, 'awaiting-landing');
+      // The halt and the run's lines on a failure: a rare end other than
+      // awaiting-landing under a loaded suite (C167) is otherwise unreadable.
+      strictEqual(r.halt.reason, 'awaiting-landing', `${JSON.stringify(r.halt)}\n${t.lines.join('\n')}`);
     } finally {
       t.fx.cleanup();
     }
@@ -255,7 +257,7 @@ describe('no worker spawns into a lane with a persona operation open', () => {
       const begun = readFileSync(join(PK.parksDir(t.work, t.fx.macroId), 'events.jsonl'), 'utf8').trim().split('\n')
         .map((l) => JSON.parse(l)).filter((e) => e.event === 'creating' && e.subtask_id === 'A').map((e) => Date.parse(e.at));
       ok(begun.length > 0 && begun.every((at) => at >= closed - 1), `no creation of A's lane began while it was busy: ${JSON.stringify(begun)} vs ${closed}`);
-      strictEqual(r.halt.reason, 'awaiting-landing');
+      strictEqual(r.halt.reason, 'awaiting-landing', `${JSON.stringify(r.halt)}\n${t.lines.join('\n')}`);
     } finally {
       t.fx.cleanup();
     }
@@ -431,7 +433,7 @@ describe('no worker spawns into a lane where another hand has an operation open'
       const a = r.steps.find((x) => x.kind === 'commit');
       ok(a, 'A stepped once the operation closed');
       ok(Date.parse(a.started_at) >= touchedAt + 2900, `A's commit started ${Date.parse(a.started_at) - touchedAt} ms after the write, before the operation closed`);
-      strictEqual(r.halt.reason, 'awaiting-landing');
+      strictEqual(r.halt.reason, 'awaiting-landing', `${JSON.stringify(r.halt)}\n${t.lines.join('\n')}`);
     } finally {
       t.fx.cleanup();
     }
@@ -590,7 +592,7 @@ describe('what changes while a step\'s marker waits for the park records\' lock 
       ok(heldAt !== null && asked > 5, `the lane was asked again (${asked})`);
       const r = t.latest();
       deepStrictEqual(stepsOf(r).map((x) => [x[2], x[4]]), [['dispatch', 'ok'], ['commit', 'ok']], t.lines.join('\n'));
-      strictEqual(r.halt.reason, 'awaiting-landing');
+      strictEqual(r.halt.reason, 'awaiting-landing', `${JSON.stringify(r.halt)}\n${t.lines.join('\n')}`);
     } finally {
       t.fx.cleanup();
     }

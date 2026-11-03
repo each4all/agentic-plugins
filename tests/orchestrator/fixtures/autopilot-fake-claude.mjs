@@ -55,6 +55,8 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import readline from 'node:readline';
 
+import { publishPid } from '../../_pidfile.mjs';
+
 const argv = process.argv.slice(2);
 if (argv[0] === '--version') {
   process.stdout.write('9.9.9 (Fake Claude)\n');
@@ -112,7 +114,7 @@ readline.createInterface({ input: process.stdin })
     }
     if (process.env.FAKE_BUSY_CHILD === '1') {
       const busy = spawn(process.execPath, ['-e', 'const end = Date.now() + 60000; while (Date.now() < end) {}'], { stdio: 'ignore' });
-      if (process.env.FAKE_CLAUDE_PIDFILE) fs.writeFileSync(process.env.FAKE_CLAUDE_PIDFILE, String(busy.pid));
+      if (process.env.FAKE_CLAUDE_PIDFILE) publishPid(process.env.FAKE_CLAUDE_PIDFILE, busy.pid);
     }
     if (mode === 'noresult') process.exit(3);
     emit({ type: 'assistant', message: { model, usage: usage(40000), content: [] } });
@@ -130,7 +132,7 @@ readline.createInterface({ input: process.stdin })
       }, slow ? 3000 : 500);
     } else if (mode === 'background-forever') {
       const task = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
-      if (process.env.FAKE_CLAUDE_PIDFILE) fs.writeFileSync(process.env.FAKE_CLAUDE_PIDFILE, String(task.pid));
+      if (process.env.FAKE_CLAUDE_PIDFILE) publishPid(process.env.FAKE_CLAUDE_PIDFILE, task.pid);
       emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'bt1', run_id: 'r-bt1', task_type: 'local_bash', description: 'Run the full suite in background' }] });
       emit(result(0.12));
     } else if (mode === 'events') {
@@ -140,7 +142,7 @@ readline.createInterface({ input: process.stdin })
         else if (event && Object.hasOwn(event, 'exit')) {
           if (event.holdPipes) {
             const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'inherit', 'inherit'], detached: true });
-            if (process.env.FAKE_CLAUDE_PIDFILE) fs.writeFileSync(process.env.FAKE_CLAUDE_PIDFILE, String(holder.pid));
+            if (process.env.FAKE_CLAUDE_PIDFILE) publishPid(process.env.FAKE_CLAUDE_PIDFILE, holder.pid);
             holder.unref();
           }
           process.exit(event.exit);
@@ -154,20 +156,20 @@ readline.createInterface({ input: process.stdin })
       const grandchild = spawn(process.execPath, ['-e', code], { stdio: 'ignore' });
       // Give the grandchild time to install its handler before the pid is
       // reported (and before a timeout can signal it).
-      setTimeout(() => fs.writeFileSync(process.env.FAKE_CLAUDE_PIDFILE, String(grandchild.pid)), 300);
+      setTimeout(() => publishPid(process.env.FAKE_CLAUDE_PIDFILE, grandchild.pid), 300);
       setInterval(() => {}, 1000);
     } else if (mode === 'deaf') {
       process.on('SIGTERM', () => {});
-      fs.writeFileSync(process.env.FAKE_CLAUDE_PIDFILE, String(process.pid));
+      publishPid(process.env.FAKE_CLAUDE_PIDFILE, process.pid);
       setInterval(() => {}, 1000);
     } else if (mode === 'leaves-child') {
       const grandchild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
-      fs.writeFileSync(process.env.FAKE_CLAUDE_PIDFILE, String(grandchild.pid));
+      publishPid(process.env.FAKE_CLAUDE_PIDFILE, grandchild.pid);
       grandchild.unref();
       emit(result(0.05));
     } else if (mode === 'pipe-holder') {
       const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'inherit', 'inherit'], detached: true });
-      fs.writeFileSync(process.env.FAKE_CLAUDE_PIDFILE, String(holder.pid));
+      publishPid(process.env.FAKE_CLAUDE_PIDFILE, holder.pid);
       holder.unref();
       emit(result(0.05));
     } else if (mode === 'two-models') {

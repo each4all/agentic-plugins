@@ -22,6 +22,7 @@ import { acknowledgeInRecord, deliveryNote, deriveRebindView, parseRebindRecord,
 import { rebindDue } from '../../plugins/orchestrator/adapters/claude/autopilot/rebind-boundary.mjs';
 import { childCopies } from '../../plugins/orchestrator/scripts/state.mjs';
 import * as HR from '../../plugins/orchestrator/scripts/lib/holds-records.mjs';
+import { readPid } from '../_pidfile.mjs';
 
 const STATE = resolve(ORCH, 'scripts/state.mjs');
 const OWNER = {};
@@ -3125,7 +3126,11 @@ process.stdin.setEncoding('utf8').on('data', (c) => {
       });
       return await fn({ deliver, marker, writerPid: () => Number(readFileSync(pidFile, 'utf8')) });
     } finally {
-      try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch { /* gone, or never started */ }
+      // readPid, never Number(readFileSync(...)): a pid file caught between
+      // its creation and its write reads as 0, and kill(0) is this runner's
+      // own group (tests/_pidfile.mjs).
+      const pid = readPid(pidFile);
+      if (pid !== null) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
       rmSync(fake, { recursive: true, force: true });
     }
   }
@@ -3194,12 +3199,18 @@ describe('ADR-0068 Decision 8, item 7 — the release before this one', () => {
   function released(dir) {
     const supplied = join(REPO_ROOT, '.released', TAG, 'plugins/orchestrator/scripts/state.mjs');
     if (existsSync(supplied)) return import(pathToFileURL(supplied).href);
+    // Through a file, never tar's stdin: bsdtar exits at the end-of-archive
+    // blocks, before reading git archive's record padding, so a write still
+    // in flight fails with EPIPE, which this catch would read as no release.
+    // Absolute: git -C REPO_ROOT resolves a relative -o against REPO_ROOT.
+    const archive = resolve(dir, '.release.tar');
     try {
-      const tar = execFileSync('git', ['-C', REPO_ROOT, 'archive', TAG, 'plugins/orchestrator/scripts'], { stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 });
-      execFileSync('tar', ['-x', '-C', dir], { input: tar });
+      execFileSync('git', ['-C', REPO_ROOT, 'archive', '--format=tar', '-o', archive, TAG, 'plugins/orchestrator/scripts'], { stdio: 'ignore' });
     } catch {
       return null;
     }
+    execFileSync('tar', ['-xf', archive, '-C', dir]);
+    rmSync(archive);
     return import(pathToFileURL(join(dir, 'plugins/orchestrator/scripts/state.mjs')).href);
   }
 

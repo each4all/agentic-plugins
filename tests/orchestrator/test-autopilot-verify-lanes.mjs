@@ -26,16 +26,25 @@
 //     before the batch runs; a hold set while a batch is prepared starts
 //     none and parks nothing, withdrawn before the settle or not;
 //   - the new-lane throttle: a batch spawns no worker, so a lane whose only
-//     step in the run was a batch is still new for its first worker.
+//     step in the run was a batch is still new for its first worker;
+//   - the owner's rerun (`--lane A --next verify`) beside a pending
+//     instruction with a step is refused (ADR-0068 Decision 7, item 5).
+//
+// The owner's instruction beside an answered request (Decision 7, item 5) is
+// in test-autopilot-verify-lanes-instruct.mjs: its own file, so a mutation
+// case that targets it runs that suite alone, well inside the mutation
+// harness's timeout, not this whole file. The helpers both share are in
+// _verify-lanes-helpers.mjs.
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, match, ok, strictEqual } from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { COMMIT, CRITIQUE, OPEN, hour, setup } from './fixtures/autopilot-lanes-run.mjs';
-import { CHECK_SCRIPT, DECLARATION } from './_verify-fixtures.mjs';
+import { DECLARATION } from './_verify-fixtures.mjs';
+import { BOUNDS, checkLogs, childOf, commitChecks, entryOf, holdsOn, sleep, verify } from './_verify-lanes-helpers.mjs';
 import { acquire } from '../../plugins/orchestrator/scripts/lib/heavy-lock.mjs';
 
 const RB = await import('../../plugins/orchestrator/adapters/claude/autopilot/rebind-boundary.mjs');
@@ -45,29 +54,6 @@ const VR = await import('../../plugins/orchestrator/adapters/claude/autopilot/ve
 const VO = await import('../../plugins/orchestrator/adapters/claude/autopilot/verify-ops.mjs');
 const HO = await import('../../plugins/orchestrator/scripts/lib/hold-ops.mjs');
 const HR = await import('../../plugins/orchestrator/scripts/lib/holds.mjs');
-
-const verify = (checks) => ({ kind: 'verify', verb: null, confidence: 'HIGH', checks, on_pass: { kind: 'commit', confidence: 'HIGH' } });
-const BOUNDS = { secondMs: 100, killGraceMs: 300, lingerMs: 500, pollMs: 25 };
-const sleep = (ms) => new Promise((r) => { setTimeout(r, ms); });
-
-// The checks committed on main, and the origin fetched: what each lane forks from.
-function commitChecks(t, declaration = DECLARATION) {
-  mkdirSync(join(t.work, 'scripts'), { recursive: true });
-  mkdirSync(join(t.work, '.agentic-plugins'), { recursive: true });
-  writeFileSync(join(t.work, 'scripts/check.mjs'), CHECK_SCRIPT);
-  writeFileSync(join(t.work, '.agentic-plugins/verify-checks.json'), declaration);
-  t.git(t.work, 'add', '-A');
-  t.git(t.work, 'commit', '-q', '-m', 'chore: checks');
-  t.git(t.work, 'push', '-q', 'origin', 'HEAD:main');
-  t.git(t.work, 'fetch', '-q', 'origin');
-}
-
-function checkLogs(r) {
-  const dir = join(r.dir, 'verify');
-  try {
-    return readdirSync(dir).flatMap((b) => readdirSync(join(dir, b)).filter((n) => n.endsWith('.log')).map((n) => `${b}/${n}: ${readFileSync(join(dir, b, n), 'utf8').slice(-600)}`)).join('\n');
-  } catch (e) { return String(e); }
-}
 
 describe('verify-lanes: batches across lanes', () => {
   it('a batch holds no worker slot, and the batches cost nothing and are no worker step', { timeout: 300_000 }, async () => {
@@ -362,14 +348,6 @@ function holdDuringPreparation(t, { hidden = false, times = 1 } = {}) {
   return { s, verifyOps, startVerify };
 }
 
-// The hold protocol on for the macro: the persona then refuses a held lane's
-// writes (the fixture's hosts carry no engineer cache, so the run cannot turn
-// it on itself).
-function holdsOn(t) {
-  HR.writeProtocol(t.work, t.fx.macroId, { writtenBy: 'test' });
-  strictEqual(HR.readActivation(t.work, t.fx.macroId).state, 'active');
-}
-
 async function heldWhilePrepared({ hidden, times = 1 }) {
   const t = await setup({ subtasks: [{ id: 'A' }], scenario: { A: { next: [verify([{ kind: 'pass' }]), COMMIT], file: true } } });
   const logs = mkdtempSync(join(tmpdir(), 'verify-lanes-log-'));
@@ -501,6 +479,42 @@ describe('verify-lanes: the owner\'s rerun', () => {
       deepStrictEqual(r2.steps.map((s) => [s.kind, s.outcome]), [['verify', 'ok'], ['verb', 'ok'], ['verify', 'ok'], ['commit', 'ok']], t.lines.join('\n'));
       deepStrictEqual([r2.steps[0].forced, r2.steps[0].verify?.outcome, r2.steps[0].verify?.batch?.end], [true, 'ran', 'failed'], JSON.stringify(r2.steps[0]));
       deepStrictEqual(ran().slice(0, 4), ['pass', 'fail', 'pass', 'fail'], 'the rerun ran the batch whole, its passed check included');
+    } finally {
+      t.fx.cleanup();
+      rmSync(logs, { recursive: true, force: true });
+    }
+  });
+
+  it('`--lane A --next verify` beside a pending instruction that carries a next step is refused, naming it: no check and no worker starts (ADR-0068 Decision 7, item 5)', { timeout: 300_000 }, async () => {
+    const I = await import('../../plugins/orchestrator/scripts/lib/instructions.mjs');
+    const t = await setup({ subtasks: [{ id: 'A' }], scenario: { A: { next: [verify([{ kind: 'pass' }, { kind: 'fail' }]), verify([{ kind: 'pass' }, { kind: 'fail' }]), COMMIT], file: true } } });
+    const logs = mkdtempSync(join(tmpdir(), 'verify-lanes-log-'));
+    try {
+      commitChecks(t);
+      const log = join(logs, 'order.log');
+      Object.assign(t.env, { VERIFY_FIXTURE_LOG: log });
+      const ran = () => readFileSync(log, { encoding: 'utf8', flag: 'a+' }).split('\n').filter(Boolean);
+      strictEqual(await t.run({}, { verifyBounds: BOUNDS }), 2, t.lines.join('\n'));
+      strictEqual(PK.readPark(t.work, t.fx.macroId, 'A').record?.reason, 'no-progress', t.lines.join('\n'));
+      deepStrictEqual(ran(), ['pass', 'fail']);
+      // The owner's instruction to the lane, with a step, while its request waits.
+      const c = childOf(t, 'A');
+      const e = await I.writeInstruction({
+        mainRoot: t.work, macroId: t.fx.macroId, subtaskId: 'A', branch: 'feat/a', child: c.id, step: '/engineer:refine',
+        note: I.checkNoteBytes(Buffer.from('refine instead of the rerun')), witness: I.gateWitnessOf(c.text), writtenBy: 'owner',
+      });
+      // A worker is a `claude -p` the fake logs; the run's probes are not.
+      const workers = () => readFileSync(join(t.dir, 'claude.log'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((x) => x.argv.includes('-p')).length;
+      const workersBefore = workers();
+      const { parseForcedStep } = await import('../../plugins/orchestrator/adapters/claude/autopilot/policy.mjs');
+      await t.run({ forcedPairs: [{ lane: 'A', step: parseForcedStep('verify') }], forcedText: '--lane A --next verify' }, { verifyBounds: BOUNDS });
+      const r2 = t.latest();
+      strictEqual(r2.halt?.reason, 'owner-choice', t.lines.join('\n'));
+      ok(new RegExp(`--lane A --next is refused: subtask A has instruction ${e.id} r1 pending with the next step /engineer:refine`).test(r2.halt.detail), r2.halt.detail);
+      deepStrictEqual(r2.steps, [], 'no batch and no step');
+      deepStrictEqual(ran(), ['pass', 'fail'], 'no check ran');
+      strictEqual(workers(), workersBefore, 'no worker started');
+      strictEqual(entryOf(I, t, e.id).state, 'pending');
     } finally {
       t.fx.cleanup();
       rmSync(logs, { recursive: true, force: true });

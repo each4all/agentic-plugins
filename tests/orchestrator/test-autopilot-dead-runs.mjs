@@ -374,6 +374,36 @@ describe('cleaning up after a dead run (ADR-0067 Decision 6, Locks)', () => {
     }
   });
 
+  it('a serial run\'s instruction line, written with the seq of the step about to start, never hides that step\'s start (ADR-0068 Decision 7)', { timeout: 60_000 }, async () => {
+    const t = await setup();
+    try {
+      const runId = 'autopilot-20261009T010000Z-1a57c1';
+      const dir = await t.deadRun(runId, { steps: [] });
+      // As driver.mjs writes them: the application's line, then the step it
+      // led to, which the run died during.
+      L.appendStep(dir, { event: 'instruction', seq: 2, subtask_id: 'A', at: t.t0, instruction: { state: 'applied', application_id: 'app-20261009T010000Z-0a0b0c0d' } });
+      L.appendStep(dir, { event: 'started', seq: 2, kind: 'verb', subtask_id: 'A', step_budget_usd: 25, started_at: t.t0, session_id: 's-2' });
+      const read = L.readRun(t.work, runId);
+      deepStrictEqual(read.steps.map((s) => [s.seq, s.event, s.kind]), [[1, 'finished', 'dispatch'], [2, 'started', 'verb']], 'the step in flight reads as started');
+      deepStrictEqual(read.instructions.map((x) => [x.seq, x.instruction.state]), [[2, 'applied']], 'the line is the run\'s, listed apart');
+      // A pending peer that names no run, on A's workflow since the step
+      // started: it can only be found through the step in flight.
+      const unnamed = await t.peer('plan-verify-20261009T010001Z-1a57c2');
+      const { lines, of } = await t.cleanup();
+      strictEqual(of(runId).outcome, 'cleaned', lines.join('\n'));
+      deepStrictEqual(of(runId).settled.map((s) => [s.seq, s.charged_usd, s.finished]), [[2, 25, false]], 'the unfinished step is settled');
+      // Merged with the instruction line, the step would still be settled (its
+      // budget survives the merge) but would no longer read as unfinished:
+      // the peer it may have started would go unreported, and the halt would
+      // name no subtask or session.
+      deepStrictEqual(of(runId).reported.map((p) => [p.run_id, p.subtask_id, p.seq]), [[unnamed.id, 'A', 2]], 'the step in flight is searched for the peers it may have started');
+      const halt = L.readRun(t.work, runId).run.halt;
+      deepStrictEqual([halt?.reason, halt?.subtask_id, halt?.last_session_id], ['interrupted', 'A', 's-2'], 'the halt names the step in flight');
+    } finally {
+      t.done();
+    }
+  });
+
   it('keeps the record when a peer-run home cannot be resolved for any reason but its absence', { timeout: 60_000 }, async (tt) => {
     if (process.getuid?.() === 0) { tt.skip('root reads through a mode-000 directory'); return; }
     const t = await setup();

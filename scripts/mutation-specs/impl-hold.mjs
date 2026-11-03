@@ -1531,8 +1531,8 @@ export const MUTATIONS = [
   },
   {
     id: 'V18', file: SCH, tests: [TSV],
-    from: '    if (gateOf(id)) return { ...refuse(null), again: false, held: true };\n    const occupiedLast',
-    to: '    const occupiedLast',
+    from: '    if (gateOf(id)) return { ...refuse(null), again: false, held: true };\n    // ADR-0068 Decision 7, item 3',
+    to: '    // ADR-0068 Decision 7, item 3',
     why: "a hold set after the lane was created no longer stops the spawn: a worker runs in the owner's lane",
     killed_by: /set after the lane was created/,
   },

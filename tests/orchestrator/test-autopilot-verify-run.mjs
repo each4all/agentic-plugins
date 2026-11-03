@@ -258,6 +258,27 @@ describe('verify-run: binding and recovery', () => {
     deepStrictEqual(after.verify_results.batches.map((b) => [b.batch_id === 'dead-1', b.end, b.cause ?? null]), [[true, 'cut-short', 'driver-end'], [false, 'passed', null]]);
   });
 
+  it('a batch a dead driver left open is ended and, with an instruction\'s step pending, not continued: the step gives the lane back (ADR-0068 Decision 7, item 5)', BOUNDED, async () => {
+    const t = await setUp([{ kind: 'pass' }, { kind: 'pass2' }]);
+    const job = t.job();
+    const fm = await readWorkflow(t.wf);
+    const tree = await digestOf(t.dir);
+    const decl = job.offer.declaration;
+    const checks = fm.verify_request.checks.map((c) => ({ kind: c.kind, origin: 'worker', argv: VD.resolveCheck(decl, c) }));
+    const start = VJ.startPayload({ batchId: 'dead-1', runId: RUN, treeStart: tree, declarationCommit: t.sha, declarationDigest: decl.digest, checks, checksDigest: VD.checksDigest(checks.map((c) => c.argv)), startedAt: '2026-10-20T01:00:00Z' });
+    VJ.appendJournal(VJ.journalPath(t.dir, fm.workflow_id), { op: 'start', request_id: fm.verify_request.id, batch_id: 'dead-1', payload: start, meta: { verb: 'compose', base: t.sha, checks_digest: start.checks_digest } });
+    const { S } = await import('./_verify-fixtures.mjs');
+    await S.recordBatchStart({ workflowPath: t.wf, host: 'claude', requestId: fm.verify_request.id, input: start });
+    let asked = 0;
+    const r = await runStep({ ...job, yieldsToInstruction: () => { asked += 1; return true; } });
+    strictEqual(asked, 1);
+    deepStrictEqual([r.outcome, r.batch.batch_id, r.batch.end, r.batch.cause, r.wrote], ['none', 'dead-1', 'cut-short', 'driver-end', true], JSON.stringify(r));
+    deepStrictEqual(ran(t.log), [], 'nothing of the batch ran');
+    const after = await readWorkflow(t.wf);
+    strictEqual(after.next_step_kind, 'verify', 'the request is left as it is, for the instruction to replace');
+    deepStrictEqual(after.verify_results.batches.map((b) => [b.batch_id, b.end, b.cause ?? null]), [['dead-1', 'cut-short', 'driver-end']]);
+  });
+
   it('a recorded failure resumes the verb, even after the driver died, and runs no later check', BOUNDED, async () => {
     const t = await setUp([{ kind: 'fail' }, { kind: 'pass' }]);
     await runStep(t.job());
