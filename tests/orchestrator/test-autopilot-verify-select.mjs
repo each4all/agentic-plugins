@@ -1119,7 +1119,7 @@ describe('verify-select — on this repository', () => {
     assert.deepEqual(r.reasons.entries.filter((e) => e.rule === 'fallback').map((e) => e.path), [unknown]);
   });
 
-  it('stays bounded: a module selects at most two fifths of the tests, the ADR the suite or ten, each in under 10 s of CPU', () => {
+  it('stays bounded: a module selects at most two fifths of the tests, the ADR the suite or fifteen, each in under 10 s of CPU', () => {
     // A test that copies a whole plugin, the tests and the generator that walk
     // every plugin's tree, and a mutation spec's TESTS reach a module beyond
     // its importers: measured 2026-10-21, budget.mjs selects 62 of 249 tests
@@ -1132,6 +1132,16 @@ describe('verify-select — on this repository', () => {
     // harness, whose spec loading reaches persona-pipeline.mjs's TESTS and
     // through them the docs walk of test-set-terminal-archive-timing.mjs
     // (measured 2026-10-21: blanking that name in that spec alone leaves 3).
+    // The ADR's bound was ten until 2026-11-03, when it selected 9 (C170 added
+    // test-autopilot-verify-mutate-timeout.mjs) and C169's
+    // tests/test-signal-guard.mjs, which runs the heavy-work wrapper through
+    // the heavy-lock fixtures, made 11: that test by the same path as the
+    // heavy-lock tests, and test-verify-record.mjs through it, whose
+    // `tests/${…}.mjs` templates may load any test at the top of tests/
+    // (blanking test-signal-guard.mjs alone leaves 9; renaming those templates
+    // alone, 10). The bound is fifteen, headroom above the 11 measured: text
+    // read as an edge, the defect it is for, selects some nine tenths (286 of
+    // 310 in a probe that injected it, 2026-11-03).
     // On CI the bound was met by a narrowing margin as the tree grew (10.1 to
     // 11.9 s of CPU for budget.mjs in three of four pull requests, 2026-10-25/26,
     // where this machine took 5.5 to 6.9 s): covers() tried every piece at
@@ -1159,7 +1169,7 @@ describe('verify-select — on this repository', () => {
       assert.ok(ms < 10000, `${p} took ${ms} ms of CPU`);
     }
     const { r } = run('docs/adr/0068-autopilot-lanes-that-keep-going.md');
-    assert.ok(r.tests.suite || r.tests.files.length <= 10, JSON.stringify(r.tests).slice(0, 200));
+    assert.ok(r.tests.suite || r.tests.files.length <= 15, JSON.stringify(r.tests).slice(0, 200));
   });
 
   it('loads from a copy of its own file alone: Node built-ins only', async () => {

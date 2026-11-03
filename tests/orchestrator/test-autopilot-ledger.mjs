@@ -16,6 +16,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { readPid } from '../_pidfile.mjs';
+
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const L = await import(resolve(REPO_ROOT, 'plugins/orchestrator/adapters/claude/autopilot/ledger.mjs'));
 const { isAutopilotRun } = await import(resolve(REPO_ROOT, 'plugins/orchestrator/scripts/state.mjs'));
@@ -219,7 +221,9 @@ describe('locks', () => {
         g.unref();
       `, pidfile], { detached: true, stdio: 'ignore' });
       await new Promise((r) => { leader.on('exit', r); });
-      member = Number(readFileSync(pidfile, 'utf8'));
+      // readPid, never Number(readFileSync(...)) (docket C169).
+      member = readPid(pidfile);
+      ok(member !== null, 'the member published its pid');
       const holder = { pid: await deadPid(), fingerprint: { kind: 'none' }, worker: { pid: leader.pid, pgid: leader.pid, fingerprint: { kind: 'none' } } };
       strictEqual(await L.holderAlive(holder), true, 'the group still has a member');
       strictEqual(await L.holderAlive({ ...holder, worker: { ...holder.worker, pgid: null } }), false, 'without the group, driver and worker are both gone');

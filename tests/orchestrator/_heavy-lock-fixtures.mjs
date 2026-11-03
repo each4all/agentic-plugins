@@ -121,10 +121,28 @@ export function testEnv(extra = {}) {
   return { ...env, ...extra };
 }
 
+// A pid or group the tracker may signal: an integer above 1. `process.kill(0)`
+// and `process.kill(-0)` signal the caller's own group, the test runner's and
+// a verification check's supervisor's (docket C169); 1 is init; NaN and the
+// rest name nothing.
+const signalable = (n) => Number.isSafeInteger(n) && n > 1;
+
+/**
+ * Node source for a process that publishes `pidExpr` in `file` at once:
+ * written beside it, then renamed over it (tests/_pidfile.mjs publishPid), so
+ * a reader sees no file or the whole pid, never an empty one.
+ */
+export const publishPidSource = (file, pidExpr = 'process.pid') => {
+  const tmp = JSON.stringify(`${file}.tmp`);
+  return `require('node:fs').writeFileSync(${tmp}, String(${pidExpr})); require('node:fs').renameSync(${tmp}, ${JSON.stringify(file)});`;
+};
+
 /**
  * The survivor tracker: every process and group a test starts, and every group
  * the locks it watches registered, is killed in `cleanUp`, whatever the test's
- * outcome. Its kills are independent of the behaviour under test.
+ * outcome. Its kills are independent of the behaviour under test. It records
+ * only what it may signal (`signalable`), so an empty pid file read as 0 never
+ * becomes a kill of the runner's own group.
  */
 export function tracker() {
   const pids = new Set();
@@ -132,19 +150,19 @@ export function tracker() {
   const locks = new Set();
   const dirs = new Set();
   return {
-    pid(pid) { if (Number.isInteger(pid)) pids.add(pid); return pid; },
-    group(pgid) { if (Number.isInteger(pgid)) groups.add(pgid); return pgid; },
+    pid(pid) { if (signalable(pid)) pids.add(pid); return pid; },
+    group(pgid) { if (signalable(pgid)) groups.add(pgid); return pgid; },
     lock(path) { locks.add(path); return path; },
     dir(path) { dirs.add(path); return path; },
     scratch() { const dir = realpathSync(mkdtempSync(join(tmpdir(), 'heavy-scratch-'))); dirs.add(dir); return dir; },
     pidFile(file) {
       if (!existsSync(file)) return [];
-      const found = readFileSync(file, 'utf8').split('\n').filter(Boolean).map(Number);
+      const found = readFileSync(file, 'utf8').split('\n').filter((l) => /^[1-9][0-9]*$/.test(l)).map(Number).filter(signalable);
       for (const pid of found) pids.add(pid);
       return found;
     },
     cleanUp() {
-      for (const path of locks) for (const pgid of registeredGroups(path)) groups.add(pgid);
+      for (const path of locks) for (const pgid of registeredGroups(path)) if (signalable(pgid)) groups.add(pgid);
       for (const pgid of groups) try { process.kill(-pgid, 'SIGKILL'); } catch { /* gone */ }
       for (const pid of pids) try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
       for (const dir of dirs) rmSync(dir, { recursive: true, force: true });

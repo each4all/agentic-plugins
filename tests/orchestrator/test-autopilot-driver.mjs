@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 
 import { makeRepo, ORCH, ENG, RUNTIME } from './fixtures/autopilot-repo.mjs';
 import { installLikeRelease } from './fixtures/install-cache.mjs';
+import { readPid } from '../_pidfile.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const AP = resolve(REPO_ROOT, 'plugins/orchestrator/adapters/claude/autopilot');
@@ -797,7 +798,10 @@ describe('a process group that outlives SIGKILL (round 4)', () => {
       t.env.FAKE_CLAUDE_MODE = 'leaves-child';
       t.env.FAKE_CLAUDE_PIDFILE = pidfile;
       strictEqual(await t.run({}, { terminateGroup: async () => 'lingering' }), 2, t.lines.join('\n'));
-      member = Number(readFileSync(pidfile, 'utf8'));
+      // readPid, never Number(readFileSync(...)): an empty read is 0, and a
+      // kill of 0 is one of the runner's own group (docket C169).
+      member = readPid(pidfile);
+      ok(member !== null, 'the member published its pid');
       const r = t.latest();
       deepStrictEqual([r.steps.length, r.steps[0].group_teardown, r.halt.reason], [1, 'lingering', 'worker-failed']);
       ok(/still there after SIGKILL/.test(r.halt.detail), r.halt.detail);
@@ -872,7 +876,8 @@ describe('stop', () => {
       const deadline = Date.now() + 30_000;
       while (Date.now() < deadline && !existsSync(pidfile)) await new Promise((r) => { setTimeout(r, 100); });
       ok(existsSync(pidfile), `the worker started its grandchild: ${output}`);
-      grandchild = Number(readFileSync(pidfile, 'utf8'));
+      ok(await (async () => { for (let i = 0; i < 50 && readPid(pidfile) === null; i += 1) await new Promise((r) => { setTimeout(r, 20); }); return readPid(pidfile) !== null; })(), 'the grandchild published its pid');
+      grandchild = readPid(pidfile);
       const stop = spawnSync(process.execPath, [cli, 'stop', '--repo', t.work], { env: t.env, encoding: 'utf8' });
       strictEqual(stop.status, 0, stop.stderr + stop.stdout);
       strictEqual(await exited, 2, output);

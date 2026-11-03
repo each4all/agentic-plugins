@@ -52,6 +52,9 @@ switch (mode) {
   case 'hang': hang(); break;
   case 'stubborn': process.on('SIGTERM', () => {}); hang(); break;
   case 'exit127': process.exit(127);
+  // A member of the check's command group that signals its own group (pid 0),
+  // as a test that read pid 0 from an empty pid file did (docket C169).
+  case 'groupkill': process.kill(0, 'SIGKILL'); hang(); break;
   case 'touch': fs.writeFileSync('touched.txt', String(Date.now())); process.exit(0);
   case 'env': fs.writeFileSync(process.env.VERIFY_FIXTURE_ENV, JSON.stringify(Object.keys(process.env).filter((k) => k.startsWith('AGENTIC_')).sort())); process.exit(0);
   case 'slow': {
@@ -73,7 +76,7 @@ export const DECLARATION = JSON.stringify({
   schema: 'agentic-verify-checks-1.0',
   kinds: {
     pass: kind('pass'), pass2: kind('pass2'), driver: kind('driver'), fail: kind('fail'), hang: kind('hang', { timeout_s: 2 }),
-    stubborn: kind('stubborn', { timeout_s: 2 }), exit127: kind('exit127'), touch: kind('touch'), env: kind('env'), slow: kind('slow'),
+    stubborn: kind('stubborn', { timeout_s: 2 }), exit127: kind('exit127'), groupkill: kind('groupkill'), touch: kind('touch'), env: kind('env'), slow: kind('slow'),
     self: kind('selfpass', { locks_itself: true }), missing: { ...kind('x'), argv: ['no-such-command-for-verify-exec'] },
     test: { ...kind('files'), argv: ['node', 'scripts/check.mjs', 'files', '{files}'], slots: [{ name: 'files', type: 'path', repeat: 'many', join: 'words', under: ['tests/'], suffix: '.mjs' }] },
     'test-suite': kind('suite'),

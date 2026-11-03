@@ -56,7 +56,11 @@
 // it), `error` (the code of the failure that kept it from executing: a
 // command that exits 127 is told from one that was not found) or `refused`
 // (the wrapper's own refusal or failure, 125), and `stopped` when a signal to
-// the wrapper stopped it. A status file that cannot be written changes
+// the wrapper stopped it. Once the command's supervisor has started, the
+// `ended` line also carries `supervisor`, how that supervisor ended
+// (supervisorEnd below), and a supervisor that left no report adds the same
+// in words to the wrapper's refusal on stderr: evidence of what ended it,
+// which changes no outcome. A status file that cannot be written changes
 // nothing else the wrapper does.
 //
 // THE GO FILE (verify-exec). With `--go-file <path>` as well, the wrapper,
@@ -173,28 +177,86 @@ export function selfLockingRefusal(repoRoot, ref, command) {
   return null;
 }
 
-// The supervisor: idle until `go`, then the command; its report on fd 3.
+// The supervisor: idle until `go`, then the command; its report on fd 3. Its
+// stop writes why it ran (STOP_REASONS) on fd 3 too, after the report and
+// before it kills its group: a supervisor that ends by SIGKILL with no stop
+// line received most likely took a signal it did not send (docket C169); its
+// stop line could also have been lost, as report() drops a failed write.
+export const STOP_REASONS = ['command-exit', 'spawn-error', 'stdin-end', 'stdin-error', 'bad-go'];
 export const SUPERVISOR = [
   "const { spawn } = require('node:child_process');",
   "const { writeSync } = require('node:fs');",
   "const report = (r) => { try { writeSync(3, JSON.stringify(r) + '\\n'); } catch {} };",
   'let run = null;',
-  "const stop = () => { try { process.kill(0, 'SIGKILL'); } catch { if (run !== null) try { run.kill('SIGKILL'); } catch {} process.exit(1); } };",
+  "const stop = (why) => { report({ stop: why }); try { process.kill(0, 'SIGKILL'); } catch { if (run !== null) try { run.kill('SIGKILL'); } catch {} process.exit(1); } };",
   "for (const s of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(s, () => {});",
-  "process.stdin.on('end', stop);",
-  "process.stdin.on('error', stop);",
+  "process.stdin.on('end', () => stop('stdin-end'));",
+  "process.stdin.on('error', () => stop('stdin-error'));",
   'const [command, ...args] = JSON.parse(process.argv[1]);',
   "let line = '';",
   "process.stdin.setEncoding('utf8');",
-  "process.stdin.on('data', (chunk) => { if (run !== null) return; line += chunk; if (line.includes('\\n')) (line === 'go\\n' ? go : stop)(); });",
+  "process.stdin.on('data', (chunk) => { if (run !== null) return; line += chunk; if (line.includes('\\n')) { if (line === 'go\\n') go(); else stop('bad-go'); } });",
   'process.stdin.resume();',
   'function go() {',
   // Node throws some exec failures (ENOEXEC, ENOTDIR) and emits the others.
-  "try { run = spawn(command, args, { stdio: ['ignore', 'inherit', 'inherit'] }); } catch (err) { report({ error: err.code ?? err.message }); stop(); return; }",
-  "run.on('error', (err) => { report({ error: err.code ?? err.message }); stop(); });",
-  "run.on('exit', (code, signal) => { report({ code, signal }); stop(); });",
+  "try { run = spawn(command, args, { stdio: ['ignore', 'inherit', 'inherit'] }); } catch (err) { report({ error: err.code ?? err.message }); stop('spawn-error'); return; }",
+  "run.on('error', (err) => { report({ error: err.code ?? err.message }); stop('spawn-error'); });",
+  "run.on('exit', (code, signal) => { report({ code, signal }); stop('command-exit'); });",
   '}',
 ].join('\n');
+
+const REPORT_HEAD = 200;
+
+/**
+ * What a supervisor wrote on fd 3: `report`, the first line that is not a stop
+ * line, parsed (null when there is none, or it is no JSON object: no evidence
+ * of how the command ended), and `stop`, the reason of the first stop line.
+ */
+export function readSupervisorReport(text) {
+  let report = null;
+  let stop = null;
+  let candidate = null;
+  for (const l of text.split('\n')) {
+    if (l === '') continue;
+    let v;
+    try { v = JSON.parse(l); } catch { v = undefined; }
+    const isStop = v !== null && typeof v === 'object' && !Array.isArray(v)
+      && Object.keys(v).length === 1 && typeof v.stop === 'string';
+    if (isStop) { stop ??= v.stop; continue; }
+    if (candidate !== null) continue;
+    candidate = l;
+    if (v !== null && typeof v === 'object' && !Array.isArray(v)) report = v;
+  }
+  return { report, stop, candidate };
+}
+
+/**
+ * How a supervisor ended, for the driver's own records (the status file's
+ * `ended` line, the check's log, the verify journal; never a persona record):
+ * its exit `code` and `signal` from its close, the `stop` reason it wrote
+ * (null: no stop line was received), the bytes it wrote on fd 3, and, when they
+ * hold no report, their first bytes. No sender of a signal is recorded: Node
+ * reports none (its handlers carry no siginfo, and SIGKILL is not caught).
+ */
+export function supervisorEnd(close, text) {
+  const { report, stop } = readSupervisorReport(text);
+  const end = {
+    code: Number.isInteger(close?.code) ? close.code : null,
+    signal: typeof close?.signal === 'string' ? close.signal : null,
+    stop,
+    report_bytes: Buffer.byteLength(text, 'utf8'),
+  };
+  if (report === null && text !== '') end.report_head = text.slice(0, REPORT_HEAD);
+  return end;
+}
+
+/** The supervisor's end in words, for the check's log. */
+export function supervisorEndText(end) {
+  const how = end.signal !== null ? `signal ${end.signal}` : `exit code ${end.code ?? 'unknown'}`;
+  const stop = end.stop !== null ? `its stop: ${end.stop}`
+    : end.signal !== null ? 'no stop line received (most likely a signal it did not send)' : 'no stop line received';
+  return `the supervisor ended by ${how}, ${stop}, ${end.report_bytes} report bytes`;
+}
 
 const signalNumber = (signal) => osConstants.signals[signal] ?? 1;
 // How often the wrapper looks for the driver's go file.
@@ -351,7 +413,7 @@ async function runHeld(handle, command, { env, err, pollMs, reportMs, beforeGo, 
   }
   const closed = new Promise((done) => {
     sup.on('error', (e) => done({ error: e }));
-    sup.on('close', () => done({}));
+    sup.on('close', (code, signal) => done({ code, signal }));
   });
   // Emitted, with no pid: EMFILE and ENFILE leave its pipes unset too.
   if (sup.pid === undefined) {
@@ -370,10 +432,10 @@ async function runHeld(handle, command, { env, err, pollMs, reportMs, beforeGo, 
     entry = registerGroup(handle.ownership, sup.pid);
   } catch (e) {
     try { process.kill(-sup.pid, 'SIGKILL'); } catch { /* gone */ }
-    await closed;
+    const close = await closed;
     await releaseLock();
     err(`heavy: ${e.message}; the command was not started`);
-    status({ state: 'ended', refused: e.message });
+    status({ state: 'ended', refused: e.message, supervisor: supervisorEnd(close, reportText) });
     return 125;
   }
   const g = { pgid: sup.pid, started: entry.leaderStarted };
@@ -391,7 +453,10 @@ async function runHeld(handle, command, { env, err, pollMs, reportMs, beforeGo, 
     sup.stdin.write('go\n');
     status({ state: 'running', pgid: g.pgid });
   } else signalGroup(g.pgid, g.started, 'SIGKILL');
-  await closed;
+  const close = await closed;
+  // How the supervisor ended (C169), on each ended line from here on.
+  const supEnd = supervisorEnd(close, reportText);
+  const ended = (line) => status({ state: 'ended', ...line, supervisor: supEnd });
   // What is left of the group ends with the command.
   for (let said = Date.now(); groupState(g.pgid, g.started) === 'running';) {
     signalGroup(g.pgid, g.started, 'SIGKILL');
@@ -416,31 +481,31 @@ async function runHeld(handle, command, { env, err, pollMs, reportMs, beforeGo, 
   entry.unregister();
   await releaseLock();
   if (received() !== null) {
-    status({ state: 'ended', stopped: received() });
+    ended({ stopped: received() });
     return 128 + signalNumber(received());
   }
   if (unready) {
     err('heavy: the status file did not take the ready line; the command was not started');
-    status({ state: 'ended', refused: 'the status file did not take the ready line' });
+    ended({ refused: 'the status file did not take the ready line' });
     return 125;
   }
-  const line = reportText.split('\n').find((l) => l !== '');
-  let report = null;
-  try { report = line === undefined ? null : JSON.parse(line); } catch { /* none */ }
+  // The report alone says how the command ended: a supervisor that reported
+  // and then ended by its own stop's SIGKILL keeps its report.
+  const { report } = readSupervisorReport(reportText);
   if (report === null) {
-    err('heavy: the command\'s supervisor ended without reporting how the command ended');
-    status({ state: 'ended', refused: 'the command\'s supervisor ended without reporting how the command ended' });
+    err(`heavy: the command's supervisor ended without reporting how the command ended (${supervisorEndText(supEnd)})`);
+    ended({ refused: 'the command\'s supervisor ended without reporting how the command ended' });
     return 125;
   }
   if (report.error !== undefined) {
     err(`heavy: cannot run ${shown(command[0])}: ${shown(report.error)}`);
-    status({ state: 'ended', error: String(report.error) });
+    ended({ error: String(report.error) });
     return startFailureStatus(report.error);
   }
   if (Number.isInteger(report.code)) {
-    status({ state: 'ended', code: report.code });
+    ended({ code: report.code });
     return report.code;
   }
-  status({ state: 'ended', signal: report.signal });
+  ended({ signal: report.signal });
   return 128 + signalNumber(report.signal);
 }
