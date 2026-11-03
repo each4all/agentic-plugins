@@ -5479,3 +5479,98 @@ pinned by the mutations of group T7.
   and verify-exec-driver's lanes cases still run
   `test-autopilot-verify-lanes.mjs`. The lanes tests that II8, II9 and II13
   name in `test-autopilot-verify-lanes.mjs` are in the new file now.
+
+## Implementation note 2026-11-03 — C168 (the owner's forced verification step below HIGH)
+
+A fix in the orchestrator package to Decision 5, items 2, 6 and 7, as
+verify-exec implemented them. It adds no guarantee and changes no persona
+record. Found in Macro 5 on impl-instruct: `classify` (`policy.mjs`) halted
+a `verify` next step below HIGH `low-confidence` before the resume rule. So
+after the owner forced a MEDIUM request with `--lane X --next verify` the
+batch ran, but the next look halted `low-confidence` again, whatever the
+batch's end, instead of resuming the requesting verb. Every batch took
+another forced step. A pass was not affected: `verify-pass` makes `on_pass`
+the next step, which the policy judges on its own confidence. Two decisions,
+then what the code does.
+
+**FV1. Scope.** The owner's forced step authorizes running that request's
+checks and resuming its requesting verb. The authorization is bound to the
+workflow (the journal is per workflow), to the request id, and to the batch
+history in the driver's own verification journal. That history is driver
+metadata, never the persona's record, which the worker can write. `on_pass`
+keeps its own confidence: after a pass, a MEDIUM `on_pass` still halts and a
+HIGH one is dispatched. A request below HIGH that the owner has not forced
+still halts before anything runs.
+
+**FV2. Lifetime.** The authorization ends when the request is replaced (a new
+request has another id), answered (its `on_pass` is the next step), or set
+aside (a `verify-batch-restart` of a record the journal does not hold whole).
+A replacement request, an instruction's step and another lane never inherit
+it. A journal written before this fix marks no batch, so its batches read as
+unforced.
+
+**FV3. The mark** (`verify-run.mjs` `runStep`). A batch the owner's forced
+step starts, restarts or continues carries `meta.forced: true` on its
+journal start, beside the requesting verb, the base and the subtask the start
+already kept. The serial driver and the scheduler tell the step it is the
+owner's (`job.forced`, from the forced step's `forced`).
+
+**FV4. The authorization** (`verify-journal.mjs` `forcedAuthority`). It
+starts at the latest batch the record names and walks back through the
+batches the journal started for the request, each continuing the one before,
+to a start marked forced. Every hop is the journal's start of that request
+and of that subtask. A restart continues nothing, so the walk stops at one
+unless the owner's own rerun made it. So a continuation of a forced batch is
+covered, whether it continues a dead driver's open batch or one cut short.
+The record is the worker's, and it names the batch the walk starts from. So
+that batch must be the last one the journal started for the request. A
+record put back to an earlier batch then revives nothing, for example one
+whose continuation has since passed and been answered (found by the
+compose step's Codex peer). A driver that died after journalling a start whose
+persona write never landed fails closed the same way: the owner forces the
+request again. `verifyFacts` gives the policy the result as `forced`,
+beside `resume`, for a pending request.
+
+**FV5. The policy** (`classify`). A `verify` next step below HIGH halts
+`low-confidence` unless `forced` names this very request (its id equal to the
+child's request id). Otherwise the branch goes on as at HIGH: the resume rule
+(a batch that ended failed or with no evidence, the journal's `resume` line
+on the record it was decided on), else the verification step, which ends an
+open batch, continues one cut short, or answers a pass the driver journalled
+before the record took it.
+
+**FV6. The step's own refusal** (`runStep`). Below HIGH, a step that is not
+the owner's runs nothing unless the authorization covers the record's latest
+batch; it halts `low-confidence`, writing nothing. Every plan such a step
+makes is held to the authorization's end, including the plan made after it
+ends an open batch, when it reads the record again. A plan that would set
+the record aside (`restart`) or start a batch that continues none halts
+`low-confidence` too, naming the rerun, because the set-aside ends the
+authorization. The guard sits in the step's one planning function, so no
+plan escapes it (the peer found the first version checking only the first
+plan). This does not weaken the policy's halt; it only bounds a step decided
+on facts that a concurrent edit made stale.
+
+**What it does not do.** A forced step that yields before its batch starts (a
+hold, a drain, an interrupt) journals nothing, so no authorization exists
+yet. A run with lanes gives the forced step back and takes it again within
+the run (scheduler, as before). A relaunch halts `low-confidence` again, and
+the owner forces it again. The trust limit of the journal (V2) applies
+unchanged: a worker that forges journal lines is outside this model.
+
+**Tests.** `tests/orchestrator/test-autopilot-verify-forced.mjs` covers the
+journal's walk (a forced batch and its continuations; no mark; a restart;
+another request, subtask or batch; a loop), the policy serial and with lanes,
+and the step on a real persona record and journal. The step cases are: a
+forced MEDIUM batch that fails, or ends with no evidence, and resumes the
+verb; one that passes, with a HIGH or a MEDIUM `on_pass`; an interruption
+before the start; a dead driver's open batch; a batch cut short, and a
+continuation of it cut short in turn, which fails at the next; a crash
+between the journal's pass and the record's; a tree changed after the pass;
+a record set aside; a record put back after its continuation was answered;
+and an edit, made through a wrapped persona CLI once a dead driver's open
+batch is ended, that sets the record aside or empties it. `tests/orchestrator/test-autopilot-verify-forced-driver.mjs`
+runs the serial driver and the scheduler end to end. The mutation spec
+`scripts/mutation-specs/verify-forced.mjs` breaks each piece (F1–F12 against
+the step and policy file, G1–G3 end to end). `verify-exec-driver.mjs` D5 now
+anchors on the changed condition.

@@ -398,6 +398,12 @@ function classify(subtask, child, landing, verify = null) {
     // or, once the journal holds its batch ended failed or with no evidence,
     // the requesting verb, which reads the results; below HIGH it halts
     // low-confidence before anything runs. A run that offers none halts.
+    // C168 (implementation note 2026-11-03) — unless the owner's forced step
+    // ran a batch of this very request (`vf.forced`, from the driver's
+    // journal, never the persona's record): the owner's word authorizes its
+    // checks and the resume of its requesting verb, so the rest of this
+    // branch applies as at HIGH. The on_pass a pass makes the next step is
+    // judged on its own confidence below.
     const vf = verify?.facts?.[id] ?? null;
     if (ns?.kind === 'verify') {
       const label = `verify @ ${ns.confidence}`;
@@ -405,7 +411,8 @@ function classify(subtask, child, landing, verify = null) {
         return { kind: 'halt', runWide: true, halt: halt('owner-choice', verifyRefusalText(id, label, verify?.why ?? null), { subtaskId: id, pointer: pointerOf('next_step'), scope: 'run' }) };
       }
       if (!CONFIDENCES.includes(ns.confidence)) return stop('owner-choice', `subtask ${id}: next step ${JSON.stringify(ns)} is outside the closed enums`);
-      if (ns.confidence !== 'HIGH') {
+      const ownerForced = typeof vf?.forced?.batch_id === 'string' && vf.forced.request_id === child.verify?.request_id;
+      if (ns.confidence !== 'HIGH' && !ownerForced) {
         return { kind: 'active', judgment: true, halt: halt('low-confidence', `subtask ${id}: ${label}: the requested checks are not run below HIGH`, { subtaskId: id, pointer: pointerOf('next_step') }) };
       }
       if (vf?.resume && vf.resume.request_id === child.verify?.request_id && VERBS.includes(vf.resume.verb)) {

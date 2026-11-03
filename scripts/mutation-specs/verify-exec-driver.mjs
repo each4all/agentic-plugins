@@ -48,7 +48,7 @@ export const MUTATIONS = [
   },
   {
     id: 'D5', file: `${AP}/policy.mjs`, tests: [T_DRV],
-    from: "      if (ns.confidence !== 'HIGH') {\n        return { kind: 'active', judgment: true, halt: halt('low-confidence', `subtask ${id}: ${label}: the requested checks are not run below HIGH`",
+    from: "      if (ns.confidence !== 'HIGH' && !ownerForced) {\n        return { kind: 'active', judgment: true, halt: halt('low-confidence', `subtask ${id}: ${label}: the requested checks are not run below HIGH`",
     to: "      if (false) {\n        return { kind: 'active', judgment: true, halt: halt('low-confidence', `subtask ${id}: ${label}: the requested checks are not run below HIGH`",
     why: 'a request below HIGH runs its checks, where ADR-0063 D4 halts it low-confidence',
     killed_by: /a request below HIGH halts low-confidence and runs nothing/,

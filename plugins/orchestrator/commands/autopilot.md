@@ -100,7 +100,14 @@ verification when the pinned engineer has the record CLI and the repository's
 committed `.agentic-plugins/verify-checks.json` parses at the run's baseline: a
 step that ends with next step `verify` then has its checks run by the driver,
 with no worker and no cost, and `--next verify` reruns a request once past the
-repeat rule (ADR-0068 Decision 5; the README's *Verification batches*). Lanes need
+repeat rule (ADR-0068 Decision 5; the README's *Verification batches*). A
+request below HIGH halts `low-confidence` before anything runs; the owner's
+`--next verify` on it authorizes that request's checks and the resume of its
+requesting verb, so after a batch that fails or gives no evidence the verb
+resumes with no second `--next` (the authorization ends when the request is
+replaced, answered or set aside, and a new request, an instruction or another
+lane never inherits it), while a pass's `on_pass` keeps its own confidence
+(ADR-0068 implementation note 2026-11-03). Lanes need
 shared creation on (`docs/runbooks/state-root-cutover.md`); `preview --lanes 2`
 shows the lanes it would reconcile and the first steps. A halt prints the
 relaunch command with the run's `--macro` and `--lanes`.
