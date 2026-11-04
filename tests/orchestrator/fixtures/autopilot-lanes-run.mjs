@@ -71,6 +71,16 @@ export async function setup({ scenario, subtasks = [{ id: 'A' }, { id: 'B' }], r
 }
 
 export const stepsOf = (r) => r.steps.map((s) => [s.seq, s.lane, s.kind, s.subtask_id, s.outcome]);
+// Each lane's steps in its own order, `<kind> <outcome>`: what a lane did,
+// whatever order the scheduler admitted the lanes' steps in (C167).
+export const laneSteps = (r) => {
+  const by = new Map();
+  for (const s of [...r.steps].sort((a, b) => a.seq - b.seq)) {
+    if (!by.has(s.lane)) by.set(s.lane, []);
+    by.get(s.lane).push(`${s.kind} ${s.outcome}`);
+  }
+  return Object.fromEntries(by);
+};
 export const bySubtask = (r) => Object.fromEntries((r.run.lanes?.lanes ?? []).map((l) => [l.subtask_id, l]));
 
 // Writes <name> beside the scenario once a line the run prints matches.

@@ -161,16 +161,18 @@ describe('a lane\'s park and its pickup (ADR-0068 Decision 4, item 3)', () => {
   });
 
   it('a step that fails in a lane: its step-failed, then its lane\'s park at the same step', async () => {
-    const t = await setup({ scenario: { A: { next: [COMMIT], file: 'a.txt' }, B: { next: [COMMIT], file: 'b.txt' }, actions: { 3: 'report-failed' } } });
+    const t = await setup({ scenario: { A: { next: [COMMIT], file: 'a.txt' }, B: { next: [COMMIT], file: 'b.txt' }, actions: { 'commit:A': 'report-failed' } } });
     try {
       strictEqual(await t.run(), 2, t.lines.join('\n'));
       const r = t.latest();
       const ls = linesOf(t, r);
-      const failed = r.steps.find((s) => s.seq === 3);
+      // A's commit, whatever seq the scheduler gave it (C167).
+      const failed = r.steps.find((s) => s.lane === 'A' && s.kind === 'commit');
+      ok(failed && failed.outcome !== 'ok', JSON.stringify(r.steps));
       const f = ls.filter((e) => e.kind === 'step-failed');
-      deepStrictEqual(f.map((e) => [e.subtask_id, e.step, e.reason, e.abort, e.pointer]), [[failed.subtask_id, 3, failed.outcome, null, join(r.dir, 'steps.jsonl')]]);
+      deepStrictEqual(f.map((e) => [e.subtask_id, e.step, e.reason, e.abort, e.pointer]), [['A', failed.seq, failed.outcome, null, join(r.dir, 'steps.jsonl')]]);
       const p = ls.filter((e) => e.kind === 'lane-parked');
-      deepStrictEqual(p.map((e) => [e.subtask_id, e.reason, e.step]), [[failed.subtask_id, failed.outcome, 3]]);
+      deepStrictEqual(p.map((e) => [e.subtask_id, e.reason, e.step]), [['A', failed.outcome, failed.seq]]);
       ok(ls.indexOf(f[0]) < ls.indexOf(p[0]));
     } finally {
       t.fx.cleanup();

@@ -26,7 +26,10 @@
 // the start) and "mark:<name>" (write it at the end); "pause:<ms>" waits that
 // long at the start, after its waits; "heavy:<name>" holds the heavy-work
 // lock from the start until <name>.release appears (see below). An action keyed "dispatch:<subtask>"
-// applies to that subtask's dispatch, whatever its seq. `"events": { "<seq>":
+// applies to that subtask's dispatch, whatever its seq, and one keyed
+// "commit:<subtask>", "verb:<subtask>" or "done:<subtask>" to that step of the
+// subtask's lane: a key the admission order of lanes cannot move, where a seq
+// is the order the scheduler admitted steps in (C167). `"events": { "<seq>":
 // [<rate_limit_info>…] }` emits those rate_limit_events into the step's stream
 // before its Stop hooks run (the stream's first one, after init, is the fake's
 // FAKE_RATE_LIMIT).
@@ -67,10 +70,29 @@ export async function perform({ prompt, cwd, env }) {
     seq = String(count.steps);
   }
   const ledgerCheck = path.join(dir, `ledger-${seq}.json`);
-  // A dispatch's actions may be keyed by its subtask too ("dispatch:<id>"),
-  // which no admission order moves.
+  // A step's actions may be keyed by its kind and subtask too, which no
+  // admission order moves (C167): "dispatch:<id>" for /orchestrator:next <id>,
+  // "commit:<id>" for /engineer:commit and "verb:<id>" for another engineer
+  // verb in the lane of subtask <id> (the subtask of the workflow active in
+  // the worker's checkout), "done:<id>" for /orchestrator:done <id> (with
+  // --no-commit or without). "verb:<id>" applies to each such verb step.
   const dispatched = /^\/orchestrator:next (\S+) /.exec(prompt)?.[1] ?? null;
-  const actionList = [scenario.actions?.[seq] ?? [], dispatched ? scenario.actions?.[`dispatch:${dispatched}`] ?? [] : []].flat();
+  const stepKey = await (async () => {
+    if (dispatched) return `dispatch:${dispatched}`;
+    const done = /^\/orchestrator:done (\S+)/.exec(prompt)?.[1];
+    if (done) return `done:${done}`;
+    const verb = /^\/engineer:([a-z]+)$/.exec(prompt)?.[1];
+    const kind = verb === 'commit' ? 'commit' : 'verb';
+    // Only a scenario with such a key looks the lane's subtask up.
+    if (!verb || !Object.keys(scenario.actions ?? {}).some((k) => k.startsWith(`${kind}:`))) return null;
+    const engCli = path.join(env.AGENTIC_ENGINEER_ROOT, 'scripts', 'state.mjs');
+    const active = execFileSync(node, [engCli, 'find-active', '--repo-root', cwd], { env, encoding: 'utf8' }).trim();
+    if (!active) return null;
+    const { readWorkflow } = await import(engCli);
+    const subtask = (await readWorkflow(active)).frontmatter.originating_subtask;
+    return typeof subtask === 'string' && subtask ? `${kind}:${subtask}` : null;
+  })();
+  const actionList = [scenario.actions?.[seq] ?? [], stepKey ? scenario.actions?.[stepKey] ?? [] : []].flat();
   for (const a of actionList) {
     if (a.startsWith('mark-start:')) fs.writeFileSync(path.join(dir, a.slice('mark-start:'.length)), seq);
   }

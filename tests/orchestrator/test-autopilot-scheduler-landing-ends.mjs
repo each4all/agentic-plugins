@@ -22,7 +22,7 @@ import { join, resolve } from 'node:path';
 
 import { ORCH } from './fixtures/autopilot-repo.mjs';
 import {
-  AP, bySubtask, COMMIT, CRITIQUE, hour, L, LN, markOn, OPEN, ROOTS, setup, stepsOf,
+  AP, bySubtask, COMMIT, CRITIQUE, hour, L, laneSteps, LN, markOn, OPEN, ROOTS, setup,
 } from './fixtures/autopilot-lanes-run.mjs';
 
 const SR = await import(resolve(AP, '../../../scripts/lib/state-root.mjs'));
@@ -47,7 +47,7 @@ describe('landing reports with lanes', () => {
   // run; the drain's last look fails, or the owner interrupts it.
   const lastLook = async (mode) => {
     const t = await setup({
-      scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT] }, actions: { 2: ['wait:a-reported', 'mark:drift'] } },
+      scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT] }, actions: { 'dispatch:B': ['wait:a-reported', 'mark:drift'] } },
     });
     markOn(t, /^◆ landing-ready: A on feat\/a /, 'a-reported');
     markOn(t, /^■ version-drift/, 'drained');
@@ -135,7 +135,7 @@ describe('landing reports with lanes', () => {
     // commit settles, A lands and the owner interrupts the run: the settling
     // look is the run's last.
     const t = await setup({
-      scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT], file: 'b.txt' }, actions: { 2: ['wait:a-reported'] } },
+      scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT], file: 'b.txt' }, actions: { 'dispatch:B': ['wait:a-reported'] } },
     });
     markOn(t, /^◆ landing-ready: A on feat\/a /, 'a-reported');
     let interrupted = false;
@@ -151,7 +151,7 @@ describe('landing reports with lanes', () => {
       strictEqual(await t.run({}, { observeAsync }), 2, t.lines.join('\n'));
       ok(interrupted && !existsSync(join(t.dir, 'a-reported.timeout')), t.lines.join('\n'));
       const r = t.latest();
-      deepStrictEqual(stepsOf(r).map((x) => [x[1], x[2], x[4]]), [['A', 'dispatch', 'ok'], ['B', 'dispatch', 'ok'], ['A', 'commit', 'ok'], ['B', 'commit', 'interrupted']]);
+      deepStrictEqual(laneSteps(r), { A: ['dispatch ok', 'commit ok'], B: ['dispatch ok', 'commit interrupted'] });
       strictEqual(r.halt.reason, 'interrupted');
       deepStrictEqual(r.landing.map((x) => [x.subtask_id, x.sync.state]), [['A', 'ready']], 'B was never reported: the run was interrupted first');
       strictEqual(bySubtask(r).A.waiting, undefined, `A landed: ${JSON.stringify(bySubtask(r).A)}`);
@@ -184,7 +184,7 @@ describe('landing reports with lanes', () => {
     // A commits and is reported ready; B's dispatch then ends on its conflict
     // gate, which drains the run. A lands just before the end's own look.
     const t = await setup({
-      scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT] }, actions: { 2: ['wait:a-reported', 'conflict-gate'] } },
+      scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT] }, actions: { 'dispatch:B': ['wait:a-reported', 'conflict-gate'] } },
     });
     markOn(t, /^◆ landing-ready: A on feat\/a /, 'a-reported');
     let landed = false;
@@ -212,7 +212,7 @@ describe('landing reports with lanes', () => {
   it('a failed look feeds the run\'s list too: when the end\'s own look fails, a lane reported ready is unknown', async () => {
     // As above, but the end's own look fails instead.
     const t = await setup({
-      scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT] }, actions: { 2: ['wait:a-reported', 'conflict-gate'] } },
+      scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT] }, actions: { 'dispatch:B': ['wait:a-reported', 'conflict-gate'] } },
     });
     markOn(t, /^◆ landing-ready: A on feat\/a /, 'a-reported');
     const { failedView } = await import(resolve(AP, 'offloop.mjs'));

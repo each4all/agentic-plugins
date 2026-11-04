@@ -436,12 +436,19 @@ export const MUTATIONS = [
     why: 'the printed fetch leaves origin/<baseline> stale under a narrower mapping, and the merge takes the old tip',
     killed_by: [T_FRESH, T_A_THEN_B],
   },
+  // F14 (the drain's feed skipped when its last look failed) is retired as
+  // an equivalent mutation: every look feeds the run's list as it returns
+  // (`look`, C128), so a failed look has already left each lane unknown, and
+  // the drain's second feed of it changes nothing. Measured (C167): it
+  // survives every scheduler test on the C167 tree, and the two tests it
+  // named on 1e80c12e before it. The drain's feed matters when its look
+  // reported, which F56 breaks.
   {
-    id: 'F14', file: SCHEDULER, tests: T_SCHED,
+    id: 'F56', file: SCHEDULER, tests: T_SCHED,
     from: DRAIN_RECONCILE,
-    to: '        if (v.lookError || v.macroLookupError) void 0; else feed(v, reported);',
-    why: 'a drain whose last look failed keeps a lane ready from an older look, after the integration branch may have moved, and one that cannot read the macro drops every waiting lane',
-    killed_by: [T_DRAIN_FAILS, T_DRAIN_MACRO],
+    to: '        feed(v, false);',
+    why: 'a drain\'s last look reports, but its report never gives the run\'s list its facts: a commit made while the run drained, reported ready, ends the run unknown',
+    killed_by: T_DRAIN,
   },
   {
     id: 'F15', file: SCHEDULER, tests: T_SCHED,
