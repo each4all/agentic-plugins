@@ -302,7 +302,7 @@ describe('a parked lane is woken for every change after the facts of its park', 
     const t = await setup({
       scenario: {
         A: { next: [COMMIT], file: true }, B: { next: [COMMIT], file: 'b.txt' },
-        actions: { 1: `gate:${GATE}`, 2: ['mark-start:b-started', 'wait:a-resumed'], 3: 'mark-start:a-resumed' },
+        actions: { 'dispatch:A': `gate:${GATE}`, 'dispatch:B': ['mark-start:b-started', 'wait:a-resumed'], 'commit:A': 'mark-start:a-resumed' },
       },
     });
     let cleared = false;
@@ -320,8 +320,8 @@ describe('a parked lane is woken for every change after the facts of its park', 
       ok(t.lines.some((l) => l.startsWith('■ lane A: ')), 'A parked on its gate as it was decided');
       ok(!existsSync(join(t.dir, 'a-resumed.timeout')), 'A stepped again while B was still in its step');
       const r = t.latest();
-      const [b2, a3] = [r.steps.find((x) => x.seq === 2), r.steps.find((x) => x.lane === 'A' && x.kind === 'commit')];
-      ok(a3 && Date.parse(a3.started_at) < Date.parse(b2.ended_at), 'A\'s commit started before B\'s dispatch ended');
+      const [b2, a3] = [r.steps.find((x) => x.lane === 'B' && x.kind === 'dispatch'), r.steps.find((x) => x.lane === 'A' && x.kind === 'commit')];
+      ok(a3 && b2 && Date.parse(a3.started_at) < Date.parse(b2.ended_at), 'A\'s commit started before B\'s dispatch ended');
       deepStrictEqual(events(r, 'A'), ['parked', 'resumed']);
     } finally {
       t.fx.cleanup();
@@ -334,7 +334,7 @@ describe('a parked lane is woken for a change made while it is judged', () => {
     const t = await setup({
       scenario: {
         A: { next: [COMMIT], file: true }, B: { next: [COMMIT], file: 'b.txt' },
-        actions: { 1: `gate:${GATE}`, 2: ['mark-start:b-started', 'wait:a-resumed'], 3: 'mark-start:a-resumed' },
+        actions: { 'dispatch:A': `gate:${GATE}`, 'dispatch:B': ['mark-start:b-started', 'wait:a-resumed'], 'commit:A': 'mark-start:a-resumed' },
       },
     });
     let cleared = false;
