@@ -2013,6 +2013,106 @@ index was written is not missed (racy git). Tests:
 `tests/persona-pipeline/_review-scope-suite.mjs` (real repositories, every
 persona, run by one `test-review-scope-<persona>.mjs` each); `scripts/mutation-specs/review-scope.mjs`.
 
+## Implementation note 2026-11-04 — a verb step's evidence (C163)
+
+**The gap.** The step postconditions (S8 above) covered a dispatch, a commit,
+a done and a finalize; a dispatch was held only to leave its subtask in
+progress with an active child, and a later engineer verb step to nothing but
+`no-progress`. The fingerprint holds the child's next step and its event
+count, so a worker that only rewrote `next_step` (to `commit @ HIGH`, say)
+passed, on the dispatch's first verb or any later verb, and the driver
+followed it. The look's git facts were HEAD and the porcelain status, which an
+edit of a file it already lists leaves as they were.
+
+**The rule.** From facts the observer reads itself, never from the worker's
+report:
+
+1. *Evidence of the verb.* A step that runs a verb (a dispatch's first verb,
+   and every later verb step, a verification resumption included) must leave
+   at least one new `### Phase 1: <Verb> (synthesized)` section of that verb
+   in its child's phase notes (the headings after the body's `## Phase
+   notes`, never the request quoted before it), with text under its synthesis
+   or its artifact (a subsection other than `Ensemble launched …` and `Active
+   next-action proposal`; a fence delimiter is not text), in what the step
+   appended: the body the look before the step read must be the start of the
+   body after it, and the section must begin past it. So a heading put in
+   front of old findings does not make them new. The verb is the step's; a
+   dispatch whose subtask names none is judged by the verb its child recorded
+   at dispatch (`dispatched_verb`), or else by any verb. A dispatch's child is
+   new, so its baseline is an empty body; only a dispatch's is. A later verb
+   step is bound to the child the look before it read: when that look holds
+   no child for the subtask, one with another workflow id, or one it could not
+   resolve (an `error` child), its old sections would count as new, so the
+   step halts. A later verb step must also leave
+   its child active (only `/engineer:commit` closes a workflow under
+   autopilot), so a step that archives its child, completes its subtask or
+   archives the macro cannot leave the rule with nothing to judge. Otherwise
+   the step halts `owner-choice` on its subtask with no pointer, the shape of
+   every postcondition, its detail naming the missing section; so does a look
+   that could not read the notes before or after the step, and a step that
+   changed the notes before it.
+2. *Legitimate no-change outcomes.* A verb that concludes nothing changes
+   records that in its own section (a refine's `### Changes applied` saying
+   none, a critique's findings, a compose of a plan) and passes; no verb is
+   required to change a file, and a file changed never stands in for the
+   section.
+3. *Content progress.* The look also projects the content of the checkout's
+   files (`lane-digest.mjs` `contentProjection`: the tree its non-ignored
+   files make through a temporary index, without HEAD, without
+   `.agentic-plugins/state` and `.agentic-plugins/runs`, and with each
+   checked-out submodule by its own projection in place of its gitlink, so a
+   commit inside one is no content either). `no-progress` (and
+   the C127 peers-only check) hold a step unchanged only when its fingerprint
+   and that content are both unchanged, so an edit of an already-modified file
+   is progress. A look that could not project it compares as before. The
+   projection is no fingerprint's, so no park record changes version, and it
+   is never evidence of a verb.
+4. *Kept as they are.* An owner-forced step (the owner named it), a verify
+   step (it runs no verb), and a step whose child now records an owner gate
+   (the gate halts the next decision for the owner) are not held to rule 1.
+
+**Where.** `stepEvidence` and `contentMoved` in `policy.mjs`; the serial
+driver and the scheduler call `stepEvidence` after a step's other checks and
+after the peers a step left are settled (C127), so that accounting still runs
+before it. The observer reads the phase notes as the artifact they are
+(`phase-evidence.mjs`): no engineer CLI prints a workflow's body, and ADR-0010
+§5 forbids an import, not reading an artifact, so its header now says "CLIs
+and git", with this one read. The six `--phase-label` literals of the
+engineer's finalize blocks are held equal to its grammar by a test, and a body
+it does not recognize (no `## Phase notes`) is no evidence, which halts. The
+grammar reads the request before `## Phase notes` as no markdown (its first
+such line ends it), so a fence there cannot hide the notes, and inside the
+notes it opens a backtick fence only as CommonMark 4.5 does (an info string
+with no backtick), so a note line such as "```a``` inline" swallows no later
+section.
+
+**Limits.** This proves a recorded completion, not the truth of the worker's
+analysis: a fabricated section with text passes, and so does a note appended
+twice. A dispatch's child is taken as new, which the look cannot prove (it
+observes no child of a pending subtask, and the claims it reads are active
+workflows only): a worker that brings back an archived workflow of the
+subtask as its child passes on that workflow's old sections, as one that
+fabricates a section does. When a step fails the rule and something the next decision would
+diagnose more precisely (a plan revised past its approval, a peer left
+pending) both hold, the step's halt is the one reported; the other shows at
+the next run. A child archived between the look's read of its frontmatter and
+of its body reads as unreadable notes, a halt, with no retry (a verb step
+under autopilot archives nothing). The look keeps each child's body in its
+view, and projects the content with a `git add -A` into a temporary index at
+every look (about 0.1–0.3 s measured on this repository). The content projection
+trusts each entry's stat as `git status` does, so an edit whose file times
+were put back is not seen (the step then reads as no progress, a halt). The
+blank lines the engineer's writes add before a body are dropped before the
+comparison, since they are no change of the notes. A fence a note opens and
+never closes runs to the end of the body, as in CommonMark, and hides the
+sections after it: the step halts, a limit that fails closed.
+
+Tests: `tests/orchestrator/test-autopilot-step-evidence.mjs` (the grammar,
+the rule, the projection) and `test-autopilot-step-evidence-runs.mjs` (the
+serial driver and the scheduler end to end, through the scripted worker's
+`handoff-only`, `no-change` and `edit-only` steps);
+`scripts/mutation-specs/autopilot-step-evidence.mjs`.
+
 ## References
 
 - ADR-0001 (honest scope)

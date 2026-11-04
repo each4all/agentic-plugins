@@ -110,7 +110,7 @@ import {
 import { parseWorkflowFile } from '../../../scripts/state.mjs';
 import {
   afterUnread, checkoutProblem, compareKept, consensusProposals, decideLanes, fingerprint, forcedForLanes, haltScope,
-  laneFingerprint, modelFor, PARK_FINGERPRINT_VERSION, parkFingerprint, peersOnlyProgress, proposalsAtEnd, renderStep,
+  laneFingerprint, modelFor, PARK_FINGERPRINT_VERSION, parkFingerprint, peersOnlyProgress, proposalsAtEnd, renderStep, stepEvidence,
   RUN_WIDE_REASONS, STEP_KINDS, verifyStep, waitingToLand,
 } from './policy.mjs';
 import { driftOf, PLUGINS, resolveRoots } from './roots.mjs';
@@ -2330,6 +2330,9 @@ export async function runLanes(c) {
         else if (targets.length > 0) verdict = peersOnlyProgress({ step: s, before: entry.before, after });
       }
     }
+    // C163 — a step that runs a verb must leave that verb's work in its
+    // child's phase notes; judged once the peers it left are accounted for.
+    if (!verdict) verdict = stepEvidence({ step: s, before: entry.before, after });
     // The verdict as the run judges it, and its scope, recorded on the
     // finished line so the next run recovers a marker in that scope. A step
     // outside every lane (finalize, a done) is the run's; a done whose worker

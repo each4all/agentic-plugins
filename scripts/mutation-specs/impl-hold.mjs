@@ -347,8 +347,8 @@ export const MUTATIONS = [
   },
   {
     id: 'D3', file: LD, tests: [TD],
-    from: "      h.update(`submodule ${rel} ${checkedOut ? treeDigest(sub).digest : `gitlink ${l.split(' ')[1]}`}\\n`);",
-    to: "      h.update(`submodule ${rel} ${`gitlink ${l.split(' ')[1]}`}\\n`);",
+    from: "      h.update(`submodule ${rel} ${checkedOut ? projectTree(sub, { withHead, exclude, trustStat, tag }).digest : `gitlink ${commit}`}\\n`);",
+    to: "      h.update(`submodule ${rel} ${`gitlink ${commit}`}\\n`);",
     why: "an edit inside a checked-out submodule leaves the digest unchanged",
     killed_by: /a checked-out submodule's edits move it/,
   },
@@ -461,8 +461,8 @@ export const MUTATIONS = [
   },
   {
     id: 'D9', file: LD, tests: [TD],
-    from: "    git(top, ['rm', '-r', '-q', '--cached', '--ignore-unmatch', '--', WORKTREE_LOCK_REL], env);",
-    to: "",
+    from: "  return projectTree(laneRoot, { withHead: true, exclude: [WORKTREE_LOCK_REL], trustStat: false });",
+    to: "  return projectTree(laneRoot, { withHead: true, exclude: [], trustStat: false });",
     why: "the release's own fence is in its basis where the lane does not ignore its runs, so its removal rejects the release",
     killed_by: /worktree lock is outside it/,
   },

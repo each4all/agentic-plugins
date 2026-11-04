@@ -7,7 +7,8 @@
 //
 // FAKE_SCENARIO names a JSON file: { "<subtask>": { "next": [<next_step>…],
 // "file": true|false }, "actions": { "<seq>": "noop"|"edit-plan"|"sleep"|
-// "bump-engineer"|"report-failed"|"pending-sleep"|"peer-sleep"|"pending-finished"|"peer-only" } } — `next` is the next step each verb of that subtask
+// "bump-engineer"|"report-failed"|"pending-sleep"|"peer-sleep"|"pending-finished"|"peer-only"|
+// "handoff-only"|"no-change"|"edit-only" } } — `next` is the next step each verb of that subtask
 // records, in order; `file` makes its first verb write a file to commit:
 // `<id>.txt` for true, or the path it names, holding `<id>` either way (two
 // subtasks naming one path conflict).
@@ -46,6 +47,16 @@
 // request, `{ kind: 'verify', confidence, checks, on_pass }`, which the verb
 // records through finish-verb --verify-request-file's API under the offer the
 // driver exported; its report names only the next step.
+//
+// C163: a dispatch's first verb, and every later verb, appends its
+// `### Phase 1: <Verb> (synthesized)` section with a synthesis and an artifact
+// before its last write, as the verb's finalize does; the driver judges each
+// such step by it. "handoff-only" leaves the section out: the step only
+// rewrites the next step. "no-change" writes the section a verb that
+// concludes nothing changes writes (and no file). "edit-only" makes a later
+// verb step change nothing but a file its subtask's dispatch wrote, still
+// uncommitted (an edit of a file the porcelain status already lists), and
+// report the state as it is, as "noop" does.
 
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -200,6 +211,16 @@ export async function perform({ prompt, cwd, env }) {
     await eng.recordPendingEnsemble({ workflowPath: filePath, phase: 'compose', ensemble_type: 'plan-verify', run_id: peerId });
     return [{ task_id: 'bt4', run_id: 'r-bt4', task_type: 'local_bash', description: 'the peer and a monitor' }];
   };
+  // C163 — the section a verb's finalize appends (the Phase 1 heading the
+  // engineer's runbooks write, then its synthesis and its artifact).
+  const synthesize = async (workflowPath, verb) => {
+    if (action === 'handoff-only') return;
+    const label = `${verb[0].toUpperCase()}${verb.slice(1)}`;
+    const note = action === 'no-change'
+      ? `### Ensemble skipped: ${verb} (local-only)\n\nScripted: the evidence shows nothing to change.\n\n### Changes applied\n\nNone: nothing to change.\n\n### Active next-action proposal\n\n- selected_next: commit`
+      : `### Ensemble skipped: ${verb} (local-only)\n\nScripted synthesis.\n\n### Artifact\n\nScripted artifact.\n\n### Active next-action proposal\n\n- selected_next: next`;
+    await eng.appendPhase({ workflowPath, host: 'claude', phaseLabel: `Phase 1: ${label} (synthesized)`, phaseNote: note, currentPhase: 'phase-2-presented', nextAction: 'next', event: 'updated' });
+  };
   // A verify next step's request rides beside it (verify-exec).
   const reported = (ns) => (ns ? { kind: ns.kind, verb: ns.verb ?? null, confidence: ns.confidence } : ns);
   const stepOf = (ns) => (ns?.kind === 'verify'
@@ -315,6 +336,7 @@ export async function perform({ prompt, cwd, env }) {
       await stopHooks();
       return finish({ report: { ...verbReport(wf, { kind: 'owner-decision', verb: null, confidence: 'HIGH' }), outcome: 'needs_owner', awaiting_owner: 'peer-conflict' } });
     }
+    await synthesize(filePath, sub.verb);
     await eng.finishVerb({ workflowPath: filePath, host: 'claude', nextAction: 'next', ...stepOf(ns) });
     // C127: a peer run left pending after the verb's last write (finish-verb
     // refuses one pending before it under autopilot), and the step ends on a
@@ -347,8 +369,18 @@ export async function perform({ prompt, cwd, env }) {
       await stopHooks();
       return finish({ report: verbReport(fm.workflow_id, ns), background });
     }
+    if (action === 'edit-only') {
+      // C163: only the file the dispatch wrote changes, which the porcelain
+      // status lists as it did; the report agrees with the state.
+      const own = scenario[fm.originating_subtask]?.file;
+      const rel = typeof own === 'string' ? own : `${String(fm.originating_subtask).toLowerCase()}.txt`;
+      fs.appendFileSync(path.join(cwd, rel), `edited at step ${seq}\n`);
+      const ns = fm.next_step_kind ? { kind: fm.next_step_kind, verb: fm.next_step_verb ?? null, confidence: fm.next_step_confidence } : null;
+      return finish({ report: verbReport(fm.workflow_id, ns) });
+    }
     await eng.appendPhase({ workflowPath: active, host: 'claude', verb: m[1], phaseLabel: `Phase 0: Resume into ${m[1]}`, currentPhase: 'phase-0-resume', clearNextStep: true, nextAction: 'run', event: 'resumed' });
     const ns = nextFor(fm.originating_subtask);
+    await synthesize(active, m[1]);
     await eng.finishVerb({ workflowPath: active, host: 'claude', nextAction: 'next', ...stepOf(ns) });
     await stopHooks();
     return finish({ report: verbReport(fm.workflow_id, reported(ns)) });
