@@ -1401,9 +1401,12 @@ export function verifyStep({ step: s, worker: w, before, after }) {
 
   // A step in a lane is judged by its lane's fingerprint, the views' `git`
   // being the lane's (ADR-0067 Decision 6); any other by the run-wide one.
-  const unchanged = s.lane
+  // C163 — and by the content of the checkout's files, which an edit of a
+  // file the porcelain status already lists moves where the fingerprint
+  // does not.
+  const unchanged = (s.lane
     ? laneFingerprint(before, s.subtaskId) === laneFingerprint(after, s.subtaskId)
-    : fingerprint(before) === fingerprint(after);
+    : fingerprint(before) === fingerprint(after)) && !contentMoved(before, after);
   if (unchanged) {
     return w.denials?.length
       ? halt('permission-denied', `no state changed, and the worker was denied: ${[...new Set(w.denials.map((d) => d.tool))].join(', ')}`, { subtaskId: s.subtaskId ?? null })
@@ -1420,10 +1423,92 @@ export function verifyStep({ step: s, worker: w, before, after }) {
  */
 export function peersOnlyProgress({ step: s, before, after }) {
   const opts = { withoutPeers: true };
-  const unchanged = s.lane
+  const unchanged = (s.lane
     ? laneFingerprint(before, s.subtaskId, opts) === laneFingerprint(after, s.subtaskId, opts)
-    : fingerprint(before, opts) === fingerprint(after, opts);
+    : fingerprint(before, opts) === fingerprint(after, opts)) && !contentMoved(before, after);
   return unchanged
     ? halt('no-progress', 'the step changed nothing but a peer run it left pending, which the run settled', { subtaskId: s.subtaskId ?? null })
     : null;
+}
+
+/**
+ * C163 (ADR-0063, implementation note of 2026-11-04) — whether the content of
+ * the checkout's files moved between two looks: both projected
+ * (observe.mjs, lane-digest.mjs contentProjection) and different. A look that
+ * could not project it leaves the no-progress rule as it was. It is a fact of
+ * progress only, never a fingerprint's and never evidence of a verb's work.
+ */
+export function contentMoved(before, after) {
+  const a = before?.git?.content;
+  const b = after?.git?.content;
+  return typeof a === 'string' && typeof b === 'string' && a !== b;
+}
+
+const verbLabel = (v) => (v ? `${v[0].toUpperCase()}${v.slice(1)}` : 'any verb');
+
+/**
+ * C163 (ADR-0063, implementation note of 2026-11-04) — the evidence a step
+ * that runs an engineer verb must leave: a dispatch's first verb, and every
+ * later verb step, a verification resumption included. Judged from the
+ * child's phase notes as the observer read them (phase-evidence.mjs), never
+ * from the worker's report: the body the look before the step read must be
+ * the start of the body after it (the body is append-only), and what the step
+ * appended must hold at least one `### Phase 1: <Verb> (synthesized)` section
+ * of the step's verb with its synthesis or artifact. A verb that concludes
+ * nothing changes records that in such a section and passes; a step that only
+ * rewrote the next step halts, as a postcondition does (`owner-choice`, its
+ * subtask, no pointer). A later verb step must leave its child active: under
+ * autopilot only /engineer:commit closes a workflow, so a verb step after which
+ * its subtask's child is gone, archived or no longer observed (its subtask
+ * moved on, or the macro archived) halts too.
+ *
+ * Not judged: an owner-forced step (the owner named it), a verify step (it
+ * runs no verb), and a step whose child now records an owner gate (the gate
+ * halts the next decision for the owner). The drivers call it after the
+ * peers a step left are settled (driver.mjs, scheduler.mjs), so that
+ * accounting runs first. A halt, or null.
+ */
+export function stepEvidence({ step: s, before, after }) {
+  if (!RUNS_A_VERB.has(s.kind) || s.forced === true) return null;
+  const id = s.subtaskId ?? null;
+  const child = id ? after?.children?.[id] : null;
+  if (!child || child.location !== 'active') {
+    // A dispatch's own postcondition already holds its child active.
+    if (s.kind === 'dispatch') return null;
+    return halt('owner-choice', `the /engineer:${s.verb} step left subtask ${id}'s engineer workflow ${child ? child.location : 'unobserved (the subtask is no longer in progress, or the macro was archived)'}; a verb step leaves its workflow active (only /engineer:commit closes it)`, { subtaskId: id });
+  }
+  if (child.awaiting_owner?.gate) return null;
+  const wf = child.workflow_id ?? '?';
+  const ev = child.evidence;
+  if (!ev || !Array.isArray(ev.sections) || typeof ev.body !== 'string') {
+    return halt('owner-choice', `the look after the step could not read the phase notes of ${wf} (${ev?.error ?? 'no evidence was read'}), so the step's work could not be verified`, { subtaskId: id });
+  }
+  const prior = before?.children?.[id];
+  const same = !!prior && typeof prior.workflow_id === 'string' && prior.workflow_id === child.workflow_id
+    && (prior.location === 'active' || prior.location === 'archived');
+  // Only a dispatch starts from no notes: its child is new. A later verb step
+  // continues the workflow the look before it read, so a child it cannot be
+  // bound to (another workflow id, none observed, or one the look could not
+  // read) leaves its old sections nothing to be told from. That a dispatch's
+  // child is new is taken, not proved: a worker that brings back an archived
+  // workflow as it passes on its old sections (a limit of the ADR note).
+  if (!same && s.kind !== 'dispatch') {
+    const was = prior ? `${prior.workflow_id ?? 'a workflow with no id'} (${prior.location})` : 'none';
+    return halt('owner-choice', `the /engineer:${s.verb}${s.resume === 'verify' ? ' resumption after verification' : ' step'} ran on subtask ${id}'s engineer workflow ${was} as the look before it read it, and the look after it found ${wf}; a verb step continues its workflow, so its work could not be told from the notes that were there before it`, { subtaskId: id });
+  }
+  let base = '';
+  if (same) {
+    if (!prior.evidence || typeof prior.evidence.body !== 'string') {
+      return halt('owner-choice', `the look before the step could not read the phase notes of ${wf} (${prior.evidence?.error ?? 'no evidence was read'}), so the step's work could not be verified`, { subtaskId: id });
+    }
+    base = prior.evidence.body;
+  }
+  if (!ev.body.startsWith(base)) {
+    return halt('owner-choice', `the step changed phase notes of ${wf} that were there before it (the body is append-only), so its work could not be told from them`, { subtaskId: id });
+  }
+  const verb = s.verb ?? child.dispatched_verb ?? null;
+  const fresh = ev.sections.filter((x) => x.start >= base.length && x.substantive === true && (verb === null || x.verb === verb));
+  if (fresh.length > 0) return null;
+  const what = s.kind === 'dispatch' ? `the dispatch of subtask ${id}` : `the /engineer:${s.verb}${s.resume === 'verify' ? ' resumption after verification' : ' step'}`;
+  return halt('owner-choice', `${what} left no new "### Phase 1: ${verbLabel(verb)} (synthesized)" section with its synthesis or artifact in ${wf}; it changed the workflow's record (next step ${nsLabel(child.next_step)}) without the verb's work`, { subtaskId: id });
 }

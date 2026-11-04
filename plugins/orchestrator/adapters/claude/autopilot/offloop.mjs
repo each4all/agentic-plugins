@@ -338,7 +338,7 @@ export function createTaskRunner({ offLoop: runTask = offLoop, onLingering = () 
 export function failedView(repoRoot, detail) {
   return {
     repoRoot, lookError: detail,
-    git: { branch: '', head: null, porcelain: null, detached: true, clean: false, error: detail },
+    git: { branch: '', head: null, porcelain: null, content: null, detached: true, clean: false, error: detail },
     brief: null, briefError: detail,
     macro: null, macroLookupError: detail,
     ready: null, readyError: null,

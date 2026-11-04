@@ -158,8 +158,8 @@ export const MUTATIONS = [
   },
   {
     id: 'V4', file: POLICY, tests: [TP, TD],
-    from: '    : fingerprint(before) === fingerprint(after);',
-    to: '    : false;',
+    from: '    : fingerprint(before) === fingerprint(after)) && !contentMoved(before, after);',
+    to: '    : false);',
     why: 'a step that changed nothing runs again and again',
   },
 

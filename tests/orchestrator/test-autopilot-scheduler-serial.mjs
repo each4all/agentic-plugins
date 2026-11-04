@@ -59,16 +59,29 @@ describe('throttle', () => {
     const soon = Math.floor(Date.now() / 1000) + 30;
     const throttled = { ...OPEN(), unifiedWindows: { five_hour: { utilization: 0.95, resetsAt: soon }, seven_day: { utilization: 0.4, resetsAt: hour() + 86400 } } };
     const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT], file: 'b.txt' } }, rateLimit: throttled });
+    // The run's clock stays short of the reset until the run has said it
+    // waits for it: however long A's steps and the looks after them take on
+    // a loaded machine, the run comes to decide B before the reset, with
+    // nothing in flight, so it must wait (the time A's steps ended does not
+    // say when that decision came). Then the clock is the real one again, and
+    // the wait's timer lets B start once the reset has passed. A run that
+    // never says it waits gets the real clock back after five minutes, and
+    // fails the assertion below.
+    const t0 = Date.now();
+    let held = true;
+    const now = () => (held && Date.now() - t0 < 300_000 ? Math.min(Date.now(), soon * 1000 - 1000) : Date.now());
+    const push = t.lines.push.bind(t.lines);
+    t.lines.push = (line) => {
+      if (/waiting for the reset at /.test(line)) held = false;
+      return push(line);
+    };
     try {
-      strictEqual(await t.run(), 2, t.lines.join('\n'));
+      strictEqual(await t.run({}, { now }), 2, t.lines.join('\n'));
       const r = t.latest();
       const b = r.steps.find((x) => x.lane === 'B');
       ok(b, t.lines.join('\n'));
       ok(Date.parse(b.started_at) >= soon * 1000, 'B started after the reset');
-      // When A's steps ended before the reset (they take seconds), nothing
-      // ran while B was throttled, and the run waited for the reset.
-      const aEnded = Math.max(...r.steps.filter((x) => x.lane === 'A').map((x) => Date.parse(x.ended_at)));
-      if (aEnded < soon * 1000) ok(t.lines.some((l) => /waiting for the reset/.test(l)), t.lines.join('\n'));
+      ok(t.lines.some((l) => /throttled \(five-hour utilization 0\.95 \(limit 0\.85\)\) with nothing running; waiting for the reset at /.test(l)), t.lines.join('\n'));
       strictEqual(r.halt.reason, 'awaiting-landing');
     } finally {
       t.fx.cleanup();

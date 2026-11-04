@@ -1,16 +1,22 @@
 // plugins/orchestrator/adapters/claude/autopilot/observe.mjs
 //
 // ADR-0063 D4 — the observer: assembles the view the policy decides from.
-// It reads, through the owning plugins' CLIs and git only (ADR-0010 §5: no
-// cross-plugin import), and writes nothing in the repository's state:
+// It reads, through the owning plugins' CLIs and git (ADR-0010 §5: no
+// cross-plugin import), and writes nothing in the repository's state but the
+// git objects a content projection adds:
 //
 //   - git: branch, HEAD, `status --porcelain --untracked-files=normal` (the
-//     clean rule /orchestrator:next applies);
+//     clean rule /orchestrator:next applies), and the content projection of
+//     the checkout's files (C163: lane-digest.mjs contentProjection, without
+//     HEAD and the generated state);
 //   - runtime `context.mjs entry-brief --surface cli` (R0, read-only);
 //   - orchestrator `state.mjs` state-root / scan-roots / find-active /
 //     find-macro / resolve-workflow / read / next-ready / resolve-landing;
 //   - engineer `state.mjs` find-active / read, and the engineer archive homes
 //     for a subtask's archived workflow;
+//   - C163 — the phase notes of each in_progress subtask's engineer workflow,
+//     read as the artifact they are (phase-evidence.mjs): the one read of a
+//     workflow's body, which no engineer CLI prints;
 //
 // ADR-0067 Decision 1 — records are found where the plugins' readers find
 // them: a macro in the orchestrator homes of the checkout's read set (the
@@ -33,6 +39,8 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { contentProjection } from '../../../scripts/lib/lane-digest.mjs';
+import { phaseEvidence } from './phase-evidence.mjs';
 import { recordDigest } from './verify-journal.mjs';
 
 export const ENGINEER_STATE_HOMES = Object.freeze(['.agentic-plugins/state/engineer', '.claude/agentic-engineer']);
@@ -163,6 +171,9 @@ function summarizeChild(fm, location, file, roots) {
     // ADR-0068 Decision 5, item 6 — the active verb: the one that recorded a
     // pending request, which the driver resumes after a batch that did not pass.
     verb: typeof fm.verb === 'string' ? fm.verb : null,
+    // C163 — the verb its dispatch named, recorded at its creation: what a
+    // dispatch's first verb is judged by when the plan names none.
+    dispatched_verb: typeof fm.dispatched_verb === 'string' ? fm.dispatched_verb : null,
     branch: fm.git_baseline?.branch ?? null,
     current_phase: fm.current_phase ?? null,
     terminal_marker: fm.terminal_marker === true,
@@ -186,6 +197,9 @@ function summarizeChild(fm, location, file, roots) {
     verify: verifySummary(fm),
     parent_workflow: fm.parent_workflow ?? null,
     originating_subtask: fm.originating_subtask ?? null,
+    // C163 — the verbs that finished in it, from its phase notes
+    // (phase-evidence.mjs): `{ sections, error }`.
+    evidence: phaseEvidence(file),
   };
 }
 
@@ -253,6 +267,16 @@ function observeGit(repoRoot, o) {
   git.detached = git.branch === '';
   git.clean = git.porcelain === '';
   if (branch.code !== 0 || status.code !== 0) git.error = failure(branch.code !== 0 ? branch : status, 'git');
+  // C163 — the content of the checkout's files, where the porcelain status
+  // stays the same across an edit of a file it already lists: the no-progress
+  // rule's content fact (policy.mjs contentMoved). Null when git cannot
+  // project it, and the rule then compares as before; never a fingerprint's.
+  git.content = null;
+  try {
+    git.content = contentProjection(repoRoot);
+  } catch (err) {
+    git.contentError = String(err?.message ?? err).split('\n')[0];
+  }
   return git;
 }
 

@@ -46,7 +46,7 @@ import { lanesHoldingWork, lanesRequirements } from './lanes.mjs';
 import { launchProposals, mainCheckoutProposal, proposalLines } from './launch-proposals.mjs';
 import { observe as defaultObserve } from './observe.mjs';
 import {
-  afterUnread, decide, fingerprint, modelFor, peersOnlyProgress, proposalLines as haltProposalLines, renderStep, verifyStep, STEP_KINDS,
+  afterUnread, decide, fingerprint, modelFor, peersOnlyProgress, proposalLines as haltProposalLines, renderStep, stepEvidence, verifyStep, STEP_KINDS,
 } from './policy.mjs';
 import {
   appendStallLine, appendStep, acquireLock, createRunDir, LockHeldError, macroLockPath, mainWorktreeRoot, newRunId,
@@ -1495,6 +1495,9 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
           }
         }
       }
+      // C163 — a step that runs a verb must leave that verb's work in its
+      // child's phase notes; judged once the peers it left are accounted for.
+      if (!verdict) verdict = stepEvidence({ step: s, before, after: view });
       if (unaccounted) keepRecord = true;
       appendStep(runDir, {
         event: 'finished', seq, ended_at: new Date(now()).toISOString(),
