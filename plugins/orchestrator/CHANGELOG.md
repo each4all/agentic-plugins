@@ -18,6 +18,13 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.37.3](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.37.2...plugin-orchestrator-v0.37.3) (2026-11-04)
+
+
+### Bug Fixes
+
+* **orchestrator:** an autopilot verb step must leave a new synthesized section of its verb in its child's phase notes, and an edit of an already-modified file counts as progress (C163 A3) ([#1025](https://github.com/each4all/agentic-plugins/issues/1025)) ([9f7ed7b](https://github.com/each4all/agentic-plugins/commit/9f7ed7b188745c900263200fe829c6cc45c8f489))
+
 ## [0.37.2](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.37.1...plugin-orchestrator-v0.37.2) (2026-11-03)
 
 
