@@ -260,7 +260,7 @@ export const MUTATIONS = [
       "      if (isTerminalStatus(h.status)) return h;\n      h.status = 'failed';\n      h.completed_at = nowIso();\n      h.exit_code = null;\n      h.error_kind = err?.code ?? 'runner_error';",
       '      return h;'),
     why: 'a run that throws once its snapshot exists leaves its ledger queued or spawning, read as live',
-    killed_by: /a run that throws once its snapshot exists \(an unreadable prompt\) ends failed/,
+    killed_by: /a run that throws once its snapshot exists \(a ledger write that fails\) ends failed/,
   },
   {
     id: 'P15', tests: [T_SNAP],

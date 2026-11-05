@@ -1,3 +1,4 @@
+- `<evidence_boundary>`: First, word for word as the templates give it
 - `<task>`: Concrete job description with genericized context
 - `<structured_output_contract>`: Exact output shape
 - `<grounding_rules>`: Ground claims in evidence; label inferences

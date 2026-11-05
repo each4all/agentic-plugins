@@ -62,6 +62,17 @@
       "requires": []
     },
     {
+      "id": "lib-evidence-boundary",
+      "source": "files/scripts/lib/evidence-boundary.mjs",
+      "dest": "scripts/lib/evidence-boundary.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
       "id": "lib-review-scope",
       "source": "files/scripts/lib/review-scope.mjs",
       "dest": "scripts/lib/review-scope.mjs",

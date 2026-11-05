@@ -21,12 +21,17 @@
 //                  state, not to be a conformant Adam7 encoder.
 //   nofile       — reports success without writing anything
 //
-// A critique prompt (it names no output path) gets an assessment that ends in
-// "verdict: pass"; `FAKE_ASSESSMENT_BYTES=<n>` pads it with n ASCII bytes
-// before the verdict, so a test can push a critique result past a pipe's
-// 64 KiB. When `FAKE_COMPANION_LOG` names a file, the fixture appends one line
+// A critique prompt (it names no output path) gets an assessment whose last
+// line is "verdict: pass", as the prompt asks; `FAKE_ASSESSMENT_BYTES=<n>` pads
+// it with n ASCII bytes before the verdict line, so a test can push a critique result past a pipe's
+// 64 KiB, and `FAKE_CRITIQUE_REPLY` replaces the assessment with its own
+// text, so a test can hand critique() a peer's answer of its choosing. When `FAKE_COMPANION_LOG` names a file, the fixture appends one line
 // to it as it starts, so a test can order what the dispatcher wrote before the
-// spawn against the spawn itself.
+// spawn against the spawn itself. A critique prompt is told by its line that
+// starts "You are evaluating an image.", wherever it stands (it follows the
+// evidence boundary, C163 D2a). When `FAKE_PROMPT_CAPTURE` names a file, the
+// fixture copies there the prompt bytes it read, so a test can check the
+// prompt the companion was actually handed.
 //
 // The fixture delivers its envelope whole: an exit waits for the write's
 // callback, and each branch returns once it has scheduled one. Exiting at once
@@ -105,11 +110,14 @@ function main() {
     return;
   }
   if (process.env.FAKE_COMPANION_LOG) appendFileSync(process.env.FAKE_COMPANION_LOG, 'companion ran\n');
-  const prompt = readFileSync(process.argv[promptFileIdx + 1], 'utf8');
+  const promptBytes = readFileSync(process.argv[promptFileIdx + 1]);
+  if (process.env.FAKE_PROMPT_CAPTURE) writeFileSync(process.env.FAKE_PROMPT_CAPTURE, promptBytes);
+  const prompt = promptBytes.toString('utf8');
   const m = prompt.match(/EXACTLY this absolute path:\n(.+)/);
-  if (!m && prompt.startsWith('You are evaluating an image.')) {
+  if (!m && /^You are evaluating an image\./m.test(prompt)) {
     const pad = 'x'.repeat(Number(process.env.FAKE_ASSESSMENT_BYTES) || 0);
-    reply({ status: 'success', stdout: `A 2x2 square of dark blue. ${pad ? `${pad} ` : ''}verdict: pass` }, 0);
+    const given = process.env.FAKE_CRITIQUE_REPLY;
+    reply({ status: 'success', stdout: given ?? `A 2x2 square of dark blue.${pad ? ` ${pad}` : ''}\nverdict: pass` }, 0);
     return;
   }
   if (!m) {

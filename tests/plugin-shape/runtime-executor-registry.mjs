@@ -478,11 +478,15 @@ export const FS_MUTATION_PRIMITIVES = [
 // bootstrap-only per ADR-0046), `os-tmpdir` marks self-created mkdtemp
 // scratch. Justifications cite the observed source sites.
 export const FS_MUTATION_USERS = {
-  // consensus run artifacts (task/prompt/raw/synthesis/decision files).
+  // consensus run artifacts (task/prompt/raw/synthesis/decision files), and
+  // (C163 D2a) the private, evidence-bounded copy of a prompt artifact that
+  // `execute` hands the companion: a self-created mkdtemp scratch directory
+  // under the OS tmpdir, recursively removed once the companion returns (the
+  // pinned recursive-removal site below).
   'consensus.mjs': {
-    primitives: ['mkdir', 'writeFile'],
-    stateRoots: ['.agentic-plugins/runs/consensus'],
-    justification: 'ADR-0024 consensus run artifacts under runs/consensus',
+    primitives: ['mkdir', 'mkdtemp', 'rm', 'writeFile'],
+    stateRoots: ['.agentic-plugins/runs/consensus', 'os-tmpdir'],
+    justification: 'ADR-0024 consensus run artifacts under runs/consensus, plus the self-created mkdtemp scratch directory holding the bounded prompt copy a companion reads during execute, and its teardown (C163 D2a); the recorded artifact itself is never rewritten',
   },
   // context capture ledger + ADR-0044 session-capture slot (note staging,
   // publish-session slot/entry + O_EXCL lock + bounded sweep).
@@ -559,6 +563,9 @@ export const FS_MUTATION_USERS = {
 // closed: recursive deletion is the highest-blast-radius fs primitive and
 // every legitimate site removes something the same file provably created.
 export const ALLOWED_RECURSIVE_REMOVALS = {
+  'consensus.mjs': [
+    { callee: 'rm', target: 'promptDir', justification: 'C163 D2a: teardown of the self-created mkdtemp directory holding the evidence-bounded prompt copy executePeer hands the companion, in a finally once the companion returns' },
+  ],
   'doctor.mjs': [
     // The pinned `rm(tempRepo, ...)` shape is the workflow-continuation proof
     // workspace's teardown. It also covered the egress-ack proof's ephemeral

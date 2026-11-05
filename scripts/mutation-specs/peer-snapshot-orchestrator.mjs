@@ -484,7 +484,7 @@ export const MUTATIONS = [
     from: "      if (isTerminalStatus(h.status)) return h;\n      h.status = 'failed';\n      h.completed_at = nowIso();\n      h.exit_code = null;\n      h.error_kind = err?.code ?? 'runner_error';",
     to: '      return h;',
     why: "an orchestrator run that throws once its snapshot exists leaves its ledger queued or spawning, read as live (persona P14)",
-    killed_by: /a run that throws once its snapshot exists \(an unreadable prompt\) ends failed/,
+    killed_by: /a run that throws once its snapshot exists \(a ledger write that fails\) ends failed/,
   },
   {
     id: 'H37', file: RUNNER, tests: [T_SNAP],
