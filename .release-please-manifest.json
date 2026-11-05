@@ -3,7 +3,7 @@
   "plugins/attention": "0.10.1",
   "plugins/companions": "0.4.3",
   "plugins/designer": "0.14.0",
-  "plugins/engineer": "0.34.0",
+  "plugins/engineer": "0.34.1",
   "plugins/founder": "0.15.0",
   "plugins/image": "0.4.1",
   "plugins/orchestrator": "0.37.3",

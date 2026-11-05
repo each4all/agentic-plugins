@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.34.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.34.0...plugin-engineer-v0.34.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* **engineer:** Phase 7 checks each commit subject's type and scope against the files it commits, and under autopilot the worker writes the subject and a failing one is refused (C163 A4) ([#1027](https://github.com/each4all/agentic-plugins/issues/1027)) ([6409cd1](https://github.com/each4all/agentic-plugins/commit/6409cd11b81317d9e07528fa28a434e097c589b1))
+
 ## [0.34.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.33.0...plugin-engineer-v0.34.0) (2026-11-01)
 
 
