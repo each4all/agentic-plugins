@@ -25,6 +25,18 @@
    so the peer was not run at all; the handle's `snapshot.reason` says
    why). Diagnose it from `stdout_path` / `stderr_path`.
 
+   One kind is not a peer that was unavailable: `prompt_unreadable` (the
+   runner could not read the prompt file the dispatch handed it — missing,
+   a directory, no permission — so no companion ran, exit 2). The prompt
+   is the file this runbook had you write, so it is an adapter or runbook
+   error: report it as a runtime error, naming the prompt path and the
+   reason the runner wrote to its own stderr (the dispatch block's
+   `prompt.xml.err` beside the prompt; the run's `stderr_path` holds a
+   companion's stderr and stays empty, since none ran), in the phase note
+   and in what you tell the user, the way `companion_misuse` is reported below, never as a silent
+   degradation. The verb still goes on local-only, and the finalize
+   settles the run `failed` with that `error_kind`.
+
    A path in the answer under the handle's `snapshot.root` names the
    snapshot the peer read: map it back to the checkout by that prefix.
    Collecting the peer stays notification-only. Other background work you

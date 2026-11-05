@@ -67,6 +67,8 @@ for (const persona of personasFor('scripts/lib/peer-snapshot.mjs')) {
   const P = personaInfo(persona);
   const lib = await import(pathToFileURL(P.path('scripts/lib/peer-snapshot.mjs')).href);
   const identity = await import(pathToFileURL(P.path('scripts/lib/process-identity.mjs')).href);
+  // C163 D2a — the prompt a companion reads opens with the evidence boundary.
+  const { EVIDENCE_BOUNDARY } = await import(pathToFileURL(P.path('scripts/lib/evidence-boundary.mjs')).href);
   const runner = await import(pathToFileURL(P.path('scripts/peer-runner.mjs')).href);
   const dispatcher = await import(pathToFileURL(P.path('scripts/dispatch-peer.mjs')).href);
   const state = await import(pathToFileURL(P.path('scripts/state.mjs')).href);
@@ -1945,7 +1947,7 @@ for (const persona of personasFor('scripts/lib/peer-snapshot.mjs')) {
         strictEqual(rec.cwd, result.snapshot.peer_cwd);
         ok(rec.cwd.startsWith(dirname(result.snapshot.root)) && relative(f.top, rec.cwd).startsWith('..'));
         ok(relative(f.top, rec.promptFile).startsWith('..'), 'the prompt copy is outside the checkout');
-        strictEqual(rec.prompt, `<task>read ${result.snapshot.root}/a and ${result.snapshot.root}/sub/s, not ${f.top}-other/a</task>`);
+        strictEqual(rec.prompt, `${EVIDENCE_BOUNDARY}\n\n<task>read ${result.snapshot.root}/a and ${result.snapshot.root}/sub/s, not ${f.top}-other/a</task>`);
         strictEqual(rec.gitDir, null, 'no git selector reaches the companion');
         strictEqual(readFileSync(promptFile, 'utf8'), prompt, 'the caller\'s prompt file is unchanged');
         strictEqual(result.snapshot.isolation, 'snapshot');
@@ -1968,15 +1970,37 @@ for (const persona of personasFor('scripts/lib/peer-snapshot.mjs')) {
       });
     });
 
-    it('a run that throws once its snapshot exists (an unreadable prompt) ends failed, its snapshot removed, no companion run', async () => {
+    // C163 D2a — the runner reads the prompt to bound it before it makes a
+    // snapshot, so an unreadable prompt ends the run before there is one.
+    it('an unreadable prompt (a directory) ends the run failed, classified prompt_unreadable, before any snapshot is made, no companion run', async () => {
       await withTmp(async (dir, snaps) => {
         const f = await fixture(dir);
         const promptDir = join(dir, 'prompt-is-a-directory');
         mkdirSync(promptDir);
-        await rejects(runner.runPeer({ repoRoot: f.top, runId: 'throws-1', peer: 'codex', promptFile: promptDir, cwd: f.top, env: fakeEnv(f, 'vandal') }), (e) => e.code === 'EISDIR');
+        const result = await runner.runPeer({ repoRoot: f.top, runId: 'unreadable-1', peer: 'codex', promptFile: promptDir, cwd: f.top, env: fakeEnv(f, 'vandal') });
+        deepStrictEqual([result.ok, result.status, result.exit_code, result.error_kind], [false, 'failed', 2, 'prompt_unreadable']);
+        const handle = await runner.readHandle(runner.peerRunPaths(f.top, 'unreadable-1').handle);
+        strictEqual(handle.status, 'failed');
+        strictEqual(handle.error_kind, 'prompt_unreadable');
+        strictEqual(handle.exit_code, 2);
+        ok(handle.completed_at);
+        strictEqual(handle.snapshot ?? null, null, 'no snapshot was made');
+        ok(!existsSync(f.record), 'no companion ran');
+        deepStrictEqual(leftovers(snaps), []);
+        strictEqual(snapshotWorktrees(f.top).length, 0);
+      });
+    });
+
+    it('a run that throws once its snapshot exists (a ledger write that fails) ends failed, its snapshot removed, no companion run', async () => {
+      await withTmp(async (dir, snaps) => {
+        const f = await fixture(dir);
+        // The write that records the run spawning, after the snapshot is made
+        // and recorded, throws.
+        const hooks = { beforeHandleWrite: (h) => { if (h.status === 'spawning') throw Object.assign(new Error('injected'), { code: 'EINJECTED' }); } };
+        await rejects(runner.runPeer({ repoRoot: f.top, runId: 'throws-1', peer: 'codex', promptText: 'x', cwd: f.top, env: fakeEnv(f, 'vandal'), hooks }), (e) => e.code === 'EINJECTED');
         const handle = await runner.readHandle(runner.peerRunPaths(f.top, 'throws-1').handle);
         strictEqual(handle.status, 'failed');
-        strictEqual(handle.error_kind, 'EISDIR');
+        strictEqual(handle.error_kind, 'EINJECTED');
         ok(handle.completed_at);
         strictEqual(handle.snapshot.isolation, 'snapshot');
         ok(handle.snapshot.removed_at);
@@ -3166,7 +3190,8 @@ for (const persona of personasFor('scripts/lib/peer-snapshot.mjs')) {
         deepStrictEqual(liveView(top), before);
         const rec = JSON.parse(readFileSync(f.record, 'utf8'));
         ok(relative(top, rec.cwd).startsWith('..'), `${rec.cwd} is outside the checkout`);
-        match(rec.prompt, /^look at \/.+\/tree\/a$/);
+        ok(rec.prompt.startsWith(`${EVIDENCE_BOUNDARY}\n\n`), 'the prompt opens with the evidence boundary');
+        match(rec.prompt.slice(EVIDENCE_BOUNDARY.length + 2), /^look at \/.+\/tree\/a$/);
         ok(!rec.prompt.includes(`${top}/`));
         deepStrictEqual(leftovers(snaps), []);
         strictEqual(snapshotWorktrees(top).length, 0);

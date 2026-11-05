@@ -1,9 +1,9 @@
-// C96 — the orchestrator's copies of the peer snapshot libraries, and (C93)
-// of the CLI exit helper.
+// C96 — the orchestrator's copies of the peer snapshot libraries, (C93) of
+// the CLI exit helper, and (C163 D2a) of the evidence boundary its peers read.
 //
 // A plugin may not import another's script (ADR-0010 §5), and the
 // persona-pipeline manifest generates only into personas (ADR-0066), so
-// plugins/orchestrator/scripts/lib/{peer-snapshot,process-identity,cli-entry}.mjs
+// plugins/orchestrator/scripts/lib/{peer-snapshot,process-identity,cli-entry,evidence-boundary}.mjs
 // are copies of the persona-pipeline sources: a three-line copy notice, then
 // the source byte for byte. One owner-record schema, worktree lock reason and
 // reclaim rule must hold across the four plugins, since a reclaim run by any
@@ -18,7 +18,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const LIBS = ['peer-snapshot.mjs', 'process-identity.mjs', 'cli-entry.mjs'];
+const LIBS = ['peer-snapshot.mjs', 'process-identity.mjs', 'cli-entry.mjs', 'evidence-boundary.mjs'];
 // The orchestrator CLIs and hooks that exit through the cli-entry copy, each
 // with the import specifier its directory reaches the copy by.
 const CLI_ENTRY_CONSUMERS = [

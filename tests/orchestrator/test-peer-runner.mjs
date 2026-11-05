@@ -45,6 +45,7 @@ const {
   fingerprintForPid,
 } = await import(PEER_RUNNER_PATH);
 const { createWorkflow, readWorkflow } = await import(STATE_PATH);
+const { EVIDENCE_BOUNDARY } = await import(resolve(REPO_ROOT, 'plugins/orchestrator/scripts/lib/evidence-boundary.mjs'));
 
 async function withTmpRepo(fn) {
   const dir = await mkdtemp(join(tmpdir(), 'orchestrator-peer-runner-test-'));
@@ -337,7 +338,8 @@ describe('peer-runner.mjs — run ledger and handle schema', () => {
       });
 
       const paths = peerRunPaths(repoRoot, 'retain-prompt-test');
-      strictEqual(await readFile(paths.prompt, 'utf8'), '<task>retain me</task>');
+      // The prompt the peer read: the evidence boundary first (C163 D2a).
+      strictEqual(await readFile(paths.prompt, 'utf8'), `${EVIDENCE_BOUNDARY}\n\n<task>retain me</task>`);
       const handle = await readHandle(paths.handle);
       strictEqual(handle.prompt_retained, true);
     });
