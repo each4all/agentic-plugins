@@ -67,8 +67,9 @@ Nothing deletes the files (a headless run can deny `rm`).
 
 ## Phase 1 — Dispatch with operational tracking
 
-A codex peer answers from a snapshot of the checkout, removed when the
-run ends (C96): a file it writes is discarded with it. Ask it for an
+The peer, claude or codex, answers from a snapshot of the checkout,
+removed when the run ends (C96, C163 D2b): a file it writes is discarded
+with it. Ask it for an
 answer, not for files.
 
 ```bash
