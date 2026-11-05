@@ -28,7 +28,10 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/critique-dispatch.mjs" \
 ```
 
 It verifies the file (refuses missing / symlink / non-image / empty / oversized)
-and returns the per-criterion assessment + a verdict (pass/fail).
+and returns the per-criterion assessment + a verdict (pass/fail), read only
+from the answer's last line (`verdict: pass` or `verdict: fail`, as the prompt
+asks); an answer without that line returns `verdict: null`, which is reported
+as no verdict, never guessed from the text.
 
 On `peer_cli_not_found`, report the honest-scope limit (no Codex bridge → no
 vision critique); do not fake a verdict.
