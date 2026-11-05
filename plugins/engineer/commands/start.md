@@ -620,6 +620,15 @@ opted back in (`--include-extra <path>` for each, PR4 A4); or the whole
 working tree (`--accept-current-tree`, all or nothing). Then execute mode
 commits with the subject(s) the user confirmed.
 
+When a commit of the plan has a `subject_rule` (the repository's
+release-please configuration names packages), the subject it takes has one
+of the rule's `allowed_types` and, for a package commit, one of its `scopes`;
+check a subject the user edited against it before execute, and say which
+part does not fit (ADR-0028 §P6, note of 2026-11-04). Execute warns on a
+subject that does not fit, commits it as given, and prints the corrected
+subject: pass the warning and the corrected subject to the user, who can
+amend the commit or retitle the pull request with it.
+
 ```bash
 ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"

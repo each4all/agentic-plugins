@@ -1505,7 +1505,10 @@ follow live in one file, `plugins/engineer/core/skills/_shared/references/autopi
 - **Known limits.**
   - The suggested subject's type follows the workflow's last verb, so a
     compose → critique → commit chain suggests `chore`. The squash title the
-    owner lands is what reaches `main`.
+    owner lands is what reaches `main`. *(2026-11-04, C163: no longer a
+    limit. The type is checked against the files each commit touches, and
+    under autopilot the commit worker writes the subject. ADR-0028 §P6, its
+    implementation note of that date.)*
   - The model-judged set points (`recurring-finding`, `scope-routing`,
     `pr-handling`) are pinned by shape tests, not by code; the driver's halts
     are the backstop.

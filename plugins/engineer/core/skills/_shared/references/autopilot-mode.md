@@ -54,7 +54,7 @@ write; the driver must also check that the installed engineer carries them
 | compose: plan approval, confirmation between code tasks | ask | the driver's: it runs the next step only on HIGH confidence |
 | critique → refine MINOR / SUGGESTION pick (`/engineer:critique`) | the user picks | carry CRITICAL and MAJOR only |
 | end-of-verb Active Next-Action Proposal | shown; the user runs the next command | still shown, and recorded as `next_step`; the driver decides |
-| commit subject (`/engineer:commit`) | the user confirms | plan mode's suggested subject |
+| commit subject (`/engineer:commit`) | the user confirms | the worker writes it from the plan (`subject_rule`); a type or scope that does not fit the change is refused (ADR-0028 §P6) |
 
 ## What a step never does under autopilot
 

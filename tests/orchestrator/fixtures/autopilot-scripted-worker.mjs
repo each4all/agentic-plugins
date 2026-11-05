@@ -61,6 +61,7 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const node = process.execPath;
@@ -388,8 +389,22 @@ export async function perform({ prompt, cwd, env }) {
 
   if (prompt === '/engineer:commit') {
     const active = execFileSync(node, [engCli, 'find-active', '--repo-root', cwd], { env, encoding: 'utf8' }).trim();
-    const r = spawnSync(node, [path.join(env.AGENTIC_ENGINEER_ROOT, 'scripts', 'phase7-commit.mjs'), '--mode', 'autopilot',
-      '--workflow-path', active, '--repo-root', cwd, '--host', 'claude'], { cwd, env, encoding: 'utf8' });
+    // As the commit runbook's Autopilot block does (ADR-0028 §P6, note of
+    // 2026-11-04): read the plan, write each commit's subject to a file — a
+    // type the commit's subject_rule allows and a summary of the change —
+    // and pass the files; a clean tree takes none.
+    const phase7 = path.join(env.AGENTIC_ENGINEER_ROOT, 'scripts', 'phase7-commit.mjs');
+    const planned = JSON.parse(execFileSync(node, [phase7, '--mode', 'plan', '--workflow-path', active, '--repo-root', cwd, '--host', 'claude'], { cwd, env, encoding: 'utf8' }));
+    const subjectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scripted-subjects-'));
+    const subjectArgs = planned.commits.flatMap((c, i) => {
+      const type = c.subject_rule ? c.subject_rule.allowed_types[0] : 'chore';
+      const scope = c.subject_rule?.scopes ? `(${c.subject_rule.scopes[0]})` : '';
+      const file = path.join(subjectDir, `subject-${i + 1}.txt`);
+      fs.writeFileSync(file, `${type}${scope}: scripted commit of ${c.files.length} file${c.files.length === 1 ? '' : 's'}\n`);
+      return planned.requires_split ? ['--subject-pkg-file', `${c.package ?? 'docs'}=${file}`] : ['--subject-file', file];
+    });
+    const r = spawnSync(node, [phase7, '--mode', 'autopilot',
+      '--workflow-path', active, '--repo-root', cwd, '--host', 'claude', ...subjectArgs], { cwd, env, encoding: 'utf8' });
     fs.writeFileSync(path.join(path.dirname(env.FAKE_SCENARIO), `phase7-${seq}.json`), JSON.stringify({ status: r.status, stdout: r.stdout, stderr: r.stderr }));
     await stopHooks();
     // The commit landed, but the worker reports failure (worker-failed).

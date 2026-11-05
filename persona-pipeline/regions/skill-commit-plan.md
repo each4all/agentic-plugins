@@ -39,3 +39,9 @@ The plan is informational: execute and close re-derive everything.
   - `requires_split: true` → the change spans release-please packages, so it
     becomes one commit per package (ADR-0016). A split needs one subject per
     commit; a single `--subject-file` is refused.
+  - `subject_rule` set (the repository's release-please configuration names
+    packages) → the commit's subject takes one of its `allowed_types` and, for
+    a package commit, one of its `scopes`; check an edited subject against it
+    before execute. Execute warns on one that does not fit, commits it as
+    given, and prints the corrected subject: pass the warning and the
+    corrected subject to the user (ADR-0028 §P6, note of 2026-11-04).

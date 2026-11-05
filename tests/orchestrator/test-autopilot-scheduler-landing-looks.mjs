@@ -109,6 +109,9 @@ describe('landing reports with lanes', () => {
   const relaunchFailing = async ({ startup = (v) => v, first, deps = () => ({}) }) => {
     const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT], file: 'b.txt' } } });
     strictEqual(await t.run(), 2, t.lines.join('\n'));
+    // Exit 2 is any halt: name the one run 1 met when it is not the
+    // awaiting-landing halt the relaunch starts from.
+    strictEqual(t.latest().halt?.reason, 'awaiting-landing', `run 1: ${JSON.stringify(t.latest().halt)}\n${t.lines.join('\n')}`);
     deepStrictEqual(t.latest().halt.waiting.map((w) => [w.subtaskId, w.sync.state]), [['A', 'ready'], ['B', 'ready']]);
     const { failedView } = await import(resolve(AP, 'offloop.mjs'));
     const { observe } = await import(resolve(AP, 'observe.mjs'));
@@ -179,6 +182,9 @@ describe('landing reports with lanes', () => {
     };
     try {
       strictEqual(await t.run(), 2, t.lines.join('\n'));
+      // Exit 2 is any halt: name the one run 1 met when it is not the
+      // awaiting-landing halt the relaunch starts from.
+      strictEqual(t.latest().halt?.reason, 'awaiting-landing', `run 1: ${JSON.stringify(t.latest().halt)}\n${t.lines.join('\n')}`);
       deepStrictEqual(t.latest().halt.waiting.map((w) => [w.subtaskId, w.sync.state]), [['A', 'ready'], ['B', 'ready']]);
       t.lines.length = 0;
       strictEqual(await t.run({}, { observe: look }), 2, t.lines.join('\n'));
@@ -235,6 +241,9 @@ describe('landing reports with lanes', () => {
     const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT], file: 'b.txt' } } });
     try {
       strictEqual(await t.run(), 2, t.lines.join('\n'));
+      // Exit 2 is any halt: name the one run 1 met when it is not the
+      // awaiting-landing halt the relaunch starts from.
+      strictEqual(t.latest().halt?.reason, 'awaiting-landing', `run 1: ${JSON.stringify(t.latest().halt)}\n${t.lines.join('\n')}`);
       const push = t.lines.push.bind(t.lines);
       t.lines.push = (l) => {
         if (/^ {2}lanes: up to /.test(l)) throw new Error('simulated: the terminal went away');

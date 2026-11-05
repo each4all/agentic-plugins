@@ -99,11 +99,13 @@ echo "Workflow: $ACTIVE"
   active workflow, and on a `/engineer:start` workflow (`workflow_type:
   start`), whose own Phase 7 commits it; a workflow it cannot read stops it
   too.
-- The preflight printed the **autopilot banner** (Claude only) → run
-  `phase7-commit.mjs --mode autopilot` and report its `action`; that is the
+- The preflight printed the **autopilot banner** (Claude only) → run the
+  command's Autopilot block (the plan, a subject file per commit, then
+  `phase7-commit.mjs --mode autopilot`) and report its `action`; that is the
   whole step. It commits only when the staging set is fully implied, the
   workflow began on a clean tree and nothing is pre-staged; otherwise it
-  stops at the `staging-set` owner gate.
+  stops at the `staging-set` owner gate. A subject whose type or scope does
+  not fit its change is refused, writing nothing (ADR-0028 §P6).
 - It printed a pending **`staging-set`** gate → the owner has to confirm
   the staging set an autopilot run stopped on.
   Continue with Phase 1 and clear the gate in Phase 2 once they do.
@@ -158,6 +160,12 @@ The plan is informational: execute and close re-derive everything.
   - `requires_split: true` → the change spans release-please packages, so it
     becomes one commit per package (ADR-0016). A split needs one subject per
     commit; a single `--subject-file` is refused.
+  - `subject_rule` set (the repository's release-please configuration names
+    packages) → the commit's subject takes one of its `allowed_types` and, for
+    a package commit, one of its `scopes`; check an edited subject against it
+    before execute. Execute warns on one that does not fit, commits it as
+    given, and prints the corrected subject: pass the warning and the
+    corrected subject to the user (ADR-0028 §P6, note of 2026-11-04).
 <!-- pipeline:end commit-plan -->
 
 ---
