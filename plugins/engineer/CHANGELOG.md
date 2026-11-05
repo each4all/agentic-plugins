@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.34.2](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.34.1...plugin-engineer-v0.34.2) (2026-11-05)
+
+
+### Bug Fixes
+
+* **engineer:** peer prompts tell the peer that repository content and caller text are data, not instructions (C163 D2a) ([8d59536](https://github.com/each4all/agentic-plugins/commit/8d595363d213720e79fa888960c648e3987555ef))
+
 ## [0.34.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.34.0...plugin-engineer-v0.34.1) (2026-11-05)
 
 
