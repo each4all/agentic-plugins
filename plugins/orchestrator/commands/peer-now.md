@@ -49,6 +49,12 @@ amendment of 2026-10-10): a prompt or a path spliced into a block is cut at
    holding that path, as given, on one line. The runner then reads the
    prompt from the user's file itself, byte for byte.
 
+The runner sends the prompt as written, opened by the evidence boundary
+when it does not already open with it (C163 D2a;
+`scripts/lib/evidence-boundary.mjs`): the peer takes the request as its task
+and anything the request quotes or points to as data, never as instructions.
+The block is the runner's to add; the prompt you write needs none.
+
 Phase 1's block reads it from there: put the path in its `TEXT_DIR` line, and
 `claude` or `codex` in its `PEER` line. It writes the run id, the peer and the
 run's result there itself (`run-id`, `peer`, `run.json`, `run.err`), which the

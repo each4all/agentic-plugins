@@ -342,7 +342,15 @@ included), the plan is LOCAL-ONLY: `VERDICT` stays the local synthesis's,
 which `plan-set` recorded, and the ensemble result records the run as failed:
 also set the block's `ENSEMBLE_VERDICT` line to `failed` and name the
 `error_kind` in `summary.txt`. A run that found no peer (`peer_cli_not_found`)
-never launched: leave `ENSEMBLE_VERDICT` empty.
+never launched: leave `ENSEMBLE_VERDICT` empty. A run that failed
+`prompt_unreadable` (the runner could not read the prompt file you wrote —
+missing, a directory, no permission — so no companion ran, exit 2) is not a
+peer that was unavailable but an adapter or runbook error: record it the same
+way (`ENSEMBLE_VERDICT` `failed`), and report it as a runtime error, naming
+the prompt path and the reason the runner wrote to its own stderr (the
+dispatch block's `$PROMPT_FILE.err`; the run's `stderr_path` holds a
+companion's stderr and stays empty, since none ran), in the phase note and in
+what you tell the user, never as a silent degradation.
 
 The block checks every input before it writes anything (C132): the two
 verdicts, the run id the dispatch wrote, in the form the macro's records of a

@@ -53,6 +53,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { constants as osConstants, homedir, tmpdir } from 'node:os';
 import { recordPendingEnsemble } from './state.mjs';
 import { absorbOutputErrors, exitAfterFlush } from './lib/cli-entry.mjs';
+import { EVIDENCE_BOUNDARY, withEvidenceBoundaryBytes } from './lib/evidence-boundary.mjs';
 import { createRunCancellation, fingerprintForPid, stopProcessGroup } from './lib/process-identity.mjs';
 import {
   createPeerSnapshot,
@@ -357,7 +358,8 @@ export function buildEnsemblePrompt({
   expectedOutput,
 }) {
   if (!task) throw new Error('buildEnsemblePrompt: task is required');
-  const parts = [];
+  // C163 D2a — the evidence boundary first, as every peer prompt opens.
+  const parts = [EVIDENCE_BOUNDARY];
 
   parts.push(`<task>\n${escapeXml(task).trim()}\n</task>`);
 
@@ -601,14 +603,32 @@ export async function dispatchPeer({
   let lingerTimer = null;
   let retireCancel = null;
   try {
-    // Materialize promptText to a temp file so the companion sees a stable path.
-    let resolvedPromptFile = promptFile;
-    if (promptText !== undefined) {
-      const dir = await mkdtemp(join(tmpdir(), 'orchestrator-prompt-'));
-      cleanupTmpDir = dir;
-      resolvedPromptFile = join(dir, 'mission.xml');
-      await writeFile(resolvedPromptFile, promptText, 'utf8');
+    // Materialize the prompt to a temp file so the companion sees a stable path.
+    // C163 D2a — the prompt opens with the evidence boundary
+    // (lib/evidence-boundary.mjs): one that does not gets it prepended. The
+    // peer always reads a private copy of the bytes checked here, never the
+    // caller's file, which a later write could change. A prompt file that
+    // cannot be read (missing, a directory, no permission) is a misuse (exit 2,
+    // kind prompt_unreadable), with no companion launched.
+    let givenPrompt;
+    try {
+      givenPrompt = promptText !== undefined ? Buffer.from(String(promptText), 'utf8') : await readFile(promptFile);
+    } catch (err) {
+      return {
+        ok: false,
+        status: 'companion_error',
+        exitCode: 2,
+        stdout: '',
+        stderr: `dispatch-peer: the prompt file cannot be read: ${err?.message ?? err}`,
+        envelope: null,
+        kind: 'prompt_unreadable',
+        companionPath,
+      };
     }
+    const dir = await mkdtemp(join(tmpdir(), 'orchestrator-prompt-'));
+    cleanupTmpDir = dir;
+    let resolvedPromptFile = join(dir, 'mission.xml');
+    await writeFile(resolvedPromptFile, withEvidenceBoundaryBytes(givenPrompt));
 
     // A codex peer runs in a snapshot of the checkout (lib/peer-snapshot.mjs),
     // with a private copy of the prompt whose live-checkout paths name the
