@@ -29,7 +29,10 @@ the prompt (**prompt-mediated vision**, simpler than the ADR's `codex exec
 
    The helper refuses missing / non-image / symlink / empty / oversized files
    before dispatch, then dispatches to Codex and returns the per-criterion
-   assessment + a `verdict` (pass/fail), parsed best-effort from Codex's text.
+   assessment + a `verdict` (pass/fail), read only from the answer's last
+   non-empty line, which the prompt asks Codex to make exactly `verdict: pass`
+   or `verdict: fail`. An answer without that line has `verdict: null`: report
+   the assessment with no verdict, never one guessed from the text.
 
 3. **Honest scope**: if `codex-companion` is unreachable (`peer_cli_not_found`),
    report that Claude cannot run vision critique without the Codex bridge — do
