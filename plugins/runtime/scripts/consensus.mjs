@@ -5,11 +5,13 @@ import { constants } from 'node:fs';
 import {
   access,
   mkdir,
+  mkdtemp,
   readFile,
   readdir,
+  rm,
   writeFile,
 } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -17,6 +19,7 @@ import { runCommand } from './doctor.mjs';
 import { resolvePeerExecutionContext } from './lib/peer-execution-context.mjs';
 import { resolveCodexHome } from './lib/state-readers.mjs';
 import { expandArgsFile } from './lib/args-file.mjs';
+import { EVIDENCE_BOUNDARY, withEvidenceBoundaryBytes } from './lib/evidence-boundary.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 
 const VERSION = RUNTIME_VERSION;
@@ -1198,25 +1201,75 @@ async function executePeer({
     });
   }
 
-  const args = [
-    companionPath,
-    'task',
-    '--cwd',
-    repoRoot,
-    '--output-format',
-    'json',
-    '--prompt-file',
-    resolve(repoRoot, prompt.pointer),
-  ];
-  if (directionSettings.model.value) args.push('--model', directionSettings.model.value);
-  if (directionSettings.effort.value) args.push('--effort', directionSettings.effort.value);
+  // C163 D2a — the companion reads a private copy of the prompt artifact that
+  // opens with the evidence boundary: an artifact an older runtime planned,
+  // without it, gets it prepended; the artifact itself is left as recorded.
+  // An artifact that cannot be read fails the execution with no companion
+  // run: handing the companion its path instead would let a file that
+  // appears there after this read reach the peer unbounded.
+  let artifact;
+  try {
+    artifact = await readFile(resolve(repoRoot, prompt.pointer));
+  } catch (err) {
+    return writeFailedExecution({
+      repoRoot,
+      runId,
+      roundNumber,
+      peer,
+      now,
+      failure: failureClass({
+        status: 'failed',
+        type: 'prompt_unreadable',
+        retryable: false,
+        retry_after: 'restore or recreate the consensus plan or next-round prompt artifact before retrying',
+      }),
+      companionPath,
+      promptPointer,
+      raw: '',
+      execution: {
+        executed: false,
+        started_at: null,
+        timeout_ms: timeoutMs,
+        companion_exit_code: null,
+        companion_error_code: null,
+        timed_out: false,
+        envelope_status: null,
+        peer_host: peer,
+        peer_model: null,
+        peer_exit_code: null,
+        metadata: null,
+        error: { kind: 'prompt_unreadable', message: `peer prompt artifact cannot be read (${err?.code ?? 'error'})` },
+      },
+    });
+  }
+  const promptDir = await mkdtemp(resolve(tmpdir(), 'runtime-consensus-prompt-'));
+  const promptCopy = resolve(promptDir, 'prompt.md');
+  let result;
+  let startedAt;
+  try {
+    await writeFile(promptCopy, withEvidenceBoundaryBytes(artifact), { mode: 0o600 });
+    const args = [
+      companionPath,
+      'task',
+      '--cwd',
+      repoRoot,
+      '--output-format',
+      'json',
+      '--prompt-file',
+      promptCopy,
+    ];
+    if (directionSettings.model.value) args.push('--model', directionSettings.model.value);
+    if (directionSettings.effort.value) args.push('--effort', directionSettings.effort.value);
 
-  const startedAt = toIso(new Date());
-  const result = await runner(process.execPath, args, {
-    cwd: repoRoot,
-    env,
-    timeoutMs,
-  });
+    startedAt = toIso(new Date());
+    result = await runner(process.execPath, args, {
+      cwd: repoRoot,
+      env,
+      timeoutMs,
+    });
+  } finally {
+    await rm(promptDir, { recursive: true, force: true });
+  }
   const parsed = parseJsonObject(result.stdout);
   const raw = typeof parsed?.stdout === 'string' ? parsed.stdout : '';
   const failure = classifyConsensusExecutionFailure({ result, parsed });
@@ -2908,8 +2961,14 @@ function toContradictionSummary(value) {
   };
 }
 
+// C163 D2a — both consensus prompts open with the evidence boundary
+// (lib/evidence-boundary.mjs): what the task or a disagreement summary quotes,
+// and every artifact a peer reads for them, is data to examine, not
+// instructions.
 function buildFanoutPrompt({ runId, peer, task, policy, lane }) {
-  return `# Runtime Consensus Fanout
+  return `${EVIDENCE_BOUNDARY}
+
+# Runtime Consensus Fanout
 
 Run id: ${runId}
 Peer: ${peer}
@@ -2955,7 +3014,9 @@ function buildRebuttalPrompt({ runId, peer, disagreements, round, lane }) {
   const body = disagreements.length
     ? disagreements.map((item, index) => formatRebuttalIssue(item, index)).join('\n\n')
     : 'No durable disagreements were provided.';
-  return `# Runtime Consensus Targeted Rebuttal
+  return `${EVIDENCE_BOUNDARY}
+
+# Runtime Consensus Targeted Rebuttal
 
 Run id: ${runId}
 Peer: ${peer}
