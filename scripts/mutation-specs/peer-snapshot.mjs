@@ -4,20 +4,24 @@
 // Run: npm run mutate -- scripts/mutation-specs/peer-snapshot.mjs
 //
 // A codex peer used to run in the live checkout, where it was measured
-// reverting uncommitted edits and deleting untracked files. Each defect below
+// reverting uncommitted edits and deleting untracked files, and a claude peer
+// did until C163 D2b. Each defect below
 // puts one route back to the live tree — the capture writing the real index,
 // the peer handed the checkout, a git selector or a prompt path pointing it
 // there — or breaks the lifecycle that removes the snapshot without touching
 // a live peer's. The test suite runs the generated copies of every persona, so
 // each defect is written into all three copies at once.
 //
-// Groups: C the capture and materialize, P the runner and dispatcher, R the
-// reclaim, S the state guard, H a run its host killed before its cleanup
-// (C142), finished by cancel or settle once it is proven over.
+// Groups: C the capture and materialize, P the runner and dispatcher, Q a
+// claude peer on both (C163 D2b), R the reclaim, S the state guard, H a run
+// its host killed before its cleanup (C142), finished by cancel or settle
+// once it is proven over.
 
 const T_SNAP = 'tests/persona-pipeline/test-peer-snapshot.mjs';
+// C163 D2b — the claude peer's cases, a small file of their own.
+const T_CLAUDE = 'tests/persona-pipeline/test-peer-snapshot-claude.mjs';
 
-export const TESTS = [T_SNAP];
+export const TESTS = [T_SNAP, T_CLAUDE];
 
 const PERSONAS = ['designer', 'engineer', 'founder'];
 const inEveryCopy = (rel, from, to) => (copy, tools) => {
@@ -87,7 +91,7 @@ export const MUTATIONS = [
   {
     id: 'P2', tests: [T_SNAP],
     prepare: inEveryCopy('peer-runner.mjs',
-      "    if (options.peer === 'codex') options.env = scrubGitSelectors(options.env);\n",
+      '    options.env = scrubGitSelectors(options.env);\n',
       ''),
     why: "the companion inherits the caller's git selectors, which send its git commands to the live tree",
     killed_by: /the vandal peer tidies only the snapshot; its paths and prompt name the snapshot/,
@@ -127,15 +131,15 @@ export const MUTATIONS = [
   {
     id: 'P7', tests: [T_SNAP],
     prepare: inEveryCopy('dispatch-peer.mjs',
-      '    if (peer === \'codex\') {\n      const base = cwd ?? process.cwd();',
-      '    if (false) {\n      const base = cwd ?? process.cwd();'),
+      '      peerCwd = snapshot.peer_cwd;\n',
+      ''),
     why: 'dispatch-peer hands the codex peer the live checkout again',
     killed_by: /the vandal peer tidies only the snapshot, which is removed when the dispatch ends/,
   },
   {
     id: 'P8', tests: [T_SNAP],
     prepare: inEveryCopy('peer-runner.mjs',
-      "    if (options.peer === 'codex') options.env = scrubGitSelectors(options.env);",
+      '    options.env = scrubGitSelectors(options.env);',
       '    if (snapshot) options.env = scrubGitSelectors(options.env);'),
     why: 'a codex peer outside any checkout inherits a git selector naming the live repository',
     killed_by: /a codex peer outside any checkout still gets no git selector naming the live repository/,
@@ -153,7 +157,7 @@ export const MUTATIONS = [
     prepare: inEveryCopy('peer-runner.mjs',
       '    await stopProcessGroup(peerProcess?.pgid, graceMs);\n    if (snapshot) {',
       '    if (snapshot) {\n      await stopProcessGroup(peerProcess?.pgid, graceMs);'),
-    why: "a peer with no snapshot (a claude peer) leaves its children running after the run",
+    why: "a peer with no snapshot (one outside any checkout, as this claude peer is) leaves its children running after the run",
     killed_by: /a claude peer's leftover child is stopped too/,
   },
   {
@@ -167,8 +171,8 @@ export const MUTATIONS = [
   {
     id: 'P12', tests: [T_SNAP],
     prepare: inEveryCopy('dispatch-peer.mjs',
-      '      spawnEnv = scrubGitSelectors(env);\n',
-      ''),
+      '    const spawnEnv = scrubGitSelectors(env);',
+      '    const spawnEnv = env;'),
     why: "dispatch-peer hands a codex peer the caller's git selectors",
     killed_by: /a codex peer outside any checkout gets no git selector naming the live repository/,
   },
@@ -179,6 +183,82 @@ export const MUTATIONS = [
       '      return;\n      lingerTimer'),
     why: "a child holding the companion's pipes keeps dispatch-peer waiting forever",
     killed_by: /a child holding the companion's pipes is stopped once the companion exits, and the dispatch ends/,
+  },
+  // ── Q: a claude peer is isolated too (C163 D2b) ────────────────────────
+  // The codex-only predicates, put back one at a time for the claude peer,
+  // each killed by the claude case of tests/persona-pipeline/
+  // test-peer-snapshot-claude.mjs it names.
+  {
+    id: 'Q1', tests: [T_CLAUDE],
+    prepare: inEveryCopy('peer-runner.mjs',
+      '    snapshot = await createPeerSnapshot({ cwd: options.cwd, runId, persona: ',
+      "    snapshot = options.peer !== 'codex' ? { isolation: 'none', reason: 'peer-not-isolated' } : await createPeerSnapshot({ cwd: options.cwd, runId, persona: "),
+    why: 'the runner hands a claude peer the live checkout again (the codex-only predicate C163 D2b removed)',
+    killed_by: /runPeer: a claude peer works in the snapshot/,
+  },
+  {
+    id: 'Q2', tests: [T_CLAUDE],
+    prepare: inEveryCopy('peer-runner.mjs',
+      '    options.env = scrubGitSelectors(options.env);',
+      "    if (options.peer === 'codex') options.env = scrubGitSelectors(options.env);"),
+    why: "a claude peer inherits the caller's git selectors, which aim its git at the live repository from any directory",
+    killed_by: /runPeer: a claude peer outside any checkout gets no git selector naming the live repository/,
+  },
+  {
+    id: 'Q3', tests: [T_CLAUDE],
+    prepare: inEveryCopy('peer-runner.mjs',
+      '    snapshot = await createPeerSnapshot({ cwd: options.cwd, runId, persona: ',
+      "    snapshot = await (options.peer === 'codex' ? createPeerSnapshot : (o) => createPeerSnapshot(o).catch(() => ({ isolation: 'none', reason: 'not-a-checkout' })))({ cwd: options.cwd, runId, persona: "),
+    why: 'a claude peer whose snapshot cannot be made runs in the live tree instead of failing snapshot_failed',
+    killed_by: /runPeer: a claude peer whose snapshot cannot be made is not run \(snapshot_failed\)/,
+  },
+  {
+    id: 'Q4', tests: [T_CLAUDE],
+    prepare: inEveryCopy('peer-runner.mjs',
+      '      const removed = await removePeerSnapshot(snapshot, { env: options.env });',
+      "      const removed = options.peer === 'codex' ? await removePeerSnapshot(snapshot, { env: options.env }) : { removed: false, error: null };"),
+    why: "a claude run's snapshot outlives the run that made it",
+    killed_by: /runPeer: a cancelled claude run removes its snapshot/,
+  },
+  {
+    id: 'Q5', tests: [T_CLAUDE],
+    prepare: inEveryCopy('peer-runner.mjs',
+      '      if (snapshot) ownerWrite = recordSnapshotCompanion(snapshot, peerProcess).catch(() => {});',
+      "      if (snapshot && options.peer === 'codex') ownerWrite = recordSnapshotCompanion(snapshot, peerProcess).catch(() => {});"),
+    why: "a claude peer is never named in its snapshot's owner record, so a reclaim cannot tell its live peer from a gone one",
+    killed_by: /runPeer: a claude run whose runner is killed outright keeps its snapshot while the peer lives/,
+  },
+  {
+    id: 'Q6', tests: [T_CLAUDE],
+    prepare: inEveryCopy('dispatch-peer.mjs',
+      '      snapshot = await createPeerSnapshot({ cwd: base, runId: ensembleBookkeeping?.runId ?? null, persona: ',
+      "      snapshot = peer !== 'codex' ? { isolation: 'none', reason: 'peer-not-isolated' } : await createPeerSnapshot({ cwd: base, runId: ensembleBookkeeping?.runId ?? null, persona: "),
+    why: 'the dispatcher hands a claude peer the live checkout again (the codex-only predicate C163 D2b removed)',
+    killed_by: /dispatchPeer: a claude peer works in the snapshot/,
+  },
+  {
+    id: 'Q7', tests: [T_CLAUDE],
+    prepare: inEveryCopy('dispatch-peer.mjs',
+      '    const spawnEnv = scrubGitSelectors(env);',
+      "    const spawnEnv = peer === 'codex' ? scrubGitSelectors(env) : env;"),
+    why: "the dispatcher hands a claude peer the caller's git selectors",
+    killed_by: /dispatchPeer: a claude peer outside any checkout gets no git selector naming the live repository/,
+  },
+  {
+    id: 'Q8', tests: [T_CLAUDE],
+    prepare: inEveryCopy('dispatch-peer.mjs',
+      '      snapshot = await createPeerSnapshot({ cwd: base, runId: ensembleBookkeeping?.runId ?? null, persona: ',
+      "      snapshot = await (peer === 'codex' ? createPeerSnapshot : (o) => createPeerSnapshot(o).catch(() => ({ isolation: 'none', reason: 'not-a-checkout' })))({ cwd: base, runId: ensembleBookkeeping?.runId ?? null, persona: "),
+    why: 'a claude peer whose snapshot cannot be made is dispatched in the live tree instead of failing snapshot_failed',
+    killed_by: /dispatchPeer: a claude peer whose snapshot cannot be made is not run \(snapshot_failed\)/,
+  },
+  {
+    id: 'Q9', tests: [T_CLAUDE],
+    prepare: inEveryCopy('dispatch-peer.mjs',
+      '      const removed = await removePeerSnapshot(snapshot, { env });',
+      "      const removed = peer === 'codex' ? await removePeerSnapshot(snapshot, { env }) : { removed: false, error: null };"),
+    why: "a claude dispatch's snapshot outlives the dispatch",
+    killed_by: /dispatch-peer CLI: SIGTERM stops a claude peer's group, removes its snapshot and exits 143/,
   },
   // ── R: reclaim ─────────────────────────────────────────────────────────
   {

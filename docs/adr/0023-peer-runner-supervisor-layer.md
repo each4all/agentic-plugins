@@ -495,7 +495,8 @@ and the peer stood in the way. The persona dispatchers that spawn a
 companion, `peer-runner.mjs` and `dispatch-peer.mjs`, now give a codex peer a
 snapshot instead (`scripts/lib/peer-snapshot.mjs`, generated from
 `persona-pipeline/`). A claude peer keeps the directory it is given: the
-measured behaviour is codex's.
+measured behaviour is codex's. (2026-11-05: a claude peer runs in a snapshot
+too; see the implementation note of that date.)
 
 **Capture.** With the caller's git selectors removed (`GIT_DIR`,
 `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY`,
@@ -555,7 +556,7 @@ run: a child the companion leaves behind is stopped at the end, and one that
 holds the companion's stdout or stderr open — which would hold the run's
 wait for the pipes to close — is stopped a second after the companion
 itself exits. A codex peer never inherits the caller's git selectors, in a
-snapshot or not.
+snapshot or not (2026-11-05: nor does a claude peer).
 
 **Reclaim.** Each isolated run, and `peer-runner sweep`, first removes this
 repository's snapshots whose owners are gone: a worktree locked with the
@@ -1403,10 +1404,97 @@ of them to a defect it must catch.
 **Limits.** The block is an instruction to the peer, not containment: a model
 may still be swayed by what it reads, and the boundary lowers that chance
 without removing it; a Claude peer still runs in the live checkout until
-D2b's snapshot. A peer whose own CLI adds a system prompt reads that as well;
+D2b's snapshot (2026-11-05: it no longer does; see the next note). A peer whose own CLI adds a system prompt reads that as well;
 the block cannot rank above it.
 
 **Rollout.** Each persona, the orchestrator, runtime and image carry it in
 their own release (`plugins/runtime/scripts` is not runtime data, so its commit type
 follows the change); an installed older version sends prompts as before
 until its release is installed (on Codex, pinned).
+
+## Implementation note 2026-11-05 — a claude peer runs in a snapshot too (C163 D2b)
+
+**The defect.** Since C96 only a codex peer was isolated: `isolatePeer` in
+`peer-runner.mjs` recorded a claude peer `isolation: none`, `reason:
+peer-not-isolated`, and `dispatchPeer` skipped the snapshot for it, so a
+claude peer ran in the live checkout. The 2026-10-13 amendment kept it there
+because the measured behaviour was codex's, but a claude peer has the same
+means (a shell, git) and reads the same prompts, and the evidence boundary of
+2026-11-04 is an instruction, not containment. The runner also stripped the
+caller's git selectors (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and
+the rest of `GIT_SELECTOR_VARS`) for a codex peer only. Changing the isolation
+predicate alone would have left a claude peer that inherited a `GIT_DIR` and
+`GIT_WORK_TREE` naming the live repository with its git commands aimed
+there from inside the snapshot, so the two change together.
+
+**The decision.** Both dispatch surfaces, `peer-runner.mjs` (`run` and
+`runPeer`) and `dispatch-peer.mjs` (`dispatchPeer` and its CLI), each
+persona's (generated from `persona-pipeline/`) and the orchestrator's,
+isolate every peer: no test of the peer is left on the way to the snapshot,
+and the CLIs take only `claude` or `codex`. A claude peer gets what a
+codex peer has had since 2026-10-13 and 2026-10-14: the same capture,
+materialization and prompt rewrite (`claude-companion.mjs` starts `claude -p`
+in its `--cwd`, the snapshot's copy of the directory it was given), the same
+owner record, lifecycle and reclaim, and the same `snapshot_failed`
+outcome: a snapshot that cannot be made fails the run, or the dispatch,
+before any companion is spawned, never falling back to the live tree. No peer
+inherits a git selector, in a snapshot or not; a directory with no `.git` in
+any ancestor is still no checkout and runs as before (`isolation: none`,
+`reason: not-a-checkout`). The cleanup contract is unchanged:
+`removePeerSnapshot` on every end, a snapshot kept while a process of the run
+lives or its ownership cannot be told (`lib/peer-snapshot.mjs`, the
+reclaim's `judgeSnapshot`), and one a runner killed outright (SIGKILL) or a
+failed cleanup left reclaimed later, or finished by `cancel` and `settle`
+once its owner record proves the run over (2026-10-19). A new handle no
+longer carries `reason: peer-not-isolated`; a ledger an older runner wrote
+keeps it, and no reader acts on it.
+
+**Limits**, beyond those of 2026-10-13 and 2026-10-14, which hold for a
+claude peer as they do for a codex one (a snapshot is not complete
+containment: a tracked absolute symlink into the checkout, shared refs that
+move, a host sandbox that grants more writable roots):
+
+- Ignored files are not in the snapshot, and `.claude/settings.local.json`
+  is usually ignored: a permission granted only there does not reach a claude
+  peer, which runs with the user's settings and the project's tracked ones.
+- Claude Code keys its per-project state by the working directory, so a
+  snapshot is a project it has not seen: what it keeps for the checkout does
+  not reach the peer.
+- Every claude dispatch from a checkout now pays the capture and the
+  materialization a codex dispatch pays, in time and in disk proportional to
+  the tracked tree, and needs what they need: write access to the
+  repository's object store and worktree metadata, and git 2.42 for an
+  unborn HEAD (the `--orphan` path runtime doctor's proof repository takes).
+  A caller without them gets `snapshot_failed` where its claude peer used to
+  run.
+- A claude peer in a checkout reads the snapshot's copy of the prompt, which
+  is written after reading the bounded copy as UTF-8: bytes that are not
+  UTF-8 reach it as U+FFFD, as they reach a codex peer since 2026-11-04,
+  where outside a checkout they reach either peer as they are.
+- Runtime consensus (ADR-0024) spawns its companions itself, with the
+  repository root as their directory, and isolates neither peer; image
+  dispatch is not isolated (2026-10-13). Neither goes through these surfaces.
+
+**Tests.** `tests/persona-pipeline/test-peer-snapshot-claude.mjs` (each
+persona) and `tests/orchestrator/test-peer-snapshot-claude.mjs` run the cases
+of `tests/persona-pipeline/_peer-snapshot-claude-cases.mjs` on each surface:
+a vandal claude peer given selectors naming the live repository tidies only
+the snapshot, its directory, prompt and git (`rev-parse --show-toplevel`
+from its directory, with the environment it was given, which the fake
+companion now records) naming the snapshot; a dispatch given no directory
+snapshots the current one; a claude peer outside any
+checkout inherits no selector and its git reaches no repository; a snapshot
+that cannot be made is `snapshot_failed` with no companion run; and the
+cleanup: a cancelled run and a dispatch CLI stopped by SIGTERM remove the
+snapshot, and a runner killed outright leaves it to its live peer until a
+sweep reclaims it once the peer has ended. The two suites' "a claude peer is
+not isolated" cases are gone. `scripts/mutation-specs/peer-snapshot.mjs` and
+`peer-snapshot-orchestrator.mjs` hold each of those cases to a defect, Q1 to
+Q9: the codex-only predicate put back, for a claude peer, on the isolation,
+the selector strip, the `snapshot_failed` outcome, the removal and the owner
+record's companion on the runner, and on the dispatcher's isolation, strip,
+outcome and removal.
+
+**Rollout.** Each persona and the orchestrator carry it in their own release;
+an installed older version runs a claude peer in the live checkout until its
+release is installed (on Codex, pinned).

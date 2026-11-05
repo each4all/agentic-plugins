@@ -319,18 +319,6 @@ describe('orchestrator: peer-runner — a codex peer runs in the snapshot (C96)'
     });
   });
 
-  it('a claude peer is not isolated: it gets the directory it was given', async () => {
-    await withTmp(async (dir, snaps) => {
-      const f = await fixture(dir);
-      const result = await runner.runPeer({ repoRoot: f.top, peer: 'claude', promptText: 'x', cwd: join(f.top, 'sub'), env: fakeEnv(f, 'record') });
-      strictEqual(result.status, 'completed');
-      strictEqual(JSON.parse(readFileSync(f.record, 'utf8')).cwd, join(f.top, 'sub'));
-      strictEqual(result.snapshot.isolation, 'none');
-      strictEqual(result.snapshot.reason, 'peer-not-isolated');
-      deepStrictEqual(leftovers(snaps), []);
-    });
-  });
-
   it('a snapshot that cannot be made fails the run before any companion runs (snapshot_failed), its pending row recorded', async () => {
     await withTmp(async (dir) => {
       const f = { top: makeUnmergedRepo(dir), companions: await writeFakeCompanions(dir), record: join(dir, 'record.json') };
@@ -1489,13 +1477,13 @@ describe('orchestrator: runbook guidance for the snapshot (C96, C127)', () => {
   const protocol = read('core/skills/_shared/references/ensemble-protocol.md');
 
   it('the launch step says the peer reads a snapshot made after the companion resolves, and to name a review base by commit id', () => {
-    ok(protocol.includes('A codex peer never works in the checkout: the runner gives it a snapshot of HEAD plus the working tree and the index'));
+    ok(protocol.includes('The peer, claude or codex, never works in the checkout: the runner gives it a snapshot of HEAD plus the working tree and the index'));
     ok(protocol.includes('name files repo-relatively and a review base by its commit id'));
     ok(protocol.includes('a missing companion still leaves no ledger, no `pending_ensemble` row and no snapshot'));
   });
 
   it('the collect step names snapshot_failed, maps snapshot paths back, and keeps pgrep -f from matching its own loop', () => {
-    ok(protocol.includes('`snapshot_failed` (no snapshot of the checkout could be made for a codex peer'));
+    ok(protocol.includes('`snapshot_failed` (no snapshot of the checkout could be made for the peer'));
     ok(protocol.includes('A path in the answer under the handle\'s `snapshot.root` names the snapshot the peer read'));
     ok(protocol.includes('Collecting the peer stays notification-only.'));
     ok(protocol.includes("bracket one character (`pgrep -f '[m]utation-harness'`) or wait on a pid file (C127)"));
@@ -1504,8 +1492,8 @@ describe('orchestrator: runbook guidance for the snapshot (C96, C127)', () => {
   it('both plan entry points name the snapshot step and commit a failed run as failed, the plan keeping the local verdict', () => {
     const command = read('commands/plan.md');
     const skill = read('core/skills/plan/SKILL.md');
-    ok(command.includes('for a codex peer, make a snapshot of HEAD plus the working tree and the index in a temporary worktree (C96)'));
-    ok(skill.includes('A codex peer runs in a snapshot of HEAD plus the working tree and the index (C96), never the checkout'));
+    ok(command.includes('for the peer, claude or codex, make a snapshot of HEAD plus the working tree and the index in a temporary worktree (C96; a claude peer since C163 D2b)'));
+    ok(skill.includes('The peer, claude or codex, runs in a snapshot of HEAD plus the working tree and the index (C96; a claude peer since C163 D2b), never the checkout'));
     for (const [name, text] of [['commands/plan.md', command], ['core/skills/plan/SKILL.md', skill]]) {
       ok(text.includes('is `failed`, `cancelled` or `orphaned`, whatever its `error_kind`, `snapshot_failed` included), the plan is LOCAL-ONLY'), `${name}: a run that did not complete makes the plan LOCAL-ONLY`);
       ok(text.includes('set the block\'s `ENSEMBLE_VERDICT` line to `failed` and name the `error_kind` in `summary.txt`'), `${name}: names the failed ensemble verdict`);
@@ -1515,7 +1503,7 @@ describe('orchestrator: runbook guidance for the snapshot (C96, C127)', () => {
 
   it('peer-now says files the peer writes are discarded', () => {
     for (const rel of ['commands/peer-now.md', 'core/skills/peer-now/SKILL.md']) {
-      ok(read(rel).includes('A codex peer answers from a snapshot of the checkout, removed when the run ends (C96): a file it writes is discarded with it.'), rel);
+      ok(read(rel).includes('The peer, claude or codex, answers from a snapshot of the checkout, removed when the run ends (C96, C163 D2b): a file it writes is discarded with it.'), rel);
     }
   });
 });

@@ -2128,18 +2128,6 @@ for (const persona of personasFor('scripts/lib/peer-snapshot.mjs')) {
       });
     });
 
-    it('a claude peer is not isolated: it gets the directory it was given', async () => {
-      await withTmp(async (dir, snaps) => {
-        const f = await fixture(dir);
-        const result = await runner.runPeer({ repoRoot: f.top, peer: 'claude', promptText: 'x', cwd: join(f.top, 'sub'), env: fakeEnv(f, 'record') });
-        strictEqual(result.status, 'completed');
-        strictEqual(JSON.parse(readFileSync(f.record, 'utf8')).cwd, join(f.top, 'sub'));
-        deepStrictEqual(result.snapshot.isolation, 'none');
-        strictEqual(result.snapshot.reason, 'peer-not-isolated');
-        deepStrictEqual(leftovers(snaps), []);
-      });
-    });
-
     it('a snapshot that cannot be made fails the run before any companion runs (snapshot_failed), and settles failed', async () => {
       await withTmp(async (dir) => {
         const f = { top: makeUnmergedRepo(dir), companions: await writeFakeCompanions(dir), record: join(dir, 'record.json') };
@@ -3158,19 +3146,19 @@ for (const persona of personasFor('scripts/lib/peer-snapshot.mjs')) {
     const peerNow = [readFileSync(P.path('commands/peer-now.md'), 'utf8'), readFileSync(P.path('core/skills/peer-now/SKILL.md'), 'utf8')].map((t) => t.replace(/\s+/g, ' '));
 
     it('the launch step says the peer reads a snapshot and to name a review base by commit id', () => {
-      ok(protocol.includes('A codex peer never works in the checkout: the runner gives it a snapshot of HEAD plus the working tree and the index'));
+      ok(protocol.includes('The peer, claude or codex, never works in the checkout: the runner gives it a snapshot of HEAD plus the working tree and the index'));
       ok(protocol.includes('name files repo-relatively and a review base by its commit id'));
     });
 
     it('the collect step names snapshot_failed, maps snapshot paths back, and keeps pgrep -f from matching its own loop', () => {
-      ok(protocol.includes('`snapshot_failed` (no snapshot of the checkout could be made for a codex peer'));
+      ok(protocol.includes('`snapshot_failed` (no snapshot of the checkout could be made for the peer'));
       ok(protocol.includes('A path in the answer under the handle\'s `snapshot.root` names the snapshot the peer read'));
       ok(protocol.includes('Collecting the peer stays notification-only.'));
       ok(protocol.includes("bracket one character (`pgrep -f '[m]utation-harness'`) or wait on a pid file (C127)"));
     });
 
     it('peer-now says files the peer writes are discarded', () => {
-      for (const text of peerNow) ok(text.includes('A codex peer answers from a snapshot of the checkout, removed when the run ends (C96): a file it writes is discarded with it.'));
+      for (const text of peerNow) ok(text.includes('The peer, claude or codex, answers from a snapshot of the checkout, removed when the run ends (C96, C163 D2b): a file it writes is discarded with it.'));
     });
   });
 

@@ -21,7 +21,7 @@
    says why — `peer_cli_not_found` (no companion resolved),
    `envelope_parse_error` (the companion's stdout was not JSON), or a
    spawn, signal or cancel kind, or `snapshot_failed` (no snapshot of
-   the checkout could be made for a codex peer — an unmerged index, say —
+   the checkout could be made for the peer — an unmerged index, say —
    so the peer was not run at all; the handle's `snapshot.reason` says
    why). Diagnose it from `stdout_path` / `stderr_path`.
 
