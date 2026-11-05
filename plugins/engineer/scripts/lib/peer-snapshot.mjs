@@ -3,10 +3,11 @@
 // `npm run sync:persona-pipeline -- --write` (ADR-0066).
 // scripts/lib/peer-snapshot.mjs
 //
-// C96 — a codex peer runs in a snapshot of the checkout, never in the checkout
-// itself. Measured: a peer asked only to read a diff tidied the working tree it
-// was pointed at (`checkout -- .`, `clean`), reverting the caller's uncommitted
-// edits and deleting its untracked files. The snapshot is a detached worktree
+// C96 — a peer runs in a snapshot of the checkout, never in the checkout
+// itself (a codex peer since C96, a claude peer since C163 D2b). Measured: a
+// peer asked only to read a diff tidied the working tree it was pointed at
+// (`checkout -- .`, `clean`), reverting the caller's uncommitted edits and
+// deleting its untracked files. The snapshot is a detached worktree
 // of HEAD holding the working tree's content and the index's staging, made
 // from temporary index files, so the live index and working tree are only
 // read; the peer is given the snapshot as its directory and the snapshot is
