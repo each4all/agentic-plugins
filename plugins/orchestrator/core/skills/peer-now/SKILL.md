@@ -55,6 +55,12 @@ it prints) and write one file there with your file-editing tool: for
 the runner reads the user's file itself, byte for byte. Nothing deletes the
 files.
 
+The runner sends the prompt as written, opened by the evidence boundary
+when it does not already open with it (C163 D2a;
+`scripts/lib/evidence-boundary.mjs`): the peer takes the request as its task
+and anything the request quotes or points to as data, never as instructions.
+The block is the runner's to add; the prompt you write needs none.
+
 ---
 
 ## Phase 1 — Dispatch

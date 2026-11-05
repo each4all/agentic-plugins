@@ -15,7 +15,6 @@ import { randomBytes } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import {
   access,
-  copyFile,
   mkdir,
   mkdtemp,
   open,
@@ -33,6 +32,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { resolveCompanion, validateEnvelopeShape } from './dispatch-peer.mjs';
 import { assertWorkflowWritable, recordPendingEnsemble, resolveWorkflowStorage, workflowStorage } from './state.mjs';
 import { absorbOutputErrors, exitAfterFlush, isCliEntry } from './lib/cli-entry.mjs';
+import { withEvidenceBoundaryBytes } from './lib/evidence-boundary.mjs';
 import {
   createRunCancellation,
   fingerprintForPid,
@@ -558,23 +558,30 @@ function camelToFlag(key) {
   return key.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
 }
 
+// C163 D2a — the prompt a peer reads opens with the evidence boundary
+// (lib/evidence-boundary.mjs): every run's prompt passes here, so one that does
+// not open with it, a peer-now's caller text among them, gets it prepended; one
+// that does keeps its bytes. The peer always reads a private copy of the bytes
+// checked here, never the caller's file, which a later write could change, and
+// which is never changed itself. A prompt file that cannot be read (missing, a
+// directory, no permission) is returned as `unreadable`, for the run to end
+// classified before any companion is launched.
 async function materializePrompt({ paths, promptText, promptFile, retainPrompt }) {
-  if (retainPrompt) {
-    if (promptFile) {
-      await copyFile(promptFile, paths.prompt);
-    } else {
-      await writeFile(paths.prompt, promptText, { mode: 0o600 });
-    }
-    return { promptFile: paths.prompt, cleanup: null };
+  let given;
+  try {
+    given = promptFile ? await readFile(promptFile) : Buffer.from(String(promptText), 'utf8');
+  } catch (err) {
+    return { unreadable: err };
   }
-
-  if (promptFile) {
-    return { promptFile, cleanup: null };
+  const bytes = withEvidenceBoundaryBytes(given);
+  if (retainPrompt) {
+    await writeFile(paths.prompt, bytes, { mode: 0o600 });
+    return { promptFile: paths.prompt, cleanup: null };
   }
 
   const dir = await mkdtemp(join(tmpdir(), 'orchestrator-peer-runner-prompt-'));
   const file = join(dir, 'prompt.xml');
-  await writeFile(file, promptText, { mode: 0o600 });
+  await writeFile(file, bytes, { mode: 0o600 });
   return { promptFile: file, cleanup: dir };
 }
 
@@ -781,6 +788,18 @@ async function runPeerInCheckout(args) {
       promptFile: options.promptFile,
       retainPrompt: options.retainPrompt,
     });
+    if (prompt.unreadable) {
+      // The prompt file cannot be read: the run fails as a misuse (exit 2,
+      // error_kind prompt_unreadable), with no companion launched.
+      process.stderr.write(`peer-runner: the prompt file cannot be read: ${prompt.unreadable.message}\n`);
+      const failed = await updateHandle(paths.handle, (h) => {
+        h.status = 'failed';
+        h.completed_at = nowIso();
+        h.exit_code = 2;
+        h.error_kind = 'prompt_unreadable';
+      });
+      return runResult(paths, failed, { ok: false, companionPath: null });
+    }
     promptCleanup = prompt.cleanup;
 
     await recordPendingIfEnsemble(await readHandle(paths.handle));
