@@ -803,8 +803,9 @@ async function runPeerInCheckout(args) {
   await writeHandle(paths.handle, handle);
 
   let promptCleanup = null;
-  // C96 — a codex peer's snapshot of the checkout, the peer's process once it
-  // runs, and the cancellation a signal to the CLI requests.
+  // C96 — the peer's snapshot of the checkout (a claude peer's too, C163
+  // D2b), the peer's process once it runs, and the cancellation a signal to
+  // the CLI requests.
   let snapshot = null;
   let peerProcess = null;
   let ownerWrite = null;
@@ -862,9 +863,10 @@ async function runPeerInCheckout(args) {
     const isolation = await isolatePeer({ options, runId, paths, companion, cancellation });
     if (isolation.failed) return runResult(paths, isolation.failed, { ok: false, companionPath });
     snapshot = isolation.snapshot;
-    // A codex peer never inherits a git selector, snapshot or not: one naming
-    // the live repository would send its git commands there.
-    if (options.peer === 'codex') options.env = scrubGitSelectors(options.env);
+    // No peer inherits a git selector, snapshot or not, a claude peer no more
+    // than a codex one (C163 D2b): one naming the live repository would send
+    // its git commands there.
+    options.env = scrubGitSelectors(options.env);
     let companionPromptFile = prompt.promptFile;
     if (snapshot) {
       // The companion reads a private copy of the prompt, its live-checkout
@@ -1135,7 +1137,7 @@ async function runPeerInCheckout(args) {
     if (exitWatch) clearInterval(exitWatch);
     exitWatch = null;
     // Nothing of the peer's group outlives the run, whatever its peer: a
-    // child left behind would run on unseen (and, for a codex peer, in a
+    // child left behind would run on unseen (and, in a checkout, in a
     // snapshot about to be removed).
     await stopProcessGroup(peerProcess?.pgid, graceMs);
     if (snapshot) {
@@ -1156,20 +1158,17 @@ async function runPeerInCheckout(args) {
   }
 }
 
-// C96 — where a peer runs. A codex peer runs in a snapshot of the checkout
-// (lib/peer-snapshot.mjs), made after reclaiming the snapshots of this
-// repository whose owners are gone; a directory that is no checkout, or a
-// claude peer, runs as before, recorded. A snapshot that cannot be made fails
-// the run (error_kind snapshot_failed) before any companion is spawned:
-// running the peer in the live tree instead is the failure this prevents.
+// C96 — where a peer runs. Every peer, claude as well as codex (C163 D2b),
+// runs in a snapshot of the checkout (lib/peer-snapshot.mjs), made after
+// reclaiming the snapshots of this repository whose owners are gone; a
+// directory that is no checkout runs as before, recorded. A snapshot that
+// cannot be made fails the run (error_kind snapshot_failed) before any
+// companion is spawned: running the peer in the live tree instead is the
+// failure this prevents.
 async function isolatePeer({ options, runId, paths, companion, cancellation }) {
   const record = async (fields) => updateHandle(paths.handle, (h) => {
     h.snapshot = peerSnapshotRecord(fields);
   });
-  if (options.peer !== 'codex') {
-    await record({ isolation: 'none', reason: 'peer-not-isolated' });
-    return { snapshot: null };
-  }
   await reclaimPeerSnapshots({ cwd: options.cwd, env: options.env }).catch(() => {});
   let snapshot;
   // A cancellation stops the capture, not only what follows it.
@@ -2430,9 +2429,10 @@ function printHelp() {
     '      [--host claude|codex] [--model <id>] [--effort <level>]',
     '      [--cwd <dir>] [--output-format text|json] [--retain-prompt]',
     '      [--cancel-grace-ms <ms>]',
-    '      A codex peer runs in a snapshot of the checkout --cwd names (HEAD,',
-    '      the index and the working tree, in a temporary worktree removed when',
-    '      the run ends): the live tree is never its directory (C96).',
+    '      The peer, claude or codex, runs in a snapshot of the checkout --cwd',
+    '      names (HEAD, the index and the working tree, in a temporary worktree',
+    '      removed when the run ends): the live tree is never its directory',
+    '      (C96, C163 D2b).',
     '',
     '  status --run-id <id> [--repo-root <path>] [--json]',
     '  cancel --run-id <id> [--repo-root <path>] [--cancel-grace-ms <ms>]',
