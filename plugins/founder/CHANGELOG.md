@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.2](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.15.1...plugin-founder-v0.15.2) (2026-11-05)
+
+
+### Bug Fixes
+
+* **founder:** a Claude peer runs in a snapshot of the checkout with inherited git selectors stripped, as a codex peer does (C163 D2b) ([b7b77b3](https://github.com/each4all/agentic-plugins/commit/b7b77b309281e30c3f58794c9fa34126889f3b21))
+
 ## [0.15.1](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.15.0...plugin-founder-v0.15.1) (2026-11-05)
 
 

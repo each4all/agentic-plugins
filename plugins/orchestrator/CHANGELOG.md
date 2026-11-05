@@ -18,6 +18,13 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.37.5](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.37.4...plugin-orchestrator-v0.37.5) (2026-11-05)
+
+
+### Bug Fixes
+
+* **orchestrator:** a Claude peer runs in a snapshot of the checkout with inherited git selectors stripped, as a codex peer does (C163 D2b) ([e9a1e64](https://github.com/each4all/agentic-plugins/commit/e9a1e6488f5e72341e5cd7f86aa63606b810c2ea))
+
 ## [0.37.4](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.37.3...plugin-orchestrator-v0.37.4) (2026-11-05)
 
 
