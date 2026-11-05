@@ -629,7 +629,8 @@ export async function dispatchPeer({
   }
 
   let cleanupTmpDir = null;
-  // C96 — a codex peer's snapshot of the checkout, and the peer's process.
+  // C96 — the peer's snapshot of the checkout (a claude peer's too, C163
+  // D2b), and the peer's process.
   let snapshot = null;
   let peerProcess = null;
   let ownerWrite = null;
@@ -666,56 +667,53 @@ export async function dispatchPeer({
     let resolvedPromptFile = join(dir, 'mission.xml');
     await writeFile(resolvedPromptFile, withEvidenceBoundaryBytes(givenPrompt));
 
-    // A codex peer runs in a snapshot of the checkout (lib/peer-snapshot.mjs),
-    // with a private copy of the prompt whose live-checkout paths name the
-    // snapshot; a directory that is no checkout, or a claude peer, runs as
-    // before. A snapshot that cannot be made fails the dispatch before any
-    // companion runs.
+    // Every peer, claude as well as codex (C163 D2b), runs in a snapshot of
+    // the checkout (lib/peer-snapshot.mjs), with a private copy of the prompt
+    // whose live-checkout paths name the snapshot; a directory that is no
+    // checkout runs as before. A snapshot that cannot be made fails the
+    // dispatch before any companion runs.
     let peerCwd = cwd;
-    let spawnEnv = env;
-    if (peer === 'codex') {
-      const base = cwd ?? process.cwd();
-      // A codex peer never inherits a git selector, snapshot or not.
-      spawnEnv = scrubGitSelectors(env);
-      await reclaimPeerSnapshots({ cwd: base, env }).catch(() => {});
-      // A cancellation stops the capture, not only what follows it.
-      const abort = new AbortController();
-      const retireAbort = cancellation?.onRequest(() => abort.abort());
-      try {
-        snapshot = await createPeerSnapshot({ cwd: base, runId: ensembleBookkeeping?.runId ?? null, persona: personaName(), env, signal: abort.signal });
-        retireAbort?.();
-      } catch (err) {
-        retireAbort?.();
-        if (err?.reason === 'cancelled' && cancellation?.signal) {
-          return {
-            ok: false,
-            status: 'companion_error',
-            exitCode: 128 + (osConstants.signals[cancellation.signal] ?? 15),
-            stdout: '',
-            stderr: `dispatch-peer: cancelled by ${cancellation.signal} while the snapshot was made`,
-            envelope: null,
-            kind: 'cancelled',
-            companionPath,
-          };
-        }
+    const base = cwd ?? process.cwd();
+    // No peer inherits a git selector, snapshot or not.
+    const spawnEnv = scrubGitSelectors(env);
+    await reclaimPeerSnapshots({ cwd: base, env }).catch(() => {});
+    // A cancellation stops the capture, not only what follows it.
+    const abort = new AbortController();
+    const retireAbort = cancellation?.onRequest(() => abort.abort());
+    try {
+      snapshot = await createPeerSnapshot({ cwd: base, runId: ensembleBookkeeping?.runId ?? null, persona: personaName(), env, signal: abort.signal });
+      retireAbort?.();
+    } catch (err) {
+      retireAbort?.();
+      if (err?.reason === 'cancelled' && cancellation?.signal) {
         return {
           ok: false,
           status: 'companion_error',
-          exitCode: 3,
+          exitCode: 128 + (osConstants.signals[cancellation.signal] ?? 15),
           stdout: '',
-          stderr: `dispatch-peer: no snapshot for the peer (${err?.reason ?? 'snapshot-error'}): ${err?.message ?? err}`,
+          stderr: `dispatch-peer: cancelled by ${cancellation.signal} while the snapshot was made`,
           envelope: null,
-          kind: 'snapshot_failed',
+          kind: 'cancelled',
           companionPath,
         };
       }
-      if (snapshot.isolation === 'snapshot') {
-        const copy = await writeSnapshotPrompt(snapshot, await readFile(resolvedPromptFile, 'utf8'), [base]);
-        resolvedPromptFile = copy.path;
-        peerCwd = snapshot.peer_cwd;
-      } else {
-        snapshot = null;
-      }
+      return {
+        ok: false,
+        status: 'companion_error',
+        exitCode: 3,
+        stdout: '',
+        stderr: `dispatch-peer: no snapshot for the peer (${err?.reason ?? 'snapshot-error'}): ${err?.message ?? err}`,
+        envelope: null,
+        kind: 'snapshot_failed',
+        companionPath,
+      };
+    }
+    if (snapshot.isolation === 'snapshot') {
+      const copy = await writeSnapshotPrompt(snapshot, await readFile(resolvedPromptFile, 'utf8'), [base]);
+      resolvedPromptFile = copy.path;
+      peerCwd = snapshot.peer_cwd;
+    } else {
+      snapshot = null;
     }
     if (cancellation?.signal) {
       return {
@@ -963,9 +961,10 @@ function printHelp() {
       'after synthesis to pop the pending entry and append the result',
       '(ADR-0017 §sub-decision 4 three-step atomic mutation).',
       '',
-      'A codex peer runs in a snapshot of the checkout --cwd (or the current',
-      'directory) names: HEAD, the index and the working tree in a temporary',
-      'worktree removed when the dispatch ends, never the live tree (C96).',
+      'The peer, claude or codex, runs in a snapshot of the checkout --cwd (or',
+      'the current directory) names: HEAD, the index and the working tree in a',
+      'temporary worktree removed when the dispatch ends, never the live tree',
+      '(C96, C163 D2b).',
       '',
       'Exit codes (per companions/contract.md §5.1):',
       '  0 — success',

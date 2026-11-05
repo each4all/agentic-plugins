@@ -327,7 +327,11 @@ const SIGTERM_LOG = process.env.FAKE_RECORD ? process.env.FAKE_RECORD + '.sigter
 if (mode === 'deaf' || mode === 'deaf-family') process.on('SIGTERM', () => { if (SIGTERM_LOG) appendFileSync(SIGTERM_LOG, 'companion '); });
 const cwd = get('--cwd');
 const promptFile = get('--prompt-file');
-const record = { cwd, promptFile, prompt: readFileSync(promptFile, 'utf8'), pid: process.pid, gitDir: process.env.GIT_DIR ?? null };
+// The worktree the peer's own git commands reach from its directory, with the
+// environment it was given (a GIT_DIR / GIT_WORK_TREE left in it wins over
+// the directory), or null outside any checkout (C163 D2b).
+const toplevel = (() => { try { return execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return null; } })();
+const record = { cwd, promptFile, prompt: readFileSync(promptFile, 'utf8'), pid: process.pid, gitDir: process.env.GIT_DIR ?? null, toplevel };
 // No process of a fixture outlives a killed test run by more than ten
 // minutes: each that would run on ends on its own then (C142).
 const BOUND = 'setTimeout(() => process.exit(0), 600000)';
