@@ -39,11 +39,13 @@ echo "Workflow: $ACTIVE"
   start`), whose own Phase 7 commits it; a workflow it cannot read stops it
   too.
 {{#capability dispatch_target}}
-- The preflight printed the **autopilot banner** (Claude only) → run
-  `phase7-commit.mjs --mode autopilot` and report its `action`; that is the
+- The preflight printed the **autopilot banner** (Claude only) → run the
+  command's Autopilot block (the plan, a subject file per commit, then
+  `phase7-commit.mjs --mode autopilot`) and report its `action`; that is the
   whole step. It commits only when the staging set is fully implied, the
   workflow began on a clean tree and nothing is pre-staged; otherwise it
-  stops at the `staging-set` owner gate.
+  stops at the `staging-set` owner gate. A subject whose type or scope does
+  not fit its change is refused, writing nothing (ADR-0028 §P6).
 {{/capability}}
 - It printed a pending **`staging-set`** gate → the owner has to confirm
 {{#capability dispatch_target}}

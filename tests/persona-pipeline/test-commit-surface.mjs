@@ -1379,6 +1379,13 @@ for (const persona of personasFor('scripts/phase7-commit.mjs')) {
   describeDispatchOn(`${persona}: --mode autopilot — /engineer:commit under an autopilot run (ADR-0063)`, () => {
     const AP = { AGENTIC_AUTOPILOT: AUTOPILOT_RUN_ID };
     const autoArgs = (dir, wf, ...extra) => ['--mode', 'autopilot', '--workflow-path', wf, '--repo-root', dir, '--host', 'claude', ...extra];
+    // The subject the commit worker writes from the plan (ADR-0028 §P6, note
+    // of 2026-11-04): autopilot takes no suggested subject.
+    const subjectFile = async (subject) => {
+      const file = join(await mkdtemp(join(tmpdir(), 'engineer-commit-subject-')), 'subject.txt');
+      await writeFile(file, `${subject}\n`);
+      return file;
+    };
 
     it('refuses outside an autopilot run, writing nothing', async () => {
       await withSandbox(async (dir) => {
@@ -1395,17 +1402,17 @@ for (const persona of personasFor('scripts/phase7-commit.mjs')) {
       });
     });
 
-    it('commits a manifest-covered change with the suggested subject and terminalizes', async () => {
+    it('commits a manifest-covered change with the subject the worker wrote, and terminalizes', async () => {
       await withSandbox(async (dir) => {
         const wf = createWorkflow(dir, { request: 'wire the thing' });
         nextStep(dir, wf, 'commit');
         record(dir, wf, 'plugins/engineer/a.mjs');
         await writeFile(join(dir, 'plugins', 'engineer', 'a.mjs'), 'export const a = 9;\n');
-        const r = run(dir, PHASE7_BIN, autoArgs(dir, wf), AP);
+        const r = run(dir, PHASE7_BIN, autoArgs(dir, wf, '--subject-file', await subjectFile('feat(engineer): set a to 9')), AP);
         strictEqual(r.code, 0, r.stderr);
         const out = JSON.parse(r.stdout);
         deepStrictEqual([out.ok, out.action], [true, 'committed']);
-        strictEqual(sh(dir, 'git', ['log', '-1', '--format=%s']), 'feat(engineer): wire the thing');
+        strictEqual(sh(dir, 'git', ['log', '-1', '--format=%s']), 'feat(engineer): set a to 9');
         const fm = (await readWorkflow(wf)).frontmatter;
         deepStrictEqual([fm.current_phase, fm.terminal_marker], ['commit-complete', true]);
         // The next step is left as it was: `done` would read as the no-commit close.
@@ -1661,7 +1668,9 @@ for (const persona of personasFor('scripts/phase7-commit.mjs')) {
           headSha: sh(dir, 'git', ['rev-parse', 'HEAD']), headSubject: 'chore: a verb committed', stderr: { write() {} } });
         deepStrictEqual([stop.archived, stop.gateFailures.includes('terminal_marker')], [false, true]);
         // /engineer:commit commits the workflow's own change; now Stop archives it.
-        r = run(dir, PHASE7_BIN, ['--mode', 'autopilot', '--workflow-path', wf, '--repo-root', dir, '--host', 'claude'], AP);
+        const subject = join(await mkdtemp(join(tmpdir(), 'engineer-commit-subject-')), 'subject.txt');
+        await writeFile(subject, 'feat(engineer): set a to 7\n');
+        r = run(dir, PHASE7_BIN, ['--mode', 'autopilot', '--workflow-path', wf, '--repo-root', dir, '--host', 'claude', '--subject-file', subject], AP);
         strictEqual(r.code, 0, r.stderr);
         strictEqual(JSON.parse(r.stdout).action, 'committed');
         stop = await runStopArchive({ workflowPath: wf, host: 'claude', repoRoot: dir,

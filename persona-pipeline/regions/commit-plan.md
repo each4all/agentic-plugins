@@ -21,4 +21,10 @@ Read the plan JSON and follow `core/skills/commit/SKILL.md` § Phase 1 — Plan:
   - `blocked` → report `no_changes.reason` and stop; nothing is written.
 - Otherwise present the staging set and `commits[].suggested_subject`, with
   `ask_user`, `extras` and `requires_split`, exactly as `/{{persona}}:start`
-  Phase 7 does, and get the user's accept / edit / cancel.
+  Phase 7 does, and get the user's accept / edit / cancel. When a commit has
+  a `subject_rule` (the repository's release-please configuration names
+  packages), an edited subject takes one of its `allowed_types` and, for a
+  package commit, one of its `scopes`; check it before execute. Execute warns
+  on one that does not fit, commits it as given, and prints the corrected
+  subject: pass the warning and the corrected subject to the user (ADR-0028
+  §P6, note of 2026-11-04).

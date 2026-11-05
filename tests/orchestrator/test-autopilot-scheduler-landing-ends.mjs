@@ -168,6 +168,9 @@ describe('landing reports with lanes', () => {
     const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [COMMIT], file: 'b.txt' } } });
     try {
       strictEqual(await t.run(), 2, t.lines.join('\n'));
+      // Exit 2 is any halt: name the one run 1 met when it is not the
+      // awaiting-landing halt this test starts from.
+      strictEqual(t.latest().halt?.reason, 'awaiting-landing', `run 1: ${JSON.stringify(t.latest().halt)}\n${t.lines.join('\n')}`);
       deepStrictEqual(t.latest().halt.waiting.map((w) => [w.subtaskId, w.sync.state]), [['A', 'ready'], ['B', 'ready']]);
       const observeAsync = async () => { throw new Error('simulated: the look threw'); };
       await rejects(t.run({}, { observeAsync }), /simulated: the look threw/);

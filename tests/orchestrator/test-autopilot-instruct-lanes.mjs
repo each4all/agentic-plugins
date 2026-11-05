@@ -60,6 +60,16 @@ const lanesLines = (t) => {
   const f = join(runsDir(t), runs.at(-1), 'lanes.jsonl');
   return existsSync(f) ? readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
 };
+// A setup run of two steps that must dispatch both lanes: A's dispatch waits
+// until B's has started, so A's next step cannot take the run's second step
+// first. Without it, a loaded machine let A's dispatch end while B's lane was
+// being created; B's admission then yielded, its lane was removed unused, and
+// the run's second step was A's critique, leaving B undispatched.
+const BOTH_DISPATCHED = { 'dispatch:A': ['wait:b-dispatched'], 'dispatch:B': ['mark-start:b-dispatched'] };
+function bothDispatched(t) {
+  ok(!existsSync(join(t.dir, 'b-dispatched.timeout')), `A's dispatch ran out its wait for B's to start\n${t.lines.join('\n')}`);
+  ok(childOf(t, 'A') && childOf(t, 'B'), t.lines.join('\n'));
+}
 const until = async (pred, what) => {
   for (let i = 0; i < 600; i += 1) {
     try { if (pred()) return; } catch { /* not yet */ }
@@ -322,10 +332,10 @@ describe('ADR-0068 Decision 7 — a run with lanes applies instructions at a lan
   });
 
   it('an application left waiting defers the lane\'s recorded step, tries again at the tick, and parks the lane after the last attempt', async () => {
-    const t = await setup({ scenario: { recordDispatch: true, A: { next: [CRITIQUE, CRITIQUE] }, B: { next: [CRITIQUE, CRITIQUE, LOW] } }, subtasks: [{ id: 'A' }, { id: 'B' }] });
+    const t = await setup({ scenario: { recordDispatch: true, A: { next: [CRITIQUE, CRITIQUE] }, B: { next: [CRITIQUE, CRITIQUE, LOW] }, actions: BOTH_DISPATCHED }, subtasks: [{ id: 'A' }, { id: 'B' }] });
     try {
       await t.run({ lanes: 2, maxSteps: 2 });
-      ok(childOf(t, 'A') && childOf(t, 'B'), t.lines.join('\n'));
+      bothDispatched(t);
       await instruct(t, 'A', 'replace the critique', '/engineer:refine');
       let calls = 0;
       await t.run({ lanes: 2, maxSteps: 4 }, {
@@ -348,9 +358,10 @@ describe('ADR-0068 Decision 7 — a run with lanes applies instructions at a lan
   });
 
   it('a record that turns unreadable keeps the lane\'s recorded step deferred, and parks the lane naming the record and its release', async () => {
-    const t = await setup({ scenario: { recordDispatch: true, A: { next: [CRITIQUE, CRITIQUE] }, B: { next: [CRITIQUE, CRITIQUE, LOW] } }, subtasks: [{ id: 'A' }, { id: 'B' }] });
+    const t = await setup({ scenario: { recordDispatch: true, A: { next: [CRITIQUE, CRITIQUE] }, B: { next: [CRITIQUE, CRITIQUE, LOW] }, actions: BOTH_DISPATCHED }, subtasks: [{ id: 'A' }, { id: 'B' }] });
     try {
       await t.run({ lanes: 2, maxSteps: 2 });
+      bothDispatched(t);
       await instruct(t, 'A', 'replace the critique', '/engineer:refine');
       const file = I.instructionsPath(t.work, t.fx.macroId, 'A');
       let calls = 0;

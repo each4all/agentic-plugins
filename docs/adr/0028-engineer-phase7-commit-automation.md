@@ -293,6 +293,106 @@ Non-interactive e2e tests use `--subject "<text>"` and
 `--confirm-non-interactive`. The flag combination is the only way to
 bypass the prompt; absent both, Phase 7 always asks.
 
+*Implementation note 2026-11-04 (C163):* the subject's type is now checked
+against the change it commits. The verb and profile, which chose the type
+alone, say nothing about the files: a critique that ended in a package fix
+suggested `chore`, and an ADR composed outside every package suggested
+`feat`. The topic was also cut at 60 characters for the description. Every
+autopilot landing since Macro 2 had its title rewritten by hand.
+
+- **Where the rule holds.** Only in a repository whose
+  `release-please-config.json` names packages (a non-empty `readPackageMap`).
+  With none, nothing changes: a consumer repository's paths are not "outside a
+  package", they are simply not routed. A root package (`"."`) owns every
+  path no other package does, which the routing cannot show, so a commit of
+  those paths is left unchecked.
+- **The rule, per commit.** A commit touching a package path takes a type
+  that routes it to a release: `feat` or `fix` (release-please's default
+  changelog sections, within the types `CONVENTIONAL_COMMIT_RE` accepts). Its
+  scope names the package: its `packageScope`, the key itself, or
+  `plugin/<name>` for `plugins/<name>`, but never another package's own scope.
+  A change under `plugins/runtime/data/` is such a commit, and the reason the
+  driver gives names it, since runtime commands read those assets from the
+  installed plugin. A commit touching no package path never takes `feat` or
+  `fix`: it takes `docs` when its content is documentation only (prose by its
+  extension: Markdown, MDX, reStructuredText or AsciiDoc; not by directory, so
+  a script under `docs/` is code, and not `.txt`, which names build inputs as
+  often as prose), `test` when
+  it is tests only (under a `tests/`, `test/` or `__tests__/` directory, or
+  named `test-*`, `*.test.*`, `*.spec.*` or `*.smoke.*`), and `chore`, `ci` or
+  `refactor` otherwise. Its scope is free. The routing class `docs-only`
+  (P12: no package path) and documentation-only content are two different
+  things, and the names and messages keep them apart. Paths cannot decide
+  between `feat` and `fix`; that stays the author's choice. A mixed commit
+  (`single-package-with-docs`) is decided by its package part, and each
+  commit of a split by its own files.
+- **Plan mode** reports each commit's `subject_rule` (`allowed_types`,
+  `scopes`, `content`, `reason`; null with no package map). Its
+  `suggested_subject` keeps the verb's type where the rule allows it, and
+  otherwise takes `fix` for a package commit or the rule's first type.
+- **Execute** checks every subject before anything is written: one picked
+  with `--suggested-subjects`, a file or an inline flag. Interactively, a
+  subject that does not fit is a warning that names the reason and the
+  corrected subject, and the commit lands as given. Every interactive Phase 7
+  text (`/engineer:start` Phase 7 in its command and its Codex skill, and the
+  commit command and skill) tells the agent to check an edited subject against the rule before
+  execute, and to pass the warning and the corrected subject to the user.
+- **Autopilot** (`--mode autopilot`). The commit worker reads the plan and
+  writes each subject to a file: a type and scope the rule allows, and a
+  one-line summary of the change. It passes the files as `--subject-file`, or
+  as `--subject-pkg-file` per commit of a split. The driver refuses three
+  things (exit 9) before anything is written, with the reason, which the
+  step's report carries: a subject that does not fit, no subject where a
+  commit is due, and a description that is the topic cut short. An empty
+  description fails the rule in either mode (a warning interactively, a
+  refusal here), and conventional-commit checking is strict whatever
+  `--lenient-cc` says. Where the description is the topic cut short or
+  empty, the refusal gives no corrected subject, which would keep that
+  description and be refused again: it names the corrected type and scope,
+  and the worker writes its own summary after them. The runbook's step block
+  passes `subject.txt` only when it is there, so on a clean tree (the close
+  and the recovery) it passes none.
+  `--suggested-subjects` is refused outright (exit 2). The worker-written
+  subject and the topic-cut refusal hold in a consumer repository too: "with
+  none, nothing changes" scopes the type rule, and a title cut mid-word is a
+  defect wherever it lands. A staging set that needs the owner still stops at
+  the `staging-set` gate first, which writes the gate and commits nothing; the
+  subjects are checked when the commit runs.
+- **Every path that writes a commit.** The A2 recovery path makes no commit
+  of its own. It finishes landed commits that carry the workflow's
+  `Workflow-ID:`, so it checks their subjects against their own files: a
+  warning interactively, a refusal under autopilot. Every marked commit is
+  checked, not only the newest, and under autopilot a landed description that
+  is the topic cut short is refused too. A landed commit touching several
+  packages fails there as well (ADR-0016), with no corrected subject: it is
+  to be split. Under autopilot a landed commit's refusal is the owner's to
+  act on: the step rewrites no history (no amend, rebase or reset), and the
+  refusal and the runbook both tell the worker to report the commit and its
+  reason, and stop. A retry after a partial
+  multi-package commit plans only the commits still to make. It checks those
+  as any execute does, and it checks the workflow's commits already landed
+  in `baseline..HEAD` as the recovery path does.
+- **Limits.** The autopilot worker's system prompt (the orchestrator's
+  `worker.mjs`) still tells a step to "use the suggested conventional
+  subject". That is another package's text, left for a change of its own.
+  The runbook's Autopilot section names that instruction and the banner below,
+  and says it governs; a suggestion written verbatim is refused when it is
+  the topic cut short. A refusal writes
+  nothing, so a workflow that an interactive verb left terminal keeps its
+  marker. That is rare: Stop archives such a workflow once HEAD moves. The
+  scopes accepted are `packageScope`'s spellings; two packages whose last
+  segments collide outside `plugins/` both accept the bare segment, as
+  `packageScope` itself does. The autopilot banner (`state.mjs`'s commit rules) still says
+  that `--mode autopilot` "commits with the suggested subjects". `state.mjs`
+  is generated into every persona, so correcting that sentence would release
+  designer and founder for a text neither prints. The runbook's Autopilot
+  block is the instruction that counts. A worker that follows the banner
+  alone gets the refusal, which names the plan, the files and the flags. The
+  sentence is corrected with the next `state.mjs` change that releases every
+  persona anyway.
+- Tests: `tests/persona-pipeline/test-phase7-subject-type.mjs`; mutation
+  proof: `scripts/mutation-specs/phase7-subject-type.mjs`.
+
 #### P7 — `!` breaking-change support in the regex
 
 The conventional-commit regex MUST accept `!` between the optional scope

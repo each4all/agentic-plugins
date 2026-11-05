@@ -96,15 +96,16 @@ async function withLaneIn(shared, fn, { ignoreState = true } = {}) {
 
 // --- the runbook transport ---------------------------------------------------
 
-function regionBlock(dest, id) {
+function regionBlocks(dest, id, count) {
   const text = readFileSync(E.path(dest), 'utf8');
   const begin = text.indexOf(`<!-- pipeline:begin ${id} -->`);
   const end = text.indexOf(`<!-- pipeline:end ${id} -->`);
   ok(begin >= 0 && end > begin, `${dest} holds region ${id}`);
   const runnable = [...text.slice(begin, end).matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]).filter((b) => !/^\s*mktemp -d /.test(b));
-  strictEqual(runnable.length, 1, `${id}: one block to run`);
-  return runnable[0];
+  strictEqual(runnable.length, count, `${id}: ${count} block(s) to run`);
+  return runnable;
 }
+const regionBlock = (dest, id) => regionBlocks(dest, id, 1)[0];
 function fill(block, pairs) {
   let out = block;
   for (const [placeholder, value] of pairs) {
@@ -144,6 +145,22 @@ const textDir = (files) => {
   for (const [name, text] of Object.entries(files)) writeFileSync(join(d, name), `${text}\n`);
   return d;
 };
+
+// The commit runbook's Autopilot step, as a worker runs it (ADR-0028 §P6,
+// note of 2026-11-04): the plan block, then one commit's subject written to a
+// file (a type and scope its subject_rule allows, and a summary of the
+// change), then the step block with TEXT_DIR set to that directory.
+function commitAutopilot(lane, env) {
+  const [planBlock, stepBlock] = regionBlocks('commands/commit.md', 'commit-autopilot', 2);
+  const p = runBlock(lane, planBlock, env);
+  strictEqual(p.status, 0, `${p.stdout}\n${p.stderr}`);
+  const plan = JSON.parse(p.stdout);
+  strictEqual(plan.requires_split, false, 'one commit');
+  const [c] = plan.commits;
+  const scope = c.subject_rule?.scopes ? `(${c.subject_rule.scopes[0]})` : '';
+  const dir = textDir({ 'subject.txt': `${c.subject_rule ? c.subject_rule.allowed_types[0] : 'chore'}${scope}: commit the change the verb recorded` });
+  return runBlock(lane, fill(stepBlock, [["TEXT_DIR='<the directory the subjects are in>'", `TEXT_DIR='${dir}'`]]), env);
+}
 
 // compose's Phase 0 bootstrap, as /orchestrator:next's dispatch runs it.
 function bootstrap(lane, env) {
@@ -455,7 +472,7 @@ for (const shared of [false, true]) describe(`the takeover (Decision 2, item 10)
     strictEqual(rec.status, 0, rec.stderr);
     const fin = finalize(lane, workerEnv(2), opDirOf(next), { verb: 'commit', commit: true });
     strictEqual(fin.status, 0, fin.stderr);
-    const c = runBlock(lane, regionBlock('commands/commit.md', 'commit-autopilot'), workerEnv(3));
+    const c = commitAutopilot(lane, workerEnv(3));
     strictEqual(c.status, 0, `${c.stdout}\n${c.stderr}`);
     return JSON.parse(c.stdout);
   }
@@ -521,7 +538,7 @@ for (const shared of [false, true]) describe(`the takeover (Decision 2, item 10)
     strictEqual(orch.compare({ subtask: SUBTASK, lane, childPath: child }).state, 'consumed');
     deepStrictEqual(orch.resumeFrom({ childPath: child }), { action: 'commit' });
 
-    const c = runBlock(lane, regionBlock('commands/commit.md', 'commit-autopilot'), workerEnv(2));
+    const c = commitAutopilot(lane, workerEnv(2));
     strictEqual(c.status, 0, `${c.stdout}\n${c.stderr}`);
     strictEqual(JSON.parse(c.stdout).action, 'committed', c.stdout);
     strictEqual(git('show', 'HEAD:plugins/engineer/a.mjs'), 'export const a = 5;');

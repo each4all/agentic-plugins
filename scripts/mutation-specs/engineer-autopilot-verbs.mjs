@@ -263,8 +263,8 @@ export const MUTATIONS = [
   },
   {
     id: 'R5', file: COMMIT_MD, tests: [T_CR],
-    from: '  --workflow-path "$ACTIVE" --repo-root "$REPO_ROOT" --host "${AGENTIC_HOST:-claude}"\n```\n\nReport its JSON `action`',
-    to: '  --workflow-path "$ACTIVE" --repo-root "$REPO_ROOT" --host "${AGENTIC_HOST:-claude}" --confirm-non-interactive\n```\n\nReport its JSON `action`',
+    from: '  "${SUBJECT_ARGS[@]}"\n```\n\nReport its JSON `action`',
+    to: '  "${SUBJECT_ARGS[@]}" --confirm-non-interactive\n```\n\nReport its JSON `action`',
     why: 'the autopilot block passes a confirm flag',
   },
   {

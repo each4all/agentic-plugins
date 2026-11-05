@@ -1277,8 +1277,18 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               // persona without it must not be handed a --mode autopilot call.
               strictEqual(parseRegions(text).regions.some((x) => x.id === 'commit-autopilot'), dispatch, 'the autopilot region');
               const modes = [['commit-plan', 'plan'], ['commit-execute', 'execute'], ['commit-close', 'close'], ...(dispatch ? [['commit-autopilot', 'autopilot']] : [])];
+              // The autopilot region holds two blocks (ADR-0028 §P6, note of
+              // 2026-11-04): the plan the worker writes the subjects from, then
+              // the step, with the subject file in TEXT_DIR. Each is run here.
+              const autopilotBlocks = dispatch ? shellBlocks(region(text, 'commit-autopilot')).map((b) => b.text) : [];
+              if (dispatch) {
+                strictEqual(autopilotBlocks.length, 2, `${persona}/commit: the plan and the step in commit-autopilot`);
+                ok(/ --mode plan \\\n/.test(autopilotBlocks[0]), 'the autopilot region opens with the plan');
+                modes.push(['commit-autopilot-plan', 'plan']);
+              }
+              const blockOf = (id) => (id === 'commit-autopilot' ? autopilotBlocks[1] : id === 'commit-autopilot-plan' ? autopilotBlocks[0] : only(id));
               for (const [id, mode] of modes) {
-                const block = only(id);
+                const block = blockOf(id);
                 const r = await runBlock('bash', block, persona, { active: '/w/a.md' });
                 deepStrictEqual([r.status, r.log], [0, ['find-active', `phase7 ${mode}`]], `${id}: ${r.stderr}`);
                 ok(r.argv[1].includes(` --mode ${mode} --workflow-path /w/a.md --repo-root /`), `${id}: ${r.argv[1]}`);
@@ -1286,7 +1296,15 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
                 deepStrictEqual((await runBlock('bash', block, persona, { active: '' })).log, ['find-active'], `${id}: no workflow, no driver`);
                 if (mode === 'autopilot') {
                   const tokens = r.argv[1].split(' ');
-                  for (const flag of ['--confirm-non-interactive', '--non-interactive', '--include-extra', '--accept-current-tree', '--subject', '--subject-pkg', '--subject-file', '--subject-pkg-file', '--suggested-subjects']) ok(!tokens.includes(flag), `the autopilot block passes ${flag}`);
+                  for (const flag of ['--confirm-non-interactive', '--non-interactive', '--include-extra', '--accept-current-tree', '--subject', '--subject-pkg', '--suggested-subjects']) ok(!tokens.includes(flag), `the autopilot block passes ${flag}`);
+                  // Contract: the subject is the worker's, from a file in TEXT_DIR,
+                  // never text on the command line (ADR-0059) nor the suggestion.
+                  ok(block.startsWith("TEXT_DIR='<the directory the subjects are in>'\n"), 'the step opens with the TEXT_DIR placeholder');
+                  ok(block.endsWith(' \\\n  "${SUBJECT_ARGS[@]}"'), 'the step passes the subject arguments, last');
+                  // subject.txt only when it is there: a clean tree (the close,
+                  // the recovery) takes no subject (C163 critique F1).
+                  ok(block.includes('SUBJECT_ARGS=()\nif [ -n "$TEXT_DIR" ] && [ -e "$TEXT_DIR/subject.txt" ]; then\n  SUBJECT_ARGS+=(--subject-file "$TEXT_DIR/subject.txt")\nfi\n'), 'the step passes subject.txt when it is there');
+                  ok(!tokens.includes('--subject-file'), 'the placeholder TEXT_DIR holds no subject.txt, so none is passed');
                   // Contract: the agent running the autopilot block — reading
                   // ACCEPT_CURRENT_TREE there would bypass the owner's staging-set confirmation.
                   ok(!block.includes('ACCEPT_CURRENT_TREE'), 'the autopilot block reads no accept bypass');

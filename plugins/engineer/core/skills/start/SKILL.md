@@ -337,6 +337,15 @@ the agent dialog between the two CLI invocations):
    (default — no flag), (b) opt specific extras back in via repeated
    `--include-extra <path>` per chosen extras entry, or (c) sweep the
    entire working tree with `--accept-current-tree` (all-or-nothing).
+   When a commit of the plan has a `subject_rule` (the repository's
+   release-please configuration names packages), its subject takes one
+   of the rule's `allowed_types` and, for a package commit, one of its
+   `scopes`: check a subject the user edited against it before execute,
+   and say which part does not fit (ADR-0028 §P6, note of 2026-11-04).
+   Execute warns on a subject that does not fit, commits it as given,
+   and prints the corrected subject: pass the warning and the corrected
+   subject to the user, who can amend the commit or retitle the pull
+   request with it.
 3. `phase7-commit.mjs --mode execute --workflow-path "$ACTIVE"
    --repo-root "$REPO_ROOT" --host "$AGENTIC_HOST" --subject-file
    "$TEXT_DIR/subject.txt" --confirm-non-interactive` — the subject the

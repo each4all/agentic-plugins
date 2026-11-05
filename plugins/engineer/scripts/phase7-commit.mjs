@@ -39,8 +39,9 @@
 //
 //   --mode autopilot  (ADR-0063, only under an autopilot run)
 //     /engineer:commit's whole step, decided in code: plan, then recover,
-//     close, stop at the staging-set owner gate, or commit with plan
-//     mode's suggested subjects.
+//     close, stop at the staging-set owner gate, or commit with the
+//     subjects the commit worker wrote to files, each checked against the
+//     change it heads (ADR-0028 §P6, note of 2026-11-04).
 //
 // /engineer:commit (ADR-0063) drives these modes for verb-chain
 // workflows; /engineer:start keeps its own Phase 7.
@@ -481,11 +482,298 @@ function trimSubjectDescription(text) {
   return firstLine.length > 60 ? `${firstLine.slice(0, 57)}...` : firstLine;
 }
 
-export function inferSubject({ packageKey, frontmatter, packageMap = null }) {
+// The topic cut short, as trimSubjectDescription makes it, when the cut
+// happened; null when the request's first line fits whole. Under autopilot a
+// subject whose description is this is refused: it says what was asked, cut
+// mid-word, not what the change does.
+function truncatedTopic(frontmatter) {
+  const text = frontmatter && frontmatter.original_request;
+  if (typeof text !== 'string') return null;
+  const firstLine = text.replace(/\r?\n.*$/s, '').trim();
+  return firstLine.length > 60 ? trimSubjectDescription(text) : null;
+}
+
+export function inferSubject({ packageKey, frontmatter, packageMap = null, files = null }) {
   const type = suggestType(frontmatter);
   const scope = packageScope(packageKey, packageMap);
   const desc = trimSubjectDescription(frontmatter.original_request);
-  return scope ? `${type}(${scope}): ${desc}` : `${type}: ${desc}`;
+  const subject = scope ? `${type}(${scope}): ${desc}` : `${type}: ${desc}`;
+  // The verb only proposes the type; the change decides which types it may
+  // take (subjectRule). With no package map nothing is checked.
+  const rule = subjectRule({ packageKey, files, packageMap });
+  return rule === null ? subject : checkSubjectRule({ subject, rule }).corrected;
+}
+
+// =============================================================================
+// Subject type and scope against the change (ADR-0028 §P6, note of 2026-11-04)
+// =============================================================================
+//
+// The verb and profile say nothing about what a commit touches: a critique
+// that ends in a code change suggested `chore`, and a compose of an ADR
+// suggested `feat` for a change release-please routes to no package. Only in a
+// repository whose release-please configuration names packages (a non-empty
+// package map) is a subject's type checked against the commit's files:
+//
+//   - a commit touching a package path takes a type that routes it to a
+//     release, `feat` or `fix` (release-please's default changelog sections,
+//     within the types CONVENTIONAL_COMMIT_RE accepts), and a scope naming
+//     that package; a change under plugins/runtime/data/ is one of these and is
+//     named as such, since runtime commands read those assets from the
+//     installed plugin (AGENTS.md § Release process). Which of `feat` and
+//     `fix` is not decidable from paths and stays the author's.
+//   - a commit touching no package path (the routing class `docs-only` of
+//     classifyMixedCase, which says nothing of what the files hold) is never
+//     `feat` or `fix`: `docs` when its content is documentation only, `test`
+//     when it is tests only, otherwise `chore`, `ci` or `refactor`. Its scope
+//     is free.
+//
+// A commit that folds files outside every package into a package commit
+// (single-package-with-docs) is decided by its package part. With no package
+// map (a consumer repository, or none configured) paths are not "outside a
+// package": nothing is checked, and nothing changes.
+
+const RELEASE_ROUTING_TYPES = Object.freeze(['feat', 'fix']);
+const NON_ROUTING_TYPES = Object.freeze({
+  documentation: Object.freeze(['docs']),
+  tests: Object.freeze(['test']),
+  other: Object.freeze(['chore', 'ci', 'refactor']),
+});
+const RUNTIME_DATA_PREFIX = 'plugins/runtime/data/';
+const DOCUMENTATION_EXTENSION_RE = /\.(md|mdx|markdown|rst|adoc)$/i;
+
+// A test file: under a tests/, test/ or __tests__/ directory, or named as a
+// test (test-*.mjs, *.test.js, *.spec.ts, *.smoke.mjs).
+function isTestPath(p) {
+  const segments = p.split('/');
+  const base = segments[segments.length - 1];
+  return segments.slice(0, -1).some((s) => s === 'tests' || s === 'test' || s === '__tests__') ||
+    /^test[-_]/.test(base) ||
+    /\.(test|spec|smoke)\.[^.]+$/.test(base);
+}
+
+// A documentation file: prose by its extension (Markdown, MDX,
+// reStructuredText, AsciiDoc), wherever it is. Not by directory: a script
+// under docs/ is code, and .txt names build inputs (requirements.txt,
+// CMakeLists.txt) as often as prose, so both read as other.
+function isDocumentationPath(p) {
+  return DOCUMENTATION_EXTENSION_RE.test(p);
+}
+
+/**
+ * What a commit's files hold, apart from where release-please routes them:
+ * `tests` when every file is a test file, `documentation` when every file is
+ * documentation and none a test, `other` otherwise (an empty list included).
+ */
+export function changeContent(files) {
+  const list = Array.isArray(files) ? files : [];
+  if (list.length === 0) return 'other';
+  if (list.every(isTestPath)) return 'tests';
+  if (list.every((p) => isDocumentationPath(p) && !isTestPath(p))) return 'documentation';
+  return 'other';
+}
+
+/**
+ * The scopes that name `packageKey`: its packageScope first (the suggested
+ * one), then its key itself and, for plugins/<name>, `plugin/<name>`; a
+ * spelling that is another package's own scope is left out (root
+ * `companions` against plugins/companions).
+ */
+export function packageScopes(packageKey, packageMap) {
+  const primary = packageScope(packageKey, packageMap);
+  const candidates = [primary, packageKey];
+  if (packageKey.startsWith('plugins/')) candidates.push(`plugin/${lastSegment(packageKey)}`);
+  const others = new Set(
+    packageMap.filter((k) => k !== packageKey).map((k) => packageScope(k, packageMap)),
+  );
+  return [...new Set(candidates)].filter((s) => s === primary || !others.has(s));
+}
+
+/**
+ * The rule one commit's subject meets, or null when nothing is checked (no
+ * package map). `packageKey` is the commit's package (null for a commit
+ * touching no package path) and `files` its files.
+ */
+export function subjectRule({ packageKey, files, packageMap }) {
+  if (!Array.isArray(packageMap) || packageMap.length === 0) return null;
+  const list = Array.isArray(files) ? files : [];
+  // A root package ('.', every path its own) is a key no path is a segment
+  // prefix of, so its files route as docs-only: a commit of them is the root
+  // package's, which the routing cannot show, and is left unchecked.
+  if (!packageKey && packageMap.includes('.')) return null;
+  if (packageKey) {
+    const runtimeData = list.some((p) => p.startsWith(RUNTIME_DATA_PREFIX));
+    return {
+      package: packageKey,
+      content: null,
+      allowed_types: [...RELEASE_ROUTING_TYPES],
+      scopes: packageScopes(packageKey, packageMap),
+      reason: runtimeData
+        ? `it changes ${RUNTIME_DATA_PREFIX}, whose assets runtime commands read from the installed plugin, so it must release package ${packageKey}`
+        : `it touches release-please package ${packageKey}, which only a feat or fix subject routes to a release`,
+    };
+  }
+  const content = changeContent(list);
+  const what = {
+    documentation: 'documentation only',
+    tests: 'tests only',
+    other: 'neither documentation only nor tests only',
+  }[content];
+  return {
+    package: null,
+    content,
+    allowed_types: [...NON_ROUTING_TYPES[content]],
+    scopes: null,
+    reason: `it touches no release-please package path (routing class docs-only), so a feat or fix subject would announce a release no package gets; its content is ${what}`,
+  };
+}
+
+/**
+ * A subject against its commit's rule: `{ok, problems, corrected}`, where
+ * `corrected` keeps the description (and a breaking `!`) and replaces a type
+ * the rule does not allow (with `fix` for a package commit, the rule's first
+ * type otherwise) and, for a package commit, a scope that does not name the
+ * package. A rule of null passes every subject; a subject that is not a
+ * conventional commit fails with no correction (CONVENTIONAL_COMMIT_RE's own
+ * check reports it).
+ */
+export function checkSubjectRule({ subject, rule }) {
+  if (rule === null) return { ok: true, problems: [], corrected: subject };
+  const parsed = parseCommitSubject(subject);
+  if (parsed === null) {
+    return { ok: false, problems: ['it is not a conventional-commit subject'], corrected: null };
+  }
+  const problems = [];
+  let { type, scope } = parsed;
+  if (!rule.allowed_types.includes(type)) {
+    problems.push(`type '${type}' is not ${rule.allowed_types.join(' or ')}: ${rule.reason}`);
+    type = rule.package ? 'fix' : rule.allowed_types[0];
+  }
+  if (rule.package && !rule.scopes.includes(scope)) {
+    problems.push(scope === null
+      ? `it names no scope; the scope names the package (${rule.scopes.join(' or ')})`
+      : `scope '${scope}' does not name package ${rule.package} (${rule.scopes.join(' or ')})`);
+    scope = rule.scopes[0];
+  }
+  if (parsed.description.trim() === '') problems.push('its description is empty; it summarizes the change');
+  const corrected = `${type}${scope ? `(${scope})` : ''}${parsed.breaking ? '!' : ''}: ${parsed.description}`;
+  return { ok: problems.length === 0, problems, corrected };
+}
+
+/**
+ * The commits of `shas` (already landed, the recovery path's) whose subjects
+ * fail their own files' rule, each `{label, subject, problems, corrected}`.
+ * A landed commit touching several packages fails as such: it should have
+ * been split (ADR-0016). Nothing with no package map.
+ */
+function landedSubjectProblems({ repoRoot, shas, packageMap, topicCut = null }) {
+  const out = [];
+  for (const sha of shas) {
+    const subject = gitSync(repoRoot, ['log', '-1', '--format=%s', sha], { allowFailure: true }) ?? '';
+    const touched = commitTouchedPaths(repoRoot, sha);
+    const label = `landed commit ${sha.slice(0, 7)}`;
+    const routes = detectCrossPackageRoutes(touched, packageMap);
+    if (routes.perPackageCommits.length > 1) {
+      out.push({
+        label,
+        subject,
+        problems: [`it touches ${routes.perPackageCommits.length} packages (${routes.perPackageCommits.map((c) => c.package).join(', ')}); a change across packages is one commit per package, each naming its own (ADR-0016)`],
+        corrected: null,
+        split_needed: true,
+      });
+      continue;
+    }
+    const packageKey = routes.perPackageCommits.length === 1 ? routes.perPackageCommits[0].package : null;
+    const verdict = checkSubjectRule({ subject, rule: subjectRule({ packageKey, files: touched, packageMap }) });
+    const problems = [...verdict.problems, ...topicCutProblem(subject, topicCut)];
+    if (problems.length > 0) out.push({ label, subject, problems, ...correctionOf(subject, verdict, topicCut) });
+  }
+  return out;
+}
+
+/**
+ * What a failing subject's report offers: `{corrected, rewrite,
+ * summary_needed}`. A subject whose type or scope alone is wrong gets the
+ * whole corrected subject. One whose description is the topic cut short, or
+ * empty, gets no subject to copy (that would keep the description, and be
+ * refused again): `summary_needed` is set, `rewrite` is the corrected
+ * `<type>(<scope>)` prefix (null when the subject is not a conventional
+ * commit), and the worker writes its own summary after it.
+ */
+function correctionOf(subject, verdict, topicCut) {
+  const parsed = parseCommitSubject(subject);
+  const replaceDescription = topicCutProblem(subject, topicCut).length > 0 ||
+    (parsed !== null && parsed.description.trim() === '');
+  if (!replaceDescription) return { corrected: verdict.ok ? null : verdict.corrected, rewrite: null, summary_needed: false };
+  // The prefix from the parsed corrected subject, never cut at its first
+  // colon: a scope may hold one (`feat(api:client)`), and a subject that is
+  // not a conventional commit has no prefix to keep.
+  const fixed = parseCommitSubject(verdict.corrected ?? '');
+  const rewrite = fixed === null
+    ? null
+    : `${fixed.type}${fixed.scope ? `(${fixed.scope})` : ''}${fixed.breaking ? '!' : ''}`;
+  return { corrected: null, rewrite, summary_needed: true };
+}
+
+// Under autopilot (a non-null topicCut), a subject whose description is the
+// workflow's topic cut short, with or without its ellipsis.
+function topicCutProblem(subject, topicCut) {
+  if (topicCut === null) return [];
+  const parsed = parseCommitSubject(subject);
+  const description = (parsed === null ? subject : parsed.description).trim();
+  return description === topicCut || description === topicCut.slice(0, -3).trim()
+    ? ['its description is the workflow\'s topic cut short; it summarizes the change instead']
+    : [];
+}
+
+// The commits in baseline..HEAD carrying this workflow's Workflow-ID trailer,
+// newest first; none when there is no baseline or git cannot list them.
+function markedCommitShas({ repoRoot, frontmatter }) {
+  const baselineHead = frontmatter.git_baseline && frontmatter.git_baseline.head;
+  const workflowId = frontmatter.workflow_id;
+  if (typeof baselineHead !== 'string' || baselineHead.length === 0) return [];
+  if (typeof workflowId !== 'string' || workflowId.length === 0) return [];
+  const revList = gitSync(
+    repoRoot,
+    ['log', '--format=%H', '-F', `--grep=${WORKFLOW_ID_TRAILER_PREFIX} ${workflowId}`, `${baselineHead}..HEAD`],
+    { allowFailure: true },
+  );
+  return (revList ?? '').split('\n').map((s) => s.trim()).filter((s) => s.length > 0);
+}
+
+// Prints the subjects that fail their rule: a refusal under autopilot (the
+// caller then writes nothing), a warning with the corrected subject otherwise.
+// A landed commit's refusal under autopilot is the owner's: the step rewrites
+// no history, it reports the commit (the commit runbook's Autopilot step).
+// `tail: false` prints the failures alone, when a landed report follows.
+function reportSubjectProblems({ failures, enforce, stderr, landed = false, tail = true }) {
+  for (const f of failures) {
+    stderr.write(
+      `${enforce ? '✗' : '⚠'} subject ${JSON.stringify(f.subject)} (${f.label}) does not fit the change it commits: ` +
+      `${f.problems.join('; ')}.\n` +
+      (f.corrected ? `  Corrected subject: ${f.corrected}\n` : '') +
+      (f.split_needed
+        ? '  No corrected subject: no one subject fits it; it is split into one commit per package, each with its own subject.\n'
+        : '') +
+      (f.summary_needed
+        ? `  No corrected subject: its description is to be replaced, not kept. Write ${f.rewrite ? `'${f.rewrite}: '` : 'a type and scope the change allows'} ` +
+          'followed by your own one-line summary of what the change does, never the topic or request cut short.\n'
+        : ''),
+    );
+  }
+  if (!tail) return;
+  if (enforce) {
+    stderr.write(
+      '✗ refused under autopilot: nothing was committed and nothing was written (ADR-0028 §P6, note of 2026-11-04). ' +
+      (landed
+        ? 'A landed commit is the owner\'s to reword, or to split where it touches several packages: this step rewrites no history (no amend, rebase or reset). ' +
+          'Report each landed commit named above, with its reason, in the step\'s report, and stop.\n'
+        : 'Write each subject anew to its subject file — the corrected subject, or, where none is given, your own summary after the type and scope named — and run the step again.\n'),
+    );
+  } else {
+    stderr.write(landed
+      ? '  Proceeding (interactive); before the pull request lands, reword the landed commit to take the corrected subject (keeping its Workflow-ID trailer), or split it where it touches several packages.\n'
+      : '  Proceeding with the subject as given (interactive); amend the commit, or the pull request title it lands under, to take the corrected subject.\n');
+  }
 }
 
 // =============================================================================
@@ -811,15 +1099,25 @@ async function planMode({ workflowPath, repoRoot, frontmatter, acceptCurrentTree
     perPackageCommits: routes.perPackageCommits,
     docsCommit: routes.docsCommit,
   });
-  const suggestedSubjects = shape.commits.map((c) => ({
-    package: c.package,
-    files: c.files,
-    suggested_subject: inferSubject({
-      packageKey: c.package,
-      frontmatter,
-      packageMap,
-    }),
-  }));
+  // ADR-0028 §P6, note of 2026-11-04 — each commit's rule: the types and, for
+  // a package commit, the scopes its subject may take; null with no package
+  // map. The suggested subject already meets it.
+  const suggestedSubjects = shape.commits.map((c) => {
+    const rule = subjectRule({ packageKey: c.package, files: c.files, packageMap });
+    return {
+      package: c.package,
+      files: c.files,
+      suggested_subject: inferSubject({
+        packageKey: c.package,
+        frontmatter,
+        packageMap,
+        files: c.files,
+      }),
+      subject_rule: rule === null
+        ? null
+        : { allowed_types: rule.allowed_types, scopes: rule.scopes, content: rule.content, reason: rule.reason },
+    };
+  });
   const phase7Config = await readPhase7Config(repoRoot);
   // ADR-0063 — on a clean tree, say which of recovery / close / blocked
   // execute and close will find, from the same classifier they run.
@@ -853,6 +1151,10 @@ async function planMode({ workflowPath, repoRoot, frontmatter, acceptCurrentTree
       branchDecision.askUser
         ? 'ask_user=true — confirm the staging set with the user before --mode execute.'
         : 'ask_user=false — staging set fully implied by manifest or accept-current-tree.',
+      ...(packageMap.length > 0 && suggestedSubjects.length > 0
+        ? ['subject_rule — each commit\'s subject takes one of its allowed_types and, for a package commit, one of its ' +
+            'scopes: execute warns on a subject that does not, and under autopilot refuses it (ADR-0028 §P6).']
+        : []),
       ...(noChanges
         ? [`no_changes.path=${noChanges.path}${noChanges.reason ? ` (${noChanges.reason})` : ''} — ` +
             (noChanges.path === 'recovery'
@@ -1292,11 +1594,10 @@ function probeLandedRecovery({ repoRoot, baselineHead, workflowId, manifestPaths
   }
   const shas = revList.split('\n').map((s) => s.trim()).filter((s) => s.length > 0);
 
-  // Step 2 — per-sha touched-paths list. `git show --name-only
-  // --pretty=format:` emits the paths, NUL-delimited under `-z` so a quoted
-  // path matches the manifest, and `--no-renames` so a rename counts both
-  // endpoints (C90): with rename detection on, only the new path is listed and
-  // a manifest that records the old one reads as partial-commit.
+  // Step 2 — per-sha touched-paths list (`commitTouchedPaths`). Both
+  // endpoints of a rename count (C90): with rename detection on, only the new
+  // path is listed and a manifest that records the old one reads as
+  // partial-commit.
   //
   // Supported topology: Phase 7 makes only single-parent commits, and a root
   // commit is never in baseline..HEAD. A marked merge commit (made by hand)
@@ -1304,15 +1605,26 @@ function probeLandedRecovery({ repoRoot, baselineHead, workflowId, manifestPaths
   // partial-commit, the safe side.
   const markedCommits = [];
   for (const sha of shas) {
-    const paths = gitSync(
-      repoRoot,
-      ['show', '--name-only', '--no-renames', '--ignore-submodules=none', '-z', '--pretty=format:', sha],
-      { allowFailure: true },
-    );
-    markedCommits.push({ sha, touched: splitZ(paths) });
+    markedCommits.push({ sha, touched: commitTouchedPaths(repoRoot, sha) });
   }
 
   return evaluateLandedRecovery({ workflowId, manifestPaths, markedCommits });
+}
+
+/**
+ * The paths one landed commit touched, for the recovery probe and the landed
+ * subject check alike. `git show --name-only --pretty=format:` emits the
+ * paths, NUL-delimited under `-z` so a quoted path matches the manifest;
+ * `--no-renames` lists both endpoints of a rename (C90), and
+ * `--ignore-submodules=none` a moved submodule a configured
+ * `diff.ignoreSubmodules` would hide. A git failure reads as no paths.
+ */
+function commitTouchedPaths(repoRoot, sha) {
+  return splitZ(gitSync(
+    repoRoot,
+    ['show', '--name-only', '--no-renames', '--ignore-submodules=none', '-z', '--pretty=format:', sha],
+    { allowFailure: true },
+  ));
 }
 
 /**
@@ -1688,6 +2000,21 @@ async function executeMode({
     acceptCurrentTree,
     includeExtras,
   });
+  // A5 — same self-detection as plan-mode (the in-repo strict path
+  // throws on malformed/missing release-please-config.json so the
+  // ADR-0016 routing convention cannot silently degrade). Read before the
+  // recovery path too, whose landed subjects are checked against it.
+  const strictPackageMap = await isAgenticPluginsRepo(repoRoot);
+  const packageMap = await readPackageMap(
+    join(repoRoot, 'release-please-config.json'),
+    { strict: strictPackageMap },
+  );
+  // ADR-0028 §P6, note of 2026-11-04 — under autopilot a subject that does
+  // not fit its change is refused before anything is written; interactively
+  // it is a warning with the corrected subject. Set only by autopilotMode: a
+  // CLI flag value is a string, never `true`.
+  const enforceSubjects = flags['autopilot-subjects'] === true;
+  const topicCut = enforceSubjects ? truncatedTopic(frontmatter) : null;
   if (branchDecision.branch === 'no-changes') {
     // ADR-0028 PR4 A2 — idempotent-recovery fast-path.
     //
@@ -1723,6 +2050,13 @@ async function executeMode({
         `${noChanges.marked_commits.map((s) => s.slice(0, 7)).join(', ')}). ` +
         `Skipping commit loop; running post-commit gates + set-terminal.\n`,
       );
+      // The landed commits are what this recovery finishes, so their subjects
+      // are checked as a commit made here would be, before any write.
+      const landedFailures = landedSubjectProblems({ repoRoot, shas: noChanges.marked_commits, packageMap, topicCut });
+      if (landedFailures.length > 0) {
+        reportSubjectProblems({ failures: landedFailures, enforce: enforceSubjects, stderr, landed: true });
+        if (enforceSubjects) return { ok: false, reason: 'subject-refused', landed: [] };
+      }
       // Fall through to the post-commit gate block below WITHOUT
       // entering the commit loop. `landed` is intentionally empty
       // here — the gates only check workflow state, not what landed
@@ -1754,14 +2088,6 @@ async function executeMode({
     );
   }
   const stagingSet = branchDecision.stagingSet;
-  // A5 — same self-detection as plan-mode (the in-repo strict path
-  // throws on malformed/missing release-please-config.json so the
-  // ADR-0016 routing convention cannot silently degrade).
-  const strictPackageMap = await isAgenticPluginsRepo(repoRoot);
-  const packageMap = await readPackageMap(
-    join(repoRoot, 'release-please-config.json'),
-    { strict: strictPackageMap },
-  );
   const routes = detectCrossPackageRoutes(stagingSet, packageMap);
   const shape = commitShapeFor({
     classification: routes.classification,
@@ -1778,6 +2104,9 @@ async function executeMode({
   let strictCC = phase7Config.strictCC;
   if (flags['strict-cc'] === true) strictCC = true;
   if (flags['lenient-cc'] === true) strictCC = false;
+  // Under autopilot strict whatever the flags: a subject that is not a
+  // conventional commit is refused, never committed with a warning.
+  if (enforceSubjects) strictCC = true;
 
   // Compose body context once (shared across split commits per P1 —
   // original_request + ensemble summary are workflow-level, not
@@ -1805,7 +2134,7 @@ async function executeMode({
     // ADR-0063 — --suggested-subjects takes plan mode's own suggestion for
     // each commit, single or split, so the subject never passes a shell.
     const subject = suggested
-      ? inferSubject({ packageKey: commit.package, frontmatter, packageMap })
+      ? inferSubject({ packageKey: commit.package, frontmatter, packageMap, files: commit.files })
       : pickSubjectForCommit({
         commit,
         flags,
@@ -1815,6 +2144,43 @@ async function executeMode({
     checkSubjectAgainstCC({ subject, strictCC, stderr });
     return subject;
   });
+  // ADR-0028 §P6, note of 2026-11-04 — each subject against the files of the
+  // commit it heads (a non-conventional one is CONVENTIONAL_COMMIT_RE's to
+  // report, above), and under autopilot against the topic cut short, which
+  // says what was asked rather than what the change does.
+  const failures = [];
+  shape.commits.forEach((commit, i) => {
+    const label = `commit ${i + 1}/${shape.commits.length}, package=${commit.package ?? 'docs'}`;
+    const parsed = parseCommitSubject(subjects[i]);
+    if (parsed === null) return;
+    const verdict = checkSubjectRule({
+      subject: subjects[i],
+      rule: subjectRule({ packageKey: commit.package, files: commit.files, packageMap }),
+    });
+    const problems = [...verdict.problems, ...topicCutProblem(subjects[i], topicCut)];
+    if (problems.length > 0) failures.push({ label, subject: subjects[i], problems, ...correctionOf(subjects[i], verdict, topicCut) });
+  });
+  // A retry after a partial commit: this workflow's commits that already
+  // landed are part of what it lands, so they are checked as the recovery
+  // path checks them.
+  const landedFailures = landedSubjectProblems({
+    repoRoot, shas: markedCommitShas({ repoRoot, frontmatter }), packageMap, topicCut,
+  });
+  // The landed commits' report comes last: under autopilot a landed failure
+  // is the owner's, so its report/stop instruction ends the refusal, and the
+  // subjects still to commit get no "run the step again" tail of their own.
+  if (failures.length > 0) {
+    reportSubjectProblems({
+      failures, enforce: enforceSubjects, stderr,
+      tail: !(enforceSubjects && landedFailures.length > 0),
+    });
+  }
+  if (landedFailures.length > 0) {
+    reportSubjectProblems({ failures: landedFailures, enforce: enforceSubjects, stderr, landed: true });
+  }
+  if (enforceSubjects && (failures.length > 0 || landedFailures.length > 0)) {
+    return { ok: false, reason: 'subject-refused', landed: [] };
+  }
   // ADR-0063 — the workflow is not terminal while it is being committed: an
   // inherited terminal marker (an interactive verb's) with HEAD moved by a
   // first split commit would let the Stop hook archive a half-committed
@@ -2096,8 +2462,11 @@ async function closeMode({ workflowPath, repoRoot, frontmatter, flags, stderr })
  *                  or a pre-staged index: a `Phase 7 plan` note, the next
  *                  step `owner-decision` and the `staging-set` gate, in one
  *                  write. Nothing is committed.
- *   otherwise    → execute with plan mode's suggested subjects and strict
- *                  conventional-commit checks; never a confirm or bypass flag.
+ *   otherwise    → execute with the worker's subject files and strict
+ *                  conventional-commit checks, each subject's type and scope
+ *                  checked against its commit's files and its description
+ *                  against the topic cut short; never a confirm or bypass
+ *                  flag. No subject refuses, writing nothing.
  *
  * It refuses outright over an owner gate, on an /engineer:start workflow,
  * and outside an autopilot run (main checks the last).
@@ -2131,7 +2500,12 @@ async function autopilotMode({ workflowPath, repoRoot, frontmatter, flags, stder
     return { ok: false, reason: 'pending_ensemble:non_empty' };
   }
   const plan = await planMode({ workflowPath, repoRoot, frontmatter, acceptCurrentTree: false });
-  const autoFlags = { ...flags, 'suggested-subjects': true, 'strict-cc': true };
+  // ADR-0028 §P6, note of 2026-11-04 — the subjects are the commit worker's,
+  // from files it wrote after reading the plan (`--subject-file`, or
+  // `--subject-pkg-file` per commit of a split), each checked against its
+  // commit's files; never the suggestion, whose description is the topic cut
+  // short. `autopilot-subjects` makes executeMode refuse a subject that fails.
+  const autoFlags = { ...flags, 'strict-cc': true, 'autopilot-subjects': true };
   if (plan.branch === 'no-changes') {
     const { path, reason } = plan.no_changes;
     if (path === 'close') {
@@ -2185,6 +2559,15 @@ async function autopilotMode({ workflowPath, repoRoot, frontmatter, flags, stder
     stderr.write('⏸ the staging set needs the owner: recorded the staging-set gate; nothing was committed.\n');
     return { ok: true, action: 'staging-set', gate: 'staging-set', staging_set: plan.staging_set, extras: plan.extras };
   }
+  if (typeof flags.subject !== 'string' && flags['subject-pkg'].length === 0) {
+    stderr.write(
+      '✗ refused under autopilot: no subject was given, and the suggested one is not used here (its description is the ' +
+      'topic cut short). Read the plan (--mode plan), write each commit\'s subject — one of its subject_rule.allowed_types, ' +
+      'a scope naming its package, and a one-line summary of the change — to a file, and pass --subject-file <file>, or ' +
+      `--subject-pkg-file <pkg>=<file> per commit of a split (docs for a docs-only commit). Nothing was written (ADR-0028 §P6).\n`,
+    );
+    return { ok: false, reason: 'subject-refused' };
+  }
   return {
     action: 'committed',
     ...(await executeMode({ workflowPath, repoRoot, frontmatter, flags: autoFlags, stderr })),
@@ -2236,7 +2619,18 @@ Execute mode requires the user-confirmed subject:
 Plan mode reports no_changes {path: recovery|close|blocked, reason} on a clean tree.
 Autopilot mode (ADR-0063, only under an autopilot run) is ${commandPrefix()}commit's whole
 step: plan, then recover / close / stop at the staging-set gate / commit with the
-suggested subjects and --strict-cc. It refuses outside an autopilot run (exit 2).
+subjects the worker wrote to files (--subject-file, or --subject-pkg-file per commit of
+a split) and --strict-cc. It refuses outside an autopilot run (exit 2), and refuses
+--suggested-subjects (exit 2).
+
+Subject type and scope (ADR-0028 §P6, note of 2026-11-04), only when
+release-please-config.json names packages: a commit touching a package takes feat or
+fix and a scope naming the package; one touching no package path takes docs
+(documentation only), test (tests only), or chore, ci or refactor. Plan mode reports
+each commit's subject_rule. A subject that does not fit, or (under autopilot) whose
+description is the topic cut short, is a warning interactively and refused under
+autopilot (exit 9), before anything is written; the recovery path checks the landed
+commits' subjects the same way.
 
 Close mode (ADR-0063) closes a workflow whose last verb recorded next_step_kind done
 and that committed nothing: close-complete + terminal marker, then archive. For a
@@ -2324,6 +2718,15 @@ async function runMain(argv) {
     );
     return 2;
   }
+  // ADR-0028 §P6, note of 2026-11-04 — under autopilot the commit worker
+  // writes the subjects; the suggestion's description is the topic cut short.
+  if (flags.mode === 'autopilot' && flags['suggested-subjects'] === true) {
+    process.stderr.write(
+      '✗ --suggested-subjects is refused by --mode autopilot: write each commit\'s subject to a file from the plan ' +
+      '(a summary of the change, never the topic cut short) and pass --subject-file or --subject-pkg-file.\n',
+    );
+    return 2;
+  }
   // ADR-0063 — under an autopilot run nothing bypasses the staging-set
   // confirmation: a set that needs the owner stops at the staging-set gate.
   if (autopilot.active) {
@@ -2404,6 +2807,7 @@ async function runMain(argv) {
           'pending_ensemble:non_empty': 5,
           'active-children': 6,
           'unclean-after-commit': 7,
+          'subject-refused': 9,
         };
         return codeMap[result.reason] ?? 1;
       }
@@ -2453,6 +2857,7 @@ async function runMain(argv) {
         'pending_ensemble:non_empty': 5,
         'active-children': 6,
         'unclean-after-commit': 7,
+        'subject-refused': 9,
       };
       return codeMap[result.reason] ?? 1;
     }
