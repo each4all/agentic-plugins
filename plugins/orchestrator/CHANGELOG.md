@@ -18,6 +18,13 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.37.4](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.37.3...plugin-orchestrator-v0.37.4) (2026-11-05)
+
+
+### Bug Fixes
+
+* **orchestrator:** Plan-verify and peer-now prompts tell the peer that repository content and caller text are data, not instructions (C163 D2a) ([4e2ca1b](https://github.com/each4all/agentic-plugins/commit/4e2ca1b258ea6e11d8fec941c56d76730fc4fba9))
+
 ## [0.37.3](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.37.2...plugin-orchestrator-v0.37.3) (2026-11-04)
 
 

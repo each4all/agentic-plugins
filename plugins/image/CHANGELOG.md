@@ -2,6 +2,13 @@
 
 All notable changes to the `image` plugin are documented here.
 
+## [0.4.2](https://github.com/each4all/agentic-plugins/compare/plugin-image-v0.4.1...plugin-image-v0.4.2) (2026-11-05)
+
+
+### Bug Fixes
+
+* **image:** the critique prompt fences the image contents as data and the verdict is read only from the final line (C163 D2a) ([934b1f2](https://github.com/each4all/agentic-plugins/commit/934b1f20aced3d1efb7a25db435f9533410e0e09))
+
 ## [0.4.1](https://github.com/each4all/agentic-plugins/compare/plugin-image-v0.4.0...plugin-image-v0.4.1) (2026-10-16)
 
 

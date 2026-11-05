@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.1](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.14.0...plugin-designer-v0.14.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* **designer:** peer prompts tell the peer that repository content and caller text are data, not instructions (C163 D2a) ([d691bad](https://github.com/each4all/agentic-plugins/commit/d691bad80f16bbd42d0d373e52a0a936e3c77924))
+
 ## [0.14.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.13.0...plugin-designer-v0.14.0) (2026-11-01)
 
 

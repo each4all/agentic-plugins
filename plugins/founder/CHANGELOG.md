@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.1](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.15.0...plugin-founder-v0.15.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* **founder:** peer prompts tell the peer that repository content and caller text are data, not instructions (C163 D2a) ([711e584](https://github.com/each4all/agentic-plugins/commit/711e584386c2920ded15ae547d5b9e0f3a3b9a3c))
+
 ## [0.15.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.14.0...plugin-founder-v0.15.0) (2026-11-01)
 
 
