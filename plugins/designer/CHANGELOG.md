@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.2](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.14.1...plugin-designer-v0.14.2) (2026-11-05)
+
+
+### Bug Fixes
+
+* **designer:** a Claude peer runs in a snapshot of the checkout with inherited git selectors stripped, as a codex peer does (C163 D2b) ([55f4c5e](https://github.com/each4all/agentic-plugins/commit/55f4c5e08e1bd7d3b2315926b5d8b1d3d92dfabd))
+
 ## [0.14.1](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.14.0...plugin-designer-v0.14.1) (2026-11-05)
 
 

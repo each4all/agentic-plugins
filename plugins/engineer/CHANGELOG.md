@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.34.3](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.34.2...plugin-engineer-v0.34.3) (2026-11-05)
+
+
+### Bug Fixes
+
+* **engineer:** a Claude peer runs in a snapshot of the checkout with inherited git selectors stripped, as a codex peer does (C163 D2b) ([681d1d4](https://github.com/each4all/agentic-plugins/commit/681d1d4981c42dbebf17f8e33b54a6d38ae4ed31))
+
 ## [0.34.2](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.34.1...plugin-engineer-v0.34.2) (2026-11-05)
 
 
