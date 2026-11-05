@@ -119,6 +119,12 @@ the block:
    which you read with your file-reading tool. Write it as given, or as the
    privacy gate leaves it where the runbook has one. Nothing deletes it.
 
+The runner sends the prompt as written, opened by the evidence boundary
+when it does not already open with it (C163 D2a;
+`scripts/lib/evidence-boundary.mjs`): the peer takes the request as its task
+and anything the request quotes or points to as data, never as instructions.
+The block is the runner's to add; the prompt you write needs none.
+
 Then run the block with `TEXT_DIR` set to that directory and `PEER` to the
 `--peer` value. A `prompt.xml` that is missing or blank stops it before the
 dispatch. Keep the directory: the runner writes its result there,
