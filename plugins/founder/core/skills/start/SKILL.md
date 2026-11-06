@@ -142,7 +142,23 @@ dirty tree. `.agentic-plugins/state/**` is excluded from the dirty check.
 `state.mjs autopilot-preflight` once, before any write, and a resumed start
 workflow clears the next step it carried. Each phase's ensemble attempt is
 settled from its run ledger (`peer-runner.mjs settle`) before the next phase,
-a repeated phase under a new run id. No phase makes a verb's terminal write;
+a repeated phase under a new run id. A refine that loops settles its passes
+in the refine skill: its pass settle (the **Each pass settles its own run**
+step) settles each earlier pass, launched or not, and the refine phase
+settles the last pass's attempt only, so no pass is settled twice (a pass
+that launched no run, settled twice, would be recorded twice under two
+attempt keys). When no run launched for a phase whose
+ensemble is a review, its empty-id settle also names that review, by the
+type the phase's dispatch would have used (compose's `plan-verify`, or
+`review` where the compose skill picks the Review point type for code;
+critique's `review` or `adversarial-scan`; refine's `refine-verify`), and why
+it never ran: `--ensemble-type <that type>
+--no-run-reason <peer-unavailable|local-only|privacy-gate|owner-skip>
+--attempt-key <a new text directory for that settle>`, so the workflow records
+the review's attempt with its outcome (`unavailable` or `skipped`) and a rerun
+of that settle records it once (C163 A1a). A `peer-runner.mjs` that does not
+name `--no-run-reason` in its usage predates the record: settle without the
+three flags then. No phase makes a verb's terminal write;
 the lifecycle's one terminal write is `finish-verb` at the end, once it
 converged where the persona waits for convergence.
 An owner gate met in a

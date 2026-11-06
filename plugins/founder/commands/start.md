@@ -309,8 +309,23 @@ phase (ADR-0066 PC2b):
   phase's attempt from its run ledger with `peer-runner.mjs settle --phase
   <verb> --run-id <that attempt's run id>` (empty when no run launched) and
   its `--summary-file`, before
-  the next phase. A repeated phase (a second refine pass) dispatches under a
-  new run id and settles each attempt.
+  the next phase. A repeated phase dispatches under a new run id. A refine
+  that loops settles its passes in the refine skill: its pass settle (the
+  **Each pass settles its own run** step) settles each earlier pass, launched
+  or not, as the loop goes back, so the refine phase settles here the last
+  pass's attempt only. Settling an earlier pass here as well would record a
+  pass that launched no run twice, under two attempt keys. When no run launched for a phase whose
+  ensemble is a review, the empty-id settle also names that review, by the
+  type the phase's dispatch would have used (compose's `plan-verify`, or
+  `review` where the compose skill picks the Review point type for code;
+  critique's `review` or `adversarial-scan`; refine's `refine-verify`), and
+  why it never ran: `--ensemble-type <that
+  type> --no-run-reason <peer-unavailable|local-only|privacy-gate|owner-skip>
+  --attempt-key <a new text directory for that settle>`, so the workflow records the
+  review's attempt with its outcome (`unavailable` or `skipped`) and a rerun
+  of that settle records it once (C163 A1a). A `peer-runner.mjs` that does not name
+  `--no-run-reason` in its usage predates the record: settle without the
+  three flags then.
 - **No phase closes the workflow.** A verb's own terminal write
   (`finish-verb`) never runs inside the lifecycle; the lifecycle's last step
   below makes its one terminal write.
