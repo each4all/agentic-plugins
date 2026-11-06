@@ -382,7 +382,7 @@ function classify(subtask, child, landing, verify = null) {
       return stop('owner-choice', `subtask ${id}: ${child.workflow_id} was detached from its macro (finalize or abort stopped before archiving it)`, { pointer: rel });
     }
     if ((child.pending_ensemble ?? 0) > 0) {
-      return stop('owner-choice', `subtask ${id}: a peer ensemble is still pending (${(child.pending_runs ?? []).join(', ') || 'unknown run'}); let it finish, or settle it with ensemble-commit --verdict aborted`, { pointer: pointerOf('pending_ensemble') });
+      return stop('owner-choice', `subtask ${id}: a peer ensemble is still pending (${(child.pending_runs ?? []).join(', ') || 'unknown run'}); let it finish, or settle it from its run ledger with the persona's peer-runner.mjs settle --run-id <id>, which records how the run went (failed, ledger_missing, when its ledger is gone)`, { pointer: pointerOf('pending_ensemble') });
     }
     const ns = child.next_step;
     // ADR-0068 Decision 5, item 11 — after the gates and the pending peer,

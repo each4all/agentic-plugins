@@ -60,6 +60,7 @@ import { lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { resolveLanding, dispatchTimeFromWorkflowId } from './landing.mjs';
+import { REVIEW_ATTEMPTS_KEY, applyReviewAttempt, decodeReviewAttempts, isReviewType, observeReviewGaps, outcomeOf, treeOf } from './lib/review-attempts.mjs';
 import {
   commandCheckout,
   creationRoot,
@@ -1573,6 +1574,12 @@ const FRONTMATTER_KEY_ORDER = [
   // replaces it.
   'plan_approval_id',
   'plan_rebindings',
+  // C163 A1a (ADR-0023, implementation note of 2026-11-05) — one outcome per
+  // review attempt (the plan's plan-verify): the JSON text of one document in
+  // a double-quoted scalar (lib/review-attempts.mjs, a byte copy of the
+  // persona-pipeline source), last for the same carrier reason. It stays
+  // text, so a document this reader cannot use never fails a read.
+  'review_attempts',
 ];
 
 // ADR-0028 §Forward-compat (PR5 #356 ported from engineer) — invisible
@@ -3224,6 +3231,10 @@ export async function recordPendingEnsemble({
       ? frontmatter.pending_ensemble.filter((e) => e.run_id !== run_id)
       : [];
     frontmatter.pending_ensemble = [...existing, entry];
+    // C163 A1a — a review's attempt is registered (open) in the same write.
+    stageReviewAttempt(frontmatter, {
+      id: run_id, phase, type: ensemble_type, state: 'open', run_id, registered_at: nowIso,
+    });
     frontmatter.updated_at = nowIso;
     await atomicWrite(
       workflowPath,
@@ -3232,6 +3243,81 @@ export async function recordPendingEnsemble({
     );
     return { frontmatter, workflowPath };
   });
+}
+
+// C163 A1a — the ledger of the macro's own run `runId`, in the macro's home
+// (`<state>/peer-runs/<run id>/`, beside `workflows/`), when its handle is
+// there and names this macro: `{handle, dir}`; null otherwise (a run whose
+// ledger is gone, or another home's). The home is the one the path names and
+// the one the file physically sits in, so a path through a linked directory
+// finds the ledger the runner wrote beside the real file.
+function ledgerHandle(workflowPath, runId) {
+  if (!/^[A-Za-z0-9._:-]+$/.test(runId) || runId.includes('..')) return null;
+  let real;
+  try {
+    real = realpathSync(workflowPath);
+  } catch {
+    return null;
+  }
+  const homes = [...new Set([dirname(dirname(resolvePath(workflowPath))), dirname(dirname(real))])];
+  for (const home of homes) {
+    const dir = join(home, 'peer-runs', runId);
+    try {
+      const h = JSON.parse(readFileSync(join(dir, 'handle.json'), 'utf8'));
+      if (h?.run_id !== runId || h.kind !== 'ensemble' || typeof h.workflow_path !== 'string') continue;
+      if (realpathSync(h.workflow_path) === real) return { handle: h, dir };
+    } catch {
+      // Not in this home.
+    }
+  }
+  return null;
+}
+
+// C163 A1a — whether a completed run's answer can be used, read as the
+// persona settle reads it (completedAnswer) from the ledger directory its
+// handle was found in: the envelope's stdout for a json run, the stdout log
+// otherwise. 'unreadable' when it cannot be read, 'empty' when it is blank,
+// null when it holds an answer.
+function ledgerAnswer(dir, handle) {
+  let answer;
+  try {
+    if (handle.output_format === 'json') {
+      const envelope = JSON.parse(readFileSync(join(dir, 'envelope.json'), 'utf8'));
+      answer = typeof envelope?.stdout === 'string' ? envelope.stdout : null;
+    } else {
+      answer = readFileSync(join(dir, 'stdout.log'), 'utf8');
+    }
+  } catch {
+    answer = null;
+  }
+  if (answer === null) return 'unreadable';
+  return answer.trim() === '' ? 'empty' : null;
+}
+
+// C163 A1a — stage one review-attempt write on a frontmatter read under the
+// workflow's lock, for the caller's own write (as the persona state.mjs
+// does). A type that is no review records nothing; a document this writer
+// cannot read is left as it is, with a warning: recording never stops the
+// write it rides on. `listed` is the results list the caller's write prunes,
+// its own row appended (a commit's), whose gaps are observed before the prune.
+function stageReviewAttempt(frontmatter, attempt, { listed = frontmatter.ensemble_results, cap = ENSEMBLE_RESULTS_RETENTION_CAP } = {}) {
+  if (!isReviewType(attempt.type)) return { recorded: false, changed: false };
+  const record = { ...attempt };
+  if (record.verdict !== undefined && !(typeof record.verdict === 'string' && /^[A-Za-z0-9._:-]{1,80}$/.test(record.verdict))) delete record.verdict;
+  let out;
+  try {
+    out = applyReviewAttempt(frontmatter[REVIEW_ATTEMPTS_KEY], record, {
+      results: frontmatter.ensemble_results, listed, cap,
+    });
+  } catch (err) {
+    // An attempt the document refuses is not recorded, and its gap still is:
+    // the results the prune cuts are observed against the document as it was.
+    const gaps = observeReviewGaps(frontmatter[REVIEW_ATTEMPTS_KEY], frontmatter.ensemble_results, { cap, listed });
+    out = { recorded: false, changed: gaps.changed, raw: gaps.raw, diagnostic: err.message };
+  }
+  if (out.diagnostic) process.stderr.write(`⚠ review attempt ${attempt.id} not recorded: ${out.diagnostic}\n`);
+  if (out.changed) frontmatter[REVIEW_ATTEMPTS_KEY] = out.raw;
+  return out;
 }
 
 /**
@@ -3314,6 +3400,62 @@ export async function commitEnsemble({
         codex_session_id,
       };
       next = [...existing, entry];
+    }
+
+    // C163 A1a — close the review attempt from the run's evidence. The plan's
+    // commit carries the local synthesis's verdict even when its run found no
+    // peer, so the verdict counts only for a run whose ledger, in the macro's
+    // home, shows it completed with a usable answer (as the persona settle
+    // maps it: how the run ended, then the answer, then the verdict). With no
+    // ledger the verdict is never the outcome: a run the macro registered
+    // (its pending row, or its open attempt) lost its ledger, `failed`; one it
+    // never registered launched nothing, `unavailable` (the orchestrator's
+    // runner finds its peer before it writes a ledger or a pending row, and
+    // returns `peer_cli_not_found` with neither).
+    //
+    // A repeat of a result already recorded makes no outcome of its own (its
+    // row was written by another commit, an older writer's when the attempt is
+    // still open), and every commit that closes nothing records the gaps the
+    // results show before the prune drops their rows, read from the list the
+    // prune cuts (`next`, this row appended).
+    //
+    // The ledger is evidence only for the attempt it ran: a handle of another
+    // phase or ensemble type (an `investigate` run's id committed as the
+    // plan's `plan-verify`) is no review of this one, and records `failed`
+    // (`ledger-mismatch`), never its verdict.
+    const prunes = { listed: next, cap };
+    if (!alreadyCommitted && isReviewType(ensemble_type)) {
+      const ledger = ledgerHandle(workflowPath, run_id);
+      const found = ledger?.handle ?? null;
+      const mismatch = found !== null && (found.phase !== phase || found.ensemble_type !== ensemble_type);
+      const handle = mismatch ? null : found;
+      let mapped;
+      let tree;
+      if (mismatch) {
+        mapped = { outcome: 'failed', reason: 'ledger-mismatch' };
+        tree = { tree: null, tree_reason: 'evidence-mismatch' };
+      } else if (handle) {
+        const status = typeof handle.status === 'string' ? handle.status : 'unknown';
+        mapped = outcomeOf(status !== 'completed'
+          ? { status, error_kind: handle.error_kind ?? null }
+          : { status, answer: ledgerAnswer(ledger.dir, handle), verdict });
+        tree = treeOf(handle);
+      } else {
+        const doc = decodeReviewAttempts(frontmatter[REVIEW_ATTEMPTS_KEY]).doc;
+        const registered = pending.some((e) => e.run_id === run_id)
+          || (doc?.attempts ?? []).some((a) => (a.run_id ?? a.id) === run_id);
+        mapped = registered ? { outcome: 'failed', reason: 'ledger_missing' } : { outcome: 'unavailable', reason: 'no-ledger' };
+        tree = { tree: null, tree_reason: registered ? 'evidence-missing' : 'no-launch' };
+      }
+      stageReviewAttempt(frontmatter, {
+        id: run_id, phase, type: ensemble_type, state: 'closed', run_id,
+        outcome: mapped.outcome, verdict, reason: mapped.reason ?? undefined,
+        status: handle?.status ?? undefined, error_kind: handle?.error_kind ?? undefined,
+        ...tree, recorded_at: nowIso,
+      }, prunes);
+    } else {
+      const out = observeReviewGaps(frontmatter[REVIEW_ATTEMPTS_KEY], frontmatter.ensemble_results, prunes);
+      if (out.changed) frontmatter[REVIEW_ATTEMPTS_KEY] = out.raw;
     }
 
     frontmatter.ensemble_results = pruneEnsembleResults(next, cap);
