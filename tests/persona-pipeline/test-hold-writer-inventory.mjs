@@ -88,6 +88,9 @@ const PLAIN = [
   ['ensemble-pending', (s, wf) => s.recordPendingEnsemble({ workflowPath: wf, phase: 'compose', ensemble_type: 'plan-verify', run_id: 'plan-verify-20261025T000000Z-aaaaaa', env: cleanEnv() })],
   ['awaiting-owner-set', (s, wf) => s.setAwaitingOwner({ workflowPath: wf, host: 'claude', gate: 'scope-routing', pointer: 'x#y', env: cleanEnv() })],
   ['set-parent-writeback-marker', (s, wf) => s.setParentWritebackMarker({ workflowPath: wf, host: 'claude', at: '2026-10-25T00:00:00Z', env: cleanEnv() })],
+  ['a review attempt that never launched', (s, wf) => s.recordReviewAttempt({
+    workflowPath: wf, attempt: { id: 'review-norun-0123456789abcdef', phase: 'critique', type: 'review', state: 'closed', outcome: 'skipped', reason: 'local-only', tree: null, tree_reason: 'no-launch' }, env: cleanEnv(),
+  })],
   ['ensemble-commit of a run the child never recorded', (s, wf) => s.commitEnsemble({
     workflowPath: wf, run_id: 'plan-verify-20261025T000000Z-bbbbbb', phase: 'compose', ensemble_type: 'plan-verify', verdict: 'agreed', summary: 'x', env: cleanEnv(),
   })],
@@ -411,6 +414,9 @@ const LOCK_SITES = {
   snapshot: { calls: 1, writers: ['LANE_WRITERS.snapshot'] },
   recordPendingEnsemble: { calls: 1, writers: ['LANE_WRITERS.plain'] },
   commitEnsemble: { calls: 1, writers: ['LANE_WRITERS.settlement'] },
+  // C163 A1a — a review attempt with no result row (never launched, superseded).
+  recordReviewAttempt: { calls: 1, writers: ['LANE_WRITERS.plain'] },
+  supersedeReviewAttempt: { calls: 1, writers: ['LANE_WRITERS.plain'] },
   recordManifestEntry: { calls: 1, writers: ['LANE_WRITERS.plain'] },
   setCheckpoint: { calls: 1, writers: ['writerOf(operation)'] },
   setTerminal: { calls: 1, writers: ['writerOf(operation)'] },
@@ -447,18 +453,19 @@ const WRITER_SUBCOMMANDS = [
   'record-refine-file', 'set-parent-writeback-marker', 'clear-parent-writeback-marker', 'set-terminal', 'awaiting-owner-set',
   'awaiting-owner-clear', 'consensus-task', 'critique-scope', 'critique-close', 'refine-record', 'finish-verb', 'verify-batch-start',
   'verify-batch-restart', 'verify-result', 'verify-batch-end', 'verify-pass', 'archive', 'detach-archive', 'stop-archive',
+  'review-attempt-supersede',
 ];
 const READER_SUBCOMMANDS = [
   'find-active', 'resolve-workflow', 'list-workflows', 'dispatch-selection', 'read', 'review-status', 'ensemble-verdict',
   'consensus-proposal', 'autopilot-preflight', 'verify-request-check', 'verify-results', 'verify-capability', 'hold-capability', 'content-digest',
-  'diagnose-redundancy', 'check-clean-baseline', 'state-root', 'shared-creation',
+  'diagnose-redundancy', 'check-clean-baseline', 'state-root', 'shared-creation', 'review-attempts',
 ];
 
 // What every other script and hook imports from state.mjs: each writer among
 // them is a function above, so its class is there.
 const IMPORTS = {
   'scripts/dispatch-peer.mjs': ['LANE_WRITER_REFUSED', 'recordPendingEnsemble'],
-  'scripts/peer-runner.mjs': ['ENSEMBLE_RESULTS_RETENTION_CAP', 'LANE_WRITER_REFUSED', 'assertWorkflowWritable', 'commitEnsemble', 'parseWorkflowFile', 'readTextArgumentFile', 'recordPendingEnsemble', 'resolveWorkflowStorage', 'workflowStorage'],
+  'scripts/peer-runner.mjs': ['ENSEMBLE_RESULTS_RETENTION_CAP', 'LANE_WRITER_REFUSED', 'assertWorkflowWritable', 'commitEnsemble', 'parseWorkflowFile', 'readTextArgumentFile', 'recordPendingEnsemble', 'recordReviewAttempt', 'resolveWorkflowStorage', 'workflowStorage'],
   'scripts/phase7-commit.mjs': ['appendPhase', 'archiveWorkflow', 'autopilotMode', 'beginCommit', 'clearParentWritebackMarker', 'endChildOperation', 'noActiveChildrenCheck', 'noPendingEnsembleCheck', 'parseWorkflowFile', 'readTextArgumentFile', 'setParentWritebackMarker', 'setTerminal'],
   'scripts/session-handoff.mjs': ['branchTip', 'checkedOutBranch', 'currentGitBranch', 'findActiveWorkflowByBranch', 'legacyStateDirRel', 'readWorkflow', 'terminalPhases', 'workflowDir', 'workflowStateRoot'],
   'scripts/stop-archive.mjs': ['archiveWorkflow', 'branchRefState', 'branchTip', 'checkedOutBranch', 'closeArchivedCommit', 'descendsFrom', 'laneWriterRefusal', 'listWorkflowFilesAllHomes', 'noActiveChildrenCheck', 'parseWorkflowFile', 'snapshot', 'sweepLeavesChild', 'terminalMarkerCheck', 'terminalPhaseCheck'],
@@ -472,7 +479,7 @@ const IMPORTS = {
 
 // Every mention of withFileLock in state.mjs: its definition, the calls above
 // and the comments and messages that name it.
-const WITH_FILE_LOCK_MENTIONS = 56;
+const WITH_FILE_LOCK_MENTIONS = 58;
 
 const FUNCTION_RE = /^(?:export )?(?:async )?function (\w+)/gm;
 

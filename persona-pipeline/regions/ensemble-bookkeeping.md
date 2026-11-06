@@ -7,7 +7,11 @@ locations**, both through {{persona}}'s `../../../../scripts/state.mjs`:
    the atomic three-step mutation (pop matching pending → append result →
    prune to the retention cap). Command-managed ensembles normally let
    `peer-runner.mjs run --kind ensemble` record the pending row before
-   spawning the companion.
+   spawning the companion, and settle it with `peer-runner.mjs settle`,
+   which reads the run's ledger and records the review's outcome. A hand
+   `ensemble-commit` reads no ledger: it refuses a review whose run has
+   one, and closes the attempt of a review whose run has none `failed`
+   (`verdict-only`) whatever its verdict (C163 A1a).
 2. **Markdown body** — human-readable phase notes appended via
    `state.mjs append --phase-note-file ...`, the note a file written with
    the file-writing tool, never shell source (ADR-0059, amendment of
@@ -37,8 +41,8 @@ generated (empty when no run launched) before its last write, and the
 ledger, not the agent, decides what the workflow records:
 
 - never launched ({{skip_cause}}):
-  nothing, and the phase note's first heading reads
-  `### Ensemble skipped: …`;
+  no `ensemble_results` entry (a review's attempt only, below), and the
+  phase note's first heading reads `### Ensemble skipped: …`;
 - launched, then failed, cancelled or abandoned: an `ensemble_results`
   entry with verdict `failed` and the ledger's `error_kind` in its summary;
 - completed: the synthesis verdict, or `degraded` when the answer was empty
@@ -48,6 +52,22 @@ ledger, not the agent, decides what the workflow records:
 
 `settle` refuses while the run is still live (collect it first), and when an
 empty run id would hide a run that launched for the same workflow and phase.
+
+**A review attempt keeps one outcome (C163 A1a, ADR-0023 implementation
+note of 2026-11-05).** For the review types (`review`, `adversarial-scan`,
+`plan-verify`, `refine-verify`), the workflow's `review_attempts` scalar keeps
+every attempt, outside the 20-row `ensemble_results` cap: the runner
+registers it, open, in its pending row's write; settle closes it in its
+result's write with one outcome (`passed`, `concerns`, `conflict`, `failed`,
+`degraded`, `unavailable`, `malformed`, `skipped` with its reason, or
+`superseded` with its replacement), the raw verdict, status and `error_kind`,
+and the tree the peer's snapshot held. A review that never launched is
+recorded too, with its reason (`unavailable` or `skipped`): the finalize's
+`NO_RUN_REASON` gives it, as do the `/start` lifecycle's `--no-run-reason`
+and, on Codex, the verb skill's own settle step. `state.mjs review-attempts` prints them; an open attempt, a review
+result with no attempt and an unreadable document read `unknown`, never
+`passed`, and the coverage says when the history is incomplete. This records
+only: nothing reads an outcome to allow or refuse a step.
 
 **`peer-now` is structurally excluded** from `ensemble_results`, by two
 independent mechanisms:

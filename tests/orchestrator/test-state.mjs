@@ -1224,6 +1224,37 @@ describe('recordPendingEnsemble + commitEnsemble', () => {
     });
   });
 
+  // C163 A1a — the plan's plan-verify is a review: its attempt is registered
+  // with the pending row and closed, with an outcome, by the commit, outside
+  // the results cap; an investigate-type run records nothing. These runs have
+  // no ledger, so no commit's verdict becomes their outcome: the registered
+  // one lost its ledger (failed), the others never launched (unavailable).
+  // The outcomes of runs the real runner left are tested in
+  // tests/persona-pipeline/test-review-attempts.mjs.
+  it('a plan-verify attempt is registered open, then closed with its outcome; past the cap it is kept', async () => {
+    await withTmpRepo('ensemble-review-attempts', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'x',
+      });
+      const doc = async () => JSON.parse((await readWorkflow(filePath)).frontmatter.review_attempts);
+      await recordPendingEnsemble({ workflowPath: filePath, phase: 'plan', ensemble_type: 'plan-verify', run_id: 'pv-0' });
+      deepStrictEqual((await doc()).attempts.map((a) => [a.id, a.state]), [['pv-0', 'open']]);
+      await commitEnsemble({ workflowPath: filePath, run_id: 'pv-0', phase: 'plan', ensemble_type: 'plan-verify', verdict: 'failed', summary: 'peer failed' });
+      for (let i = 1; i <= 21; i++) {
+        await commitEnsemble({ workflowPath: filePath, run_id: `pv-${i}`, phase: 'plan', ensemble_type: 'plan-verify', verdict: i % 2 ? 'pass' : 'concerns', summary: 's', completed_at: `2026-11-01T00:00:${String(i).padStart(2, '0')}Z` });
+      }
+      await commitEnsemble({ workflowPath: filePath, run_id: 'other', phase: 'plan', ensemble_type: 'investigate', verdict: 'pass', summary: 's' });
+      const d = await doc();
+      strictEqual(d.attempts.length, 22);
+      deepStrictEqual(d.attempts.slice(0, 3).map((a) => [a.outcome, a.reason, a.verdict]), [
+        ['failed', 'ledger_missing', 'failed'], ['unavailable', 'no-ledger', 'pass'], ['unavailable', 'no-ledger', 'concerns'],
+      ]);
+      strictEqual((await readWorkflow(filePath)).frontmatter.ensemble_results.length, 20);
+      deepStrictEqual(d.coverage, { history_incomplete: false, reasons: [] });
+    });
+  });
+
   it('idempotent commit (same run_id is no-op for results list)', async () => {
     await withTmpRepo('ensemble-idemp', async (root) => {
       const { filePath } = await createWorkflow({

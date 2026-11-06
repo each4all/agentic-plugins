@@ -542,13 +542,65 @@ for (const persona of PERSONAS) {
                 deepStrictEqual([got.pending.length, got.fm.current_phase], [0, 'summary-complete']);
                 archive(dir, wf);
 
-                // Never launched: nothing recorded, the verb still finishes.
+                // Never launched: no result, the verb still finishes; a review
+                // records its attempt skipped, reason unspecified, as
+                // NO_RUN_REASON was left empty (C163 A1a).
                 wf = createWorkflow(dir, verb);
                 r = runBlock(shell, dir, await finalize(verb), vars);
                 strictEqual(r.status, 0, r.stderr);
                 got = await results(wf);
                 deepStrictEqual([got.results.length, got.pending.length, got.fm.current_phase], [0, 0, 'summary-complete']);
+                const attempts = got.fm.review_attempts === undefined ? [] : JSON.parse(got.fm.review_attempts).attempts;
+                deepStrictEqual(attempts.map((a) => [a.type, a.outcome, a.reason]), ['review', 'plan-verify', 'refine-verify'].includes(type) ? [[type, 'skipped', 'unspecified']] : []);
                 archive(dir, wf);
+
+                // Never launched because no peer was found: the block, with
+                // NO_RUN_REASON filled, records a review's attempt unavailable
+                // with that reason (C163 A1a).
+                wf = createWorkflow(dir, verb);
+                const unavailable = (await finalize(verb)).replace("NO_RUN_REASON=''", () => "NO_RUN_REASON='peer-unavailable'");
+                ok(unavailable.includes("NO_RUN_REASON='peer-unavailable'"), 'the block takes the reason');
+                r = runBlock(shell, dir, unavailable, vars);
+                strictEqual(r.status, 0, r.stderr);
+                got = await results(wf);
+                deepStrictEqual([got.results.length, got.pending.length, got.fm.current_phase], [0, 0, 'summary-complete']);
+                const noPeer = got.fm.review_attempts === undefined ? [] : JSON.parse(got.fm.review_attempts).attempts;
+                deepStrictEqual(noPeer.map((a) => [a.type, a.outcome, a.reason, a.tree_reason]), ['review', 'plan-verify', 'refine-verify'].includes(type) ? [[type, 'unavailable', 'peer-unavailable', 'no-launch']] : []);
+                // A later review of the same verb in this workflow that never
+                // launched either, finalized from a text directory of its own:
+                // an attempt of its own, never merged into the first.
+                const later = (await finalize(verb)).replace("NO_RUN_REASON=''", () => "NO_RUN_REASON='local-only'");
+                ok(later.includes("NO_RUN_REASON='local-only'"), 'the block takes the reason');
+                r = runBlock(shell, dir, later, vars);
+                strictEqual(r.status, 0, r.stderr);
+                got = await results(wf);
+                const twice = got.fm.review_attempts === undefined ? [] : JSON.parse(got.fm.review_attempts).attempts;
+                deepStrictEqual(twice.map((a) => [a.type, a.outcome, a.reason]), ['review', 'plan-verify', 'refine-verify'].includes(type) ? [[type, 'unavailable', 'peer-unavailable'], [type, 'skipped', 'local-only']] : []);
+                archive(dir, wf);
+
+                // A critique whose dispatch would have run adversarial-scan
+                // (engineer's full-codebase, founder's red-team): the block's
+                // ATTEMPT_TYPE, set as the dispatch's ENSEMBLE_TYPE was, names
+                // the type of the review that never launched.
+                if (verb === 'critique') {
+                  wf = createWorkflow(dir, verb);
+                  // A type the runner would refuse (a capital, a leading
+                  // hyphen) stops the block before any write.
+                  for (const bad of ['Review', '-review']) {
+                    const before = await readFile(wf, 'utf8');
+                    const refused = runBlock(shell, dir, (await finalize(verb)).replace("NO_RUN_REASON=''", () => "NO_RUN_REASON='peer-unavailable'").replace("ATTEMPT_TYPE='review'", () => `ATTEMPT_TYPE='${bad}'`), vars);
+                    strictEqual(refused.status, 1, bad);
+                    ok(refused.stderr.includes('ATTEMPT_TYPE is not an ensemble type'), refused.stderr);
+                    strictEqual(await readFile(wf, 'utf8'), before, `${bad}: nothing written`);
+                  }
+                  const adversarial = (await finalize(verb)).replace("NO_RUN_REASON=''", () => "NO_RUN_REASON='peer-unavailable'").replace("ATTEMPT_TYPE='review'", () => "ATTEMPT_TYPE='adversarial-scan'");
+                  ok(adversarial.includes("ATTEMPT_TYPE='adversarial-scan'"), 'the block takes the type');
+                  r = runBlock(shell, dir, adversarial, vars);
+                  strictEqual(r.status, 0, r.stderr);
+                  got = await results(wf);
+                  deepStrictEqual(JSON.parse(got.fm.review_attempts).attempts.map((a) => [a.type, a.outcome, a.reason]), [['adversarial-scan', 'unavailable', 'peer-unavailable']]);
+                  archive(dir, wf);
+                }
 
                 if (convergent(verb)) {
                   // Not converged: settled, then an append with the step that

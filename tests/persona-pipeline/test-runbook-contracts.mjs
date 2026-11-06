@@ -827,9 +827,12 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               // and with dispatch_target on the operation directory Phase 0
               // printed (ADR-0068 Decision 2, item 7) and the owner gate the
               // step ends on, empty unless the agent sets it (ADR-0068
-              // Decision 5, verify-runbooks).
+              // Decision 5, verify-runbooks), and why no run launched, empty
+              // unless none did, and the ensemble type the dispatch ran with or
+              // would have, the verb's default unless the agent sets another
+              // (C163 A1a).
               let at = 0;
-              while (/^(ARGS_DIR|TEXT_DIR|DISPATCH_DIR|READ_DIR|VERDICT|CONFIDENCE|RESOLVE_VERB|PEER|PROMPT_FILE|OP_DIR)='<[^'>]+>'$|^OWNER_GATE=''$|^CONVERGED="<[^">]+>"$|^# /.test(lines[at] ?? '')) at++;
+              while (/^(ARGS_DIR|TEXT_DIR|DISPATCH_DIR|READ_DIR|VERDICT|CONFIDENCE|RESOLVE_VERB|PEER|PROMPT_FILE|OP_DIR)='<[^'>]+>'$|^OWNER_GATE=''$|^NO_RUN_REASON=''$|^ATTEMPT_TYPE='[a-z][a-z-]*'$|^CONVERGED="<[^">]+>"$|^# /.test(lines[at] ?? '')) at++;
               // Contract: the agent running a block in a fresh shell — without the
               // persona's own override and cache path the block runs another
               // plugin's scripts, or none. A block nested in a list item is indented.
@@ -1679,7 +1682,10 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               ok(boundary.includes('and dispatches the per-phase peer ensemble'), 'the per-phase ensemble');
               for (const rule of [
                 '`peer-runner.mjs settle --phase <verb> --run-id <that attempt\'s run id>`',
-                'dispatches under a new run id and settles each attempt',
+                'A repeated phase dispatches under a new run id.',
+                // C163 A1a — a looping refine's earlier passes are the refine
+                // skill's pass settle's; the lifecycle settles the last pass.
+                'so the refine phase settles here the last pass\'s attempt only',
                 '(`finish-verb`) never runs inside the lifecycle',
                 '`state.mjs awaiting-owner-set --gate <gate> --anchor <anchor>`',
                 '`state.mjs awaiting-owner-clear --gate <gate> --resolution-file <the owner\'s decision> --next-step-kind verb --next-step-verb <the next phase\'s verb> --next-step-confidence HIGH --next-action-file <the next phase\'s action>`',
@@ -1806,7 +1812,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               const at = (re) => { const m = re.exec(code); ok(m, `${key}: ${re}`); return m.index; };
               const repo = at(/^REPO_ROOT="\$\(git rev-parse --show-toplevel\)" \|\| exit 1$/m);
               const note = at(/^node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" append --workflow-path "\$ACTIVE" [^\n]*--phase-note-file "\$TEXT_DIR\/note\.md" [^\n]*--next-action-file "\$TEXT_DIR\/next-action\.txt" --event updated \|\| exit \$\?$/m);
-              const settle = at(new RegExp(`^node "\\$CLAUDE_PLUGIN_ROOT/scripts/peer-runner\\.mjs" settle --repo-root "\\$REPO_ROOT" --workflow-path "\\$ACTIVE" --host "\\$\\{AGENTIC_HOST:-claude\\}" --phase '${verb}' --run-id "\\$RUN_ID" --verdict "\\$VERDICT" --summary-file "\\$TEXT_DIR/summary\\.txt" \\|\\| exit \\$\\?$`, 'm'));
+              const settle = at(new RegExp(`^node "\\$CLAUDE_PLUGIN_ROOT/scripts/peer-runner\\.mjs" settle --repo-root "\\$REPO_ROOT" --workflow-path "\\$ACTIVE" --host "\\$\\{AGENTIC_HOST:-claude\\}" --phase '${verb}' --run-id "\\$RUN_ID" --verdict "\\$VERDICT" --summary-file "\\$TEXT_DIR/summary\\.txt" "\\$@" \\|\\| exit \\$\\?$`, 'm'));
               // Indented inside the convergence check in the convergent variant.
               const terminal = at(/^[ \t]*node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" finish-verb --workflow-path "\$ACTIVE" [^\n]*--next-action-file "\$TEXT_DIR\/next-action\.txt" --next-step-kind verb --next-step-verb '[a-z]+' --next-step-confidence "\$CONFIDENCE" \|\| exit \$\?$/m);
               strictEqual(run.length, 1, 'one dispatch');

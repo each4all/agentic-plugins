@@ -77,8 +77,11 @@ for (const persona of personasFor('scripts/state.mjs')) {
       await rm(dir, { recursive: true, force: true });
     }
   }
+  // As settle commits a completed run: its verdict, with the run evidence
+  // (C163 A1a) its review attempt is closed from.
   const settle = (wf, runId, verdict) => commitEnsemble({
     workflowPath: wf, run_id: runId, phase: 'critique', ensemble_type: 'review', verdict, summary: 's',
+    review: { outcome: verdict === 'conflict' ? 'conflict' : verdict === 'concerns' ? 'concerns' : 'passed', status: 'completed', tree: null, tree_reason: 'not-isolated' },
   });
   const taskFile = (dir, id, runId, suffix = '') => join(dir, P.stateDirRel, 'consensus', `${id}.${runId}${suffix}.md`);
   const gate = (name, runId) => ({ gate: name, anchor: 'ensemble-synthesis', ...(runId === undefined ? {} : { runId }) });
@@ -132,7 +135,13 @@ for (const persona of personasFor('scripts/state.mjs')) {
       deepStrictEqual([frontmatter.awaiting_owner_gate, frontmatter.awaiting_owner_run_id, frontmatter.terminal_marker ?? false], ['peer-conflict', 'review-1', false]);
       const text = await readFile(wf, 'utf8');
       const keys = text.split('\n---\n')[0].split('\n').filter((l) => /^[a-z_]+:/.test(l)).map((l) => l.split(':')[0]);
-      strictEqual(keys.at(-1), 'awaiting_owner_run_id', 'the run id is the last key, where an older carrier re-emits it in place');
+      // The run id follows every key a release before it wrote, where an older
+      // carrier re-emits it in place; only keys added after it (the verify
+      // records, the persona operations, the review attempts the settle above
+      // recorded) come later, each also appended at the tail.
+      const later = new Set(['verify_attempt', 'verify_handoff', 'verify_request', 'verify_results', 'persona_operations', 'review_attempts']);
+      strictEqual(keys.filter((k) => !later.has(k)).at(-1), 'awaiting_owner_run_id', 'the run id is the last key, where an older carrier re-emits it in place');
+      strictEqual(keys.at(-1), 'review_attempts', 'the review attempts, added after the run id, follow it');
       const p = await consensusProposal({ workflowPath: wf });
       deepStrictEqual([p.current, p.gate, p.run_id, p.task_file, p.pointer],
         [true, 'peer-conflict', 'review-1', taskFile(dir, id, 'review-1'), `${P.stateDirRel}/consensus/${id}.review-1.md`]);

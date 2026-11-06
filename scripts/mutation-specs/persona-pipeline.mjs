@@ -203,7 +203,7 @@ const COMMIT_STEP = [
   'node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" settle \\',
   '  --repo-root "$REPO_ROOT" --workflow-path "$ACTIVE" \\',
   '  --host "${AGENTIC_HOST:-claude}" --phase {{verb}} --run-id "$RUN_ID" \\',
-  '  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt" || exit $?',
+  '  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt" "$@" || exit $?',
   '',
   '',
 ].join('\n');
@@ -245,7 +245,9 @@ const IDENTITY = /^identity: persona, verb, phase, ensemble type and run-id pref
 const PRIVACY = /^privacy: the prohibition sentence precedes the dispatch/;
 // The finalize passes the agent's files (C130; the F group).
 const TEXT_FILES = /^the finalize passes the note, the summary and the next action as files the agent wrote, checked before any write$/;
-const SETTLE_FILE = '  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt" || exit $?\n';
+// The settle's last line; C163 A1a: the never-launched attempt's arguments,
+// the positional parameters ("$@"), come last.
+const SETTLE_FILE = '  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt" "$@" || exit $?\n';
 // The finalize holds each file to every reader's rule (C130 refine: `[ -s ]`
 // passed a newline, a check for blanks a BOM, and settle refused after the append).
 const READERS_RULE = 'node -e \'let t;try{t=new TextDecoder("utf-8",{fatal:true}).decode(require("fs").readFileSync(process.argv[1]))}catch{process.exit(1)}process.exit(t.includes("\\0")||t.trim()===""?1:0)\' "$TEXT_DIR/$TEXT_FILE" ||';
@@ -898,7 +900,7 @@ export const MUTATIONS = [
   // ---- G: PC2b U4b, the compose/frame/investigate/decide finalize ------------
   {
     id: 'G38', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: SETTLE_FILE, to: '  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt"\n' }),
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: SETTLE_FILE, to: '  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt" "$@"\n' }),
     killed_by: templateCaught(FINALIZE, /^the finalize, run: settle is the first write, so its refusal stops the block before any write/),
     why: 'a refused settle no longer stops the block: the note is written and the workflow closes with its ensemble attempt unsettled',
   },
@@ -996,7 +998,7 @@ export const MUTATIONS = [
   },
   {
     id: 'G50', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-finalize-convergent.md', from: SETTLE_FILE, to: '  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt"\n' }),
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-finalize-convergent.md', from: SETTLE_FILE, to: '  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt" "$@"\n' }),
     killed_by: [/^verb-finalize-convergent\.md: rebuilt from verb-finalize\.md and the variant's own lines, it is byte for byte the variant$/],
     why: 'the convergent finalize drifts from the plain one in a line they share: its settle no longer stops the block (PC2b U5b)',
   },
@@ -1757,8 +1759,10 @@ export const MUTATIONS = [
       const path = join(copy, 'persona-pipeline/manifest.json');
       const manifest = JSON.parse(readFileSync(path, 'utf8'));
       const subs = manifest.regions.filter((r) => r.dest === 'commands/compose.md' && r.substitutions?.ensemble_type);
-      // One since PC2b U5a: the dispatch names the type, the finalize no longer does.
-      if (subs.length !== 1) throw new MutationHarnessError(`compose ensemble_type substitutions: ${subs.length}`);
+      // One since PC2b U5a (the dispatch names the type, the finalize no longer
+      // did); two since C163 A1a: the finalize names it again, for the
+      // never-launched review attempt it records. Both are changed.
+      if (subs.length !== 2) throw new MutationHarnessError(`compose ensemble_type substitutions: ${subs.length}`);
       for (const r of subs) r.substitutions.ensemble_type.value = 'review';
       writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
       regenerate(copy);
@@ -2428,7 +2432,7 @@ export const MUTATIONS = [
   },
   {
     id: 'X48', tests: [T_REF],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/ensemble-failure-unavailable.md', from: "- **Action**: Proceed with orchestrator-only analysis, silently. A run the\n  runner started settles as verdict `failed` with this `error_kind`\n  (`peer-runner.mjs settle`); with no run launched there is nothing to\n  settle.", to: "- **Action**: Skip the dispatch silently. Proceed with orchestrator-only\n  analysis." }),
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/ensemble-failure-unavailable.md', from: "- **Action**: Proceed with orchestrator-only analysis, silently. A run the\n  runner started settles as verdict `failed` with this `error_kind`\n  (`peer-runner.mjs settle`), and a review's attempt as the outcome\n  `unavailable`; with no run launched, the empty-id settle records no\n  result, and its `peer-unavailable` reason (the finalize's `NO_RUN_REASON`,\n  or `--no-run-reason` in `/start` and the Codex verb skills) records a\n  review's attempt `unavailable` all the same (C163 A1a).", to: "- **Action**: Skip the dispatch silently. Proceed with orchestrator-only\n  analysis." }),
     killed_by: /the protocol's collect step and each failure action settle the attempt from its run ledger \(RV5\)$/,
     why: 'the protocol tells the agent to skip an unavailable peer by hand again, leaving the attempt the runner started unsettled (PC2b RV5)',
   },
@@ -2838,7 +2842,7 @@ export const MUTATIONS = [
     prepare: (copy, tools) => templateDefect(copy, tools, {
       template: 'regions/verb-finalize.md',
       from: SETTLE_FILE,
-      to: '  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt"\n',
+      to: '  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt" "$@"\n',
     }),
     killed_by: /verb runbooks — Phase 2 \(ADR-0063 D3\) > compose: every write stops the block on failure; the last write is finish-verb with the next step$/,
     why: 'a refused settlement no longer stops the block, so engineer closes the verb with its ensemble attempt unsettled',
@@ -3124,7 +3128,7 @@ export const MUTATIONS = [
   },
   {
     id: 'F5', tests: [T_CONTRACT, T_GUARD],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: SETTLE_FILE, to: '  --verdict "$VERDICT" --summary-file $TEXT_DIR/summary.txt || exit $?\n' }),
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: SETTLE_FILE, to: '  --verdict "$VERDICT" --summary-file $TEXT_DIR/summary.txt "$@" || exit $?\n' }),
     killed_by: [GUARD_RULES, /^bash: the finalize block hands hostile texts to the scripts byte for byte/],
     why: "the summary file's path is unquoted: a text directory whose name holds a space splits it, and settle reads no file",
   },
@@ -3417,9 +3421,9 @@ export const MUTATIONS = [
   // runs the cached Claude release's state.mjs.
   ...[['U8c', 'compose', 'record-composed-file'], ['U8d', 'refine', 'record-refine-file']].map(([id, skill, sub]) => ({
     id, tests: [T_ENG], file: `plugins/engineer/core/skills/${skill}/SKILL.md`,
-    from: 'REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1\nACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active',
+    from: 'REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1\nACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?\n[ -n "$ACTIVE" ] || { echo "✗ No active engineer workflow on this branch; nothing was recorded."',
     to: 'ROOT_OVERRIDE="$(printenv \'AGENTIC_ENGINEER_ROOT\' || true)"\nCLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"\n[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/\'engineer\' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -1)"\n'
-      + 'REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1\nACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active',
+      + 'REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1\nACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?\n[ -n "$ACTIVE" ] || { echo "✗ No active engineer workflow on this branch; nothing was recorded."',
     killed_by: new RegExp(`hand-written workflow writes, run in a fresh shell \\(R4, C75\\) > the ${skill} skill's commit-manifest record runs <plugin-root>'s state\\.mjs`),
     why: `the ${skill} skill's ${sub} snippet finds the workflow through Claude's root lookup, so on Codex with a Claude cache it runs the cached release's state.mjs`,
   })),
@@ -3434,8 +3438,8 @@ export const MUTATIONS = [
   // The run, not the text checks, catches a cached copy reached some other way.
   {
     id: 'U8f', tests: [T_ENG], file: 'plugins/engineer/core/skills/compose/SKILL.md',
-    from: 'REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1\nACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active',
-    to: 'REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1\nnode "$HOME/.claude/plugins/cache/agentic-plugins/engineer/0.1.0/scripts/state.mjs" find-active --repo-root "$REPO_ROOT" >/dev/null 2>&1\nACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active',
+    from: 'REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1\nACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?\n[ -n "$ACTIVE" ] || { echo "✗ No active engineer workflow on this branch; nothing was recorded."',
+    to: 'REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1\nnode "$HOME/.claude/plugins/cache/agentic-plugins/engineer/0.1.0/scripts/state.mjs" find-active --repo-root "$REPO_ROOT" >/dev/null 2>&1\nACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?\n[ -n "$ACTIVE" ] || { echo "✗ No active engineer workflow on this branch; nothing was recorded."',
     killed_by: /hand-written workflow writes, run in a fresh shell \(R4, C75\) > the compose skill's commit-manifest record runs <plugin-root>'s state\.mjs/,
     why: "the compose snippet runs a cached Claude release's state.mjs by a path the text checks do not name; only the run sees it",
   },

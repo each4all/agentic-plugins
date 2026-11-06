@@ -604,8 +604,9 @@ export const MUTATIONS = [
   },
   {
     id: 'A40', file: STATE, tests: [T_REC],
-    from: '    frontmatter.pending_ensemble = [...existing, entry];\n    frontmatter.updated_at = nowIso;\n    await writeWorkflow(workflowPath, frontmatter, body, ownership);\n    return { frontmatter, workflowPath };\n  }, { env, host, writer: LANE_WRITERS.plain });',
-    to: '    frontmatter.pending_ensemble = [...existing, entry];\n    frontmatter.updated_at = nowIso;\n    await writeWorkflow(workflowPath, frontmatter, body, ownership);\n    return { frontmatter, workflowPath };\n  }, { writer: LANE_WRITERS.plain });',
+    // C163 A1a: the registration also stages the review attempt (open).
+    from: "      id: run_id, phase, type: ensemble_type, state: 'open', run_id, registered_at: nowIso,\n    });\n    frontmatter.updated_at = nowIso;\n    await writeWorkflow(workflowPath, frontmatter, body, ownership);\n    return { frontmatter, workflowPath };\n  }, { env, host, writer: LANE_WRITERS.plain });",
+    to: "      id: run_id, phase, type: ensemble_type, state: 'open', run_id, registered_at: nowIso,\n    });\n    frontmatter.updated_at = nowIso;\n    await writeWorkflow(workflowPath, frontmatter, body, ownership);\n    return { frontmatter, workflowPath };\n  }, { writer: LANE_WRITERS.plain });",
     why: "the pending registration is admitted under this process's environment, not the step's: an earlier step's delayed dispatch records its pending run over a later step's handoff, and the step's own dispatch stales its own next write",
     killed_by: [/every write of a step is held to the mark, one that changes nothing included/, /the step's own consecutive writes are taken/],
   },

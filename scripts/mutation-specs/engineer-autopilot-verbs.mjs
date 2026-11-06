@@ -237,10 +237,11 @@ export const MUTATIONS = [
   // ---- R: the runbooks ---------------------------------------------------------
   {
     // PC3 U7: critique's finalize is generated and settles the attempt; C130:
-    // its summary is the file the agent wrote.
+    // its summary is the file the agent wrote; C163 A1a: the never-launched
+    // attempt's arguments ("$@") follow it.
     id: 'R1', file: CRITIQUE, tests: [T_RB, T_SH],
-    from: '  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt" || exit $?',
-    to: '  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt"',
+    from: '  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt" "$@" || exit $?',
+    to: '  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt" "$@"',
     why: 'a refused settlement is ignored and finish-verb publishes the next step anyway',
   },
   {

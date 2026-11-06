@@ -8953,6 +8953,33 @@
         ]
       },
       "why": "VR ADR-0068 Decision 5 (verify-runbooks, C2-M1): with dispatch_target on, OWNER_GATE selects the owner-decision form of the last write, which records the gate the step ends on, with the anchor its gate list names, in place of the verb and verify forms"
+    },
+    {
+      "runbooks": [
+        "founder/compose",
+        "founder/critique",
+        "founder/decide",
+        "founder/frame",
+        "founder/investigate",
+        "founder/refine",
+        "designer/compose",
+        "designer/critique",
+        "designer/decide",
+        "designer/frame",
+        "designer/investigate",
+        "designer/refine",
+        "engineer/compose",
+        "engineer/critique",
+        "engineer/decide",
+        "engineer/frame",
+        "engineer/investigate",
+        "engineer/refine"
+      ],
+      "op": "add-positional",
+      "where": "call:peer-runner.mjs settle",
+      "from": "--summary-file",
+      "to": "$@",
+      "why": "C163 A1a: with no run launched, settle records a review's attempt with the reason NO_RUN_REASON gives, its ensemble type and the key its id derives from; the flags are the positional parameters (\"$@\", no array: the block runs in any POSIX shell), set only when the installed peer-runner names them, so an older runner settles as before"
     }
   ],
   "runbooks": {

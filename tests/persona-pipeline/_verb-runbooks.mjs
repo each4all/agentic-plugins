@@ -436,6 +436,18 @@ const STRUCTURAL = {
     strictEqual(next === undefined ? '' : callName(next), d.from, `${d.where}: insert-call finds ${JSON.stringify(d.from)} after it`);
     record.calls.splice(at + 1, 0, structuredClone(d.to));
   },
+  // C163 A1a: an argument with no flag (the positional parameters the block
+  // expands, "$@"), added
+  // right after the value of flag `from`.
+  'add-positional'(record, d) {
+    const m = CALL_WHERE.exec(d.where);
+    if (!m) throw new Error(`add-positional names no call: ${d.where}`);
+    const { args } = record.calls[locateCall(record, d.where, m[1], m[2] ?? null, m[3])];
+    strictEqual(args.filter(([f, v]) => f === null && v === d.to).length, 0, `${d.where}: add-positional finds ${d.to} absent`);
+    const after = args.map(([f], i) => [f, i]).filter(([f]) => f === d.from);
+    strictEqual(after.length, 1, `${d.where}: add-positional finds ${d.from} once`);
+    args.splice(after[0][1] + 1, 0, [null, d.to]);
+  },
   'add-flag'(record, d) {
     const m = FLAG_WHERE.exec(d.where);
     if (!m) throw new Error(`add-flag names no call flag: ${d.where}`);
