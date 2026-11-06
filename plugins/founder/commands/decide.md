@@ -429,6 +429,21 @@ the synthesis read, never one chosen from the workflow's pending entries. With
 neither directory left, nothing binds the run to the synthesis: the block
 cannot settle it, and settle does by hand (`peer-runner.mjs settle --run-id`).
 
+When no run launched, set `NO_RUN_REASON` to why: `peer-unavailable` (the
+companion or the peer's CLI was not found, or could not run, before any run),
+`local-only` (the verb ran without a peer by design), `privacy-gate` (the
+prompt could not be made safe to send) or `owner-skip` (the owner chose no
+review). For a review, settle records the attempt with the outcome that reason
+gives, `unavailable` or `skipped`, under an id derived from `TEXT_DIR`, so a
+rerun records it once (C163 A1a); left empty, the attempt is `skipped` with
+the reason `unspecified`. For an ensemble that is no review it records
+nothing. Leave `NO_RUN_REASON` empty when a run launched.
+Set `ATTEMPT_TYPE` to the ensemble type the dispatch block ran with, or
+would have run with: its `ENSEMBLE_TYPE`, the default this block names unless
+the dispatch's prose said to set another (critique's adversarial profiles set
+`adversarial-scan`), so a review that never launched is recorded under the
+type it would have had.
+
 Whatever run the block settles, the empty id included, it keeps in its text
 directory as `finalize-run.json` before settle. Every value the last write
 takes is checked before settle too (`CONFIDENCE` here), so a step that fails
@@ -545,6 +560,11 @@ TEXT_DIR='<directory from step 1>'
 DISPATCH_DIR='<the directory the dispatch block ran with; empty when no run launched; the run ledger directory when a run launched and that directory is gone>'
 VERDICT='<the synthesis verdict>'
 CONFIDENCE='<HIGH|MEDIUM|LOW>'
+# Why no run launched (peer-unavailable, local-only, privacy-gate or
+# owner-skip); empty when a run launched.
+NO_RUN_REASON=''
+# The ensemble type the dispatch ran with, or would have (its ENSEMBLE_TYPE).
+ATTEMPT_TYPE='brainstorm'
 ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
@@ -563,6 +583,17 @@ esac
 case "$CONFIDENCE" in
   HIGH|MEDIUM|LOW) ;;
   *) echo "✗ CONFIDENCE is not HIGH, MEDIUM or LOW, the proposal's confidence the last write records; nothing was written." >&2; exit 1 ;;
+esac
+# C163 A1a — why no run launched, which settle records for a review's attempt.
+case "$NO_RUN_REASON" in
+  ''|peer-unavailable|local-only|privacy-gate|owner-skip) ;;
+  *) echo "✗ NO_RUN_REASON is not peer-unavailable, local-only, privacy-gate or owner-skip (empty when a run launched); nothing was written." >&2; exit 1 ;;
+esac
+# The runner's grammar for a type: a lowercase letter, then up to 40
+# lowercase letters or hyphens, the letters spelled out (a range such as a-z
+# follows the locale's collation in bash, which can take in capitals).
+case "$ATTEMPT_TYPE" in
+  ''|[!abcdefghijklmnopqrstuvwxyz]*|*[!abcdefghijklmnopqrstuvwxyz-]*|??????????????????????????????????????????*) echo "✗ ATTEMPT_TYPE is not an ensemble type (the dispatch's ENSEMBLE_TYPE); nothing was written." >&2; exit 1 ;;
 esac
 # The run's id, from the result the runner wrote beside the dispatch's prompt,
 # or, when DISPATCH_DIR is the run's own ledger directory (no result there,
@@ -679,6 +710,16 @@ case "$HOLD" in
     exit 1 ;;
 esac
 
+# C163 A1a — the review attempt of a run that never launched: its type, why,
+# and the key its id derives from. A peer-runner older than this runbook takes
+# none of these flags, so they are passed only when it names them; it then
+# records no attempt, and settles as before. They are the positional
+# parameters settle takes last ("$@"), since the block runs in any POSIX
+# shell, which has no arrays.
+set --
+if grep -q -e "'--no-run-reason'" "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" 2>/dev/null; then
+  set -- --ensemble-type "$ATTEMPT_TYPE" --no-run-reason "$NO_RUN_REASON" --attempt-key "$TEXT_DIR"
+fi
 # ADR-0066 PC2b — settle the ensemble attempt from its ledger (never launched,
 # launched and failed, completed). It is the first write and the one judge of
 # the run: a refusal (a run still live, of another workflow or phase, or an
@@ -688,7 +729,7 @@ esac
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" settle \
   --repo-root "$REPO_ROOT" --workflow-path "$ACTIVE" \
   --host "${AGENTIC_HOST:-claude}" --phase 'decide' --run-id "$RUN_ID" \
-  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt" || exit $?
+  --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt" "$@" || exit $?
 
 # ADR-0067 Decision 8 — the verdict the settle above recorded for the run
 # (empty when it recorded none), read before the phase note: a mismatch, or a
