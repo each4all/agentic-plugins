@@ -1,0 +1,413 @@
+// C163 A1a — one outcome per review attempt (ADR-0023, implementation note of
+// 2026-11-05). A review attempt is one try of a review-type ensemble: it is
+// registered when its run is dispatched, closed once with an outcome, and kept
+// in the workflow's `review_attempts` frontmatter scalar, a JSON document
+// `{v, attempts, coverage, seen}` the 20-row `ensemble_results` cap does not
+// touch.
+// `ensemble_results` stays the legacy projection, its keys, cap and verdict
+// words unchanged.
+//
+// This module is pure: it maps a settlement to an outcome, validates and
+// edits the document, and projects what a reader sees. It records; nothing
+// here, and no caller of it, enforces an outcome (A1b does).
+//
+// Hand mirror: plugins/orchestrator/scripts/lib/review-attempts.mjs is a byte
+// copy of this file (tests/persona-pipeline/test-review-attempts.mjs holds the
+// two equal).
+
+export const REVIEW_ATTEMPTS_KEY = 'review_attempts';
+export const REVIEW_ATTEMPTS_VERSION = 1;
+// A document past this size drops its oldest closed attempts and says so
+// (coverage.history_incomplete, reason `truncation`) in the same write.
+export const REVIEW_ATTEMPTS_MAX_BYTES = 32768;
+
+// The ensemble types that are reviews: the only ones recorded. Classified by
+// type alone, never by phase, run-id prefix or a caller's flag.
+export const REVIEW_ENSEMBLE_TYPES = Object.freeze(['review', 'adversarial-scan', 'plan-verify', 'refine-verify']);
+const REVIEW_TYPE_SET = new Set(REVIEW_ENSEMBLE_TYPES);
+export function isReviewType(ensembleType) {
+  return typeof ensembleType === 'string' && REVIEW_TYPE_SET.has(ensembleType);
+}
+
+export const REVIEW_OUTCOMES = Object.freeze([
+  'passed', 'concerns', 'conflict', 'failed', 'degraded', 'unavailable', 'malformed', 'skipped', 'superseded',
+]);
+const OUTCOME_SET = new Set(REVIEW_OUTCOMES);
+// What a reader sees for an attempt with no outcome recorded (open, or a
+// legacy row): never `passed`.
+export const UNKNOWN_OUTCOME = 'unknown';
+
+// Why no run launched, and the outcome each records.
+export const NO_RUN_REASONS = Object.freeze({
+  'peer-unavailable': 'unavailable',
+  'local-only': 'skipped',
+  'privacy-gate': 'skipped',
+  'owner-skip': 'skipped',
+});
+
+const PASSED_VERDICTS = new Set(['agreed', 'resolved', 'pass']);
+const UNAVAILABLE_KINDS = new Set(['peer_cli_not_found', 'peer_unauthenticated', 'peer_invocation_error']);
+const MALFORMED_KINDS = new Set(['envelope_parse_error', 'envelope_shape_invalid']);
+
+/**
+ * The outcome of a settled attempt, applied in order: how the run ended, then
+ * whether its answer was usable, then the synthesis verdict. `passed` is the
+ * normalized result of a usable review; it does not mean "no defects".
+ *
+ * @param {{status?: string|null, error_kind?: string|null, answer?: 'empty'|'unreadable'|null, verdict?: string|null}} s
+ * @returns {{outcome: string, reason: string|null}}
+ */
+export function outcomeOf({ status = null, error_kind = null, answer = null, verdict = null } = {}) {
+  if (typeof status === 'string' && status !== 'completed') {
+    const why = error_kind ?? status;
+    if (UNAVAILABLE_KINDS.has(error_kind)) return { outcome: 'unavailable', reason: why };
+    if (MALFORMED_KINDS.has(error_kind)) return { outcome: 'malformed', reason: why };
+    return { outcome: 'failed', reason: why };
+  }
+  if (answer === 'empty' || answer === 'unreadable') return { outcome: 'degraded', reason: `answer-${answer}` };
+  if (PASSED_VERDICTS.has(verdict)) return { outcome: 'passed', reason: null };
+  if (verdict === 'concerns') return { outcome: 'concerns', reason: null };
+  // refine's `regression` is a concern; the raw verdict is kept beside it.
+  if (verdict === 'regression') return { outcome: 'concerns', reason: 'regression' };
+  if (verdict === 'conflict') return { outcome: 'conflict', reason: null };
+  if (verdict === 'degraded') return { outcome: 'degraded', reason: 'verdict-degraded' };
+  if (verdict === 'failed') return { outcome: 'failed', reason: error_kind ?? 'verdict-failed' };
+  return { outcome: 'failed', reason: 'unrecognized-verdict' };
+}
+
+/**
+ * The tree a run's peer saw, from its handle's snapshot record (the snapshot
+ * actually reviewed), never the checkout at settlement. A snapshot of a
+ * checkout on an unborn branch has no commit (`head` null) and still the trees
+ * it isolated.
+ */
+export function treeOf(handle) {
+  const s = handle?.snapshot;
+  if (!s || typeof s !== 'object') return { tree: null, tree_reason: 'no-snapshot' };
+  const hash = (v) => typeof v === 'string' && HASH_RE.test(v);
+  if (s.isolation === 'snapshot' && (hash(s.head) || hash(s.index_tree) || hash(s.worktree_tree))) {
+    return {
+      tree: {
+        head: hash(s.head) ? s.head : null,
+        index_tree: hash(s.index_tree) ? s.index_tree : null,
+        worktree_tree: hash(s.worktree_tree) ? s.worktree_tree : null,
+      },
+      tree_reason: null,
+    };
+  }
+  if (s.isolation === 'failed') return { tree: null, tree_reason: 'capture-failed' };
+  return { tree: null, tree_reason: 'not-isolated' };
+}
+
+const ATTEMPT_KEYS = new Set([
+  'id', 'phase', 'type', 'state', 'outcome', 'verdict', 'status', 'error_kind', 'reason',
+  'superseded_by', 'run_id', 'tree', 'tree_reason', 'registered_at', 'recorded_at',
+]);
+const COVERAGE_KEYS = new Set(['history_incomplete', 'reasons', 'truncated']);
+const ID_RE = /^[A-Za-z0-9._:-]{1,160}$/;
+const TOKEN_RE = /^[A-Za-z0-9._:-]{1,80}$/;
+const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
+const HASH_RE = /^[0-9a-f]{7,64}$/;
+const safeId = (v) => typeof v === 'string' && ID_RE.test(v) && !v.includes('..');
+export const isReviewAttemptId = safeId;
+// A results row's run id as the runner accepts it (no length limit): what
+// `seen` holds, so every row a commit can add can be the watermark.
+const resultRunId = (v) => typeof v === 'string' && /^[A-Za-z0-9._:-]+$/.test(v) && !v.includes('..');
+const optString = (v, re) => v === undefined || v === null || (typeof v === 'string' && re.test(v));
+
+// Why `doc` is not a valid document of this version, or null.
+export function reviewAttemptsProblem(doc) {
+  if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) return 'not an object';
+  if (!Number.isInteger(doc.v) || doc.v < 1) return 'v is not a positive integer';
+  for (const k of Object.keys(doc)) {
+    if (!['v', 'attempts', 'coverage', 'seen'].includes(k)) return `unknown field ${JSON.stringify(k)}`;
+  }
+  if (!Array.isArray(doc.attempts)) return 'attempts is not a list';
+  if (doc.seen !== undefined && !resultRunId(doc.seen)) return 'seen is not a run id';
+  const c = doc.coverage;
+  if (c === null || typeof c !== 'object' || Array.isArray(c)) return 'coverage is not an object';
+  for (const k of Object.keys(c)) if (!COVERAGE_KEYS.has(k)) return `coverage: unknown field ${JSON.stringify(k)}`;
+  if (typeof c.history_incomplete !== 'boolean') return 'coverage.history_incomplete is not true or false';
+  if (!Array.isArray(c.reasons) || !c.reasons.every((r) => typeof r === 'string' && TOKEN_RE.test(r))) return 'coverage.reasons is not a list of tokens';
+  if (c.history_incomplete !== (c.reasons.length > 0)) return 'coverage.history_incomplete disagrees with its reasons';
+  if (c.truncated !== undefined && (!Number.isInteger(c.truncated) || c.truncated < 1)) return 'coverage.truncated is not a positive integer';
+  const ids = new Set();
+  for (const [i, a] of doc.attempts.entries()) {
+    const at = `attempts[${i}]`;
+    if (a === null || typeof a !== 'object' || Array.isArray(a)) return `${at} is not an object`;
+    for (const k of Object.keys(a)) if (!ATTEMPT_KEYS.has(k)) return `${at}: unknown field ${JSON.stringify(k)}`;
+    if (!safeId(a.id)) return `${at}.id is not an attempt id`;
+    if (ids.has(a.id)) return `${at}.id ${a.id} is listed twice`;
+    ids.add(a.id);
+    if (typeof a.phase !== 'string' || !TOKEN_RE.test(a.phase)) return `${at}.phase is not a phase`;
+    if (!isReviewType(a.type)) return `${at}.type is not a review type`;
+    if (a.state !== 'open' && a.state !== 'closed') return `${at}.state is not open or closed`;
+    for (const k of ['verdict', 'status', 'error_kind', 'reason', 'tree_reason']) {
+      if (!optString(a[k], TOKEN_RE)) return `${at}.${k} is not a token`;
+    }
+    if (a.run_id !== undefined && a.run_id !== null && !safeId(a.run_id)) return `${at}.run_id is not a run id`;
+    for (const k of ['registered_at', 'recorded_at']) if (!optString(a[k], ISO_RE)) return `${at}.${k} is not an ISO UTC time`;
+    if (a.tree !== undefined && a.tree !== null) {
+      if (typeof a.tree !== 'object' || Array.isArray(a.tree)) return `${at}.tree is not an object`;
+      for (const k of Object.keys(a.tree)) if (!['head', 'index_tree', 'worktree_tree'].includes(k)) return `${at}.tree: unknown field ${JSON.stringify(k)}`;
+      // head is null for a snapshot of an unborn branch, which still names its trees.
+      if (!optString(a.tree.head, HASH_RE)) return `${at}.tree.head is not a commit`;
+      for (const k of ['index_tree', 'worktree_tree']) if (!optString(a.tree[k], HASH_RE)) return `${at}.tree.${k} is not a tree`;
+      if (!['head', 'index_tree', 'worktree_tree'].some((k) => typeof a.tree[k] === 'string')) return `${at}.tree names no commit and no tree`;
+    }
+    if (a.state === 'open') {
+      if (a.outcome !== undefined) return `${at} is open but has an outcome`;
+      continue;
+    }
+    if (!OUTCOME_SET.has(a.outcome)) return `${at}.outcome is not one of ${REVIEW_OUTCOMES.join(', ')}`;
+    if (typeof a.recorded_at !== 'string') return `${at} is closed with no recorded_at`;
+    if (a.outcome === 'skipped' && typeof a.reason !== 'string') return `${at} is skipped with no reason`;
+    if (a.outcome === 'superseded' && !(safeId(a.superseded_by) && a.superseded_by !== a.id)) return `${at} is superseded with no replacement`;
+    if (a.outcome !== 'superseded' && a.superseded_by !== undefined) return `${at} names a replacement but is not superseded`;
+    if ((a.tree === undefined || a.tree === null) && typeof a.tree_reason !== 'string') return `${at} has no tree and no tree_reason`;
+  }
+  return null;
+}
+
+/**
+ * Decode the scalar as the frontmatter holds it (the JSON text). Never throws:
+ * a document this reader cannot use reads `unknown` downstream, never
+ * `malformed`, and the workflow file stays readable.
+ *
+ * @returns {{state: 'absent'|'ok'|'later-version'|'unreadable', doc: object|null, diagnostic: string|null}}
+ */
+export function decodeReviewAttempts(raw) {
+  if (raw === undefined) return { state: 'absent', doc: null, diagnostic: null };
+  if (typeof raw !== 'string') return { state: 'unreadable', doc: null, diagnostic: `${REVIEW_ATTEMPTS_KEY} is not a JSON document in a string scalar` };
+  let doc;
+  try {
+    doc = JSON.parse(raw);
+  } catch (err) {
+    return { state: 'unreadable', doc: null, diagnostic: `${REVIEW_ATTEMPTS_KEY} is not JSON (${err.message})` };
+  }
+  if (doc !== null && typeof doc === 'object' && Number.isInteger(doc.v) && doc.v > REVIEW_ATTEMPTS_VERSION) {
+    return { state: 'later-version', doc: null, diagnostic: `${REVIEW_ATTEMPTS_KEY} is a later version (v ${doc.v}) than this reader's (v ${REVIEW_ATTEMPTS_VERSION})` };
+  }
+  const problem = reviewAttemptsProblem(doc);
+  if (problem !== null) return { state: 'unreadable', doc: null, diagnostic: `${REVIEW_ATTEMPTS_KEY}: ${problem}` };
+  return { state: 'ok', doc, diagnostic: null };
+}
+
+export function encodeReviewAttempts(doc) {
+  return JSON.stringify(doc);
+}
+
+const isReviewRow = (row) => row !== null && typeof row === 'object' && isReviewType(row.ensemble_type);
+
+// A new document. A workflow that already holds review results, or a full
+// results list (whose earlier rows may be gone), had reviews before the
+// document began: its history is incomplete from the start. It sees the list
+// as found (`seen`, below).
+function newDocument(results, cap) {
+  const rows = Array.isArray(results) ? results : [];
+  const before = rows.some(isReviewRow) || rows.length >= cap;
+  const doc = { v: REVIEW_ATTEMPTS_VERSION, attempts: [], coverage: { history_incomplete: before, reasons: before ? ['pre-instrumentation'] : [] } };
+  const seen = newestRunId(rows);
+  return seen === null ? doc : { ...doc, seen };
+}
+
+// The run id of the results row a prune keeps longest: the newest by
+// `completed_at`, the last listed among equals (the prune sorts stably and
+// keeps the tail). null when the list is empty or that row's id is no run id
+// the runner accepts.
+function newestRunId(rows) {
+  let best = null;
+  for (const r of rows) {
+    if (r === null || typeof r !== 'object') continue;
+    if (best === null || String(r.completed_at ?? '') >= String(best.completed_at ?? '')) best = r;
+  }
+  return best !== null && resultRunId(best.run_id) ? best.run_id : null;
+}
+
+// Whether rows were pruned since this document's last write with no writer of
+// this version there to see them (an older writer added them and pruned them,
+// so a review among them left no gap). Each write records the newest row it
+// saw (`seen`); later rows sort after it, so a prune drops it no later than
+// any row added after it. Gone from the list, it says rows went unseen. With
+// none recorded (the list was empty), a full list says the same.
+function prunedUnseen(doc, results, cap) {
+  const rows = Array.isArray(results) ? results : [];
+  if (typeof doc.seen === 'string') return !rows.some((r) => r?.run_id === doc.seen);
+  return rows.length >= cap;
+}
+
+function withReason(coverage, reason) {
+  const reasons = coverage.reasons.includes(reason) ? coverage.reasons : [...coverage.reasons, reason];
+  return { ...coverage, history_incomplete: true, reasons };
+}
+
+// Drop the oldest closed attempts until the document fits, then, when only
+// open ones are left, the oldest open ones (one that closes later comes back
+// closed, its registration lost), saying so.
+function compact(doc, maxBytes) {
+  let out = doc;
+  while (Buffer.byteLength(encodeReviewAttempts(out), 'utf8') > maxBytes && out.attempts.length > 1) {
+    let i = out.attempts.findIndex((a) => a.state === 'closed');
+    if (i === -1) i = 0;
+    const coverage = withReason(out.coverage, 'truncation');
+    coverage.truncated = (out.coverage.truncated ?? 0) + 1;
+    out = { ...out, attempts: out.attempts.filter((_, j) => j !== i), coverage };
+  }
+  return out;
+}
+
+// A compact record: no key for a value it does not have.
+const clean = (record) => Object.fromEntries(Object.entries(record).filter(([, v]) => v !== undefined && v !== null));
+
+/**
+ * Apply one attempt write to the document the frontmatter holds (pure).
+ * `attempt.state` is `open` (a registration: a no-op when the id is known) or
+ * `closed` (an outcome: recorded once, the first one kept; an open attempt is
+ * closed in place, an unknown one added closed).
+ *
+ * `results` is the results list as the write found it (a new document reads
+ * it to tell whether reviews preceded it); `listed`, the list the write
+ * prunes, its own row appended, whose gaps are observed before the prune can
+ * drop them (a row appended and pruned in the same write included).
+ *
+ * @returns {{recorded: boolean, changed: boolean, raw: string|undefined, kept: object|null, diagnostic: string|null}}
+ *   `raw` is the scalar to store; a document this writer cannot read (a later
+ *   version, unreadable) is left as it is, `recorded` false.
+ */
+export function applyReviewAttempt(raw, attempt, { results = [], listed = results, cap = 20, maxBytes = REVIEW_ATTEMPTS_MAX_BYTES } = {}) {
+  const decoded = decodeReviewAttempts(raw);
+  if (decoded.state === 'later-version' || decoded.state === 'unreadable') {
+    return { recorded: false, changed: false, raw, kept: null, diagnostic: decoded.diagnostic };
+  }
+  const doc = decoded.doc ?? newDocument(results, cap);
+  const record = clean(attempt);
+  // Only a closed attempt keeps a tree field: null means "no tree", with its
+  // tree_reason.
+  if (attempt.state === 'closed' && record.tree === undefined) record.tree = null;
+  if (attempt.state !== 'closed') delete record.tree;
+  const i = doc.attempts.findIndex((a) => a.id === record.id);
+  let next;
+  let kept = null;
+  if (i === -1) {
+    next = { ...doc, attempts: [...doc.attempts, record] };
+  } else {
+    const existing = doc.attempts[i];
+    kept = existing;
+    if (record.state === 'closed' && existing.state === 'closed' && existing.outcome === 'superseded'
+      && (existing.tree === undefined || existing.tree === null) && record.tree) {
+      // A superseded attempt keeps its outcome, and takes the tree its run's
+      // settlement read later from the snapshot.
+      const { tree_reason: _drop, ...rest } = existing;
+      next = { ...doc, attempts: doc.attempts.map((a, j) => (j === i ? { ...rest, tree: record.tree } : a)) };
+    } else if (record.state === 'open' || existing.state === 'closed') {
+      next = doc;
+    } else {
+      const merged = { ...existing, ...record, registered_at: existing.registered_at ?? record.registered_at };
+      if (merged.registered_at === undefined) delete merged.registered_at;
+      next = { ...doc, attempts: doc.attempts.map((a, j) => (j === i ? merged : a)) };
+      kept = null;
+    }
+  }
+  next = withObservedGaps(next, { listed, results, cap });
+  if (next === doc) return { recorded: true, changed: false, raw, kept, diagnostic: null };
+  const problem = reviewAttemptsProblem(next);
+  if (problem !== null) throw new Error(`${REVIEW_ATTEMPTS_KEY}: refusing to write an invalid attempt (${problem})`);
+  next = compact(next, maxBytes);
+  return { recorded: true, changed: true, raw: encodeReviewAttempts(next), kept, diagnostic: null };
+}
+
+/**
+ * Record only the gaps the results list shows (pure), with no attempt write:
+ * every commit that makes no outcome of its own (a repeat of a result, or a
+ * result of a type that is no review), before it prunes the list. `results`
+ * and `listed` are as applyReviewAttempt's: the list as found, and the list
+ * the write prunes. A document this writer cannot read is left as it is; with
+ * no document and no review row in the pruned list there is nothing to
+ * record, and none is begun.
+ */
+export function observeReviewGaps(raw, results, { cap = 20, listed = results } = {}) {
+  const decoded = decodeReviewAttempts(raw);
+  if (decoded.state === 'later-version' || decoded.state === 'unreadable') return { changed: false, raw };
+  if (!decoded.doc && !(Array.isArray(listed) && listed.some(isReviewRow))) return { changed: false, raw };
+  const doc = decoded.doc ?? newDocument(results, cap);
+  const next = withObservedGaps(doc, { listed, results, cap });
+  if (next === doc && decoded.doc) return { changed: false, raw };
+  return { changed: true, raw: encodeReviewAttempts(next) };
+}
+
+// The gaps a writer sees in the results list before it can prune them, kept
+// in the document's coverage, so they outlive the rows that showed them: a
+// review result with no attempt (`missing-outcome`), an open attempt whose
+// run a writer settled without closing it (`legacy-writer`), and rows pruned
+// since the last write with no writer of this version there to see them
+// (`pruned-unseen`, read against `results`, the list as found). The write
+// then records the newest row of `listed`, the list it prunes, as `seen`.
+function withObservedGaps(doc, { listed, results, cap }) {
+  const rows = Array.isArray(listed) ? listed : [];
+  const known = new Set(doc.attempts.map((a) => a.run_id ?? a.id));
+  const settled = new Set(rows.map((r) => r?.run_id));
+  const add = [];
+  if (rows.some((r) => isReviewRow(r) && !known.has(r.run_id))) add.push('missing-outcome');
+  if (doc.attempts.some((a) => a.state === 'open' && settled.has(a.run_id ?? a.id))) add.push('legacy-writer');
+  if (prunedUnseen(doc, results, cap)) add.push('pruned-unseen');
+  const fresh = add.filter((r) => !doc.coverage.reasons.includes(r));
+  let next = fresh.length === 0 ? doc : { ...doc, coverage: fresh.reduce(withReason, doc.coverage) };
+  const seen = newestRunId(rows);
+  if (seen !== (doc.seen ?? null)) {
+    const { seen: _old, ...rest } = next;
+    next = seen === null ? rest : { ...rest, seen };
+  }
+  return next;
+}
+
+/**
+ * What a reader sees: every attempt with its outcome (`unknown` while open),
+ * every review-type `ensemble_results` row with no attempt as a legacy row
+ * reading `unknown` (even when its verdict is `agreed` or `pass`), and the
+ * coverage, with the reasons the record cannot be complete.
+ */
+export function projectReviewOutcomes(frontmatter, { cap = 20 } = {}) {
+  const results = Array.isArray(frontmatter?.ensemble_results) ? frontmatter.ensemble_results : [];
+  const decoded = decodeReviewAttempts(frontmatter?.[REVIEW_ATTEMPTS_KEY]);
+  const attempts = decoded.doc?.attempts ?? [];
+  const reasons = new Set(decoded.doc?.coverage.reasons ?? []);
+  if (decoded.state === 'later-version' || decoded.state === 'unreadable') reasons.add(`document-${decoded.state}`);
+  if (decoded.state === 'absent' && (results.some(isReviewRow) || results.length >= cap)) reasons.add('pre-instrumentation');
+  // Rows an older writer added and pruned since the document's last write.
+  if (decoded.state === 'ok' && prunedUnseen(decoded.doc, results, cap)) reasons.add('pruned-unseen');
+  const byRun = new Map();
+  for (const a of attempts) byRun.set(a.run_id ?? a.id, a);
+  const settled = new Set(results.map((r) => r?.run_id));
+  const outAttempts = attempts.map((a) => {
+    const open = a.state === 'open';
+    // An open attempt whose run a writer settled without closing it: an
+    // older writer.
+    if (open && settled.has(a.run_id ?? a.id)) reasons.add('legacy-writer');
+    return { ...a, outcome: open ? UNKNOWN_OUTCOME : a.outcome };
+  });
+  const legacy = [];
+  for (const r of results) {
+    if (!isReviewRow(r) || byRun.has(r.run_id)) continue;
+    legacy.push({ run_id: r.run_id, phase: r.phase, ensemble_type: r.ensemble_type, verdict: r.verdict, outcome: UNKNOWN_OUTCOME });
+    if (decoded.state === 'ok') reasons.add('missing-outcome');
+  }
+  return {
+    v: REVIEW_ATTEMPTS_VERSION,
+    document: decoded.state,
+    diagnostic: decoded.diagnostic,
+    attempts: outAttempts,
+    legacy,
+    coverage: {
+      history_incomplete: reasons.size > 0,
+      reasons: [...reasons],
+      ...(decoded.doc?.coverage.truncated ? { truncated: decoded.doc.coverage.truncated } : {}),
+    },
+  };
+}
+
+/** The outcome a reader sees for one run (or attempt) id: `unknown` unless one was recorded. */
+export function reviewOutcomeFor(frontmatter, id) {
+  const decoded = decodeReviewAttempts(frontmatter?.[REVIEW_ATTEMPTS_KEY]);
+  const a = decoded.doc?.attempts.find((x) => x.id === id || x.run_id === id);
+  return a && a.state === 'closed' ? a.outcome : UNKNOWN_OUTCOME;
+}
