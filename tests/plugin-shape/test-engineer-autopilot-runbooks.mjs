@@ -103,7 +103,8 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
         // running it again (the settle records nothing more) appends the note
         // once.
         ok(commit >= 0 && append > commit && finish > append, 'settle → append → finish-verb');
-        ok(/--summary-file "\$TEXT_DIR\/summary\.txt" \|\| exit \$\?\n/.test(block.slice(commit, append)), 'the ensemble write stops the block when it fails');
+        // C163 A1a: the never-launched attempt's arguments ("$@") come last.
+        ok(/--summary-file "\$TEXT_DIR\/summary\.txt" "\$@" \|\| exit \$\?\n/.test(block.slice(commit, append)), 'the ensemble write stops the block when it fails');
         ok(/--event updated \|\| exit \$\?\n/.test(block.slice(append, finish)), 'the append stops the block when it fails');
       } else {
         ok(append >= 0 && commit > append && finish > commit, 'append → ensemble-commit → finish-verb');

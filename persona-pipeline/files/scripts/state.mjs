@@ -77,6 +77,14 @@ import { isCliEntry } from './lib/cli-entry.mjs';
 import { capabilityOn, commandPrefix, loadPersona, personaName, personaOrRefuse, stateDirRel } from './lib/persona.mjs';
 import { captureWorkingTree } from './lib/peer-snapshot.mjs';
 import {
+  REVIEW_ATTEMPTS_KEY,
+  applyReviewAttempt,
+  isReviewAttemptId,
+  isReviewType,
+  observeReviewGaps,
+  projectReviewOutcomes,
+} from './lib/review-attempts.mjs';
+import {
   HOLD_PERSONA_CAPABILITY,
   HOLDS_PROTOCOL,
   OPERATION_ID_RE,
@@ -1641,6 +1649,13 @@ function frontmatterKeyOrder() {
   // (an earlier release, or a persona with dispatch_target off) carries it
   // through its forward-compat carrier byte for byte.
   if (capabilityOn('dispatch_target')) order.push(PERSONA_OPERATIONS_KEY);
+  // C163 A1a (ADR-0023, implementation note of 2026-11-05) — one outcome per
+  // review attempt: the JSON text of one document in a double-quoted scalar,
+  // last of all, so a reader that does not know it carries it through its
+  // forward-compat carrier byte for byte. It stays text here (decoded by
+  // lib/review-attempts.mjs on demand), so a document this reader cannot use
+  // never makes the workflow unreadable: it reads `unknown`.
+  order.push(REVIEW_ATTEMPTS_KEY);
   keyOrderCache = Object.freeze(order);
   return keyOrderCache;
 }
@@ -3392,9 +3407,121 @@ export async function recordPendingEnsemble({
       ? frontmatter.pending_ensemble.filter((e) => e.run_id !== run_id)
       : [];
     frontmatter.pending_ensemble = [...existing, entry];
+    // C163 A1a — a review's attempt is registered (open) in the same write,
+    // before the runner can fail to find or launch its peer: an attempt that
+    // never closes reads `unknown`, never absent.
+    stageReviewAttempt(frontmatter, {
+      id: run_id, phase, type: ensemble_type, state: 'open', run_id, registered_at: nowIso,
+    });
     frontmatter.updated_at = nowIso;
     await writeWorkflow(workflowPath, frontmatter, body, ownership);
     return { frontmatter, workflowPath };
+  }, { env, host, writer: LANE_WRITERS.plain });
+}
+
+/**
+ * C163 A1a — stage one review-attempt write (registration or outcome) on a
+ * frontmatter read under the workflow's lock, for the caller's own write.
+ * A type that is not a review records no attempt. A document this writer
+ * cannot read (a later version, or unreadable) is left as it is, with a
+ * warning: recording never stops the write it rides on. `listed` is the
+ * results list the caller's write prunes, its own row appended (a commit's);
+ * its gaps are observed before the prune, so a row appended and pruned in the
+ * same write leaves its gap too. With none, the list as found.
+ */
+function stageReviewAttempt(frontmatter, attempt, { listed = frontmatter.ensemble_results, cap = ENSEMBLE_RESULTS_RETENTION_CAP } = {}) {
+  // Only the gaps the results show, no attempt: a commit that makes no
+  // outcome of its own (a repeat, or a type that is no review), before it
+  // prunes the rows that show them.
+  if (attempt.state === 'gaps') {
+    const out = observeReviewGaps(frontmatter[REVIEW_ATTEMPTS_KEY], frontmatter.ensemble_results, { cap, listed });
+    if (out.changed) frontmatter[REVIEW_ATTEMPTS_KEY] = out.raw;
+    return { recorded: false, changed: out.changed, kept: null };
+  }
+  if (!isReviewType(attempt.type)) return { recorded: false, changed: false, kept: null };
+  // A raw verdict word that is no token (a caller's free text) is not kept;
+  // the outcome mapped from it is.
+  const record = { ...attempt };
+  if (record.verdict !== undefined && !(typeof record.verdict === 'string' && /^[A-Za-z0-9._:-]{1,80}$/.test(record.verdict))) delete record.verdict;
+  let out;
+  try {
+    out = applyReviewAttempt(frontmatter[REVIEW_ATTEMPTS_KEY], record, {
+      results: frontmatter.ensemble_results, listed, cap,
+    });
+  } catch (err) {
+    // An attempt the document refuses (a value it cannot hold) is not
+    // recorded, and its gap still is: the results the prune cuts are observed
+    // against the document as it was, so the row it leaves with no attempt
+    // reads `missing-outcome` once pruned.
+    const gaps = observeReviewGaps(frontmatter[REVIEW_ATTEMPTS_KEY], frontmatter.ensemble_results, { cap, listed });
+    out = { recorded: false, changed: gaps.changed, raw: gaps.raw, kept: null, diagnostic: err.message };
+  }
+  if (out.diagnostic) process.stderr.write(`⚠ review attempt ${attempt.id} not recorded: ${out.diagnostic}\n`);
+  if (out.changed) frontmatter[REVIEW_ATTEMPTS_KEY] = out.raw;
+  return out;
+}
+
+/**
+ * C163 A1a — record the outcome of a review attempt that has no
+ * `ensemble_results` row: a review that never launched (skipped or
+ * unavailable, with its reason) or an unsettled attempt explicitly replaced
+ * (superseded, with its replacement). Idempotent by attempt id: the first
+ * outcome is kept. It writes nothing else, so the legacy results, their counts
+ * and the pending rows are unchanged.
+ */
+export async function recordReviewAttempt({
+  workflowPath,
+  attempt,
+  host = 'claude',
+  env = process.env,
+  now = new Date(),
+}) {
+  if (!attempt || attempt.state !== 'closed') throw new Error('recordReviewAttempt: attempt must be a closed attempt');
+  if (!isReviewType(attempt.type)) throw new Error(`recordReviewAttempt: ${JSON.stringify(attempt.type)} is not a review type`);
+  return withFileLock(workflowPath, async (ownership) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    const nowIso = isoUtc(now);
+    const out = stageReviewAttempt(frontmatter, { recorded_at: nowIso, ...attempt });
+    if (out.changed) {
+      frontmatter.updated_at = nowIso;
+      await writeWorkflow(workflowPath, frontmatter, body, ownership);
+    }
+    return { workflowPath, recorded: out.recorded, changed: out.changed, kept: out.kept, diagnostic: out.diagnostic ?? null };
+  }, { env, host, writer: LANE_WRITERS.plain });
+}
+
+/**
+ * C163 A1a — mark an unsettled review attempt superseded by another. Only an
+ * attempt still open (registered, never closed) can be superseded; the
+ * replacement is named. Its pending row, if any, is left for its settle.
+ */
+export async function supersedeReviewAttempt({ workflowPath, attemptId, supersededBy, host = 'claude', env = process.env, now = new Date() }) {
+  for (const [name, v] of [['attemptId', attemptId], ['supersededBy', supersededBy]]) {
+    if (typeof v !== 'string' || v === '') throw new Error(`supersedeReviewAttempt: ${name} must be a non-empty string`);
+  }
+  if (attemptId === supersededBy) throw new Error('supersedeReviewAttempt: an attempt cannot supersede itself');
+  if (!isReviewAttemptId(supersededBy)) throw new Error(`supersedeReviewAttempt: ${JSON.stringify(supersededBy)} is not an attempt id`);
+  return withFileLock(workflowPath, async (ownership) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    const view = projectReviewOutcomes(frontmatter, { cap: ENSEMBLE_RESULTS_RETENTION_CAP });
+    const target = view.attempts.find((a) => a.id === attemptId);
+    if (!target) throw new Error(`supersedeReviewAttempt: no review attempt ${attemptId} on ${frontmatter.workflow_id}`);
+    if (target.state !== 'open') {
+      return { workflowPath, recorded: true, changed: false, kept: target };
+    }
+    const nowIso = isoUtc(now);
+    const out = stageReviewAttempt(frontmatter, {
+      id: attemptId, phase: target.phase, type: target.type, state: 'closed', outcome: 'superseded',
+      superseded_by: supersededBy, tree: null, tree_reason: 'superseded', recorded_at: nowIso,
+    });
+    if (!out.recorded) throw new Error(`supersedeReviewAttempt: ${attemptId} was not recorded superseded (${out.diagnostic ?? 'the document cannot be written'})`);
+    if (out.changed) {
+      frontmatter.updated_at = nowIso;
+      await writeWorkflow(workflowPath, frontmatter, body, ownership);
+    }
+    return { workflowPath, recorded: out.recorded, changed: out.changed, kept: out.kept };
   }, { env, host, writer: LANE_WRITERS.plain });
 }
 
@@ -3410,6 +3537,16 @@ export async function recordPendingEnsemble({
  * already exists, the second commit is a no-op for the results list (the
  * matching pending entry is still removed if present).
  */
+// C163 A1a — the outcome the `ensemble-commit` CLI records for a review whose
+// run has no ledger (a run with one is refused, and settled from it with
+// `peer-runner.mjs settle`): a hand commit reads no evidence, so the attempt
+// closes `failed`, reason `verdict-only`, with no tree. Closed, it never
+// reads `passed`, and it is not mistaken for an older writer's open attempt
+// (`legacy-writer`).
+export const VERDICT_ONLY_REVIEW = Object.freeze({
+  outcome: 'failed', reason: 'verdict-only', tree: null, tree_reason: 'evidence-missing',
+});
+
 export async function commitEnsemble({
   workflowPath,
   run_id,
@@ -3420,6 +3557,13 @@ export async function commitEnsemble({
   completed_at,
   codex_session_id = null,
   cap = ENSEMBLE_RESULTS_RETENTION_CAP,
+  // C163 A1a — the review attempt's outcome as settle read it from the run
+  // ledger: `{outcome, reason, status, error_kind, tree, tree_reason}`,
+  // recorded in this same write, for a review type only. With none (a caller
+  // that has only the verdict) no outcome is recorded: a verdict is no
+  // evidence of how the run went. The `ensemble-commit` CLI passes
+  // VERDICT_ONLY_REVIEW, which closes the attempt `failed`.
+  review = null,
   // As recordPendingEnsemble's: the attempt mark (withFileLock, ADR-0068
   // Decision 5).
   host = 'claude',
@@ -3488,6 +3632,42 @@ export async function commitEnsemble({
         codex_session_id,
       };
       next = [...existing, entry];
+    }
+
+    // C163 A1a — close the review attempt (before the prune, which a new
+    // document reads to tell whether earlier reviews preceded it). A repeat of
+    // a result already recorded makes no outcome of its own: the row it finds
+    // was written by another commit, an older writer's when the attempt is
+    // still open, and its verdict is no evidence of how the run went, so the
+    // attempt stays open (`unknown`, the gap `legacy-writer`) and a row with
+    // no attempt stays a legacy row. Every commit that closes nothing (a
+    // repeat, or a type that is no review) still records the gaps the results
+    // show before the prune drops their rows. So does a commit with only a
+    // verdict (`review` null, an in-process caller with no run evidence):
+    // its row reads `unknown`, as an older writer's does, and never `passed`
+    // (the `ensemble-commit` CLI passes VERDICT_ONLY_REVIEW instead, and
+    // closes the attempt `failed`). The gaps are read from the list the
+    // prune cuts (`next`, this row appended), so a row appended and pruned in
+    // this same write (an older `completed_at`) leaves its gap too.
+    const prunes = { listed: next, cap };
+    if (!alreadyCommitted && isReviewType(ensemble_type) && review) {
+      stageReviewAttempt(frontmatter, {
+        id: run_id,
+        phase,
+        type: ensemble_type,
+        state: 'closed',
+        run_id,
+        outcome: review.outcome,
+        verdict,
+        status: review.status ?? undefined,
+        error_kind: review.error_kind ?? undefined,
+        reason: review.reason ?? undefined,
+        tree: review.tree ?? null,
+        tree_reason: review.tree ? undefined : (review.tree_reason ?? 'not-reported'),
+        recorded_at: nowIso,
+      }, prunes);
+    } else {
+      stageReviewAttempt(frontmatter, { id: run_id, phase, type: ensemble_type, state: 'gaps' }, prunes);
     }
 
     // Step 3: prune.
@@ -5459,7 +5639,7 @@ export async function finishVerb({
       throw new Error(
         'refused under autopilot: a peer ensemble is still pending ' +
           `(${frontmatter.pending_ensemble.map((e) => e.run_id).join(', ')}); collect it and ` +
-          'run ensemble-commit first — the next step is published only once the step is settled (ADR-0063 D5)',
+          'settle it from its run ledger (peer-runner.mjs settle) first — the next step is published only once the step is settled (ADR-0063 D5)',
       );
     }
   }
@@ -7643,9 +7823,24 @@ function cliPrintHelp() {
       '  ensemble-commit --workflow-path <path> --run-id <id> --phase <name>',
       '                  --ensemble-type <name> --verdict <text> --summary <text>',
       '                  [--completed-at <iso>] [--codex-session-id <id>]',
-      '                  [--cap <n>] [--host claude|codex]',
+      '                  [--cap <n>] [--host claude|codex] [--repo-root <path>]',
       '    ADR-0017 sub-4 — three-step atomic commit: pop pending → append result → prune.',
       '    Idempotent on run-id (second commit is a no-op for the results list).',
+      '    A review type also closes its review attempt in the same write (C163 A1a):',
+      '    failed (verdict-only), whatever the verdict, as it reads no run ledger.',
+      '    A review whose run has a ledger (looked up from --repo-root, default the',
+      '    working directory, and the workflow\'s own home) is refused: settle it',
+      '    with peer-runner.mjs settle, which records how the run went.',
+      '',
+      '  review-attempts --workflow-path <path>',
+      '    C163 A1a — print, as JSON, one outcome per review attempt (unknown while',
+      '    open), the review results with no attempt (legacy, read unknown) and the',
+      '    coverage (history_incomplete with its reasons). Read-only.',
+      '',
+      '  review-attempt-supersede --workflow-path <path> --attempt-id <id>',
+      '                           --superseded-by <id> [--host claude|codex]',
+      '    C163 A1a — record an open review attempt superseded by another. Records',
+      '    only: the pending row, if any, is left for its settle.',
       '',
       '  checkpoint-set --workflow-path <path> --host <host> --summary <text>',
       '    ADR-0017 sub-2 — set latest_checkpoint and append host_history checkpointed.',
@@ -8178,6 +8373,30 @@ async function cliRun(subcommand, flags) {
           throw new Error(`--cap must be a non-negative integer (got ${flags.cap})`);
         }
         if (flags.host !== undefined) validateHost(flags.host);
+        // C163 A1a — a review whose run has a ledger is settled from it, never
+        // by hand: the verdict-only close below would hide the outcome the
+        // ledger shows (a completed review's concerns, a peer not found), and
+        // the first outcome is kept. Refused before any write; a lookup that
+        // fails refuses too.
+        if (isReviewType(flags['ensemble-type'])) {
+          const { peerRunLedgerFound } = await import('./peer-runner.mjs');
+          let found;
+          try {
+            found = await peerRunLedgerFound({ repoRoot: flags['repo-root'] ?? process.cwd(), runId: flags['run-id'], workflowPath: flags['workflow-path'] });
+          } catch (err) {
+            throw new Error(`ensemble-commit: could not tell whether run ${flags['run-id']} has a run ledger (${err.message}); nothing was written. Settle it with peer-runner.mjs settle.`);
+          }
+          if (found) {
+            throw new Error(
+              `ensemble-commit: run ${flags['run-id']} has a run ledger, so its review is settled from it: ` +
+                `peer-runner.mjs settle --repo-root <the repository root> --workflow-path ${flags['workflow-path']} ` +
+                `--host <claude|codex> --phase ${flags.phase} --run-id ${flags['run-id']} --verdict <the synthesis verdict> ` +
+                '--summary-file <a file holding the summary> records how the run went (it refuses a live run until it ends ' +
+                'or is shown abandoned). A hand commit reads no ledger, and its verdict-only close would hide that outcome; ' +
+                'nothing was written.',
+            );
+          }
+        }
         await commitEnsemble({
           workflowPath: flags['workflow-path'],
           run_id: flags['run-id'],
@@ -8189,8 +8408,34 @@ async function cliRun(subcommand, flags) {
           codex_session_id: flags['codex-session-id'] ?? null,
           cap,
           host: flags.host,
+          // C163 A1a — a run with no ledger (refused above otherwise): its
+          // verdict is no evidence of how the run went, so a review's attempt
+          // closes `failed` (`verdict-only`) whatever the verdict says, never
+          // `passed`, and is never left open for good (a later settle finds
+          // the result row and records nothing more).
+          review: VERDICT_ONLY_REVIEW,
         });
         process.stdout.write(`${flags['workflow-path']}\n`);
+        return 0;
+      }
+
+      case 'review-attempts': {
+        cliRequire(flags, ['workflow-path']);
+        const { frontmatter } = parseWorkflowFile(await readFile(flags['workflow-path'], 'utf8'));
+        process.stdout.write(`${JSON.stringify(projectReviewOutcomes(frontmatter, { cap: ENSEMBLE_RESULTS_RETENTION_CAP }))}\n`);
+        return 0;
+      }
+
+      case 'review-attempt-supersede': {
+        cliRequire(flags, ['workflow-path', 'attempt-id', 'superseded-by']);
+        if (flags.host !== undefined) validateHost(flags.host);
+        const out = await supersedeReviewAttempt({
+          workflowPath: flags['workflow-path'],
+          attemptId: flags['attempt-id'],
+          supersededBy: flags['superseded-by'],
+          host: flags.host,
+        });
+        process.stdout.write(`${JSON.stringify({ ok: true, changed: out.changed, outcome: out.kept?.outcome ?? 'superseded' })}\n`);
         return 0;
       }
 

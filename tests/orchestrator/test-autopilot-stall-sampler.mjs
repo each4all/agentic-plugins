@@ -16,6 +16,16 @@ const AP = resolve(REPO_ROOT, 'plugins/orchestrator/adapters/claude/autopilot');
 const S = await import(resolve(AP, 'stall.mjs'));
 const SM = await import(resolve(AP, 'stall-sampler.mjs'));
 const pause = (ms) => new Promise((r) => { setTimeout(r, ms); });
+// Waits until pred() holds, checking every few ms, up to a bound far past any
+// tick; false when the bound passes first.
+const until = async (pred, boundMs = 5000) => {
+  const end = Date.now() + boundMs;
+  while (!pred()) {
+    if (Date.now() > end) return false;
+    await pause(2);
+  }
+  return true;
+};
 const table = (procs = []) => ({ ok: true, procs, unreadable: [], exited: [], resolutionMs: 10 });
 
 describe('the run\'s sampler (Decision 3, item 6; §Consequences)', () => {
@@ -42,8 +52,13 @@ describe('the run\'s sampler (Decision 3, item 6; §Consequences)', () => {
     });
     const got = { 10: [], 20: [], 30: [] };
     const regs = [10, 20, 30].map((pid) => sampler.register((s, m, w) => got[pid].push(s)));
-    await pause(130);
-    for (const r of regs) r.unregister();
+    // Six ticks, counted, not timed: worker 30's counter goes back from the
+    // fourth, and a busy event loop fires fewer ticks in a fixed pause.
+    try {
+      ok(await until(() => got[10].length >= 6), `ticks ${got[10].length}`);
+    } finally {
+      for (const r of regs) r.unregister();
+    }
     strictEqual(sampler.size, 0);
     const ticks = got[10].length;
     ok(ticks >= 3, `ticks ${ticks}`);
@@ -66,8 +81,11 @@ describe('the run\'s sampler (Decision 3, item 6; §Consequences)', () => {
     const sampler = SM.createStallSampler({ intervalMs: 20, deadlineMs: 10, readTable: () => { reads += 1; return new Promise(() => {}); } });
     const got = [];
     const reg = sampler.register((s) => got.push(s.why));
-    await pause(120);
-    reg.unregister();
+    try {
+      ok(await until(() => got.length >= 3), got.join(','));
+    } finally {
+      reg.unregister();
+    }
     strictEqual(reads, 1);
     strictEqual(got[0], 'timeout');
     ok(got.length >= 3 && got.slice(1).every((w) => w === 'slow'), got.join(','));
@@ -86,10 +104,16 @@ describe('the run\'s sampler (Decision 3, item 6; §Consequences)', () => {
     });
     const got = [];
     const reg = sampler.register((s) => got.push(s.ok ? 'ok' : s.why));
-    await pause(45);
-    resolveLate(table());
-    await pause(40);
-    reg.unregister();
+    // The answer comes once its tick is judged a timeout, never on a wall
+    // clock: under load the tick fires late, its deadline lands past a fixed
+    // pause, and the answer would be on time, not late.
+    try {
+      ok(await until(() => got.includes('timeout')), `no timeout: ${got.join(',')}`);
+      resolveLate(table());
+      ok(await until(() => got.includes('failed')), `no failed sample: ${got.join(',')}`);
+    } finally {
+      reg.unregister();
+    }
     strictEqual(got[0], 'timeout');
     ok(!got.includes('ok'), `the late answer reached nobody: ${got.join(',')}`);
     ok(got.includes('failed'), got.join(','));
@@ -100,11 +124,19 @@ describe('the run\'s sampler (Decision 3, item 6; §Consequences)', () => {
     const sampler = SM.createStallSampler({ intervalMs: 20, deadlineMs: 1000, readTable: () => new Promise((r) => { release = r; }) });
     const got = [];
     const reg = sampler.register((s) => got.push(s));
-    await pause(30);
-    reg.unregister();
+    // The read has started (a late tick never leaves release unset); a tick
+    // that came while it ran is `slow`, the only sample before unregistering.
+    let before;
+    try {
+      ok(await until(() => release !== undefined), 'no read started');
+    } finally {
+      before = got.length;
+      reg.unregister();
+    }
     release(table());
     await pause(10);
-    deepStrictEqual(got, []);
+    ok(got.every((s) => s.why === 'slow'), JSON.stringify(got));
+    deepStrictEqual(got.slice(before), []);
   });
 
   it('a listener that throws is passed over; the others still get the sample', async () => {
@@ -112,9 +144,11 @@ describe('the run\'s sampler (Decision 3, item 6; §Consequences)', () => {
     const got = [];
     const a = sampler.register(() => { throw new Error('x'); });
     const b = sampler.register((s) => got.push(s));
-    await pause(50);
-    a.unregister();
-    b.unregister();
-    ok(got.length >= 1);
+    try {
+      ok(await until(() => got.length >= 1), 'no sample reached the second listener');
+    } finally {
+      a.unregister();
+      b.unregister();
+    }
   });
 });

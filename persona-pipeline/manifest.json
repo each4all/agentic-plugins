@@ -84,6 +84,17 @@
       "requires": []
     },
     {
+      "id": "lib-review-attempts",
+      "source": "files/scripts/lib/review-attempts.mjs",
+      "dest": "scripts/lib/review-attempts.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
       "id": "lib-vendor-commonmark",
       "source": "files/scripts/lib/vendor/commonmark.min.cjs",
       "dest": "scripts/lib/vendor/commonmark.min.cjs",
@@ -875,6 +886,10 @@
           "value": "compose",
           "context": "shell"
         },
+        "ensemble_type": {
+          "value": "plan-verify",
+          "context": "shell"
+        },
         "phase_label": {
           "value": "Phase 1: Compose (synthesized)",
           "context": "shell"
@@ -1116,6 +1131,10 @@
           "context": "shell"
         },
         "verb": {
+          "value": "frame",
+          "context": "shell"
+        },
+        "ensemble_type": {
           "value": "frame",
           "context": "shell"
         },
@@ -1365,6 +1384,10 @@
         },
         "verb": {
           "value": "investigate",
+          "context": "shell"
+        },
+        "ensemble_type": {
+          "field": "verbs.investigate.ensemble_type",
           "context": "shell"
         },
         "phase_label": {
@@ -1641,6 +1664,10 @@
         },
         "verb": {
           "value": "decide",
+          "context": "shell"
+        },
+        "ensemble_type": {
+          "value": "brainstorm",
           "context": "shell"
         },
         "phase_label": {
@@ -1964,6 +1991,10 @@
           "value": "refine",
           "context": "shell"
         },
+        "ensemble_type": {
+          "value": "refine-verify",
+          "context": "shell"
+        },
         "phase_label": {
           "value": "Phase 1: Refine (synthesized)",
           "context": "shell"
@@ -2040,6 +2071,10 @@
         },
         "verb": {
           "value": "refine",
+          "context": "shell"
+        },
+        "ensemble_type": {
+          "value": "refine-verify",
           "context": "shell"
         },
         "phase_label": {
@@ -2399,6 +2434,10 @@
         },
         "verb": {
           "value": "critique",
+          "context": "shell"
+        },
+        "ensemble_type": {
+          "value": "review",
           "context": "shell"
         },
         "phase_label": {
@@ -2916,6 +2955,46 @@
       }
     },
     {
+      "id": "compose-review-settle",
+      "template": "regions/skill-review-settle.md",
+      "dest": "core/skills/compose/SKILL.md",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "verb": {
+          "value": "compose",
+          "context": "markdown"
+        },
+        "phase": {
+          "value": "compose",
+          "context": "shell"
+        },
+        "review_types": {
+          "value": "`plan-verify`, or `review` where this skill picks the Review point type",
+          "context": "markdown"
+        },
+        "review_type": {
+          "value": "plan-verify",
+          "context": "shell"
+        },
+        "review_type_other": {
+          "value": "review",
+          "context": "shell"
+        },
+        "verdicts": {
+          "value": "`agreed`, `concerns` or `conflict`",
+          "context": "markdown"
+        }
+      }
+    },
+    {
       "id": "compose-finish",
       "template": "regions/skill-verb-finish.md",
       "dest": "core/skills/compose/SKILL.md",
@@ -3066,6 +3145,46 @@
       ]
     },
     {
+      "id": "critique-review-settle",
+      "template": "regions/skill-review-settle.md",
+      "dest": "core/skills/critique/SKILL.md",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "verb": {
+          "value": "critique",
+          "context": "markdown"
+        },
+        "phase": {
+          "value": "critique",
+          "context": "shell"
+        },
+        "review_types": {
+          "value": "`review`, or `adversarial-scan` where this skill's profile picks the Adversarial-scan point type",
+          "context": "markdown"
+        },
+        "review_type": {
+          "value": "review",
+          "context": "shell"
+        },
+        "review_type_other": {
+          "value": "adversarial-scan",
+          "context": "shell"
+        },
+        "verdicts": {
+          "value": "`agreed`, `concerns` or `conflict`",
+          "context": "markdown"
+        }
+      }
+    },
+    {
       "id": "critique-finish",
       "template": "regions/skill-verb-finish.md",
       "dest": "core/skills/critique/SKILL.md",
@@ -3128,6 +3247,62 @@
       "personas": [
         "engineer"
       ]
+    },
+    {
+      "id": "refine-pass-settle",
+      "template": "regions/skill-refine-pass-settle.md",
+      "dest": "core/skills/refine/SKILL.md",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "refine-review-settle",
+      "template": "regions/skill-review-settle.md",
+      "dest": "core/skills/refine/SKILL.md",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "verb": {
+          "value": "refine",
+          "context": "markdown"
+        },
+        "phase": {
+          "value": "refine",
+          "context": "shell"
+        },
+        "review_types": {
+          "value": "`refine-verify`",
+          "context": "markdown"
+        },
+        "review_type": {
+          "value": "refine-verify",
+          "context": "shell"
+        },
+        "review_type_other": {
+          "value": "refine-verify",
+          "context": "shell"
+        },
+        "verdicts": {
+          "value": "`resolved`, `concerns`, `regression` or `conflict`",
+          "context": "markdown"
+        }
+      }
     },
     {
       "id": "refine-finish",

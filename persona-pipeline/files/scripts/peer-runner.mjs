@@ -15,7 +15,7 @@
 // selected dispatch paths to this managed runner.
 
 import { spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import {
   access,
@@ -29,7 +29,7 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { constants as fsConstants } from 'node:fs';
+import { constants as fsConstants, realpathSync } from 'node:fs';
 import { constants as osConstants, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 
@@ -42,9 +42,11 @@ import {
   parseWorkflowFile,
   readTextArgumentFile,
   recordPendingEnsemble,
+  recordReviewAttempt,
   resolveWorkflowStorage,
   workflowStorage,
 } from './state.mjs';
+import { NO_RUN_REASONS, isReviewType, outcomeOf, treeOf } from './lib/review-attempts.mjs';
 import { absorbOutputErrors, exitAfterFlush, isCliEntry } from './lib/cli-entry.mjs';
 import { withEvidenceBoundaryBytes } from './lib/evidence-boundary.mjs';
 import { capabilityOn, personaName, personaOrRefuse, stateDirRel } from './lib/persona.mjs';
@@ -246,6 +248,16 @@ async function findPeerRunPaths(repoRoot, runId, workflowPath) {
     }
   }
   return found;
+}
+
+// C163 A1a — whether run `runId` has a ledger in a home settle reads (a run
+// directory, or one a prune claimed). The `state.mjs ensemble-commit` CLI
+// refuses to close such a run's review by hand: it reads no ledger, and its
+// verdict-only close would hide the outcome the ledger shows. A run id the
+// runner would refuse names no ledger.
+export async function peerRunLedgerFound({ repoRoot = process.cwd(), runId, workflowPath } = {}) {
+  if (typeof runId !== 'string' || !/^[A-Za-z0-9._:-]+$/.test(runId) || runId.includes('..')) return false;
+  return (await findPeerRunPaths(repoRoot, runId, workflowPath)).length > 0;
 }
 
 async function resolvePeerRunPathsForRead(repoRoot, runId, workflowPath) {
@@ -828,6 +840,26 @@ async function runPeerInCheckout(args) {
         h.exit_code = 2;
         h.error_kind = 'prompt_unreadable';
       });
+      // C163 A1a — this run fails before its pending row would register its
+      // review attempt: the attempt is recorded failed here, so it leaves a
+      // trace even if no finalize settles it. Best effort: the run's own
+      // failure is the result either way.
+      if (failed.kind === 'ensemble' && typeof failed.workflow_path === 'string' && isReviewType(failed.ensemble_type)) {
+        try {
+          await recordReviewAttempt({
+            workflowPath: failed.workflow_path,
+            attempt: {
+              id: failed.run_id, phase: failed.phase, type: failed.ensemble_type, state: 'closed', run_id: failed.run_id,
+              outcome: 'failed', reason: 'prompt_unreadable', status: 'failed', error_kind: 'prompt_unreadable',
+              tree: null, tree_reason: 'no-launch',
+            },
+            host: failed.host,
+            env: options.env,
+          });
+        } catch (err) {
+          process.stderr.write(`peer-runner: the review attempt of ${failed.run_id} was not recorded: ${err.message}\n`);
+        }
+      }
       return runResult(paths, failed, { ok: false, companionPath: null });
     }
     promptCleanup = prompt.cleanup;
@@ -2116,6 +2148,13 @@ async function settleEnsembleInCheckout({
   verdict,
   summary,
   host,
+  // C163 A1a — with no run launched (an empty run id): the review the verb
+  // would have dispatched, why none launched (NO_RUN_REASONS), and the key
+  // its attempt id is derived from (the finalize's text directory, so a rerun
+  // records the same attempt). Without an ensemble type nothing is recorded.
+  ensembleType,
+  noRunReason,
+  attemptKey,
   // The step's environment, which the workflow write is admitted under (its
   // attempt mark, ADR-0068 Decision 5), as every writer's.
   env = process.env,
@@ -2139,7 +2178,8 @@ async function settleEnsembleInCheckout({
     if (open.length > 0) {
       refuse(`an unsettled ensemble attempt for phase ${phase} is in the ledger: settle it by its run id (${open.join(', ')})`);
     }
-    return { ok: true, settlement: 'skipped', run_id: null, phase };
+    const noRun = await recordNoRunAttempt({ workflowPath: wf, phase, ensembleType, noRunReason, attemptKey, host, env, now });
+    return { ok: true, settlement: 'skipped', run_id: null, phase, ...noRun };
   }
 
   assertSafeRunId(runId);
@@ -2148,8 +2188,9 @@ async function settleEnsembleInCheckout({
   // A concurrent settle that won is reported with the verdict the workflow
   // holds, never this call's (PC2b Review of code step 6).
   let keptVerdict = null;
-  const commit = async (fields) => {
+  const commit = async (fields, review = null) => {
     const { idempotentSkip, kept } = await commitEnsemble({
+      review,
       workflowPath: wf,
       run_id: runId,
       phase,
@@ -2182,7 +2223,7 @@ async function settleEnsembleInCheckout({
       ensemble_type: row.ensemble_type,
       verdict: SETTLE_FAILED_VERDICT,
       summary: 'peer run ledger missing: error_kind=ledger_missing',
-    });
+    }, { outcome: 'failed', reason: 'ledger_missing', error_kind: 'ledger_missing', tree: null, tree_reason: 'evidence-missing' });
     return { ok: true, settlement, run_id: runId, phase, status: null, error_kind: 'ledger_missing', verdict: keptVerdict ?? SETTLE_FAILED_VERDICT };
   }
 
@@ -2208,12 +2249,21 @@ async function settleEnsembleInCheckout({
   // runner the host killed before its cleanup left: removed when the run is
   // proven over, reported apart, never a change of the settlement.
   const cleanup = () => snapshotCleanupField(paths, handle, null, recorded);
+  // C163 A1a — the review attempt's outcome, from the ledger: how the run
+  // ended, whether its answer was usable, then the verdict; and the tree its
+  // peer saw, from the handle's snapshot record, never the checkout now.
+  const reviewOf = (s) => ({
+    ...outcomeOf(s),
+    status: handle.status,
+    error_kind: handle.error_kind ?? null,
+    ...treeOf(handle),
+  });
   if (handle.status !== 'completed') {
     const settlement = await commit({
       ensemble_type: handle.ensemble_type,
       verdict: SETTLE_FAILED_VERDICT,
       summary: `peer run ${handle.status}: error_kind=${handle.error_kind ?? 'none'}`,
-    });
+    }, reviewOf({ status: handle.status, error_kind: handle.error_kind ?? null }));
     return { ...base, settlement, verdict: keptVerdict ?? SETTLE_FAILED_VERDICT, ...(await cleanup()) };
   }
   const answer = await completedAnswer(paths, handle);
@@ -2224,14 +2274,60 @@ async function settleEnsembleInCheckout({
       ensemble_type: handle.ensemble_type,
       verdict: SETTLE_DEGRADED_VERDICT,
       summary: `peer answer ${why}; the synthesis is local-only${local}`,
-    });
+    }, reviewOf({ status: 'completed', answer: why }));
     return { ...base, settlement, verdict: keptVerdict ?? SETTLE_DEGRADED_VERDICT, answer: why, ...(await cleanup()) };
   }
   if (typeof verdict !== 'string' || verdict.trim() === '') refuse(`run ${runId} completed: settle needs the synthesis --verdict`);
   if (verdict === SETTLE_FAILED_VERDICT) refuse(`run ${runId} completed: '${SETTLE_FAILED_VERDICT}' is reserved for a run that failed`);
   if (typeof summary !== 'string' || summary.trim() === '') refuse(`run ${runId} completed: settle needs the synthesis --summary`);
-  const settlement = await commit({ ensemble_type: handle.ensemble_type, verdict, summary: singleLineSummary(summary) });
+  const settlement = await commit(
+    { ensemble_type: handle.ensemble_type, verdict, summary: singleLineSummary(summary) },
+    reviewOf({ status: 'completed', verdict }),
+  );
   return { ...base, settlement, verdict: keptVerdict ?? verdict, ...(await cleanup()) };
+}
+
+// C163 A1a — a review that launched no run: its attempt, closed with the
+// outcome its reason records (unavailable, or skipped), under an id derived
+// from the workflow, the phase, the type and the finalize's key, so a rerun of
+// the same finalize records the same attempt once. A type that is not a review
+// records nothing. With no reason the attempt is `skipped`, reason
+// `unspecified`: this records, it refuses no step for a word left unset (A1b
+// decides what an outcome allows); a word that is no reason is refused.
+async function recordNoRunAttempt({ workflowPath, phase, ensembleType, noRunReason, attemptKey, host, env, now }) {
+  if (ensembleType === undefined || ensembleType === null || ensembleType === '') return {};
+  if (typeof ensembleType !== 'string' || !/^[a-z][a-z-]{0,40}$/.test(ensembleType)) {
+    throw new Error(`settle: --ensemble-type ${JSON.stringify(ensembleType)} is not an ensemble type`);
+  }
+  if (!isReviewType(ensembleType)) return {};
+  const given = typeof noRunReason === 'string' && noRunReason !== '';
+  if (given && !Object.hasOwn(NO_RUN_REASONS, noRunReason)) {
+    refuse(`--no-run-reason ${JSON.stringify(noRunReason)} is not one of ${Object.keys(NO_RUN_REASONS).join(', ')} (NO_RUN_REASON in the finalize block)`);
+  }
+  if (typeof attemptKey !== 'string' || attemptKey === '') {
+    refuse(`no run launched for the ${ensembleType} review of phase ${phase}: pass --attempt-key (the finalize's text directory), so a rerun records the same attempt`);
+  }
+  // Both paths by their physical identity, so a rerun through a link names
+  // the same attempt.
+  const physical = (p) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return resolve(p);
+    }
+  };
+  const digest = createHash('sha256').update([physical(workflowPath), phase, ensembleType, physical(attemptKey)].join('\0')).digest('hex').slice(0, 16);
+  const attemptId = `${ensembleType}-norun-${digest}`;
+  const outcome = given ? NO_RUN_REASONS[noRunReason] : 'skipped';
+  const reason = given ? noRunReason : 'unspecified';
+  const out = await recordReviewAttempt({
+    workflowPath,
+    attempt: { id: attemptId, phase, type: ensembleType, state: 'closed', outcome, reason, tree: null, tree_reason: 'no-launch' },
+    host,
+    env,
+    now,
+  });
+  return { attempt_id: attemptId, outcome: out.kept?.outcome ?? (out.recorded ? outcome : null) };
 }
 
 // C142 — the snapshot cleanup of a run already settled, read from its ledger
@@ -2375,6 +2471,12 @@ function parseCliArgs(argv) {
         if (Object.hasOwn(opts, 'summaryFile')) throw new Error('--summary-file is given more than once');
         opts.summaryFile = rest[++i];
         break;
+      case '--no-run-reason':
+        opts.noRunReason = rest[++i];
+        break;
+      case '--attempt-key':
+        opts.attemptKey = rest[++i];
+        break;
       case '--apply':
         opts.apply = true;
         break;
@@ -2442,8 +2544,11 @@ function printHelp() {
     "  settle --workflow-path <path> --phase <p> --run-id <id|''>",
     '         [--verdict <v> (--summary <s> | --summary-file <path>)]',
     '         [--repo-root <path>] [--host claude|codex] [--stale-grace-ms <ms>]',
+    '         [--ensemble-type <t> --no-run-reason <r> --attempt-key <dir>]',
     '      Record what an ensemble attempt came to, decided from its ledger:',
     "      --run-id '' when no run launched. Exit 0 settled or skipped, 1 refused.",
+    "      With --run-id '' and a review type, records the attempt that never",
+    `      launched, with its reason (${Object.keys(NO_RUN_REASONS).join('|')}) (C163 A1a).`,
     '      --summary-file reads the summary an agent wrote with its file-writing',
     '      tool (UTF-8, one trailing newline removed, the file kept), before',
     '      anything is written: a runbook never puts it on the command line',
@@ -2561,6 +2666,9 @@ async function cliRun(opts) {
           verdict: opts.verdict,
           summary: opts.summary,
           host: opts.host,
+          ensembleType: opts.ensembleType,
+          noRunReason: opts.noRunReason,
+          attemptKey: opts.attemptKey,
           staleGraceMs: Number.isInteger(opts.staleGraceMs)
             ? opts.staleGraceMs
             : parsePositiveInt(process.env.PEER_RUN_STALE_GRACE_MS, DEFAULT_STALE_GRACE_MS),

@@ -273,7 +273,16 @@ describe('runtime bootstrap artifacts — family lock (#28)', () => {
     strictEqual(rejected.length, 1, 'the other is rejected');
     strictEqual(rejected[0].reason, 'run-open', 'rejected because a run is already open');
     ok(rejected[0].blocking.some((run) => run.run_id === created[0].run_id), 'the rejection NAMES the open run');
-    match(rejected[0].diagnostics[0], /abandon bootstrap-/, 'and points at the recovery');
+    // The recovery is one of the diagnostics, not necessarily the first. When the
+    // loser's link lands while the winner's release has its record parked, the
+    // loser gives that lock back and retries, and the lock's note of it comes
+    // before the run-open line. Anything else in the list is a real report and
+    // fails here.
+    const recovery = `abandon ${created[0].run_id}`;
+    ok(rejected[0].diagnostics.some((d) => d.includes(recovery)), 'and points at the recovery for that run');
+    for (const d of rejected[0].diagnostics) {
+      ok(d.includes(recovery) || /^A bootstrap family lock record was displaced to bootstrap\.lock\.release-[0-9a-f]+ while this invocation was acquiring; the lock it had just taken was given back rather than run alongside a holder that may still believe it holds the family\.$/.test(d), `an unexpected diagnostic: ${d}`);
+    }
 
     const scan = await scanBootstrapRuns({ homeDir });
     strictEqual(scan.runs.length, 1, 'exactly one run directory exists');

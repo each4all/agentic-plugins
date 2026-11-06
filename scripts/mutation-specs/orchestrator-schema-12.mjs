@@ -343,8 +343,9 @@ export const MUTATIONS = [
       });
       tools.applyEdit(copy, {
         file: STATE,
-        from: "  'plan_rebindings',\n];",
-        to: "  'plan_rebindings',\n  'terminal_marker',\n];",
+        // The order's tail (C163 A1a added review_attempts after plan_rebindings).
+        from: "  'review_attempts',\n];",
+        to: "  'review_attempts',\n  'terminal_marker',\n];",
       });
     },
     why: 'the 1.2 keys are not at the tail, so every 1.1 reader write reorders them',

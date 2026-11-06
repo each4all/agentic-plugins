@@ -44,7 +44,8 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
       // R4: each block runs in a fresh shell (C75), finding the workflow and the run itself.
       // HP: the persona operation a verb opens and closes (ADR-0068 Decision 2, hold-persona).
       // VR: the verify form and the results on resume (ADR-0068 Decision 5, verify-runbooks).
-      ok(/^(?:PC2(?:a[234]|b)|PC3b?|ADR-0067-WP|CP|C130|C120|R4|HP|VR) /.test(d.why), `${d.where}: a change with its reason`);
+      // C163: the review attempt of a run that never launched (C163 A1a).
+      ok(/^(?:PC2(?:a[234]|b)|PC3b?|ADR-0067-WP|CP|C130|C120|R4|HP|VR|C163) /.test(d.why), `${d.where}: a change with its reason`);
       if (structural) ok(STRUCTURAL_OPS.includes(d.op), `${d.where}: a known op`);
       else ok(typeof d.from === 'string' && typeof d.to === 'string' && d.from !== d.to && d.from.length > 0, `${d.where}: a string change`);
     }

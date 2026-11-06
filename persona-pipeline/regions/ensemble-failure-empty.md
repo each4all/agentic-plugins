@@ -3,7 +3,8 @@
   findings.
 - **Action**: Parse only the findings that pass structural validation;
   discard the rest. Continue with the salvageable subset. A completed run
-  with no usable answer at all settles as verdict `degraded`. `settle` sees
+  with no usable answer at all settles as verdict `degraded`, and a review's
+  attempt as the outcome `degraded`. `settle` sees
   an empty or unreadable answer itself; an answer that parses to no
   findings, only structural shell, reads to it like any other, so pass
   `degraded` as the synthesis verdict then.

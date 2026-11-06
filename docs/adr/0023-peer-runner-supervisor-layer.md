@@ -1498,3 +1498,348 @@ outcome and removal.
 **Rollout.** Each persona and the orchestrator carry it in their own release;
 an installed older version runs a claude peer in the live checkout until its
 release is installed (on Codex, pinned).
+
+## Implementation note 2026-11-05 — one outcome per review attempt (C163 A1a)
+
+**The defect.** A review that failed, degraded or never ran left nothing a
+reader downstream could tell from a review that passed. `settle` collapsed a
+peer that could not be found or run (`peer_cli_not_found`,
+`peer_unauthenticated`, `peer_invocation_error`) and an envelope that could
+not be parsed (`envelope_parse_error`, `envelope_shape_invalid`) into the
+verdict `failed`, with the `error_kind` only in the summary text; a review
+that never launched recorded nothing (`settle --run-id ''` writes nothing, and
+`commitEnsemble` needs a run id); the tree the peer saw was on the run's
+handle alone, which the sweep removes (200 runs / 14 days); and
+`ensemble_results` keeps 20 rows, dropping older ones with no trace.
+
+**The decision.** Each workflow keeps its review attempts in one frontmatter
+scalar, `review_attempts`: the JSON text of a document `{v: 1, attempts,
+coverage, seen}` in a double-quoted scalar, last of the keys, so a reader that does
+not know it (any released persona or orchestrator) carries it byte for byte
+through its forward-compat carrier (ADR-0028 §Forward-compat). It stays text
+when parsed and is decoded on demand (`scripts/lib/review-attempts.mjs`,
+generated into each persona, and a byte copy in the orchestrator): a document
+a reader cannot use (unreadable, or a later version) never makes the workflow
+unreadable, and a writer leaves it as it is. `ensemble_results` is unchanged:
+its keys, its cap of 20, its verdict words, the rows a run adds (none for a
+review that never launched or was superseded), and so every count and "last
+summary" read from it (the autopilot observer and policy, the commit driver)
+and the `pending_ensemble` rows the handoff digest hashes.
+
+- **Which ensembles are reviews**: `review`, `adversarial-scan`,
+  `plan-verify` and `refine-verify`, classified by ensemble type alone in one
+  table (`REVIEW_ENSEMBLE_TYPES`), never by phase, run-id prefix or a caller's
+  flag. `investigate`, `root-cause`, `cited-brief`, `research-scan`,
+  `reference-scan`, `frame`, `brainstorm` and peer-now are not, and record
+  nothing.
+- **Attempt identity**: a launched run's attempt is its run id, registered
+  open in the write that records its pending row (`recordPendingEnsemble`,
+  under the same lock), before the runner can fail to find or launch its peer;
+  a run that fails earlier still, on a prompt it cannot read, records its
+  attempt `failed` (`prompt_unreadable`) itself.
+  A review that never launched gets `<type>-norun-<16 hex>`, derived from the
+  workflow, the phase, the type and the finalize's text directory
+  (`--attempt-key`), so a rerun of the same finalize records the same attempt
+  once.
+- **The outcome**, recorded once by attempt id (the first one kept), in the
+  same locked write as the legacy result (`commitEnsemble`), only from run
+  evidence: settle hands it what it read from the run's ledger. A caller
+  with only a verdict and no evidence records no outcome: its row reads
+  `unknown`, as an older writer's does. The hand commit,
+  `state.mjs ensemble-commit` (the remedy for a pending ensemble left
+  behind), reads no ledger either. For a review whose run has a ledger
+  (`peer-runner.mjs peerRunLedgerFound`, the homes settle reads) it refuses
+  before any write and names `peer-runner.mjs settle`, which reads the
+  ledger and records how the run went: a verdict-only close would hide that
+  outcome for good, as the first one is kept. For one whose run has none it
+  closes the attempt `failed`, reason `verdict-only`, whatever its verdict:
+  never `passed`, and never left open for good with an older writer
+  (`legacy-writer`) blamed; a later settle finds its result row and records
+  nothing more. The autopilot's pending-ensemble halt, and the autopilot
+  refusal of a verb's last write beside a pending run, name
+  `peer-runner.mjs settle`. A repeat of a
+  result already recorded makes no outcome of its own: the row it finds was
+  written by another commit (an older writer's, when the attempt is still
+  open), and its verdict is no evidence of how the run went, so an open
+  attempt stays open (`unknown`, the gap `legacy-writer`) and a row with no
+  attempt stays a legacy row. The outcome is applied in order:
+  how the run ended, then whether its answer was usable, then the verdict.
+  `unavailable` for the three peer kinds above; `malformed` for the two
+  envelope kinds; `failed` for any other end (cancelled, orphaned, pruned,
+  `ledger_missing`, `snapshot_failed`, `prompt_unreadable`, ...), with its
+  reason; `degraded` for a completed run whose answer was empty or unreadable
+  (or a synthesis verdict `degraded`); then `passed` for `agreed`,
+  `resolved` or `pass`, `concerns` for `concerns` and refine's `regression`
+  (reason `regression`), `conflict` for `conflict`, and `failed` (reason
+  `unrecognized-verdict`) for any other word. A review that never launched is
+  `unavailable` (`NO_RUN_REASON=peer-unavailable`) or `skipped` with its
+  reason (`local-only`, `privacy-gate`, `owner-skip`); an open attempt
+  explicitly replaced is `superseded` with its replacement
+  (`state.mjs review-attempt-supersede`, records only: its pending row stays
+  for its settle, whose snapshot tree the superseded attempt then takes). That
+  command is the only writer of `superseded`: no runbook, region or script
+  calls it, and the orchestrator has none (see Limits). The raw `verdict`, `status` and `error_kind` are kept
+  beside the outcome. `passed` is the normalized result of a usable review; it
+  does not mean "no defects".
+- **The tree the review saw**: `head`, `index_tree` and `worktree_tree` of
+  the run's snapshot record on its handle, copied at settle, never the
+  checkout at settlement. A snapshot of a checkout on an unborn branch has
+  `head: null` and the trees it isolated. With none, `tree: null` and a
+  `tree_reason`: `no-launch`, `capture-failed`, `not-isolated` (a directory
+  that is no checkout), `no-snapshot`, `evidence-missing` (the ledger was
+  gone), `evidence-mismatch` (an orchestrator ledger of another phase or type),
+  `superseded` (an attempt replaced before its run settled; its settlement's
+  tree replaces it) or `not-reported` (run evidence that named no tree).
+- **The history**: attempts are kept past the results cap. A document past
+  32 KiB drops its oldest closed attempts, then its oldest open ones, and says
+  so in the same write (`coverage.history_incomplete`, reason `truncation`,
+  `truncated` its count). A document begun on a workflow that already held
+  review results, or a full results list, is marked `pre-instrumentation`
+  from its first write. Every commit, of a review or of any other ensemble
+  type, and a repeat, also keeps in the coverage the gaps the results list
+  shows before its prune can drop them, read from the list the prune cuts,
+  the commit's own row appended, so a row appended and pruned in the same
+  write (an older `completed_at`) leaves its gap too, as does one whose
+  attempt the document refuses (a run id past its 160 characters), observed
+  against the document as it was (`missing-outcome`, a review result
+  with no attempt; `legacy-writer`, an open attempt a writer settled without
+  closing), so a gap outlives the row that showed it. A workflow with no
+  document begins one for this only when a review row is there to lose: one
+  that never held a review gets none. Each write also records, as `seen`, the
+  run id of the newest row of the list it prunes (by `completed_at`, the last
+  listed among equals: the row the prune keeps longest). A row added later
+  sorts after it, so a prune drops `seen` no later than any row added after
+  it: when a later write, or a reader, finds `seen` gone from the list, rows
+  were pruned with no writer of this version there to see them (an older
+  writer added and pruned them, a review among them perhaps), and the
+  coverage says `pruned-unseen`. With no `seen` (the list was empty at the
+  last write), a full list says the same. So a gap a reader saw, an older
+  writer's review row read as `missing-outcome`, is not withdrawn when that
+  writer prunes the row, as long as the row is no older (by `completed_at`)
+  than `seen`, as a row added after `seen` normally is: the reader sees
+  `pruned-unseen` instead, and the next write keeps it. A row older than
+  `seen` can be pruned while `seen` stays (Limits). `seen` takes any run id
+  the runner accepts, so a long one is a watermark like any other.
+- **The reader** (`state.mjs review-attempts`, `projectReviewOutcomes`,
+  `reviewOutcomeFor`): an open attempt reads `unknown`; a review-type result
+  with no attempt (a record from before this note, or one an older writer
+  settled) reads `unknown` even when its verdict is `agreed` or `pass`, and
+  makes the coverage incomplete (`pre-instrumentation`, `missing-outcome`, or
+  `legacy-writer` for an attempt an older writer settled without closing),
+  whether or not a write has recorded it yet, as does a `seen` row gone from
+  the list (`pruned-unseen`); a
+  document that cannot be read reads `unknown` with its diagnostic
+  (`document-unreadable`, `document-later-version`). A positive outcome is
+  never inferred from a legacy verdict.
+- **The finalize** of every persona verb passes, with no run launched, the
+  ensemble type its dispatch would have used (`ATTEMPT_TYPE`, the block's
+  default, which the agent sets as the dispatch's `ENSEMBLE_TYPE` was set:
+  `adversarial-scan` for engineer's `full-codebase` critique and founder's
+  `red-team`; checked before any write against the runner's grammar for a
+  type, a lowercase letter and up to 40 lowercase letters or hyphens, the
+  letters spelled out since a range follows bash's collation), `NO_RUN_REASON`
+  and its text directory. Left empty, the attempt is `skipped` with the reason
+  `unspecified` (this records, it refuses no step); a word that is no reason
+  is refused before any write. The flags are the positional parameters
+  settle takes last (`"$@"`; the block runs in any POSIX shell, dash
+  included, which has no arrays), set only when the installed
+  `peer-runner.mjs` names `--no-run-reason`, so a runbook text newer than the
+  script it runs (a directory marketplace ahead of the cache, a pinned
+  autopilot) settles as before and records no such attempt. The `/start`
+  lifecycle, which settles each phase by hand (a looping refine's last pass
+  only: the refine skill's pass settle settles the earlier ones, below), names the same three flags on
+  a review phase's empty-id settle, on both hosts: in Claude's
+  `commands/start.md` (`start-phase-boundary`) and in the shared
+  `core/skills/start/SKILL.md` that Codex's `$start` follows
+  (`start-command-intro`).
+- **The Codex verb skills.** On Codex a verb runs as a skill mention
+  (`$<persona>:critique`, `$<persona>:compose`, `$<persona>:refine`), with no
+  command file to run the finalize (ADR-0013), and inside a workflow, which
+  the Codex `$start` skill tells the user to continue that way. Each of the
+  three skills settles its own review when `state.mjs find-active` names an
+  active workflow on the branch (`<verb>-review-settle`, from
+  `persona-pipeline/regions/skill-review-settle.md`): it dispatches with the
+  workflow's accounting flags (`--kind ensemble`, `--workflow-path`,
+  `--phase <verb>`, `--ensemble-type`, `--host codex`, a `new-run-id` run
+  id), then runs `peer-runner.mjs settle` by the run id read from the
+  runner's result beside the prompt, or, with no run launched, the empty-id
+  settle naming the type, `--no-run-reason` and its text directory as
+  `--attempt-key`. Before any write the block refuses a launched run's
+  verdict outside the persona verbs' words (`agreed`, `resolved`,
+  `concerns`, `regression`, `conflict` and `degraded`: a word `outcomeOf`
+  does not know would record a clean review `failed`,
+  `unrecognized-verdict`, and settle refuses `failed` for a completed run),
+  a verdict given with no run launched, and a placeholder left unfilled; the skill
+  names its own verb's words, as the Claude command's synthesis heading
+  does. On
+  Claude the command's finalize settles, and inside either host's `/start`
+  the lifecycle does, so the step is skipped there.
+- **A looping refine.** The refine skill loops (Steps 2 to 4, or 5), and each
+  pass is a refine-verify attempt of its own, launched or not, while the
+  finalize, on either host and in `/start`, settles the last pass's. So each
+  earlier pass settles its attempt before the loop goes back, with the
+  skill's pass settle (`refine-pass-settle`, from
+  `persona-pipeline/regions/skill-refine-pass-settle.md`, which each refine
+  command names), with `--host` the agent's host: a launched pass by the run
+  id beside its prompt, and a pass that launched none with the empty id, type
+  `refine-verify`, its `NO_RUN_REASON` and its text directory as the attempt
+  key, as the finalize and `/start` take a review that never launched. Before
+  any write it refuses another host, a verdict outside a refine synthesis's
+  words (`resolved`, `concerns`, `regression`, `conflict`, `degraded`), a
+  reason settle does not know, a verdict with no run, a reason beside a run,
+  neither a run nor a reason, and a value left unfilled or empty. The
+  finalize then settles the last pass only, and a later settle naming no run
+  is no longer refused by an earlier pass's pending row.
+- **The orchestrator** registers and closes its plan's `plan-verify`
+  attempts in its own `recordPendingEnsemble` and `commitEnsemble`. Its plan
+  commits the local synthesis's verdict whatever the run did, so the outcome
+  comes from the run's evidence, mapped in the same order as settle's: with
+  the run's handle in the macro's home (`peer-runs/<run id>/handle.json`
+  beside `workflows/`, looked for beside the path given and beside the file
+  it physically names, so a path through a linked directory finds the ledger
+  the runner wrote), how the run ended, then whether a completed run's
+  answer (its envelope's stdout, or its stdout log) is usable, then the
+  verdict, and the tree from its snapshot. A handle is evidence only for the
+  attempt it ran: one whose phase or ensemble type is not the commit's (an
+  `investigate` run's id committed as the plan's `plan-verify`) records
+  `failed` (`ledger-mismatch`, `evidence-mismatch`), never its verdict.
+  With no handle the verdict is
+  never the outcome: a run the macro registered (its pending row or open
+  attempt) lost its ledger, `failed` (`ledger_missing`, `evidence-missing`);
+  one it never registered launched nothing, `unavailable` (reason
+  `no-ledger`, `tree_reason: no-launch`), since the orchestrator's runner
+  finds its peer before it writes a ledger or a pending row and returns
+  `peer_cli_not_found` with neither.
+
+This records; nothing reads an outcome to allow or refuse a step (C163 A1b).
+
+**Limits.**
+
+- A review run with no active workflow on its branch (a skill invoked
+  standalone, on either host, which dispatches with no `--workflow-path`)
+  has nowhere to be recorded. A review run inside a workflow is recorded on
+  both hosts: by the command's finalize, by `/start`, or by the Codex verb
+  skill's own settle (above).
+- An older writer (a persona or orchestrator release before this note) adds
+  no attempt. A newer writer that writes while the older one's result row is
+  still among the 20 kept records the gap, a reader sees it before any write,
+  and rows an older writer adds and prunes with no newer write between leave
+  `pruned-unseen` (above). That marker is coarse: it says rows went unseen,
+  not that a review was among them. It misses rows an older writer prunes
+  without dropping the `seen` row, which happens only when such a row's
+  `completed_at` is older than `seen`'s (a clock behind, or a row appended and
+  pruned in the same older write, which no reader ever saw). So a history
+  with no gap recorded is still not proof of a complete one.
+- `NO_RUN_REASON` is the agent's word for why no run launched; the runner
+  cannot check it, as it never ran. The same holds for the `/start`
+  lifecycle's flags and the Codex verb skills' `NO_RUN_REASON`, which the
+  agent writes into its settle.
+- An orchestrator commit for a run with neither a ledger nor a registration
+  reads `unavailable` whatever stopped it: a runner that refused before its
+  ledger (a workflow the write guard refuses, a run id already taken) throws,
+  and a commit made after that anyway records the same.
+- A repeat that meets an attempt left open because its own close could not
+  be written (a value the document refuses) keeps it open, and the coverage
+  names it `legacy-writer`, the only cause a reader can tell from the file.
+- No flow records `superseded`: only `review-attempt-supersede`, run by
+  hand, does. A review dispatched again for the same phase, other than a
+  refine pass the pass settle closes (above), leaves the earlier attempt open, which reads `unknown`, never `passed`; replacing it
+  automatically would need to tell a run abandoned from one still to be
+  settled (a consensus round's), and when a flow may do that is A1b's to
+  decide, with what it enforces.
+- The orchestrator maps its handle's status as written, with no reconcile: a
+  run committed while its handle still says it is running records `failed`
+  with that status, a negative outcome that a later commit, a repeat, does
+  not change.
+
+**Tests.** `tests/persona-pipeline/test-review-attempts.mjs` (each persona):
+the mapping table; each outcome through the real runner and a stub companion
+(passed, concerns, conflict, regression, unavailable, malformed, degraded),
+a failed run with the tree its snapshot held, a gone ledger; a repeat settle
+keeping the first outcome, and a closed attempt closed again with another
+outcome (in the library, and by a never-launched review's rerun with
+another reason) keeping its first, reported as the one kept; the
+never-launched review (recorded once per finalize, unavailable through the CLI, `skipped`/`unspecified` with no
+reason, a word that is no reason refused, nothing for another type or none);
+superseded; 25 full-size attempts (a runner's run id, registered, closed
+with a tree) kept past the cap with a complete history; legacy rows, a
+document begun late, a document begun when the full results list holds no
+review (by the writer and by the reader), a verdict `degraded` recorded
+`degraded`, an attempt an older
+writer settled, a corrupt and a later-version document; the byte cap's
+truncation marker, for closed and for open attempts; a repeat commit of a
+legacy row making no outcome, and a repeat commit and settle over an older
+writer's result leaving its open attempt `unknown`, both with run evidence;
+a commit with only a verdict and no evidence recording no outcome, and the
+`ensemble-commit` CLI closing a pending attempt and one it never registered
+`failed` (`verdict-only`) with no older writer blamed, a later settle keeping
+it, and refusing a review whose run has a ledger (by `--repo-root`, and from
+the workflow's own home) before any write, settle then recording the ledger's
+outcome; a gap kept past its row's
+pruning, by review commits and by commits of another type; no document begun
+for a workflow with no review; a superseded attempt taking its settlement's
+tree; a supersede naming no attempt id failing; a rerun through a linked
+directory naming the same attempt; a run whose prompt cannot be read; a snapshot of an unborn branch, through
+the real runner, keeping its trees with no head; a review row appended and
+pruned in the same write keeping its gap, and an attempt the document refuses
+keeping it too; a corrupt document left as it is by
+a closing commit and by a gaps-only one; the
+`/start` settle rule naming the three flags, and leaving a looping refine's
+earlier passes to the refine skill's pass settle, in Claude's command and in the
+shared skill Codex's `$start` follows; the settle block of each Codex verb
+skill (critique, compose, refine), run as the skill renders it in a checkout
+on the workflow's branch: a review that never launched recorded once with its
+reason, and a later one from its own text directory recorded apart, a launched run settled from its ledger, nothing with no active
+workflow, critique's other type recorded, and a type outside the verb's
+review types (one list per verb, shared by the personas) or a reason settle
+does not know stopped before any write, as are a verdict settle does not map
+(`AGREED`, `looks good`, `failed`, empty, the unfilled placeholder), a
+verdict with no run launched and an unfilled or empty text directory, and
+each verdict word the block takes, and each the skill names, mapping to an
+outcome; a looping refine's two launched passes, the first settled by the
+skill's pass settle and the last by the settle block, each closed with its
+own outcome and its raw verdict (the first `regression`, so a word the block
+supplied would show) and no pending row left, a later settle naming no run then
+recorded; a loop whose first two passes launched no run (`peer-unavailable`,
+`privacy-gate`), each recorded by the pass settle, and whose last pass's run
+the settle block closes, three attempts and a complete history; and the pass
+settle refusing another host, a word a refine synthesis does not use, a
+reason settle does not know, a verdict with no run, a reason beside a run,
+neither a run nor a reason, and an unfilled or empty value before any write;
+each refine command naming the pass settle; an older writer's review row read `missing-outcome` by a reader
+before any write records it, and, once that writer prunes it unseen, read
+`pruned-unseen` and kept so by later writes; the orchestrator copy equal to
+the source. The orchestrator's plan-verify through its own runner and a stub
+companion: no peer (no ledger, no pending row) `unavailable` though the
+commit says `pass`, a malformed run `malformed`, an empty answer
+`degraded`, a completed run whose envelope is gone or torn `degraded`
+(`answer-unreadable`), an answer taking the verdict, a run in a git checkout keeping
+its snapshot's tree, a completed run of another type
+and of another phase `failed` (`ledger-mismatch`), an attempt the document
+refuses keeping its pruned row's gap,
+a run registered by its pending row alone and by its attempt alone, its
+ledger gone, `failed`, a run launched and committed through a linked
+directory, a repeat over an older writer's result, a commit of another
+type keeping a gap, and a gap an older writer pruned unseen kept by a later
+commit.
+`tests/orchestrator/test-state.mjs` holds the plan's plan-verify past the
+cap. `test-verb-runbook-runs.mjs` runs each finalize with no run launched,
+`NO_RUN_REASON` empty (`skipped`) and `peer-unavailable` (`unavailable`),
+then a second review of the verb from a fresh text directory, `local-only`
+(a second attempt),
+and a critique's with `ATTEMPT_TYPE='adversarial-scan'`, and with a type the
+runner would refuse (stopped before any write).
+`scripts/mutation-specs/review-attempts.mjs` holds each to a defect (O1–O8
+the mapping, N1–N17 the never-launched review, the early failure, the
+`/start` rule on both hosts and the Codex verb skills' settle and its checks,
+N18–N23 a looping refine's pass settle, N24–N26 one attempt per review
+(the `/start` rule beside the pass settle, the Codex settle's and the Claude
+finalize's attempt key), S1 superseded,
+T1–T2 the tree, H1–H14 the history, a gap a reader saw included, W1–W14 what a
+writer must not make up or lose (W12 the first outcome kept, W13 and W14 the
+CLI's close and its refusal), F1 and G1 the critique finalize's type,
+M1–M15 the orchestrator).
+
+**Rollout.** Each persona and the orchestrator carry it in their own release;
+an installed older version records no attempts, and its results read
+`unknown` to a reader of this one.

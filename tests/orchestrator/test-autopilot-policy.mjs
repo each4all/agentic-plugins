@@ -215,7 +215,7 @@ describe('decide — the D4 halts', () => {
     ['a next step outside the enums', inProgressA({ next_step: { kind: 'verb', verb: 'deploy', confidence: 'HIGH' } }), 'owner-choice', /outside the closed enums/],
     ['an /engineer:start workflow', inProgressA({ workflow_type: 'start' }), 'owner-choice', /stays interactive/],
     ['a detached child', inProgressA({ parent_detached: true }), 'owner-choice', /detached from its macro/],
-    ['a pending peer ensemble', inProgressA({ pending_ensemble: 1, pending_runs: ['plan-verify-x'] }), 'owner-choice', /peer ensemble is still pending \(plan-verify-x\)/],
+    ['a pending peer ensemble', inProgressA({ pending_ensemble: 1, pending_runs: ['plan-verify-x'] }), 'owner-choice', /peer ensemble is still pending \(plan-verify-x\); let it finish, or settle it from its run ledger with the persona's peer-runner\.mjs settle --run-id <id>/],
     ['the child on another branch', inProgressA({}, { git: { branch: 'main' } }), 'owner-choice', /never switches branches/],
     ['a child that belongs to another attempt', inProgressA({ location: 'linkage-mismatch', detail: 'branch=feat/z' }), 'owner-choice', /does not belong to this attempt: branch=feat\/z/],
     ['an unreadable child', inProgressA({ location: 'error', detail: 'EACCES' }), 'owner-choice', /could not be read: EACCES/],
