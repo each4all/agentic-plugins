@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed 2026-11-07. Acceptance is the owner's.
+Accepted (2026-11-07: the owner accepted slice 1, Decisions 1 and 2,
+explicitly in the main session). Slice 2 adds Decisions 3 and 4 in its own
+change, which is proposed and accepted on its own.
 - Docket item C163, items A2a and A2b, of macro
   `macro-plan-20261104T045033Z-4b2055`. The number is the next free one.
 - Written in two slices, one subtask each:
