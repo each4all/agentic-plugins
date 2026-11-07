@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.34.4](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.34.3...plugin-engineer-v0.34.4) (2026-11-07)
+
+
+### Bug Fixes
+
+* **engineer:** record one outcome per review attempt, including failed, degraded and unavailable peers, in a durable history (C163 A1a) ([96e3078](https://github.com/each4all/agentic-plugins/commit/96e30789500b035104508d488400bf4003ab5598))
+
 ## [0.34.3](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.34.2...plugin-engineer-v0.34.3) (2026-11-05)
 
 

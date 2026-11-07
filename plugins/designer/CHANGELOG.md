@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.3](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.14.2...plugin-designer-v0.14.3) (2026-11-07)
+
+
+### Bug Fixes
+
+* **designer:** record one outcome per review attempt, including failed, degraded and unavailable peers, in a durable history (C163 A1a) ([13c4bad](https://github.com/each4all/agentic-plugins/commit/13c4bad6a02b1f929de5e6ed669d4edc7e337f17))
+
 ## [0.14.2](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.14.1...plugin-designer-v0.14.2) (2026-11-05)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.3](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.15.2...plugin-founder-v0.15.3) (2026-11-07)
+
+
+### Bug Fixes
+
+* **founder:** record one outcome per review attempt, including failed, degraded and unavailable peers, in a durable history (C163 A1a) ([31faee9](https://github.com/each4all/agentic-plugins/commit/31faee95d7dcc03c86199702421482800f801328))
+
 ## [0.15.2](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.15.1...plugin-founder-v0.15.2) (2026-11-05)
 
 
