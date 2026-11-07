@@ -192,7 +192,15 @@ plan's commits (a split given `--subject-file`), stops the step with exit 1 or
 it again. A refusal that
 names a landed commit is the owner's to reword, or to split where it touches
 several packages: rewrite no history in the step (no amend, rebase or reset),
-and report it, with its reason, in the step's report. Never push or open a pull request afterwards: waiting
+and report it, with its reason, in the step's report. A refusal with exit 10
+(`review-held`) says the workflow's latest review outcome holds the commit
+back (failed, degraded, unavailable, malformed or unknown) and nothing was
+committed or written: the step never accepts it (`state.mjs review-accept` is
+the owner's, and refused under autopilot) and never reruns the review; report
+the attempt and its outcome the refusal names in the step's report, with
+`outcome` `needs_owner` and `awaiting_owner` null (the gate is the driver's to
+report, and never stored), and stop.
+Never push or open a pull request afterwards: waiting
 for the landing is the owner's routine step, which the driver reads from
 state, and it is not an owner gate.
 <!-- pipeline:end commit-autopilot -->
@@ -232,6 +240,11 @@ Read the plan JSON and follow `core/skills/commit/SKILL.md` § Phase 1 — Plan:
   on one that does not fit, commits it as given, and prints the corrected
   subject: pass the warning and the corrected subject to the user (ADR-0028
   §P6, note of 2026-11-04).
+
+When the plan's `review_hold` is set, a review outcome holds this commit back:
+show the user that line before asking anything. It names the attempt and the
+ways on, and execute warns only as it commits, so this is where the user
+decides (ADR-0028, note of 2026-11-07).
 <!-- pipeline:end commit-plan -->
 
 ---
