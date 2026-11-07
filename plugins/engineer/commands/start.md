@@ -644,6 +644,11 @@ subject that does not fit, commits it as given, and prints the corrected
 subject: pass the warning and the corrected subject to the user, who can
 amend the commit or retitle the pull request with it.
 
+When the plan's `review_hold` is set, a review outcome holds this commit back:
+show the user that line before asking anything. It names the attempt and the
+ways on, and execute warns only as it commits, so this is where the user
+decides (ADR-0028, note of 2026-11-07).
+
 ```bash
 ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"

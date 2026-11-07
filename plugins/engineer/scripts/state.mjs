@@ -80,12 +80,17 @@ import { isCliEntry } from './lib/cli-entry.mjs';
 import { capabilityOn, commandPrefix, loadPersona, personaName, personaOrRefuse, stateDirRel } from './lib/persona.mjs';
 import { captureWorkingTree } from './lib/peer-snapshot.mjs';
 import {
+  REVIEW_ACCEPTANCE_KEY,
   REVIEW_ATTEMPTS_KEY,
   applyReviewAttempt,
   isReviewAttemptId,
   isReviewType,
+  latestOutcomeText,
+  newReviewAcceptance,
   observeReviewGaps,
   projectReviewOutcomes,
+  reviewGate,
+  reviewRecordRepairText,
 } from './lib/review-attempts.mjs';
 import {
   HOLD_PERSONA_CAPABILITY,
@@ -1659,6 +1664,13 @@ function frontmatterKeyOrder() {
   // lib/review-attempts.mjs on demand), so a document this reader cannot use
   // never makes the workflow unreadable: it reads `unknown`.
   order.push(REVIEW_ATTEMPTS_KEY);
+  // C163 A1b (ADR-0063 and ADR-0028, implementation notes of 2026-11-07) —
+  // the owner's acceptance of one review outcome that holds a commit back:
+  // the JSON text of one document in a double-quoted scalar, after the
+  // attempts, for the same carrier reason. Text here too, decoded by
+  // lib/review-attempts.mjs on demand: one this reader cannot use accepts
+  // nothing, and the workflow stays readable.
+  order.push(REVIEW_ACCEPTANCE_KEY);
   keyOrderCache = Object.freeze(order);
   return keyOrderCache;
 }
@@ -3514,6 +3526,16 @@ export async function supersedeReviewAttempt({ workflowPath, attemptId, supersed
     if (target.state !== 'open') {
       return { workflowPath, recorded: true, changed: false, kept: target };
     }
+    // A replacement registers after the attempt it replaces: one listed at or
+    // before it is refused, since the review gate reads the last listed
+    // attempt and never follows a link back (critique of 2026-11-07, MAJOR 2):
+    // a link back would revive an earlier outcome, a pass or an attempt the
+    // owner accepted.
+    const at = view.attempts.findIndex((a) => a.id === attemptId);
+    const back = view.attempts.findIndex((a) => a.id === supersededBy);
+    if (back !== -1 && back < at) {
+      throw new Error(`supersedeReviewAttempt: ${supersededBy} is listed before ${attemptId}; a replacement is an attempt registered after the one it replaces`);
+    }
     const nowIso = isoUtc(now);
     const out = stageReviewAttempt(frontmatter, {
       id: attemptId, phase: target.phase, type: target.type, state: 'closed', outcome: 'superseded',
@@ -3525,6 +3547,124 @@ export async function supersedeReviewAttempt({ workflowPath, attemptId, supersed
       await writeWorkflow(workflowPath, frontmatter, body, ownership);
     }
     return { workflowPath, recorded: out.recorded, changed: out.changed, kept: out.kept };
+  }, { env, host, writer: LANE_WRITERS.plain });
+}
+
+/**
+ * C163 A1b (ADR-0063 and ADR-0028, implementation notes of 2026-11-07) — the
+ * review gate of a workflow, with the change compared: `reviewGate` (its
+ * latest review outcome, whether it holds a commit back, the owner's
+ * acceptance), and, when an acceptance names the latest attempt, whether the
+ * working tree of `repoRoot` is still the one it was given for (`change`:
+ * `same`, `moved` or `unreadable`). The tree alone is compared, as a review
+ * snapshot would hold it: a commit of the accepted content (the recovery
+ * path's) keeps it, an edit moves it. `held` is true while the latest outcome
+ * blocks and no acceptance covers both the attempt and the tree. Read-only.
+ */
+export async function reviewGateCheck({ workflowPath, repoRoot, frontmatter = null }) {
+  const fm = frontmatter ?? parseWorkflowFile(await readFile(workflowPath, 'utf8')).frontmatter;
+  const gate = reviewGate(fm, { cap: ENSEMBLE_RESULTS_RETENTION_CAP });
+  let change = null;
+  if (gate.blocking && gate.acceptance.state === 'matches') {
+    const checkout = await workflowCheckout(repoRoot, fm);
+    if (!checkout.ok) change = { state: 'unreadable', reason: checkout.reason, message: checkout.message };
+    else if (checkout.tree !== gate.acceptance.doc.tree) change = { state: 'moved', tree: checkout.tree, accepted_tree: gate.acceptance.doc.tree };
+    else change = { state: 'same', tree: checkout.tree };
+  }
+  const accepted = gate.blocking && gate.acceptance.state === 'matches' && change?.state === 'same';
+  return { ...gate, change, held: gate.blocking && !accepted };
+}
+
+/**
+ * C163 A1b — why a review gate holds the commit back, in one sentence that
+ * names the attempt, its outcome and error kind, and the owner's two ways on:
+ * a new review, or an acceptance of this attempt. Null when it does not hold.
+ */
+export function reviewHoldText(check, { workflowPath = '<workflow>' } = {}) {
+  if (!check?.held) return null;
+  const id = check.latest?.id ?? null;
+  const why = check.acceptance.state === 'matches' && check.change?.state === 'moved'
+    ? `the owner accepted it for another change (the working tree is ${check.change.tree}, the acceptance names ${check.change.accepted_tree})`
+    : check.acceptance.state === 'matches' && check.change?.state === 'unreadable'
+      ? `the owner accepted it, but the working tree cannot be compared (${check.change.reason})`
+      : check.acceptance.state === 'stale' && check.acceptance.reason === 'outcome-changed'
+        ? `the owner accepted it when it read ${check.acceptance.doc.outcome}, and it reads another outcome now`
+        : check.acceptance.state === 'stale' && check.acceptance.reason === 'history-changed'
+        ? 'the owner accepted it, and a gap in the review history was found since'
+        : check.acceptance.state === 'stale' && check.acceptance.doc.attempt_id === id
+        ? 'the owner accepted it before a later review was registered'
+        : check.acceptance.state === 'stale'
+        ? `the owner's acceptance names another attempt (${check.acceptance.doc.attempt_id}), which a later review replaced`
+        : check.acceptance.state === 'unreadable'
+          ? `the owner's acceptance cannot be read (${check.acceptance.diagnostic})`
+          : 'the owner has not accepted it';
+  // The path as one shell word (critique of 2026-11-07, refine-verify MINOR):
+  // quoted when it holds anything but a plain path's characters; a path with
+  // a control character, which no line can print, is left out.
+  const printable = typeof workflowPath === 'string' && workflowPath !== '' && !/[\u0000-\u001f\u007f]/.test(workflowPath);
+  const word = printable && /^[A-Za-z0-9_@%+=:,./-]+$/.test(workflowPath) ? workflowPath : `'${String(workflowPath).replace(/'/g, `'\\''`)}'`;
+  // A record this reader cannot use takes neither way on: only a repair, or an
+  // upgrade, gets out (critique of 2026-11-07, third pass, MAJOR 3).
+  const repair = reviewRecordRepairText(check.latest);
+  if (repair) return `the latest review outcome holds the commit back: ${latestOutcomeText(check)}; ${repair}`;
+  // An attempt still open has no outcome to accept (acceptReviewAttempt), and
+  // a legacy row with no run id names nothing to accept.
+  if (check.latest?.open || !id) {
+    return `the latest review outcome holds the commit back: ${latestOutcomeText(check)}; ${why}. ` +
+      `Run the review again (a new outcome replaces it); ${id ? `${id} is still open, so it cannot be accepted until its run is settled` : 'the record names no attempt that can be accepted'}`;
+  }
+  const accept = printable
+    ? `accept this attempt with \`state.mjs review-accept --workflow-path ${word} --attempt-id ${id} --note-file <file>\` in the workflow's checkout`
+    : `accept this attempt with \`state.mjs review-accept --attempt-id ${id}\`, with --workflow-path naming this workflow's file (its path cannot be printed here), in the workflow's checkout`;
+  return `the latest review outcome holds the commit back: ${latestOutcomeText(check)}; ${why}. ` +
+    `Run the review again (a new outcome replaces it), or, as the owner, ${accept}`;
+}
+
+/**
+ * C163 A1b — the owner's acceptance of the latest review attempt, when its
+ * outcome holds a commit back (failed, degraded, unavailable, malformed,
+ * unknown, or skipped with no reason or as owner-skip). It records the
+ * attempt, the outcome it reads and the working tree it is given for
+ * (`review_acceptance`); a later review attempt, another outcome of that
+ * attempt, or another tree makes it stale. Only the owner accepts: under an
+ * autopilot run it is refused, and it refuses an attempt that is not the
+ * latest, not blocking, still open, or whose run is still pending.
+ */
+export async function acceptReviewAttempt({ workflowPath, repoRoot, attemptId, note = undefined, host = 'claude', env = process.env, now = new Date() }) {
+  if (isAutopilotRun(env)) {
+    throw new Error(`review-accept: refused under an autopilot run (AGENTIC_AUTOPILOT=${env.AGENTIC_AUTOPILOT}); only the owner accepts a review outcome (ADR-0063 Q2)`);
+  }
+  if (!isReviewAttemptId(attemptId)) throw new Error(`review-accept: ${JSON.stringify(attemptId)} is not an attempt id`);
+  return withFileLock(workflowPath, async (ownership) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    const gate = reviewGate(frontmatter, { cap: ENSEMBLE_RESULTS_RETENTION_CAP });
+    if (gate.latest === null) throw new Error(`review-accept: ${frontmatter.workflow_id} has no review outcome to accept`);
+    if (gate.latest.id === null || gate.latest.id === undefined) throw new Error(`review-accept: the review record of ${frontmatter.workflow_id} cannot be read (${gate.latest.reason}); no attempt can be accepted`);
+    if (gate.latest.id !== attemptId) throw new Error(`review-accept: ${attemptId} is not the latest review attempt of ${frontmatter.workflow_id} (the latest is ${latestOutcomeText(gate)})`);
+    if (!gate.blocking) throw new Error(`review-accept: ${attemptId} is ${gate.latest.outcome}, which holds nothing back; there is nothing to accept`);
+    // An attempt still open, or one whose run is still pending, has no outcome
+    // yet: an acceptance of it would cover the outcome its settle records
+    // later, which the owner never saw.
+    const view = projectReviewOutcomes(frontmatter, { cap: ENSEMBLE_RESULTS_RETENTION_CAP });
+    const listed = view.attempts.find((a) => a.id === attemptId) ?? null;
+    const runId = listed?.run_id ?? attemptId;
+    const pending = (Array.isArray(frontmatter.pending_ensemble) ? frontmatter.pending_ensemble : []).some((e) => e?.run_id === runId);
+    if (listed?.state === 'open' || pending) {
+      throw new Error(`review-accept: ${attemptId} is still open${pending ? ` (run ${runId} is pending)` : ''}, so it has no outcome to accept; collect and settle its run first (peer-runner.mjs settle --run-id ${runId}), then accept the outcome it records. When an older writer already settled the run without closing the attempt (settle answers already-settled), run the review again instead: a new attempt replaces it`);
+    }
+    const checkout = await workflowCheckout(repoRoot, frontmatter);
+    if (!checkout.ok) throw new Error(`review-accept: the working tree cannot be recorded (${checkout.message}); run it in the workflow's checkout`);
+    const nowIso = isoUtc(now);
+    // The record as the owner saw it: a later registration or a gap found
+    // since makes the acceptance stale for good.
+    frontmatter[REVIEW_ACCEPTANCE_KEY] = newReviewAcceptance({
+      attempt: gate.latest, listed: gate.listed, gaps: gate.coverage.reasons,
+      head: checkout.head ?? null, tree: checkout.tree, acceptedAt: nowIso, note,
+    });
+    frontmatter.updated_at = nowIso;
+    await writeWorkflow(workflowPath, frontmatter, body, ownership);
+    return { workflowPath, attempt_id: attemptId, outcome: gate.latest.outcome, tree: checkout.tree, head: checkout.head ?? null };
   }, { env, host, writer: LANE_WRITERS.plain });
 }
 
@@ -7840,6 +7980,18 @@ function cliPrintHelp() {
       '    open), the review results with no attempt (legacy, read unknown) and the',
       '    coverage (history_incomplete with its reasons). Read-only.',
       '',
+      '  review-gate --workflow-path <path> [--repo-root <checkout>]',
+      '    C163 A1b — print, as JSON, the review gate: the latest review outcome,',
+      '    whether it holds a commit back (failed, degraded, unavailable, malformed,',
+      '    unknown), the owner\'s acceptance and, when it names the latest attempt,',
+      '    whether the checkout\'s working tree is still the accepted one. Read-only.',
+      '',
+      '  review-accept --workflow-path <path> --attempt-id <id> [--repo-root <checkout>]',
+      '                [--note-file <file>] [--host claude|codex]',
+      '    C163 A1b — the owner accepts the latest review attempt whose outcome holds',
+      '    a commit back, for the working tree as it is now. A later review, or',
+      '    another tree, makes the acceptance stale. Refused under an autopilot run.',
+      '',
       '  review-attempt-supersede --workflow-path <path> --attempt-id <id>',
       '                           --superseded-by <id> [--host claude|codex]',
       '    C163 A1a — record an open review attempt superseded by another. Records',
@@ -8426,6 +8578,29 @@ async function cliRun(subcommand, flags) {
         cliRequire(flags, ['workflow-path']);
         const { frontmatter } = parseWorkflowFile(await readFile(flags['workflow-path'], 'utf8'));
         process.stdout.write(`${JSON.stringify(projectReviewOutcomes(frontmatter, { cap: ENSEMBLE_RESULTS_RETENTION_CAP }))}\n`);
+        return 0;
+      }
+
+      case 'review-gate': {
+        cliRequire(flags, ['workflow-path']);
+        const check = await reviewGateCheck({ workflowPath: flags['workflow-path'], repoRoot: flags['repo-root'] ?? process.cwd() });
+        process.stdout.write(`${JSON.stringify(check)}\n`);
+        return 0;
+      }
+
+      case 'review-accept': {
+        cliRequire(flags, ['workflow-path', 'attempt-id']);
+        if (flags.host !== undefined) validateHost(flags.host);
+        let note;
+        if (flags['note-file'] !== undefined) note = (await readFile(flags['note-file'], 'utf8')).trim();
+        const out = await acceptReviewAttempt({
+          workflowPath: flags['workflow-path'],
+          repoRoot: flags['repo-root'] ?? process.cwd(),
+          attemptId: flags['attempt-id'],
+          note,
+          host: flags.host,
+        });
+        process.stdout.write(`${JSON.stringify({ ok: true, ...out })}\n`);
         return 0;
       }
 

@@ -82,6 +82,8 @@ import {
   beginCommit,
   endChildOperation,
   readTextArgumentFile,
+  reviewGateCheck,
+  reviewHoldText,
 } from './state.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -1124,12 +1126,20 @@ async function planMode({ workflowPath, repoRoot, frontmatter, acceptCurrentTree
   const noChanges = branchDecision.branch === 'no-changes'
     ? classifyNoChanges({ repoRoot, frontmatter, manifestPaths })
     : null;
+  // C163 A1b (ADR-0028, implementation note of 2026-11-07) — a review outcome
+  // that holds the commit back, named here so the user reads it before
+  // deciding: execute warns only as it commits. Null when none holds, and on a
+  // clean tree that lands nothing (only a recovery lands commits).
+  const reviewHold = noChanges !== null && noChanges.path !== 'recovery'
+    ? null
+    : reviewHoldText(await reviewGateCheck({ workflowPath, repoRoot, frontmatter }), { workflowPath });
   return {
     mode: 'plan',
     workflow_path: workflowPath,
     branch: branchDecision.branch,
     ask_user: branchDecision.askUser,
     no_changes: noChanges,
+    review_hold: reviewHold,
     extras: branchDecision.extras ?? [],
     git_changes: gitChanges,
     manifest_paths: manifestPaths,
@@ -1968,6 +1978,17 @@ async function executeMode({
   // ADR-0063 Q2 — a commit never crosses an owner gate. For staging-set the
   // owner confirms the set and /engineer:commit clears the gate first.
   refuseOwnerGate(frontmatter);
+  // C163 A1b (ADR-0028, implementation note of 2026-11-07) — interactively a
+  // review outcome that holds the commit back (failed, degraded, unavailable,
+  // malformed or unknown, with no acceptance of the owner's for this tree) is
+  // a warning, and the commit goes on: the user decided at plan time, where
+  // the plan named it (`review_hold`), and this line records it was still so.
+  // Under autopilot it is refused at admission below (heldReviewRefusal), on
+  // the commit and recovery paths.
+  if (flags['autopilot-subjects'] !== true) {
+    const held = reviewHoldText(await reviewGateCheck({ workflowPath, repoRoot, frontmatter }), { workflowPath });
+    if (held) stderr.write(`⚠ review: ${held}. Interactively this is a warning; under autopilot the commit is refused.\n`);
+  }
   // Re-derive everything (do NOT trust caller-supplied plan; planMode
   // is informational, executeMode is authoritative).
   const acceptCurrentTree =
@@ -2063,6 +2084,12 @@ async function executeMode({
       // this invocation, so an empty list is safe and accurate
       // (nothing landed THIS run).
       //
+      // C163 A1b — under autopilot the recovery is admitted only past a usable
+      // review, read again here, just before its first write.
+      if (enforceSubjects) {
+        const refused = await heldReviewRefusal({ workflowPath, repoRoot, stderr });
+        if (refused) return refused;
+      }
       // ADR-0063 — non-terminal until the gates pass, as in the loop below.
       const { operation: id } = await beginCommit({ workflowPath, host: flags.host });
       return await underCommitOperation({ workflowPath, flags, stderr, id }, () => runPostCommitGatesOnly({
@@ -2180,6 +2207,15 @@ async function executeMode({
   }
   if (enforceSubjects && (failures.length > 0 || landedFailures.length > 0)) {
     return { ok: false, reason: 'subject-refused', landed: [] };
+  }
+  // C163 A1b (critique of 2026-11-07, MAJOR 1) — under autopilot the commit
+  // is admitted only past a usable review, read again from the workflow file
+  // here, just before the first write and the staging: an outcome recorded
+  // while the plan was made is seen. What a writer records after this read,
+  // while the commit runs, is not (ADR-0028 note, Limits).
+  if (enforceSubjects) {
+    const refused = await heldReviewRefusal({ workflowPath, repoRoot, stderr });
+    if (refused) return refused;
   }
   // ADR-0063 — the workflow is not terminal while it is being committed: an
   // inherited terminal marker (an interactive verb's) with HEAD moved by a
@@ -2475,6 +2511,20 @@ async function closeMode({ workflowPath, repoRoot, frontmatter, flags, stderr })
  * never lands only to fail the post-commit P11 gate. Routine waiting to land
  * sets no gate: the driver reads it from state (ADR-0063 D3a).
  */
+// C163 A1b (ADR-0028, note of 2026-11-07) — under autopilot, the refusal of
+// a commit or a recovery over a review outcome that holds it back (failed,
+// degraded, unavailable, malformed, unknown, or a skip with no reason or as
+// owner-skip, with no acceptance of the owner's for this working tree), or
+// null. The review record is read from the workflow file each time, never
+// from the frontmatter the step began with: that was read before planning, and
+// an outcome a concurrent writer recorded since would go unseen.
+async function heldReviewRefusal({ workflowPath, repoRoot, stderr }) {
+  const held = reviewHoldText(await reviewGateCheck({ workflowPath, repoRoot }), { workflowPath });
+  if (!held) return null;
+  stderr.write(`✗ refused under autopilot: ${held}. Nothing was committed and nothing was written (ADR-0028, note of 2026-11-07).\n`);
+  return { ok: false, reason: 'review-held', landed: [] };
+}
+
 async function autopilotMode({ workflowPath, repoRoot, frontmatter, flags, stderr }) {
   // Only the owner resolves an owner gate (ADR-0063 Q2); the command's
   // preflight refuses first, and this holds when the mode is run directly.
@@ -2506,6 +2556,19 @@ async function autopilotMode({ workflowPath, repoRoot, frontmatter, flags, stder
   // commit's files; never the suggestion, whose description is the topic cut
   // short. `autopilot-subjects` makes executeMode refuse a subject that fails.
   const autoFlags = { ...flags, 'strict-cc': true, 'autopilot-subjects': true };
+  // C163 A1b (ADR-0028 and ADR-0063, implementation notes of 2026-11-07) — a
+  // change lands only past a usable review: a latest review outcome that holds
+  // the commit back (heldReviewRefusal) refuses the commit and the recovery of
+  // a commit begun alike, before anything is written, unless the owner
+  // accepted that attempt for this working tree (`state.mjs review-accept`). A
+  // close lands nothing and is not held. The commit is judged here first, so
+  // a held review is refused before the staging-set gate's write; executeMode
+  // judges the commit and the recovery again at admission, from the workflow
+  // file as it is then.
+  if (plan.branch !== 'no-changes') {
+    const refused = await heldReviewRefusal({ workflowPath, repoRoot, stderr });
+    if (refused) return refused;
+  }
   if (plan.branch === 'no-changes') {
     const { path, reason } = plan.no_changes;
     if (path === 'close') {
@@ -2631,6 +2694,12 @@ each commit's subject_rule. A subject that does not fit, or (under autopilot) wh
 description is the topic cut short, is a warning interactively and refused under
 autopilot (exit 9), before anything is written; the recovery path checks the landed
 commits' subjects the same way.
+
+Review outcome (ADR-0028, note of 2026-11-07, C163 A1b): when the workflow's latest
+review outcome is failed, degraded, unavailable, malformed or unknown, and the owner
+has not accepted that attempt for this working tree (state.mjs review-accept), autopilot
+mode refuses the commit and the recovery path (exit 10) before anything is written;
+interactively execute warns and commits. A close is not held.
 
 Close mode (ADR-0063) closes a workflow whose last verb recorded next_step_kind done
 and that committed nothing: close-complete + terminal marker, then archive. For a
@@ -2808,6 +2877,7 @@ async function runMain(argv) {
           'active-children': 6,
           'unclean-after-commit': 7,
           'subject-refused': 9,
+          'review-held': 10,
         };
         return codeMap[result.reason] ?? 1;
       }
