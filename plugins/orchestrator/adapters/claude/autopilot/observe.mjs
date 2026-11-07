@@ -40,6 +40,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { contentProjection } from '../../../scripts/lib/lane-digest.mjs';
+import { reviewGate } from '../../../scripts/lib/review-attempts.mjs';
 import { phaseEvidence } from './phase-evidence.mjs';
 import { recordDigest } from './verify-journal.mjs';
 
@@ -162,6 +163,65 @@ export function verifySummary(fm) {
   };
 }
 
+// C163 A1b (ADR-0063, implementation note of 2026-11-07) — what the review
+// gate reads of a child: its latest review outcome, whether that outcome holds
+// the commit back (an acceptance of the owner's naming the attempt lets it;
+// whether the tree moved since is Phase 7's to compare), each outcome, and
+// whether the history is complete. From the orchestrator's byte copy of the
+// persona library (scripts/lib/review-attempts.mjs), so the policy and the
+// persona read one rule.
+// An engineer older than the record carries its scalars through its
+// forward-compat carrier, which its `read` lists under
+// `_forward_compat_unknowns` (each `{key, value, raw}`): they are read from
+// there, so its review record still holds the gate.
+const REVIEW_KEYS = ['review_attempts', 'review_acceptance'];
+function withCarriedReview(fm) {
+  const carried = Array.isArray(fm?._forward_compat_unknowns) ? fm._forward_compat_unknowns : [];
+  let out = fm;
+  for (const u of carried) {
+    if (REVIEW_KEYS.includes(u?.key) && fm[u.key] === undefined && typeof u.value === 'string') out = { ...out, [u.key]: u.value };
+  }
+  return out;
+}
+
+export function reviewSummary(fm) {
+  const g = reviewGate(withCarriedReview(fm ?? {}));
+  return {
+    held: g.held,
+    blocking: g.blocking,
+    latest: g.latest,
+    acceptance: {
+      state: g.acceptance.state, attempt_id: g.acceptance.doc?.attempt_id ?? null, tree: g.acceptance.doc?.tree ?? null,
+      // When the owner gave it: a re-acceptance moves nothing else when the
+      // tree is the one accepted before (policy.mjs childTuple).
+      accepted_at: g.acceptance.doc?.accepted_at ?? null,
+      // Why a stale acceptance no longer covers the latest: another attempt,
+      // or another outcome of the attempt accepted (with the one accepted).
+      ...(g.acceptance.state === 'stale' ? { reason: g.acceptance.reason ?? null, outcome: g.acceptance.doc?.outcome ?? null } : {}),
+    },
+    outcomes: g.outcomes,
+    history_incomplete: g.coverage.history_incomplete,
+    reasons: g.coverage.reasons,
+  };
+}
+
+// C163 A1b (critique of 2026-11-07, third pass) — whether the working tree is
+// still the one the owner's acceptance names, asked of the persona, which
+// compares what a review snapshot would hold, in the checkout this look is
+// from. Only for a child of this checkout's branch, whose latest outcome blocks
+// and whose acceptance otherwise covers it: a run with lanes decides from the
+// main checkout, which reads no lane's tree, and judges a lane's step from a
+// look in the lane. A tree that moved, or that cannot be compared, holds the
+// lane, as Phase 7 would. A persona that cannot answer leaves it to Phase 7.
+function compareAcceptedTree(child, { engCli, repoRoot, branch, o }) {
+  const r = child?.review;
+  if (child?.location !== 'active' || child.branch !== branch || r?.blocking !== true || r.held || r.acceptance?.state !== 'matches') return;
+  const asked = node(engCli, ['review-gate', '--workflow-path', child.path, '--repo-root', repoRoot], o);
+  const state = asked.code === 0 ? parseJson(asked.stdout)?.change : null;
+  if (state?.state !== 'moved' && state?.state !== 'unreadable') return;
+  child.review = { ...r, held: true, change: { state: state.state, reason: state.reason ?? null } };
+}
+
 function summarizeChild(fm, location, file, roots) {
   return {
     location,
@@ -195,6 +255,7 @@ function summarizeChild(fm, location, file, roots) {
     commit_manifest: Array.isArray(fm.commit_manifest) ? fm.commit_manifest.length : 0,
     progress: progressEvents(fm.host_history),
     verify: verifySummary(fm),
+    review: reviewSummary(fm),
     parent_workflow: fm.parent_workflow ?? null,
     originating_subtask: fm.originating_subtask ?? null,
     // C163 — the verbs that finished in it, from its phase notes
@@ -448,6 +509,7 @@ export function observe({ repoRoot, roots, macroId = null, fetch = true, env = p
   for (const s of subtasks) {
     if (s?.status !== 'in_progress') continue;
     const child = observeChild({ engCli, repoRoot, roots: stateRoots, macroId: id, subtask: s, o });
+    compareAcceptedTree(child, { engCli, repoRoot, branch: view.git.branch, o });
     view.children[s.id] = child;
     if (child.path) childPaths.add(child.path);
   }

@@ -46,7 +46,7 @@ import { lanesHoldingWork, lanesRequirements } from './lanes.mjs';
 import { launchProposals, mainCheckoutProposal, proposalLines } from './launch-proposals.mjs';
 import { observe as defaultObserve } from './observe.mjs';
 import {
-  afterUnread, decide, fingerprint, modelFor, peersOnlyProgress, proposalLines as haltProposalLines, renderStep, stepEvidence, verifyStep, STEP_KINDS,
+  afterUnread, decide, fingerprint, modelFor, peersOnlyProgress, proposalLines as haltProposalLines, renderStep, reviewOutcomesText, stepEvidence, verifyStep, STEP_KINDS,
 } from './policy.mjs';
 import {
   appendStallLine, appendStep, acquireLock, createRunDir, LockHeldError, macroLockPath, mainWorktreeRoot, newRunId,
@@ -374,6 +374,9 @@ function haltRecord({ runId, d, lastSessionId, repoRoot, macroId, lanes }) {
     detail: d.detail,
     pointer: d.pointer ?? null,
     subtask_id: d.subtaskId ?? null,
+    // C163 A1b — a review-outcome halt's record of the subtask's review
+    // outcomes (each waiting entry carries its own).
+    ...(d.review ? { review: d.review } : {}),
     waiting: d.waiting ?? null,
     // Snake case, as landing.jsonl keeps it (C123).
     merge_order: d.mergeOrder ? mergeOrderRecord(d.mergeOrder) : null,
@@ -404,8 +407,10 @@ function notifyLocal(options, title, message, { platform = process.platform, spa
 function printHalt(out, d) {
   out(`■ halted: ${d.reason} — ${d.detail}`);
   if (d.pointer) out(`  pointer: ${d.pointer}`);
+  if (d.review) out(`  ${reviewOutcomesText(d.review)}`);
   for (const w of d.waiting ?? []) {
     out(`  · ${w.subtaskId} on ${w.branch} (${w.reason})${w.detail ? `: ${w.detail}` : ''}`);
+    if (w.review) out(`      ${reviewOutcomesText(w.review)}`);
     if (w.sync) out(`      ${syncText(w.sync, d.integration ? `refs/remotes/origin/${d.integration}` : null)}`);
     if (w.overlap) out(`      at ${w.commit ?? 'no commit'} · overlap: ${overlapText(w.overlap)}`);
     for (const c of [...(w.sync?.commands ?? []), ...(w.commands ?? [])]) out(`      ${c}`);

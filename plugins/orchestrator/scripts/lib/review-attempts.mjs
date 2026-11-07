@@ -8,8 +8,10 @@
 // words unchanged.
 //
 // This module is pure: it maps a settlement to an outcome, validates and
-// edits the document, and projects what a reader sees. It records; nothing
-// here, and no caller of it, enforces an outcome (A1b does).
+// edits the document, and projects what a reader sees. It enforces nothing
+// itself: `reviewGate` (C163 A1b, ADR-0063 and ADR-0028 implementation notes
+// of 2026-11-07) says whether the latest outcome holds a commit back, and its
+// callers enforce it (the autopilot policy, Phase 7, the landing report).
 //
 // Hand mirror: plugins/orchestrator/scripts/lib/review-attempts.mjs is a byte
 // copy of this file (tests/persona-pipeline/test-review-attempts.mjs holds the
@@ -243,11 +245,13 @@ function withReason(coverage, reason) {
 
 // Drop the oldest closed attempts until the document fits, then, when only
 // open ones are left, the oldest open ones (one that closes later comes back
-// closed, its registration lost), saying so.
+// closed, its registration lost), saying so. The last attempt listed is never
+// dropped: it is the one the review gate reads as the latest, and when every
+// older attempt is still open it is the first closed one.
 function compact(doc, maxBytes) {
   let out = doc;
   while (Buffer.byteLength(encodeReviewAttempts(out), 'utf8') > maxBytes && out.attempts.length > 1) {
-    let i = out.attempts.findIndex((a) => a.state === 'closed');
+    let i = out.attempts.slice(0, -1).findIndex((a) => a.state === 'closed');
     if (i === -1) i = 0;
     const coverage = withReason(out.coverage, 'truncation');
     coverage.truncated = (out.coverage.truncated ?? 0) + 1;
@@ -410,4 +414,345 @@ export function reviewOutcomeFor(frontmatter, id) {
   const decoded = decodeReviewAttempts(frontmatter?.[REVIEW_ATTEMPTS_KEY]);
   const a = decoded.doc?.attempts.find((x) => x.id === id || x.run_id === id);
   return a && a.state === 'closed' ? a.outcome : UNKNOWN_OUTCOME;
+}
+
+// ---------------------------------------------------------------------------
+// C163 A1b — the review gate (ADR-0063 and ADR-0028, implementation notes of
+// 2026-11-07). Conservative until the tree a review saw is compared (A2): the
+// gate reads the latest review outcome of the workflow, whatever tree it saw.
+
+// The outcomes that hold a commit back. `passed`, `concerns` and `conflict`
+// are usable reviews (a conflict has its own gate), and `skipped` is a review
+// the verb chose not to run, with its reason (whatever the reason, it clears
+// no earlier outcome that holds); a superseded attempt listed last reads
+// `unknown` (its replacement is not listed after it).
+export const REVIEW_BLOCKING_OUTCOMES = Object.freeze(['failed', 'degraded', 'unavailable', 'malformed', UNKNOWN_OUTCOME]);
+const BLOCKING_SET = new Set(REVIEW_BLOCKING_OUTCOMES);
+// The reasons a `skipped` outcome holds a commit back as `unknown` does: no
+// reason given (`unspecified`, a finalize that left NO_RUN_REASON empty), and
+// `owner-skip`, which the record cannot tell from a worker's claim (an
+// autopilot step writes it with no owner present; interactively Phase 7 only
+// warns). `local-only` and `privacy-gate` stay recorded choices.
+export const REVIEW_BLOCKING_SKIP_REASONS = Object.freeze(['unspecified', 'owner-skip']);
+const BLOCKING_SKIP_SET = new Set(REVIEW_BLOCKING_SKIP_REASONS);
+
+/** Whether one outcome line (`{outcome, reason}`) holds a commit back. */
+export function reviewOutcomeBlocks(line) {
+  if (!line || typeof line !== 'object') return false;
+  if (BLOCKING_SET.has(line.outcome)) return true;
+  return line.outcome === 'skipped' && BLOCKING_SKIP_SET.has(line.reason ?? 'unspecified');
+}
+
+// A time as a number, or null when it is missing or cannot be parsed (it
+// cannot be ordered, which the gate reads fail-closed). ISO times of different
+// precision (`…00Z`, `…00.500Z`) compare as instants, never as strings.
+function instantOf(v) {
+  if (typeof v !== 'string') return null;
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? t : null;
+}
+
+// The owner's acceptance of one blocking attempt: a JSON document in its own
+// frontmatter scalar, beside the attempts. It names the attempt it accepts,
+// the outcome that attempt read (outcome, error kind, reason), the record as
+// the owner saw it (`listed`: the last attempt listed then, with its time;
+// `gaps`: the coverage reasons then) and the change it was given for (`head`
+// and `tree`, the working tree as a review snapshot would hold it). A later
+// registration, another outcome of that attempt, a gap in the history found
+// since, or another change makes it stale, for good: a later registration
+// moves `listed` (an id compaction dropped and a writer recorded again is
+// listed with a new time), and coverage reasons are never removed.
+export const REVIEW_ACCEPTANCE_KEY = 'review_acceptance';
+export const REVIEW_ACCEPTANCE_VERSION = 1;
+// The derived owner gate a held lane halts on (`awaiting-owner:review-outcome`):
+// never stored, so nothing but an acceptance or a new review clears it.
+export const REVIEW_OUTCOME_GATE = 'review-outcome';
+const ACCEPTANCE_KEYS = new Set(['v', 'attempt_id', 'outcome', 'reason', 'error_kind', 'listed', 'gaps', 'head', 'tree', 'accepted_at', 'note']);
+const NOTE_MAX = 500;
+
+// Why `doc` is not a valid acceptance of this version, or null.
+export function reviewAcceptanceProblem(doc) {
+  if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) return 'not an object';
+  for (const k of Object.keys(doc)) if (!ACCEPTANCE_KEYS.has(k)) return `unknown field ${JSON.stringify(k)}`;
+  if (doc.v !== REVIEW_ACCEPTANCE_VERSION) return `v is not ${REVIEW_ACCEPTANCE_VERSION}`;
+  if (!safeId(doc.attempt_id)) return 'attempt_id is not an attempt id';
+  if (!(OUTCOME_SET.has(doc.outcome) || doc.outcome === UNKNOWN_OUTCOME)) return 'outcome is not an outcome';
+  for (const k of ['reason', 'error_kind']) if (!optString(doc[k], TOKEN_RE)) return `${k} is not a token`;
+  // null when no attempt was listed (the latest was a legacy row).
+  const l = doc.listed;
+  if (l !== null && (typeof l !== 'object' || Array.isArray(l) || Object.keys(l).some((k) => k !== 'id' && k !== 'at')
+    || !safeId(l.id) || !optString(l.at, ISO_RE))) return 'listed is not the last attempt listed, with its time, or null';
+  if (!Array.isArray(doc.gaps) || !doc.gaps.every((r) => typeof r === 'string' && TOKEN_RE.test(r))) return 'gaps is not a list of tokens';
+  if (!optString(doc.head, HASH_RE)) return 'head is not a commit';
+  if (!(typeof doc.tree === 'string' && HASH_RE.test(doc.tree))) return 'tree is not a tree';
+  if (!(typeof doc.accepted_at === 'string' && ISO_RE.test(doc.accepted_at))) return 'accepted_at is not an ISO UTC time';
+  if (doc.note !== undefined && !(typeof doc.note === 'string' && doc.note.length <= NOTE_MAX && !doc.note.includes('\0'))) return 'note is not a short text';
+  return null;
+}
+
+/** Decode the acceptance scalar. Never throws. */
+export function decodeReviewAcceptance(raw) {
+  if (raw === undefined || raw === null) return { state: 'absent', doc: null, diagnostic: null };
+  if (typeof raw !== 'string') return { state: 'unreadable', doc: null, diagnostic: `${REVIEW_ACCEPTANCE_KEY} is not a JSON document in a string scalar` };
+  let doc;
+  try {
+    doc = JSON.parse(raw);
+  } catch (err) {
+    return { state: 'unreadable', doc: null, diagnostic: `${REVIEW_ACCEPTANCE_KEY} is not JSON (${err.message})` };
+  }
+  const problem = reviewAcceptanceProblem(doc);
+  if (problem !== null) return { state: 'unreadable', doc: null, diagnostic: `${REVIEW_ACCEPTANCE_KEY}: ${problem}` };
+  return { state: 'ok', doc, diagnostic: null };
+}
+
+/** The acceptance document an owner's resolution writes (pure; validated). */
+export function newReviewAcceptance({ attempt, listed, gaps, head = null, tree, acceptedAt, note = undefined }) {
+  const doc = clean({
+    v: REVIEW_ACCEPTANCE_VERSION,
+    attempt_id: attempt?.id,
+    outcome: attempt?.outcome,
+    reason: attempt?.reason,
+    error_kind: attempt?.error_kind,
+    gaps: Array.isArray(gaps) ? [...gaps].sort() : undefined,
+    head,
+    tree,
+    accepted_at: acceptedAt,
+    note: typeof note === 'string' && note.trim() !== '' ? note.trim().slice(0, NOTE_MAX) : undefined,
+  });
+  // Kept when null (no attempt listed), which clean would drop.
+  doc.listed = listed ? clean({ id: listed.id, at: listed.at }) : null;
+  const problem = reviewAcceptanceProblem(doc);
+  if (problem !== null) throw new Error(`${REVIEW_ACCEPTANCE_KEY}: refusing to write an invalid acceptance (${problem})`);
+  return encodeReviewAttempts(doc);
+}
+
+// One outcome as a report names it: compact, no tree.
+function outcomeLine(a, legacy = false) {
+  return clean({
+    id: a.id ?? a.run_id ?? null,
+    phase: a.phase ?? null,
+    type: a.type ?? a.ensemble_type ?? null,
+    outcome: a.outcome,
+    error_kind: a.error_kind ?? null,
+    reason: a.reason ?? null,
+    legacy: legacy || undefined,
+    later_skip: a.later_skip ?? null,
+    // An attempt still open has no outcome to accept yet (state.mjs review-accept).
+    open: a.state === 'open' ? true : undefined,
+  });
+}
+
+// The newest legacy review row by its results row's `completed_at`, compared
+// as instants (the last listed among equals; a row whose time is missing or
+// cannot be parsed is newest, since it cannot be ordered), with that instant,
+// or null when there is none.
+function newestLegacy(legacy, results) {
+  if (!Array.isArray(legacy) || legacy.length === 0) return null;
+  const at = new Map((Array.isArray(results) ? results : []).map((r) => [r?.run_id, instantOf(r?.completed_at)]));
+  let best = null;
+  for (const row of legacy) {
+    const t = at.get(row.run_id) ?? null;
+    if (best === null || t === null || (best.at !== null && t >= best.at)) best = { row, at: t };
+  }
+  return best;
+}
+
+// The attempt a list's latest is read as: the last listed. A replacement
+// registers after the attempt it replaces, so it is listed after it
+// (`state.mjs review-attempt-supersede` refuses one listed at or before it),
+// and a superseded attempt listed last has no replacement to read: it is
+// `unknown`, `replacement-missing` when its replacement is not listed, and
+// `replacement-backward` when it names an attempt listed before it (a
+// hand-written or older record), which is never followed: that would revive
+// an earlier outcome, a pass or an attempt the owner accepted. So the latest
+// attempt only ever moves forward, and an acceptance a later registration
+// made stale stays stale.
+function latestAttempt(attempts) {
+  if (attempts.length === 0) return null;
+  const last = attempts[attempts.length - 1];
+  if (last.outcome !== 'superseded') return last;
+  const replacement = attempts.find((a) => a.id === last.superseded_by);
+  return { ...last, outcome: UNKNOWN_OUTCOME, reason: replacement ? 'replacement-backward' : 'replacement-missing' };
+}
+
+// The latest attempt listed before `skip` that ran, or null: every skip is
+// passed over, one that holds as well as a usable one, since neither saw the
+// change. A superseded one is passed over when its replacement is listed after
+// it (the replacement is read in its turn); one whose replacement is not listed
+// after it reads `unknown`, as latestAttempt reads it, and holds.
+function lastRunBefore(attempts, skip) {
+  for (let i = attempts.indexOf(skip) - 1; i >= 0; i -= 1) {
+    const a = attempts[i];
+    if (a.outcome === 'superseded') {
+      const j = attempts.findIndex((x) => x.id === a.superseded_by);
+      if (j > i) continue;
+      return { ...a, outcome: UNKNOWN_OUTCOME, reason: j === -1 ? 'replacement-missing' : 'replacement-backward' };
+    }
+    if (a.outcome === 'skipped') continue;
+    return a;
+  }
+  return null;
+}
+
+// The latest skip listed after `ran` that holds the commit back, or null: with
+// nothing behind it that holds, it is the outcome the gate reads, whatever
+// usable skip came after it. `ran` null looks at the whole list.
+function lastHoldingSkipAfter(attempts, ran) {
+  for (let i = attempts.length - 1; i >= 0 && attempts[i].id !== ran?.id; i -= 1) {
+    if (attempts[i].outcome === 'skipped' && reviewOutcomeBlocks(attempts[i])) return attempts[i];
+  }
+  return null;
+}
+
+// Whether an acceptance still names the latest outcome as the owner accepted
+// it: the same attempt, with the same outcome, error kind and reason. An
+// attempt accepted while it read one outcome (open, `unknown`) and closed
+// since with another is a new outcome the owner never saw.
+function acceptanceNames(doc, latest) {
+  if (latest === null || latest.id === null || latest.id === undefined) return false;
+  return doc.attempt_id === latest.id && doc.outcome === latest.outcome
+    && (doc.error_kind ?? null) === (latest.error_kind ?? null)
+    && (doc.reason ?? null) === (latest.reason ?? null);
+}
+
+// The last attempt a list holds, with its time, as an acceptance records it.
+function listedLast(attempts) {
+  const a = attempts[attempts.length - 1];
+  return a ? { id: a.id, at: a.recorded_at ?? a.registered_at ?? null } : null;
+}
+
+// Why an acceptance no longer covers the latest, or null when it does:
+// `other-attempt` (the latest is another attempt, or a later one was
+// registered since: the last listed is not the one the owner saw),
+// `outcome-changed` (the attempt accepted reads another outcome now) or
+// `history-changed` (a gap in the history was found since: a coverage reason
+// it did not hold).
+function acceptanceStale(doc, latest, listed, reasons) {
+  if (latest === null || doc.attempt_id !== latest.id) return 'other-attempt';
+  if (!acceptanceNames(doc, latest)) return 'outcome-changed';
+  if ((doc.listed?.id ?? null) !== (listed?.id ?? null) || (doc.listed?.at ?? null) !== (listed?.at ?? null)) return 'other-attempt';
+  if (reasons.some((r) => !doc.gaps.includes(r))) return 'history-changed';
+  return null;
+}
+
+/**
+ * The review gate of a workflow (pure): its latest review outcome, whether
+ * that outcome holds a commit back, and whether the owner's acceptance covers
+ * it. The latest outcome is the last attempt the document lists (an attempt
+ * is listed when it is registered, or recorded closed when it never
+ * launched; "latest" is the last registered, not the last recorded), and
+ * `unknown` when that one is superseded (its replacement is not listed after
+ * it); a skip of any reason is read as the latest attempt before it that ran,
+ * when that one holds (`later_skip` names the skip), since a review that never
+ * ran clears nothing, and a usable skip (`local-only` or `privacy-gate`) as an
+ * earlier skip that holds, when no attempt that holds lies behind it; a legacy
+ * review row (no attempt) is the latest, `unknown`, when an older writer added it after the
+ * attempt that ran last or it cannot be ordered against it (a time missing or
+ * unparseable; times compare as instants), and when there is no attempt; a
+ * document this reader cannot use is `unknown` too. A workflow with no review
+ * at all has no latest outcome and is not held. The outcomes that hold the
+ * commit back are REVIEW_BLOCKING_OUTCOMES, and `skipped` with a reason in
+ * REVIEW_BLOCKING_SKIP_REASONS.
+ *
+ * `acceptance.state`: `none` (absent), `matches` (it names the latest
+ * attempt with the outcome, error kind and reason it reads now, the last
+ * attempt listed is the one it saw, and no gap was found since), `stale`
+ * (`reason` `other-attempt`: the latest is another attempt, or a later one
+ * was registered; `outcome-changed`: the attempt accepted reads another
+ * outcome now; `history-changed`: a gap in the history was found since) or
+ * `unreadable`. Whether the change moved since is the caller's to compare
+ * (`acceptance.doc.head` and `tree`): the autopilot policy cannot read the
+ * tree a snapshot would hold, so Phase 7 compares it before it commits.
+ *
+ * `held` is `blocking` with no matching acceptance.
+ */
+export function reviewGate(frontmatter, { cap = 20 } = {}) {
+  const view = projectReviewOutcomes(frontmatter, { cap });
+  const outcomes = [
+    ...view.legacy.map((r) => outcomeLine(r, true)),
+    ...view.attempts.map((a) => outcomeLine(a)),
+  ];
+  let latest = null;
+  if (view.document === 'later-version' || view.document === 'unreadable') {
+    latest = { id: null, phase: null, type: null, outcome: UNKNOWN_OUTCOME, reason: `document-${view.document}` };
+  } else {
+    // The last attempt listed (latestAttempt).
+    let pick = latestAttempt(view.attempts);
+    // A review that never ran clears no earlier outcome that holds the
+    // commit back (conservative until A2): a skip's reason is the worker's
+    // claim, which settle never checks. When the pick is a skip, of any
+    // reason, the latest attempt before it that ran (`ran`) is read in its
+    // place when that one holds, so accepting a skip never clears a failure it
+    // does not name. A skip after a usable review, or with no review before
+    // it, stays the latest, unless a skip that holds comes before it, which is
+    // read instead. A legacy row is ordered against `ran` alike, so a skip
+    // never hides it either.
+    // With no review before the skip in the record but attempts dropped from
+    // it (`truncation`, which drops the oldest closed attempts first), what
+    // ran before cannot be told: the skip reads `unknown` (`history-truncated`).
+    let ran = pick;
+    if (pick !== null && pick.outcome === 'skipped') {
+      ran = lastRunBefore(view.attempts, pick);
+      const holdingSkip = lastHoldingSkipAfter(view.attempts, ran);
+      if (ran !== null && reviewOutcomeBlocks(ran)) pick = { ...ran, later_skip: pick.id };
+      else if (ran === null && view.coverage.reasons.includes('truncation')) pick = { ...pick, outcome: UNKNOWN_OUTCOME, reason: 'history-truncated' };
+      else if (holdingSkip !== null && holdingSkip !== pick) pick = { ...holdingSkip, later_skip: pick.id };
+    }
+    if (pick !== null) latest = outcomeLine(pick);
+    // A legacy review row (no attempt) that an older writer added after the
+    // attempt read, or that cannot be ordered against it (a time missing or
+    // unparseable on either side), is the latest: `unknown`. Times compare as
+    // instants.
+    const legacy = newestLegacy(view.legacy, frontmatter?.ensemble_results);
+    if (legacy !== null) {
+      const ranAt = instantOf(ran?.recorded_at ?? ran?.registered_at);
+      if (ran === null || legacy.at === null || ranAt === null || legacy.at >= ranAt) latest = outcomeLine(legacy.row, true);
+    }
+  }
+  const blocking = reviewOutcomeBlocks(latest);
+  const listed = listedLast(view.attempts);
+  const decoded = decodeReviewAcceptance(frontmatter?.[REVIEW_ACCEPTANCE_KEY]);
+  let acceptance;
+  if (decoded.state === 'absent') acceptance = { state: 'none', doc: null };
+  else if (decoded.state === 'unreadable') acceptance = { state: 'unreadable', doc: null, diagnostic: decoded.diagnostic };
+  else {
+    const stale = acceptanceStale(decoded.doc, latest, listed, view.coverage.reasons);
+    acceptance = stale === null ? { state: 'matches', doc: decoded.doc } : { state: 'stale', reason: stale, doc: decoded.doc };
+  }
+  return {
+    latest,
+    blocking,
+    held: blocking && acceptance.state !== 'matches',
+    acceptance,
+    // What an acceptance given now records of the record (newReviewAcceptance).
+    listed,
+    outcomes,
+    coverage: view.coverage,
+  };
+}
+
+/**
+ * What gets a review record this reader cannot use out of the gate, or null
+ * when the record can be read. A new review cannot (`recordReviewAttempt`
+ * records nothing over such a document), and no attempt can be accepted (none
+ * can be named), so the owner's two usual ways on are not offered.
+ */
+export function reviewRecordRepairText(latest) {
+  if (latest?.reason === 'document-later-version') {
+    return 'the review record was written by a later version than this one reads, so neither a new review nor an acceptance can be recorded over it: upgrade the plugins';
+  }
+  if (latest?.reason === 'document-unreadable') {
+    return "the review record cannot be read, so neither a new review nor an acceptance can be recorded over it: repair the workflow file's review_attempts by hand";
+  }
+  return null;
+}
+
+/** One line naming a gate's latest outcome: `<id> (<phase> <type>): <outcome>[, <error kind or reason>]`. */
+export function latestOutcomeText(gate) {
+  const l = gate?.latest;
+  if (!l) return 'no review recorded';
+  const why = l.error_kind ?? l.reason ?? null;
+  const where = [l.phase, l.type].filter(Boolean).join(' ');
+  const skip = l.later_skip ? ` (the later review ${l.later_skip} was skipped, which clears nothing)` : '';
+  return `${l.id ?? 'the review record'}${where ? ` (${where}${l.legacy ? ', legacy row' : ''})` : ''}: ${l.outcome}${why ? `, ${why}` : ''}${skip}`;
 }
