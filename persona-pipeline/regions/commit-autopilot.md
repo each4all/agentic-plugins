@@ -88,6 +88,14 @@ plan's commits (a split given `--subject-file`), stops the step with exit 1 or
 it again. A refusal that
 names a landed commit is the owner's to reword, or to split where it touches
 several packages: rewrite no history in the step (no amend, rebase or reset),
-and report it, with its reason, in the step's report. Never push or open a pull request afterwards: waiting
+and report it, with its reason, in the step's report. A refusal with exit 10
+(`review-held`) says the workflow's latest review outcome holds the commit
+back (failed, degraded, unavailable, malformed or unknown) and nothing was
+committed or written: the step never accepts it (`state.mjs review-accept` is
+the owner's, and refused under autopilot) and never reruns the review; report
+the attempt and its outcome the refusal names in the step's report, with
+`outcome` `needs_owner` and `awaiting_owner` null (the gate is the driver's to
+report, and never stored), and stop.
+Never push or open a pull request afterwards: waiting
 for the landing is the owner's routine step, which the driver reads from
 state, and it is not an owner gate.

@@ -11,7 +11,10 @@
 // "handoff-only"|"no-change"|"edit-only" } } — `next` is the next step each verb of that subtask
 // records, in order; `file` makes its first verb write a file to commit:
 // `<id>.txt` for true, or the path it names, holding `<id>` either way (two
-// subtasks naming one path conflict).
+// subtasks naming one path conflict). `"review": "failed"` on a subtask makes
+// its verbs settle a failed review (C163 A1b), so its commit meets the gate.
+// The action "edit-before-commit:<file>" edits that file of the checkout once
+// the plan is made, just before Phase 7's commit.
 //
 // With lanes (ADR-0067 Decision 6) several workers run at once, each in its
 // own checkout: `"seqFromArgv": true` keys `actions` by the run's step seq
@@ -326,9 +329,16 @@ export async function perform({ prompt, cwd, env }) {
     if (action === 'conflict-gate' || action === 'conflict-gate-no-task') {
       // ADR-0067 Decision 8: the verb's synthesis is a conflict — the settle
       // records it, the task file is written (or not), and the conflict gate
-      // is recorded with the run id; the step ends there, as it should.
+      // is recorded with the run id; the step ends there, as it should. As
+      // settle does (C163 A1a), the write records the attempt's outcome read
+      // from a run that completed: a conflict, which the conflict gate holds,
+      // never the review-outcome gate (a row with no outcome would read
+      // `unknown` there).
       const runId = 'review-20261001T000000Z-c0ffee';
-      await eng.commitEnsemble({ workflowPath: filePath, run_id: runId, phase: 'critique', ensemble_type: 'review', verdict: 'conflict', summary: 'C1 contested' });
+      await eng.commitEnsemble({
+        workflowPath: filePath, run_id: runId, phase: 'critique', ensemble_type: 'review', verdict: 'conflict', summary: 'C1 contested',
+        review: { outcome: 'conflict', reason: null, status: 'completed', error_kind: null, tree: null, tree_reason: 'no-snapshot' },
+      });
       if (action === 'conflict-gate') await eng.writeConsensusTask({ workflowPath: filePath, runId, text: 'C1: A or B?' });
       await eng.finishVerb({
         workflowPath: filePath, host: 'claude', nextAction: 'Owner decision', nextStep: { kind: 'owner-decision', confidence: 'HIGH' },
@@ -336,6 +346,16 @@ export async function perform({ prompt, cwd, env }) {
       });
       await stopHooks();
       return finish({ report: { ...verbReport(wf, { kind: 'owner-decision', verb: null, confidence: 'HIGH' }), outcome: 'needs_owner', awaiting_owner: 'peer-conflict' } });
+    }
+    // C163 A1b: `"review": "failed"` on a subtask — the verb's review settled
+    // failed, as settle records a run whose peer timed out, so its commit
+    // step meets the review gate.
+    if (scenario[id].review === 'failed') {
+      await eng.commitEnsemble({
+        workflowPath: filePath, run_id: `review-20261001T000000Z-fa11e${id.toLowerCase()}`, phase: 'critique', ensemble_type: 'review',
+        verdict: 'failed', summary: 'the peer timed out',
+        review: { outcome: 'failed', reason: null, status: 'failed', error_kind: 'peer_timeout', tree: null, tree_reason: 'no-snapshot' },
+      });
     }
     await synthesize(filePath, sub.verb);
     await eng.finishVerb({ workflowPath: filePath, host: 'claude', nextAction: 'next', ...stepOf(ns) });
@@ -403,6 +423,9 @@ export async function perform({ prompt, cwd, env }) {
       fs.writeFileSync(file, `${type}${scope}: scripted commit of ${c.files.length} file${c.files.length === 1 ? '' : 's'}\n`);
       return planned.requires_split ? ['--subject-pkg-file', `${c.package ?? 'docs'}=${file}`] : ['--subject-file', file];
     });
+    for (const a of actionList) {
+      if (a.startsWith('edit-before-commit:')) fs.appendFileSync(path.join(cwd, a.slice('edit-before-commit:'.length)), 'edited during the step\n');
+    }
     const r = spawnSync(node, [phase7, '--mode', 'autopilot',
       '--workflow-path', active, '--repo-root', cwd, '--host', 'claude', ...subjectArgs], { cwd, env, encoding: 'utf8' });
     fs.writeFileSync(path.join(path.dirname(env.FAKE_SCENARIO), `phase7-${seq}.json`), JSON.stringify({ status: r.status, stdout: r.stdout, stderr: r.stderr }));

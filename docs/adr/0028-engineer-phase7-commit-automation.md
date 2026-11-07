@@ -643,6 +643,129 @@ collapse to re-exports of `CONVENTIONAL_COMMIT_RE`. The module is pure
 invariant; `readPackageMap` is the one exception and accepts the file
 path as a parameter so tests can drive it with fixtures.
 
+### Implementation note 2026-11-07 — a commit past an unusable review (C163 A1b)
+
+Phase 7 checked that no peer ensemble was still pending (P11), but not how a
+settled one ended: a review that failed, degraded or never ran committed as if
+it had passed. Since C163 A1a each review attempt keeps one outcome in the
+workflow (`review_attempts`, ADR-0023 implementation note of 2026-11-05); this
+note enforces it.
+
+- **The rule.** The workflow's latest review outcome (the last attempt it
+  lists, "latest" meaning last registered, not last recorded; `unknown` when
+  that one is superseded, since a replacement registers after the attempt it
+  replaces and is listed after it: `replacement-missing` when it is not
+  listed, `replacement-backward` when it names an attempt listed before,
+  which is never followed, so the latest only moves forward and an
+  acceptance a later registration made stale stays stale; a legacy review
+  row, read `unknown`, when an older writer added it after the attempt that
+  ran last, when the two cannot be ordered (a time missing or unparseable;
+  times compare as instants, never as strings), or when there is no attempt;
+  a record that cannot be read is `unknown`) holds the commit back
+  when it is `failed`, `degraded`, `unavailable`, `malformed` or `unknown`,
+  and when it is `skipped` with no reason given (`unspecified`) or as
+  `owner-skip`: the record cannot tell an owner's skip from a worker's claim
+  of one, so a review no one is known to have chosen to skip holds as an
+  unknown one does (interactively that is a warning only). `passed`,
+  `concerns` and `conflict` are usable reviews, and `skipped` as `local-only`
+  or `privacy-gate` is a choice the verb records. No skip, of any reason,
+  clears anything: its reason is the worker's claim, which settle never
+  checks, so when the latest attempt before it that ran holds, that attempt is
+  read in the skip's place (the latest line names the skip, `later_skip`, and
+  only that attempt can be accepted, so accepting a skip never clears a failure
+  it does not name; a superseded attempt on the way is read as it would be
+  listed last, so one whose replacement is not listed after it holds as
+  `unknown`). Otherwise a skip stays the latest, and a usable one holds nothing,
+  unless a skip that holds comes before it (read instead, `later_skip` naming
+  the usable one) or attempts were dropped from the record (`truncation`), when
+  with no review before it what ran cannot be told and the skip reads `unknown`
+  (`history-truncated`). Compaction never drops the last attempt listed, since
+  that is the one read as the latest. A workflow with no review at all is not
+  held. Conservative until the tree a review saw is compared (C163
+  A2): the latest outcome counts whatever tree it saw. The pure rule is
+  `reviewGate` in `scripts/lib/review-attempts.mjs`, which the orchestrator
+  reads from its byte copy.
+- **The owner's way on.** `state.mjs review-accept --workflow-path <p>
+  --attempt-id <id> [--note-file <f>]` records the owner's acceptance of the
+  latest blocking attempt (`review_acceptance`, one JSON document in its own
+  frontmatter scalar, after `review_attempts`): the attempt, the outcome it
+  read with its error kind and reason, the record as the owner saw it
+  (`listed`, the last attempt listed then with its time, and `gaps`, the
+  coverage reasons then), and the working tree it is given for (`head` and
+  `tree`, the tree a review snapshot would hold). It covers the latest only
+  while that is the same attempt with the same outcome, error kind and
+  reason, the last attempt listed is still the one it saw, and no gap was
+  found since: a later review attempt makes it stale for good (a skip that
+  reads the accepted attempt again does not revive it, nor does an id
+  compaction dropped and a writer recorded again, which is listed with a new
+  time), and so do another outcome of the attempt accepted, a gap found since
+  (coverage reasons are never removed), and another tree: the tree alone
+  is compared, so a commit of the accepted content (the recovery path's)
+  keeps it and an edit moves it. It is refused under an autopilot run (only
+  the owner accepts), for an attempt that is not the latest, for one that
+  holds nothing back, and for one still open or whose run is still pending
+  (it has no outcome yet: settle its run first).
+  `state.mjs review-gate` prints the judgment, read-only.
+  `state.mjs review-attempt-supersede` refuses a replacement listed at or
+  before the attempt it replaces.
+- **Under autopilot** `--mode autopilot` refuses (exit 10, `review-held`) the
+  commit and the recovery of a commit begun alike, before anything is written,
+  with one line naming the attempt, its outcome and error kind, why no
+  acceptance covers it, and both ways on (a new review, or `review-accept`,
+  its workflow path quoted as one shell word when it needs it). Each way on
+  it names is one the command takes: an attempt still open offers only the
+  new review, since `review-accept` refuses it until its run is settled, and
+  a record this reader cannot use (a later version, or one that cannot be
+  read) offers neither, since nothing can be recorded over it: the line says
+  to upgrade the plugins, or to repair `review_attempts` by hand. A working
+  tree that cannot be compared (an index entry marked assume-unchanged, a
+  conflicted index) holds the commit, as one that moved does.
+  A close lands nothing and is not held. The commit is judged before the
+  staging-set gate, which would otherwise write a gate over a held review,
+  and the commit and the recovery are judged again at admission, just before
+  their first write, from the workflow file as it is then: the frontmatter
+  the step began with was read before planning, and an outcome a concurrent
+  writer recorded while the plan was made would go unseen.
+- **Interactively** `--mode plan` names the hold (`review_hold`, the same
+  line; null over a clean tree that lands nothing), and the runbooks show it
+  before asking, which is where the user decides. `--mode execute` warns with
+  the same line and commits.
+- **Limits.** The last check is at admission, before the commit: an outcome
+  a writer records after it, while the commit runs, and an edit of the
+  working tree between it and the staging, are not seen (no writer of a run
+  does either: P11 refuses a pending run first). A pre-commit hook that
+  rewrites the change commits content the acceptance was not given for (no
+  hook of this repository does; a consumer's that does should be reviewed
+  again after it runs). The tree compared is the one a review snapshot would
+  hold, and that capture respects a submodule set `ignore=all`, which Phase 7
+  stages all the same: moving such a submodule's commit after the acceptance
+  leaves the tree `same`, and the commit lands a gitlink the acceptance was not
+  given for. It takes an accepted blocking outcome and that setting together,
+  and seeing it would change what every review snapshot holds, so it is left a
+  limit, under the owner's rule of 2026-10-25. An open attempt compaction
+  dropped comes back closed and is listed last, so its outcome is read as the
+  latest though it registered before others, with `truncation` the only trace;
+  it takes 32 KiB of attempts open at once in one workflow (the bound is bytes:
+  about 190 with timestamped ids, about 75 with ids of the longest form), and
+  is left a limit under the same rule. `review-accept` is a plain write, so a lane the owner
+  holds (ADR-0068 Decision 2) refuses it until the owner releases the hold.
+  Its owner-only check is `AGENTIC_AUTOPILOT` alone, as for the other owner
+  writes. A legacy review row (a writer older than C163 A1a, or a direct
+  `commitEnsemble` call that passes no `review`; settle and the `ensemble-commit`
+  CLI always record an outcome) counts while `ensemble_results` holds it: once
+  about 20 later results have pruned it, the gate no longer sees it, so a passed
+  attempt before it reads `passed` again; and an acceptance whose `gaps` already
+  held `missing-outcome` cannot tell that row from the one it saw, so it matches
+  again. No runbook writes such a row, and the driver's capability floor
+  excludes an engineer older than the record from a run. Recording every row
+  durably would add a field to A1a's document for an arrangement that rare, so
+  this is left a limit, under the owner's rule of 2026-10-25.
+
+Tests: `tests/persona-pipeline/test-review-gate.mjs`;
+`scripts/mutation-specs/review-gate.mjs` (groups S and P, and the cases on the
+engineer's library copy: L6, L14, L19, L24–L27, K3, K5, K15). The autopilot's
+half is ADR-0063's implementation note of the same date.
+
 ## Consequences
 
 **Positive**

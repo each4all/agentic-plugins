@@ -313,7 +313,10 @@ describe('a lane-layer failure is the lane\'s', () => {
       });
       strictEqual(code, 2, t.lines.join('\n'));
       const r = t.latest();
-      strictEqual(r.halt.reason, 'budget', r.halt.detail);
+      // The next decision reads the failed outcome the lane's settle recorded:
+      // A's commit is held back (C163 A1b).
+      strictEqual(r.halt.reason, 'awaiting-owner:review-outcome', r.halt.detail);
+      match(r.halt.detail, /plan-verify-20261001T000000Z-feed04 \(compose plan-verify\): failed, peer_exit_nonzero/);
       const s = r.steps[0];
       deepStrictEqual([s.lane, s.outcome, s.closed_on_report, s.abandoned_background.map((x) => x.task_id)], ['A', 'ok', true, ['bt4']]);
       deepStrictEqual(s.peer_settlements.map((x) => [x.run_id, x.cancel.exit, x.settle.exit]), [['plan-verify-20261001T000000Z-feed04', 0, 0]]);

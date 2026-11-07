@@ -189,6 +189,11 @@ function finalize(lane, env, opDir, next = {}, dispatchDir = '', verb = 'compose
     ["CONFIDENCE='<HIGH|MEDIUM|LOW>'", "CONFIDENCE='HIGH'"],
     ["OP_DIR='<the operation directory the Phase 0 block printed as OP_DIR; empty when it printed none>'", `OP_DIR='${opDir}'`],
   ]);
+  // No run launched: the note says local-only, and NO_RUN_REASON records it,
+  // so the review attempt is `skipped, local-only`, a choice the review gate
+  // lets through; left empty it would be `unspecified`, which holds the commit
+  // under autopilot (C163 A1b).
+  if (dispatchDir === '') block = fill(block, [["NO_RUN_REASON=''", "NO_RUN_REASON='local-only'"]]);
   // The runbook's "change the --next-step-* flags when the verb's result selects
   // a different next step", and OWNER_GATE, which selects its owner-decision
   // form for a gate.

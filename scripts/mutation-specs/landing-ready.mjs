@@ -112,7 +112,7 @@ const BASE_CHECK = '        base: { ref: baseRef, commit: baseCommit, ...check(b
 const REPORT = '        landing = reportLandingReady({ repoRoot, mainRoot, runDir, runId, seq, view: v, out, now, cache: mergeChecks, env, notice });';
 const SCRATCH_HOME = '    ...out, HOME: dir, XDG_CONFIG_HOME: dir,';
 const SUBJECT = 'export const subjectKey = (r) => JSON.stringify([r?.subtask_id ?? null, r?.engineer_workflow_id ?? null]);';
-const OBSERVATION = 'export const observationKey = (r) => JSON.stringify([r?.commit ?? null, r?.integration_branch ?? null, r?.sync?.base_commit ?? null, r?.sync?.state ?? null]);';
+const OBSERVATION = 'export const observationKey = (r) => JSON.stringify([r?.commit ?? null, r?.integration_branch ?? null, r?.sync?.base_commit ?? null, r?.sync?.state ?? null, reviewKey(r?.review)]);';
 const DEDUP = '      if (latest.get(subject) === observationKey(record)) continue;';
 const PUBLISHED = '      report.reported.push(entry.subtaskId);\n      notice.warned = false;';
 const DRAIN_LOOK = '        if (reported) await c.reportLanding(v, seq, runAt(repoRoot));';

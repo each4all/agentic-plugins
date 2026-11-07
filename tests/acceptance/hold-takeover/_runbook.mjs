@@ -119,6 +119,11 @@ export function finalize(lane, env, opDir, next = {}, dispatchDir = '', verb = '
     ["CONFIDENCE='<HIGH|MEDIUM|LOW>'", "CONFIDENCE='HIGH'"],
     ["OP_DIR='<the operation directory the Phase 0 block printed as OP_DIR; empty when it printed none>'", `OP_DIR='${opDir}'`],
   ]);
+  // No run launched: the note says local-only, and NO_RUN_REASON records it,
+  // so the review attempt is `skipped, local-only`, a choice the review gate
+  // lets through; left empty it would be `unspecified`, which holds the commit
+  // under autopilot (C163 A1b).
+  if (dispatchDir === '') block = fill(block, [["NO_RUN_REASON=''", "NO_RUN_REASON='local-only'"]]);
   const typical = /--next-step-kind verb --next-step-verb '[a-z]+'( \\\n\s*--next-step-confidence "\$CONFIDENCE")/;
   ok(typical.test(block), 'the typical finish-verb');
   if (next.commit) block = block.replace(typical, '--next-step-kind commit$1');
