@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.34.5](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.34.4...plugin-engineer-v0.34.5) (2026-11-07)
+
+
+### Bug Fixes
+
+* **engineer:** refuse an autopilot commit or recovery on a review outcome that holds it back, and warn interactively (C163 A1b) ([333d12a](https://github.com/each4all/agentic-plugins/commit/333d12adf639a2f066fa6c2068670b1bb003b6d0))
+
 ## [0.34.4](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.34.3...plugin-engineer-v0.34.4) (2026-11-07)
 
 
