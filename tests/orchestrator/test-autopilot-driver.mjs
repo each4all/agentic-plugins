@@ -590,10 +590,12 @@ describe('C127: a step closed on its finished report settles the peers it left',
     const t = await setup({ scenario: { A: { next: [COMMIT] }, B: { next: [DONE] }, actions: { 1: 'pending-finished' } } });
     try {
       // One step: the next decision reads the state the cleanup left, so it
-      // halts on the step cap, not on a pending peer (policy: pending_ensemble).
+      // halts on the failed outcome the settle recorded (C163 A1b: A's commit
+      // is held back), not on a pending peer (policy: pending_ensemble).
       strictEqual(await t.run({ maxSteps: 1 }), 2, t.lines.join('\n'));
       const r = t.latest();
-      deepStrictEqual([r.halt.reason, r.steps.length], ['budget', 1], r.halt.detail);
+      deepStrictEqual([r.halt.reason, r.steps.length], ['awaiting-owner:review-outcome', 1], r.halt.detail);
+      match(r.halt.detail, new RegExp(`${FEED04} \\(compose plan-verify\\): failed, peer_exit_nonzero`));
       const s = r.steps[0];
       deepStrictEqual([s.outcome, s.report_eof, s.closed_on_report, s.report_teardown, s.peers_unaccounted], ['ok', true, true, null, false]);
       deepStrictEqual(s.abandoned_background, [{ task_id: 'bt4', task_type: 'local_bash', description: 'the peer and a monitor', run_id: 'r-bt4' }]);

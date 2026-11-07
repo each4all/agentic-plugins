@@ -1478,6 +1478,17 @@ for (const persona of personasFor('scripts/phase7-commit.mjs')) {
         strictEqual(run(dir, PHASE7_BIN, execArgs(dir, wf, '--suggested-subjects')).code, 5);
         sh(dir, 'node', [STATE_BIN, 'ensemble-commit', '--workflow-path', wf, '--host', 'claude', '--phase', 'compose', '--ensemble-type', 'plan-verify', '--run-id', 'pv-9', '--verdict', 'agree', '--summary', 's']);
         const landed = sh(dir, 'git', ['rev-parse', 'HEAD']);
+        // A verdict with no run ledger closes the attempt failed (C163 A1a), so
+        // autopilot holds the recovery too (A1b) until the owner accepts it.
+        const held = await readFile(wf, 'utf8');
+        r = run(dir, PHASE7_BIN, autoArgs(dir, wf), AP);
+        strictEqual(r.code, 10, r.stderr);
+        match(r.stderr, /pv-9 \(compose plan-verify\): failed, verdict-only/);
+        strictEqual(await readFile(wf, 'utf8'), held, 'the refusal writes nothing');
+        strictEqual(sh(dir, 'git', ['rev-parse', 'HEAD']), landed, 'the refusal commits nothing');
+        const note = join(dir, '.git', 'accept-note.txt');
+        await writeFile(note, 'the owner read the change\n');
+        sh(dir, 'node', [STATE_BIN, 'review-accept', '--workflow-path', wf, '--attempt-id', 'pv-9', '--repo-root', dir, '--note-file', note]);
         r = run(dir, PHASE7_BIN, autoArgs(dir, wf), AP);
         strictEqual(r.code, 0, r.stderr);
         out = JSON.parse(r.stdout);

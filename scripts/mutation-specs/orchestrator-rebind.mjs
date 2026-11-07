@@ -523,7 +523,7 @@ export const MUTATIONS = [
   },
   {
     id: 'B8', file: POLICY, tests: [TA],
-    from: 'export const PARK_FINGERPRINT_VERSION = 3;',
+    from: 'export const PARK_FINGERPRINT_VERSION = 4;',
     to: 'export const PARK_FINGERPRINT_VERSION = 2;',
     killed_by: [/the lane fingerprint takes the record's facts only for the subtask it names/],
     why: 'a park kept by a release that did not read the record is compared, and resumes on facts it never had',

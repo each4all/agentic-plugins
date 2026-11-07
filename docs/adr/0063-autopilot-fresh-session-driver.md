@@ -2116,6 +2116,121 @@ serial driver and the scheduler end to end, through the scripted worker's
 `handoff-only`, `no-change` and `edit-only` steps);
 `scripts/mutation-specs/autopilot-step-evidence.mjs`.
 
+## Implementation note 2026-11-07 — the review gate (C163 A1b)
+
+**The gap.** A lane reached `/engineer:commit` on the next step its last verb
+recorded. Since C163 A1a each review attempt keeps one outcome in its
+workflow (ADR-0023 implementation note of 2026-11-05), but nothing read it: a
+review that failed, degraded or never ran was followed by a commit like any
+other, and the landing report said nothing of it.
+
+**The rule.** The observer reads each child's review record through the
+orchestrator's byte copy of the persona library (`reviewGate`,
+`observe.mjs reviewSummary`): its latest review outcome, whether that outcome
+holds the commit back (`failed`, `degraded`, `unavailable`, `malformed` or
+`unknown`, and `skipped` with no reason given or as `owner-skip`, which an
+autopilot step can write with no owner present; no skip, of any reason,
+clears an earlier outcome that holds, and a superseded
+attempt listed last reads `unknown`; ADR-0028's note of the same date gives
+the rule and the owner's acceptance), each outcome, and whether the history
+is complete.
+
+1. *The halt.* A lane whose next step would run `/engineer:commit` (a commit
+   or done step, or the recovery of a commit begun) while its latest outcome
+   holds the commit back halts `awaiting-owner:review-outcome`, pointing at
+   the child's `review_attempts`. Its detail names the attempt, its outcome
+   and error kind, why no acceptance covers it, whether the history is
+   incomplete, and both ways on: run the review again (`--next
+   /engineer:critique`, or `--lane <subtask> --next /engineer:critique` in a
+   run with lanes), or the owner's `state.mjs review-accept` of that attempt in
+   the lane's checkout, then relaunch. The command names the workflow file's
+   own path, quoted as one shell word when it holds a space, a quote or a
+   non-ASCII character; only a path with a control character, which no line can
+   print, is left out, and the attempt is still named. Each way on is one the
+   command takes, the `--next` printed with nothing attached that
+   `parseForcedStep` would refuse: an attempt still open offers only the new
+   review, and a record this reader cannot use offers neither, saying to
+   upgrade the plugins or to repair `review_attempts` by hand. A parked lane's
+   `resolution.change` names the same ways on, from its record, since there is
+   no gate to clear. A verb next step is not held: the lane can review again.
+2. *A derived gate.* `review-outcome` is never stored (codes.mjs
+   `DERIVED_OWNER_GATES`): a recorded owner gate would stop classification
+   before the owner's `--next` and would be refused by Phase 7, leaving no way
+   on but a hand edit. The halt is a judgment halt, so the owner's `--next
+   <verb>` (a new review) replaces it; `--next /engineer:commit`, and `--lane
+   <id> /engineer:commit` with lanes, are refused while the lane is held. A
+   worker's step report cannot name it (the report's gates are the stored
+   ones). A forced commit a run with lanes took at its start meets the gate
+   again at each decision, so an outcome recorded since holds it too.
+3. *Resolution, restart, invalidation.* An acceptance naming the latest
+   attempt, with the outcome, error kind and reason it reads now, lets the
+   commit; the relaunched run reads it at its first look. A later review
+   attempt makes it stale for good, and so do another outcome of the attempt
+   accepted and a gap in the history found since (ADR-0028's note: the
+   acceptance records the record as the owner saw it); the lane halts again
+   on the new outcome. Whether the working tree is still the accepted one is Phase 7's
+   to compare (it reads the tree a snapshot would hold; this policy does not).
+   The observer asks it (`state.mjs review-gate`) in the checkout it looks from,
+   for a child of that checkout's branch whose accepted outcome blocks, and a
+   tree that moved or cannot be compared reads `held`: a serial run halts on
+   the gate with no worker spent. A run with lanes decides from the main
+   checkout, which reads no lane's tree, so there the commit step runs, Phase 7
+   refuses it (exit 10, writing nothing), and the look from the lane reads the
+   gate holding. `verifyStep` turns a commit step that leaves the gate holding,
+   with no new commit and no owner gate, into this same halt, with the record,
+   the ways on and what the worker reported; no new commit alone says nothing
+   of the review, so a step stopped by a refused subject or an unfinished
+   recovery, whose acceptance still covers its tree, is judged as any other. A
+   worker that reports the refusal as a failure stays `worker-failed`, so the
+   run cancels its peers, and carries the record. The latest outcome (while it
+   blocks) and the acceptance with its tree, its state (matching or stale, so a
+   re-acceptance of the same attempt and tree after it settled with another
+   outcome counts) and its time (so accepting the first tree again, after a
+   refusal at a second, counts: an act of the owner's is always reconsidered)
+   are added to the lane's fingerprint, only while
+   one of them is there, so a child with neither keeps the fingerprint it had:
+   a lane parked on the gate is picked up again when the owner accepts, accepts
+   again for another tree, or a new outcome is recorded (a no-run outcome
+   moves no count the fingerprint held; a skip after a failure clears
+   nothing, so it moves nothing). Those facts changed what a park's
+   fingerprint hashes, so `PARK_FINGERPRINT_VERSION` is 4: a park an earlier
+   release kept is never compared, and resumes only on the owner's release.
+4. *Reports.* Each subtask waiting to land carries its review record: the
+   landing-ready event and its log line (`review`), the terminal headline and
+   the `awaiting-landing` halt name each outcome (id, phase, type, outcome,
+   error kind or reason), whether the latest holds the commit back, the
+   acceptance, and when the history is incomplete with its reasons. A
+   review-outcome halt's record keeps the same, and so does a lane's park,
+   its entry in the run's lane report (a lane parked in the run, one parked
+   by an earlier run, a release re-applied), its printed park line, and the
+   halt a run with lanes ends on, the first held lane's as the halt's own and
+   every other held lane's in its `also`. The landing log's observation
+   key includes the outcomes, the acceptance and the completeness, so a new
+   outcome at unchanged commits is reported again; a record logged before the
+   outcomes observed none, and its subject is reported once more.
+
+*Version floor.* The driver's capability floor (roots.mjs) requires an
+engineer with `review-accept`, so a run never pairs this gate with an
+engineer that can neither record an acceptance nor refuse the commit itself.
+The observer also reads the record from an engineer's forward-compat carrier
+(`_forward_compat_unknowns`), where an engineer older than the record lists
+it.
+
+*Limits.* A workflow begun before C163 A1a holds only legacy review rows:
+its lane halts once on `unknown`, and the owner accepts or reviews again. A `done`
+step is held like a commit, since `/engineer:commit` commits whatever the tree
+holds; over a clean tree it would only close, and the owner's acceptance lets
+it. In a run with lanes a commit step over a moved tree spends a worker, as
+above. A park's fingerprint holds the acceptance, not the tree compare, so a
+lane parked over a moved tree is picked up by a new acceptance or a new outcome,
+not by restoring the tree alone. A legacy row pruned from `ensemble_results` is
+no longer seen (ADR-0028's note, Limits).
+
+Tests: `tests/orchestrator/test-autopilot-review-gate.mjs`, with a serial run and
+a run with lanes through the real `review-accept` and the real Phase 7;
+`scripts/mutation-specs/review-gate.mjs` (groups L, K and O, one case for each
+outcome class).
+
 ## References
 
 - ADR-0001 (honest scope)
