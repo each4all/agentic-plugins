@@ -64,7 +64,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { AUTOPILOT_DIR_REL, appendLanding, appendLine } from './ledger.mjs';
-import { isSafeBranch, isSafeMacroId, waitingToLand } from './policy.mjs';
+import { isSafeBranch, isSafeMacroId, reviewOutcomesText, waitingToLand } from './policy.mjs';
 
 export const LANDING_DIR_REL = `${AUTOPILOT_DIR_REL}/landing`;
 
@@ -102,8 +102,16 @@ export function readLandingLog(file) {
 // the same commit), the integration branch at another commit, or another
 // freshness state. A record written before freshness (no `sync`) observed no
 // base and no state, so its subject is reported once more.
+// C163 A1b (ADR-0063, implementation note of 2026-11-07) — and the subject's
+// review outcomes: a new outcome, an acceptance, or a history found
+// incomplete, at unchanged commits, is a change and is reported again. A
+// record written before the review outcomes (no `review`) observed none, so
+// its subject is reported once more, as one before freshness was.
 export const subjectKey = (r) => JSON.stringify([r?.subtask_id ?? null, r?.engineer_workflow_id ?? null]);
-export const observationKey = (r) => JSON.stringify([r?.commit ?? null, r?.integration_branch ?? null, r?.sync?.base_commit ?? null, r?.sync?.state ?? null]);
+export const reviewKey = (rec) => (rec && typeof rec === 'object'
+  ? [(Array.isArray(rec.outcomes) ? rec.outcomes : []).map((o) => [o?.id ?? null, o?.outcome ?? null]), rec.accepted ?? null, rec.history_incomplete === true]
+  : null);
+export const observationKey = (r) => JSON.stringify([r?.commit ?? null, r?.integration_branch ?? null, r?.sync?.base_commit ?? null, r?.sync?.state ?? null, reviewKey(r?.review)]);
 
 function runGit(argv, { cwd, env, timeout = GIT_TIMEOUT_MS } = {}) {
   const r = spawnSync('git', argv, {
@@ -491,6 +499,9 @@ function eventRecord({ entry, report, runId, macroId, seq, at }) {
     sync: entry.sync,
     commands: entry.commands,
     note: entry.note ?? null,
+    // C163 A1b — each review outcome of the subtask, and whether its history
+    // is incomplete; null when the observer read none.
+    review: entry.review ?? null,
     overlap: { base: entry.overlap.base, pairs: entry.overlap.pairs.map(snake) },
     merge_order: mergeOrderRecord(report.mergeOrder),
   };
@@ -551,6 +562,7 @@ export function reportLandingReady({
       out(headline(entry, report));
       if (entry.sync.state !== 'ready') out(`    ${syncText(entry.sync, report.base.ref)}`);
       out(`    overlap: ${overlapText(entry.overlap)}`);
+      out(`    ${reviewOutcomesText(entry.review ?? null)}`);
       out(`    merge order: ${orderText(report.mergeOrder)}`);
       for (const c of [...entry.sync.commands, ...entry.commands]) out(`    ${c}`);
       for (const n of [entry.sync.note, entry.note]) if (n) out(`    ${n}`);

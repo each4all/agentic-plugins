@@ -110,7 +110,7 @@ import {
 import { parseWorkflowFile } from '../../../scripts/state.mjs';
 import {
   afterUnread, checkoutProblem, compareKept, consensusProposals, decideLanes, fingerprint, forcedForLanes, haltScope,
-  laneFingerprint, modelFor, PARK_FINGERPRINT_VERSION, parkFingerprint, peersOnlyProgress, proposalsAtEnd, renderStep, stepEvidence,
+  laneFingerprint, modelFor, PARK_FINGERPRINT_VERSION, parkFingerprint, peersOnlyProgress, proposalsAtEnd, renderStep, reviewOutcomesText, reviewResolutionText, stepEvidence,
   RUN_WIDE_REASONS, STEP_KINDS, verifyStep, waitingToLand,
 } from './policy.mjs';
 import { driftOf, PLUGINS, resolveRoots } from './roots.mjs';
@@ -704,7 +704,7 @@ export async function runLanes(c) {
     if (hh.subtaskId) {
       unmark(hh.subtaskId);
       if (report.has(hh.subtaskId) || lanes.has(hh.subtaskId)) {
-        lane(hh.subtaskId).halt = { reason: hh.reason, detail: hh.detail };
+        lane(hh.subtaskId).halt = { reason: hh.reason, detail: hh.detail, ...(hh.review ? { review: hh.review } : {}) };
         if (hh.proposals?.length) lane(hh.subtaskId).proposals = hh.proposals;
       }
     }
@@ -717,6 +717,7 @@ export async function runLanes(c) {
     } else {
       out(`  also ${hh.subtaskId ? `lane ${hh.subtaskId}: ` : ''}${hh.reason} — ${hh.detail}`);
     }
+    if (hh.review) out(`  ${reviewOutcomesText(hh.review)}`);
     // Once run.json records the run draining (the first halt).
     publishHalt(hh);
   };
@@ -807,7 +808,10 @@ export async function runLanes(c) {
   } : {
     pointer: h.pointer ?? null,
     change: h.claim ? `stop the run, re-attach the claiming workflow with /orchestrator:next ${id} or archive it with /engineer:resume on its branch`
-      : releaseOnly ? null : 'a change to the lane\'s record picks it up again: clear its gate, record a next step, commit, or move its branch',
+      : releaseOnly ? null
+      // C163 A1b — the review gate is derived, never stored: there is no gate to clear.
+      : h.review ? reviewResolutionText(h.review, id)
+      : 'a change to the lane\'s record picks it up again: clear its gate, record a next step, commit, or move its branch',
     release: releaseCommand({ subtaskId: id, macroId, repoRoot }),
     relaunch: relaunchCommand({ macroId, lanes: N, repoRoot }),
     release_only: releaseOnly,
@@ -861,6 +865,8 @@ export async function runLanes(c) {
       lane_path: pathOf(id), branch: subtaskOf(id)?.branch ?? null, seq: h.seq ?? null, step_kind: h.stepKind ?? null,
       since: at(), resolution: resolutionOf(h, id, releaseOnly),
       ...(h.rejectedRelease ? { rejected_release: h.rejectedRelease } : {}),
+      // C163 A1b — a review-outcome halt's record of the lane's review outcomes.
+      ...(h.review ? { review: h.review } : {}),
     });
     let kept = true;
     const expect = markers.get(id) ?? null;
@@ -886,12 +892,15 @@ export async function runLanes(c) {
     markers.delete(id);
     parked.set(id, { ...rec, kept });
     watch(id, before);
-    Object.assign(lane(id), { halt: { reason: h.reason, detail: h.detail }, park: showPark({ ...rec, kept }) });
+    // C163 A1b (critique of 2026-11-07, MAJOR 5) — the lane's report keeps
+    // its review record, as its kept park does.
+    Object.assign(lane(id), { halt: { reason: h.reason, detail: h.detail, ...(h.review ? { review: h.review } : {}) }, park: showPark({ ...rec, kept }) });
     if (h.proposals?.length) lane(id).proposals = h.proposals;
     appendLaneEvent(runDir, { event: 'parked', subtask_id: id, reason: h.reason, detail: h.detail, record_id: rec.record_id, form: fp.form, fingerprint: fp.fingerprint, release_only: releaseOnly, run_id: runId, at: rec.since });
     // The kept park, or, when the records could not take it, the lane event.
     pub.emit('lane-parked', { reason: h.reason, step: Number.isInteger(h.seq) ? h.seq : null, kept, pointer: kept ? parkPath(mainRoot, macroId, id) : pub.lanesFile }, id);
     out(`■ lane ${id}: ${h.reason} — ${h.detail}`);
+    if (h.review) out(`  ${reviewOutcomesText(h.review)}`);
     out(`  other lanes continue${releaseOnly ? `; this lane waits for the owner${rec.resolution?.release ? `'s release: ${rec.resolution.release}` : ''}` : ''}`);
     publish();
   }
@@ -1151,7 +1160,7 @@ export async function runLanes(c) {
         // Kept by an earlier run: applied again as it is (Decision 1, item 3).
         parked.set(id, { ...cur.record, kept: true });
         watch(id);
-        Object.assign(lane(id), { park: showPark(cur.record), halt: { reason: cur.record.reason, detail: cur.record.detail } });
+        Object.assign(lane(id), { park: showPark(cur.record), halt: { reason: cur.record.reason, detail: cur.record.detail, ...(cur.record.review ? { review: cur.record.review } : {}) } });
         return true;
       }
       markers.set(id, cur.record.record_id);
@@ -1629,7 +1638,7 @@ export async function runLanes(c) {
         if (parked.get(id)?.record_id === rec.record_id) continue;
         parked.set(id, { ...rec, kept: true });
         watch(id);
-        Object.assign(lane(id), { park: showPark(rec), halt: { reason: rec.reason, detail: rec.detail }, ...(rec.proposals?.length ? { proposals: rec.proposals } : {}) });
+        Object.assign(lane(id), { park: showPark(rec), halt: { reason: rec.reason, detail: rec.detail, ...(rec.review ? { review: rec.review } : {}) }, ...(rec.proposals?.length ? { proposals: rec.proposals } : {}) });
         out(`■ lane ${id}: ${rec.reason} — ${rec.detail} (kept since run ${rec.run_id}; ${gateOf(id)})`);
         continue;
       }
@@ -1647,7 +1656,7 @@ export async function runLanes(c) {
       }
       parked.set(id, { ...rec, kept: true });
       watch(id, fp.fresh ? before : null);
-      Object.assign(lane(id), { park: showPark(rec), halt: { reason: rec.reason, detail: rec.detail }, ...(rec.proposals?.length ? { proposals: rec.proposals } : {}) });
+      Object.assign(lane(id), { park: showPark(rec), halt: { reason: rec.reason, detail: rec.detail, ...(rec.review ? { review: rec.review } : {}) }, ...(rec.proposals?.length ? { proposals: rec.proposals } : {}) });
       out(`■ lane ${id}: ${rec.reason} — ${rec.detail} (kept since run ${rec.run_id}${cmp === 'incomparable' ? `; release it to pick it up: ${rec.resolution?.release ?? releaseCommand({ subtaskId: id, macroId, repoRoot })}` : ''})`);
     }
   }
@@ -2535,7 +2544,7 @@ export async function runLanes(c) {
     const p = parked.get(ids[0]);
     return {
       outcome: 'halt', reason: p.reason, detail: p.detail, subtaskId: ids[0], ...(p.pointer ? { pointer: p.pointer } : {}),
-      ...(p.proposals?.length ? { proposals: p.proposals } : {}), resolution: p.resolution ?? null,
+      ...(p.proposals?.length ? { proposals: p.proposals } : {}), ...(p.review ? { review: p.review } : {}), resolution: p.resolution ?? null,
     };
   };
 
@@ -2599,8 +2608,8 @@ export async function runLanes(c) {
     // beside the reason (Decision 1, item 9).
     if (d) {
       const also = [
-        ...halts.filter((h) => h !== d).map((h) => ({ reason: h.reason, detail: h.detail, subtask_id: h.subtaskId ?? null })),
-        ...[...parked.values()].filter((p) => p.subtask_id !== d.subtaskId && !heldOf(p.subtask_id)).map((p) => ({ reason: p.reason, detail: p.detail, subtask_id: p.subtask_id, parked: true, release_only: p.release_only === true })),
+        ...halts.filter((h) => h !== d).map((h) => ({ reason: h.reason, detail: h.detail, subtask_id: h.subtaskId ?? null, ...(h.review ? { review: h.review } : {}) })),
+        ...[...parked.values()].filter((p) => p.subtask_id !== d.subtaskId && !heldOf(p.subtask_id)).map((p) => ({ reason: p.reason, detail: p.detail, subtask_id: p.subtask_id, parked: true, release_only: p.release_only === true, ...(p.review ? { review: p.review } : {}) })),
         ...heldAtEnd().filter((x) => x.subtask_id !== d.subtaskId),
         ...busyAtEnd().filter((x) => x.subtask_id !== d.subtaskId),
       ];

@@ -21,12 +21,17 @@
 import { createHash } from 'node:crypto';
 import { subtaskReadiness } from '../../../scripts/state.mjs';
 import { digestOf, parseRebindRecord, REBIND_KEY, wordsDigest } from '../../../scripts/lib/rebind.mjs';
+import { isReviewAttemptId, latestOutcomeText, reviewRecordRepairText, REVIEW_OUTCOME_GATE } from '../../../scripts/lib/review-attempts.mjs';
 import {
-  ENGINEER_OWNER_GATES, HALT_REASONS, isSafeMacroId, isSafeSubtaskId, MACRO_OWNER_GATES, OWNER_GATES,
+  DERIVED_OWNER_GATES, ENGINEER_OWNER_GATES, HALT_REASONS, isSafeMacroId, isSafeSubtaskId, MACRO_OWNER_GATES, OWNER_GATES,
+  STORED_OWNER_GATES,
 } from './codes.mjs';
 
 // The closed sets and id alphabets the event file shares (codes.mjs).
-export { ENGINEER_OWNER_GATES, HALT_REASONS, isSafeMacroId, isSafeSubtaskId, MACRO_OWNER_GATES, OWNER_GATES };
+export {
+  DERIVED_OWNER_GATES, ENGINEER_OWNER_GATES, HALT_REASONS, isSafeMacroId, isSafeSubtaskId, MACRO_OWNER_GATES, OWNER_GATES,
+  STORED_OWNER_GATES,
+};
 
 export const VERBS = Object.freeze(['investigate', 'frame', 'decide', 'compose', 'critique', 'refine']);
 export const NEXT_STEP_KINDS = Object.freeze(['verb', 'commit', 'owner-decision', 'done', 'verify']);
@@ -199,7 +204,165 @@ function childTuple(id, c, { withoutPeers = false } = {}) {
   if (c.verify) {
     tuple.push([c.verify.request_id ?? null, c.verify.answered_by ?? null, c.verify.batches ?? 0, c.verify.results ?? 0, c.verify.last_end ?? null]);
   }
+  // C163 A1b — the review gate's facts: a lane parked on the gate is picked
+  // up again when its latest outcome changes (a new review, a no-run outcome
+  // that moves no count above) or the owner accepts an attempt, for any tree.
+  // Appended only while the latest outcome blocks or an acceptance is
+  // recorded, so a child with neither keeps the lane fingerprint it had. A
+  // park an older run kept is never compared with this one: the tuple's input
+  // changed, and PARK_FINGERPRINT_VERSION with it (4), so such a park resumes
+  // only on the owner's release. Without peers, the outcome (peer
+  // bookkeeping) is left out and the acceptance, the owner's, kept.
+  // The acceptance's state counts too: an owner who accepts the same attempt
+  // for the same tree again, after it settled with another outcome than the
+  // one first accepted, turns a stale acceptance into a matching one, which
+  // moves neither the id nor the tree. And so does its time: accepted for tree
+  // T1, refused at T2 and accepted for T1 again moves nothing else, and an
+  // explicit act of the owner's is always reconsidered.
+  const rv = c.review ?? null;
+  const accepted = rv?.acceptance?.attempt_id ?? null;
+  const acceptedTree = rv?.acceptance?.tree ?? null;
+  const acceptedState = accepted !== null ? (rv?.acceptance?.state ?? null) : null;
+  const acceptedAt = rv?.acceptance?.accepted_at ?? null;
+  if (withoutPeers) {
+    if (accepted !== null) tuple.push(['review-acceptance', accepted, acceptedTree, acceptedState, acceptedAt]);
+  } else if (rv?.blocking === true || accepted !== null) {
+    tuple.push(['review', rv.latest?.id ?? null, rv.latest?.outcome ?? null, accepted, acceptedTree, acceptedState, acceptedAt]);
+  }
   return tuple;
+}
+
+// C163 A1b (ADR-0063, implementation note of 2026-11-07) — the halt a lane
+// meets when its next step would commit and its latest review outcome holds
+// the commit back (failed, degraded, unavailable, malformed or unknown, or
+// skipped with no reason or as owner-skip, with no acceptance of the owner's
+// naming that attempt and the outcome it reads): `awaiting-owner:
+// review-outcome`, a gate derived from state and never stored. It is a
+// judgment halt, so the owner's `--next <verb>` (a new review) replaces it;
+// `--next commit` does not (forcedApplies, forcedForLanes). Whether the
+// working tree is still the one the owner accepted is Phase 7's to compare
+// (it reads the tree; this policy does not): the observer asks the persona in
+// the checkout it looks from (observe.mjs), so a moved tree reads `held` here
+// too, and a look from elsewhere leaves the step to Phase 7's refusal, which
+// verifyStep turns into this halt (reviewHaltAfterCommitStep). Null when the
+// lane is not held.
+function reviewHalt(id, child, pointer) {
+  const r = child?.review;
+  if (!r?.held) return null;
+  return halt(`awaiting-owner:${REVIEW_OUTCOME_GATE}`, `subtask ${id}: ${reviewHeldText(r, child)}`, {
+    subtaskId: id, pointer, review: reviewRecord(r),
+  });
+}
+
+// The sentence a held lane's halt and a refused --next commit give: the
+// attempt, its outcome and error kind, why no acceptance covers it, and the
+// owner's ways on, each one the command it names takes: `--next` parses only
+// `/engineer:<verb>` (parseForcedStep), a run with lanes also names the lane,
+// `review-accept` refuses an attempt still open, and a record this reader
+// cannot use takes neither (reviewRecordRepairText). Ids enter the printed
+// command only when they pass their alphabets.
+function reviewHeldText(r, child) {
+  const id = r.latest?.id ?? null;
+  const why = r.change?.state === 'moved'
+    ? `the owner accepted ${id} for another working tree, so Phase 7 refuses the commit (exit 10)`
+    : r.change?.state === 'unreadable'
+    ? `the owner accepted ${id}, but the working tree cannot be compared (${r.change.reason ?? 'no reason given'}), so Phase 7 refuses the commit (exit 10)`
+    : r.acceptance?.state === 'stale' && r.acceptance.reason === 'outcome-changed'
+    ? `the owner accepted ${r.acceptance.attempt_id} when it read ${r.acceptance.outcome ?? 'another outcome'}, and it reads another outcome now`
+    : r.acceptance?.state === 'stale' && r.acceptance.reason === 'history-changed'
+    ? `the owner accepted ${r.acceptance.attempt_id}, and a gap in the review history was found since`
+    : r.acceptance?.state === 'stale' && r.acceptance.attempt_id === id
+    ? `the owner accepted ${id} before a later review was registered`
+    : r.acceptance?.state === 'stale'
+    ? `the owner's acceptance names ${r.acceptance.attempt_id}, which a later review replaced`
+    : r.acceptance?.state === 'unreadable' ? "the owner's acceptance cannot be read" : 'the owner has not accepted it';
+  const incomplete = r.history_incomplete ? ` (the review history is incomplete: ${(r.reasons ?? []).join(', ')})` : '';
+  const held = `its latest review outcome holds the commit back: ${latestOutcomeText(r)}`;
+  const repair = reviewRecordRepairText(r.latest);
+  if (repair) return `${held}${incomplete}; ${repair}, then relaunch`;
+  // The workflow file's own path: with shared creation it lives in the main
+  // checkout's state root, which a path relative to the lane would miss.
+  // A path with a space or a non-ASCII character is quoted (pathWord), never
+  // dropped (critique of 2026-11-07, MAJOR 4): the command is the owner's
+  // only way on but a new review. Only a path holding a control character,
+  // which no line can print, is left out, and the attempt is still named.
+  const file = child?.path ?? null;
+  const acceptable = id !== null && isReviewAttemptId(id);
+  const printable = typeof file === 'string' && file !== '' && !/[\u0000-\u001f\u007f]/.test(file);
+  const accept = acceptable && printable
+    ? `the owner accepts it for the working tree as it is, run in the lane's checkout: node <engineer>/scripts/state.mjs review-accept --workflow-path ${pathWord(file)} --attempt-id ${id} --note-file <file>`
+    : acceptable
+      ? `the owner accepts it for the working tree as it is, run in the lane's checkout: state.mjs review-accept --attempt-id ${id} with --workflow-path naming the subtask's workflow file (its path cannot be printed here)`
+      : null;
+  const lane = isSafeSubtaskId(child?.originating_subtask) ? child.originating_subtask : '<subtask>';
+  const again = `Run the review again (relaunch with \`--next /engineer:critique\` or, in a run with lanes, \`--lane ${lane} --next /engineer:critique\`; a new outcome replaces it)`;
+  const ways = r.latest?.open
+    ? `${again}; ${id} is still open, so it cannot be accepted until its run is settled`
+    : accept ? `${again}, or ${accept}, then relaunch`
+    : `${again}; the record names no attempt that can be accepted`;
+  return `${held}; ${why}${incomplete}. ${ways}`;
+}
+
+// C163 A1b (critique of 2026-11-07, third pass, MAJOR 1) — a commit step that
+// leaves a child the review gate holds active, with no new commit and no owner
+// gate, as the look after it reads it: Phase 7 refused (exit 10, nothing
+// written) over an outcome recorded while the step ran, or over a working tree
+// the owner's acceptance does not cover (observe.mjs compares it in the step's
+// own checkout). A step that stopped for another reason reads `held: false`, so
+// it is judged as any other: no new commit alone says nothing of the review.
+// What the worker reported goes beside the record. Null otherwise.
+function reviewHaltAfterCommitStep(s, before, after, summary) {
+  if (s.kind !== 'commit' || !s.subtaskId) return null;
+  const child = after?.children?.[s.subtaskId];
+  if (child?.location !== 'active' || child.awaiting_owner?.gate || child.review?.held !== true) return null;
+  if (!after?.git?.head || after.git.head !== before?.git?.head) return null;
+  const h = reviewHalt(s.subtaskId, child, child.relPath ? `${child.relPath}#review_attempts` : null);
+  return { ...h, detail: `${h.detail}.${summary ? ` The worker reported: ${summary}` : ''}` };
+}
+
+/**
+ * C163 A1b — what a report keeps of a child's review record: each outcome
+ * (id, phase, type, outcome, error kind or reason), the latest, whether it
+ * holds the commit back, the acceptance, and whether the history is complete.
+ * Null when the child carries no review record (an older observer).
+ */
+export function reviewRecord(r) {
+  if (!r || typeof r !== 'object') return null;
+  return {
+    latest: r.latest ?? null,
+    held: r.held === true,
+    // Not while the gate holds: an acceptance the tree has moved past covers nothing.
+    accepted: r.acceptance?.state === 'matches' && r.held !== true ? r.acceptance.attempt_id : null,
+    outcomes: Array.isArray(r.outcomes) ? r.outcomes : [],
+    history_incomplete: r.history_incomplete === true,
+    reasons: Array.isArray(r.reasons) ? r.reasons : [],
+  };
+}
+
+/**
+ * C163 A1b — what picks a lane parked on the review gate up again (its park's
+ * `resolution.change`), from its record: each way on the halt names, and only
+ * those (reviewHeldText): the gate is never stored, so there is none to clear.
+ */
+export function reviewResolutionText(rec, subtaskId) {
+  const repair = reviewRecordRepairText(rec?.latest);
+  if (repair) return `${repair}; the record read again picks the lane up`;
+  const review = `relaunch with --lane ${subtaskId} --next /engineer:critique to run the review`;
+  if (rec?.latest?.open) return `a new review outcome picks it up again; ${review} (${rec.latest.id} is still open, so it cannot be accepted until its run is settled)`;
+  return `the owner's review-accept (its command is in the halt) or a new review outcome picks it up again; ${review}`;
+}
+
+/** One line naming each review outcome of a report's record, and whether the history is incomplete. */
+export function reviewOutcomesText(rec) {
+  if (!rec) return 'review outcomes: not observed';
+  const list = rec.outcomes.length === 0 ? 'none recorded'
+    : rec.outcomes.map((o) => `${o.id ?? '?'} ${[o.phase, o.type].filter(Boolean).join(' ')}: ${o.outcome}${o.error_kind ?? o.reason ? ` (${o.error_kind ?? o.reason})` : ''}${o.legacy ? ' [legacy]' : ''}`).join('; ');
+  const tail = [
+    rec.held ? 'the latest holds the commit back' : null,
+    rec.accepted ? `accepted by the owner: ${rec.accepted}` : null,
+    rec.history_incomplete ? `history incomplete (${rec.reasons.join(', ') || 'no reason given'})` : null,
+  ].filter(Boolean);
+  return `review outcomes: ${list}${tail.length ? `; ${tail.join('; ')}` : ''}`;
 }
 
 // ADR-0068 Decision 8 — what the macro's record of rebindings says of one
@@ -426,8 +589,12 @@ function classify(subtask, child, landing, verify = null) {
     // recovers both, so neither follows the stale next step, nor the P7 guard
     // below: the commit an answered request's on_pass began keeps the
     // request's answer, and its own commit changed the tree the guard reads.
+    // C163 A1b — the review gate holds every way to the commit: this
+    // recovery, and the commit and done steps below.
+    const held = reviewHalt(id, child, pointerOf('review_attempts'));
     if (child.current_phase === 'phase-7-commit'
       || (child.terminal_marker === true && COMMIT_SURFACE_PHASES.has(child.current_phase))) {
+      if (held) return { kind: 'active', judgment: true, halt: held };
       return { kind: 'active', step: { kind: 'commit', subtaskId: id, branch: child.branch, recovery: true } };
     }
     // P7 — a request a batch of this driver answered: its on_pass is taken
@@ -452,6 +619,10 @@ function classify(subtask, child, landing, verify = null) {
       return { kind: 'active', judgment: true, halt: halt('low-confidence', `subtask ${id}: ${label}`, { subtaskId: id, pointer: pointerOf('next_step') }) };
     }
     if (ns.kind === 'verb') return { kind: 'active', step: { kind: 'verb', verb: ns.verb, subtaskId: id, branch: child.branch } };
+    // commit and done both run /engineer:commit, which commits whatever the
+    // tree holds: the gate holds both (a done over a clean tree only closes,
+    // and the owner's acceptance lets it).
+    if (held) return { kind: 'active', judgment: true, halt: held };
     return { kind: 'active', step: { kind: 'commit', subtaskId: id, branch: child.branch } };
   }
 
@@ -476,6 +647,9 @@ function classify(subtask, child, landing, verify = null) {
       waiting: {
         subtaskId: id, branch: subtask.branch, reason: landing.reason, detail: landing.detail ?? '',
         engineerWorkflowId: child.workflow_id ?? null,
+        // C163 A1b — each review outcome of the subtask's workflow, for the
+        // landing-ready report and the awaiting-landing halt.
+        ...(child.review ? { review: reviewRecord(child.review) } : {}),
         ...(viaStop ? { note: `${child.workflow_id} was archived by a Stop hook after an interactive ${child.current_phase}; check that ${subtask.branch} carries the work` } : {}),
       },
     };
@@ -712,6 +886,9 @@ function forcedApplies(forced, { view, subtasks, classified, active }) {
     case 'commit': {
       if (active.length !== 1) return nope(`/engineer:${forced.kind === 'commit' ? 'commit' : forced.verb} needs exactly one active engineer workflow; there are ${active.length}`);
       const child = view.children?.[active[0].subtask.id];
+      // C163 A1b — the owner's --next replaces the review gate's halt with a
+      // verb (a new review), never with the commit it holds back.
+      if (forced.kind === 'commit' && child?.review?.held) return nope(`subtask ${active[0].subtask.id}: ${reviewHeldText(child.review, child)}`);
       return { kind: forced.kind, verb: forced.verb, subtaskId: active[0].subtask.id, branch: child?.branch ?? active[0].subtask.branch };
     }
     case 'verify': {
@@ -804,6 +981,7 @@ export function forcedForLanes(pairs, view) {
       case 'verb':
       case 'commit':
         if (!active.includes(id)) return nope(`subtask ${id} has no active engineer workflow`);
+        if (f.kind === 'commit' && view.children[id].review?.held) return nope(`subtask ${id}: ${reviewHeldText(view.children[id].review, view.children[id])}`);
         forced.set(id, { kind: f.kind, ...(f.kind === 'verb' ? { verb: f.verb } : {}), subtaskId: id, branch: view.children[id].branch ?? s.branch });
         break;
       case 'verify':
@@ -931,6 +1109,12 @@ function decideLanesStep(view, ctx = {}) {
     if (c.kind === 'done' || c.kind === 'done-no-commit') { done.push(c.step); continue; }
     if (c.kind === 'waiting') { waiting.push(c.waiting); continue; }
     const f = forced.get(s.id);
+    // C163 A1b — a forced commit judged when the run began meets the review
+    // gate again at each decision: an outcome recorded since holds it too.
+    if (f?.kind === 'commit' && view.children?.[s.id]?.review?.held) {
+      out.laneHalts.push(reviewHalt(s.id, view.children[s.id], view.children[s.id].relPath ? `${view.children[s.id].relPath}#review_attempts` : null));
+      continue;
+    }
     if (f && f.kind !== 'dispatch') { out.laneSteps.push(laneStep({ ...f, forced: true }, s.id)); continue; }
     if (c.halt) { out.laneHalts.push(c.halt); continue; }
     const lane = lanes.get(s.id);
@@ -1010,8 +1194,11 @@ export function haltScope(h, view) {
 // another version is never compared, and never resumes by itself (Decision 1,
 // item 3). Raise it whenever parkFingerprint's input changes. 3: the
 // rebinding facts (ADR-0068 Decision 8) — a park an older run kept beside a
-// record it did not read is not compared with one that reads it.
-export const PARK_FINGERPRINT_VERSION = 3;
+// record it did not read is not compared with one that reads it. 4: the
+// review gate's facts (C163 A1b, childTuple) — a park kept before them, whose
+// child's latest review outcome blocks, would otherwise compare `changed` and
+// resume without the owner.
+export const PARK_FINGERPRINT_VERSION = 4;
 
 /**
  * A park's fingerprint: the lane's fingerprint, its peer bookkeeping included:
@@ -1210,7 +1397,7 @@ export const STEP_REPORT_SCHEMA = Object.freeze({
         },
       ],
     },
-    awaiting_owner: { enum: [...OWNER_GATES, 'duplicate-workflow', null] },
+    awaiting_owner: { enum: [...STORED_OWNER_GATES, 'duplicate-workflow', null] },
     summary: { type: 'string', maxLength: 400 },
     // C127 (ADR-0063 D5, amendment of 2026-10-13): true while the worker
     // still waits on a background task's notification, false once this
@@ -1243,7 +1430,7 @@ export function stepReportProblem(r) {
     if (!isPlainObject(ns) || Object.keys(ns).some((k) => !NEXT_STEP_KEYS.has(k)) || ![...NEXT_STEP_KEYS].every((k) => Object.hasOwn(ns, k))) return 'next_step';
     if (!NEXT_STEP_KINDS.includes(ns.kind) || !(ns.verb === null || VERBS.includes(ns.verb)) || !CONFIDENCES.includes(ns.confidence)) return 'next_step';
   }
-  if (!(r.awaiting_owner === null || r.awaiting_owner === 'duplicate-workflow' || OWNER_GATES.includes(r.awaiting_owner))) return 'awaiting_owner';
+  if (!(r.awaiting_owner === null || r.awaiting_owner === 'duplicate-workflow' || STORED_OWNER_GATES.includes(r.awaiting_owner))) return 'awaiting_owner';
   if (typeof r.summary !== 'string' || r.summary.length > 400) return 'summary';
   if (typeof r.waiting_on_background !== 'boolean') return 'waiting_on_background';
   return null;
@@ -1360,7 +1547,12 @@ export function verifyStep({ step: s, worker: w, before, after }) {
   const r = w.report;
   const summary = String(r?.summary ?? '').slice(0, 300);
   if (!r || typeof r !== 'object') return halt('owner-choice', 'the worker returned no step report, so its result cannot be cross-checked');
-  if (r.outcome === 'failed') return halt('worker-failed', `the worker reports failure: ${summary}`);
+  if (r.outcome === 'failed') {
+    // Still a failed step, whose peers the run cancels (its reason decides
+    // that), with the review record when the gate is why (C163 A1b).
+    const held = reviewHaltAfterCommitStep(s, before, after, null);
+    return halt('worker-failed', `the worker reports failure: ${summary}${held ? `; ${held.detail}` : ''}`, held ? { subtaskId: held.subtaskId, pointer: held.pointer, review: held.review } : {});
+  }
   // A last report that still waits, from a worker that exited: the wait it
   // names never ended in a report, so what the step did is not known (C127).
   if (r.waiting_on_background === true) {
@@ -1383,6 +1575,10 @@ export function verifyStep({ step: s, worker: w, before, after }) {
     return halt('owner-choice', `the worker reports ${r.awaiting_owner}, but the state records ${gates.size ? [...gates].join(', ') : 'no owner gate'}: ${summary}`, { subtaskId: s.subtaskId ?? null });
   }
   const child = s.subtaskId ? after?.children?.[s.subtaskId] : null;
+  // Before a report of the owner's being needed is checked against stored
+  // gates: Phase 7's refusal over a held review stores none (C163 A1b).
+  const reviewHeldAfter = reviewHaltAfterCommitStep(s, before, after, summary);
+  if (reviewHeldAfter) return reviewHeldAfter;
   if (r.outcome === 'needs_owner' && !r.awaiting_owner && child?.next_step?.kind !== 'owner-decision') {
     return halt('owner-choice', `the worker reports that it needs the owner, but the state records no owner decision: ${summary}`, { subtaskId: s.subtaskId ?? null });
   }

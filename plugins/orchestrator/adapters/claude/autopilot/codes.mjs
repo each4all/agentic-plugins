@@ -16,7 +16,15 @@ export const ENGINEER_OWNER_GATES = Object.freeze([
 export const MACRO_OWNER_GATES = Object.freeze([...VALID_MACRO_OWNER_GATES]);
 // `duplicate-workflow` is never stored (no single file owns it); it reaches
 // the driver as an entry-brief owner-choice-required and halts owner-choice.
-export const OWNER_GATES = Object.freeze([...MACRO_OWNER_GATES, ...ENGINEER_OWNER_GATES]);
+// The gates a worker's step report may name: the stored ones.
+export const STORED_OWNER_GATES = Object.freeze([...MACRO_OWNER_GATES, ...ENGINEER_OWNER_GATES]);
+// C163 A1b (ADR-0063, implementation note of 2026-11-07) — gates the policy
+// derives from state and never stores: `review-outcome`, a lane whose latest
+// review outcome holds its commit back (lib/review-attempts.mjs
+// REVIEW_OUTCOME_GATE, held equal by tests/orchestrator/test-autopilot-review-gate.mjs).
+// The owner's acceptance or a new review clears it, never a worker.
+export const DERIVED_OWNER_GATES = Object.freeze(['review-outcome']);
+export const OWNER_GATES = Object.freeze([...STORED_OWNER_GATES, ...DERIVED_OWNER_GATES]);
 
 // DESIGN §6.2 / ADR-0063 D4. `awaiting-owner` is reported as
 // `awaiting-owner:<gate>`.

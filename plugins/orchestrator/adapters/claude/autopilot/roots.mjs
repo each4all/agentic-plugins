@@ -116,6 +116,7 @@ const PROBES = Object.freeze({
     ['commands/commit.md', '/engineer:commit', 'the /engineer:commit command (S3+S4, engineer 0.24.0)'],
     ['commands/compose.md', '${AGENTIC_ENGINEER_ROOT:-', 'runbooks that honor AGENTIC_ENGINEER_ROOT (S0)'],
     ['scripts/peer-runner.mjs', "opts.subcommand === 'settle'", 'peer-runner settle, which settles the peers a step closed on its report left (C127; ADR-0066 PC2b)'],
+    ['scripts/state.mjs', "case 'review-accept'", 'the review gate, with the owner\'s review-accept and Phase 7\'s refusal (C163 A1b)'],
   ],
   runtime: [
     ['scripts/context.mjs', "'entry-brief'", 'runtime:context entry-brief (ADR-0045)'],
