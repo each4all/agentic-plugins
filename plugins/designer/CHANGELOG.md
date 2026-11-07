@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.4](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.14.3...plugin-designer-v0.14.4) (2026-11-07)
+
+
+### Bug Fixes
+
+* **designer:** tell when the latest review outcome holds a commit back, and record the owner's acceptance of it (C163 A1b) ([0a10c21](https://github.com/each4all/agentic-plugins/commit/0a10c219e015beb381013d8e56eab750162924aa))
+
 ## [0.14.3](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.14.2...plugin-designer-v0.14.3) (2026-11-07)
 
 

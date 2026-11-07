@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.4](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.15.3...plugin-founder-v0.15.4) (2026-11-07)
+
+
+### Bug Fixes
+
+* **founder:** tell when the latest review outcome holds a commit back, and record the owner's acceptance of it (C163 A1b) ([ae6267e](https://github.com/each4all/agentic-plugins/commit/ae6267e5bd1916462dcac737e5c4d9b141e3c64e))
+
 ## [0.15.3](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.15.2...plugin-founder-v0.15.3) (2026-11-07)
 
 
