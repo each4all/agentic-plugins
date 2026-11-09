@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.5](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.15.4...plugin-founder-v0.15.5) (2026-11-09)
+
+
+### Bug Fixes
+
+* **founder:** record the change identity with each review outcome, and the owner's acceptance of a change its reviews do not vouch for (C163 A2b) ([ae9fc15](https://github.com/each4all/agentic-plugins/commit/ae9fc158d7ed71d00b4d30008c8b408350ffd54e))
+
 ## [0.15.4](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.15.3...plugin-founder-v0.15.4) (2026-11-07)
 
 

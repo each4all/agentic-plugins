@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.5](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.14.4...plugin-designer-v0.14.5) (2026-11-09)
+
+
+### Bug Fixes
+
+* **designer:** record the change identity with each review outcome, and the owner's acceptance of a change its reviews do not vouch for (C163 A2b) ([6d580c3](https://github.com/each4all/agentic-plugins/commit/6d580c37f4ea476159d099a3ac91858622bdd436))
+
 ## [0.14.4](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.14.3...plugin-designer-v0.14.4) (2026-11-07)
 
 
