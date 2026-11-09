@@ -32,6 +32,7 @@ const TS = [
   'tests/orchestrator/test-autopilot-scheduler-landing-halts.mjs',
 ];
 const TO = 'tests/orchestrator/test-autopilot-offloop.mjs';
+const TOI = 'tests/orchestrator/test-autopilot-offloop-interrupt.mjs';
 const TLS = 'tests/orchestrator/test-autopilot-lanes-supervision.mjs';
 
 const AP = 'plugins/orchestrator/adapters/claude/autopilot';
@@ -49,7 +50,7 @@ const OFFLOOP = `${AP}/offloop.mjs`;
 const GATE = '  const gate = (refreshable = false) => gateNewLane(throttle, { nowSec: now() / 1000, inFlight: inflight.size, refreshable });';
 const TERMINAL = '  if (macro.fm?.terminal_marker === true && !ctx.driverBusy) {';
 
-export const TESTS = [TT, TB, TP, TW, TC, TDR, TO, ...TS, TLS];
+export const TESTS = [TT, TB, TP, TW, TC, TDR, TO, TOI, ...TS, TLS];
 
 export const MUTATIONS = [
   // ---- T: the throttle ------------------------------------------------------
@@ -329,14 +330,14 @@ export const MUTATIONS = [
     killed_by: /signals every group it is given, its descendants included/,
   },
   {
-    id: 'O9', file: OFFLOOP, tests: [TO],
+    id: 'O9', file: OFFLOOP, tests: [TOI],
     from: "export const KILLED_AT_INTERRUPT = Object.freeze(['observe', 'fetchBaseline', 'reportLanding']);",
     to: 'export const KILLED_AT_INTERRUPT = Object.freeze([]);',
     why: 'an interrupt waits on a look, a fetch or the landing report in flight for the whole bound instead of killing it',
     killed_by: /stops a look, a fetch and the landing report in flight at once/,
   },
   {
-    id: 'O10', file: OFFLOOP, tests: [TO],
+    id: 'O10', file: OFFLOOP, tests: [TOI],
     from: '    const left = Math.max(0, interruptedAt + boundMs - Date.now());',
     to: '    const left = boundMs;',
     why: 'the bound counts from each task\'s start, not from the interrupt: tasks started one after another extend the interrupt without end',

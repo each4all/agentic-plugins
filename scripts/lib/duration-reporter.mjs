@@ -8,8 +8,11 @@
 // instead as one top-level test named after the file (`test:pass` or
 // `test:fail` at nesting 0), whose duration is taken. The run's own summary is
 // the `test:summary` Node emits last and without a `file`.
-// `shard-tests.mjs record` reads those lines and refuses a recording whose
-// last line is not a successful run's summary: a run that was stopped never
+// `npm test` runs two passes, the parallel pool and then the large tier
+// (scripts/run-tests.mjs), and appends the second's lines to the first's: a
+// recording of it holds one run summary per pass. `shard-tests.mjs record`
+// reads those lines and refuses a recording with a summary that is not a
+// success, or whose last line is not a summary: a run that was stopped never
 // wrote one.
 //
 // A file's duration is its own run as Node timed it, with the process start

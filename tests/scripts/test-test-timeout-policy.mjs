@@ -13,6 +13,9 @@
 //   (i)  Every node --test script in package.json carries --test-timeout,
 //        placed BEFORE the first positional path (Node 24 parses a flag after
 //        a positional as a test argument, silently dropping the bound).
+//        scripts.test runs the suite through scripts/run-tests.mjs, which
+//        hands its options to each of its two passes (the parallel pool and
+//        the large tier): the bound reaches both.
 //   (ii) An orphaned-pending-promise test (zero live handles, never settles —
 //        the exact 2026-07-11 hang shape) exits nonzero within the bound
 //        instead of hanging, and reports the timeout in its output.
@@ -24,6 +27,8 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import { buildPasses } from '../../scripts/run-tests.mjs';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
@@ -33,12 +38,14 @@ const TIMEOUT_FLAG = /--test-timeout=(\d+)/;
 // than listed here, so a script added later is covered too. test:smoke is
 // deliberately exempt: it is opt-in and host-CLI-bound, not a CI hang surface.
 const UNBOUNDED_EXEMPT = new Set(['test:smoke']);
+const RUNS_TESTS = (cmd) => cmd.includes('node --test') || cmd.includes('scripts/run-tests.mjs');
 
 test('every node --test script pins --test-timeout before its first test path', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
   const bounded = Object.keys(pkg.scripts)
-    .filter((name) => !UNBOUNDED_EXEMPT.has(name) && pkg.scripts[name].includes('node --test'));
-  assert.ok(bounded.includes('test'), 'scripts.test must invoke node --test (the suite full-tests.yml runs)');
+    .filter((name) => !UNBOUNDED_EXEMPT.has(name) && RUNS_TESTS(pkg.scripts[name]));
+  assert.ok(bounded.includes('test'), 'scripts.test must run the suite (the one full-tests.yml runs)');
+  assert.match(pkg.scripts.test, /^node scripts\/run-tests\.mjs /, 'scripts.test runs the suite through the tier runner');
   for (const name of bounded) {
     const cmd = pkg.scripts[name];
     const match = cmd.match(TIMEOUT_FLAG);
@@ -60,6 +67,22 @@ test('every node --test script pins --test-timeout before its first test path', 
         `scripts.${name}: --test-timeout must precede the first test path — after a positional, `
           + 'Node 24 treats it as a test argument and the bound silently vanishes');
     }
+  }
+});
+
+test('the tier runner hands scripts.test\'s --test-timeout to both of its passes', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
+  const argv = pkg.scripts.test.split(' ').slice(2);
+  const timeout = argv.find((a) => TIMEOUT_FLAG.test(a));
+  assert.ok(timeout, 'scripts.test carries --test-timeout');
+  const passes = buildPasses({
+    argv, repoRoot: REPO_ROOT, discovered: ['tests/test-a.mjs', 'tests/test-b.mjs'], large: ['tests/test-b.mjs'],
+  });
+  assert.deepEqual(passes.map((p) => p.tier), ['pool', 'large']);
+  for (const pass of passes) {
+    const firstFile = pass.args.findIndex((a) => a.startsWith('tests/'));
+    assert.ok(pass.args.indexOf(timeout) !== -1 && pass.args.indexOf(timeout) < firstFile,
+      `the ${pass.tier} pass carries ${timeout} before its first file: ${pass.args.join(' ')}`);
   }
 });
 

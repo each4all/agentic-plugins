@@ -12,6 +12,9 @@ Accepted
 > Amended 2026-10-19: `full-tests.yml` runs `npm test`'s files as a matrix of
 > shards that together run each file once, and Decision 5's guard pins the
 > shards instead of one `npm test` step.
+> Amended 2026-11-09: `npm test` runs its files in two passes by test size
+> tier, the parallel pool and then the declared large tier at low
+> concurrency (`scripts/run-tests.mjs`).
 
 ## Context
 
@@ -462,3 +465,69 @@ recording; record again when the shards drift apart.
 
 **Rollback.** Revert the commit: the matrix, the weights and the two
 mutation anchors go back together.
+
+### 2026-11-09 — test size tiers: the large tier runs after the pool
+
+**Trigger**: macro `8a34a1` subtask `W3-flake`, from the owner's decision of
+2026-11-09. On a machine with 88 hardware threads (Node 24.18.0, `main`
+`d86f1349`) the suite at default concurrency kept every CPU 84–92 % busy and
+started about 6,600 processes a second (15 at rest). One read of the whole
+process listing then proved nothing in 0 of 15 tries, against 10 of 10 at
+rest (about 350 ms). The run failed 49 tests; at `--test-concurrency=24` it
+failed 22 and was slower; a temporary directory per file failed 54. Every
+failing file passed on its own.
+
+**What changed.**
+
+- Tests have a size: *small* (one process, function calls only), *medium*
+  (subprocesses such as git and the CLIs, temporary repositories) and
+  *large* (depends on the state of the whole machine: the full process
+  listing, real CPU or elapsed time measured against a bound, a runbook run
+  end to end). Only large is declared, in one reviewed file,
+  `scripts/data/test-tiers.json`; a file it does not name is in the pool. Its
+  loader, `scripts/lib/suite-tiers.mjs`, refuses an entry that is unsorted,
+  repeated, unsafe or not a file Node's discovery finds.
+- `npm test` is `node scripts/run-tests.mjs` with the same options as
+  before (the preloads are now written `--import=<file>`). The runner runs
+  the pool at the caller's concurrency, Node's default when none, then the
+  large files at a concurrency of at most 2, and fails when either pass
+  failed. Each pass is a `node --test` child in the runner's process group,
+  with every `NODE_TEST_*` variable removed; a SIGINT or SIGTERM is
+  forwarded and starts no later pass. A named file, a directory or a glob
+  goes to the pass its tier names; a name that matches nothing is refused.
+- The audit of 2026-11-09 declared the peer snapshot suites, the dead-run
+  cleanup (C142) and the verification selection's CPU bound whole, and moved
+  four cases out of pool files into large files of their own: the stall
+  watch end to end, the bootstrap renderer's 40 ms bound, the run's
+  interrupt (200 ms and 450 ms bounds) and the macOS read of the real process
+  table. Bounds of a second or more, with a wide margin over what they
+  measure, stay in the pool.
+- `scripts/shard-tests.mjs` still runs `npm test -- <files>`: each shard runs
+  its own share of both tiers, in two passes. Its `record` takes a
+  recording with one run summary per pass, since the runner appends the
+  large pass's reporter output to the pool's, and refuses one whose passes
+  do not each end with their own summary over their own tier's files. When
+  both passes run, the runner refuses what two passes cannot honour: a
+  reporter that writes one document per run (tap, junit), wherever it
+  writes, and `--watch`, whose pool never ends; the cure is two `npm test`
+  runs, each naming one tier's files. It reads those options as Node does,
+  `_` for `-` in a name and NODE_OPTIONS' before the arguments, and refuses
+  a file destination in NODE_OPTIONS, which it cannot redirect for the
+  large pass. `--watch-path` is left to Node, which refuses it beside
+  `--test`.
+- Decision 5 (v)'s guard counts a step that calls `run-tests.mjs` as one that
+  runs tests.
+
+**What the measurement does not show.** The 49 failures were measured on one
+machine with many threads, where the pool is widest. A CI runner has four
+cores: its pool is narrower, and its shards now end with a pass of their
+share of the large files at concurrency 2. Whether each shard stays inside
+its 20-minute step bound is seen on the push that carries this change.
+
+**Rollback.** Put `node --test --test-timeout=120000 --import
+./tests/_hermetic-env.mjs --import ./tests/_signal-guard.mjs` back into
+`scripts.test`, and revert the runner, the loader, the declaration, the
+recording rule in `shard-tests.mjs` and the guards that name them
+(`tests/scripts/test-test-timeout-policy.mjs`,
+`tests/scripts/test-full-suite-coverage.mjs`, the G5 anchor of
+`scripts/mutation-specs/supervisor-kill.mjs`) together.

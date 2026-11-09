@@ -52,6 +52,7 @@
     }
   },
   "mappings": [
-    { "paths": ["plugins/runtime/**"], "tests": ["tests/plugin-shape/test-runtime-plugin.mjs"] }
+    { "paths": ["plugins/runtime/**"], "tests": ["tests/plugin-shape/test-runtime-plugin.mjs"] },
+    { "paths": ["scripts/run-tests.mjs", "scripts/lib/suite-tiers.mjs", "scripts/data/test-tiers.json"], "tests": ["tests/scripts/test-run-tests.mjs", "tests/scripts/test-test-tiers.mjs", "tests/scripts/test-test-timeout-policy.mjs", "tests/scripts/test-full-suite-coverage.mjs", "tests/scripts/test-shard-tests.mjs"] }
   ]
 }

@@ -813,6 +813,25 @@ describe('Phase 7 compares the change with its reviews (ADR-0069 Decision 3)', (
     });
   });
 
+  it('with no branch to land on, the refusal names the cure, `git remote set-head origin --auto`, never an acceptance', async () => {
+    await withRepo(async (dir) => {
+      const wf = workflow(dir);
+      await writeFile(join(dir, 'pkgA', 'x'), 'x1\n');
+      git(dir, 'remote', 'set-head', 'origin', '--delete');
+      git(dir, 'add', 'pkgA/x');
+      git(dir, 'commit', '-qm', 'fix: x\n\nWorkflow-ID: compose-20261107T000000Z-eeeeee', '--no-verify');
+      const c = await check(dir, wf, []);
+      // A real check of a repository with no refs/remotes/origin/HEAD: held,
+      // with a key an acceptance could name.
+      deepStrictEqual([c.state, c.reason, c.held, typeof c.acceptance_key], ['not-comparable', 'no-landing-branch', true, 'string']);
+      const hold = S.reviewBindingHoldText(c, { workflowPath: wf });
+      match(hold, /cannot be compared with its reviews \(no-landing-branch\)/);
+      match(hold, /`git remote set-head origin --auto`/);
+      match(hold, /then run the commit again/);
+      doesNotMatch(hold, /review-binding-accept/);
+    });
+  });
+
   it('the projection keeps a staged mode core.filemode cannot read: admission sees the commit as it will be', async () => {
     await withRepo(async (dir, root) => {
       git(dir, 'config', 'core.filemode', 'false');

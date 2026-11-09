@@ -276,6 +276,25 @@ ADR-0001 final note.
 - `npm test` — full Node test suite via `node --test` discovery (ADR-0033);
   conventionally-named new test files are picked up automatically.
   `npm test -- <files>` runs a subset (`npm test -- tests/cross-host/test-*.mjs`).
+
+  **Test sizes.** A test is *small* (one process, function calls only),
+  *medium* (subprocesses such as git and the CLIs, temporary repositories)
+  or *large* (it depends on the state of the whole machine: the full process
+  listing, real CPU or elapsed time measured against a bound, a runbook run
+  end to end). `npm test` runs `scripts/run-tests.mjs`, which runs small and
+  medium files in the parallel pool first, then the large files at a
+  concurrency of at most 2, and fails when either pass did; a subset and a
+  shard split the same way. Only large is declared:
+  `scripts/data/test-tiers.json` lists those files, sorted, and every file it
+  does not name is in the pool. A test that reads the whole process table or
+  bounds real time goes in a file of its own on that list (move such a case
+  out of a pool file rather than listing the pool file); where the judgment
+  alone is under test, a seam with a fake listing keeps it small (the peer
+  `LISTING_HOOK` of `peer-snapshot.mjs`, which the peer snapshot suites use). A `--test-concurrency` you pass applies
+  to the pool as given and caps the large pass. The loader
+  (`scripts/lib/suite-tiers.mjs`) refuses a listed name discovery does not
+  find, so a renamed large file must be renamed there too (ADR-0033,
+  amendment of 2026-11-09).
 - `npm run test:smoke` — the companion smoke tests
   (`companions/tests/*.smoke.mjs`, outside discovery).
 - `npm run lint:plugin-shape` — validate every plugin directory with `kit/lint`.

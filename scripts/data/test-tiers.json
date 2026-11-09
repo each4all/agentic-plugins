@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "large": [
+    "tests/orchestrator/test-autopilot-dead-runs.mjs",
+    "tests/orchestrator/test-autopilot-offloop-interrupt.mjs",
+    "tests/orchestrator/test-autopilot-procs-live.mjs",
+    "tests/orchestrator/test-autopilot-verify-select.mjs",
+    "tests/orchestrator/test-autopilot-worker-stall-e2e.mjs",
+    "tests/orchestrator/test-peer-snapshot-claude.mjs",
+    "tests/orchestrator/test-peer-snapshot.mjs",
+    "tests/persona-pipeline/test-peer-snapshot-claude.mjs",
+    "tests/persona-pipeline/test-peer-snapshot.mjs",
+    "tests/runtime/test-bootstrap-render-timing.mjs"
+  ]
+}

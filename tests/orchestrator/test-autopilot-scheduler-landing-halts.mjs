@@ -16,7 +16,7 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, match, ok, rejects, strictEqual } from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -56,6 +56,8 @@ describe('landing reports with lanes', () => {
     const ENG = await import(join(ROOTS.engineer, 'scripts', 'state.mjs'));
     let cleared = false;
     let ended = false;
+    // Each child's recorded macro path, read while the run looks at it.
+    const parents = {};
     const observeAsync = async (a, o) => {
       if (!ended && a.repoRoot === t.work && a.fetch === false) {
         ended = true;
@@ -63,6 +65,10 @@ describe('landing reports with lanes', () => {
         else t.signals.emit('SIGINT');
       }
       const v = await observeInChild(a, o);
+      for (const id of ['A', 'B']) {
+        const p = v.children?.[id]?.path;
+        if (p && !(id in parents) && existsSync(p)) parents[id] = (await ENG.readWorkflow(p)).frontmatter.parent_workflow_path ?? null;
+      }
       if (!cleared && a.repoRoot === t.lane('B') && v.children?.B?.awaiting_owner?.gate === 'peer-conflict') {
         cleared = true;
         await ENG.clearAwaitingOwner({
@@ -75,7 +81,7 @@ describe('landing reports with lanes', () => {
     try {
       const code = await t.run({}, { observeAsync });
       ok(cleared && ended && !existsSync(join(t.dir, 'a-reported.timeout')), t.lines.join('\n'));
-      return { t, code, r: t.latest() };
+      return { t, code, r: t.latest(), parents };
     } catch (e) {
       // The callers' finally is not reached yet: clean up here.
       t.fx.cleanup();
@@ -87,8 +93,17 @@ describe('landing reports with lanes', () => {
   // the tip before A landed: it is unknown, never ready (C128, the
   // A-lands-then-B sequence).
   it('an awaiting-landing halt lists what the run\'s list holds as it ends: a lane that landed during the end\'s own look is not listed, and the other keeps no ready', async () => {
-    const { t, code, r } = await idleEnd('land');
+    const { t, code, r, parents } = await idleEnd('land');
     try {
+      // As /orchestrator:next does, the scripted dispatch records the macro's
+      // path on each child (ADR-0067 Decision 3), whatever origin/HEAD says:
+      // the commit finds the macro's integration branch through it.
+      const macro = realpathSync(t.fx.macroPath);
+      deepStrictEqual(['A', 'B'].map((id) => (parents[id] ? realpathSync(parents[id]) : parents[id])), [macro, macro], JSON.stringify(parents));
+      // And the clone names its default branch, as a clone of a non-empty
+      // origin does on every git: the commit of a child with no macro path
+      // still finds a branch to land on.
+      strictEqual(t.fx.git('symbolic-ref', 'refs/remotes/origin/HEAD'), 'refs/remotes/origin/main');
       strictEqual(code, 2, t.lines.join('\n'));
       deepStrictEqual(laneSteps(r), { A: ['dispatch ok', 'commit ok'], B: ['dispatch ok', 'commit ok'] });
       strictEqual(r.halt.reason, 'awaiting-landing', r.halt.detail);

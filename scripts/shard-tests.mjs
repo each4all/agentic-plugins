@@ -42,8 +42,10 @@
 //
 // THE WEIGHTS. `record` rewrites the weights file from one full run's
 // per-file durations, written by scripts/lib/duration-reporter.mjs (its header
-// has the command). It refuses a run that did not finish or did not pass, or
-// that missed a discovered file. Weights only balance the shards: stale or
+// has the command). npm test runs in two passes, the parallel pool and then
+// the large tier (scripts/run-tests.mjs), so a recording holds one run summary
+// per pass and ends with the last. It refuses a run that did not finish or
+// did not pass, or that missed a discovered file. Weights only balance the shards: stale or
 // missing ones cost time, never coverage.
 
 import { spawnSync } from 'node:child_process';
@@ -53,6 +55,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { listTestFiles } from './lib/discover-tests.mjs';
+import { partitionByTier, readTiers } from './lib/suite-tiers.mjs';
 
 const DEFAULT_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -225,6 +228,8 @@ export function weightsFromRecording(repoRoot, text) {
   const root = fs.realpathSync(repoRoot);
   const seconds = new Map();
   const problems = [];
+  // The files each pass recorded, a pass ending at its summary.
+  const segments = [[]];
   const lines = text.split('\n').filter((line) => line.trim() !== '');
   lines.forEach((line, n) => {
     let event;
@@ -235,9 +240,11 @@ export function weightsFromRecording(repoRoot, text) {
       return;
     }
     if (event?.summary === true) {
-      // The run's summary is its last line, and only that.
-      if (n !== lines.length - 1) problems.push(`line ${n + 1} is a run summary before the end of the recording`);
-      else if (event.success !== true || event.counts?.cancelled !== 0) problems.push('the run did not pass: its summary is not a success with no test cancelled');
+      // One summary per pass of npm test (scripts/run-tests.mjs runs the
+      // pool, then the large tier), the last line always one: each must be a
+      // success with no test cancelled.
+      if (event.success !== true || event.counts?.cancelled !== 0) problems.push(`line ${n + 1}: a pass did not pass: its summary is not a success with no test cancelled`);
+      segments.push([]);
       return;
     }
     const ms = event?.duration_ms;
@@ -256,7 +263,7 @@ export function weightsFromRecording(repoRoot, text) {
     const rel = path.relative(root, path.join(dir, path.basename(abs))).split(path.sep).join('/');
     if (!isSafeTestPath(rel)) problems.push(`${event.file} is not a test path inside the repository`);
     else if (seconds.has(rel)) problems.push(`${rel} is recorded twice`);
-    else seconds.set(rel, ms / 1000);
+    else { seconds.set(rel, ms / 1000); segments.at(-1).push(rel); }
   });
   const last = lines.length > 0 ? (() => { try { return JSON.parse(lines.at(-1)); } catch { return null; } })() : null;
   if (last?.summary !== true) problems.push('the recording does not end with the run\'s summary: the run did not finish');
@@ -264,6 +271,23 @@ export function weightsFromRecording(repoRoot, text) {
   const found = new Set(discovered);
   for (const rel of discovered) if (!seconds.has(rel)) problems.push(`${rel} has no recorded duration`);
   for (const rel of seconds.keys()) if (!found.has(rel)) problems.push(`${rel} was recorded but is not discovered`);
+  // A full npm test makes one pass per tier with files, the pool and then the
+  // large tier (scripts/run-tests.mjs): each must have ended with its own
+  // summary, holding its own files. A pass that stopped before its summary
+  // would otherwise borrow the next one's.
+  if (last?.summary === true) {
+    const { pool, large } = partitionByTier(discovered, readTiers(repoRoot));
+    const passes = [['the pool', pool], ['the large tier', large]].filter(([, files]) => files.length > 0);
+    const ended = segments.slice(0, -1);
+    if (ended.length !== passes.length) {
+      problems.push(`the recording holds ${ended.length} pass summaries; a full run makes ${passes.length} (${passes.map(([name]) => name).join(', then ')})`);
+    } else {
+      ended.forEach((files, i) => {
+        const own = new Set(passes[i][1]);
+        for (const rel of files) if (found.has(rel) && !own.has(rel)) problems.push(`${rel} is recorded in pass ${i + 1}, which runs ${passes[i][0]}`);
+      });
+    }
+  }
   if (problems.length > 0) throw new Error(`refusing the recording:\n  ${problems.join('\n  ')}`);
   const sorted = Object.fromEntries([...seconds.keys()].sort().map((rel) => [rel, Math.round(seconds.get(rel) * 10) / 10]));
   return {

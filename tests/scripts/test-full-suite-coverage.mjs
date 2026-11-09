@@ -1,7 +1,8 @@
 // Guard meta-test for the discovery-based full test suite (ADR-0033).
 //
-// `npm test` is `node --test` (no-arg) — Node 24 discovers test files repo-wide
-// by its default conventions, and `.github/workflows/full-tests.yml` runs that
+// `npm test` runs `node --test` (no-arg) through scripts/run-tests.mjs, in two
+// passes by test size tier (the parallel pool, then the large tier) — Node 24
+// discovers test files repo-wide by its default conventions, and `.github/workflows/full-tests.yml` runs that
 // suite unfiltered as the repo-level coverage authority, split into shards
 // that together run each discovered file once (2026-10-19 amendment). That
 // design only stays drift-proof if these invariants hold; this test fails
@@ -217,9 +218,9 @@ test('(iv) every CI workflow triggers on a push to any branch and on dispatch, n
   }
 });
 
-// A step runs tests when it calls npm test, node --test or the shard script,
-// which starts npm test itself.
-const TEST_RUNNER = /\bnpm (?:run )?test\b|\bnode --test\b|\bshard-tests\.mjs\b/;
+// A step runs tests when it calls npm test, node --test, the tier runner npm
+// test runs, or the shard script, which starts npm test itself.
+const TEST_RUNNER = /\bnpm (?:run )?test\b|\bnode --test\b|\brun-tests\.mjs\b|\bshard-tests\.mjs\b/;
 
 test('(v) one run step in one workflow runs tests, so no test file runs twice per push', () => {
   const runners = [];
