@@ -13,7 +13,8 @@
 // aborts a stalled step as a timeout does; a worker that ignores an idle close
 // of stdin is judged until it exits; a close on a finished report, an abort
 // and the worker's exit end the watch. The run's sampler:
-// test-autopilot-stall-sampler.mjs.
+// test-autopilot-stall-sampler.mjs; the watch on the real process table, a
+// large-tier file: test-autopilot-worker-stall-e2e.mjs.
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert/strict';
@@ -28,7 +29,6 @@ import { publishPid, readPid } from '../_pidfile.mjs';
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const W = await import(resolve(REPO_ROOT, 'plugins/orchestrator/adapters/claude/autopilot/worker.mjs'));
 const FAKE = resolve(REPO_ROOT, 'tests/orchestrator/fixtures/autopilot-fake-claude.mjs');
-const SM = await import(resolve(REPO_ROOT, 'plugins/orchestrator/adapters/claude/autopilot/stall-sampler.mjs'));
 chmodSync(FAKE, 0o755);
 
 const RUN = 'autopilot-20261001T000000Z-123456';
@@ -894,30 +894,8 @@ describe('the worker\'s watch (Decision 3, items 7, 8 and 10)', () => {
     }
   });
 
-  it('a real descendant that burns CPU keeps a quiet step active (the probe and the tree, end to end)', { skip: !['darwin', 'linux'].includes(process.platform) }, async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'autopilot-stall-busy-'));
-    const pidfile = join(dir, 'busy.pid');
-    const sampler = SM.createStallSampler({ intervalMs: 200 });
-    const records = [];
-    try {
-      const h = W.startWorker({
-        cwd: dir, prompt: 'x', stepKind: 'verb', runId: RUN, seq: 1, roots: ROOTS, stepBudgetUsd: 1, stepTimeoutSec: 30,
-        rawPath: join(dir, 'w.jsonl'),
-        env: { ...process.env, AUTOPILOT_CLAUDE_BIN: FAKE, FAKE_CLAUDE_MODE: 'events', FAKE_CLAUDE_PIDFILE: pidfile, FAKE_EVENTS: JSON.stringify([{ delay: 5000, event: { result: null } }]), FAKE_BUSY_CHILD: '1' },
-        stall: { mode: 'on', sampler, detector: { windowMs: 2000, intervalMs: 200, cpuThresholdMs: 100 } }, onStall: (r) => records.push(r),
-      });
-      h.begin();
-      const w = await h.done;
-      strictEqual(w.aborted, null, `a busy child is activity: ${JSON.stringify(records)}`);
-      deepStrictEqual(records.filter((r) => r.verdict === 'stalled'), []);
-      ok(w.stall.summary.lowest_window_cpu_ms >= 100, JSON.stringify(w.stall.summary));
-    } finally {
-      sampler.stop();
-      const pid = readPid(pidfile);
-      if (pid !== null) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+  // A real descendant burning CPU, on the real process table:
+  // test-autopilot-worker-stall-e2e.mjs, a large-tier file.
 });
 
 // ADR-0068 Decision 5 (`verify-runbooks`): the rules a worker gets follow the

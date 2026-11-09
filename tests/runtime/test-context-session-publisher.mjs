@@ -26,6 +26,7 @@ import {
   PUBLISH_REFRESH_TTL_MS,
   SWEEP_MAX_AGE_MS,
   SWEEP_MAX_REMOVALS,
+  claimStaleSlotLock,
   computeSessionFingerprint,
   noteContext,
   publishSessionCapture,
@@ -595,6 +596,81 @@ describe('slot lock (contract §8)', () => {
     ok(takeovers <= 1, `at most one contender may win the stale-lock claim (got ${takeovers}: ${a.status}/${a.reason ?? ''} ${b.status}/${b.reason ?? ''})`);
     ok([a, b].some((r) => r.status === 'published'), 'the winning contender must publish');
     strictEqual((await readSlotStatus({ repoRoot })).generation, 'committed');
+  });
+
+  // The interleaving the race above only sometimes hits (it failed once in a
+  // loaded full suite): contender B judges the stale lock, then A takes it
+  // over and creates its own fresh lock, then B's claim runs. B's rename
+  // would move A's live lock; the claim must notice it is not the lock B
+  // judged, put it back, and refuse.
+  it('a claim that finds a lock created since its judgment puts that lock back and refuses (stale-takeover ABA)', async () => {
+    const { repoRoot, homeDir } = await makeGitRepo();
+    await publish({ repoRoot, homeDir, sessionId: 'before' });
+    const dir = captureDir(repoRoot);
+    const lockPath = join(dir, '.lock');
+    const old = new Date(Date.now() - LOCK_STALE_AGE_MS - 5000);
+
+    // Control: the judged stale lock untouched is claimed, and gone.
+    await writeFile(lockPath, '9999:stale');
+    await utimes(lockPath, old, old);
+    const control = await claimStaleSlotLock({ dir, judged: await lstat(lockPath) });
+    deepStrictEqual(control, { claimed: true, reason: null });
+    await rejects(() => lstat(lockPath), /ENOENT/, 'a kept claim removes the stale lock');
+
+    // B judges a stale lock; A replaces it with its own fresh lock.
+    await writeFile(lockPath, '9999:stale');
+    await utimes(lockPath, old, old);
+    const judged = await lstat(lockPath);
+    await rm(lockPath);
+    await writeFile(lockPath, '4242:winner-a');
+    const claim = await claimStaleSlotLock({ dir, judged });
+    deepStrictEqual(claim, { claimed: false, reason: 'lock-takeover-race' });
+    strictEqual(await readFile(lockPath, 'utf8'), '4242:winner-a', "the earlier winner's lock is back, its token intact");
+    deepStrictEqual((await readdir(dir)).filter((n) => n.startsWith('.lock.tmp-')), [], 'no claim file is left');
+
+    // A reused inode number cannot pass for the judged lock: the same inode
+    // with another mtime is refused, and put back.
+    const judgedFresh = await lstat(lockPath);
+    await utimes(lockPath, old, old);
+    strictEqual((await lstat(lockPath)).ino, judgedFresh.ino);
+    deepStrictEqual(await claimStaleSlotLock({ dir, judged: judgedFresh }), { claimed: false, reason: 'lock-takeover-race' });
+    strictEqual(await readFile(lockPath, 'utf8'), '4242:winner-a');
+  });
+
+  it("a wrong claim whose link(2) fails otherwise than EEXIST still puts the owner's token back (O_EXCL create), and never replaces a third contender's lock", async () => {
+    const { repoRoot, homeDir } = await makeGitRepo();
+    await publish({ repoRoot, homeDir, sessionId: 'before' });
+    const dir = captureDir(repoRoot);
+    const lockPath = join(dir, '.lock');
+    const old = new Date(Date.now() - LOCK_STALE_AGE_MS - 5000);
+    const eperm = async () => { throw Object.assign(new Error('link refused'), { code: 'EPERM' }); };
+    const judgeThenReplace = async (token) => {
+      await rm(lockPath, { force: true });
+      await writeFile(lockPath, '9999:stale');
+      await utimes(lockPath, old, old);
+      const judged = await lstat(lockPath);
+      await rm(lockPath);
+      await writeFile(lockPath, token);
+      return judged;
+    };
+
+    const judged = await judgeThenReplace('4242:winner-a');
+    deepStrictEqual(await claimStaleSlotLock({ dir, judged, linkImpl: eperm }), { claimed: false, reason: 'lock-takeover-race' });
+    strictEqual(await readFile(lockPath, 'utf8'), '4242:winner-a', 'the owner token is back, so its release still matches');
+    deepStrictEqual((await readdir(dir)).filter((n) => n.startsWith('.lock.tmp-')), []);
+
+    // A third contender's lock appears in the gap (the link is where it
+    // lands): EEXIST leaves it, and so does the fallback for any other error.
+    const judged2 = await judgeThenReplace('4242:winner-a');
+    const thirdThenFail = (code) => async () => {
+      await writeFile(lockPath, '7777:third');
+      throw Object.assign(new Error('link'), { code });
+    };
+    deepStrictEqual(await claimStaleSlotLock({ dir, judged: judged2, linkImpl: thirdThenFail('EEXIST') }), { claimed: false, reason: 'lock-takeover-race' });
+    strictEqual(await readFile(lockPath, 'utf8'), '7777:third');
+    const judged3 = await judgeThenReplace('4242:winner-a');
+    deepStrictEqual(await claimStaleSlotLock({ dir, judged: judged3, linkImpl: thirdThenFail('EPERM') }), { claimed: false, reason: 'lock-takeover-race' });
+    strictEqual(await readFile(lockPath, 'utf8'), '7777:third');
   });
 });
 

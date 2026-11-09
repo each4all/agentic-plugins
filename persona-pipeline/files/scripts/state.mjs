@@ -3722,6 +3722,13 @@ export function reviewBindingHoldText(check, { workflowPath = '<workflow>', extr
   // of the same change.
   const quoted = (p) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(p) ? p : `'${String(p).replace(/'/g, `'\\''`)}'`);
   const also = extras.map((p) => ` --include-extra ${quoted(p)}`).join('');
+  // No branch to land on (no argument, no macro's integration branch, no
+  // refs/remotes/origin/HEAD, which a clone of an empty repository or a git
+  // older than 2.48 never writes): nothing was compared, so an acceptance
+  // would vouch for a comparison never made. The way on is the missing ref.
+  if (check.reason === 'no-landing-branch') {
+    return `${comparisonText(check)}. No branch to land on is known: set the repository's default branch with \`git remote set-head origin --auto\` (or name it, \`git remote set-head origin <branch>\`), then run the commit again`;
+  }
   const accept = printable
     ? `accept this change with \`state.mjs review-binding-accept --workflow-path ${word}${also} --note-file <file>\` in the workflow's checkout`
     : "accept this change with `state.mjs review-binding-accept`, with --workflow-path naming this workflow's file (its path cannot be printed here), in the workflow's checkout";

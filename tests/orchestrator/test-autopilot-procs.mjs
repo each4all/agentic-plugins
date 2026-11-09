@@ -67,11 +67,7 @@ describe('macOS: ps with its locale pinned to C', () => {
     deepStrictEqual(r, { ok: false, why: 'failed' });
   });
 
-  it('reads this machine\'s table when it is macOS', { skip: process.platform !== 'darwin' }, async () => {
-    const r = await P.readProcessTable();
-    strictEqual(r.ok, true);
-    ok(r.procs.some((p) => p.pid === process.pid), 'this process is listed');
-  });
+  // This machine's real table: test-autopilot-procs-live.mjs, a large-tier file.
 });
 
 describe('Linux: /proc/<pid>/stat', () => {

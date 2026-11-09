@@ -80,6 +80,10 @@ export async function makeRepo({ subtasks = [{ id: 'A' }, { id: 'B', blocked_by:
   gitIn(main, 'commit', '-q', '-m', 'chore: init');
   gitIn(main, 'push', '-q', 'origin', 'HEAD:main');
   gitIn(main, 'fetch', '-q', 'origin');
+  // The clone of an empty origin has no refs/remotes/origin/HEAD before git
+  // 2.48, and a commit with no macro's branch then finds no branch to land on
+  // (ADR-0069, no-landing-branch): set it as a clone of a real one has it.
+  gitIn(main, 'remote', 'set-head', 'origin', 'main');
   if (linked) {
     gitIn(main, 'switch', '-q', '--detach');
     gitIn(main, 'worktree', 'add', '-q', work, 'main');
@@ -126,7 +130,7 @@ export async function makeRepo({ subtasks = [{ id: 'A' }, { id: 'B', blocked_by:
         repoRoot: work, verb: s.verb, host: 'claude', profile: 'backend', originalRequest: s.topic,
         gitBaseline: { branch: s.branch, head: git('rev-parse', 'HEAD'), status_digest: '' },
         currentPhase: 'phase-0-bootstrap', nextAction: 'Run the verb',
-        parentWorkflow: macroId, originatingSubtask: id, now,
+        parentWorkflow: macroId, originatingSubtask: id, parentWorkflowPath: macroPath, now,
       });
       const wfId = (await eng.readWorkflow(filePath)).frontmatter.workflow_id;
       await orch.updateSubtask({ workflowPath: macroPath, subtaskId: id, host: 'claude', status: 'in_progress', engineerWorkflowId: wfId });

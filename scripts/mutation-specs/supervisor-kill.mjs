@@ -143,7 +143,7 @@ export const MUTATIONS = [
   },
   {
     id: 'G5', file: PKG, tests: [TG],
-    from: ' --import ./tests/_signal-guard.mjs"',
+    from: ' --import=./tests/_signal-guard.mjs"',
     to: '"',
     why: 'npm test loads no guard: a test\'s signal to its own group ends the check\'s supervisor again',
     killed_by: THROUGH_NPM,

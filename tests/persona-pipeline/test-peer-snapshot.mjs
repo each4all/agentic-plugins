@@ -2521,12 +2521,19 @@ for (const persona of personasFor('scripts/lib/peer-snapshot.mjs')) {
         // tree, it keeps the run for that process, and nothing is written or
         // removed. The occupant is the reason: a process read in the tree
         // decides before any process the listing could not read is weighed
-        // (treeOccupancy), so a listing that drops it, or reads none, fails
-        // here (C142, tenth review).
+        // (treeOccupancy), so a listing that drops it, or reads none on every
+        // attempt below, fails here (C142, tenth review).
         const { NODE_OPTIONS: _preload, ...bare } = env;
         const occupant = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 600000)'], { cwd: tree, stdio: 'ignore', detached: true });
         t.after(() => killGroup(occupant.pid));
-        const occupied = cancelWith(bare);
+        // On a machine that starts processes faster than the listing reads
+        // them (the large pass beside another whole-system suite), the
+        // listing may not settle in its rounds and read none: `tree-unknown`,
+        // the documented retention direction (treeOccupancy), which writes
+        // nothing. A bounded retry then asks again; a listing that drops the
+        // occupant, or never reads one, still fails the assertion below.
+        let occupied = cancelWith(bare);
+        for (let i = 0; i < 5 && occupied.answer?.why === 'tree-unknown'; i++) occupied = cancelWith(bare);
         deepStrictEqual([occupied.answer?.ok, occupied.answer?.why], [false, 'tree-occupied'], `${JSON.stringify(occupied.answer)} ${occupied.stderr}`);
         strictEqual(readFileSync(run.handlePath, 'utf8'), handle, 'nothing is written');
         assertLeftover(f, snaps);
@@ -2768,7 +2775,9 @@ for (const persona of personasFor('scripts/lib/peer-snapshot.mjs')) {
           ok(alive(grandchild) && groupAlive(run.companion.pgid), `${why}: the group runs on`);
         }
         editJson(run.handlePath, (h) => { h.updated_at = stale; h.snapshot.supervisor = kept; });
-        const answer = await runner.cancelPeerRun({ repoRoot: f.top, runId: 'host-1a', graceMs: 300 });
+        // C174: the child ignores SIGTERM and logs it; a grace long enough for
+        // the log to be written before the SIGKILL, so the assertion below never races it.
+        const answer = await runner.cancelPeerRun({ repoRoot: f.top, runId: 'host-1a', graceMs: 2000 });
         ok(!alive(grandchild), 'the child left in the group is stopped');
         ok(!groupAlive(run.companion.pgid));
         ok(sigtermsSeen(f.record).includes('child'), 'the log sees the SIGTERM the stop sends');
@@ -2808,7 +2817,9 @@ for (const persona of personasFor('scripts/lib/peer-snapshot.mjs')) {
         await sleep(250);
         deepStrictEqual(sigtermsSeen(f.record), [], 'no SIGTERM reaches the group while its supervisor cannot be told');
         editJson(p.handle, (h) => { h.snapshot.supervisor = kept; });
-        answer = await runner.cancelPeerRun({ repoRoot: f.top, runId: 'host-1t', graceMs: 300 });
+        // C174: the child ignores SIGTERM and logs it; a grace long enough for
+        // the log to be written before the SIGKILL, so the assertion below never races it.
+        answer = await runner.cancelPeerRun({ repoRoot: f.top, runId: 'host-1t', graceMs: 2000 });
         ok(!alive(grandchild) && !groupAlive(run.companion.pgid), 'the child left in the group is stopped');
         ok(sigtermsSeen(f.record).includes('child'), 'the log sees the SIGTERM the stop sends');
         deepStrictEqual([answer.ok, answer.status, answer.reason, answer.snapshot_cleanup], [true, 'completed', 'already_terminal', { removed: true, skipped: null, error: null, already_gone: true }]);

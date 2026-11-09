@@ -489,11 +489,13 @@ export const FS_MUTATION_USERS = {
     justification: 'ADR-0024 consensus run artifacts under runs/consensus, plus the self-created mkdtemp scratch directory holding the bounded prompt copy a companion reads during execute, and its teardown (C163 D2a); the recorded artifact itself is never rewritten',
   },
   // context capture ledger + ADR-0044 session-capture slot (note staging,
-  // publish-session slot/entry + O_EXCL lock + bounded sweep).
+  // publish-session slot/entry + O_EXCL lock + bounded sweep). `link` restores
+  // a stale-lock claim that turned out to be another contender's fresh lock
+  // without replacing any `.lock` (claimStaleSlotLock → restoreClaimedLock).
   'context.mjs': {
-    primitives: ['mkdir', 'open', 'rename', 'rm', 'writeFile'],
+    primitives: ['link', 'mkdir', 'open', 'rename', 'rm', 'writeFile'],
     stateRoots: ['.agentic-plugins/runs/context', '.agentic-plugins/state/runtime/session-capture'],
-    justification: 'context run ledger (runs/context) + ADR-0044 slot home: temp+rename writes, wx lock, own-temp sweep and note --clear removals (ADR-0044 §3 deletion grant)',
+    justification: 'context run ledger (runs/context) + ADR-0044 slot home: temp+rename writes, wx lock, own-temp sweep and note --clear removals (ADR-0044 §3 deletion grant), and the no-replace link(2) restore of a wrongly claimed slot lock inside the same lock directory',
   },
   // doctor run artifacts + ephemeral temp-repo probes (mkdtemp under the OS
   // tmpdir, recursively removed — the pinned recursive-removal site below).

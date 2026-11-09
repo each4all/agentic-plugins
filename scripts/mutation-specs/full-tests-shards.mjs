@@ -205,9 +205,9 @@ export const MUTATIONS = [
   },
   {
     id: 'K3', file: CLI,
-    from: 'else if (event.success !== true || event.counts?.cancelled !== 0) problems.push(',
-    to: 'else if (false) problems.push(',
-    why: 'a failed or cancelled run, whose files may have stopped early, rewrites the weights',
+    from: '      if (event.success !== true || event.counts?.cancelled !== 0) problems.push(',
+    to: '      if (false) problems.push(',
+    why: 'a failed or cancelled run (either pass), whose files may have stopped early, rewrites the weights',
     killed_by: /record refuses a run that did not finish/,
   },
   {

@@ -13,6 +13,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 import { listTestFiles } from '../../scripts/lib/discover-tests.mjs';
+import { TIERS_FILE } from '../../scripts/lib/suite-tiers.mjs';
 import {
   MAX_SHARDS, MIN_SHARDS, OVERHEAD_SECONDS, UNRECORDED_SECONDS, WEIGHTS_FILE,
   assignShards, isSafeTestPath, parseShardSpec, partitionProblems, planShards, validateWeights,
@@ -105,12 +106,14 @@ test('a weights file must be schema 1 with safe paths and finite, non-negative s
 
 const FIXTURE_TESTS = ['tests/test-a.mjs', 'tests/test-b.mjs', 'tests/c.test.mjs', 'kit/d-test.cjs', 'tests/test-e.mjs'];
 
-function fixtureRepo(seconds = {}) {
+function fixtureRepo(seconds = {}, { large = [] } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'shard-tests-')));
   for (const rel of FIXTURE_TESTS) {
     fs.mkdirSync(path.join(root, path.dirname(rel)), { recursive: true });
     fs.writeFileSync(path.join(root, rel), '');
   }
+  fs.mkdirSync(path.join(root, path.dirname(TIERS_FILE)), { recursive: true });
+  fs.writeFileSync(path.join(root, TIERS_FILE), JSON.stringify({ schema: 1, large }));
   fs.mkdirSync(path.join(root, path.dirname(WEIGHTS_FILE)), { recursive: true });
   fs.writeFileSync(path.join(root, WEIGHTS_FILE), JSON.stringify({ schema: 1, recorded: 'x', source: 'x', seconds }));
   return root;
@@ -254,8 +257,11 @@ test('the CLI refuses a bad shard spec, an unknown command and a malformed weigh
 
 const PASSED = { summary: true, success: true, duration_ms: 1, counts: { cancelled: 0 } };
 
-function recording(root, files, { summary = PASSED, first = null } = {}) {
+// `split`: the number of files recorded before a pass's summary `between`,
+// as npm test's two passes (scripts/run-tests.mjs) write them.
+function recording(root, files, { summary = PASSED, first = null, split = null, between = PASSED } = {}) {
   const lines = files.map((rel, i) => JSON.stringify({ file: path.join(root, rel), duration_ms: 1000 * (i + 1) + 234 }));
+  if (split !== null) lines.splice(split, 0, JSON.stringify(between));
   if (first) lines.unshift(JSON.stringify(first));
   if (summary) lines.push(JSON.stringify(summary));
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'shard-tests-rec-')), 'run.jsonl');
@@ -274,16 +280,52 @@ test('record rewrites the weights from a complete recording', () => {
   assert.doesNotThrow(() => validateWeights(written));
 });
 
+// The fixture's last file is large: the pool's files, then its own.
+function twoPassRepo() {
+  const root = fixtureRepo({}, { large: ['tests/test-e.mjs'] });
+  const files = listTestFiles(root);
+  assert.equal(files.at(-1), 'tests/test-e.mjs', 'the large file is recorded last');
+  return { root, files, pool: files.length - 1 };
+}
+
+test('record takes a recording of npm test\'s two passes, each its tier\'s files and its own summary', () => {
+  const { root, files, pool } = twoPassRepo();
+  const res = cli(['record', '--from', recording(root, files, { split: pool }), '--repo-root', root]);
+  assert.equal(res.status, 0, res.stderr);
+  const written = JSON.parse(fs.readFileSync(path.join(root, WEIGHTS_FILE), 'utf8'));
+  assert.deepEqual(Object.keys(written.seconds), [...files].sort());
+});
+
+test('record refuses a recording whose passes do not match the tiers: a pass that ended with no summary, a file in the other pass', () => {
+  const { root, files, pool } = twoPassRepo();
+  const before = fs.readFileSync(path.join(root, WEIGHTS_FILE), 'utf8');
+  const cases = [
+    // The pool stopped before its summary; the large pass's closes the file.
+    [recording(root, files), /holds 1 pass summaries; a full run makes 2 \(the pool, then the large tier\)/],
+    [recording(root, files, { split: pool - 1 }), /tests\/test-b\.mjs is recorded in pass 2, which runs the large tier/],
+    [recording(root, files, { split: 0 }), /is recorded in pass 2, which runs the large tier/],
+  ];
+  for (const [from, message] of cases) {
+    const res = cli(['record', '--from', from, '--repo-root', root]);
+    assert.equal(res.status, 1, `refused: ${message}`);
+    assert.match(res.stderr, message);
+    assert.equal(fs.readFileSync(path.join(root, WEIGHTS_FILE), 'utf8'), before, 'the weights file is unchanged');
+  }
+});
+
 test('record refuses a run that did not finish, missed a file or recorded one twice, and writes nothing', () => {
   const root = fixtureRepo({ 'tests/test-a.mjs': 3 });
   const before = fs.readFileSync(path.join(root, WEIGHTS_FILE), 'utf8');
   const files = listTestFiles(root);
   const cases = [
     [recording(root, files, { summary: null }), /did not finish/],
-    [recording(root, files, { summary: null, first: PASSED }), /line 1 is a run summary before the end/],
-    [recording(root, files, { summary: { ...PASSED, success: false } }), /the run did not pass/],
-    [recording(root, files, { summary: { ...PASSED, counts: { cancelled: 2 } } }), /the run did not pass/],
-    [recording(root, files, { summary: { summary: true } }), /the run did not pass/],
+    [recording(root, files, { summary: null, first: PASSED }), /did not finish/],
+    [recording(root, files, { summary: { ...PASSED, success: false } }), /a pass did not pass/],
+    [recording(root, files, { summary: { ...PASSED, counts: { cancelled: 2 } } }), /a pass did not pass/],
+    [recording(root, files, { summary: { summary: true } }), /a pass did not pass/],
+    [recording(root, files, { split: 1, between: { ...PASSED, success: false } }), /line 2: a pass did not pass/],
+    [recording(root, files, { split: 1, between: { ...PASSED, counts: { cancelled: 1 } } }), /line 2: a pass did not pass/],
+    [recording(root, files, { split: 1 }), /holds 2 pass summaries; a full run makes 1 \(the pool\)/],
     [recording(root, files.slice(1)), new RegExp(`${files[0].replaceAll('.', '\\.')} has no recorded duration`)],
     [recording(root, [...files, files[0]]), /is recorded twice/],
     [recording(root, [...files, 'elsewhere/x.mjs']), /elsewhere\/x\.mjs was recorded but is not discovered/],
@@ -305,6 +347,7 @@ test('record takes the reporter\'s output of a real run: a file without node:tes
   fs.symlinkSync('test-a.mjs', path.join(root, 'tests', 'test-link.mjs'));
   fs.mkdirSync(path.join(root, path.dirname(WEIGHTS_FILE)), { recursive: true });
   fs.writeFileSync(path.join(root, WEIGHTS_FILE), JSON.stringify({ schema: 1, seconds: {} }));
+  fs.writeFileSync(path.join(root, TIERS_FILE), JSON.stringify({ schema: 1, large: [] }));
   const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'shard-tests-rec-real-out-')), 'run.jsonl');
   const env = { ...process.env };
   for (const name of Object.keys(env)) if (name.startsWith('NODE_TEST')) delete env[name];
