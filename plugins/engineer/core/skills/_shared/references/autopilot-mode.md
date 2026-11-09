@@ -52,7 +52,7 @@ write; the driver must also check that the installed engineer carries them
 | "Recommended: X. Proceed?" | ask | proceed with X |
 | decide: wait for the user to choose a direction | wait | no CONFLICT: the recommendation is the direction, at the synthesis's confidence |
 | compose: plan approval, confirmation between code tasks | ask | the driver's: it runs the next step only on HIGH confidence |
-| critique → refine MINOR / SUGGESTION pick (`/engineer:critique`) | the user picks | carry CRITICAL and MAJOR only |
+| critique → refine MINOR / SUGGESTION pick (`/engineer:critique`) | the user picks | carry CRITICAL and MAJOR only; from the subtask's second critique, CRITICAL and frequent-path MAJOR only (§ Critique convergence) |
 | end-of-verb Active Next-Action Proposal | shown; the user runs the next command | still shown, and recorded as `next_step`; the driver decides |
 | commit subject (`/engineer:commit`) | the user confirms | the worker writes it from the plan (`subject_rule`); a type or scope that does not fit the change is refused (ADR-0028 §P6) |
 
@@ -188,7 +188,8 @@ gates. Under autopilot what differs is when a gate is recorded:
 `decide-conflict`, `peer-conflict`, `recurring-finding` and `scope-routing`
 are recorded in either mode; `staging-set` (`/engineer:commit`: the staging
 set needs the owner — `ask_user`, a workflow that did not begin on a clean
-tree, or a pre-staged index) and `pr-handling` only under an autopilot run.
+tree, or a pre-staged index), `pr-handling` and `critique-cap` (§ Critique
+convergence) only under an autopilot run.
 A conflict gate (`decide-conflict` or `peer-conflict`, set on a synthesis
 verdict of `conflict`) records its run id beside a consensus task file; the
 driver's halt report carries the bounded consensus round it proposes, for the
@@ -216,6 +217,41 @@ from state (§ Outcomes the driver reads) and halts `awaiting-landing`.
 `duplicate-workflow` is never stored: two live workflows on one branch have
 no single file to hold it. The driver meets it as an entry-brief
 `owner-choice-required` and halts `owner-choice`.
+
+## Critique convergence (C176, ADR-0063 amendment of 2026-11-09)
+
+The critique → refine loop of a subtask converges by rule, not by patience:
+
+- **Deferral.** From the subtask's second critique (the `round`
+  `critique-scope` prints), refine takes every CRITICAL and every MAJOR on a
+  frequent, natural path, test gaps included (the owner rule of 2026-10-25).
+  A MAJOR on a rare path — a hand-made file, a gap of the same class as one
+  already recorded, a special layout — is deferred: it keeps its severity,
+  is recorded as a known limit, and no longer blocks convergence. For a
+  document deliverable the review ledger decides it (`critique-close`, a
+  `defer` on the finding); for a code deliverable the note lists it under
+  `### Known limits (deferred)`. A CRITICAL, a recurring finding, one a peer
+  contested and one a veto gate raised are never deferred.
+- **The cap.** Each subtask gets `limit` critique rounds, 3 by default.
+  `finish-verb` under an autopilot run counts a critique once per critique
+  run (a rerun of its finalize, an interrupted critique and a failed peer
+  attempt count nothing; an interactive critique is no round), in the
+  workflow file (`critique_rounds`), so the count survives a relaunch and an
+  install. A critique at the cap with nothing CRITICAL or MAJOR open proceeds
+  to `/engineer:commit`. One that would go on past the critique (any verb as
+  the next step — refine, compose, a critique again — or a verify request
+  whose `on_pass` is one) is refused by the finalize block before settle
+  (`critique-cap-check`, `verify-request-check`) and by `finish-verb`;
+  it ends instead on the owner gate `critique-cap` (heading `### Critique
+  cap reached`, anchor `critique-cap`), which parks only its lane. A
+  `peer-conflict` keeps precedence: the conflict ends on its own gate.
+- **The owner's exits.** `awaiting-owner-clear --gate critique-cap` with
+  `--grant-critique-rounds <n>` and a verb as the next step (refine) sets
+  the limit to the rounds counted plus n, so the cap does not fire again at
+  once; or, with the next step commit or done, a `--resolution-file` naming
+  the findings the owner accepts as known limits (acceptance, which grants
+  no round). Any other clear of `critique-cap` is refused. Another round
+  at or over the cap without a grant is refused, after `peer-conflict` too.
 
 ## Peer ensembles
 

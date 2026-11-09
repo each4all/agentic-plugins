@@ -24,12 +24,23 @@
 //                reason, the tree it reviewed, HEAD, the baseline, the
 //                artifact set, the passages of a scoped one, the targets,
 //                the critique runs the workflow had noted when it opened
-//                (`critique_entries`), and its state (open | closed |
-//                abandoned)
+//                (`critique_entries`), its convergence round (`round`: 1 +
+//                the closed generations before it) and its state (open |
+//                closed | abandoned)
 //   findings     every finding, with a workflow-wide id (G<generation>-F<n>),
 //                its severity, location and text, its disposition
-//                (open | resolved | left-open) and the refine attempts that
-//                targeted it
+//                (open | resolved | left-open | deferred), the refine
+//                attempts that targeted it, and the sticky `veto` and
+//                `conflict` flags a critique set on it
+//
+// C176 (ADR-0063, amendment of 2026-11-09) — the convergence rule. From a
+// critique's second round, a MAJOR finding on a rare path (a hand-made file, a
+// gap of the same class, a special layout) may be deferred: it keeps its
+// severity, takes the disposition `deferred` with its known limit
+// (`defer_reason`), and no longer blocks convergence. closeGeneration alone
+// decides it: a CRITICAL, a recurring finding, one a peer conflict or a
+// persona veto gate flagged (in this close or any earlier one), and one whose
+// references disagree are never deferred, and the result names each refusal.
 //   refines      one attempt per closed generation (R<generation>): the
 //                findings it targeted and the tree it left
 //
@@ -45,6 +56,9 @@ export const REVIEW_LEDGER_SCHEMA = 'review-ledger-1';
 export const SEVERITIES = Object.freeze(['CRITICAL', 'MAJOR', 'MINOR', 'SUGGESTION']);
 export const BLOCKING_SEVERITIES = Object.freeze(['CRITICAL', 'MAJOR']);
 export const GENERATION_MODES = Object.freeze(['full', 'scoped', 'partial']);
+export const DISPOSITIONS = Object.freeze(['open', 'resolved', 'left-open', 'deferred']);
+// C176 — the first round whose rare-path MAJOR findings may be deferred.
+export const DEFERRAL_ROUND = 2;
 const SEVERITY_RANK = Object.freeze({ SUGGESTION: 0, MINOR: 1, MAJOR: 2, CRITICAL: 3 });
 // A deliverable is a document only when every changed path is Markdown (.mdx
 // excluded: it carries code) and no changed line is or may be code (`codeLines`:
@@ -566,12 +580,15 @@ export function validateLedger(ledger, workflowId) {
   // next), so they run 1, 2, 3 in order.
   ledger.generations.forEach((g, i) => {
     if (!isObject(g) || g.id !== i + 1 || !GENERATION_MODES.includes(g.mode) || !['open', 'closed', 'abandoned'].includes(g.state)
-      || !Number.isInteger(g.critique_entries) || g.critique_entries < 0 || typeof g.tree !== 'string' || !isList(g.artifact) || !isList(g.targets) || !Array.isArray(g.passages)
+      || !Number.isInteger(g.critique_entries) || g.critique_entries < 0 || (g.round !== undefined && !(Number.isInteger(g.round) && g.round >= 1))
+      || typeof g.tree !== 'string' || !isList(g.artifact) || !isList(g.targets) || !Array.isArray(g.passages)
       || !g.passages.every((p) => isPassage(p) && g.artifact.includes(p.path))) throw bad(`generations[${i}] is malformed`);
   });
   ledger.findings.forEach((x, i) => {
     if (!isObject(x) || typeof x.id !== 'string' || !FINDING_ID_RE.test(x.id) || !SEVERITIES.includes(x.severity)
-      || !['open', 'resolved', 'left-open'].includes(x.disposition) || !isList(x.targeted_by) || !Array.isArray(x.history)
+      || !DISPOSITIONS.includes(x.disposition) || !isList(x.targeted_by) || !Array.isArray(x.history)
+      || (x.defer_reason !== undefined && typeof x.defer_reason !== 'string')
+      || (x.veto !== undefined && typeof x.veto !== 'boolean') || (x.conflict !== undefined && typeof x.conflict !== 'boolean')
       || !x.history.every((h) => isObject(h) && Number.isInteger(h.generation) && typeof h.verdict === 'string')) throw bad(`findings[${i}] is malformed`);
   });
   ledger.refines.forEach((r, i) => {
@@ -592,6 +609,24 @@ function isBlocking(f) {
 
 function closedGenerations(ledger) {
   return ledger.generations.filter((g) => g.state === 'closed');
+}
+
+/**
+ * C176 — the convergence round of generation `id`: the one it stored, or 1 +
+ * the closed generations before it (a ledger an earlier release wrote). It
+ * counts the critiques of the current ledger only, so a ledger that replaced
+ * another starts again at round 1, and a finding recurring in the old one
+ * cannot come back deferrable.
+ */
+export function generationRound(ledger, id) {
+  const gen = ledger.generations.find((g) => g.id === id);
+  if (gen !== undefined && Number.isInteger(gen.round)) return gen.round;
+  return ledger.generations.filter((g) => g.state === 'closed' && g.id < id).length + 1;
+}
+
+/** The round the next critique of `ledger` opens in. */
+export function nextRound(ledger) {
+  return closedGenerations(ledger).length + 1;
 }
 
 /**
@@ -690,6 +725,7 @@ export function openGeneration(ledger, fields, now) {
   const next = structuredClone(ledger);
   for (const g of next.generations) if (g.state === 'open') g.state = 'abandoned';
   const id = next.generations.reduce((m, g) => Math.max(m, g.id), 0) + 1;
+  const round = nextRound(next);
   next.generations.push({
     id,
     mode: fields.mode,
@@ -703,6 +739,7 @@ export function openGeneration(ledger, fields, now) {
     passages: (fields.passages ?? []).map(({ path, start, end, deleted, whole }) => ({ path, start, end, deleted, ...(whole ? { whole: true } : {}) })),
     targets: [...(fields.targets ?? [])],
     critique_entries: fields.critiqueEntries ?? 0,
+    round,
     state: 'open',
     opened_at: now,
     closed_at: null,
@@ -728,6 +765,11 @@ function checkFindingsInput(input, ledger) {
     if (f.verdict !== undefined && f.verdict !== 'resolved' && f.verdict !== 'unresolved') throw new ReviewScopeError(`${where}.verdict must be resolved or unresolved`);
     if (f.scope !== undefined && f.scope !== 'in' && f.scope !== 'outside') throw new ReviewScopeError(`${where}.scope must be in or outside`);
     if (f.location !== undefined && typeof f.location !== 'string') throw new ReviewScopeError(`${where}.location is not a string`);
+    if (f.defer !== undefined && (typeof f.defer !== 'string' || f.defer.trim() === '' || /[\r\n]/.test(f.defer.trim()))) {
+      throw new ReviewScopeError(`${where}.defer must be the known limit, one line of text`);
+    }
+    if (f.veto !== undefined && typeof f.veto !== 'boolean') throw new ReviewScopeError(`${where}.veto must be true or false`);
+    if (f.conflict !== undefined && typeof f.conflict !== 'boolean') throw new ReviewScopeError(`${where}.conflict must be true or false`);
     const loc = parseLocation(f.location);
     if (loc !== null && loc.start !== null && (loc.start < 1 || loc.end < loc.start)) {
       throw new ReviewScopeError(`${where}.location ${JSON.stringify(f.location)} names no line range (start 1 or more, end not before start)`);
@@ -745,7 +787,23 @@ function checkFindingsInput(input, ledger) {
  *   recurring  carried findings an earlier refine attempt already targeted
  *   resolved   findings this critique resolved
  *   new        the ids this critique gave its new findings
+ *   deferred   MAJOR findings deferred as known limits (C176), `deferred_now`
+ *              the ones this close deferred, and `deferral_refused` each
+ *              deferral asked for and refused, `{ id, reason }` (round |
+ *              critical | not-major | recurring | veto | conflict |
+ *              ambiguous)
+ *   round      this critique's convergence round
  *   converged  no CRITICAL or MAJOR finding is open
+ *
+ * A deferral (C176) is asked for by a reference's `defer`, its known limit. It
+ * is taken only from round 2, for a finding that is MAJOR after this
+ * judgment, not recurring (judged before any deferral, so a candidate counts
+ * as open), never flagged `veto` or `conflict` (the flags are sticky across
+ * generations), and when every reference to it in this close carries `defer`
+ * with no `resolved` verdict and one severity. A deferred finding keeps its
+ * severity; a later critique that does not report it (a full one included)
+ * leaves it deferred, one that reports it with no `defer` opens it again, and
+ * a `resolved` verdict resolves it.
  *
  * A scoped critique resolves a target only on one `resolved` verdict for it;
  * a missing, duplicated or contradictory one leaves it open, and a prior open
@@ -768,6 +826,13 @@ export function closeGeneration(ledger, id, input, now) {
   const refs = new Map();
   for (const f of input.findings) if (f.id !== 'NEW') refs.set(f.id, [...(refs.get(f.id) ?? []), f]);
   const resolved = [];
+  const round = generationRound(next, id);
+  // C176 — the sticky flags: a peer conflict or a persona veto gate a
+  // reference names stays on the finding for every later close.
+  const flag = (finding, references) => {
+    if (references.some((r) => r.veto === true)) finding.veto = true;
+    if (references.some((r) => r.conflict === true)) finding.conflict = true;
+  };
   // Whether a finding sits outside the passages a scoped critique reviewed: a
   // location that overlaps one is in, whatever the review claimed, and so is
   // one that cannot be placed (a path the artifact set does not hold); one on
@@ -831,8 +896,11 @@ export function closeGeneration(ledger, id, input, now) {
   for (const finding of next.findings) {
     const references = refs.get(finding.id);
     if (references) {
+      flag(finding, references);
       judge(finding, references, { mustBeSingle: targets.has(finding.id) });
-    } else if (gen.mode === 'full' && finding.disposition !== 'resolved') {
+    } else if (gen.mode === 'full' && finding.disposition !== 'resolved' && finding.disposition !== 'deferred') {
+      // A deferred finding a critique does not report stays the known limit
+      // it was deferred as (C176): not reporting it is no evidence it is gone.
       finding.disposition = 'resolved';
       finding.history.push({ generation: id, verdict: 'not-reported' });
       resolved.push(finding.id);
@@ -871,10 +939,56 @@ export function closeGeneration(ledger, id, input, now) {
       targeted_by: [],
       history: [],
     };
+    flag(finding, [f]);
     next.findings.push(finding);
     byId.set(fid, finding);
     added.push(fid);
     if (disposition === 'left-open') leftOpen.push(fid);
+    if (f.defer !== undefined) refs.set(fid, [f]);
+  }
+
+  // C176 — the deferrals this close asks for, judged after every other
+  // disposition: recurring is computed first, with each candidate still open.
+  // A deferred finding this close reports is judged again: a judgment that
+  // kept it deferred (a resolution not taken) is no deferral, so it is open
+  // until the pass below defers it again, which only an eligible report does.
+  for (const [fid] of refs) {
+    const finding = byId.get(fid);
+    if (finding !== undefined && finding.disposition === 'deferred') finding.disposition = 'open';
+  }
+  const recurringBefore = new Set(recurringFindings(next));
+  const deferredNow = [];
+  const refused = [];
+  for (const [fid, references] of refs) {
+    const asked = references.filter((r) => r.defer !== undefined);
+    const finding = byId.get(fid);
+    if (asked.length === 0) {
+      if (finding !== undefined && finding.disposition !== 'deferred') {
+        delete finding.defer_reason;
+        delete finding.deferred_in;
+      }
+      continue;
+    }
+    if (finding === undefined || finding.disposition !== 'open') continue;
+    const severities = new Set(references.map((r) => r.severity ?? finding.severity));
+    let reason = null;
+    if (round < DEFERRAL_ROUND) reason = 'round';
+    else if (finding.severity === 'CRITICAL') reason = 'critical';
+    else if (finding.severity !== 'MAJOR') reason = 'not-major';
+    else if (recurringBefore.has(fid)) reason = 'recurring';
+    else if (finding.veto === true) reason = 'veto';
+    else if (finding.conflict === true) reason = 'conflict';
+    else if (asked.length !== references.length || references.some((r) => r.verdict === 'resolved') || severities.size > 1) reason = 'ambiguous';
+    if (reason !== null) {
+      refused.push({ id: fid, reason });
+      delete finding.defer_reason;
+      delete finding.deferred_in;
+      continue;
+    }
+    finding.disposition = 'deferred';
+    finding.defer_reason = asked.at(-1).defer.trim();
+    finding.deferred_in = id;
+    deferredNow.push(fid);
   }
 
   gen.state = 'closed';
@@ -893,6 +1007,10 @@ export function closeGeneration(ledger, id, input, now) {
       recurring: recurringFindings(next),
       resolved,
       new: added,
+      round,
+      deferred: next.findings.filter((f) => f.disposition === 'deferred').map((f) => f.id),
+      deferred_now: deferredNow,
+      deferral_refused: refused,
     },
   };
 }
@@ -936,6 +1054,13 @@ export function reviewStatus(ledger) {
     carry: open.map((f) => f.id),
     recurring: recurringFindings(ledger),
     left_open: ledger.findings.filter((f) => f.disposition === 'left-open').map((f) => f.id),
-    findings: ledger.findings.map(({ id, severity, location, text, disposition, targeted_by }) => ({ id, severity, location, text, disposition, targeted_by })),
+    deferred: ledger.findings.filter((f) => f.disposition === 'deferred').map((f) => f.id),
+    round: nextRound(ledger),
+    findings: ledger.findings.map(({ id, severity, location, text, disposition, targeted_by, defer_reason, veto, conflict }) => ({
+      id, severity, location, text, disposition, targeted_by,
+      ...(defer_reason === undefined ? {} : { defer_reason }),
+      ...(veto === true ? { veto: true } : {}),
+      ...(conflict === true ? { conflict: true } : {}),
+    })),
   };
 }

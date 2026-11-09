@@ -165,6 +165,7 @@ the session handoff names the gate's resolving surface as the next action.
 | `scope-routing` | a verb concludes the request does not belong in this verb or workflow (another route in the Routing Recommendation fits) | `Routing recommendation` · `routing-recommendation` | the owner picks the route, then `awaiting-owner-clear` with the next step |
 | `staging-set` | `/engineer:commit` under autopilot (with `dispatch_target` on, the one path that records it): the staging set needs the owner | `Phase 7 plan` · `phase7-plan` | interactive `/engineer:commit`, which clears it once the owner confirms the set |
 | `pr-handling` | under autopilot, the task itself needs an outward action: a push, a pull request, a release or an issue | `Outward action needed` · `pr-handling` | the owner takes or declines the action, then `awaiting-owner-clear` with the next step |
+| `critique-cap` | `/engineer:critique` under autopilot ends at the subtask's critique cap (3 rounds by default) with a CRITICAL or MAJOR finding still open (C176) | `Critique cap reached` · `critique-cap` | the owner grants further rounds (`awaiting-owner-clear --gate critique-cap --grant-critique-rounds <n>` with the next step refine) or accepts the open findings as known limits (`--resolution-file` naming them, the next step commit) |
 
 `state.mjs awaiting-owner-clear --gate <gate> --resolution-file <the decision's
 file> --next-step-kind … --next-step-confidence … [--next-step-verb …]
@@ -178,7 +179,7 @@ amendment of 2026-10-10).
 Inside a `/engineer:start` lifecycle, decide's Owner selection records no
 next step instead (`--clear-next-step true`): the lifecycle owns its phase
 order.
-Reading a workflow file, `state.mjs` accepts all six gate names (ADR-0066
+Reading a workflow file, `state.mjs` accepts all seven gate names (ADR-0066
 Decision 7 validates each schema 1.4 key on its own).
 
 **The conflict gates and their consensus task file (ADR-0067 Decision 8).**

@@ -325,6 +325,19 @@ ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "
   Review whether each target is resolved and whether the changed passages
   introduced a problem. A problem seen outside the passages is still reported,
   marked outside.
+
+Whatever the mode, the JSON also names this critique's convergence `round`
+(C176, ADR-0063 amendment of 2026-11-09): a recorded critique's is the
+ledger's closed critiques plus one; with no ledger it is the critique cap's
+count with this run in it (`rounds`, against `limit`). From round 2, sort each
+MAJOR finding by the path it lies on: on a frequent, natural path it is
+refine's work as before; on a rare one (a hand-made file, a gap of the same
+class as one already recorded, a special layout) it is deferred as a known
+limit, its severity kept. A CRITICAL, a recurring finding, a contested one
+(a peer conflict) and one a veto gate raised are never deferred. With a ledger
+the close below decides each deferral; with none (`recorded: false`, a code
+deliverable) the note applies the same rule, listing such a finding under
+`### Known limits (deferred)` instead of handing it to refine.
 <!-- pipeline:end critique-scope-prepare -->
 
 ### Ensemble dispatch — Review (default) or Adversarial-scan (full-codebase)
@@ -465,6 +478,10 @@ it, its text, and in a scoped critique `scope` `in` or `outside` the passages
 location, or one on a path the artifact set does not hold, counts in); a ledger
 finding judged again by its id, with `verdict` `resolved` or `unresolved`. In a scoped critique every
 target needs one verdict: a target with none, or with two, stays open.
+From round 2 (C176), a MAJOR on a rare path carries `defer`, its known limit
+in one line (`"defer": "only a hand-made file reaches it"`); a finding a peer
+contested carries `conflict: true`, and one a veto gate raised `veto: true`,
+which stay on it for every later critique.
 
 ```bash
 TEXT_DIR='<directory holding findings.json>'
@@ -494,6 +511,13 @@ It prints the disposition, which Phase 2 follows:
   generation. Findings in `left_open` go under `### Left open`: new findings
   other than CRITICAL that a scoped critique saw outside the passages, the
   owner's to weigh when the work lands, never refine's.
+- `deferred_now` are the findings this close deferred: they go under
+  `### Known limits (deferred)`, each with its id, severity and known limit,
+  and are no refine work. `deferral_refused` names each deferral asked for
+  and refused, with its reason (`round`, `critical`, `not-major`,
+  `recurring`, `veto`, `conflict` or `ambiguous`): that finding stays open,
+  refine's work. A later critique that does not report a deferred finding
+  leaves it deferred; one that reports it with no `defer` opens it again.
 - `converged: true` (no CRITICAL or MAJOR open in the ledger) puts the
   proposal on the commit route only when nothing else this runbook names
   stands in the way: a `conflict` verdict still ends on its gate first, and a
@@ -688,6 +712,12 @@ the branch that matches runs and the note is appended once: on a conflict,
 owner does, then rules, and clearing the gate retires the task file. compose,
 frame and refine, and every other verdict, never take this branch.
 
+In a critique under an autopilot run, the block also checks the critique cap
+(C176) before settle: a critique at its cap whose verb form would start
+another round (`NEXT_STEP_KIND` `verb`), or whose request's `on_pass` is a
+verb, stops it with nothing written. Such a critique ends on the owner gate
+`critique-cap`, or with `commit` when no CRITICAL or MAJOR finding is open.
+
 Before settle, the block reads every result this phase recorded on the
 workflow, and the gate it holds. A recorded conflict with no owner ruling
 holds the phase, and only that same run, finalized with `VERDICT` set to
@@ -790,14 +820,18 @@ whenever the step ends on one: the last write is then the owner-decision
 form, which records that gate with the anchor the gate list above names, in
 place of the verb or verify form. A gate this verb does not end on with it, a
 request beside it, and a note that holds the heading of `recurring-finding`,
-`scope-routing` or `pr-handling` while `OWNER_GATE` is empty each stop the
-block before any write. Once every other check has passed, just before
+`scope-routing`, `pr-handling` or `critique-cap` while `OWNER_GATE` is empty
+each stop the block before any write. Once every other check has passed, just before
 settle, the block keeps the form it took in the text directory
 (`finalize-verify.json`: the request's sha256, or none), so a run those checks
 stop keeps none and may add a request: run again with the same `TEXT_DIR`
 after a write, it takes the same form and the same request, and a request
 added, removed or changed since stops it before any write. With no `verify-request.json`, the block ends with the verb form as
 always.
+
+`NEXT_STEP_KIND` in the block names the verb form's next step: `verb` (the
+verb its last write names), or `commit` or `done` when the result selects one
+of them; set it rather than editing the last write's flags.
 
 ```bash
 TEXT_DIR='<directory from step 1>'
@@ -813,6 +847,9 @@ OP_DIR='<the operation directory the Phase 0 block printed as OP_DIR; empty when
 # The owner gate this step ends on, when it ends on one; empty otherwise.
 # Naming it selects the last write's owner-decision form, which records it.
 OWNER_GATE=''
+# The verb form's next step: verb (the verb its last write names), or commit
+# or done when the result selects one of them; the last write records it.
+NEXT_STEP_KIND='verb'
 ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
@@ -861,11 +898,16 @@ case "$OWNER_GATE" in
   pr-handling) OWNER_GATE_ANCHOR=pr-handling ;;
   recurring-finding) [ 'critique' != refine ] || OWNER_GATE_ANCHOR=recurring-finding ;;
   decide-conflict) [ 'critique' != decide ] || OWNER_GATE_ANCHOR=ensemble-synthesis ;;
+  critique-cap) [ 'critique' != critique ] || OWNER_GATE_ANCHOR=critique-cap ;;
 esac
 [ -z "$OWNER_GATE" ] || [ -n "$OWNER_GATE_ANCHOR" ] \
   || { echo "✗ OWNER_GATE is $OWNER_GATE, which is not a gate this verb ends on with the owner-decision form (the gate list above names them); nothing was written." >&2; exit 1; }
-[ -n "$OWNER_GATE" ] || ! grep -Eq '^ {0,3}###[[:blank:]]+(Recurring finding|Routing recommendation|Outward action needed)([[:space:]]|$)' "$TEXT_DIR/note.md" 2>/dev/null \
+[ -n "$OWNER_GATE" ] || ! grep -Eq '^ {0,3}###[[:blank:]]+(Recurring finding|Routing recommendation|Outward action needed|Critique cap reached)([[:space:]]|$)' "$TEXT_DIR/note.md" 2>/dev/null \
   || { echo "✗ note.md in TEXT_DIR ($TEXT_DIR) records an owner gate (its heading), but OWNER_GATE is empty: set OWNER_GATE to that gate, and the last write records it. Nothing was written." >&2; exit 1; }
+case "$NEXT_STEP_KIND" in
+  verb|commit|done) ;;
+  *) echo "✗ NEXT_STEP_KIND is not verb, commit or done, the verb form's next step; nothing was written." >&2; exit 1 ;;
+esac
 # The run's id, from the result the runner wrote beside the dispatch's prompt,
 # or, when DISPATCH_DIR is the run's own ledger directory (no result there,
 # its handle.json instead), from that handle, the directory naming the run. An empty
@@ -1005,6 +1047,20 @@ esac
 # beside it would be dropped by the conflict branch.
 [ -z "$OWNER_GATE" ] || [ "$VERDICT" != conflict ] \
   || { echo "✗ OWNER_GATE is $OWNER_GATE, but VERDICT is conflict: a conflict ends on its own gate, bound to its run. Leave OWNER_GATE empty; nothing was written." >&2; exit 1; }
+# C176 — the critique cap, before settle, the first write: under an autopilot
+# run, a critique at its cap whose verb form would start another round (a
+# verb as its next step) stops here with nothing written, as a verify request
+# whose on_pass is a verb stops at verify-request-check. It ends on the
+# owner gate critique-cap instead, or with commit when no CRITICAL or MAJOR
+# finding is open. An owner gate and a conflict end on their own gate; the
+# check refuses nothing interactively, nor in any other verb.
+if [ 'critique' = critique ] && [ -z "$OWNER_GATE" ] && [ "$VERDICT" != conflict ] && [ -z "$VERIFY_FORM" ] && [ "$NEXT_STEP_KIND" = verb ]; then
+  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" critique-cap-check \
+    --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+    --next-step-kind verb --next-step-verb 'refine' \
+    --next-step-confidence "$CONFIDENCE" > /dev/null \
+    || { echo "✗ The last write would refuse another critique round, for the reason above; nothing was written. Set OWNER_GATE to critique-cap, with the open findings under ### Critique cap reached in note.md, or NEXT_STEP_KIND to commit when no CRITICAL or MAJOR finding is open, and run this block again." >&2; exit 1; }
+fi
 # The verify form, kept in TEXT_DIR (finalize-verify.json: the request's
 # sha256, or null for the verb form) at the first run, after every check
 # above, so a run they stop keeps no form and runs again with a request added:
@@ -1109,6 +1165,20 @@ if [ "$RECORDED" != conflict ]; then
       --next-action-file "$TEXT_DIR/next-action.txt" \
       --next-step-kind owner-decision --next-step-confidence "$CONFIDENCE" \
       --owner-gate "$OWNER_GATE" --owner-gate-anchor "$OWNER_GATE_ANCHOR" || exit $?
+  elif [ -z "$VERIFY_FORM" ] && [ "$NEXT_STEP_KIND" != verb ]; then
+    # The verb form with commit or done as its next step (NEXT_STEP_KIND), in
+    # place of the verb the form below names.
+    # ARCHIVE TIMING — interactively this is the verb form's terminal write: on
+    # Claude the Stop hook fires at EVERY turn end, so the archive gates are
+    # evaluated at the end of THIS turn; `--terminal-marker false` clears the
+    # marker only before that Stop fires (the verb form's note below says how).
+    # Under an autopilot run it records the next step only. On Codex the Stop
+    # hook runs only once the plugin hooks are trusted (`/hooks`).
+    node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
+      --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+      --operation-dir "$OP_DIR" \
+      --next-action-file "$TEXT_DIR/next-action.txt" \
+      --next-step-kind "$NEXT_STEP_KIND" --next-step-confidence "$CONFIDENCE" || exit $?
   elif [ -z "$VERIFY_FORM" ]; then
   # ADR-0029 §1 / completion-output contract §2 — next-action.txt, which the
   # append above and this terminal write record, holds the COMPACT form of the
@@ -1185,7 +1255,30 @@ When Phase 0's preflight printed the autopilot banner, this command follows
   batch); proceed with the recommended option instead of asking
   "Recommended: X. Proceed?".
 - **Refine carries CRITICAL and MAJOR findings only** — the default rule; the
-  MINOR / SUGGESTION pick the user makes interactively is skipped.
+  MINOR / SUGGESTION pick the user makes interactively is skipped. From the
+  subtask's second critique (the `round` critique-scope prints), a MAJOR on
+  a rare path (a hand-made file, a gap of the same class, a special layout)
+  is deferred as a known limit instead (§ Review ledger close; with no ledger
+  the note lists it under `### Known limits (deferred)`); a CRITICAL, a
+  recurring, contested or vetoed finding never is (C176, ADR-0063 amendment
+  of 2026-11-09).
+- **The critique cap** (C176). A subtask gets at most `limit` critique rounds
+  (3 by default; critique-scope prints `rounds` and `limit`, and finish-verb
+  counts each critique whose synthesis completed once; a failed peer attempt
+  counts nothing). Phase 2's block checks the cap before settle, with the
+  next step it will write (`NEXT_STEP_KIND`, or the verify request's
+  `on_pass`); `critique-cap-check` prints where the workflow stands at any
+  time. A refusal means this critique is at the cap and would start another
+  round: unless the verdict is `conflict` (its own gate keeps precedence),
+  end on the owner gate `critique-cap` instead, with the open findings under
+  the heading `### Critique cap reached` and `OWNER_GATE=critique-cap` (anchor
+  `critique-cap`). A clean critique at the cap (nothing CRITICAL or MAJOR
+  open) proceeds to commit (`NEXT_STEP_KIND=commit`). finish-verb refuses
+  another round at the cap either way. The owner grants
+  further rounds (`awaiting-owner-clear --gate critique-cap
+  --grant-critique-rounds <n>` with the next step refine), or accepts the
+  open findings as known limits (`--resolution` naming them, the next step
+  commit).
 - **A CONFLICT is the owner's.** When the synthesis verdict is `conflict`, do
   not pick a side: Phase 2's block takes its conflict branch, which writes the
   contested items as the consensus task file and records the `peer-conflict`
