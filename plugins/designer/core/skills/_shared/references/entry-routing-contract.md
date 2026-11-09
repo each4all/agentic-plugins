@@ -195,11 +195,11 @@ next step instead (`--clear-next-step true`): the lifecycle owns its phase
 order.
 `staging-set` belongs to a commit command, and designer declares
 `commit_surface` off, so `state.mjs` refuses to set it, naming the capability.
-`pr-handling` belongs to autopilot dispatch, and designer declares
-`dispatch_target` off, so `state.mjs` refuses to set it, naming the
-capability; an inherited `AGENTIC_AUTOPILOT` changes nothing a designer
+`pr-handling` and `critique-cap` belong to autopilot dispatch, and
+designer declares `dispatch_target` off, so `state.mjs` refuses to set
+them, naming the capability; an inherited `AGENTIC_AUTOPILOT` changes nothing a designer
 command writes (ADR-0066 Decision 3).
-Reading a workflow file, `state.mjs` accepts all six gate names (ADR-0066
+Reading a workflow file, `state.mjs` accepts all seven gate names (ADR-0066
 Decision 7 validates each schema 1.4 key on its own).
 
 **The conflict gates and their consensus task file (ADR-0067 Decision 8).**
