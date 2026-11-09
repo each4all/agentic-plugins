@@ -417,9 +417,12 @@ phase (ADR-0066 PC2b):
   type> --no-run-reason <peer-unavailable|local-only|privacy-gate|owner-skip>
   --attempt-key <a new text directory for that settle>`, so the workflow records the
   review's attempt with its outcome (`unavailable` or `skipped`) and a rerun
-  of that settle records it once (C163 A1a). A `peer-runner.mjs` that does not name
-  `--no-run-reason` in its usage predates the record: settle without the
-  three flags then.
+  of that settle records it once (C163 A1a). A dispatch that launched takes
+  `--subject-file <file>` (`{"shown": [...], "covered": [...]}`, the paths its
+  prompt shows, and those at the content the tree holds now), and so does an
+  empty-id settle for what the local reviewers read (ADR-0069 Decision 1). A `peer-runner.mjs` that does not name
+  `--no-run-reason` in its usage predates the record: settle without those
+  flags then.
 - **No phase closes the workflow.** A verb's own terminal write
   (`finish-verb`) never runs inside the lifecycle; the lifecycle's last step
   below makes its one terminal write.
@@ -643,6 +646,11 @@ part does not fit (ADR-0028 §P6, note of 2026-11-04). Execute warns on a
 subject that does not fit, commits it as given, and prints the corrected
 subject: pass the warning and the corrected subject to the user, who can
 amend the commit or retitle the pull request with it.
+
+When the plan's `review_binding.hold` is set, the change does not compare with
+its reviews: show that line, and when `review_binding.state` is `different`,
+go back to the critique phase unless the owner accepts it (`state.mjs
+review-binding-accept`): execute refuses it (ADR-0069 Decision 3).
 
 When the plan's `review_hold` is set, a review outcome holds this commit back:
 show the user that line before asking anything. It names the attempt and the

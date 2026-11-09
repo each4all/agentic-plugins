@@ -81,7 +81,11 @@ import {
   appendPhase,
   beginCommit,
   endChildOperation,
+  manifestPathsOf,
   readTextArgumentFile,
+  recordCommittedComparison,
+  reviewBindingCheck,
+  reviewBindingHoldText,
   reviewGateCheck,
   reviewHoldText,
 } from './state.mjs';
@@ -951,6 +955,29 @@ export function decideStagingBranch({
   };
 }
 
+/**
+ * C163 A2b (critique of 2026-11-08, MAJOR 3) — the paths a commit of this
+ * workflow stages now, derived as plan and execute derive them: the manifest
+ * (each path checked, as they check it) against what git reports changed, with
+ * `includeExtras` opted in. state.mjs `commitPathsOf` reads it, so the
+ * owner's acceptance judges the tree a commit would hold, never the manifest's
+ * own list (an ignored file in it is not staged).
+ */
+export function commitStagingSet({ repoRoot, frontmatter, includeExtras = [], acceptCurrentTree = false }) {
+  const manifest = Array.isArray(frontmatter?.commit_manifest) ? frontmatter.commit_manifest : [];
+  for (const entry of manifest) {
+    if (!entry || typeof entry !== 'object') throw new Error(`commit_manifest entry is not an object: ${JSON.stringify(entry)}`);
+    assertSafePath(entry.path);
+  }
+  for (const p of includeExtras) assertSafePath(p);
+  return decideStagingBranch({
+    gitChanges: computeGitChanges(repoRoot),
+    manifestPaths: manifest.map((e) => e.path),
+    acceptCurrentTree,
+    includeExtras,
+  }).stagingSet;
+}
+
 // =============================================================================
 // Mixed-hunk detection (ADR-0028 §Layer-3; exact since the C84 review)
 // =============================================================================
@@ -1056,7 +1083,7 @@ export function commitShapeFor({ classification, perPackageCommits, docsCommit }
 // Plan-mode JSON output
 // =============================================================================
 
-async function planMode({ workflowPath, repoRoot, frontmatter, acceptCurrentTree }) {
+async function planMode({ workflowPath, repoRoot, frontmatter, acceptCurrentTree, landingBranch = null }) {
   const gitChanges = computeGitChanges(repoRoot);
   const manifest = Array.isArray(frontmatter.commit_manifest)
     ? frontmatter.commit_manifest
@@ -1130,9 +1157,15 @@ async function planMode({ workflowPath, repoRoot, frontmatter, acceptCurrentTree
   // that holds the commit back, named here so the user reads it before
   // deciding: execute warns only as it commits. Null when none holds, and on a
   // clean tree that lands nothing (only a recovery lands commits).
-  const reviewHold = noChanges !== null && noChanges.path !== 'recovery'
+  // C163 A2b (ADR-0069) — and how the change compares with its reviews, which
+  // narrows the outcome read above to reviews of this change.
+  const landsNothing = noChanges !== null && noChanges.path !== 'recovery';
+  // The branch to land on as execute takes it (`--landing-branch`), so the plan
+  // compares what execute will (critique of 2026-11-07, MINOR).
+  const reviewBinding = landsNothing ? null : await reviewBindingCheck({ workflowPath, repoRoot, frontmatter, paths: stagingSet, argument: landingBranch });
+  const reviewHold = landsNothing
     ? null
-    : reviewHoldText(await reviewGateCheck({ workflowPath, repoRoot, frontmatter }), { workflowPath });
+    : reviewHoldText(await reviewGateCheck({ workflowPath, repoRoot, frontmatter, binding: reviewBinding }), { workflowPath });
   return {
     mode: 'plan',
     workflow_path: workflowPath,
@@ -1140,6 +1173,13 @@ async function planMode({ workflowPath, repoRoot, frontmatter, acceptCurrentTree
     ask_user: branchDecision.askUser,
     no_changes: noChanges,
     review_hold: reviewHold,
+    review_binding: reviewBinding === null ? null : {
+      state: reviewBinding.state,
+      reason: reviewBinding.reason ?? null,
+      paths: reviewBinding.failures.map((f) => f.path),
+      held: reviewBinding.held,
+      hold: reviewBindingHoldText(reviewBinding, { workflowPath }),
+    },
     extras: branchDecision.extras ?? [],
     git_changes: gitChanges,
     manifest_paths: manifestPaths,
@@ -1784,6 +1824,21 @@ async function runPostCommitGates({ workflowPath, repoRoot, flags, stderr, lande
     );
     return { ok: false, reason: 'active-children', landed };
   }
+  // C163 A2b (ADR-0069 Decision 2) — the committed comparison of the tree after
+  // the workflow's last commit, keyed by that commit, with the members found. A
+  // series stopped part way reaches no gate here, so it records nothing and
+  // claims nothing (Decision 3). A failure to record never undoes a commit; the
+  // landing then reads no record for this commit, which is not comparable.
+  try {
+    const recorded = await recordCommittedComparison({
+      workflowPath, repoRoot, argument: flags['landing-branch'] ?? null, host: flags.host, writer: 'operation',
+    });
+    if (recorded.recorded && recorded.state === 'different') {
+      stderr.write(`⚠ review binding: commit ${recorded.commit} is not the change reviewed (${recorded.failures.map((f) => f.path).join(', ')}): something changed it after admission (a pre-commit hook, for one). The landed comparison will say so.\n`);
+    }
+  } catch (err) {
+    stderr.write(`⚠ review binding: the committed comparison was not recorded (${err.message.split('\n')[0]}).\n`);
+  }
   // PR4 review F1 (Phase 5 Angle A+B): use `-z` for parity with the
   // Layer-1 clean-baseline parser (state.mjs runCleanBaselineCheck).
   // Plain `--porcelain=v1` C-quotes paths containing spaces / tabs /
@@ -1986,7 +2041,16 @@ async function executeMode({
   // Under autopilot it is refused at admission below (heldReviewRefusal), on
   // the commit and recovery paths.
   if (flags['autopilot-subjects'] !== true) {
-    const held = reviewHoldText(await reviewGateCheck({ workflowPath, repoRoot, frontmatter }), { workflowPath });
+    // The staging set this execute derives below, so the warning narrows by
+    // the comparison of the tree it commits (critique of 2026-11-08, MAJOR 3).
+    const staging = commitStagingSet({
+      repoRoot,
+      frontmatter,
+      includeExtras: Array.isArray(flags['include-extra']) ? flags['include-extra'] : [],
+      acceptCurrentTree: flags['accept-current-tree'] === true || process.env.ACCEPT_CURRENT_TREE === '1',
+    });
+    const binding = await reviewBindingCheck({ workflowPath, repoRoot, frontmatter, paths: staging, argument: flags['landing-branch'] ?? null, refresh: false });
+    const held = reviewHoldText(await reviewGateCheck({ workflowPath, repoRoot, frontmatter, binding }), { workflowPath });
     if (held) stderr.write(`⚠ review: ${held}. Interactively this is a warning; under autopilot the commit is refused.\n`);
   }
   // Re-derive everything (do NOT trust caller-supplied plan; planMode
@@ -2086,10 +2150,8 @@ async function executeMode({
       //
       // C163 A1b — under autopilot the recovery is admitted only past a usable
       // review, read again here, just before its first write.
-      if (enforceSubjects) {
-        const refused = await heldReviewRefusal({ workflowPath, repoRoot, stderr });
-        if (refused) return refused;
-      }
+      const recovering = await reviewAdmission({ workflowPath, repoRoot, stderr, flags, paths: [], enforce: enforceSubjects });
+      if (recovering) return recovering;
       // ADR-0063 — non-terminal until the gates pass, as in the loop below.
       const { operation: id } = await beginCommit({ workflowPath, host: flags.host });
       return await underCommitOperation({ workflowPath, flags, stderr, id }, () => runPostCommitGatesOnly({
@@ -2213,10 +2275,12 @@ async function executeMode({
   // here, just before the first write and the staging: an outcome recorded
   // while the plan was made is seen. What a writer records after this read,
   // while the commit runs, is not (ADR-0028 note, Limits).
-  if (enforceSubjects) {
-    const refused = await heldReviewRefusal({ workflowPath, repoRoot, stderr });
-    if (refused) return refused;
-  }
+  // C163 A2b (ADR-0069 Decision 3) — and past a comparison of the whole series
+  // with its reviews, from the tree its last commit will hold.
+  const admitted = await reviewAdmission({
+    workflowPath, repoRoot, stderr, flags, paths: shape.commits.flatMap((c) => c.files), enforce: enforceSubjects,
+  });
+  if (admitted) return admitted;
   // ADR-0063 — the workflow is not terminal while it is being committed: an
   // inherited terminal marker (an interactive verb's) with HEAD moved by a
   // first split commit would let the Stop hook archive a half-committed
@@ -2518,11 +2582,57 @@ async function closeMode({ workflowPath, repoRoot, frontmatter, flags, stderr })
 // null. The review record is read from the workflow file each time, never
 // from the frontmatter the step began with: that was read before planning, and
 // an outcome a concurrent writer recorded since would go unseen.
-async function heldReviewRefusal({ workflowPath, repoRoot, stderr }) {
-  const held = reviewHoldText(await reviewGateCheck({ workflowPath, repoRoot }), { workflowPath });
+//
+// C163 A2b (ADR-0069 Decision 3) — the same refusal for a change its reviews do
+// not vouch for: `paths` are what the commit stages, so the comparison reads the
+// tree its last commit will hold. The outcome gate reads only reviews of that
+// change (`binding`). A comparison the owner accepted for this change lets it.
+async function heldReviewRefusal({ workflowPath, repoRoot, stderr, flags = {}, paths = [] }) {
+  // One read of the record for both judgments: an attempt closed between two
+  // would make them judge different histories.
+  const { frontmatter } = parseWorkflowFile(await readFile(workflowPath, 'utf8'));
+  const binding = await reviewBindingCheck({ workflowPath, repoRoot, frontmatter, paths, argument: flags['landing-branch'] ?? null });
+  const extras = paths.filter((p) => !manifestPathsOf(frontmatter).includes(p));
+  // A comparison that holds with no acceptance key names a cause to clear
+  // first: until it is, neither acceptance can be given (refine-verify of
+  // 2026-11-08, third pass).
+  const noKey = binding.held && typeof binding.acceptance_key !== 'string' ? reviewBindingHoldText(binding, { workflowPath, extras }) : null;
+  const held = noKey ?? reviewHoldText(await reviewGateCheck({ workflowPath, repoRoot, frontmatter, binding }), { workflowPath })
+    ?? reviewBindingHoldText(binding, { workflowPath, extras });
   if (!held) return null;
-  stderr.write(`✗ refused under autopilot: ${held}. Nothing was committed and nothing was written (ADR-0028, note of 2026-11-07).\n`);
+  stderr.write(`✗ refused under autopilot: ${held}. Nothing was committed and nothing was written (ADR-0028, note of 2026-11-07; ADR-0069).\n`);
   return { ok: false, reason: 'review-held', landed: [] };
+}
+
+// C163 A2b (ADR-0069 Decision 3) — the admission of a commit or a recovery,
+// just before its first write. Under autopilot, heldReviewRefusal. Interactively
+// a change that differs from what was reviewed goes back to critique: it is
+// refused, with both ways on, unless the owner accepted it for this change; one
+// that cannot be compared proves nothing either way, and is a warning. The user
+// saw both in the plan (`review_binding`).
+async function reviewAdmission({ workflowPath, repoRoot, stderr, flags, paths, enforce }) {
+  if (enforce) return heldReviewRefusal({ workflowPath, repoRoot, stderr, flags, paths });
+  const { frontmatter } = parseWorkflowFile(await readFile(workflowPath, 'utf8'));
+  const binding = await reviewBindingCheck({ workflowPath, repoRoot, frontmatter, paths, argument: flags['landing-branch'] ?? null });
+  const extras = paths.filter((p) => !manifestPathsOf(frontmatter).includes(p));
+  const hold = reviewBindingHoldText(binding, { workflowPath, extras });
+  if (!hold) return null;
+  // A repository the environment selects that is not the checkout is no review
+  // question: Phase 7 would commit in the other one, so it refuses whatever the
+  // mode (refine-verify of 2026-11-08, second pass).
+  if (binding.reason === 'repository-mismatch') {
+    stderr.write(`✗ phase7-commit refused: ${hold}. Nothing was committed and nothing was written (ADR-0069).\n`);
+    return { ok: false, reason: 'review-binding-mismatch', landed: [] };
+  }
+  if (binding.state === 'different') {
+    stderr.write(
+      `✗ phase7-commit refused: ${hold}. Nothing was committed and nothing was written (ADR-0069 Decision 3).\n` +
+      `\nRecommended action: ${commandPrefix()}critique — review the change as it is now.\n`,
+    );
+    return { ok: false, reason: 'review-binding-mismatch', landed: [] };
+  }
+  stderr.write(`⚠ review binding: ${hold}. Interactively this is a warning; under autopilot the commit is refused.\n`);
+  return null;
 }
 
 async function autopilotMode({ workflowPath, repoRoot, frontmatter, flags, stderr }) {
@@ -2549,7 +2659,7 @@ async function autopilotMode({ workflowPath, repoRoot, frontmatter, flags, stder
     );
     return { ok: false, reason: 'pending_ensemble:non_empty' };
   }
-  const plan = await planMode({ workflowPath, repoRoot, frontmatter, acceptCurrentTree: false });
+  const plan = await planMode({ workflowPath, repoRoot, frontmatter, acceptCurrentTree: false, landingBranch: flags['landing-branch'] ?? null });
   // ADR-0028 §P6, note of 2026-11-04 — the subjects are the commit worker's,
   // from files it wrote after reading the plan (`--subject-file`, or
   // `--subject-pkg-file` per commit of a split), each checked against its
@@ -2566,7 +2676,7 @@ async function autopilotMode({ workflowPath, repoRoot, frontmatter, flags, stder
   // judges the commit and the recovery again at admission, from the workflow
   // file as it is then.
   if (plan.branch !== 'no-changes') {
-    const refused = await heldReviewRefusal({ workflowPath, repoRoot, stderr });
+    const refused = await heldReviewRefusal({ workflowPath, repoRoot, stderr, flags, paths: plan.staging_set });
     if (refused) return refused;
   }
   if (plan.branch === 'no-changes') {
@@ -2700,6 +2810,15 @@ review outcome is failed, degraded, unavailable, malformed or unknown, and the o
 has not accepted that attempt for this working tree (state.mjs review-accept), autopilot
 mode refuses the commit and the recovery path (exit 10) before anything is written;
 interactively execute warns and commits. A close is not held.
+
+Review binding (ADR-0069, C163 A2b): the change is compared with its reviews, from
+the tree the commit will hold. Plan mode reports review_binding; execute refuses a
+change that differs (exit 10, review-binding-mismatch) unless the owner accepted it
+for this change (state.mjs review-binding-accept), and warns on one that cannot be
+compared; autopilot mode refuses both (exit 10).
+  --landing-branch <branch>         The branch the change lands on, in plan, execute and
+                                    autopilot mode alike; else the parent macro's branch,
+                                    else origin's default branch.
 
 Close mode (ADR-0063) closes a workflow whose last verb recorded next_step_kind done
 and that committed nothing: close-complete + terminal marker, then archive. For a
@@ -2851,6 +2970,7 @@ async function runMain(argv) {
         repoRoot: flags['repo-root'],
         frontmatter,
         acceptCurrentTree,
+        landingBranch: flags['landing-branch'] ?? null,
       });
       process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`);
       return 0;
@@ -2928,6 +3048,7 @@ async function runMain(argv) {
         'active-children': 6,
         'unclean-after-commit': 7,
         'subject-refused': 9,
+        'review-binding-mismatch': 10,
       };
       return codeMap[result.reason] ?? 1;
     }
