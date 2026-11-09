@@ -164,11 +164,12 @@ type the phase's dispatch would have used (compose's `plan-verify`, or
 critique's `review` or `adversarial-scan`; refine's `refine-verify`), and why
 it never ran: `--ensemble-type <that type>
 --no-run-reason <peer-unavailable|local-only|privacy-gate|owner-skip>
+--subject-file <the paths it read, {"shown": [...], "covered": [...]}, ADR-0069>
 --attempt-key <a new text directory for that settle>`, so the workflow records
 the review's attempt with its outcome (`unavailable` or `skipped`) and a rerun
 of that settle records it once (C163 A1a). A `peer-runner.mjs` that does not
-name `--no-run-reason` in its usage predates the record: settle without the
-three flags then. No phase makes a verb's terminal write;
+name `--no-run-reason` in its usage predates the record: settle without those
+flags then. No phase makes a verb's terminal write;
 the lifecycle's one terminal write is `finish-verb` at the end, once it
 converged where the persona waits for convergence.
 An owner gate met in a
