@@ -79,6 +79,30 @@ function listProcessesHere(options = {}) {
 // second copy of each record.
 export const SNAPSHOT_EXCLUDED_PATHSPECS = ['.agentic-plugins/state', ':(glob).claude/agentic-*/**'];
 
+// A capture never reads an untracked file in the state homes: a runner writes
+// its ledger there while another run of the same checkout captures (the
+// concurrent-runs test, failing in a whole-suite run).
+// - Its `git add -A` excludes them (SNAPSHOT_ADD_PATHSPECS, the homes of
+//   SNAPSHOT_EXCLUDED_PATHSPECS), so a temporary ledger file renamed away
+//   between git's scan and its stat of it cannot fail the add. The `[.]`
+//   leaves each pattern no literal prefix: an exclude pathspec whose literal
+//   path is, or lies under, an ignored directory makes git refuse the add
+//   (exit 1, "The following paths are ignored"), and this repository ignores
+//   both homes (measured on git 2.54, ignored homes, ancestors and
+//   descendants).
+// - Its `git rm` of the homes (SNAPSHOT_RM_ARGS) drops the entries the index
+//   already tracks there, forced (`-f`), since it only ever removes entries of
+//   a throwaway index: unforced, git refuses an entry whose staged content
+//   matches neither HEAD nor the file, a tracked ledger rewritten between the
+//   add and the rm.
+// Limits: a file the index tracks in a home is still read (git refreshes its
+// entry, running any clean filter it has, and reads the `.gitattributes` of
+// its directories, untracked or not, to find that filter), and so is a file
+// named exactly `.agentic-plugins/state`, which `state/**` does not match
+// (the rm drops it).
+const SNAPSHOT_ADD_PATHSPECS = ['.', ':(top,exclude,glob)[.]agentic-plugins/state/**', ':(top,exclude,glob)[.]claude/agentic-*/**'];
+const SNAPSHOT_RM_ARGS = ['rm', '--cached', '-r', '-q', '-f', '--ignore-unmatch', '--', ...SNAPSHOT_EXCLUDED_PATHSPECS];
+
 // The variables that select a repository, worktree or index for git. Removed
 // from every git call here and from the companion's environment.
 export const GIT_SELECTOR_VARS = [
@@ -106,7 +130,22 @@ export function scrubGitSelectors(env = process.env) {
   return out;
 }
 
-function gitEnv(env) {
+// The variables that change how git reads every pathspec. The capture's
+// pathspecs carry their own magic (SNAPSHOT_ADD_PATHSPECS, the glob of
+// SNAPSHOT_EXCLUDED_PATHSPECS), which GIT_LITERAL_PATHSPECS=1 in the caller's
+// environment would turn off: the add would refuse its excludes as matching
+// nothing, and the rm would leave `.claude/agentic-*` in the tree. Removed from
+// every git call here.
+const GIT_PATHSPEC_MODE_VARS = ['GIT_LITERAL_PATHSPECS', 'GIT_GLOB_PATHSPECS', 'GIT_NOGLOB_PATHSPECS', 'GIT_ICASE_PATHSPECS'];
+
+function withoutPathspecModes(env) {
+  const out = { ...env };
+  for (const name of GIT_PATHSPEC_MODE_VARS) delete out[name];
+  return out;
+}
+
+function gitEnv(callerEnv) {
+  const env = withoutPathspecModes(callerEnv);
   return { ...scrubGitSelectors(env), LC_ALL: 'C', GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' };
 }
 
@@ -227,7 +266,7 @@ function nulFields(text) {
 // One capture: HEAD, the index (I: what is staged) and the working tree (W:
 // the index with every working-tree change added, .gitignore respected, the
 // state homes removed), each from a copy of the live index.
-async function capture(top, parent, env, signal, beforeRecheck) {
+async function capture(top, parent, env, signal, beforeRecheck, afterAdd = null) {
   const headBefore = await readHead(top, env, signal);
   const liveIndex = resolve(top, (await gitOk(top, ['rev-parse', '--git-path', 'index'], 'git-discovery', { env, signal })).trim());
   const staged = join(parent, 'index.staged');
@@ -288,8 +327,9 @@ async function capture(top, parent, env, signal, beforeRecheck) {
     if (tag !== 'S' && tag >= 'a' && tag <= 'z') assumeUnchanged.push(path);
   }
 
-  await gitOk(top, ['add', '-A'], 'worktree-unreadable', { env, signal, indexFile: worktree });
-  await gitOk(top, ['rm', '--cached', '-r', '-q', '--ignore-unmatch', '--', ...SNAPSHOT_EXCLUDED_PATHSPECS], 'worktree-unreadable', { env, signal, indexFile: worktree });
+  await gitOk(top, ['add', '-A', '--', ...SNAPSHOT_ADD_PATHSPECS], 'worktree-unreadable', { env, signal, indexFile: worktree });
+  if (afterAdd) await afterAdd();
+  await gitOk(top, SNAPSHOT_RM_ARGS, 'worktree-unreadable', { env, signal, indexFile: worktree });
   const worktreeTree = (await gitOk(top, ['write-tree'], 'worktree-unreadable', { env, signal, indexFile: worktree })).trim();
 
   if (beforeRecheck) await beforeRecheck();
@@ -313,12 +353,29 @@ export async function captureWorkingTree({ cwd, env = process.env, signal = null
   const parent = await mkdtemp(join(snapshotBase(top), 'review-capture-'));
   try {
     for (let attempt = 1; attempt <= 2; attempt++) {
-      const snap = await capture(top, parent, env, signal, hooks.afterCapture ? () => hooks.afterCapture(attempt) : null);
+      const snap = await capture(top, parent, env, signal, hooks.afterCapture ? () => hooks.afterCapture(attempt) : null, hooks.afterAdd ?? null);
       if (!snap.moved) return { top, head: snap.head, unborn: snap.unborn, tree: snap.worktreeTree, flagged: [...new Set([...snap.assumeUnchanged, ...snap.skipWorktree])].sort() };
     }
     throw new SnapshotError('head-moved', `HEAD of ${top} moved during the capture, twice`);
   } finally {
     await rm(parent, { recursive: true, force: true });
+  }
+}
+
+// C163 A2b (ADR-0069 Decision 1, item 4) — the snapshot's working tree as its
+// launch tree would hold it now: the capture again, over an index of that tree
+// rather than the snapshot's own. The snapshot's index is the live one's, so a
+// submodule the live checkout moved and did not stage, which no snapshot checks
+// out, would read as moved back; a peer's edit reads the same either way.
+export async function recaptureSnapshotTree(snapshot, { env = process.env } = {}) {
+  const index = join(snapshot.parent, 'end-capture.index');
+  try {
+    await gitOk(snapshot.root, ['read-tree', snapshot.worktree_tree], 'worktree-unreadable', { env, indexFile: index });
+    await gitOk(snapshot.root, ['add', '-A', '--', ...SNAPSHOT_ADD_PATHSPECS], 'worktree-unreadable', { env, indexFile: index });
+    await gitOk(snapshot.root, SNAPSHOT_RM_ARGS, 'worktree-unreadable', { env, indexFile: index });
+    return (await gitOk(snapshot.root, ['write-tree'], 'worktree-unreadable', { env, indexFile: index })).trim();
+  } finally {
+    await rm(index, { force: true });
   }
 }
 
@@ -366,7 +423,10 @@ async function writeJsonAtomic(path, value) {
 // throws SnapshotError 'cancelled'.
 // Test seam: `hooks.afterCapture(attempt)` runs after a capture has read
 // the index and the working tree and before it reads HEAD again, so a test
-// can move HEAD in between.
+// can move HEAD in between;
+// `hooks.afterAdd()` runs between the capture's `add -A` and its `rm` of the
+// state homes, so a test can rewrite a ledger there as another run would.
+// captureWorkingTree takes both.
 export async function createPeerSnapshot({
   cwd,
   runId = null,
@@ -402,7 +462,7 @@ export async function createPeerSnapshot({
 
     let snap = null;
     for (let attempt = 1; attempt <= 2; attempt++) {
-      snap = await capture(top, parent, env, signal, hooks.afterCapture ? () => hooks.afterCapture(attempt) : null);
+      snap = await capture(top, parent, env, signal, hooks.afterCapture ? () => hooks.afterCapture(attempt) : null, hooks.afterAdd ?? null);
       if (!snap.moved) break;
       snap = null;
     }
@@ -425,7 +485,9 @@ export async function createPeerSnapshot({
     await gitOk(tree, ['read-tree', '-u', '--reset', snap.worktreeTree], 'materialize-failed', { env, signal });
     await gitOk(tree, ['read-tree', snap.indexTree], 'materialize-failed', { env, signal });
     if (snap.intentToAdd.length > 0) {
-      await gitOk(tree, ['add', '-N', '--pathspec-from-file=-', '--pathspec-file-nul'], 'materialize-failed', { env, signal, input: `${snap.intentToAdd.join('\0')}\0` });
+      // File names, never patterns: an intent-to-add `[id].txt` read as a
+      // glob would mark an untracked `i.txt` intent-to-add too.
+      await gitOk(tree, ['--literal-pathspecs', 'add', '-N', '--pathspec-from-file=-', '--pathspec-file-nul'], 'materialize-failed', { env, signal, input: `${snap.intentToAdd.join('\0')}\0` });
     }
     if (snap.assumeUnchanged.length > 0) {
       await gitOk(tree, ['update-index', '--assume-unchanged', '-z', '--stdin'], 'materialize-failed', { env, signal, input: `${snap.assumeUnchanged.join('\0')}\0` });
@@ -450,6 +512,9 @@ export async function createPeerSnapshot({
       head: snap.head,
       index_tree: snap.indexTree,
       worktree_tree: snap.worktreeTree,
+      // The index entries marked assume-unchanged or skip-worktree, which make
+      // a review's identity unusable (ADR-0069 Decision 1).
+      flagged: [...new Set([...snap.assumeUnchanged, ...snap.skipWorktree])].sort(),
       supervisor: owner.supervisor,
     };
   } catch (error) {

@@ -59,7 +59,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { resolveLanding, dispatchTimeFromWorkflowId } from './landing.mjs';
+import { landingEvidence, resolveLanding, dispatchTimeFromWorkflowId } from './landing.mjs';
 import { REVIEW_ATTEMPTS_KEY, applyReviewAttempt, decodeReviewAttempts, isReviewType, observeReviewGaps, outcomeOf, treeOf } from './lib/review-attempts.mjs';
 import {
   commandCheckout,
@@ -1833,6 +1833,34 @@ function serializeFrontmatter(fm) {
  * above — unknown keys throw, mis-indented blocks throw. This is a
  * round-trip parser, not a general YAML parser.
  */
+// C163 A2b (ADR-0069 Decision 2) — the landed comparison, asked of the persona
+// that holds the reviews (a plugin calls another through its CLI, ADR-0010 §5).
+// It is `not-comparable` with the reason when the persona cannot answer: an older
+// engineer, or none found.
+async function landedReview({ repoRoot, result, integrationBranch, owner }) {
+  const evidence = await landingEvidence({ repoRoot, commit: result.commit, prNumber: result.pr_number, headRefOid: result.head_ref_oid });
+  const none = (reason) => ({ kind: 'landed', state: 'not-comparable', reason, failures: [], evidence: evidence.evidence });
+  let root;
+  try {
+    const { discoverEngineerPluginRoot } = await import('./discover-engineer.mjs');
+    root = await discoverEngineerPluginRoot();
+  } catch {
+    root = null;
+  }
+  if (!root) return none('no-persona-cli');
+  const args = [join(root, 'scripts', 'state.mjs'), 'review-compare-landed', '--repo-root', repoRoot, '--commit', result.commit, '--integration-branch', integrationBranch];
+  if (evidence.start) args.push('--start', evidence.start);
+  if (evidence.head) args.push('--head', evidence.head);
+  if (owner) args.push('--child-workflow', owner);
+  try {
+    const stdout = execFileSync(process.execPath, args, { encoding: 'utf8', timeout: 120_000, maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+    const parsed = JSON.parse(stdout);
+    return { ...parsed, evidence: evidence.evidence, reason: parsed.reason === 'no-landing-evidence' ? `no-landing-evidence:${evidence.evidence}` : parsed.reason };
+  } catch {
+    return none('persona-cli-failed');
+  }
+}
+
 export function parseWorkflowFile(text) {
   if (!text.startsWith('---\n')) {
     throw new Error('Missing frontmatter open delimiter (expected "---\\n" at file start).');
@@ -4393,6 +4421,11 @@ const UPDATE_SUBTASK_ALLOWED_KEYS = new Set([
   // (ADR-0068 Decision 8, item 4): the dispatch is compared, and the macro
   // body records the waiver and why.
   'expectDispatch', 'waiveDispatch', 'waiveTold',
+  // ADR-0069 Decision 3 — done's record that the owner accepts a landing
+  // that differs from what was reviewed (with a `reason`). It and the two
+  // waivers are the owner's overrides: each is refused when `env` (default
+  // process.env) names an autopilot run, since only the owner gives them.
+  'acceptLandedChange', 'env',
 ]);
 
 // The plan-time fields a caller may expect unchanged, by option name. An empty
@@ -4548,6 +4581,8 @@ export async function updateSubtask(opts) {
     expectBranch,
     waiveDispatch = false,
     waiveTold = false,
+    acceptLandedChange = false,
+    env = process.env,
   } = opts;
   const expectDispatch = opts.expectDispatch === undefined
     ? undefined
@@ -4565,6 +4600,24 @@ export async function updateSubtask(opts) {
   }
   if (typeof waiveTold !== 'boolean') {
     throw new Error('updateSubtask: waiveTold must be a boolean');
+  }
+  if (typeof acceptLandedChange !== 'boolean') {
+    throw new Error('updateSubtask: acceptLandedChange must be a boolean');
+  }
+  // ADR-0069 Decision 3, ADR-0063 Q2 — the owner's overrides, refused under an
+  // autopilot run before anything is read or written: a worker that reruns
+  // done with one of them would record the owner's judgment in the owner's
+  // name. The driver halts on what needs it, and the owner reruns done.
+  const overrides = [
+    [waiveDispatch, '--waive-dispatch'],
+    [waiveTold, '--waive-told'],
+    [acceptLandedChange, '--accept-landed-change'],
+  ].filter(([on]) => on).map(([, flag]) => flag);
+  if (overrides.length > 0 && isAutopilotRun(env)) {
+    throw new Error(
+      `updateSubtask: ${overrides.join(', ')} refused under autopilot (AGENTIC_AUTOPILOT=${env.AGENTIC_AUTOPILOT}): ` +
+        'only the owner waives a check or accepts a landing its reviews do not vouch for (ADR-0063 Q2, ADR-0069 Decision 3)',
+    );
   }
   if (reason !== undefined && typeof reason !== 'string') {
     throw new Error('updateSubtask: reason must be a string');
@@ -4606,6 +4659,19 @@ export async function updateSubtask(opts) {
     if (status !== 'completed') throw new Error('updateSubtask: --waive-told applies only to a completion (--status completed)');
     if (typeof engineerWorkflowId !== 'string' || engineerWorkflowId.length === 0) {
       throw new Error('updateSubtask: --waive-told names no owner; pass --engineer-workflow-id');
+    }
+  }
+  // ADR-0069 Decision 3 — the owner's acceptance of a landed change its reviews
+  // do not vouch for: a completion with the landed commit, and why.
+  if (acceptLandedChange) {
+    if (reasonText.length === 0) {
+      throw new Error(
+        'updateSubtask: --accept-landed-change requires a non-empty reason (ADR-0069 Decision 3: ' +
+          'the owner records why a landing its reviews do not vouch for is accepted).',
+      );
+    }
+    if (status !== 'completed' || typeof commit !== 'string' || commit.length === 0) {
+      throw new Error('updateSubtask: --accept-landed-change applies only to a completion with its landed commit (--status completed --commit)');
     }
   }
   if (expectBranch !== undefined && (typeof expectBranch !== 'string' || expectBranch.length === 0)) {
@@ -7504,7 +7570,7 @@ function cliPrintHelp() {
       '                 [--event updated|resumed] [--expect-branch <branch>]',
       '                 [--expect-verb <verb>] [--expect-profile <profile>]',
       '                 [--expect-topic <topic>] [--expect-dispatch <json> | --waive-dispatch]',
-      '                 [--waive-told]',
+      '                 [--waive-told] [--accept-landed-change]',
       '                 [--correct] [--reason-file <path>|- | --reason <text>]',
       '    ADR-0019 PR-C0 — atomic single-subtask mutation. Updates one',
       '    plan.subtasks[i] entry by id without rewriting the whole plan.',
@@ -7534,6 +7600,10 @@ function cliPrintHelp() {
       '    (ADR-0068 Decision 8, item 4). --waive-told (reason required, with',
       '    --status completed and --engineer-workflow-id) completes an archived child',
       '    it cannot vouch for; the macro body records the waiver and the reason.',
+      '    --accept-landed-change (reason required, with --status completed and',
+      '    --commit) is done\'s record that the owner accepts a landing that differs',
+      '    from what was reviewed (ADR-0069 Decision 3). It and both waivers are the',
+      '    owner\'s: each is refused when AGENTIC_AUTOPILOT names an autopilot run.',
       '',
       '  bulk-subtask-status --workflow-path <path> --host claude|codex',
       '                      --from-statuses <csv> --to-status deferred|abandoned',
@@ -8423,6 +8493,12 @@ async function cliRun(subcommand, flags) {
           explicitCommit: flags.commit || null,
           explicitPr: flags.pr || null,
         });
+        // C163 A2b (ADR-0069) — what landed against what was reviewed, for the
+        // completion path; advisory here, /orchestrator:done and the policy act
+        // on it. Never a refusal of the landing itself: the merge is a fact.
+        if (result.ok) {
+          result.landed_review = await landedReview({ repoRoot: flags['repo-root'], result, integrationBranch, owner });
+        }
         process.stdout.write(`${JSON.stringify(result)}\n`);
         return result.ok ? 0 : 1;
       }
@@ -8785,6 +8861,7 @@ async function cliRun(subcommand, flags) {
           expectDispatch: flags['expect-dispatch'],
           waiveDispatch: cliPresenceFlag(flags, 'waive-dispatch'),
           waiveTold: cliPresenceFlag(flags, 'waive-told'),
+          acceptLandedChange: cliPresenceFlag(flags, 'accept-landed-change'),
         });
         // Emit JSON envelope so callers (PR-C engineer parent-writeback
         // helper, PR-D /next + /done runbooks) can parse the result

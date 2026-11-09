@@ -40,7 +40,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { contentProjection } from '../../../scripts/lib/lane-digest.mjs';
-import { reviewGate } from '../../../scripts/lib/review-attempts.mjs';
+import { decodeBindingAcceptance, latestCommittedComparison, REVIEW_BINDING_ACCEPTANCE_KEY, reviewGate } from '../../../scripts/lib/review-attempts.mjs';
 import { phaseEvidence } from './phase-evidence.mjs';
 import { recordDigest } from './verify-journal.mjs';
 
@@ -85,6 +85,40 @@ const physical = (p) => {
     if (err.code === 'ENOENT') return null;
     throw err;
   }
+};
+
+// A workflow file found by a scan and gone when read moved meanwhile: a step
+// that commits archives its child at any time, in another lane too, and a
+// file may be renamed. Its absence proves nothing about the claim, so the
+// reader asks again from a fresh discovery, up to MOVE_RETRIES more times,
+// and a file still moving after that is the error the read reported. A read
+// that fails while the file is there (`vanished` false, or a check that
+// throws) is an error at once.
+//
+// Limits (refine-verify of 2026-11-08, second pass): a scan sees each home as
+// it is when that home is listed, so a file moved from a home not yet listed
+// into one already listed is seen in neither, and nothing tells it moved; and
+// engineer's own `find-active` passes over a file gone during its scan, so a
+// workflow renamed within its home then is not found by it. A workflow is
+// archived (moved out of every home), never renamed within one, and no step
+// moves a workflow between homes while a run drives them.
+const MOVE_RETRIES = 2;
+const vanished = (p) => {
+  try { return physical(p) === null; } catch { return false; }
+};
+// Why a listed entry whose real path is missing holds no workflow: `link`, a
+// link whose target is missing (no workflow, skipped), or `moved`, gone or
+// replaced since it was listed (list again). A probe failing otherwise throws.
+const missingKind = (p) => {
+  let st;
+  try { st = fs.lstatSync(p); } catch (err) {
+    if (err.code === 'ENOENT') return 'moved';
+    throw err;
+  }
+  // A regular file there now was renamed away and back, or replaced: its
+  // real path is asked again by the next enumeration.
+  if (!st.isSymbolicLink()) return 'moved';
+  return physical(p) === null ? 'link' : 'moved';
 };
 
 // The read set and the repository-wide scan set of `repoRoot`, from
@@ -174,7 +208,7 @@ export function verifySummary(fm) {
 // forward-compat carrier, which its `read` lists under
 // `_forward_compat_unknowns` (each `{key, value, raw}`): they are read from
 // there, so its review record still holds the gate.
-const REVIEW_KEYS = ['review_attempts', 'review_acceptance'];
+const REVIEW_KEYS = ['review_attempts', 'review_acceptance', 'review_bindings', 'review_binding_acceptance'];
 function withCarriedReview(fm) {
   const carried = Array.isArray(fm?._forward_compat_unknowns) ? fm._forward_compat_unknowns : [];
   let out = fm;
@@ -185,8 +219,21 @@ function withCarriedReview(fm) {
 }
 
 export function reviewSummary(fm) {
-  const g = reviewGate(withCarriedReview(fm ?? {}));
+  const carried = withCarriedReview(fm ?? {});
+  const g = reviewGate(carried);
+  // C163 A2b — the committed comparison recorded last: what a landing report
+  // shows as provisional, before the merge (ADR-0069 Decision 3).
+  const comparison = latestCommittedComparison(carried);
+  // C163 A2b — the owner's acceptance of a change its reviews do not vouch
+  // for: Phase 7 refused the commit before it, so a lane parked on that refusal
+  // is picked up when the owner gives it (policy.mjs childTuple).
+  const bound = decodeBindingAcceptance(carried[REVIEW_BINDING_ACCEPTANCE_KEY]);
+  const bindingAcceptance = bound.state === 'ok'
+    ? { manifest_sha256: bound.doc.manifest_sha256, state: bound.doc.state, accepted_at: bound.doc.accepted_at }
+    : bound.state === 'unreadable' ? { unreadable: true } : null;
   return {
+    ...(comparison ? { comparison } : {}),
+    ...(bindingAcceptance ? { binding_acceptance: bindingAcceptance } : {}),
     held: g.held,
     blocking: g.blocking,
     latest: g.latest,
@@ -390,7 +437,19 @@ function linkageProblems(child, { macroId, subtask }) {
   return wrong;
 }
 
-function observeChild({ engCli, repoRoot, roots, macroId, subtask, o }) {
+// The subtask's child, found again from a fresh discovery while the active
+// file it found moved before its read: the child's own commit, in its lane,
+// archives it at any time, and the archive is where the next discovery finds
+// it.
+function observeChild(args) {
+  for (let attempt = 0; ; attempt += 1) {
+    const child = observeChildOnce(args);
+    if (!child.moved) return child;
+    if (attempt >= MOVE_RETRIES) return { location: 'error', detail: child.detail };
+  }
+}
+
+function observeChildOnce({ engCli, repoRoot, roots, macroId, subtask, o }) {
   if (typeof subtask.branch !== 'string' || subtask.branch.length === 0) {
     return { location: 'error', detail: 'the subtask records no branch' };
   }
@@ -398,7 +457,7 @@ function observeChild({ engCli, repoRoot, roots, macroId, subtask, o }) {
   if (active.code !== 0) return { location: 'error', detail: failure(active, 'engineer find-active') };
   if (active.stdout) {
     const r = readFrontmatter(engCli, active.stdout, o);
-    if (r.error) return { location: 'error', detail: r.error };
+    if (r.error) return vanished(active.stdout) ? { moved: true, detail: r.error } : { location: 'error', detail: r.error };
     const child = summarizeChild(r.fm, 'active', active.stdout, roots.scan);
     const wrong = linkageProblems(child, { macroId, subtask });
     if (wrong.length > 0) return { ...child, location: 'linkage-mismatch', detail: wrong.join(', ') };
@@ -416,7 +475,19 @@ function observeChild({ engCli, repoRoot, roots, macroId, subtask, o }) {
   return child;
 }
 
-function listClaims({ engCli, roots, macroId, o }) {
+// Every live engineer workflow claiming the macro, from a fresh enumeration
+// of every home each time a listed file moved during the listing (archived,
+// renamed, or a link to it removed): a file gone now may live on under
+// another name, so its absence alone is never no claim.
+function listClaims(args) {
+  for (let attempt = 0; ; attempt += 1) {
+    const r = listClaimsOnce(args);
+    if (!r.moved) return r;
+    if (attempt >= MOVE_RETRIES) return { error: `the workflows kept moving while they were listed: ${r.moved}` };
+  }
+}
+
+function listClaimsOnce({ engCli, roots, macroId, o }) {
   const list = [];
   const seen = new Set();
   for (const dir of roots.scan.flatMap((root) => ENGINEER_STATE_HOMES.map((home) => path.join(root, home, 'workflows')))) {
@@ -431,10 +502,20 @@ function listClaims({ engCli, roots, macroId, o }) {
       const file = path.join(dir, n);
       let real;
       try { real = physical(file); } catch (err) { return { error: `cannot read ${file}: ${err.message}` }; }
-      if (real === null || seen.has(real)) continue;
+      // Gone or replaced since the listing: list again. A link whose target is
+      // missing is no workflow, and is skipped.
+      if (real === null) {
+        let kind;
+        try { kind = missingKind(file); } catch (err) { return { error: `cannot read ${file}: ${err.message}` }; }
+        if (kind === 'moved') return { moved: `${file} moved before it was read` };
+        continue;
+      }
+      if (seen.has(real)) continue;
       seen.add(real);
+      // Moved during its read (a link to it removed included): list again,
+      // with nothing counted as seen.
       const r = readFrontmatter(engCli, file, o);
-      if (r.error) return { error: r.error };
+      if (r.error) return vanished(file) ? { moved: r.error } : { error: r.error };
       if (r.fm.parent_workflow !== macroId) continue;
       list.push({
         id: r.fm.workflow_id ?? null,
@@ -523,12 +604,14 @@ export function observe({ repoRoot, roots, macroId = null, fetch = true, env = p
 
   // A live engineer workflow on the checked-out branch that is none of the
   // in_progress subtasks' children.
-  if (view.git.branch) {
+  // One that moved before its read is looked for again (MOVE_RETRIES).
+  for (let attempt = 0; view.git.branch; attempt += 1) {
     const here = node(engCli, ['find-active', '--repo-root', repoRoot], o);
     if (here.code !== 0) {
       view.foreign = { id: null, path: null, relPath: null, detail: failure(here, 'engineer find-active') };
     } else if (here.stdout && !childPaths.has(here.stdout)) {
       const r = readFrontmatter(engCli, here.stdout, o);
+      if (r.error && attempt < MOVE_RETRIES && vanished(here.stdout)) continue;
       if (r.error) {
         view.foreign = { id: null, path: here.stdout, relPath: relTo(stateRoots.scan, here.stdout), detail: r.error };
       } else {
@@ -543,6 +626,7 @@ export function observe({ repoRoot, roots, macroId = null, fetch = true, env = p
         };
       }
     }
+    break;
   }
 
   const toLand = subtasks.filter((s) => s?.status === 'in_progress' && view.children[s.id] && needsLanding(view.children[s.id]));

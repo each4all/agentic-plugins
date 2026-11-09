@@ -229,6 +229,11 @@ function childTuple(id, c, { withoutPeers = false } = {}) {
   } else if (rv?.blocking === true || accepted !== null) {
     tuple.push(['review', rv.latest?.id ?? null, rv.latest?.outcome ?? null, accepted, acceptedTree, acceptedState, acceptedAt]);
   }
+  // C163 A2b (ADR-0069 Decision 3) — the owner's acceptance of a change Phase 7
+  // refused: appended only once given, so no other lane's fingerprint moves, and
+  // a lane parked on the refusal is picked up when it is.
+  const ba = rv?.binding_acceptance ?? null;
+  if (ba) tuple.push(['review-binding-acceptance', ba.manifest_sha256 ?? null, ba.state ?? null, ba.accepted_at ?? null, ba.unreadable === true]);
   return tuple;
 }
 
@@ -331,6 +336,9 @@ export function reviewRecord(r) {
   return {
     latest: r.latest ?? null,
     held: r.held === true,
+    // C163 A2b — the committed comparison recorded last, which stays
+    // provisional until the landing (ADR-0069).
+    ...(r.comparison ? { comparison: r.comparison } : {}),
     // Not while the gate holds: an acceptance the tree has moved past covers nothing.
     accepted: r.acceptance?.state === 'matches' && r.held !== true ? r.acceptance.attempt_id : null,
     outcomes: Array.isArray(r.outcomes) ? r.outcomes : [],
@@ -361,6 +369,11 @@ export function reviewOutcomesText(rec) {
     rec.held ? 'the latest holds the commit back' : null,
     rec.accepted ? `accepted by the owner: ${rec.accepted}` : null,
     rec.history_incomplete ? `history incomplete (${rec.reasons.join(', ') || 'no reason given'})` : null,
+    // Before the merge this is a warning at most: the landed comparison decides
+    // (ADR-0069 Decision 3).
+    rec.comparison && rec.comparison.state !== 'same' && rec.comparison.state !== 'no-reviews'
+      ? `before the merge the commit compared ${rec.comparison.state}${rec.comparison.reason ? ` (${rec.comparison.reason})` : ''} with its reviews, provisionally`
+      : null,
   ].filter(Boolean);
   return `review outcomes: ${list}${tail.length ? `; ${tail.join('; ')}` : ''}`;
 }
@@ -640,6 +653,13 @@ function classify(subtask, child, landing, verify = null) {
   const viaStop = child.current_phase !== 'commit-complete';
   if (!landing) return stop('owner-choice', `subtask ${id}: its landing was not checked`);
   if (landing.error) return stop('owner-choice', `subtask ${id}: resolve-landing failed: ${landing.error}`);
+  // C163 A2b (ADR-0069 Decision 3) — what landed is not what was reviewed: it
+  // has landed, and only the owner says what follows. Nothing else stops here: a
+  // landing that cannot be compared proves nothing, and done records that.
+  if (landing.ok === true && landing.landed_review?.state === 'different') {
+    const paths = (landing.landed_review.failures ?? []).map((f) => f.path);
+    return stop('owner-choice', `subtask ${id}: what landed at ${landing.commit} is not the change reviewed (${paths.slice(0, 8).join(', ')}${paths.length > 8 ? `, and ${paths.length - 8} more` : ''}); review what landed and fix it forward, then record it with /orchestrator:done ${id} --accept-landed-change <reason>`, { pointer: rel });
+  }
   if (landing.ok === true) return { kind: 'done', step: { kind: 'done', subtaskId: id } };
   if (landing.reason === 'no_pr' || landing.reason === 'not_merged') {
     return {
@@ -1481,9 +1501,18 @@ function postcondition(s, before, after) {
     }
     case 'done':
     case 'done-no-commit': {
-      if (after?.macro?.archived) return null;
       const st = subtaskIn(after, id);
-      return st?.status === 'completed' ? null : `/orchestrator:done left subtask ${id} ${st?.status ?? 'missing'}`;
+      // A done step is dispatched for a landing: completed with no commit, the
+      // worker took --no-commit, which records no landing and so no comparison
+      // of it (ADR-0069 Decision 3). Only the driver's own done-no-commit step,
+      // or the owner, completes a subtask that way. Checked before the archived
+      // macro passes: done of the last subtask archives the macro, whose view
+      // still carries the plan's subtasks (critique of 2026-11-08, fifth pass,
+      // MAJOR 3).
+      if (s.kind === 'done' && st?.status === 'completed' && !st.commit) return `the done step completed subtask ${id} with no landed commit (a --no-commit completion, which is the driver's done-no-commit step or the owner's)`;
+      if (after?.macro?.archived) return null;
+      if (st?.status !== 'completed') return `/orchestrator:done left subtask ${id} ${st?.status ?? 'missing'}`;
+      return null;
     }
     case 'finalize':
       return after?.macro?.archived ? null : `/orchestrator:finalize left macro ${after?.macro?.id ?? '?'} active`;

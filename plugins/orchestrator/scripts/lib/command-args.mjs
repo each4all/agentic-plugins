@@ -60,7 +60,7 @@ export const COMMAND_GRAMMARS = Object.freeze({
   done: {
     usage:
       '/orchestrator:done <subtask-id> [--pr=<n>] [--commit=<sha>] [--correct] [--no-commit] ' +
-      '[--waive-dispatch] [--workflow=<id>] [--integration-branch=<branch>] [<reason>]',
+      '[--waive-dispatch] [--accept-landed-change] [--workflow=<id>] [--integration-branch=<branch>] [<reason>]',
     subtask: 'required',
     reason: true,
     options: [
@@ -69,6 +69,7 @@ export const COMMAND_GRAMMARS = Object.freeze({
       { name: 'correct', field: 'correct', kind: 'switch' },
       { name: 'no-commit', field: 'no_commit', kind: 'switch' },
       { name: 'waive-dispatch', field: 'waive_dispatch', kind: 'switch' },
+      { name: 'accept-landed-change', field: 'accept_landed_change', kind: 'switch' },
       WORKFLOW,
       { name: 'integration-branch', field: 'integration_branch', kind: 'value' },
     ],
@@ -192,9 +193,13 @@ export function parseCommandArguments(command, text) {
   }
   if (grammar.subtask === 'required' && !subtaskSeen) refuse(`${command} needs a subtask id. Usage: ${grammar.usage}`);
   // done: --no-commit records a subtask that landed no commit, so it excludes
-  // the options that name or replace one.
+  // the options that name or replace one, and the acceptance of what landed
+  // (ADR-0069 Decision 3): there is no landing to accept, and the no-commit
+  // write would drop it unread. Tidiness, not the guard: a plain --no-commit
+  // already completes with no comparison, and the driver's postcondition is
+  // what halts a done step a worker completed that way (policy.mjs).
   if (fields.no_commit === true) {
-    const clash = ['pr', 'commit', 'correct'].filter((name) => given.has(name));
+    const clash = ['pr', 'commit', 'correct', 'accept-landed-change'].filter((name) => given.has(name));
     if (clash.length > 0) refuse(`--no-commit excludes ${clash.map((n) => `--${n}`).join(', ')}`);
   }
   return fields;
