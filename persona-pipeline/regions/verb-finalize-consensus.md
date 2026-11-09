@@ -169,6 +169,14 @@ the branch that matches runs and the note is appended once: on a conflict,
 owner does, then rules, and clearing the gate retires the task file. compose,
 frame and refine, and every other verdict, never take this branch.
 
+{{#capability dispatch_target}}
+In a critique under an autopilot run, the block also checks the critique cap
+(C176) before settle: a critique at its cap whose verb form would start
+another round (`NEXT_STEP_KIND` `verb`), or whose request's `on_pass` is a
+verb, stops it with nothing written. Such a critique ends on the owner gate
+`critique-cap`, or with `commit` when no CRITICAL or MAJOR finding is open.
+
+{{/capability}}
 Before settle, the block reads every result this phase recorded on the
 workflow, and the gate it holds. A recorded conflict with no owner ruling
 holds the phase, and only that same run, finalized with `VERDICT` set to
@@ -279,14 +287,18 @@ whenever the step ends on one: the last write is then the owner-decision
 form, which records that gate with the anchor the gate list above names, in
 place of the verb or verify form. A gate this verb does not end on with it, a
 request beside it, and a note that holds the heading of `recurring-finding`,
-`scope-routing` or `pr-handling` while `OWNER_GATE` is empty each stop the
-block before any write. Once every other check has passed, just before
+`scope-routing`, `pr-handling` or `critique-cap` while `OWNER_GATE` is empty
+each stop the block before any write. Once every other check has passed, just before
 settle, the block keeps the form it took in the text directory
 (`finalize-verify.json`: the request's sha256, or none), so a run those checks
 stop keeps none and may add a request: run again with the same `TEXT_DIR`
 after a write, it takes the same form and the same request, and a request
 added, removed or changed since stops it before any write. With no `verify-request.json`, the block ends with the verb form as
 always.
+
+`NEXT_STEP_KIND` in the block names the verb form's next step: `verb` (the
+verb its last write names), or `commit` or `done` when the result selects one
+of them; set it rather than editing the last write's flags.
 {{/capability}}
 
 ```bash
@@ -304,6 +316,9 @@ OP_DIR='<the operation directory the Phase 0 block printed as OP_DIR; empty when
 # The owner gate this step ends on, when it ends on one; empty otherwise.
 # Naming it selects the last write's owner-decision form, which records it.
 OWNER_GATE=''
+# The verb form's next step: verb (the verb its last write names), or commit
+# or done when the result selects one of them; the last write records it.
+NEXT_STEP_KIND='verb'
 {{/capability}}
 ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
@@ -356,11 +371,16 @@ case "$OWNER_GATE" in
   pr-handling) OWNER_GATE_ANCHOR=pr-handling ;;
   recurring-finding) [ {{verb}} != refine ] || OWNER_GATE_ANCHOR=recurring-finding ;;
   decide-conflict) [ {{verb}} != decide ] || OWNER_GATE_ANCHOR=ensemble-synthesis ;;
+  critique-cap) [ {{verb}} != critique ] || OWNER_GATE_ANCHOR=critique-cap ;;
 esac
 [ -z "$OWNER_GATE" ] || [ -n "$OWNER_GATE_ANCHOR" ] \
   || { echo "✗ OWNER_GATE is $OWNER_GATE, which is not a gate this verb ends on with the owner-decision form (the gate list above names them); nothing was written." >&2; exit 1; }
-[ -n "$OWNER_GATE" ] || ! grep -Eq '^ {0,3}###[[:blank:]]+(Recurring finding|Routing recommendation|Outward action needed)([[:space:]]|$)' "$TEXT_DIR/note.md" 2>/dev/null \
+[ -n "$OWNER_GATE" ] || ! grep -Eq '^ {0,3}###[[:blank:]]+(Recurring finding|Routing recommendation|Outward action needed|Critique cap reached)([[:space:]]|$)' "$TEXT_DIR/note.md" 2>/dev/null \
   || { echo "✗ note.md in TEXT_DIR ($TEXT_DIR) records an owner gate (its heading), but OWNER_GATE is empty: set OWNER_GATE to that gate, and the last write records it. Nothing was written." >&2; exit 1; }
+case "$NEXT_STEP_KIND" in
+  verb|commit|done) ;;
+  *) echo "✗ NEXT_STEP_KIND is not verb, commit or done, the verb form's next step; nothing was written." >&2; exit 1 ;;
+esac
 {{/capability}}
 # The run's id, from the result the runner wrote beside the dispatch's prompt,
 # or, when DISPATCH_DIR is the run's own ledger directory (no result there,
@@ -506,6 +526,22 @@ esac
   || { echo "✗ OWNER_GATE is $OWNER_GATE, but VERDICT is conflict: a conflict ends on its own gate, bound to its run. Leave OWNER_GATE empty; nothing was written." >&2; exit 1; }
 {{/capability}}
 {{#capability dispatch_target}}
+# C176 — the critique cap, before settle, the first write: under an autopilot
+# run, a critique at its cap whose verb form would start another round (a
+# verb as its next step) stops here with nothing written, as a verify request
+# whose on_pass is a verb stops at verify-request-check. It ends on the
+# owner gate critique-cap instead, or with commit when no CRITICAL or MAJOR
+# finding is open. An owner gate and a conflict end on their own gate; the
+# check refuses nothing interactively, nor in any other verb.
+if [ {{verb}} = critique ] && [ -z "$OWNER_GATE" ] && [ "$VERDICT" != conflict ] && [ -z "$VERIFY_FORM" ] && [ "$NEXT_STEP_KIND" = verb ]; then
+  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" critique-cap-check \
+    --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+    --next-step-kind verb --next-step-verb {{next_verb}} \
+    --next-step-confidence "$CONFIDENCE" > /dev/null \
+    || { echo "✗ The last write would refuse another critique round, for the reason above; nothing was written. Set OWNER_GATE to critique-cap, with the open findings under ### Critique cap reached in note.md, or NEXT_STEP_KIND to commit when no CRITICAL or MAJOR finding is open, and run this block again." >&2; exit 1; }
+fi
+{{/capability}}
+{{#capability dispatch_target}}
 # The verify form, kept in TEXT_DIR (finalize-verify.json: the request's
 # sha256, or null for the verb form) at the first run, after every check
 # above, so a run they stop keeps no form and runs again with a request added:
@@ -612,6 +648,20 @@ if [ "$RECORDED" != conflict ]; then
       --next-action-file "$TEXT_DIR/next-action.txt" \
       --next-step-kind owner-decision --next-step-confidence "$CONFIDENCE" \
       --owner-gate "$OWNER_GATE" --owner-gate-anchor "$OWNER_GATE_ANCHOR" || exit $?
+  elif [ -z "$VERIFY_FORM" ] && [ "$NEXT_STEP_KIND" != verb ]; then
+    # The verb form with commit or done as its next step (NEXT_STEP_KIND), in
+    # place of the verb the form below names.
+    # ARCHIVE TIMING — interactively this is the verb form's terminal write: on
+    # Claude the Stop hook fires at EVERY turn end, so the archive gates are
+    # evaluated at the end of THIS turn; `--terminal-marker false` clears the
+    # marker only before that Stop fires (the verb form's note below says how).
+    # Under an autopilot run it records the next step only. On Codex the Stop
+    # hook runs only once the plugin hooks are trusted (`/hooks`).
+    node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
+      --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+      --operation-dir "$OP_DIR" \
+      --next-action-file "$TEXT_DIR/next-action.txt" \
+      --next-step-kind "$NEXT_STEP_KIND" --next-step-confidence "$CONFIDENCE" || exit $?
   elif [ -z "$VERIFY_FORM" ]; then
   {{/capability}}
   # ADR-0029 §1 / completion-output contract §2 — next-action.txt, which the

@@ -578,6 +578,8 @@ function blockedGateNextActions(phase) {
   }
   if (capabilityOn('dispatch_target')) {
     resolvingSurfaces.push('pr-handling, the owner takes or declines the outward action, then clears the gate with the next step');
+    // C176 — the critique cap of an autopilot subtask.
+    resolvingSurfaces.push('critique-cap, the owner grants further critique rounds (--grant-critique-rounds, the next step refine) or accepts the open findings as known limits (--resolution naming them), then clears the gate');
   }
   const actions = {
     no_active_children: `Settle the incomplete child-completion entries recorded on this workflow before archiving it (${name} workflows normally carry none — an unexpected entry indicates external state mutation).`,

@@ -2251,6 +2251,149 @@ a run with lanes through the real `review-accept` and the real Phase 7;
 `scripts/mutation-specs/review-gate.mjs` (groups L, K and O, one case for each
 outcome class).
 
+## Amendment 2026-11-09 — critique convergence (C176)
+
+**The problem.** The critique → refine loop of an autopilot subtask had no
+bound. The 2026-10-14 amendment made a document deliverable's re-critique
+scoped, but every CRITICAL and MAJOR it found was still refine's work, and a
+code deliverable kept the full critique: each round could find a new MAJOR on
+a path almost no one walks, refine fixed it, and the next critique found
+another. Nothing counted the rounds.
+
+**The rule.** From a subtask's second critique, refine takes only CRITICAL
+findings and MAJOR findings on a frequent, natural path, test gaps included.
+A MAJOR on a rare path — a hand-made file, a gap of the same class as one
+already recorded, a special layout — is *deferred*: recorded as a known limit,
+its severity kept. This is the owner rule of 2026-10-25 (fix the defects and
+test gaps of frequent, natural use; document the rare cases as limits) applied
+by the loop itself. A recurring finding, one a peer contested and one a
+persona veto gate raised (designer accessibility, founder regulatory or
+safety) are never deferred. A subtask also gets a cap of critique rounds,
+3 by default: a critique at the cap with nothing CRITICAL or MAJOR open
+proceeds to the commit; one that is not clean parks only its lane on a new
+owner gate, `critique-cap`, and the owner decides.
+
+**Decisions.**
+
+- *D-A, the gate.* `critique-cap` is a stored engineer owner gate (heading
+  `### Critique cap reached`, anchor `critique-cap`), settable only with
+  `dispatch_target` on, as `pr-handling` is: only an autopilot subject has a
+  cap. The existing paths do the rest: the policy halts
+  `awaiting-owner:critique-cap` with the subtask id; the serial driver halts;
+  the lane scheduler parks that lane only; the owner's clear moves the lane's
+  fingerprint. The orchestrator's copy of the gate list
+  (`codes.mjs ENGINEER_OWNER_GATES`) gains it, held equal by the enum parity
+  test.
+- *D-B, the count.* `critique_rounds` counts the critique syntheses a
+  finish-verb recorded under an autopilot run, in all three of its forms
+  (verb, owner-decision, verify), inside the same locked write; an
+  interactive critique is no round, so a workflow the owner drives alone never
+  reaches the cap. It counts once per critique run:
+  `critique_rounds_entry` keeps the run identity last counted, the
+  critique-run markers of the body (`lib/review-scope.mjs critiqueEntries`)
+  plus one for a workflow the critique verb created. A finalize run again
+  counts nothing more; a critique stopped before its finish-verb counts
+  nothing; a failed peer attempt is an attempt, not a synthesis: the
+  finalize settles the run's review attempt before finish-verb counts, and a
+  launched run whose critique attempt closed last ended with an outcome that is
+  no synthesis (anything but passed, concerns or conflict) counts nothing. A
+  critique that launched no peer (skipped, or the peer unavailable) is a
+  local synthesis and counts. A critique
+  resumed after a failed verification batch is a new run and a new round. The
+  keys are flat integers at the frontmatter's tail (`dispatch_target`'s), so a
+  relaunch, an install and an older reader's carrier keep them.
+- *D-C, the limit.* `critique_round_limit` is absolute, the default 3 when
+  absent. A critique is at the cap when the rounds, this one counted, reach
+  the limit. Only an autopilot run enforces it: `finish-verb` refuses a next
+  step that goes on past the critique (any verb — refine, compose, a critique
+  again — or a verify request whose `on_pass` is one), naming
+  `OWNER_GATE=critique-cap`, before any write and again in its locked write,
+  so a writer between the two cannot carry a round past the cap. The
+  critique's finalize block asks the same before settle, its first write:
+  `state.mjs critique-cap-check` for the verb form (`NEXT_STEP_KIND`) and
+  `verify-request-check` for a request's `on_pass`, both read-only, so a
+  critique at the cap stops with nothing written and ends on its gate. Run
+  before the settle, they take the run as counted. At the cap only commit,
+  done and an owner gate end a critique.
+- *D-D, the deferral round.* A review ledger generation stores its `round`,
+  1 plus the closed generations of the current ledger; `critique-scope`
+  prints it, with the cap's `rounds` and `limit`. A `/<persona>:start`
+  lifecycle's critiques count here though they never call finish-verb, and a
+  ledger that replaced another starts again at round 1, so a finding recurring
+  in the old one cannot come back deferrable. With no ledger (a code
+  deliverable) the round is the cap's count with this run in it.
+- *D-E, deferral in the ledger.* `closeGeneration` alone decides it. A
+  reference may carry `defer` (its known limit, one line), `veto: true` and
+  `conflict: true`. A deferral is taken only from round 2, for a finding that
+  is MAJOR after this judgment, not recurring (computed before any deferral,
+  with each candidate still open), never flagged `veto` or `conflict` (the
+  flags are sticky across generations), and when every reference to it in
+  this close carries `defer`, with no `resolved` verdict and one severity.
+  Otherwise it stays open and the result names the refusal
+  (`deferral_refused`: round, critical, not-major, recurring, veto, conflict
+  or ambiguous). The disposition `deferred` keeps the severity, stores
+  `defer_reason`, and does not block convergence. A later critique that does
+  not report it, a full one included, leaves it deferred; one that reports it
+  with no `defer` opens it again; a `resolved` verdict resolves it. The schema
+  stays `review-ledger-1`.
+- *D-F, the owner's exits.* Clearing `critique-cap` with
+  `--grant-critique-rounds <n>` (n of 1 or more) and a verb as the next step
+  (refine) sets
+  the limit to the rounds counted plus n in the same write, so the cap does
+  not fire again at once. Or
+  the owner accepts the open findings as known limits: the next step commit,
+  with a resolution naming them. Acceptance is the owner's and distinct from
+  the automatic deferral; it grants no round and leaves the ledger as it is.
+  Clearing `critique-cap` or `peer-conflict` with another round while the
+  rounds have reached the limit, without a sufficient grant, is refused; a
+  grant on any other gate is refused; every clear stays refused under
+  autopilot (Q2). A `peer-conflict` at the cap keeps precedence: the conflict
+  ends on its own gate.
+
+**Where it lives.** `persona-pipeline/files/scripts/lib/review-scope.mjs`
+(D-D, D-E), `persona-pipeline/files/scripts/state.mjs` (D-A to D-C, D-F,
+the banner's wording), the critique, refine and finalize regions, and the
+engineer's `autopilot-mode.md` § Critique convergence; the orchestrator's
+`codes.mjs`.
+
+**Known limits.**
+
+- The budget is per workflow: a replacement attempt of a subtask (a new
+  workflow) starts its count again.
+- For a code deliverable, which has no ledger, the deferral is applied in the
+  critique's note (`### Known limits (deferred)`) by the runbook, not by code;
+  the cap still bounds the loop in code.
+- Mixed versions. An engineer older than this amendment never writes the gate
+  or the count, so the cap is simply not enforced, as before. An older reader
+  refuses a workflow that holds `critique-cap`: ship engineer and orchestrator
+  in one release, and recover a downgraded workflow by clearing the gate with
+  the newer engineer first. An older reader also refuses a ledger that holds
+  `deferred` and starts a new one with a full critique, which only costs a
+  round.
+- With no ledger, the deferral round is the cap's count, which only an
+  autopilot verb chain's finish-verb advances: a code deliverable's critique
+  in a `/<persona>:start` lifecycle, or in a persona with `dispatch_target`
+  off, stays at round 1 and defers nothing (it converges as before).
+- The run identity counts critique-run marker lines in the body; a note that
+  quotes one (or the resume heading of an older release) on a line of its
+  own, appended again by a rerun of its finalize, counts as another round.
+  Only a hand-made note does that.
+- The finalize's checks before settle cannot see how the run ended, and take
+  it as counted: a critique at the cap whose peer failed ends on
+  `critique-cap` (the owner grants a round), though finish-verb would have
+  counted nothing. The binding of a failed attempt to the run is the critique
+  attempt closed last (`recorded_at`, to the second; a tie goes to the later
+  entry), never the one registered last; a run settled by hand outside the
+  finalize, or two finalizes in one second, can leave another run's attempt
+  the one closed last.
+- A peer that fails on every critique counts no round, so the cap does not
+  bound that loop; the driver's other halts do.
+
+Tests: `tests/persona-pipeline/test-critique-convergence.mjs` (the deferral
+boundary in every persona, the cap's count, enforcement and the owner's
+exits), `tests/orchestrator/test-autopilot-critique-cap.mjs` (the serial halt,
+the lane park, and park → grant → resume through the real scheduler).
+
 ## References
 
 - ADR-0001 (honest scope)

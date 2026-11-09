@@ -20,6 +20,7 @@ the session handoff names the gate's resolving surface as the next action.
 {{/capability}}
 {{#capability dispatch_target}}
 | `pr-handling` | under autopilot, the task itself needs an outward action: a push, a pull request, a release or an issue | `Outward action needed` · `pr-handling` | the owner takes or declines the action, then `awaiting-owner-clear` with the next step |
+| `critique-cap` | `/{{persona}}:critique` under autopilot ends at the subtask's critique cap (3 rounds by default) with a CRITICAL or MAJOR finding still open (C176) | `Critique cap reached` · `critique-cap` | the owner grants further rounds (`awaiting-owner-clear --gate critique-cap --grant-critique-rounds <n>` with the next step refine) or accepts the open findings as known limits (`--resolution-file` naming them, the next step commit) |
 {{/capability}}
 
 `state.mjs awaiting-owner-clear --gate <gate> --resolution-file <the decision's
@@ -39,12 +40,12 @@ order.
 `commit_surface` off, so `state.mjs` refuses to set it, naming the capability.
 {{/capability}}
 {{^capability dispatch_target}}
-`pr-handling` belongs to autopilot dispatch, and {{persona}} declares
-`dispatch_target` off, so `state.mjs` refuses to set it, naming the
-capability; an inherited `AGENTIC_AUTOPILOT` changes nothing a {{persona}}
+`pr-handling` and `critique-cap` belong to autopilot dispatch, and
+{{persona}} declares `dispatch_target` off, so `state.mjs` refuses to set
+them, naming the capability; an inherited `AGENTIC_AUTOPILOT` changes nothing a {{persona}}
 command writes (ADR-0066 Decision 3).
 {{/capability}}
-Reading a workflow file, `state.mjs` accepts all six gate names (ADR-0066
+Reading a workflow file, `state.mjs` accepts all seven gate names (ADR-0066
 Decision 7 validates each schema 1.4 key on its own).
 
 **The conflict gates and their consensus task file (ADR-0067 Decision 8).**

@@ -59,3 +59,16 @@ ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "
   Review whether each target is resolved and whether the changed passages
   introduced a problem. A problem seen outside the passages is still reported,
   marked outside.
+
+Whatever the mode, the JSON also names this critique's convergence `round`
+(C176, ADR-0063 amendment of 2026-11-09): a recorded critique's is the
+ledger's closed critiques plus one; with no ledger it is the critique cap's
+count with this run in it (`rounds`, against `limit`). From round 2, sort each
+MAJOR finding by the path it lies on: on a frequent, natural path it is
+refine's work as before; on a rare one (a hand-made file, a gap of the same
+class as one already recorded, a special layout) it is deferred as a known
+limit, its severity kept. A CRITICAL, a recurring finding, a contested one
+(a peer conflict) and one a veto gate raised are never deferred. With a ledger
+the close below decides each deferral; with none (`recorded: false`, a code
+deliverable) the note applies the same rule, listing such a finding under
+`### Known limits (deferred)` instead of handing it to refine.

@@ -743,8 +743,8 @@ export const MUTATIONS = [
   },
   {
     id: 'K2', file: STATE, tests: [T_GATE],
-    from: '    operation.inLock(frontmatter);\n    const nowIso = isoUtc(now);\n    // ADR-0067 Decision 8 — the run id goes with the gate',
-    to: '    const nowIso = isoUtc(now);\n    // ADR-0067 Decision 8 — the run id goes with the gate',
+    from: '    operation.inLock(frontmatter);\n    const nowIso = isoUtc(now);\n    // C176 — another round at or over the critique cap takes the owner',
+    to: '    const nowIso = isoUtc(now);\n    // C176 — another round at or over the critique cap takes the owner',
     why: "a gate's clear writes outside its operation: no entry opened, none checked",
     killed_by: /the clear opens it in the directory, and the finish-verb closes it there/,
   },

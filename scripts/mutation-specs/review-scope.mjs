@@ -11,7 +11,8 @@
 // Groups: S when a critique (or a Refine-verify) is scoped, D what is a
 // document, C the close's disposition, R refuses, F falls back instead of
 // stopping the verb, L where a location is, V the severity a judgment leaves,
-// B the baseline.
+// B the baseline, K the convergence rule (C176: the deferral boundary and the
+// critique cap, test-critique-convergence.mjs).
 //
 // Not here: the capture's index-copy timestamps (peer-snapshot.mjs, racy git).
 // Whether git trusts a stale stat depends on the second the fixture's writes
@@ -23,7 +24,9 @@ const T = ['designer', 'engineer', 'founder'].map((p) => `tests/persona-pipeline
 
 const RB = 'tests/persona-pipeline/test-review-scope-runbook.mjs';
 
-export const TESTS = [...T, RB];
+const CC = ['tests/persona-pipeline/test-critique-convergence.mjs'];
+
+export const TESTS = [...T, RB, ...CC];
 
 const PERSONAS = ['designer', 'engineer', 'founder'];
 const LIB = PERSONAS.map((p) => `plugins/${p}/scripts/lib/review-scope.mjs`);
@@ -105,7 +108,7 @@ export const MUTATIONS = [
   },
   {
     id: 'C5', tests: T,
-    prepare: every(LIB, "    } else if (gen.mode === 'full' && finding.disposition !== 'resolved') {", "    } else if (finding.disposition !== 'resolved') {"),
+    prepare: every(LIB, "    } else if (gen.mode === 'full' && finding.disposition !== 'resolved' && finding.disposition !== 'deferred') {", "    } else if (finding.disposition !== 'resolved' && finding.disposition !== 'deferred') {"),
     why: 'a scoped critique resolves a prior MAJOR the refine never targeted',
   },
   {
@@ -507,5 +510,61 @@ export const MUTATIONS = [
     id: 'R12', tests: T,
     prepare: every(SNAPSHOT, 'tree: snap.worktreeTree, flagged: [...new Set([...snap.assumeUnchanged, ...snap.skipWorktree])]', 'tree: snap.worktreeTree, flagged: [...new Set([...snap.assumeUnchanged])]'),
     why: 'an edit to a skip-worktree file is left out of the tree a scoped critique converges on',
+  },
+  // ── K: the convergence rule (C176) ────────────────────────────────────────
+  {
+    id: 'K1', tests: CC,
+    prepare: every(LIB, '    if (round < DEFERRAL_ROUND) reason = \'round\';', '    if (round < 1) reason = \'round\';'),
+    why: "a first critique's MAJOR is deferred, so the loop converges before any refine",
+  },
+  {
+    id: 'K2', tests: CC,
+    prepare: every(LIB, "    else if (recurringBefore.has(fid)) reason = 'recurring';", "    else if (false) reason = 'recurring';"),
+    why: 'a finding a refine already failed to fix is deferred instead of reaching the owner',
+  },
+  {
+    id: 'K3', tests: CC,
+    prepare: every(LIB, "    else if (finding.veto === true) reason = 'veto';", "    else if (references.some((r) => r.veto === true)) reason = 'veto';"),
+    why: 'a veto flag holds for its own close only, so a later critique defers what a veto gate raised',
+  },
+  {
+    id: 'K11', tests: CC,
+    prepare: every(LIB, '      flag(finding, references);\n', ''),
+    why: 'a veto or conflict raised on an earlier finding is never stored, so that finding is deferred like any MAJOR',
+  },
+  {
+    id: 'K4', tests: CC,
+    prepare: every(STATE, 'at_cap: critique && after >= limit', 'at_cap: critique && after > limit'),
+    why: 'the critique cap fires one round late, so a subtask gets a fourth round of three',
+  },
+  {
+    id: 'K5', tests: CC,
+    prepare: every(STATE, '  const pending = critique && identity > entry && (assumeCounted || !critiqueAttemptFailed(frontmatter));', '  const pending = critique && (assumeCounted || !critiqueAttemptFailed(frontmatter));'),
+    why: 'a finalize run again counts its critique twice, so the cap fires early',
+  },
+  {
+    id: 'K7', tests: CC,
+    prepare: every(STATE, '  const pending = critique && identity > entry && (assumeCounted || !critiqueAttemptFailed(frontmatter));', '  const pending = critique && identity > entry;'),
+    why: 'a critique whose peer attempt failed counts a round, so a failing peer spends the cap',
+  },
+  {
+    id: 'K10', tests: CC,
+    prepare: every(STATE, "    if (latest === undefined || String(a.recorded_at ?? '') >= String(latest.recorded_at ?? '')) latest = a;", '    latest = a;'),
+    why: 'the critique counts on the attempt registered last, so a run finalized after a failed one registered later is left uncounted',
+  },
+  {
+    id: 'K8', tests: CC,
+    prepare: every(STATE, '  if (cap === undefined || !autopilotMode({ env: cap.env, host: cap.host }).active) return false;', '  if (cap === undefined) return false;'),
+    why: 'an interactive critique counts a round, so a workflow the owner drives alone is capped',
+  },
+  {
+    id: 'K9', tests: CC,
+    prepare: every(STATE, '  if (capRefusal !== null) throw new Error(capRefusal);\n', ''),
+    why: 'verify-request-check passes a request whose on_pass starts another round at the cap, so the finalize settles before the last write refuses',
+  },
+  {
+    id: 'K6', tests: CC,
+    prepare: every(LIB, " && finding.disposition !== 'resolved' && finding.disposition !== 'deferred') {", " && finding.disposition !== 'resolved') {"),
+    why: 'a full critique that does not report a deferred finding resolves it, so its known limit is lost',
   },
 ];

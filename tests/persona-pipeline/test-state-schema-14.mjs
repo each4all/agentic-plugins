@@ -168,10 +168,10 @@ for (const persona of personasFor('scripts/state.mjs')) {
       });
     });
 
-    it('the enums are engineer\'s: five kinds (ADR-0068 Decision 5 adds verify), three confidences, six workflow gates (ADR-0067 Decision 8 adds peer-conflict)', () => {
+    it('the enums are engineer\'s: five kinds (ADR-0068 Decision 5 adds verify), three confidences, seven workflow gates (ADR-0067 Decision 8 adds peer-conflict, C176 critique-cap)', () => {
       deepStrictEqual([...VALID_NEXT_STEP_KINDS], ['verb', 'commit', 'owner-decision', 'done', 'verify']);
       deepStrictEqual([...VALID_CONFIDENCE], ['HIGH', 'MEDIUM', 'LOW']);
-      deepStrictEqual([...VALID_WORKFLOW_OWNER_GATES].sort(), ['decide-conflict', 'peer-conflict', 'pr-handling', 'recurring-finding', 'scope-routing', 'staging-set']);
+      deepStrictEqual([...VALID_WORKFLOW_OWNER_GATES].sort(), ['critique-cap', 'decide-conflict', 'peer-conflict', 'pr-handling', 'recurring-finding', 'scope-routing', 'staging-set']);
     });
   });
 
@@ -202,8 +202,8 @@ for (const persona of personasFor('scripts/state.mjs')) {
       }
     });
 
-    it('reads every one of the five workflow gates, including those this persona cannot set', () => {
-      for (const gate of ['scope-routing', 'decide-conflict', 'recurring-finding', 'staging-set', 'pr-handling']) {
+    it('reads every one of the workflow gates, including those this persona cannot set', () => {
+      for (const gate of ['scope-routing', 'decide-conflict', 'recurring-finding', 'staging-set', 'pr-handling', 'critique-cap']) {
         strictEqual(parseWorkflowFile(fixture([`awaiting_owner_gate: "${gate}"`, ...AWAITING.slice(1)])).frontmatter.awaiting_owner_gate, gate);
       }
     });
@@ -379,10 +379,10 @@ for (const persona of personasFor('scripts/state.mjs')) {
   });
 
   describe(`${persona}: schema 1.4 — owner gates (awaiting-owner-set / -clear)`, () => {
-    it('only the gates whose capability is on can be set: the four, and staging-set or pr-handling with its capability', () => {
+    it('only the gates whose capability is on can be set: the four, and staging-set, pr-handling or critique-cap with its capability', () => {
       const expected = ['decide-conflict', 'peer-conflict', 'recurring-finding', 'scope-routing'];
       if (CAPS.commit_surface) expected.push('staging-set');
-      if (CAPS.dispatch_target) expected.push('pr-handling');
+      if (CAPS.dispatch_target) expected.push('pr-handling', 'critique-cap');
       deepStrictEqual([...settableOwnerGates()].sort(), expected.sort());
     });
 
@@ -456,7 +456,7 @@ for (const persona of personasFor('scripts/state.mjs')) {
       });
     });
 
-    for (const [gate, capability] of [['staging-set', 'commit_surface'], ['pr-handling', 'dispatch_target']].filter(([, cap]) => !CAPS[cap])) {
+    for (const [gate, capability] of [['staging-set', 'commit_surface'], ['pr-handling', 'dispatch_target'], ['critique-cap', 'dispatch_target']].filter(([, cap]) => !CAPS[cap])) {
       it(`${gate} is refused, naming ${capability} — by the CLI, by finish-verb and by the programmatic path`, async () => {
         await withFile(async (filePath) => {
           const before = await readFile(filePath, 'utf8');
