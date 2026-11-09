@@ -23,7 +23,7 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
-const GH_FIELDS = 'number,url,state,mergeCommit,baseRefName,headRefName,createdAt';
+const GH_FIELDS = 'number,url,state,mergeCommit,baseRefName,headRefName,createdAt,headRefOid';
 
 async function runGit(repoRoot, args) {
   try {
@@ -54,6 +54,61 @@ export function dispatchTimeFromWorkflowId(workflowId) {
 }
 
 const refuse = (reason, detail) => ({ ok: false, reason, detail });
+
+// How far back a rebased series is walked: more commits than one pull request
+// lands, so a walk that reaches it stops rather than guesses.
+const LANDING_WALK_LIMIT = 256;
+
+/**
+ * C163 A2b (ADR-0069 Decision 2) — where a landing started, from evidence of
+ * the landing itself, for the landed comparison.
+ *
+ * - A merge commit: its first parent; its second parent is the head.
+ * - A squash or a rebase: the commits GitHub names as introduced by this pull
+ *   request (`GET /repos/{owner}/{repo}/commits/{sha}/pulls`, which answers, for
+ *   a commit on the default branch, with the merged pull request that introduced
+ *   it) are walked back along first parents from the merge commit; the first
+ *   commit it does not name is where the landing started. So a rebase that
+ *   dropped a commit already integrated walks no further than it landed, where
+ *   counting the branch's commits would reach into `main`. Never the pull
+ *   request's commit list, which names the head branch's commits, not what the
+ *   rebase landed.
+ *
+ * With no such evidence `start` is null, and the landing is not comparable. That
+ * is also where a landing on another branch than the default one ends: GitHub
+ * answers there with open pull requests only.
+ */
+export async function landingEvidence({ repoRoot, commit, prNumber = null, headRefOid = null }) {
+  const head = typeof headRefOid === 'string' && headRefOid !== '' ? headRefOid : null;
+  const parentsOf = async (sha) => {
+    const r = await runGit(repoRoot, ['rev-list', '--parents', '-n', '1', sha]);
+    return r.ok ? r.stdout.split(/\s+/).slice(1) : null;
+  };
+  const parents = await parentsOf(commit);
+  if (parents === null) return { start: null, head, evidence: 'commit-unreadable' };
+  if (parents.length >= 2) return { start: parents[0], head: head ?? parents[1], evidence: 'merge-commit' };
+  if (prNumber === null || prNumber === undefined) return { start: null, head, evidence: 'no-pull-request' };
+  let cur = commit;
+  for (let i = 0; i < LANDING_WALK_LIMIT; i += 1) {
+    const r = await runGh(repoRoot, ['api', `repos/{owner}/{repo}/commits/${cur}/pulls?per_page=100`, '--jq', '[.[].number]']);
+    if (!r.ok) return { start: null, head, evidence: 'gh-unavailable' };
+    let numbers;
+    try {
+      numbers = JSON.parse(r.stdout);
+    } catch {
+      return { start: null, head, evidence: 'gh-unreadable' };
+    }
+    if (!Array.isArray(numbers)) return { start: null, head, evidence: 'gh-unreadable' };
+    if (!numbers.some((n) => String(n) === String(prNumber))) {
+      // The merge commit itself must be of this pull request.
+      return cur === commit ? { start: null, head, evidence: 'not-associated' } : { start: cur, head, evidence: 'pull-request-commits' };
+    }
+    const up = await parentsOf(cur);
+    if (up === null || up.length === 0) return { start: null, head, evidence: 'no-parent' };
+    [cur] = up;
+  }
+  return { start: null, head, evidence: 'walk-limit' };
+}
 
 async function isAncestor(repoRoot, commit, ref) {
   const r = await runGit(repoRoot, ['merge-base', '--is-ancestor', commit, ref]);
@@ -179,5 +234,6 @@ export async function resolveLanding({
   return {
     ok: true, commit: mergeCommit, pr_url: pr.url ?? null, pr_number: pr.number ?? null,
     verification: 'merge-commit', integration_ref: integrationRef,
+    head_ref_oid: pr.headRefOid ?? null,
   };
 }

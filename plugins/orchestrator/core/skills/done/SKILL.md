@@ -64,12 +64,18 @@ file and its directory once read. The fields:
 - `correct`, from `--correct` — replace a recorded value deliberately (needs
   a reason);
 - `no_commit`, from `--no-commit` — the work landed no commit (needs a
-  reason; excludes `--pr`, `--commit` and `--correct`);
+  reason; excludes `--pr`, `--commit`, `--correct` and
+  `--accept-landed-change`);
 - `waive_dispatch`, from `--waive-dispatch` — complete in the recorded
   owner's name without comparing the dispatch it records, when no file of it
   is left to read it from (Phase 2), or, with that dispatch read, complete an
   archived owner the macro's record cannot vouch for (Phase 3; needs a
   reason, and the macro records both);
+- `accept_landed_change`, from `--accept-landed-change` — complete a subtask
+  whose landing differs from what was reviewed (needs a reason, and the macro
+  records it; ADR-0069 Decision 3). It and `--waive-dispatch` are the owner's
+  alone: the write refuses either under an autopilot run (`AGENTIC_AUTOPILOT`
+  names one), so a worker never gives them;
 - `workflow_id`, from `--workflow=<macro-id>`;
 - `integration_branch`, from `--integration-branch=<b>` — default is the
   macro's `git_baseline.branch`;
@@ -78,7 +84,8 @@ file and its directory once read. The fields:
   writes it to a file of its own, which `state.mjs` reads.
 
 The parser refuses, and nothing is written: a missing subtask id, an unknown
-or repeated option, `--no-commit` with `--pr`, `--commit` or `--correct`,
+or repeated option, `--no-commit` with `--pr`, `--commit`, `--correct` or
+`--accept-landed-change`,
 an option after the reason began (unless `--` opened it), and a subtask id
 or option holding a quote or backslash (a value is written bare, so a subtask
 whose id holds a quote, a backslash or a space, or starts with `-`, cannot be
@@ -101,8 +108,8 @@ otherwise `find-active` on the current branch, then `find-macro` for a
 subtask branch. Then the subtask as the macro records it. A `deferred` or
 `abandoned` subtask is refused (terminal-partial states are absorbing); a
 `completed` one, without `--correct`, is a no-op and the block ends there.
-With `--correct`, `--no-commit` or `--waive-dispatch`, a reason is
-required. The reason stays in the file the block wrote it to (`REASON_FILE`):
+With `--correct`, `--no-commit`, `--waive-dispatch` or
+`--accept-landed-change`, a reason is required. The reason stays in the file the block wrote it to (`REASON_FILE`):
 the block only checks that it holds text, and Phase 3 hands the file's bytes
 to `state.mjs`, so the shell never reads the reason as text.
 
@@ -191,7 +198,7 @@ fi
 # --- The arguments: the args file, parsed (ADR-0059, C134(a)) ---
 # command-args reads the file by done's grammar and removes it: it refuses a
 # missing subtask id, an unknown or repeated option, --no-commit with --pr,
-# --commit or --correct, and an id or option holding a quote or backslash. Each value
+# --commit, --correct or --accept-landed-change, and an id or option holding a quote or backslash. Each value
 # below is read from what it printed, so no character the user typed is shell
 # source. The reason goes from there to a file of its own, which state.mjs
 # reads; the shell never holds it.
@@ -211,6 +218,7 @@ ARG_INTEGRATION_BRANCH="$(printf '%s' "$ARGS_JSON" | JSON_KEY=integration_branch
 CORRECT="$(printf '%s' "$ARGS_JSON" | JSON_KEY=correct node -e "$JSON_FIELD")" || exit 1
 NO_COMMIT="$(printf '%s' "$ARGS_JSON" | JSON_KEY=no_commit node -e "$JSON_FIELD")" || exit 1
 WAIVE_DISPATCH="$(printf '%s' "$ARGS_JSON" | JSON_KEY=waive_dispatch node -e "$JSON_FIELD")" || exit 1
+ACCEPT_LANDED="$(printf '%s' "$ARGS_JSON" | JSON_KEY=accept_landed_change node -e "$JSON_FIELD")" || exit 1
 REASON_FILE="$(mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX")/reason.txt" || exit 1
 printf '%s' "$ARGS_JSON" | node -e 'const fs=require("fs");let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>fs.writeFileSync(process.argv[1],JSON.parse(d).reason))' "$REASON_FILE" || exit 1
 
@@ -282,8 +290,8 @@ fi
 
 HAS_REASON=0
 if grep -q '[^[:space:]]' "$REASON_FILE"; then HAS_REASON=1; fi
-if { [ "$CORRECT" = true ] || [ "$NO_COMMIT" = true ] || [ "$WAIVE_DISPATCH" = true ]; } && [ "$HAS_REASON" -eq 0 ]; then
-  echo "✗ --correct, --no-commit and --waive-dispatch need a reason (the free text after the flags)." >&2
+if { [ "$CORRECT" = true ] || [ "$NO_COMMIT" = true ] || [ "$WAIVE_DISPATCH" = true ] || [ "$ACCEPT_LANDED" = true ]; } && [ "$HAS_REASON" -eq 0 ]; then
+  echo "✗ --correct, --no-commit, --waive-dispatch and --accept-landed-change need a reason (the free text after the flags)." >&2
   exit 1
 fi
 
@@ -393,6 +401,23 @@ if [ "$VERIFICATION" = "ancestry-only" ]; then
   # Keep the weaker verification visible in the macro's record.
   LANDING_NOTE="Landing verified by ancestry only: gh was unavailable, so $COMMIT_SHA could not be matched to its pull request."
 fi
+# C163 A2b (ADR-0069 Decision 3) — what landed against what was reviewed. A
+# difference has landed, so nothing here undoes it: the subtask is not recorded
+# until the owner says what follows (--accept-landed-change, with a reason). A
+# landing that cannot be compared proves nothing either way: it is recorded, and
+# the macro says so.
+LANDED_STATE="$(printf '%s' "$LANDING" | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const r=JSON.parse(d).landed_review||{};process.stdout.write(String(r.state||""))})')" || exit 1
+LANDED_WHY="$(printf '%s' "$LANDING" | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const r=JSON.parse(d).landed_review||{};process.stdout.write(r.state==="different"?(r.failures||[]).map(f=>f.path).join(", "):String(r.reason||""))})')" || exit 1
+LANDED_NOTE=""
+if [ "$LANDED_STATE" = "different" ]; then
+  if [ "$ACCEPT_LANDED" != true ]; then
+    echo "✗ Not recorded — what landed at $COMMIT_SHA is not the change reviewed: $LANDED_WHY. It has landed: review what landed and fix it forward, then rerun with --accept-landed-change and a reason." >&2
+    exit 1
+  fi
+  LANDED_NOTE="Landed change differs from what was reviewed ($LANDED_WHY); the owner recorded it (--accept-landed-change)."
+elif [ "$LANDED_STATE" = "not-comparable" ]; then
+  LANDED_NOTE="Landed change not compared with its reviews: $LANDED_WHY."
+fi
 
 # ADR-0067 Decision 4, item 5 — join the macro's run lock before the write: a
 # routine refusal above (not_merged and the rest) left no entry; this one names
@@ -416,12 +441,17 @@ UPDATE_ARGS=(--workflow-path "$MACRO_PATH" --host codex --subtask-id "$SUBTASK_I
 # waived that check (Phase 2).
 UPDATE_ARGS+=("${DISPATCH_ARGS[@]}")
 [ "$CORRECT" = true ] && UPDATE_ARGS+=(--correct)
-if [ -n "$LANDING_NOTE" ] || [ "$HAS_REASON" -eq 1 ]; then
+# ADR-0069 Decision 3 — the owner's acceptance reaches the write, which
+# refuses it, as it refuses both waivers, under an autopilot run: only the
+# owner gives them, never a worker rerunning done.
+[ "$ACCEPT_LANDED" = true ] && UPDATE_ARGS+=(--accept-landed-change)
+if [ -n "$LANDING_NOTE" ] || [ -n "$LANDED_NOTE" ] || [ "$HAS_REASON" -eq 1 ]; then
   # The note reaches state.mjs on stdin: the landing line, then the reason
   # copied byte for byte from REASON_FILE. No temporary file is written.
   {
     if [ -n "$LANDING_NOTE" ]; then printf '%s\n' "$LANDING_NOTE"; fi
     if [ "$HAS_REASON" -eq 1 ]; then cat "$REASON_FILE"; fi
+    if [ -n "$LANDED_NOTE" ]; then printf '\n%s\n' "$LANDED_NOTE"; fi
   } | node "<orchestrator-plugin-root>/scripts/state.mjs" subtask-update "${UPDATE_ARGS[@]}" --reason-file - || exit $?
 else
   node "<orchestrator-plugin-root>/scripts/state.mjs" subtask-update "${UPDATE_ARGS[@]}" || exit $?
