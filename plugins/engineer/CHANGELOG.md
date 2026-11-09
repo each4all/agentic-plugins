@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.34.6](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.34.5...plugin-engineer-v0.34.6) (2026-11-09)
+
+
+### Bug Fixes
+
+* **engineer:** compare each commit with the change its reviews saw, and hold one they do not vouch for (C163 A2b) ([e8424d7](https://github.com/each4all/agentic-plugins/commit/e8424d724877be4151f2f717608c617d4ddb99e2))
+
 ## [0.34.5](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.34.4...plugin-engineer-v0.34.5) (2026-11-07)
 
 
