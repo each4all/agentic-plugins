@@ -2,7 +2,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { lstat, mkdir, open, readdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { link, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -930,27 +930,8 @@ async function acquireSlotLock({ dir, nowMs }) {
       if (age <= LOCK_STALE_AGE_MS) {
         return { acquired: false, reason: 'lock-held', token: null };
       }
-      // Stale takeover as a REAL mutual exclusion (contract §8 — the
-      // plan-verify peer reproduced two last-rename-wins takeovers both
-      // acquiring): CLAIM the stale lock by atomically renaming it away to
-      // a unique temp name. rename succeeds for exactly one contender;
-      // every loser sees ENOENT and exits silently. The winner removes its
-      // claimed file (own-lock deletion, the ADR-0044 §3 grant — a leftover
-      // matches the temp pattern and falls to the sweep) and loops back to
-      // the O_EXCL create; a third publisher that slips in between wins the
-      // create and this one exits lock-held at the next EEXIST. The
-      // displaced owner's release no-ops on the token check either way.
-      const claimPath = resolve(dir, `.lock.tmp-${process.pid}-${randomBytes(4).toString('hex')}`);
-      try {
-        await rename(lockPath, claimPath);
-      } catch {
-        return { acquired: false, reason: 'lock-takeover-race', token: null };
-      }
-      try {
-        await rm(claimPath, { force: true });
-      } catch {
-        // best effort — the claim matches the sweep's temp pattern
-      }
+      const claim = await claimStaleSlotLock({ dir, judged: entryStat });
+      if (!claim.claimed) return { acquired: false, reason: claim.reason, token: null };
       tookOver = true;
       continue;
     }
@@ -972,6 +953,108 @@ async function acquireSlotLock({ dir, nowMs }) {
     return { acquired: true, reason: null, token, takeover: tookOver };
   }
   return { acquired: false, reason: 'lock-vanished-race', token: null };
+}
+
+// Stale takeover as a REAL mutual exclusion (contract §8 — the plan-verify
+// peer reproduced two last-rename-wins takeovers both acquiring): CLAIM the
+// stale lock by atomically renaming it away to a unique temp name, so the
+// rename succeeds for one contender and every other sees ENOENT and exits.
+//
+// The rename moves whatever `.lock` holds when it runs, not the file this
+// contender judged stale (`judged`, its lstat). A contender that judged the
+// stale lock, then waited, can rename away the FRESH lock an earlier winner
+// has since created, and both would publish holding "the" lock (the full
+// suite caught two takeovers this way under load). So the claim is kept only
+// when the renamed file is the judged one: same device, inode, size and
+// mtime. The inode alone cannot tell (a freed inode is reused at once on
+// Linux, so the winner's new lock may carry the stale one's number); the
+// mtime can, since the judged lock was older than the stale age and a lock
+// created since is not. A claim of another file is put back without
+// replacing any `.lock` (restoreClaimedLock: link(2), which unlike rename
+// never replaces a lock a third contender created in the gap, then an
+// O_EXCL create of the same token where link fails otherwise), and this
+// contender exits `lock-takeover-race`.
+//
+// The kept claim is removed (own-lock deletion, the ADR-0044 §3 grant — a
+// leftover matches the temp pattern and falls to the sweep) and the caller
+// loops back to the O_EXCL create; a third publisher that slips in between
+// wins the create and the caller exits lock-held at the next EEXIST. The
+// displaced owner's release no-ops on the token check either way.
+//
+// Residuals, both inside the few calls between the rename and the restore,
+// both needing a stale lock and a takeover racing a fresh acquisition (like
+// the release's read-compare-delete window, no portable compare-and-rename
+// primitive closes them): a third contender that creates `.lock` while the
+// wrong claim is out holds it beside the earlier owner (the restore finds it
+// and leaves it), and the two may leave a mixed generation, which the next
+// publication repairs (§7.2); an owner that releases while its lock is out
+// finds nothing to delete, and the restore puts its finished lock back,
+// which then holds publishers off until it is older than the stale age.
+// `linkImpl` is a test seam for a link that fails.
+export async function claimStaleSlotLock({ dir, judged, linkImpl = link }) {
+  const lockPath = resolve(dir, '.lock');
+  const claimPath = resolve(dir, `.lock.tmp-${process.pid}-${randomBytes(4).toString('hex')}`);
+  try {
+    await rename(lockPath, claimPath);
+  } catch {
+    return { claimed: false, reason: 'lock-takeover-race' };
+  }
+  let claimed = null;
+  try {
+    claimed = await lstat(claimPath);
+  } catch {
+    // unreadable: not shown to be the judged lock, so it is put back below
+  }
+  const same = claimed !== null
+    && claimed.dev === judged.dev
+    && claimed.ino === judged.ino
+    && claimed.size === judged.size
+    && claimed.mtimeMs === judged.mtimeMs;
+  if (!same) await restoreClaimedLock({ claimPath, lockPath, claimed, linkImpl });
+  try {
+    await rm(claimPath, { force: true });
+  } catch {
+    // best effort — the claim matches the sweep's temp pattern
+  }
+  return same ? { claimed: true, reason: null } : { claimed: false, reason: 'lock-takeover-race' };
+}
+
+// Put a wrongly claimed live lock back without ever replacing a `.lock` that
+// exists: link(2) first (the same inode, so its mtime and token are the
+// owner's); EEXIST means a third contender holds `.lock` now, which is left
+// alone. Any other link failure (a filesystem without hard links, EPERM)
+// falls back to an O_EXCL create holding the claimed lock's bytes, the owner
+// token its token-checked release compares, so the owner's lock is not
+// discarded because one primitive failed.
+async function restoreClaimedLock({ claimPath, lockPath, claimed, linkImpl }) {
+  try {
+    await linkImpl(claimPath, lockPath);
+    return 'linked';
+  } catch (error) {
+    if (error?.code === 'EEXIST') return 'taken';
+  }
+  if (claimed === null || !claimed.isFile() || claimed.size > 256) return 'lost';
+  let content;
+  try {
+    content = await readFile(claimPath);
+  } catch {
+    return 'lost';
+  }
+  let handle;
+  try {
+    handle = await open(lockPath, 'wx');
+  } catch {
+    return 'taken';
+  }
+  try {
+    await handle.writeFile(content);
+  } catch {
+    // a half-written restore reads as a fresh foreign lock, so it still
+    // keeps other publishers out until it is stale
+  } finally {
+    await handle.close().catch(() => {});
+  }
+  return 'rewritten';
 }
 
 // Token-checked release (contract §8): delete ONLY a lock still carrying our
