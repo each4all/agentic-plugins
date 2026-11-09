@@ -302,7 +302,16 @@ bounded sweep.
 - Stale-lock takeover: a lock older than the §4 stale-age (with the
   future-skew bound applied to its timestamp) may be taken over; the
   takeover rewrites the owner token so the displaced owner's release
-  becomes a no-op.
+  becomes a no-op. A contender claims the stale lock by renaming it away
+  and keeps the claim only when the renamed file is the lock it judged
+  stale (same device, inode, size and mtime); a claim of a lock created
+  since is put back without replacing any `.lock` (`link(2)`, or an
+  `O_EXCL` create of the same owner token where `link(2)` fails otherwise,
+  never `rename(2)`), and the contender exits silently. Residual: in the
+  short window while such a claim is out, a third publisher can acquire
+  `.lock` beside the earlier owner (a mixed generation, repaired by §7.2 on
+  the next run), or an owner that finishes then has its released lock put
+  back, which holds publication off until the lock is stale.
 - Across concurrent sessions of one repo the slot is **last-writer-wins**
   (the ADR-0043 slot concession). Producers never delete on read; consumers
   are strictly read-only on all three files.
