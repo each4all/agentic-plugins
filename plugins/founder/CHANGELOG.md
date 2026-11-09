@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.6](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.15.5...plugin-founder-v0.15.6) (2026-11-09)
+
+
+### Bug Fixes
+
+* **founder:** name the missing default branch as the way on when a review binding has no branch to compare against ([cc35c9e](https://github.com/each4all/agentic-plugins/commit/cc35c9e20c766e78cd317feb76990c78b44627e9))
+
 ## [0.15.5](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.15.4...plugin-founder-v0.15.5) (2026-11-09)
 
 
