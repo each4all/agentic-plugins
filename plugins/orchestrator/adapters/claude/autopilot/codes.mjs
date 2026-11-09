@@ -12,6 +12,10 @@ import { VALID_MACRO_OWNER_GATES } from '../../../scripts/state.mjs';
 
 export const ENGINEER_OWNER_GATES = Object.freeze([
   'scope-routing', 'decide-conflict', 'peer-conflict', 'recurring-finding', 'staging-set', 'pr-handling',
+  // C176 (ADR-0063, amendment of 2026-11-09) — a critique at its subtask's
+  // critique cap with findings still open: the serial driver halts
+  // awaiting-owner:critique-cap, the lane scheduler parks that lane only.
+  'critique-cap',
 ]);
 export const MACRO_OWNER_GATES = Object.freeze([...VALID_MACRO_OWNER_GATES]);
 // `duplicate-workflow` is never stored (no single file owns it); it reaches
