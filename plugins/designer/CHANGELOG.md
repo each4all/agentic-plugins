@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.6](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.14.5...plugin-designer-v0.14.6) (2026-11-09)
+
+
+### Bug Fixes
+
+* **designer:** name the missing default branch as the way on when a review binding has no branch to compare against ([d6260db](https://github.com/each4all/agentic-plugins/commit/d6260db7041141fcfcb3eae46f5b31309dd5b5b9))
+
 ## [0.14.5](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.14.4...plugin-designer-v0.14.5) (2026-11-09)
 
 

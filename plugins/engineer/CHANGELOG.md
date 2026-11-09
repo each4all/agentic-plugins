@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.34.7](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.34.6...plugin-engineer-v0.34.7) (2026-11-09)
+
+
+### Bug Fixes
+
+* **engineer:** name the missing default branch as the way on when a review binding has no branch to compare against ([36d68e6](https://github.com/each4all/agentic-plugins/commit/36d68e60d315f49d52621e18897d9213dfcba5dc))
+
 ## [0.34.6](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.34.5...plugin-engineer-v0.34.6) (2026-11-09)
 
 
