@@ -15,10 +15,15 @@
 // itself: `reviewGate` (C163 A1b, ADR-0063 and ADR-0028 implementation notes
 // of 2026-11-07) says whether the latest outcome holds a commit back, and its
 // callers enforce it (the autopilot policy, Phase 7, the landing report).
+// Its last part is what ties a review to a change (ADR-0069): the
+// `review_bindings` document and the composition rule, pure too; reading git
+// for them is lib/change-identity.mjs's.
 //
 // Hand mirror: plugins/orchestrator/scripts/lib/review-attempts.mjs is a byte
 // copy of this file (tests/persona-pipeline/test-review-attempts.mjs holds the
 // two equal).
+
+import { createHash } from 'node:crypto';
 
 export const REVIEW_ATTEMPTS_KEY = 'review_attempts';
 export const REVIEW_ATTEMPTS_VERSION = 1;
@@ -668,19 +673,28 @@ function acceptanceStale(doc, latest, listed, reasons) {
  * tree a snapshot would hold, so Phase 7 compares it before it commits.
  *
  * `held` is `blocking` with no matching acceptance.
+ *
+ * `otherChange` (ADR-0069 Decision 3) narrows the read to reviews of the
+ * change compared: the ids of attempts the record shows to be of another
+ * change (`attemptsOfOtherChange`), which are passed over as though unlisted.
+ * An attempt the record shows nothing of is never in it, so it counts as A1b
+ * reads it, whatever tree it saw. A caller that compares no change, or a comparison that
+ * read no counting review, passes none, and the gate stays conservative. The acceptance's own record (`listed`) still reads
+ * every attempt: an attempt registered since moves it either way.
  */
-export function reviewGate(frontmatter, { cap = 20 } = {}) {
+export function reviewGate(frontmatter, { cap = 20, otherChange = null } = {}) {
   const view = projectReviewOutcomes(frontmatter, { cap });
   const outcomes = [
     ...view.legacy.map((r) => outcomeLine(r, true)),
     ...view.attempts.map((a) => outcomeLine(a)),
   ];
+  const read = otherChange ? view.attempts.filter((a) => !otherChange.has(a.id)) : view.attempts;
   let latest = null;
   if (view.document === 'later-version' || view.document === 'unreadable') {
     latest = { id: null, phase: null, type: null, outcome: UNKNOWN_OUTCOME, reason: `document-${view.document}` };
   } else {
     // The last attempt listed (latestAttempt).
-    let pick = latestAttempt(view.attempts);
+    let pick = latestAttempt(read);
     // A review that never ran clears no earlier outcome that holds the
     // commit back (conservative until A2): a skip's reason is the worker's
     // claim, which settle never checks. When the pick is a skip, of any
@@ -695,8 +709,8 @@ export function reviewGate(frontmatter, { cap = 20 } = {}) {
     // ran before cannot be told: the skip reads `unknown` (`history-truncated`).
     let ran = pick;
     if (pick !== null && pick.outcome === 'skipped') {
-      ran = lastRunBefore(view.attempts, pick);
-      const holdingSkip = lastHoldingSkipAfter(view.attempts, ran);
+      ran = lastRunBefore(read, pick);
+      const holdingSkip = lastHoldingSkipAfter(read, ran);
       if (ran !== null && reviewOutcomeBlocks(ran)) pick = { ...ran, later_skip: pick.id };
       else if (ran === null && view.coverage.reasons.includes('truncation')) pick = { ...pick, outcome: UNKNOWN_OUTCOME, reason: 'history-truncated' };
       else if (holdingSkip !== null && holdingSkip !== pick) pick = { ...holdingSkip, later_skip: pick.id };
@@ -758,4 +772,405 @@ export function latestOutcomeText(gate) {
   const where = [l.phase, l.type].filter(Boolean).join(' ');
   const skip = l.later_skip ? ` (the later review ${l.later_skip} was skipped, which clears nothing)` : '';
   return `${l.id ?? 'the review record'}${where ? ` (${where}${l.legacy ? ', legacy row' : ''})` : ''}: ${l.outcome}${why ? `, ${why}` : ''}${skip}`;
+}
+
+// ---------------------------------------------------------------------------
+// C163 A2b — what ties a review to a change (ADR-0069). The `review_bindings`
+// frontmatter scalar, beside the attempts and apart from them: a JSON document
+// in a scalar of its own, so that a reader older than it carries it through its
+// forward-compat carrier and goes on reading its outcomes (Decision 4), and so
+// that it does not spend the attempts' 32 KiB.
+//
+// - `attempts[<id>]`: `{identity, reason, coverage}`. `identity` is Decision
+//   1's record with `manifest_sha256` in place of the list, or null with
+//   `reason`, why the review records none (it is then unbound). `coverage` is
+//   `full` (its subject covered every path its manifest touches), `partial`, or
+//   null when its dispatch recorded no subject, which covers no path.
+// - `answers[<path>]`: `[entry, id]`, the entry the latest counting review that
+//   covered the path saw (null for a path it saw untouched), latest by the
+//   attempt's position in the workflow's own ledger (`review_attempts`, appended
+//   under the state lock), never by a time. Each entry is one manifest line
+//   `<old mode> <new mode> <old id> <new id> <status>\t<path>`.
+// - `seen[<path>]`: `[entry, id]`, the same for the latest review that did not
+//   count (a failure, a skip): what the outcome gate's narrowing reads.
+// - `comparisons[<commit>]`: Phase 7's committed comparison, keyed by the
+//   commit it was made for: its state and its manifest's digest.
+// - `truncated`: true when the record could not fit; the workflow's change is
+//   then not comparable (`bindings-truncated`).
+//
+// So the record grows with the paths reviewed, and by a small record per
+// review, never by a manifest per review (the owner's instruction of
+// 2026-11-09).
+
+export const REVIEW_BINDINGS_KEY = 'review_bindings';
+export const REVIEW_BINDINGS_VERSION = 1;
+// Past this size the record keeps only its comparisons and says it is
+// truncated. Well under the 256 KiB readers allow a whole frontmatter (the
+// state root's and the entry brief's read bound): this scalar is escaped when
+// written, and the rest of the frontmatter counts too.
+export const REVIEW_BINDINGS_MAX_BYTES = 131072;
+// How many committed comparisons a workflow keeps, the newest: a landing reads
+// the one of its head, and each amend or rebase adds one.
+export const REVIEW_COMPARISONS_MAX = 32;
+export const CHANGE_IDENTITY_VERSION = 1;
+export const REVIEW_BINDING_ACCEPTANCE_KEY = 'review_binding_acceptance';
+export const REVIEW_BINDING_ACCEPTANCE_VERSION = 1;
+// Which reviews answer for a path (Decision 3): a review that ran and whose
+// answer was usable. A skip or an unavailable peer vouches for nothing, as A1b
+// reads them (a skip's reason is the worker's claim).
+export const COUNTING_REVIEW_OUTCOMES = Object.freeze(['passed', 'concerns', 'conflict']);
+const COUNTING_SET = new Set(COUNTING_REVIEW_OUTCOMES);
+const isCounting = (a) => a?.state === 'closed' && COUNTING_SET.has(a.outcome);
+
+/**
+ * The digest of a manifest: the sha256 of its entries as a JSON list. Never
+ * joined by a character a path can hold: a file name with a line break in it
+ * would make two different manifests one digest.
+ */
+export function manifestDigest(entries) {
+  return createHash('sha256').update(JSON.stringify(entries), 'utf8').digest('hex');
+}
+
+/** The path of one manifest entry line. */
+export function entryPath(entry) {
+  return entry.slice(entry.indexOf('\t') + 1);
+}
+
+const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+const SHA256_RE = /^[0-9a-f]{64}$/;
+
+const COMPARISON_STATES = new Set(['same', 'different', 'not-comparable', 'no-reviews']);
+const COVERAGE_KINDS = new Set(['full', 'partial']);
+
+// Why one path table (`answers` or `seen`) is malformed, or null.
+function tableProblem(name, table, attempts) {
+  if (!isObject(table)) return `${name} is not an object`;
+  for (const [path, row] of Object.entries(table)) {
+    if (!Array.isArray(row) || row.length !== 2) return `${name}[${JSON.stringify(path)}] is not [entry, attempt]`;
+    const [entry, by] = row;
+    if (entry !== null && !(typeof entry === 'string' && entry.includes('\t') && entryPath(entry) === path)) return `${name}[${JSON.stringify(path)}] holds an entry of another path`;
+    if (typeof by !== 'string' || !Object.hasOwn(attempts, by)) return `${name}[${JSON.stringify(path)}] names an attempt the document does not hold`;
+  }
+  return null;
+}
+
+// Why `doc` is not a valid bindings document of this version, or null.
+export function reviewBindingsProblem(doc) {
+  if (!isObject(doc)) return 'not an object';
+  if (!Number.isInteger(doc.v) || doc.v < 1) return 'v is not a positive integer';
+  for (const k of Object.keys(doc)) {
+    if (!['v', 'attempts', 'answers', 'seen', 'comparisons', 'truncated'].includes(k)) return `unknown field ${JSON.stringify(k)}`;
+  }
+  if (!isObject(doc.attempts) || !isObject(doc.comparisons)) return 'attempts or comparisons is not an object';
+  if (doc.truncated !== undefined && doc.truncated !== true) return 'truncated is not true';
+  for (const [id, rec] of Object.entries(doc.attempts)) {
+    if (!isObject(rec)) return `attempts[${id}] is not an object`;
+    if (rec.identity !== null && !isObject(rec.identity)) return `attempts[${id}].identity is not an object or null`;
+    if (rec.identity === null && typeof rec.reason !== 'string') return `attempts[${id}] has no identity and no reason`;
+    if (rec.identity && !(typeof rec.identity.manifest_sha256 === 'string' && SHA256_RE.test(rec.identity.manifest_sha256))) return `attempts[${id}].identity names no manifest digest`;
+    if (rec.coverage !== null && !COVERAGE_KINDS.has(rec.coverage)) return `attempts[${id}].coverage is not full, partial or null`;
+  }
+  for (const name of ['answers', 'seen']) {
+    const problem = tableProblem(name, doc[name] ?? {}, doc.attempts);
+    if (problem !== null) return problem;
+  }
+  for (const [commit, rec] of Object.entries(doc.comparisons)) {
+    if (!isObject(rec)) return `comparisons[${commit}] is not an object`;
+    if (!COMPARISON_STATES.has(rec.state)) return `comparisons[${commit}].state is not a comparison's`;
+    if (rec.manifest_sha256 !== undefined && rec.manifest_sha256 !== null && !(typeof rec.manifest_sha256 === 'string' && SHA256_RE.test(rec.manifest_sha256))) return `comparisons[${commit}].manifest_sha256 is not a sha256`;
+    if (rec.reason !== undefined && rec.reason !== null && typeof rec.reason !== 'string') return `comparisons[${commit}].reason is not a string`;
+    if (rec.at !== undefined && typeof rec.at !== 'string') return `comparisons[${commit}].at is not a string`;
+    if (rec.accepted !== undefined && typeof rec.accepted !== 'boolean') return `comparisons[${commit}].accepted is not a boolean`;
+  }
+  return null;
+}
+
+/**
+ * Decode the scalar as the frontmatter holds it. Never throws.
+ * @returns {{state: 'absent'|'ok'|'later-version'|'unreadable', doc: object|null, diagnostic: string|null}}
+ */
+export function decodeReviewBindings(raw) {
+  if (raw === undefined || raw === null) return { state: 'absent', doc: null, diagnostic: null };
+  if (typeof raw !== 'string') return { state: 'unreadable', doc: null, diagnostic: `${REVIEW_BINDINGS_KEY} is not a JSON document in a string scalar` };
+  let doc;
+  try {
+    doc = JSON.parse(raw);
+  } catch (err) {
+    return { state: 'unreadable', doc: null, diagnostic: `${REVIEW_BINDINGS_KEY} is not JSON (${err.message})` };
+  }
+  if (isObject(doc) && Number.isInteger(doc.v) && doc.v > REVIEW_BINDINGS_VERSION) {
+    return { state: 'later-version', doc: null, diagnostic: `${REVIEW_BINDINGS_KEY} is a later version (v ${doc.v}) than this reader's (v ${REVIEW_BINDINGS_VERSION})` };
+  }
+  const problem = reviewBindingsProblem(doc);
+  if (problem !== null) return { state: 'unreadable', doc: null, diagnostic: `${REVIEW_BINDINGS_KEY}: ${problem}` };
+  return { state: 'ok', doc: { answers: {}, seen: {}, ...doc }, diagnostic: null };
+}
+
+const NEW_BINDINGS = () => ({ v: REVIEW_BINDINGS_VERSION, attempts: {}, answers: {}, seen: {}, comparisons: {} });
+
+// The document as written: whole when it fits, else its comparisons alone,
+// marked truncated, which every later comparison of the workflow reads as not
+// comparable (`bindings-truncated`).
+function fitted(doc, maxBytes) {
+  if (Buffer.byteLength(JSON.stringify(doc), 'utf8') <= maxBytes) return doc;
+  return { v: doc.v, attempts: {}, answers: {}, seen: {}, comparisons: doc.comparisons, truncated: true };
+}
+
+/**
+ * Record what ties one attempt to its change (pure), under the lock that
+ * recorded the attempt's outcome: `identity` with its `manifest` list, or none
+ * with `reason`; `coverage` `{shown, covered}`, or null. `attempts` is the
+ * workflow's ledger as projectReviewOutcomes lists it, this attempt closed in
+ * it: its position there orders the review against the others.
+ *
+ * A counting review writes, for each path it covered, the entry it saw into
+ * `answers`; a `full` one (Decision 1, item 6: `covered` holds every path its
+ * manifest touches) also answers as untouched for a path an earlier review saw
+ * touched and its own subject did not show at all (Decision 2 § A path a later
+ * whole review no longer shows). One settled after a review listed later had
+ * already written there is not applied: it is recorded unbound
+ * (`settled-out-of-order`), since its answers can no longer be placed. A review
+ * that does not count writes what it saw into `seen`, where a later-listed one
+ * has not. The first record of an attempt is kept. A document this writer cannot
+ * read is left as it is.
+ *
+ * @returns {{recorded: boolean, changed: boolean, raw: string|undefined, diagnostic: string|null}}
+ */
+export function applyReviewBinding(raw, attemptId, { identity = null, reason = null, coverage = null }, { attempts = [], maxBytes = REVIEW_BINDINGS_MAX_BYTES } = {}) {
+  const decoded = decodeReviewBindings(raw);
+  if (decoded.state === 'later-version' || decoded.state === 'unreadable') return { recorded: false, changed: false, raw, diagnostic: decoded.diagnostic };
+  const doc = decoded.doc ?? NEW_BINDINGS();
+  if (doc.truncated || Object.hasOwn(doc.attempts, attemptId)) return { recorded: true, changed: false, raw, diagnostic: null };
+  const position = new Map(attempts.map((a, i) => [a.id, i]));
+  const at = position.get(attemptId);
+  const self = attempts[at];
+  const manifest = identity && Array.isArray(identity.manifest) ? identity.manifest : null;
+  const entries = new Map((manifest ?? []).map((e) => [entryPath(e), e]));
+  const covered = new Set(coverage?.covered ?? []);
+  const full = manifest !== null && coverage !== null && [...entries.keys()].every((p) => covered.has(p));
+  let record = manifest === null
+    ? { identity: null, reason: reason ?? 'not-reported', coverage: coverage ? (full ? 'full' : 'partial') : null }
+    : { identity: { ...Object.fromEntries(Object.entries(identity).filter(([k]) => k !== 'manifest')), manifest_sha256: manifestDigest(manifest) }, coverage: coverage ? (full ? 'full' : 'partial') : null };
+  // Tables with no prototype: a path is any name, `__proto__` included, which
+  // an ordinary object would take as its prototype and drop.
+  const answers = Object.assign(Object.create(null), doc.answers);
+  const seen = Object.assign(Object.create(null), doc.seen);
+  // Listed earlier than `by`: an attempt the ledger no longer lists is older
+  // than any it does (A1a drops the oldest first, and says so).
+  const before = (by) => (position.get(by) ?? -1) < at;
+  if (at === undefined) {
+    if (record.identity) record = { identity: null, reason: 'not-listed', coverage: record.coverage };
+  } else if (record.identity && coverage) {
+    if (isCounting(self)) {
+      const laterApplied = attempts.slice(at + 1).some((a) => isCounting(a) && doc.attempts[a.id]?.identity && doc.attempts[a.id].coverage !== null);
+      if (laterApplied) {
+        record = { identity: null, reason: 'settled-out-of-order', coverage: record.coverage };
+      } else {
+        for (const p of covered) answers[p] = [entries.get(p) ?? null, attemptId];
+        if (full) {
+          const shown = new Set([...(coverage.shown ?? []), ...covered]);
+          for (const [p, [entry]] of Object.entries(answers)) if (entry !== null && !shown.has(p)) answers[p] = [null, attemptId];
+        }
+      }
+    } else {
+      for (const p of covered) if (!seen[p] || before(seen[p][1])) seen[p] = [entries.get(p) ?? null, attemptId];
+    }
+  }
+  const next = fitted({ ...doc, attempts: { ...doc.attempts, [attemptId]: record }, answers, seen }, maxBytes);
+  return { recorded: true, changed: true, raw: JSON.stringify(next), diagnostic: null };
+}
+
+/**
+ * Record Phase 7's committed comparison, keyed by the commit (pure). A later
+ * comparison of the same commit replaces it. A document this writer cannot read
+ * is left as it is.
+ */
+export function applyCommittedComparison(raw, commit, record, { maxBytes = REVIEW_BINDINGS_MAX_BYTES } = {}) {
+  const decoded = decodeReviewBindings(raw);
+  if (decoded.state === 'later-version' || decoded.state === 'unreadable') return { recorded: false, changed: false, raw, diagnostic: decoded.diagnostic };
+  const doc = decoded.doc ?? NEW_BINDINGS();
+  const { [commit]: _replaced, ...others } = doc.comparisons;
+  const kept = Object.entries({ ...others, [commit]: record }).slice(-REVIEW_COMPARISONS_MAX);
+  const next = fitted({ ...doc, comparisons: Object.fromEntries(kept) }, maxBytes);
+  return { recorded: true, changed: true, raw: JSON.stringify(next), diagnostic: null };
+}
+
+// Why an attempt's record cannot answer for the compared change, or null:
+// `branch` and `objectFormat` are the change's, and a review that recorded
+// another is not comparable, never compared from another base. A record written
+// before the identity existed, or an attempt with no record, is unbound, never
+// matching (Decision 4).
+function unboundWhy(rec, { branch, objectFormat }) {
+  if (rec === undefined) return 'no-identity-recorded';
+  if (rec.identity === null) return rec.reason;
+  if (rec.identity.v !== CHANGE_IDENTITY_VERSION) return 'identity-version';
+  if (objectFormat && rec.identity.object_format !== objectFormat) return 'object-format';
+  if (branch && rec.identity.base?.branch !== branch) return `other-landing-branch:${rec.identity.base?.branch ?? 'none'}`;
+  // A dispatch that recorded no subject: what it showed is not known. An empty
+  // subject is a record, and covers no path.
+  if (rec.coverage === null || rec.coverage === undefined) return 'no-subject';
+  return null;
+}
+
+/**
+ * The comparison of a change with the reviews of the workflow that commits it
+ * (ADR-0069 Decisions 2 and 3, pure). `change` is the change's manifest
+ * entries; `frontmatter` the workflow's.
+ *
+ * - `not-comparable` with `reason`: the workflow's review history is
+ *   incomplete, its bindings record cannot be read or was truncated, a counting
+ *   review is unbound and no later `full` review of the workflow, by ledger
+ *   position, lifts it, or a path is answered by a review that cannot answer
+ *   for this change;
+ * - `no-reviews`: no counting review; nothing is bound, and the outcome gate
+ *   alone speaks (a workflow with no review is not held, A1b);
+ * - `same`, or `different` with `failures`: every path the change touches, or
+ *   the latest counting review covering it saw touched, must have the change's
+ *   entry from that review (a path untouched on both sides is equal).
+ *
+ * @returns {{state: string, reason: string|null, failures: Array<{path: string, why: 'uncovered'|'differs', by: string[]}>}}
+ */
+export function compareWithBindings({ change, frontmatter, branch, objectFormat, cap = 20 }) {
+  const nc = (reason) => ({ state: 'not-comparable', reason, failures: [] });
+  const view = projectReviewOutcomes(frontmatter, { cap });
+  if (view.coverage.reasons.length > 0) return nc(`history-incomplete:${view.coverage.reasons.join(',')}`);
+  const decoded = decodeReviewBindings(frontmatter?.[REVIEW_BINDINGS_KEY]);
+  if (decoded.state === 'later-version' || decoded.state === 'unreadable') return nc(`bindings-${decoded.state}`);
+  const doc = decoded.doc ?? NEW_BINDINGS();
+  if (doc.truncated) return nc('bindings-truncated');
+  const counting = view.attempts.filter(isCounting);
+  if (counting.length === 0) return { state: 'no-reviews', reason: null, failures: [] };
+  const position = new Map(view.attempts.map((a, i) => [a.id, i]));
+  const countingIds = new Set(counting.map((a) => a.id));
+  // An own key only: an attempt id such as `constructor` would read an
+  // inherited member as its record.
+  const recOf = (id) => (Object.hasOwn(doc.attempts, id) ? doc.attempts[id] : undefined);
+  const why = (id) => unboundWhy(recOf(id), { branch, objectFormat });
+  const fulls = counting.filter((a) => why(a.id) === null && recOf(a.id).coverage === 'full').map((a) => position.get(a.id));
+  for (const a of counting) {
+    const w = why(a.id);
+    // Lifted by a later full review: it was given the whole change after this
+    // one, by ledger position.
+    if (w !== null && !fulls.some((p) => p > position.get(a.id))) return nc(`unbound-review:${a.id}:${w}`);
+  }
+  // Every answer comes from a review that can answer for this change, the
+  // untouched ones too: one that cannot leaves an obligation nobody can read.
+  for (const [path, [, by]] of Object.entries(doc.answers)) {
+    const w = countingIds.has(by) ? why(by) : 'not-counting';
+    if (w !== null) return nc(`answer-unusable:${path}:${by}:${w}`);
+  }
+  const changeOf = new Map(change.map((e) => [entryPath(e), e]));
+  const paths = new Set(changeOf.keys());
+  for (const [p, [entry]] of Object.entries(doc.answers)) if (entry !== null) paths.add(p);
+  const failures = [];
+  for (const path of [...paths].sort()) {
+    const answer = Object.hasOwn(doc.answers, path) ? doc.answers[path] : null;
+    if (answer === null) {
+      failures.push({ path, why: 'uncovered', by: [] });
+      continue;
+    }
+    const [entry, by] = answer;
+    if (entry !== (changeOf.get(path) ?? null)) failures.push({ path, why: 'differs', by: [by] });
+  }
+  return failures.length === 0 ? { state: 'same', reason: null, failures } : { state: 'different', reason: null, failures };
+}
+
+/**
+ * The attempts of a workflow whose record shows them to be of another change
+ * than `change`, the compared change's manifest entries (reviewGate's
+ * `otherChange`): a review that did not count is of another change when, on a
+ * path the change touches that it is the latest such review to have covered
+ * (`seen`), the entry it saw is not the change's. A path the commit leaves out
+ * (an untracked or unstaged file the snapshot held) says nothing either way, so
+ * a review of this very change with more in its checkout stays read (critique of
+ * 2026-11-07, CRITICAL 1). An attempt the record shows nothing of, like one with
+ * no identity or one the comparison cannot read (another version, object format
+ * or branch, no subject), cannot say it concerned another change, so it stays
+ * read.
+ */
+export function attemptsOfOtherChange(frontmatter, change, { branch, objectFormat }) {
+  const decoded = decodeReviewBindings(frontmatter?.[REVIEW_BINDINGS_KEY]);
+  const doc = decoded.doc;
+  const out = new Set();
+  if (!doc || doc.truncated) return out;
+  const changeOf = new Map(change.map((e) => [entryPath(e), e]));
+  for (const [path, [entry, by]] of Object.entries(doc.seen)) {
+    if (!changeOf.has(path) || entry === changeOf.get(path)) continue;
+    if (unboundWhy(Object.hasOwn(doc.attempts, by) ? doc.attempts[by] : undefined, { branch, objectFormat }) === null) out.add(by);
+  }
+  return out;
+}
+
+/** The committed comparison a workflow recorded last, with its commit, or null. */
+export function latestCommittedComparison(frontmatter) {
+  const decoded = decodeReviewBindings(frontmatter?.[REVIEW_BINDINGS_KEY]);
+  let best = null;
+  for (const [commit, rec] of Object.entries(decoded.doc?.comparisons ?? {})) {
+    if (best === null || String(rec?.at ?? '') >= String(best.at ?? '')) best = { commit, state: rec?.state ?? null, reason: rec?.reason ?? null, at: rec?.at ?? null };
+  }
+  return best;
+}
+
+// Why `doc` is not a valid acceptance of a comparison, or null.
+function bindingAcceptanceProblem(doc) {
+  if (!isObject(doc)) return 'not an object';
+  if (doc.v !== REVIEW_BINDING_ACCEPTANCE_VERSION) return `v is not ${REVIEW_BINDING_ACCEPTANCE_VERSION}`;
+  if (!(typeof doc.manifest_sha256 === 'string' && SHA256_RE.test(doc.manifest_sha256))) return 'manifest_sha256 is not a sha256';
+  if (doc.state !== 'different' && doc.state !== 'not-comparable') return 'state is not different or not-comparable';
+  if (!(typeof doc.accepted_at === 'string' && ISO_RE.test(doc.accepted_at))) return 'accepted_at is not an ISO UTC time';
+  return null;
+}
+
+/** Decode the owner's acceptance of a comparison. Never throws. */
+export function decodeBindingAcceptance(raw) {
+  if (raw === undefined || raw === null) return { state: 'absent', doc: null };
+  try {
+    const doc = JSON.parse(raw);
+    const problem = bindingAcceptanceProblem(doc);
+    return problem === null ? { state: 'ok', doc } : { state: 'unreadable', doc: null, diagnostic: problem };
+  } catch (err) {
+    return { state: 'unreadable', doc: null, diagnostic: err.message };
+  }
+}
+
+/** The acceptance an owner's resolution writes (pure; validated). */
+export function newBindingAcceptance({ comparison, acceptedAt, note = undefined }) {
+  const doc = clean({
+    v: REVIEW_BINDING_ACCEPTANCE_VERSION,
+    manifest_sha256: comparison.acceptance_key ?? comparison.manifest_sha256,
+    state: comparison.state,
+    reason: comparison.reason ?? undefined,
+    paths: comparison.failures?.length ? comparison.failures.map((f) => f.path) : undefined,
+    accepted_at: acceptedAt,
+    note: typeof note === 'string' && note.trim() !== '' ? note.trim().slice(0, NOTE_MAX) : undefined,
+  });
+  const problem = bindingAcceptanceProblem(doc);
+  if (problem !== null) throw new Error(`${REVIEW_BINDING_ACCEPTANCE_KEY}: refusing to write an invalid acceptance (${problem})`);
+  return JSON.stringify(doc);
+}
+
+/**
+ * Whether the owner's acceptance covers this comparison: it names the same
+ * change (the manifest's digest, or, when no base resolved and so no manifest,
+ * the digest of the tree: `acceptance_key`) and the comparison reads as it did.
+ * An edit moves the digest, so it makes the acceptance stale.
+ */
+export function bindingAccepted(frontmatter, comparison) {
+  const decoded = decodeBindingAcceptance(frontmatter?.[REVIEW_BINDING_ACCEPTANCE_KEY]);
+  const key = comparison?.acceptance_key ?? comparison?.manifest_sha256;
+  if (decoded.state !== 'ok' || !key) return false;
+  return decoded.doc.manifest_sha256 === key && decoded.doc.state === comparison.state;
+}
+
+/** One line naming a comparison's failures or its reason. */
+export function comparisonText(comparison) {
+  if (comparison?.state === 'different') {
+    const say = (f) => (f.why === 'uncovered' ? 'no review covers it' : f.why === 'landed' ? 'not as committed' : `differs from what ${f.by.join(', ')} reviewed`);
+    const list = (comparison.failures ?? []).slice(0, 8).map((f) => `${f.path} (${say(f)})`);
+    const more = (comparison.failures?.length ?? 0) > 8 ? `, and ${comparison.failures.length - 8} more` : '';
+    if (list.length === 0) return `the change is not the one reviewed (${comparison.reason ?? 'no path named'})`;
+    return `the change is not the one reviewed: ${list.join(', ')}${more}`;
+  }
+  if (comparison?.state === 'not-comparable') return `the change cannot be compared with its reviews (${comparison.reason})`;
+  return `the change compares ${comparison?.state ?? 'unknown'}`;
 }

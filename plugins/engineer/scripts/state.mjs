@@ -82,16 +82,26 @@ import { captureWorkingTree } from './lib/peer-snapshot.mjs';
 import {
   REVIEW_ACCEPTANCE_KEY,
   REVIEW_ATTEMPTS_KEY,
+  REVIEW_BINDINGS_KEY,
+  REVIEW_BINDING_ACCEPTANCE_KEY,
+  applyCommittedComparison,
   applyReviewAttempt,
+  applyReviewBinding,
+  attemptsOfOtherChange,
+  bindingAccepted,
+  comparisonText,
   isReviewAttemptId,
   isReviewType,
   latestOutcomeText,
+  manifestDigest,
+  newBindingAcceptance,
   newReviewAcceptance,
   observeReviewGaps,
   projectReviewOutcomes,
   reviewGate,
   reviewRecordRepairText,
 } from './lib/review-attempts.mjs';
+import { compareCommitted, compareLanded, projectedTree } from './lib/change-identity.mjs';
 import {
   HOLD_PERSONA_CAPABILITY,
   HOLDS_PROTOCOL,
@@ -1671,6 +1681,12 @@ function frontmatterKeyOrder() {
   // lib/review-attempts.mjs on demand: one this reader cannot use accepts
   // nothing, and the workflow stays readable.
   order.push(REVIEW_ACCEPTANCE_KEY);
+  // C163 A2b (ADR-0069) — what ties each review to its change, and the owner's
+  // acceptance of a comparison: JSON text in double-quoted scalars, last of
+  // all, for the same carrier reason. A reader older than them carries them,
+  // and goes on reading its outcomes as A1b does (Decision 4).
+  order.push(REVIEW_BINDINGS_KEY);
+  order.push(REVIEW_BINDING_ACCEPTANCE_KEY);
   keyOrderCache = Object.freeze(order);
   return keyOrderCache;
 }
@@ -3477,6 +3493,23 @@ function stageReviewAttempt(frontmatter, attempt, { listed = frontmatter.ensembl
 }
 
 /**
+ * C163 A2b (ADR-0069 Decision 1) — stage what ties one attempt to its change
+ * on a frontmatter read under the lock. As with the attempt, recording never
+ * stops the write it rides on; a document this writer cannot read is left as it
+ * is, with a warning, and the change then reads not comparable.
+ */
+function stageReviewBinding(frontmatter, attemptId, binding) {
+  if (!binding) return false;
+  // The ledger as it stands with this attempt closed in it: its position there
+  // orders the review against the others (ADR-0069 Decision 3).
+  const { attempts } = projectReviewOutcomes(frontmatter, { cap: ENSEMBLE_RESULTS_RETENTION_CAP });
+  const out = applyReviewBinding(frontmatter[REVIEW_BINDINGS_KEY], attemptId, binding, { attempts });
+  if (out.diagnostic) process.stderr.write(`⚠ what review attempt ${attemptId} is of was not recorded: ${out.diagnostic}\n`);
+  if (out.changed) frontmatter[REVIEW_BINDINGS_KEY] = out.raw;
+  return out.changed;
+}
+
+/**
  * C163 A1a — record the outcome of a review attempt that has no
  * `ensemble_results` row: a review that never launched (skipped or
  * unavailable, with its reason) or an unsettled attempt explicitly replaced
@@ -3487,6 +3520,7 @@ function stageReviewAttempt(frontmatter, attempt, { listed = frontmatter.ensembl
 export async function recordReviewAttempt({
   workflowPath,
   attempt,
+  binding = null,
   host = 'claude',
   env = process.env,
   now = new Date(),
@@ -3498,7 +3532,8 @@ export async function recordReviewAttempt({
     const { frontmatter, body } = parseWorkflowFile(text);
     const nowIso = isoUtc(now);
     const out = stageReviewAttempt(frontmatter, { recorded_at: nowIso, ...attempt });
-    if (out.changed) {
+    const bound = out.recorded && stageReviewBinding(frontmatter, attempt.id, binding);
+    if (out.changed || bound) {
       frontmatter.updated_at = nowIso;
       await writeWorkflow(workflowPath, frontmatter, body, ownership);
     }
@@ -3560,10 +3595,18 @@ export async function supersedeReviewAttempt({ workflowPath, attemptId, supersed
  * snapshot would hold it: a commit of the accepted content (the recovery
  * path's) keeps it, an edit moves it. `held` is true while the latest outcome
  * blocks and no acceptance covers both the attempt and the tree. Read-only.
+ *
+ * C163 A2b (ADR-0069 Decision 3) — `binding`, a comparison of the change
+ * (reviewBindingCheck) that read reviews which count and compared them, narrows
+ * the read to reviews of that change: an attempt recorded for another change
+ * (`binding.other_change_attempts`) holds nothing here, and the comparison
+ * answers for it instead. A comparison that read none (`no-reviews`), or proved
+ * nothing (`not-comparable`), names none, and the gate stays conservative.
  */
-export async function reviewGateCheck({ workflowPath, repoRoot, frontmatter = null }) {
+export async function reviewGateCheck({ workflowPath, repoRoot, frontmatter = null, binding = null }) {
   const fm = frontmatter ?? parseWorkflowFile(await readFile(workflowPath, 'utf8')).frontmatter;
-  const gate = reviewGate(fm, { cap: ENSEMBLE_RESULTS_RETENTION_CAP });
+  const otherChange = Array.isArray(binding?.other_change_attempts) ? new Set(binding.other_change_attempts) : null;
+  const gate = reviewGate(fm, { cap: ENSEMBLE_RESULTS_RETENTION_CAP, otherChange });
   let change = null;
   if (gate.blocking && gate.acceptance.state === 'matches') {
     const checkout = await workflowCheckout(repoRoot, fm);
@@ -3618,6 +3661,146 @@ export function reviewHoldText(check, { workflowPath = '<workflow>' } = {}) {
     : `accept this attempt with \`state.mjs review-accept --attempt-id ${id}\`, with --workflow-path naming this workflow's file (its path cannot be printed here), in the workflow's checkout`;
   return `the latest review outcome holds the commit back: ${latestOutcomeText(check)}; ${why}. ` +
     `Run the review again (a new outcome replaces it), or, as the owner, ${accept}`;
+}
+
+/** The paths a workflow's commit manifest names. */
+export function manifestPathsOf(frontmatter) {
+  return (Array.isArray(frontmatter?.commit_manifest) ? frontmatter.commit_manifest : []).map((e) => e?.path).filter((p) => typeof p === 'string');
+}
+
+/**
+ * C163 A2b (critique of 2026-11-08, MAJOR 3) — the paths a commit of this
+ * workflow would stage now, with `extras` opted in beside the manifest: the
+ * staging set Phase 7's plan and execute derive (phase7-commit.mjs
+ * `commitStagingSet`, the manifest's paths git reports changed, an ignored file
+ * left out), so the owner's acceptance judges the tree Phase 7 commits, and
+ * takes there. A persona with no Phase
+ * 7 commits nothing through it: there, the manifest's paths and the extras.
+ */
+export async function commitPathsOf({ repoRoot, frontmatter, extras = [] }) {
+  const phase7 = new URL('./phase7-commit.mjs', import.meta.url);
+  if (!existsSync(phase7)) return [...new Set([...manifestPathsOf(frontmatter), ...extras])];
+  const { commitStagingSet } = await import(phase7.href);
+  return commitStagingSet({ repoRoot, frontmatter, includeExtras: extras });
+}
+
+/**
+ * C163 A2b (ADR-0069 Decisions 2 and 3) — the comparison of a change with its
+ * reviews: `paths` are the paths the commit stages (the tree it will hold,
+ * projected through a temporary index, so a series is judged whole before its
+ * first commit); none, HEAD's tree. `held` is true when it is `different` or
+ * `not-comparable` and no acceptance of the owner's covers this change.
+ * Read-only.
+ */
+export async function reviewBindingCheck({ workflowPath, repoRoot, frontmatter = null, paths = [], argument = null, refresh = true }) {
+  const fm = frontmatter ?? parseWorkflowFile(await readFile(workflowPath, 'utf8')).frontmatter;
+  const { tree, reason: projectionWhy } = projectedTree(repoRoot, paths);
+  const { change, ...comparison } = tree === null
+    ? { kind: 'committed', state: 'not-comparable', reason: projectionWhy, failures: [], manifest_sha256: null }
+    : compareCommitted({ repoRoot, frontmatter: fm, tree, argument, cap: ENSEMBLE_RESULTS_RETENTION_CAP, refresh });
+  const acceptanceKey = comparison.manifest_sha256 ?? (tree === null ? null : manifestDigest([`tree\t${tree}`]));
+  const withKey = { ...comparison, acceptance_key: acceptanceKey };
+  const judged = comparison.state === 'different' || comparison.state === 'not-comparable';
+  const accepted = judged && bindingAccepted(fm, withKey);
+  // Decision 3 — the attempts of another change, for the outcome gate's
+  // narrowing, only when the comparison read reviews that count and compared
+  // them. `no-reviews` read none: a failure of an earlier edit is then all
+  // there is, and it keeps holding (critique of 2026-11-07, CRITICAL 1).
+  const otherChange = (comparison.state === 'same' || comparison.state === 'different') && Array.isArray(change)
+    ? [...attemptsOfOtherChange(fm, change, { branch: comparison.branch, objectFormat: comparison.object_format })]
+    : null;
+  return { ...withKey, other_change_attempts: otherChange, accepted, held: judged && !accepted };
+}
+
+/**
+ * C163 A2b — why a comparison holds the commit back, in one sentence that names
+ * what differs and the two ways on: a new review of the change, or the owner's
+ * acceptance of it. Null when it does not hold.
+ */
+export function reviewBindingHoldText(check, { workflowPath = '<workflow>', extras = [] } = {}) {
+  if (!check?.held) return null;
+  const printable = typeof workflowPath === 'string' && workflowPath !== '' && !/[\u0000-\u001f\u007f]/.test(workflowPath);
+  const word = printable && /^[A-Za-z0-9_@%+=:,./-]+$/.test(workflowPath) ? workflowPath : `'${String(workflowPath).replace(/'/g, `'\\''`)}'`;
+  // Paths the commit stages beyond the manifest are named, so the acceptance is
+  // of the same change.
+  const quoted = (p) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(p) ? p : `'${String(p).replace(/'/g, `'\\''`)}'`);
+  const also = extras.map((p) => ` --include-extra ${quoted(p)}`).join('');
+  const accept = printable
+    ? `accept this change with \`state.mjs review-binding-accept --workflow-path ${word}${also} --note-file <file>\` in the workflow's checkout`
+    : "accept this change with `state.mjs review-binding-accept`, with --workflow-path naming this workflow's file (its path cannot be printed here), in the workflow's checkout";
+  // A comparison with no key (the tree could not be projected: flagged index
+  // entries, another repository selected) has nothing an acceptance could name,
+  // so the way on is to clear its cause (refine-verify of 2026-11-08, F7).
+  if (typeof check.acceptance_key !== 'string') {
+    const cause = check.reason === 'index-flags'
+      ? 'clear the assume-unchanged or skip-worktree flag on the paths it commits (git update-index --no-assume-unchanged / --no-skip-worktree -- <path>)'
+      : check.reason === 'repository-mismatch'
+        ? 'unset the GIT_DIR or GIT_WORK_TREE that selects another repository than the checkout'
+        : 'resolve why the tree it commits cannot be worked out';
+    return `${comparisonText(check)}. It cannot be accepted as it is: ${cause}, then run the commit again`;
+  }
+  return `${comparisonText(check)}. Review the change as it is now (${commandPrefix()}critique), or, as the owner, ${accept}`;
+}
+
+/**
+ * C163 A2b (ADR-0069 Decision 3) — the owner's acceptance of a change its
+ * reviews do not vouch for, given for this change: an edit makes it stale. Only
+ * the owner accepts: under an autopilot run it is refused.
+ */
+export async function acceptReviewBinding({ workflowPath, repoRoot, note = undefined, argument = null, extras = [], host = 'claude', env = process.env, now = new Date() }) {
+  if (isAutopilotRun(env)) {
+    throw new Error(`review-binding-accept: refused under an autopilot run (AGENTIC_AUTOPILOT=${env.AGENTIC_AUTOPILOT}); only the owner accepts a change its reviews do not vouch for (ADR-0069 Decision 3)`);
+  }
+  // The ref is brought up to date before the lock: no writer of this workflow
+  // waits on the network.
+  await reviewBindingCheck({ workflowPath, repoRoot, argument });
+  return withFileLock(workflowPath, async (ownership) => {
+    const { frontmatter, body } = parseWorkflowFile(await readFile(workflowPath, 'utf8'));
+    // What the commit will stage: the staging set, and what it opted in beside it.
+    const paths = await commitPathsOf({ repoRoot, frontmatter, extras });
+    const check = await reviewBindingCheck({ workflowPath, repoRoot, frontmatter, paths, argument, refresh: false });
+    if (check.state !== 'different' && check.state !== 'not-comparable') {
+      throw new Error(`review-binding-accept: the change compares ${check.state}; there is nothing to accept`);
+    }
+    const nowIso = isoUtc(now);
+    frontmatter[REVIEW_BINDING_ACCEPTANCE_KEY] = newBindingAcceptance({ comparison: check, acceptedAt: nowIso, note });
+    frontmatter.updated_at = nowIso;
+    await writeWorkflow(workflowPath, frontmatter, body, ownership);
+    return { workflowPath, state: check.state, reason: check.reason ?? null, accepted_for: check.acceptance_key };
+  }, { env, host, writer: LANE_WRITERS.plain });
+}
+
+/**
+ * C163 A2b (ADR-0069 Decision 2) — record the committed comparison of HEAD,
+ * keyed by that commit: the landing compares what landed with its manifest. Phase 7 calls
+ * it after a workflow's last commit; `state.mjs review-binding-record` records
+ * it again for a commit an amend or a local rebase made, on an active or an
+ * archived workflow. Nothing is recorded for a partial series.
+ */
+export async function recordCommittedComparison({ workflowPath, repoRoot, argument = null, host = 'claude', env = process.env, now = new Date(), writer = LANE_WRITERS.plain }) {
+  return withFileLock(workflowPath, async (ownership) => {
+    const { frontmatter, body } = parseWorkflowFile(await readFile(workflowPath, 'utf8'));
+    const check = compareCommitted({ repoRoot, frontmatter, argument, cap: ENSEMBLE_RESULTS_RETENTION_CAP, refresh: false });
+    if (typeof check.head !== 'string') return { recorded: false, state: check.state, reason: check.reason };
+    const record = {
+      state: check.state,
+      reason: check.reason ?? undefined,
+      branch: check.branch,
+      base: check.base,
+      result_tree: check.result_tree,
+      manifest_sha256: check.manifest_sha256,
+      paths: check.failures.slice(0, 20).map((f) => f.path),
+      // The owner accepted this change before its commit (review-binding-accept):
+      // its landing then reads not comparable, never different again.
+      accepted: check.state === 'different' || check.state === 'not-comparable' ? bindingAccepted(frontmatter, check) : undefined,
+      at: isoUtc(now),
+    };
+    const out = applyCommittedComparison(frontmatter[REVIEW_BINDINGS_KEY], check.head, JSON.parse(JSON.stringify(record)));
+    if (out.diagnostic) throw new Error(out.diagnostic);
+    frontmatter[REVIEW_BINDINGS_KEY] = out.raw;
+    await writeWorkflow(workflowPath, frontmatter, body, ownership);
+    return { recorded: true, commit: check.head, state: check.state, reason: check.reason ?? null, failures: check.failures };
+  }, { env, host, writer });
 }
 
 /**
@@ -3809,6 +3992,8 @@ export async function commitEnsemble({
         tree_reason: review.tree ? undefined : (review.tree_reason ?? 'not-reported'),
         recorded_at: nowIso,
       }, prunes);
+      // C163 A2b — what the review was of, from the run's ledger.
+      stageReviewBinding(frontmatter, run_id, review.binding ?? null);
     } else {
       stageReviewAttempt(frontmatter, { id: run_id, phase, type: ensemble_type, state: 'gaps' }, prunes);
     }
@@ -7814,7 +7999,9 @@ function cliParseFlags(argv) {
     if (name in flags && TEXT_FILE_FLAGS.some((text) => name === `${text}-file`)) {
       throw new Error(`--${name} is given more than once`);
     }
-    flags[name] = val;
+    // The one repeated flag: a path each.
+    if (name === 'include-extra') (flags[name] ??= []).push(val);
+    else flags[name] = val;
     i += 1;
   }
   return flags;
@@ -7980,6 +8167,16 @@ function cliPrintHelp() {
       '    open), the review results with no attempt (legacy, read unknown) and the',
       '    coverage (history_incomplete with its reasons). Read-only.',
       '',
+      '  review-binding-accept --workflow-path <path> [--repo-root <checkout>] [--note-file <file>] [--include-extra <path>]...',
+      '    C163 A2b — the owner accepts a change its reviews do not vouch for, for the',
+      '    change as it is now; an edit makes it stale. Refused under an autopilot run.',
+      '  review-binding-record --workflow-path <path> [--repo-root <checkout>]',
+      '    C163 A2b — record the committed comparison of HEAD, keyed by it (Phase 7 does',
+      '    after a last commit; this is for a commit an amend or a local rebase made).',
+      '  review-compare-landed --repo-root <checkout> --commit <sha>',
+      '      [--start <sha>] [--head <sha>] [--child-workflow <id>]',
+      '    C163 A2b — print, as JSON, how what landed compares with what the child',
+      '    workflow committed.',
       '  review-gate --workflow-path <path> [--repo-root <checkout>]',
       '    C163 A1b — print, as JSON, the review gate: the latest review outcome,',
       '    whether it holds a commit back (failed, degraded, unavailable, malformed,',
@@ -8583,8 +8780,57 @@ async function cliRun(subcommand, flags) {
 
       case 'review-gate': {
         cliRequire(flags, ['workflow-path']);
-        const check = await reviewGateCheck({ workflowPath: flags['workflow-path'], repoRoot: flags['repo-root'] ?? process.cwd() });
-        process.stdout.write(`${JSON.stringify(check)}\n`);
+        const repoRoot = flags['repo-root'] ?? process.cwd();
+        const out = await reviewGateCheck({ workflowPath: flags['workflow-path'], repoRoot });
+        process.stdout.write(`${JSON.stringify(out)}\n`);
+        return 0;
+      }
+
+      case 'review-binding-accept': {
+        cliRequire(flags, ['workflow-path']);
+        if (flags.host !== undefined) validateHost(flags.host);
+        let note;
+        if (flags['note-file'] !== undefined) note = (await readFile(flags['note-file'], 'utf8')).trim();
+        const out = await acceptReviewBinding({
+          workflowPath: flags['workflow-path'],
+          repoRoot: flags['repo-root'] ?? process.cwd(),
+          note,
+          argument: flags['landing-branch'] ?? null,
+          extras: flags['include-extra'] ?? [],
+          host: flags.host,
+        });
+        process.stdout.write(`${JSON.stringify({ ok: true, ...out })}\n`);
+        return 0;
+      }
+
+      case 'review-binding-record': {
+        cliRequire(flags, ['workflow-path']);
+        if (flags.host !== undefined) validateHost(flags.host);
+        const out = await recordCommittedComparison({
+          workflowPath: flags['workflow-path'],
+          repoRoot: flags['repo-root'] ?? process.cwd(),
+          argument: flags['landing-branch'] ?? null,
+          host: flags.host,
+        });
+        process.stdout.write(`${JSON.stringify({ ok: out.recorded, ...out })}\n`);
+        return out.recorded ? 0 : 1;
+      }
+
+      case 'review-compare-landed': {
+        // The landed comparison, for the orchestrator's completion path
+        // (ADR-0069 Decision 2): JSON on stdout, read-only.
+        // --integration-branch is taken and not read: the landed comparison
+        // uses no ref.
+        cliRequire(flags, ['repo-root', 'commit']);
+        const out = compareLanded({
+          repoRoot: flags['repo-root'],
+          start: flags.start ?? null,
+          commit: flags.commit,
+          head: flags.head ?? null,
+          childWorkflowId: flags['child-workflow'] ?? null,
+          parse: parseWorkflowFile,
+        });
+        process.stdout.write(`${JSON.stringify(out)}\n`);
         return 0;
       }
 

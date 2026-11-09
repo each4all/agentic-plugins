@@ -194,9 +194,11 @@ names a landed commit is the owner's to reword, or to split where it touches
 several packages: rewrite no history in the step (no amend, rebase or reset),
 and report it, with its reason, in the step's report. A refusal with exit 10
 (`review-held`) says the workflow's latest review outcome holds the commit
-back (failed, degraded, unavailable, malformed or unknown) and nothing was
-committed or written: the step never accepts it (`state.mjs review-accept` is
-the owner's, and refused under autopilot) and never reruns the review; report
+back (failed, degraded, unavailable, malformed or unknown), or the change is
+not the one reviewed or cannot be compared with its reviews (ADR-0069), and
+nothing was committed or written: the step never accepts it (`state.mjs
+review-accept` and `review-binding-accept` are the owner's, and refused under
+autopilot) and never reruns the review; report
 the attempt and its outcome the refusal names in the step's report, with
 `outcome` `needs_owner` and `awaiting_owner` null (the gate is the driver's to
 report, and never stored), and stop.
@@ -245,6 +247,13 @@ When the plan's `review_hold` is set, a review outcome holds this commit back:
 show the user that line before asking anything. It names the attempt and the
 ways on, and execute warns only as it commits, so this is where the user
 decides (ADR-0028, note of 2026-11-07).
+
+The plan's `review_binding` says how the change compares with its reviews
+(ADR-0069 Decision 3). When its `hold` is set show that line too. `state:
+different` means the change is not the one reviewed: execute refuses it (exit
+10), and the way on is `/engineer:critique` of the change as it is now, or the
+owner's `state.mjs review-binding-accept`. `state: not-comparable` proves nothing
+either way: execute warns and commits.
 <!-- pipeline:end commit-plan -->
 
 ---
