@@ -47,6 +47,7 @@ import {
   workflowStorage,
 } from './state.mjs';
 import { NO_RUN_REASONS, isReviewType, outcomeOf, treeOf } from './lib/review-attempts.mjs';
+import { bindingOfRun, captureIdentity, macroBranchOf, parseSubject } from './lib/change-identity.mjs';
 import { absorbOutputErrors, exitAfterFlush, isCliEntry } from './lib/cli-entry.mjs';
 import { withEvidenceBoundaryBytes } from './lib/evidence-boundary.mjs';
 import { capabilityOn, personaName, personaOrRefuse, stateDirRel } from './lib/persona.mjs';
@@ -63,7 +64,10 @@ import {
 // stopped (C96): the close barrier waits on pipes a child may hold.
 const EXIT_LINGER_MS = 1000;
 import {
+  captureWorkingTree,
   createPeerSnapshot,
+  recaptureSnapshotTree,
+  supervisorFingerprint,
   groupTiedToTree,
   handlePeerProcess,
   handleSupervisor,
@@ -538,6 +542,12 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+// An identity's capture time, now, to the second (ADR-0069 Decision 1). It is
+// recorded, and orders nothing: reviews are ordered by their ledger position.
+function secondsIso() {
+  return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
 function makeHandle({
   runId,
   kind,
@@ -892,6 +902,11 @@ async function runPeerInCheckout(args) {
     const isolation = await isolatePeer({ options, runId, paths, companion, cancellation });
     if (isolation.failed) return runResult(paths, isolation.failed, { ok: false, companionPath });
     snapshot = isolation.snapshot;
+    // C163 A2b (ADR-0069 Decision 1) — what the review is of: its subject as
+    // its dispatch recorded it, and, with a snapshot, the change the snapshot
+    // holds. Recorded on the handle, where settle reads them.
+    const reviewing = options.kind === 'ensemble' && isReviewType(options.ensembleType);
+    const binding = reviewing ? await launchBinding({ options, snapshot }) : null;
     // No peer inherits a git selector, snapshot or not, a claude peer no more
     // than a codex one (C163 D2b): one naming the live repository would send
     // its git commands there.
@@ -903,7 +918,8 @@ async function runPeerInCheckout(args) {
       const copy = await writeSnapshotPrompt(snapshot, await readFile(prompt.promptFile, 'utf8'), [options.cwd, options.repoRoot]);
       companionPromptFile = copy.path;
       await updateHandle(paths.handle, (h) => {
-        h.snapshot = peerSnapshotRecord(snapshot, { prompt_paths_rewritten: copy.count });
+        h.snapshot = peerSnapshotRecord(snapshot, { prompt_paths_rewritten: copy.count, ...(binding?.snapshot ?? {}) });
+        if (binding?.subject) h.subject = binding.subject;
       });
     }
     if (cancellation?.signal) {
@@ -1174,16 +1190,81 @@ async function runPeerInCheckout(args) {
       // snapshot. A cleanup failure is recorded and reported; it never
       // changes the run's status.
       await ownerWrite;
+      // C163 A2b (ADR-0069 Decision 1, item 4) — the launch tree is the tree
+      // the peer saw only while the snapshot is unchanged: captured again now,
+      // with its process group stopped and before it is removed.
+      const ended = options.kind === 'ensemble' && isReviewType(options.ensembleType) ? await endCapture(snapshot, options.env) : {};
       const removed = await removePeerSnapshot(snapshot, { env: options.env });
       if (removed.error) process.stderr.write(`peer-runner: snapshot cleanup failed: ${removed.error}\n`);
       await updateHandle(paths.handle, (h) => {
         // A run that threw before the record was written gets it here.
-        h.snapshot = { ...(h.snapshot ?? peerSnapshotRecord(snapshot)), removed_at: removed.removed ? nowIso() : null, cleanup_error: removed.error };
+        h.snapshot = { ...(h.snapshot ?? peerSnapshotRecord(snapshot)), ...ended, removed_at: removed.removed ? nowIso() : null, cleanup_error: removed.error };
       }).catch(() => {});
     }
     if (promptCleanup) {
       await rm(promptCleanup, { recursive: true, force: true });
     }
+  }
+}
+
+// C163 A2b — the subject a dispatch recorded, from its file. A file that cannot
+// be read as one covers no path, and says so; it never stops the review.
+async function readSubject(file) {
+  if (typeof file !== 'string' || file === '') return null;
+  let text;
+  try {
+    text = await readFile(file, 'utf8');
+  } catch (err) {
+    process.stderr.write(`peer-runner: the review's subject file cannot be read (${err.code ?? err.message}); the review covers no path\n`);
+    return null;
+  }
+  const { subject, problem } = parseSubject(text);
+  if (subject === null) process.stderr.write(`peer-runner: the review's subject file is not usable (${problem}); the review covers no path\n`);
+  return subject;
+}
+
+// C163 A2b (ADR-0069 Decision 1) — a review's subject and, in a snapshot, its
+// identity, for the handle. It never fails the run: a review with no identity
+// is unbound, with the reason.
+async function launchBinding({ options, snapshot }) {
+  const subject = await readSubject(options.subjectFile);
+  if (!snapshot) return { subject, snapshot: null };
+  try {
+    const macroBranch = options.workflowPath ? macroBranchOf(parseWorkflowFile(await readFile(options.workflowPath, 'utf8')).frontmatter) : null;
+    const { identity, reason } = captureIdentity({
+      repoRoot: snapshot.live_toplevel,
+      head: snapshot.head,
+      resultTree: snapshot.worktree_tree,
+      source: 'snapshot',
+      capturedAt: secondsIso(),
+      argument: options.landingBranch ?? null,
+      macroBranch,
+      flagged: snapshot.flagged ?? [],
+    });
+    return { subject, snapshot: identity ? { identity } : { identity_reason: reason } };
+  } catch (err) {
+    process.stderr.write(`peer-runner: the review's identity was not captured: ${err.message}\n`);
+    return { subject, snapshot: { identity_reason: 'identity-error' } };
+  }
+}
+
+async function endCapturePending(handle) {
+  const s = handle.snapshot;
+  if (!s?.identity || typeof s.end_tree === 'string' || s.end_tree_reason) return false;
+  const supervisor = handleSupervisor(handle);
+  if (!supervisor || supervisor.malformed || !(await isProcessAlive(supervisor.pid))) return false;
+  try {
+    return JSON.stringify(await supervisorFingerprint(supervisor.pid)) === JSON.stringify(supervisor.fingerprint);
+  } catch {
+    return false;
+  }
+}
+
+async function endCapture(snapshot, env) {
+  try {
+    return { end_tree: await recaptureSnapshotTree(snapshot, { env }) };
+  } catch {
+    return { end_tree_reason: 'snapshot-recapture-failed' };
   }
 }
 
@@ -2155,6 +2236,10 @@ async function settleEnsembleInCheckout({
   ensembleType,
   noRunReason,
   attemptKey,
+  // C163 A2b — with no run launched: the subject the local reviewers read, and
+  // the branch to land on when it is named (ADR-0069 Decision 1).
+  subjectFile,
+  landingBranch,
   // The step's environment, which the workflow write is admitted under (its
   // attempt mark, ADR-0068 Decision 5), as every writer's.
   env = process.env,
@@ -2178,7 +2263,7 @@ async function settleEnsembleInCheckout({
     if (open.length > 0) {
       refuse(`an unsettled ensemble attempt for phase ${phase} is in the ledger: settle it by its run id (${open.join(', ')})`);
     }
-    const noRun = await recordNoRunAttempt({ workflowPath: wf, phase, ensembleType, noRunReason, attemptKey, host, env, now });
+    const noRun = await recordNoRunAttempt({ workflowPath: wf, repoRoot, phase, ensembleType, noRunReason, attemptKey, subjectFile, landingBranch, host, env, now, frontmatter });
     return { ok: true, settlement: 'skipped', run_id: null, phase, ...noRun };
   }
 
@@ -2249,6 +2334,12 @@ async function settleEnsembleInCheckout({
   // runner the host killed before its cleanup left: removed when the run is
   // proven over, reported apart, never a change of the settlement.
   const cleanup = () => snapshotCleanupField(paths, handle, null, recorded);
+  // C163 A2b — the runner marks a run terminal before its cleanup captures the
+  // snapshot again: settled in between, a review that changed nothing would be
+  // recorded unbound for good. A runner gone leaves it unbound, rightly.
+  if (await endCapturePending(handle)) {
+    refuse(`run ${runId} is still finishing (its snapshot has not been captured again yet): collect it first`);
+  }
   // C163 A1a — the review attempt's outcome, from the ledger: how the run
   // ended, whether its answer was usable, then the verdict; and the tree its
   // peer saw, from the handle's snapshot record, never the checkout now.
@@ -2257,6 +2348,7 @@ async function settleEnsembleInCheckout({
     status: handle.status,
     error_kind: handle.error_kind ?? null,
     ...treeOf(handle),
+    binding: bindingOfRun(handle),
   });
   if (handle.status !== 'completed') {
     const settlement = await commit({
@@ -2294,7 +2386,7 @@ async function settleEnsembleInCheckout({
 // records nothing. With no reason the attempt is `skipped`, reason
 // `unspecified`: this records, it refuses no step for a word left unset (A1b
 // decides what an outcome allows); a word that is no reason is refused.
-async function recordNoRunAttempt({ workflowPath, phase, ensembleType, noRunReason, attemptKey, host, env, now }) {
+async function recordNoRunAttempt({ workflowPath, repoRoot, phase, ensembleType, noRunReason, attemptKey, subjectFile, landingBranch, host, env, now, frontmatter }) {
   if (ensembleType === undefined || ensembleType === null || ensembleType === '') return {};
   if (typeof ensembleType !== 'string' || !/^[a-z][a-z-]{0,40}$/.test(ensembleType)) {
     throw new Error(`settle: --ensemble-type ${JSON.stringify(ensembleType)} is not an ensemble type`);
@@ -2323,11 +2415,35 @@ async function recordNoRunAttempt({ workflowPath, phase, ensembleType, noRunReas
   const out = await recordReviewAttempt({
     workflowPath,
     attempt: { id: attemptId, phase, type: ensembleType, state: 'closed', outcome, reason, tree: null, tree_reason: 'no-launch' },
+    binding: await noRunBinding({ repoRoot, subjectFile, landingBranch, frontmatter }),
     host,
     env,
     now,
   });
   return { attempt_id: attemptId, outcome: out.kept?.outcome ?? (out.recorded ? outcome : null) };
+}
+
+// C163 A2b (ADR-0069 Decision 1, item 4) — no peer launched: the checkout,
+// captured as a snapshot would hold it, is what the local reviewers read.
+async function noRunBinding({ repoRoot, subjectFile, landingBranch, frontmatter }) {
+  const coverage = await readSubject(subjectFile);
+  try {
+    const captured = await captureWorkingTree({ cwd: repoRoot ?? process.cwd() });
+    if (captured === null) return { identity: null, reason: 'no-capture', coverage };
+    const { identity, reason } = captureIdentity({
+      repoRoot: captured.top,
+      head: captured.head,
+      resultTree: captured.tree,
+      source: 'checkout',
+      capturedAt: secondsIso(),
+      argument: landingBranch ?? null,
+      macroBranch: macroBranchOf(frontmatter),
+      flagged: captured.flagged,
+    });
+    return { identity, reason, coverage };
+  } catch {
+    return { identity: null, reason: 'capture-failed', coverage };
+  }
 }
 
 // C142 — the snapshot cleanup of a run already settled, read from its ledger
@@ -2430,6 +2546,12 @@ function parseCliArgs(argv) {
       case '--ensemble-type':
         opts.ensembleType = rest[++i];
         break;
+      case '--subject-file':
+        opts.subjectFile = rest[++i];
+        break;
+      case '--landing-branch':
+        opts.landingBranch = rest[++i];
+        break;
       case '--host':
         opts.host = rest[++i];
         break;
@@ -2523,6 +2645,7 @@ function printHelp() {
     '      on any other status than 0. Writes nothing.',
     '',
     '  run --peer claude|codex (--prompt-file <path>|--prompt-text <text>)',
+    '      [--subject-file <path>] [--landing-branch <branch>]  (a review: what it was shown, ADR-0069)',
     '      [--repo-root <path>] [--run-id <id>] [--kind ensemble|peer-now|manual]',
     '      [--workflow-path <path> --phase <p> --ensemble-type <t>]',
     '      [--host claude|codex] [--model <id>] [--effort <level>]',
@@ -2545,10 +2668,12 @@ function printHelp() {
     '         [--verdict <v> (--summary <s> | --summary-file <path>)]',
     '         [--repo-root <path>] [--host claude|codex] [--stale-grace-ms <ms>]',
     '         [--ensemble-type <t> --no-run-reason <r> --attempt-key <dir>]',
+    '         [--subject-file <path>] [--landing-branch <branch>]',
     '      Record what an ensemble attempt came to, decided from its ledger:',
     "      --run-id '' when no run launched. Exit 0 settled or skipped, 1 refused.",
     "      With --run-id '' and a review type, records the attempt that never",
-    `      launched, with its reason (${Object.keys(NO_RUN_REASONS).join('|')}) (C163 A1a).`,
+    `      launched, with its reason (${Object.keys(NO_RUN_REASONS).join('|')}) (C163 A1a),`,
+    '      the checkout it read and, in --subject-file, the paths it read (ADR-0069).',
     '      --summary-file reads the summary an agent wrote with its file-writing',
     '      tool (UTF-8, one trailing newline removed, the file kept), before',
     '      anything is written: a runbook never puts it on the command line',
@@ -2604,6 +2729,8 @@ async function cliRun(opts) {
           workflowPath: opts.workflowPath,
           phase: opts.phase,
           ensembleType: opts.ensembleType,
+          subjectFile: opts.subjectFile,
+          landingBranch: opts.landingBranch,
           host: opts.host,
           peer: opts.peer,
           promptFile: opts.promptFile,
@@ -2669,6 +2796,8 @@ async function cliRun(opts) {
           ensembleType: opts.ensembleType,
           noRunReason: opts.noRunReason,
           attemptKey: opts.attemptKey,
+          subjectFile: opts.subjectFile,
+          landingBranch: opts.landingBranch,
           staleGraceMs: Number.isInteger(opts.staleGraceMs)
             ? opts.staleGraceMs
             : parsePositiveInt(process.env.PEER_RUN_STALE_GRACE_MS, DEFAULT_STALE_GRACE_MS),

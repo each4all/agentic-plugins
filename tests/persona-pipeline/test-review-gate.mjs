@@ -72,6 +72,27 @@ async function withSandbox(fn) {
   }
 }
 
+// A usable review of the checkout as it is, bound to it (ADR-0069): the
+// sandbox gets a branch to land on, a remote-tracking ref at its baseline.
+const boundPassed = async (S, P, dir, wf, id) => {
+  if (spawnSync('git', ['-C', dir, 'remote', 'get-url', 'origin']).status !== 0) {
+    const base = sh(dir, 'git', ['rev-parse', 'HEAD']);
+    sh(dir, 'git', ['remote', 'add', 'origin', join(dir, 'no-such-origin')]);
+    sh(dir, 'git', ['update-ref', 'refs/remotes/origin/main', base]);
+    sh(dir, 'git', ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main']);
+  }
+  const CI = await import(pathToFileURL(P.path('scripts/lib/change-identity.mjs')).href);
+  const SNAP = await import(pathToFileURL(P.path('scripts/lib/peer-snapshot.mjs')).href);
+  const captured = await SNAP.captureWorkingTree({ cwd: dir, env: env() });
+  const { identity, reason } = CI.captureIdentity({ repoRoot: dir, head: captured.head, resultTree: captured.tree, source: 'snapshot', capturedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'), refresh: false });
+  const paths = identity.manifest.map((e) => e.slice(e.indexOf('\t') + 1));
+  return S.recordReviewAttempt({
+    workflowPath: wf,
+    env: env(),
+    attempt: { id, phase: 'critique', type: 'review', state: 'closed', outcome: 'passed', run_id: id, tree: null, tree_reason: 'no-snapshot' },
+    binding: { identity, reason, coverage: { shown: paths, covered: paths } },
+  });
+};
 for (const persona of personasFor('scripts/state.mjs')) {
   const P = personaInfo(persona);
   const STATE_BIN = P.path('scripts/state.mjs');
@@ -448,7 +469,7 @@ for (const persona of personasFor('scripts/phase7-commit.mjs')) {
       await withSandbox(async (dir, text) => {
         const wf = workflow(dir);
         await writeFile(join(dir, 'src', 'a.mjs'), 'export const a = 1;\n');
-        await attempt(wf, 'review-1', 'passed');
+        await boundPassed(S, P, dir, wf, 'review-1');
         const subject = await text('fix: set a to 1');
         const git = await injectingGit(wf);
         try {
@@ -525,7 +546,7 @@ for (const persona of personasFor('scripts/phase7-commit.mjs')) {
         const wf = workflow(dir);
         await writeFile(join(dir, 'src', 'a.mjs'), 'export const a = 1;\n');
         await attempt(wf, 'review-1', 'failed', { error_kind: 'peer_timeout' });
-        await attempt(wf, 'review-2', 'passed');
+        await boundPassed(S, P, dir, wf, 'review-2');
         const r = auto(dir, wf, '--subject-file', await text('fix: set a to 1'));
         strictEqual(r.code, 0, r.stderr);
         strictEqual(JSON.parse(r.stdout).action, 'committed');

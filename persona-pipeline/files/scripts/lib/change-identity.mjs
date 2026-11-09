@@ -1,0 +1,673 @@
+// C163 A2b — the change a review is bound to, read from git (ADR-0069).
+//
+// Decision 1: a review records its change as a base, a result tree and the
+// per-path transition list between them, from one plumbing command run with no
+// inherited GIT_* variable, whatever the user's diff settings. Decision 2: a
+// committed or landed change is the same change when the reviews that answer
+// for its paths hold the same transitions.
+//
+// The rule itself is pure and lives in lib/review-attempts.mjs
+// (`compareWithBindings`); this module computes what it compares: the landing
+// branch, the merge base, the manifests, the commits of an interval, and the
+// state-root lookup of a landing's workflow. Nothing here writes a workflow.
+
+import { execFileSync } from 'node:child_process';
+import { lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { CHANGE_IDENTITY_VERSION, compareWithBindings, decodeReviewBindings, entryPath, manifestDigest, REVIEW_BINDINGS_KEY } from './review-attempts.mjs';
+import { readSet, SHARED_HOMES } from './state-root.mjs';
+
+// Fetching the ref is best effort, and short: a review or a commit never waits
+// on the network for long, and a stale ref is a limit the landed comparison
+// covers (Decision 1, item 3).
+const FETCH_TIMEOUT_MS = 20_000;
+
+// Decision 1, item 5 — the one projection every manifest goes through, with no
+// inherited GIT_* variable: a selector in the environment would read another
+// repository.
+function gitEnv(extra = {}) {
+  const env = {};
+  for (const [k, v] of Object.entries(process.env)) if (!k.startsWith('GIT_')) env[k] = v;
+  return { ...env, GIT_TERMINAL_PROMPT: '0', ...extra };
+}
+
+function git(repoRoot, args, { env = {}, input = undefined, timeout = undefined, buffer = false } = {}) {
+  try {
+    const stdout = execFileSync('git', ['-C', repoRoot, ...args], {
+      env: gitEnv(env),
+      input,
+      timeout,
+      maxBuffer: 256 * 1024 * 1024,
+      stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+    });
+    return { ok: true, stdout: buffer ? stdout : stdout.toString('utf8').trim() };
+  } catch (err) {
+    return { ok: false, stdout: buffer ? Buffer.alloc(0) : '', stderr: String(err?.stderr ?? err?.message ?? err).trim() };
+  }
+}
+
+/**
+ * The paths the snapshot removes (SNAPSHOT_EXCLUDED_PATHSPECS of
+ * lib/peer-snapshot.mjs, the state homes), dropped from every manifest:
+ * unfiltered, a tracked file under a state home reads as deleted in a reviewed
+ * manifest and is absent from a committed one (measured, ADR-0069 P3).
+ */
+export function isExcludedFromManifest(path) {
+  if (path === '.agentic-plugins/state' || path.startsWith('.agentic-plugins/state/')) return true;
+  return /^\.claude\/agentic-[^/]*\/.+$/.test(path);
+}
+
+// `ignoreBOM`: a leading U+FEFF is part of a file name, never a byte-order mark
+// to strip, or `other` and `\u{FEFF}other` would be one path (critique of
+// 2026-11-07, MAJOR 2). Buffer's own decoding, used elsewhere here, keeps it.
+const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+
+/**
+ * The manifest from one tree to another (Decision 1, item 5), each entry one
+ * line `<old mode> <new mode> <old id> <new id> <status>\t<path>`, in git's
+ * order. `reason` says why there is none: git failed, or a path is not UTF-8
+ * text, which no record could hold as itself.
+ */
+export function manifestBetween(repoRoot, baseTree, resultTree) {
+  const r = git(repoRoot, ['diff-tree', '-r', '-z', '--raw', '--no-renames', '--full-index', '--ignore-submodules=none', baseTree, resultTree], { buffer: true });
+  if (!r.ok) return { entries: null, reason: 'manifest-unreadable', detail: r.stderr };
+  const entries = [];
+  let at = 0;
+  const out = r.stdout;
+  while (at < out.length) {
+    const metaEnd = out.indexOf(0, at);
+    if (metaEnd === -1) break;
+    const pathEnd = out.indexOf(0, metaEnd + 1);
+    if (pathEnd === -1) break;
+    const meta = out.subarray(at, metaEnd).toString('latin1').replace(/^:/, '');
+    let path;
+    try {
+      path = UTF8.decode(out.subarray(metaEnd + 1, pathEnd));
+    } catch {
+      return { entries: null, reason: 'path-not-utf8' };
+    }
+    at = pathEnd + 1;
+    if (!isExcludedFromManifest(path)) entries.push(`${meta}\t${path}`);
+  }
+  return { entries, reason: null };
+}
+
+/**
+ * The branch to land on (Decision 1, item 3): an explicit argument, else the
+ * parent macro's integration branch, else the repository's default branch, the
+ * one `refs/remotes/origin/HEAD` points to. With none of them, no branch.
+ */
+export function resolveLandingBranch({ repoRoot, argument = null, macroBranch = null }) {
+  if (typeof argument === 'string' && argument !== '') return { branch: argument, source: 'argument' };
+  if (typeof macroBranch === 'string' && macroBranch !== '') return { branch: macroBranch, source: 'macro' };
+  const r = git(repoRoot, ['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD']);
+  const m = r.ok ? /^refs\/remotes\/origin\/(.+)$/.exec(r.stdout) : null;
+  if (m) return { branch: m[1], source: 'default' };
+  return { branch: null, source: null, reason: 'no-landing-branch' };
+}
+
+/**
+ * The `git_baseline.branch` of a macro's frontmatter, read from its text: a
+ * persona's parser refuses a macro's schema. Looked up at its recorded path,
+ * then where an archive moves it.
+ */
+export function macroBranchOf(frontmatter) {
+  const recorded = frontmatter?.parent_workflow_path;
+  if (typeof recorded !== 'string' || recorded === '') return null;
+  const archived = recorded.replace(/\/workflows\/([^/]+)$/, '/archive/$1');
+  for (const file of [recorded, archived]) {
+    let text;
+    try {
+      text = readFileSync(file, 'utf8');
+    } catch {
+      continue;
+    }
+    const m = /^git_baseline:[ \t]*\r?\n(?:[ \t]+.*\r?\n)*?[ \t]+branch:[ \t]*"?([^"\r\n]+)"?[ \t]*\r?$/m.exec(text);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+function hasOrigin(repoRoot) {
+  return git(repoRoot, ['remote', 'get-url', 'origin']).ok;
+}
+
+// The ref the branch to land on is read from: the remote-tracking one, the ref
+// the landing resolver checks; the local branch only with no `origin` remote.
+function landingRef(repoRoot, branch) {
+  const ref = hasOrigin(repoRoot) ? `refs/remotes/origin/${branch}` : `refs/heads/${branch}`;
+  return git(repoRoot, ['show-ref', '--verify', '--quiet', ref]).ok ? ref : null;
+}
+
+/** Bring the remote-tracking ref up to date where it can; never a refusal. */
+export function refreshLandingRef(repoRoot, branch) {
+  if (!hasOrigin(repoRoot)) return false;
+  return git(repoRoot, ['fetch', '--quiet', '--no-tags', '--refmap=', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { timeout: FETCH_TIMEOUT_MS }).ok;
+}
+
+// The one merge base of a commit and the branch to land on, or why not: with
+// several best bases none is chosen (measured, ADR-0069 P2).
+function singleBase(repoRoot, head, ref) {
+  const r = git(repoRoot, ['merge-base', '--all', head, ref]);
+  const bases = r.ok ? r.stdout.split('\n').filter(Boolean) : [];
+  if (bases.length === 0) return { base: null, reason: 'no-merge-base' };
+  if (bases.length > 1) return { base: null, reason: 'several-merge-bases' };
+  return { base: bases[0], reason: null };
+}
+
+const treeOf = (repoRoot, rev) => {
+  const r = git(repoRoot, ['rev-parse', '--verify', '--quiet', `${rev}^{tree}`]);
+  return r.ok && r.stdout ? r.stdout : null;
+};
+
+const objectFormatOf = (repoRoot) => {
+  const r = git(repoRoot, ['rev-parse', '--show-object-format']);
+  return r.ok ? r.stdout : null;
+};
+
+/**
+ * The identity of a reviewed change (Decision 1): `{identity}`, with its
+ * `manifest` list, or `{identity: null, reason}`, why the review records none.
+ */
+export function captureIdentity({ repoRoot, head, resultTree, source, capturedAt, argument = null, macroBranch = null, flagged = [], refresh = true }) {
+  const none = (reason) => ({ identity: null, reason });
+  if (flagged.length > 0) return none('index-flags');
+  if (typeof resultTree !== 'string' || resultTree === '') return none('no-capture');
+  if (typeof head !== 'string' || head === '') return none('unborn-branch');
+  const landing = resolveLandingBranch({ repoRoot, argument, macroBranch });
+  if (landing.branch === null) return none(landing.reason);
+  if (refresh) refreshLandingRef(repoRoot, landing.branch);
+  const ref = landingRef(repoRoot, landing.branch);
+  if (ref === null) return none('no-landing-ref');
+  const { base, reason } = singleBase(repoRoot, head, ref);
+  if (base === null) return none(reason);
+  const baseTree = treeOf(repoRoot, base);
+  const objectFormat = objectFormatOf(repoRoot);
+  if (baseTree === null || objectFormat === null) return none('identity-unreadable');
+  const { entries, reason: why } = manifestBetween(repoRoot, baseTree, resultTree);
+  if (entries === null) return none(why);
+  return {
+    identity: {
+      v: CHANGE_IDENTITY_VERSION,
+      object_format: objectFormat,
+      base: { commit: base, tree: baseTree, branch: landing.branch, source: landing.source },
+      result_tree: resultTree,
+      source,
+      captured_at: capturedAt,
+      manifest: entries,
+    },
+    reason: null,
+  };
+}
+
+/**
+ * What a run's handle says of its identity (pure on the handle): the identity
+ * the runner captured at launch, when the snapshot was the same tree at its
+ * end. A run with no second capture (a runner killed before its cleanup) records
+ * none: nothing says the peer left the snapshot as it was.
+ */
+export function bindingOfRun(handle) {
+  const s = handle?.snapshot;
+  const coverage = handle?.subject ?? null;
+  const none = (reason) => ({ identity: null, reason, coverage });
+  if (!s || typeof s !== 'object') return none('no-snapshot');
+  if (s.isolation === 'failed') return none('capture-failed');
+  if (s.isolation !== 'snapshot') return none('not-isolated');
+  if (s.identity_reason) return none(s.identity_reason);
+  if (!s.identity) return none('identity-not-captured');
+  if (typeof s.end_tree !== 'string') return none(s.end_tree_reason ?? 'snapshot-not-recaptured');
+  if (s.end_tree !== s.worktree_tree) return none('snapshot-changed');
+  return { identity: s.identity, reason: null, coverage };
+}
+
+/**
+ * The subject a dispatch recorded (Decision 1, item 6), from the text of its
+ * file: `{subject}`, or `{subject: null, problem}`. Every path is repository
+ * relative; `covered` is a subset of `shown`, whose missing paths it adds, since
+ * a covered path was shown. Paths are spelled as git spells them.
+ */
+export function parseSubject(text) {
+  const bad = (problem) => ({ subject: null, problem });
+  let doc;
+  try {
+    doc = JSON.parse(text);
+  } catch (err) {
+    return bad(`not JSON (${err.message})`);
+  }
+  if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) return bad('not an object with shown and covered');
+  for (const k of Object.keys(doc)) if (k !== 'shown' && k !== 'covered') return bad(`unknown field ${JSON.stringify(k)}`);
+  if (!Array.isArray(doc.shown) || !Array.isArray(doc.covered)) return bad('shown and covered must both be lists of paths');
+  const norm = [];
+  for (const list of [doc.shown, doc.covered]) {
+    const out = [];
+    for (const p of list) {
+      if (typeof p !== 'string' || p === '' || p.includes('\0')) return bad('a path is not a non-empty string');
+      const q = p.replace(/^(\.\/)+/, '');
+      if (q.startsWith('/') || q === '..' || q.startsWith('../') || q.includes('/../')) return bad(`${JSON.stringify(p)} is not relative to the repository`);
+      out.push(q);
+    }
+    norm.push(out);
+  }
+  const [shown, covered] = norm;
+  return { subject: { shown: [...new Set([...shown, ...covered])].sort(), covered: [...new Set(covered)].sort() }, problem: null };
+}
+
+// The git Phase 7 stages with (phase7-commit.mjs `gitSync`): the process's
+// whole environment, in the checkout (named with `-C`, as `git` above names it). The projection stages through it, so
+// whatever reaches Phase 7's `git add` reaches the projection too, a clean
+// filter injected through GIT_CONFIG_COUNT/KEY/VALUE among them (critique of
+// 2026-11-08, MAJOR 1). Only the index is the projection's own. The manifest
+// read from the tree it writes is still `git` above, with no inherited GIT_*
+// variable (Decision 1, item 5).
+function stagingGit(repoRoot, args, { indexFile = null, input = undefined } = {}) {
+  try {
+    const stdout = execFileSync('git', ['-C', repoRoot, ...args], {
+      env: indexFile === null ? process.env : { ...process.env, GIT_INDEX_FILE: indexFile },
+      input,
+      maxBuffer: 256 * 1024 * 1024,
+      stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+    });
+    return { ok: true, stdout };
+  } catch {
+    return { ok: false, stdout: Buffer.alloc(0) };
+  }
+}
+
+// Whether two lists of paths name the same files, one by one (device and inode).
+function sameFiles(a, b) {
+  if (a.length !== b.length || a.length === 0) return false;
+  return a.every((p, i) => {
+    if (typeof p !== 'string' || typeof b[i] !== 'string') return false;
+    try {
+      const x = statSync(p);
+      const y = statSync(b[i]);
+      return x.dev === y.dev && x.ino === y.ino;
+    } catch {
+      return false;
+    }
+  });
+}
+
+const nulList = (buf) => buf.toString('utf8').split('\0').filter((p) => p.length > 0);
+
+// A directory with a repository checked out in it (phase7-commit.mjs
+// `checkedOutRepository`): what `git add` stages for a gitlink is the commit
+// such a repository has checked out.
+function checkedOut(dir) {
+  try {
+    return lstatSync(dir).isDirectory() && (lstatSync(join(dir, '.git')), true);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The tree a commit of these paths would leave: HEAD with each path as staging
+ * it would hold it, through a temporary index, so a comparison at admission sees
+ * the whole series before its first commit: `{tree}`, or `{tree: null,
+ * reason}`. Entries outside `paths` stay as HEAD holds them: Phase 7 refuses to
+ * commit one staged (`unapproved-pre-staged`).
+ *
+ * It stages as Phase 7 stages (phase7-commit.mjs `preflightAndStage`), with
+ * the same commands in the same environment (critique of 2026-11-08, MAJORs 1
+ * and 2). Each path starts from its entry in the real index, as `git add`
+ * does, so where a setting (core.filemode=false) leaves git unable to read a
+ * mode from the file, the staged one is what commits; a staged deletion among
+ * `paths` stays deleted, as Phase 7 commits it; every other path goes through
+ * `git --literal-pathspecs add`, a submodule with `--force`. So an attribute,
+ * a filter and the Unicode form git gives a path read here as in the commit.
+ * The entries carry no stat data, so `git add` reads every file again: a copy
+ * of the index file itself would carry a newer mtime than the entries, and
+ * git would take an edit of the same size in the same second as unchanged.
+ *
+ * A path flagged assume-unchanged or skip-worktree is not projected
+ * (`index-flags`): `git add` keeps its index content, and Phase 7's split puts
+ * a set-aside entry back without its flag, so what commits is not certain.
+ */
+export function projectedTree(repoRoot, paths) {
+  const none = (reason) => ({ tree: null, reason });
+  const dir = mkdtempSync(join(tmpdir(), 'agentic-change-'));
+  try {
+    const indexFile = join(dir, 'index');
+    const on = (args, input) => stagingGit(repoRoot, args, { indexFile, input });
+    // The repository Phase 7 stages in, with what the environment selects
+    // (GIT_DIR, GIT_WORK_TREE), must be the one the manifest reads with none:
+    // otherwise the commit lands in another repository than the one compared
+    // (refine-verify of 2026-11-08, F3).
+    // Compared as files, not as spellings: a case-insensitive filesystem or
+    // another spelling of the same directory names one repository (refine-verify
+    // of 2026-11-08, second pass).
+    // One path per call, only its line end removed: a directory name may end
+    // in a blank or hold a line break (refine-verify of 2026-11-08, third pass).
+    const where = ['--absolute-git-dir', '--show-toplevel'];
+    const pathOf = (r) => (r.ok ? r.stdout.toString('utf8').replace(/\n$/, '') : null);
+    const selected = where.map((w) => pathOf(stagingGit(repoRoot, ['rev-parse', w])));
+    const own = where.map((w) => pathOf(git(repoRoot, ['rev-parse', w], { buffer: true })));
+    if (!sameFiles(selected, own)) return none('repository-mismatch');
+    const head = stagingGit(repoRoot, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}']);
+    const headCommit = head.ok ? head.stdout.toString('utf8').trim() : '';
+    if (headCommit && !on(['read-tree', headCommit]).ok) return none('projection-failed');
+    if (paths.length > 0) {
+      const flags = stagingGit(repoRoot, ['--literal-pathspecs', 'ls-files', '-v', '-z', '--', ...paths]);
+      if (!flags.ok) return none('projection-failed');
+      if (nulList(flags.stdout).some((f) => f[0] === 'S' || f[0] === 's' || (f[0] >= 'a' && f[0] <= 'z'))) return none('index-flags');
+      const staged = stagingGit(repoRoot, ['ls-files', '-s', '-z']);
+      if (!staged.ok) return none('projection-failed');
+      const wanted = new Set(paths);
+      const entries = staged.stdout.toString('utf8').split('\0').filter((line) => wanted.has(line.slice(line.indexOf('\t') + 1)));
+      if (entries.length > 0 && !on(['update-index', '-z', '--index-info'], `${entries.join('\0')}\0`).ok) return none('projection-failed');
+      // Phase 7's own list of the staged deletions (listStaged), from the real
+      // index: `git add` is never given one.
+      const deletions = stagingGit(repoRoot, ['diff', '--cached', '--name-only', '--no-renames', '--ignore-submodules=none', '-z', '--diff-filter=D']);
+      if (!deletions.ok) return none('projection-failed');
+      const deleted = new Set(nulList(deletions.stdout).filter((p) => wanted.has(p)));
+      if (deleted.size > 0 && !on(['update-index', '--force-remove', '-z', '--stdin'], `${[...deleted].join('\0')}\0`).ok) return none('projection-failed');
+      const toAdd = paths.filter((p) => !deleted.has(p));
+      if (toAdd.length > 0) {
+        const stage = on(['--literal-pathspecs', 'ls-files', '--stage', '-z', '--', ...toAdd]);
+        if (!stage.ok) return none('projection-failed');
+        const add = new Set(toAdd);
+        const submodules = nulList(stage.stdout)
+          .filter((record) => record.startsWith('160000 '))
+          .map((record) => record.slice(record.indexOf('\t') + 1))
+          .filter((p) => add.has(p) && checkedOut(join(repoRoot, p)));
+        const plain = toAdd.filter((p) => !submodules.includes(p));
+        if (plain.length > 0 && !on(['--literal-pathspecs', 'add', '--', ...plain]).ok) return none('projection-failed');
+        if (submodules.length > 0 && !on(['--literal-pathspecs', 'add', '--force', '--', ...submodules]).ok) return none('projection-failed');
+      }
+    }
+    const tree = on(['write-tree']);
+    const out = tree.ok ? tree.stdout.toString('utf8').trim() : '';
+    return out ? { tree: out, reason: null } : none('projection-failed');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const TRAILER_LINE = /^Workflow-ID:[ \t]*(\S+)[ \t]*$/;
+
+// The workflow a commit message names: the last `Workflow-ID` trailer line of
+// it, as Phase 7 writes it (phase7-commit.mjs `composeBody`), or null.
+function namedWorkflow(message) {
+  let named = null;
+  for (const line of message.split(/\r?\n/)) {
+    const m = TRAILER_LINE.exec(line);
+    if (m) named = m[1];
+  }
+  return named;
+}
+
+// The commits of an interval, each with the workflow its message names.
+//
+// A merge commit naming no workflow whose other parents all lie in `from` (the
+// branch to land on merged into the branch: GitHub's "Update branch", or the
+// merge AGENTS.md allows) is left out: it brings in only history the interval
+// starts from, and belongs to no workflow. What its resolution changed is still
+// in the manifest, and a review must answer for it (critique of 2026-11-07,
+// MAJOR 5). A merge of anything else stays, and names no workflow.
+function commitsWithTrailers(repoRoot, from, to) {
+  const r = git(repoRoot, ['log', '--format=%H%x00%P%x00%B%x00', `${from}..${to}`], { buffer: true });
+  if (!r.ok) return null;
+  const parts = r.stdout.toString('utf8').split('\0');
+  const out = [];
+  for (let i = 0; i + 2 < parts.length; i += 3) {
+    const sha = parts[i].trim();
+    const parents = parts[i + 1].trim().split(' ').filter(Boolean);
+    const named = namedWorkflow(parts[i + 2]);
+    if (!sha) continue;
+    if (named === null && parents.length > 1 && parents.slice(1).every((p) => git(repoRoot, ['merge-base', '--is-ancestor', p, from]).ok)) continue;
+    out.push({ sha, workflow: named });
+  }
+  return out;
+}
+
+// The persona homes a workflow can be found in, active and archived: the
+// caller's read set. With shared creation off, a linked worktree's own state
+// root is not in it, so a workflow that lives only there is not found and its
+// landing reads not comparable, never the same (a limit, ADR-0069 Consequences).
+function workflowHomes(repoRoot) {
+  const roots = readSet(repoRoot);
+  const dirs = [];
+  for (const root of Array.isArray(roots) ? roots : []) {
+    const base = typeof root === 'string' ? root : root?.root ?? root?.dir;
+    if (typeof base !== 'string') continue;
+    for (const home of SHARED_HOMES) {
+      if (home.plugin === 'orchestrator') continue;
+      dirs.push(join(base, home.rel, 'workflows'), join(base, home.rel, 'archive'));
+    }
+  }
+  return [...new Set(dirs)];
+}
+
+// Whether a suffixed archive file is a copy of this workflow: false only when
+// its frontmatter establishes another id. A quoted scalar is read as JSON, as
+// the state parser reads it; a file whose id cannot be read stays a candidate,
+// so the lookup fails closed (refine-verify of 2026-11-08, third pass).
+function namesWorkflow(file, workflowId) {
+  let text;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch {
+    return true;
+  }
+  const m = /^workflow_id:[ \t]*(.*?)[ \t]*\r?$/m.exec(text);
+  if (m === null || m[1] === '') return true;
+  let id = m[1];
+  if (id.startsWith('"')) {
+    try {
+      id = JSON.parse(id);
+    } catch {
+      return true;
+    }
+  }
+  return typeof id !== 'string' || id === workflowId;
+}
+const ARCHIVE_SUFFIX = /^-\d{8}T\d{6}Z-[0-9a-f]{6}\.md$/;
+// Whether a home holds the file: true, false, or 'unreadable'. Only absence
+// (ENOENT, or a home that is not a directory) is no copy; any other error (a
+// home that cannot be searched) may hide one, which `existsSync` would read as
+// absent (critique of 2026-11-08, third pass, MAJOR 2).
+function present(file) {
+  try {
+    statSync(file);
+    return true;
+  } catch (err) {
+    return err?.code === 'ENOENT' || err?.code === 'ENOTDIR' ? false : 'unreadable';
+  }
+}
+
+/**
+ * The file of a workflow id in the state root, active or archived: `{file}`,
+ * or `{file: null, reason}` (`not-found`, `ambiguous` or `unreadable`). Every
+ * home is searched: copies that hold the same bytes are one workflow, and
+ * copies that differ (an active file and an archived one) are no one workflow,
+ * since reading either would drop what the other records (critique of
+ * 2026-11-08, MAJOR 4). An archive that found the canonical name taken writes
+ * `<id>-<yyyymmddThhmmssZ>-<6 hex>.md` (state.mjs `resolveArchiveDestination`):
+ * such a file is a copy too (refine-verify of 2026-11-08, F4).
+ */
+export function locateWorkflow(repoRoot, workflowId) {
+  if (typeof workflowId !== 'string' || !/^[A-Za-z0-9._:-]+$/.test(workflowId) || workflowId.includes('..')) return { file: null, reason: 'not-found' };
+  const copies = [];
+  for (const dir of workflowHomes(repoRoot)) {
+    const canonical = join(dir, `${workflowId}.md`);
+    const found = present(canonical);
+    if (found === 'unreadable') return { file: null, reason: 'unreadable' };
+    if (found) copies.push(canonical);
+    if (!dir.endsWith('/archive') && !dir.endsWith('\\archive')) continue;
+    let names = [];
+    try {
+      names = readdirSync(dir);
+    } catch (err) {
+      // A home that is not there holds no copy; one that cannot be read may
+      // hold one, so nothing is claimed (refine-verify of 2026-11-08, third pass).
+      if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') continue;
+      return { file: null, reason: 'unreadable' };
+    }
+    for (const name of names) {
+      // Its own frontmatter names the id: `compose-<time>-<hex>.md` is another
+      // workflow's canonical file, not a copy of a workflow `compose`.
+      if (name.startsWith(`${workflowId}-`) && ARCHIVE_SUFFIX.test(name.slice(workflowId.length)) && namesWorkflow(join(dir, name), workflowId)) copies.push(join(dir, name));
+    }
+  }
+  // One file reached through two names (a home that aliases another) is one
+  // copy, read once: read twice, a write between the reads would make it differ
+  // from itself (refine-verify of 2026-11-08, second pass).
+  const seen = new Set();
+  const distinct = copies.filter((file) => {
+    let key = file;
+    try {
+      const s = statSync(file);
+      key = `${s.dev}:${s.ino}`;
+    } catch {
+      // unreadable: kept, and read below
+    }
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  if (distinct.length === 0) return { file: null, reason: 'not-found' };
+  const bytes = (file) => {
+    try {
+      return readFileSync(file);
+    } catch {
+      return null;
+    }
+  };
+  const first = bytes(distinct[0]);
+  for (const other of distinct.slice(1)) {
+    const b = bytes(other);
+    if (first === null || b === null || !first.equals(b)) return { file: null, reason: 'ambiguous' };
+  }
+  return { file: distinct[0], reason: null };
+}
+
+// Whether a commit no remote holds names another workflow. With no remote at
+// all that is the branch's whole history: it fails closed.
+function othersUnlanded(repoRoot, workflowId) {
+  const r = git(repoRoot, ['log', '-n', '1000', '--format=%B%x00', 'HEAD', '--not', '--remotes'], { buffer: true });
+  if (!r.ok) return true;
+  for (const message of r.stdout.toString('utf8').split('\0')) {
+    const named = namedWorkflow(message);
+    if (named !== null && named !== workflowId) return true;
+  }
+  return false;
+}
+
+/**
+ * The committed comparison (Decision 2, as the owner's instruction of
+ * 2026-11-09 narrows it): from the merge base of HEAD and the branch to land
+ * on, to `tree` (the projection of what the commit will hold, or HEAD's tree
+ * once committed), with the reviews of the committing workflow alone. An
+ * interval holding a commit that names another workflow, or none, is
+ * `not-comparable`, whatever the reviews say: that workflow's reviews are not
+ * read.
+ */
+export function compareCommitted({ repoRoot, frontmatter, tree = null, argument = null, cap = 20, refresh = true }) {
+  const out = (fields) => ({ kind: 'committed', failures: [], reason: null, manifest_sha256: null, ...fields });
+  const workflowId = frontmatter?.workflow_id;
+  const landing = resolveLandingBranch({ repoRoot, argument, macroBranch: macroBranchOf(frontmatter) });
+  const notComparable = (reason, extra = {}) => {
+    // A workflow with no review at all has nothing to compare, and no base it
+    // could not find changes that, unless the branch holds a commit of another
+    // workflow: with no interval, it can be neither read nor ruled out.
+    const alone = compareWithBindings({ change: [], frontmatter, branch: null, objectFormat: null, cap }).state === 'no-reviews';
+    if (alone && !othersUnlanded(repoRoot, workflowId)) return out({ state: 'no-reviews', ...extra });
+    return out({ state: 'not-comparable', reason, ...extra });
+  };
+  if (landing.branch === null) return notComparable(landing.reason);
+  if (refresh) refreshLandingRef(repoRoot, landing.branch);
+  const ref = landingRef(repoRoot, landing.branch);
+  if (ref === null) return notComparable('no-landing-ref', { branch: landing.branch });
+  const headRead = git(repoRoot, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}']);
+  if (!headRead.ok || !headRead.stdout) return notComparable('unborn-branch', { branch: landing.branch });
+  const head = headRead.stdout;
+  const { base, reason: baseWhy } = singleBase(repoRoot, head, ref);
+  if (base === null) return notComparable(baseWhy, { branch: landing.branch });
+  const resultTree = tree ?? treeOf(repoRoot, head);
+  const baseTree = treeOf(repoRoot, base);
+  const objectFormat = objectFormatOf(repoRoot);
+  if (!resultTree || !baseTree || !objectFormat) return notComparable('identity-unreadable', { branch: landing.branch });
+  const { entries, reason: manifestWhy } = manifestBetween(repoRoot, baseTree, resultTree);
+  if (entries === null) return notComparable(manifestWhy, { branch: landing.branch });
+  const identity = { branch: landing.branch, source: landing.source, base, base_tree: baseTree, result_tree: resultTree, head, object_format: objectFormat, manifest_sha256: manifestDigest(entries) };
+  const commits = commitsWithTrailers(repoRoot, base, head);
+  if (commits === null) return out({ state: 'not-comparable', reason: 'interval-unreadable', ...identity });
+  const foreign = commits.find((c) => c.workflow !== workflowId);
+  if (foreign) {
+    const reason = foreign.workflow === null
+      ? `commit-without-workflow:${foreign.sha.slice(0, 12)}`
+      : `commit-of-other-workflow:${foreign.sha.slice(0, 12)}:${foreign.workflow}`;
+    return out({ state: 'not-comparable', reason, ...identity });
+  }
+  const compared = compareWithBindings({ change: entries, frontmatter, branch: landing.branch, objectFormat, cap });
+  // `change`, the entries compared, for the outcome gate's narrowing; never
+  // recorded.
+  return out({ ...compared, ...identity, change: entries });
+}
+
+// The paths whose entries differ between two manifests, either way.
+function differingPaths(a, b) {
+  const of = (list) => new Map(list.map((e) => [entryPath(e), e]));
+  const x = of(a);
+  const y = of(b);
+  return [...new Set([...x.keys(), ...y.keys()])].filter((p) => x.get(p) !== y.get(p)).sort();
+}
+
+/**
+ * The landed comparison (Decision 2, as the owner's instruction of 2026-11-09
+ * narrows it): the manifest from the tree the landing started from to the tree
+ * after it, against the manifest of the committed comparison the child workflow
+ * recorded for the head of what landed. It uses no ref and reads no review:
+ * equal, the landing is the change committed, and reads what the commit read
+ * (`same` or `no-reviews`; `different` unless the owner accepted it before the
+ * commit; any other committed state is `not-comparable`, named);
+ * unequal, it is `different`. Missing evidence of the start or the head, no
+ * child, or no comparison recorded for the head reads `not-comparable`.
+ */
+export function compareLanded({ repoRoot, start, commit, head, childWorkflowId = null, parse }) {
+  const out = (fields) => ({ kind: 'landed', failures: [], reason: null, ...fields });
+  if (typeof start !== 'string' || start === '') return out({ state: 'not-comparable', reason: 'no-landing-evidence' });
+  const startTree = treeOf(repoRoot, start);
+  const landedTree = treeOf(repoRoot, commit);
+  if (!startTree || !landedTree || !objectFormatOf(repoRoot)) return out({ state: 'not-comparable', reason: 'landing-unreadable' });
+  // A start past the landing, or beside it, measures something else.
+  if (!git(repoRoot, ['merge-base', '--is-ancestor', start, commit]).ok || git(repoRoot, ['rev-parse', start]).stdout === git(repoRoot, ['rev-parse', commit]).stdout) {
+    return out({ state: 'not-comparable', reason: 'start-not-before-landing' });
+  }
+  const { entries, reason } = manifestBetween(repoRoot, startTree, landedTree);
+  if (entries === null) return out({ state: 'not-comparable', reason });
+  const fields = { manifest_sha256: manifestDigest(entries), start, commit, head: head ?? null };
+  if (typeof head !== 'string' || head === '') return out({ state: 'not-comparable', reason: 'no-head-commit', ...fields });
+  if (typeof childWorkflowId !== 'string' || childWorkflowId === '') return out({ state: 'not-comparable', reason: 'no-child-workflow', ...fields });
+  const { file, reason: lookup } = locateWorkflow(repoRoot, childWorkflowId);
+  if (file === null) return out({ state: 'not-comparable', reason: `workflow-${lookup}:${childWorkflowId}`, ...fields });
+  let decoded;
+  try {
+    decoded = decodeReviewBindings(parse(readFileSync(file, 'utf8')).frontmatter?.[REVIEW_BINDINGS_KEY]);
+  } catch {
+    return out({ state: 'not-comparable', reason: `workflow-unreadable:${childWorkflowId}`, ...fields });
+  }
+  if (decoded.state === 'later-version' || decoded.state === 'unreadable') return out({ state: 'not-comparable', reason: `bindings-${decoded.state}`, ...fields });
+  // An own key only: `constructor` names no commit.
+  const comparisons = decoded.doc?.comparisons ?? {};
+  const record = Object.hasOwn(comparisons, head) ? comparisons[head] : null;
+  if (record === null || typeof record.manifest_sha256 !== 'string') return out({ state: 'not-comparable', reason: `no-committed-comparison:${head.slice(0, 12)}`, ...fields });
+  if (record.manifest_sha256 !== fields.manifest_sha256) {
+    // The paths that differ, when the committed trees can still be read.
+    const baseTree = typeof record.base === 'string' ? treeOf(repoRoot, record.base) : null;
+    const committed = baseTree && typeof record.result_tree === 'string' ? manifestBetween(repoRoot, baseTree, record.result_tree).entries : null;
+    const failures = committed ? differingPaths(committed, entries).map((path) => ({ path, why: 'landed', by: [head.slice(0, 12)] })) : [];
+    return out({ state: 'different', reason: `landed-not-committed:${head.slice(0, 12)}`, failures, ...fields });
+  }
+  if (record.state === 'same' || record.state === 'no-reviews') return out({ state: record.state, ...fields });
+  // A commit Phase 7 found different after it (a pre-commit hook rewrote it)
+  // lands different, unless the owner accepted that change before its commit.
+  if (record.state === 'different' && record.accepted !== true) {
+    const failures = (Array.isArray(record.paths) ? record.paths : []).map((path) => ({ path, why: 'differs', by: [] }));
+    return out({ state: 'different', reason: `committed-different:${head.slice(0, 12)}`, failures, ...fields });
+  }
+  return out({ state: 'not-comparable', reason: `committed-${record.state}${record.reason ? `:${record.reason}` : ''}`, ...fields });
+}

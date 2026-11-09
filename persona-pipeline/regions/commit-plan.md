@@ -33,3 +33,10 @@ When the plan's `review_hold` is set, a review outcome holds this commit back:
 show the user that line before asking anything. It names the attempt and the
 ways on, and execute warns only as it commits, so this is where the user
 decides (ADR-0028, note of 2026-11-07).
+
+The plan's `review_binding` says how the change compares with its reviews
+(ADR-0069 Decision 3). When its `hold` is set show that line too. `state:
+different` means the change is not the one reviewed: execute refuses it (exit
+10), and the way on is `/{{persona}}:critique` of the change as it is now, or the
+owner's `state.mjs review-binding-accept`. `state: not-comparable` proves nothing
+either way: execute warns and commits.

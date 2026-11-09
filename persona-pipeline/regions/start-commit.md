@@ -24,6 +24,11 @@ subject that does not fit, commits it as given, and prints the corrected
 subject: pass the warning and the corrected subject to the user, who can
 amend the commit or retitle the pull request with it.
 
+When the plan's `review_binding.hold` is set, the change does not compare with
+its reviews: show that line, and when `review_binding.state` is `different`,
+go back to the critique phase unless the owner accepts it (`state.mjs
+review-binding-accept`): execute refuses it (ADR-0069 Decision 3).
+
 When the plan's `review_hold` is set, a review outcome holds this commit back:
 show the user that line before asking anything. It names the attempt and the
 ways on, and execute warns only as it commits, so this is where the user

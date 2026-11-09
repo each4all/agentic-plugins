@@ -85,7 +85,10 @@ const T_FAILED_KEPT = /a failed report stays worker-failed, so the run cancels i
 const T_DECIDE_MOVED = /decide holds the step: a moved tree, or one that cannot be compared, halts on the gate/;
 const T_RESOLUTION_TEXT = /a parked lane's resolution names only what its record takes/;
 const T_E2E_MOVED = /moved before the step, the run halts with no worker; moved during it, Phase 7 refuses and the run halts on the gate/;
-const T_E2E_LANES = /a kept park reports its record; an edit is refused and parks the lane; the first tree accepted again is picked up/;
+// One end-to-end test of these five runs became two (it came within seconds
+// of the suite's timeout): the kept park, and the edit and re-acceptance.
+const T_E2E_KEPT = /a kept park reports its record$/;
+const T_E2E_REACCEPT = /an edit after the acceptance holds the lane on the gate; the first tree accepted again is picked up and commits/;
 const T_REACCEPT_SAME = /a re-acceptance of the same attempt and tree moves the fingerprint/;
 const T_PRINTED_NEXT = /the --next the halt prints parses, and a run with lanes takes the --lane it prints/;
 const T_REPAIR = /a record this reader cannot use offers neither a new review nor an acceptance/;
@@ -449,8 +452,8 @@ export const MUTATIONS = [
   },
   {
     id: 'O14', file: POLICY, tests: [T_ORCH],
-    from: "  const printable = typeof file === 'string' && file !== '' && !/[\\u0000-\\u001f\\u007f]/.test(file);",
-    to: "  const printable = typeof file === 'string' && /^[A-Za-z0-9._/-]+$/.test(file);",
+    from: "  const acceptable = id !== null && isReviewAttemptId(id);\n  const printable = typeof file === 'string' && file !== '' && !/[\\u0000-\\u001f\\u007f]/.test(file);",
+    to: "  const acceptable = id !== null && isReviewAttemptId(id);\n  const printable = typeof file === 'string' && /^[A-Za-z0-9._/-]+$/.test(file);",
     why: 'a path with a space or a non-ASCII character drops the accept command, hiding the owner\'s only way on but a new review',
     killed_by: [T_QUOTE],
   },
@@ -494,7 +497,7 @@ export const MUTATIONS = [
     from: '  child.review = { ...r, held: true, change: { state: state.state, reason: state.reason ?? null } };\n',
     to: '',
     why: 'the observer reads no moved tree, so the gate lets the step and the refusal halts owner-choice: no new commit alone cannot say it was the review',
-    killed_by: [T_E2E_MOVED, T_E2E_LANES],
+    killed_by: [T_E2E_MOVED, T_E2E_REACCEPT],
   },
   {
     id: 'O21', file: POLICY, tests: [T_ORCH],
@@ -550,14 +553,14 @@ export const MUTATIONS = [
     from: "child.branch !== branch || r?.blocking !== true",
     to: "r?.blocking !== true",
     why: "a run with lanes asks the persona about a lane's child from the main checkout, which reads as another branch: an accepted lane parks unreadable, and the owner's acceptance never lets it commit",
-    killed_by: [T_E2E_LANES],
+    killed_by: [T_E2E_REACCEPT],
   },
   {
     id: 'O24', file: OBSERVE, tests: [T_ORCH],
     from: "      accepted_at: g.acceptance.doc?.accepted_at ?? null,\n",
     to: '',
     why: 'a re-acceptance of the first tree moves no fingerprint, so its kept park stays parked and the relaunch runs nothing (critique of 2026-11-07, third pass, MAJOR 2)',
-    killed_by: [T_REACCEPT_SAME, T_E2E_LANES],
+    killed_by: [T_REACCEPT_SAME, T_E2E_REACCEPT],
   },
   {
     id: 'O25', file: POLICY, tests: [T_ORCH],
@@ -599,7 +602,7 @@ export const MUTATIONS = [
     from: '      : h.review ? reviewResolutionText(h.review, id)\n',
     to: '',
     why: 'a lane parked on the review gate is told to clear a gate that is never stored',
-    killed_by: [T_E2E_LANES],
+    killed_by: [T_E2E_KEPT],
   },
   {
     id: 'O42', file: POLICY, tests: [T_ORCH],
@@ -620,7 +623,7 @@ export const MUTATIONS = [
     from: "      watch(id, fp.fresh ? before : null);\n      Object.assign(lane(id), { park: showPark(rec), halt: { reason: rec.reason, detail: rec.detail, ...(rec.review ? { review: rec.review } : {}) },",
     to: "      watch(id, fp.fresh ? before : null);\n      Object.assign(lane(id), { park: showPark(rec), halt: { reason: rec.reason, detail: rec.detail },",
     why: 'a park an earlier run kept reports no review record in its lane report',
-    killed_by: [T_E2E_LANES],
+    killed_by: [T_E2E_KEPT],
   },
   {
     id: 'O32', file: DRIVER, tests: [T_ORCH],
@@ -747,21 +750,21 @@ export const MUTATIONS = [
   // ---- P: Phase 7 ------------------------------------------------------------------
   {
     id: 'P1', file: PHASE7, tests: [T_PERSONA],
-    from: "  if (plan.branch !== 'no-changes') {\n    const refused = await heldReviewRefusal({ workflowPath, repoRoot, stderr });\n",
-    to: "  if (false) {\n    const refused = await heldReviewRefusal({ workflowPath, repoRoot, stderr });\n",
+    from: "  if (plan.branch !== 'no-changes') {\n    const refused = await heldReviewRefusal({ workflowPath, repoRoot, stderr, flags, paths: plan.staging_set });\n",
+    to: "  if (false) {\n    const refused = await heldReviewRefusal({ workflowPath, repoRoot, stderr, flags, paths: plan.staging_set });\n",
     why: 'a held review records the staging-set gate instead of being refused: the owner is asked to confirm a set that cannot land',
     killed_by: [T_P7_STAGING],
   },
   {
     id: 'P2', file: PHASE7, tests: [T_PERSONA],
-    from: '      if (enforceSubjects) {\n        const refused = await heldReviewRefusal({ workflowPath, repoRoot, stderr });\n        if (refused) return refused;\n      }\n',
+    from: '      const recovering = await reviewAdmission({ workflowPath, repoRoot, stderr, flags, paths: [], enforce: enforceSubjects });\n      if (recovering) return recovering;\n',
     to: '',
     why: 'the recovery of a commit begun finishes over a failed review',
     killed_by: [T_P7_RECOVERY],
   },
   {
     id: 'P4', file: PHASE7, tests: [T_PERSONA],
-    from: '  if (enforceSubjects) {\n    const refused = await heldReviewRefusal({ workflowPath, repoRoot, stderr });\n    if (refused) return refused;\n  }\n',
+    from: '  const admitted = await reviewAdmission({\n    workflowPath, repoRoot, stderr, flags, paths: shape.commits.flatMap((c) => c.files), enforce: enforceSubjects,\n  });\n  if (admitted) return admitted;\n',
     to: '',
     why: 'the commit is judged only on the frontmatter read before planning: a failure recorded while the plan was made lands (critique of 2026-11-07, MAJOR 1)',
     killed_by: [T_P7_ADMISSION],
@@ -817,15 +820,15 @@ export const MUTATIONS = [
   },
   {
     id: 'P6', file: PHASE7, tests: [T_PERSONA],
-    from: "  const reviewHold = noChanges !== null && noChanges.path !== 'recovery'\n    ? null\n    : reviewHoldText(",
+    from: "  const reviewHold = landsNothing\n    ? null\n    : reviewHoldText(",
     to: '  const reviewHold = false\n    ? null\n    : reviewHoldText(',
     why: 'a close that lands nothing is presented as held, though execute lets it',
     killed_by: [T_PLAN_CLEAN],
   },
   {
     id: 'P8', file: PHASE7, tests: [T_PERSONA],
-    from: "  const reviewHold = noChanges !== null && noChanges.path !== 'recovery'\n",
-    to: '  const reviewHold = noChanges !== null\n',
+    from: "  const landsNothing = noChanges !== null && noChanges.path !== 'recovery';\n",
+    to: '  const landsNothing = noChanges !== null;\n',
     why: 'the recovery of a commit begun lands commits, and the plan says nothing of the hold over them',
     killed_by: [T_P7_RECOVERY],
   },

@@ -247,7 +247,7 @@ export const MUTATIONS = [
   {
     id: 'N8', tests: [T_RA],
     prepare: (copy, tools) => {
-      tools.applyEdit(copy, { file: 'persona-pipeline/regions/skill-start-command-intro.md', from: '--no-run-reason <peer-unavailable|local-only|privacy-gate|owner-skip>\n--attempt-key <a new text directory for that settle>`, so the workflow records\n', to: '`, so the workflow records\n' });
+      tools.applyEdit(copy, { file: 'persona-pipeline/regions/skill-start-command-intro.md', from: '--no-run-reason <peer-unavailable|local-only|privacy-gate|owner-skip>\n--subject-file <the paths it read, {"shown": [...], "covered": [...]}, ADR-0069>\n--attempt-key <a new text directory for that settle>`, so the workflow records\n', to: '`, so the workflow records\n' });
       regenerate(copy);
     },
     killed_by: /the shared skill Codex's \$start follows names it too$/,
@@ -523,7 +523,7 @@ export const MUTATIONS = [
   {
     id: 'N9', tests: [T_RA],
     prepare: (copy, tools) => {
-      tools.applyEdit(copy, { file: 'persona-pipeline/regions/skill-review-settle.md', from: '    --ensemble-type "$ENSEMBLE_TYPE" --no-run-reason "$NO_RUN_REASON" \\\n', to: '    --ensemble-type "$ENSEMBLE_TYPE" \\\n' });
+      tools.applyEdit(copy, { file: 'persona-pipeline/regions/skill-review-settle.md', from: '    --ensemble-type "$ENSEMBLE_TYPE" --no-run-reason "$NO_RUN_REASON" \\\n    --subject-file', to: '    --ensemble-type "$ENSEMBLE_TYPE" \\\n    --subject-file' });
       regenerate(copy);
     },
     killed_by: /\$refine with no run launched records the review that never ran, once$/,

@@ -94,6 +94,10 @@ gives, `unavailable` or `skipped`, under an id derived from `TEXT_DIR`, so a
 rerun records it once (C163 A1a); left empty, the attempt is `skipped` with
 the reason `unspecified`. For an ensemble that is no review it records
 nothing. Leave `NO_RUN_REASON` empty when a run launched.
+With no run launched, a review still says what its local reviewers read: with
+your file-writing tool create `subject.json` in the text directory, as the
+dispatch's step says (`{"shown": [...], "covered": [...]}`), and settle records
+it with the attempt (ADR-0069). With no such file the attempt covers no path.
 Set `ATTEMPT_TYPE` to the ensemble type the dispatch block ran with, or
 would have run with: its `ENSEMBLE_TYPE`, the default this block names unless
 the dispatch's prose said to set another (critique's adversarial profiles set
@@ -526,6 +530,11 @@ esac
 set --
 if grep -q -e "'--no-run-reason'" "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" 2>/dev/null; then
   set -- --ensemble-type "$ATTEMPT_TYPE" --no-run-reason "$NO_RUN_REASON" --attempt-key "$TEXT_DIR"
+fi
+# ADR-0069 Decision 1, item 6 — with no run launched, what the local reviewers
+# read, when the agent wrote it (subject.json in TEXT_DIR, as the dispatch's).
+if [ -f "$TEXT_DIR/subject.json" ] && grep -q -e "'--subject-file'" "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" 2>/dev/null; then
+  set -- "$@" --subject-file "$TEXT_DIR/subject.json"
 fi
 # ADR-0066 PC2b — settle the ensemble attempt from its ledger (never launched,
 # launched and failed, completed). It is the first write and the one judge of

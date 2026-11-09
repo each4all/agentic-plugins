@@ -925,22 +925,39 @@ describe('a run, the tree moved after the acceptance', () => {
 
 // Critique of 2026-11-07, third pass, MAJOR 1, 2 and 4, end to end in a run
 // with lanes: the kept park keeps its record, the refusal parks the lane on
-// the gate, and a re-acceptance of the first tree picks it up.
+// the gate, and a re-acceptance of the first tree picks it up. Two tests, each
+// from its own setup: one test of all five runs came within seconds of the
+// suite's 120-second timeout under the load of the whole suite, and past it.
 describe('lanes, runs — a kept park, a refused commit and a re-acceptance', () => {
-  it('a kept park reports its record; an edit is refused and parks the lane; the first tree accepted again is picked up and commits', async () => {
-    const t = await setupLanes({ scenario: { A: { next: [COMMIT], file: true, review: 'failed' }, B: { next: [COMMIT], file: true, review: 'failed' } } });
+  const SCENARIO = { A: { next: [COMMIT], file: true, review: 'failed' }, B: { next: [COMMIT], file: true, review: 'failed' } };
+
+  it('a kept park reports its record', async () => {
+    const t = await setupLanes({ scenario: SCENARIO });
     try {
       strictEqual(await t.run(), 2, t.lines.join('\n'));
       let lanes = bySubtask(t.latest());
       match(lanes.A.park.resolution.change, /review-accept .*--lane A --next \/engineer:critique/);
       ok(!/clear its gate/.test(lanes.A.park.resolution.change), lanes.A.park.resolution.change);
-      const wf = join(t.work, lanes.A.park.pointer.replace(/#.*$/, ''));
 
       // Nothing changed: each park is kept, with its record.
       strictEqual(await t.run(), 2, t.lines.join('\n'));
       lanes = bySubtask(t.latest());
       deepStrictEqual(lanes.A.halt?.review?.outcomes.map((o) => o.id), [FAILED_A], 'a park kept by an earlier run');
       strictEqual(lanes.A.park.kept, true);
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('an edit after the acceptance holds the lane on the gate; the first tree accepted again is picked up and commits', async () => {
+    // Lane A alone: this test asserts only A, and each run of a second lane
+    // would only add its time.
+    const t = await setupLanes({ scenario: { A: SCENARIO.A }, subtasks: [{ id: 'A' }] });
+    try {
+      strictEqual(await t.run(), 2, t.lines.join('\n'));
+      let lanes = bySubtask(t.latest());
+      ok(lanes.A.park?.pointer, t.lines.join('\n'));
+      const wf = join(t.work, lanes.A.park.pointer.replace(/#.*$/, ''));
 
       // Accepted for the tree as it is, then edited: Phase 7 refuses, and the lane parks on the gate.
       const file = join(t.lane('A'), 'a.txt');

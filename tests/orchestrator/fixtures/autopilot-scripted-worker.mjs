@@ -333,11 +333,30 @@ export async function perform({ prompt, cwd, env }) {
       // settle does (C163 A1a), the write records the attempt's outcome read
       // from a run that completed: a conflict, which the conflict gate holds,
       // never the review-outcome gate (a row with no outcome would read
-      // `unknown` there).
+      // `unknown` there). And as settle does (ADR-0069 Decision 1), it records
+      // what the review was of, the whole change as the checkout holds it, so
+      // the commit the owner lets go on after the gate compares `same`.
       const runId = 'review-20261001T000000Z-c0ffee';
+      // Each path is one literal: as separate segments, 'scripts' and the file's
+      // name also cover scripts/mutation-specs/<that name> for verify-select
+      // (one free segment), so every test that reaches this module would also
+      // reach what that spec reaches, and be selected for unrelated changes.
+      const { captureWorkingTree } = await import(path.join(env.AGENTIC_ENGINEER_ROOT, 'scripts/lib/peer-snapshot.mjs'));
+      const { captureIdentity, macroBranchOf } = await import(path.join(env.AGENTIC_ENGINEER_ROOT, 'scripts/lib/change-identity.mjs'));
+      const { entryPath } = await import(path.join(env.AGENTIC_ENGINEER_ROOT, 'scripts/lib/review-attempts.mjs'));
+      const captured = await captureWorkingTree({ cwd });
+      const { identity, reason } = captureIdentity({
+        repoRoot: captured.top, head: captured.head, resultTree: captured.tree, source: 'snapshot',
+        capturedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+        macroBranch: macroBranchOf((await eng.readWorkflow(filePath)).frontmatter), flagged: captured.flagged, refresh: false,
+      });
+      const reviewed = identity ? identity.manifest.map(entryPath) : [];
       await eng.commitEnsemble({
         workflowPath: filePath, run_id: runId, phase: 'critique', ensemble_type: 'review', verdict: 'conflict', summary: 'C1 contested',
-        review: { outcome: 'conflict', reason: null, status: 'completed', error_kind: null, tree: null, tree_reason: 'no-snapshot' },
+        review: {
+          outcome: 'conflict', reason: null, status: 'completed', error_kind: null, tree: null, tree_reason: 'no-snapshot',
+          binding: { identity, reason, coverage: { shown: reviewed, covered: reviewed } },
+        },
       });
       if (action === 'conflict-gate') await eng.writeConsensusTask({ workflowPath: filePath, runId, text: 'C1: A or B?' });
       await eng.finishVerb({

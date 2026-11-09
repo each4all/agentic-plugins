@@ -36,7 +36,7 @@ const cli = (args) => spawnSync(process.execPath, [STATE, ...args], { encoding: 
 const MACRO = 'macro-plan-20261016T164728Z-6b1b43';
 const DONE_EMPTY = {
   agentic_command_args: 1, command: 'done', subtask_id: '', pr: '', commit: '', correct: false,
-  no_commit: false, waive_dispatch: false, workflow_id: '', integration_branch: '', reason: '',
+  no_commit: false, waive_dispatch: false, accept_landed_change: false, workflow_id: '', integration_branch: '', reason: '',
 };
 const done = (fields) => ({ ...DONE_EMPTY, ...fields });
 
@@ -115,6 +115,7 @@ describe('the grammars', () => {
       ['T1 because --pr=3', /the option --pr=3 comes after the reason began/],
       ['T1 --no-commit --pr=3 r', /--no-commit excludes --pr/],
       ['T1 --commit=abc --no-commit --correct r', /--no-commit excludes --commit, --correct/],
+      ['T1 --no-commit --accept-landed-change r', /--no-commit excludes --accept-landed-change/],
     ];
     for (const [text, pattern] of cases) throws(() => parseCommandArguments('done', text), pattern, JSON.stringify(text));
     throws(() => parseCommandArguments('next', 'T1 T2'), /next takes one subtask id; T2 follows it/);

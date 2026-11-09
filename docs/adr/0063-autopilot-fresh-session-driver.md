@@ -842,6 +842,26 @@ Codex remains manual. It still benefits from the host-neutral D6 fields
 through entry-brief. A Codex driver would need its own host-truth probes and
 its own ADR.
 
+
+> **Implementation note of 2026-11-07 (C163 A2b, ADR-0069), as the owner's
+> instruction of 2026-11-09 simplified it.** No look compares a change with its
+> reviews: the main checkout's look never runs `review-gate` in a lane's worktree
+> nor touches a lane's index, and every look reads the review record as it is (the
+> outcome gate above, and the committed comparison Phase 7 recorded, which the
+> landing report shows as provisional). The comparison is Phase 7's, on every route
+> that lands a commit; under autopilot its refusal (exit 10, `review-held`, nothing
+> written) ends the step, whose report needs the owner, and the lane halts
+> `owner-choice` with the refusal's text; the owner's `review-binding-accept` joins the
+> lane's fingerprint once given, so it picks the parked lane up. A landing that differs from what was
+> committed halts `owner-choice` before the done step; one that cannot be compared
+> goes on, and the macro records why. ADR-0069 Decisions 3 and 4 hold the rule. A
+> worker's `/orchestrator:done` with `--accept-landed-change` or a waiver is refused
+> at the write, `subtask-update`, as the owner's acceptance of a review binding is
+> (`--correct` is not an owner override and is not refused), and a done step that
+> completed its subtask with no landed commit (`--no-commit`) halts, the macro's
+> last subtask included, whose done archives the macro: only the driver's
+> done-no-commit step completes one that way.
+
 ## Consequences
 
 **Positive**:

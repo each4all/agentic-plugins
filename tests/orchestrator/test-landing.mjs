@@ -127,7 +127,9 @@ describe('resolve-landing (ADR-0062)', () => {
     await withLanding(async ({ squash, pr, resolveLanding, logFile }) => {
       const r = await resolveLanding([pr()]);
       strictEqual(r.status, 0, r.stderr);
-      deepStrictEqual(r.json, {
+      // What ADR-0069 adds to the answer is held by test-review-binding-landing.mjs.
+      const { landed_review: _landed, head_ref_oid: _head, ...answer } = r.json;
+      deepStrictEqual(answer, {
         ok: true, commit: squash, pr_url: 'https://github.com/o/r/pull/7', pr_number: 7,
         verification: 'merge-commit', integration_ref: 'refs/remotes/origin/main',
       });

@@ -25,7 +25,11 @@ Without `--kind ensemble` the runner records a manual run: no attempt is
 registered, and settle refuses the run. Write the prompt as
 `prompt.xml` in its own `mktemp -d` directory, and send the runner's JSON
 result to `prompt.xml.run.json` beside it: that directory is the block's
-`DISPATCH_DIR`.
+`DISPATCH_DIR`. Beside the prompt, with your file-writing tool, write
+`subject.json`, what you put in the reviewer's subject, `{"shown": [...],
+"covered": [...]}` (repository-relative paths; `covered` are those shown at the
+content the working tree holds now; ADR-0069 Decision 1, item 6), and pass it
+with `--subject-file <that file>`. A review with no subject vouches for nothing.
 
 The synthesis's summary reaches settle as a file, never in the block: in
 shell source a quote, `$`, backtick or line break of it would be read as code
@@ -61,7 +65,12 @@ from, cut before its `/core/skills/` directory:
   made safe to send) or `owner-skip`. The attempt is recorded `unavailable`
   or `skipped` under an id derived from `TEXT_DIR`, so a rerun of this block
   with the same `TEXT_DIR` records it once; use a new `TEXT_DIR` for each
-  attempt.
+  attempt. With no run launched, a review still says what its local
+  reviewers read: with your file-writing tool create `subject.json` in
+  `TEXT_DIR`, beside `summary.txt` (there is no prompt for it to sit beside),
+  in the form the dispatch step above gives (`{"shown": [...], "covered":
+  [...]}`), and settle records it with the attempt (ADR-0069). With no such
+  file the attempt covers no path and never binds.
 
 A type that is not one of this verb's review types, or a reason not in that
 list, stops the block before any write: settle would record nothing for a type
@@ -134,6 +143,7 @@ else
   node "<plugin-root>/scripts/peer-runner.mjs" settle --repo-root "$REPO_ROOT" \
     --workflow-path "$ACTIVE" --host codex --phase {{phase}} --run-id '' \
     --ensemble-type "$ENSEMBLE_TYPE" --no-run-reason "$NO_RUN_REASON" \
+    --subject-file "$TEXT_DIR/subject.json" \
     --attempt-key "$TEXT_DIR" || exit $?
 fi
 ```

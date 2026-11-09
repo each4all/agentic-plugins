@@ -2,9 +2,12 @@
 
 ## Status
 
-Accepted (2026-11-07: the owner accepted slice 1, Decisions 1 and 2,
-explicitly in the main session). Slice 2 adds Decisions 3 and 4 in its own
-change, which is proposed and accepted on its own.
+Slice 1, Decisions 1 and 2: Accepted (2026-11-07: the owner accepted them
+explicitly in the main session). Slice 2, Decisions 3 and 4: Proposed, with
+A2b's implementation, in its own change; the owner accepts them on their own.
+Decisions 3 and 4 were rewritten on 2026-11-09 by the owner's instruction to
+simplify the binding (Decision 3, its opening note), which also narrows how
+Decision 2's composition is applied; each place it does carries a dated note.
 - Docket item C163, items A2a and A2b, of macro
   `macro-plan-20261104T045033Z-4b2055`. The number is the next free one.
 - Written in two slices, one subtask each:
@@ -12,10 +15,10 @@ change, which is proposed and accepted on its own.
     records, and Decision 2, which differences between a reviewed change
     and a committed or landed change count as the same change. Both rest on
     measurements taken by prototype (§ Measurements).
-  - **Slice 2 (A2b, to come):** Decision 3, enforcement and the owner's
-    override, and Decision 4, how review records written before the
-    identity existed are read, including a rollback to an older reader. A2b
-    also implements Decisions 1 and 2.
+  - **Slice 2 (A2b):** Decision 3, enforcement and the owner's override, and
+    Decision 4, how review records written before the identity existed are
+    read, including a rollback to an older reader. A2b also implements
+    Decisions 1 and 2 (§ Implementation of slices 1 and 2).
 - Decision 1 converged between the local prototype and a Codex peer's
   independent one (engineer workflow `decide-20261107T014723Z-38653a`, run
   `brainstorm-20261107T014900Z-cfdcaa`). Decision 2 was a recorded conflict
@@ -140,8 +143,9 @@ A review records, with its attempt, the identity of the change it reviewed:
    the landed interval starts from the landing's parent and needs none.
 4. **`result_tree`**: the reviewed result, the tree the review saw, never
    the checkout at settlement; **`source`**, which capture it came from;
-   and **`captured_at`**, the UTC time of that capture, which orders reviews
-   (Decision 2):
+   and **`captured_at`**, the UTC time of that capture (amended 2026-11-09:
+   recorded, and ordering nothing; Decision 3 orders reviews by their position in
+   the workflow's ledger):
    - `snapshot`: when the peer launched in a snapshot, the snapshot's
      `worktree_tree`, the tree the peer saw. The review's local half, and
      the subject the dispatching verb collected (item 6), read the live
@@ -188,8 +192,10 @@ A review records, with its attempt, the identity of the change it reviewed:
    `scripts/lib/peer-snapshot.mjs`, the state homes) dropped.
    `--ignore-submodules=none` is required: without it `diff-tree` honours
    `submodule.<name>.ignore` from the repository's configuration or
-   `.gitmodules`, and `diff.ignoreSubmodules`, and with `all` a changed pin
-   prints nothing, so two pins would read as the same change; scrubbing the
+   `.gitmodules`, for a path `.gitmodules` maps to that name, and with `all`
+   a changed pin prints nothing, so two pins would read as the same change
+   (corrected 2026-11-08: this also named `diff.ignoreSubmodules`, which
+   `diff-tree` does not honour, P1; the decision is unchanged); scrubbing the
    `GIT_*` variables does not remove configuration (measured, P1; Phase 7's
    staging guard passes the same option). The same projection, that filter
    included, computes every manifest a review is compared with
@@ -199,7 +205,10 @@ A review records, with its attempt, the identity of the change it reviewed:
    its digest: the snapshot's trees are referenced by nothing, so `git gc`
    may prune them, and scoped coverage (below) compares entries path by
    path. A2b may keep a long list beside the workflow with its sha256 in the
-   attempt; the identity is the list.
+   attempt; the identity is the list. (Corrected 2026-11-08 and 2026-11-09: A2b keeps no list beside the workflow,
+   nor each review's list: the record keeps, per path, the entry the latest
+   counting review saw, and a record past its cap makes the change not
+   comparable; Decision 3.)
 6. **`coverage`**: the paths the dispatching verb actually put in the
    reviewer's subject, recorded with the attempt by that verb when it
    dispatches, as two path sets, either of which may be empty: **`shown`**,
@@ -264,8 +273,9 @@ exists (the peer ran with no snapshot or its capture failed, A1a's
 snapshot changed under the peer, or could not be captured again at its end
 (item 4); when no
 single integration base resolves (an unborn branch, no branch to land on,
-several best merge bases); or when the capture holds index entries marked
-assume-unchanged or skip-worktree. The capture lists those entries (`capture` of the persona
+several best merge bases); when the manifest holds a path that is not UTF-8 text,
+which the record cannot keep as itself; or when the capture holds index entries
+marked assume-unchanged or skip-worktree. The capture lists those entries (`capture` of the persona
 plugins' `scripts/lib/peer-snapshot.mjs` returns them, `captureWorkingTree`
 as `flagged`), but a peer snapshot's record on the run's handle keeps only
 its trees, so A2b records the lists from the capture itself. The peer saw
@@ -354,7 +364,8 @@ is equal). Among the counting reviews whose coverage includes a path, the
 latest answers for it: the one with the latest `captured_at`, the time its
 result tree was captured, not when it was registered or settled, since
 reviews finish out of order. Reviews tied on that time answer together, and
-their entries for the path must all equal the change's. A path the change
+their entries for the path must all equal the change's. (Amended 2026-11-09,
+Decision 3: the latest by position in the workflow's own ledger, so no two tie.) A path the change
 touches that no counting review covers fails, as does a path whose
 answering review's entry differs: either way the change is not vouched for.
 A `full` review's `covered` holds every path its manifest touches, and a
@@ -370,7 +381,8 @@ pending change deleting it), never when the file was untracked.
 A later counting review of the same workflow answers for such a path in its
 place when two things hold: the later review is `full`, so its subject held
 the whole change at its capture, and the path is not in its `shown` at all.
-It answers for the path as untouched, with its own `captured_at`: the
+It answers for the path as untouched, in its own place (amended 2026-11-09: by
+ledger position, Decision 3): the
 reviewer was given the whole change and the path was not in it, so its
 content was the base's. A path the later review's subject showed, at any
 content, is answered for only through its `covered` (item 6), so a path it
@@ -379,6 +391,14 @@ review still answers. A review of another workflow, or one that is not
 `full`, clears nothing. When the change does touch the path, the untouched
 entry differs from the change's and the change is not vouched for, so the
 clearing never vouches for content no reviewer saw.
+
+(Amended 2026-11-09 by the owner's instruction, Decision 3 § Whose reviews and
+§ After the merge: the composition reads the committing workflow's reviews
+alone, an interval holding another workflow's commit, or a commit naming none,
+is not comparable, and the landed comparison reads no review, comparing the
+landed manifest with the committed comparison's. The rest of this section, to
+§ The same change, records the member rule as it was accepted; it is no longer
+applied.)
 
 **The reviews it reads.** The composition reads the reviews of the
 workflows that make up the compared change, its *members*, and of no other
@@ -465,15 +485,16 @@ document, `pre-instrumentation`, results rows pruned unseen, and a document
 it cannot read). How records from before A1a are read is A2b's. The
 manifests Decision 1 adds to each attempt make the size cap easier to
 reach, so A2b keeps a long manifest beside the workflow (item 5) and sizes
-the record so that an ordinary workflow's history stays whole. Which of the reviews read count (their outcome, whether superseded)
-is Decision 3's.
+the record so that an ordinary workflow's history stays whole. Which of the
+reviews read count (their outcome, whether superseded) is Decision 3's.
 
 **The same change** — these differences do not count:
 
 - commit metadata: message, author, committer, dates, parents, signatures
   (the identity is unchanged; a message rewritten so that a `Workflow-ID`
   trailer is gone changes which reviews the comparison reads, § The
-  reviews it reads);
+  reviews it reads; since 2026-11-09 such a commit makes the change
+  `not-comparable`, Decision 3 § Whose reviews);
 - how the change is committed or landed: one commit or several, amend,
   squash merge, rebase merge, merge commit;
 - the reviewed working-tree capture against the commit that records the
@@ -508,6 +529,272 @@ dropped from every manifest by the one projection of Decision 1.
 a moved base" (equal manifest, another base tree) apart from "the unchanged
 change" (equal base and result trees), and a later decision can tighten the
 rule to equal endpoint trees without a new record.
+
+### Decision 3 — enforcement and the owner's override (slice 2, Proposed)
+
+**Rewritten 2026-11-09 by the owner's instruction** (recorded in engineer
+workflow `compose-20261107T140106Z-f8c9f6`, instruction `dc58d5079a169b9b`). Six
+critiques had run, and since the fourth almost every MAJOR was in a mechanism an
+earlier refine had added so that more cases could read `same`; each fix opened a
+new surface. The owner chose the default a review gate should have: `same` only
+where it is certain, `not-comparable` everywhere else. A false halt costs one more
+critique or an owner acceptance; a false pass defeats the gate. Rare arrangements
+are documented limits, not code (the owner's rule of 2026-10-25). Each mechanism
+this removed is in § Alternatives Considered, with its cost; where this decision
+narrows Decision 2's composition, Decision 2 carries a dated note pointing here.
+
+**The comparison has four results**, for a commit and for a landing alike:
+`same`; `different`, with the paths; `not-comparable`, with the reason; and
+`no-reviews`, when the workflow holds no review that counts.
+
+**Which reviews count.** A review answers for a path only when it ran and its
+answer was usable: its outcome is `passed`, `concerns` or `conflict`. A skip of
+any reason, an unavailable peer and a failed, degraded or malformed run answer for
+nothing. That holds for a review with a `checkout` identity too (Decision 1, item
+4): its identity is on record, and a skip's reason is the worker's claim, which
+settle never checks, so a worker could otherwise launder an edit by claiming a
+local-only skip. A workflow whose reviews never ran reads `no-reviews`, and the
+outcome gate alone speaks for it, as A1b reads it.
+
+**Whose reviews.** The committing workflow's, and no other's. An interval (the
+commits from the merge base to HEAD) holding a commit whose `Workflow-ID` trailer
+names another workflow, or that names none, is `not-comparable`
+(`commit-of-other-workflow:<sha>:<id>`, `commit-without-workflow:<sha>`), whatever
+the reviews say. The one exception is a merge whose other parents all lie in the
+base (the branch to land on merged into the branch: GitHub's "Update branch", or
+the merge this repository allows): it brings in only history the interval starts
+from, and is left out; what its resolution changed is in the manifest, and a
+review must answer for it.
+
+**No base, and no review of its own.** A workflow with no review reads
+`no-reviews` even when no base resolves, unless a commit no remote holds names
+another workflow: with no interval, it can be neither read nor ruled out, so the
+change is `not-comparable`. In a repository with no `origin` that is the branch's
+whole history, which fails closed.
+
+**The order of reviews** is their position in the workflow's own ledger
+(`review_attempts`, appended under the state lock as each attempt registers, or is
+recorded closed when it never launched), never a time. A review's `captured_at`
+(Decision 1, item 4) is recorded and orders nothing.
+
+**The record** is bounded by the paths, not by the number of reviews. When a
+review's outcome is recorded, settle applies what it saw to the workflow's
+`review_bindings` (Decision 4):
+
+- a counting review writes, for each path it covered, the entry it saw there (none
+  for a path it saw untouched): the record keeps, per path, the entry the latest
+  counting review that covered it saw;
+- a `full` one (Decision 1, item 6) also answers as untouched for a path an
+  earlier review saw touched and its own subject did not show at all (Decision 2
+  § A path a later whole review no longer shows);
+- a counting review settled after any counting review listed later than it was
+  applied, whichever paths each covered, is not applied, and is unbound
+  (`settled-out-of-order`): its answers can no longer be placed;
+- a review that does not count writes what it saw on the paths it covered to a
+  second table, where a later-listed one has not, for the outcome gate's
+  narrowing (below);
+- a record that cannot fit its cap keeps only its committed comparisons and says
+  it is truncated: the workflow's change is then `not-comparable`
+  (`bindings-truncated`), for good.
+
+A change is `same` when every path it touches, and every path the record answers
+touched, has from the record the change's entry (a path untouched on both sides is
+equal); a path the record does not answer is uncovered, and either failure is
+`different`. A path answered by a review that cannot answer for this change (one
+whose identity reads unbound now, below) is `not-comparable`
+(`answer-unusable:<path>:<id>:<why>`).
+
+**Which reviews may vouch.** A review with no identity (a record before this
+release, a peer that changed its snapshot, several merge bases, a flagged index
+entry, one settled out of order) is *unbound*, and an identity of another version,
+another object format or another branch to land on reads the same, as does a
+review whose dispatch recorded no subject: what it showed is not known, where an
+empty subject is a record that it showed nothing (a plan held outside the tree).
+An unbound review vouches for no path. It also holds obligations nobody can read,
+so a change with one is `not-comparable` (`unbound-review:<id>:<why>`), unless a
+later `full` review of the workflow, by ledger position, saw the whole change after
+it. A review history its reader calls incomplete (`coverage.history_incomplete` of
+A1a's `projectReviewOutcomes`: attempts dropped at the size cap, reviews that
+predate the document, results rows pruned unseen, a document it cannot read) is
+`not-comparable` (`history-incomplete:<reasons>`), and so is a `review_bindings`
+document of a later version or one that cannot be read.
+
+**A partial series claims nothing.** The comparison is made at admission, before
+the series' first commit, from the tree its last commit will hold (HEAD with the
+staged paths, through a temporary index), so a package left out of the commit is
+seen before anything lands. The tree is projected as Phase 7 stages: the staging
+set Phase 7 derives (the manifest's paths git reports changed, with the extras
+opted in), each path through the same `git add`, in the same environment (added
+2026-11-08, critique of 2026-11-08, MAJORs 1 to 3). The owner's acceptance projects
+that same set. A comparison is recorded only for the tree after the workflow's
+last commit. A series stopped part way records none, and its landing is
+`not-comparable` until the recovery path records one.
+
+**At Phase 7**, on every path that lands a commit (execute, autopilot, the
+recovery of a commit begun); a close lands nothing:
+
+| | autopilot | interactive |
+|---|---|---|
+| `same`, `no-reviews` | commits | commits |
+| `different` | refused, exit 10 `review-held` | refused, exit 10 `review-binding-mismatch`, re-routed to `/<persona>:critique` |
+| `not-comparable` | refused, as `different` | warns and commits: it proves nothing either way (but `repository-mismatch` is refused, added 2026-11-08) |
+
+The plan names the comparison (`review_binding`) before the user decides. A1b's
+interactive warning stays a warning for an outcome; a change shown to differ is
+refused, since the user otherwise commits what the review did not see with its
+verdict still on record.
+
+**Under autopilot no look compares.** The comparison is Phase 7's alone: the
+driver's looks never run it, so the main checkout's look neither runs anything in a
+lane's worktree nor touches a lane's index. Each look reads the review record as
+it is: the outcome gate as A1b reads it, unnarrowed, and the committed comparison
+Phase 7 recorded. A refusal at Phase 7 ends its step (nothing written), the step's
+report needs the owner, and the lane halts `owner-choice` with that report,
+which carries the refusal and its two ways on. The owner's acceptance of the
+change is part of the lane's fingerprint once given, so it picks the parked lane
+up.
+
+**The outcome gate narrows.** A1b reads the latest outcome whatever tree it saw.
+Given a comparison that read reviews which count and compared them (`same` or
+`different`), Phase 7's gate passes over an attempt the record shows to be of
+another change: a review that did not count is of another change when, on a path
+the change touches that it is the latest such review to have covered, the entry it
+saw is not the change's. A path the commit leaves out (an untracked or unstaged
+file the snapshot held) says nothing either way. An attempt the record shows
+nothing of (no identity; another version, object format or branch; no subject; an
+earlier failure whose paths a later one covered) stays read, conservatively. A
+comparison that read no counting review (`no-reviews`), or proved nothing
+(`not-comparable`), narrows nothing: a failure is then all there is, and it holds
+as A1b holds it. (Corrected 2026-11-08, by the critique of 2026-11-07, CRITICAL 1:
+the first implementation narrowed on any comparison, `no-reviews` included, and
+judged "another change" by the whole manifest's digest.)
+
+**The owner's override.** `state.mjs review-binding-accept` records the owner's
+acceptance of a change its reviews do not vouch for: the change's digest, the
+state it compared, the owner's note. It covers that change and that state only:
+an edit moves the digest and makes it stale. It is refused under an autopilot run,
+like every owner write, and when the change compares `same` or `no-reviews`. It is
+a scalar of its own, so A1b's acceptance of an attempt keeps its meaning.
+
+**After the merge.** What landed is a fact, so nothing here undoes it. The landed
+comparison reads no review: it compares the manifest of what landed (Decision 2,
+from the landing's start, with no ref) with the manifest of the committed
+comparison the subtask's child workflow recorded for the head of what landed.
+
+- Equal: the landing is the change committed, and reads what the commit read,
+  `same` or `no-reviews`. A commit Phase 7 recorded `different` (a pre-commit hook
+  rewrote it after admission) lands `different`, unless the owner accepted that
+  change before its commit (the record says so, `accepted`); then, like a commit
+  that compared `not-comparable`, it lands `not-comparable`
+  (`committed-<state>:<reason>`).
+- Unequal: `different`, with the paths whose entries differ when the committed
+  trees can still be read. `/orchestrator:done` does not record the subtask, and
+  the autopilot policy halts `owner-choice`, until the owner says what follows
+  with `--accept-landed-change` and a reason, which the macro records. The write
+  refuses it under an autopilot run, as it refuses every owner write.
+- No evidence of the start, no head, no child workflow, a child that cannot be
+  found as one file (`workflow-<not-found|ambiguous|unreadable>:<id>`), or no
+  committed comparison recorded for the head (a commit made on the branch after
+  Phase 7: a review-comment fixup, a suggestion accepted on the forge, a
+  force-push): `not-comparable`, and the subtask is recorded with a line in the
+  macro saying why. Refusing it would strand a landing that may be right.
+- Before the merge, the landing report shows the committed comparison as
+  provisional, and never blocks: `landing-ready` stays advisory, and only the
+  completion path reads what landed.
+
+**The landing's evidence.** The interval's start comes from GitHub's record of
+which pull request introduced each commit
+(`GET /repos/{owner}/{repo}/commits/{sha}/pulls`), walked back along first
+parents from the merge commit: the first commit it does not attribute to the
+pull request is where the landing started. So a squash and a rebase read alike,
+and a rebase that dropped a commit walks no further than it landed. A merge
+commit needs no forge: its first parent is the start, its second the head. The
+head is the pull request's `headRefOid`. A start that is not an ancestor of the
+landing is refused. Anything less is `not-comparable`
+(`no-landing-evidence:<why>`), which is where a landing on a non-default branch
+ends, since the endpoint names only open pull requests there. **Not measured:**
+the step that wrote this may not call `gh`, so this rests on GitHub's
+documentation and a fixture standing for its answer. A first real landing should
+check it: an answer that does not match reads `not-comparable`, never `same`.
+
+### Decision 4 — records written before this release, and a rollback (slice 2, Proposed)
+
+**Records stay apart.** What ties a review to a change lives in its own
+frontmatter scalar, `review_bindings`, beside `review_attempts` and not in it.
+`reviewAttemptsProblem` refuses an unknown field, so an identity inside an
+attempt would make every older reader call the whole record unreadable, which
+reads `unknown` and holds every commit, and refuses every later write. Apart, the
+attempts document is byte for byte what A1a defined. `review_bindings` holds, per
+attempt, its identity without the manifest list (the list's digest instead) and
+whether its subject was full, partial or absent; the per-path tables of Decision 3;
+the committed comparisons, keyed by commit; and the truncation mark.
+
+**A record before this release** holds attempts and no `review_bindings`. Each of
+its counting attempts is unbound (`no-identity-recorded`), never matching, so a
+workflow in flight at the upgrade reads `not-comparable`: under autopilot it
+halts for a new review or the owner's acceptance, and interactively it warns. A
+legacy results row or an incomplete history reads `not-comparable` as Decision 3
+says. No migration infers an identity: nothing says what such a review saw.
+
+**A rollback to an older reader.** An older persona carries both new scalars
+through its forward-compat carrier, byte for byte, and reads its outcomes under
+A1b's conservative gate, so it binds nothing and refuses nothing it would not
+have refused before. Reviews it records have no binding, so after a return to
+this release they read unbound, never matching, and a comparison it did not
+record is absent, which a landing reads as `not-comparable`. An older orchestrator
+ignores `landed_review` and records the landing as it did. A newer engineer behind
+an older orchestrator is held by Phase 7 alone, as any orchestrator now is: the
+policy reports the refusal as the step's need of the owner. A document of a later
+version is not read: its workflow's change is `not-comparable`.
+
+## Implementation of slices 1 and 2 (A2b)
+
+- `scripts/lib/change-identity.mjs` (persona-pipeline) reads git: the landing
+  branch, the merge base, the manifest, the projection, the interval's commits
+  and the two comparisons. `scripts/lib/review-attempts.mjs` holds the pure rule
+  (`applyReviewBinding`, `compareWithBindings`, `attemptsOfOtherChange`) and the
+  document.
+- **The record.** `peer-runner.mjs run` captures the identity after the snapshot,
+  before the peer, and captures the snapshot again after the peer's group has
+  stopped, over an index of the launch tree, so a submodule the live checkout moved
+  and did not stage does not read as moved back; settle records the identity only
+  when the two trees are equal, and refuses a run whose runner is still between its
+  terminal status and that capture. A dispatch records its subject with
+  `--subject-file` (`subject.json` beside the prompt, written with the file tool,
+  ADR-0059). With no run launched, settle takes the capture and the subject itself
+  (`subject.json` in the finalize's text directory, on the Codex skill path too).
+  The record is applied under the lock that records the attempt's outcome, against
+  the ledger as it then stands. Its cap is 128 KiB, since readers allow a whole
+  frontmatter 256 KiB; a workflow keeps its 32 newest committed comparisons.
+- **The comparison** is recorded as `review_bindings.comparisons[<commit>]`
+  (state, reason, branch, base, result tree, manifest digest), by Phase 7 after a
+  last commit and by `state.mjs review-binding-record` for a commit an amend or a
+  local rebase made.
+- **The projection** is the tree Phase 7's staging leaves (`projectedTree`): HEAD
+  read into a temporary index, each path's real index entry over it (no stat data,
+  so `git add` reads every file again), a staged deletion removed, and every other
+  path through `git --literal-pathspecs add` (`--force` for a submodule), in the
+  process's whole environment, as Phase 7's `git add` runs; the manifest read from
+  that tree still runs with no inherited `GIT_*` variable. A path flagged
+  assume-unchanged or skip-worktree is not projected (`index-flags`). The staging
+  set comes from one place, `commitStagingSet` in `phase7-commit.mjs`, which
+  `review-binding-accept` reads too. A repository the environment selects
+  (`GIT_DIR`, `GIT_WORK_TREE`) that is not the checkout, compared as files, makes
+  the projection `repository-mismatch`, which Phase 7 refuses in either mode. A
+  comparison with no acceptance key names the cause to clear, never an acceptance
+  that could only fail.
+- **The completion path.** `resolve-landing` adds `landed_review`, asked of the
+  engineer through `state.mjs review-compare-landed`, since a plugin calls another
+  through its CLI (ADR-0010 §5). The child's file is found in the state root,
+  active or archived; copies that differ (an active and an archived one, or an
+  archive under a suffixed name) are no one workflow.
+- **The owner's overrides** on the completion path are refused at the write:
+  `subtask-update` refuses `--accept-landed-change` and both waivers when
+  `AGENTIC_AUTOPILOT` names a run, and the autopilot policy halts a done step that
+  completed its subtask with no landed commit, the macro's last subtask included.
+- Paths are decoded with `ignoreBOM`, so a leading U+FEFF stays part of a file
+  name. The Codex settle of a review that never launched passes `--subject-file`
+  as words of its own (`${TEXT_DIR:+…}` is one word under zsh).
 
 ## Measurements
 
@@ -623,7 +910,11 @@ reported in its answer and not kept (run
   prescribed `diff-tree` without the option prints the `M` entry (control);
   with `submodule.mod.ignore=all` in the repository's configuration, or in
   `.gitmodules`, it prints nothing; with `--ignore-submodules=none` it prints
-  the entry again, `diff.ignoreSubmodules=all` set as well.
+  the entry again, `diff.ignoreSubmodules=all` set as well. Measured again on
+  2026-11-08 (git 2.54.0), after a mutation of the manifest's option survived
+  a test with no `.gitmodules`: the setting hides the entry only when
+  `.gitmodules` maps the path to the name, and `diff.ignoreSubmodules=all`
+  alone hides nothing, with or without the mapping.
 - **P2 criss-cross.** Two best merge bases; `git merge-base` printed the
   same one of them for both argument orders (the earlier claim that the
   order selects did not hold), and the manifests from the two bases to one
@@ -688,8 +979,12 @@ reported in its answer and not kept (run
   critique of the pending change of a file an earlier commit of the branch
   also changed), vouches for the file's whole transition from the base at
   the reviewed content.
-- The manifest is recorded in full, which costs space in the attempt
-  document (or a file beside the workflow) for a large change.
+- The record keeps, per path, the latest counting review's entry and the
+  latest failing review's (each about 270 bytes for a path of 60 characters,
+  measured), and per review only a small record without its manifest, so it grows
+  with the paths reviewed, not with a manifest per review: some 490 such paths fit
+  its 128 KiB, or some 240 when failing reviews saw them all too. A larger change is
+  not comparable for good (`bindings-truncated`), and needs the owner's acceptance.
 - A file left dirty or untracked in the checkout during a review whose
   coverage includes it (a `full` review, or a critique of the pending
   change, which embeds untracked files), and not committed with the
@@ -701,35 +996,29 @@ reported in its answer and not kept (run
 - Coverage is only as exact as each dispatch's record of its subject (its
   `shown` and `covered`): a verb that records no subject leaves its reviews
   covering nothing, and every verb that dispatches a review records one
-  (A2b). Finding a change's members across workflows, archived ones
-  included, costs a scan of the state root at each comparison, and Phase 7
-  records the members it found, keyed by its commit, so the landing reads
-  them from its head commit's record and need not trust trailers on
-  `main`. A landing whose head commit names no workflow, or has no
-  committed comparison recorded for its own sha, is not comparable; so an
-  amend or local rebase of the branch head after its last committed
-  comparison needs that comparison recorded again for the new sha (Phase 7's
-  recovery path for an existing commit, `phase7-commit.mjs`), even when its
-  manifest is unchanged. A rewrite the forge makes at landing does not, since
-  the landing evidence names the original head. The record is keyed by the
-  sha, so a head whose commit object is gone with its deleted branch is
-  still found in the state root.
-- A member whose review record is incomplete (attempts dropped at A1a's
-  size cap, reviews from before A1a, a document that cannot be read), or a
-  member that cannot be found, makes the change not comparable; that fails
-  closed, and keeping a long manifest beside the workflow keeps the size
-  cap rare.
+  (A2b). A landing whose head has no committed comparison, recorded by the
+  subtask's child for that sha, is not comparable; so an amend or local rebase
+  of the branch head after its last committed comparison needs that comparison
+  recorded again (Phase 7's recovery path for an existing commit,
+  `phase7-commit.mjs`), even when its manifest is unchanged. A rewrite the forge
+  makes at landing does not, since the landing evidence names the original head.
+  The record is keyed by the sha, so a head whose commit object is gone with its
+  deleted branch is still found.
+- A workflow whose review record is incomplete (attempts dropped at A1a's size
+  cap, reviews from before A1a, a document that cannot be read) is not
+  comparable; that fails closed.
 - A review whose peer changed its snapshot, or whose snapshot could not be
   captured again at the end, records no identity, so a peer that edits the
   tree it reviews leaves its review unbound; a change it made and undid
   before ending is not seen.
-- Membership rests on the `Workflow-ID` trailer. A branch kept after a
-  squash or rewriting rebase landing, without being cut again, keeps the
-  landed workflow a member, so the next landing is not vouched for; that
-  fails closed. A commit without the trailer (made by hand, or reworded or
-  squashed locally) adds no member, and its workflow's obligations for
-  paths it reviewed and left out of its commit are lost; that does not
-  fail closed, and Decision 3 says what such an interval may claim.
+- The interval is read through the `Workflow-ID` trailer (amended
+  2026-11-09): a commit of another workflow, or of none (made by hand, or
+  reworded or squashed locally), makes the change not comparable. So a second
+  workflow on a branch an earlier one committed to never binds before the
+  earlier commits land (autopilot halts, interactive warns), and neither does a
+  branch kept after a squash or rewriting rebase landing without being cut
+  again. A hand commit made for a workflow carries its trailer, as Phase 7's
+  recovery path expects.
 - A review in a sparse checkout, or with any assume-unchanged entry, never
   binds.
 - The committed comparison rests on the branch ref: the same stale ref at
@@ -737,6 +1026,92 @@ reported in its answer and not kept (run
   compares as different. The landed comparison decides.
 - Submodule content beyond the gitlink is outside the identity: a dirty or
   uninitialized submodule is not seen.
+- (Slice 2) A subject is the dispatching worker's statement of what it put in the
+  prompt, and nothing checks the prompt against it: a worker that overstates
+  `covered` vouches for what the reviewer did not see. Deriving it from the prompt
+  would be a parser of free text; the record at least makes the claim specific and
+  auditable.
+- (Slice 2) A rebase or an amend of the branch head after its last Phase 7 commit
+  leaves no comparison for the new head, so its landing reads `not-comparable`
+  until `review-binding-record` runs. It is recorded, not refused, and it is routine
+  in this repository, where a landing often follows a rewrite of a subject or a
+  rebase onto a sibling's landing.
+- (Slice 2) A pre-commit hook that rewrites the change is not seen at admission; the
+  comparison recorded after the commit then reads `different`, Phase 7 warns, and the
+  landing decides. An edit made while Phase 7 commits, between its admission and its
+  `git add`, is the same case (added 2026-11-08): the admission holds no lock over
+  the working tree. So are two rarer arrangements the refine-verify of 2026-11-08
+  measured (F1, F2): a path pre-staged under a clean filter whose output has changed
+  since (the projection re-reads every file through the filter, `git add` keeps an
+  entry whose stat data still matches), and a split series that stages the deletion
+  of a `.gitattributes` an earlier package's files depend on (Phase 7 commits that
+  package with the attribute still in the index). Phase 7 then records `different`
+  after the commit, and the landing decides.
+- (Slice 2) A landing resolved in the moment its workflow is being archived can read
+  the active file and its new archive at once, which differ, and so reads
+  `workflow-ambiguous`, not comparable, where a moment later it reads what the
+  archive holds (refine-verify of 2026-11-08, F6). The landing's not comparable
+  goes on, with the reason recorded, so a difference can be missed in that window;
+  a workflow is archived at its commit step's end, long before its pull request
+  lands, so the window is not one an ordinary run meets. Likewise a copy replaced
+  between the lookup's identity check and its read can be taken for the copy it
+  replaced, read once where it is now two (measured with a controlled
+  interleaving, refine-verify of 2026-11-08, third pass); the next lookup reads
+  it.
+- (Slice 2) The first review after the upgrade is what binds, so a workflow in flight
+  needs one new review, or the owner's acceptance.
+- (Slice 2) The landing's child workflow is looked up in the caller's state read
+  set. With shared creation off, a linked worktree keeps its workflows in its own
+  state root, so a landing resolved from the main checkout does not find a
+  workflow that lives only in a linked one: it reads `not-comparable`
+  (`workflow-not-found`) and `done` records it with a line, where the linked
+  checkout would read `different`. It does not claim `same`. This is a special
+  arrangement (shared creation is the default here), left as a limit by the
+  owner's rule for rare cases; complete the subtask from the checkout that holds
+  the workflow (critique of 2026-11-07, MAJOR 6).
+- (Slice 2, 2026-11-09) The simplification halts where `same` was provable, by
+  the owner's choice (Decision 3, its opening note): a counting review settled
+  after one listed later than it is unbound until a later full review; two
+  reviews of one workflow that overlap are ordered by registration, not by when
+  each read the tree; an answer from a review measured from another branch to
+  land on keeps the change not comparable once a later full review shows that
+  path without covering it.
+- (Slice 2, 2026-11-09) Under autopilot no look compares, so a change its
+  reviews do not vouch for spends one commit step before Phase 7 refuses it, and
+  the look reads the outcome gate unnarrowed: a failure of another change holds
+  the lane where Phase 7 would pass over it, until the owner accepts it or a new
+  review runs. The narrowing reads only the latest failing review of each path,
+  so an earlier failure whose paths a later one covered stays read.
+- (Slice 2, 2026-11-09) A landing whose head has no committed comparison (a
+  review-comment fixup after Phase 7) is not comparable and recorded with its
+  line, even when the fixup edited a reviewed path: the macro's line is the only
+  sign. Review such a fixup before the landing, or record its comparison with
+  `review-binding-record` after a review.
+- (Slice 2, known limits of the critique of 2026-11-09, left as limits by the
+  owner's convergence rule of that date; each is rare, fails closed, or costs only
+  a false halt or a message):
+  - Past its byte cap the record keeps every committed comparison (up to 32)
+    without bounding their failure lists by bytes, so very long failure lists can
+    still outgrow what the frontmatter readers allow (reproduced synthetically:
+    334,189 bytes against 131,072). Bounding the comparison details by bytes too
+    would close it.
+  - The outcome gate narrows on `different` too, so once the owner gives
+    `review-binding-accept`, a failed review of an in-between tree no longer holds
+    and is not shown (reproduced: R1 passed, R2 failed, a third edit committed).
+  - `--landing-branch` is not refused under autopilot: a worker passing its own
+    pushed branch narrows the interval Phase 7 checks (inferred; no runbook passes
+    the flag, and the landing comparison still reads `different`).
+  - Two causes leave a change unbound until a later full review (one whose
+    subject lists every path of its manifest): a review settled out of order, and
+    a peer that writes an untracked file into its snapshot. Neither ever passes:
+    the change reads `not-comparable`, which halts under autopilot and warns
+    interactively.
+  - The agent lists a review's subject paths by hand: an untracked file it misses
+    reads `uncovered`, then `different`, and the commit goes back to critique or
+    the lane halts, naming the path (a false halt).
+  - The engineer and `gh` timeouts inside the landing comparison can add up past
+    the main look's 120-second `resolve-landing` budget on a slow network, turning
+    a `not-comparable` into a landing error that halts the lane.
 
 **Neutral**
 
@@ -781,3 +1156,34 @@ reported in its answer and not kept (run
 - **Rename detection on.** Its result depends on a similarity threshold and
   configuration, and the peer measured different patch-ids for the same
   endpoints under two rename settings; a rename is a delete and an add.
+
+Built and removed by the owner's instruction of 2026-11-09 (Decision 3), each
+for `not-comparable` with a named reason; the cost of each removal is a halt where
+`same` was provable:
+
+- **The reviews of every workflow with a commit in the interval** (members named
+  by `Workflow-ID` trailers, found in every state home, recorded at commit for the
+  landing). A trailer missing from one commit dropped its workflow's obligations
+  silently. (The rules for a workflow file found twice stay: the landing's lookup
+  of its one child workflow uses them.) Cost: a
+  second workflow on a branch does not bind until the first one's commits land.
+- **Ordering by capture time**, the snapshot's read of the working tree, with the
+  captures of one checkout serialized by a lock file so that the times ordered the
+  reads. Two overlapping captures could not be ordered by any one instant, and the
+  lock had stale-lock and timeout cases of its own. Cost: reviews settled out of
+  their ledger order are unbound until a later full review.
+- **Each review's manifest, compacted at the cap, with the obligations of the
+  dropped records tracked** (a dropped review lifted by a later full review, and a
+  path it could have answered not comparable unless a review covered it strictly
+  after). Its rule took five critiques to state. Cost: a change past the per-path
+  record's cap is not comparable for good.
+- **A landing with no committed comparison for its head recovered from the nearest
+  recorded ancestor's members, and the known reviews asked whether a path they
+  answer for differs** (a partial `different`). A path no known review covered
+  could be another workflow's. Cost: such a landing reads not comparable, and is
+  recorded with its line.
+- **The autopilot look comparing each child, in the lane's worktree for a lane,
+  through a copy of its index.** It ran beside the lane's worker, whose `git add`
+  then failed on the index lock, and needed the lane's identity checked before and
+  after. Cost: a refused change spends one commit step, and a failure of another
+  change holds a lane Phase 7 would let.

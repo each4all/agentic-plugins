@@ -502,6 +502,68 @@ for (const persona of PERSONAS) {
           });
         });
 
+        // C163 A2b (ADR-0069 Decision 1, item 6): the file the agent wrote is the
+        // only way a review's subject reaches its record; a review with none
+        // vouches for nothing. A stand-in runner shows what the block passes.
+        for (const verb of ['compose', 'critique', 'refine']) {
+          it(`${verb}: subject.json reaches the review's record, from the dispatch and, with no run launched, from the finalize; no file passes no flag, and an older runner is not given it`, skip(verb), async () => {
+            const companions = await stubCompanions();
+            const standIns = await realpath(await mkdtemp(join(tmpdir(), `${persona}-stand-in-runners-`)));
+            const textDirOf = (b) => /^TEXT_DIR='([^'\n]+)'$/m.exec(b)[1];
+            const subject = { shown: ['a.txt', 'b.txt'], covered: ['a.txt'] };
+            const prompt = { 'prompt.xml': '<task>fixture</task>' };
+            const withSubject = { ...prompt, 'subject.json': JSON.stringify(subject) };
+            const standIn = async (name, wf, comment) => {
+              const root = join(standIns, name);
+              await mkdir(join(root, 'scripts'), { recursive: true });
+              await writeFile(join(root, 'scripts', 'state.mjs'), `process.stdout.write(${JSON.stringify(wf)});\n`);
+              await writeFile(join(root, 'scripts', 'peer-runner.mjs'), `// ${comment}\nprocess.stdout.write(process.argv[2] === 'new-run-id' ? 'run-1' : JSON.stringify(process.argv.slice(2)));\n`);
+              return root;
+            };
+            try {
+              await withRepo(async (dir) => {
+                const { dispatch } = verbBlocks(verb);
+                const wf = createWorkflow(dir, verb);
+                // What the block passes.
+                const passed = async (texts, root) => {
+                  const b = await withTexts(dispatch, texts);
+                  const r = runBlock(shell, dir, b, {}, root);
+                  strictEqual(r.status, 0, r.stderr);
+                  return { dir: textDirOf(b), argv: JSON.parse(await readFile(join(textDirOf(b), 'prompt.xml.run.json'), 'utf8')) };
+                };
+                const current = await standIn('current', wf, "names '--subject-file'");
+                const older = await standIn('older', wf, 'predates the flag');
+                const given = await passed(withSubject, current);
+                strictEqual(given.argv[given.argv.indexOf('--subject-file') + 1], join(given.dir, 'subject.json'));
+                ok(!(await passed(prompt, current)).argv.includes('--subject-file'), 'no file, no flag');
+                ok(!(await passed(withSubject, older)).argv.includes('--subject-file'), 'an older runner would refuse the flag');
+                // The real runner: the dispatch's handle holds it.
+                const b = await withTexts(dispatch, withSubject);
+                const r = runBlock(shell, dir, b, { AGENTIC_COMPANIONS_ROOT: companions });
+                strictEqual(r.status, 0, r.stderr);
+                const { handle_path: handle } = JSON.parse(await readFile(join(textDirOf(b), 'prompt.xml.run.json'), 'utf8'));
+                deepStrictEqual(JSON.parse(await readFile(handle, 'utf8')).subject.covered, subject.covered);
+              });
+              await withRepo(async (dir) => {
+                // No run launched: the finalize's settle records it with the attempt.
+                const wf = createWorkflow(dir, verb);
+                const b = (await finalize(verb)).replace("NO_RUN_REASON=''", () => "NO_RUN_REASON='local-only'");
+                await writeFile(join(textDirOf(b), 'subject.json'), `${JSON.stringify(subject)}\n`);
+                const r = runBlock(shell, dir, b);
+                strictEqual(r.status, 0, r.stderr);
+                const { frontmatter: fm } = await readWorkflow(wf);
+                const [attempt] = JSON.parse(fm.review_attempts).attempts;
+                // The record keeps whether the subject covered the whole change; with
+                // no subject it would be null (unbound, no-subject).
+                deepStrictEqual(['full', 'partial'].includes(JSON.parse(fm.review_bindings).attempts[attempt.id].coverage), true);
+              });
+            } finally {
+              await rm(companions, { recursive: true, force: true });
+              await rm(standIns, { recursive: true, force: true });
+            }
+          });
+        }
+
         for (const verb of VERBS) {
           it(`${verb}'s finalize: completed → the synthesis verdict, failed → failed, never launched → nothing, each then finish-verb; an empty DISPATCH_DIR beside a pending run is refused, the run's ledger directory settles that run, and a ledger of another workflow (A's run finalized on B) stops the block before any write (R4 G2, H1, J1)`, skip(verb), async () => {
             const ok_ = await stubCompanions();
