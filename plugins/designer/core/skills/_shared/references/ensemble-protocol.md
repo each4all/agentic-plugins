@@ -171,7 +171,11 @@ dispatch. Genericize before constructing the prompt (step 3).
    subcommand on Codex) so its own analysis proceeds in parallel. The
    runner runs in the foreground of that background task, never behind a
    shell `&`, which would detach it where the host can neither track it
-   nor notify you when it exits.
+   nor notify you when it exits. For a review type, write beside the prompt
+   what you put in the reviewer's subject, `subject.json`
+   (`{"shown": [...], "covered": [...]}`, repository-relative paths; `covered`
+   are those shown at the content the working tree holds now), and pass it with
+   `--subject-file`: a review with no subject vouches for nothing (ADR-0069).
 
    The peer, claude or codex, never works in the checkout: the runner
    gives it a snapshot of HEAD plus the working tree and the index
@@ -372,6 +376,16 @@ and, on Codex, the verb skill's own settle step. `state.mjs review-attempts` pri
 result with no attempt and an unreadable document read `unknown`, never
 `passed`, and the coverage says when the history is incomplete. This records
 only: nothing reads an outcome to allow or refuse a step.
+
+**A review records what it was of (C163 A2b, ADR-0069).** Beside the attempts,
+the workflow's `review_bindings` scalar keeps, per attempt, the change the
+review saw (the integration base and the tree its peer's snapshot held, the
+snapshot captured again at the run's end and the identity recorded only when the
+two trees are equal) and whether the paths its dispatch put in its subject
+(`subject.json`, `--subject-file`) covered the whole change; and, per path, the
+transition the latest counting review that covered it saw, in ledger order.
+Phase 7 compares the change with these. A review with no subject, or with no
+identity, is unbound and vouches for nothing.
 
 **`peer-now` is structurally excluded** from `ensemble_results`, by two
 independent mechanisms:

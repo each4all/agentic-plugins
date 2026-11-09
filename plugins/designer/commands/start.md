@@ -377,9 +377,12 @@ phase (ADR-0066 PC2b):
   type> --no-run-reason <peer-unavailable|local-only|privacy-gate|owner-skip>
   --attempt-key <a new text directory for that settle>`, so the workflow records the
   review's attempt with its outcome (`unavailable` or `skipped`) and a rerun
-  of that settle records it once (C163 A1a). A `peer-runner.mjs` that does not name
-  `--no-run-reason` in its usage predates the record: settle without the
-  three flags then.
+  of that settle records it once (C163 A1a). A dispatch that launched takes
+  `--subject-file <file>` (`{"shown": [...], "covered": [...]}`, the paths its
+  prompt shows, and those at the content the tree holds now), and so does an
+  empty-id settle for what the local reviewers read (ADR-0069 Decision 1). A `peer-runner.mjs` that does not name
+  `--no-run-reason` in its usage predates the record: settle without those
+  flags then.
 - **No phase closes the workflow.** A verb's own terminal write
   (`finish-verb`) never runs inside the lifecycle; the lifecycle's last step
   below makes its one terminal write.
