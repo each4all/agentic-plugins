@@ -247,6 +247,19 @@ ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "
   Review whether each target is resolved and whether the changed passages
   introduced a problem. A problem seen outside the passages is still reported,
   marked outside.
+
+Whatever the mode, the JSON also names this critique's convergence `round`
+(C176, ADR-0063 amendment of 2026-11-09): a recorded critique's is the
+ledger's closed critiques plus one; with no ledger it is the critique cap's
+count with this run in it (`rounds`, against `limit`). From round 2, sort each
+MAJOR finding by the path it lies on: on a frequent, natural path it is
+refine's work as before; on a rare one (a hand-made file, a gap of the same
+class as one already recorded, a special layout) it is deferred as a known
+limit, its severity kept. A CRITICAL, a recurring finding, a contested one
+(a peer conflict) and one a veto gate raised are never deferred. With a ledger
+the close below decides each deferral; with none (`recorded: false`, a code
+deliverable) the note applies the same rule, listing such a finding under
+`### Known limits (deferred)` instead of handing it to refine.
 <!-- pipeline:end critique-scope-prepare -->
 
 ### Ensemble dispatch (Review point for default; Adversarial-scan point for red-team)
@@ -378,6 +391,10 @@ it, its text, and in a scoped critique `scope` `in` or `outside` the passages
 location, or one on a path the artifact set does not hold, counts in); a ledger
 finding judged again by its id, with `verdict` `resolved` or `unresolved`. In a scoped critique every
 target needs one verdict: a target with none, or with two, stays open.
+From round 2 (C176), a MAJOR on a rare path carries `defer`, its known limit
+in one line (`"defer": "only a hand-made file reaches it"`); a finding a peer
+contested carries `conflict: true`, and one a veto gate raised `veto: true`,
+which stay on it for every later critique.
 
 ```bash
 TEXT_DIR='<directory holding findings.json>'
@@ -407,6 +424,13 @@ It prints the disposition, which Phase 2 follows:
   generation. Findings in `left_open` go under `### Left open`: new findings
   other than CRITICAL that a scoped critique saw outside the passages, the
   owner's to weigh when the work lands, never refine's.
+- `deferred_now` are the findings this close deferred: they go under
+  `### Known limits (deferred)`, each with its id, severity and known limit,
+  and are no refine work. `deferral_refused` names each deferral asked for
+  and refused, with its reason (`round`, `critical`, `not-major`,
+  `recurring`, `veto`, `conflict` or `ambiguous`): that finding stays open,
+  refine's work. A later critique that does not report a deferred finding
+  leaves it deferred; one that reports it with no `defer` opens it again.
 - `converged: true` (no CRITICAL or MAJOR open in the ledger) puts the
   proposal on the commit route only when nothing else this runbook names
   stands in the way: a `conflict` verdict still ends on its gate first, and a

@@ -90,6 +90,7 @@ import {
   attemptsOfOtherChange,
   bindingAccepted,
   comparisonText,
+  decodeReviewAttempts,
   isReviewAttemptId,
   isReviewType,
   latestOutcomeText,
@@ -351,6 +352,9 @@ export const VALID_WORKFLOW_OWNER_GATES = new Set([
   'recurring-finding',
   'staging-set',
   'pr-handling',
+  // C176 (ADR-0063, amendment of 2026-11-09) — an autopilot critique that
+  // ends at its subtask's critique cap with findings still open.
+  'critique-cap',
 ]);
 // ADR-0067 Decision 8 — the conflict gates: a synthesis verdict of conflict
 // in decide (decide-conflict) or in critique and investigate (peer-conflict).
@@ -410,14 +414,151 @@ export function autopilotMode({ env = process.env, host = 'claude' } = {}) {
 }
 
 // The owner gates a persona can set (ADR-0066 Decision 3, PC2b DD2): the four
-// whose resolving surface every persona has, and the two that belong to a
+// whose resolving surface every persona has, and the three that belong to a
 // capability — staging-set to commit_surface (the commit confirms the staging
 // set), pr-handling to dispatch_target (an autopilot step stops before an
-// outward action). A reader accepts all six; a setter accepts only these.
+// outward action), critique-cap to dispatch_target (C176: only an autopilot
+// subject has a critique cap). A reader accepts all seven; a setter accepts
+// only these.
 const CAPABILITY_OWNER_GATES = Object.freeze({
   'staging-set': 'commit_surface',
   'pr-handling': 'dispatch_target',
+  'critique-cap': 'dispatch_target',
 });
+
+// -----------------------------------------------------------------------------
+// C176 (ADR-0063, amendment of 2026-11-09) — the critique cap of a subtask.
+// `critique_rounds` counts the critique syntheses a finish-verb recorded, once
+// per critique run: `critique_rounds_entry` is the run identity last counted
+// (the critique-run markers of the body, lib/review-scope.mjs critiqueEntries,
+// plus one for a workflow created by the critique verb). A finalize run again
+// counts nothing more; a critique stopped before its finish-verb counts
+// nothing; a critique whose peer attempt failed counts nothing
+// (critiqueAttemptFailed). Only a finish-verb under an autopilot run counts:
+// an interactive critique is never a round, so a workflow the owner drives
+// alone never reaches the cap, its peer-conflict clears included.
+// `critique_round_limit` is absolute, the default when absent; an owner's
+// grant raises it relative to the count, never below the limit it holds. The
+// keys are dispatch_target's: only an autopilot subject has a cap, and only an
+// autopilot run enforces it.
+export const CRITIQUE_CAP_DEFAULT = 3;
+const CRITIQUE_ROUND_KEYS = Object.freeze(['critique_rounds', 'critique_rounds_entry', 'critique_round_limit']);
+
+function critiqueRunIdentity(frontmatter, body) {
+  const created = String(frontmatter.workflow_id ?? '').startsWith('critique-') ? 1 : 0;
+  return critiqueEntries(body) + created;
+}
+
+// The outcomes of a launched review that are a synthesis of the peer's
+// answer; any other outcome of a launched run (failed, malformed, degraded,
+// unavailable, superseded) is a failed peer attempt.
+const SYNTHESIZED_REVIEW_OUTCOMES = new Set(['passed', 'concerns', 'conflict']);
+
+/**
+ * C176 — whether the critique run in progress is a failed peer attempt, which
+ * counts no round. A critique's finalize settles its review attempt (the
+ * block's first write) before finish-verb counts (its last), so the critique
+ * attempt closed last is this run's: the latest `recorded_at`, a tie going to
+ * the later entry. Never the last entry alone: an attempt keeps the place it
+ * was registered at when it closes, so a run registered before another and
+ * finalized after it would read the other's outcome. A launched run (it has a
+ * run id) closed with an outcome that is no synthesis is a failure. A
+ * critique that launched no peer, by design or for want of one (skipped,
+ * unavailable with no run), is a local synthesis and counts; so is a workflow
+ * with no closed attempt recorded, or a record this reader cannot use.
+ */
+function critiqueAttemptFailed(frontmatter) {
+  const { doc } = decodeReviewAttempts(frontmatter[REVIEW_ATTEMPTS_KEY]);
+  let latest;
+  for (const a of doc?.attempts ?? []) {
+    if (a?.phase !== 'critique' || a.state !== 'closed') continue;
+    if (latest === undefined || String(a.recorded_at ?? '') >= String(latest.recorded_at ?? '')) latest = a;
+  }
+  return latest !== undefined && typeof latest.run_id === 'string'
+    && !SYNTHESIZED_REVIEW_OUTCOMES.has(latest.outcome);
+}
+
+/**
+ * Where the workflow stands against its critique cap: the rounds counted, the
+ * run identity last counted, the limit, whether the critique run now in
+ * progress is still to be counted (`pending`), the rounds once it is
+ * (`rounds_after`), and whether that reaches the limit (`at_cap`). Only a
+ * workflow whose verb is critique has a run to count. A run whose peer
+ * attempt failed is not pending, unless `assumeCounted`: a check made before
+ * the finalize settles the run (critique-cap-check, verify-request-check,
+ * critique-scope) cannot see its outcome yet, and takes the run as counted,
+ * so it never lets through a next step the last write would refuse.
+ */
+export function critiqueRounds(frontmatter, body, { assumeCounted = false } = {}) {
+  const rounds = frontmatter.critique_rounds ?? 0;
+  const entry = frontmatter.critique_rounds_entry ?? 0;
+  const limit = frontmatter.critique_round_limit ?? CRITIQUE_CAP_DEFAULT;
+  const critique = frontmatter.verb === 'critique';
+  const identity = critique ? critiqueRunIdentity(frontmatter, body) : 0;
+  const pending = critique && identity > entry && (assumeCounted || !critiqueAttemptFailed(frontmatter));
+  const after = rounds + (pending ? 1 : 0);
+  return { critique, rounds, entry, limit, identity, pending, rounds_after: after, at_cap: critique && after >= limit };
+}
+
+// Count the critique run in progress, once, in the caller's locked write,
+// under an autopilot run only. There the cap is judged again, on the state
+// the write holds (`cap`: `{ env, host, nextStep, verifyRequest }`), so a
+// writer between finish-verb's early check and this write cannot carry a
+// round past the cap.
+function countCritiqueRound(frontmatter, body, cap) {
+  if (cap === undefined || !autopilotMode({ env: cap.env, host: cap.host }).active) return false;
+  const refusal = critiqueCapRefusal(frontmatter, body, { ...cap, autopilot: true });
+  if (refusal !== null) throw new Error(refusal);
+  if (!capabilityOn('dispatch_target')) return false;
+  const r = critiqueRounds(frontmatter, body);
+  if (!r.pending) return false;
+  frontmatter.critique_rounds = r.rounds + 1;
+  frontmatter.critique_rounds_entry = r.identity;
+  return true;
+}
+
+// Whether a next step (or a verify request's on_pass) goes on past the
+// critique: any verb does (refine, compose, a critique again), so at the cap
+// only commit, done and an owner gate end the loop.
+function continuesCritiqueLoop(nextStep, verifyRequest) {
+  const step = nextStep?.kind === 'verify' ? verifyRequest?.on_pass : nextStep;
+  return step?.kind === 'verb';
+}
+
+/**
+ * C176 — the refusal a critique at its cap meets when it would start another
+ * round under an autopilot run, or null. A clean critique (commit, done) and
+ * an owner gate proceed; interactively the cap is never enforced.
+ * `assumeCounted`: a check made before the run is settled (critiqueRounds).
+ */
+export function critiqueCapRefusal(frontmatter, body, { nextStep, verifyRequest, autopilot, assumeCounted = false }) {
+  if (!autopilot || !capabilityOn('dispatch_target')) return null;
+  const r = critiqueRounds(frontmatter, body, { assumeCounted });
+  if (!r.at_cap || !continuesCritiqueLoop(nextStep, verifyRequest)) return null;
+  const step = nextStep.kind === 'verify' ? `verify, then ${verifyRequest.on_pass.verb}` : nextStep.verb;
+  return `refused under autopilot: this critique is round ${r.rounds_after} of the subtask's critique cap ${r.limit}, ` +
+    `and its next step (${step}) would start another round. End it with the owner gate critique-cap ` +
+    '(OWNER_GATE=critique-cap, the next step owner-decision), or with commit when no CRITICAL or MAJOR finding is open ' +
+    '(C176, ADR-0063 amendment of 2026-11-09)';
+}
+
+/**
+ * Read-only: the cap check a critique's finalize runs before its first write,
+ * settle. The run is not settled yet, so it is taken as counted
+ * (critiqueRounds `assumeCounted`): a critique at the cap whose peer failed is
+ * held to the cap here, though its finish-verb would count nothing.
+ */
+export async function critiqueCapCheck({ workflowPath, host = 'claude', nextStep, verifyRequest, env = process.env }) {
+  validateHost(host);
+  const { frontmatter, body } = await readWorkflow(workflowPath);
+  const autopilot = autopilotMode({ env, host }).active;
+  const r = critiqueRounds(frontmatter, body, { assumeCounted: true });
+  const refusal = nextStep === undefined ? null : critiqueCapRefusal(frontmatter, body, { nextStep, verifyRequest, autopilot, assumeCounted: true });
+  return {
+    rounds: r.rounds, rounds_after: r.rounds_after, limit: r.limit, at_cap: r.at_cap,
+    enforced: autopilot && capabilityOn('dispatch_target'), refusal,
+  };
+}
 
 export function settableOwnerGates() {
   return new Set([...VALID_WORKFLOW_OWNER_GATES].filter(
@@ -1687,6 +1828,9 @@ function frontmatterKeyOrder() {
   // and goes on reading its outcomes as A1b does (Decision 4).
   order.push(REVIEW_BINDINGS_KEY);
   order.push(REVIEW_BINDING_ACCEPTANCE_KEY);
+  // C176 (ADR-0063, amendment of 2026-11-09) — the critique cap's count and
+  // limit: flat integers, last of all, for the same carrier reason.
+  if (capabilityOn('dispatch_target')) order.push(...CRITIQUE_ROUND_KEYS);
   keyOrderCache = Object.freeze(order);
   return keyOrderCache;
 }
@@ -2290,6 +2434,12 @@ function validateSchema11Fields(fm) {
   // forward-compat unknown-key carrier and are not validated here
   // (ADR-0066 Decision 3).
   if (capabilityOn('dispatch_target')) {
+    // C176 — the critique cap: non-negative integers, the limit at least 1.
+    for (const key of CRITIQUE_ROUND_KEYS) {
+      if (!(key in fm)) continue;
+      const min = key === 'critique_round_limit' ? 1 : 0;
+      if (!Number.isInteger(fm[key]) || fm[key] < min) throw new Error(`${key} must be an integer of ${min} or more`);
+    }
     // ADR-0028 §P10 schema 1.3 — parent_writeback_at write-ahead marker.
     // Optional scalar; non-empty string when present.
     if ('parent_writeback_at' in fm) {
@@ -3227,6 +3377,8 @@ export async function appendPhase({
   // finish-verb's: a verb that ends with another next step than verify drops
   // the last request and its results in the same write (ADR-0068 Decision 5).
   dropVerifyRequest = false,
+  // finish-verb's (C176): count the critique run in progress in this write.
+  countCritique = false,
   event = 'resumed',
   // ADR-0068 Decision 2 (N4) — the command's operation directory, and whether
   // this write opens its operation (`openOperation`, the kind) or closes it
@@ -3278,6 +3430,7 @@ export async function appendPhase({
     applyNextStepWrite(frontmatter, nextStepWrite, { dropVerify: dropVerifyRequest });
     const replacedRunId = gateFields ? applyOwnerGate(frontmatter, gateFields) : null;
     if (clearTerminalMarker && frontmatter.terminal_marker === true) frontmatter.terminal_marker = false;
+    if (countCritique) countCritiqueRound(frontmatter, body, { env, host, nextStep });
     frontmatter.updated_at = nowIso;
     frontmatter.host_history = [
       ...(frontmatter.host_history ?? []),
@@ -4241,6 +4394,8 @@ export async function setTerminal({
   nextStep,
   // finish-verb's, as appendPhase's (ADR-0068 Decision 5).
   dropVerifyRequest = false,
+  // finish-verb's, as appendPhase's (C176).
+  countCritique = false,
   event = 'updated',
   // As appendPhase's: the attempt mark (withFileLock, ADR-0068 Decision 5).
   env = process.env,
@@ -4303,6 +4458,7 @@ export async function setTerminal({
     }
     if (nextAction !== undefined) frontmatter.next_action = nextAction;
     applyNextStepWrite(frontmatter, nextStepWrite, { dropVerify: dropVerifyRequest });
+    if (countCritique) countCritiqueRound(frontmatter, body, { env, host, nextStep });
     frontmatter.updated_at = nowIso;
     frontmatter.host_history = [
       ...(frontmatter.host_history ?? []),
@@ -4617,7 +4773,7 @@ async function reviewContext(workflowPath, what) {
   const { frontmatter, body } = parseWorkflowFile(await readFile(workflowPath, 'utf8'));
   const paths = reviewLedgerPaths(workflowPath, frontmatter.workflow_id);
   if (!paths) throw new Error(`${what}: ${JSON.stringify(workflowPath)} is not a workflow file under the ${personaName()} state home`);
-  return { frontmatter, paths, entries: critiqueEntries(body) };
+  return { frontmatter, paths, entries: critiqueEntries(body), cap: critiqueRounds(frontmatter, body, { assumeCounted: true }) };
 }
 
 // The checkout a review is held to: its working tree as a tree object and
@@ -4700,7 +4856,7 @@ export async function openCritiqueScope({ workflowPath, repoRoot, profile = '', 
   // The review ledger, held to the workflow's attempt mark as every write
   // under its lock is (withFileLock, ADR-0068 Decision 5).
   return withFileLock(workflowPath, async (ownership) => {
-    const { frontmatter, paths, entries } = await reviewContext(workflowPath, 'critique-scope');
+    const { frontmatter, paths, entries, cap } = await reviewContext(workflowPath, 'critique-scope');
     const checkout = await workflowCheckout(repoRoot, frontmatter);
     const facts = checkout.ok
       ? reviewFacts(checkout, frontmatter)
@@ -4715,7 +4871,11 @@ export async function openCritiqueScope({ workflowPath, repoRoot, profile = '', 
       artifact: facts.artifact,
       ...(checkout.ok ? {} : { detail: checkout.message }),
     };
-    const unrecorded = { recorded: false, generation: null, mode: 'full', reason: facts.documentReason, ...summary, passages: [], targets: [], findings: [] };
+    // C176 — the convergence round: a recorded critique's is its generation's
+    // (the ledger's closed critiques plus one); with no ledger it is the
+    // critique cap's count with this run in it. `rounds` is that count.
+    const rounds = { rounds: cap.rounds_after, limit: cap.limit };
+    const unrecorded = { recorded: false, generation: null, mode: 'full', reason: facts.documentReason, round: Math.max(1, cap.rounds_after), ...rounds, ...summary, passages: [], targets: [], findings: [] };
     if (!checkout.ok && checkout.otherBranch) return unrecorded;
     // Every path below moves or writes the ledger: the mark moves on first, so
     // a step stopped between the two has already bound the attempt.
@@ -4776,6 +4936,8 @@ export async function openCritiqueScope({ workflowPath, repoRoot, profile = '', 
       generation: opened.generation,
       mode: decision.mode,
       reason: decision.reason,
+      round: opened.ledger.generations.at(-1).round,
+      ...rounds,
       ...summary,
       passages,
       targets: decision.targets,
@@ -5039,6 +5201,12 @@ export async function clearAwaitingOwner({
   // The owner's decision in words (the direction chosen, a deferral and its
   // reason). It lands in the resolved note of the same write.
   resolution,
+  // C176 — further critique rounds the owner grants (an integer of 1 or
+  // more), with a verb as the next step (refine): the limit becomes the
+  // rounds counted plus the grant, in the same write. Taken only on the
+  // critique-cap and peer-conflict gates; a clear that starts another round
+  // at or over the limit without it is refused.
+  grantCritiqueRounds,
   // ADR-0068 Decision 2, item 7 (N4) — a gate resolution is one operation
   // across its clear and the finish-verb after it: this clear opens it in an
   // operation directory (`openOperation`, the kind), or, given only the
@@ -5071,6 +5239,30 @@ export async function clearAwaitingOwner({
     );
   }
   validateEnumScalar('awaiting_owner_gate', gate, VALID_WORKFLOW_OWNER_GATES);
+  const loopStep = continuesCritiqueLoop(nextStep);
+  if (grantCritiqueRounds !== undefined) {
+    if (!Number.isInteger(grantCritiqueRounds) || grantCritiqueRounds < 1) {
+      throw new Error(`the critique rounds a grant adds are an integer of 1 or more (got ${JSON.stringify(grantCritiqueRounds)})`);
+    }
+    if (!capabilityOn('dispatch_target')) {
+      throw new Error(`${personaName()} has no critique cap (dispatch_target off, C176): a grant is refused`);
+    }
+    if (gate !== 'critique-cap' && gate !== 'peer-conflict') {
+      throw new Error(`a critique-round grant clears the critique-cap or peer-conflict gate, not ${gate} (C176)`);
+    }
+    if (!loopStep) {
+      throw new Error('a critique-round grant goes with a verb as the next step (refine), the round it grants (C176)');
+    }
+  }
+  // critique-cap has two exits: another round with a grant, or the owner's
+  // acceptance of the open findings, the next step commit or done with a
+  // resolution naming them. No next step at all is neither.
+  if (gate === 'critique-cap' && !loopStep && !(['commit', 'done'].includes(nextStep?.kind) && resolution !== undefined)) {
+    throw new Error(
+      'critique-cap is cleared with another round (--grant-critique-rounds and the next step refine) or by accepting ' +
+        'the open findings (the next step commit or done, with --resolution naming the findings accepted as known limits) (C176)',
+    );
+  }
   const operation = operationDir !== undefined && operationDir !== ''
     ? await prepareOperation({
       point: openOperation !== undefined ? 'open' : closeOperation ? 'close' : 'carry', kind: openOperation, operationDir, workflowPath, host, env, now,
@@ -5088,12 +5280,30 @@ export async function clearAwaitingOwner({
     }
     operation.inLock(frontmatter);
     const nowIso = isoUtc(now);
+    // C176 — another round at or over the critique cap takes the owner's
+    // grant, which sets the limit relative to the rounds counted.
+    let granted = '';
+    // A peer-conflict counts only on a critique: investigate's conflict starts
+    // no critique round.
+    if (capabilityOn('dispatch_target') && loopStep && (gate === 'critique-cap' || (gate === 'peer-conflict' && frontmatter.verb === 'critique'))) {
+      const r = critiqueRounds(frontmatter, body);
+      if (grantCritiqueRounds !== undefined) {
+        frontmatter.critique_round_limit = r.rounds + grantCritiqueRounds;
+        granted = `Granted ${grantCritiqueRounds} further critique round${grantCritiqueRounds === 1 ? '' : 's'}: the critique cap is now ${frontmatter.critique_round_limit} (${r.rounds} counted).\n\n`;
+      } else if (r.rounds >= r.limit) {
+        throw new Error(
+          `the critique cap is reached (${r.rounds} of ${r.limit} rounds): another round takes the owner's grant, ` +
+            '--grant-critique-rounds <n> (C176)',
+        );
+      }
+    }
     // ADR-0067 Decision 8 — the run id goes with the gate's other keys, and
     // the task file of that run is retired once this write has landed.
     const runId = frontmatter.awaiting_owner_run_id;
     const note =
       `### Owner gate resolved: ${gate} at ${nowIso}\n\n` +
       (resolution !== undefined ? `${resolution.trim()}\n\n` : '') +
+      granted +
       `Cleared awaiting_owner (since ${frontmatter.awaiting_owner_since}, ` +
       `pointer ${frontmatter.awaiting_owner_pointer}${runId !== undefined ? `, run ${runId}` : ''}).\n\n`;
     for (const k of AWAITING_OWNER_KEYS) delete frontmatter[k];
@@ -5122,6 +5332,8 @@ const OWNER_GATE_RESOLUTION = Object.freeze({
   // commit_surface and dispatch_target gates, settable only with those on.
   'staging-set': (p) => `the owner confirms the staging set in ${p}commit, which clears the gate and then commits`,
   'pr-handling': () => 'the owner takes or declines the outward action (push, pull request), then clears the gate',
+  // C176 — dispatch_target's, as pr-handling.
+  'critique-cap': () => 'the owner grants further critique rounds (--grant-critique-rounds with the next step refine), or accepts the open findings as known limits (--resolution naming them, the next step commit), then clears the gate',
   'scope-routing': () => 'the owner chooses the route the phase note recommends, then clears the gate',
 });
 
@@ -5138,7 +5350,10 @@ const AUTOPILOT_COMMIT_RULES =
 const AUTOPILOT_RULES =
   'ceremony gates auto-pass. Do not offer a presentation mode (present in batch); ' +
   'proceed with the recommended option instead of asking; carry only CRITICAL and ' +
-  'MAJOR findings into refine; end the verb with finish-verb, which records ' +
+  'MAJOR findings into refine, and from a subtask\'s second critique only CRITICAL ' +
+  'and frequent-path MAJOR ones (a rare-path MAJOR is deferred as a known limit); ' +
+  'a critique at the critique cap that is not clean ends at the critique-cap owner ' +
+  'gate; end the verb with finish-verb, which records ' +
   'next_step and leaves the terminal marker unset; never run git commit, push, or ' +
   'open a pull request; when a genuine owner judgment is needed, record the owner ' +
   'gate and stop. Rules: core/skills/_shared/references/autopilot-mode.md.';
@@ -5958,7 +6173,8 @@ export async function finishVerb({
     if (verifyRequest === undefined) {
       throw new Error('finish-verb --next-step-kind verify takes the request as --verify-request-file (ADR-0068 Decision 5, item 2)');
     }
-    const result = await recordVerifyRequest({ workflowPath, host, nextAction, nextStep, input: verifyRequest, env, cwd, now, operationDir });
+    await assertCritiqueCap({ workflowPath, host, nextStep, verifyRequest, env });
+    const result = await recordVerifyRequest({ workflowPath, host, nextAction, nextStep, input: verifyRequest, env, cwd, now, operationDir, countCritique: true });
     return { ...result, mode: 'autopilot', terminal: false };
   }
   if (verifyRequest !== undefined) {
@@ -5969,6 +6185,7 @@ export async function finishVerb({
   // is refused, so a next step is published only once the step is settled (D5).
   const autopilot = autopilotMode({ env, host }).active;
   if (autopilot) {
+    await assertCritiqueCap({ workflowPath, host, nextStep, env });
     const { frontmatter } = await readWorkflow(workflowPath);
     if (!noPendingEnsembleCheck(frontmatter)) {
       throw new Error(
@@ -5981,7 +6198,7 @@ export async function finishVerb({
   if (autopilot || ownerGate !== undefined) {
     const result = await appendPhase({
       workflowPath, host, nextAction, nextStep, ownerGate,
-      clearTerminalMarker: true, dropVerifyRequest: true, event: 'updated', env, now,
+      clearTerminalMarker: true, dropVerifyRequest: true, countCritique: true, event: 'updated', env, now,
       operationDir, closeOperation: Boolean(operationDir),
     });
     return { ...result, mode: autopilot ? 'autopilot' : 'interactive', terminal: false };
@@ -5999,6 +6216,7 @@ export async function finishVerb({
     nextAction,
     nextStep,
     dropVerifyRequest: true,
+    countCritique: true,
     event: 'updated',
     env,
     now,
@@ -6009,6 +6227,14 @@ export async function finishVerb({
   if (result.held !== null) return { ...result, mode: 'interactive', terminal: false };
   const { held: _none, ...closed } = result;
   return { ...closed, mode: 'interactive', terminal: true };
+}
+
+// C176 — finish-verb's cap check, before any write.
+async function assertCritiqueCap({ workflowPath, host, nextStep, verifyRequest, env }) {
+  if (!autopilotMode({ env, host }).active || !capabilityOn('dispatch_target')) return;
+  const { frontmatter, body } = await readWorkflow(workflowPath);
+  const refusal = critiqueCapRefusal(frontmatter, body, { nextStep, verifyRequest, autopilot: true });
+  if (refusal !== null) throw new Error(refusal);
 }
 
 // -----------------------------------------------------------------------------
@@ -6515,7 +6741,9 @@ function bindVerifyRequest(frontmatter, { workflowPath, parsed, env, host, cwd, 
  * write (the peer run's settle), so a request the last write would refuse
  * stops the block with the workflow as it was, never with half a handoff
  * written (ADR-0068 Decision 5, `verify-runbooks`). `settling` is the peer
- * run that settle pops first, the one pending entry not counted. Returns
+ * run that settle pops first, the one pending entry not counted. The critique
+ * cap is judged too (C176), with the run taken as counted, since it is not
+ * settled yet (critiqueRounds `assumeCounted`). Returns
  * `{ ok: true, request_id }`; throws finish-verb's message otherwise.
  */
 export async function checkVerifyRequest({
@@ -6523,7 +6751,11 @@ export async function checkVerifyRequest({
 }) {
   validateHost(host);
   const { parsed } = verifyRequestInput(nextStep, input);
-  const { frontmatter } = parseWorkflowFile(await readFile(workflowPath, 'utf8'));
+  const { frontmatter, body } = parseWorkflowFile(await readFile(workflowPath, 'utf8'));
+  const capRefusal = critiqueCapRefusal(frontmatter, body, {
+    nextStep, verifyRequest: parsed, autopilot: autopilotMode({ env, host }).active, assumeCounted: true,
+  });
+  if (capRefusal !== null) throw new Error(capRefusal);
   const { id } = bindVerifyRequest(frontmatter, { workflowPath, parsed, env, host, cwd, settling });
   return { ok: true, request_id: id };
 }
@@ -6541,6 +6773,8 @@ export async function recordVerifyRequest({
   workflowPath, host, nextAction, nextStep, input, env = process.env, cwd = process.cwd(), now = new Date(),
   // ADR-0068 Decision 2 (N4) — as setTerminal's: the last write closes it.
   operationDir,
+  // finish-verb's (C176): count the critique run in progress in this write.
+  countCritique = false,
 }) {
   validateHost(host);
   const { fields, parsed } = verifyRequestInput(nextStep, input);
@@ -6569,6 +6803,7 @@ export async function recordVerifyRequest({
     Object.assign(frontmatter, fields);
     if (nextAction !== undefined) frontmatter.next_action = nextAction;
     if (frontmatter.terminal_marker === true) frontmatter.terminal_marker = false;
+    if (countCritique) countCritiqueRound(frontmatter, body, { env, host, nextStep, verifyRequest: parsed });
     historyUpdated(frontmatter, host, isoUtc(now));
     // The record is checked whole, the mark it moves on included.
     const text = workflowText(frontmatter, body, ownership, { request: true, since });
@@ -8025,6 +8260,12 @@ function cliNextStep(flags) {
   };
 }
 
+// C176 — --grant-critique-rounds: a decimal integer of 1 or more.
+function cliGrant(value) {
+  if (!/^[1-9][0-9]{0,3}$/.test(String(value))) throw new Error(`--grant-critique-rounds must be an integer of 1 or more (got '${value}')`);
+  return Number(value);
+}
+
 // Every flag takes a value in this CLI, so a boolean flag is spelled
 // `--name true|false`, parsed strictly (a typo must not read as false).
 function cliBoolean(flags, name, fallback) {
@@ -8251,6 +8492,18 @@ function cliPrintHelp() {
       `    declaration ${VERIFY_DECLARATION_PATH} at that commit). Any other kind`,
       '    drops the last request and its results.',
       '',
+      ...(capabilityOn('dispatch_target')
+        ? [
+          '  critique-cap-check --workflow-path <p> --host <h>',
+          '                     [--next-step-kind <k> [--next-step-verb <v>] --next-step-confidence <c>',
+          '                      | --request-file <path>]',
+          '    C176 — print {rounds, rounds_after, limit, at_cap, enforced, refusal}',
+          '    for the critique run in progress; exit 1 under an autopilot run when',
+          '    the next step (or the request\'s on_pass) would start another round at',
+          '    the critique cap, with the message finish-verb would give.',
+          '',
+        ]
+        : []),
       '  verify-request-check --workflow-path <p> --host <h> --request-file <path>',
       '              --next-step-confidence HIGH|MEDIUM|LOW [--settling-run-id <id>]',
       '    Whether finish-verb --next-step-kind verify would take the request now,',
@@ -8316,6 +8569,15 @@ function cliPrintHelp() {
       '    replaces the gate\'s, and the decision in words in the same write. Exit 1 when',
       `    the gate is not the one set${capabilityOn('dispatch_target') ? ', or under an autopilot run' : ''}. The run id goes with the`,
       '    gate, and the task file of that run is retired (ADR-0067 Decision 8).',
+      ...(capabilityOn('dispatch_target')
+        ? [
+          '    [--grant-critique-rounds <n>] (C176): on critique-cap or peer-conflict,',
+          '    with a verb as the next step (refine), set the critique cap to the',
+          '    rounds counted plus n. Another round at or over the cap without it,',
+          '    and critique-cap cleared with neither a round nor commit or done with',
+          '    a --resolution naming the accepted findings, exit 1.',
+        ]
+        : []),
       '',
       '  consensus-task --workflow-path <path> --run-id <run id> [--host <host>]',
       '                 (--text <contested items> | --text-file <path>)',
@@ -8329,8 +8591,8 @@ function cliPrintHelp() {
       '    C120 — for a document deliverable, open the next critique in the',
       '    review ledger (<home>/reviews/<workflow id>.json) and print its scope',
       '    as JSON {recorded, ledger, generation, mode, reason, document, tree,',
-      '    artifact,',
-      '    passages, targets, findings}. mode is scoped only after a full critique',
+      '    artifact, passages, targets, findings, round, rounds, limit}. mode is',
+      '    scoped only after a full critique',
       '    and a recorded refine whose tree the checkout still holds; any doubt is',
       '    full, and a profile other than the default is partial. A deliverable',
       '    that is not a document, or a checkout it cannot read, records nothing.',
@@ -8338,8 +8600,11 @@ function cliPrintHelp() {
       '  critique-close --workflow-path <path> --repo-root <path> --ledger <id>',
       '                 --generation <n> --findings-file <path>',
       '    C120 — close the open critique with the synthesis\'s findings',
-      '    ({"findings": [{id, severity, location, text, verdict, scope}]}) and',
-      '    print the disposition {converged, carry, left_open, recurring, ...}.',
+      '    ({"findings": [{id, severity, location, text, verdict, scope, defer,',
+      '    veto, conflict}]}) and print the disposition {converged, carry,',
+      '    left_open, recurring, round, deferred, deferral_refused, ...}. From',
+      '    round 2 a MAJOR whose every reference carries defer (its known limit)',
+      '    is deferred, unless recurring or flagged veto or conflict (C176).',
       '    Exit 1 when the ledger is not the one critique-scope named, or the',
       '    checkout no longer holds the tree it reviewed.',
       '',
@@ -9019,6 +9284,7 @@ async function cliRun(subcommand, flags) {
           clearNextStep: cliBoolean(flags, 'clear-next-step', false),
           nextAction: flags['next-action'],
           resolution: flags.resolution,
+          grantCritiqueRounds: 'grant-critique-rounds' in flags ? cliGrant(flags['grant-critique-rounds']) : undefined,
           operationDir: flags['operation-dir'],
           openOperation: flags['open-operation'],
           closeOperation: cliBoolean(flags, 'close-operation', false),
@@ -9219,6 +9485,22 @@ async function cliRun(subcommand, flags) {
       // ADR-0068 Decision 5 (`verify-runbooks`) — the finalize's check, before
       // its first write, that finish-verb would take the request: writes
       // nothing, and refuses with finish-verb's own message.
+      // C176 — the critique cap a critique's finalize checks before its first
+      // write: prints where the workflow stands, and refuses (exit 1, the
+      // message finish-verb would give) a next step that would start another
+      // round at the cap under an autopilot run.
+      case 'critique-cap-check': {
+        cliRequire(flags, ['workflow-path', 'host']);
+        const verifyRequest = 'request-file' in flags ? readJsonArgumentFile(flags['request-file'], '--request-file') : undefined;
+        const nextStep = verifyRequest !== undefined
+          ? { kind: 'verify', confidence: flags['next-step-confidence'] ?? 'HIGH' }
+          : 'next-step-kind' in flags ? cliNextStep(flags) : undefined;
+        const checked = await critiqueCapCheck({ workflowPath: flags['workflow-path'], host: flags.host, nextStep, verifyRequest });
+        process.stdout.write(`${JSON.stringify(checked)}\n`);
+        if (checked.refusal !== null) throw new Error(checked.refusal);
+        return 0;
+      }
+
       case 'verify-request-check': {
         cliRequire(flags, ['workflow-path', 'host', 'request-file', 'next-step-confidence']);
         const checked = await checkVerifyRequest({
