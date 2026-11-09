@@ -45,7 +45,8 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
       // HP: the persona operation a verb opens and closes (ADR-0068 Decision 2, hold-persona).
       // VR: the verify form and the results on resume (ADR-0068 Decision 5, verify-runbooks).
       // C163: the review attempt of a run that never launched (C163 A1a).
-      ok(/^(?:PC2(?:a[234]|b)|PC3b?|ADR-0067-WP|CP|C130|C120|R4|HP|VR|C163) /.test(d.why), `${d.where}: a change with its reason`);
+      // C176: the critique cap and the verb form's NEXT_STEP_KIND (ADR-0063, amendment of 2026-11-09).
+      ok(/^(?:PC2(?:a[234]|b)|PC3b?|ADR-0067-WP|CP|C130|C120|R4|HP|VR|C163|C176) /.test(d.why), `${d.where}: a change with its reason`);
       if (structural) ok(STRUCTURAL_OPS.includes(d.op), `${d.where}: a known op`);
       else ok(typeof d.from === 'string' && typeof d.to === 'string' && d.from !== d.to && d.from.length > 0, `${d.where}: a string change`);
     }
@@ -286,8 +287,10 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
           const settled = of('peer-runner.mjs', 'settle').length > 0;
           const commit = settled ? index('peer-runner.mjs', 'settle') : index('state.mjs', 'ensemble-commit');
           // The typical finish-verb, the verb form: with dispatch_target on,
-          // the owner-decision form OWNER_GATE selects comes first (C2-M1).
-          const verbForm = of('state.mjs', 'finish-verb').find(([c]) => c.args.some(([f, v]) => f === '--next-step-kind' && v === 'verb'));
+          // the owner-decision form OWNER_GATE selects comes first (C2-M1), and
+          // the commit or done branch NEXT_STEP_KIND selects (C176), read with
+          // its default verb but naming no verb.
+          const verbForm = of('state.mjs', 'finish-verb').find(([c]) => c.args.some(([f, v]) => f === '--next-step-kind' && v === 'verb') && c.args.some(([f]) => f === '--next-step-verb'));
           const terminal = settled || persona === 'engineer' ? (verbForm ? verbForm[1] : index('state.mjs', 'finish-verb')) : index('state.mjs', 'set-terminal');
           // R4 G1: settle, the one judge of the run, is the settled finalize's
           // first write, so its refusal comes before the note is appended.

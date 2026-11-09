@@ -24,7 +24,12 @@ ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "
 - Otherwise refine's work is `carry`, every CRITICAL and MAJOR open in the
   ledger, targeted before or not (and, interactively, the MINOR and
   SUGGESTION findings the user picks). `left_open` findings are the owner's,
-  not refine's. A finding is recurring exactly when it is in `recurring`: a
+  not refine's, and so are `deferred` ones (C176, ADR-0063 amendment of
+  2026-11-09): from a critique's second round a MAJOR on a rare path (a
+  hand-made file, a gap of the same class, a special layout) was recorded as
+  a known limit, its `defer_reason`, and is not fixed here. Fix every
+  CRITICAL, and every MAJOR on a frequent, natural path, test gaps included;
+  a recurring, contested or vetoed finding is never a known limit. A finding is recurring exactly when it is in `recurring`: a
   refine already targeted it and a critique closed since judged it
   unresolved. One in
   `recurring` ends this refine on the `recurring-finding` gate before any fix

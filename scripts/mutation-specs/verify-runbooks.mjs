@@ -125,7 +125,7 @@ export const MUTATIONS = [
   },
   {
     id: 'F7', file: `${ENG}/commands/refine.md`, tests: [T_VR],
-    from: "[ -n \"$OWNER_GATE\" ] || ! grep -Eq '^ {0,3}###[[:blank:]]+(Recurring finding|Routing recommendation|Outward action needed)([[:space:]]|$)' \"$TEXT_DIR/note.md\" 2>/dev/null \\\n",
+    from: "[ -n \"$OWNER_GATE\" ] || ! grep -Eq '^ {0,3}###[[:blank:]]+(Recurring finding|Routing recommendation|Outward action needed|Critique cap reached)([[:space:]]|$)' \"$TEXT_DIR/note.md\" 2>/dev/null \\\n",
     to: 'true || ! false \\\n',
     why: 'an owner gate\'s note with OWNER_GATE empty is taken: a request beside it hides the gate behind next step verify, and the driver runs on_pass past the owner\'s judgment',
     killed_by: /refine: an owner gate \(OWNER_GATE, or its note's heading\) beside a request stops the block before any write/,

@@ -44,7 +44,8 @@ shell source a quote, `$`, backtick or line of it would be read as code
 2. With your file-writing tool, not the shell, create `resolution.txt` in
    that directory, ending with one newline: for Fix now, `Owner decision: fix
    the finding now` with what the owner added; for Defer, `Owner decision:
-   defer the finding` with the reason and where it is tracked. Nothing
+   defer the finding` with the reason and where it is tracked (a rare case
+   the owner rule of 2026-10-25 records as a known limit, C176). Nothing
    deletes it.
 
 Then run the block with `TEXT_DIR` set to that directory; a resolution left

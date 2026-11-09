@@ -58,7 +58,7 @@ for (const persona of personasFor('scripts/state.mjs')) {
   // The suite may run inside an autopilot worker (docket C88); nothing here is
   // one, so no AGENTIC_* variable of the worker reaches a child.
   const cliEnv = () => Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AGENTIC_')));
-  const runCli = (args) => spawnSync(process.execPath, [STATE_PATH, ...args], { encoding: 'utf8', env: cliEnv() });
+  const runCli = (args, extra = {}) => spawnSync(process.execPath, [STATE_PATH, ...args], { encoding: 'utf8', env: { ...cliEnv(), ...extra } });
 
   async function withWorkflow(fn, { verb = 'critique' } = {}) {
     // The temporary directory's own path may hold characters outside the
@@ -129,7 +129,10 @@ for (const persona of personasFor('scripts/state.mjs')) {
       await writeConsensusTask({ workflowPath: wf, runId: 'review-1', text: 'C1' });
       const r = runCli(['finish-verb', '--workflow-path', wf, '--host', 'claude', '--next-action', 'Owner decision',
         '--next-step-kind', 'owner-decision', '--next-step-confidence', 'HIGH',
-        '--owner-gate', 'peer-conflict', '--owner-gate-anchor', 'ensemble-synthesis', '--owner-gate-run-id', 'review-1']);
+        '--owner-gate', 'peer-conflict', '--owner-gate-anchor', 'ensemble-synthesis', '--owner-gate-run-id', 'review-1'],
+        // Under an autopilot run, where a critique is counted (C176); with
+        // dispatch_target off the run is ignored and the write is as before.
+        { AGENTIC_AUTOPILOT: 'autopilot-20261110T000000Z-c176ab' });
       strictEqual(r.status, 0, r.stderr);
       const { frontmatter } = await readWorkflow(wf);
       deepStrictEqual([frontmatter.awaiting_owner_gate, frontmatter.awaiting_owner_run_id, frontmatter.terminal_marker ?? false], ['peer-conflict', 'review-1', false]);
@@ -138,10 +141,16 @@ for (const persona of personasFor('scripts/state.mjs')) {
       // The run id follows every key a release before it wrote, where an older
       // carrier re-emits it in place; only keys added after it (the verify
       // records, the persona operations, the review attempts the settle above
-      // recorded) come later, each also appended at the tail.
-      const later = new Set(['verify_attempt', 'verify_handoff', 'verify_request', 'verify_results', 'persona_operations', 'review_attempts']);
+      // recorded, and the critique cap's count this critique's finish-verb
+      // recorded under an autopilot run where dispatch_target is on, C176) come later, each also
+      // appended at the tail.
+      const rounds = ['critique_rounds', 'critique_rounds_entry'];
+      const later = new Set(['verify_attempt', 'verify_handoff', 'verify_request', 'verify_results', 'persona_operations', 'review_attempts', ...rounds]);
       strictEqual(keys.filter((k) => !later.has(k)).at(-1), 'awaiting_owner_run_id', 'the run id is the last key, where an older carrier re-emits it in place');
-      strictEqual(keys.at(-1), 'review_attempts', 'the review attempts, added after the run id, follow it');
+      strictEqual(keys.filter((k) => !rounds.includes(k)).at(-1), 'review_attempts', 'the review attempts, added after the run id, follow it');
+      const tail = keys.filter((k) => rounds.includes(k));
+      deepStrictEqual(keys.slice(keys.length - tail.length), tail, 'the critique cap keys, added last, are last of all');
+      deepStrictEqual(tail, P.capabilities.dispatch_target ? rounds : [], 'the critique counted once where the cap applies');
       const p = await consensusProposal({ workflowPath: wf });
       deepStrictEqual([p.current, p.gate, p.run_id, p.task_file, p.pointer],
         [true, 'peer-conflict', 'review-1', taskFile(dir, id, 'review-1'), `${P.stateDirRel}/consensus/${id}.review-1.md`]);

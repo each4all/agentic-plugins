@@ -491,8 +491,8 @@ export const MUTATIONS = [
     id: 'O13', tests: [T_S14],
     prepare: (copy, tools) => canonicalDefect(copy, tools, {
       dest: 'scripts/state.mjs',
-      from: "  const autopilot = autopilotMode({ env, host }).active;\n  if (autopilot) {\n    const { frontmatter } = await readWorkflow(workflowPath);\n",
-      to: "  const autopilot = isAutopilotRun(env);\n  if (autopilot) {\n    const { frontmatter } = await readWorkflow(workflowPath);\n",
+      from: "  const autopilot = autopilotMode({ env, host }).active;\n  if (autopilot) {\n    await assertCritiqueCap({ workflowPath, host, nextStep, env });\n    const { frontmatter } = await readWorkflow(workflowPath);\n",
+      to: "  const autopilot = isAutopilotRun(env);\n  if (autopilot) {\n    await assertCritiqueCap({ workflowPath, host, nextStep, env });\n    const { frontmatter } = await readWorkflow(workflowPath);\n",
     }),
     why: "an inherited AGENTIC_AUTOPILOT suppresses a verb's terminal write (the acceptance case)",
   },

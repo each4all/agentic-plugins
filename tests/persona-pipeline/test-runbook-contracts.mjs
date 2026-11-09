@@ -131,9 +131,12 @@ const PROPOSED_ROUND = '/runtime:consensus plan --task-file /s/consensus/w.r.md 
 // (R4 G1: the one judge of the run refuses before anything is written); the
 // consensus variant reads the recorded verdict before the note (R4 J2, J4).
 // The calls before settle: the consensus variant reads this phase's last
-// recorded result there (R4 K2: a conflict no gate names holds any other verdict).
-const preSettle = (verb) => (Object.hasOwn(CONFLICT_GATES, verb) ? ['find-active', 'read'] : ['find-active']);
-const typicalLog = (verb) => (Object.hasOwn(CONFLICT_GATES, verb) ? [...preSettle(verb), 'settle', 'ensemble-verdict', 'append', 'finish-verb'] : ['find-active', 'settle', 'append', 'finish-verb']);
+// recorded result there (R4 K2: a conflict no gate names holds any other verdict),
+// and a critique with dispatch_target on checks the critique cap for its verb
+// form (C176), on any verdict but conflict.
+const capChecked = (verb, persona) => verb === 'critique' && declaration(persona).capabilities?.dispatch_target === true;
+const preSettle = (verb, persona) => (Object.hasOwn(CONFLICT_GATES, verb) ? ['find-active', 'read', ...(capChecked(verb, persona) ? ['critique-cap-check'] : [])] : ['find-active']);
+const typicalLog = (verb, persona) => (Object.hasOwn(CONFLICT_GATES, verb) ? [...preSettle(verb, persona), 'settle', 'ensemble-verdict', 'append', 'finish-verb'] : ['find-active', 'settle', 'append', 'finish-verb']);
 // R4 (C75): a finalize block's head lines, filled the way the agent fills
 // them — the dispatch's directory (here a directory of its own inside the
 // text directory, into which the test writes the runner's result and the
@@ -830,9 +833,10 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               // Decision 5, verify-runbooks), and why no run launched, empty
               // unless none did, and the ensemble type the dispatch ran with or
               // would have, the verb's default unless the agent sets another
-              // (C163 A1a).
+              // (C163 A1a), and with dispatch_target on the verb form's next
+              // step kind, verb unless the agent sets commit or done (C176).
               let at = 0;
-              while (/^(ARGS_DIR|TEXT_DIR|DISPATCH_DIR|READ_DIR|VERDICT|CONFIDENCE|RESOLVE_VERB|PEER|PROMPT_FILE|OP_DIR)='<[^'>]+>'$|^OWNER_GATE=''$|^NO_RUN_REASON=''$|^ATTEMPT_TYPE='[a-z][a-z-]*'$|^CONVERGED="<[^">]+>"$|^# /.test(lines[at] ?? '')) at++;
+              while (/^(ARGS_DIR|TEXT_DIR|DISPATCH_DIR|READ_DIR|VERDICT|CONFIDENCE|RESOLVE_VERB|PEER|PROMPT_FILE|OP_DIR)='<[^'>]+>'$|^OWNER_GATE=''$|^NEXT_STEP_KIND='verb'$|^NO_RUN_REASON=''$|^ATTEMPT_TYPE='[a-z][a-z-]*'$|^CONVERGED="<[^">]+>"$|^# /.test(lines[at] ?? '')) at++;
               // Contract: the agent running a block in a fresh shell — without the
               // persona's own override and cache path the block runs another
               // plugin's scripts, or none. A block nested in a list item is indented.
@@ -865,8 +869,9 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               // its gate with one more finish-verb, which carries the note too.
               // With dispatch_target on, the verify form (ADR-0068 Decision 5) and
               // the owner-decision form OWNER_GATE selects (C2-M1) are two more
-              // finish-verbs, never terminal, each carrying the note too.
-              const verifyForm = declaration(persona).capabilities.dispatch_target === true ? 2 : 0;
+              // finish-verbs, never terminal, each carrying the note too; so
+              // does the verb form's commit or done branch (NEXT_STEP_KIND, C176).
+              const verifyForm = declaration(persona).capabilities.dispatch_target === true ? 3 : 0;
               deepStrictEqual([timing.sites, timing.problems], [(['commands/decide.md', 'commands/refine.md'].includes(dest) ? 2 : 1) + (Object.hasOwn(CONFLICT_GATES, verbOf(dest)) ? 1 : 0) + verifyForm, []], 'each terminal write carries its archive-timing note');
             }
           });
@@ -1881,7 +1886,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               // Every other recorded verdict, and none, takes the typical last write.
               for (const recorded of ['', 'agreed', 'concerns', 'failed', 'degraded']) {
                 const typical = await run(recorded === 'failed' || recorded === 'degraded' || recorded === '' ? 'agreed' : recorded, { recorded });
-                deepStrictEqual([typical.status, typical.log], [0, typicalLog(verb)], `recorded ${recorded || 'nothing'}: the typical last write`);
+                deepStrictEqual([typical.status, typical.log], [0, typicalLog(verb, persona)], `recorded ${recorded || 'nothing'}: the typical last write`);
                 ok(!typical.argv.some((a) => a.includes('--owner-gate')), 'no gate');
               }
               // The recorded verdict and VERDICT disagree: the settle is the only
@@ -1897,12 +1902,12 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               ]) {
                 const how = runDir ? { verdict } : { verdict, launched: false };
                 const mismatch = await runBlock('bash', `${STALE}${finalizeAs(block, how)}`, persona, { note: 'n', active: FOUND, recorded, texts: { ...runResult(), 'contested.md': CONTESTED } });
-                deepStrictEqual([mismatch.status, mismatch.log], [1, ['find-active', 'read', 'settle', 'ensemble-verdict']], `VERDICT ${verdict}, recorded ${recorded || 'nothing'}: ${mismatch.stderr}`);
+                deepStrictEqual([mismatch.status, mismatch.log], [1, [...(verdict === 'conflict' ? ['find-active', 'read'] : preSettle(verb, persona)), 'settle', 'ensemble-verdict']], `VERDICT ${verdict}, recorded ${recorded || 'nothing'}: ${mismatch.stderr}`);
                 ok(mismatch.stderr.includes(`✗ ${says}`), mismatch.stderr);
                 strictEqual(mismatch.note, null, 'no phase note');
                 if (next === null) continue;
                 const again = await run(next, { recorded });
-                deepStrictEqual([again.status, again.log], [0, recorded === 'conflict' ? CONFLICT_LOG : typicalLog(verb)], `the recovery for recorded ${recorded}`);
+                deepStrictEqual([again.status, again.log], [0, recorded === 'conflict' ? CONFLICT_LOG : typicalLog(verb, persona)], `the recovery for recorded ${recorded}`);
               }
               // A conflict without its contested items stops before any write
               // (R4: checked with the other texts), not after the settle.
@@ -1930,7 +1935,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               const region = text.slice(text.indexOf(`<!-- pipeline:begin ${verb}-finalize`), text.indexOf(`<!-- pipeline:end ${verb}-finalize`));
               ok(region.length > 0 && !/consensus round|peer-conflict/.test(region), `${verb}'s finalize region proposes no consensus round`);
               const conflict = await runBlock('bash', `${STALE}${finalizeAs(converged(block, persona, verb), { verdict: 'conflict' })}`, persona, { note: 'n', recorded: 'conflict', active: FOUND, texts: runResult() });
-              deepStrictEqual([conflict.status, conflict.log], [0, typicalLog(verb)], 'a conflict verdict takes the typical last write');
+              deepStrictEqual([conflict.status, conflict.log], [0, typicalLog(verb, persona)], 'a conflict verdict takes the typical last write');
             });
 
             // R4 G1: settle is the block's first write, so its refusal (a run of
@@ -1940,19 +1945,19 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               const block = converged(blockWith(/peer-runner\.mjs" settle \\/).text, persona, verb);
               const passed = await runBlock('bash', `${STALE}${finalizeAs(block)}`, persona, { note: 'n', active: FOUND, texts: runResult() });
               strictEqual(passed.status, 0, passed.stderr);
-              deepStrictEqual(passed.log, typicalLog(verb));
+              deepStrictEqual(passed.log, typicalLog(verb, persona));
               ok(passed.argv[passed.log.indexOf('settle')].includes(` --run-id r --verdict agreed --summary-file ${passed.textDir}/summary.txt`), passed.argv[passed.log.indexOf('settle')]);
               deepStrictEqual(passed.texts.map(([flag]) => flag), ['--summary-file', '--phase-note-file', '--next-action-file', '--next-action-file'], 'settle, the append and the last write each read their file');
               ok(passed.argv.slice(1).every((a) => `${a} `.includes(' --workflow-path /w/active.md ')), 'every call after the find targets the workflow it found');
               // A run the result names, refused by settle: nothing is written.
               const named = await runBlock('bash', finalizeAs(block), persona, { note: 'n', active: FOUND, texts: runResult(), settleStatus: 1 });
-              deepStrictEqual([named.status, named.log], [1, [...preSettle(verb), 'settle']], 'a refused settle of the named run writes nothing');
+              deepStrictEqual([named.status, named.log], [1, [...preSettle(verb, persona), 'settle']], 'a refused settle of the named run writes nothing');
               ok(named.argv[named.log.indexOf('settle')].includes(' --run-id r --verdict agreed '), named.argv[named.log.indexOf('settle')]);
               // No run launched: an empty DISPATCH_DIR is the empty id, which
               // settle judges (it refuses one that would hide an attempt the
               // ledger holds); the block reads no pending entry for it (R4 H1).
               const refused = await runBlock('bash', finalizeAs(block, { launched: false }), persona, { note: 'n', active: FOUND, settleStatus: 1, readOutput: JSON.stringify({ pending_ensemble: [{ phase: verb, run_id: 'pending' }] }) });
-              deepStrictEqual([refused.status, refused.log], [1, [...preSettle(verb), 'settle']], 'a refused settle of the empty id writes nothing');
+              deepStrictEqual([refused.status, refused.log], [1, [...preSettle(verb, persona), 'settle']], 'a refused settle of the empty id writes nothing');
               ok(refused.argv[refused.log.indexOf('settle')].includes(' --run-id  --verdict agreed '), `no run launched, the empty id: ${refused.argv[refused.log.indexOf('settle')]}`);
             });
 
@@ -1972,7 +1977,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               }
               for (const confidence of ['HIGH', 'MEDIUM', 'LOW']) {
                 const r = await runBlock('bash', `${STALE}${finalizeAs(converged(block, persona, verb), { confidence })}`, persona, { note: 'n', active: FOUND, texts: runResult() });
-                deepStrictEqual([r.status, r.log], [0, typicalLog(verb)], `confidence ${confidence}: ${r.stderr}`);
+                deepStrictEqual([r.status, r.log], [0, typicalLog(verb, persona)], `confidence ${confidence}: ${r.stderr}`);
                 ok(r.argv[r.log.indexOf('finish-verb')].includes(` --next-step-confidence ${confidence}`), r.argv.join('\n'));
               }
               if (!convergent(persona, verb)) {
@@ -1991,7 +1996,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               }
               // Converged, the resolving step is not read.
               const yes = await runBlock('bash', `${STALE}${finalizeAs(converged(block, persona, verb, 'yes'), { resolve: null })}`, persona, { note: 'n', active: FOUND, texts: runResult() });
-              deepStrictEqual([yes.status, yes.log], [0, typicalLog(verb)], yes.stderr);
+              deepStrictEqual([yes.status, yes.log], [0, typicalLog(verb, persona)], yes.stderr);
             });
 
             // R4 K2, L1, L2 (the owner's J2 ruling and its Fix now of
@@ -2087,7 +2092,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               ];
               for (const [why, readOutput, opts] of released) {
                 const r = await runBlock('bash', `${STALE}${finalizeAs(block, { launched: false })}`, persona, { note: 'n', active: FOUND, readOutput, ...opts });
-                deepStrictEqual([r.status, r.log], [0, typicalLog(verb)], `${why}: ${r.stderr}`);
+                deepStrictEqual([r.status, r.log], [0, typicalLog(verb, persona)], `${why}: ${r.stderr}`);
               }
               // A conflict whose id could never name a gate (a run settled by
               // hand under such an id) is held too, and named the owner's: no
@@ -2124,7 +2129,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               const id = `${verb}-20261017T000000Z-0a0b0c`;
               const row = (runId = id, phase = verb) => ({ phase, ensemble_type: 'fixture', run_id: runId, started_at: '2026-10-17T00:00:00Z' });
               const runs = (pending) => JSON.stringify({ workflow_id: 'w', pending_ensemble: pending, ensemble_results: [] });
-              const rest = typicalLog(verb).slice(1);
+              const rest = typicalLog(verb, persona).slice(1);
               const LEDGER = `"$TEXT_DIR/peer-runs/${id}"`;
               const ledger = (runId = id, { workflow = FOUND, at = id, handle } = {}) => ({
                 [`peer-runs/${at}/handle.json`]: handle ?? `${JSON.stringify({ run_id: runId, kind: 'ensemble', phase: verb, workflow_path: workflow })}\n`,
@@ -2270,7 +2275,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               const block = converged(blockWith(/peer-runner\.mjs" settle \\/).text, persona, verb);
               for (const shell of SHELLS) {
                 const r = await runBlock(shell, `${STALE}${finalizeAs(block)}`, persona, { note: 'n', active: FOUND, texts: runResult(`${verb}-20261017T000000Z-0a0b0c`) });
-                deepStrictEqual([r.status, r.log], [0, typicalLog(verb)], `${shell}: ${r.stderr}`);
+                deepStrictEqual([r.status, r.log], [0, typicalLog(verb, persona)], `${shell}: ${r.stderr}`);
                 ok(r.argv[r.log.indexOf('settle')].includes(` settle --repo-root `) && r.argv[r.log.indexOf('settle')].includes(` --workflow-path /w/active.md `) && r.argv[r.log.indexOf('settle')].includes(` --run-id ${verb}-20261017T000000Z-0a0b0c --verdict agreed `), `${shell}: ${r.argv.join('\n')}`);
               }
               const filled = (verdict = true, dir = true) => {
@@ -2326,14 +2331,14 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               for (const shell of SHELLS) {
                 for (const [why, opts] of go) {
                   const r = await runBlock(shell, `${STALE}${block}`, persona, { note: 'n', active: FOUND, ...opts });
-                  deepStrictEqual([r.status, r.log], [0, typicalLog(verb)], `${shell}, ${why}: ${r.stderr}`);
+                  deepStrictEqual([r.status, r.log], [0, typicalLog(verb, persona)], `${shell}, ${why}: ${r.stderr}`);
                   settled(r);
                 }
               }
               // settle refuses the recorded run (still live, of another phase, or
               // with no ledger and not pending): nothing is written.
               const refused = await runBlock('bash', `${STALE}${block}`, persona, { note: 'n', active: FOUND, texts: empty(), settleStatus: 1 });
-              deepStrictEqual([refused.status, refused.log], [1, [...preSettle(verb), 'settle']], `a refused settle writes nothing: ${refused.stderr}`);
+              deepStrictEqual([refused.status, refused.log], [1, [...preSettle(verb, persona), 'settle']], `a refused settle writes nothing: ${refused.stderr}`);
               settled(refused);
               const missing = 'prompt.xml.dispatch.json there is missing, malformed or names another run';
               const stops = [
@@ -2877,7 +2882,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
                 const texts = { 'note.md': `${HOSTILE_NOTE}\n`, 'summary.txt': `${HOSTILE_SUMMARY}\n`, 'next-action.txt': `${HOSTILE_NEXT}\n` };
                 const ok_ = await runBlock(shell, finalizeAs(block), persona, { active: FOUND, texts: { ...texts, ...runResult() } });
                 strictEqual(ok_.status, 0, ok_.stderr);
-                deepStrictEqual(ok_.log, typicalLog(verb));
+                deepStrictEqual(ok_.log, typicalLog(verb, persona));
                 strictEqual(ok_.note, texts['note.md'], 'the note reached state.mjs unread by the shell');
                 deepStrictEqual(ok_.texts, [['--summary-file', texts['summary.txt']], ['--phase-note-file', texts['note.md']], ['--next-action-file', texts['next-action.txt']], ['--next-action-file', texts['next-action.txt']]], 'each script read the file the agent wrote');
                 deepStrictEqual(ok_.sideEffects, [], 'nothing in the texts ran');
@@ -2897,7 +2902,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
                 strictEqual(failed.status, 7, 'the block exits with the append\'s status');
                 // settle has recorded the run; the block run again records nothing
                 // more for it, and the append then writes the note.
-                deepStrictEqual(failed.log, typicalLog(verb).slice(0, -1), 'no later write ran');
+                deepStrictEqual(failed.log, typicalLog(verb, persona).slice(0, -1), 'no later write ran');
               });
             }
           }

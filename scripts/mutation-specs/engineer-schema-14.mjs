@@ -123,8 +123,8 @@ export const MUTATIONS = [
   },
   {
     id: 'W8', file: STATE, tests: [T14],
-    from: "    applyNextStepWrite(frontmatter, nextStepWrite, { dropVerify: dropVerifyRequest });\n    frontmatter.updated_at = nowIso;",
-    to: "    applyNextStepWrite(frontmatter, nextStepWrite, { dropVerify: dropVerifyRequest });\n    frontmatter.schema = SCHEMA_VERSION;\n    frontmatter.updated_at = nowIso;",
+    from: "    applyNextStepWrite(frontmatter, nextStepWrite, { dropVerify: dropVerifyRequest });\n    if (countCritique) countCritiqueRound(frontmatter, body, { env, host, nextStep });\n    frontmatter.updated_at = nowIso;",
+    to: "    applyNextStepWrite(frontmatter, nextStepWrite, { dropVerify: dropVerifyRequest });\n    if (countCritique) countCritiqueRound(frontmatter, body, { env, host, nextStep });\n    frontmatter.schema = SCHEMA_VERSION;\n    frontmatter.updated_at = nowIso;",
     why: 'set-terminal silently promotes a 1.3 file to 1.4',
   },
 

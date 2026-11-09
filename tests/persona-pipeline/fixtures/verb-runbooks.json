@@ -9007,6 +9007,155 @@
       "from": "--run-id",
       "to": "$@",
       "why": "C163 A2b (ADR-0069 Decision 1, item 6): a review's dispatch records its subject with --subject-file when the agent wrote subject.json; the flag is a positional parameter (\"$@\", no array: the block runs in any POSIX shell), set only when the installed peer-runner names it, so an older runner dispatches as before"
+    },
+    {
+      "op": "insert-call",
+      "where": "call:state.mjs finish-verb#1",
+      "from": "state.mjs finish-verb",
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--operation-dir",
+            "<the operation directory the Phase 0 block printed as OP_DIR; empty when it printed none>"
+          ],
+          [
+            "--next-action-file",
+            "<directory from step 1>/next-action.txt"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ]
+        ]
+      },
+      "runbooks": [
+        "engineer/compose",
+        "engineer/critique",
+        "engineer/decide",
+        "engineer/frame",
+        "engineer/investigate",
+        "engineer/refine"
+      ],
+      "why": "C176 (ADR-0063 amendment of 2026-11-09): with dispatch_target on, the verb form's next step is NEXT_STEP_KIND, verb unless the agent sets commit or done; the commit or done branch is one more finish-verb, after the owner-decision form, which the characterization reads with the variable's default, verb, and no --next-step-verb."
+    },
+    {
+      "op": "insert-call",
+      "where": "call:state.mjs read#1",
+      "from": "peer-runner.mjs settle",
+      "to": {
+        "script": "state.mjs",
+        "sub": "critique-cap-check",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "refine"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ]
+        ]
+      },
+      "runbooks": [
+        "engineer/critique"
+      ],
+      "why": "C176 (ADR-0063 amendment of 2026-11-09): with dispatch_target on, the consensus finalize checks the critique cap before settle, for the verb form's next step (refine); the check runs in critique only (its guard names the verb), and refuses only under an autopilot run."
+    },
+    {
+      "op": "insert-call",
+      "where": "call:state.mjs read#1",
+      "from": "peer-runner.mjs settle",
+      "to": {
+        "script": "state.mjs",
+        "sub": "critique-cap-check",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "compose"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ]
+        ]
+      },
+      "runbooks": [
+        "engineer/decide"
+      ],
+      "why": "C176 (ADR-0063 amendment of 2026-11-09): with dispatch_target on, the consensus finalize checks the critique cap before settle, for the verb form's next step (compose); the check runs in critique only (its guard names the verb), and refuses only under an autopilot run."
+    },
+    {
+      "op": "insert-call",
+      "where": "call:state.mjs read#1",
+      "from": "peer-runner.mjs settle",
+      "to": {
+        "script": "state.mjs",
+        "sub": "critique-cap-check",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "frame"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ]
+        ]
+      },
+      "runbooks": [
+        "engineer/investigate"
+      ],
+      "why": "C176 (ADR-0063 amendment of 2026-11-09): with dispatch_target on, the consensus finalize checks the critique cap before settle, for the verb form's next step (frame); the check runs in critique only (its guard names the verb), and refuses only under an autopilot run."
     }
   ],
   "runbooks": {

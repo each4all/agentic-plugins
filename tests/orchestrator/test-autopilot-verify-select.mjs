@@ -1125,7 +1125,7 @@ describe('verify-select — on this repository', () => {
     // its importers: measured 2026-10-21, budget.mjs selects 62 of 249 tests
     // and policy.mjs 67, in about 4.5 s of CPU each (before the plugin walks
     // counted, 48 and 53 under a bound of a quarter). Text read as an edge
-    // selected about 223 for any change. The time is the process's CPU time,
+    // selected about 223 for any change. The time is calling-thread CPU time,
     // not the wall clock, which test files running in parallel stretch
     // (11.5-12.7 s observed for a 10 s run). After #990 the ADR selects 8:
     // four of them are the heavy-lock tests, which run the real mutation
@@ -1154,12 +1154,19 @@ describe('verify-select — on this repository', () => {
     // the scheduler): 105 of 307. The selection grows with the autopilot's
     // own tests, so the bound is two fifths: text read as an edge, the defect
     // it is for, selects nine tenths.
+    // The time is this thread's CPU (process.threadCpuUsage), not the
+    // process's: V8's helper threads, whose number follows the machine's
+    // cores, add their time to process.cpuUsage. Measured 2026-11-10 on an
+    // 88-thread machine (Node 24.18.0), budget.mjs alone took 12.2 s of
+    // process CPU and 6.9 s of this thread's, against 7.0 s of wall clock;
+    // the parent commit, unchanged, took 12.1 s of process CPU, so the bound
+    // failed with no change of the selection.
     const tree = fsTree(REPO_ROOT);
     const all = vs.discoverTests(tree).length;
     const run = (p) => {
-      const c0 = process.cpuUsage();
+      const c0 = process.threadCpuUsage();
       const r = vs.selectChecks({ tree, base: tree, declaration: DECL, changes: changed(p) });
-      const c = process.cpuUsage(c0);
+      const c = process.threadCpuUsage(c0);
       return { r, ms: Math.round((c.user + c.system) / 1000) };
     };
     for (const p of ['plugins/orchestrator/adapters/claude/autopilot/budget.mjs', 'plugins/orchestrator/adapters/claude/autopilot/policy.mjs']) {

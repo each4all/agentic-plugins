@@ -351,6 +351,62 @@ for (const persona of PERSONAS.filter((p) => personaInfo(p).capabilities.dispatc
       });
     });
 
+    // C176 — the critique cap is checked before settle, the first write: a
+    // critique at its cap (a limit of 1, its first round in progress) whose
+    // verb form or request would start another round stops the block with
+    // nothing written; commit and the critique-cap gate proceed.
+    it('critique: at the cap under autopilot, the verb form or a request whose on_pass is a verb stops the block before settle; commit (NEXT_STEP_KIND) and the critique-cap gate proceed', async () => {
+      const capOne = async (wf) => {
+        const t = await readFile(wf, 'utf8');
+        const end = t.indexOf('\n---\n');
+        await writeFile(wf, `${t.slice(0, end)}\ncritique_round_limit: 1${t.slice(end)}`);
+      };
+      await withRepo(async ({ dir, sha, wf, area }) => {
+        await capOne(wf);
+        const { opDir } = resume(dir, 'critique', offer(sha));
+        const before = await readFile(wf, 'utf8');
+        for (const files of [{}, { 'verify-request.json': { ...REQ, on_pass: { kind: 'verb', verb: 'refine', confidence: 'HIGH' } } }]) {
+          const tdir = await textDir(area, texts(files));
+          const r = runBlock(dir, finalize('critique', { tdir, opDir }), offer(sha));
+          strictEqual(r.status, 1, r.stderr);
+          ok(/round 1 of the subtask's critique cap 1/.test(r.stderr), r.stderr);
+          strictEqual(await readFile(wf, 'utf8'), before, `${Object.keys(files)}: nothing was written`);
+        }
+        const tdir = await textDir(area, texts({ 'next-action.txt': 'Commit the change' }));
+        const r = runBlock(dir, fill(finalize('critique', { tdir, opDir }), "NEXT_STEP_KIND='verb'", "NEXT_STEP_KIND='commit'"), offer(sha));
+        strictEqual(r.status, 0, r.stderr);
+        const fm = await front(wf);
+        deepStrictEqual([fm.next_step_kind, fm.next_step_verb, fm.critique_rounds, fm.terminal_marker === true], ['commit', undefined, 1, false]);
+      });
+      await withRepo(async ({ dir, sha, wf, area }) => {
+        await capOne(wf);
+        const { opDir } = resume(dir, 'critique', offer(sha));
+        const tdir = await textDir(area, texts({ 'note.md': '### Ensemble synthesis: fixture\n\n### Critique cap reached\n\nOwner: grant rounds or accept', 'next-action.txt': 'Owner: grant rounds or accept' }));
+        const r = runBlock(dir, withGate(finalize('critique', { tdir, opDir }), 'critique-cap'), offer(sha));
+        strictEqual(r.status, 0, r.stderr);
+        const fm = await front(wf);
+        deepStrictEqual([fm.next_step_kind, fm.awaiting_owner_gate, fm.awaiting_owner_pointer?.endsWith('#critique-cap'), fm.critique_rounds], ['owner-decision', 'critique-cap', true, 1]);
+      });
+    });
+
+    // C176 — NEXT_STEP_KIND selects the verb form's commit or done branch in
+    // every finalize template, and the critique cap check stays out of the
+    // other verbs.
+    for (const verb of ['compose', 'refine', 'decide']) {
+      it(`${verb}: NEXT_STEP_KIND commit or done ends the verb form with that next step and no verb`, async () => {
+        for (const kind of ['commit', 'done']) {
+          await withRepo(async ({ dir, sha, wf, area }) => {
+            const { opDir } = resume(dir, verb, offer(sha));
+            const tdir = await textDir(area, texts({ 'next-action.txt': `Next: ${kind}` }));
+            const r = runBlock(dir, fill(finalize(verb, { tdir, opDir }), "NEXT_STEP_KIND='verb'", `NEXT_STEP_KIND='${kind}'`), offer(sha));
+            strictEqual(r.status, 0, r.stderr);
+            const fm = await front(wf);
+            deepStrictEqual([fm.next_step_kind, fm.next_step_verb, fm.terminal_marker === true, 'critique_rounds' in fm], [kind, undefined, false, false]);
+          });
+        }
+      });
+    }
+
     // The verify form's usual case: a verb whose peer ran (Plan-verify,
     // Review, Refine-verify) ends with a request. The check sets aside the run
     // the block settles first, and only that one.

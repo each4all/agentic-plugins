@@ -298,6 +298,10 @@ describe('owner-gate anchors', () => {
       'scope-routing': 'routing-recommendation',
       'staging-set': 'phase7-plan',
       'pr-handling': 'pr-handling',
+      // C176 — dispatch_target's, as pr-handling; critique's finalize records
+      // it from OWNER_GATE (its case arm), the critique command's Autopilot
+      // section names it.
+      'critique-cap': 'critique-cap',
     });
     const used = [];
     // PC3 U7: a generated finalize names each gate it can end with in a bullet
