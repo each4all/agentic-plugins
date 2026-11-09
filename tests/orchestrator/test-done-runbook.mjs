@@ -10,7 +10,7 @@
 // fake on PATH.
 
 import { describe, it, before } from 'node:test';
-import { deepStrictEqual, strictEqual, notStrictEqual, ok, rejects } from 'node:assert/strict';
+import { deepStrictEqual, match, strictEqual, notStrictEqual, ok, rejects } from 'node:assert/strict';
 import { mkdtemp, rm, writeFile, mkdir, chmod, readFile, rename, symlink } from 'node:fs/promises';
 import { existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -65,6 +65,7 @@ function typedArguments(vars, reason) {
   if (vars.correct) parts.push('--correct');
   if (vars.no_commit) parts.push('--no-commit');
   if (vars.waive_dispatch) parts.push('--waive-dispatch');
+  if (vars.accept_landed_change) parts.push('--accept-landed-change');
   if (vars.workflow) parts.push(`--workflow=${vars.workflow}`);
   if (vars.integration_branch) parts.push(`--integration-branch=${vars.integration_branch}`);
   if (reason !== null) parts.push(reason);
@@ -445,6 +446,58 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
       ok(body.includes(`commit: "${squash}" -> "${later}"`), body);
       ok(body.includes(`Reason: ${reason}`), body);
       strictEqual(existsSync(marker), false, 'the reason is never evaluated by the shell');
+    });
+  });
+
+  // C163 A2b (ADR-0069 Decision 3) — a landing that differs from what was
+  // reviewed has landed: it is not recorded until the owner says what follows.
+  // The engineer answering here is a stub that prints the comparison.
+  it('a landing that differs is refused; --accept-landed-change with a reason records it, and the macro says so', async () => {
+    await withFixture(async ({ done, macroPath, dir }) => {
+      const root = join(dir, 'stub-engineer');
+      await mkdir(join(root, 'scripts'), { recursive: true });
+      await mkdir(join(root, '.claude-plugin'), { recursive: true });
+      await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'engineer', version: '9.9.9' }));
+      await writeFile(join(root, 'scripts', 'state.mjs'), `process.stdout.write(JSON.stringify({ kind: 'landed', state: process.env.STUB_STATE, reason: process.env.STUB_STATE === 'different' ? null : 'no-committed-comparison:abc', failures: [{ path: 'pkg/x', why: 'differs', by: ['r1'] }] }));\n`);
+      const env = { AGENTIC_ENGINEER_ROOT: root, STUB_STATE: 'different' };
+      const refused = await done({}, { env });
+      strictEqual(refused.status, 1, refused.stderr);
+      match(refused.stderr, /is not the change reviewed: pkg\/x/);
+      strictEqual((await readWorkflow(macroPath)).frontmatter.plan.subtasks[0].status, 'in_progress');
+      const bare = await done({ accept_landed_change: true }, { env });
+      strictEqual(bare.status, 1);
+      ok(/need a reason/.test(bare.stderr), bare.stderr);
+      // Under an autopilot run the acceptance is the owner's alone: a worker
+      // rerunning done with it and a reason it wrote is refused at the write,
+      // and nothing is recorded (critique of 2026-11-08, MAJOR 1).
+      const worker = await done({ accept_landed_change: true }, { env: { ...env, AGENTIC_AUTOPILOT: 'autopilot-20261108T000000Z-abcdef' }, reason: 'a worker wrote this' });
+      strictEqual(worker.status, 1, worker.stderr);
+      match(worker.stderr, /--accept-landed-change refused under autopilot/);
+      strictEqual((await readWorkflow(macroPath)).frontmatter.plan.subtasks[0].status, 'in_progress');
+      const r = await done({ accept_landed_change: true }, { env, reason: 'the owner read the difference' });
+      strictEqual(r.status, 0, r.stderr);
+      const { frontmatter, body } = await readWorkflow(macroPath);
+      strictEqual(frontmatter.plan.subtasks[0].status, 'completed');
+      ok(body.includes('Landed change differs from what was reviewed (pkg/x)'), body);
+      // --correct is another thing: it does not stand for the owner's word on this.
+      const corrected = await done({ correct: true }, { env, reason: 'a correction' });
+      strictEqual(corrected.status, 1, corrected.stderr);
+      match(corrected.stderr, /is not the change reviewed/);
+    });
+  });
+
+  it('a landing that cannot be compared is recorded, and the macro says why', async () => {
+    await withFixture(async ({ done, macroPath, dir }) => {
+      const root = join(dir, 'stub-engineer');
+      await mkdir(join(root, 'scripts'), { recursive: true });
+      await mkdir(join(root, '.claude-plugin'), { recursive: true });
+      await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'engineer', version: '9.9.9' }));
+      await writeFile(join(root, 'scripts', 'state.mjs'), `process.stdout.write(JSON.stringify({ kind: 'landed', state: 'not-comparable', reason: 'no-committed-comparison:abc', failures: [] }));\n`);
+      const r = await done({}, { env: { AGENTIC_ENGINEER_ROOT: root } });
+      strictEqual(r.status, 0, r.stderr);
+      const { frontmatter, body } = await readWorkflow(macroPath);
+      strictEqual(frontmatter.plan.subtasks[0].status, 'completed');
+      ok(body.includes('Landed change not compared with its reviews: no-committed-comparison:abc'), body);
     });
   });
 
@@ -834,6 +887,23 @@ for (const [shell, installed] of DONE_SHELLS) for (const [variant, label] of VAR
       await rejects(updateSubtask(base), /--waive-dispatch requires a non-empty reason/);
       await rejects(updateSubtask({ ...base, reason: 'gone', engineerWorkflowId: undefined }), /--waive-dispatch names no owner/);
       await rejects(updateSubtask({ ...base, reason: 'gone', expectDispatch: { macro: 'm', subtask: 'A', branch: 'feat/a' } }), /not both/);
+      strictEqual(await readFile(macroPath, 'utf8'), before);
+    });
+  });
+
+  // ADR-0063 Q2, ADR-0069 Decision 3 — the owner's overrides are refused at the
+  // write under an autopilot run, each on its own, before anything is written;
+  // with no run named, the acceptance still needs its reason and its commit.
+  claudeOnly('the owner\'s overrides are refused under an autopilot run, and the acceptance needs a reason and a commit (updateSubtask)', async () => {
+    await withFixture(async ({ macroPath, squash }) => {
+      const before = await readFile(macroPath, 'utf8');
+      const run = { AGENTIC_AUTOPILOT: 'autopilot-20261108T000000Z-abcdef' };
+      const base = { workflowPath: macroPath, subtaskId: 'A', host: 'claude', engineerWorkflowId: ENGINEER_ID, status: 'completed', commit: squash, closedAt: '2026-10-09T00:00:00Z', reason: 'a worker wrote this' };
+      for (const [opt, flag] of [['waiveDispatch', '--waive-dispatch'], ['waiveTold', '--waive-told'], ['acceptLandedChange', '--accept-landed-change']]) {
+        await rejects(updateSubtask({ ...base, [opt]: true, env: run }), new RegExp(`${flag} refused under autopilot`));
+      }
+      await rejects(updateSubtask({ ...base, acceptLandedChange: true, reason: undefined, env: {} }), /--accept-landed-change requires a non-empty reason/);
+      await rejects(updateSubtask({ ...base, acceptLandedChange: true, commit: undefined, env: {} }), /--accept-landed-change applies only to a completion with its landed commit/);
       strictEqual(await readFile(macroPath, 'utf8'), before);
     });
   });

@@ -2097,8 +2097,8 @@ export const MUTATIONS = [
     // C134(a): the exclusion moved from the block to done's argument grammar,
     // which both hosts' blocks call.
     id: 'A30', file: 'plugins/orchestrator/scripts/lib/command-args.mjs', tests: [T_DONE_RUNBOOK],
-    from: "    const clash = ['pr', 'commit', 'correct'].filter((name) => given.has(name));",
-    to: "    const clash = ['pr', 'correct'].filter((name) => given.has(name));",
+    from: "    const clash = ['pr', 'commit', 'correct', 'accept-landed-change'].filter((name) => given.has(name));",
+    to: "    const clash = ['pr', 'correct', 'accept-landed-change'].filter((name) => given.has(name));",
     why: "done takes --no-commit with --commit, and completes without the commit it was given",
     killed_by: /--no-commit excludes --commit/,
   },

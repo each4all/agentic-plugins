@@ -18,7 +18,11 @@
    subcommand on Codex) so its own analysis proceeds in parallel. The
    runner runs in the foreground of that background task, never behind a
    shell `&`, which would detach it where the host can neither track it
-   nor notify you when it exits.
+   nor notify you when it exits. For a review type, write beside the prompt
+   what you put in the reviewer's subject, `subject.json`
+   (`{"shown": [...], "covered": [...]}`, repository-relative paths; `covered`
+   are those shown at the content the working tree holds now), and pass it with
+   `--subject-file`: a review with no subject vouches for nothing (ADR-0069).
 
    The peer, claude or codex, never works in the checkout: the runner
    gives it a snapshot of HEAD plus the working tree and the index

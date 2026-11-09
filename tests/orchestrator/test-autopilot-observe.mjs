@@ -10,7 +10,7 @@
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
-import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import fs, { mkdirSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -335,6 +335,163 @@ describe('observe from a linked worktree (ADR-0067 Decision 1)', () => {
       writeFileSync(join(third, '.agentic-plugins/state/engineer/workflows'), 'not a directory');
       const v = lookFrom(fx, lane);
       ok(/cannot list .*\/third\/\.agentic-plugins\/state\/engineer\/workflows: ENOTDIR/.test(v.claimsError ?? ''), String(v.claimsError));
+    });
+  });
+
+  // A workflow file found by a scan and gone when read moved meanwhile (a
+  // step that commits archives its child at any time, in another lane too):
+  // the reader looks again from a fresh discovery, and only a file still there
+  // when its read failed, or one that keeps moving, is an error. The engineer
+  // CLI here wraps the real one; on the read of VANISH_PATH it first, by
+  // VANISH_MODE: `move` moves the file out of every home, `rename` renames it
+  // in its home, `unlink` removes it (a link), `archive` moves it to
+  // VANISH_ARCHIVE, `chase` renames whatever file of that home is read, every
+  // time, and `fail` leaves it and fails the read (the control).
+  const FAKE_ENG = [
+    "import { spawnSync } from 'node:child_process';",
+    "import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';",
+    "import { dirname, resolve } from 'node:path';",
+    'const real = (p) => { try { return realpathSync(p); } catch { return resolve(p); } };',
+    'const there = (p) => { try { lstatSync(p); return true; } catch { return false; } };',
+    // Which read of the target it acts on, by count (VANISH_NTH, default 1).
+    "const nth = () => { const c = process.env.VANISH_COUNT; const n = (existsSync(c) ? Number(readFileSync(c, 'utf8')) : 0) + 1; writeFileSync(c, String(n)); return n === Number(process.env.VANISH_NTH ?? 1); };",
+    'const args = process.argv.slice(2);',
+    "const at = args.indexOf('--workflow-path');",
+    'const target = process.env.VANISH_PATH;',
+    "const file = args[0] === 'read' && at >= 0 ? args[at + 1] : null;",
+    'const mode = process.env.VANISH_MODE;',
+    "if (file && mode === 'chase' && real(dirname(file)) === real(dirname(target)) && file.endsWith('.md') && existsSync(file)) {",
+    "  renameSync(file, file.replace(/\\.md$/, '-m.md'));",
+    '} else if (file && there(file) && there(target) && real(file) === real(target) && nth()) {',
+    "  if (mode === 'fail') { process.stderr.write('simulated: the read failed\\n'); process.exit(1); }",
+    "  if (mode === 'move') renameSync(file, file + '.archived');",
+    "  if (mode === 'rename') renameSync(file, file.replace(/\\.md$/, '-renamed.md'));",
+    "  if (mode === 'unlink') unlinkSync(file);",
+    "  if (mode === 'archive') { mkdirSync(dirname(process.env.VANISH_ARCHIVE), { recursive: true }); renameSync(file, process.env.VANISH_ARCHIVE); }",
+    '}',
+    "const r = spawnSync(process.execPath, [process.env.REAL_ENG_CLI, ...args], { stdio: 'inherit' });",
+    'process.exit(r.status ?? 1);',
+    '',
+  ].join('\n');
+  const racingLook = (fx, vars) => {
+    const fake = join(fx.dir, 'eng-race');
+    mkdirSync(join(fake, 'scripts'), { recursive: true });
+    writeFileSync(join(fake, 'scripts', 'state.mjs'), FAKE_ENG);
+    const env = { ...fx.env, ...vars, VANISH_COUNT: join(fake, 'reads'), REAL_ENG_CLI: join(fx.roots.engineer, 'scripts', 'state.mjs') };
+    return observe({ repoRoot: fx.work, roots: { ...fx.roots, engineer: fake }, macroId: null, fetch: false, env });
+  };
+  const claimElsewhere = async (fx) => (await fx.eng.createWorkflow({
+    repoRoot: fx.work, verb: 'compose', host: 'claude', originalRequest: 'x',
+    gitBaseline: { branch: 'feat/elsewhere', head: fx.git('rev-parse', 'HEAD'), status_digest: '' },
+    parentWorkflow: fx.macroId, originatingSubtask: 'A',
+  })).filePath;
+  const claimRacing = (mode) => withRepo(async (fx) => {
+    const filePath = await claimElsewhere(fx);
+    return { v: racingLook(fx, { VANISH_PATH: filePath, VANISH_MODE: mode }), filePath };
+  });
+
+  it('a claim archived between the listing and its read is no claim, never a claims error', async () => {
+    const { v } = await claimRacing('move');
+    strictEqual(v.claimsError, null);
+    deepStrictEqual(v.claims, []);
+  });
+
+  it('a claim renamed in its home between the listing and its read is still a claim, under its new name', async () => {
+    const { v, filePath } = await claimRacing('rename');
+    strictEqual(v.claimsError, null);
+    deepStrictEqual(v.claims.map((c) => [c.originating_subtask, basename(c.path)]), [['A', basename(filePath).replace(/\.md$/, '-renamed.md')]]);
+  });
+
+  it('a link removed during its read never hides the claim it pointed to', async () => {
+    await withRepo(async (fx) => {
+      const filePath = await claimElsewhere(fx);
+      // Listed first (sorted), read first, removed during that read.
+      const link = join(dirname(filePath), '0-link.md');
+      symlinkSync(filePath, link);
+      const v = racingLook(fx, { VANISH_PATH: link, VANISH_MODE: 'unlink' });
+      strictEqual(v.claimsError, null);
+      deepStrictEqual(v.claims.map((c) => [c.originating_subtask, basename(c.path)]), [['A', basename(filePath)]]);
+    });
+  });
+
+  it('a claim that keeps moving while it is listed is a claims error, never no claim', async () => {
+    const { v } = await claimRacing('chase');
+    ok(/kept moving while they were listed/.test(v.claimsError ?? ''), String(v.claimsError));
+  });
+
+  it('a claim whose read fails while the file stays is a claims error, never no claim', async () => {
+    const { v } = await claimRacing('fail');
+    ok(/simulated: the read failed/.test(v.claimsError ?? ''), String(v.claimsError));
+    ok(!/kept moving/.test(v.claimsError), 'a file still there when its read failed is no move');
+  });
+
+  it('an active child archived between its discovery and its read is found archived, never an error', async () => {
+    await withRepo(async (fx) => {
+      const c = await fx.dispatch('A');
+      const archive = join(fx.work, '.agentic-plugins/state/engineer/archive', basename(c.path));
+      const v = racingLook(fx, { VANISH_PATH: c.path, VANISH_MODE: 'archive', VANISH_ARCHIVE: archive });
+      strictEqual(v.children.A.location, 'archived', JSON.stringify(v.children.A));
+      strictEqual(v.claimsError, null);
+    });
+  });
+
+  it("a workflow of the checked-out branch archived between its discovery and its read is no foreign workflow", async () => {
+    await withRepo(async (fx) => {
+      const { filePath } = await fx.eng.createWorkflow({
+        repoRoot: fx.work, verb: 'compose', host: 'claude', originalRequest: 'x',
+        gitBaseline: { branch: 'main', head: fx.git('rev-parse', 'HEAD'), status_digest: '' },
+      });
+      // The claims listing reads it first; the second read is the one after
+      // find-active found it on the checked-out branch.
+      const v = racingLook(fx, { VANISH_PATH: filePath, VANISH_MODE: 'move', VANISH_NTH: '2' });
+      strictEqual(v.foreign, null, JSON.stringify(v.foreign));
+    });
+  });
+
+  // Before the read: an entry whose real path is missing is skipped only as a
+  // link whose target is missing. The look's own fs calls are doctored here,
+  // in process, for the entry named `name`, and restored after.
+  const doctoredLook = async (fx, look, name, { realpath, lstat } = {}) => {
+    const orig = { realpathSync: fs.realpathSync, lstatSync: fs.lstatSync };
+    let realpathFails = realpath ?? 0;
+    fs.realpathSync = (p, ...rest) => {
+      if (basename(String(p)) === name && realpathFails > 0) {
+        realpathFails -= 1;
+        throw Object.assign(new Error(`ENOENT: simulated, realpath '${p}'`), { code: 'ENOENT' });
+      }
+      return orig.realpathSync(p, ...rest);
+    };
+    fs.lstatSync = (p, ...rest) => {
+      if (basename(String(p)) === name && lstat) throw Object.assign(new Error(`${lstat}: simulated, lstat '${p}'`), { code: lstat });
+      return orig.lstatSync(p, ...rest);
+    };
+    try { return look({ fetch: false }); } finally { Object.assign(fs, orig); }
+  };
+
+  it('a claim whose real path is missing for a moment, the file still there, is listed by a fresh enumeration', async () => {
+    await withRepo(async (fx, look) => {
+      const filePath = await claimElsewhere(fx);
+      const v = await doctoredLook(fx, look, basename(filePath), { realpath: 1 });
+      strictEqual(v.claimsError, null);
+      deepStrictEqual(v.claims.map((c) => [c.originating_subtask, basename(c.path)]), [['A', basename(filePath)]]);
+    });
+  });
+
+  it('a claim whose real path is missing and whose lstat fails otherwise is a claims error, never no claim', async () => {
+    await withRepo(async (fx, look) => {
+      const filePath = await claimElsewhere(fx);
+      const v = await doctoredLook(fx, look, basename(filePath), { realpath: 99, lstat: 'EACCES' });
+      ok(/EACCES: simulated/.test(v.claimsError ?? ''), String(v.claimsError));
+    });
+  });
+
+  it('a link in a workflow home whose target is missing is no claim and no error', async () => {
+    await withRepo(async (fx, look) => {
+      const filePath = await claimElsewhere(fx);
+      symlinkSync(join(dirname(filePath), 'nowhere.md'), join(dirname(filePath), '0-dangling.md'));
+      const v = look({ fetch: false });
+      strictEqual(v.claimsError, null);
+      deepStrictEqual(v.claims.map((c) => basename(c.path)), [basename(filePath)]);
     });
   });
 

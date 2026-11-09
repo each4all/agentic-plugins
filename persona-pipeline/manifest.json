@@ -84,6 +84,17 @@
       "requires": []
     },
     {
+      "id": "lib-change-identity",
+      "source": "files/scripts/lib/change-identity.mjs",
+      "dest": "scripts/lib/change-identity.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
       "id": "lib-review-attempts",
       "source": "files/scripts/lib/review-attempts.mjs",
       "dest": "scripts/lib/review-attempts.mjs",

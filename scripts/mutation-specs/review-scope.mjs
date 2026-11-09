@@ -505,7 +505,7 @@ export const MUTATIONS = [
   },
   {
     id: 'R12', tests: T,
-    prepare: every(SNAPSHOT, '[...new Set([...snap.assumeUnchanged, ...snap.skipWorktree])]', '[...new Set([...snap.assumeUnchanged])]'),
+    prepare: every(SNAPSHOT, 'tree: snap.worktreeTree, flagged: [...new Set([...snap.assumeUnchanged, ...snap.skipWorktree])]', 'tree: snap.worktreeTree, flagged: [...new Set([...snap.assumeUnchanged])]'),
     why: 'an edit to a skip-worktree file is left out of the tree a scoped critique converges on',
   },
 ];

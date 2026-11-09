@@ -130,6 +130,136 @@ for (const persona of personasFor('scripts/lib/peer-snapshot.mjs')) {
       });
     });
 
+    // A runner writes its ledger in the state home while another run of the
+    // checkout captures: an entry the capture's `add -A` staged is rewritten
+    // before the `rm --cached` that drops it (the concurrent-runs case below,
+    // failing in a whole-suite run). The afterAdd seam is that writer, made
+    // deterministic.
+    it('a state-home ledger rewritten between the add and the rm is dropped from the capture, the homes ignored or not', async () => {
+      await withTmp(async (dir) => {
+        const top = makeDirtyRepo(dir);
+        const ledgers = ['.agentic-plugins/state/engineer/handle.json', '.claude/agentic-engineer/handle.json'];
+        let n = 0;
+        const write = () => {
+          n += 1;
+          for (const rel of ledgers) {
+            mkdirSync(dirname(join(top, rel)), { recursive: true });
+            writeFileSync(join(top, rel), `{"v":${n}}\n`);
+          }
+        };
+        write();
+        // Control: git refuses the unforced rm of such an entry, staged with
+        // one content and holding another on disk.
+        for (const rel of ledgers) {
+          const probe = join(dir, 'probe.index');
+          cpSync(join(top, '.git', 'index'), probe);
+          const probeEnv = { ...env, GIT_INDEX_FILE: probe };
+          execFileSync('git', ['add', '--', rel], { cwd: top, env: probeEnv });
+          writeFileSync(join(top, rel), '{"v":0}\n');
+          const rm = spawnSync('git', ['rm', '--cached', '-q', '--', rel], { cwd: top, env: probeEnv, encoding: 'utf8' });
+          notStrictEqual(rm.status, 0, `git refuses the unforced rm of ${rel}`);
+          match(rm.stderr, /staged content different from both/);
+        }
+        const homes = (tree) => git(top, 'ls-tree', '-r', '--name-only', tree).split('\n').filter((p) => p.startsWith('.agentic-plugins/') || p.startsWith('.claude/'));
+        const hooks = { afterAdd: write };
+        // Then with both homes ignored, as this repository has them, and a
+        // ledger the index tracks (staged): it is dropped all the same.
+        for (const ignored of [false, true]) {
+          if (ignored) {
+            writeFileSync(join(top, '.gitignore'), 'ignored.txt\nigdir/\n.agentic-plugins/\n.claude/\n');
+            git(top, 'add', '-f', '--', ...ledgers);
+          }
+          let before = n;
+          const cap = await lib.captureWorkingTree({ cwd: top, env, hooks });
+          ok(n > before, 'the ledgers were rewritten between the add and the rm of captureWorkingTree');
+          deepStrictEqual(homes(cap.tree), [], `no state-home path in the captured tree (homes ignored: ${ignored})`);
+          ok(git(top, 'ls-tree', '-r', '--name-only', cap.tree).split('\n').includes('untracked'), 'the rest of the working tree is captured');
+          before = n;
+          const snap = await lib.createPeerSnapshot({ cwd: top, persona, env, hooks });
+          ok(n > before, 'the ledgers were rewritten between the add and the rm of createPeerSnapshot');
+          deepStrictEqual(homes(snap.worktree_tree), [], `no state-home path in the snapshot's working tree (homes ignored: ${ignored})`);
+          await lib.removePeerSnapshot(snap, { env });
+        }
+      });
+    });
+
+    // The add never reads the state homes either: a temporary ledger file
+    // renamed away between git's scan and its stat would fail it. A file no
+    // one can read stands for that writer deterministically: git fails on it
+    // the moment it reads it.
+    it('an intent-to-add file whose name reads as a glob is replayed by name: an untracked file the glob matches stays untracked', async () => {
+      await withTmp(async (dir) => {
+        const top = makeDirtyRepo(dir);
+        writeFileSync(join(top, '[id].txt'), 'b\n');
+        writeFileSync(join(top, 'i.txt'), 'i\n');
+        git(top, 'add', '-N', '--', ':(literal)[id].txt');
+        const snap = await lib.createPeerSnapshot({ cwd: top, persona, env });
+        const tracked = git(snap.root, 'ls-files').split('\n');
+        ok(tracked.includes('[id].txt'), 'the intent-to-add entry is replayed');
+        ok(!tracked.includes('i.txt'), 'the untracked file the name matches as a glob stays untracked');
+        strictEqual(liveView(snap.root).status, withoutStateHome(liveView(top).status));
+        await lib.removePeerSnapshot(snap, { env });
+      });
+    });
+
+    // The capture's pathspecs carry their own magic, which a pathspec mode in
+    // the caller's environment would turn off.
+    it('GIT_LITERAL_PATHSPECS=1 in the caller\'s environment changes nothing the capture drops', async () => {
+      await withTmp(async (dir) => {
+        const top = makeDirtyRepo(dir);
+        const rel = '.claude/agentic-engineer/handle.json';
+        mkdirSync(dirname(join(top, rel)), { recursive: true });
+        writeFileSync(join(top, rel), '{}\n');
+        git(top, 'add', '--', rel);
+        const literal = { ...env, GIT_LITERAL_PATHSPECS: '1' };
+        const homes = (tree) => git(top, 'ls-tree', '-r', '--name-only', tree).split('\n').filter((p) => p.startsWith('.agentic-plugins/') || p.startsWith('.claude/'));
+        const cap = await lib.captureWorkingTree({ cwd: top, env: literal });
+        deepStrictEqual(homes(cap.tree), [], 'the tracked .claude/agentic-* ledger and the untracked state home stay out');
+        ok(git(top, 'ls-tree', '-r', '--name-only', cap.tree).split('\n').includes('untracked'));
+        const snap = await lib.createPeerSnapshot({ cwd: top, persona, env: literal });
+        deepStrictEqual(homes(snap.worktree_tree), []);
+        await lib.removePeerSnapshot(snap, { env });
+      });
+    });
+
+    it('the capture and the recapture never read an untracked file in the state homes, whether .gitignore ignores them or not', { skip: process.getuid?.() === 0 && 'root reads any file' }, async () => {
+      await withTmp(async (dir) => {
+        const top = makeDirtyRepo(dir);
+        const lockIn = (root) => {
+          const files = [join(root, '.agentic-plugins', 'state', 'engineer', 'run.tmp'), join(root, '.claude', 'agentic-engineer', 'run.tmp')];
+          for (const p of files) {
+            mkdirSync(dirname(p), { recursive: true });
+            writeFileSync(p, '{}\n');
+            chmodSync(p, 0);
+          }
+          return files;
+        };
+        const locked = lockIn(top);
+        try {
+          // Control: git fails on each file when it reads it.
+          for (const p of locked) {
+            const add = spawnSync('git', ['add', '--', relative(top, p)], { cwd: top, env: { ...env, GIT_INDEX_FILE: join(dir, 'probe.index') }, encoding: 'utf8' });
+            notStrictEqual(add.status, 0, `git fails reading ${p}`);
+          }
+          for (const ignored of [false, true]) {
+            if (ignored) writeFileSync(join(top, '.gitignore'), 'ignored.txt\nigdir/\n.agentic-plugins/\n.claude/\n');
+            const cap = await lib.captureWorkingTree({ cwd: top, env });
+            ok(git(top, 'ls-tree', '-r', '--name-only', cap.tree).split('\n').includes('untracked'), `the capture succeeds (homes ignored: ${ignored})`);
+            const snap = await lib.createPeerSnapshot({ cwd: top, persona, env });
+            const inSnap = lockIn(snap.root);
+            try {
+              strictEqual(await lib.recaptureSnapshotTree(snap, { env }), snap.worktree_tree, `the recapture reads no state home of the snapshot (homes ignored: ${ignored})`);
+            } finally {
+              for (const p of inSnap) chmodSync(p, 0o600);
+            }
+            await lib.removePeerSnapshot(snap, { env });
+          }
+        } finally {
+          for (const p of locked) chmodSync(p, 0o600);
+        }
+      });
+    });
+
     it('a peer directory that holds only ignored files is created in the snapshot', async () => {
       await withTmp(async (dir) => {
         const top = makeDirtyRepo(dir);

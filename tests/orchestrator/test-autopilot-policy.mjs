@@ -668,6 +668,22 @@ describe('verifyStep', () => {
     it('a done must complete the subtask; a finalize must archive the macro', () => {
       const done = { kind: 'done', subtaskId: 'A' };
       ok(/left subtask A in_progress/.test(verifyStep({ step: done, before: archivedA({ ok: true }), after: archivedA({ ok: true }, { progress: 9 }), worker: okWorker({ report }) }).detail));
+      // ADR-0069 Decision 3 (refine-verify of 2026-11-08, fourth pass, B): a
+      // done step completed with no landed commit took --no-commit, which no
+      // comparison of the landing reads; only done-no-commit completes that way.
+      const completed = (extra) => view({ subtasks: [sub('A', 'completed', extra)], fm: { host_history: [{ event: 'updated' }] } });
+      strictEqual(verifyStep({ step: done, before: archivedA({ ok: true }), after: completed({ commit: 'c'.repeat(40) }), worker: okWorker({ report }) }), null);
+      ok(/completed subtask A with no landed commit/.test(verifyStep({ step: done, before: archivedA({ ok: true }), after: completed({}), worker: okWorker({ report }) })?.detail ?? ''));
+      strictEqual(verifyStep({ step: { kind: 'done-no-commit', subtaskId: 'A' }, before: archivedA({ ok: true }), after: completed({}), worker: okWorker({ report }) }), null);
+      // Critique of 2026-11-08, fifth pass, MAJOR 3: done of the last subtask
+      // archives the macro, and the archived view still carries its plan.
+      const archivedMacro = (extra) => {
+        const v = completed(extra);
+        return { ...v, macro: { ...v.macro, archived: true } };
+      };
+      ok(/completed subtask A with no landed commit/.test(verifyStep({ step: done, before: archivedA({ ok: true }), after: archivedMacro({}), worker: okWorker({ report }) })?.detail ?? ''), 'the last subtask, with the macro archived');
+      strictEqual(verifyStep({ step: done, before: archivedA({ ok: true }), after: archivedMacro({ commit: 'c'.repeat(40) }), worker: okWorker({ report }) }), null);
+      strictEqual(verifyStep({ step: { kind: 'done-no-commit', subtaskId: 'A' }, before: archivedA({ ok: true }), after: archivedMacro({}), worker: okWorker({ report }) }), null);
       const fin = { kind: 'finalize' };
       const active = view({ subtasks: [sub('A', 'completed')], fm: { host_history: [{ event: 'updated' }] } });
       ok(/left macro .* active/.test(verifyStep({ step: fin, before: view({ subtasks: [sub('A', 'completed')] }), after: active, worker: okWorker({ report }) }).detail));

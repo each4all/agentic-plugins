@@ -893,8 +893,8 @@ export const MUTATIONS = [
   },
   {
     id: 'G37', tests: [T_CONTRACT], file: 'plugins/founder/commands/critique.md',
-    from: '  --ensemble-type "$ENSEMBLE_TYPE" --run-id "$RUN_ID" \\\n  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err"\n',
-    to: '  --ensemble-type "$ENSEMBLE_TYPE" --run-id "$RUN_ID" \\\n  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err" &\n',
+    from: '  --ensemble-type "$ENSEMBLE_TYPE" --run-id "$RUN_ID" \\\n  "$@" \\\n  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err"\n',
+    to: '  --ensemble-type "$ENSEMBLE_TYPE" --run-id "$RUN_ID" \\\n  "$@" \\\n  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err" &\n',
     why: "founder critique's dispatch, edited in the runbook, detaches the runner with a shell & (RV9)",
   },
   // ---- G: PC2b U4b, the compose/frame/investigate/decide finalize ------------
@@ -1878,8 +1878,8 @@ export const MUTATIONS = [
   },
   {
     id: 'D6', tests: [T_SYNC], file: 'plugins/designer/commands/investigate.md',
-    from: "  --ensemble-type \"$ENSEMBLE_TYPE\" --run-id \"$RUN_ID\" \\\n  > \"$PROMPT_FILE.run.json\"",
-    to: "  --ensemble-type \"$ENSEMBLE_TYPE\" --run-id \"$RUN_ID\" --model gpt-x \\\n  > \"$PROMPT_FILE.run.json\"",
+    from: "  --ensemble-type \"$ENSEMBLE_TYPE\" --run-id \"$RUN_ID\" \\\n  \"$@\" \\\n  > \"$PROMPT_FILE.run.json\"",
+    to: "  --ensemble-type \"$ENSEMBLE_TYPE\" --run-id \"$RUN_ID\" --model gpt-x \\\n  \"$@\" \\\n  > \"$PROMPT_FILE.run.json\"",
     killed_by: /^the repository is clean$/,
     why: 'a hand edit inside a generated region of investigate.md (the drift check must fail)',
   },
@@ -1983,8 +1983,8 @@ export const MUTATIONS = [
   // ---- M: critique (PC2a3 U5; PC2b U5a generates founder's dispatch and both finalizes) ----
   {
     id: 'M40', tests: [T_CONTRACT], file: 'plugins/founder/commands/critique.md',
-    from: '  --ensemble-type "$ENSEMBLE_TYPE" --run-id "$RUN_ID" \\\n  > "$PROMPT_FILE.run.json"',
-    to: '  --ensemble-type \'review\' --run-id "$RUN_ID" \\\n  > "$PROMPT_FILE.run.json"',
+    from: '  --ensemble-type "$ENSEMBLE_TYPE" --run-id "$RUN_ID" \\\n  "$@" \\\n  > "$PROMPT_FILE.run.json"',
+    to: '  --ensemble-type \'review\' --run-id "$RUN_ID" \\\n  "$@" \\\n  > "$PROMPT_FILE.run.json"',
     killed_by: [inSuite('founder/commands/critique.md (committed)', /^founder critique, instantiated per profile/)],
     why: 'founder critique dispatches review for red-team too: the adversarial scan never reaches the peer (QD5)',
   },

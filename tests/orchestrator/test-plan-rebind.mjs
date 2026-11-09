@@ -23,6 +23,14 @@ import { rebindDue } from '../../plugins/orchestrator/adapters/claude/autopilot/
 import { childCopies } from '../../plugins/orchestrator/scripts/state.mjs';
 import * as HR from '../../plugins/orchestrator/scripts/lib/holds-records.mjs';
 import { readPid } from '../_pidfile.mjs';
+import { isSessionVariable } from '../../scripts/lib/session-env.mjs';
+
+// Run on its own from an agentic session (an autopilot worker's quick check),
+// this file would inherit the session (`npm test` clears it first,
+// tests/_hermetic-env.mjs): an inherited AGENTIC_AUTOPILOT makes updateSubtask
+// refuse the owner's waivers these tests write (critique of 2026-11-08, sixth
+// pass, MAJOR 5). Cleared here, before any test runs.
+for (const name of Object.keys(process.env)) if (isSessionVariable(name)) delete process.env[name];
 
 const STATE = resolve(ORCH, 'scripts/state.mjs');
 const OWNER = {};

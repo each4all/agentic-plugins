@@ -46,6 +46,11 @@ The plan is informational: execute and close re-derive everything.
     given, and prints the corrected subject: pass the warning and the
     corrected subject to the user (ADR-0028 §P6, note of 2026-11-04).
 
+When the plan's `review_binding.hold` is set, the change does not compare with
+its reviews: show that line, and when `review_binding.state` is `different`,
+review it again (execute refuses it) unless the owner accepts it (`state.mjs
+review-binding-accept`), ADR-0069 Decision 3.
+
 When the plan's `review_hold` is set, a review outcome holds this commit back:
 show the user that line before asking anything. It names the attempt and the
 ways on, and execute warns only as it commits, so this is where the user

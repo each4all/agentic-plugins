@@ -90,9 +90,11 @@ names a landed commit is the owner's to reword, or to split where it touches
 several packages: rewrite no history in the step (no amend, rebase or reset),
 and report it, with its reason, in the step's report. A refusal with exit 10
 (`review-held`) says the workflow's latest review outcome holds the commit
-back (failed, degraded, unavailable, malformed or unknown) and nothing was
-committed or written: the step never accepts it (`state.mjs review-accept` is
-the owner's, and refused under autopilot) and never reruns the review; report
+back (failed, degraded, unavailable, malformed or unknown), or the change is
+not the one reviewed or cannot be compared with its reviews (ADR-0069), and
+nothing was committed or written: the step never accepts it (`state.mjs
+review-accept` and `review-binding-accept` are the owner's, and refused under
+autopilot) and never reruns the review; report
 the attempt and its outcome the refusal names in the step's report, with
 `outcome` `needs_owner` and `awaiting_owner` null (the gate is the driver's to
 report, and never stored), and stop.

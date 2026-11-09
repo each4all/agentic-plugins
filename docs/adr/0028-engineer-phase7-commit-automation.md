@@ -766,6 +766,23 @@ Tests: `tests/persona-pipeline/test-review-gate.mjs`;
 engineer's library copy: L6, L14, L19, L24–L27, K3, K5, K15). The autopilot's
 half is ADR-0063's implementation note of the same date.
 
+> **Implementation note of 2026-11-07 (C163 A2b, ADR-0069).** The review gate above
+> no longer reads "the latest outcome whatever tree it saw" where a change is
+> compared: Phase 7 compares the change with its reviews on every path that lands a
+> commit, from the tree the series' last commit will hold, and the outcome gate reads
+> only reviews of that change (an attempt with no identity stays read). The plan names
+> the comparison (`review_binding`). Under autopilot `different` and `not-comparable`
+> refuse with exit 10 (`review-held`); interactively `different` refuses with exit 10
+> (`review-binding-mismatch`), re-routed to critique, and `not-comparable` warns
+> (a `repository-mismatch` refuses in both modes).
+> `state.mjs review-binding-accept` is the owner's way on. After a last commit Phase 7
+> records the comparison, keyed by the commit, for the landing. ADR-0069 Decisions 3
+> and 4 hold the rule. (Refines of 2026-11-08: only a comparison that read counting
+> reviews, `same` or `different`, narrows the outcome gate, path by path, from what
+> the record shows (ADR-0069 Decision 3, as simplified on 2026-11-09); and the tree
+> compared is projected from Phase 7's own staging set, through the same `git add` in
+> the same environment.)
+
 ## Consequences
 
 **Positive**
