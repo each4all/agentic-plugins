@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.36.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.35.0...plugin-engineer-v0.36.0) (2026-11-10)
+
+
+### Features
+
+* **engineer:** cap a verify request's mutation cases and stop asking for the whole suite between refines ([30340ce](https://github.com/each4all/agentic-plugins/commit/30340ce888be9b41794b6bf3da5f3d6ba54c5849))
+
 ## [0.35.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.34.7...plugin-engineer-v0.35.0) (2026-11-10)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.16.0...plugin-founder-v0.17.0) (2026-11-10)
+
+
+### Features
+
+* **founder:** refuse a verify request that names more mutation cases than one batch runs ([b89c680](https://github.com/each4all/agentic-plugins/commit/b89c6806bc1ebdfba1b71b9bfbd42443d03d5597))
+
 ## [0.16.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.15.6...plugin-founder-v0.16.0) (2026-11-10)
 
 
