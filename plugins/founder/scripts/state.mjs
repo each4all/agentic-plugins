@@ -125,7 +125,9 @@ import {
   writeOperationTransport,
 } from './lib/holds.mjs';
 import {
+  MAX_BATCH_MUTATE_CASES,
   MAX_REQUEST_BYTES,
+  caseCount as verifyCaseCount,
   MAX_RESULTS_BYTES,
   RECORD_VERSION as VERIFY_RECORD_VERSION,
   SLOT_TYPES,
@@ -6708,6 +6710,13 @@ function bindVerifyRequest(frontmatter, { workflowPath, parsed, env, host, cwd, 
   assertRequestable(frontmatter, { settling });
   const tree = testedTree(cwd, workflowPath, frontmatter);
   for (const check of parsed.checks) resolveCheck(offer.declaration, check, { tree });
+  // ADR-0068 Decision 5, amendment of 2026-11-10 (C178) — the batch's cap on
+  // mutation cases, held here for the request's own checks: the driver holds
+  // the whole batch to it, and refuses one over it before anything runs.
+  const cases = verifyCaseCount(offer.declaration, parsed.checks);
+  if (cases > MAX_BATCH_MUTATE_CASES) {
+    throw new Error(`the request names ${cases} mutation case ids, more than the ${MAX_BATCH_MUTATE_CASES} one verification batch runs (ADR-0068 Decision 5, amendment of 2026-11-10); name the cases of the gate or fail-closed code the change touches, and leave the rest to a later request`);
+  }
   const bound = {
     workflow_id: frontmatter.workflow_id,
     run_id: offer.runId,
