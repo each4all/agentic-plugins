@@ -73,10 +73,10 @@ test('partitionProblems names a dropped, duplicated or undiscovered file, an emp
   assert.deepEqual(partitionProblems(['a.test.mjs', 'b.test.mjs'], [['a.test.mjs'], ['b.test.mjs']]), []);
 });
 
-test('a shard spec is i/N with N from 2 to 4 and i from 1 to N', () => {
+test('a shard spec is i/N with N from 2 to 6 and i from 1 to N', () => {
   assert.deepEqual(parseShardSpec('2/3'), { index: 2, total: 3 });
-  assert.deepEqual(parseShardSpec('4/4'), { index: 4, total: 4 });
-  for (const bad of ['', '3', '0/3', '4/3', '1/1', '1/5', '01/3', '1/3/2', ' 1/3', 'a/b', undefined]) {
+  assert.deepEqual(parseShardSpec('6/6'), { index: 6, total: 6 });
+  for (const bad of ['', '3', '0/3', '4/3', '1/1', '1/7', '7/6', '01/3', '1/3/2', ' 1/3', 'a/b', undefined]) {
     assert.throws(() => parseShardSpec(bad), Error, `refuses ${JSON.stringify(bad)}`);
   }
 });
@@ -246,7 +246,7 @@ test('with the real npm, the shards execute every discovered file exactly once, 
 test('the CLI refuses a bad shard spec, an unknown command and a malformed weights file', () => {
   const root = fixtureRepo();
   assert.equal(cli(['run', '3/2', '--repo-root', root]).status, 1);
-  assert.equal(cli(['run', '1/5', '--repo-root', root]).status, 1);
+  assert.equal(cli(['run', '1/7', '--repo-root', root]).status, 1);
   assert.equal(cli(['frobnicate', '--repo-root', root]).status, 2);
   assert.equal(cli(['run', '--repo-root']).status, 2);
   fs.writeFileSync(path.join(root, WEIGHTS_FILE), '{"schema":1,"seconds":{"tests/test-a.mjs":-3}}');

@@ -66,7 +66,7 @@ export const OVERHEAD_SECONDS = 0.5;
 // The estimate for a file with no recording yet.
 export const UNRECORDED_SECONDS = 5;
 export const MIN_SHARDS = 2;
-export const MAX_SHARDS = 4;
+export const MAX_SHARDS = 6;
 
 /**
  * A path the runner receives unchanged: repository-relative, POSIX, only

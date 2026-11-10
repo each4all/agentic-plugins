@@ -48,7 +48,7 @@ jobs:
       # Every shard runs to its end, so one run reports every failing file.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -71,7 +71,9 @@ jobs:
       #
       # The step's bound catches a shard that hangs; it is not a speed target.
       # The whole suite took 24.5 to 25 min in one job in October 2026; by
-      # 2026-10-30 three shards ran 10 to over 20 min, so it runs as four.
+      # 2026-10-30 three shards ran 10 to over 20 min, so it ran as four; on
+      # 2026-11-09, with the large tier after each shard's pool, four ran 11 to
+      # over 20 min, so it runs as six (ADR-0033 amendment of 2026-11-10).
       - name: Run test shard (npm test)
         timeout-minutes: 20
         env:
