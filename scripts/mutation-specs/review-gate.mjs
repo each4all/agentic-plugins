@@ -409,8 +409,8 @@ export const MUTATIONS = [
   },
   {
     id: 'O8', file: POLICY, tests: [T_ORCH],
-    from: "    if (held) return { kind: 'active', judgment: true, halt: held };\n    return { kind: 'active', step: { kind: 'commit', subtaskId: id, branch: child.branch } };",
-    to: "    if (held) return { kind: 'halt', halt: held };\n    return { kind: 'active', step: { kind: 'commit', subtaskId: id, branch: child.branch } };",
+    from: "    if (held) return { kind: 'active', judgment: true, halt: held };\n    // The commit gate, at the route every verb takes to the commit:",
+    to: "    if (held) return { kind: 'halt', halt: held };\n    // The commit gate, at the route every verb takes to the commit:",
     why: "the review gate's halt stands whatever the owner's --next says: a new review (--next critique) cannot replace it",
     killed_by: [T_FORCED],
   },

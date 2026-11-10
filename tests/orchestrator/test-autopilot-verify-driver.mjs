@@ -140,6 +140,44 @@ describe('verify-driver: a failing check recorded and routed, in a serial run', 
     }
   });
 
+  it('a verb that asks for the commit with no final verification is resumed once with the driver\'s sentence; the suite then passes and the commit goes, each on the driver\'s record (C178)', BOUNDED, async () => {
+    const VJ = await import(resolve(AP, 'verify-journal.mjs'));
+    const P = await import(resolve(AP, 'policy.mjs'));
+    const t = await setup({ scenario: { A: { next: [COMMIT, verify([{ kind: 'pass' }]), COMMIT], file: true } } });
+    try {
+      strictEqual(await t.run(), 2, t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual(r.steps.map((s) => [s.kind, s.outcome]), [['dispatch', 'ok'], ['verb', 'ok'], ['verify', 'ok'], ['commit', 'ok']], t.lines.join('\n'));
+      const [, verb, batch, commit] = r.steps;
+      strictEqual(verb.resume, 'final-verify');
+      ok(verb.command.endsWith(` ${P.FINAL_VERIFY_SENTENCE}`), verb.command);
+      deepStrictEqual(batch.verify.batch.checks.map((c) => [c.kind, c.origin]), [['pass', 'worker'], ['test-suite', 'driver']]);
+      strictEqual(commit.suite_evidence.batch_id, batch.verify.batch.batch_id, 'the commit names the batch that passed the suite');
+      strictEqual(commit.command, '/engineer:commit');
+      deepStrictEqual(t.ran(), ['pass', 'suite']);
+      const wf = readdirSync(join(t.work, '.agentic-plugins/state/orchestrator/verify-journal')).map((f) => f.replace(/\.jsonl$/, ''));
+      strictEqual(wf.length, 1);
+      const ops = VJ.readJournal(VJ.journalPath(t.work, wf[0])).entries.map((e) => e.op);
+      deepStrictEqual(ops, ['final-resume', 'start', 'result', 'result', 'end', 'pass', 'commit']);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('a verb that asks for the commit again, without the final verification, halts no-progress: the gate resumes it once on a tree', BOUNDED, async () => {
+    const t = await setup({ scenario: { A: { next: [COMMIT], file: true } } });
+    try {
+      strictEqual(await t.run(), 2, t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual(r.steps.map((s) => [s.kind, s.resume ?? null]), [['dispatch', null], ['verb', 'final-verify']], t.lines.join('\n'));
+      strictEqual(r.halt.reason, 'no-progress');
+      match(r.halt.detail, /the commit gate resumed a verb on this tree already/);
+      deepStrictEqual(t.ran(), []);
+    } finally {
+      t.cleanup();
+    }
+  });
+
   it('the last permitted worker step recording verify starts nothing more, and the request survives for the relaunch', BOUNDED, async () => {
     const t = await setup({ scenario: { A: { next: [verify([{ kind: 'pass' }]), COMMIT], file: true } } });
     try {

@@ -462,6 +462,29 @@ export function resolveCheck(decl, check, { tree = null } = {}) {
   return argv;
 }
 
+// ADR-0068 Decision 5, amendment of 2026-11-10 (C178) — the mutation cases
+// one batch runs at most, over all its checks: a cost ceiling of its own,
+// beside the six case ids one `mutate` check names at most (AGENTS.md
+// § Build / test / CI, which sizes one check's timeout). Counted as the
+// values of every `id` slot of the batch's checks, so a declaration that
+// names its mutation kind otherwise is held to it too.
+export const MAX_BATCH_MUTATE_CASES = 6;
+
+/** The case ids `checks` (`[{kind, args}]`) name: the values of every `id` slot. */
+export function caseCount(decl, checks) {
+  let n = 0;
+  for (const c of checks ?? []) {
+    const kind = isObj(c) && typeof c.kind === 'string' && Object.hasOwn(decl.kinds, c.kind) ? decl.kinds[c.kind] : null;
+    if (!kind) continue;
+    for (const slot of kind.slots) {
+      if (slot.type !== 'id') continue;
+      const v = isObj(c.args) ? c.args[slot.name] : undefined;
+      n += Array.isArray(v) ? v.length : typeof v === 'string' ? 1 : 0;
+    }
+  }
+  return n;
+}
+
 /** The identity of a batch's checks (item 7): sha256 over its argv arrays, in batch order. */
 export function checksDigest(argvList) {
   return sha256(JSON.stringify(argvList));

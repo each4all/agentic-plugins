@@ -28,7 +28,10 @@
 //   - the new-lane throttle: a batch spawns no worker, so a lane whose only
 //     step in the run was a batch is still new for its first worker;
 //   - the owner's rerun (`--lane A --next verify`) beside a pending
-//     instruction with a step is refused (ADR-0068 Decision 7, item 5).
+//     instruction with a step is refused (ADR-0068 Decision 7, item 5);
+//   - the commit gate as a commit step is admitted (amendment of 2026-11-10):
+//     a lane edited since the decision starts no commit and is decided again;
+//     one whose tree cannot be digested then is parked for the owner.
 //
 // The owner's instruction beside an answered request (Decision 7, item 5) is
 // in test-autopilot-verify-lanes-instruct.mjs: its own file, so a mutation
@@ -447,7 +450,11 @@ describe('verify-lanes: the new-lane throttle', () => {
       const after = t.lines.slice(lines0).join('\n');
       const steps = r.steps.map((s) => [s.subtask_id, s.kind, s.verify?.batch?.end ?? null]);
       ok(steps.some((x) => x[0] === 'A' && x[1] === 'verify' && x[2] === 'passed'), `${JSON.stringify(steps)}\n${after}`);
-      ok(steps.some((x) => x[0] === 'B' && x[1] === 'commit'), `B, started, kept stepping: ${JSON.stringify(steps)}`);
+      // B's critique asks for the commit with no final verification, so the
+      // commit gate (amendment of 2026-11-10) resumes it: a worker step of a
+      // started lane, which the throttle does not hold back.
+      ok(steps.filter((x) => x[0] === 'B' && x[1] === 'verb').length >= 2, `B, started, kept stepping: ${JSON.stringify(steps)}`);
+      ok(!steps.some((x) => x[0] === 'B' && x[1] === 'commit'), `B's commit waits for the suite: ${JSON.stringify(steps)}`);
       ok(!steps.some((x) => x[0] === 'A' && x[1] !== 'verify'), `A's commit never started: ${JSON.stringify(steps)}\n${after}`);
       strictEqual(r.halt?.reason, 'interrupted', 'the wait ended only at the signal');
       ok(/waiting for the reset at /.test(after), after);
@@ -546,6 +553,79 @@ describe('verify-lanes: the owner\'s rerun', () => {
     } finally {
       t.fx.cleanup();
       rmSync(logs, { recursive: true, force: true });
+    }
+  });
+});
+
+// ADR-0068 Decision 5, amendment of 2026-11-10 (C178) — the commit gate at
+// the admission: the lane was prepared since the decision read its tree, so
+// the tree is digested afresh as the commit step is admitted. The digests a
+// batch and the decision's facts take are called from verify-run.mjs and are
+// let through as they are; the first one called from anywhere else is the
+// admission's, which `at` meets: 'moved' (a file written to the lane just
+// before it) or 'unreadable' (it throws).
+function gateAtAdmission(at) {
+  const s = { met: 0, reads: [] };
+  const verifyOps = {
+    select: VO.DEFAULT_OPS.select,
+    gateRead: async (a) => {
+      const r = VR.gateRead(a);
+      s.reads.push(r);
+      return r;
+    },
+    treeDigest: async (lane) => {
+      if (s.met === 0 && !/verify-run\.mjs/.test(new Error('caller').stack)) {
+        s.met = 1;
+        if (at === 'unreadable') throw new Error('the digest failed');
+        writeFileSync(join(lane, 'late.txt'), 'written while the commit was prepared\n');
+      }
+      return VO.DEFAULT_OPS.treeDigest(lane);
+    },
+  };
+  return { s, verifyOps };
+}
+const SUITE_THEN_COMMIT = () => verify([{ kind: 'test-suite' }]);
+
+describe('verify-lanes: the commit gate as the commit step is admitted', () => {
+  it('a lane edited since the decision read its tree starts no commit: the run decides again, and the commit waits for the suite on the tree as it is', { timeout: 300_000 }, async () => {
+    const t = await setup({ subtasks: [{ id: 'A' }], scenario: { A: { next: [SUITE_THEN_COMMIT(), SUITE_THEN_COMMIT(), COMMIT], file: true } } });
+    try {
+      commitChecks(t);
+      const { s, verifyOps } = gateAtAdmission('moved');
+      const code = await t.run({}, { verifyBounds: BOUNDS, verifyOps });
+      const r = t.latest();
+      const steps = r.steps.map((x) => [x.kind, x.outcome, x.verify?.batch?.end ?? null]);
+      strictEqual(s.met, 1, `the admission's digest was reached: ${JSON.stringify(steps)}\n${t.lines.join('\n')}`);
+      // The gate's reads of the lane, as the task a run runs for them gives them.
+      deepStrictEqual([typeof s.reads[0].dirty, /^[0-9a-f]{40,64}$/.test(s.reads[0].content), /^[0-9a-f]{40}$/.test(s.reads[0].base)], ['boolean', true, true], JSON.stringify(s.reads[0]));
+      ok(t.lines.some((l) => /lane A: its tree is not the one the commit gate read; deciding again/.test(l)), t.lines.join('\n'));
+      // No commit on the first pass: the requesting verb is resumed (the
+      // tree changed after its batch passed), asks for the suite again, and
+      // the commit follows that second pass.
+      deepStrictEqual(steps, [
+        ['dispatch', 'ok', null], ['verify', 'ok', 'passed'], ['verb', 'ok', null], ['verify', 'ok', 'passed'], ['commit', 'ok', null],
+      ], `${t.lines.join('\n')}\n${checkLogs(r)}`);
+      strictEqual(code, 2, t.lines.join('\n'));
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('a lane whose tree cannot be digested then starts no commit and is parked for the owner', { timeout: 300_000 }, async () => {
+    const t = await setup({ subtasks: [{ id: 'A' }], scenario: { A: { next: [SUITE_THEN_COMMIT(), COMMIT], file: true } } });
+    try {
+      commitChecks(t);
+      const { s, verifyOps } = gateAtAdmission('unreadable');
+      await t.run({}, { verifyBounds: BOUNDS, verifyOps });
+      const r = t.latest();
+      const steps = r.steps.map((x) => [x.kind, x.outcome, x.verify?.batch?.end ?? null]);
+      strictEqual(s.met, 1, `the admission's digest was reached: ${JSON.stringify(steps)}\n${t.lines.join('\n')}`);
+      deepStrictEqual(steps, [['dispatch', 'ok', null], ['verify', 'ok', 'passed']], t.lines.join('\n'));
+      const park = PK.readPark(t.work, t.fx.macroId, 'A');
+      deepStrictEqual([park.record?.state, park.record?.reason], ['parked', 'owner-choice'], JSON.stringify(park));
+      match(park.record.detail, /cannot be read as its commit is admitted/);
+    } finally {
+      t.fx.cleanup();
     }
   });
 });
