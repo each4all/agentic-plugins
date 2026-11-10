@@ -99,9 +99,8 @@ GIT_BRANCH="$(git branch --show-current)"
 GIT_HEAD="$(git rev-parse HEAD)"
 STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
 # The request, as a file (ADR-0059, amendment of 2026-10-10): the one the
-# agent wrote, or the AGENTIC_TOPIC a dispatcher exports, which is program data
-# the block writes to a private directory of its own, so no text flag is
-# inline and a dispatched run needs no file of the agent's.
+# agent wrote, or the AGENTIC_TOPIC a dispatcher exports, written here to a
+# private directory of its own.
 REQUEST_FILE="$TEXT_DIR/request.txt"
 if [ -n "${AGENTIC_TOPIC:-}" ]; then
   REQUEST_FILE="$(mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX")/topic.txt" || exit 1
@@ -344,8 +343,7 @@ ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "
 PROMPT_FILE="$TEXT_DIR/prompt.xml"
 grep -q '[^[:space:]]' "$PROMPT_FILE" 2>/dev/null || { echo "✗ prompt.xml in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was dispatched." >&2; exit 1; }
 # ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch, allocated by the
-# runner (C119, C26): no shell arithmetic or hand-written date makes it. An
-# allocation that prints nothing stops the block too.
+# runner; an allocation that prints nothing stops the block too.
 RUN_ID="$(node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" new-run-id --prefix "$ENSEMBLE_TYPE")" || RUN_ID=''
 [ -n "$RUN_ID" ] || { echo "✗ peer-runner.mjs new-run-id allocated no run id for $ENSEMBLE_TYPE (its error, if any, is above); nothing was dispatched." >&2; exit 1; }
 # The dispatch's own record of the run it launches and the workflow it found,
@@ -353,10 +351,9 @@ RUN_ID="$(node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" new-run-id --prefix
 # runner ends without writing its result (R4 F1).
 node -e 'require("fs").writeFileSync(process.argv[1],JSON.stringify({run_id:process.argv[2],workflow_path:process.argv[3]})+"\n")' "$PROMPT_FILE.dispatch.json" "$RUN_ID" "$ACTIVE" \
   || { echo "✗ Could not record the dispatch in TEXT_DIR ($TEXT_DIR); nothing was dispatched." >&2; exit 1; }
-# ADR-0069 Decision 1, item 6 — the subject the agent wrote, for a review. A
-# peer-runner older than this runbook takes no such flag, so it is passed only
-# when it names it. The positional parameters, since the block runs in any
-# POSIX shell, which has no arrays.
+# ADR-0069 Decision 1, item 6 — the subject the agent wrote, for a review,
+# passed only to a peer-runner that names the flag (an older one does not), as
+# positional parameters: the block runs in any POSIX shell, which has no arrays.
 set --
 if [ -f "$TEXT_DIR/subject.json" ] && grep -q -e "'--subject-file'" "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" 2>/dev/null; then
   set -- --subject-file "$TEXT_DIR/subject.json"
@@ -535,82 +532,56 @@ block:
    file holds its text as written and ends with one newline, which the
    scripts remove; nothing deletes the files.
 
-Then run the block with `TEXT_DIR` set to that directory, `DISPATCH_DIR` to the
-directory the dispatch block ran with, `VERDICT` to the synthesis's verdict,
-and `CONFIDENCE` to the proposal's confidence (`HIGH`, `MEDIUM` or `LOW`). The block reads the run's id from the result the runner wrote there,
-`prompt.xml.run.json`, never from a value carried from the dispatch's shell. A
-runner that ended without writing its result (killed, or stopped by an error
-after it launched the run) leaves that file empty: the block then takes the run
-from `prompt.xml.dispatch.json`, which the dispatch block wrote there before
-the launch, naming the run and the workflow. A run whose handle or record names
-another workflow than the one the block finds, a handle that cannot be read
-as that run's (one gone is left to the dispatch's record), or a directory
-with no result, or one naming no well-formed run id, stops the block before
-any write; settle, its first write, refuses a run of another phase. A
-well-formed run id is one the runner accepts: letters, digits, `.`, `_`, `:`
-and `-`, with no `..`, so a run the runner launched can always be finalized.
+Then run the block with its values set:
 
-When no run launched (the verb ran local-only, or the dispatch's
-`prompt.xml.err` says why), leave `DISPATCH_DIR` empty: that is the empty id,
-"no run launched", and settle refuses it while the workflow holds a run of
-this phase it would hide. When a run launched but its dispatch's directory is
-gone (a later session, or a system that cleared its temporary files), set
-`DISPATCH_DIR` to the run's own ledger directory, the one holding the
-`envelope.json` the synthesis read
-(`.agentic-plugins/state/designer/peer-runs/<run id>`): the block reads the
-run from its `handle.json` and checks it as it checks a dispatch's, the
-workflow here and the phase in settle, so the run settled is always the one
-the synthesis read, never one chosen from the workflow's pending entries. With
-neither directory left, nothing binds the run to the synthesis: the block
-cannot settle it, and settle does by hand (`peer-runner.mjs settle --run-id`).
+- `TEXT_DIR`: that directory, a fresh one for each finalize: the block keeps
+  there the run it settles (`finalize-run.json`), and a rerun in it must name
+  that same run.
+- `DISPATCH_DIR`: the directory the dispatch block ran with; the block reads
+  the run's id from the result the runner wrote there, `prompt.xml.run.json`.
+  Leave it empty when no run launched (the verb ran local-only, or the
+  dispatch's `prompt.xml.err` says why). When a run launched but that
+  directory is gone, set it to the run's own ledger directory, the one holding
+  the `envelope.json` the synthesis read
+  (`.agentic-plugins/state/designer/peer-runs/<run id>`).
+  When settle refuses an empty `DISPATCH_DIR` because a run of this phase is
+  pending or unsettled, do not settle that run by hand, as its message reads,
+  while its answer can be read: collect the run and synthesize it, then set
+  `DISPATCH_DIR` to its directory (its ledger directory when that is gone)
+  and finalize from a fresh `TEXT_DIR`, since this one keeps the empty id.
+  Only with neither directory left is it settled by hand, as the reference
+  says.
+- `VERDICT`: the synthesis's verdict.
+- `CONFIDENCE`: the proposal's confidence (`HIGH`, `MEDIUM` or `LOW`).
+- `NO_RUN_REASON`: empty when a run launched. When none did, why:
+  `peer-unavailable` (the companion or the peer's CLI was not found, or could
+  not run, before any run), `local-only` (the verb ran without a peer by
+  design), `privacy-gate` (the prompt could not be made safe to send) or
+  `owner-skip` (the owner chose no review). With no run launched, a review
+  still says what its local reviewers read: with your file-writing tool create
+  `subject.json` in the text directory, as the dispatch's step says
+  (`{"shown": [...], "covered": [...]}`); with no such file the attempt covers
+  no path.
+- `ATTEMPT_TYPE`: the ensemble type the dispatch block ran with, or would have
+  run with: its `ENSEMBLE_TYPE`, the default this block names unless the
+  dispatch's prose said to set another (critique's adversarial profiles set
+  `adversarial-scan`).
 
-When no run launched, set `NO_RUN_REASON` to why: `peer-unavailable` (the
-companion or the peer's CLI was not found, or could not run, before any run),
-`local-only` (the verb ran without a peer by design), `privacy-gate` (the
-prompt could not be made safe to send) or `owner-skip` (the owner chose no
-review). For a review, settle records the attempt with the outcome that reason
-gives, `unavailable` or `skipped`, under an id derived from `TEXT_DIR`, so a
-rerun records it once (C163 A1a); left empty, the attempt is `skipped` with
-the reason `unspecified`. For an ensemble that is no review it records
-nothing. Leave `NO_RUN_REASON` empty when a run launched.
-With no run launched, a review still says what its local reviewers read: with
-your file-writing tool create `subject.json` in the text directory, as the
-dispatch's step says (`{"shown": [...], "covered": [...]}`), and settle records
-it with the attempt (ADR-0069). With no such file the attempt covers no path.
-Set `ATTEMPT_TYPE` to the ensemble type the dispatch block ran with, or
-would have run with: its `ENSEMBLE_TYPE`, the default this block names unless
-the dispatch's prose said to set another (critique's adversarial profiles set
-`adversarial-scan`), so a review that never launched is recorded under the
-type it would have had.
-
-Whatever run the block settles, the empty id included, it keeps in its text
-directory as `finalize-run.json` before settle. Every value the last write
-takes is checked before settle too (`CONFIDENCE` here), so a step that fails
-after it fails on the workflow's own state, and its message says what. Run
-again with the same `TEXT_DIR` after a later step failed, it settles that same
-run again, which records nothing more; a phase note the failed run already
-appended (the failure came at the last write) is appended a second time. A kept run that differs from the one this run of the
-block names stops it before any write: each finalize takes a fresh text
-directory, and a record left by another stays its own. The empty id binds
-too: after settle refuses it (a run of this phase is pending), collect that
-run, synthesize it, and finalize it from a fresh text directory. A file left
-unwritten, blank, or not UTF-8 text stops it too.
-
-`peer-runner.mjs settle` decides from the run ledger what the workflow
-records, not from these values alone: a run that never launched records
-nothing; a run that launched and failed, was cancelled or was abandoned
-records verdict `failed` with the ledger's `error_kind`; a run that completed
-records the synthesis verdict, or `degraded` when its answer was empty or
-unreadable. An answer that parses to nothing usable, only structural
+`peer-runner.mjs settle`, the block's first write, decides from the run ledger
+what the workflow records: a run that launched and failed records `failed`
+whatever `VERDICT` says, and a completed run whose answer was empty or
+unreadable records `degraded`.
+An answer that parses to nothing usable, only structural
 shell, reads to `settle` like any other, so set `VERDICT` to `degraded` then.
-It runs before the block writes anything, so its refusal leaves the workflow
-as it was: while a run is still live, or its handle was last updated less than
-the stale grace (a minute) ago (collect it, or wait, and run the block again); for a run of
-another workflow or phase; or when an empty id would hide an attempt the
-ledger holds for this phase (collect that run and synthesize it, then set
-`DISPATCH_DIR` to its directory, or to its ledger directory when that is
-gone). Once
-it has recorded a run, running the block again records nothing more for it.
+Every check before settle stops the block with nothing written, and its
+message says what to set.
+
+Read `core/skills/_shared/references/verb-finalize.md`, the section named for
+what you see, only when the step is not the plain one: the block stopped and
+its message does not settle what to do; the dispatch's directory is gone, or
+the run is still live; you run the block a second time after it wrote; or you
+need the reason a step of the block is as it is. A normal step reads none of
+it.
 
 A synthesis verdict of `conflict` ends this verb on its conflict gate,
 `peer-conflict`, with a bounded consensus round proposed before the
@@ -625,54 +596,24 @@ file is spelled from the state root,
 completion output gives the command the block prints, with its absolute
 path.
 
-The block branches on the verdict the settle recorded for the run, not on
-`VERDICT` alone, and before it appends the phase note. Recorded `conflict`,
-with `VERDICT` set to `conflict`, it writes the contested items to that task
-file (`consensus-task`), then appends the note and records the gate with the
-run id in the same write as the next step `owner-decision`.
 Whenever `VERDICT` is `conflict`, write the contested items before you run
 the block, with the file tool, as `contested.md` in the `TEXT_DIR` directory:
 each CONFLICT item with both positions and their evidence, prepared as the
 peer prompt was, since the consensus peers read it. They come from the peers'
 positions, so never put them in the block: there the shell would read a line
 of them as a command. With `VERDICT` set to `conflict`, a `contested.md`
-missing, blank or not UTF-8 text stops the block before any write. When the
-recorded verdict and `VERDICT` disagree (a run recorded `failed`, or a conflict
-recorded by an earlier attempt), or the task file cannot be written, the
-block stops after the settle and before the phase note, and its message says
-what to set: the recorded verdict, with `contested.md` when that is
-`conflict`, or, for a conflict with no run named, the run's directory. Run
-the block again: its settle does nothing for a run it already recorded, so
-the branch that matches runs and the note is appended once: on a conflict,
-`consensus-task` first, then the note and the gate. Nothing runs the consensus round: the
-owner does, then rules, and clearing the gate retires the task file. compose,
-frame and refine, and every other verdict, never take this branch.
+missing, blank or not UTF-8 text stops the block before any write. The block
+writes them to the task file (`consensus-task`), then appends the note and
+records the gate with the run id in the same write as the next step
+`owner-decision`. Nothing runs the consensus round: the owner does, then
+rules, and clearing the gate retires the task file. When the block stops on a
+conflict (the recorded verdict and `VERDICT` disagree, a conflict gate is
+pending, or an earlier conflict of this phase has no ruling), its message says
+what to set, and the reference's § A conflict says why.
 
-Before settle, the block reads every result this phase recorded on the
-workflow, and the gate it holds. A recorded conflict with no owner ruling
-holds the phase, and only that same run, finalized with `VERDICT` set to
-`conflict`, gets past it. Two machine-written records count as a ruling:
-this verb's conflict gate, pending and naming that run, and that run's
-retired task file (the owner cleared the gate). While this verb's conflict
-gate is pending, it holds every finish but a run of the block for the gate's
-own run with `VERDICT` set to `conflict`, the empty id included; its message
-says the owner resolves the gate first. With no such gate pending, a
-conflict whose task file was never retired (the gate was never set, for
-example because an earlier run of the block stopped at `consensus-task`)
-holds every finish but its own run's as a conflict, whatever later run the
-phase recorded since: any other `VERDICT`, the empty id, and any other run
-finalized as a conflict stop the block before any write, and its message
-names that run, to finalize first with `VERDICT` set to `conflict`. A
-conflict whose id could never name a gate (a run settled by hand under such
-an id) stops it too, and its message says the owner decides it: no run of the
-block can end it on its gate. A recorded conflict thus never ends without its
-gate. With `VERDICT` set to
-`conflict`, the run id must also suit the task file and the gate: a letter or
-digit, then letters, digits, `_` and `-`, 128 at most, as the runbook's
-dispatch makes them; and on every path an id opening with `--` stops the
-block, since the verdict read takes it as a flag. Both stop it before any
-write, as does an owner gate named in `OWNER_GATE`, where the block has one,
-beside `VERDICT` `conflict`: the conflict ends on its own gate.
+An owner gate named in `OWNER_GATE`, where the block has one, beside `VERDICT`
+`conflict` stops the block before any write: the conflict ends on its own
+gate.
 
 The last write, `finish-verb`, records the proposal's next step in closed-enum
 form: `--next-step-kind` `verb` (with `--next-step-verb`), `commit` (the owner
@@ -708,8 +649,7 @@ ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'designer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 # A fresh shell: the workflow and the run are found again here, never carried
-# from an earlier block. The run ledger lives under the repository root, where
-# the dispatch put it.
+# from an earlier block.
 PERSONA='designer'
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
@@ -717,8 +657,7 @@ ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "
 case "$VERDICT" in
   ''|*'<'*) echo "✗ VERDICT is not set to the synthesis verdict; nothing was written." >&2; exit 1 ;;
 esac
-# The last write's confidence, checked here with the other values it takes, so
-# a value it would refuse stops the block before settle, its first write.
+# The last write's confidence, checked before settle, the first write.
 case "$CONFIDENCE" in
   HIGH|MEDIUM|LOW) ;;
   *) echo "✗ CONFIDENCE is not HIGH, MEDIUM or LOW, the proposal's confidence the last write records; nothing was written." >&2; exit 1 ;;
@@ -729,24 +668,17 @@ case "$NO_RUN_REASON" in
   *) echo "✗ NO_RUN_REASON is not peer-unavailable, local-only, privacy-gate or owner-skip (empty when a run launched); nothing was written." >&2; exit 1 ;;
 esac
 # The runner's grammar for a type: a lowercase letter, then up to 40
-# lowercase letters or hyphens, the letters spelled out (a range such as a-z
-# follows the locale's collation in bash, which can take in capitals).
+# lowercase letters or hyphens, spelled out (a range follows the locale).
 case "$ATTEMPT_TYPE" in
   ''|[!abcdefghijklmnopqrstuvwxyz]*|*[!abcdefghijklmnopqrstuvwxyz-]*|??????????????????????????????????????????*) echo "✗ ATTEMPT_TYPE is not an ensemble type (the dispatch's ENSEMBLE_TYPE); nothing was written." >&2; exit 1 ;;
 esac
-# The run's id, from the result the runner wrote beside the dispatch's prompt,
-# or, when DISPATCH_DIR is the run's own ledger directory (no result there,
-# its handle.json instead), from that handle, the directory naming the run. An empty
-# DISPATCH_DIR (exit 5) is the empty id, no run launched; nothing else stands
-# for a run, and none is chosen from the workflow's pending entries. A result
-# that is missing or names no well-formed run id (the runner's rule: letters,
-# digits, ".", "_", ":" and "-", with no "..", so every run it launched can be
-# finalized) stops it, as does a
-# run whose handle names another workflow than the one found above (exit 2)
-# or cannot be read as the run's (exit 3): nothing is written to a workflow
-# the run is not for; settle, the first write, judges the phase. Exit 4 leaves the run to the
-# dispatch's own record: a result left empty, or a run whose handle is gone
-# (its id printed).
+# The run's id, from the result the runner wrote beside the dispatch's prompt
+# or, when DISPATCH_DIR is the run's own ledger directory, from its
+# handle.json. Exit 5: an empty DISPATCH_DIR, the empty id, no run launched.
+# Exit 2: the handle names another workflow. Exit 3: the handle cannot be read
+# as the run's. Exit 4: the result is empty or the handle gone, so the
+# dispatch's own record decides (its id printed). Exit 1: no result, or no
+# well-formed run id.
 RUN_ID="$(node -e 'const [d,w]=process.argv.slice(1);if(d==="")process.exit(5);const fs=require("fs"),p=require("path");const good=(v)=>typeof v==="string"&&/^[A-Za-z0-9._:-]+$/.test(v)&&!v.includes("..");const same=(a,b)=>{try{return fs.realpathSync(a)===fs.realpathSync(b)}catch{return p.resolve(a)===p.resolve(b)}};const bound=(h,id)=>{if(h===null||typeof h!=="object"||h.run_id!==id)process.exit(3);if(typeof h.workflow_path!=="string"||!same(h.workflow_path,w))process.exit(2);process.stdout.write(id);process.exit(0)};let t,r,h;try{t=fs.readFileSync(p.join(d,"prompt.xml.run.json"),"utf8")}catch(e){if(!(e&&e.code==="ENOENT"))process.exit(1);try{h=fs.readFileSync(p.join(d,"handle.json"),"utf8")}catch(e){process.exit(e&&(e.code==="ENOENT"||e.code==="ENOTDIR")?1:3)}const id=p.basename(p.resolve(d));if(!good(id))process.exit(1);try{h=JSON.parse(h)}catch{process.exit(3)}bound(h,id)}if(t.trim()==="")process.exit(4);try{r=JSON.parse(t)}catch{process.exit(1)}const id=r&&r.run_id;if(!good(id))process.exit(1);try{h=fs.readFileSync(r.handle_path,"utf8")}catch(e){if(e&&e.code==="ENOENT"){process.stdout.write(id);process.exit(4)}process.exit(3)}try{h=JSON.parse(h)}catch{process.exit(3)}bound(h,id)' "$DISPATCH_DIR" "$ACTIVE")"
 RUN_READ=$?
 if [ "$RUN_READ" -eq 2 ]; then
@@ -756,10 +688,8 @@ elif [ "$RUN_READ" -eq 3 ]; then
   echo "✗ The handle of the run in DISPATCH_DIR ($DISPATCH_DIR) cannot be read as that run's, so the run cannot be bound to $ACTIVE; nothing was written." >&2
   exit 1
 elif [ "$RUN_READ" -eq 4 ]; then
-  # The dispatch recorded, before the launch, the run it launches and the
-  # workflow it found (prompt.xml.dispatch.json): that run is the one to
-  # settle, for the workflow found above only. A run the result names, its
-  # handle gone, must be that same run.
+  # The run the dispatch recorded before the launch (prompt.xml.dispatch.json),
+  # for the workflow found above only; a run the result names must be that one.
   RUN_ID="$(node -e 'const [d,w,named]=process.argv.slice(1);const fs=require("fs"),p=require("path");const same=(a,b)=>{try{return fs.realpathSync(a)===fs.realpathSync(b)}catch{return p.resolve(a)===p.resolve(b)}};let m;try{m=JSON.parse(fs.readFileSync(p.join(d,"prompt.xml.dispatch.json"),"utf8"))}catch{process.exit(1)}const id=m&&m.run_id;if(typeof id!=="string"||!/^[A-Za-z0-9._:-]+$/.test(id)||id.includes("..")||(named!==""&&named!==id))process.exit(1);if(typeof m.workflow_path!=="string"||!same(m.workflow_path,w))process.exit(2);process.stdout.write(id)' "$DISPATCH_DIR" "$ACTIVE" "$RUN_ID")"
   case $? in
     0) ;;
@@ -767,19 +697,17 @@ elif [ "$RUN_READ" -eq 4 ]; then
     *) echo "✗ The runner left no usable result in DISPATCH_DIR ($DISPATCH_DIR), and prompt.xml.dispatch.json there is missing, malformed or names another run; nothing was written. When the run launched, set DISPATCH_DIR to its ledger directory, the one holding the envelope.json the synthesis read, and run this block again; with no ledger directory either, settle the run by hand (peer-runner.mjs settle --run-id), then run this block with DISPATCH_DIR empty from a fresh TEXT_DIR. When the runner refused before any ledger (prompt.xml.err says why), no run launched: leave DISPATCH_DIR empty." >&2; exit 1 ;;
   esac
 elif [ "$RUN_READ" -eq 5 ]; then
-  # No run launched: the empty id (the read printed nothing), which settle
-  # accepts only when no attempt of this phase is open. It never stands for a
-  # run whose directory is gone.
+  # No run launched: the empty id, which settle accepts only when no attempt
+  # of this phase is open.
   :
 elif [ "$RUN_READ" -ne 0 ]; then
   echo "✗ prompt.xml.run.json in DISPATCH_DIR ($DISPATCH_DIR) is missing or names no well-formed run id, and DISPATCH_DIR is no run ledger directory; nothing was written. Set DISPATCH_DIR to the directory the dispatch block ran with; leave it empty when no run launched (prompt.xml.err there says why), or, when a run launched and that directory is gone, set it to the run's ledger directory, the one holding the envelope.json the synthesis read." >&2
   exit 1
 fi
 # The run this block settles is kept in TEXT_DIR (finalize-run.json) before
-# settle; the empty id is kept too. Run again after a later step failed, the
-# block settles the same run: a run kept that differs from the one named now,
-# the empty id included (exit 3), stops it, as does a record that is
-# malformed or names another workflow or phase (exit 7).
+# settle, the empty id too, so a rerun settles the same run. Exit 3: another
+# run was kept. Exit 7: the record is malformed, or of another workflow or
+# phase.
 KEPT_ID="$(node -e 'const [rec,id,w,ph]=process.argv.slice(1);const fs=require("fs"),p=require("path");const good=(v)=>typeof v==="string"&&(v===""||/^[A-Za-z0-9._:-]+$/.test(v)&&!v.includes(".."));const same=(a,b)=>{try{return fs.realpathSync(a)===fs.realpathSync(b)}catch{return p.resolve(a)===p.resolve(b)}};let m,has=true;try{m=JSON.parse(fs.readFileSync(rec,"utf8"))}catch(e){if(!(e&&e.code==="ENOENT"))process.exit(7);has=false}if(has&&(!m||!good(m.run_id)||m.phase!==ph||typeof m.workflow_path!=="string"||!same(m.workflow_path,w)))process.exit(7);if(has&&m.run_id!==id){process.stdout.write(m.run_id);process.exit(3)}if(!has){try{fs.writeFileSync(rec,JSON.stringify({run_id:id,workflow_path:w,phase:ph})+"\n")}catch{process.exit(8)}}process.stdout.write(id);process.exit(0)' "$TEXT_DIR/finalize-run.json" "$RUN_ID" "$ACTIVE" 'critique')"
 case $? in
   0) ;;
@@ -789,11 +717,8 @@ case $? in
   *) echo "✗ Could not check finalize-run.json in TEXT_DIR ($TEXT_DIR); nothing was written." >&2; exit 1 ;;
 esac
 # The texts the agent wrote with its file tool (ADR-0059, amendment of
-# 2026-10-10): each script reads its file itself, so no line of the note is
-# shell source. The append reads the note only after settle has written,
-# so each file is first held to every reader's rule: strict UTF-8, no NUL
-# byte, and text left once blanks are trimmed (settle's rule). A file a
-# script would refuse stops the block before any write.
+# 2026-10-10), each held to every reader's rule before any write: strict
+# UTF-8, no NUL byte, and text left once blanks are trimmed.
 for TEXT_FILE in note.md summary.txt next-action.txt; do
   node -e 'let t;try{t=new TextDecoder("utf-8",{fatal:true}).decode(require("fs").readFileSync(process.argv[1]))}catch{process.exit(1)}process.exit(t.includes("\0")||t.trim()===""?1:0)' "$TEXT_DIR/$TEXT_FILE" || { echo "✗ $TEXT_FILE in TEXT_DIR ($TEXT_DIR) is missing, blank or not UTF-8 text; write it with the file tool first. Nothing was written." >&2; exit 1; }
 done
@@ -803,12 +728,9 @@ done
 if [ "$VERDICT" = conflict ]; then
   node -e 'let t;try{t=new TextDecoder("utf-8",{fatal:true}).decode(require("fs").readFileSync(process.argv[1]))}catch{process.exit(1)}process.exit(t.includes("\0")||t.trim()===""?1:0)' "$TEXT_DIR/contested.md" || { echo "✗ contested.md in TEXT_DIR ($TEXT_DIR) is missing, blank or not UTF-8 text; a conflict needs the contested items: write them with the file tool first. Nothing was written." >&2; exit 1; }
 fi
-# The run id where the later steps of this variant read it: the verdict read
-# runs on every path, and state.mjs's parser takes a value opening with "--"
-# as a flag; a conflict's run id names its task file and its gate (state.mjs
-# isSafeConsensusRunId: a letter or digit, then letters, digits, "_" and "-",
-# 128 at most). An id either would refuse stops the block here, before any
-# write.
+# The run id where the later steps of this variant read it: state.mjs's
+# parser takes a value opening with "--" as a flag, and a conflict's run id
+# names its task file and its gate (state.mjs isSafeConsensusRunId).
 case "$RUN_ID" in
   --*) echo "✗ Run id '$RUN_ID' opens with '--', which state.mjs reads as a flag; nothing was written. Settle the run by hand (peer-runner.mjs settle --run-id), then run this block with DISPATCH_DIR empty from a fresh TEXT_DIR." >&2; exit 1 ;;
 esac
@@ -816,18 +738,11 @@ if [ "$VERDICT" = conflict ] && [ -n "$RUN_ID" ]; then
   node -e 'process.exit(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(process.argv[1])?0:1)' "$RUN_ID" || { echo "✗ VERDICT is conflict, but run id '$RUN_ID' cannot name a consensus task file or a gate (a letter or digit, then letters, digits, _ and -, 128 at most, as the runbook's dispatch makes them); nothing was written. Dispatch the review again with the runbook's dispatch block, settle this run by hand (peer-runner.mjs settle --run-id), and finalize the new run." >&2; exit 1; }
 fi
 # R4 K2, L1, L2 — the conflict itself holds the phase, from the workflow's
-# own record: every result this phase recorded, not only the last, and the
-# gate. While this verb's conflict gate is pending (a run id left without its
-# gate, or another gate, is none), only the gate's own run, finalized as a
-# conflict, passes (gate). With none pending, a conflict whose task file was
-# never retired passes only its own run finalized as a conflict, so any other
-# VERDICT, the empty id, and another run as a conflict stop the block here
-# (conflict); a conflict whose id could never name a gate holds it too: no run
-# of the block can end that one, so it is the owner's (owner). Read before
-# settle: a run settled now is not yet recorded, and a run recorded later
-# cannot hide an earlier conflict. A read that fails, or prints no workflow,
-# stops it too (the read is checked on its own: a pipe reports its last
-# command).
+# own record, read before settle: every result this phase recorded, and the
+# gate. HOLD is empty, or names what holds the finish: this verb's pending
+# conflict gate (gate), a conflict with no ruling (its run id), or one whose
+# id could never name a gate (owner). A read that fails, or prints no
+# workflow, stops the block too.
 WF_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE")" \
   || { echo "✗ Could not read the results recorded on $ACTIVE; nothing was written." >&2; exit 1; }
 HOLD="$(printf '%s' "$WF_JSON" | node -e 'let s="";process.stdin.setEncoding("utf8");process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{const [w,ph,g,run,v]=process.argv.slice(1);const fs=require("fs"),p=require("path");let o;try{o=JSON.parse(s)}catch{process.exit(1)}if(o===null||typeof o!=="object")process.exit(1);const safe=(id)=>/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id);const named=(id)=>id===""?"(no id)":id;if(o.awaiting_owner_gate===g){const gr=typeof o.awaiting_owner_run_id==="string"?o.awaiting_owner_run_id:"";if(gr===""||run!==gr||v!=="conflict")process.stdout.write("gate "+named(gr));process.exit(0)}const held=(Array.isArray(o.ensemble_results)?o.ensemble_results:[]).filter((e)=>e&&e.phase===ph&&e.verdict==="conflict").map((e)=>typeof e.run_id==="string"?e.run_id:"").filter((id)=>!(safe(id)&&typeof o.workflow_id==="string"&&fs.existsSync(p.join(p.dirname(p.dirname(w)),"consensus",o.workflow_id+"."+id+".resolved.md"))));if(held.length===0||(v==="conflict"&&run!==""&&held.includes(run)))process.exit(0);const owner=held.find((id)=>!safe(id));process.stdout.write(owner===undefined?"conflict "+held[0]:"owner "+named(owner))})' "$ACTIVE" 'critique' 'peer-conflict' "$RUN_ID" "$VERDICT")" \
@@ -850,11 +765,8 @@ case "$HOLD" in
 esac
 
 # C163 A1a — the review attempt of a run that never launched: its type, why,
-# and the key its id derives from. A peer-runner older than this runbook takes
-# none of these flags, so they are passed only when it names them; it then
-# records no attempt, and settles as before. They are the positional
-# parameters settle takes last ("$@"), since the block runs in any POSIX
-# shell, which has no arrays.
+# and the key its id derives from, passed only to a peer-runner that names
+# these flags, as the positional parameters settle takes last ("$@").
 set --
 if grep -q -e "'--no-run-reason'" "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" 2>/dev/null; then
   set -- --ensemble-type "$ATTEMPT_TYPE" --no-run-reason "$NO_RUN_REASON" --attempt-key "$TEXT_DIR"
@@ -864,25 +776,18 @@ fi
 if [ -f "$TEXT_DIR/subject.json" ] && grep -q -e "'--subject-file'" "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" 2>/dev/null; then
   set -- "$@" --subject-file "$TEXT_DIR/subject.json"
 fi
-# ADR-0066 PC2b — settle the ensemble attempt from its ledger (never launched,
-# launched and failed, completed). It is the first write and the one judge of
-# the run: a refusal (a run still live, of another workflow or phase, or an
-# attempt an empty id would hide) stops the block before any write, so the
-# workflow never records a note for an attempt left unsettled; once it has
-# recorded the run, running the block again records nothing more for it.
+# ADR-0066 PC2b — settle the ensemble attempt from its ledger: the first write
+# and the one judge of the run. Its refusal stops the block before any write.
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" settle \
   --repo-root "$REPO_ROOT" --workflow-path "$ACTIVE" \
   --host "${AGENTIC_HOST:-claude}" --phase 'critique' --run-id "$RUN_ID" \
   --verdict "$VERDICT" --summary-file "$TEXT_DIR/summary.txt" "$@" || exit $?
 
 # ADR-0067 Decision 8 — the verdict the settle above recorded for the run
-# (empty when it recorded none), read before the phase note: a mismatch, or a
-# conflict whose task file cannot be written, stops the block with the settle
-# its only write, so running it again (the settle records nothing more)
-# appends the note once (R4 J2, J4). A recorded conflict does not close the
-# verb: it writes the contested items as the consensus task file and ends on
-# the conflict gate, bound to its run. Any other verdict makes the typical
-# last write.
+# (empty when it recorded none), read before the phase note: a mismatch stops
+# the block with the settle its only write. A recorded conflict writes the
+# contested items as the consensus task file and ends on the conflict gate,
+# bound to its run. Any other verdict makes the typical last write.
 RECORDED="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-verdict \
   --workflow-path "$ACTIVE" --run-id "$RUN_ID")" || exit $?
 if [ "$RECORDED" = conflict ] && [ "$VERDICT" = conflict ]; then
@@ -921,9 +826,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
 if [ "$RECORDED" != conflict ]; then
   # ADR-0029 §1 / completion-output contract §2 — next-action.txt, which the
   # append above and this terminal write record, holds the COMPACT form of the
-  # proposal above (selected_next + one-line why + next_command) so the
-  # durable state and the code-emitted completion footer agree with the
-  # Active Next-Action Proposal. Step 2 shows the typical-case default; write
+  # proposal above. Step 2 shows the typical-case default; write
   # another, and change the --next-step-* flags, when the verb's result
   # selects a different next step (e.g. the owner's save and commit).
   # ADR-0063 D3 — finish-verb is the verb's last write: the ADR-0017
@@ -931,13 +834,10 @@ if [ "$RECORDED" != conflict ]; then
   # with the next step. ADR-0066 Decision 3: an inherited AGENTIC_AUTOPILOT
   # changes nothing here.
   # ARCHIVE TIMING — on Claude the Stop hook fires at EVERY turn end, so the
-  # archive gates are evaluated at the end of THIS turn, not at session close;
-  # if a gate fails the workflow stays marked and a later Stop re-evaluates it.
+  # archive gates are evaluated at the end of THIS turn, not at session close.
   # Clearing the marker with `--terminal-marker false` works only before that
-  # Stop fires, needs set-terminal's full flag set (--workflow-path, --host,
-  # --terminal-phase), and does not restore the previous phase or next_action.
-  # On Codex the Stop hook runs only once the operator has trusted the plugin
-  # hooks (`/hooks`), so evaluation waits for that. Full contract:
+  # Stop fires. On Codex the Stop hook runs only once the operator has trusted
+  # the plugin hooks (`/hooks`), so evaluation waits for that. Full contract:
   # core/skills/_shared/references/session-handoff.md § Archive timing.
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
