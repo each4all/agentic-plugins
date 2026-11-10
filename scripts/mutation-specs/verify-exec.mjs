@@ -205,8 +205,8 @@ export const MUTATIONS = [
   },
   {
     id: 'B6', file: RUN, tests: [T_RUN],
-    from: '    if (tree !== p.start.payload?.tree_start) facts[id] = { guard:',
-    to: '    if (false) facts[id] = { guard:',
+    from: '    if (tree !== p.start.payload?.tree_start) facts[id] = { ...facts[id], guard:',
+    to: '    if (false) facts[id] = { ...facts[id], guard:',
     why: 'an answered request whose tree changed after the pass dispatches its on_pass on the changed tree',
     killed_by: /an answered one whose tree changed since its pass is guarded/,
   },

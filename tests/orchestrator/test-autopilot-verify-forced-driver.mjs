@@ -111,13 +111,16 @@ describe('verify-forced-driver: a serial run', () => {
   });
 
   it('a forced MEDIUM batch that ends with no evidence resumes the requesting verb too', BOUNDED, async () => {
-    const t = await serial({ A: { next: [verify([{ kind: 'hang' }]), COMMIT], file: true } });
+    // The resumed verb ends with the final verification, at HIGH: the commit
+    // gate (amendment of 2026-11-10) takes no commit the suite did not pass for.
+    const t = await serial({ A: { next: [verify([{ kind: 'hang' }]), verify([{ kind: 'pass' }], { confidence: 'HIGH' }), COMMIT], file: true } });
     try {
       await haltedOnMedium(t);
       strictEqual(await t.run(FORCED), 2, t.lines.join('\n'));
       const r = t.latest();
-      deepStrictEqual(shape(r), [['verify', 'ok'], ['verb', 'ok'], ['commit', 'ok']], t.lines.join('\n'));
+      deepStrictEqual(shape(r), [['verify', 'ok'], ['verb', 'ok'], ['verify', 'ok'], ['commit', 'ok']], t.lines.join('\n'));
       strictEqual(r.steps[0].verify.batch.end, 'no-evidence');
+      deepStrictEqual(r.steps[2].verify.batch.checks.map((c) => c.kind), ['pass', 'test-suite'], 'the final batch holds the suite');
     } finally {
       t.cleanup();
     }

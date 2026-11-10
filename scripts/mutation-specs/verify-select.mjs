@@ -227,7 +227,7 @@ export const MUTATIONS = [
     /orders its additions by the declaration/, 'the additions come out in another order'),
   m('A5', '      if (unfit.length > 0) {', '      if (false) {',
     /a selected test the test kind cannot carry widens to the suite/, 'a test the test kind cannot carry is dropped or refused downstream'),
-  m('A6', '  const files = [...new Set([...selected, ...extra])].sort(byText);', '  const files = [...selected].sort(byText);',
+  m('A6', '  const everyFile = [...new Set([...selected, ...extra])].sort(byText);', '  const everyFile = [...selected].sort(byText);',
     /holds the test kind's bound on the list its own adds_on joins/, 'the test kind\'s own adds_on arguments are lost, or pass the bound'),
   m('A7', '    suite = true;\n    widened.push({ kind: testKind, why: `the ${testKind} kind is added unrestricted', '    widened.push({ kind: testKind, why: `the ${testKind} kind is added unrestricted',
     /the test kind added unrestricted stands as the suite/, 'the unrestricted test check is replaced by a list of the selected files'),

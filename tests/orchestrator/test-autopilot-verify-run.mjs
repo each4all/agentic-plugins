@@ -51,7 +51,7 @@ import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  FAST, GIT_ISOLATION, RUN, VD, VJ, VR, cleanup, digestOf, git, jobFor, makeRepo, ran, readWorkflow, request, resumeVerb, runStep, workflowWithRequest,
+  DECLARATION, FAST, GIT_ISOLATION, RUN, VD, VJ, VR, cleanup, digestOf, git, jobFor, makeRepo, ran, readWorkflow, request, resumeVerb, runStep, workflowWithRequest,
 } from './_verify-fixtures.mjs';
 import { acquire } from '../../plugins/orchestrator/scripts/lib/heavy-lock.mjs';
 
@@ -387,6 +387,150 @@ describe('verify-run: repeats and the owner\'s rerun', () => {
     const again = await runStep(t.job({ seq: 6 }));
     deepStrictEqual([again.batch.end, again.batch.continues ?? null], ['no-evidence', null]);
     deepStrictEqual(ran(t.log), ['pass', 'hang', 'pass', 'hang']);
+  });
+});
+
+// ADR-0068 Decision 5, amendment of 2026-11-10 (C178).
+const CRITIQUE = { kind: 'verb', verb: 'critique', confidence: 'HIGH' };
+const WITH_SUITE = { declaration: DECLARATION };
+// One step with the selection seam recording what it was asked.
+async function stepWith(job, selection) {
+  const asked = [];
+  const v = VR.startVerify({
+    job, bounds: FAST, stopCause: () => null, onWait: () => {}, register: async () => [{ release: () => {} }],
+    ops: { treeDigest: digestOf, select: async (a) => { asked.push(a); return { additions: [], tests: { files: [] }, deferred: [], ...selection }; } },
+  });
+  return { ...(await v.done), asked };
+}
+
+describe('verify-run: intermediate and final batches (C178)', () => {
+  it('a final request\'s batch holds the suite once, the driver\'s, in place of the test files the driver would add, with no addition too', BOUNDED, async () => {
+    const t = await setUp([{ kind: 'pass' }], { repo: WITH_SUITE });
+    const r = await stepWith(t.job(), { additions: [{ kind: 'test', args: { files: ['tests/test-a.mjs'] } }, { kind: 'driver', args: {} }] });
+    strictEqual(r.batch.end, 'passed');
+    deepStrictEqual(r.batch.checks.map((c) => [c.kind, c.origin]), [['pass', 'worker'], ['driver', 'driver'], ['test-suite', 'driver']]);
+    deepStrictEqual(ran(t.log), ['pass', 'driver', 'suite']);
+    strictEqual(r.asked[0].deferLarge, false, 'a final selection defers nothing');
+    const none = await setUp([{ kind: 'pass' }], { repo: WITH_SUITE });
+    deepStrictEqual((await stepWith(none.job(), {})).batch.checks.map((c) => c.kind), ['pass', 'test-suite']);
+  });
+
+  it('a final request that names the suite itself runs it once', BOUNDED, async () => {
+    const t = await setUp([{ kind: 'test-suite' }, { kind: 'pass' }], { repo: WITH_SUITE });
+    const r = await stepWith(t.job(), { additions: [{ kind: 'test-suite', args: {} }] });
+    deepStrictEqual(r.batch.checks.map((c) => [c.kind, c.origin]), [['test-suite', 'worker'], ['pass', 'worker']]);
+  });
+
+  it('an intermediate request\'s batch gets no suite of its own, and its selection defers the large tests', BOUNDED, async () => {
+    const t = await setUp([{ kind: 'pass' }], { repo: WITH_SUITE, onPass: CRITIQUE });
+    const r = await stepWith(t.job(), { additions: [{ kind: 'test', args: { files: ['tests/test-a.mjs'] } }], deferred: ['tests/test-big.mjs'] });
+    deepStrictEqual(r.batch.checks.map((c) => c.kind), ['pass', 'test']);
+    strictEqual(r.asked[0].deferLarge, true);
+    strictEqual(r.selection.deferred, 1);
+  });
+
+  it('a declaration with no suite kind adds none to a final batch', BOUNDED, async () => {
+    const t = await setUp([{ kind: 'pass' }]);
+    deepStrictEqual((await stepWith(t.job(), {})).batch.checks.map((c) => c.kind), ['pass']);
+  });
+});
+
+describe('verify-run: the batch\'s cap on mutation cases (C178)', () => {
+  const ids = (n, p = 'W') => Array.from({ length: n }, (_, i) => `${p}${i + 1}`);
+  it('the persona refuses a request over the cap before any write; the driver refuses a batch its additions take over it, and nothing runs', BOUNDED, async () => {
+    strictEqual(VD.MAX_BATCH_MUTATE_CASES, 6);
+    const t = await setUp([{ kind: 'mutate', args: { ids: ids(6) } }], { onPass: CRITIQUE });
+    await resumeVerb(t.wf, { step: 5 });
+    let refusal = null;
+    try { await request(t.wf, t.dir, t.sha, [{ kind: 'mutate', args: { ids: ids(4) } }, { kind: 'mutate', args: { ids: ids(3, 'X') } }], { step: 5, onPass: CRITIQUE }); } catch (e) { refusal = e; }
+    match(String(refusal?.message), /names 7 mutation case ids, more than the 6 one verification batch runs/);
+    await request(t.wf, t.dir, t.sha, [{ kind: 'mutate', args: { ids: ids(4) } }], { step: 5, onPass: CRITIQUE });
+    const r = await stepWith(t.job({ seq: 6 }), { additions: [{ kind: 'mutate', args: { ids: ids(3, 'D') } }] });
+    strictEqual(r.outcome, 'halt');
+    strictEqual(r.refused, true);
+    match(r.halt.detail, /names 7 mutation case ids, more than the 6 one batch runs/);
+    deepStrictEqual(ran(t.log), [], 'nothing ran');
+    const at = await stepWith(t.job({ seq: 7 }), { additions: [{ kind: 'mutate', args: { ids: ids(2, 'D') } }] });
+    strictEqual(at.batch.end, 'passed', 'six cases are a batch');
+  });
+});
+
+describe('verify-run: a pass is reused for an unchanged tree (C178)', () => {
+  const again = async (t, step, checks = [{ kind: 'pass' }, { kind: 'pass2' }]) => {
+    await resumeVerb(t.wf, { step });
+    await request(t.wf, t.dir, t.sha, checks, { step, onPass: CRITIQUE });
+  };
+  const two = () => setUp([{ kind: 'pass' }, { kind: 'pass2' }], { onPass: CRITIQUE });
+
+  it('the same request on the same tree, declaration and base replays the pass: no check runs, the record is the driver\'s, on_pass follows; a third halts no-progress', BOUNDED, async () => {
+    const t = await two();
+    const first = await runStep(t.job());
+    await again(t, 5);
+    const r = await runStep(t.job({ seq: 6 }));
+    deepStrictEqual([r.outcome, r.batch.end, r.batch.reused_from], ['ran', 'passed', first.batch.batch_id]);
+    deepStrictEqual(r.follow, { kind: 'on_pass' });
+    deepStrictEqual(ran(t.log), ['pass', 'pass2'], 'no check ran again');
+    ok(r.batch.checks.every((c) => c.reused === true));
+    const fm = await readWorkflow(t.wf);
+    deepStrictEqual([fm.next_step_kind, fm.next_step_verb], ['verb', 'critique']);
+    strictEqual(fm.verify_request.answered_by, r.batch.batch_id);
+    const entries = journalOf(t.dir, t.wf);
+    strictEqual(VJ.untrustedProblem({ request: fm.verify_request, results: fm.verify_results, entries }), null);
+    const b = latest(fm);
+    deepStrictEqual(b.results.map((x) => [x.outcome, x.log]), [['passed', `verify/${b.batch_id}/0.log`], ['passed', `verify/${b.batch_id}/1.log`]]);
+    match(readFileSync(join(t.dir, '.agentic-plugins/runs/autopilot', RUN, b.results[0].log), 'utf8'), new RegExp(`passed in batch ${first.batch.batch_id}[^]*verify/${first.batch.batch_id}/0\\.log`));
+    deepStrictEqual(VJ.startEntry(entries, fm.verify_request.id, b.batch_id).meta.reused_from, { request_id: entries[0].request_id, batch_id: first.batch.batch_id });
+    await again(t, 7);
+    const third = await runStep(t.job({ seq: 8 }));
+    deepStrictEqual([third.outcome, third.halt?.reason], ['halt', 'no-progress']);
+    match(third.halt.detail, /already reused once/);
+    deepStrictEqual(ran(t.log), ['pass', 'pass2']);
+  });
+
+  it('a pass run with another selection base, or another declaration, runs again whole', BOUNDED, async () => {
+    const t = await two();
+    await runStep(t.job());
+    await again(t, 5);
+    const r = await runStep({ ...t.job({ seq: 6 }), base: 'a'.repeat(40) });
+    deepStrictEqual([r.batch.end, r.batch.reused_from ?? null], ['passed', null]);
+    deepStrictEqual(ran(t.log), ['pass', 'pass2', 'pass', 'pass2']);
+    // planVerify's own rule: the declaration's digest is part of a pass's identity.
+    const fm = await readWorkflow(t.wf);
+    await again(t, 7);
+    const fm2 = await readWorkflow(t.wf);
+    const entries = journalOf(t.dir, t.wf);
+    const before = VJ.lastEnded(entries, { excludeRequest: fm2.verify_request.id });
+    const plan = (over) => VR.planVerify({
+      pending: true, request: fm2.verify_request, results: fm2.verify_results, entries, treeNow: before.tree_start, checksDigest: before.checks_digest,
+      declarationDigest: before.declaration_digest, base: before.base, ...over,
+    });
+    ok(fm.verify_request.id !== fm2.verify_request.id);
+    strictEqual(plan({}).action, 'reuse');
+    strictEqual(plan({ declarationDigest: 'f'.repeat(64) }).action, 'start');
+    strictEqual(plan({ base: null }).action, 'start');
+    strictEqual(plan({ treeNow: 'e'.repeat(64) }).action, 'start');
+    strictEqual(plan({ forcedRerun: true }).action, 'start');
+    // A pass the journal does not hold whole (a result line gone) is not reused.
+    const holed = entries.filter((e) => !(e.op === 'result' && e.batch_id === before.batch_id && e.index === 1));
+    strictEqual(VR.planVerify({ pending: true, request: fm2.verify_request, results: fm2.verify_results, entries: holed, treeNow: before.tree_start, checksDigest: before.checks_digest, declarationDigest: before.declaration_digest, base: before.base }).action, 'start');
+  });
+
+  it('a replay a hold cuts short is continued by running what is left, and its pass is never reused in turn', BOUNDED, async () => {
+    const t = await two();
+    await runStep(t.job());
+    await again(t, 5);
+    const id = (await readWorkflow(t.wf)).verify_request.id;
+    const replayed = () => journalOf(t.dir, t.wf).some((e) => e.op === 'result' && e.request_id === id);
+    const cut = await runStep(t.job({ seq: 6 }), { stopCause: () => (replayed() ? 'hold' : null) });
+    deepStrictEqual([cut.batch.end, cut.batch.cause, cut.batch.checks.length], ['cut-short', 'hold', 1]);
+    deepStrictEqual(ran(t.log), ['pass', 'pass2'], 'the replayed check did not run');
+    const rest = await runStep(t.job({ seq: 7 }));
+    deepStrictEqual([rest.batch.end, rest.batch.continues], ['passed', cut.batch.batch_id]);
+    deepStrictEqual(ran(t.log), ['pass', 'pass2', 'pass2'], 'what was left ran');
+    ok(VJ.startEntry(journalOf(t.dir, t.wf), id, rest.batch.batch_id).meta.reused_from, 'the continuation keeps the marker');
+    await again(t, 8);
+    const next = await runStep(t.job({ seq: 9 }));
+    deepStrictEqual([next.outcome, next.halt?.reason], ['halt', 'no-progress']);
   });
 });
 

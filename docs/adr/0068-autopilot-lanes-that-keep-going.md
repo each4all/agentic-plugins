@@ -5574,3 +5574,144 @@ runs the serial driver and the scheduler end to end. The mutation spec
 `scripts/mutation-specs/verify-forced.mjs` breaks each piece (F1–F12 against
 the step and policy file, G1–G3 end to end). `verify-exec-driver.mjs` D5 now
 anchors on the changed condition.
+
+## Amendment 2026-11-10 — verification policy (C178)
+
+**The problem.** Measured over the last two macros, verification took 57 to
+71 percent of a step's time, and 65 of 113 batches failed. Workers asked for
+the whole suite and broad mutation sets after every refine, and the driver's
+selection added every test a change could reach, the large ones included, to
+each batch. The whole suite ran many times for trees that changed again
+before the commit, and never had to run for the tree that was committed.
+
+**What changes.** Decision 5 keeps its shape: a request, the driver's batch,
+the journal, `on_pass`. Six rules are amended or added. Items cite Decision 5.
+
+1. **Intermediate and final requests.** A request whose `on_pass` is a verb
+   is *intermediate*; one whose `on_pass` is `commit` or `done` is *final*.
+   Nothing new is declared: the driver reads the kind the request already
+   holds.
+
+2. **An intermediate batch leaves the large tests out (item 4).** The
+   selection (`verify-select.mjs` `selectChecks`, `deferLarge`) removes from
+   the test files it adds each test the repository declares large
+   (`scripts/data/test-tiers.json`, the tiers of ADR-0033's amendment of
+   2026-11-09), read at the selection's base, never from the lane's tree, in
+   the form `scripts/lib/suite-tiers.mjs` accepts. A list that is missing,
+   does not parse or has another form defers nothing. A change only a
+   deferred test matches is matched, so it selects no suite. The suite
+   fallback for a change nothing matches, or matched only with uncertainty,
+   stays. A large test that itself changed is kept. The worker's own checks
+   are never dropped. A new key in the check declaration was rejected: both
+   parsers are strict, so a key on `main` before every install knew it would
+   end the offer.
+
+3. **A final batch holds the suite once (item 4).** When the declaration has
+   a `test-suite` kind, a final batch runs it exactly once: the worker's when
+   the request names it, else the driver's, in place of the test files the
+   driver would have added. A declaration with no such kind gets no final
+   suite, and no gate (rule 4).
+
+4. **The commit gate.** In a run that offers verification over a declaration
+   whose `test-suite` kind resolves with no argument, a commit needs the
+   suite's evidence: a batch of the workflow that the driver's journal ended
+   `passed`, whose checks hold the suite's command, started and ended on the
+   lane's tree as it is now, with the run's declaration digest and the lane's
+   selection base. The tree digest hashes `HEAD`, so an edit, a regeneration,
+   a commit or a rebase since invalidates it. The gate holds every route:
+   - *the next step `commit`, or `done` over a tree with a change:* without
+     evidence the driver resumes the workflow's last verb, with one fixed
+     sentence after its command that tells it to end with the verify form,
+     the suite named, `on_pass` commit. A second such resume on the same tree
+     halts the lane `no-progress`. `done` over a tree with no change only
+     closes the workflow and needs none;
+   - *the owner's forced `--next /engineer:commit`:* refused, naming the way
+     out (force the verb). With lanes it is judged at each decision, on the
+     lane's own tree; the check made as the run starts cannot judge it,
+     because no lane is held yet;
+   - *the recovery of an interrupted commit:* its own commit moved `HEAD`, so
+     the tree digest no longer says anything. The driver records each commit
+     step it admits in the journal with the lane's content without `HEAD`
+     (`lane-digest.mjs` `contentProjection`) and the tree it was admitted
+     on, and takes the commit up again only while the content is still that
+     and the suite's evidence still holds for that admitted tree, with the
+     run's declaration and the lane's base as they are now. Only the moved
+     `HEAD` is let by: a tree that cannot be digested now, another
+     declaration or another base is no recovery. It is also taken up when
+     the suite's evidence holds for the tree as it is now, as a commit
+     admitted anew, and when the lane holds no change at all: the commit
+     command then only closes the workflow (a `done` over a clean tree, or
+     a commit made, whose archive did not run) and commits nothing. The
+     owner's forced commit of a commit begun follows the same three. A
+     recovery taken up without evidence for the tree as it is writes no new
+     journal line: the first admission's stands, so a second interruption
+     is judged as the first. Otherwise the lane halts `owner-choice`, a
+     judgment halt the owner's forced verb replaces;
+   - *at the admission, with lanes:* the lane is prepared between the
+     decision and the start, so the tree is digested again there, and a
+     commit decided on another tree is not started: the run decides again.
+     A recovery taken up on its admitted content is compared by that
+     content. A tree that cannot be read there parks the lane
+     `owner-choice`.
+
+   The gate's facts and records are the driver's (`verify-run.mjs`
+   `suiteFact`, `noteGateStep`; journal ops `commit` and `final-resume`),
+   never the persona's record. A journal that cannot be read, or a tree or a
+   base that cannot be read, is no evidence. A run with lanes reads the
+   lane's status, content and base in a child process, as it does the tree
+   digest (`offloop.mjs` `gateRead`), so its loop goes on supervising the
+   workers in flight; a read that fails there fails closed.
+
+5. **A pass is reused once (item 7).** Item 7 halted a request whose checks
+   repeated a batch that passed or failed on the same tree. A failure still
+   halts. A pass is now evidence for the unchanged tree: when the earlier
+   batch passed whole (it continued no batch, replayed none, and the journal
+   holds a result for each of its checks) with the same declaration digest
+   and selection base, the driver records a batch for the new request whose
+   results are that batch's, runs nothing, and answers it. Each replayed
+   result's log is a pointer to the source's. A pass that was itself a replay
+   is a repeat and halts `no-progress`; a pass that does not qualify runs
+   again whole. A replay that a hold or the driver's end cuts short is
+   continued by running what is left, and the continuation keeps the replay's
+   mark, so its pass is never replayed in turn.
+
+6. **A cap on mutation cases per batch.** One batch runs at most 6 case ids
+   over all its checks (`MAX_BATCH_MUTATE_CASES`: the values of every `id`
+   slot). This is a cost ceiling, distinct from the six case ids one `mutate`
+   check names at most, which sizes that check's timeout (AGENTS.md). The
+   persona refuses a request over it before any write (`bindVerifyRequest`);
+   the driver refuses a batch over it, its own additions counted, before
+   anything runs.
+
+**What the worker is told (item 1).** The runbooks' § Long checks and the
+verify form now say: an intermediate request names the test files the change
+touches, no suite and no broad mutation set; mutation cases only for gate or
+fail-closed code, at most 6; a final request names the suite.
+
+**Limits, documented and not fixed.**
+
+- *The guarantee covers tracked and non-ignored files.* The tree digest does
+  not see installed dependencies or anything git ignores. A dependency
+  reinstalled between the suite and the commit is not noticed.
+- *The window before staging.* An edit made after the gate's last digest and
+  before `/engineer:commit` stages is not seen. The P7 guard has the same
+  window.
+- *A workflow whose commit began under an older driver.* Its journal holds no
+  `commit` line, so its recovery under this driver halts `owner-choice`.
+- *Mixed versions.* An older persona under this driver has no request-time
+  cap: the driver's refusal of the batch is what it meets. New runbooks under
+  an older driver keep the old repeat rule: a repeated pass halts
+  `no-progress`, and no gate asks for the suite.
+- *The preview.* `autopilot preview` does not judge the gate: it shows the
+  commit, and the run decides.
+- *The resumed verb.* The gate resumes the workflow's last verb, usually a
+  critique, which counts as a critique round of ADR-0063's cap.
+
+**Tests.** `tests/orchestrator/test-autopilot-verify-select-tiers.mjs` (rule
+2), `test-autopilot-verify-run.mjs` (rules 1, 3, 5 and 6 on a real persona
+record and journal), `test-autopilot-verify-gate.mjs` (rule 4: the evidence,
+the facts, every route of the policy, the journal lines),
+`test-autopilot-verify-lanes.mjs` (rule 4 at the admission: a lane edited
+since the decision, a tree that cannot be digested), and
+`test-autopilot-verify-mutate-timeout.mjs` (the cap, AGENTS.md and the
+runbook sentence held equal).

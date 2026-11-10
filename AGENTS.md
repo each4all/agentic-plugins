@@ -350,7 +350,13 @@ ADR-0001 final note.
   1800 seconds, and the disposable copies, their cleanup and the wait for
   the heavy-work lock take from the same 4 hours, for which the sizing keeps
   1800 seconds. So **one `mutate` check names at most 6 case ids**: split a
-  larger set into several checks of 6 or fewer, each with its own control.
+  larger set into several checks of 6 or fewer, each with its own control,
+  and hand them over in separate requests: **one verification batch runs at
+  most 6 case ids in all**, over every check of it, the driver's included
+  (`MAX_BATCH_MUTATE_CASES`). That is a cost ceiling of its own, distinct from
+  this sizing; the persona refuses a request over it and the driver a batch
+  (ADR-0068, amendment of 2026-11-10). An intermediate request names mutation
+  cases only for gate or fail-closed code.
   Six is a ceiling, not a guarantee: the control runs every test file the
   named cases select, together, so group cases whose files are few or fast,
   and give a case whose files alone take long a check of its own. The batch's

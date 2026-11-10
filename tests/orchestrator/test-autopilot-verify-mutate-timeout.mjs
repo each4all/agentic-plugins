@@ -19,7 +19,11 @@
 //     cleanup and the heavy-work lock, fit the check's timeout_s, which fits
 //     the driver's batch bound; one case more would not;
 //   - AGENTS.md states the same per-run timeout, timeout_s, margin and case
-//     limit.
+//     limit;
+//   - C178: the cap on the case ids one batch runs (MAX_BATCH_MUTATE_CASES)
+//     is one number in the driver's copy, the persona's, AGENTS.md and the
+//     runbooks' § Long checks, and both copies count a request's case ids
+//     alike.
 //
 // It proves the transport, not the length: no control here runs past 900 s.
 //
@@ -99,6 +103,36 @@ describe('the repository\'s mutate check carries the harness timeout (C170)', ()
       `the control and ${limit} cases at ${seconds} s each, with ${MARGIN_S} s kept, need ${(limit + 1) * seconds + MARGIN_S} s; the check has ${total} s`);
     ok((limit + 2) * seconds + MARGIN_S > total, `${limit + 1} cases would fit too: AGENTS.md understates the limit`);
     ok(total * BOUNDS.secondMs <= BOUNDS.batchMs, 'one mutate check fits the driver\'s batch bound');
+  });
+
+  it('the batch\'s cap on case ids is one number in both copies, AGENTS.md and the runbooks (C178)', () => {
+    const cap = D.MAX_BATCH_MUTATE_CASES;
+    ok(Number.isInteger(cap) && cap >= 1);
+    strictEqual(P.MAX_BATCH_MUTATE_CASES, cap, 'the persona\'s copy');
+    const text = agentsParagraph();
+    strictEqual(Number(/one verification batch runs at most (\d+) case ids in all/.exec(text)?.[1]), cap, `AGENTS.md names the batch's cap: ${text}`);
+    ok(text.includes('`MAX_BATCH_MUTATE_CASES`'));
+    const region = readFileSync(join(REPO_ROOT, 'persona-pipeline/regions/long-checks.md'), 'utf8').replace(/\s+/g, ' ');
+    strictEqual(Number(/One batch runs at most (\d+) case ids of mutation in all/.exec(region)?.[1]), cap, 'the runbooks\' § Long checks names the same cap');
+    for (const f of ['verb-finalize', 'verb-finalize-convergent', 'verb-finalize-consensus']) {
+      const form = readFileSync(join(REPO_ROOT, `persona-pipeline/regions/${f}.md`), 'utf8').replace(/\s+/g, ' ');
+      strictEqual(Number(/names more than (\d+) mutation case ids in all is refused/.exec(form)?.[1]), cap, `${f}: the verify form names the same cap`);
+    }
+    const mode = readFileSync(join(REPO_ROOT, 'plugins/engineer/core/skills/_shared/references/autopilot-mode.md'), 'utf8').replace(/\s+/g, ' ');
+    strictEqual(Number(/One batch runs at most (\d+) mutation case ids in all/.exec(mode)?.[1]), cap, 'autopilot-mode.md names the same cap');
+    // Both copies count the same: the values of every id slot, whatever the kind.
+    const personaDecl = P.parseDeclaration(DECLARATION_TEXT);
+    const requests = [
+      [],
+      [CHECK],
+      [CHECK, { kind: 'mutate', args: { spec: SPEC, ids: ['C3', 'C4', 'C5', 'C6', 'C7'] } }, { kind: 'test-suite' }],
+      [{ kind: 'mutate-static', args: { specs: [SPEC] } }, { kind: 'undeclared', args: { ids: ['X'] } }, { kind: 'mutate', args: { spec: SPEC } }],
+    ];
+    deepStrictEqual(requests.map((r) => D.caseCount(decl, r)), [0, 2, 7, 0]);
+    deepStrictEqual(requests.map((r) => P.caseCount(personaDecl, r)), [0, 2, 7, 0]);
+    // The cap is no larger than what one check may name: one batch's cases fit one check.
+    const limit = Number(/at most (\d+) case ids/.exec(text)?.[1]);
+    ok(cap <= limit, `the batch's cap ${cap} fits the ${limit} case ids one check names`);
   });
 
   it('AGENTS.md states the declared timeouts and the margin', () => {

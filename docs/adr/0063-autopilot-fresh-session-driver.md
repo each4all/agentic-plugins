@@ -2394,6 +2394,27 @@ boundary in every persona, the cap's count, enforcement and the owner's
 exits), `tests/orchestrator/test-autopilot-critique-cap.mjs` (the serial halt,
 the lane park, and park → grant → resume through the real scheduler).
 
+## Amendment 2026-11-10 — the commit gate (C178)
+
+D4's rule that only `/engineer:commit` closes a workflow under autopilot gains
+a condition the driver holds before it starts that command. In a run that
+offers verification over a declaration with a suite kind, the commit step is
+taken only with the whole suite's evidence for the lane's tree as it is.
+Without it the driver resumes the workflow's last verb, with one fixed
+sentence of its own after the verb's command, so that the verb ends with the
+final verification. The owner's forced commit is refused the same way, and an
+interrupted commit is taken up only on the content it was admitted on.
+
+The sentence is the first text the driver puts after a verb's command. It is
+fixed in the driver (`policy.mjs` `FINAL_VERIFY_SENTENCE`), in a closed
+alphabet, and carries no word of the owner's, of a worker's or of a file's:
+the rule that the driver hands a worker only the step grammar holds with this
+one addition. The owner's `--next` still accepts the bare commands alone.
+
+The rule, its routes, its records and its limits are ADR-0068's (Amendment
+2026-11-10, rule 4). The resumed verb is usually a critique, and counts as a
+round of the critique cap of the 2026-11-09 amendment above.
+
 ## References
 
 - ADR-0001 (honest scope)

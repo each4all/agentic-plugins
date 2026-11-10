@@ -96,7 +96,7 @@ export async function perform({ prompt, cwd, env }) {
     if (dispatched) return `dispatch:${dispatched}`;
     const done = /^\/orchestrator:done (\S+)/.exec(prompt)?.[1];
     if (done) return `done:${done}`;
-    const verb = /^\/engineer:([a-z]+)$/.exec(prompt)?.[1];
+    const verb = /^\/engineer:([a-z]+)(?: [^\n]+)?$/.exec(prompt)?.[1];
     const kind = verb === 'commit' ? 'commit' : 'verb';
     // Only a scenario with such a key looks the lane's subtask up.
     if (!verb || !Object.keys(scenario.actions ?? {}).some((k) => k.startsWith(`${kind}:`))) return null;
@@ -401,7 +401,10 @@ export async function perform({ prompt, cwd, env }) {
     return finish({ report: verbReport(wf, reported(ns)), ...(background ? { background } : {}) });
   }
 
-  m = /^\/engineer:([a-z]+)$/.exec(prompt);
+  // A verb's command may carry the driver's fixed sentence after it (the
+  // commit gate's resume, policy.mjs FINAL_VERIFY_SENTENCE); the commit's
+  // never does, and is matched whole below.
+  m = /^\/engineer:([a-z]+)(?: [^\n]+)?$/.exec(prompt);
   if (m && m[1] !== 'commit') {
     const active = execFileSync(node, [engCli, 'find-active', '--repo-root', cwd], { env, encoding: 'utf8' }).trim();
     const fm = (await eng.readWorkflow(active)).frontmatter;

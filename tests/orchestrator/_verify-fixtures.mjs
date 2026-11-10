@@ -43,7 +43,7 @@ const mode = process.argv[2];
 if (process.env.VERIFY_FIXTURE_LOG) fs.appendFileSync(process.env.VERIFY_FIXTURE_LOG, mode + '\\n');
 const hang = () => setInterval(() => {}, 1000);
 switch (mode) {
-  case 'pass': case 'pass2': case 'driver': case 'files': case 'suite': case 'selfpass': process.exit(0);
+  case 'pass': case 'pass2': case 'driver': case 'files': case 'suite': case 'selfpass': case 'mutate': process.exit(0);
   case 'fail':
     console.log('TAP version 13');
     console.log('not ok 1 - suite > it fails');
@@ -72,7 +72,7 @@ switch (mode) {
 export const CHECK_SCRIPT = CHECK;
 
 const kind = (mode, over = {}) => ({ argv: ['node', 'scripts/check.mjs', mode], slots: [], timeout_s: 30, locks_itself: false, adds_on: [], ...over });
-export const DECLARATION = JSON.stringify({
+const DECLARED = {
   schema: 'agentic-verify-checks-1.0',
   kinds: {
     pass: kind('pass'), pass2: kind('pass2'), driver: kind('driver'), fail: kind('fail'), hang: kind('hang', { timeout_s: 2 }),
@@ -80,11 +80,17 @@ export const DECLARATION = JSON.stringify({
     self: kind('selfpass', { locks_itself: true }), missing: { ...kind('x'), argv: ['no-such-command-for-verify-exec'] },
     test: { ...kind('files'), argv: ['node', 'scripts/check.mjs', 'files', '{files}'], slots: [{ name: 'files', type: 'path', repeat: 'many', join: 'words', under: ['tests/'], suffix: '.mjs' }] },
     'test-suite': kind('suite'),
+    mutate: { ...kind('mutate'), argv: ['node', 'scripts/check.mjs', 'mutate', '{ids}'], slots: [{ name: 'ids', type: 'id', repeat: 'many', join: 'comma' }], locks_itself: true },
   },
-}, null, 2);
+};
+export const DECLARATION = JSON.stringify(DECLARED, null, 2);
+// The same without the suite kind: a final request's batch then gets no suite
+// of the driver's (ADR-0068 Decision 5, amendment of 2026-11-10), so a test of
+// anything else names every check its batch runs. `makeRepo`'s default.
+export const DECLARATION_NO_SUITE = JSON.stringify({ ...DECLARED, kinds: Object.fromEntries(Object.entries(DECLARED.kinds).filter(([k]) => k !== 'test-suite')) }, null, 2);
 
 /** A repository on branch feat/x with the declaration committed; `{ dir, sha }`. */
-export function makeRepo({ declaration = DECLARATION } = {}) {
+export function makeRepo({ declaration = DECLARATION_NO_SUITE } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'verify-exec-'));
   git(dir, 'init', '-q', '-b', 'feat/x');
   writeFileSync(join(dir, '.gitignore'), '.agentic-plugins/state/\n.agentic-plugins/runs/\n');

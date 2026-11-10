@@ -559,8 +559,15 @@ for (const persona of personasFor('scripts/state.mjs')) {
         const mutate = (list) => ({ ...REQ, checks: [{ kind: 'mutate', args: { spec: 'scripts/mutation-specs/s.mjs', ids: list } }] });
         await rejects(finish(wf, dir, sha, mutate(ids9)), /resolves to a word of 584 characters, more than the 512 a batch runs/);
         strictEqual(await readFile(wf, 'utf8'), before);
-        // Seven fit (454 characters), and the batch starts.
-        await finish(wf, dir, sha, mutate(ids9.slice(0, 7)));
+        // Seven fit a word (454 characters), and are one more than the case
+        // ids one batch runs (ADR-0068 Decision 5, amendment of 2026-11-10):
+        // refused before any write too, in one check or across two.
+        await rejects(finish(wf, dir, sha, mutate(ids9.slice(0, 7))), /names 7 mutation case ids, more than the 6 one verification batch runs/);
+        const two = { ...REQ, checks: [mutate(ids9.slice(0, 4)).checks[0], mutate(ids9.slice(4, 7)).checks[0]] };
+        await rejects(finish(wf, dir, sha, two), /names 7 mutation case ids, more than the 6 one verification batch runs/);
+        strictEqual(await readFile(wf, 'utf8'), before);
+        // Six are a request, and the batch starts.
+        await finish(wf, dir, sha, mutate(ids9.slice(0, 6)));
         await batch(wf, 'b1');
       });
     });

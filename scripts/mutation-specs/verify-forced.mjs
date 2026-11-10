@@ -97,7 +97,7 @@ export const MUTATIONS = [
   },
   {
     id: 'F11', file: `${AP}/verify-run.mjs`, tests: [T_FORCED],
-    from: "    if (p.action === 'start' && !p.continues) {",
+    from: "    if ((p.action === 'start' && !p.continues) || p.action === 'reuse') {",
     to: '    if (false) {',
     why: 'an unforced step starts a new batch of a request below HIGH when an edit after the end of an open batch empties the record',
     killed_by: /an edit that empties its batches \(a new batch\) runs nothing/,
