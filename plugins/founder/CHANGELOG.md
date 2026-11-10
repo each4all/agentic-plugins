@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.15.6...plugin-founder-v0.16.0) (2026-11-10)
+
+
+### Features
+
+* **founder:** defer non-blocking MAJOR findings from the second critique on ([7de0b61](https://github.com/each4all/agentic-plugins/commit/7de0b6151805a8735fc218dc4c1d60285d35a063))
+
 ## [0.15.6](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.15.5...plugin-founder-v0.15.6) (2026-11-09)
 
 

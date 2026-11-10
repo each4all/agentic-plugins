@@ -18,6 +18,13 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.38.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.37.8...plugin-orchestrator-v0.38.0) (2026-11-10)
+
+
+### Features
+
+* **orchestrator:** accept the critique-cap owner gate an autopilot critique at its round cap records ([11760ec](https://github.com/each4all/agentic-plugins/commit/11760ec6f8235a2917772494c1bf635e12763ece))
+
 ## [0.37.8](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.37.7...plugin-orchestrator-v0.37.8) (2026-11-09)
 
 

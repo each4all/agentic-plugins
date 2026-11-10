@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.35.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.34.7...plugin-engineer-v0.35.0) (2026-11-10)
+
+
+### Features
+
+* **engineer:** defer non-blocking MAJOR findings from the second critique on and cap critique rounds per subtask ([4ee2695](https://github.com/each4all/agentic-plugins/commit/4ee2695b31f0e46ad081c4fd8fa7667acbb2f0c4))
+
 ## [0.34.7](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.34.6...plugin-engineer-v0.34.7) (2026-11-09)
 
 
