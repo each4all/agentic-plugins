@@ -18,6 +18,13 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.40.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.39.0...plugin-orchestrator-v0.40.0) (2026-11-10)
+
+
+### Features
+
+* **orchestrator:** keep each autopilot step's and verify check's temporary files in a run-owned directory removed when it ends, and cap what ended runs keep ([#1049](https://github.com/each4all/agentic-plugins/issues/1049)) ([aa38cdd](https://github.com/each4all/agentic-plugins/commit/aa38cdd5ab5bf6a6089a614c10ca5abcd3c3cf0f))
+
 ## [0.39.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.38.0...plugin-orchestrator-v0.39.0) (2026-11-10)
 
 
