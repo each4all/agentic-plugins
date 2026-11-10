@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.1](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.16.0...plugin-designer-v0.16.1) (2026-11-10)
+
+
+### Bug Fixes
+
+* **designer:** cut the six verb runbooks to what each step acts on and move finalize rationale and rare cases to a verb-finalize reference ([bccfc79](https://github.com/each4all/agentic-plugins/commit/bccfc791a76e64963e7a534e99b013def7677351))
+
 ## [0.16.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.15.0...plugin-designer-v0.16.0) (2026-11-10)
 
 
