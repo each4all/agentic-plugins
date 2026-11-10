@@ -194,12 +194,8 @@ const PEER_NOW_RC_STOP = '[ "$RUN_RC" -eq 0 ] || { echo "✗ peer-now run $RUN_I
 const RESOLVE = 'regions/decide-resolve.md';
 const PHASE_05_RUN = /^Phase 0\.5: between the resume and the dispatch, the resolver reads the args file/;
 const COMMIT_STEP = [
-  '# ADR-0066 PC2b — settle the ensemble attempt from its ledger (never launched,',
-  '# launched and failed, completed). It is the first write and the one judge of',
-  '# the run: a refusal (a run still live, of another workflow or phase, or an',
-  '# attempt an empty id would hide) stops the block before any write, so the',
-  '# workflow never records a note for an attempt left unsettled; once it has',
-  '# recorded the run, running the block again records nothing more for it.',
+  '# ADR-0066 PC2b — settle the ensemble attempt from its ledger: the first write',
+  '# and the one judge of the run. Its refusal stops the block before any write.',
   'node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" settle \\',
   '  --repo-root "$REPO_ROOT" --workflow-path "$ACTIVE" \\',
   '  --host "${AGENTIC_HOST:-claude}" --phase {{verb}} --run-id "$RUN_ID" \\',

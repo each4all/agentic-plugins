@@ -50,8 +50,7 @@ ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "
 PROMPT_FILE="$TEXT_DIR/prompt.xml"
 grep -q '[^[:space:]]' "$PROMPT_FILE" 2>/dev/null || { echo "✗ prompt.xml in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was dispatched." >&2; exit 1; }
 # ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch, allocated by the
-# runner (C119, C26): no shell arithmetic or hand-written date makes it. An
-# allocation that prints nothing stops the block too.
+# runner; an allocation that prints nothing stops the block too.
 RUN_ID="$(node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" new-run-id --prefix "$ENSEMBLE_TYPE")" || RUN_ID=''
 [ -n "$RUN_ID" ] || { echo "✗ peer-runner.mjs new-run-id allocated no run id for $ENSEMBLE_TYPE (its error, if any, is above); nothing was dispatched." >&2; exit 1; }
 # The dispatch's own record of the run it launches and the workflow it found,
@@ -59,10 +58,9 @@ RUN_ID="$(node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" new-run-id --prefix
 # runner ends without writing its result (R4 F1).
 node -e 'require("fs").writeFileSync(process.argv[1],JSON.stringify({run_id:process.argv[2],workflow_path:process.argv[3]})+"\n")' "$PROMPT_FILE.dispatch.json" "$RUN_ID" "$ACTIVE" \
   || { echo "✗ Could not record the dispatch in TEXT_DIR ($TEXT_DIR); nothing was dispatched." >&2; exit 1; }
-# ADR-0069 Decision 1, item 6 — the subject the agent wrote, for a review. A
-# peer-runner older than this runbook takes no such flag, so it is passed only
-# when it names it. The positional parameters, since the block runs in any
-# POSIX shell, which has no arrays.
+# ADR-0069 Decision 1, item 6 — the subject the agent wrote, for a review,
+# passed only to a peer-runner that names the flag (an older one does not), as
+# positional parameters: the block runs in any POSIX shell, which has no arrays.
 set --
 if [ -f "$TEXT_DIR/subject.json" ] && grep -q -e "'--subject-file'" "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" 2>/dev/null; then
   set -- --subject-file "$TEXT_DIR/subject.json"

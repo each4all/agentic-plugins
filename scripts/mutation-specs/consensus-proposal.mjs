@@ -199,8 +199,8 @@ export const MUTATIONS = [
   },
   {
     id: 'R4', file: PLAIN, tests: [TR],
-    from: '# ADR-0066 PC2b — settle the ensemble attempt from its ledger (never launched,\n',
-    to: '# runtime:consensus is proposed here too\n# ADR-0066 PC2b — settle the ensemble attempt from its ledger (never launched,\n',
+    from: '# ADR-0066 PC2b — settle the ensemble attempt from its ledger: the first write\n',
+    to: '# runtime:consensus is proposed here too\n# ADR-0066 PC2b — settle the ensemble attempt from its ledger: the first write\n',
     why: 'compose, frame and refine propose a consensus round',
     killed_by: /the finalize has no conflict branch/,
   },
