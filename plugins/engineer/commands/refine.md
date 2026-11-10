@@ -100,16 +100,10 @@ REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 GIT_BRANCH="$(git branch --show-current)"
 GIT_HEAD="$(git rev-parse HEAD)"
 STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
-# ADR-0019 §1+§3 — when /orchestrator:next dispatches this command,
-# it sets AGENTIC_PARENT_WORKFLOW + AGENTIC_ORIGINATING_SUBTASK so
-# the create-time bootstrap records the immutable parent linkage.
-# Both must be set together (or both absent for direct invocation).
-# ADR-0067 Decision 3 — it also sets AGENTIC_PARENT_WORKFLOW_PATH, the
-# macro file's absolute path, recorded beside them; an older orchestrator
-# sets none. The path is valid only with both ids.
-# ADR-0067 Decision 4, item 5 — and AGENTIC_DISPATCH_SELECTION, the selection
-# its Phase 1 made (JSON: subtask, branch, verb, profile, topic), recorded
-# beside them for every later binding to compare; also valid only with both.
+# The parent linkage /orchestrator:next exports when it dispatches this
+# command (ADR-0019 §3): both ids, or neither for a direct invocation. The
+# macro's path and the dispatch selection (ADR-0067 Decisions 3 and 4) are
+# valid only with both ids; an older orchestrator sets neither of the two.
 PARENT_ARGS=()
 if [ -n "${AGENTIC_PARENT_WORKFLOW:-}" ] || [ -n "${AGENTIC_ORIGINATING_SUBTASK:-}" ]; then
   if [ -z "${AGENTIC_PARENT_WORKFLOW:-}" ] || [ -z "${AGENTIC_ORIGINATING_SUBTASK:-}" ]; then
@@ -131,18 +125,15 @@ elif [ -n "${AGENTIC_DISPATCH_SELECTION:-}" ]; then
   exit 1
 fi
 # The request, as a file (ADR-0059, amendment of 2026-10-10): the one the
-# agent wrote, or the AGENTIC_TOPIC a dispatcher exports, which is program data
-# the block writes to a private directory of its own, so no text flag is
-# inline and a dispatched run needs no file of the agent's.
+# agent wrote, or the AGENTIC_TOPIC a dispatcher exports, written here to a
+# private directory of its own.
 REQUEST_FILE="$TEXT_DIR/request.txt"
 if [ -n "${AGENTIC_TOPIC:-}" ]; then
   REQUEST_FILE="$(mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX")/topic.txt" || exit 1
   printf '%s\n' "$AGENTIC_TOPIC" > "$REQUEST_FILE" || exit 1
 fi
 grep -q '[^[:space:]]' "$REQUEST_FILE" 2>/dev/null || { echo "✗ request.txt in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was written." >&2; exit 1; }
-# ADR-0068 Decision 2, item 7 — this command's operation directory: the
-# create opens the command's persona operation there when it creates a
-# macro's child, and the finalize block's last write closes it.
+# ADR-0068 Decision 2, item 7 — this command's operation directory.
 OP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-op.XXXXXX")" || exit 1
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
   --repo-root "$REPO_ROOT" \
@@ -186,9 +177,7 @@ REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
 [ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
 VERB='refine'
-# ADR-0068 Decision 2, item 7 — this command's operation directory: this
-# first write opens the command's persona operation there when the workflow
-# is a macro's child, and the finalize block's last write closes it.
+# ADR-0068 Decision 2, item 7 — this command's operation directory.
 OP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-op.XXXXXX")" || exit 1
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --verb 'refine' \
@@ -238,48 +227,20 @@ Sort the checks a change needs by the work they are expected to take:
   many files), any test file known to run long, and every mutation run
   (`npm run mutate`, and `npm run mutate:static` over every spec).
 
-Where a long check runs depends on the session:
+Where a long check runs depends on the session. The rules are in the skill
+this command follows, `core/skills/refine/SKILL.md` § Long checks: what a
+verify request names by the step that follows it, the cap on mutation cases,
+the repeat rule, and the commands the lock wrapper refuses. In short:
 
 - **Under an autopilot run that offers verification** (Phase 0's preflight
   banner ends `This run offers verification`): run no long check in the
-  step, and never wait for the heavy-work lock there — a wait on a lock is
-  quiet and idle, which the driver judges stalled. Hand the long checks to the driver instead, with the finalize's
-  verify form (`verify-request.json`): it runs them with no LLM after the step
-  ends, and the step that follows reads their results, which Phase 0 prints.
-  Failing tests named there are the evidence to work from; a check that ended
-  with no evidence (a timeout, one cut short or never reached) says nothing
-  about the code. What a request names depends on the step that follows it
-  (ADR-0068 Decision 5, amendment of 2026-11-10):
-  - **An intermediate request** (its `on_pass` is a verb, as after composing
-    or refining): name only the test files the change touches. Do not name
-    the whole suite, a broad `npm test` or a broad mutation set: the driver
-    adds the small and medium tests the change selects, and the large ones
-    wait for the final run. Name mutation cases only when the change touches
-    gate or fail-closed code (a check that refuses, a guard, a bound), and
-    then only those cases. A step with no test file to name names the
-    cheapest declared check its change triggers.
-  - **The final request** (its `on_pass` is `commit` or `done`): name the
-    whole suite, the `test-suite` check, when the repository declares it. Its
-    pass is the evidence the commit needs, and it holds only for the tree it
-    ran on: after any later edit, regeneration, commit or rebase the driver
-    asks for it again, and resumes a verb that asks for the commit without it.
-  - **One batch runs at most 6 case ids of mutation in all**, the request's
-    and the driver's together: a request over that is refused before any
-    write.
-
-  Recording the same checks again on an unchanged tree after they passed
-  runs nothing: the driver reuses the pass once. A second time, or after one
-  failed, it halts the lane `no-progress`: change the code first (the owner
-  reruns a flaky check with `--next verify`).
+  step, and never wait for the heavy-work lock there. Hand the long checks to
+  the driver with the finalize's verify form (`verify-request.json`).
 - **Under an autopilot run that does not offer it** (the banner ends `This
   run does not offer verification`): in the step, as before.
 - **Interactively:** run a long check under the repository's heavy-work lock,
-  so it does not run beside another session's heavy work:
-  `agentic-autopilot heavy -- <command>` (or `node <orchestrator plugin
-  root>/adapters/claude/autopilot/cli.mjs heavy -- <command>`). A command that
-  takes the lock itself, as the mutation harness does (`locks_itself` in
-  `.agentic-plugins/verify-checks.json`), runs directly: the wrapper refuses
-  it. With no orchestrator installed, run the check directly.
+  `agentic-autopilot heavy -- <command>`; directly when the command takes the
+  lock itself (the wrapper refuses it) or no orchestrator is installed.
 <!-- pipeline:end refine-long-checks -->
 
 <!-- pipeline:begin refine-scope-record -->
@@ -292,9 +253,8 @@ Before the fix, read the workflow's review ledger (ADR-0063, amendment of
 ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-# A fresh shell: the workflow is found again here, never carried from an
-# earlier block. A failure (no workflow found, an older state.mjs without the
-# subcommand) is no reason to stop the refine: it runs as it always has.
+# A failure (no workflow found, an older state.mjs without the subcommand)
+# does not stop the refine: it runs as it always has.
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || REPO_ROOT="$PWD"
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")"
 [ -n "$ACTIVE" ] && node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" review-status \
@@ -342,9 +302,9 @@ CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 # A checkout git cannot read (a broken HEAD) is the script's to judge, and
 # it falls back: the block hands it this directory instead of stopping.
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || REPO_ROOT="$PWD"
-# A fresh shell: the workflow is found again here. A failure, or no workflow
-# found, records nothing for this tree; a targets file it refuses (an id the
-# ledger does not hold) is fixed and the block run again.
+# A failure, or no workflow found, records nothing for this tree; a targets
+# file it refuses (an id the ledger does not hold) is fixed and the block run
+# again.
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")"
 [ -n "$ACTIVE" ] && node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" refine-record \
   --workflow-path "$ACTIVE" --repo-root "$REPO_ROOT" \
@@ -435,8 +395,7 @@ ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "
 PROMPT_FILE="$TEXT_DIR/prompt.xml"
 grep -q '[^[:space:]]' "$PROMPT_FILE" 2>/dev/null || { echo "✗ prompt.xml in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was dispatched." >&2; exit 1; }
 # ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch, allocated by the
-# runner (C119, C26): no shell arithmetic or hand-written date makes it. An
-# allocation that prints nothing stops the block too.
+# runner; an allocation that prints nothing stops the block too.
 RUN_ID="$(node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" new-run-id --prefix "$ENSEMBLE_TYPE")" || RUN_ID=''
 [ -n "$RUN_ID" ] || { echo "✗ peer-runner.mjs new-run-id allocated no run id for $ENSEMBLE_TYPE (its error, if any, is above); nothing was dispatched." >&2; exit 1; }
 # The dispatch's own record of the run it launches and the workflow it found,
@@ -444,10 +403,9 @@ RUN_ID="$(node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" new-run-id --prefix
 # runner ends without writing its result (R4 F1).
 node -e 'require("fs").writeFileSync(process.argv[1],JSON.stringify({run_id:process.argv[2],workflow_path:process.argv[3]})+"\n")' "$PROMPT_FILE.dispatch.json" "$RUN_ID" "$ACTIVE" \
   || { echo "✗ Could not record the dispatch in TEXT_DIR ($TEXT_DIR); nothing was dispatched." >&2; exit 1; }
-# ADR-0069 Decision 1, item 6 — the subject the agent wrote, for a review. A
-# peer-runner older than this runbook takes no such flag, so it is passed only
-# when it names it. The positional parameters, since the block runs in any
-# POSIX shell, which has no arrays.
+# ADR-0069 Decision 1, item 6 — the subject the agent wrote, for a review,
+# passed only to a peer-runner that names the flag (an older one does not), as
+# positional parameters: the block runs in any POSIX shell, which has no arrays.
 set --
 if [ -f "$TEXT_DIR/subject.json" ] && grep -q -e "'--subject-file'" "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" 2>/dev/null; then
   set -- --subject-file "$TEXT_DIR/subject.json"
@@ -466,12 +424,10 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
 ```
 <!-- pipeline:end refine-dispatch -->
 
-`peer-runner.mjs run` records the matching `pending_ensemble` row
-before spawning the companion and writes raw peer output under the
-hidden peer-run ledger; the background command's stdout is the small
-runner JSON result (`envelope_path`, `stdout_path`, `stderr_path`,
-`handle_path`). Synthesize per AGREED / LOCAL-ONLY / PEER-ONLY /
-CONFLICT. Peer-flagged regressions or over-fitting concerns block
+The background command's stdout is the small runner JSON result
+(`envelope_path`, `stdout_path`, `stderr_path`, `handle_path`); the raw
+peer output stays in the peer-run ledger. Synthesize per AGREED /
+LOCAL-ONLY / PEER-ONLY / CONFLICT. Peer-flagged regressions or over-fitting concerns block
 completion until addressed.
 
 When a finding that an earlier refine pass on this workflow already
@@ -549,82 +505,56 @@ block:
    file holds its text as written and ends with one newline, which the
    scripts remove; nothing deletes the files.
 
-Then run the block with `TEXT_DIR` set to that directory, `DISPATCH_DIR` to the
-directory the dispatch block ran with, `VERDICT` to the synthesis's verdict,
-and `CONFIDENCE` to the proposal's confidence (`HIGH`, `MEDIUM` or `LOW`). The block reads the run's id from the result the runner wrote there,
-`prompt.xml.run.json`, never from a value carried from the dispatch's shell. A
-runner that ended without writing its result (killed, or stopped by an error
-after it launched the run) leaves that file empty: the block then takes the run
-from `prompt.xml.dispatch.json`, which the dispatch block wrote there before
-the launch, naming the run and the workflow. A run whose handle or record names
-another workflow than the one the block finds, a handle that cannot be read
-as that run's (one gone is left to the dispatch's record), or a directory
-with no result, or one naming no well-formed run id, stops the block before
-any write; settle, its first write, refuses a run of another phase. A
-well-formed run id is one the runner accepts: letters, digits, `.`, `_`, `:`
-and `-`, with no `..`, so a run the runner launched can always be finalized.
+Then run the block with its values set:
 
-When no run launched (the verb ran local-only, or the dispatch's
-`prompt.xml.err` says why), leave `DISPATCH_DIR` empty: that is the empty id,
-"no run launched", and settle refuses it while the workflow holds a run of
-this phase it would hide. When a run launched but its dispatch's directory is
-gone (a later session, or a system that cleared its temporary files), set
-`DISPATCH_DIR` to the run's own ledger directory, the one holding the
-`envelope.json` the synthesis read
-(`.agentic-plugins/state/engineer/peer-runs/<run id>`): the block reads the
-run from its `handle.json` and checks it as it checks a dispatch's, the
-workflow here and the phase in settle, so the run settled is always the one
-the synthesis read, never one chosen from the workflow's pending entries. With
-neither directory left, nothing binds the run to the synthesis: the block
-cannot settle it, and settle does by hand (`peer-runner.mjs settle --run-id`).
+- `TEXT_DIR`: that directory, a fresh one for each finalize: the block keeps
+  there the run it settles (`finalize-run.json`), and a rerun in it must name
+  that same run.
+- `DISPATCH_DIR`: the directory the dispatch block ran with; the block reads
+  the run's id from the result the runner wrote there, `prompt.xml.run.json`.
+  Leave it empty when no run launched (the verb ran local-only, or the
+  dispatch's `prompt.xml.err` says why). When a run launched but that
+  directory is gone, set it to the run's own ledger directory, the one holding
+  the `envelope.json` the synthesis read
+  (`.agentic-plugins/state/engineer/peer-runs/<run id>`).
+  When settle refuses an empty `DISPATCH_DIR` because a run of this phase is
+  pending or unsettled, do not settle that run by hand, as its message reads,
+  while its answer can be read: collect the run and synthesize it, then set
+  `DISPATCH_DIR` to its directory (its ledger directory when that is gone)
+  and finalize from a fresh `TEXT_DIR`, since this one keeps the empty id.
+  Only with neither directory left is it settled by hand, as the reference
+  says.
+- `VERDICT`: the synthesis's verdict.
+- `CONFIDENCE`: the proposal's confidence (`HIGH`, `MEDIUM` or `LOW`).
+- `NO_RUN_REASON`: empty when a run launched. When none did, why:
+  `peer-unavailable` (the companion or the peer's CLI was not found, or could
+  not run, before any run), `local-only` (the verb ran without a peer by
+  design), `privacy-gate` (the prompt could not be made safe to send) or
+  `owner-skip` (the owner chose no review). With no run launched, a review
+  still says what its local reviewers read: with your file-writing tool create
+  `subject.json` in the text directory, as the dispatch's step says
+  (`{"shown": [...], "covered": [...]}`); with no such file the attempt covers
+  no path.
+- `ATTEMPT_TYPE`: the ensemble type the dispatch block ran with, or would have
+  run with: its `ENSEMBLE_TYPE`, the default this block names unless the
+  dispatch's prose said to set another (critique's adversarial profiles set
+  `adversarial-scan`).
 
-When no run launched, set `NO_RUN_REASON` to why: `peer-unavailable` (the
-companion or the peer's CLI was not found, or could not run, before any run),
-`local-only` (the verb ran without a peer by design), `privacy-gate` (the
-prompt could not be made safe to send) or `owner-skip` (the owner chose no
-review). For a review, settle records the attempt with the outcome that reason
-gives, `unavailable` or `skipped`, under an id derived from `TEXT_DIR`, so a
-rerun records it once (C163 A1a); left empty, the attempt is `skipped` with
-the reason `unspecified`. For an ensemble that is no review it records
-nothing. Leave `NO_RUN_REASON` empty when a run launched.
-With no run launched, a review still says what its local reviewers read: with
-your file-writing tool create `subject.json` in the text directory, as the
-dispatch's step says (`{"shown": [...], "covered": [...]}`), and settle records
-it with the attempt (ADR-0069). With no such file the attempt covers no path.
-Set `ATTEMPT_TYPE` to the ensemble type the dispatch block ran with, or
-would have run with: its `ENSEMBLE_TYPE`, the default this block names unless
-the dispatch's prose said to set another (critique's adversarial profiles set
-`adversarial-scan`), so a review that never launched is recorded under the
-type it would have had.
-
-Whatever run the block settles, the empty id included, it keeps in its text
-directory as `finalize-run.json` before settle. Every value the last write
-takes is checked before settle too (`CONFIDENCE` here), so a step that fails
-after it fails on the workflow's own state, and its message says what. Run
-again with the same `TEXT_DIR` after a later step failed, it settles that same
-run again, which records nothing more; a phase note the failed run already
-appended (the failure came at the last write) is appended a second time. A kept run that differs from the one this run of the
-block names stops it before any write: each finalize takes a fresh text
-directory, and a record left by another stays its own. The empty id binds
-too: after settle refuses it (a run of this phase is pending), collect that
-run, synthesize it, and finalize it from a fresh text directory. A file left
-unwritten, blank, or not UTF-8 text stops it too.
-
-`peer-runner.mjs settle` decides from the run ledger what the workflow
-records, not from these values alone: a run that never launched records
-nothing; a run that launched and failed, was cancelled or was abandoned
-records verdict `failed` with the ledger's `error_kind`; a run that completed
-records the synthesis verdict, or `degraded` when its answer was empty or
-unreadable. An answer that parses to nothing usable, only structural
+`peer-runner.mjs settle`, the block's first write, decides from the run ledger
+what the workflow records: a run that launched and failed records `failed`
+whatever `VERDICT` says, and a completed run whose answer was empty or
+unreadable records `degraded`.
+An answer that parses to nothing usable, only structural
 shell, reads to `settle` like any other, so set `VERDICT` to `degraded` then.
-It runs before the block writes anything, so its refusal leaves the workflow
-as it was: while a run is still live, or its handle was last updated less than
-the stale grace (a minute) ago (collect it, or wait, and run the block again); for a run of
-another workflow or phase; or when an empty id would hide an attempt the
-ledger holds for this phase (collect that run and synthesize it, then set
-`DISPATCH_DIR` to its directory, or to its ledger directory when that is
-gone). Once
-it has recorded a run, running the block again records nothing more for it.
+Every check before settle stops the block with nothing written, and its
+message says what to set.
+
+Read `core/skills/_shared/references/verb-finalize.md`, the section named for
+what you see, only when the step is not the plain one: the block stopped and
+its message does not settle what to do; the dispatch's directory is gone, or
+the run is still live; you run the block a second time after it wrote; or you
+need the reason a step of the block is as it is. A normal step reads none of
+it.
 
 The last write, `finish-verb`, records the proposal's next step in closed-enum
 form: `--next-step-kind` `verb` (with `--next-step-verb`), `commit`
@@ -651,10 +581,7 @@ The owner-decision form below records the gate with the next step in one
 write and leaves the workflow open, not terminal, until the owner resolves it.
 
 Set `OP_DIR` to the operation directory the Phase 0 bootstrap or resume block
-printed (`OP_DIR=<path>`), or leave it empty when it printed none: the last
-write, `finish-verb` (or, where this block has one, the write that keeps the
-workflow open), closes there the persona operation Phase 0 opened when the
-workflow is a macro's child (ADR-0068 Decision 2, item 7). A value left
+printed (`OP_DIR=<path>`), or leave it empty when it printed none. A value left
 unfilled stops the block before any write.
 
 **The verify form** (ADR-0068 Decision 5). Under an autopilot run that offers
@@ -699,26 +626,16 @@ Then `next-action.txt` names the verification (for example `Verify: the
 changed tests and the mutation cases, then critique`). When every check
 passed, the driver dispatches `on_pass`; otherwise it resumes this verb, whose
 Phase 0 prints the results. The block checks the request before its first
-write with the last write's own checks (`state.mjs verify-request-check`), so
-a request it would refuse (a run that offers no verification, a kind not
-declared, a path not in the tree, a confidence that is not `CONFIDENCE`)
-stops it with nothing written: fix the request, or remove the file to end
-with the verb form. A conflict takes no request, and neither does any other
-owner gate: a step that ends on its owner's judgment writes no
-`verify-request.json`, since the driver would otherwise run the checks and
-then `on_pass` past the judgment. Set `OWNER_GATE` in the block to the gate
-whenever the step ends on one: the last write is then the owner-decision
-form, which records that gate with the anchor the gate list above names, in
-place of the verb or verify form. A gate this verb does not end on with it, a
-request beside it, and a note that holds the heading of `recurring-finding`,
-`scope-routing`, `pr-handling` or `critique-cap` while `OWNER_GATE` is empty
-each stop the block before any write. Once every other check has passed, just before
-settle, the block keeps the form it took in the text directory
-(`finalize-verify.json`: the request's sha256, or none), so a run those checks
-stop keeps none and may add a request: run again with the same `TEXT_DIR`
-after a write, it takes the same form and the same request, and a request
-added, removed or changed since stops it before any write. With no `verify-request.json`, the block ends with the verb form as
-always.
+write, so a request it would refuse stops it with nothing written: fix the
+request, or remove the file to end with the verb form. Once it has written,
+a request added, removed or changed stops a rerun: the block keeps the form it
+took in the text directory (`finalize-verify.json`). A conflict takes no
+request, and neither does any other owner gate: a step that ends on its
+owner's judgment writes no `verify-request.json`. Set `OWNER_GATE` in the
+block to the gate whenever the step ends on one: the last write is then the
+owner-decision form, which records that gate with the anchor the gate list
+above names, in place of the verb or verify form. With no
+`verify-request.json`, the block ends with the verb form as always.
 
 `NEXT_STEP_KIND` in the block names the verb form's next step: `verb` (the
 verb its last write names), or `commit` or `done` when the result selects one
@@ -745,8 +662,7 @@ ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 # A fresh shell: the workflow and the run are found again here, never carried
-# from an earlier block. The run ledger lives under the repository root, where
-# the dispatch put it.
+# from an earlier block.
 PERSONA='engineer'
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
@@ -757,8 +673,7 @@ esac
 case "$VERDICT" in
   ''|*'<'*) echo "✗ VERDICT is not set to the synthesis verdict; nothing was written." >&2; exit 1 ;;
 esac
-# The last write's confidence, checked here with the other values it takes, so
-# a value it would refuse stops the block before settle, its first write.
+# The last write's confidence, checked before settle, the first write.
 case "$CONFIDENCE" in
   HIGH|MEDIUM|LOW) ;;
   *) echo "✗ CONFIDENCE is not HIGH, MEDIUM or LOW, the proposal's confidence the last write records; nothing was written." >&2; exit 1 ;;
@@ -769,19 +684,14 @@ case "$NO_RUN_REASON" in
   *) echo "✗ NO_RUN_REASON is not peer-unavailable, local-only, privacy-gate or owner-skip (empty when a run launched); nothing was written." >&2; exit 1 ;;
 esac
 # The runner's grammar for a type: a lowercase letter, then up to 40
-# lowercase letters or hyphens, the letters spelled out (a range such as a-z
-# follows the locale's collation in bash, which can take in capitals).
+# lowercase letters or hyphens, spelled out (a range follows the locale).
 case "$ATTEMPT_TYPE" in
   ''|[!abcdefghijklmnopqrstuvwxyz]*|*[!abcdefghijklmnopqrstuvwxyz-]*|??????????????????????????????????????????*) echo "✗ ATTEMPT_TYPE is not an ensemble type (the dispatch's ENSEMBLE_TYPE); nothing was written." >&2; exit 1 ;;
 esac
 # The owner gate selects the last write's owner-decision form, with the anchor
-# the gate list names; a gate this verb does not end on with it stops the block
-# here, before settle, its first write. A note holding a gate's heading names
-# a gate too: with OWNER_GATE empty the verb form would close the step past
-# the owner's judgment, so it stops the block as well. A heading indented by up
-# to three spaces, or with more than one space or a tab after its ###, is still
-# one (CommonMark); one quoted in a fenced example
-# matches too, a limit that fails closed (the block stops, nothing written).
+# the gate list names. A gate this verb does not end on with it, and a gate's
+# heading in note.md while OWNER_GATE is empty, stop the block here, before
+# settle, its first write.
 OWNER_GATE_ANCHOR=''
 case "$OWNER_GATE" in
   '') ;;
@@ -799,19 +709,13 @@ case "$NEXT_STEP_KIND" in
   verb|commit|done) ;;
   *) echo "✗ NEXT_STEP_KIND is not verb, commit or done, the verb form's next step; nothing was written." >&2; exit 1 ;;
 esac
-# The run's id, from the result the runner wrote beside the dispatch's prompt,
-# or, when DISPATCH_DIR is the run's own ledger directory (no result there,
-# its handle.json instead), from that handle, the directory naming the run. An empty
-# DISPATCH_DIR (exit 5) is the empty id, no run launched; nothing else stands
-# for a run, and none is chosen from the workflow's pending entries. A result
-# that is missing or names no well-formed run id (the runner's rule: letters,
-# digits, ".", "_", ":" and "-", with no "..", so every run it launched can be
-# finalized) stops it, as does a
-# run whose handle names another workflow than the one found above (exit 2)
-# or cannot be read as the run's (exit 3): nothing is written to a workflow
-# the run is not for; settle, the first write, judges the phase. Exit 4 leaves the run to the
-# dispatch's own record: a result left empty, or a run whose handle is gone
-# (its id printed).
+# The run's id, from the result the runner wrote beside the dispatch's prompt
+# or, when DISPATCH_DIR is the run's own ledger directory, from its
+# handle.json. Exit 5: an empty DISPATCH_DIR, the empty id, no run launched.
+# Exit 2: the handle names another workflow. Exit 3: the handle cannot be read
+# as the run's. Exit 4: the result is empty or the handle gone, so the
+# dispatch's own record decides (its id printed). Exit 1: no result, or no
+# well-formed run id.
 RUN_ID="$(node -e 'const [d,w]=process.argv.slice(1);if(d==="")process.exit(5);const fs=require("fs"),p=require("path");const good=(v)=>typeof v==="string"&&/^[A-Za-z0-9._:-]+$/.test(v)&&!v.includes("..");const same=(a,b)=>{try{return fs.realpathSync(a)===fs.realpathSync(b)}catch{return p.resolve(a)===p.resolve(b)}};const bound=(h,id)=>{if(h===null||typeof h!=="object"||h.run_id!==id)process.exit(3);if(typeof h.workflow_path!=="string"||!same(h.workflow_path,w))process.exit(2);process.stdout.write(id);process.exit(0)};let t,r,h;try{t=fs.readFileSync(p.join(d,"prompt.xml.run.json"),"utf8")}catch(e){if(!(e&&e.code==="ENOENT"))process.exit(1);try{h=fs.readFileSync(p.join(d,"handle.json"),"utf8")}catch(e){process.exit(e&&(e.code==="ENOENT"||e.code==="ENOTDIR")?1:3)}const id=p.basename(p.resolve(d));if(!good(id))process.exit(1);try{h=JSON.parse(h)}catch{process.exit(3)}bound(h,id)}if(t.trim()==="")process.exit(4);try{r=JSON.parse(t)}catch{process.exit(1)}const id=r&&r.run_id;if(!good(id))process.exit(1);try{h=fs.readFileSync(r.handle_path,"utf8")}catch(e){if(e&&e.code==="ENOENT"){process.stdout.write(id);process.exit(4)}process.exit(3)}try{h=JSON.parse(h)}catch{process.exit(3)}bound(h,id)' "$DISPATCH_DIR" "$ACTIVE")"
 RUN_READ=$?
 if [ "$RUN_READ" -eq 2 ]; then
@@ -821,10 +725,8 @@ elif [ "$RUN_READ" -eq 3 ]; then
   echo "✗ The handle of the run in DISPATCH_DIR ($DISPATCH_DIR) cannot be read as that run's, so the run cannot be bound to $ACTIVE; nothing was written." >&2
   exit 1
 elif [ "$RUN_READ" -eq 4 ]; then
-  # The dispatch recorded, before the launch, the run it launches and the
-  # workflow it found (prompt.xml.dispatch.json): that run is the one to
-  # settle, for the workflow found above only. A run the result names, its
-  # handle gone, must be that same run.
+  # The run the dispatch recorded before the launch (prompt.xml.dispatch.json),
+  # for the workflow found above only; a run the result names must be that one.
   RUN_ID="$(node -e 'const [d,w,named]=process.argv.slice(1);const fs=require("fs"),p=require("path");const same=(a,b)=>{try{return fs.realpathSync(a)===fs.realpathSync(b)}catch{return p.resolve(a)===p.resolve(b)}};let m;try{m=JSON.parse(fs.readFileSync(p.join(d,"prompt.xml.dispatch.json"),"utf8"))}catch{process.exit(1)}const id=m&&m.run_id;if(typeof id!=="string"||!/^[A-Za-z0-9._:-]+$/.test(id)||id.includes("..")||(named!==""&&named!==id))process.exit(1);if(typeof m.workflow_path!=="string"||!same(m.workflow_path,w))process.exit(2);process.stdout.write(id)' "$DISPATCH_DIR" "$ACTIVE" "$RUN_ID")"
   case $? in
     0) ;;
@@ -832,19 +734,17 @@ elif [ "$RUN_READ" -eq 4 ]; then
     *) echo "✗ The runner left no usable result in DISPATCH_DIR ($DISPATCH_DIR), and prompt.xml.dispatch.json there is missing, malformed or names another run; nothing was written. When the run launched, set DISPATCH_DIR to its ledger directory, the one holding the envelope.json the synthesis read, and run this block again; with no ledger directory either, settle the run by hand (peer-runner.mjs settle --run-id), then run this block with DISPATCH_DIR empty from a fresh TEXT_DIR. When the runner refused before any ledger (prompt.xml.err says why), no run launched: leave DISPATCH_DIR empty." >&2; exit 1 ;;
   esac
 elif [ "$RUN_READ" -eq 5 ]; then
-  # No run launched: the empty id (the read printed nothing), which settle
-  # accepts only when no attempt of this phase is open. It never stands for a
-  # run whose directory is gone.
+  # No run launched: the empty id, which settle accepts only when no attempt
+  # of this phase is open.
   :
 elif [ "$RUN_READ" -ne 0 ]; then
   echo "✗ prompt.xml.run.json in DISPATCH_DIR ($DISPATCH_DIR) is missing or names no well-formed run id, and DISPATCH_DIR is no run ledger directory; nothing was written. Set DISPATCH_DIR to the directory the dispatch block ran with; leave it empty when no run launched (prompt.xml.err there says why), or, when a run launched and that directory is gone, set it to the run's ledger directory, the one holding the envelope.json the synthesis read." >&2
   exit 1
 fi
 # The run this block settles is kept in TEXT_DIR (finalize-run.json) before
-# settle; the empty id is kept too. Run again after a later step failed, the
-# block settles the same run: a run kept that differs from the one named now,
-# the empty id included (exit 3), stops it, as does a record that is
-# malformed or names another workflow or phase (exit 7).
+# settle, the empty id too, so a rerun settles the same run. Exit 3: another
+# run was kept. Exit 7: the record is malformed, or of another workflow or
+# phase.
 KEPT_ID="$(node -e 'const [rec,id,w,ph]=process.argv.slice(1);const fs=require("fs"),p=require("path");const good=(v)=>typeof v==="string"&&(v===""||/^[A-Za-z0-9._:-]+$/.test(v)&&!v.includes(".."));const same=(a,b)=>{try{return fs.realpathSync(a)===fs.realpathSync(b)}catch{return p.resolve(a)===p.resolve(b)}};let m,has=true;try{m=JSON.parse(fs.readFileSync(rec,"utf8"))}catch(e){if(!(e&&e.code==="ENOENT"))process.exit(7);has=false}if(has&&(!m||!good(m.run_id)||m.phase!==ph||typeof m.workflow_path!=="string"||!same(m.workflow_path,w)))process.exit(7);if(has&&m.run_id!==id){process.stdout.write(m.run_id);process.exit(3)}if(!has){try{fs.writeFileSync(rec,JSON.stringify({run_id:id,workflow_path:w,phase:ph})+"\n")}catch{process.exit(8)}}process.stdout.write(id);process.exit(0)' "$TEXT_DIR/finalize-run.json" "$RUN_ID" "$ACTIVE" 'refine')"
 case $? in
   0) ;;
@@ -856,12 +756,8 @@ esac
 # ADR-0068 Decision 5 — the verify form: a request the agent wrote in
 # TEXT_DIR (verify-request.json) makes the last write record it with the next
 # step verify, in place of the verb form. It is checked here with the last
-# write's own checks (verify-request-check; the run settle pops first is not
-# counted), before settle, the first write, so a request the last write would
-# refuse stops the block with nothing written; a conflict takes none, nor
-# does an owner gate (OWNER_GATE, which a note holding a gate's heading has
-# already required above), and an entry the check cannot read (a dangling
-# link) refuses too. The form is kept just before settle (below).
+# write's own checks, before settle, the first write; a conflict takes none,
+# nor does an owner gate.
 VERIFY_FILE="$TEXT_DIR/verify-request.json"
 VERIFY_FORM=''
 if [ -e "$VERIFY_FILE" ] || [ -L "$VERIFY_FILE" ]; then
@@ -875,20 +771,15 @@ if [ -e "$VERIFY_FILE" ] || [ -L "$VERIFY_FILE" ]; then
     || { echo "✗ The last write would refuse verify-request.json in TEXT_DIR ($TEXT_DIR), for the reason above; nothing was written. Fix the request, or remove it to end with the verb form, and run this block again." >&2; exit 1; }
 fi
 # The texts the agent wrote with its file tool (ADR-0059, amendment of
-# 2026-10-10): each script reads its file itself, so no line of the note is
-# shell source. The append reads the note only after settle has written,
-# so each file is first held to every reader's rule: strict UTF-8, no NUL
-# byte, and text left once blanks are trimmed (settle's rule). A file a
-# script would refuse stops the block before any write.
+# 2026-10-10), each held to every reader's rule before any write: strict
+# UTF-8, no NUL byte, and text left once blanks are trimmed.
 for TEXT_FILE in note.md summary.txt next-action.txt; do
   node -e 'let t;try{t=new TextDecoder("utf-8",{fatal:true}).decode(require("fs").readFileSync(process.argv[1]))}catch{process.exit(1)}process.exit(t.includes("\0")||t.trim()===""?1:0)' "$TEXT_DIR/$TEXT_FILE" || { echo "✗ $TEXT_FILE in TEXT_DIR ($TEXT_DIR) is missing, blank or not UTF-8 text; write it with the file tool first. Nothing was written." >&2; exit 1; }
 done
 # The verify form, kept in TEXT_DIR (finalize-verify.json: the request's
-# sha256, or null for the verb form) at the first run, after every check
-# above, so a run they stop keeps no form and runs again with a request added:
-# run again after a write, the block takes the same form and the same request,
-# and a request added, removed or changed since (exit 3) stops it before any
-# write.
+# sha256, or null for the verb form) after every check above: a rerun takes
+# the same form, and a request added, removed or changed since (exit 3) stops
+# it before any write.
 node -e 'const [rec,f]=process.argv.slice(1);const fs=require("fs");let now=null;try{now=require("crypto").createHash("sha256").update(fs.readFileSync(f)).digest("hex")}catch(e){if(!(e&&e.code==="ENOENT"))process.exit(1)}let m;try{m=JSON.parse(fs.readFileSync(rec,"utf8"))}catch(e){if(!(e&&e.code==="ENOENT"))process.exit(7);try{fs.writeFileSync(rec,JSON.stringify({request_sha256:now})+"\n")}catch{process.exit(8)}process.exit(0)}if(m===null||typeof m!=="object"||!(m.request_sha256===null||typeof m.request_sha256==="string"&&/^[0-9a-f]{64}$/.test(m.request_sha256)))process.exit(7);process.exit(m.request_sha256===now?0:3)' "$TEXT_DIR/finalize-verify.json" "$VERIFY_FILE"
 case $? in
   0) ;;
@@ -898,11 +789,8 @@ case $? in
 esac
 
 # C163 A1a — the review attempt of a run that never launched: its type, why,
-# and the key its id derives from. A peer-runner older than this runbook takes
-# none of these flags, so they are passed only when it names them; it then
-# records no attempt, and settles as before. They are the positional
-# parameters settle takes last ("$@"), since the block runs in any POSIX
-# shell, which has no arrays.
+# and the key its id derives from, passed only to a peer-runner that names
+# these flags, as the positional parameters settle takes last ("$@").
 set --
 if grep -q -e "'--no-run-reason'" "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" 2>/dev/null; then
   set -- --ensemble-type "$ATTEMPT_TYPE" --no-run-reason "$NO_RUN_REASON" --attempt-key "$TEXT_DIR"
@@ -912,12 +800,8 @@ fi
 if [ -f "$TEXT_DIR/subject.json" ] && grep -q -e "'--subject-file'" "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" 2>/dev/null; then
   set -- "$@" --subject-file "$TEXT_DIR/subject.json"
 fi
-# ADR-0066 PC2b — settle the ensemble attempt from its ledger (never launched,
-# launched and failed, completed). It is the first write and the one judge of
-# the run: a refusal (a run still live, of another workflow or phase, or an
-# attempt an empty id would hide) stops the block before any write, so the
-# workflow never records a note for an attempt left unsettled; once it has
-# recorded the run, running the block again records nothing more for it.
+# ADR-0066 PC2b — settle the ensemble attempt from its ledger: the first write
+# and the one judge of the run. Its refusal stops the block before any write.
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" settle \
   --repo-root "$REPO_ROOT" --workflow-path "$ACTIVE" \
   --host "${AGENTIC_HOST:-claude}" --phase 'refine' --run-id "$RUN_ID" \
@@ -937,9 +821,6 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
 if [ -n "$OWNER_GATE" ]; then
   # The gate and the next step owner-decision in one write: the workflow
   # stays open until the owner resolves the gate.
-  # A limit (ADR-0068 VR6): interactively, with another owner gate already
-  # pending, this write refuses after settle and the note, so a rerun appends
-  # the note again; an autopilot run's preflight refuses a pending gate first.
   # ARCHIVE TIMING — with an owner gate this write is never terminal, so the
   # Stop hook, which fires at EVERY turn end on Claude, leaves the workflow
   # active (it refuses to archive while a gate is pending); the
@@ -968,25 +849,18 @@ elif [ -z "$VERIFY_FORM" ] && [ "$NEXT_STEP_KIND" != verb ]; then
 elif [ -z "$VERIFY_FORM" ]; then
 # ADR-0029 §1 / completion-output contract §2 — next-action.txt, which the
 # append above and this terminal write record, holds the COMPACT form of the
-# proposal above (selected_next + one-line why + next_command) so the
-# durable state and the code-emitted completion footer agree with the
-# Active Next-Action Proposal. Step 2 shows the typical-case default; write
+# proposal above. Step 2 shows the typical-case default; write
 # another, and change the --next-step-* flags, when the verb's result
 # selects a different next step (e.g. commit).
 # ADR-0063 D3 — finish-verb is the verb's last write: the ADR-0017
 # §sub-decision 5 atomic terminal write (summary-complete + terminal marker)
-# with the next step, interactively. Under an autopilot run (ADR-0066
-# Decision 3: AGENTIC_AUTOPILOT names a run, on Claude) it writes the next step
-# only and leaves the terminal marker for the commit command, which alone
-# closes a workflow there.
+# with the next step, interactively. Under an autopilot run it writes the
+# next step only and leaves the terminal marker for the commit command.
 # ARCHIVE TIMING — on Claude the Stop hook fires at EVERY turn end, so the
-# archive gates are evaluated at the end of THIS turn, not at session close;
-# if a gate fails the workflow stays marked and a later Stop re-evaluates it.
+# archive gates are evaluated at the end of THIS turn, not at session close.
 # Clearing the marker with `--terminal-marker false` works only before that
-# Stop fires, needs set-terminal's full flag set (--workflow-path, --host,
-# --terminal-phase), and does not restore the previous phase or next_action.
-# On Codex the Stop hook runs only once the operator has trusted the plugin
-# hooks (`/hooks`), so evaluation waits for that. Full contract:
+# Stop fires. On Codex the Stop hook runs only once the operator has trusted
+# the plugin hooks (`/hooks`), so evaluation waits for that. Full contract:
 # core/skills/_shared/references/session-handoff.md § Archive timing.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
@@ -1017,35 +891,28 @@ fi
 ## Autopilot mode (ADR-0063, Claude only)
 
 When Phase 0's preflight printed the autopilot banner, this command follows
-`${CLAUDE_PLUGIN_ROOT}/core/skills/_shared/references/autopilot-mode.md`
-(the preflight prints nothing interactively, and none of this applies then):
+`${CLAUDE_PLUGIN_ROOT}/core/skills/_shared/references/autopilot-mode.md`,
+which holds the rules in full (the preflight prints nothing interactively, and
+none of this applies then). What this command does with them:
 
-- **Ceremony gates auto-pass.** No presentation-mode prompt (present in
-  batch); proceed with the recommended option instead of asking
-  "Recommended: X. Proceed?".
+- **Ceremony gates auto-pass.** Present in batch, and proceed with the
+  recommended option instead of asking.
 - **Never run `git commit`.** Set `--next-step-kind commit` when the artifact
-  is ready; `/engineer:commit` commits it. (The driver also denies `git
-  commit` on this step.)
-- **A recurring finding is the owner's.** When a finding that an earlier refine
-  pass on this workflow already addressed survives verification again, stop:
-  set `OWNER_GATE` to `recurring-finding` in Phase 2's finalize block, whose
-  owner-decision form records the gate (anchor `recurring-finding`). For a document with a
-  review ledger, the recurring findings are its `recurring` ids (C120).
+  is ready (`NEXT_STEP_KIND` in Phase 2's block); `/engineer:commit` commits
+  it.
+- **A recurring finding is the owner's** (§ Ensemble dispatch above says
+  which findings recur): stop, and set `OWNER_GATE` to `recurring-finding`
+  in Phase 2's finalize block, whose owner-decision form records the gate.
 - **The last write is Phase 2's `finish-verb`**, which records the next step
-  and leaves the terminal marker unset: under autopilot only
-  `/engineer:commit` closes a workflow, and `set-terminal --terminal-marker
-  true` is refused.
+  and leaves the terminal marker unset: only `/engineer:commit` closes a
+  workflow there.
 - **Owner judgments.** Stop with the gate that names the judgment and do not
-  decide it yourself: `scope-routing` when the request does not belong in this
-  verb or workflow (recorded in either mode), `pr-handling` when the task
-  itself needs a push, a pull request or another outward action (autopilot
-  only; interactively the user acts). Record the gate by setting `OWNER_GATE` in Phase 2's finalize block, whose
-  last write is then the owner-decision form, after a phase note under the
-  heading the gate table names (`autopilot-mode.md` § Owner gates).
-- **Long checks.** In a run that offers verification, run only the quick
-  checks in the step and hand the long ones (the whole suite, a broad
-  `npm test`, a mutation run) to the driver with Phase 2's verify form;
-  never wait for the heavy-work lock (`autopilot-mode.md` § Verification).
+  decide it yourself (`scope-routing`, `pr-handling`; Phase 2's gate list
+  says when): set `OWNER_GATE` in Phase 2's finalize block, after a phase
+  note under the gate's heading (`autopilot-mode.md` § Owner gates).
+- **Long checks.** As § Long checks above says: in a run that offers
+  verification, only the quick checks run in the step, and it never waits for
+  the heavy-work lock (`autopilot-mode.md` § Verification).
 - **Peers.** Collect the ensemble as `ensemble-protocol.md` § Step 2 says:
   wait for the background notification; never sleep-poll. A step report
   taken while you wait is provisional: when the notification re-invokes you,
@@ -1067,13 +934,10 @@ Q2), in either of two ways:
 
 Ask the owner: fix it now, or defer it. The clear records the owner's decision
 (`--resolution-file`, the file below) and the next step it implies in one
-write, so the
-next step never becomes runnable without the decision behind it, and a failure
-never leaves the gate's `owner-decision` behind; the same write replaces the
-gate's next action. Inside a `/engineer:start` lifecycle both blocks clear
-the gate and stop there: resume the lifecycle, which fixes the finding in its
-refine phase or continues at its terminal step, and makes its one terminal
-write.
+write, which also replaces the gate's next action. Inside a
+`/engineer:start` lifecycle both blocks clear the gate and stop there:
+resume the lifecycle, which fixes the finding in its refine phase or continues
+at its terminal step, and makes its one terminal write.
 
 The owner's decision reaches `state.mjs` as a file, never in a block: in
 shell source a quote, `$`, backtick or line of it would be read as code
@@ -1117,19 +981,15 @@ PERSONA='engineer'
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
 [ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
-# A gate met inside a /start lifecycle is resolved there: the lifecycle's
-# refine phase runs the fix, and the lifecycle makes the one terminal write,
-# which this refine's own phases would make otherwise. A failed read, or a type
-# that cannot be parsed, stops the block (the read is checked on its own: a
-# pipe reports its last command).
+# A gate met inside a /start lifecycle is resolved there. A failed read, or a
+# type that cannot be parsed, stops the block.
 WF_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE")" \
   || { echo "✗ Could not read the workflow type; nothing was written." >&2; exit 1; }
 WF_TYPE="$(printf '%s' "$WF_JSON" \
   | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).workflow_type||"verb-chain")}catch{process.exit(1)}})')" \
   || { echo "✗ Could not read the workflow type; nothing was written." >&2; exit 1; }
-# The owner's resolution, from the file the agent wrote with its file tool:
-# state.mjs reads it itself, so no line of it is shell source. A file left
-# unwritten stops the block before any write.
+# The owner's resolution, the file the agent wrote with its file tool: one
+# left unwritten stops the block before any write.
 grep -q '[^[:space:]]' "$TEXT_DIR/resolution.txt" 2>/dev/null || { echo "✗ resolution.txt in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was written." >&2; exit 1; }
 if [ "$WF_TYPE" = start ]; then
   NEXT_ACTION="Resume /${PERSONA}:start: its refine phase fixes the recurring finding"
@@ -1137,11 +997,8 @@ else
   NEXT_ACTION='Fix the recurring finding in this refine, then re-critique'
 fi
 # ADR-0068 Decision 2, item 7 — the clear is a write of this refine's persona
-# operation: the one Phase 0 opened (OP_DIR set), or, with OP_DIR empty, one the
-# clear opens in a directory this block makes and prints, which the finalize
-# of the phases below closes. Inside a /start lifecycle, where the phases do
-# not run, the clear closes the operation Phase 0 opened, or is its own
-# operation's one write.
+# operation: the one Phase 0 opened (OP_DIR set), or one it opens here and
+# prints. Inside a /start lifecycle it closes Phase 0's, or is its own write.
 case "$OP_DIR" in
   *'<'*) echo "✗ OP_DIR is not set to the operation directory this run's Phase 0 printed (empty when it printed none, or when this refine's finalize already ran); nothing was written." >&2; exit 1 ;;
 esac
@@ -1180,17 +1037,15 @@ PERSONA='engineer'
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
 [ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
-# A gate met inside a /start lifecycle is resolved there: the lifecycle makes
-# the one terminal write. A failed read, or a type that cannot be parsed, stops
-# the block (the read is checked on its own: a pipe reports its last command).
+# A gate met inside a /start lifecycle is resolved there. A failed read, or a
+# type that cannot be parsed, stops the block.
 WF_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE")" \
   || { echo "✗ Could not read the workflow type; nothing was written." >&2; exit 1; }
 WF_TYPE="$(printf '%s' "$WF_JSON" \
   | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).workflow_type||"verb-chain")}catch{process.exit(1)}})')" \
   || { echo "✗ Could not read the workflow type; nothing was written." >&2; exit 1; }
-# The owner's resolution, from the file the agent wrote with its file tool:
-# state.mjs reads it itself, so no line of it is shell source. A file left
-# unwritten stops the block before any write.
+# The owner's resolution, the file the agent wrote with its file tool: one
+# left unwritten stops the block before any write.
 grep -q '[^[:space:]]' "$TEXT_DIR/resolution.txt" 2>/dev/null || { echo "✗ resolution.txt in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was written." >&2; exit 1; }
 if [ "$WF_TYPE" = start ]; then
   NEXT_ACTION="Resume /${PERSONA}:start: the finding is deferred, and the lifecycle continues at its terminal step"
@@ -1198,10 +1053,8 @@ else
   NEXT_ACTION='Commit the refined change; the recurring finding is deferred'
 fi
 # ADR-0068 Decision 2, item 7 — the clear and the finish-verb below are one
-# persona operation: the one this run's Phase 0 opened (OP_DIR set), or, with
-# OP_DIR empty, one the clear opens in a directory this block makes. Inside a
-# /start lifecycle, where no finish-verb follows, the clear closes the operation
-# Phase 0 opened, or is its own operation's one write.
+# persona operation: the one Phase 0 opened (OP_DIR set), or one the clear
+# opens here. Inside a /start lifecycle it closes Phase 0's, or is its own write.
 case "$OP_DIR" in
   *'<'*) echo "✗ OP_DIR is not set to the operation directory this run's Phase 0 printed (empty when it printed none, or when this refine's finalize already ran); nothing was written." >&2; exit 1 ;;
 esac
@@ -1225,11 +1078,9 @@ if [ "$WF_TYPE" = start ]; then
 fi
 # ARCHIVE TIMING — this finish-verb is a terminal write: on Claude the Stop
 # hook fires at EVERY turn end, so the archive gates are evaluated at the end
-# of THIS turn (they pass once HEAD has moved). Clearing the marker with
-# `--terminal-marker false` works only before that Stop fires and needs
-# set-terminal's full flag set. On Codex the Stop hook runs only once the
-# operator has trusted the plugin hooks (`/hooks`). Full contract:
-# core/skills/_shared/references/session-handoff.md § Archive timing.
+# of THIS turn; `--terminal-marker false` clears the marker only before that
+# Stop fires. On Codex the Stop hook runs only once the plugin hooks are
+# trusted (`/hooks`).
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --operation-dir "$OP_DIR" \
