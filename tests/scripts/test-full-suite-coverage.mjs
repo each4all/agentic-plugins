@@ -17,7 +17,7 @@
 //         never `*.smoke.test.mjs`). CI runners have no host CLI, so smoke tests
 //         must be explicitly opt-in via `npm run test:smoke`, not silently present.
 //   (iii) `full-tests.yml` has exactly the shard matrix and the aggregate check
-//         (one axis, 2 to 4 shards, no include, exclude or continue-on-error,
+//         (one axis, 2 to 6 shards, no include, exclude or continue-on-error,
 //         the shard bound from the matrix itself, full history, Node 24), and
 //         the shards it names run every discovered file exactly once.
 //   (iv)  Every CI workflow (all but release-please.yml) triggers on a push to any
@@ -139,7 +139,7 @@ test('(iii) full-tests.yml runs the suite as shards that hold every discovered f
   assert.deepEqual(jobs.map((l) => (l === matrix ? MATRIX : l)), FULL_TESTS_JOBS,
     `${FULL_TESTS_WORKFLOW}'s jobs must be exactly the shard matrix and the aggregate check`);
 
-  // The shards are 1..N, in order, with N from 2 to 4.
+  // The shards are 1..N, in order, with N from 2 to 6.
   const m = /^        shard: \[(\d+(?:, \d+)*)\]$/.exec(matrix);
   assert.ok(m, `the matrix line is \`shard: [1, 2, …]\`; got ${matrix.trim()}`);
   const shards = m[1].split(', ').map(Number);

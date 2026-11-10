@@ -531,3 +531,53 @@ recording rule in `shard-tests.mjs` and the guards that name them
 (`tests/scripts/test-test-timeout-policy.mjs`,
 `tests/scripts/test-full-suite-coverage.mjs`, the G5 anchor of
 `scripts/mutation-specs/supervisor-kill.mjs`) together.
+
+### 2026-11-10 — six shards, weights recorded again
+
+**Trigger**: the test size tiers above landed (#1041). On `main` the two
+full-tests runs that followed (the release commit and its catalog sync) each
+had shard 1 of 4 stopped by the 20-minute step bound with no test failing,
+its pool not yet finished; the other shards took 11 to 18 minutes. PR #1043
+(macro `8a34a1` subtask `W1-converge`) had shard 3 of 4 stopped the same
+way: its pool ended after about 19.5 minutes with 2,744 tests and none
+failing, and the bound stopped the large pass that followed. A rerun of that
+shard passed. The weights had not been recorded since 2026-10-31, and each
+shard now ends with a pass of its share of the large tier at a concurrency of
+at most 2.
+
+**What changed.**
+
+- `full-tests.yml` runs `shard: [1, 2, 3, 4, 5, 6]`; the bounds (step 20
+  minutes, job 25) stay hang bounds.
+- `scripts/shard-tests.mjs` `MAX_SHARDS` is 6, so Decision 5 (iii) takes a
+  matrix of two to six shards; `tests/scripts/test-shard-tests.mjs` refuses
+  `1/7` and `7/6` where it refused `1/5`.
+- `scripts/data/test-weights.json` was recorded again with
+  `shard-tests.mjs record`, from one run of `main` at `0a2e51da` on a Linux
+  machine with 88 hardware threads (Node 24.18.0, `--test-concurrency=8`,
+  333 files). The pool ran 13,589 tests (13,465 passed, 124 skipped) in
+  1,906 s and the large pass 559 (558 passed, 1 skipped) in 381 s, none
+  failed. The recorded file times add up to 12,717 s: six shards each hold
+  about 2,149 s of weight, and the heaviest file
+  (`tests/orchestrator/test-autopilot-verify-lanes.mjs`, 652 s) is under a
+  third of one.
+- `scripts/mutation-specs/full-tests-shards.mjs` W6 and W7 anchor on the new
+  matrix line and keep their defects.
+
+**Why six.** At four shards each holds about 3,224 s of weight, and the runs
+above put a shard's pool near the step bound before its large pass starts.
+Scaled from those runs (a stopped shard counted at its 20 minutes), five shards would take about 9 to 16 minutes and six
+about 7 to 13 (an estimate, not a measurement), leaving room for the suite to
+grow and for the large pass. As on 2026-10-31, raising the bound instead
+would keep the wall time and hide a hang for longer.
+
+**What the measurement does not show.** The weights are shares from one run
+at a concurrency of 8, not predictions of a 4-core runner's time. They
+balance each shard's total, not its two passes: a shard's large files run
+after its pool whatever their weight. Two files added after this recording
+(by #1043) have the fixed estimate until the next one. The recording ran with
+`TMPDIR` outside `/tmp`, because on that machine an empty `/tmp/.git` made
+every temporary repository under `/tmp` look like part of a checkout.
+
+**Rollback.** Revert the commit: the matrix, `MAX_SHARDS`, its test cases,
+the weights and the two mutation anchors go back together.
