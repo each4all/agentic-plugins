@@ -207,7 +207,7 @@ the steps stay manual**, and the host-neutral state it reads (`next_step_*`,
   line, and never stops a step; observe with `--step-timeout 10800` or more.
   `--stall-detector on`, the owner's switch after reviewing those records, aborts a
   stalled step (`worker-failed`) and makes the step clock's default the 8-hour
-  emergency cap. `commands/autopilot.md` has the details.
+  emergency cap. `core/skills/_shared/references/autopilot-run.md` has the details.
 - **Bounds.** Steps, total cost, and each step's budget and wall clock
   (`--max-steps`, `--max-cost`, `--step-budget`, `--step-timeout`); a halt or `stop`
   ends a run too. The run itself has no clock, so a step started late gets its whole
