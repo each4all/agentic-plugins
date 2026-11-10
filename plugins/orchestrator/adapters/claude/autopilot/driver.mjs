@@ -73,7 +73,7 @@ import {
   ALLOWED_TOOLS, COMMIT_DENY, DENIED_TOOLS, claudeBin, startWorker as defaultStartWorker, terminateGroupsSync, workerEnv,
 } from './worker.mjs';
 import {
-  checkEnvOf, offerRecord, personaEnvOf, requestKnownIn, selectionBase, startVerify as defaultStartVerify, verifyFacts, verifyOfferFor,
+  checkEnvOf, noteGateStep, offerRecord, personaEnvOf, requestKnownIn, selectionBase, startVerify as defaultStartVerify, suiteArgvOf, verifyFacts, verifyOfferFor,
 } from './verify-run.mjs';
 import { DEFAULT_OPS as VERIFY_OPS } from './verify-ops.mjs';
 import { checkStateBase, creationRoot, STATE_BASE_ENV } from '../../../scripts/lib/state-root.mjs';
@@ -1275,7 +1275,18 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         }
         if (applied) view = look(view.macro.id);
       }
-      ctx.verify = { offered: offer.offered, why: offer.why ?? null, facts: await verifyFacts({ view, mainRoot, treeOf: (deps.verifyOps ?? VERIFY_OPS).treeDigest }) };
+      // Amendment of 2026-11-10 (C178), the commit gate: with a suite kind in
+      // the run's declaration (`suite`), each child at a commit, and the one
+      // the owner's forced commit names, gets the suite's evidence for its
+      // tree as it is at this decision.
+      ctx.verify = {
+        offered: offer.offered, why: offer.why ?? null, suite: suiteArgvOf(offer) !== null,
+        facts: await verifyFacts({
+          view, mainRoot, treeOf: (deps.verifyOps ?? VERIFY_OPS).treeDigest, offer,
+          baseOf: () => selectionBase({ lane: repoRoot, integration: view.macro?.fm?.git_baseline?.branch ?? null, baseline: offer.baseline }),
+          forcedCommit: ctx.forced?.kind === 'commit' ? true : null,
+        }),
+      };
       // P2 — an instruction's step, recorded with no write to the child since,
       // replaces the step an answered batch would have dispatched (item 5).
       for (const [id, f] of Object.entries(ctx.verify.facts ?? {})) {
@@ -1398,9 +1409,22 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       const stepTimeoutSec = reservation.timeoutSec;
       const sessionId = randomUUID();
       const fpBefore = fingerprint(view);
+      // The commit gate's own record (verify-run.mjs noteGateStep), before the
+      // step's: a commit the gate let through, with the lane's content it was
+      // decided on, or a verb it resumed for the final verification. A record
+      // that cannot be written starts no step.
+      try {
+        const wfId = s.subtaskId ? view.children?.[s.subtaskId]?.workflow_id : null;
+        if (typeof wfId === 'string') noteGateStep({ mainRoot, workflowId: wfId, step: s, runId, seq, at: new Date(now()).toISOString() });
+      } catch (e) {
+        budget.settle(reservation, { spawned: false });
+        reservation = null;
+        return await finish('halted', { reason: 'owner-choice', subtaskId: s.subtaskId ?? null, detail: `the commit gate's record could not be written (${String(e?.message ?? e).slice(0, 200)}); the step did not start` });
+      }
       // D1: the spawn is on record before it starts.
       appendStep(runDir, {
         event: 'started', seq, kind: s.kind, command, subtask_id: s.subtaskId ?? null, forced: s.forced === true,
+        ...(s.suite ? { suite_evidence: s.suite } : {}), ...(s.resume === 'final-verify' ? { resume: 'final-verify' } : {}),
         // P2 — the application this step's next step comes from, read from the
         // receipts and the child (restart-safe, an owner's application included).
         ...(() => { const ia = stepApplication(mainRoot, view.macro.id, s, view.children?.[s.subtaskId]?.path); return ia ? { instruction_application: ia } : {}; })(),

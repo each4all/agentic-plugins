@@ -75,6 +75,45 @@ const step = (kind, fields = {}) => ({ outcome: 'step', step: { kind, ...fields 
 // ---------------------------------------------------------------------------
 // Step grammar
 
+// ADR-0068 Decision 5, amendment of 2026-11-10 (C178) — what a verb resumed
+// by the commit gate is told, after its command. Fixed text: letters, digits,
+// spaces and plain punctuation only, so it is one argument line of the command.
+export const FINAL_VERIFY_SENTENCE = 'The driver\'s commit gate holds this change: the whole test suite has not passed on this tree as it is. '
+  + 'Change only what is needed, then end this step with the verify form, naming the test-suite check, with on_pass commit.';
+
+/**
+ * The commit gate (ADR-0068 Decision 5, amendment of 2026-11-10): in a run
+ * that offers verification over a declaration with a suite kind
+ * (`verify.suite`), a commit needs the suite's evidence for the lane's tree
+ * as it is (`fact`, verify-run.mjs suiteFact). Returns null when the commit
+ * may go (with no gate, or with the evidence), else what is missing.
+ */
+function suiteGate(verify, fact) {
+  if (verify?.offered !== true || verify.suite !== true) return null;
+  if (fact?.ok === true) return null;
+  return fact?.why ?? 'the suite\'s evidence for the lane\'s tree was not read';
+}
+// What a commit step carries of the fact it was decided on: the driver
+// records it as the step is admitted (verify-run.mjs noteGateStep).
+// `admitted`: a commit begun, taken up without the evidence for the tree as
+// it is (on the content of its own admission, or over a tree with no change):
+// the admission compares the lane by content, and the earlier admission's
+// record stands, so a second interruption is judged as the first was.
+const gateRecord = (verify, fact, admitted = false) => (verify?.offered === true && verify.suite === true
+  ? { suite: { batch_id: fact?.batch_id ?? null, content: fact?.content ?? null, tree: fact?.tree ?? null, ...(admitted ? { admitted: true } : {}) } }
+  : {});
+// A commit begun: the phase beginCommit leaves, or a commit whose archive did
+// not run. Only then may the content the driver admitted the commit on stand
+// in for the suite's evidence (the commit moved HEAD and the tree digest).
+const commitBegun = (child) => child?.current_phase === 'phase-7-commit'
+  || (child?.terminal_marker === true && COMMIT_SURFACE_PHASES.has(child.current_phase));
+// Or the lane holds no change at all: the commit command then only closes
+// the workflow (a done over a clean tree whose archive did not run, or a
+// commit made whose archive did not), and commits nothing the suite missed.
+const recovers = (child, fact) => commitBegun(child) && (fact?.recovery === true || fact?.dirty === false);
+const gateRefusalText = (id, missing) => `subtask ${id}: the commit gate holds it (ADR-0068 Decision 5, amendment of 2026-11-10): ${missing}. `
+  + 'Force the verb instead (--next /engineer:<verb>), whose step ends with the final verification (the test-suite check, on_pass commit)';
+
 /**
  * The exact text a worker receives for a step. Throws when an identifier
  * fails its alphabet — decide never returns such a step, so a throw here is a
@@ -91,7 +130,9 @@ export function renderStep(s, { macroId, runId }) {
       return `/orchestrator:next ${needId()} --workflow=${macroId}`;
     case 'verb':
       if (!VERBS.includes(s.verb)) throw new Error(`renderStep: unknown verb ${JSON.stringify(s.verb)}`);
-      return `/engineer:${s.verb}`;
+      // The commit gate's resume (suiteGate): the verb's command with one
+      // fixed sentence of the driver's, never text of the owner's or a worker's.
+      return s.resume === 'final-verify' ? `/engineer:${s.verb} ${FINAL_VERIFY_SENTENCE}` : `/engineer:${s.verb}`;
     case 'commit':
       return '/engineer:commit';
     case 'done':
@@ -608,7 +649,20 @@ function classify(subtask, child, landing, verify = null) {
     if (child.current_phase === 'phase-7-commit'
       || (child.terminal_marker === true && COMMIT_SURFACE_PHASES.has(child.current_phase))) {
       if (held) return { kind: 'active', judgment: true, halt: held };
-      return { kind: 'active', step: { kind: 'commit', subtaskId: id, branch: child.branch, recovery: true } };
+      // The commit gate: an interrupted commit is taken up only when the
+      // driver admitted it on the lane's content as it is now (its own commit
+      // moved HEAD, so the tree digest no longer says), or the suite's
+      // evidence holds for the tree now, or the lane holds no change (the
+      // command then only closes the workflow). A judgment halt: the owner's
+      // forced verb replaces it.
+      const missing = suiteGate(verify, vf?.suite);
+      if (missing !== null && !recovers(child, vf?.suite)) {
+        return { kind: 'active', judgment: true, halt: halt('owner-choice', `subtask ${id}: its commit was interrupted, and the lane is not as the driver admitted that commit (${missing}); look at the lane, then force the verb that ends with the final verification (--next /engineer:<verb>)`, { subtaskId: id, pointer: pointerOf('next_step') }) };
+      }
+      // The step carries the fact it was decided on, as every gated commit
+      // does: the admission compares the lane with it. `admitted`: taken up
+      // on the content of the commit's own admission, whose record stands.
+      return { kind: 'active', step: { kind: 'commit', subtaskId: id, branch: child.branch, recovery: true, ...gateRecord(verify, vf?.suite, missing !== null) } };
     }
     // P7 — a request a batch of this driver answered: its on_pass is taken
     // only while the lane's tree is the one the batch passed on; otherwise
@@ -636,7 +690,22 @@ function classify(subtask, child, landing, verify = null) {
     // tree holds: the gate holds both (a done over a clean tree only closes,
     // and the owner's acceptance lets it).
     if (held) return { kind: 'active', judgment: true, halt: held };
-    return { kind: 'active', step: { kind: 'commit', subtaskId: id, branch: child.branch } };
+    // The commit gate, at the route every verb takes to the commit: without
+    // the suite's evidence for the tree as it is, the lane's last verb is
+    // resumed once to end with the final verification; a second time on the
+    // same tree is no progress. A done over a tree with no change only
+    // closes, and needs none.
+    const missing = suiteGate(verify, vf?.suite);
+    if (missing !== null && !(ns.kind === 'done' && vf?.suite?.dirty === false)) {
+      if (vf?.suite?.resumed === true) {
+        return { kind: 'active', judgment: true, halt: halt('no-progress', `subtask ${id}: ${label}: the commit gate resumed a verb on this tree already to end with the final verification, and ${missing}`, { subtaskId: id, pointer: pointerOf('next_step') }) };
+      }
+      if (!VERBS.includes(child.verb)) {
+        return { kind: 'active', judgment: true, halt: halt('owner-choice', `subtask ${id}: ${label}: the commit gate holds it (${missing}), and the workflow names no verb to resume`, { subtaskId: id, pointer: pointerOf('next_step') }) };
+      }
+      return { kind: 'active', step: { kind: 'verb', verb: child.verb, subtaskId: id, branch: child.branch, resume: 'final-verify', gate: { tree: vf?.suite?.tree ?? null, why: missing } } };
+    }
+    return { kind: 'active', step: { kind: 'commit', subtaskId: id, branch: child.branch, ...gateRecord(verify, vf?.suite) } };
   }
 
   // Archived.
@@ -838,7 +907,7 @@ function decideStep(view, ctx = {}) {
   const forced = ctx.forced ?? null;
   let forcedTarget = null;
   if (forced) {
-    const applies = forcedApplies(forced, { view, subtasks, classified, active });
+    const applies = forcedApplies(forced, { view, subtasks, classified, active, verify: ctx.verify ?? null });
     if (applies.halt) return applies.halt;
     forcedTarget = applies;
   }
@@ -899,7 +968,7 @@ function dirtyTree(view, id) {
 }
 
 // A forced step goes through the prerequisites its automatic twin has.
-function forcedApplies(forced, { view, subtasks, classified, active }) {
+function forcedApplies(forced, { view, subtasks, classified, active, verify = null }) {
   const nope = (why) => ({ halt: halt('owner-choice', `--next does not apply: ${why}`) });
   switch (forced.kind) {
     case 'verb':
@@ -909,7 +978,14 @@ function forcedApplies(forced, { view, subtasks, classified, active }) {
       // C163 A1b — the owner's --next replaces the review gate's halt with a
       // verb (a new review), never with the commit it holds back.
       if (forced.kind === 'commit' && child?.review?.held) return nope(`subtask ${active[0].subtask.id}: ${reviewHeldText(child.review, child)}`);
-      return { kind: forced.kind, verb: forced.verb, subtaskId: active[0].subtask.id, branch: child?.branch ?? active[0].subtask.branch };
+      // The commit gate holds the owner's forced commit too: the owner's way
+      // past it is the verb that ends with the final verification.
+      const fact = verify?.facts?.[active[0].subtask.id]?.suite ?? null;
+      if (forced.kind === 'commit') {
+        const missing = suiteGate(verify, fact);
+        if (missing !== null && !recovers(child, fact)) return nope(gateRefusalText(active[0].subtask.id, missing));
+      }
+      return { kind: forced.kind, verb: forced.verb, subtaskId: active[0].subtask.id, branch: child?.branch ?? active[0].subtask.branch, ...(forced.kind === 'commit' ? gateRecord(verify, fact, suiteGate(verify, fact) !== null) : {}) };
     }
     case 'verify': {
       if (active.length !== 1) return nope(`verify needs exactly one active engineer workflow; there are ${active.length}`);
@@ -975,7 +1051,7 @@ const activeChildren = (view, subtasks) => subtasks
  * more than one active child, a pair without `--lane` is refused. Returns
  * { forced: Map<subtaskId, step> } or { halt }.
  */
-export function forcedForLanes(pairs, view) {
+export function forcedForLanes(pairs, view, verify = null) {
   const subtasks = subtasksOf(view);
   const active = activeChildren(view, subtasks);
   const forced = new Map();
@@ -1002,6 +1078,11 @@ export function forcedForLanes(pairs, view) {
       case 'commit':
         if (!active.includes(id)) return nope(`subtask ${id} has no active engineer workflow`);
         if (f.kind === 'commit' && view.children[id].review?.held) return nope(`subtask ${id}: ${reviewHeldText(view.children[id].review, view.children[id])}`);
+        if (f.kind === 'commit') {
+          const fact = verify?.facts?.[id]?.suite ?? null;
+          const missing = suiteGate(verify, fact);
+          if (missing !== null && !recovers(view.children[id], fact)) return nope(gateRefusalText(id, missing));
+        }
         forced.set(id, { kind: f.kind, ...(f.kind === 'verb' ? { verb: f.verb } : {}), subtaskId: id, branch: view.children[id].branch ?? s.branch });
         break;
       case 'verify':
@@ -1133,6 +1214,18 @@ function decideLanesStep(view, ctx = {}) {
     // gate again at each decision: an outcome recorded since holds it too.
     if (f?.kind === 'commit' && view.children?.[s.id]?.review?.held) {
       out.laneHalts.push(reviewHalt(s.id, view.children[s.id], view.children[s.id].relPath ? `${view.children[s.id].relPath}#review_attempts` : null));
+      continue;
+    }
+    // The commit gate, judged again at each decision as the review gate is:
+    // a tree edited since the run began holds the forced commit too.
+    if (f?.kind === 'commit') {
+      const fact = ctx.verify?.facts?.[s.id]?.suite ?? null;
+      const missing = suiteGate(ctx.verify ?? null, fact);
+      if (missing !== null && !recovers(view.children?.[s.id], fact)) {
+        out.laneHalts.push(halt('owner-choice', `--next does not apply: ${gateRefusalText(s.id, missing)}`, { subtaskId: s.id }));
+        continue;
+      }
+      out.laneSteps.push(laneStep({ ...f, forced: true, ...gateRecord(ctx.verify ?? null, fact, missing !== null) }, s.id));
       continue;
     }
     if (f && f.kind !== 'dispatch') { out.laneSteps.push(laneStep({ ...f, forced: true }, s.id)); continue; }
