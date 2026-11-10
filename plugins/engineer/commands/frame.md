@@ -522,6 +522,17 @@ tree (`verb` with its `verb`, `commit` or `done`, and its confidence); and
 }
 ```
 
+Size the request by its `on_pass` (ADR-0068 Decision 5, amendment of
+2026-11-10). With `on_pass` a verb the request is intermediate: name only the
+test files the change touches, never the whole suite or a broad mutation set
+(the driver adds the small and medium tests the change selects, and leaves the
+large ones to the final run), and name mutation cases only for gate or
+fail-closed code. With `on_pass` `commit` or `done` it is final: name the
+whole suite, the `test-suite` check, when the repository declares it. The
+driver takes the commit only with that suite passed on the tree as it is, and
+resumes a verb that asks for the commit without it. A request that names more
+than 6 mutation case ids in all is refused.
+
 Then `next-action.txt` names the verification (for example `Verify: the
 changed tests and the mutation cases, then critique`). When every check
 passed, the driver dispatches `on_pass`; otherwise it resumes this verb, whose
