@@ -26,7 +26,8 @@
 // on a prompt; nothing the driver passes escalates (`assertNoEscalation`).
 // The worker's environment is the driver's minus the launching session's
 // identity, the dispatch contract variables and the notification channel,
-// plus the run id and the plugin roots.
+// plus the run id and the plugin roots, and with the step's own TMPDIR
+// (scratch.mjs) in place of the driver's.
 //
 // On timeout or abort the driver kills only the process group it spawned (the
 // ADR-0035 §4 child-only rule, the peer-runner pattern).
@@ -148,7 +149,7 @@ export function pushBlockConfig(base, { fetchUrls = [], pushUrls = [] } = {}) {
   return out;
 }
 
-export function workerEnv(base, { runId, seq = null, roots, remotes = {}, stateBase = null, autopilotToken = null, verifyBaseline = null }) {
+export function workerEnv(base, { runId, seq = null, roots, remotes = {}, stateBase = null, autopilotToken = null, verifyBaseline = null, tmpDir = null }) {
   const env = {};
   for (const [k, v] of Object.entries(base)) {
     if (SCRUB_EXACT.includes(k) || SCRUB_PREFIXES.some((p) => k.startsWith(p))) continue;
@@ -174,6 +175,10 @@ export function workerEnv(base, { runId, seq = null, roots, remotes = {}, stateB
   // ADR-0067 Decision 4, item 5 — the run's secret, which admits its workers
   // to the locks it holds; never an inherited one.
   if (typeof autopilotToken === 'string' && autopilotToken !== '') env.AGENTIC_AUTOPILOT_TOKEN = autopilotToken;
+  // ADR-0068, amendment of 2026-11-10 — the step's own temporary directory
+  // (scratch.mjs), which the driver made and removes when the step ends: a
+  // runbook's `mktemp -d` directories and a test's repositories go there.
+  if (typeof tmpDir === 'string' && tmpDir !== '') env.TMPDIR = tmpDir;
   return env;
 }
 
@@ -357,6 +362,7 @@ export function terminateGroupsSync(pgids, { graceMs = KILL_GRACE_MS } = {}) {
  * @param o.rawPath        where the raw stream goes (ledger worker-<seq>.jsonl)
  * @param o.env            the driver's environment (defaults to process.env)
  * @param o.remotes        {fetchUrls, pushUrls} of the repository's remotes (pushBlockConfig)
+ * @param o.tmpDir         the step's TMPDIR (scratch.mjs), which the caller made; null = the driver's
  * @param o.checkInit      (plugins) => null | {reason, detail}: refuse the loaded plugins
  * @param o.onRateLimit    (rate_limit_info) => void: each rate_limit_event, as it comes (throttle.mjs)
  * @param o.timing         { closeDebounceMs, reportExitGraceMs, killGraceMs } (a test seam)
@@ -377,7 +383,7 @@ export function startWorker(o) {
   });
   // Everything that can fail before the worker runs is done before it starts.
   const raw = fs.openSync(o.rawPath, 'a');
-  const workerEnvironment = workerEnv(env, { runId: o.runId, seq: o.seq, roots: o.roots, remotes: o.remotes ?? {}, stateBase: o.stateBase ?? null, autopilotToken: o.autopilotToken ?? null, verifyBaseline: o.verifyBaseline ?? null });
+  const workerEnvironment = workerEnv(env, { runId: o.runId, seq: o.seq, roots: o.roots, remotes: o.remotes ?? {}, stateBase: o.stateBase ?? null, autopilotToken: o.autopilotToken ?? null, verifyBaseline: o.verifyBaseline ?? null, tmpDir: o.tmpDir ?? null });
   let child;
   try {
     child = spawn(claudeBin(env), args, {

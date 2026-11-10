@@ -438,6 +438,7 @@ export function abandonedText(w) {
  *           macro's operation records, holds.mjs openOperations), busyWaitMs (how long a run with nothing
  *           running waits on lanes laneBusy holds back before it ends; the step timeout by default),
  *           resolveRoots (the drift check),
+ *           scratch: the run's temporary root (scratch.mjs: stepDir, checkDir, make, release), or absent,
  *           stallOf({ seq, lane, subtaskId }) => { stall, onStall }: the run's stall detector for a step
  *           (driver.mjs, ADR-0068 Decision 3) }
  */
@@ -1813,6 +1814,8 @@ export async function runLanes(c) {
       base: selectionBase({ lane: held.path, integration: baseline, baseline: offer.baseline }),
       checkEnv: checkEnvOf(workerEnv(env, { runId, seq: mine, roots, remotes: c.remotes ?? {}, stateBase: stateRoot.root, autopilotToken: c.token })),
       personaEnv: personaEnvOf(env),
+      // Each check's own TMPDIR (verify-run.mjs runStep; scratch.mjs).
+      scratch: c.scratch ?? null,
     };
     const entry = { seq: mine, subtaskId: id, cwd: held.path, before: view, result: null, state: 'running', waiting: null, groups: new Set(), forcedStep };
     const note = () => {
@@ -2235,6 +2238,8 @@ export async function runLanes(c) {
     const command = renderStep(s, { macroId, runId });
     const { model, effort } = modelFor(s, { plan: options.models, override: { model: options.model, effort: options.effort } });
     const sessionId = randomUUID();
+    // The step's own TMPDIR (scratch.mjs), on record before it is made.
+    const tmpDir = c.scratch ? c.scratch.stepDir(mine) : null;
     appendStep(runDir, {
       event: 'started', seq: mine, lane: inLane ? id : null, kind: s.kind, command, subtask_id: id, forced: s.forced === true,
       ...(s.suite ? { suite_evidence: s.suite } : {}), ...(s.resume === 'final-verify' ? { resume: 'final-verify' } : {}),
@@ -2242,15 +2247,19 @@ export async function runLanes(c) {
       session_id: sessionId, model, effort, step_budget_usd: reservation.usd, step_timeout_sec: timeoutSec, cwd,
       stall_detector: options.stallDetector === 'on' ? 'on' : 'log',
       started_at: new Date(now()).toISOString(), fingerprint_before: inLane ? laneFingerprint(before, id) : fingerprint(before),
+      ...(tmpDir ? { tmp_dir: tmpDir } : {}),
     });
     out(`[${mine}] ${inLane ? `lane ${id}: ` : ''}${command}${!inLane && id ? ` (subtask ${id})` : ''}${model || effort ? ` · ${model ?? 'default'}/${effort ?? 'default'}` : ''}`);
     // The lane's report names its last step, the done in the driver's checkout included.
     if (id && (inLane || report.has(id))) lane(id).last_step = { seq: mine, kind: s.kind, verb: s.verb ?? null, command, outcome: 'running' };
-    const entry = { seq: mine, step: s, subtaskId: id, lane: inLane ? id : null, cwd, before, reservation, groups: [], worker: null, w: null, done: null };
+    const entry = { seq: mine, step: s, subtaskId: id, lane: inLane ? id : null, cwd, before, reservation, groups: [], worker: null, w: null, done: null, tmpDir };
     inflight.set(mine, entry);
     try {
+      // A directory that cannot be made fails the step as a spawn that
+      // throws does: no step runs with the driver's own TMPDIR.
+      if (tmpDir) c.scratch.make(tmpDir);
       entry.worker = c.startWorker({
-        cwd, prompt: command, stepKind: s.kind, runId, seq: mine, roots, sessionId,
+        cwd, prompt: command, stepKind: s.kind, runId, seq: mine, roots, sessionId, tmpDir,
         stepBudgetUsd: reservation.usd, stepTimeoutSec: timeoutSec, model, effort, rawPath: workerStreamPath(runDir, mine), env,
         remotes: c.remotes, stateBase: place.stateBase, autopilotToken: c.token, onRateLimit,
         // ADR-0068 Decision 5, item 11 — the run's offer, to every worker.
@@ -2404,6 +2413,10 @@ export async function runLanes(c) {
       fingerprint_after: entry.lane ? laneFingerprint(after, id) : fingerprint(after),
       outcome: verdict ? verdict.reason : 'ok', halt_scope: scope,
     });
+    // The step's peers are settled: its TMPDIR goes, in the background,
+    // unless its group outlived SIGKILL or its peers are unaccounted for
+    // (the run then holds it, as it keeps its locks or its open-run record).
+    if (entry.tmpDir) c.scratch.release(entry.tmpDir, w.groupTeardown === 'lingering' ? 'the step\'s process group outlived SIGKILL' : unaccounted ? 'the step\'s peers are unaccounted for' : null);
     settling = null;
     pub.stepEnd(entry.seq, s, id, verdict, w.aborted);
     writeRun(runDir, run);

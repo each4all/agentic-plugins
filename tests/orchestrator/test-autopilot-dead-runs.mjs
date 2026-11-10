@@ -700,8 +700,14 @@ async function driverSetup() {
   writeFileSync(scen, JSON.stringify({ A: { next: [{ kind: 'commit', verb: null, confidence: 'HIGH' }] }, B: { next: [{ kind: 'done', verb: null, confidence: 'HIGH' }] }, actions: { 1: 'peer-sleep' } }));
   const roots = { orchestrator: ORCH, engineer: ENG, runtime: RUNTIME };
   const version = (root) => JSON.parse(readFileSync(join(root, '.claude-plugin', 'plugin.json'), 'utf8')).version;
+  // The killed driver leaves its temporary root to the next run's sweep, and
+  // no run follows here: it lies in the fixture's directory, which `done`
+  // removes.
+  const tmp = join(fx.dir, 'tmp');
+  mkdirSync(tmp);
   const env = {
     ...fx.env,
+    TMPDIR: tmp,
     AUTOPILOT_CLAUDE_BIN: FAKE, FAKE_CLAUDE_MODE: 'script', FAKE_WORKER_SCRIPT: SCRIPTED, FAKE_SCENARIO: scen,
     FAKE_CLAUDE_LOG: join(fx.dir, 'claude.log'),
     AGENTIC_ORCHESTRATOR_ROOT: ORCH, AGENTIC_ENGINEER_ROOT: ENG, AGENTIC_RUNTIME_ROOT: RUNTIME,

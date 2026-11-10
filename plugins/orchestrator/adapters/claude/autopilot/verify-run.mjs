@@ -75,6 +75,14 @@
 // The failing tests' names are parsed from the check's log (node --test's
 // TAP and spec lines), bounded, and reach only the workflow; each check's log
 // is under the run's directory, `verify/<batch>/<index>.log`.
+//
+// TMPDIR (ADR-0068, amendment of 2026-11-10). Each check that runs gets a
+// temporary directory of its own under the run's temporary root
+// (`job.scratch`, scratch.mjs), outside the lane, made before its spawn and
+// removed when it ends, whatever its outcome; one that cannot be made starts
+// no check (`not-started`). A check whose group outlived SIGKILL keeps its
+// directory, which the run then holds. A reused pass starts no process and
+// makes none. The status and go files stay in the run's directory.
 
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -1128,11 +1136,29 @@ async function runStep({ job, ctl, ops, bounds, now, abortedBy }) {
       ran.push({ index: i, kind: check.kind, origin: check.origin, outcome: 'passed', duration_ms: 0, reused: true });
       continue;
     }
-    const r = await runCheck({
-      check, lane: job.lane, env: job.checkEnv, baseline: job.offer.baseline,
-      logFile: path.join(job.runDir, logRel), statusFile: path.join(dir, `${i}.status`), goFile: path.join(dir, `${i}.go`), label: `verify ${batchId} #${i} ${check.kind}`,
-      deadlineMs: { declared: check.timeout_s * bounds.secondMs, batchLeft: bounds.batchMs - batchUsedMs }, ctl, bounds,
-    });
+    // The check's own TMPDIR. A removal's failure is the run's to count,
+    // never the check's result.
+    const tmpDir = job.scratch ? job.scratch.checkDir(job.seq, i) : null;
+    let r;
+    let made = false;
+    try {
+      if (tmpDir) { job.scratch.make(tmpDir); made = true; }
+    } catch (e) {
+      r = { outcome: 'not-started', exit: null, signal: null, durationMs: 0, runMs: 0, detail: `the check's temporary directory could not be made (${e?.message ?? e})` };
+    }
+    try {
+      r ??= await runCheck({
+        check, lane: job.lane, env: tmpDir ? { ...job.checkEnv, TMPDIR: tmpDir } : job.checkEnv, baseline: job.offer.baseline,
+        logFile: path.join(job.runDir, logRel), statusFile: path.join(dir, `${i}.status`), goFile: path.join(dir, `${i}.go`), label: `verify ${batchId} #${i} ${check.kind}`,
+        deadlineMs: { declared: check.timeout_s * bounds.secondMs, batchLeft: bounds.batchMs - batchUsedMs }, ctl, bounds,
+      });
+    } catch (e) {
+      // A supervision that threw: a group that outlived SIGKILL rides on the
+      // error, and keeps the directory.
+      if (made) { try { job.scratch.release(tmpDir, Number.isInteger(e?.lingering) ? 'the check\'s process group outlived SIGKILL' : null); } catch { /* counted by the run */ } }
+      throw e;
+    }
+    if (made) { try { job.scratch.release(tmpDir, r.lingering ? 'the check\'s process group outlived SIGKILL' : null); } catch { /* counted by the run */ } }
     batchUsedMs += r.runMs;
     if (r.lingering) { lingering = r.pgid; }
     const failing = r.outcome === 'failed' ? parseFailingTests(readTail(path.join(job.runDir, logRel))) : { names: [], more: 0 };

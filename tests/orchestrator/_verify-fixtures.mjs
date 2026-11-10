@@ -57,6 +57,8 @@ switch (mode) {
   case 'groupkill': process.kill(0, 'SIGKILL'); hang(); break;
   case 'touch': fs.writeFileSync('touched.txt', String(Date.now())); process.exit(0);
   case 'env': fs.writeFileSync(process.env.VERIFY_FIXTURE_ENV, JSON.stringify(Object.keys(process.env).filter((k) => k.startsWith('AGENTIC_')).sort())); process.exit(0);
+  // Its TMPDIR, and a file left in it (ADR-0068, amendment of 2026-11-10).
+  case 'tmp': fs.writeFileSync(process.env.VERIFY_FIXTURE_ENV, JSON.stringify({ tmp: process.env.TMPDIR ?? null })); fs.writeFileSync(process.env.TMPDIR + '/left-by-the-check.txt', 'x'); process.exit(0);
   case 'slow': {
     const end = () => { if (process.env.VERIFY_FIXTURE_LOG) fs.appendFileSync(process.env.VERIFY_FIXTURE_LOG, 'slow-end\\n'); process.exit(0); };
     const until = process.env.VERIFY_FIXTURE_SLOW_UNTIL;
@@ -76,7 +78,7 @@ const DECLARED = {
   schema: 'agentic-verify-checks-1.0',
   kinds: {
     pass: kind('pass'), pass2: kind('pass2'), driver: kind('driver'), fail: kind('fail'), hang: kind('hang', { timeout_s: 2 }),
-    stubborn: kind('stubborn', { timeout_s: 2 }), exit127: kind('exit127'), groupkill: kind('groupkill'), touch: kind('touch'), env: kind('env'), slow: kind('slow'),
+    stubborn: kind('stubborn', { timeout_s: 2 }), exit127: kind('exit127'), groupkill: kind('groupkill'), touch: kind('touch'), env: kind('env'), tmp: kind('tmp'), slow: kind('slow'),
     self: kind('selfpass', { locks_itself: true }), missing: { ...kind('x'), argv: ['no-such-command-for-verify-exec'] },
     test: { ...kind('files'), argv: ['node', 'scripts/check.mjs', 'files', '{files}'], slots: [{ name: 'files', type: 'path', repeat: 'many', join: 'words', under: ['tests/'], suffix: '.mjs' }] },
     'test-suite': kind('suite'),
