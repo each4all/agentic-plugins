@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import { execFile } from 'node:child_process';
 import { deepStrictEqual, notStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert/strict';
-import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,14 +16,19 @@ import {
 } from '../../plugins/runtime/scripts/settings.mjs';
 import { RUNTIME_VERSION } from '../../plugins/runtime/scripts/version.mjs';
 import { skillsPath } from '../_helpers.mjs';
+import { fileTmpDirs } from '../_tmp.mjs';
+
+// Every temporary directory below is removed when the file's tests end, on
+// failure too (tests/_tmp.mjs).
+const newTmp = fileTmpDirs();
 
 const SETTINGS_RUN_ID = 'settings-20260513T000000Z-abcdef';
 const PORTABLE_HOOK_COMMAND = '/bin/sh "${PLUGIN_ROOT}/adapters/codex/hooks/run-node-hook.sh" "${PLUGIN_ROOT}/adapters/codex/hooks/hook.mjs"';
 
 describe('runtime settings', () => {
   it('builds a dry-run settings plan without mutating config or running install commands', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-home-'));
+    const root = newTmp('runtime-settings-repo-');
+    const home = newTmp('runtime-settings-home-');
     await seedRepo(root);
     await mkdir(join(root, '.agentic-plugins'), { recursive: true });
     await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'codex_model = "old-codex"\n');
@@ -64,8 +69,8 @@ describe('runtime settings', () => {
   });
 
   it('reports non-executable host CLI install plans when Claude or Codex is unavailable', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-cli-install-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-cli-install-home-'));
+    const root = newTmp('runtime-settings-cli-install-repo-');
+    const home = newTmp('runtime-settings-cli-install-home-');
     await seedRepo(root);
 
     const report = await runSettings({
@@ -90,8 +95,8 @@ describe('runtime settings', () => {
   });
 
   it('reports non-executable host auth remediation plans', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-auth-plan-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-auth-plan-home-'));
+    const root = newTmp('runtime-settings-auth-plan-repo-');
+    const home = newTmp('runtime-settings-auth-plan-home-');
     await seedRepo(root);
 
     const report = await runSettings({
@@ -122,8 +127,8 @@ describe('runtime settings', () => {
   });
 
   it('plans host auth verification instead of login when Claude auth is sandbox-limited', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-auth-sandbox-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-auth-sandbox-home-'));
+    const root = newTmp('runtime-settings-auth-sandbox-repo-');
+    const home = newTmp('runtime-settings-auth-sandbox-home-');
     await seedRepo(root);
 
     const report = await runSettings({
@@ -153,8 +158,8 @@ describe('runtime settings', () => {
   });
 
   it('plans retired Claude plugin cleanup without executing uninstall', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-plugin-cleanup-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-plugin-cleanup-home-'));
+    const root = newTmp('runtime-settings-plugin-cleanup-repo-');
+    const home = newTmp('runtime-settings-plugin-cleanup-home-');
     await seedRepo(root);
 
     const report = await runSettings({
@@ -196,8 +201,8 @@ describe('runtime settings', () => {
   });
 
   it('executes retired Claude plugin cleanup behind an explicit flag', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-plugin-cleanup-execute-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-plugin-cleanup-execute-home-'));
+    const root = newTmp('runtime-settings-plugin-cleanup-execute-repo-');
+    const home = newTmp('runtime-settings-plugin-cleanup-execute-home-');
     await seedRepo(root);
 
     const calls = [];
@@ -261,8 +266,8 @@ describe('runtime settings', () => {
   const MARKETPLACE_ADD = 'codex plugin marketplace add each4all/agentic-plugins';
 
   it('write-ahead: persists the planned record + plan hash BEFORE the H2 action runs (§1.5 #10)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-writeahead-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-writeahead-home-'));
+    const root = newTmp('runtime-settings-writeahead-repo-');
+    const home = newTmp('runtime-settings-writeahead-home-');
     await seedRepo(root);
     const artifactPath = join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json');
 
@@ -308,8 +313,8 @@ describe('runtime settings', () => {
   });
 
   it('write-ahead: an interrupted H2 run leaves a durable record naming the landed action (§1.5 #10)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-writeahead-kill-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-writeahead-kill-home-'));
+    const root = newTmp('runtime-settings-writeahead-kill-repo-');
+    const home = newTmp('runtime-settings-writeahead-kill-home-');
     await seedRepo(root);
     const artifactPath = join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json');
 
@@ -342,8 +347,8 @@ describe('runtime settings', () => {
   });
 
   it('write-ahead: the retired-plugin cleanup executor journals its action (§1.5 #26)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-cleanup-writeahead-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-cleanup-writeahead-home-'));
+    const root = newTmp('runtime-settings-cleanup-writeahead-repo-');
+    const home = newTmp('runtime-settings-cleanup-writeahead-home-');
     await seedRepo(root);
     const artifactPath = join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json');
     const CLEANUP = 'claude plugin uninstall research@agentic-plugins';
@@ -391,8 +396,8 @@ describe('runtime settings', () => {
   });
 
   it('plan-hash: refuses to execute when the expected hash diverges from the fresh plan (§1.6 #25)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-planhash-refuse-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-planhash-refuse-home-'));
+    const root = newTmp('runtime-settings-planhash-refuse-repo-');
+    const home = newTmp('runtime-settings-planhash-refuse-home-');
     await seedRepo(root);
 
     const calls = [];
@@ -419,8 +424,8 @@ describe('runtime settings', () => {
   });
 
   it('plan-hash: a matching expected hash validates and executes (§1.6)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-planhash-ok-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-planhash-ok-home-'));
+    const root = newTmp('runtime-settings-planhash-ok-repo-');
+    const home = newTmp('runtime-settings-planhash-ok-home-');
     await seedRepo(root);
 
     // Learn the plan hash from a dry-run (what bootstrap would present).
@@ -450,8 +455,8 @@ describe('runtime settings', () => {
   });
 
   it('applies only selected agentic-plugins-owned config writes', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-apply-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-apply-home-'));
+    const root = newTmp('runtime-settings-apply-repo-');
+    const home = newTmp('runtime-settings-apply-home-');
     await seedRepo(root);
     await mkdir(join(root, '.agentic-plugins'), { recursive: true });
     await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'codex_model = "old-codex" # keep comment\n');
@@ -481,8 +486,8 @@ describe('runtime settings', () => {
   });
 
   it('warns when a selected lower-precedence config target is shadowed by repo config', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-shadow-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-shadow-home-'));
+    const root = newTmp('runtime-settings-shadow-repo-');
+    const home = newTmp('runtime-settings-shadow-home-');
     await seedRepo(root);
     await mkdir(join(root, '.agentic-plugins'), { recursive: true });
     await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'codex_model = "repo-codex"\n');
@@ -509,8 +514,8 @@ describe('runtime settings', () => {
   });
 
   it('reports plugin installation recommendations without treating them as executed', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-install-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-install-home-'));
+    const root = newTmp('runtime-settings-install-repo-');
+    const home = newTmp('runtime-settings-install-home-');
     await seedRepo(root);
     const report = await runSettings({
       repoRoot: root,
@@ -534,8 +539,8 @@ describe('runtime settings', () => {
   });
 
   it('reports the legacy plugin_hooks gate read-only without planning a host-config write', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hooks-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hooks-home-'));
+    const root = newTmp('runtime-settings-hooks-repo-');
+    const home = newTmp('runtime-settings-hooks-home-');
     await seedRepo(root);
 
     await installSourcePluginsOnCodex(root, home);
@@ -564,8 +569,8 @@ describe('runtime settings', () => {
   });
 
   it('skips the removed plugin_hooks write and surfaces generic hooks when Codex removed the flag', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hooks-removed-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hooks-removed-home-'));
+    const root = newTmp('runtime-settings-hooks-removed-repo-');
+    const home = newTmp('runtime-settings-hooks-removed-home-');
     await seedRepo(root);
 
     await installSourcePluginsOnCodex(root, home);
@@ -591,8 +596,8 @@ describe('runtime settings', () => {
   });
 
   it('reports Codex hook review as a manual follow-up when plugin hooks are ready', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-review-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-review-home-'));
+    const root = newTmp('runtime-settings-hook-review-repo-');
+    const home = newTmp('runtime-settings-hook-review-home-');
     await seedRepo(root);
 
     await installSourcePluginsOnCodex(root, home);
@@ -633,8 +638,8 @@ describe('runtime settings', () => {
   });
 
   it('carries Codex hook command portability warnings into settings output', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-command-warning-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-command-warning-home-'));
+    const root = newTmp('runtime-settings-hook-command-warning-repo-');
+    const home = newTmp('runtime-settings-hook-command-warning-home-');
     await seedRepo(root);
     await writeJson(join(root, 'plugins', 'engineer', 'hooks', 'hooks.json'), {
       hooks: {
@@ -658,8 +663,8 @@ describe('runtime settings', () => {
   });
 
   it('does not warn when Codex hook commands use compatibility root aliases with Codex adapter paths', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-command-alias-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-command-alias-home-'));
+    const root = newTmp('runtime-settings-hook-command-alias-repo-');
+    const home = newTmp('runtime-settings-hook-command-alias-home-');
     await seedRepo(root);
     await writeJson(join(root, 'plugins', 'engineer', 'hooks', 'hooks.json'), {
       hooks: {
@@ -682,8 +687,8 @@ describe('runtime settings', () => {
   });
 
   it('records Codex hook review attestation behind an explicit flag', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-review-attest-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-review-attest-home-'));
+    const root = newTmp('runtime-settings-hook-review-attest-repo-');
+    const home = newTmp('runtime-settings-hook-review-attest-home-');
     await seedRepo(root);
     // An attestable machine (S8a5): the hooks are actually reviewable/trusted there —
     // Codex-installed plugin evidence + the trusted hook-state rows /hooks records.
@@ -734,8 +739,8 @@ describe('runtime settings', () => {
   });
 
   it('emits canonical bound_versions (list-authoritative) + attested_plugins, keeping the legacy map (S8a4-2)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-bound-versions-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-bound-versions-home-'));
+    const root = newTmp('runtime-settings-bound-versions-repo-');
+    const home = newTmp('runtime-settings-bound-versions-home-');
     await seedRepo(root); // source: engineer + orchestrator 1.0.0, both codex-hook-bearing
     await writeTrustedCodexHookStateConfig(home);
     // Installed at the listed 0.7.0, carrying the hooks.
@@ -790,8 +795,8 @@ describe('runtime settings', () => {
   // "bundled" plugin that then blocked attestation as not installed; the source tree is no
   // longer a hook origin at all.)
   it('leaves a hook plugin Codex has not installed out of the review and the attestation (ADR-0061)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-attest-not-installed-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-attest-not-installed-home-'));
+    const root = newTmp('runtime-settings-attest-not-installed-repo-');
+    const home = newTmp('runtime-settings-attest-not-installed-home-');
     await seedRepo(root); // orchestrator's SOURCE carries Codex hooks
     await writeTrustedCodexHookStateConfig(home);
     await installSourcePluginsOnCodex(root, home, ['engineer'], { engineer: '0.7.0' });
@@ -817,8 +822,8 @@ describe('runtime settings', () => {
   });
 
   it('blocks attestation for a Codex-DISABLED bundled hook plugin (a disabled plugin loads no hooks, S8a5)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-attest-disabled-plugin-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-attest-disabled-plugin-home-'));
+    const root = newTmp('runtime-settings-attest-disabled-plugin-repo-');
+    const home = newTmp('runtime-settings-attest-disabled-plugin-home-');
     await seedRepo(root);
     // Hook-state rows all trusted and enabled — the PLUGIN, not any handler, is what
     // is off, so only the attestable verdict can catch it (the peer-found gap: both
@@ -848,8 +853,8 @@ describe('runtime settings', () => {
   });
 
   it('blocks attestation when the Codex hook-state config is missing — trust is recorded there (S8a5)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-attest-no-config-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-attest-no-config-home-'));
+    const root = newTmp('runtime-settings-attest-no-config-repo-');
+    const home = newTmp('runtime-settings-attest-no-config-home-');
     await seedRepo(root);
     // Codex-installed evidence present; ONLY the trust store is absent. Pre-S8a5 this
     // attested (disabled_handlers is necessarily 0 over an empty entry list) and the
@@ -879,8 +884,8 @@ describe('runtime settings', () => {
   });
 
   it('threads the OBSERVED Codex CLI version into bound_versions.codex, not a constant (S8a4-2)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-bound-cli-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-bound-cli-home-'));
+    const root = newTmp('runtime-settings-bound-cli-repo-');
+    const home = newTmp('runtime-settings-bound-cli-home-');
     await seedRepo(root);
 
     const report = await runSettings({
@@ -901,8 +906,8 @@ describe('runtime settings', () => {
   });
 
   it('binds a null Codex CLI version when --version is unparseable, never a guess (S8a4-2)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-bound-cli-null-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-bound-cli-null-home-'));
+    const root = newTmp('runtime-settings-bound-cli-null-repo-');
+    const home = newTmp('runtime-settings-bound-cli-null-home-');
     await seedRepo(root);
 
     const report = await runSettings({
@@ -924,8 +929,8 @@ describe('runtime settings', () => {
   });
 
   it('leaves attested_plugins empty when the attestation is blocked (S8a4-2)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-attested-empty-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-attested-empty-home-'));
+    const root = newTmp('runtime-settings-attested-empty-repo-');
+    const home = newTmp('runtime-settings-attested-empty-home-');
     await seedRepo(root);
     await writeDisabledCodexHookStateConfig(home); // forces status=blocked
     // The hooks must be INSTALLED for the disabled handlers to be what blocks: with no
@@ -952,8 +957,8 @@ describe('runtime settings', () => {
   });
 
   it('refuses --attest-codex-hook-review combined with an execution flag (stale pre-exec snapshot, S8a4-2)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-attest-combo-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-attest-combo-home-'));
+    const root = newTmp('runtime-settings-attest-combo-repo-');
+    const home = newTmp('runtime-settings-attest-combo-home-');
     await seedRepo(root);
 
     await rejects(
@@ -980,8 +985,8 @@ describe('runtime settings', () => {
   });
 
   it('blocks Codex hook review attestation while expected hook states are disabled', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-state-disabled-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-state-disabled-home-'));
+    const root = newTmp('runtime-settings-hook-state-disabled-repo-');
+    const home = newTmp('runtime-settings-hook-state-disabled-home-');
     await seedRepo(root);
     await writeDisabledCodexHookStateConfig(home);
 
@@ -1018,8 +1023,8 @@ describe('runtime settings', () => {
   // pre-S8a5 gate attested straight through it — and doctor's mirror then called the
   // fresh attestation stale on the same evidence. The per-handler gate blocks first.
   it('blocks attestation on a disabled handler masked by an enabled sibling (S8a5)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-sibling-mask-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-sibling-mask-home-'));
+    const root = newTmp('runtime-settings-hook-sibling-mask-repo-');
+    const home = newTmp('runtime-settings-hook-sibling-mask-home-');
     await seedRepo(root);
     // TWO real Stop handlers (peer finding: with the default single-handler fixture
     // the 0:1 row below would model a STALE index, not a live sibling — the
@@ -1063,8 +1068,8 @@ describe('runtime settings', () => {
     // argument, and a default runSettings run leaves ~/.codex untouched.
     await rejects(async () => parseArgs(['--apply-codex-plugin-hooks']), /Unknown argument: --apply-codex-plugin-hooks/);
 
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hooks-apply-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hooks-apply-home-'));
+    const root = newTmp('runtime-settings-hooks-apply-repo-');
+    const home = newTmp('runtime-settings-hooks-apply-home-');
     await seedRepo(root);
     await mkdir(join(home, '.codex'), { recursive: true });
     const originalConfig = [
@@ -1095,8 +1100,8 @@ describe('runtime settings', () => {
   });
 
   it('does not retry Codex marketplace add when the temporary marketplace cache is already current', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-tmp-current-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-tmp-current-home-'));
+    const root = newTmp('runtime-settings-codex-tmp-current-repo-');
+    const home = newTmp('runtime-settings-codex-tmp-current-home-');
     await seedRepo(root);
     await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
 
@@ -1126,8 +1131,8 @@ describe('runtime settings', () => {
   });
 
   it('recognizes the Codex per-plugin surface in cache materialization on 0.137.0 (ADR-0032)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-perplugin-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-perplugin-home-'));
+    const root = newTmp('runtime-settings-codex-perplugin-repo-');
+    const home = newTmp('runtime-settings-codex-perplugin-home-');
     await seedRepo(root);
     await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
 
@@ -1158,8 +1163,8 @@ describe('runtime settings', () => {
   });
 
   it('does not overclaim per-plugin verbs in settings on an add-only Codex host (ADR-0032)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-addonly-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-addonly-home-'));
+    const root = newTmp('runtime-settings-codex-addonly-repo-');
+    const home = newTmp('runtime-settings-codex-addonly-home-');
     await seedRepo(root);
     await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
 
@@ -1188,8 +1193,8 @@ describe('runtime settings', () => {
   // currentness input. A clone behind the source manifest used to produce an executable
   // `upgrade-marketplace`; it now produces only the clone-presence recommendation.
   it('does not treat a stale marketplace clone as a Codex currentness signal (ADR-0061)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-tmp-stale-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-tmp-stale-home-'));
+    const root = newTmp('runtime-settings-codex-tmp-stale-repo-');
+    const home = newTmp('runtime-settings-codex-tmp-stale-home-');
     await seedRepo(root);
     await seedCodexTmpMarketplace(home, 'runtime', '0.0.9');
 
@@ -1210,8 +1215,8 @@ describe('runtime settings', () => {
   // reinstalls nothing — the recommendation is a manual repair doctor then re-verifies,
   // never an executable upgrade that would record "executed" without fixing anything.
   it('recommends a manual Codex repair when the install cache is behind the registered catalog pin', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-pin-behind-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-pin-behind-home-'));
+    const root = newTmp('runtime-settings-codex-pin-behind-repo-');
+    const home = newTmp('runtime-settings-codex-pin-behind-home-');
     await seedRepo(root);
     await seedCodexInstallCache(home, 'runtime', '0.0.9');
     const registration = await codexRegisteredCatalog([pinnedCodexEntry('runtime', '0.1.0')]);
@@ -1236,8 +1241,8 @@ describe('runtime settings', () => {
     // After activation the catalog pin, not the clone's working tree, is what Codex
     // installs — so a clone that lacks plugins/<name> (sparse, or ahead of a removal)
     // does not make an installable plugin read as "no marketplace configured".
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-pin-noclone-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-pin-noclone-home-'));
+    const root = newTmp('runtime-settings-codex-pin-noclone-repo-');
+    const home = newTmp('runtime-settings-codex-pin-noclone-home-');
     await seedRepo(root);
     const registration = await codexRegisteredCatalog([pinnedCodexEntry('runtime', '0.1.0')]);
     const report = await runSettings({
@@ -1256,8 +1261,8 @@ describe('runtime settings', () => {
   });
 
   it('does not recommend installing Codex when the list authoritatively reports installed; only reworded materialization (ADR-0034)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-installed-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-installed-home-'));
+    const root = newTmp('runtime-settings-codexlist-installed-repo-');
+    const home = newTmp('runtime-settings-codexlist-installed-home-');
     await seedRepo(root);
     await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
 
@@ -1281,8 +1286,8 @@ describe('runtime settings', () => {
   });
 
   it('recommends enabling a Codex plugin the list reports installed-but-disabled, not materialization (ADR-0034)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-disabled-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-disabled-home-'));
+    const root = newTmp('runtime-settings-codexlist-disabled-repo-');
+    const home = newTmp('runtime-settings-codexlist-disabled-home-');
     await seedRepo(root);
     await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
 
@@ -1305,8 +1310,8 @@ describe('runtime settings', () => {
   });
 
   it('offers an executable codex plugin add for a not-installed plugin on the per-plugin surface (ADR-0035 §5/§6)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-absent-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-absent-home-'));
+    const root = newTmp('runtime-settings-codexlist-absent-repo-');
+    const home = newTmp('runtime-settings-codexlist-absent-home-');
     await seedRepo(root);
     await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
 
@@ -1333,8 +1338,8 @@ describe('runtime settings', () => {
   });
 
   it('recommends a manual Codex repair when the list reports installed but older than the catalog pin (ADR-0034, ADR-0061)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-older-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-older-home-'));
+    const root = newTmp('runtime-settings-codexlist-older-repo-');
+    const home = newTmp('runtime-settings-codexlist-older-home-');
     await seedRepo(root);
     await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
     const registration = await codexRegisteredCatalog([pinnedCodexEntry('runtime', '0.1.0')]);
@@ -1367,8 +1372,8 @@ describe('runtime settings', () => {
       ['local entry', { name: 'runtime', source: { source: 'local', path: './plugins/runtime' } }],
       ['pin without a sha', { ...pinnedCodexEntry('runtime', '0.1.0'), source: { ...pinnedCodexEntry('runtime', '0.1.0').source, sha: 'not-a-sha' } }],
     ]) {
-      const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-unpinned-repo-'));
-      const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-unpinned-home-'));
+      const root = newTmp('runtime-settings-codexlist-unpinned-repo-');
+      const home = newTmp('runtime-settings-codexlist-unpinned-home-');
       await seedRepo(root);
       await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
       const registration = await codexRegisteredCatalog([entry]);
@@ -1387,8 +1392,8 @@ describe('runtime settings', () => {
   });
 
   it('ignores a stale codex install cache when the list reports not installed (ADR-0034)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-stalecache-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-stalecache-home-'));
+    const root = newTmp('runtime-settings-codexlist-stalecache-repo-');
+    const home = newTmp('runtime-settings-codexlist-stalecache-home-');
     await seedRepo(root);
     await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
     // A stale per-plugin install cache lingers at 0.0.5, but the authoritative list
@@ -1422,11 +1427,11 @@ describe('runtime settings', () => {
   // flagged. This is the direct consumer-repo regression the contract pins.
   it('consumer repo (no source): registered-catalog currentness flags a stale install AND emits zero false register-marketplace-entry', async () => {
     // NO seedRepo — this repo is not an agentic-plugins checkout.
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-consumer-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-consumer-home-'));
+    const root = newTmp('runtime-settings-consumer-repo-');
+    const home = newTmp('runtime-settings-consumer-home-');
     // The operator's registered marketplace catalog (machine-scoped, resolved from the C2
     // registration probe's installLocation), NOT a repo checkout. It carries runtime 0.1.0.
-    const installLoc = await mkdtemp(join(tmpdir(), 'runtime-settings-consumer-mp-'));
+    const installLoc = newTmp('runtime-settings-consumer-mp-');
     await mkdir(join(installLoc, '.claude-plugin'), { recursive: true });
     await writeJson(join(installLoc, '.claude-plugin', 'marketplace.json'), {
       name: 'agentic-plugins',
@@ -1467,14 +1472,14 @@ describe('runtime settings', () => {
   // hooks, never a version that may not be installed. This is the 3-way split, exercised with
   // three DISTINCT versions: source 1.0.0, installed 0.0.5, registered catalog 0.9.9.
   it('binds Codex hook attestation/review-targets to the INSTALLED version, never source or registered catalog (peer #8)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-3way-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-3way-home-'));
+    const root = newTmp('runtime-settings-3way-repo-');
+    const home = newTmp('runtime-settings-3way-home-');
     await seedRepo(root); // source: engineer 1.0.0 + codex hooks
     // INSTALLED (codex cache) 0.0.5, carrying the hooks — the only place Codex's effective
     // hooks come from (ADR-0061 §Decision 4).
     await installSourcePluginsOnCodex(root, home, ['engineer'], { engineer: '0.0.5' });
     // Registered catalog carries engineer 0.9.9 — distinct from BOTH source and installed.
-    const installLoc = await mkdtemp(join(tmpdir(), 'runtime-settings-3way-mp-'));
+    const installLoc = newTmp('runtime-settings-3way-mp-');
     await mkdir(join(installLoc, '.claude-plugin'), { recursive: true });
     await writeJson(join(installLoc, '.claude-plugin', 'marketplace.json'), {
       name: 'agentic-plugins',
@@ -1510,8 +1515,8 @@ describe('runtime settings', () => {
   // Round 2 (Codex review): an installed plugin whose hooks cannot be read must not let
   // an attestation of the REST read complete.
   it('blocks attestation while an installed plugin\'s hooks cannot be read', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-unreadable-hooks-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-unreadable-hooks-home-'));
+    const root = newTmp('runtime-settings-unreadable-hooks-repo-');
+    const home = newTmp('runtime-settings-unreadable-hooks-home-');
     await seedRepo(root);
     await writeTrustedCodexHookStateConfig(home);
     // engineer listed at 0.3.0 but only a 0.2.0 cache exists; orchestrator is readable.
@@ -1536,8 +1541,8 @@ describe('runtime settings', () => {
   });
 
   it('never borrows a Claude or source version for a Codex hook review target', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-target-version-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-target-version-home-'));
+    const root = newTmp('runtime-settings-codex-target-version-repo-');
+    const home = newTmp('runtime-settings-codex-target-version-home-');
     await seedRepo(root);
     await installSourcePluginsOnCodex(root, home);
     const report = await runSettings({
@@ -1560,8 +1565,8 @@ describe('runtime settings', () => {
   });
 
   it('executes only allowlisted plugin management commands behind an explicit flag', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-execute-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-execute-home-'));
+    const root = newTmp('runtime-settings-execute-repo-');
+    const home = newTmp('runtime-settings-execute-home-');
     await seedRepo(root);
 
     const calls = [];
@@ -1591,8 +1596,8 @@ describe('runtime settings', () => {
   });
 
   it('executes codex plugin add after a passing installPolicy/authPolicy pre-flight and post-verifies (ADR-0035 §6)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codexinstall-ok-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codexinstall-ok-home-'));
+    const root = newTmp('runtime-settings-codexinstall-ok-repo-');
+    const home = newTmp('runtime-settings-codexinstall-ok-home-');
     await seedRepo(root);
     await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
     const others = ['companions', 'engineer', 'orchestrator'].map((n) => ({ name: n, marketplaceName: 'agentic-plugins', version: '9.9.9', installed: true, enabled: true }));
@@ -1626,8 +1631,8 @@ describe('runtime settings', () => {
   });
 
   it('blocks codex plugin add when authPolicy is ON_INSTALL (ADR-0035 §6 block-or-manual)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codexinstall-oninstall-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codexinstall-oninstall-home-'));
+    const root = newTmp('runtime-settings-codexinstall-oninstall-repo-');
+    const home = newTmp('runtime-settings-codexinstall-oninstall-home-');
     await seedRepo(root);
     await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
     const others = ['companions', 'engineer', 'orchestrator'].map((n) => ({ name: n, marketplaceName: 'agentic-plugins', version: '9.9.9', installed: true, enabled: true }));
@@ -1658,8 +1663,8 @@ describe('runtime settings', () => {
   });
 
   it('blocks codex plugin add when installPolicy is not AVAILABLE (ADR-0035 §6)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codexinstall-policy-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codexinstall-policy-home-'));
+    const root = newTmp('runtime-settings-codexinstall-policy-repo-');
+    const home = newTmp('runtime-settings-codexinstall-policy-home-');
     await seedRepo(root);
     await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
     const others = ['companions', 'engineer', 'orchestrator'].map((n) => ({ name: n, marketplaceName: 'agentic-plugins', version: '9.9.9', installed: true, enabled: true }));
@@ -1684,8 +1689,8 @@ describe('runtime settings', () => {
   });
 
   it('flags CODEX_INSTALL_NOT_VERIFIED when post-verify does not report the plugin installed (ADR-0035 §6)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codexinstall-unverified-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codexinstall-unverified-home-'));
+    const root = newTmp('runtime-settings-codexinstall-unverified-repo-');
+    const home = newTmp('runtime-settings-codexinstall-unverified-home-');
     await seedRepo(root);
     await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
     const others = ['companions', 'engineer', 'orchestrator'].map((n) => ({ name: n, marketplaceName: 'agentic-plugins', version: '9.9.9', installed: true, enabled: true }));
@@ -1712,8 +1717,8 @@ describe('runtime settings', () => {
   });
 
   it('fails zero-exit Claude plugin commands when the plugin CLI reports unavailable', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-claude-plugin-unavailable-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-claude-plugin-unavailable-home-'));
+    const root = newTmp('runtime-settings-claude-plugin-unavailable-repo-');
+    const home = newTmp('runtime-settings-claude-plugin-unavailable-home-');
     await seedRepo(root);
 
     const unavailable = okResult("RAW plugin isn't available in this environment.\n");
@@ -1758,8 +1763,8 @@ describe('runtime settings', () => {
   });
 
   it('executes Claude plugin management when only the slash plugin surface is unavailable', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-claude-plugin-preflight-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-claude-plugin-preflight-home-'));
+    const root = newTmp('runtime-settings-claude-plugin-preflight-repo-');
+    const home = newTmp('runtime-settings-claude-plugin-preflight-home-');
     await seedRepo(root);
 
     const calls = [];
@@ -1806,8 +1811,8 @@ describe('runtime settings', () => {
   // ADR-0064 Decision 4 removed the doctor hint for a permission denial along with
   // `--sandbox-permission-probe`, the surface it pointed at.
   it('classifies a permission-denied plugin-management failure with no doctor hint', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-permission-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-permission-home-'));
+    const root = newTmp('runtime-settings-permission-repo-');
+    const home = newTmp('runtime-settings-permission-home-');
     await seedRepo(root);
 
     const report = await runSettings({
@@ -1839,8 +1844,8 @@ describe('runtime settings', () => {
   });
 
   it('persists execution artifacts and classifies failed plugin-management retries', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-artifact-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-artifact-home-'));
+    const root = newTmp('runtime-settings-artifact-repo-');
+    const home = newTmp('runtime-settings-artifact-home-');
     await seedRepo(root);
 
     const report = await runSettings({
@@ -2064,9 +2069,9 @@ describe('runtime settings', () => {
     // deliberately — but the write then lands somewhere `mutation_boundary`
     // never named (cross-host review, MAJOR). The symlink itself must survive:
     // rename goes to the RESOLVED target, never over the link.
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-symlink-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-symlink-home-'));
-    const external = await mkdtemp(join(tmpdir(), 'runtime-settings-symlink-ext-'));
+    const root = newTmp('runtime-settings-symlink-repo-');
+    const home = newTmp('runtime-settings-symlink-home-');
+    const external = newTmp('runtime-settings-symlink-ext-');
     await seedRepo(root);
     await mkdir(join(home, '.agentic-plugins'), { recursive: true });
     const realTarget = join(external, 'real.toml');
@@ -2092,8 +2097,8 @@ describe('runtime settings', () => {
   });
 
   it('--unset plans a remove op, applies it, and distinguishes absent from present', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-unset-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-unset-home-'));
+    const root = newTmp('runtime-settings-unset-repo-');
+    const home = newTmp('runtime-settings-unset-home-');
     await seedRepo(root);
     await mkdir(join(home, '.agentic-plugins'), { recursive: true });
     const userConfig = join(home, '.agentic-plugins', 'config.toml');
@@ -2122,8 +2127,8 @@ describe('runtime settings', () => {
     // ADR-0045 §7 forbids a tracked repo value from ACTIVATING entry_brief.
     // Refusing to REMOVE one would leave the exact byte the ADR exists to
     // prevent sitting in the repo file with no tool able to take it out.
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-unset-repo2-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-unset-home2-'));
+    const root = newTmp('runtime-settings-unset-repo2-');
+    const home = newTmp('runtime-settings-unset-home2-');
     await seedRepo(root);
     await mkdir(join(root, '.agentic-plugins'), { recursive: true });
     const repoConfig = join(root, '.agentic-plugins', 'config.toml');
@@ -2174,8 +2179,8 @@ describe('runtime settings', () => {
 
 describe('settings: config key families (model/effort and session)', () => {
   it('reads existing keys from config.toml as current state, keeps unchanged values, and drops unknown keys', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-current-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-current-home-'));
+    const root = newTmp('runtime-settings-current-repo-');
+    const home = newTmp('runtime-settings-current-home-');
     await seedRepo(root);
     await mkdir(join(root, '.agentic-plugins'), { recursive: true });
     await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'session_capture = "stop-hook"\nunknown_key = "still-dropped"\n');
@@ -2197,8 +2202,8 @@ describe('settings: config key families (model/effort and session)', () => {
   // ADR-0044 §3 — the session family rides the generic family-plan core:
   // projection, shadow warnings, per-target validation, defaults.
   it('plans the session_capture key with the shipped default off and renders the section', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-session-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-session-home-'));
+    const root = newTmp('runtime-settings-session-repo-');
+    const home = newTmp('runtime-settings-session-home-');
     await seedRepo(root);
 
     const report = await runSettings({
@@ -2237,8 +2242,8 @@ describe('settings: config key families (model/effort and session)', () => {
   // repo plan), and a tracked repo value is reported as ignored, never
   // shadowing.
   it('refuses to plan the user-scope-only entry-brief keys repo-side and routes them to the user target', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-entrybrief-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-entrybrief-home-'));
+    const root = newTmp('runtime-settings-entrybrief-repo-');
+    const home = newTmp('runtime-settings-entrybrief-home-');
     await seedRepo(root);
 
     const report = await runSettings({
@@ -2270,8 +2275,8 @@ describe('settings: config key families (model/effort and session)', () => {
   });
 
   it('apply with --target repo keeps the repo file byte-identical when only user-scope-only keys are requested', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-entrybrief-apply-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-entrybrief-apply-home-'));
+    const root = newTmp('runtime-settings-entrybrief-apply-');
+    const home = newTmp('runtime-settings-entrybrief-apply-home-');
     await seedRepo(root);
     await mkdir(join(root, '.agentic-plugins'), { recursive: true });
     const repoConfigPath = join(root, '.agentic-plugins', 'config.toml');
@@ -2297,7 +2302,7 @@ describe('settings: config key families (model/effort and session)', () => {
   it('a user config path aliasing the repo file is refused the user-scope-only keys too', async () => {
     // repoRoot === homeDir: the "user" file IS the repo-trackable file
     // (codex review MAJOR, reproduced) — both targets must strip the keys.
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-entrybrief-alias-'));
+    const root = newTmp('runtime-settings-entrybrief-alias-');
     await seedRepo(root);
     await mkdir(join(root, '.agentic-plugins'), { recursive: true });
     const configPath = join(root, '.agentic-plugins', 'config.toml');
@@ -2320,8 +2325,8 @@ describe('settings: config key families (model/effort and session)', () => {
   });
 
   it('surfaces the observed loader-effective value when an env override is active', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-entrybrief-env-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-entrybrief-env-home-'));
+    const root = newTmp('runtime-settings-entrybrief-env-');
+    const home = newTmp('runtime-settings-entrybrief-env-home-');
     await seedRepo(root);
     await mkdir(join(home, '.agentic-plugins'), { recursive: true });
     await writeFile(join(home, '.agentic-plugins', 'config.toml'), 'entry_brief = "off"\n');
@@ -2340,8 +2345,8 @@ describe('settings: config key families (model/effort and session)', () => {
   });
 
   it('reports a tracked repo entry_brief value as ignored (user-scope-only), never shadowing', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-entrybrief-ignored-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-entrybrief-ignored-home-'));
+    const root = newTmp('runtime-settings-entrybrief-ignored-');
+    const home = newTmp('runtime-settings-entrybrief-ignored-home-');
     await seedRepo(root);
     await mkdir(join(root, '.agentic-plugins'), { recursive: true });
     await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'entry_brief = "startup"\n');
@@ -2357,8 +2362,8 @@ describe('settings: config key families (model/effort and session)', () => {
   });
 
   it('surfaces an invalid stored session_capture value as a fail-closed warning', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-session-bad-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-session-bad-home-'));
+    const root = newTmp('runtime-settings-session-bad-repo-');
+    const home = newTmp('runtime-settings-session-bad-home-');
     await seedRepo(root);
     await mkdir(join(root, '.agentic-plugins'), { recursive: true });
     await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'session_capture = "always"\n');
@@ -2379,8 +2384,8 @@ describe('settings: config key families (model/effort and session)', () => {
   // ADR-0044 S4 (session-capture-contract.md §13): the readiness section —
   // off stays informational; a half-enabled chain warns, recommends, renders.
   it('reports session-capture readiness: off is informational, a gate-on half-enabled chain warns', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-readiness-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-readiness-home-'));
+    const root = newTmp('runtime-settings-readiness-repo-');
+    const home = newTmp('runtime-settings-readiness-home-');
     await seedRepo(root);
 
     // Control: shipped default off — evaluated, zero warnings, no states.
@@ -2410,8 +2415,8 @@ describe('settings: config key families (model/effort and session)', () => {
   });
 
   it('evaluates session-capture readiness in local_plan scope with honestly-unverified enablement', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-readiness-local-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-readiness-local-home-'));
+    const root = newTmp('runtime-settings-readiness-local-repo-');
+    const home = newTmp('runtime-settings-readiness-local-home-');
     await seedRepo(root);
     await mkdir(join(root, '.agentic-plugins'), { recursive: true });
     await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'session_capture = "stop-hook"\n');
@@ -2438,8 +2443,8 @@ describe('settings: config key families (model/effort and session)', () => {
   // off informational; the user-scope-only gate on with a half-enabled hook
   // chain warns; a tracked repo value never activates.
   it('reports entry-brief readiness: off informational, user-scope gate-on chain warns, repo value ignored', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-entry-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-entry-home-'));
+    const root = newTmp('runtime-settings-entry-repo-');
+    const home = newTmp('runtime-settings-entry-home-');
     await seedRepo(root);
 
     // Control: shipped default off — evaluated, zero warnings.
@@ -2477,8 +2482,8 @@ describe('settings: config key families (model/effort and session)', () => {
   });
 
   it('evaluates entry-brief readiness in local_plan scope, executor probe included', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-entry-local-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-entry-local-home-'));
+    const root = newTmp('runtime-settings-entry-local-repo-');
+    const home = newTmp('runtime-settings-entry-local-home-');
     await seedRepo(root);
     await mkdir(join(home, '.agentic-plugins'), { recursive: true });
     await writeFile(join(home, '.agentic-plugins', 'config.toml'), 'entry_brief = "startup"\n');
@@ -2508,8 +2513,8 @@ describe('settings: config key families (model/effort and session)', () => {
   });
 
   it('a blocked entry chain degrades the local_plan overall too (review-peer mutation coverage)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-entry-local-blocked-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-entry-local-blocked-home-'));
+    const root = newTmp('runtime-settings-entry-local-blocked-repo-');
+    const home = newTmp('runtime-settings-entry-local-blocked-home-');
     await seedRepo(root);
     await mkdir(join(home, '.agentic-plugins'), { recursive: true });
     await writeFile(join(home, '.agentic-plugins', 'config.toml'), 'entry_brief = "startup"\n');
@@ -2531,8 +2536,8 @@ describe('settings: config key families (model/effort and session)', () => {
   // layer must plan nothing and refuse apply — never be rebuilt from an
   // empty base.
   it('refuses to plan or apply against an unreadable config target', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-unreadable-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-unreadable-home-'));
+    const root = newTmp('runtime-settings-unreadable-repo-');
+    const home = newTmp('runtime-settings-unreadable-home-');
     await seedRepo(root);
     await mkdir(join(root, '.agentic-plugins', 'config.toml'), { recursive: true }); // a DIRECTORY: present but unreadable (EISDIR)
 
@@ -2605,8 +2610,8 @@ describe('settings: config key families (model/effort and session)', () => {
   });
 
   it('applies session config writes to the selected agentic-plugins-owned target', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-session-apply-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-session-apply-home-'));
+    const root = newTmp('runtime-settings-session-apply-repo-');
+    const home = newTmp('runtime-settings-session-apply-home-');
     await seedRepo(root);
 
     const report = await runSettings({
@@ -2627,8 +2632,8 @@ describe('settings: config key families (model/effort and session)', () => {
   });
 
   it('warns when a requested session key is shadowed by repo config', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-session-shadow-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-session-shadow-home-'));
+    const root = newTmp('runtime-settings-session-shadow-repo-');
+    const home = newTmp('runtime-settings-session-shadow-home-');
     await seedRepo(root);
     await mkdir(join(root, '.agentic-plugins'), { recursive: true });
     await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'session_capture = "off"\n');
@@ -2652,8 +2657,8 @@ describe('settings: config key families (model/effort and session)', () => {
   });
 
   it('warns about an invalid lower-precedence session value shadowed by a valid repo value', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-session-invalid-lower-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-session-invalid-lower-home-'));
+    const root = newTmp('runtime-settings-session-invalid-lower-repo-');
+    const home = newTmp('runtime-settings-session-invalid-lower-home-');
     await seedRepo(root);
     await mkdir(join(root, '.agentic-plugins'), { recursive: true });
     await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'session_capture = "off"\n');
@@ -2676,8 +2681,8 @@ describe('settings: config key families (model/effort and session)', () => {
   it('drops a blank desired value instead of planning it', async () => {
     // An empty value is not a value: the differ drops it, so removing a key is
     // `--unset`'s job, never a blank write.
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-blank-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-blank-home-'));
+    const root = newTmp('runtime-settings-blank-repo-');
+    const home = newTmp('runtime-settings-blank-home-');
     await seedRepo(root);
 
     const report = await runSettings({
@@ -2716,8 +2721,8 @@ describe('settings: the surfaces ADR-0064 removed stay removed', () => {
   });
 
   it('a report carries none of the removed sections or counters, in either scope', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-removed-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-removed-home-'));
+    const root = newTmp('runtime-settings-removed-repo-');
+    const home = newTmp('runtime-settings-removed-home-');
     await seedRepo(root);
     for (const skipHostCliProbes of [true, false]) {
       const report = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes, runner: fakeRunner(defaultCliMap()) });
@@ -2736,8 +2741,8 @@ describe('settings: the surfaces ADR-0064 removed stay removed', () => {
   });
 
   it('a leftover notify_* line is inert, and --unset says why it will not remove it', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-leftover-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-leftover-home-'));
+    const root = newTmp('runtime-settings-leftover-repo-');
+    const home = newTmp('runtime-settings-leftover-home-');
     await seedRepo(root);
     await mkdir(join(root, '.agentic-plugins'), { recursive: true });
     const repoConfig = join(root, '.agentic-plugins', 'config.toml');
@@ -2977,7 +2982,7 @@ async function installSourcePluginsOnCodex(root, home, names = ['engineer', 'orc
 // A registered Codex marketplace (the `codex plugin marketplace list --json` answer) whose
 // catalog at installLocation holds `entries`. Returns the runner map entry.
 async function codexRegisteredCatalog(entries) {
-  const installLocation = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-mp-'));
+  const installLocation = newTmp('runtime-settings-codex-mp-');
   await mkdir(join(installLocation, '.agents', 'plugins'), { recursive: true });
   await writeJson(join(installLocation, '.agents', 'plugins', 'marketplace.json'), { name: 'agentic-plugins', plugins: entries });
   return {

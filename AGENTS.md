@@ -295,6 +295,23 @@ ADR-0001 final note.
   (`scripts/lib/suite-tiers.mjs`) refuses a listed name discovery does not
   find, so a renamed large file must be renamed there too (ADR-0033,
   amendment of 2026-11-09).
+
+  **Temporary files.** `npm test` gives each test file's process a `TMPDIR`
+  of its own (`tests/_tmp-guard.mjs`) and fails a file that leaves anything
+  there (npm's shared `node-compile-cache` aside) unless
+  `scripts/data/test-tmp-leaks.json` declares it; the summary at
+  the end of the run counts what each file left. Make a test's directories
+  with `tests/_tmp.mjs` (`tmpDir(t, prefix)`, or `fileTmpDirs()` for a file's
+  shared fixtures), which removes them on failure too, and only inside the
+  temporary directory they were made in (`scripts/lib/remove-tree.mjs`). The
+  declaration is a baseline that only shrinks: never add a file to it (review
+  enforces this; nothing mechanical does), and remove one the summary names
+  as leaving nothing once it did so in more than one run, since a file that
+  leaks only sometimes would otherwise make the suite flaky. A run whose
+  count is not whole (a file with no record or no result, a directory that
+  cannot be read or removed) fails whatever the declaration says.
+  `--test-isolation=none` is refused under `npm test` (ADR-0033, second
+  amendment of 2026-11-10).
 - `npm run test:smoke` — the companion smoke tests
   (`companions/tests/*.smoke.mjs`, outside discovery).
 - `npm run lint:plugin-shape` — validate every plugin directory with `kit/lint`.

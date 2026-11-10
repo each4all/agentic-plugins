@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { strictEqual, ok } from 'node:assert/strict';
-import { mkdtemp, mkdir, realpath, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, realpath, symlink, writeFile } from 'node:fs/promises';
 import { statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, parse, relative, resolve, sep, dirname } from 'node:path';
@@ -8,6 +8,11 @@ import { readdir, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 import { isUnder, resolveContained, resolveContainedSync, sameDirectory } from '../../plugins/runtime/scripts/lib/path-containment.mjs';
+import { fileTmpDirs } from '../_tmp.mjs';
+
+// Every temporary directory below is removed when the file's tests end, on
+// failure too (tests/_tmp.mjs).
+const newTmp = fileTmpDirs();
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const LIB = resolve(HERE, '../../plugins/runtime/scripts/lib');
@@ -30,7 +35,7 @@ async function foldsCase(root) {
 
 describe('runtime path identity (sameDirectory)', () => {
   it('answers identity by inode, not by spelling — the case-alias the lexical compare misses', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'path-identity-case-'));
+    const root = newTmp('path-identity-case-');
     const real = join(root, 'RealDir');
     await mkdir(real);
     const variant = join(root, 'realdir');
@@ -50,7 +55,7 @@ describe('runtime path identity (sameDirectory)', () => {
   });
 
   it('follows a symlink to the same identity, and a trailing separator changes nothing', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'path-identity-link-'));
+    const root = newTmp('path-identity-link-');
     const real = join(root, 'target');
     await mkdir(real);
     const link = join(root, 'alias');
@@ -62,7 +67,7 @@ describe('runtime path identity (sameDirectory)', () => {
   });
 
   it('calls two genuinely distinct directories distinct', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'path-identity-distinct-'));
+    const root = newTmp('path-identity-distinct-');
     const a = join(root, 'a');
     const b = join(root, 'b');
     await mkdir(a);
@@ -71,7 +76,7 @@ describe('runtime path identity (sameDirectory)', () => {
   });
 
   it('treats an absent path as distinct, not as unknown', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'path-identity-absent-'));
+    const root = newTmp('path-identity-absent-');
     const a = join(root, 'a');
     await mkdir(a);
     const verdict = await sameDirectory(a, join(root, 'never-created'));
@@ -80,7 +85,7 @@ describe('runtime path identity (sameDirectory)', () => {
   });
 
   it('reports UNKNOWN — never a guess — when the filesystem refuses to answer', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'path-identity-unknown-'));
+    const root = newTmp('path-identity-unknown-');
     const a = join(root, 'a');
     const b = join(root, 'b');
     await mkdir(a);
@@ -180,7 +185,7 @@ describe('sameDirectory — identity precision', () => {
 const ASSET = join('docs', 'asset.md');
 
 async function fixturePackage() {
-  const root = await mkdtemp(join(tmpdir(), 'contained-pkg-'));
+  const root = newTmp('contained-pkg-');
   await mkdir(join(root, 'docs'), { recursive: true });
   return root;
 }
@@ -189,7 +194,7 @@ describe('resolveContained — a packaged asset must resolve inside its package'
   it('refuses an asset that resolves OUTSIDE the package, through a leaf symlink', async () => {
     // A constant relative path cannot escape lexically, which is why there was
     // no check; it escapes through the filesystem instead.
-    const outside = await mkdtemp(join(tmpdir(), 'contained-outside-'));
+    const outside = newTmp('contained-outside-');
     await writeFile(join(outside, 'evil.md'), 'outside\n');
     const root = await fixturePackage();
     await symlink(join(outside, 'evil.md'), join(root, ASSET));
@@ -205,9 +210,9 @@ describe('resolveContained — a packaged asset must resolve inside its package'
 
   it('refuses an escape through a symlinked directory too', async () => {
     // The leaf and the directory are two directions of one defect.
-    const outside = await mkdtemp(join(tmpdir(), 'contained-outdir-'));
+    const outside = newTmp('contained-outdir-');
     await writeFile(join(outside, 'asset.md'), 'outside\n');
-    const root = await mkdtemp(join(tmpdir(), 'contained-pkg-'));
+    const root = newTmp('contained-pkg-');
     await symlink(outside, join(root, 'docs'));
 
     strictEqual((await resolveContained(root, ASSET)).status, 'escaped');
@@ -218,7 +223,7 @@ describe('resolveContained — a packaged asset must resolve inside its package'
     // several install layouts. Both sides are canonicalized.
     const real = await fixturePackage();
     await writeFile(join(real, ASSET), 'inside\n');
-    const parent = await mkdtemp(join(tmpdir(), 'contained-link-'));
+    const parent = newTmp('contained-link-');
     await symlink(real, join(parent, 'runtime'));
 
     strictEqual((await resolveContained(join(parent, 'runtime'), ASSET)).status, 'ok');
@@ -236,7 +241,7 @@ describe('resolveContained — a packaged asset must resolve inside its package'
   it('containment is canonical, so a PREFIX SIBLING is outside', async () => {
     // `/x/runtime-evil`.startsWith(`/x/runtime`) is true — measured. The shared
     // predicate appends the separator, and this pins that it keeps doing so.
-    const base = await mkdtemp(join(tmpdir(), 'contained-prefix-'));
+    const base = newTmp('contained-prefix-');
     await mkdir(join(base, 'runtime'), { recursive: true });
     await mkdir(join(base, 'runtime-evil', 'docs'), { recursive: true });
     await writeFile(join(base, 'runtime-evil', 'docs', 'x.md'), 'x');
@@ -261,7 +266,7 @@ describe('resolveContained — a packaged asset must resolve inside its package'
     // A BROKEN symlink is `missing`, not `escaped` and not `unreadable`:
     // nothing was read, so there is no escape to report — only an incomplete
     // package. It points outside the root here precisely to pin that ordering.
-    const outside = await mkdtemp(join(tmpdir(), 'contained-gone-'));
+    const outside = newTmp('contained-gone-');
     const dangling = await fixturePackage();
     await symlink(join(outside, 'never-created.md'), join(dangling, ASSET));
     const broken = await resolveContained(dangling, ASSET);
@@ -326,7 +331,7 @@ describe('resolveContained — a packaged asset must resolve inside its package'
     // `'/' + sep` is `'//'`, so nothing was ever inside `/` — every filesystem
     // root, drive root, and UNC share root failed the predicate. The fixture is
     // created rather than borrowed, so the case asserts nothing about the machine.
-    const dir = await mkdtemp(join(tmpdir(), 'contained-root-'));
+    const dir = newTmp('contained-root-');
     const file = join(dir, 'inside.md');
     await writeFile(file, 'inside\n');
     const root = parse(file).root;
@@ -345,7 +350,7 @@ describe('resolveContained — a packaged asset must resolve inside its package'
     // pin a platform this suite cannot run, pin that the two agree.
     const root = await fixturePackage();
     await writeFile(join(root, ASSET), 'inside\n');
-    const outside = await mkdtemp(join(tmpdir(), 'contained-sync-out-'));
+    const outside = newTmp('contained-sync-out-');
     await writeFile(join(outside, 'evil.md'), 'outside\n');
     await mkdir(join(root, 'esc'), { recursive: true });
     await symlink(join(outside, 'evil.md'), join(root, 'esc', 'x.md'));
@@ -367,9 +372,9 @@ describe('resolveContained — a packaged asset must resolve inside its package'
     // asserted is the PROPERTY — the read is refused when the asset resolves
     // outside the package — through the shared predicate, so the case does not
     // depend on the private layout of any one renderer.
-    const pkg = await mkdtemp(join(tmpdir(), 'contained-assets-'));
+    const pkg = newTmp('contained-assets-');
     await mkdir(join(pkg, 'receivers'), { recursive: true });
-    const outside = await mkdtemp(join(tmpdir(), 'contained-assets-out-'));
+    const outside = newTmp('contained-assets-out-');
     await writeFile(join(outside, 'evil.mjs'), '// OUTSIDE MARKER\n');
     await symlink(join(outside, 'evil.mjs'), join(pkg, 'receivers', 'template.mjs'));
 

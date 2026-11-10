@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { strictEqual, notStrictEqual, ok, rejects, deepStrictEqual, match, throws } from 'node:assert/strict';
-import { cp, mkdtemp, mkdir, writeFile, readdir, readFile, realpath, rm, utimes } from 'node:fs/promises';
+import { cp, mkdir, writeFile, readdir, readFile, realpath, rm, utimes } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -12,6 +12,11 @@ import { evaluateCodexHookStateGate, formatText, parseArgs, projectCodexHookStat
 import { recomputeHookAttestation } from '../../plugins/runtime/scripts/lib/completion-reducer.mjs';
 import { makeDefValidator } from '../../plugins/runtime/scripts/lib/schema-validate.mjs';
 import { buildClone, installFromClone, pinned, writeCatalog } from './_codex-pinned-fixture.mjs';
+import { fileTmpDirs } from '../_tmp.mjs';
+
+// Every temporary directory below is removed when the file's tests end, on
+// failure too (tests/_tmp.mjs).
+const newTmp = fileTmpDirs();
 
 // Module-load scrub. Most tests run
 // doctor with the default env = process.env; an ambient AGENTIC_COMPANIONS_ROOT or
@@ -78,8 +83,8 @@ describe('runtime doctor', () => {
   });
 
   it('builds a sanitized read-only report from source, CLI, companion, config, and ledger probes', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-repo-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     await seedCompanionCaches(home);
     await seedHome(home);
@@ -213,8 +218,8 @@ describe('runtime doctor', () => {
   });
 
   it('recognizes the Codex per-plugin command surface on 0.137.0 (ADR-0032)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-perplugin-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-perplugin-home-'));
+    const root = newTmp('runtime-doctor-perplugin-');
+    const home = newTmp('runtime-doctor-perplugin-home-');
     await seedRepo(root);
     await seedHome(home);
     const report = await runDoctor({
@@ -261,8 +266,8 @@ describe('runtime doctor', () => {
   });
 
   it('enumerates only the detected per-plugin verbs and does not overclaim (ADR-0032)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-perplugin-partial-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-perplugin-partial-home-'));
+    const root = newTmp('runtime-doctor-perplugin-partial-');
+    const home = newTmp('runtime-doctor-perplugin-partial-home-');
     await seedRepo(root);
     await seedHome(home);
     const report = await runDoctor({
@@ -293,8 +298,8 @@ describe('runtime doctor', () => {
   });
 
   it('treats removed plugin_hooks as ready on the generic hooks gate (Codex >= ~0.134)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-repo-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     await seedHome(home);
     await installSourcePluginsOnCodex(root, home);
@@ -336,8 +341,8 @@ describe('runtime doctor', () => {
   });
 
   it('recommends generic hooks (not plugin_hooks) when plugin_hooks is removed and generic hooks is off', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-repo-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     await seedHome(home);
     await installSourcePluginsOnCodex(root, home);
@@ -369,8 +374,8 @@ describe('runtime doctor', () => {
   });
 
   it('reports unavailable Claude slash plugin surface without blocking Claude plugin CLI management', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-claude-plugin-surface-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-claude-plugin-surface-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     const report = await runDoctor({
       repoRoot: root,
@@ -398,8 +403,8 @@ describe('runtime doctor', () => {
   });
 
   it('flags hook-bearing Codex plugins that do not expose hooks in their manifest', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-gap-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-hook-gap-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     await writeJson(join(root, 'plugins', 'engineer', '.codex-plugin', 'plugin.json'), {
       name: 'engineer',
@@ -421,8 +426,8 @@ describe('runtime doctor', () => {
   });
 
   it('folds a claude_adapter_only plugin into the Codex bundled/review/expected sets (host loads default-file hooks regardless of command shape)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-claude-only-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-claude-only-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     // LEGACY-LAYOUT SYNTHETIC (kept deliberately after the posture
     // resolution relocated the real attention registration): a root
@@ -549,8 +554,8 @@ describe('runtime doctor', () => {
   });
 
   it('drops a relocated attention from every Codex hook set and reads its stale trust rows as unexpected (display-only)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-attention-relocated-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-attention-relocated-home-'));
+    const root = newTmp('runtime-doctor-attention-relocated-');
+    const home = newTmp('runtime-doctor-attention-relocated-home-');
     await seedRepo(root);
     // POST-RELOCATION layout (posture resolution, ADR-0040 §3 amendment):
     // the Claude registration is manifest-scoped at adapters/claude/hooks/
@@ -653,8 +658,8 @@ describe('runtime doctor', () => {
   // hooks/hooks.json to Codex until the upgrade lands — cache scanning
   // intentionally survives the source-tree relocation.
   it('matches hooks.state rows against versioned install-cache hook paths in a cache-only consumer repo', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-cache-only-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-cache-only-home-'));
+    const root = newTmp('runtime-doctor-cache-only-');
+    const home = newTmp('runtime-doctor-cache-only-home-');
     // NO seedRepo: the consumer repo has no plugins/ source at all.
     const cacheRoot = join(home, '.codex', 'plugins', 'cache', 'agentic-plugins', 'attention', '0.4.0');
     await mkdir(join(cacheRoot, '.codex-plugin'), { recursive: true });
@@ -702,8 +707,8 @@ describe('runtime doctor', () => {
       { cacheVersion: '0.20.0', expectFollowup: false, label: 'matching cache version keeps the attestation current' },
       { cacheVersion: '0.21.0', expectFollowup: true, label: 'a cache upgrade flips the attestation to plugin_version_changed' },
     ]) {
-      const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-attest-cache-'));
-      const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-attest-cache-home-'));
+      const root = newTmp('runtime-doctor-attest-cache-');
+      const home = newTmp('runtime-doctor-attest-cache-home-');
       const cacheRoot = join(home, '.codex', 'plugins', 'cache', 'agentic-plugins', 'engineer', cacheVersion);
       await mkdir(join(cacheRoot, '.codex-plugin'), { recursive: true });
       await writeJson(join(cacheRoot, '.codex-plugin', 'plugin.json'), { name: 'engineer', version: cacheVersion, description: 'engineer', hooks: './adapters/codex/hooks/hooks.json' });
@@ -777,8 +782,8 @@ describe('runtime doctor', () => {
     // Generic vocabulary self-healing — retargeted onto engineer's seeded
     // manifest-declared hooks file after the attention relocation (this
     // tests the mirror, not any attention-specific packaging).
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-unknown-event-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-unknown-event-home-'));
+    const root = newTmp('runtime-doctor-unknown-event-');
+    const home = newTmp('runtime-doctor-unknown-event-home-');
     await seedRepo(root);
     await writeJson(join(root, 'plugins', 'engineer', 'hooks', 'hooks.json'), {
       hooks: {
@@ -843,8 +848,8 @@ describe('runtime doctor', () => {
   });
 
   it('a hook-bearing designer is reported as PACKAGED and review-required, never as trusted/active (ADR-0042 RT)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-designer-hooks-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-designer-hooks-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     // Seed designer the way the plugin actually ships: a Codex manifest that
     // exposes hooks + a bundled hooks.json with the portable command shape.
@@ -907,8 +912,8 @@ describe('runtime doctor', () => {
   });
 
   it('reports Codex hook review as a manual follow-up when plugin hooks are ready', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-review-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-hook-review-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     await installSourcePluginsOnCodex(root, home);
     const report = await runDoctor({
@@ -952,8 +957,8 @@ describe('runtime doctor', () => {
   });
 
   it('reports disabled Codex hook state for bundled hooks', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-state-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-state-home-'));
+    const root = newTmp('runtime-doctor-hook-state-repo-');
+    const home = newTmp('runtime-doctor-hook-state-home-');
     await seedRepo(root);
     await writeDisabledCodexHookStateConfig(home);
 
@@ -996,8 +1001,8 @@ describe('runtime doctor', () => {
       ? 'an explicit `enabled = true` (older Codex residue)'
       : 'no `enabled` key (what a current Codex writes on trust)';
     it(`treats a trusted Codex hook entry with ${label} as enabled`, async () => {
-      const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-trusted-repo-'));
-      const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-trusted-home-'));
+      const root = newTmp('runtime-doctor-hook-trusted-repo-');
+      const home = newTmp('runtime-doctor-hook-trusted-home-');
       await seedRepo(root);
       await writeTrustedCodexHookStateConfig(home, 'hooks/hooks.json', { explicitEnabled });
 
@@ -1030,8 +1035,8 @@ describe('runtime doctor', () => {
   }
 
   it('still reports disabled when Codex wrote an explicit `enabled = false`', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-explicit-off-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-explicit-off-home-'));
+    const root = newTmp('runtime-doctor-hook-explicit-off-repo-');
+    const home = newTmp('runtime-doctor-hook-explicit-off-home-');
     await seedRepo(root);
     await writeDisabledCodexHookStateConfig(home);
 
@@ -1058,8 +1063,8 @@ describe('runtime doctor', () => {
   // disabled the whole group (like test #24's plugin-level twin) passes even
   // without the per-handler derivation, which is exactly how this shipped.
   it('surfaces a disabled handler masked by an enabled sibling, and stales attestation currency on it (S8a5)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-sibling-mask-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-sibling-mask-home-'));
+    const root = newTmp('runtime-doctor-hook-sibling-mask-');
+    const home = newTmp('runtime-doctor-hook-sibling-mask-home-');
     await seedRepo(root);
     // TWO real Stop handlers (peer finding: with the default single-handler fixture
     // the 0:1 row below would model a STALE index, not a live sibling — the
@@ -1237,8 +1242,8 @@ describe('runtime doctor', () => {
   // coordinates instead needs empirical evidence of Codex's stale-row cleanup
   // behavior — recorded as a follow-up trigger, not guessed here.
   it('counts a disabled row for a REMOVED handler coordinate (orphan index) as disabled evidence — fail-closed (S8a5)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-orphan-index-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-orphan-index-home-'));
+    const root = newTmp('runtime-doctor-hook-orphan-index-');
+    const home = newTmp('runtime-doctor-hook-orphan-index-home-');
     await seedRepo(root); // engineer Stop has exactly ONE handler (0:0)
     await writeTrustedCodexHookStateConfig(home, 'hooks/hooks.json', {
       extraLines: [
@@ -1265,8 +1270,8 @@ describe('runtime doctor', () => {
   // read `current` here while the completion reducer staled the same machine on plugin
   // state. The attestable verdict is now consumed.
   it('stales attestation currency for a Codex-DISABLED bundled hook plugin (plugin_not_attestable, S8a5)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-attest-disabled-plugin-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-attest-disabled-plugin-home-'));
+    const root = newTmp('runtime-doctor-attest-disabled-plugin-');
+    const home = newTmp('runtime-doctor-attest-disabled-plugin-home-');
     await seedRepo(root);
     await writeTrustedCodexHookStateConfig(home);
     const runId = 'settings-20260718T020000Z-a5f003';
@@ -1317,8 +1322,8 @@ describe('runtime doctor', () => {
   // be read as text (here: it is a directory — EISDIR) is `unreadable`, not `missing`
   // — the operator recovery is "fix the file", not "trust hooks for the first time".
   it('classifies an unreadable Codex config as config=unreadable and stales currency on it (S8a5)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-state-unreadable-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-state-unreadable-home-'));
+    const root = newTmp('runtime-doctor-hook-state-unreadable-');
+    const home = newTmp('runtime-doctor-hook-state-unreadable-home-');
     await seedRepo(root);
     await mkdir(join(home, '.codex', 'config.toml'), { recursive: true }); // a DIRECTORY at the config path
 
@@ -1333,8 +1338,8 @@ describe('runtime doctor', () => {
   });
 
   it('stales an otherwise-current attestation when no hook-state config exists — trust is recorded there (S8a5)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-state-absent-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-state-absent-home-'));
+    const root = newTmp('runtime-doctor-hook-state-absent-');
+    const home = newTmp('runtime-doctor-hook-state-absent-home-');
     await seedRepo(root);
     await seedCodexInstallCache(home, 'engineer', '1.0.0');
     await seedCodexInstallCache(home, 'orchestrator', '1.0.0');
@@ -1380,8 +1385,8 @@ describe('runtime doctor', () => {
   });
 
   it('reports Codex hook command portability warnings when hook commands still point at Claude adapter paths', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-command-warning-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-hook-command-warning-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     await writeJson(join(root, 'plugins', 'engineer', 'hooks', 'hooks.json'), {
       hooks: {
@@ -1409,8 +1414,8 @@ describe('runtime doctor', () => {
   });
 
   it('does not warn when Codex hook commands use compatibility root aliases with Codex adapter paths', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-command-alias-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-hook-command-alias-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     await writeJson(join(root, 'plugins', 'engineer', 'hooks', 'hooks.json'), {
       hooks: {
@@ -1438,8 +1443,8 @@ describe('runtime doctor', () => {
   // does not fall through to snapshot or source hooks." The source tree AND the marketplace
   // clone both carry engineer hooks here; the installed package carries none.
   it('reads Codex hooks from the installed package alone: a hookless install is authoritative over source and clone hooks', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hookless-install-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-hookless-install-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root); // engineer + orchestrator SOURCE carry Codex hooks
     await installSourcePluginsOnCodex(root, home, ['orchestrator']);
     // engineer installed WITHOUT hooks.
@@ -1464,8 +1469,8 @@ describe('runtime doctor', () => {
   });
 
   it('names the INSTALLED package version on a hook review target, never the source version', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-version-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-hook-version-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root); // source engineer 1.0.0
     await installSourcePluginsOnCodex(root, home, ['engineer', 'orchestrator'], { engineer: '0.9.0' });
     const report = await runDoctor({
@@ -1482,8 +1487,8 @@ describe('runtime doctor', () => {
   });
 
   it('never borrows another version\'s hooks when no cache directory holds the listed version', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-no-borrowed-hooks-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-no-borrowed-hooks-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     // Codex lists engineer 0.3.0; the only engineer cache is a hook-bearing 0.2.0.
     await installSourcePluginsOnCodex(root, home, ['engineer', 'orchestrator'], { engineer: '0.2.0' });
@@ -1516,8 +1521,8 @@ describe('runtime doctor', () => {
   });
 
   it('gives a plugin Codex has not installed no hooks, whatever its source carries', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-uninstalled-hooks-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-uninstalled-hooks-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     // A stale engineer cache lingers, but the list authoritatively says not installed.
     await installSourcePluginsOnCodex(root, home);
@@ -1541,8 +1546,8 @@ describe('runtime doctor', () => {
   // ADR-0061 §Decision 4: "Where a Codex-hosted caller resolved a sibling from the Claude
   // cache, diagnostics say so." Doctor predicts it from the two install caches.
   it('predicts a Codex-installed caller resolving a sibling from the Claude cache, and says it is a prediction', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-sibling-fallback-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-sibling-fallback-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     // engineer installed on Codex; runtime only in the CLAUDE cache.
     await seedCodexInstallCache(home, 'engineer', '1.0.0');
@@ -1568,8 +1573,8 @@ describe('runtime doctor', () => {
   });
 
   it('checks the manifest-declared Codex hook file instead of the Claude default hooks file', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-manifest-path-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-hook-manifest-path-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     await writeJson(join(root, 'plugins', 'engineer', '.codex-plugin', 'plugin.json'), {
       name: 'engineer',
@@ -1607,8 +1612,8 @@ describe('runtime doctor', () => {
   });
 
   it('accepts a current Codex hook review attestation artifact', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-review-attested-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-hook-review-attested-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     // The plugins must be Codex-installed at the attested versions for the currency mirror
     // to read them current (list-authoritative, S8a4 §SCOPE-2) — a source-only match no longer counts.
@@ -1704,8 +1709,8 @@ describe('runtime doctor', () => {
   // current while another installed plugin's hooks cannot be read — the covered set is
   // unknown. (Without the check, orchestrator-only would read current here.)
   it('stales a /hooks attestation while an installed plugin\'s hooks cannot be read', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-review-unreadable-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-hook-review-unreadable-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     await writeTrustedCodexHookStateConfig(home);
     const runId = 'settings-20260925T000000Z-abcdef';
@@ -1759,8 +1764,8 @@ describe('runtime doctor', () => {
   });
 
   it('stales a /hooks attestation when only the Codex CLI version moves (version-bound trust, S8a4-3)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-cli-drift-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-cli-drift-home-'));
+    const root = newTmp('runtime-doctor-hook-cli-drift-');
+    const home = newTmp('runtime-doctor-hook-cli-drift-home-');
     await seedRepo(root);
     // Plugins ARE installed and match; ONLY the Codex CLI version differs from the bound
     // one — the dimension the pre-S8a4 mirror was blind to (the dead pipe). The trusted
@@ -1812,8 +1817,8 @@ describe('runtime doctor', () => {
   });
 
   it('stales a legacy attestation carrying no bound_versions (never silently current, S8a4-3)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-legacy-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-legacy-home-'));
+    const root = newTmp('runtime-doctor-hook-legacy-');
+    const home = newTmp('runtime-doctor-hook-legacy-home-');
     await seedRepo(root);
     await seedCodexInstallCache(home, 'engineer', '1.0.0');
     await seedCodexInstallCache(home, 'orchestrator', '1.0.0');
@@ -1857,8 +1862,8 @@ describe('runtime doctor', () => {
   });
 
   it('classifies nonzero Claude auth JSON as unauthenticated', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-claude-auth-json-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-claude-auth-json-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     const report = await runDoctor({
       repoRoot: root,
@@ -1894,8 +1899,8 @@ describe('runtime doctor', () => {
   });
 
   it('classifies Claude auth false inside Codex sandbox as sandbox-limited', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-claude-auth-sandbox-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-claude-auth-sandbox-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     const report = await runDoctor({
       repoRoot: root,
@@ -1932,8 +1937,8 @@ describe('runtime doctor', () => {
   });
 
   it('reports stale retired Claude plugin entries as host parity issues', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-retired-plugin-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-retired-plugin-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     const report = await runDoctor({
       repoRoot: root,
@@ -1964,8 +1969,8 @@ describe('runtime doctor', () => {
   });
 
   it('distinguishes missing CLIs as unavailable and fails overall', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-missing-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-missing-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     const report = await runDoctor({
       repoRoot: root,
@@ -1978,8 +1983,8 @@ describe('runtime doctor', () => {
   });
 
   it('recognizes installed cache state even when a consumer repo has no plugin source tree', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-consumer-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-consumer-');
+    const home = newTmp('runtime-doctor-home-');
     await seedHome(home);
     const report = await runDoctor({
       repoRoot: root,
@@ -1992,8 +1997,8 @@ describe('runtime doctor', () => {
   });
 
   it('does not treat Codex temporary marketplace cache as plugin installation', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-marketplace-only-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-marketplace-only-');
+    const home = newTmp('runtime-doctor-home-');
     await seedCodexTmpMarketplace(home);
     const report = await runDoctor({
       repoRoot: root,
@@ -2012,8 +2017,8 @@ describe('runtime doctor', () => {
   });
 
   it('surfaces Codex marketplace-cache-only materialization even when repo source is available', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-source-plus-marketplace-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-source-plus-marketplace-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     await seedCodexTmpMarketplace(home);
     const report = await runDoctor({
@@ -2029,8 +2034,8 @@ describe('runtime doctor', () => {
   });
 
   it('flags malformed non-terminal peer-run handles as blocked ledger health', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-bad-ledger-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-bad-ledger-');
+    const home = newTmp('runtime-doctor-home-');
     await mkdir(join(root, '.claude', 'agentic-engineer', 'peer-runs', 'bad-run'), { recursive: true });
     await writeJson(join(root, '.claude', 'agentic-engineer', 'peer-runs', 'bad-run', 'handle.json'), {
       run_id: 'bad-run',
@@ -2048,8 +2053,8 @@ describe('runtime doctor', () => {
   });
 
   it('reports canonical workflow storage when state already lives under .agentic-plugins/state', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-canonical-ledger-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-canonical-ledger-');
+    const home = newTmp('runtime-doctor-home-');
     await mkdir(join(root, '.agentic-plugins', 'state', 'engineer', 'workflows'), { recursive: true });
     await writeWorkflow(join(root, '.agentic-plugins', 'state', 'engineer', 'workflows', 'compose-20260513T000000Z-abcdef.md'), 'feat/canonical');
 
@@ -2067,8 +2072,8 @@ describe('runtime doctor', () => {
   });
 
   it('reports ambiguous storage when canonical and legacy homes share a workflow branch', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-ambiguous-ledger-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-ambiguous-ledger-');
+    const home = newTmp('runtime-doctor-home-');
     await mkdir(join(root, '.agentic-plugins', 'state', 'engineer', 'workflows'), { recursive: true });
     await mkdir(join(root, '.claude', 'agentic-engineer', 'workflows'), { recursive: true });
     await writeWorkflow(join(root, '.agentic-plugins', 'state', 'engineer', 'workflows', 'compose-20260513T000000Z-aaaaaa.md'), 'feat/shared');
@@ -2086,8 +2091,8 @@ describe('runtime doctor', () => {
   });
 
   it('summarizes latest settings execution artifact failures with retry classification', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-settings-artifact-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-settings-artifact-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     const runId = 'settings-20260513T000000Z-abcdef';
     await mkdir(join(root, '.agentic-plugins', 'runs', 'settings', runId), { recursive: true });
@@ -2140,8 +2145,8 @@ describe('runtime doctor', () => {
   });
 
   it('treats a nonterminal (in-progress) settings execution record as NOT available (§1.5 #27)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-settings-nonterminal-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-settings-nonterminal-home-'));
+    const root = newTmp('runtime-doctor-settings-nonterminal-');
+    const home = newTmp('runtime-doctor-settings-nonterminal-home-');
     const runId = 'settings-20260513T000000Z-abcdef';
     await mkdir(join(root, '.agentic-plugins', 'runs', 'settings', runId), { recursive: true });
     // A write-ahead record interrupted mid-run: ZERO failures precisely because it
@@ -2180,8 +2185,8 @@ describe('runtime doctor', () => {
   });
 
   it('summarizes latest settings cleanup artifact failures separately', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-settings-cleanup-artifact-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-settings-cleanup-artifact-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     const runId = 'settings-20260513T000000Z-abcdef';
     await mkdir(join(root, '.agentic-plugins', 'runs', 'settings', runId), { recursive: true });
@@ -2247,8 +2252,8 @@ describe('runtime doctor', () => {
   });
 
   it('summarizes latest consensus execution artifact without raw peer output', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-consensus-artifact-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-consensus-artifact-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     const runId = 'consensus-20260513T000000Z-abcdef';
     await mkdir(join(root, '.agentic-plugins', 'runs', 'consensus', runId), { recursive: true });
@@ -2314,8 +2319,8 @@ describe('runtime doctor', () => {
   });
 
   it('warns specifically when the latest consensus execution timed out', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-consensus-timeout-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-consensus-timeout-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     const runId = 'consensus-20260513T000000Z-abcdef';
     await mkdir(join(root, '.agentic-plugins', 'runs', 'consensus', runId), { recursive: true });
@@ -2369,8 +2374,8 @@ describe('runtime doctor', () => {
   // cases below pin the three rows of the matrix the criterion now states, and
   // that a compat collection on disk no longer reaches it at all.
   it('recomposes runtime_handoff_artifacts from settings and consensus only (ADR-0060)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-handoff-recomposed-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-handoff-recomposed-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     // A MALFORMED compat run. Before ADR-0060 this blocked the criterion; now
     // nothing reads the collection, so it must not reach the verdict.
@@ -2391,8 +2396,8 @@ describe('runtime doctor', () => {
   });
 
   it('blocks runtime_handoff_artifacts on a malformed settings artifact, and is satisfied when both collections read', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-handoff-matrix-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-handoff-matrix-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     const settingsDir = join(root, '.agentic-plugins', 'runs', 'settings', 'settings-20260828T000000Z-abcdef');
     await mkdir(settingsDir, { recursive: true });
@@ -2421,8 +2426,8 @@ describe('runtime doctor', () => {
   // partial, still passed them. Before ADR-0060 the compat collection's presence
   // happened to cover the second half.
   it('blocks runtime_handoff_artifacts on a blocked consensus collection alone', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-handoff-consensus-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-handoff-consensus-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     const settingsDir = join(root, '.agentic-plugins', 'runs', 'settings', 'settings-20260828T000000Z-abcdef');
     await mkdir(settingsDir, { recursive: true });
@@ -2442,8 +2447,8 @@ describe('runtime doctor', () => {
 
   it('reads runtime_handoff_artifacts as partial when exactly one collection is missing, in either direction', async () => {
     for (const present of ['settings', 'consensus']) {
-      const root = await mkdtemp(join(tmpdir(), `runtime-doctor-handoff-only-${present}-`));
-      const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+      const root = newTmp(`runtime-doctor-handoff-only-${present}-`);
+      const home = newTmp('runtime-doctor-home-');
       await seedRepo(root);
       if (present === 'settings') {
         const settingsDir = join(root, '.agentic-plugins', 'runs', 'settings', 'settings-20260828T000000Z-abcdef');
@@ -2464,8 +2469,8 @@ describe('runtime doctor', () => {
   });
 
   it('reports runtime artifact inventory pressure without reading artifact bodies', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-artifact-inventory-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-artifact-inventory-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     for (let i = 0; i < 21; i++) {
       const seconds = String(i).padStart(2, '0');
@@ -2504,8 +2509,8 @@ describe('runtime doctor', () => {
   // registry family over cap ONLY because its runs are pinned is informational,
   // not a fault.
   it('demotes a pinned-only over-cap registry family out of the retention-guidance warning', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-retention-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-retention-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     // A real git repo so the citation scan's `git ls-files` succeeds.
     execFileSync('git', ['-C', root, 'init', '-q'], { stdio: 'ignore' });
@@ -2551,8 +2556,8 @@ describe('runtime doctor', () => {
   });
 
   it('keeps the retention-guidance warning when a registry family has genuine actionable overage', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-retention-actionable-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-retention-actionable-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     execFileSync('git', ['-C', root, 'init', '-q'], { stdio: 'ignore' });
     // Two OLD settings runs, NEITHER pinned → both actionable over a cap of 1.
@@ -2586,8 +2591,8 @@ describe('runtime doctor', () => {
   });
 
   it('still inventories the RETIRED permission advisory family (ADR-0057 §Decision 7) and excludes its latest.json singleton from run counts', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-permission-inventory-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-permission-inventory-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     for (const runId of ['permission-20260629T080000Z-000001', 'permission-20260629T090000Z-000002']) {
       await mkdir(join(root, '.agentic-plugins', 'runs', 'permission', runId), { recursive: true });
@@ -2644,8 +2649,8 @@ describe('runtime doctor', () => {
   // member; companion permission evidence comes only from the permission proof's
   // preflight, which reads `unknown` until --permission-proof is requested.
   it('reports no sandbox probe and leaves permission readiness to the explicit permission proof', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-readiness-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-readiness-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     const report = await runDoctor({
       repoRoot: root,
@@ -2678,8 +2683,8 @@ describe('runtime doctor', () => {
   });
 
   it('plans permission proof as an explicit preflight without executing peers', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-permission-proof-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-permission-proof-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     await seedCompanionCaches(home);
     const report = await runDoctor({
@@ -2706,8 +2711,8 @@ describe('runtime doctor', () => {
   });
 
   it('executes permission proof only behind the explicit executor boundary and classifies permission failures', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-permission-proof-execute-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-permission-proof-execute-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     await seedCompanionCaches(home);
     const calls = [];
@@ -2785,8 +2790,8 @@ describe('runtime doctor', () => {
   });
 
   it('plans deep peer smoke as a structured read-only doctor section without executing peers', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-deep-smoke-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-deep-smoke-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     await seedCompanionCaches(home);
     const report = await runDoctor({
@@ -2822,8 +2827,8 @@ describe('runtime doctor', () => {
   });
 
   it('executes deep peer smoke only behind the explicit executor boundary and omits raw peer output', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-deep-smoke-execute-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-deep-smoke-execute-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     await seedCompanionCaches(home);
     const peerOutputs = {
@@ -2877,8 +2882,8 @@ describe('runtime doctor', () => {
   });
 
   it('plans workflow continuation proof without executing peers or mutating workflow state', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-workflow-proof-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-workflow-proof-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     await seedCompanionCaches(home);
     const report = await runDoctor({
@@ -2904,8 +2909,8 @@ describe('runtime doctor', () => {
   });
 
   it('executes workflow continuation proof through engineer dispatch and state bookkeeping', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-workflow-proof-execute-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-workflow-proof-execute-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     await seedCompanionCaches(home);
     const calls = [];
@@ -2992,9 +2997,9 @@ describe('runtime doctor', () => {
     // Consumer-machine shape: engineer is installed in the host plugin cache, and
     // the repo has NO plugins/engineer. Pre-C5 the proof looked under
     // repoRoot/plugins/engineer and would block here.
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-consumer-repo-'));
+    const root = newTmp('runtime-doctor-consumer-repo-');
     // Canonical: the resolver returns canonical roots (ADR-0061 S2).
-    const home = await realpath(await mkdtemp(join(tmpdir(), 'runtime-doctor-consumer-home-')));
+    const home = await realpath(newTmp('runtime-doctor-consumer-home-'));
     await seedRepo(root);
     await seedCompanionCaches(home);
     await rm(join(root, 'plugins', 'engineer'), { recursive: true, force: true });
@@ -3065,8 +3070,8 @@ describe('runtime doctor', () => {
     //
     // Driven through `runDoctor` rather than the private reader, because that is
     // the caller the rule is about.
-    const root = await mkdtemp(join(tmpdir(), 'doctor-dual-'));
-    const home = await mkdtemp(join(tmpdir(), 'doctor-dual-home-'));
+    const root = newTmp('doctor-dual-');
+    const home = newTmp('doctor-dual-home-');
     const seedRun = async (runId, artifactSchema, reportSchema) => {
       const dir = join(root, '.agentic-plugins', 'runs', 'doctor', runId);
       await mkdir(dir, { recursive: true });
@@ -3117,8 +3122,8 @@ describe('runtime doctor', () => {
   });
 
   it('records reusable doctor proof artifacts and reuses them when current versions match', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-recorded-proof-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-recorded-proof-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     await seedCompanionCaches(home);
     await seedHome(home);
@@ -3177,8 +3182,8 @@ describe('runtime doctor', () => {
   });
 
   it('invalidates a recorded doctor proof when the list-authoritative codex installed version changes (ADR-0034)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-proof-codexlist-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-proof-codexlist-home-'));
+    const root = newTmp('runtime-doctor-proof-codexlist-');
+    const home = newTmp('runtime-doctor-proof-codexlist-home-');
     await seedRepo(root);
     await seedCompanionCaches(home);
     await seedHome(home);
@@ -3222,8 +3227,8 @@ describe('runtime doctor', () => {
   // ADR-0061 §Decision 4: a version is not content identity. A proof recorded against the
   // pinned bytes is not reused once the installed bytes diverge under the same version.
   it('invalidates a recorded doctor proof when the installed bytes stop matching the pin, and keeps it when they do not', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-proof-identity-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-proof-identity-home-'));
+    const root = newTmp('runtime-doctor-proof-identity-');
+    const home = newTmp('runtime-doctor-proof-identity-home-');
     await seedRepo(root);
     await seedCompanionCaches(home);
     const { clone, c1 } = await buildClone();
@@ -3284,8 +3289,8 @@ describe('runtime doctor', () => {
     ['the Codex list gives no installed version', null, {}],
   ]) {
   it(`does not reuse a recorded proof for a pinned install whose bytes cannot be verified: ${label}`, async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-proof-unverified-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-proof-unverified-home-'));
+    const root = newTmp('runtime-doctor-proof-unverified-');
+    const home = newTmp('runtime-doctor-proof-unverified-home-');
     await seedRepo(root);
     await seedCompanionCaches(home);
     const { clone, c1 } = await buildClone();
@@ -3329,8 +3334,8 @@ describe('runtime doctor', () => {
   }
 
   it('keeps a cache-recorded proof reusable when a list-capable codex later reports the same version (ADR-0034)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-proof-legacy-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-proof-legacy-home-'));
+    const root = newTmp('runtime-doctor-proof-legacy-');
+    const home = newTmp('runtime-doctor-proof-legacy-home-');
     await seedRepo(root);
     await seedCompanionCaches(home);
     await seedHome(home); // ~/.codex install cache seeds runtime @ 0.1.0
@@ -3379,8 +3384,8 @@ describe('runtime doctor', () => {
   });
 
   it('keeps host auth separate from child companion auth failures', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-child-auth-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-child-auth-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     await seedCompanionCaches(home);
     const report = await runDoctor({
@@ -3424,8 +3429,8 @@ describe('runtime doctor', () => {
   });
 
   it('classifies auth wording in failed peer stdout without leaking raw output', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-child-auth-stdout-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-child-auth-stdout-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     await seedCompanionCaches(home);
     const rawAuthOutput = 'Not logged in. Please run /login. AUTH RAW DETAILS MUST NOT LEAK';
@@ -3468,8 +3473,8 @@ describe('runtime doctor', () => {
   });
 
   it('classifies child companion sandbox detail without leaking raw peer stderr', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-child-sandbox-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-child-sandbox-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     await seedCompanionCaches(home);
     const rawDetail = [
@@ -3564,7 +3569,7 @@ describe('runtime doctor', () => {
     for (const flag of ['--egress-ack-proof', '--execute-egress-ack-proof', '--sandbox-permission-probe']) {
       throws(() => parseArgs([flag]), new RegExp(`^Error: Unknown argument: ${flag}$`));
     }
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-removed-flags-'));
+    const root = newTmp('runtime-doctor-removed-flags-');
     const repo = join(root, 'repo');
     const home = join(root, 'home');
     const bin = join(root, 'bin');
@@ -3597,8 +3602,8 @@ describe('runtime doctor', () => {
   });
 
   it('records an atomic 1.4 artifact whose artifact_sha256 matches the bytes on disk, with no egress_ack_proof section', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-record-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    const root = newTmp('runtime-doctor-record-');
+    const home = newTmp('runtime-doctor-home-');
     await seedRepo(root);
     const report = await runDoctor({
       repoRoot: root,
@@ -3651,8 +3656,8 @@ describe('runtime doctor — codex plugin list read signal (ADR-0034)', () => {
     'codex plugin list --json': pluginListResult,
   });
   const mkdirs = async () => ({
-    root: await mkdtemp(join(tmpdir(), 'runtime-doctor-codexlist-')),
-    home: await mkdtemp(join(tmpdir(), 'runtime-doctor-codexlist-home-')),
+    root: newTmp('runtime-doctor-codexlist-'),
+    home: newTmp('runtime-doctor-codexlist-home-'),
   });
 
   // The founder RT slice (ADR-0036) recorded a deferred generic-name fix: the
@@ -3957,8 +3962,8 @@ describe('runtime doctor — codex plugin list read signal (ADR-0034)', () => {
 describe('runtime doctor — companion candidates (ADR-0061)', () => {
   it('reports the AGENTIC_COMPANIONS_ROOT development override and selects from it', async () => {
     // Canonical: the peer context returns canonical companion paths (ADR-0061 S2).
-    const root = await realpath(await mkdtemp(join(tmpdir(), 'runtime-doctor-companions-override-')));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-companions-override-home-'));
+    const root = await realpath(newTmp('runtime-doctor-companions-override-'));
+    const home = newTmp('runtime-doctor-companions-override-home-');
     await seedRepo(root);
     await seedCompanionCaches(home);
     const override = join(root, 'companions');
@@ -3975,8 +3980,8 @@ describe('runtime doctor — companion candidates (ADR-0061)', () => {
   });
 
   it('does not select the repository source tree when no override is set and the caches are empty', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-companions-source-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-companions-source-home-'));
+    const root = newTmp('runtime-doctor-companions-source-');
+    const home = newTmp('runtime-doctor-companions-source-home-');
     await seedRepo(root); // plants companions/*.mjs and plugins/companions/scripts/*.mjs
     const report = await runDoctor({
       repoRoot: root,
@@ -3993,7 +3998,7 @@ describe('runtime doctor — companion candidates (ADR-0061)', () => {
 describe('runtime doctor — installed engineer root resolver (§8.2 C5)', () => {
   it('env override wins when absolute and scripts/state.mjs exists', async () => {
     // Canonical: the resolver returns canonical roots (ADR-0061 S2).
-    const dir = await realpath(await mkdtemp(join(tmpdir(), 'engineer-root-env-')));
+    const dir = await realpath(newTmp('engineer-root-env-'));
     await mkdir(join(dir, 'scripts'), { recursive: true });
     await writeFile(join(dir, 'scripts', 'state.mjs'), '// x\n');
     const res = await resolveInstalledEngineerRoot({ env: { AGENTIC_ENGINEER_ROOT: dir }, home: '/nonexistent-home-xyz', selfUrl: 'file:///nope/x.mjs' });
@@ -4006,7 +4011,7 @@ describe('runtime doctor — installed engineer root resolver (§8.2 C5)', () =>
   });
 
   it('picks the SemVer-max Claude cache install whose manifest name is engineer', async () => {
-    const home = await realpath(await mkdtemp(join(tmpdir(), 'engineer-root-cache-')));
+    const home = await realpath(newTmp('engineer-root-cache-'));
     const base = join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'engineer');
     for (const [version, name] of [['0.9.0', 'engineer'], ['0.21.0', 'engineer'], ['9.9.9', 'notengineer']]) {
       const r = join(base, version);
@@ -4021,7 +4026,7 @@ describe('runtime doctor — installed engineer root resolver (§8.2 C5)', () =>
   });
 
   it('falls back to the sibling monorepo checkout when no cache exists', async () => {
-    const base = await realpath(await mkdtemp(join(tmpdir(), 'engineer-root-sibling-')));
+    const base = await realpath(newTmp('engineer-root-sibling-'));
     await mkdir(join(base, 'plugins', 'runtime', 'scripts'), { recursive: true });
     await mkdir(join(base, 'plugins', 'engineer', 'scripts'), { recursive: true });
     await writeFile(join(base, 'plugins', 'engineer', 'scripts', 'state.mjs'), '// x\n');
@@ -4042,8 +4047,8 @@ describe('runtime doctor — installed engineer root resolver (§8.2 C5)', () =>
 // the overall-warning gate (blocked warns; off and ready stay silent).
 describe('runtime doctor — session capture readiness (ADR-0044 S4)', () => {
   it('reports the shipped default off silently and renders the section header', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'doctor-session-off-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'doctor-session-off-home-'));
+    const root = newTmp('doctor-session-off-repo-');
+    const home = newTmp('doctor-session-off-home-');
     await seedRepo(root);
     const report = await runDoctor({ repoRoot: root, homeDir: home, format: 'json', runner: fakeRunner({}), env: {} });
     strictEqual(report.session_capture.status, 'off');
@@ -4058,8 +4063,8 @@ describe('runtime doctor — session capture readiness (ADR-0044 S4)', () => {
   });
 
   it('surfaces a gate-on half-enabled chain as an overall warning with rendered states', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'doctor-session-blocked-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'doctor-session-blocked-home-'));
+    const root = newTmp('doctor-session-blocked-repo-');
+    const home = newTmp('doctor-session-blocked-home-');
     await seedRepo(root);
     await mkdir(join(root, '.agentic-plugins'), { recursive: true });
     await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'session_capture = "stop-hook"\n');
@@ -4077,8 +4082,8 @@ describe('runtime doctor — session capture readiness (ADR-0044 S4)', () => {
   });
 
   it('reads a satisfied dynamically-declared publisher floor as ready (no warning)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'doctor-session-ready-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'doctor-session-ready-home-'));
+    const root = newTmp('doctor-session-ready-repo-');
+    const home = newTmp('doctor-session-ready-home-');
     await seedRepo(root);
     await mkdir(join(root, '.agentic-plugins'), { recursive: true });
     await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'session_capture = "stop-hook"\n');
@@ -4103,8 +4108,8 @@ describe('runtime doctor — session capture readiness (ADR-0044 S4)', () => {
   // ADR-0045 S8 (session-capture-contract.md §18): the entry-side mirror on
   // the doctor surface — gate scope, floor sibling key, executor probe.
   it('reports entry-brief readiness: off silently, repo value ignored, user-scope gate-on chain warns', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'doctor-entry-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'doctor-entry-home-'));
+    const root = newTmp('doctor-entry-repo-');
+    const home = newTmp('doctor-entry-home-');
     await seedRepo(root);
 
     // Control: shipped default off — section present, header rendered, silent.
@@ -4138,8 +4143,8 @@ describe('runtime doctor — session capture readiness (ADR-0044 S4)', () => {
   });
 
   it('entry floor satisfied + executor present is ready; executor absent at a passing floor blocks', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'doctor-entry-exec-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'doctor-entry-exec-home-'));
+    const root = newTmp('doctor-entry-exec-repo-');
+    const home = newTmp('doctor-entry-exec-home-');
     await seedRepo(root);
     await mkdir(join(home, '.agentic-plugins'), { recursive: true });
     await writeFile(join(home, '.agentic-plugins', 'config.toml'), 'entry_brief = "startup"\n');
@@ -4175,8 +4180,8 @@ describe('runtime doctor — session capture readiness (ADR-0044 S4)', () => {
     // Peer finding: integration coverage must exercise the actual list-text
     // path (parseClaudePluginList → claudePluginListEnablement), not only
     // unit tests injecting a pre-built {enabled} object.
-    const root = await mkdtemp(join(tmpdir(), 'doctor-session-list-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'doctor-session-list-home-'));
+    const root = newTmp('doctor-session-list-repo-');
+    const home = newTmp('doctor-session-list-home-');
     await seedRepo(root);
     await mkdir(join(root, '.agentic-plugins'), { recursive: true });
     await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'session_capture = "stop-hook"\n');

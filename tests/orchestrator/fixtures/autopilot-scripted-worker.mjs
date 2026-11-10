@@ -442,18 +442,26 @@ export async function perform({ prompt, cwd, env }) {
     const phase7 = path.join(env.AGENTIC_ENGINEER_ROOT, 'scripts', 'phase7-commit.mjs');
     const planned = JSON.parse(execFileSync(node, [phase7, '--mode', 'plan', '--workflow-path', active, '--repo-root', cwd, '--host', 'claude'], { cwd, env, encoding: 'utf8' }));
     const subjectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scripted-subjects-'));
-    const subjectArgs = planned.commits.flatMap((c, i) => {
-      const type = c.subject_rule ? c.subject_rule.allowed_types[0] : 'chore';
-      const scope = c.subject_rule?.scopes ? `(${c.subject_rule.scopes[0]})` : '';
-      const file = path.join(subjectDir, `subject-${i + 1}.txt`);
-      fs.writeFileSync(file, `${type}${scope}: scripted commit of ${c.files.length} file${c.files.length === 1 ? '' : 's'}\n`);
-      return planned.requires_split ? ['--subject-pkg-file', `${c.package ?? 'docs'}=${file}`] : ['--subject-file', file];
-    });
-    for (const a of actionList) {
-      if (a.startsWith('edit-before-commit:')) fs.appendFileSync(path.join(cwd, a.slice('edit-before-commit:'.length)), 'edited during the step\n');
+    let r;
+    try {
+      const subjectArgs = planned.commits.flatMap((c, i) => {
+        const type = c.subject_rule ? c.subject_rule.allowed_types[0] : 'chore';
+        const scope = c.subject_rule?.scopes ? `(${c.subject_rule.scopes[0]})` : '';
+        const file = path.join(subjectDir, `subject-${i + 1}.txt`);
+        fs.writeFileSync(file, `${type}${scope}: scripted commit of ${c.files.length} file${c.files.length === 1 ? '' : 's'}\n`);
+        return planned.requires_split ? ['--subject-pkg-file', `${c.package ?? 'docs'}=${file}`] : ['--subject-file', file];
+      });
+      for (const a of actionList) {
+        if (a.startsWith('edit-before-commit:')) fs.appendFileSync(path.join(cwd, a.slice('edit-before-commit:'.length)), 'edited during the step\n');
+      }
+      r = spawnSync(node, [phase7, '--mode', 'autopilot',
+        '--workflow-path', active, '--repo-root', cwd, '--host', 'claude', ...subjectArgs], { cwd, env, encoding: 'utf8' });
+    } finally {
+      // The subjects were read by the run above, or a step before it threw;
+      // a directory left here would be charged to the test file that started
+      // this worker (docket C175).
+      fs.rmSync(subjectDir, { recursive: true, force: true });
     }
-    const r = spawnSync(node, [phase7, '--mode', 'autopilot',
-      '--workflow-path', active, '--repo-root', cwd, '--host', 'claude', ...subjectArgs], { cwd, env, encoding: 'utf8' });
     fs.writeFileSync(path.join(path.dirname(env.FAKE_SCENARIO), `phase7-${seq}.json`), JSON.stringify({ status: r.status, stdout: r.stdout, stderr: r.stderr }));
     await stopHooks();
     // The commit landed, but the worker reports failure (worker-failed).

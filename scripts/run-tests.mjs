@@ -59,6 +59,18 @@
 // SIGINT and SIGTERM are forwarded to the pass running, and no pass starts
 // after one: the run then exits 128 + the signal's number, whatever the pass
 // answered. A pass that cannot start exits 1.
+//
+// THE LEAK GUARD (docket C175; scripts/lib/tmp-leaks.mjs). Every pass loads
+// tests/_tmp-guard.mjs first in each test file's process, which gives the
+// file a TMPDIR of its own in this run's directory (`tg-XXXXXX` under the
+// system's) and fails a file not declared in scripts/data/test-tmp-leaks.json
+// that leaves anything there. When the passes end the run prints what the
+// files left and removes its directory, whatever the passes answered; a run
+// killed with SIGKILL leaves it. A run whose passes passed still fails when
+// the count is not whole (a file with no record or no result, a directory
+// that cannot be read or removed), whatever the declaration says. A guarded
+// run needs a process per file, so `--test-isolation=none` is refused (run
+// `node --test` directly).
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -68,6 +80,8 @@ import { fileURLToPath } from 'node:url';
 
 import { listTestFiles } from './lib/discover-tests.mjs';
 import { partitionByTier, readTiers } from './lib/suite-tiers.mjs';
+import { holdBase, removeTree } from './lib/remove-tree.mjs';
+import { GUARD_DIR_VAR, GUARD_OWNER_VAR, collectRun, guardFailures, readLeaks, startRun, summarize } from './lib/tmp-leaks.mjs';
 
 export const LARGE_CONCURRENCY = 2;
 
@@ -78,7 +92,11 @@ export const VALUE_OPTIONS = new Set([
   '--test-reporter', '--test-reporter-destination', '--test-name-pattern', '--test-skip-pattern',
   '--test-concurrency', '--test-timeout', '--test-shard', '--test-global-setup',
   '--test-coverage-include', '--test-coverage-exclude', '--watch-path',
+  '--test-isolation', '--experimental-test-isolation',
 ]);
+
+/** The leak guard every test file's process loads first (tests/_tmp-guard.mjs). */
+export const TMP_GUARD_URL = new URL('../tests/_tmp-guard.mjs', import.meta.url).href;
 
 const GLOB_CHARS = /[*?[\]{}]/;
 
@@ -268,6 +286,84 @@ function refuseTwoPassModes(options, inherited = []) {
   }
 }
 
+/**
+ * Refuses a run without a process per test file, which the leak guard needs:
+ * `--test-isolation=none`, given as an argument or in NODE_OPTIONS.
+ */
+export function refuseUnguarded(argv, nodeOptions = '') {
+  const all = [...parseArgs(splitNodeOptions(nodeOptions)).options, ...parseArgs(argv).options];
+  const iso = all.filter((o) => o.name === '--test-isolation' || o.name === '--experimental-test-isolation').at(-1);
+  if (iso && iso.value === 'none') {
+    throw new Error(`${iso.raw.join(' ')} runs every test file in one process, so the temporary-file leak guard `
+      + '(tests/_tmp-guard.mjs) cannot tell them apart: run node --test directly, with the preloads of package.json, to run them that way');
+  }
+}
+
+/** The passes with the leak guard loaded first in each test file's process. */
+export function withTmpGuard(passes, guardUrl = TMP_GUARD_URL) {
+  return passes.map((p) => ({ ...p, args: [p.args[0], `--import=${guardUrl}`, ...p.args.slice(1)] }));
+}
+
+/**
+ * The children's environment for a guarded run: `env` with the run directory
+ * named, and a guard owner inherited from an enclosing guarded test file
+ * removed, so this run guards its own files.
+ */
+export function guardEnv(runDir, env = childEnv()) {
+  const out = { ...env, [GUARD_DIR_VAR]: runDir };
+  delete out[GUARD_OWNER_VAR];
+  return out;
+}
+
+/**
+ * True when Node itself leaves named files unrun or runs them again
+ * (`--test-shard`, `--watch`, as an argument or in NODE_OPTIONS): a file with
+ * no record is then no failure of the guard.
+ */
+export function runsPartially(argv, nodeOptions = '') {
+  const all = [...parseArgs(splitNodeOptions(nodeOptions)).options, ...parseArgs(argv).options];
+  const watch = all.filter((o) => o.name === '--watch' || o.name === '--no-watch').at(-1);
+  return all.some((o) => o.name === '--test-shard') || Boolean(watch && watch.name === '--watch');
+}
+
+/**
+ * Prints the run's summary and removes its directory `runDir`, made in
+ * `base`, which holdBase returned before the directory was made (a read-only
+ * tree a killed file left included); never throws.
+ * Returns `{ summary, removed }`: the summary, null when the run directory
+ * could not be read, and whether the directory was removed.
+ */
+export function finishGuard(base, runDir, passes, leaks, log = (m) => process.stderr.write(`${m}\n`)) {
+  let summary = null;
+  try {
+    summary = summarize(collectRun(runDir, passes.flatMap((p) => p.files)), leaks);
+    for (const l of summary.lines) log(l);
+  } catch (err) {
+    log(`⚠ run-tests: could not read what the test files left in ${runDir}: ${err.message}`);
+  }
+  let removed = true;
+  try {
+    removeTree(base, runDir);
+  } catch (err) {
+    removed = false;
+    log(`⚠ run-tests: could not remove ${runDir}: ${err.message}`);
+  }
+  return { summary, removed };
+}
+
+/**
+ * The run's status with the guard's verdict: a run whose passes passed fails
+ * for each reason guardFailures gives (an undeclared file that left entries
+ * which its own process failed to report, or a count that is not whole).
+ * `guard` is finishGuard's answer, with `partial` from runsPartially.
+ */
+export function guardedStatus(status, guard, log = (m) => process.stderr.write(`${m}\n`)) {
+  if (status !== 0) return status;
+  const failures = guardFailures(guard);
+  for (const why of failures) log(`✗ run-tests: ${why}`);
+  return failures.length > 0 ? 1 : 0;
+}
+
 // Each call a new name in this run's private directory, which removeTmp
 // removes.
 let tmpDir = null;
@@ -347,10 +443,16 @@ export async function runPasses(passes, { env = childEnv(), log = (m) => process
 export async function main(argv, { repoRoot = process.cwd() } = {}) {
   try {
     let passes;
+    let leaks;
+    let partial;
     try {
       const discovered = listTestFiles(repoRoot);
       const large = readTiers(repoRoot);
-      passes = buildPasses({ argv, repoRoot, discovered, large, nodeOptions: process.env.NODE_OPTIONS ?? '' });
+      const nodeOptions = process.env.NODE_OPTIONS ?? '';
+      refuseUnguarded(argv, nodeOptions);
+      partial = runsPartially(argv, nodeOptions);
+      leaks = readLeaks(repoRoot, discovered);
+      passes = buildPasses({ argv, repoRoot, discovered, large, nodeOptions });
     } catch (err) {
       process.stderr.write(`✗ run-tests: ${err.message}\n`);
       return 1;
@@ -359,7 +461,26 @@ export async function main(argv, { repoRoot = process.cwd() } = {}) {
       process.stderr.write('run-tests: no test file to run\n');
       return 0;
     }
-    return await runPasses(passes);
+    // The run directory's base, held before the directory is made: what
+    // removes the directory is held to the place it was made in, as that
+    // place resolved then.
+    let tmpBase;
+    let runDir;
+    try {
+      tmpBase = holdBase(path.resolve(os.tmpdir()));
+      runDir = startRun({ repoRoot: fs.realpathSync(repoRoot), leaks, tmp: tmpBase.path });
+    } catch (err) {
+      process.stderr.write(`✗ run-tests: could not make the leak guard's run directory: ${err.message}\n`);
+      return 1;
+    }
+    let status = 1;
+    let guard = { summary: null, removed: false };
+    try {
+      status = await runPasses(withTmpGuard(passes), { env: guardEnv(runDir) });
+    } finally {
+      guard = finishGuard(tmpBase, runDir, passes, leaks);
+    }
+    return guardedStatus(status, { ...guard, partial });
   } finally {
     removeTmp();
   }

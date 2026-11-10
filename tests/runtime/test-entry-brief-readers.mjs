@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, rejects, strictEqual } from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, realpath, rename, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -23,6 +23,11 @@ import {
   skippedSourcesOf,
   splitFrontmatterLines,
 } from '../../plugins/runtime/scripts/lib/entry-brief-readers.mjs';
+import { fileTmpDirs } from '../_tmp.mjs';
+
+// Every temporary directory below is removed when the file's tests end, on
+// failure too (tests/_tmp.mjs).
+const newTmp = fileTmpDirs();
 
 // ADR-0045 §2.1/§3 — macro S7a-brief-readers. The bounded, versioned, tolerant
 // read layer for the entry arbiter: R0, reads-only, consumes nothing. Every
@@ -36,7 +41,7 @@ const T0 = Date.parse('2026-07-19T10:00:00Z');
 const IMPERATIVE = 'IMPERATIVE-MARKER run /engineer:refine now';
 
 async function makeRepo() {
-  return mkdtemp(join(tmpdir(), 'entry-brief-readers-'));
+  return newTmp('entry-brief-readers-');
 }
 
 function personaHome(root, persona, home = 'canonical') {
@@ -1053,7 +1058,7 @@ describe('entry-brief readers — frontmatter-only reads (C124)', () => {
 // C122 — a link is followed only into a home of its persona in the read set.
 
 async function outsideFile(body) {
-  const dir = await mkdtemp(join(tmpdir(), 'entry-brief-outside-'));
+  const dir = newTmp('entry-brief-outside-');
   const path = join(dir, 'outside.md');
   await writeFile(path, body);
   return path;
@@ -1089,7 +1094,7 @@ describe('entry-brief readers — workflow links and homes (C122)', () => {
     strictEqual((await readPersonaWorkflowSource({ repoRoot: intoFounder, persona: 'founder', branch: 'feat/x' })).status, 'ok');
 
     const linkedDir = await makeRepo();
-    const elsewhere = await mkdtemp(join(tmpdir(), 'entry-brief-elsewhere-'));
+    const elsewhere = newTmp('entry-brief-elsewhere-');
     await writeFile(join(elsewhere, 'a.md'), personaFm({ branch: 'feat/x' }));
     await mkdir(personaHome(linkedDir, 'engineer'), { recursive: true });
     await symlink(elsewhere, join(personaHome(linkedDir, 'engineer'), 'workflows'));
@@ -1099,7 +1104,7 @@ describe('entry-brief readers — workflow links and homes (C122)', () => {
 
   it('accepts a home that is itself a link (the lanes layout), its pointer spelled under the home', async () => {
     const root = await makeRepo();
-    const target = await mkdtemp(join(tmpdir(), 'entry-brief-home-'));
+    const target = newTmp('entry-brief-home-');
     await mkdir(join(target, 'workflows'));
     await writeFile(join(target, 'workflows', 'a.md'), personaFm({ branch: 'feat/x' }));
     await mkdir(join(root, '.agentic-plugins', 'state'), { recursive: true });
@@ -1311,7 +1316,7 @@ describe('entry-brief readers — workflow links and homes (C122)', () => {
       const ancestor = await setup();
       const c = await read(ancestor, async (t) => {
         const workflows = join(personaHome(t.root, 'engineer'), 'workflows');
-        const decoy = await mkdtemp(join(tmpdir(), 'entry-brief-decoy-'));
+        const decoy = newTmp('entry-brief-decoy-');
         await writeFile(join(decoy, 'inside.md'), personaFm({ id: OUTSIDE_ID, branch: 'feat/x' }));
         await rename(workflows, `${workflows}.moved`);
         await symlink(decoy, workflows);
@@ -1334,7 +1339,7 @@ describe('entry-brief readers — workflow links and homes (C122)', () => {
         if (real === early.insideReal && !early.swapped) {
           early.swapped = true;
           const workflows = join(personaHome(early.root, 'engineer'), 'workflows');
-          const decoy = await mkdtemp(join(tmpdir(), 'entry-brief-decoy-'));
+          const decoy = newTmp('entry-brief-decoy-');
           await writeFile(join(decoy, 'inside.md'), personaFm({ id: OUTSIDE_ID, branch: 'feat/x' }));
           await rename(workflows, `${workflows}.moved`);
           await symlink(decoy, workflows);
@@ -1375,7 +1380,7 @@ describe('entry-brief readers — workflow links and homes (C122)', () => {
     // same inode, outside.
     const moved = await setup();
     const a = await read(moved, atOpen(moved, async (t) => {
-      const away = join(await mkdtemp(join(tmpdir(), 'entry-brief-away-')), 'workflows');
+      const away = join(newTmp('entry-brief-away-'), 'workflows');
       await rename(t.workflows, away);
       await symlink(away, t.workflows);
     }));
@@ -1423,13 +1428,13 @@ describe('entry-brief readers — workflow links and homes (C122)', () => {
       return result;
     };
     const movedDuring = await duringWalk(async (t) => {
-      const away = join(await mkdtemp(join(tmpdir(), 'entry-brief-away-')), 'workflows');
+      const away = join(newTmp('entry-brief-away-'), 'workflows');
       await rename(t.workflows, away);
       await symlink(away, t.workflows);
     });
     deepStrictEqual([movedDuring.status, movedDuring.active?.workflow_id], ['ok', 'compose-20260719T090000Z-abc123']);
     const decoyDuring = await duringWalk(async (t) => {
-      const decoy = await mkdtemp(join(tmpdir(), 'entry-brief-decoy-'));
+      const decoy = newTmp('entry-brief-decoy-');
       await writeFile(join(decoy, 'inside.md'), personaFm({ id: OUTSIDE_ID, branch: 'feat/x' }));
       await rename(t.workflows, `${t.workflows}.moved`);
       await symlink(decoy, t.workflows);
@@ -1630,7 +1635,7 @@ describe('entry-brief readers — a workflow replaced by rename (C171)', () => {
       openReadOnly: async (path) => {
         if (path === t.bReal && !swapped) {
           swapped = true;
-          const decoy = await mkdtemp(join(tmpdir(), 'entry-brief-decoy-'));
+          const decoy = newTmp('entry-brief-decoy-');
           await writeFile(join(decoy, 'b.md'), personaFm({ id: OUTSIDE_ID, branch: 'feat/x' }));
           await rename(workflows, `${workflows}.moved`);
           await symlink(decoy, workflows);
