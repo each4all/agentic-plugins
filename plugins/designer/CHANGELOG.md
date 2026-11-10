@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.15.0...plugin-designer-v0.16.0) (2026-11-10)
+
+
+### Features
+
+* **designer:** refuse a verify request that names more mutation cases than one batch runs ([87fa5e2](https://github.com/each4all/agentic-plugins/commit/87fa5e2b9c99848b194322d50369f9d05c37f059))
+
 ## [0.15.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.14.6...plugin-designer-v0.15.0) (2026-11-10)
 
 
