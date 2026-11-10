@@ -63,7 +63,9 @@ import {
   autopilotDir, holderAlive, listLocks, listOpenRuns, listRuns, macroLockPath, mainWorktreeRoot, provablySame, readLockEntries, readOpenRun, readRun, relaunchCommand,
 } from './ledger.mjs';
 import { deletePark, readPark, readParks, retiring } from './parks.mjs';
+import { applyRetention, describePlan, planRetention } from './retention.mjs';
 import { resolveRoots } from './roots.mjs';
+import { describeLeftovers, listScratchIndex, sweepLeftovers } from './scratch.mjs';
 import { observe } from './observe.mjs';
 import { INTERRUPT_BOUND_MS } from './offloop.mjs';
 import {
@@ -86,13 +88,13 @@ function previewVerify(roots, repoRoot, view) {
 import { MAX_STEP_TIMEOUT_SEC, terminateGroup } from './worker.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const SUBCOMMANDS = ['preview', 'start', 'status', 'stop', 'release', 'hold', 'writer-clear', 'instruct', 'events'];
+const SUBCOMMANDS = ['preview', 'start', 'status', 'stop', 'release', 'hold', 'writer-clear', 'instruct', 'events', 'retention'];
 // The subcommands that name a subtask as their one positional argument.
 const SUBTASK_SUBCOMMANDS = ['release', 'hold', 'writer-clear', 'instruct'];
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,63}$/;
 
-export const USAGE = `Usage: autopilot [preview|start|status|stop|release|hold|writer-clear|instruct|events] [options]
+export const USAGE = `Usage: autopilot [preview|start|status|stop|release|hold|writer-clear|instruct|events|retention] [options]
        autopilot heavy [--purpose <text>] [--repo <dir>] [--declaration-ref <rev>] -- <command> [args...]
 
   preview                 observe, decide and print the posture; spawns nothing (default)
@@ -124,6 +126,11 @@ export const USAGE = `Usage: autopilot [preview|start|status|stop|release|hold|w
                           print the events of a macro's runs (or a verb chain's, in that checkout) after
                           the cursor, one JSON line each, and with --follow keep watching; <run-id>:0 is
                           from that run's first line, whenever it arrives (the Monitor recipe)
+  retention               show what the cap on this checkout's old runs would trim (their worker streams and
+                          verification logs; never run.json or the step log, never a run a workflow
+                          names) and the temporary
+                          directories earlier runs left; a run's start applies both
+  retention --execute     trim them, and remove the temporary directories nothing uses any more
   heavy -- <command>      run a command under the repository's heavy-work lock, one heavy job at a time
                           across worktrees (heavy --help for its options and exit codes)
 
@@ -287,7 +294,7 @@ export function parseCli(argv) {
       default: throw new UsageError(`unknown option ${JSON.stringify(word)}`);
     }
   }
-  if (o.execute && o.sub !== 'start') throw new UsageError('--execute applies only to start');
+  if (o.execute && o.sub !== 'start' && o.sub !== 'retention') throw new UsageError('--execute applies only to start and retention');
   if (o.run !== null && o.sub !== 'status') throw new UsageError('--run applies only to status');
   if (o.hold !== null && o.sub !== 'release') throw new UsageError('--hold applies only to release');
   if (o.hold !== null && !/^[0-9a-f]{16}$/.test(o.hold)) throw new UsageError(`--hold ${JSON.stringify(o.hold)} is not a hold id`);
@@ -1106,6 +1113,13 @@ export async function main(argv = process.argv.slice(2), { env = process.env, io
     case 'stop': return stopCmd(o, repoRoot, out, err, { env, hooks });
     case 'release': return releaseCmd(o, repoRoot, env, out, err, hooks);
     case 'events': return eventsCmd(o, repoRoot, out, hooks);
+    case 'retention': {
+      if (isAutopilotRun(env)) {
+        err(`✗ AGENTIC_AUTOPILOT=${env.AGENTIC_AUTOPILOT}: a step of an autopilot run never trims the runs' records`);
+        return 1;
+      }
+      return retentionCmd(o, repoRoot, { out, err, env });
+    }
     case 'hold':
     case 'instruct':
     case 'writer-clear': {
@@ -1119,6 +1133,41 @@ export async function main(argv = process.argv.slice(2), { env = process.env, io
     }
     default: return 1;
   }
+}
+
+/**
+ * ADR-0068, amendment of 2026-11-10 — the cap on a checkout's old runs
+ * (retention.mjs) and the temporary directories earlier runs left
+ * (scratch.mjs): what would go, or with --execute what went. Exit 1 when
+ * something could not be trimmed.
+ */
+export async function retentionCmd(o, repoRoot, { out, err, env = process.env, now = () => Date.now() }) {
+  const mainRoot = mainWorktreeRoot(repoRoot);
+  let failed = false;
+  if (o.execute) {
+    const left = await sweepLeftovers({ mainRoot, env });
+    for (const line of describeLeftovers(left)) out(line);
+    const live = left.filter((r) => r.outcome === 'live');
+    for (const r of live) out(`temporary files of run ${r.run_id}: ${r.detail}`);
+    // A root that is not proven its run's, or a removal that failed, is the
+    // owner's to look at; one a peer still uses is not a failure.
+    failed = left.some((r) => r.outcome === 'kept' || (r.failures ?? []).length > 0);
+    const r = await applyRetention({ repoRoot, mainRoot, now });
+    if (r.busy) { err('✗ another retention is running; nothing was trimmed'); return 1; }
+    for (const t of r.trimmed) out(`trimmed ${t.run_id}: ${(t.bytes / (1024 * 1024)).toFixed(1)} MB`);
+    for (const f of r.failures) err(`✗ ${f.run_id}: ${f.error}`);
+    if (!r.citations.ok) out(`⚠ every run past the floors is kept whole: ${r.citations.problem}`);
+    out(`${r.trimmed.length} run${r.trimmed.length === 1 ? '' : 's'} trimmed, ${r.kept} kept`);
+    failed = failed || r.failures.length > 0;
+  } else {
+    const open = new Set(listOpenRuns(mainRoot).map((x) => x.runId));
+    for (const e of listScratchIndex(mainRoot)) {
+      out(`temporary files of run ${e.runId}: ${e.record?.root ?? 'an index entry that does not read'}${open.has(e.runId) ? ' (its run holds an open-run record)' : ''}`);
+    }
+    for (const line of describePlan(planRetention({ repoRoot, mainRoot, now }))) out(line);
+    out('Nothing was changed. Run with --execute to trim.');
+  }
+  return failed ? 1 : 0;
 }
 
 /**

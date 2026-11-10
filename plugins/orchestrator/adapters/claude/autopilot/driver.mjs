@@ -25,6 +25,10 @@
 // A run whose driver died cannot do that, so before its first spawn each run
 // cleans up after the dead runs of its macro, from their open-run records
 // (dead-runs.mjs), and keeps its own record until it ends.
+// Each worker step and each verification check gets a TMPDIR of its own under
+// the run's temporary root, removed when it ends; what a run could not remove
+// (a peer still at work, a dead driver) the next run's start sweeps
+// (scratch.mjs; ADR-0068, amendment of 2026-11-10).
 //
 // With `--lanes N` (N of 2 or more, ADR-0067 Decision 6) the start is the
 // same, then scheduler.mjs runs the macro's subtasks in lanes, each in its
@@ -65,6 +69,8 @@ import {
 import { INSTRUCTIONS_CAPABILITY } from '../../../scripts/lib/instructions.mjs';
 import { stallStepLine } from './stall.mjs';
 import { createStallSampler } from './stall-sampler.mjs';
+import { allocateScratch, createRunScratch, describeLeftovers, scratchBase, sweepLeftovers } from './scratch.mjs';
+import { applyRetention, describeApplied } from './retention.mjs';
 import {
   abandonedText, endedUnlooked, foundWaiting, laneBlock, ownChildOnly, peerCancellationOutcome, peerRunnerCommand, peerSettlementOutcome, peersUnlisted,
   reconcileWaiting, reportClosePeersUnlisted, runLanes,
@@ -146,6 +152,10 @@ export async function preflight({ repoRoot, env = process.env, checkClaude = tru
   if (unignored.length > 0) {
     problems.push(`.agentic-plugins/{${unignored.join(',')}}/ is not gitignored: add .agentic-plugins/{runs,state,tmp,cache}/ to .gitignore (each worker writes there, and a dirty tree stops dispatch)`);
   }
+  // ADR-0068, amendment of 2026-11-10 — each step's TMPDIR lies outside
+  // every worktree; with no such directory the run does not start.
+  const tmp = scratchBase({ repoRoot, env });
+  if (tmp.problem) problems.push(tmp.problem);
   let claude = null;
   if (checkClaude) {
     const v = spawnSync(claudeBin(env), ['--version'], { encoding: 'utf8', timeout: 30_000, env });
@@ -596,7 +606,24 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
   // from the pinned persona's capability and the declaration at the commit the
   // run starts from (verify-run.mjs verifyOfferFor); run.json records it.
   const offer = (deps.verifyOffer ?? verifyOfferFor)({ roots, repoRoot, baseline: view.git.head });
+  // Read once: the macro's landing log is kept beside its lock (ADR-0067
+  // Decision 7), and so are the run's open-run record (Decision 6) and the
+  // index entry of its temporary root; a second read that fell back to
+  // repoRoot would part them.
+  const mainRoot = mainWorktreeRoot(repoRoot);
   const runId = newRunId(new Date(now()));
+  // ADR-0068, amendment of 2026-11-10 — the run's temporary root, made
+  // exclusively before anything else of the run: one that cannot be made
+  // starts no run (never a step with the driver's own TMPDIR).
+  let scratch;
+  try {
+    const made = await (deps.allocateScratch ?? allocateScratch)({ repoRoot, mainRoot, runId, env, now });
+    scratch = createRunScratch({ root: made.root, runId, commonDir: made.commonDir, mainRoot, env, now });
+  } catch (e) {
+    err('✗ The autopilot cannot start:');
+    err(`  - ${e?.message ?? e}`);
+    return 1;
+  }
   const runDir = createRunDir(repoRoot, runId);
   const startedAt = now();
   const run = {
@@ -632,13 +659,25 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     // The seqs whose charge cost_usd holds: a dead run's cleanup settles
     // every other started step, once (ADR-0067 Decision 6, Budgets).
     accounted_seqs: [],
+    // The run's temporary root (scratch.mjs): what its end could not remove
+    // yet, and why; `removed_at` once the root is gone.
+    scratch: { root: scratch.root, deferred: [], failures: 0, removed_at: null },
     halt: null,
   };
   writeRun(runDir, run);
-  // Read once: the macro's landing log is kept beside its lock (ADR-0067
-  // Decision 7), and so is the run's open-run record (Decision 6); a second
-  // read that fell back to repoRoot would part them.
-  const mainRoot = mainWorktreeRoot(repoRoot);
+  // The run's end for its temporary root: the removals in flight, then one
+  // pass over what is left (never after an error: the steps in flight are
+  // unknown then, and the next run's sweep takes it). Never the run's outcome.
+  const endScratch = async (sweep, say) => {
+    try {
+      run.scratch = await scratch.end({ sweep });
+      writeRun(runDir, run);
+      const kept = run.scratch.deferred;
+      if (kept.length > 0) say(`  temporary files: ${kept.length} director${kept.length === 1 ? 'y stays' : 'ies stay'} under ${scratch.root} (${kept[0].why}); the next run removes what it can`);
+    } catch (e) {
+      say(`⚠ the run's temporary directory ${scratch.root} could not be cleaned up (${e?.message ?? e}); the next run removes it`);
+    }
+  };
 
   const locks = [];
   // A step whose process group outlived SIGKILL leaves the run's entries in
@@ -877,6 +916,10 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         late(`⚠ the run's open-run record could not be removed (${e?.message ?? e}); stop, or the next run of the macro, cleans it up`);
       }
     }
+    // Every step and check has ended: what they left in the run's temporary
+    // root goes, but for what the run holds (a group that outlived SIGKILL,
+    // peers unaccounted for) or a peer still uses.
+    await endScratch(true, late);
     detach();
     return status === 'completed' ? 0 : 2;
   };
@@ -959,6 +1002,22 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         writeRun(runDir, run);
       }
     }
+    // ADR-0068, amendment of 2026-11-10 — what earlier runs left in their
+    // temporary roots: after the dead-run cleanup, which removes a dead run's
+    // open-run record once its peers are cancelled, every root whose driver
+    // is gone and whose run holds no such record is swept; never this run's
+    // own (it has no open-run record yet). Never a halt.
+    const left = await (deps.sweepLeftovers ?? sweepLeftovers)({ mainRoot, selfRunId: runId, env, ...(deps.probe ? { probe: deps.probe } : {}) });
+    for (const line of describeLeftovers(left)) out(`  ${line}`);
+    // And the cap on what the checkout's old runs keep (retention.mjs): their
+    // worker streams and verification logs, never those of a run a workflow
+    // names. A failure is a warning.
+    try {
+      const line = describeApplied(await (deps.applyRetention ?? applyRetention)({ repoRoot, mainRoot, now, by: runId }));
+      if (line) out(`  ${line}`);
+    } catch (e) {
+      out(`  ⚠ retention: ${e?.message ?? e}; the run goes on`);
+    }
     writeOpenRun(mainRoot, {
       runId, macroId, checkout: repoRoot, runDir, pid: process.pid, fingerprint: await processFingerprint(process.pid), startedAt: run.started_at,
     });
@@ -1032,7 +1091,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
           emit: publish, halt: publishHalt, stepEnd: publishStepEnd,
           stepFailed: publishStepFailed, lanesFile: join(runDir, 'lanes.jsonl'),
         },
-        stallOf,
+        stallOf, scratch,
         verify: { offer, startVerify: deps.startVerify ?? defaultStartVerify, ops: deps.verifyOps ?? null, bounds: deps.verifyBounds ?? null },
       });
     }
@@ -1146,6 +1205,8 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         base: selectionBase({ lane: repoRoot, integration: view.macro?.fm?.git_baseline?.branch ?? null, baseline: offer.baseline }),
         checkEnv: checkEnvOf(workerEnv(env, { runId, seq, roots, remotes, stateBase: stateRoot.root, autopilotToken: token })),
         personaEnv: personaEnvOf(env),
+        // Each check's own TMPDIR (verify-run.mjs runStep).
+        scratch,
       };
       const note = (state) => {
         run.verifying = state === null ? null : { seq, subtask_id: id, ...state };
@@ -1409,6 +1470,8 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       const stepTimeoutSec = reservation.timeoutSec;
       const sessionId = randomUUID();
       const fpBefore = fingerprint(view);
+      // The step's own TMPDIR (scratch.mjs), on record before it is made.
+      const tmpDir = scratch.stepDir(seq);
       // The commit gate's own record (verify-run.mjs noteGateStep), before the
       // step's: a commit the gate let through, with the lane's content it was
       // decided on, or a verb it resumed for the final verification. A record
@@ -1429,13 +1492,16 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         // receipts and the child (restart-safe, an owner's application included).
         ...(() => { const ia = stepApplication(mainRoot, view.macro.id, s, view.children?.[s.subtaskId]?.path); return ia ? { instruction_application: ia } : {}; })(),
         session_id: sessionId, model, effort, step_budget_usd: stepBudgetUsd, step_timeout_sec: stepTimeoutSec,
-        stall_detector: stallMode, started_at: new Date(now()).toISOString(), fingerprint_before: fpBefore,
+        stall_detector: stallMode, started_at: new Date(now()).toISOString(), fingerprint_before: fpBefore, tmp_dir: tmpDir,
       });
       active = { seq, subtaskId: s.subtaskId ?? null, aborted: null };
       out(`[${seq}] ${command}${s.subtaskId ? ` (subtask ${s.subtaskId})` : ''}${model || effort ? ` · ${model ?? 'default'}/${effort ?? 'default'}` : ''}`);
 
+      // A directory that cannot be made fails the run as a spawn that throws
+      // does: no step runs with the driver's own TMPDIR.
+      scratch.make(tmpDir);
       current = startWorker({
-        cwd: repoRoot, prompt: command, stepKind: s.kind, runId, seq, roots, sessionId,
+        cwd: repoRoot, prompt: command, stepKind: s.kind, runId, seq, roots, sessionId, tmpDir,
         stepBudgetUsd, stepTimeoutSec, model, effort, rawPath: workerStreamPath(runDir, seq), env, remotes,
         stateBase: stateRoot.root,
         autopilotToken: token,
@@ -1541,6 +1607,10 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         fingerprint_after: fingerprint(view), outcome: verdict ? verdict.reason : 'ok',
       });
       active = null;
+      // The step's peers are settled: its TMPDIR goes, in the background,
+      // unless its group outlived SIGKILL or its peers are unaccounted for
+      // (the run then holds it, as it keeps its locks or its open-run record).
+      scratch.release(tmpDir, w.groupTeardown === 'lingering' ? 'the step\'s process group outlived SIGKILL' : unaccounted ? 'the step\'s peers are unaccounted for' : null);
       publishStepEnd(seq, s, id, verdict, w.aborted);
       writeRun(runDir, run);
       const pct = w.peakPct == null ? '?' : `${(w.peakPct * 100).toFixed(1)}%`;
@@ -1606,6 +1676,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     try {
       release();
     } catch { /* a dead driver's entry, judged gone; the run's own error is the one thrown */ }
+    await endScratch(false, () => {});
     detach();
     throw e;
   }

@@ -5715,3 +5715,171 @@ the facts, every route of the policy, the journal lines),
 since the decision, a tree that cannot be digested), and
 `test-autopilot-verify-mutate-timeout.mjs` (the cap, AGENTS.md and the
 runbook sentence held equal).
+
+## Amendment 2026-11-10 — temporary files and run retention (C175)
+
+**The problem.** Measured on the owner's machine: about 7 GB and 650,000
+files a day in the temporary directory, and 1.9 GB of autopilot run
+directories. A worker step's runbook blocks make `mktemp -d` directories that
+nothing deletes (ADR-0059, by design: a block never deletes the file it was
+handed), its quick tests leave repositories, a verification check leaves the
+suite's and the mutation harness's copies, and every run keeps each step's raw
+stream and each check's log for good. An interim wrapper and a cron job on
+that machine removed them by age; this amendment replaces both.
+
+**What changes.** Two mechanisms of the driver, both in
+`plugins/orchestrator/adapters/claude/autopilot/`. No runbook changes, and
+ADR-0059 stands as written: a runbook's directories are bounded by where they
+are made, not by a block that deletes them.
+
+1. **A TMPDIR per step and per check (`scratch.mjs`).** A run owns one root,
+   `<base>/agentic-ap/<run>/` (`<run>` is the run id without its `autopilot-`
+   prefix), made exclusively (mode 0700) before
+   the run directory, with a marker (`.scratch.json`: schema, run id, the
+   repository's toplevel and common git directory). A worker step runs with
+   `TMPDIR=<root>/s<seq>` (its `started` line records `tmp_dir`), a
+   verification check with `TMPDIR=<root>/v<seq>-<index>`; each is made
+   just before its spawn. The names are short on purpose: a tool that makes a
+   unix socket under TMPDIR has about a hundred bytes for its whole path (104
+   on macOS, whose per-user TMPDIR takes half of them). `<base>` is the driver's own `TMPDIR`, then `/tmp`:
+   the first that resolves, lies outside every worktree of the repository and
+   holds no character XML escapes (a peer's prompt names paths under it). With
+   no such directory, or a root that cannot be made, the run does not start;
+   a step directory that cannot be made fails as a spawn that throws does, and
+   a check's is `not-started`. There is no degraded mode: no step or check
+   runs with the driver's own TMPDIR. Decision 5's check environment (item 8)
+   is otherwise unchanged; a reused pass starts no process and makes none.
+
+2. **Removal, and what defers it.** A step's directory is released once the
+   step's peers are settled (after the cancellations and settlements of
+   ADR-0063 D5, not at the worker's exit), a check's when the check ends,
+   whatever its outcome. Removal runs in the background, one directory at a
+   time, never inside a step's critical section, and its failure is counted
+   in `run.json` (`scratch.failures`), never a step's or a check's outcome.
+   A directory stays while something may still use it:
+   - a step directory under which any directory's name holds
+     `-peer-snapshot-` stays WHOLE (a surviving peer uses more of it than its
+     snapshot) unless each such snapshot's run is proven over by
+     `judgeRunEnded`, where no age counts, and `removeOwnedSnapshot` then
+     removed it with its registration. No owner record, a run alive or
+     unknown, and a removal refused or failed each keep it;
+   - a step whose process group outlived SIGKILL, a step whose peers the run
+     could not account for (`peers_unaccounted`), and a check whose group
+     outlived SIGKILL are held by the run, which keeps its locks or its
+     open-run record for the same reason.
+   At its end the run waits for the removals in flight, makes one pass over
+   its root and removes the root when nothing is left (the marker last, the
+   directory without recursion); `run.json` `scratch` records what stays
+   and why, and `removed_at`. A run that ended on an error sweeps nothing:
+   its steps in flight are unknown.
+
+3. **The guard.** Nothing is removed that is not proven the run's:
+   `scratchTarget` judges the paths alone (an absolute, normalized root named
+   for its run under `agentic-ap`; the root itself, or its direct child
+   named `s<n>`, `v<n>-<i>` or `.removing-<name>`), and
+   `proveScratch` then reads the file system (the root a real directory whose
+   real path is itself, so no link lies on the way; a marker naming this run
+   and this repository's common git directory; the child a real directory,
+   not a link). A directory is renamed `.removing-<name>` before its contents
+   go, so a removal a crash interrupted is finished by the next pass without
+   judging a half-removed snapshot again.
+
+4. **What a run left (the index, and the sweep).** Each root has an entry in
+   `<main>/.agentic-plugins/runs/autopilot/scratch/<run-id>.json` (root,
+   repository, the driver's pid and fingerprint), written before the root is
+   made and removed only when the root is gone, so a root is found from any
+   checkout and a crash strands none (an entry with no root is dropped; an
+   EMPTY root with no marker is removed with `rmdir`).
+   A run's start, after the dead-run cleanup of ADR-0067 Decision 6 and before
+   its own open-run record, sweeps every entry whose run holds no open-run
+   record and whose driver is gone (the record read again once the driver is
+   known gone, never from an earlier listing), by the same pass and the same
+   guard, which proves a directory before anything under it is scanned;
+   never its own entry, and never a root while its run's record stays (a
+   dead run's cleanup removes the record only once its worker groups are
+   empty and its peers cancelled). The sweep never halts a run. SIGTERM ends
+   a run through its normal end; a driver that dies leaves its root to this
+   sweep; the driver's exit handler removes nothing.
+
+5. **Run retention (`retention.mjs`), owned by the orchestrator.** Not a
+   `runtime:retention` family: which records a run's readers need, and which
+   logs a workflow cites, are this plugin's to know. Only a run's bulk is
+   trimmed, its `worker-<seq>.jsonl` streams and its `verify/` directory
+   (ADR-0063 D8 already gave the raw stream a bounded retention); `run.json`,
+   `steps.jsonl`, `halt.json`, `landing.jsonl` and `lanes.jsonl` always stay,
+   so `status`, a hold's handoff, the event reader's reconciliation, a halt's
+   resume and the pairing of a request with its step (`requestKnownIn`) read
+   every run as before. `run.json` `retention` records the trim. A run is
+   eligible when it has ended (completed, halted, error), is not among the
+   checkout's newest 20 ended runs and ended more than 14 days ago; never a
+   run with an open-run record, a cleanup lock or an index entry of item 4,
+   one `running` or `draining`, or one whose `run.json` does not read. A
+   cited run is not trimmed, whatever its age: its worker streams stay with
+   its `verify/`. A workflow cites a run by naming it:
+   every run id that appears in an active engineer workflow of any state home
+   of the repository's checkouts, in one archived within 14 days, or in a
+   verification journal of an active workflow or written within 14 days. The
+   read is by text and errs toward keeping, and it comes before any file of
+   the run is chosen; a source that does not read keeps every run past the
+   floors whole (fail closed). One retention runs at a
+   time (`retention.lock` beside the open-run records); each run is judged
+   again under it just before its files go, and each file is renamed
+   `.removing-<name>` first, which a later pass finishes. It runs at each
+   run's start, after the sweep of item 4, where a failure is a warning; and
+   as `agentic-autopilot retention` (what would go, changing nothing) and
+   `retention --execute`, which a worker of a run is refused.
+
+**What it replaces on the owner's machine.** Once the release carrying this
+is installed, the interim `agentic-run` wrapper and the `agentic-tmp-clean`
+cron job on that machine are the owner's to remove.
+
+**Limits.**
+
+- *A snapshot nothing proves over.* A directory named like a snapshot with no
+  owner record that reads (a creation cut short, a test's leftover in a
+  worker's step) keeps its step directory until the owner removes it; `run.json`
+  and `retention` name it. An age bound was not added: `judgeRunEnded` counts
+  no age so that nothing is removed under a peer that may still run.
+- *A check's own survivors.* A check's directory is kept only for a group the
+  driver knows outlived SIGKILL. A process the check started in a group of
+  its own that the check's teardown did not reach loses its directory.
+- *Socket paths.* A step's TMPDIR is longer than the driver's by the root's
+  and the step's names (about 40 bytes). Where a tool's socket path under it
+  runs past the system's limit, start the driver with a shorter `TMPDIR`.
+- *A shared `/tmp`.* On a machine whose users share `/tmp` and set no
+  `TMPDIR`, the second user's run finds `agentic-ap` owned by another
+  and does not start. Set `TMPDIR`.
+- *Other temporary files of the driver.* What the driver itself makes in its
+  own TMPDIR (a landing check's scratch, an instruction's text) is outside
+  this amendment; each removes its own.
+- *A run with no macro that ended on an error* keeps its open-run record
+  until `stop` cleans it up, and its root with it.
+- *A finalize replayed in a later step.* A step's text and dispatch
+  directories are gone with it. The runbooks already cover a directory that
+  is gone (a later session, a system that cleared its temporary files): the
+  finalize takes the run's ledger directory as `DISPATCH_DIR` and a fresh
+  text directory.
+- *An operation a step left open.* A step that is cut short between its
+  first and its last write leaves its persona operation open on the workflow,
+  and its operation directory is gone with the step, so that operation cannot
+  be closed by running its last write again. The way out is the one the
+  persona's refusal already names, the owner's `writer-clear`.
+- *Citations are read once per pass.* A workflow that first names an old,
+  uncited run while a retention pass is trimming it is not seen by that pass,
+  and a stream or a `verify/` a crash left renamed is finished by the next
+  pass whatever cites the run by then, a citation read that fails included. A run is named by the workflow whose step requested its
+  checks, so a first citation of a run past both floors is not expected.
+- *A state home behind a dangling link.* A `workflows`, `archive` or journal
+  directory that is a link whose target is gone reads as absent, as a home
+  that was never made does, and cites nothing. Only a hand-made link reaches
+  it.
+
+**Tests.** `tests/orchestrator/test-autopilot-scratch.mjs` (the base, the
+allocation, the guard's refusals, removal and its crash recovery, a live and
+an ended peer snapshot, the sweep of what earlier runs left, and the driver
+end to end), `test-autopilot-retention.mjs` (the floors, each run never
+trimmed, the citations and their fail-closed read, the lock, an interrupted
+pass, the command), `test-autopilot-verify-run.mjs` (a check's directory on
+every outcome), and `scripts/mutation-specs/autopilot-scratch.mjs` (the
+marker, the layout, the live snapshot, the caller's own root, a cited run
+kept whole and the fail-closed citation read).

@@ -1,6 +1,6 @@
 ---
 description: Run an approved macro unattended — one fresh Claude worker per step, halting at owner judgment (ADR-0063, Claude only; dry-run by default)
-argument-hint: "[preview|start [--execute]|status|stop|release <subtask> [--hold <id>|--discard-unreadable]|hold <subtask>|writer-clear <subtask> --operation <id>|instruct <subtask> (--note-file <path> [--next \"<step>\"] [--revises <id>:<revision>]|--withdraw <id>)|events (--macro <id>|--checkout <dir>) --after <run-id>:<seq> [--follow]] [--macro <id>] [--models owner-default|mixed|sonnet] [--model <m>] [--effort <e>] [--max-steps <n>] [--max-cost <usd>] [--step-budget <usd>] [--step-timeout <s>] [--stall-detector log|on] [--lanes <n>] [--next \"<step>\"] [--lane <subtask> --next \"<step>\"] [--notify-local] [--json]"
+argument-hint: "[preview|start [--execute]|status|stop|release <subtask> [--hold <id>|--discard-unreadable]|hold <subtask>|writer-clear <subtask> --operation <id>|instruct <subtask> (--note-file <path> [--next \"<step>\"] [--revises <id>:<revision>]|--withdraw <id>)|events (--macro <id>|--checkout <dir>) --after <run-id>:<seq> [--follow]|retention [--execute]] [--macro <id>] [--models owner-default|mixed|sonnet] [--model <m>] [--effort <e>] [--max-steps <n>] [--max-cost <usd>] [--step-budget <usd>] [--step-timeout <s>] [--stall-detector log|on] [--lanes <n>] [--next \"<step>\"] [--lane <subtask> --next \"<step>\"] [--notify-local] [--json]"
 ---
 
 # Orchestrator · Autopilot
@@ -196,6 +196,12 @@ on Codex the steps stay manual.
 - `events --macro <id> --after <run-id>:<seq> [--follow]` prints the run's
   events after that one, one JSON line each, and with `--follow` keeps
   watching, across relaunches: the Monitor recipe below (ADR-0068 Decision 4).
+- `retention` shows what the cap on this checkout's old runs would trim (their
+  worker streams and verification logs; never `run.json` or the step log,
+  and nothing of a run a workflow names) and the temporary directories earlier runs
+  left; `retention --execute` trims and removes what nothing uses any more.
+  A run's start does both, so the command is for looking, or for a checkout
+  no run starts in (ADR-0068, amendment of 2026-11-10).
 - Holds, releases, instructions and writer-clear refuse inside an autopilot worker. Rolling
   the orchestrator back below the release that added holds while a hold
   exists is unsupported: a hold on a subtask with no lane has no fence an
@@ -234,7 +240,7 @@ as text. It removes the args file and its directory once it has read them.
 
 ---
 
-## preview, status, stop, release, hold, writer-clear, instruct, events, and start without --execute
+## preview, status, stop, release, hold, writer-clear, instruct, events, retention, and start without --execute
 
 Run this block when the arguments do not contain `start` together with
 `--execute`:
@@ -247,7 +253,7 @@ node "$CLAUDE_PLUGIN_ROOT/adapters/claude/autopilot/cli.mjs" --args-file "$ARGS_
 ```
 
 Show the output as it is. Exit 0: the preview would proceed (or status, stop,
-release, hold, writer-clear, instruct or events succeeded). Exit 2: the preview would halt — the reason and its pointer are in
+release, hold, writer-clear, instruct, events or retention succeeded). Exit 2: the preview would halt — the reason and its pointer are in
 the output. Exit 1: an error or a start condition that fails; the output names
 it.
 

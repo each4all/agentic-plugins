@@ -118,6 +118,39 @@ the steps stay manual**, and the host-neutral state it reads (`next_step_*`,
   until it does, `stop` and the next run print the command that cancels such a peer. A
   record whose ledger is gone, whose peer could not be cancelled, or one of whose peer-run
   homes cannot be read (anything but its absence), is kept and reported for the owner.
+- **Temporary files.** Each worker step and each verification check runs with a `TMPDIR`
+  of its own, `<base>/agentic-ap/<run>/s<seq>/` or `v<seq>-<index>/` (`<run>` is the run id
+  without its `autopilot-`; the names are short because a unix socket's whole path has
+  about a hundred bytes),
+  which the driver removes when it ends, so a runbook's `mktemp -d` directories, a test's
+  repositories and a mutation copy end with the step that made them
+  (`adapters/claude/autopilot/scratch.mjs`;
+  [ADR-0068](../../docs/adr/0068-autopilot-lanes-that-keep-going.md), amendment of
+  2026-11-10). `<base>` is the driver's `TMPDIR`, then `/tmp`: the first outside every
+  worktree of the repository. With none, or when the run's directory cannot be made, the
+  run does not start (set `TMPDIR`); a step never falls back to a directory inside a
+  worktree. A directory stays while something may still use it: a step directory that
+  holds a peer's snapshot whose run is not proven over stays whole, and so does one whose
+  process group outlived SIGKILL or whose peers the run could not account for; `run.json`
+  lists them (`scratch.deferred`). Nothing is removed that is not proven the run's (its
+  layout, its marker, no link on the way). What a run left, a dead driver's included, the
+  next run's start removes, after the dead-run cleanup, from the index
+  `<main>/.agentic-plugins/runs/autopilot/scratch/<run-id>.json`; it never touches its own
+  root, a live driver's, or one whose run still holds an open-run record. A limit: a
+  snapshot directory with no owner record that reads (a creation cut short, a test's
+  leftover) keeps its step directory until someone removes it by hand.
+- **Retention.** Each run's start also trims what the checkout's old runs keep
+  (`adapters/claude/autopilot/retention.mjs`): only a run's bulk, its `worker-<seq>.jsonl`
+  streams and its `verify/` logs, never `run.json`, `steps.jsonl`, `halt.json`,
+  `landing.jsonl` or `lanes.jsonl`, so `status`, a hold's handoff, the event reader and a
+  halt's resume read every run as before. A run is trimmed only when it has ended, is not
+  among the checkout's newest 20 ended runs and ended more than 14 days ago; never one
+  with an open-run record, a cleanup lock or a temporary root still on the index. A cited
+  run is not trimmed, whatever its age: while an engineer workflow names the run (an active
+  one, one archived within 14 days, or a verification journal), its streams and its logs
+  both stay. A workflow home that does not read keeps every run past the floors whole. `retention`
+  shows what would go, and the temporary roots on the index; `retention --execute` trims
+  and sweeps. A failure at a run's start is a warning, never a halt.
 - **Lanes (`--lanes N`).** `adapters/claude/autopilot/lanes.mjs` holds ADR-0067
   Decision 5's lane layer: a lane is a locked git worktree at
   `<parent>/<repo>-lanes/<macro-id>/<subtask-id>`, named from the main worktree, created
@@ -452,7 +485,8 @@ next step `verify` and a request; the driver runs the checks itself
   group of its own, put on the run's locks as a worker group of its lane before its
   command starts; through the wrapper, whose command group the driver puts on the locks
   too before its go (a hold or a drain while the check waits for the lock stops it with
-  nothing run), or directly for a command that takes the lock itself. Each check its
+  nothing run), or directly for a command that takes the lock itself; with a `TMPDIR` of
+  its own outside the lane, removed when the check ends (Temporary files, above). Each check its
   declared timeout (from its go), the wait for the lock 8 hours, a batch 6 hours of
   running checks; then SIGTERM, and SIGKILL to both groups 5 s later. A group that
   outlives SIGKILL halts the run, which keeps its locks.

@@ -46,7 +46,7 @@
 import { after, describe, it } from 'node:test';
 import { deepStrictEqual, match, ok, strictEqual } from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -54,6 +54,7 @@ import {
   DECLARATION, FAST, GIT_ISOLATION, RUN, VD, VJ, VR, cleanup, digestOf, git, jobFor, makeRepo, ran, readWorkflow, request, resumeVerb, runStep, workflowWithRequest,
 } from './_verify-fixtures.mjs';
 import { acquire } from '../../plugins/orchestrator/scripts/lib/heavy-lock.mjs';
+import { allocateScratch, createRunScratch } from '../../plugins/orchestrator/adapters/claude/autopilot/scratch.mjs';
 
 const dirs = [];
 after(() => cleanup(dirs));
@@ -254,6 +255,69 @@ describe('verify-run: order, stops and the step that follows', () => {
     strictEqual(r.wrote, false);
     strictEqual(journalOf(t.dir, t.wf).length, 0);
     strictEqual((await readWorkflow(t.wf)).verify_results, undefined);
+  });
+});
+
+// ADR-0068, amendment of 2026-11-10 — each check that runs gets a TMPDIR of
+// its own under the run's temporary root, removed when it ends.
+describe('verify-run: each check\'s own TMPDIR', () => {
+  async function withScratch(t) {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), 'verify-scratch-')));
+    dirs.push(base);
+    const made = await allocateScratch({ repoRoot: t.dir, mainRoot: t.dir, runId: RUN, env: { ...process.env, TMPDIR: base } });
+    return { base, root: made.root, scratch: createRunScratch({ root: made.root, runId: RUN, commonDir: made.commonDir, mainRoot: t.dir }) };
+  }
+
+  it('a check sees its own directory, outside the lane, and what it left there goes when it ends, whether it passed, failed or timed out', BOUNDED, async () => {
+    const t = await setUp([{ kind: 'tmp' }, { kind: 'fail' }]);
+    const s = await withScratch(t);
+    const envFile = join(t.logs, 'env.json');
+    const r = await runStep({ ...t.job({ envFile }), scratch: s.scratch });
+    strictEqual(r.batch.end, 'failed');
+    const seen = JSON.parse(readFileSync(envFile, 'utf8')).tmp;
+    strictEqual(seen, join(s.root, 'v4-0'), 'the check\'s TMPDIR is its own directory of the run\'s root');
+    ok(!seen.startsWith(`${realpathSync(t.dir)}/`), 'outside the lane');
+    await s.scratch.idle();
+    deepStrictEqual(readdirSync(s.root), ['.scratch.json'], 'both checks\' directories are gone, the passed one\'s and the failed one\'s');
+    strictEqual(git(t.dir, 'status', '--porcelain'), '', 'the lane is as it was');
+
+    const h = await setUp([{ kind: 'stubborn' }]);
+    const hs = await withScratch(h);
+    const hr = await runStep({ ...h.job(), scratch: hs.scratch }, { bounds: { ...FAST, batchMs: 8000 } });
+    deepStrictEqual([hr.batch.end, hr.batch.cause], ['no-evidence', 'timeout']);
+    await hs.scratch.idle();
+    deepStrictEqual(readdirSync(hs.root), ['.scratch.json'], 'a check that timed out leaves no directory');
+  });
+
+  it('a directory that cannot be made starts no check: not-started, with the reason, and nothing ran', BOUNDED, async () => {
+    const t = await setUp([{ kind: 'pass' }]);
+    const released = [];
+    const scratch = { checkDir: (seq, i) => `/nowhere/v${seq}-${i}`, make: () => { throw new Error('EACCES: permission denied'); }, release: (d, why) => { released.push([d, why]); } };
+    const r = await runStep({ ...t.job(), scratch });
+    deepStrictEqual(ran(t.log), [], 'the check never ran');
+    deepStrictEqual(latest(await readWorkflow(t.wf)).results.map((x) => x.outcome), ['not-started']);
+    strictEqual(r.batch.end, 'no-evidence');
+    deepStrictEqual(released, [], 'a directory that was never made is not released');
+  });
+
+  it('a removal that throws never changes the check\'s result; a job with no scratch root runs with the worker environment\'s TMPDIR', BOUNDED, async () => {
+    const t = await setUp([{ kind: 'tmp' }]);
+    const base = realpathSync(mkdtempSync(join(tmpdir(), 'verify-scratch-')));
+    dirs.push(base);
+    const dir = join(base, 'v4-0');
+    const scratch = { checkDir: () => dir, make: (d) => mkdirSync(d), release: () => { throw new Error('the removal failed'); } };
+    const envFile = join(t.logs, 'env.json');
+    const r = await runStep({ ...t.job({ envFile }), scratch });
+    strictEqual(r.batch.end, 'passed');
+    ok(existsSync(join(dir, 'left-by-the-check.txt')), 'control: the check wrote into the directory');
+
+    const n = await setUp([{ kind: 'tmp' }]);
+    const own = realpathSync(mkdtempSync(join(tmpdir(), 'verify-scratch-')));
+    dirs.push(own);
+    const nEnv = join(n.logs, 'env.json');
+    const rn = await runStep(n.job({ envFile: nEnv, extraEnv: { TMPDIR: own } }));
+    strictEqual(rn.batch.end, 'passed');
+    strictEqual(JSON.parse(readFileSync(nEnv, 'utf8')).tmp, own);
   });
 });
 
