@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual, throws, rejects } from 'node:assert/strict';
-import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -12,13 +12,18 @@ import {
   parseArgs,
   runContext,
 } from '../../plugins/runtime/scripts/context.mjs';
+import { fileTmpDirs } from '../_tmp.mjs';
+
+// Every temporary directory below is removed when the file's tests end, on
+// failure too (tests/_tmp.mjs).
+const newTmp = fileTmpDirs();
 
 const RUN_ID = 'context-20260513T000000Z-abcdef';
 const LATER_RUN_ID = 'context-20260513T020000Z-fedcba';
 
 describe('runtime context', () => {
   it('captures a bounded context artifact without mutating host session state', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-context-capture-'));
+    const root = newTmp('runtime-context-capture-');
     const report = await runContext({
       command: 'capture',
       repoRoot: root,
@@ -58,7 +63,7 @@ describe('runtime context', () => {
   });
 
   it('generates a next-session prompt and status report from the stored artifact', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-context-status-'));
+    const root = newTmp('runtime-context-status-');
     await runContext({
       command: 'capture',
       repoRoot: root,
@@ -87,7 +92,7 @@ describe('runtime context', () => {
   });
 
   it('finds the latest context artifact and reports stale handoff status', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-context-latest-'));
+    const root = newTmp('runtime-context-latest-');
     await runContext({
       command: 'capture',
       repoRoot: root,
@@ -127,7 +132,7 @@ describe('runtime context', () => {
   });
 
   it('reports source-stale handoffs when the current git commit moved after capture', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-context-source-stale-'));
+    const root = newTmp('runtime-context-source-stale-');
     await runContext({
       command: 'capture',
       repoRoot: root,
@@ -173,7 +178,7 @@ describe('runtime context', () => {
   });
 
   it('does not treat dirty-captured handoffs as source-verified when the commit still matches', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-context-dirty-artifact-'));
+    const root = newTmp('runtime-context-dirty-artifact-');
     await runContext({
       command: 'capture',
       repoRoot: root,
@@ -216,7 +221,7 @@ describe('runtime context', () => {
   });
 
   it('checks explicit context budget without creating artifacts', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-context-check-'));
+    const root = newTmp('runtime-context-check-');
     const report = await runContext({
       command: 'check',
       repoRoot: root,
@@ -237,7 +242,7 @@ describe('runtime context', () => {
   });
 
   it('classifies green and red context checks from explicit inputs', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-context-check-risk-'));
+    const root = newTmp('runtime-context-check-risk-');
     const green = await runContext({
       command: 'check',
       repoRoot: root,
@@ -258,7 +263,7 @@ describe('runtime context', () => {
   });
 
   it('accepts caller-supplied check risk without pretending to measure host context', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-context-check-manual-'));
+    const root = newTmp('runtime-context-check-manual-');
     const report = await runContext({
       command: 'check',
       repoRoot: root,
@@ -272,7 +277,7 @@ describe('runtime context', () => {
   });
 
   it('normalizes absolute artifact pointers only when they stay inside the repo', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-context-artifacts-'));
+    const root = newTmp('runtime-context-artifacts-');
     const report = await runContext({
       command: 'capture',
       repoRoot: root,
@@ -337,7 +342,7 @@ describe('runtime context', () => {
   });
 
   it('rejects ambiguous or incomplete context budget checks', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-context-check-invalid-'));
+    const root = newTmp('runtime-context-check-invalid-');
     await rejectsAsync(
       runContext({
         command: 'check',
@@ -369,7 +374,7 @@ describe('runtime context', () => {
   });
 
   it('rejects missing or ambiguous context status lookup inputs', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-context-status-invalid-'));
+    const root = newTmp('runtime-context-status-invalid-');
     await rejectsAsync(
       runContext({
         command: 'status',
@@ -584,7 +589,7 @@ describe('runtime session handoff (ADR-0031)', () => {
   });
 
   it('composes the session decision into a check report and degrades on a bad projection', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-check-projection-'));
+    const root = newTmp('runtime-check-projection-');
     const projPath = join(root, 'proj.json');
     await writeFile(projPath, JSON.stringify(fullProjection({ archive_gate: 'ready_to_archive' })));
     const report = await runContext({ command: 'check', repoRoot: root, risk: 'yellow', workflowProjectionFile: projPath });
@@ -617,7 +622,7 @@ describe('runtime session handoff (ADR-0031)', () => {
   });
 
   it('leaves a green check with no projection unchanged but fires the preflight at yellow/red risk', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-check-green-'));
+    const root = newTmp('runtime-check-green-');
     const green = await runContext({ command: 'check', repoRoot: root, risk: 'green' });
     strictEqual('session_handoff' in green, false);
     strictEqual('projection_error' in green, false);
@@ -627,7 +632,7 @@ describe('runtime session handoff (ADR-0031)', () => {
   });
 
   it('folds the session decision into a status handoff only when a projection is supplied', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-status-projection-'));
+    const root = newTmp('runtime-status-projection-');
     await runContext({
       command: 'capture',
       repoRoot: root,
@@ -662,7 +667,7 @@ describe('runtime session handoff (ADR-0031)', () => {
   });
 
   it('surfaces an honest unsupported workflow_kind with preserved routing through the status handoff (runtime-unsupported-kind)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-status-unsupported-'));
+    const root = newTmp('runtime-status-unsupported-');
     await runContext({
       command: 'capture',
       repoRoot: root,

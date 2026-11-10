@@ -14,7 +14,7 @@
 
 import { describe, it } from 'node:test';
 import { ok, strictEqual, deepStrictEqual } from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,6 +26,11 @@ import {
   readRegisteredMarketplaceCatalog,
   CANONICAL_MARKETPLACE,
 } from '../../plugins/runtime/scripts/lib/machine-probe.mjs';
+import { fileTmpDirs } from '../_tmp.mjs';
+
+// Every temporary directory below is removed when the file's tests end, on
+// failure too (tests/_tmp.mjs).
+const tmp = fileTmpDirs();
 
 const MODULE_PATH = resolve(dirname(fileURLToPath(import.meta.url)), '../../plugins/runtime/scripts/lib/machine-probe.mjs');
 
@@ -109,7 +114,7 @@ describe('machine host probe (machine-only seam)', () => {
     });
 
     it('produces machine facts from home + runner alone, with no repo input (seam)', async () => {
-      const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+      const home = tmp('mp-home-');
       const seen = [];
       const runner = async (command, args, options = {}) => { seen.push({ command, cwd: options.cwd }); return fakeRunner(baseProbeMap())(command, args); };
       const result = await probeMachineHostState({ homeDir: home, env: {}, runner });
@@ -121,8 +126,8 @@ describe('machine host probe (machine-only seam)', () => {
 
   describe('codex-home-honored', () => {
     it('reads $CODEX_HOME config.toml and caches, not ~/.codex, covering the former hardcodes', async () => {
-      const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
-      const codexHome = await mkdtemp(join(tmpdir(), 'mp-codexhome-'));
+      const home = tmp('mp-home-');
+      const codexHome = tmp('mp-codexhome-');
 
       // Poison ~/.codex so any residual `join(homeDir, '.codex', …)` hardcode would surface it.
       await mkdir(join(home, '.codex'), { recursive: true });
@@ -154,8 +159,8 @@ describe('machine host probe (machine-only seam)', () => {
     });
 
     it('resolves $CODEX_HOME from env when codexHome is not passed', async () => {
-      const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
-      const codexHome = await mkdtemp(join(tmpdir(), 'mp-codexhome-'));
+      const home = tmp('mp-home-');
+      const codexHome = tmp('mp-codexhome-');
       await writeFile(join(codexHome, 'config.toml'), '[hooks.state]\n\n[hooks.state."engineer@agentic-plugins:hooks/hooks.json:stop:0:0"]\ntrusted_hash = "sha256:real"\n');
       const result = await probeMachineHostState({ homeDir: home, env: { CODEX_HOME: codexHome }, runner: fakeRunner(baseProbeMap()) });
       strictEqual(result.codexHookConfig.config_path, join(codexHome, 'config.toml'));
@@ -169,7 +174,7 @@ describe('machine host probe (machine-only seam)', () => {
 
   describe('neutral-cwd', () => {
     it('runs host CLIs in a neutral cwd (never the caller repo / process.cwd)', async () => {
-      const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+      const home = tmp('mp-home-');
       const seen = [];
       const runner = async (command, args, options = {}) => { seen.push({ command, cwd: options.cwd }); return fakeRunner(baseProbeMap())(command, args); };
       await probeMachineHostState({ homeDir: home, env: {}, runner });
@@ -182,8 +187,8 @@ describe('machine host probe (machine-only seam)', () => {
     });
 
     it('threads an explicit neutral cwd through to the runner', async () => {
-      const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
-      const neutral = await mkdtemp(join(tmpdir(), 'mp-neutral-'));
+      const home = tmp('mp-home-');
+      const neutral = tmp('mp-neutral-');
       const seen = [];
       const runner = async (command, args, options = {}) => { seen.push({ command, cwd: options.cwd }); return fakeRunner(baseProbeMap())(command, args); };
       await probeMachineHostState({ homeDir: home, cwd: neutral, env: {}, runner });
@@ -193,7 +198,7 @@ describe('machine host probe (machine-only seam)', () => {
 
   describe('normalized-shape', () => {
     it('normalizes Claude text rows and Codex json rows to the same {id,version,scope,enabled,ambiguous,observations} shape', async () => {
-      const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+      const home = tmp('mp-home-');
       const result = await probeMachineHostState({ homeDir: home, env: {}, runner: fakeRunner(baseProbeMap()) });
       ok(result.installed.claude.length > 0 && result.installed.codex.length > 0, 'both hosts report an installed row');
       // `ambiguous`/`observations` joined the contract shape deliberately: the raw
@@ -218,7 +223,7 @@ describe('machine host probe (machine-only seam)', () => {
       // The reason the two fields are in the shape at all, driven rather than
       // asserted structurally. Without this the addition above would be a shape
       // change no test connects to a behaviour.
-      const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+      const home = tmp('mp-home-');
       const result = await probeMachineHostState({
         homeDir: home,
         env: {},
@@ -242,7 +247,7 @@ describe('machine host probe (machine-only seam)', () => {
 
   describe('no-raw-leak', () => {
     it('keeps raw CLI stdout internal — no multi-line blobs in the returned facts', async () => {
-      const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+      const home = tmp('mp-home-');
       const SENTINEL = 'RAW-MULTILINE-SENTINEL-DO-NOT-LEAK';
       const claudeListRaw = `Installed plugins:\n\n  > engineer@agentic-plugins\n    Version: 1.2.3\n    Scope: user\n    Status: enabled\n    ${SENTINEL}\n`;
       const codexListRaw = `${CODEX_LIST_JSON}\nwarning: ${SENTINEL} on stderr echoed to stdout\n`;
@@ -275,7 +280,7 @@ describe('machine host probe (machine-only seam)', () => {
     const claudeJson = (entries) => okResult(JSON.stringify(entries));
 
     it('canonical github source → registered + satisfied (source identity, not name)', async () => {
-      const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+      const home = tmp('mp-home-');
       const result = await probeMachineHostState({
         homeDir: home,
         env: {},
@@ -294,7 +299,7 @@ describe('machine host probe (machine-only seam)', () => {
     });
 
     it('a github FORK named agentic-plugins → unknown + not satisfied (name proves nothing)', async () => {
-      const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+      const home = tmp('mp-home-');
       const result = await probeMachineHostState({
         homeDir: home,
         env: {},
@@ -322,7 +327,7 @@ describe('machine host probe (machine-only seam)', () => {
     });
 
     it('a directory source named agentic-plugins → registered but flagged (contributor checkout)', async () => {
-      const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+      const home = tmp('mp-home-');
       const result = await probeMachineHostState({
         homeDir: home,
         env: {},
@@ -340,7 +345,7 @@ describe('machine host probe (machine-only seam)', () => {
     });
 
     it('subcommand unavailable/failed → unknown (absence of evidence is not registration)', async () => {
-      const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+      const home = tmp('mp-home-');
       const result = await probeMachineHostState({
         homeDir: home,
         env: {},
@@ -352,7 +357,7 @@ describe('machine host probe (machine-only seam)', () => {
     });
 
     it('empty registered list → missing (definite absence), not unknown', async () => {
-      const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+      const home = tmp('mp-home-');
       const result = await probeMachineHostState({
         homeDir: home,
         env: {},
@@ -370,8 +375,8 @@ describe('machine host probe (machine-only seam)', () => {
 
     describe('catalog read (§1.4.1 currentness authority)', () => {
       it('reads per-plugin versions from the catalog AT installLocation', async () => {
-        const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
-        const loc = await mkdtemp(join(tmpdir(), 'mp-mploc-'));
+        const home = tmp('mp-home-');
+        const loc = tmp('mp-mploc-');
         await mkdir(join(loc, '.claude-plugin'), { recursive: true });
         await writeFile(join(loc, '.claude-plugin', 'marketplace.json'), JSON.stringify({
           plugins: [{ name: 'runtime', version: '0.80.1' }, { name: 'engineer', version: '0.21.0' }],
@@ -393,7 +398,7 @@ describe('machine host probe (machine-only seam)', () => {
       });
 
       it('canonical registration + UNREADABLE catalog → still registered, currentness unknown, NO repo fallback', async () => {
-        const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+        const home = tmp('mp-home-');
         const result = await probeMachineHostState({
           homeDir: home,
           env: {},
@@ -410,13 +415,13 @@ describe('machine host probe (machine-only seam)', () => {
       });
 
       it('is installLocation-scoped, never cwd/repo (poisoned-catalog)', async () => {
-        const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+        const home = tmp('mp-home-');
         // A poison catalog at the caller cwd claims 9.9.9; the probe must ignore it.
-        const poisonCwd = await mkdtemp(join(tmpdir(), 'mp-poison-cwd-'));
+        const poisonCwd = tmp('mp-poison-cwd-');
         await mkdir(join(poisonCwd, '.claude-plugin'), { recursive: true });
         await writeFile(join(poisonCwd, '.claude-plugin', 'marketplace.json'), JSON.stringify({ plugins: [{ name: 'runtime', version: '9.9.9' }] }));
         // The REAL registered installLocation claims 1.0.0.
-        const loc = await mkdtemp(join(tmpdir(), 'mp-mploc-'));
+        const loc = tmp('mp-mploc-');
         await mkdir(join(loc, '.claude-plugin'), { recursive: true });
         await writeFile(join(loc, '.claude-plugin', 'marketplace.json'), JSON.stringify({ plugins: [{ name: 'runtime', version: '1.0.0' }] }));
         const result = await probeMachineHostState({
@@ -451,7 +456,7 @@ describe('machine host probe (machine-only seam)', () => {
 
     describe('codex --json and text fallback', () => {
       it('codex --json with a source-backed canonical marketplace → registered', async () => {
-        const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+        const home = tmp('mp-home-');
         const result = await probeMachineHostState({
           homeDir: home,
           env: {},
@@ -491,7 +496,7 @@ describe('machine host probe (machine-only seam)', () => {
       });
 
       it('text fallback (no --json) WITH an explicit canonical slug → registered', async () => {
-        const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+        const home = tmp('mp-home-');
         const result = await probeMachineHostState({
           homeDir: home,
           env: {},
@@ -507,7 +512,7 @@ describe('machine host probe (machine-only seam)', () => {
       });
 
       it('text fallback with only a NAME / local root → unknown (name is not identity)', async () => {
-        const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+        const home = tmp('mp-home-');
         const result = await probeMachineHostState({
           homeDir: home,
           env: {},
@@ -550,7 +555,7 @@ describe('machine host probe (machine-only seam)', () => {
     });
 
     async function probe(overrides) {
-      const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+      const home = tmp('mp-home-');
       return probeMachineHostState({ homeDir: home, env: {}, runner: fakeRunner(baseProbeMap(overrides)) });
     }
 
@@ -654,7 +659,7 @@ describe('machine host probe (machine-only seam)', () => {
 // scanner already refused exactly this and says why, so the two now agree.
 describe('cache scan binds a manifest to the plugin it was asked about', () => {
   async function homeWithClaudeCache(plugin, manifest) {
-    const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+    const home = tmp('mp-home-');
     const dir = join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', plugin, '0.90.3', '.claude-plugin');
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, 'plugin.json'), JSON.stringify(manifest));

@@ -15,6 +15,10 @@ Accepted
 > Amended 2026-11-09: `npm test` runs its files in two passes by test size
 > tier, the parallel pool and then the declared large tier at low
 > concurrency (`scripts/run-tests.mjs`).
+> Amended 2026-11-10 (second amendment of that date): `npm test` loads a
+> temporary-file leak guard in every test file's process and fails an
+> undeclared file that leaves anything in its own `TMPDIR`
+> (`tests/_tmp-guard.mjs`).
 
 ## Context
 
@@ -581,3 +585,54 @@ every temporary repository under `/tmp` look like part of a checkout.
 
 **Rollback.** Revert the commit: the matrix, `MAX_SHARDS`, its test cases,
 the weights and the two mutation anchors go back together.
+
+### 2026-11-10 — a temporary-file leak guard in every test file's process
+
+**Trigger**: macro `8a34a1` subtask `W4-tests` (docket C175). Test files made
+temporary directories with `mkdtemp` and removed them, when they did, at the
+end of a test body, so a failing assertion left them behind; processes the
+tests start left theirs too. Nothing counted them, and with files running
+side by side a count of the system's temporary directory could not say which
+file left what.
+
+**What changed.**
+
+- `npm test` (`scripts/run-tests.mjs`) makes a run directory and loads
+  `tests/_tmp-guard.mjs` first in each test file's process. The guard gives
+  the file a `TMPDIR` of its own there, and at exit records what is left in
+  it and removes it. A file `scripts/data/test-tmp-leaks.json` does not
+  declare that left anything fails. The run prints the count and removes its
+  directory. A count that is not whole (a file with no record or no result, a
+  directory that cannot be read or removed) fails the run whatever the
+  declaration says; with Node's own `--test-shard` or `--watch` a file with
+  no record is reported only. `--test-isolation=none` is refused.
+- `tests/_tmp.mjs` (`tmpDir`, `fileTmpDirs`) removes a test's directories
+  through `t.after`/`after`, on failure too; ten test files and one shared
+  fixture adopt it. `scripts/lib/remove-tree.mjs` removes only what is
+  strictly inside the temporary directory the caller allocated in, and
+  refuses when that directory's name resolves to another place than it did
+  at allocation.
+- The declaration is the first baseline: the files that still leak. It only
+  shrinks (`AGENTS.md` § Build / test / CI has the rule).
+
+**Measurement.** The first guarded run of the whole suite, on an earlier base
+(`main` at `0a2e51da`, before any file adopted the helper), counted 2,884
+entries left by 107 of 334 files. The count after this change is in the pull
+request that lands it, taken from the final suite run; it is not written
+here, since an edit after that run would void its evidence.
+
+**Limits.** Not seen: a process started with no `TMPDIR` or another one; code
+that writes to `/tmp` whatever `TMPDIR` is; a preload that runs before the
+guard; a descendant that writes after the runner's last look. A file that
+exits inside a test may be charged what its own exit listeners remove, and
+so may a file that registers a cleanup exit listener from its own root
+`after()` hook: the guard counts before that listener runs, so such a file
+can fail although it ends clean (register the listener at the top level, or
+remove in the hook itself). A
+runner killed with SIGKILL leaves its run directory. A file that leaks only
+in some runs and is not declared fails that run, named. One Linux measurement
+says nothing of macOS-only paths. The shards run through `npm test --
+<files>`, the path the guard's own tests take; no test starts a shard.
+
+**Rollback.** Revert the commit: the guard's preload, the helper, the
+declaration and the adopting files go back together.

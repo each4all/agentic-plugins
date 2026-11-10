@@ -17,7 +17,7 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, doesNotMatch, match, ok, strictEqual } from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmod, cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -43,6 +43,11 @@ import {
   pinned,
   writeCatalog,
 } from './_codex-pinned-fixture.mjs';
+import { fileTmpDirs } from '../_tmp.mjs';
+
+// Every temporary directory below is removed when the file's tests end, on
+// failure too (tests/_tmp.mjs).
+const tmp = fileTmpDirs();
 
 function probeMap(clone, { listVersion = null, listRows = null } = {}) {
   const map = {
@@ -58,7 +63,7 @@ function probeMap(clone, { listVersion = null, listRows = null } = {}) {
 }
 
 async function probe({ clone, codexHome, env = {}, map, gitCalls }) {
-  const home = await mkdtemp(join(tmpdir(), 'codex-identity-home-'));
+  const home = tmp('codex-identity-home-');
   const result = await probeMachineHostState({ homeDir: home, codexHome, env, runner: mixedRunner(map, gitCalls) });
   return result.codexInstallIdentity.plugins.runtime;
 }
@@ -153,7 +158,7 @@ describe('ADR-0061 §Decision 4 — currentness from the three facts', () => {
   });
 
   it('hashes a symlink target by its bytes, so targets that decode alike do not collide (round 6)', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'codex-identity-link-'));
+    const dir = tmp('codex-identity-link-');
     // The installed link points at the single byte 0xff; the pinned tree's link at the
     // three bytes of U+FFFD. Decoded, both read '\uFFFD'.
     await symlink(Buffer.from([0xff]), join(dir, 'link'));
@@ -180,7 +185,7 @@ describe('ADR-0061 §Decision 4 — content identity against a real pinned tree'
   it('CONTROL: a correct materialization of the pin is verified and current', async () => {
     const { clone, c1 } = await buildClone();
     await writeCatalog(clone, [pinned('runtime', '0.1.0', c1)]);
-    const codexHome = await mkdtemp(join(tmpdir(), 'codex-identity-codex-'));
+    const codexHome = tmp('codex-identity-codex-');
     await install(clone, c1, codexHome, '0.1.0');
     const fact = await probe({ clone, codexHome, map: probeMap(clone, { listVersion: '0.1.0' }) });
     strictEqual(fact.catalog_target.version, '0.1.0');
@@ -195,7 +200,7 @@ describe('ADR-0061 §Decision 4 — content identity against a real pinned tree'
   it('failure across a version change: target and installed disagree, and the bytes are not claimed', async () => {
     const { clone, c1, c2 } = await buildClone();
     await writeCatalog(clone, [pinned('runtime', '0.2.0', c2)]);
-    const codexHome = await mkdtemp(join(tmpdir(), 'codex-identity-codex-'));
+    const codexHome = tmp('codex-identity-codex-');
     await install(clone, c1, codexHome, '0.1.0'); // the older cache stays
     const fact = await probe({ clone, codexHome, map: probeMap(clone, { listVersion: '0.1.0' }) });
     strictEqual(fact.catalog_target.version, '0.2.0');
@@ -208,7 +213,7 @@ describe('ADR-0061 §Decision 4 — content identity against a real pinned tree'
   it('failure in a same-version repair: versions agree, the bytes differ, and it is never current', async () => {
     const { clone, c1 } = await buildClone();
     await writeCatalog(clone, [pinned('runtime', '0.1.0', c1)]);
-    const codexHome = await mkdtemp(join(tmpdir(), 'codex-identity-codex-'));
+    const codexHome = tmp('codex-identity-codex-');
     const dest = await install(clone, c1, codexHome, '0.1.0');
     await writeFile(join(dest, 'scripts', 'a.mjs'), 'export const v = "main";\n'); // divergent bytes, same version
     const fact = await probe({ clone, codexHome, map: probeMap(clone, { listVersion: '0.1.0' }) });
@@ -222,7 +227,7 @@ describe('ADR-0061 §Decision 4 — content identity against a real pinned tree'
   it('a lost executable bit and an extra file are divergence too', async () => {
     const { clone, c1 } = await buildClone();
     await writeCatalog(clone, [pinned('runtime', '0.1.0', c1)]);
-    const codexHome = await mkdtemp(join(tmpdir(), 'codex-identity-codex-'));
+    const codexHome = tmp('codex-identity-codex-');
     const dest = await install(clone, c1, codexHome, '0.1.0');
     // 0654: group and other may execute, the owner may not — git calls that 100644, and
     // so must this check (any-execute-bit would read it as 100755).
@@ -235,13 +240,13 @@ describe('ADR-0061 §Decision 4 — content identity against a real pinned tree'
   });
 
   it('with the list unavailable, the newest retained PRERELEASE is the installed fact (round 7)', async () => {
-    const codexHome = await mkdtemp(join(tmpdir(), 'codex-identity-codex-'));
+    const codexHome = tmp('codex-identity-codex-');
     for (const version of ['1.0.0-rc.2', '1.0.0-rc.10', '1.0.0-rc.1']) {
       const dir = join(codexHome, 'plugins', 'cache', 'agentic-plugins', 'runtime', version, '.codex-plugin');
       await mkdir(dir, { recursive: true });
       await writeFile(join(dir, 'plugin.json'), JSON.stringify({ name: 'runtime', version }));
     }
-    const home = await mkdtemp(join(tmpdir(), 'codex-identity-home-'));
+    const home = tmp('codex-identity-home-');
     const result = await probeMachineHostState({ homeDir: home, codexHome, env: {}, runner: async (command) => enoent(command) });
     strictEqual(result.caches.codex.runtime.latest.manifest_version, '1.0.0-rc.10', 'rc.10 > rc.2 > rc.1');
     strictEqual(result.codexInstallIdentity.plugins.runtime.installed.version, '1.0.0-rc.10');
@@ -250,7 +255,7 @@ describe('ADR-0061 §Decision 4 — content identity against a real pinned tree'
   it('with the list unavailable, the manifest-verified cache is the installed fact', async () => {
     const { clone, c1 } = await buildClone();
     await writeCatalog(clone, [pinned('runtime', '0.1.0', c1)]);
-    const codexHome = await mkdtemp(join(tmpdir(), 'codex-identity-codex-'));
+    const codexHome = tmp('codex-identity-codex-');
     await install(clone, c1, codexHome, '0.1.0');
     const fact = await probe({ clone, codexHome, map: probeMap(clone) });
     strictEqual(fact.installed.source, 'cache');
@@ -260,7 +265,7 @@ describe('ADR-0061 §Decision 4 — content identity against a real pinned tree'
   it('with two retained directories declaring the pinned version, hashes the one NAMED by it, and refuses a tie', async () => {
     const { clone, c1 } = await buildClone();
     await writeCatalog(clone, [pinned('runtime', '0.1.0', c1)]);
-    const codexHome = await mkdtemp(join(tmpdir(), 'codex-identity-codex-'));
+    const codexHome = tmp('codex-identity-codex-');
     // 0.1.0/ is what Codex serves, with divergent bytes; 0.0.9/ holds pristine release
     // bytes but ALSO declares 0.1.0. Picking the first match would certify the wrong one.
     const served = await install(clone, c1, codexHome, '0.1.0');
@@ -270,7 +275,7 @@ describe('ADR-0061 §Decision 4 — content identity against a real pinned tree'
     strictEqual(fact.currentness, 'content-mismatch', JSON.stringify(fact.content_identity));
 
     // No directory NAMED by the version: another name declaring it is never borrowed.
-    const tieHome = await mkdtemp(join(tmpdir(), 'codex-identity-codex-'));
+    const tieHome = tmp('codex-identity-codex-');
     await install(clone, c1, tieHome, '0.0.8');
     await install(clone, c1, tieHome, '0.0.9');
     const tie = await probe({ clone, codexHome: tieHome, map: probeMap(clone, { listVersion: '0.1.0' }) });
@@ -284,7 +289,7 @@ describe('ADR-0061 §Decision 4 — content identity against a real pinned tree'
     // alone would have certified 0.0.9/.
     const { clone, c1, c2 } = await buildClone();
     await writeCatalog(clone, [pinned('runtime', '0.1.0', c1)]);
-    const codexHome = await mkdtemp(join(tmpdir(), 'codex-identity-codex-'));
+    const codexHome = tmp('codex-identity-codex-');
     await install(clone, c2, codexHome, '0.1.0');
     await install(clone, c1, codexHome, '0.0.9');
     const fact = await probe({ clone, codexHome, map: probeMap(clone, { listVersion: '0.1.0' }) });
@@ -294,7 +299,7 @@ describe('ADR-0061 §Decision 4 — content identity against a real pinned tree'
 
   it('a tree that changes while it is hashed is not one install: unverified, even with the manifest unchanged', async () => {
     const { clone, c1 } = await buildClone();
-    const codexHome = await mkdtemp(join(tmpdir(), 'codex-identity-codex-'));
+    const codexHome = tmp('codex-identity-codex-');
     const dest = await install(clone, c1, codexHome, '0.1.0');
     const manifest = await readFile(join(dest, '.codex-plugin', 'plugin.json'), 'utf8');
     const still = await hashInstalledTreeStable(dest);
@@ -321,7 +326,7 @@ describe('ADR-0061 §Decision 4 — content identity against a real pinned tree'
   it('a pinned commit the clone does not hold leaves identity unverified, never current', async () => {
     const { clone, c1 } = await buildClone();
     await writeCatalog(clone, [pinned('runtime', '0.1.0', 'b'.repeat(40))]);
-    const codexHome = await mkdtemp(join(tmpdir(), 'codex-identity-codex-'));
+    const codexHome = tmp('codex-identity-codex-');
     await install(clone, c1, codexHome, '0.1.0');
     const fact = await probe({ clone, codexHome, map: probeMap(clone, { listVersion: '0.1.0' }) });
     strictEqual(fact.currentness, 'content-unverified');
@@ -331,9 +336,9 @@ describe('ADR-0061 §Decision 4 — content identity against a real pinned tree'
   it('git that cannot run leaves identity unverified', async () => {
     const { clone, c1 } = await buildClone();
     await writeCatalog(clone, [pinned('runtime', '0.1.0', c1)]);
-    const codexHome = await mkdtemp(join(tmpdir(), 'codex-identity-codex-'));
+    const codexHome = tmp('codex-identity-codex-');
     await install(clone, c1, codexHome, '0.1.0');
-    const home = await mkdtemp(join(tmpdir(), 'codex-identity-home-'));
+    const home = tmp('codex-identity-home-');
     const map = probeMap(clone, { listVersion: '0.1.0' });
     const result = await probeMachineHostState({ homeDir: home, codexHome, env: {}, runner: async (command, args) => map[`${command} ${args.join(' ')}`] ?? enoent(command) });
     const fact = result.codexInstallIdentity.plugins.runtime;
@@ -344,7 +349,7 @@ describe('ADR-0061 §Decision 4 — content identity against a real pinned tree'
   it('conflicting list rows leave identity unverified', async () => {
     const { clone, c1 } = await buildClone();
     await writeCatalog(clone, [pinned('runtime', '0.1.0', c1)]);
-    const codexHome = await mkdtemp(join(tmpdir(), 'codex-identity-codex-'));
+    const codexHome = tmp('codex-identity-codex-');
     await install(clone, c1, codexHome, '0.1.0');
     const rows = [
       { name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.1.0', installed: true, enabled: true },
@@ -358,7 +363,7 @@ describe('ADR-0061 §Decision 4 — content identity against a real pinned tree'
   it('an unpinned catalog leaves currentness unknown and reads no repository or clone manifest version', async () => {
     const { clone, c1 } = await buildClone();
     await writeCatalog(clone, [{ name: 'runtime', source: { source: 'local', path: './plugins/runtime' } }]);
-    const codexHome = await mkdtemp(join(tmpdir(), 'codex-identity-codex-'));
+    const codexHome = tmp('codex-identity-codex-');
     await install(clone, c1, codexHome, '0.1.0');
     const gitCalls = [];
     // The clone's working tree says 0.2.0 — newer than the install. Unpinned, that is not a target.
@@ -372,7 +377,7 @@ describe('ADR-0061 §Decision 4 — content identity against a real pinned tree'
   it('the git read ignores a caller GIT_DIR and runs immutable and offline', async () => {
     const { clone, c1 } = await buildClone();
     await writeCatalog(clone, [pinned('runtime', '0.1.0', c1)]);
-    const codexHome = await mkdtemp(join(tmpdir(), 'codex-identity-codex-'));
+    const codexHome = tmp('codex-identity-codex-');
     await install(clone, c1, codexHome, '0.1.0');
     // A different repository the caller's environment points at.
     const decoy = await buildClone();
@@ -492,8 +497,8 @@ describe('ADR-0061 S3 — bootstrap names the manual Codex remedy', () => {
 
 describe('ADR-0061 §Decision 4 — doctor reports the three facts', () => {
   async function doctorFor({ clone, codexHome, listVersion }) {
-    const root = await mkdtemp(join(tmpdir(), 'codex-identity-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'codex-identity-doctor-home-'));
+    const root = tmp('codex-identity-repo-');
+    const home = tmp('codex-identity-doctor-home-');
     return runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -505,7 +510,7 @@ describe('ADR-0061 §Decision 4 — doctor reports the three facts', () => {
   it('names both failure shapes in host parity and text, and neither as current', async () => {
     const behind = await buildClone();
     await writeCatalog(behind.clone, [pinned('runtime', '0.2.0', behind.c2)]);
-    const behindHome = await mkdtemp(join(tmpdir(), 'codex-identity-codex-'));
+    const behindHome = tmp('codex-identity-codex-');
     await install(behind.clone, behind.c1, behindHome, '0.1.0');
     const behindReport = await doctorFor({ clone: behind.clone, codexHome: behindHome, listVersion: '0.1.0' });
     strictEqual(behindReport.plugins.runtime.codex_install.currentness, 'behind');
@@ -514,7 +519,7 @@ describe('ADR-0061 §Decision 4 — doctor reports the three facts', () => {
 
     const divergent = await buildClone();
     await writeCatalog(divergent.clone, [pinned('runtime', '0.1.0', divergent.c1)]);
-    const divergentHome = await mkdtemp(join(tmpdir(), 'codex-identity-codex-'));
+    const divergentHome = tmp('codex-identity-codex-');
     const dest = await install(divergent.clone, divergent.c1, divergentHome, '0.1.0');
     await writeFile(join(dest, 'scripts', 'a.mjs'), 'export const v = "main";\n');
     const divergentReport = await doctorFor({ clone: divergent.clone, codexHome: divergentHome, listVersion: '0.1.0' });
@@ -528,7 +533,7 @@ describe('ADR-0061 §Decision 4 — doctor reports the three facts', () => {
   it('CONTROL: a verified pinned install raises no identity issue, and an unpinned catalog raises none either', async () => {
     const good = await buildClone();
     await writeCatalog(good.clone, [pinned('runtime', '0.1.0', good.c1)]);
-    const goodHome = await mkdtemp(join(tmpdir(), 'codex-identity-codex-'));
+    const goodHome = tmp('codex-identity-codex-');
     await install(good.clone, good.c1, goodHome, '0.1.0');
     const report = await doctorFor({ clone: good.clone, codexHome: goodHome, listVersion: '0.1.0' });
     strictEqual(report.plugins.runtime.codex_install.currentness, 'current');
@@ -536,7 +541,7 @@ describe('ADR-0061 §Decision 4 — doctor reports the three facts', () => {
 
     const unpinned = await buildClone();
     await writeCatalog(unpinned.clone, [{ name: 'runtime', source: { source: 'local', path: './plugins/runtime' } }]);
-    const unpinnedHome = await mkdtemp(join(tmpdir(), 'codex-identity-codex-'));
+    const unpinnedHome = tmp('codex-identity-codex-');
     await install(unpinned.clone, unpinned.c1, unpinnedHome, '0.1.0');
     const unpinnedReport = await doctorFor({ clone: unpinned.clone, codexHome: unpinnedHome, listVersion: '0.1.0' });
     strictEqual(unpinnedReport.codex_install_identity.pin_phase, 'unpinned');
@@ -550,7 +555,7 @@ describe('ADR-0061 §Decision 4 — doctor reports the three facts', () => {
       pinned('runtime', '0.1.0', 'not-a-sha'),
       { name: 'engineer', source: { source: 'local', path: './plugins/engineer' } },
     ]);
-    const codexHome = await mkdtemp(join(tmpdir(), 'codex-identity-codex-'));
+    const codexHome = tmp('codex-identity-codex-');
     await install(clone, c1, codexHome, '0.1.0');
     const report = await doctorFor({ clone, codexHome, listVersion: '0.1.0' });
     strictEqual(report.codex_install_identity.pin_phase, 'mixed');

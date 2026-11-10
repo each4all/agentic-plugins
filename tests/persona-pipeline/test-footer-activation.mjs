@@ -26,7 +26,7 @@
 
 import { describe, it } from 'node:test';
 import { strictEqual, ok, match, doesNotReject, deepStrictEqual } from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, utimes, writeFile } from 'node:fs/promises';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
@@ -34,6 +34,11 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 import { personasFor, personaInfo, REPO_ROOT } from './_personas.mjs';
+import { fileTmpDirs } from '../_tmp.mjs';
+
+// Every temporary directory below is removed when the file's tests end, on
+// failure too (tests/_tmp.mjs).
+const tmp = fileTmpDirs();
 
 const require = createRequire(import.meta.url);
 const RUNTIME_ROOT = resolve(REPO_ROOT, 'plugins/runtime'); // pin discovery deterministically
@@ -185,7 +190,7 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
 
   describe(`${persona}: completion-footer activation (ADR-0043 S3/S4)`, () => {
     it('CLI set-terminal renders the footer on STDERR, never stdout (machine channel intact)', async () => {
-      const root = await mkdtemp(join(tmpdir(), `${persona}-footer-stderr-`));
+      const root = tmp(`${persona}-footer-stderr-`);
       initRepo(root);
       const wf = createWorkflow(root);
       const res = cliSetTerminal(root, wf, CRITIQUE_NEXT);
@@ -204,7 +209,7 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
     // Claude is autopilot mode, whose finish-verb records the next step only
     // (no terminal write, so no footer: the driver is the handoff).
     it('CLI finish-verb renders the footer on STDERR like set-terminal; an owner gate renders none, and so does an autopilot run with dispatch_target on (PC2b, ADR-0066 D3)', async () => {
-      const root = await mkdtemp(join(tmpdir(), `${persona}-footer-finish-`));
+      const root = tmp(`${persona}-footer-finish-`);
       initRepo(root);
       const finish = (wf, extra, env = {}) => spawnSync(
         'node',
@@ -233,7 +238,7 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
     });
 
     it('promotes elements 2/3/4/7 to CONCRETE (completion state + recommended next work + continue-vs-fresh)', async () => {
-      const root = await mkdtemp(join(tmpdir(), `${persona}-footer-elements-`));
+      const root = tmp(`${persona}-footer-elements-`);
       initRepo(root);
       const wf = createWorkflow(root);
       const res = cliSetTerminal(root, wf, CRITIQUE_NEXT);
@@ -261,7 +266,7 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
     // Passing nothing is the honest statement of "I measured nothing": runtime
     // still applies the same conservative yellow, and now says whose it is.
     it('declares no context state — an unmeasured default renders as unmeasured, not as a caller assertion', async () => {
-      const root = await mkdtemp(join(tmpdir(), `${persona}-footer-unmeasured-`));
+      const root = tmp(`${persona}-footer-unmeasured-`);
       initRepo(root);
       const wf = createWorkflow(root);
       const res = cliSetTerminal(root, wf, 'Critique the composed artifact');
@@ -282,7 +287,7 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
     });
 
     it('is idempotent: the Stop-hook backstop does NOT re-render what the primary rendered', async () => {
-      const root = await mkdtemp(join(tmpdir(), `${persona}-footer-idem-`));
+      const root = tmp(`${persona}-footer-idem-`);
       initRepo(root);
       const wf = createWorkflow(root);
       const projectionFile = join(root, PROJECTION_REL);
@@ -315,7 +320,7 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
     });
 
     it('fail-closed on a MISSING/too-old runtime: no footer, still emitted, no throw', async () => {
-      const root = await mkdtemp(join(tmpdir(), `${persona}-footer-noruntime-`));
+      const root = tmp(`${persona}-footer-noruntime-`);
       initRepo(root);
       const wf = createWorkflow(root);
       const projectionFile = join(root, 'proj.json');
@@ -336,7 +341,7 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
     });
 
     it('fail-closed on a broken projection: no footer, no file, no throw', async () => {
-      const root = await mkdtemp(join(tmpdir(), `${persona}-footer-brokenproj-`));
+      const root = tmp(`${persona}-footer-brokenproj-`);
       const projectionFile = join(root, 'proj.json');
       // workflowPath does not resolve → non-ok projection status.
       const { value, stderr } = await captureStderr(() =>
@@ -351,7 +356,7 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
     });
 
     it('SessionStart reconciliation: a rendered footer suppresses the nudge; a missed footer keeps it', async () => {
-      const root = await mkdtemp(join(tmpdir(), `${persona}-footer-reconcile-`));
+      const root = tmp(`${persona}-footer-reconcile-`);
       initRepo(root);
       const wf = createWorkflow(root);
       const projectionFile = join(root, PROJECTION_REL);
@@ -364,7 +369,7 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
       strictEqual(afterRender.footerRendered, true);
 
       // Missed: no marker (fresh projection, runtime forced missing) → nudge stays.
-      const root2 = await mkdtemp(join(tmpdir(), `${persona}-footer-reconcile-missed-`));
+      const root2 = tmp(`${persona}-footer-reconcile-missed-`);
       initRepo(root2);
       const wf2 = createWorkflow(root2);
       const projectionFile2 = join(root2, PROJECTION_REL);
@@ -382,7 +387,7 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
     });
 
     it('fail-closed on a DEGRADED render (footer.mjs reports projection_error): no mark, nudge fires', async () => {
-      const root = await mkdtemp(join(tmpdir(), `${persona}-footer-degraded-`));
+      const root = tmp(`${persona}-footer-degraded-`);
       initRepo(root);
       const wf = createWorkflow(root);
       const projectionFile = join(root, PROJECTION_REL);
@@ -390,7 +395,7 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
       // Point discovery at a stub runtime whose footer.mjs exits 0 but reports a
       // projection_error (no session_handoff) — the JSON validation must reject it.
       const stub = await writeStubRuntime(
-        await mkdtemp(join(tmpdir(), `${persona}-stub-rt-`)),
+        tmp(`${persona}-stub-rt-`),
         DEGRADED_FOOTER,
         { version: versionAboveFloor(P.runtimeFooterFloor) },
       );
@@ -559,7 +564,7 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
       });
 
       it(`E2E: an unmoved-HEAD terminal renders ${P.capabilities.commit_surface ? 'blocked with the commit action' : 'publish-needed'} and stays generic-marker-free`, async () => {
-        const root = await mkdtemp(join(tmpdir(), `${persona}-footer-publish-`));
+        const root = tmp(`${persona}-footer-publish-`);
         initRepo(root);
         // Baseline the workflow at the REAL current HEAD so head_moved is the
         // ONLY unmet gate at set-terminal time — the common "work ready, not
@@ -595,7 +600,7 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
       });
 
       it('E2E: a moved-HEAD terminal renders next-work-available and names the phase', async () => {
-        const root = await mkdtemp(join(tmpdir(), `${persona}-footer-ready-`));
+        const root = tmp(`${persona}-footer-ready-`);
         initRepo(root);
         const wf = createWorkflow(root); // baseline 1111… ≠ real HEAD → head_moved passes
         const res = cliSetTerminal(root, wf, CRITIQUE_NEXT);
@@ -610,7 +615,7 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
     });
 
     it('a PRIMARY re-terminalization re-renders over its own rendered tombstone; a backstop does not', async () => {
-      const root = await mkdtemp(join(tmpdir(), `${persona}-footer-reterm-`));
+      const root = tmp(`${persona}-footer-reterm-`);
       initRepo(root);
       const wf = createWorkflow(root);
       const projectionFile = join(root, PROJECTION_REL);
@@ -635,7 +640,7 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
     });
 
     it("a 'claimed' (in-progress/crashed) marker does not suppress the nudge — only 'rendered' does", async () => {
-      const root = await mkdtemp(join(tmpdir(), `${persona}-footer-claimed-`));
+      const root = tmp(`${persona}-footer-claimed-`);
       initRepo(root);
       const wf = createWorkflow(root);
       const projectionFile = join(root, PROJECTION_REL);
@@ -663,7 +668,7 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
     // re-terminalization renders again even when its phase and next action
     // equal the transition that already rendered.
     it('CLI: re-running set-terminal with the same phase and next action renders the footer again', async () => {
-      const root = await mkdtemp(join(tmpdir(), `${persona}-footer-cli-reterm-`));
+      const root = tmp(`${persona}-footer-cli-reterm-`);
       initRepo(root);
       const wf = createWorkflow(root);
       const first = cliSetTerminal(root, wf, CRITIQUE_NEXT);
@@ -684,7 +689,7 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
     for (const [phase, nextAction] of laterTransitions) {
       it(`a later ${phase} transition whose primary emit was missed renders at the backstop, once`, async () => {
         const { setTerminal } = await import(pathToFileURL(STATE).href);
-        const root = await mkdtemp(join(tmpdir(), `${persona}-footer-later-`));
+        const root = tmp(`${persona}-footer-later-`);
         initRepo(root);
         const wf = createWorkflow(root);
         const markerFile = `${join(root, PROJECTION_REL)}.footer-rendered`;
@@ -712,7 +717,7 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
     }
 
     it("SessionStart: an earlier transition's render does not suppress the nudge for a later one; a marker without a transition does", async () => {
-      const root = await mkdtemp(join(tmpdir(), `${persona}-footer-later-nudge-`));
+      const root = tmp(`${persona}-footer-later-nudge-`);
       initRepo(root);
       const wf = createWorkflow(root);
       const projectionFile = join(root, PROJECTION_REL);
@@ -737,7 +742,7 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
     });
 
     it('a footer whose stderr write fails after it returned counts as not rendered: no marker, and the nudge fires', async () => {
-      const root = await mkdtemp(join(tmpdir(), `${persona}-footer-undelivered-`));
+      const root = tmp(`${persona}-footer-undelivered-`);
       initRepo(root);
       const wf = createWorkflow(root);
       const projectionFile = join(root, PROJECTION_REL);
@@ -769,7 +774,7 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
     // inherited terminal marker; that reopening is no new completion.
     it('a workflow reopened with its terminal marker inherited renders no footer at the Stop backstop', async () => {
       const { appendPhase } = await import(pathToFileURL(STATE).href);
-      const root = await mkdtemp(join(tmpdir(), `${persona}-footer-reopen-`));
+      const root = tmp(`${persona}-footer-reopen-`);
       initRepo(root);
       const wf = createWorkflow(root);
       const first = cliSetTerminal(root, wf, CRITIQUE_NEXT);
@@ -786,7 +791,7 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
     // A failed write calls back with the error and then emits 'error' on the
     // stream; with no listener left that event would crash the completion.
     it('a stderr error event after the failed write callback does not crash the emit', async () => {
-      const root = await mkdtemp(join(tmpdir(), `${persona}-footer-epipe-`));
+      const root = tmp(`${persona}-footer-epipe-`);
       initRepo(root);
       const wf = createWorkflow(root);
       const projectionFile = join(root, PROJECTION_REL);
@@ -812,12 +817,12 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
     });
 
     it('renders from its own snapshot: a write to the slot between the two footer runs does not reach the footer', async () => {
-      const root = await mkdtemp(join(tmpdir(), `${persona}-footer-overlap-`));
+      const root = tmp(`${persona}-footer-overlap-`);
       initRepo(root);
       const wf = createWorkflow(root);
       const projectionFile = join(root, PROJECTION_REL);
       const stub = await writeStubRuntime(
-        await mkdtemp(join(tmpdir(), `${persona}-stub-rt-`)),
+        tmp(`${persona}-stub-rt-`),
         echoFooter({ slot: projectionFile }),
         { version: versionAboveFloor(P.runtimeFooterFloor) },
       );
@@ -843,7 +848,7 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
     // transition may take over.
     async function laterTransitionPending(prefix) {
       const { setTerminal } = await import(pathToFileURL(STATE).href);
-      const root = await mkdtemp(join(tmpdir(), `${persona}-${prefix}-`));
+      const root = tmp(`${persona}-${prefix}-`);
       initRepo(root);
       const wf = createWorkflow(root);
       const markerFile = `${join(root, PROJECTION_REL)}.footer-rendered`;
@@ -970,7 +975,7 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
       it(`a render whose claim another attempt took over ${outcomeOfRender} without touching that claim`, async () => {
         const { root, wf, markerFile } = await laterTransitionPending(`footer-attempt-${outcomeOfRender}`);
         const stub = await writeStubRuntime(
-          await mkdtemp(join(tmpdir(), `${persona}-stub-rt-`)),
+          tmp(`${persona}-stub-rt-`),
           `import { readFileSync, writeFileSync } from 'node:fs';
 const marker = ${JSON.stringify(markerFile)};
 if (process.argv.includes('json')) {
@@ -1017,13 +1022,13 @@ if (process.argv.includes('json')) {
     });
 
     it('two renders in one process on one slot each render their own workflow', async () => {
-      const root = await mkdtemp(join(tmpdir(), `${persona}-footer-concurrent-`));
+      const root = tmp(`${persona}-footer-concurrent-`);
       initRepo(root);
       const a = createWorkflow(root, { branch: 'feat/a' });
       const b = createWorkflow(root, { branch: 'feat/b' });
       const projectionFile = join(root, PROJECTION_REL);
       const stub = await writeStubRuntime(
-        await mkdtemp(join(tmpdir(), `${persona}-stub-rt-`)),
+        tmp(`${persona}-stub-rt-`),
         echoFooter({ delayMs: 300 }),
         { version: versionAboveFloor(P.runtimeFooterFloor) },
       );

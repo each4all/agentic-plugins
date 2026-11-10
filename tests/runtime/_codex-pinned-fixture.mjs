@@ -3,9 +3,14 @@
 // `git archive` the way a successful materialization produces them.
 
 import { execFile, execFileSync } from 'node:child_process';
-import { chmod, cp, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileTmpDirs } from '../_tmp.mjs';
+
+// Every temporary directory below is removed when the tests of the file that
+// imports this end, on failure too (tests/_tmp.mjs).
+const tmp = fileTmpDirs();
 
 export const SHA = 'a'.repeat(40);
 
@@ -43,7 +48,7 @@ function git(cwd, ...args) {
 
 // A marketplace clone with two commits of plugins/runtime: C1 = 0.1.0, C2 = 0.2.0.
 export async function buildClone() {
-  const clone = await realpath(await mkdtemp(join(tmpdir(), 'codex-identity-clone-')));
+  const clone = await realpath(tmp('codex-identity-clone-'));
   git(clone, 'init', '-q', '-b', 'main');
   const plugin = join(clone, 'plugins', 'runtime');
   await mkdir(join(plugin, '.codex-plugin'), { recursive: true });
@@ -72,7 +77,7 @@ export async function writeCatalog(clone, entries) {
 
 // Materialize plugins/runtime at `commit` into the Codex install cache under `version`.
 export async function installFromClone(clone, commit, codexHome, version) {
-  const extract = await mkdtemp(join(tmpdir(), 'codex-identity-extract-'));
+  const extract = tmp('codex-identity-extract-');
   execFileSync('/bin/sh', ['-c', `git -C "${clone}" archive ${commit} plugins/runtime | tar -x -C "${extract}"`]);
   const dest = join(codexHome, 'plugins', 'cache', 'agentic-plugins', 'runtime', version);
   await rm(dest, { recursive: true, force: true });

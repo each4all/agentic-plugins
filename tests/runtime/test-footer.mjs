@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -11,13 +11,18 @@ import {
   parseArgs,
   runFooter,
 } from '../../plugins/runtime/scripts/footer.mjs';
+import { fileTmpDirs } from '../_tmp.mjs';
+
+// Every temporary directory below is removed when the file's tests end, on
+// failure too (tests/_tmp.mjs).
+const newTmp = fileTmpDirs();
 
 const RUN_ID = 'context-20260513T010000Z-abcdef';
 const CONSENSUS_RUN_ID = 'consensus-20260513T010000Z-abcdef';
 
 describe('runtime footer', () => {
   it('renders an advisory footer from explicit pointer-only fields', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-explicit-'));
+    const root = newTmp('runtime-footer-explicit-');
     const report = await runFooter({
       repoRoot: root,
       host: 'codex',
@@ -51,7 +56,7 @@ describe('runtime footer', () => {
   });
 
   it('allows callers to explicitly mark a fully closed completion state', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-closed-'));
+    const root = newTmp('runtime-footer-closed-');
     const report = await runFooter({
       repoRoot: root,
       host: 'neutral',
@@ -72,7 +77,7 @@ describe('runtime footer', () => {
   });
 
   it('links a runtime context artifact without leaking summary or prompt bodies', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-context-'));
+    const root = newTmp('runtime-footer-context-');
     await runContext({
       command: 'capture',
       repoRoot: root,
@@ -108,7 +113,7 @@ describe('runtime footer', () => {
   });
 
   it('can link the latest runtime context artifact with stale metadata', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-latest-'));
+    const root = newTmp('runtime-footer-latest-');
     await runContext({
       command: 'capture',
       repoRoot: root,
@@ -170,7 +175,7 @@ describe('runtime footer', () => {
   });
 
   it('recommends reusing a fresh context artifact from the current source snapshot', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-source-current-'));
+    const root = newTmp('runtime-footer-source-current-');
     await runContext({
       command: 'capture',
       repoRoot: root,
@@ -214,7 +219,7 @@ describe('runtime footer', () => {
   });
 
   it('surfaces source-stale context artifacts without printing context bodies', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-source-stale-'));
+    const root = newTmp('runtime-footer-source-stale-');
     await runContext({
       command: 'capture',
       repoRoot: root,
@@ -261,7 +266,7 @@ describe('runtime footer', () => {
   });
 
   it('links consensus status guidance without leaking prompt bodies', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-consensus-'));
+    const root = newTmp('runtime-footer-consensus-');
     await runConsensus({
       command: 'plan',
       repoRoot: root,
@@ -299,7 +304,7 @@ describe('runtime footer', () => {
   });
 
   it('links consensus owner decisions without leaking decision text', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-consensus-decision-'));
+    const root = newTmp('runtime-footer-consensus-decision-');
     await runConsensus({
       command: 'plan',
       repoRoot: root,
@@ -351,7 +356,7 @@ describe('runtime footer', () => {
   });
 
   it('links consensus owner ratification without leaking ratification text', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-consensus-ratify-'));
+    const root = newTmp('runtime-footer-consensus-ratify-');
     await runConsensus({
       command: 'plan',
       repoRoot: root,
@@ -401,7 +406,7 @@ describe('runtime footer', () => {
   });
 
   it('links consensus cancellation without leaking cancellation reason text', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-consensus-cancel-'));
+    const root = newTmp('runtime-footer-consensus-cancel-');
     await runConsensus({
       command: 'plan',
       repoRoot: root,
@@ -438,7 +443,7 @@ describe('runtime footer', () => {
   });
 
   it('can link the latest consensus run by manifest freshness', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-consensus-latest-'));
+    const root = newTmp('runtime-footer-consensus-latest-');
     await runConsensus({
       command: 'plan',
       repoRoot: root,
@@ -472,7 +477,7 @@ describe('runtime footer', () => {
   });
 
   it('can link the latest open consensus run without selecting terminal artifacts', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-consensus-latest-open-'));
+    const root = newTmp('runtime-footer-consensus-latest-open-');
     const openRunId = 'consensus-20260513T000000Z-111111';
     const cancelledRunId = CONSENSUS_RUN_ID;
     await runConsensus({
@@ -520,7 +525,7 @@ describe('runtime footer', () => {
   });
 
   it('recommends asking the user about PR handling only when readiness criteria pass', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-pr-ready-'));
+    const root = newTmp('runtime-footer-pr-ready-');
     const report = await runFooter({
       repoRoot: root,
       host: 'codex',
@@ -546,7 +551,7 @@ describe('runtime footer', () => {
   });
 
   it('blocks PR handling when validation, review, branch, or context criteria fail', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-pr-block-'));
+    const root = newTmp('runtime-footer-pr-block-');
     const report = await runFooter({
       repoRoot: root,
       host: 'codex',
@@ -567,7 +572,7 @@ describe('runtime footer', () => {
   });
 
   it('defers PR handling when readiness evidence is incomplete', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-pr-defer-'));
+    const root = newTmp('runtime-footer-pr-defer-');
     const report = await runFooter({
       repoRoot: root,
       host: 'codex',
@@ -593,7 +598,7 @@ describe('runtime footer', () => {
     for (const flag of ['--cutover-record', '--cutover-omcc-dev-active', '--cutover-omcc-dev-note', '--cutover-dogfood-date']) {
       throws(() => parseArgs(['render', flag, 'no']), { message: `Unknown argument: ${flag}` });
     }
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-retired-'));
+    const root = newTmp('runtime-footer-retired-');
     const report = await runFooter({
       repoRoot: root,
       host: 'codex',
@@ -677,7 +682,7 @@ describe('runtime footer', () => {
     throws(() => parseArgs(['render', '--artifact', 'bad\npath']), /single-line/);
     ok(formatText({ help: true }).includes('--consensus-latest-open'));
 
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-reject-'));
+    const root = newTmp('runtime-footer-reject-');
     await rejectsAsync(
       runFooter({
         repoRoot: root,
@@ -717,7 +722,7 @@ describe('runtime footer session handoff (ADR-0031)', () => {
   });
 
   it('enriches the footer with the projection and session decision', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-projection-'));
+    const root = newTmp('runtime-footer-projection-');
     const projPath = join(root, 'proj.json');
     await writeFile(projPath, JSON.stringify(fullProjection()));
     const report = await runFooter({
@@ -739,7 +744,7 @@ describe('runtime footer session handoff (ADR-0031)', () => {
 
   it('accepts founder and designer projections as first-class supported kinds (ADR-0043 §1)', async () => {
     for (const kind of ['founder', 'designer']) {
-      const root = await mkdtemp(join(tmpdir(), `runtime-footer-${kind}-`));
+      const root = newTmp(`runtime-footer-${kind}-`);
       const projPath = join(root, 'proj.json');
       await writeFile(projPath, JSON.stringify(fullProjection({ workflow_kind: kind })));
       const report = await runFooter({
@@ -757,7 +762,7 @@ describe('runtime footer session handoff (ADR-0031)', () => {
   });
 
   it('reports an honest unsupported workflow_kind in the footer instead of no-active-workflow (runtime-unsupported-kind)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-unsupported-'));
+    const root = newTmp('runtime-footer-unsupported-');
     const projPath = join(root, 'image.json');
     // The genuinely unsupported fixture is `image` (lean L2 with no workflow
     // state machine — ADR-0037): the degradation path outlived the
@@ -780,7 +785,7 @@ describe('runtime footer session handoff (ADR-0031)', () => {
   });
 
   it('degrades to per-field workflow flags and omits session_handoff without a projection', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-noproj-'));
+    const root = newTmp('runtime-footer-noproj-');
     const report = await runFooter({
       repoRoot: root,
       host: 'claude',
@@ -794,7 +799,7 @@ describe('runtime footer session handoff (ADR-0031)', () => {
   });
 
   it('degrades cleanly on a malformed projection and ignores legacy workflow flags', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-badproj-'));
+    const root = newTmp('runtime-footer-badproj-');
     const badPath = join(root, 'bad.json');
     await writeFile(badPath, '{ not valid json');
     const report = await runFooter({
@@ -813,7 +818,7 @@ describe('runtime footer session handoff (ADR-0031)', () => {
   });
 
   it('rejects a projection with missing required fields (bounded schema)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-incomplete-'));
+    const root = newTmp('runtime-footer-incomplete-');
     const badPath = join(root, 'incomplete.json');
     const incomplete = fullProjection();
     delete incomplete.phase;
@@ -857,7 +862,7 @@ describe('runtime footer persona command host-localization', () => {
   });
 
   const renderWith = async (host, overrides = {}, options = {}) => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-persona-'));
+    const root = newTmp('runtime-footer-persona-');
     const projPath = join(root, 'proj.json');
     await writeFile(projPath, JSON.stringify(personaProjection(overrides)));
     return runFooter({
@@ -931,7 +936,7 @@ describe('runtime footer persona command host-localization', () => {
     // every member through the render path so the next omission cannot land
     // without failing here.
     const commands = ['runtime', 'engineer', 'orchestrator', 'founder', 'designer', 'image'];
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-persona-table-'));
+    const root = newTmp('runtime-footer-persona-table-');
     const report = await runFooter({
       repoRoot: root,
       host: 'codex',
@@ -945,7 +950,7 @@ describe('runtime footer persona command host-localization', () => {
   });
 
   it('localizes recommended-next-work and the completion next action (sidecar path)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-persona-rnw-'));
+    const root = newTmp('runtime-footer-persona-rnw-');
     const report = await runFooter({
       repoRoot: root,
       host: 'codex',
@@ -963,7 +968,7 @@ describe('runtime footer persona command host-localization', () => {
   });
 
   it('does not rewrite path-like text and is idempotent on already-localized commands', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-persona-safe-'));
+    const root = newTmp('runtime-footer-persona-safe-');
     const report = await runFooter({
       repoRoot: root,
       host: 'codex',

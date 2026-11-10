@@ -4,7 +4,7 @@
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, match, ok, strictEqual, throws } from 'node:assert/strict';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -12,6 +12,11 @@ import { pathToFileURL } from 'node:url';
 import { validateAgainstSchema } from '../../plugins/runtime/scripts/lib/schema-validate.mjs';
 import { runSync } from '../../scripts/sync-persona-pipeline.mjs';
 import { MANIFEST, REPO_ROOT, declaration, personaInfo, personasFound } from './_personas.mjs';
+import { fileTmpDirs } from '../_tmp.mjs';
+
+// Every temporary directory below is removed when the file's tests end, on
+// failure too (tests/_tmp.mjs).
+const tmp = fileTmpDirs();
 
 const SCHEMA = JSON.parse(readFileSync(join(REPO_ROOT, 'persona-pipeline/persona.schema.json'), 'utf8'));
 const validate = (doc) => validateAgainstSchema(doc, SCHEMA, { readerVersion: 'persona-declaration-1.4' });
@@ -90,7 +95,7 @@ describe('persona.schema.json', () => {
 // A minimal plugin directory holding only the loader, a manifest and a
 // declaration, so each case gets its own module instance (its own URL).
 function loaderPlugin({ name = 'founder', decl, manifestName = name, codexOnly = false } = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'pp-loader-'));
+  const root = tmp('pp-loader-');
   mkdirSync(join(root, 'scripts/lib'), { recursive: true });
   cpSync(join(REPO_ROOT, `plugins/${name}/scripts/lib/persona.mjs`), join(root, 'scripts/lib/persona.mjs'));
   const host = codexOnly ? '.codex-plugin' : '.claude-plugin';
@@ -279,7 +284,7 @@ describe('derived identity (V1) equals the literals the plugins used before ADR-
 // ---- cross-field rules, enforced by the generator's check ----------------------
 
 function repoSubsetCopy() {
-  const root = mkdtempSync(join(tmpdir(), 'pp-decl-'));
+  const root = tmp('pp-decl-');
   cpSync(join(REPO_ROOT, 'persona-pipeline'), join(root, 'persona-pipeline'), { recursive: true });
   for (const persona of MANIFEST.personas) {
     cpSync(join(REPO_ROOT, 'plugins', persona), join(root, 'plugins', persona), { recursive: true });
