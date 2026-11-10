@@ -46,7 +46,7 @@ const META_COMMANDS = ['resume', 'checkpoint', 'peer-now', 'approve'];
 const CLAUDE_ONLY_COMMANDS = ['autopilot'];
 const DISPATCH_AND_LIFECYCLE_SKILLS = [...DISPATCH_COMMANDS, ...LIFECYCLE_COMMANDS];
 const ALL_COMMANDS = [...VERBS, ...ALIAS_VERBS, ...DISPATCH_COMMANDS, ...LIFECYCLE_COMMANDS, ...META_COMMANDS, ...CLAUDE_ONLY_COMMANDS];
-const SHARED_REFS = ['ensemble-protocol.md', 'presentation-protocol.md', 'session-handoff.md'];
+const SHARED_REFS = ['autopilot-run.md', 'ensemble-protocol.md', 'next-dispatch.md', 'presentation-protocol.md', 'session-handoff.md'];
 const HOST_SHARED_SCRIPTS = ['state.mjs', 'dispatch-peer.mjs', 'peer-runner.mjs', 'stop-archive.mjs'];
 const CLAUDE_HOOKS = ['_shared.mjs', 'session-start.mjs', 'pre-compact.mjs', 'stop.mjs'];
 const CODEX_HOOK_HELPERS = ['session-start.mjs', 'pre-compact.mjs', 'stop.mjs', 'run-node-hook.sh', 'hooks.json'];
@@ -267,6 +267,31 @@ describe(`plugins/orchestrator ${SKILLS_REL}/`, () => {
       // Contract: the commands and skills send the agent to this file by path — a
       // missing file breaks the step that reads it.
       ok((await stat(refPath)).isFile(), `${ref} is a file`);
+    });
+  }
+
+  // The two runbooks that keep only the plain path send the agent to a
+  // reference for the rest: the file each names, and every section of it they
+  // name, must be there, or a refusal's pointer leads nowhere.
+  for (const [command, ref] of [['next.md', 'next-dispatch.md'], ['autopilot.md', 'autopilot-run.md']]) {
+    it(`commands/${command} names ${ref} by its path, and every section it names is one of the reference's`, async () => {
+      const body = (await readFile(resolve(PLUGIN_ROOT, 'commands', command), 'utf-8')).replace(/\s+/g, ' ');
+      const text = await readFile(resolve(PLUGIN_ROOT, `${SKILLS_REL}/_shared/references`, ref), 'utf-8');
+      // By the root the command text was loaded from (Claude fills the
+      // variable at load), not "the plugin root", which a pinned script root
+      // of an older release would make a directory without the file.
+      ok(body.includes(`\`\${CLAUDE_PLUGIN_ROOT}/core/skills/_shared/references/${ref}\``), `${command} names the reference by its path`);
+      const headings = new Set([...text.matchAll(/^## (.+)$/gm)].map((m) => m[1]));
+      // A section named after "the reference's" or after the reference's path.
+      const cited = new RegExp(`(?:the reference's|references/${ref.replace('.', '\\.')}\`) § ([^.:;,]*?)(?= has |\\.|:|;|,)`, 'g');
+      const named = [...body.matchAll(cited)].map((m) => m[1].trim());
+      ok(named.length >= 1, `${command} names at least one section of ${ref} (guards a vacuous pass)`);
+      for (const section of named) ok(headings.has(section), `${ref} has the section "${section}" that ${command} names`);
+      // The reference's own table lists only sections it has.
+      const listed = [...text.matchAll(/\| § ([^|]+?) \|/g)].map((m) => m[1].trim());
+      ok(listed.length >= 4, `${ref} opens with its table of sections`);
+      for (const section of listed) ok(headings.has(section), `${ref} has the section "${section}" its table lists`);
+      for (const heading of headings) ok(listed.includes(heading), `${ref}'s table lists its section "${heading}", so a state leads to it`);
     });
   }
 

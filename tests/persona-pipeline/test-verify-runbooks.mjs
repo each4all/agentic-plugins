@@ -694,6 +694,15 @@ describe('the long-check guidance (ADR-0068 Decision 5, item 1)', () => {
         ok(/<!-- pipeline:begin [a-z]+-long-checks -->/.test(t), 'the long-check region');
         ok(/never wait(?:s)? for the heavy-work lock/.test(t.replace(/\s+/g, ' ')), 'under the offer, no wait for the heavy-work lock');
         ok(/agentic-autopilot heavy --/.test(t), 'interactively, the heavy-work lock wrapper');
+        // A command renders the short form, which sends its reader to the
+        // skill it follows for the whole text: the path it names is that
+        // skill, and the skill carries the section.
+        if (rel.startsWith('commands/')) {
+          const verb = rel.slice('commands/'.length, -'.md'.length);
+          const pointed = t.replace(/\s+/g, ' ').match(/`(core\/skills\/[a-z]+\/SKILL\.md)` § Long checks/);
+          strictEqual(pointed?.[1], `core/skills/${verb}/SKILL.md`, 'the short form names the skill this command follows');
+          ok(/<!-- pipeline:begin [a-z]+-long-checks -->\n### Long checks/.test(readFileSync(P.path(pointed[1]), 'utf8')), 'and that skill carries § Long checks');
+        }
         const outside = t.replace(/<!-- pipeline:begin [a-z]+-long-checks -->[\s\S]*?<!-- pipeline:end [a-z]+-long-checks -->/g, '');
         for (const line of outside.split('\n').filter((l) => RUN_SUITE.test(l))) {
           ok(/long[- ]checks?/i.test(line), `an instruction to run the suite that does not route through the long-check guidance: ${line.trim()}`);

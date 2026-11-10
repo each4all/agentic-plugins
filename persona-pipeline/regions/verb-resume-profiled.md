@@ -26,9 +26,7 @@ ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "
 [ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
 VERB={{verb}}
 {{#capability dispatch_target}}
-# ADR-0068 Decision 2, item 7 — this command's operation directory: this
-# first write opens the command's persona operation there when the workflow
-# is a macro's child, and the finalize block's last write closes it.
+# ADR-0068 Decision 2, item 7 — this command's operation directory.
 OP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-op.XXXXXX")" || exit 1
 {{/capability}}
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \

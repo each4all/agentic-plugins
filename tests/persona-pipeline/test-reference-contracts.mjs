@@ -45,6 +45,9 @@ const HANDOFF = `${REFS}/session-handoff.md`;
 const OUTPUT_RULES = 'core/skills/investigate/references/output-file-rules.md';
 const ENSEMBLE = `${REFS}/ensemble-protocol.md`;
 const ORCHESTRATION = `${REFS}/orchestration.md`;
+// The cases a verb runbook's finalize block leaves to a reference, read by
+// the state seen, never on a normal step.
+const FINALIZE = `${REFS}/verb-finalize.md`;
 const GATE_SENTENCE = 'pass an explicit privacy gate before BOTH web search AND peer-host dispatch';
 // The ensemble protocol's regions that state a peer privacy policy, held by
 // exactly the personas that declare one.
@@ -352,6 +355,7 @@ describe('reference contracts: which personas each reference holds generated reg
       [ORCHESTRATION]: ['designer', 'engineer', 'founder'],
       [PROTOCOL]: ['designer', 'engineer', 'founder'],
       [HANDOFF]: ['designer', 'engineer', 'founder'],
+      [FINALIZE]: ['designer', 'engineer', 'founder'],
       'core/skills/investigate/references/business-brief-ensemble.md': ['founder'],
       'core/skills/investigate/references/business-brief-spec.md': ['founder'],
       'core/skills/investigate/references/cited-brief-ensemble.md': ['engineer'],

@@ -59,7 +59,13 @@ PC2a3 completes the verb runbooks and begins the skills:
   the plain template plus a convergence paragraph and a fail-closed check
   around the terminal write, which records the next step without closing
   when the work did not converge. A contract rebuilds each variant from its
-  plain template, so the two cannot drift. refine adds a generated Owner
+  plain template, so the two cannot drift. A finalize's body holds what an
+  agent sets and writes on a normal step; the cases that are not the plain
+  one (the dispatch's directory gone, a run still live, a rerun after a
+  write, a refused verify request, what holds a conflict) and the reasons for
+  the block's steps render once per persona as the reference
+  `core/skills/_shared/references/verb-finalize.md` (`finalize-reference.md`),
+  which the body sends the agent to by the state it sees. refine adds a generated Owner
   decision step (`refine-owner-decision.md`, the recurring-finding gate), as
   decide adds its Owner selection (`decide-owner-selection.md`); where refine
   waits for convergence, its variant (`refine-owner-decision-convergent.md`)

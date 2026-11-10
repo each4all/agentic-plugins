@@ -414,9 +414,9 @@ describe('persona text-file transport (C130, ADR-0059 amendment of 2026-10-10)',
       planted('persona-pipeline/regions/checkpoint-set.md', 'create `summary.txt` in that', 'create the summary file in that', 'R3 the section never names summary.txt, which the block reads');
     });
     it('R2: a text flag with its text in the prose of a command, a skill and a region', () => {
-      planted('plugins/founder/commands/compose.md', 'Then run the block with `TEXT_DIR` set to that directory, `DISPATCH_DIR` to the', 'Then run the block with `--summary "<the résumé>"`, `TEXT_DIR` set to that directory, `DISPATCH_DIR` to the', 'R2 a text flag with its text — --summary "<the résumé>"');
+      planted('plugins/founder/commands/compose.md', 'Then run the block with its values set:', 'Then run the block with `--summary "<the résumé>"` and its values set:', 'R2 a text flag with its text — --summary "<the résumé>"');
       planted('plugins/engineer/core/skills/refine/SKILL.md', '**Core principle**: do not modify code', '**Core principle**: never pass `--resolution "<the ruling>"`; do not modify code', 'R2 a text flag with its text — --resolution "<the ruling>"');
-      planted('persona-pipeline/regions/verb-finalize.md', 'Then run the block with `TEXT_DIR` set to that directory, `DISPATCH_DIR` to the', 'Then run the block with `--next-action <the next step>`, `TEXT_DIR` set to that directory, `DISPATCH_DIR` to the', 'R2 a text flag with its text — --next-action <the next step>');
+      planted('persona-pipeline/regions/verb-finalize.md', 'Then run the block with its values set:', 'Then run the block with `--next-action <the next step>` and its values set:', 'R2 a text flag with its text — --next-action <the next step>');
     });
     it('manifest: a prose value that names a text flag with its text', () => {
       planted('persona-pipeline/manifest.json#critique-finalize.owner_gates', "--resolution-file <the ruling's file>", '--resolution "<the ruling>"', 'R2 a text flag with its text — --resolution "<the ruling>"');

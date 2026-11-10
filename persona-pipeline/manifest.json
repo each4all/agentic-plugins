@@ -841,11 +841,17 @@
     },
     {
       "id": "compose-long-checks",
-      "template": "regions/long-checks.md",
+      "template": "regions/long-checks-command.md",
       "dest": "commands/compose.md",
       "personas": [
         "engineer"
-      ]
+      ],
+      "substitutions": {
+        "skill": {
+          "value": "compose",
+          "context": "markdown"
+        }
+      }
     },
     {
       "id": "compose-dispatch",
@@ -1913,11 +1919,17 @@
     },
     {
       "id": "refine-long-checks",
-      "template": "regions/long-checks.md",
+      "template": "regions/long-checks-command.md",
       "dest": "commands/refine.md",
       "personas": [
         "engineer"
-      ]
+      ],
+      "substitutions": {
+        "skill": {
+          "value": "refine",
+          "context": "markdown"
+        }
+      }
     },
     {
       "id": "refine-scope-record",
@@ -2341,11 +2353,17 @@
     },
     {
       "id": "critique-long-checks",
-      "template": "regions/long-checks.md",
+      "template": "regions/long-checks-command.md",
       "dest": "commands/critique.md",
       "personas": [
         "engineer"
-      ]
+      ],
+      "substitutions": {
+        "skill": {
+          "value": "critique",
+          "context": "markdown"
+        }
+      }
     },
     {
       "id": "critique-scope-prepare",
@@ -3750,6 +3768,22 @@
         },
         "footer_floor": {
           "field": "runtime_footer_floor",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "finalize-reference",
+      "template": "regions/finalize-reference.md",
+      "dest": "core/skills/_shared/references/verb-finalize.md",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
           "context": "markdown"
         }
       }

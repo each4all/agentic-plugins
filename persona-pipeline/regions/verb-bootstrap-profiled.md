@@ -40,16 +40,10 @@ GIT_BRANCH="$(git branch --show-current)"
 GIT_HEAD="$(git rev-parse HEAD)"
 STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
 {{#capability dispatch_target}}
-# ADR-0019 §1+§3 — when /orchestrator:next dispatches this command,
-# it sets AGENTIC_PARENT_WORKFLOW + AGENTIC_ORIGINATING_SUBTASK so
-# the create-time bootstrap records the immutable parent linkage.
-# Both must be set together (or both absent for direct invocation).
-# ADR-0067 Decision 3 — it also sets AGENTIC_PARENT_WORKFLOW_PATH, the
-# macro file's absolute path, recorded beside them; an older orchestrator
-# sets none. The path is valid only with both ids.
-# ADR-0067 Decision 4, item 5 — and AGENTIC_DISPATCH_SELECTION, the selection
-# its Phase 1 made (JSON: subtask, branch, verb, profile, topic), recorded
-# beside them for every later binding to compare; also valid only with both.
+# The parent linkage /orchestrator:next exports when it dispatches this
+# command (ADR-0019 §3): both ids, or neither for a direct invocation. The
+# macro's path and the dispatch selection (ADR-0067 Decisions 3 and 4) are
+# valid only with both ids; an older orchestrator sets neither of the two.
 PARENT_ARGS=()
 if [ -n "${AGENTIC_PARENT_WORKFLOW:-}" ] || [ -n "${AGENTIC_ORIGINATING_SUBTASK:-}" ]; then
   if [ -z "${AGENTIC_PARENT_WORKFLOW:-}" ] || [ -z "${AGENTIC_ORIGINATING_SUBTASK:-}" ]; then
@@ -72,9 +66,8 @@ elif [ -n "${AGENTIC_DISPATCH_SELECTION:-}" ]; then
 fi
 {{/capability}}
 # The request, as a file (ADR-0059, amendment of 2026-10-10): the one the
-# agent wrote, or the AGENTIC_TOPIC a dispatcher exports, which is program data
-# the block writes to a private directory of its own, so no text flag is
-# inline and a dispatched run needs no file of the agent's.
+# agent wrote, or the AGENTIC_TOPIC a dispatcher exports, written here to a
+# private directory of its own.
 REQUEST_FILE="$TEXT_DIR/request.txt"
 if [ -n "${AGENTIC_TOPIC:-}" ]; then
   REQUEST_FILE="$(mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX")/topic.txt" || exit 1
@@ -82,9 +75,7 @@ if [ -n "${AGENTIC_TOPIC:-}" ]; then
 fi
 grep -q '[^[:space:]]' "$REQUEST_FILE" 2>/dev/null || { echo "✗ request.txt in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was written." >&2; exit 1; }
 {{#capability dispatch_target}}
-# ADR-0068 Decision 2, item 7 — this command's operation directory: the
-# create opens the command's persona operation there when it creates a
-# macro's child, and the finalize block's last write closes it.
+# ADR-0068 Decision 2, item 7 — this command's operation directory.
 OP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-op.XXXXXX")" || exit 1
 {{/capability}}
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \

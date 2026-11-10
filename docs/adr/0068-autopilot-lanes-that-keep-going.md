@@ -4747,6 +4747,12 @@ is a request-mediated handoff, not a proposal kind (the closed-enum table is
 unchanged), `on_pass` is the step after it, and the repeat rule is the
 driver's (`no-progress`, the owner's `--next verify`).
 
+Since 2026-11-11 the three commands render a short form of the guidance
+(`regions/long-checks-command.md`): the quick and long sort, each session's
+branch in a sentence, and a pointer to the skill's § Long checks, which keeps
+the whole text (`regions/long-checks.md`). A command follows its skill, so the
+whole text was read twice on every step.
+
 **VR5. The worker's rules** (`worker.mjs` `systemAppend`). Under the offer,
 rule 4 keeps peer ensembles as background tasks and sends long checks to
 rule 7, which names quick against long and tells a resumed verb to read the

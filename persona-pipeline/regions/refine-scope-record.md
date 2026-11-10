@@ -7,9 +7,8 @@ Before the fix, read the workflow's review ledger (ADR-0063, amendment of
 ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/{{name}} -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-# A fresh shell: the workflow is found again here, never carried from an
-# earlier block. A failure (no workflow found, an older state.mjs without the
-# subcommand) is no reason to stop the refine: it runs as it always has.
+# A failure (no workflow found, an older state.mjs without the subcommand)
+# does not stop the refine: it runs as it always has.
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || REPO_ROOT="$PWD"
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")"
 [ -n "$ACTIVE" ] && node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" review-status \
@@ -57,9 +56,9 @@ CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 # A checkout git cannot read (a broken HEAD) is the script's to judge, and
 # it falls back: the block hands it this directory instead of stopping.
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || REPO_ROOT="$PWD"
-# A fresh shell: the workflow is found again here. A failure, or no workflow
-# found, records nothing for this tree; a targets file it refuses (an id the
-# ledger does not hold) is fixed and the block run again.
+# A failure, or no workflow found, records nothing for this tree; a targets
+# file it refuses (an id the ledger does not hold) is fixed and the block run
+# again.
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")"
 [ -n "$ACTIVE" ] && node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" refine-record \
   --workflow-path "$ACTIVE" --repo-root "$REPO_ROOT" \

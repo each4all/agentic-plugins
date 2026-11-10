@@ -23,13 +23,10 @@ Q2), in either of two ways:
 
 Ask the owner: fix it now, or defer it. The clear records the owner's decision
 (`--resolution-file`, the file below) and the next step it implies in one
-write, so the
-next step never becomes runnable without the decision behind it, and a failure
-never leaves the gate's `owner-decision` behind; the same write replaces the
-gate's next action. Inside a `/{{persona}}:start` lifecycle both blocks clear
-the gate and stop there: resume the lifecycle, which fixes the finding in its
-refine phase or continues at its terminal step, and makes its one terminal
-write.
+write, which also replaces the gate's next action. Inside a
+`/{{persona}}:start` lifecycle both blocks clear the gate and stop there:
+resume the lifecycle, which fixes the finding in its refine phase or continues
+at its terminal step, and makes its one terminal write.
 
 The owner's decision reaches `state.mjs` as a file, never in a block: in
 shell source a quote, `$`, backtick or line of it would be read as code
@@ -77,19 +74,15 @@ PERSONA={{name}}
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
 [ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
-# A gate met inside a /start lifecycle is resolved there: the lifecycle's
-# refine phase runs the fix, and the lifecycle makes the one terminal write,
-# which this refine's own phases would make otherwise. A failed read, or a type
-# that cannot be parsed, stops the block (the read is checked on its own: a
-# pipe reports its last command).
+# A gate met inside a /start lifecycle is resolved there. A failed read, or a
+# type that cannot be parsed, stops the block.
 WF_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE")" \
   || { echo "✗ Could not read the workflow type; nothing was written." >&2; exit 1; }
 WF_TYPE="$(printf '%s' "$WF_JSON" \
   | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).workflow_type||"verb-chain")}catch{process.exit(1)}})')" \
   || { echo "✗ Could not read the workflow type; nothing was written." >&2; exit 1; }
-# The owner's resolution, from the file the agent wrote with its file tool:
-# state.mjs reads it itself, so no line of it is shell source. A file left
-# unwritten stops the block before any write.
+# The owner's resolution, the file the agent wrote with its file tool: one
+# left unwritten stops the block before any write.
 grep -q '[^[:space:]]' "$TEXT_DIR/resolution.txt" 2>/dev/null || { echo "✗ resolution.txt in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was written." >&2; exit 1; }
 if [ "$WF_TYPE" = start ]; then
   NEXT_ACTION="Resume /${PERSONA}:start: its refine phase fixes the recurring finding"
@@ -98,11 +91,8 @@ else
 fi
 {{#capability dispatch_target}}
 # ADR-0068 Decision 2, item 7 — the clear is a write of this refine's persona
-# operation: the one Phase 0 opened (OP_DIR set), or, with OP_DIR empty, one the
-# clear opens in a directory this block makes and prints, which the finalize
-# of the phases below closes. Inside a /start lifecycle, where the phases do
-# not run, the clear closes the operation Phase 0 opened, or is its own
-# operation's one write.
+# operation: the one Phase 0 opened (OP_DIR set), or one it opens here and
+# prints. Inside a /start lifecycle it closes Phase 0's, or is its own write.
 case "$OP_DIR" in
   *'<'*) echo "✗ OP_DIR is not set to the operation directory this run's Phase 0 printed (empty when it printed none, or when this refine's finalize already ran); nothing was written." >&2; exit 1 ;;
 esac
@@ -155,17 +145,15 @@ PERSONA={{name}}
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
 [ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
-# A gate met inside a /start lifecycle is resolved there: the lifecycle makes
-# the one terminal write. A failed read, or a type that cannot be parsed, stops
-# the block (the read is checked on its own: a pipe reports its last command).
+# A gate met inside a /start lifecycle is resolved there. A failed read, or a
+# type that cannot be parsed, stops the block.
 WF_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE")" \
   || { echo "✗ Could not read the workflow type; nothing was written." >&2; exit 1; }
 WF_TYPE="$(printf '%s' "$WF_JSON" \
   | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).workflow_type||"verb-chain")}catch{process.exit(1)}})')" \
   || { echo "✗ Could not read the workflow type; nothing was written." >&2; exit 1; }
-# The owner's resolution, from the file the agent wrote with its file tool:
-# state.mjs reads it itself, so no line of it is shell source. A file left
-# unwritten stops the block before any write.
+# The owner's resolution, the file the agent wrote with its file tool: one
+# left unwritten stops the block before any write.
 grep -q '[^[:space:]]' "$TEXT_DIR/resolution.txt" 2>/dev/null || { echo "✗ resolution.txt in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was written." >&2; exit 1; }
 if [ "$WF_TYPE" = start ]; then
   NEXT_ACTION="Resume /${PERSONA}:start: the finding is deferred, and the lifecycle continues at its terminal step"
@@ -179,10 +167,8 @@ else
 fi
 {{#capability dispatch_target}}
 # ADR-0068 Decision 2, item 7 — the clear and the finish-verb below are one
-# persona operation: the one this run's Phase 0 opened (OP_DIR set), or, with
-# OP_DIR empty, one the clear opens in a directory this block makes. Inside a
-# /start lifecycle, where no finish-verb follows, the clear closes the operation
-# Phase 0 opened, or is its own operation's one write.
+# persona operation: the one Phase 0 opened (OP_DIR set), or one the clear
+# opens here. Inside a /start lifecycle it closes Phase 0's, or is its own write.
 case "$OP_DIR" in
   *'<'*) echo "✗ OP_DIR is not set to the operation directory this run's Phase 0 printed (empty when it printed none, or when this refine's finalize already ran); nothing was written." >&2; exit 1 ;;
 esac
@@ -209,11 +195,9 @@ if [ "$WF_TYPE" = start ]; then
 fi
 # ARCHIVE TIMING — this finish-verb is a terminal write: on Claude the Stop
 # hook fires at EVERY turn end, so the archive gates are evaluated at the end
-# of THIS turn (they pass once HEAD has moved). Clearing the marker with
-# `--terminal-marker false` works only before that Stop fires and needs
-# set-terminal's full flag set. On Codex the Stop hook runs only once the
-# operator has trusted the plugin hooks (`/hooks`). Full contract:
-# core/skills/_shared/references/session-handoff.md § Archive timing.
+# of THIS turn; `--terminal-marker false` clears the marker only before that
+# Stop fires. On Codex the Stop hook runs only once the plugin hooks are
+# trusted (`/hooks`).
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
 {{#capability dispatch_target}}

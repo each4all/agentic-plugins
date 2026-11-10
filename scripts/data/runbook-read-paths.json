@@ -1,0 +1,155 @@
+{
+  "schema": 1,
+  "normal_step": "An autopilot step on Claude: one peer run dispatched and collected, the verb or verify form at the end, no owner gate, no rerun, no refusal.",
+  "steps": {
+    "engineer:compose": {
+      "body": "plugins/engineer/commands/compose.md",
+      "reads": [
+        {
+          "path": "plugins/engineer/core/skills/compose/SKILL.md",
+          "why": "Phase 1 follows the skill's command-invoked mode"
+        },
+        {
+          "path": "plugins/engineer/core/skills/_shared/references/autopilot-mode.md",
+          "why": "the preflight banner sends the step to its rules"
+        },
+        {
+          "path": "plugins/engineer/core/skills/_shared/references/ensemble-protocol.md",
+          "why": "the Plan-verify prompt and the collect step"
+        },
+        {
+          "path": "plugins/engineer/core/skills/_shared/references/entry-routing-contract.md",
+          "why": "the Active Next-Action Proposal"
+        },
+        {
+          "path": "plugins/engineer/core/skills/_shared/references/orchestration.md",
+          "why": "the skill's local agents, Step 1"
+        },
+        {
+          "path": "plugins/engineer/core/skills/_shared/references/presentation-protocol.md",
+          "why": "the skill's Present step cites it before presenting"
+        }
+      ]
+    },
+    "engineer:critique": {
+      "body": "plugins/engineer/commands/critique.md",
+      "reads": [
+        {
+          "path": "plugins/engineer/core/skills/critique/SKILL.md",
+          "why": "Phase 1 follows the skill's command-invoked mode"
+        },
+        {
+          "path": "plugins/engineer/core/skills/_shared/references/autopilot-mode.md",
+          "why": "the preflight banner sends the step to its rules"
+        },
+        {
+          "path": "plugins/engineer/core/skills/_shared/references/ensemble-protocol.md",
+          "why": "the review prompt and the collect step"
+        },
+        {
+          "path": "plugins/engineer/core/skills/_shared/references/entry-routing-contract.md",
+          "why": "the Active Next-Action Proposal"
+        },
+        {
+          "path": "plugins/engineer/core/skills/_shared/references/orchestration.md",
+          "why": "the skill's review agents"
+        },
+        {
+          "path": "plugins/engineer/core/skills/_shared/references/agent-taxonomy.md",
+          "why": "the reviewers are chosen from it"
+        },
+        {
+          "path": "plugins/engineer/core/skills/_shared/references/presentation-protocol.md",
+          "why": "the skill's Present step cites it before presenting"
+        }
+      ]
+    },
+    "engineer:refine": {
+      "body": "plugins/engineer/commands/refine.md",
+      "reads": [
+        {
+          "path": "plugins/engineer/core/skills/refine/SKILL.md",
+          "why": "Phase 1 follows the skill's command-invoked mode"
+        },
+        {
+          "path": "plugins/engineer/core/skills/_shared/references/autopilot-mode.md",
+          "why": "the preflight banner sends the step to its rules"
+        },
+        {
+          "path": "plugins/engineer/core/skills/_shared/references/ensemble-protocol.md",
+          "why": "the refine-verify prompt and the collect step"
+        },
+        {
+          "path": "plugins/engineer/core/skills/_shared/references/entry-routing-contract.md",
+          "why": "the Active Next-Action Proposal"
+        },
+        {
+          "path": "plugins/engineer/core/skills/_shared/references/orchestration.md",
+          "why": "the skill's local agents"
+        },
+        {
+          "path": "plugins/engineer/core/skills/_shared/references/presentation-protocol.md",
+          "why": "the skill's Present step cites it before presenting"
+        }
+      ]
+    },
+    "engineer:commit": {
+      "body": "plugins/engineer/commands/commit.md",
+      "reads": [
+        {
+          "path": "plugins/engineer/core/skills/commit/SKILL.md",
+          "why": "the command follows the commit skill"
+        },
+        {
+          "path": "plugins/engineer/core/skills/_shared/references/autopilot-mode.md",
+          "why": "the preflight banner sends the step to its rules"
+        },
+        {
+          "path": "plugins/engineer/core/skills/_shared/references/entry-routing-contract.md",
+          "why": "the Active Next-Action Proposal at completion"
+        }
+      ]
+    },
+    "orchestrator:next": {
+      "body": "plugins/orchestrator/commands/next.md",
+      "reads": [
+        {
+          "path": "plugins/orchestrator/core/skills/_shared/references/session-handoff.md",
+          "why": "the dispatch's handoff wiring"
+        },
+        {
+          "path": "plugins/engineer/commands/compose.md",
+          "why": "the step runs the dispatched verb's runbook in the same session; compose stands for the verb"
+        },
+        {
+          "path": "plugins/engineer/core/skills/compose/SKILL.md",
+          "why": "the dispatched compose: Phase 1 follows the skill's command-invoked mode"
+        },
+        {
+          "path": "plugins/engineer/core/skills/_shared/references/autopilot-mode.md",
+          "why": "the dispatched compose: the preflight banner sends the step to its rules"
+        },
+        {
+          "path": "plugins/engineer/core/skills/_shared/references/ensemble-protocol.md",
+          "why": "the dispatched compose: the Plan-verify prompt and the collect step"
+        },
+        {
+          "path": "plugins/engineer/core/skills/_shared/references/entry-routing-contract.md",
+          "why": "the dispatched compose: the Active Next-Action Proposal"
+        },
+        {
+          "path": "plugins/engineer/core/skills/_shared/references/orchestration.md",
+          "why": "the dispatched compose: the skill's local agents, Step 1"
+        },
+        {
+          "path": "plugins/engineer/core/skills/_shared/references/presentation-protocol.md",
+          "why": "the dispatched compose: the skill's Present step cites it before presenting"
+        }
+      ]
+    },
+    "orchestrator:autopilot": {
+      "body": "plugins/orchestrator/commands/autopilot.md",
+      "reads": []
+    }
+  }
+}
