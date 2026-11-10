@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.1](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.17.0...plugin-founder-v0.17.1) (2026-11-10)
+
+
+### Bug Fixes
+
+* **founder:** cut the six verb runbooks to what each step acts on and move finalize rationale and rare cases to a verb-finalize reference ([6439b79](https://github.com/each4all/agentic-plugins/commit/6439b79bd99467145d97e78501b7470e38c5a194))
+
 ## [0.17.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.16.0...plugin-founder-v0.17.0) (2026-11-10)
 
 

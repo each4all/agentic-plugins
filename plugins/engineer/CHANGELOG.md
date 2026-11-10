@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.36.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.36.0...plugin-engineer-v0.36.1) (2026-11-10)
+
+
+### Bug Fixes
+
+* **engineer:** cut the six verb runbooks to what each step acts on and move finalize rationale and rare cases to a verb-finalize reference ([0963f0f](https://github.com/each4all/agentic-plugins/commit/0963f0f84d32cbdda31ca0ca6868cbda40dcb16a))
+
 ## [0.36.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.35.0...plugin-engineer-v0.36.0) (2026-11-10)
 
 
