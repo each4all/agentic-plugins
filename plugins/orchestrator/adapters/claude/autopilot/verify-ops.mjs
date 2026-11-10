@@ -13,7 +13,7 @@ import { collectChanges, diskReader, gitReader, selectChecks } from './verify-se
 
 export const DEFAULT_OPS = Object.freeze({
   treeDigest: async (lane) => treeDigest(lane).digest,
-  select: async ({ lane, base, requested, declaration }) => selectChecks({
-    tree: diskReader(lane), base: gitReader({ cwd: lane, commit: base }), changes: collectChanges({ cwd: lane, base }), requested, declaration,
+  select: async ({ lane, base, requested, declaration, deferLarge = false }) => selectChecks({
+    tree: diskReader(lane), base: gitReader({ cwd: lane, commit: base }), changes: collectChanges({ cwd: lane, base }), requested, declaration, deferLarge,
   }),
 });

@@ -1205,6 +1205,28 @@ function pathSlot(kind) {
   return s.type === 'path' && ['one', 'many', 'optional-many'].includes(s.repeat) ? s : null;
 }
 
+// -----------------------------------------------------------------------------
+// The size tiers (AGENTS.md § Build / test / CI; ADR-0033, amendment of
+// 2026-11-09): the test files the repository declares large.
+
+export const TIERS_FILE = 'scripts/data/test-tiers.json';
+export const TIERS_SCHEMA = 1;
+
+/**
+ * The large test files `reader` declares (ADR-0068 Decision 5, amendment of
+ * 2026-11-10), in the form scripts/lib/suite-tiers.mjs accepts: `{schema: 1,
+ * large: [path…]}` and no other key. A declaration that is missing, does not
+ * parse or is in another form declares none: nothing is then deferred, and an
+ * intermediate batch runs what it ran before the tiers.
+ */
+export function largeTests(reader) {
+  const data = readJson(reader, TIERS_FILE).value;
+  if (!isObj(data) || data.schema !== TIERS_SCHEMA || !Array.isArray(data.large)) return new Set();
+  if (Object.keys(data).some((k) => k !== 'schema' && k !== 'large')) return new Set();
+  if (!data.large.every((p) => typeof p === 'string' && safeRelPath(p))) return new Set();
+  return new Set(data.large);
+}
+
 const PATH_ALPHABET = /^[A-Za-z0-9._/-]{1,256}$/;
 function fitsSlot(slot, p) {
   return PATH_ALPHABET.test(p) && !p.startsWith('-') && safeRelPath(p)
@@ -1223,13 +1245,19 @@ function fitsSlot(slot, p) {
  * - `requested`: the worker's checks, `[{kind, args}]`, returned as given.
  * - `declaration`: the repository's declaration.
  * - `testKind`, `suiteKind`: the kinds that run test files and the suite.
+ * - `deferLarge`: an intermediate batch's selection (amendment of
+ *   2026-11-10): the large tests the base declares (`largeTests`) are left
+ *   out of the test files and listed in `deferred`, for the final run's
+ *   suite. A change such a test matches is matched all the same, so it selects
+ *   no suite; a large test that itself changed is kept, as are the worker's
+ *   own checks; the suite a selection falls back to defers nothing.
  *
- * Returns `{requested, additions, tests, reasons, widened}`: `additions` in the
+ * Returns `{requested, additions, tests, deferred, reasons, widened}`: `additions` in the
  * check form, ordered by the declaration's kinds; `tests` either `{files}` or
  * `{suite: true}`; `reasons` and `widened` as `{entries, total}`, the first
  * MAX_LISTED entries kept.
  */
-export function selectChecks({ tree, base, changes, requested = [], declaration, testKind = 'test', suiteKind = 'test-suite', maxListed = MAX_LISTED }) {
+export function selectChecks({ tree, base, changes, requested = [], declaration, testKind = 'test', suiteKind = 'test-suite', maxListed = MAX_LISTED, deferLarge = false }) {
   if (!tree || typeof tree.list !== 'function' || typeof tree.read !== 'function') fail('selectChecks needs a tree reader');
   if (!base || typeof base.list !== 'function' || typeof base.read !== 'function') fail('selectChecks needs a base reader');
   if (!Array.isArray(changes)) fail('selectChecks needs the changes');
@@ -1438,7 +1466,14 @@ export function selectChecks({ tree, base, changes, requested = [], declaration,
     widened.push({ kind: testKind, why: `the ${testKind} kind is added unrestricted, which runs every test` });
   }
   const extra = (additions.get(testKind) ?? []).flatMap((a) => a.args?.[tSlot?.name] ?? []);
-  const files = [...new Set([...selected, ...extra])].sort(byText);
+  const everyFile = [...new Set([...selected, ...extra])].sort(byText);
+  // The large tests an intermediate batch leaves to the final run: declared
+  // at the base (a lane cannot move a test out of its own batch by editing
+  // the list), and unchanged in the lane.
+  const large = deferLarge ? largeTests(base) : new Set();
+  const changedSet = new Set(changedPaths);
+  const waits = (t) => large.has(t) && !changedSet.has(t);
+  const files = everyFile.filter((t) => !waits(t));
   if (!suite) {
     if (tSlot === null) { suite = true; widened.push({ kind: testKind, why: 'no declared kind carries test files' }); }
     else {
@@ -1481,6 +1516,7 @@ export function selectChecks({ tree, base, changes, requested = [], declaration,
     requested,
     additions: out,
     tests: suite ? { suite: true } : { files },
+    deferred: suite ? [] : everyFile.filter(waits),
     reasons: { entries: reasons.slice(0, maxListed), total: reasons.length },
     widened: { entries: widened.slice(0, maxListed), total: widened.length },
   };

@@ -114,7 +114,7 @@ import {
   RUN_WIDE_REASONS, STEP_KINDS, verifyStep, waitingToLand,
 } from './policy.mjs';
 import { driftOf, PLUGINS, resolveRoots } from './roots.mjs';
-import { checkEnvOf, personaEnvOf, requestKnownIn, selectionBase, verifyFacts } from './verify-run.mjs';
+import { checkEnvOf, noteGateStep, personaEnvOf, requestKnownIn, selectionBase, suiteArgvOf, verifyFacts } from './verify-run.mjs';
 import { workerEnv } from './worker.mjs';
 import {
   applyRateLimitEvent, createThrottleState, gateNewLane, judgeThrottle, throttleSnapshot, throttleText,
@@ -1711,6 +1711,18 @@ export async function runLanes(c) {
       return r.value;
     },
   };
+  // The commit gate's reads of a lane besides its tree digest (its status,
+  // its content without HEAD, its selection base), off the loop too: one
+  // task per lane and read (`ops.gateRead`, when the caller gives one, in
+  // its place). An answer that cannot be had throws, and the fact fails
+  // closed.
+  const gateReadOf = async (lanePath) => {
+    const a = { lane: lanePath, integration: baseline, baseline: offer.baseline };
+    if (typeof vcfg.ops?.gateRead === 'function') return vcfg.ops.gateRead(a);
+    const r = await task('gateRead', a, lanePath);
+    if (r.error) throw new Error(r.error);
+    return r.value;
+  };
   // The queue is the decision's: each turn, the lanes it gives a verification
   // step, each kept with the time its request was recorded; a request a person
   // replaced (a held lane's verb) leaves it. A batch spawns no worker, so the
@@ -2138,6 +2150,26 @@ export async function runLanes(c) {
     // it leaves the batch open, which the next run's step ends from the
     // journal (Decision 5, item 10), where a marker would park the lane; the
     // marker of the lane's creation is settled before it.
+    // The commit gate, at the admission: the lane was prepared since the
+    // decision read its tree, so the tree is digested afresh, and a commit
+    // decided on another tree is not started; the run decides again, on the
+    // tree as it is. A tree that cannot be digested here parks the lane: the
+    // decision would meet the same tree again, with no step to end the turn.
+    // Before the admission's last await, so the checks below it (a signal, a
+    // drain, a step that ended meanwhile) run after this one too.
+    // An interrupted commit taken up on the content of its admission
+    // (`s.suite.admitted`) is compared by that content, since its own commit
+    // moved the tree digest; every other gated commit, by the tree.
+    if (!batch && inLane && s.kind === 'commit' && s.suite) {
+      const byContent = s.suite.admitted === true;
+      let treeNow = null;
+      try { treeNow = byContent ? ((await gateReadOf(cwd))?.content ?? null) : await verifyOps.treeDigest(cwd); } catch { treeNow = null; }
+      if (typeof treeNow !== 'string') return refuse({ reason: 'owner-choice', detail: `the lane's tree cannot be read as its commit is admitted, so the commit gate cannot say the suite passed on it; the step did not start`, subtaskId: id });
+      if (treeNow !== (byContent ? s.suite.content : s.suite.tree)) {
+        out(`  lane ${id}: its tree is not the one the commit gate read; deciding again`);
+        return refuse(null);
+      }
+    }
     if (batch) await unmark(id);
     else if (id && (inLane || DONE_KINDS.has(s.kind))) await mark(id, 'in-flight', { seq: seq + 1, step_kind: s.kind });
     const drift = await driftNow();
@@ -2182,6 +2214,14 @@ export async function runLanes(c) {
     // run clock takes from it (ADR-0063 D1, amendment of 2026-10-13).
     const timeoutSec = reservation.timeoutSec;
 
+    // The commit gate's own record (verify-run.mjs noteGateStep), before the
+    // step's; one that cannot be written starts no step.
+    try {
+      const wfId = id ? before.children?.[id]?.workflow_id : null;
+      if (typeof wfId === 'string') noteGateStep({ mainRoot, workflowId: wfId, step: s, runId, seq: seq + 1, at: new Date(now()).toISOString() });
+    } catch (e) {
+      return refuse({ reason: 'owner-choice', detail: `the commit gate's record could not be written (${String(e?.message ?? e).slice(0, 200)}); the step did not start`, subtaskId: id });
+    }
     // Admitted.
     seq += 1;
     const mine = seq;
@@ -2197,6 +2237,7 @@ export async function runLanes(c) {
     const sessionId = randomUUID();
     appendStep(runDir, {
       event: 'started', seq: mine, lane: inLane ? id : null, kind: s.kind, command, subtask_id: id, forced: s.forced === true,
+      ...(s.suite ? { suite_evidence: s.suite } : {}), ...(s.resume === 'final-verify' ? { resume: 'final-verify' } : {}),
       ...(() => { const ia = stepApplication(mainRoot, macroId, s, before.children?.[id]?.path); return ia ? { instruction_application: ia } : {}; })(),
       session_id: sessionId, model, effort, step_budget_usd: reservation.usd, step_timeout_sec: timeoutSec, cwd,
       stall_detector: options.stallDetector === 'on' ? 'on' : 'log',
@@ -2654,6 +2695,9 @@ export async function runLanes(c) {
     await retireEnded();
     await consumeReleases();
     if (options.forcedPairs?.length) {
+      // The commit gate is not judged here: no lane is held yet, so no lane's
+      // tree can be read. Each decision judges a forced commit on its lane's
+      // tree before it starts (policy.mjs decideLanesStep).
       const f = forcedForLanes(options.forcedPairs, c.view);
       if (f.halt) return await end('halted', f.halt);
       // A forced step on a held lane, or one whose release was rejected or
@@ -2792,7 +2836,31 @@ export async function runLanes(c) {
       if (busyDue) { busy.clear(); busyDue = false; }
       // ADR-0068 Decision 5 — what the policy takes from the journal and the
       // lanes' trees, for a run that offers verification.
-      const vfacts = await verifyFacts({ view, mainRoot, laneOf: (id) => lanes.get(id)?.path ?? null, treeOf: verifyOps.treeDigest });
+      // Amendment of 2026-11-10 (C178), the commit gate: each lane at a
+      // commit, and each a forced commit names, gets the suite's evidence for
+      // its tree as it is at this decision.
+      // The gate's other reads run off the loop, one task per lane a
+      // decision reads (`gateReads`), shared by the three readers.
+      const gateReads = new Map();
+      const gateReadAt = (root) => {
+        if (!gateReads.has(root)) gateReads.set(root, gateReadOf(root));
+        return gateReads.get(root);
+      };
+      const vfacts = await verifyFacts({
+        view, mainRoot, laneOf: (id) => lanes.get(id)?.path ?? null, treeOf: verifyOps.treeDigest, offer,
+        baseOf: async (id) => {
+          const base = (await gateReadAt(lanes.get(id)?.path ?? repoRoot))?.base;
+          if (typeof base !== 'string') throw new Error('the lane\'s base was not read');
+          return base;
+        },
+        dirtyOf: async (root) => {
+          const dirty = (await gateReadAt(root))?.dirty;
+          if (typeof dirty !== 'boolean') throw new Error('the lane\'s status was not read');
+          return dirty;
+        },
+        contentOf: async (root) => (await gateReadAt(root))?.content ?? null,
+        forcedCommit: new Set([...forced].filter(([, f]) => f?.kind === 'commit').map(([id]) => id)),
+      });
       if (c.interrupted() || ended.length > 0 || verifyActive?.result) continue;
       // P2 — an instruction's step, with no worker step since, replaces the
       // step an answered batch would have dispatched (Decision 7, item 5).
@@ -2801,7 +2869,7 @@ export async function runLanes(c) {
       }
       const d = decideLanes(view, {
         inFlight: subtasksInFlight(), parked: new Set([...parked.keys(), ...busy, ...heldSubtasks(view), ...instructDeferred.keys()]), driverBusy: driverBusy(), lanes, started, forced, finalizeAttempted,
-        verify: { offered: offer.offered === true, why: offer.why ?? null, facts: vfacts },
+        verify: { offered: offer.offered === true, why: offer.why ?? null, suite: suiteArgvOf(offer) !== null, facts: vfacts },
       });
       if (d.outcome === 'completed') {
         if (inflight.size > 0 || verifyActive) { await nextEvent(); continue; }

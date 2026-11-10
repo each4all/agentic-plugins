@@ -468,8 +468,30 @@ next step `verify` and a request; the driver runs the checks itself
   refuses as a held lane's, with no hold the run reads, halts a serial run
   `owner-choice`; with lanes it is tried again, and a second such refusal in a row parks
   the lane `no-progress`. The same
-  checks recorded again on an unchanged tree after a pass or a failure halt the lane
-  `no-progress`; `--next verify` (or `--lane <subtask> --next verify`) reruns them once.
+  checks recorded again on an unchanged tree after a failure halt the lane
+  `no-progress`; after a pass, with the same declaration and selection base, the driver
+  reuses that pass once for the new request and runs nothing (a pass that was itself
+  reused halts `no-progress`, and one that does not qualify runs again whole).
+  `--next verify` (or `--lane <subtask> --next verify`) reruns them once.
+- **Intermediate and final (amendment of 2026-11-10).** A request whose `on_pass` is a
+  verb is intermediate: the driver's additions leave out the tests the repository
+  declares large (`scripts/data/test-tiers.json` at the selection's base), unless the
+  test itself changed; the suite fallback for a change nothing matches stays. A request
+  whose `on_pass` is `commit` or `done` is final: when the declaration has a
+  `test-suite` kind its batch runs the suite (the worker's when the request names it,
+  else one the driver adds), in place of the test files the driver would add. One batch runs at most 6 mutation case ids over all its checks;
+  the driver refuses a batch over that before anything runs.
+- **The commit gate (amendment of 2026-11-10).** With a `test-suite` kind that resolves
+  with no argument, a commit needs a batch that passed the suite on the lane's tree as it
+  is, with the run's declaration and the lane's base. Without it, a next step `commit`
+  (or `done` over a changed tree) resumes the workflow's last verb to end with the final
+  verification, once per tree, then halts `no-progress`; `--next /engineer:commit` is
+  refused (force the verb instead); an interrupted commit is taken up when the lane's content
+  is the one the driver admitted it on and the suite's evidence still holds for that
+  admitted tree, when the evidence holds for the tree as it is, or when the lane holds no
+  change (the command then only closes the workflow); otherwise it halts `owner-choice`. With lanes the tree is
+  digested again as the commit step is admitted: a lane edited since is decided again,
+  and one that cannot be read is parked `owner-choice`.
 - **Below HIGH.** A request below HIGH halts the lane `low-confidence` and runs nothing.
   The owner's `--next verify` (or `--lane <subtask> --next verify`) on it authorizes that
   request: its batch's journal start says the owner's step began it, and the next looks

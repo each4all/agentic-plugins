@@ -45,6 +45,7 @@ import { processFingerprint } from './ledger.mjs';
 import { observe } from './observe.mjs';
 import { terminateGroup } from './worker.mjs';
 import { DEFAULT_OPS as VERIFY_OPS } from './verify-ops.mjs';
+import { gateRead } from './verify-run.mjs';
 
 const SELF = pathToFileURL(fileURLToPath(import.meta.url)).href;
 const DRIVER = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), 'driver.mjs')).href;
@@ -111,7 +112,11 @@ export const TASKS = {
   // (git over a temporary index) and its selection (the import graph of the
   // lane's tests), which would stop the supervision of every worker in flight.
   verifyTree: (a) => VERIFY_OPS.treeDigest(a.lane),
-  verifySelect: (a) => VERIFY_OPS.select({ lane: a.lane, base: a.base, requested: a.requested, declaration: a.declaration }),
+  verifySelect: (a) => VERIFY_OPS.select({ lane: a.lane, base: a.base, requested: a.requested, declaration: a.declaration, deferLarge: a.deferLarge === true }),
+  // ADR-0068 Decision 5, amendment of 2026-11-10 — the commit gate's reads of
+  // a lane at each decision (git status, the content projection, the fork
+  // point): up to a minute or two each when git is slow.
+  gateRead: (a) => gateRead({ lane: a.lane, integration: a.integration, baseline: a.baseline }),
   // ADR-0068 Decision 2, item 7 — a released lane's basis, as its release
   // recorded it, for the driver's one comparison: the lane's fingerprint, its
   // tree digest (git over a temporary index) and its child's content digest

@@ -28,7 +28,13 @@
 //     of the workflow's last batch the journal ended passed or failed, on the
 //     same tree: a repeat, which halts the lane `no-progress` and runs nothing
 //     (after a batch with no evidence it runs again whole; the owner's
-//     explicit rerun, `--next verify`, runs it once);
+//     explicit rerun, `--next verify`, runs it once). Amendment of 2026-11-10
+//     (C178): when that batch passed whole (it continued none, replayed none,
+//     and the journal holds a result for each of its checks) with the same
+//     declaration and selection base, its pass is reused: the driver records
+//     a batch for the new request whose results are that batch's, runs
+//     nothing, and answers it. A pass already reused once is a repeat, and
+//     halts; a pass that does not qualify runs again whole;
 //   - a request below HIGH (C168): nothing, unless the owner's forced step
 //     runs it (its batch's journal start says so, `meta.forced`) or the
 //     record's latest batch continues such a batch; then everything above
@@ -78,11 +84,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  MAX_BATCH_CHECKS, MAX_FAILING_TEST_CHARS, MAX_FAILING_TESTS, MAX_RESULTS_BYTES, canonicalJson, checksDigest, resolveCheck, sha256, worstCaseBytes,
+  MAX_BATCH_CHECKS, MAX_BATCH_MUTATE_CASES, MAX_FAILING_TEST_CHARS, MAX_FAILING_TESTS, MAX_RESULTS_BYTES, canonicalJson, caseCount, checksDigest, resolveCheck, sha256, worstCaseBytes,
 } from './verify-decl.mjs';
 import {
-  appendJournal, endPayload, forcedAuthority, isoSeconds, journalPath, lastEnded, passOf, readJournal, recordDigest, resultPayload, resumeFact, startEntry, startPayload, untrustedProblem,
+  appendJournal, endPayload, forcedAuthority, isoSeconds, journalPath, lastEnded, passOf, readJournal, recordDigest, resultPayload, resumeFact, startEntry, startPayload, suiteEvidence, untrustedProblem,
 } from './verify-journal.mjs';
+import { contentProjection } from '../../../scripts/lib/lane-digest.mjs';
 import { SUPERVISOR, readSupervisorReport, supervisorEnd } from '../../../scripts/lib/heavy-run.mjs';
 import { groupState, holderName, lockPath, readLock, signalGroup as signalLeader } from '../../../scripts/lib/heavy-lock.mjs';
 import { verifyCapabilityProblem } from './roots.mjs';
@@ -218,11 +225,24 @@ export const offerRecord = (o) => (o.offered
  * policy follow a request below HIGH; verify-journal.mjs forcedAuthority).
  * `laneOf(id)` names a lane's checkout (null: the view's own), `treeOf`
  * digests one.
+ *
+ * Amendment of 2026-11-10 (C178), the commit gate — with `offer` (the run's,
+ * offered, its declaration holding a suite kind that resolves) each active
+ * child at a commit also gets `suite` (suiteFact): one whose next step is
+ * the commit or done, one in a commit phase, and each the owner's forced
+ * commit names (`forcedCommit`: a set of subtask ids, or true for every
+ * active child). `baseOf(id)` is the lane's selection base now. `baseOf`,
+ * `dirtyOf` and `contentOf` may each answer a promise: a run with lanes reads
+ * them off its loop (offloop.mjs gateRead), as it does the tree digest, so
+ * the workers in flight are supervised meanwhile. A base that cannot be read
+ * is no evidence.
  */
-export async function verifyFacts({ view, mainRoot, laneOf = () => null, treeOf }) {
+export async function verifyFacts({ view, mainRoot, laneOf = () => null, treeOf, offer = null, baseOf = () => null, forcedCommit = null, dirtyOf = laneDirty, contentOf = contentProjection }) {
   const facts = {};
+  const suiteArgv = suiteArgvOf(offer);
+  const forcedHas = (id) => forcedCommit === true || (forcedCommit instanceof Set && forcedCommit.has(id));
   for (const [id, c] of Object.entries(view?.children ?? {})) {
-    if (c?.location !== 'active' || !c.verify || typeof c.workflow_id !== 'string') continue;
+    if (c?.location !== 'active' || typeof c.workflow_id !== 'string') continue;
     let entries = null;
     try {
       const r = readJournal(journalPath(mainRoot, c.workflow_id));
@@ -230,12 +250,22 @@ export async function verifyFacts({ view, mainRoot, laneOf = () => null, treeOf 
     } catch {
       entries = null;
     }
+    const atCommit = c.next_step?.kind === 'commit' || c.next_step?.kind === 'done' || c.current_phase === 'phase-7-commit' || c.terminal_marker === true;
+    if (suiteArgv !== null && (atCommit || forcedHas(id))) {
+      let base = null;
+      let baseRead = true;
+      try { base = await baseOf(id); } catch { baseRead = false; }
+      facts[id] = {
+        suite: await suiteFact({ entries, root: laneOf(id) ?? view.repoRoot, treeOf, declarationDigest: offer.declaration.digest, base, baseRead, suiteArgv, dirtyOf, contentOf }),
+      };
+    }
+    if (!c.verify) continue;
     // A journal that cannot be read answers nothing for a pending request
     // (the verification step halts on it) and guards an answered one: its
     // on_pass is not taken on a pass the driver cannot check.
     if (entries === null) {
       if (c.next_step && c.next_step.kind !== 'verify' && c.verify.answered_by) {
-        facts[id] = { guard: { batch_id: c.verify.answered_by, verb: c.verb ?? null, why: 'the verify journal cannot be read' } };
+        facts[id] = { ...facts[id], guard: { batch_id: c.verify.answered_by, verb: c.verb ?? null, why: 'the verify journal cannot be read' } };
       }
       continue;
     }
@@ -244,21 +274,132 @@ export async function verifyFacts({ view, mainRoot, laneOf = () => null, treeOf 
       // C168 — the owner's forced step authorized this request's checks below
       // HIGH: the policy then follows its results as at HIGH.
       const f = forcedAuthority(entries, { requestId: c.verify.request_id, batchId: c.verify.last_batch ?? null, subtaskId: id });
-      if (r || f) facts[id] = { ...(r ? { resume: r } : {}), ...(f ? { forced: f } : {}) };
+      if (r || f) facts[id] = { ...facts[id], ...(r ? { resume: r } : {}), ...(f ? { forced: f } : {}) };
       continue;
     }
     if (!c.verify.answered_by || !c.next_step) continue;
     const p = passOf(entries, c.verify.request_id, c.verify.answered_by);
     const verb = p?.start?.meta?.verb ?? c.verb ?? null;
     if (!p) {
-      facts[id] = { guard: { batch_id: c.verify.answered_by, verb, why: 'its answer is not one this driver wrote' } };
+      facts[id] = { ...facts[id], guard: { batch_id: c.verify.answered_by, verb, why: 'its answer is not one this driver wrote' } };
       continue;
     }
     let tree = null;
     try { tree = await treeOf(laneOf(id) ?? view.repoRoot); } catch { tree = null; }
-    if (tree !== p.start.payload?.tree_start) facts[id] = { guard: { batch_id: c.verify.answered_by, verb, why: 'the tree changed after its batch passed' } };
+    if (tree !== p.start.payload?.tree_start) facts[id] = { ...facts[id], guard: { batch_id: c.verify.answered_by, verb, why: 'the tree changed after its batch passed' } };
   }
   return facts;
+}
+
+// ---------------------------------------------------------------------------
+// The commit gate (ADR-0068 Decision 5, amendment of 2026-11-10, C178)
+
+/**
+ * The suite's command as the run's declaration resolves it, or null when the
+ * run offers no verification, its declaration has no `test-suite` kind, or
+ * that kind takes arguments nothing here can give: then there is no gate, and
+ * no final suite.
+ */
+export function suiteArgvOf(offer) {
+  if (offer?.offered !== true || !offer.declaration?.kinds?.['test-suite']) return null;
+  try { return resolveCheck(offer.declaration, { kind: 'test-suite', args: {} }); } catch { return null; }
+}
+
+/**
+ * Whether a checkout holds a change git status lists (untracked files
+ * included). Throws when git cannot say. No optional lock: the read never
+ * refreshes the index, so it takes no index.lock beside a commit worker of
+ * that lane, and wakes no parked lane (ADR-0068 Decision 1, item 6).
+ */
+export function laneDirty(root) {
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_'))), GIT_OPTIONAL_LOCKS: '0' };
+  const r = spawnSync('git', ['-C', root, 'status', '--porcelain', '--untracked-files=normal'], { encoding: 'utf8', env, timeout: 60_000 });
+  if (r.status !== 0) throw new Error(`git status failed in ${root}`);
+  return r.stdout.trim() !== '';
+}
+
+/**
+ * The three reads the gate makes of a lane besides its tree digest, in one
+ * call: whether the checkout holds a change, its content without HEAD, and
+ * its selection base. Each is null when it cannot be read (the base never
+ * is: it falls back to the baseline). A run with lanes runs it off its loop
+ * (offloop.mjs gateRead).
+ */
+export function gateRead({ lane, integration = null, baseline }) {
+  let dirty = null;
+  try { dirty = laneDirty(lane); } catch { dirty = null; }
+  let content = null;
+  try { content = contentProjection(lane); } catch { content = null; }
+  return { dirty, content, base: selectionBase({ lane, integration, baseline }) };
+}
+
+/**
+ * What the policy takes for a child at a commit:
+ *   ok, batch_id  a batch of the workflow passed the whole suite on the
+ *                 lane's tree as it is, with the run's declaration and the
+ *                 lane's base (verify-journal.mjs suiteEvidence);
+ *   why           what is missing, when it is not ok;
+ *   dirty         the checkout holds a change (unreadable: taken as one);
+ *   tree, content the lane's tree digest and its content without HEAD
+ *                 (lane-digest.mjs contentProjection), null when unreadable;
+ *   recovery      the last commit step the driver admitted for the workflow
+ *                 was admitted on this content, and the suite's evidence
+ *                 holds for the tree it was admitted on, with the run's
+ *                 declaration and the lane's base as they are now: an
+ *                 interrupted commit may be taken up, though its own commit
+ *                 moved HEAD and the digest. Only the moved HEAD is let by:
+ *                 a tree that cannot be read now, another declaration or
+ *                 another base is no recovery;
+ *   resumed       the driver already resumed a verb on this tree to end with
+ *                 the final verification.
+ */
+export async function suiteFact({ entries, root, treeOf, declarationDigest, base, baseRead = true, suiteArgv, dirtyOf = laneDirty, contentOf = contentProjection }) {
+  let tree = null;
+  try { tree = await treeOf(root); } catch { tree = null; }
+  let dirty = true;
+  try { dirty = (await dirtyOf(root)) !== false; } catch { dirty = true; }
+  let content = null;
+  try { content = await contentOf(root); } catch { content = null; }
+  if (typeof content !== 'string') content = null;
+  const readable = entries !== null && tree !== null && baseRead;
+  const ev = readable ? suiteEvidence(entries, { tree, declarationDigest, base, suiteArgv }) : null;
+  const admitted = (entries ?? []).filter((e) => e.op === 'commit').at(-1) ?? null;
+  // The evidence the commit was admitted with, judged again as it would be
+  // now but for the tree: the one the driver recorded at the admission.
+  const admittedEv = readable && typeof admitted?.payload?.tree === 'string'
+    ? suiteEvidence(entries, { tree: admitted.payload.tree, declarationDigest, base, suiteArgv })
+    : null;
+  const why = ev ? null
+    : entries === null ? 'the verify journal cannot be read'
+      : tree === null ? 'the lane\'s tree cannot be read'
+        : !baseRead ? 'the lane\'s base cannot be read'
+          : 'no verification batch of this workflow passed the whole suite on the lane\'s tree as it is, with the run\'s declaration and the lane\'s base';
+  return {
+    ok: ev !== null, batch_id: ev?.batch_id ?? null, why, dirty, tree, content,
+    recovery: admittedEv !== null && content !== null && typeof admitted?.payload?.content === 'string' && admitted.payload.content === content,
+    resumed: (entries ?? []).some((e) => e.op === 'final-resume' && (e.payload?.tree ?? null) === tree),
+  };
+}
+
+/**
+ * The driver's line for a step the gate let through or asked for, written as
+ * the step is admitted (before its worker starts): a commit step (`s.suite`,
+ * the fact it was decided on) or a verb resumed to end with the final
+ * verification (`s.resume === 'final-verify'`, `s.gate`). Any other step
+ * writes nothing; nor does the recovery of an interrupted commit taken up on
+ * the content of its admission (`s.suite.admitted`): that admission's line
+ * stands, with the tree its evidence is for. Throws when the journal cannot be written: the step then
+ * does not start.
+ */
+export function noteGateStep({ mainRoot, workflowId, step, runId, seq, at }) {
+  const line = step?.kind === 'commit' && step.suite && step.suite.admitted !== true
+    ? { op: 'commit', batch_id: step.suite.batch_id ?? null, payload: { content: step.suite.content ?? null, tree: step.suite.tree ?? null } }
+    : step?.kind === 'verb' && step.resume === 'final-verify'
+      ? { op: 'final-resume', payload: { tree: step.gate?.tree ?? null, verb: step.verb } }
+      : null;
+  if (line === null) return false;
+  appendJournal(journalPath(mainRoot, workflowId), { ...line, run_id: runId, seq, at });
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -293,9 +434,11 @@ export function endFor(batch, treeNow, { cut = null, bound = false } = {}) {
  *   checksDigest the batch's checks digest as the driver resolves them now
  *   verb         the requesting verb as the child records it (for a request no batch has run)
  *   forcedRerun  the owner's explicit rerun (`--next verify`)
- * Returns { action: 'none' | 'restart' | 'end' | 'pass' | 'resume' | 'halt' | 'start', … }.
+ *   declarationDigest, base  the declaration and the selection base a new batch would run with
+ * Returns { action: 'none' | 'restart' | 'end' | 'pass' | 'resume' | 'halt' | 'start' | 'reuse', … };
+ * `reuse` carries `source`, the passed batch whose results the new batch replays.
  */
-export function planVerify({ pending, request, results, entries, treeNow, checksDigest: digest, verb = null, forcedRerun = false }) {
+export function planVerify({ pending, request, results, entries, treeNow, checksDigest: digest, verb = null, forcedRerun = false, declarationDigest = null, base = null }) {
   if (!pending || !request || typeof request.id !== 'string') return { action: 'none', why: 'no request is pending' };
   const problem = untrustedProblem({ request, results, entries });
   if (problem) return { action: 'restart', why: problem, replaces: results === undefined || results === null ? null : sha256(JSON.stringify(results)) };
@@ -329,10 +472,23 @@ export function planVerify({ pending, request, results, entries, treeNow, checks
   if (treeNow === null) return { action: 'halt', reason: 'owner-choice', detail: 'the lane\'s tree cannot be read, so no batch can be bound to it' };
   const before = lastEnded(entries, { excludeRequest: request.id });
   if (!forcedRerun && before && before.checks_digest === digest && before.tree_start === treeNow && (before.end === 'passed' || before.end === 'failed')) {
-    return {
+    const repeat = (how) => ({
       action: 'halt', reason: 'no-progress',
-      detail: `the step recorded the checks of batch ${before.batch_id} again (it ${before.end}) on the tree it ran on: nothing changed, so nothing runs; change the lane, or rerun them once with --next verify`,
-    };
+      detail: `the step recorded the checks of batch ${before.batch_id} again (it ${how}) on the tree it ran on: nothing changed, so nothing runs; change the lane, or rerun them once with --next verify`,
+    });
+    if (before.end === 'failed') return repeat('failed');
+    // Amendment of 2026-11-10 (C178) — a pass is evidence for the unchanged
+    // tree: it is reused once, when it is whole and was run with the
+    // declaration and the base a new batch would run with. A pass that was
+    // itself a reuse is a repeat; one that does not qualify runs again.
+    // Under another declaration or base the request is no repeat: it runs.
+    const sameFooting = typeof declarationDigest === 'string' && before.declaration_digest === declarationDigest && (before.base ?? null) === (base ?? null);
+    if (sameFooting && before.reused_from) return repeat('passed, on results already reused once');
+    const whole = before.continues === null && before.checks > 0 && before.results.length === before.checks
+      && Array.from({ length: before.checks }, (_, i) => before.results[i]).every((r) => r?.outcome === 'passed');
+    if (whole && sameFooting && !before.reused_from) {
+      return { action: 'reuse', continues: null, prior: null, source: before };
+    }
   }
   return { action: 'start', continues: null, prior: null };
 }
@@ -777,12 +933,12 @@ async function runStep({ job, ctl, ops, bounds, now, abortedBy }) {
   // not the owner's never sets the record aside (which ends the
   // authorization) and never starts a batch that continues none.
   const replan = (digest) => {
-    const p = planVerify({ pending, request, results: fm.verify_results, entries, treeNow, checksDigest: digest, verb: job.verb, forcedRerun: job.forcedRerun === true });
+    const p = planVerify({ pending, request, results: fm.verify_results, entries, treeNow, checksDigest: digest, verb: job.verb, forcedRerun: job.forcedRerun === true, declarationDigest: decl.digest, base: job.base ?? null });
     if (!below || ownerForced) return p;
     if (p.action === 'restart') {
       return { action: 'halt', reason: 'low-confidence', detail: `the request's record is set aside (${p.why}), which ends the owner's authorization of it below HIGH; nothing ran. Rerun it with --next verify` };
     }
-    if (p.action === 'start' && !p.continues) {
+    if ((p.action === 'start' && !p.continues) || p.action === 'reuse') {
       return { action: 'halt', reason: 'low-confidence', detail: 'a new batch of a request below HIGH starts only on the owner\'s forced step; nothing ran. Run it with --next verify' };
     }
     return p;
@@ -827,8 +983,22 @@ async function runStep({ job, ctl, ops, bounds, now, abortedBy }) {
   let selection = null;
   try {
     const worker = request.checks.map((c) => ({ ...c, origin: 'worker' }));
-    selection = await ops.select({ lane: job.lane, base: job.base, requested: request.checks, declaration: decl });
+    // Amendment of 2026-11-10 (C178) — a request whose on_pass is a verb is
+    // intermediate: its batch leaves the large tests to the final run. One
+    // whose on_pass is the commit (or done) is final: its batch holds the
+    // whole suite once, the worker's or the driver's, in place of the test
+    // files the driver would add, when the declaration has the suite kind.
+    const final = request.on_pass?.kind !== 'verb';
+    selection = await ops.select({ lane: job.lane, base: job.base, requested: request.checks, declaration: decl, deferLarge: !final });
     let additions = selection.additions.map((c) => ({ ...c, origin: 'driver' }));
+    if (final && decl.kinds['test-suite']) {
+      additions = additions.filter((c) => c.kind !== 'test' && c.kind !== 'test-suite');
+      if (!worker.some((c) => c.kind === 'test-suite')) additions.push({ kind: 'test-suite', args: {}, origin: 'driver' });
+    }
+    // The batch's cap on mutation cases, the worker's and the driver's
+    // together: a cost ceiling, refused before anything runs.
+    const cases = caseCount(decl, [...worker, ...additions]);
+    if (cases > MAX_BATCH_MUTATE_CASES) throw new Error(`the batch names ${cases} mutation case ids, more than the ${MAX_BATCH_MUTATE_CASES} one batch runs; ask for the cases of the gate or fail-closed code the change touches`);
     const resolveAll = (list) => list.map((c) => {
       const argv = resolveCheck(decl, { kind: c.kind, args: c.args ?? {} }, { tree: job.lane });
       const k = decl.kinds[c.kind];
@@ -866,7 +1036,14 @@ async function runStep({ job, ctl, ops, bounds, now, abortedBy }) {
   const dir = path.join(job.runDir, 'verify', batchId);
   fs.mkdirSync(dir, { recursive: true });
   const restart = plan.action === 'restart';
-  const continues = restart ? null : plan.continues;
+  const continues = restart ? null : plan.continues ?? null;
+  // A reuse (planVerify): the batch replays its source's passed results. A
+  // batch that continues a replay cut short runs what is left, and keeps the
+  // marker, so its pass is never reused in turn.
+  const reuse = plan.action === 'reuse' ? plan.source : null;
+  const reusedFrom = reuse
+    ? { request_id: reuse.request_id, batch_id: reuse.batch_id }
+    : (plan.prior ? startEntry(entries, request.id, plan.prior.batch_id)?.meta?.reused_from ?? null : null);
   const start = startPayload({
     batchId, runId: job.runId, continues, treeStart: treeNow, declarationCommit: job.offer.baseline, declarationDigest: decl.digest,
     checks, checksDigest: digest, startedAt: iso(),
@@ -877,6 +1054,7 @@ async function runStep({ job, ctl, ops, bounds, now, abortedBy }) {
   const meta = {
     verb: (plan.prior ? startEntry(entries, request.id, plan.prior.batch_id)?.meta?.verb : null) ?? job.verb, base: job.base, checks_digest: digest, subtask_id: job.subtaskId ?? null,
     ...(ownerForced ? { forced: true } : {}),
+    ...(reusedFrom ? { reused_from: reusedFrom } : {}),
   };
   // A hold, a drain or the driver's end that came while the batch was
   // prepared starts none: the step yields, writing nothing more, and the
@@ -938,6 +1116,18 @@ async function runStep({ job, ctl, ops, bounds, now, abortedBy }) {
     if (batchUsedMs >= bounds.batchMs) { bound = true; break; }
     const check = checks[i];
     const logRel = `verify/${batchId}/${i}.log`;
+    if (reuse) {
+      // No process starts: the source's result, under this batch, its log a
+      // pointer to the source's (a result's log is relative to its own run).
+      const src = reuse.results[i];
+      const srcLog = typeof reuse.run_id === 'string' && typeof src.log === 'string' ? path.join(path.dirname(job.runDir), reuse.run_id, src.log) : null;
+      fs.writeFileSync(path.join(job.runDir, logRel), `reused: this check passed in batch ${reuse.batch_id} of request ${reuse.request_id}, on this tree, with this declaration and base; it did not run again.\nits log: ${srcLog ?? 'not recorded'}\n`);
+      const payload = resultPayload({ index: i, outcome: 'passed', exit: 0, signal: null, durationMs: src.duration_ms ?? 0, log: logRel, endedAt: iso() });
+      await write('result', 'verify-result', ['--batch-id', batchId, '--input-file', inputFile(dir, `result-${i}.json`, payload)], { batch_id: batchId, index: i, payload });
+      results.push(payload);
+      ran.push({ index: i, kind: check.kind, origin: check.origin, outcome: 'passed', duration_ms: 0, reused: true });
+      continue;
+    }
     const r = await runCheck({
       check, lane: job.lane, env: job.checkEnv, baseline: job.offer.baseline,
       logFile: path.join(job.runDir, logRel), statusFile: path.join(dir, `${i}.status`), goFile: path.join(dir, `${i}.go`), label: `verify ${batchId} #${i} ${check.kind}`,
@@ -986,8 +1176,8 @@ async function runStep({ job, ctl, ops, bounds, now, abortedBy }) {
   }
   return {
     outcome: 'ran', follow, wrote,
-    batch: { batch_id: batchId, continues, restart, end: e.end, cause: e.cause, checks: ran, checks_digest: digest, tree_start: treeNow, tree_end: e.tree_end, total: checks.length },
-    selection: selection ? { tests: selection.tests.suite ? 'suite' : (selection.tests.files ?? []).length, additions: selection.additions.length } : null,
+    batch: { batch_id: batchId, continues, restart, end: e.end, cause: e.cause, checks: ran, checks_digest: digest, tree_start: treeNow, tree_end: e.tree_end, total: checks.length, ...(reusedFrom ? { reused_from: reusedFrom.batch_id } : {}) },
+    selection: selection ? { tests: selection.tests.suite ? 'suite' : (selection.tests.files ?? []).length, additions: selection.additions.length, deferred: (selection.deferred ?? []).length } : null,
   };
 }
 

@@ -13,8 +13,9 @@
 // dies between the two leaves an intent the record may or may not hold, and
 // never a record the journal does not hold. A start also keeps what the
 // persona's record does not: the requesting verb, the selection base, the
-// subtask, and whether the owner's forced step started it (C168,
-// forcedAuthority).
+// subtask, whether the owner's forced step started it (C168,
+// forcedAuthority), and the batch whose passed results it replays instead of
+// running its checks (`meta.reused_from`, amendment of 2026-11-10).
 //
 // TRUST. The persona's record is no trust boundary (its lib/verify.mjs header):
 // the worker whose step recorded the request can write any batch, result, end
@@ -47,7 +48,12 @@ const WORKFLOW_ID_RE = /^[a-z][a-z0-9-]*-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 // `resume` is the driver's own decision, no persona write: the request's
 // latest batch, its record trusted whole (untrustedProblem), ended without an
 // answer on this tree, and its requesting verb follows (resumeFact).
-export const OPS = Object.freeze(['start', 'restart', 'result', 'end', 'pass', 'resume']);
+// `commit` and `final-resume` are the driver's own too (amendment of
+// 2026-11-10, the commit gate): a commit step it admitted, with the lane's
+// content it was admitted on, and a step it resumed to end with the final
+// verification, with the tree it was resumed on. A driver older than them
+// reads past both (readJournal keeps the ops it knows).
+export const OPS = Object.freeze(['start', 'restart', 'result', 'end', 'pass', 'resume', 'commit', 'final-resume']);
 
 /** The journal of one workflow, under the main checkout. */
 export function journalPath(mainRoot, workflowId) {
@@ -244,7 +250,11 @@ export function untrustedProblem({ request, results, entries }) {
 /**
  * The latest batch the journal ended for this workflow, other than the
  * request's own (`excludeRequest`): what a repeat is judged against (item 7).
- * `{ request_id, batch_id, end, checks_digest, tree_start }`, or null.
+ * `{ request_id, batch_id, end, checks_digest, tree_start }`, or null, with
+ * what a reuse of its pass is judged on (amendment of 2026-11-10): the
+ * declaration digest and the selection base it ran with, the batch it
+ * continues, the batch it replayed (`reused_from`), the run that ran it, how
+ * many checks it has, and the results the journal holds for it, by index.
  */
 export function lastEnded(entries, { excludeRequest = null } = {}) {
   for (let i = entries.length - 1; i >= 0; i -= 1) {
@@ -252,7 +262,39 @@ export function lastEnded(entries, { excludeRequest = null } = {}) {
     if (e.op !== 'end' || e.request_id === excludeRequest) continue;
     const start = startEntry(entries, e.request_id, e.batch_id);
     if (!start) continue;
-    return { request_id: e.request_id, batch_id: e.batch_id, end: e.payload?.end ?? null, checks_digest: start.meta?.checks_digest ?? start.payload?.checks_digest ?? null, tree_start: start.payload?.tree_start ?? null };
+    const results = [];
+    for (const r of find(entries, e.request_id, 'result', e.batch_id)) if (Number.isInteger(r.index)) results[r.index] = r.payload;
+    return {
+      request_id: e.request_id, batch_id: e.batch_id, end: e.payload?.end ?? null, checks_digest: start.meta?.checks_digest ?? start.payload?.checks_digest ?? null, tree_start: start.payload?.tree_start ?? null,
+      declaration_digest: start.payload?.declaration_digest ?? null, base: start.meta?.base ?? null, continues: start.payload?.continues ?? null,
+      reused_from: start.meta?.reused_from ?? null, run_id: start.payload?.run_id ?? null,
+      checks: Array.isArray(start.payload?.checks) ? start.payload.checks.length : 0, results,
+    };
+  }
+  return null;
+}
+
+/**
+ * ADR-0068 Decision 5, amendment of 2026-11-10 (C178) — the suite's evidence
+ * for a tree: the latest batch of the workflow the journal ended `passed`
+ * whose checks hold the suite's command (`suiteArgv`, as the driver resolves
+ * the declaration's suite kind now), started and ended on `tree`, with the
+ * declaration `declarationDigest` and the selection base `base`. Every part
+ * is the journal's own (a start's payload and metadata, an end's payload),
+ * never the persona's record. `{ batch_id, request_id }`, or null: an edit,
+ * a regeneration, a commit or a rebase since moves the tree digest (it
+ * hashes HEAD), a newer declaration its digest, a moved fork point the base.
+ */
+export function suiteEvidence(entries, { tree, declarationDigest, base, suiteArgv }) {
+  if (typeof tree !== 'string' || typeof declarationDigest !== 'string' || !Array.isArray(suiteArgv)) return null;
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const e = entries[i];
+    if (e.op !== 'end' || e.payload?.end !== 'passed' || e.payload.tree_end !== tree) continue;
+    const start = startEntry(entries, e.request_id, e.batch_id);
+    const p = start?.payload;
+    if (!p || p.tree_start !== tree || p.declaration_digest !== declarationDigest || (start.meta?.base ?? null) !== (base ?? null)) continue;
+    if (!Array.isArray(p.checks) || !p.checks.some((c) => same(c?.argv, suiteArgv))) continue;
+    return { batch_id: e.batch_id, request_id: e.request_id };
   }
   return null;
 }
