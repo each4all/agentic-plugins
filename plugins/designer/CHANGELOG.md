@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.14.6...plugin-designer-v0.15.0) (2026-11-10)
+
+
+### Features
+
+* **designer:** defer non-blocking MAJOR findings from the second critique on ([eb428a1](https://github.com/each4all/agentic-plugins/commit/eb428a1e5000b6d7503c3b73adfbd6dd18b035a8))
+
 ## [0.14.6](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.14.5...plugin-designer-v0.14.6) (2026-11-09)
 
 
