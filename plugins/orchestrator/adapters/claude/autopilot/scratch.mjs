@@ -198,12 +198,23 @@ export async function allocateScratch({ repoRoot, mainRoot, runId, env = process
   if (commonDir === null) throw new Error(`the common git directory of ${repoRoot} cannot be read, so the run's temporary directory cannot be tied to the repository`);
   const home = path.join(base, SCRATCH_HOME);
   const makeHome = () => {
+    const make = () => {
+      try {
+        fs.mkdirSync(home, { mode: 0o700 });
+      } catch (err) {
+        if (err.code !== 'EEXIST') throw new Error(`the run's temporary directory could not be made under ${base} (${err.code ?? err.message}); set TMPDIR to a directory you can write to`);
+      }
+      return fs.lstatSync(home);
+    };
+    let st;
     try {
-      fs.mkdirSync(home, { mode: 0o700 });
+      st = make();
     } catch (err) {
-      if (err.code !== 'EEXIST') throw new Error(`the run's temporary directory could not be made under ${base} (${err.code ?? err.message}); set TMPDIR to a directory you can write to`);
+      // Found (EEXIST) and then gone: another run's end removed it between
+      // the two calls. Made again, once.
+      if (err.code !== 'ENOENT') throw err;
+      st = make();
     }
-    const st = fs.lstatSync(home);
     const uid = typeof process.getuid === 'function' ? process.getuid() : null;
     if (!st.isDirectory() || st.isSymbolicLink() || (uid !== null && st.uid !== uid)) {
       throw new Error(`${home} is not a directory of your own (a link, a file, or another user's): the run's temporary files cannot go there. Set TMPDIR to a directory of your own`);
