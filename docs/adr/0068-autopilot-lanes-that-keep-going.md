@@ -5769,7 +5769,9 @@ are made, not by a block that deletes them.
      open-run record for the same reason.
    At its end the run waits for the removals in flight, makes one pass over
    its root and removes the root when nothing is left (the marker last, the
-   directory without recursion); `run.json` `scratch` records what stays
+   directory without recursion), and `agentic-ap` after it when that is
+   empty (`rmdir`, which removes nothing else; a run starting at that moment
+   makes it again), so an ended run leaves nothing under the base; `run.json` `scratch` records what stays
    and why, and `removed_at`. A run that ended on an error sweeps nothing:
    its steps in flight are unknown.
 
@@ -5848,7 +5850,8 @@ cron job on that machine are the owner's to remove.
   runs past the system's limit, start the driver with a shorter `TMPDIR`.
 - *A shared `/tmp`.* On a machine whose users share `/tmp` and set no
   `TMPDIR`, the second user's run finds `agentic-ap` owned by another
-  and does not start. Set `TMPDIR`.
+  while a run of that user has its root there, and does not start. Set
+  `TMPDIR`.
 - *Other temporary files of the driver.* What the driver itself makes in its
   own TMPDIR (a landing check's scratch, an instruction's text) is outside
   this amendment; each removes its own.

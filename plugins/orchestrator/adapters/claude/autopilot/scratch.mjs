@@ -197,16 +197,19 @@ export async function allocateScratch({ repoRoot, mainRoot, runId, env = process
   const commonDir = commonDirOf(repoRoot);
   if (commonDir === null) throw new Error(`the common git directory of ${repoRoot} cannot be read, so the run's temporary directory cannot be tied to the repository`);
   const home = path.join(base, SCRATCH_HOME);
-  try {
-    fs.mkdirSync(home, { mode: 0o700 });
-  } catch (err) {
-    if (err.code !== 'EEXIST') throw new Error(`the run's temporary directory could not be made under ${base} (${err.code ?? err.message}); set TMPDIR to a directory you can write to`);
-  }
-  const st = fs.lstatSync(home);
-  const uid = typeof process.getuid === 'function' ? process.getuid() : null;
-  if (!st.isDirectory() || st.isSymbolicLink() || (uid !== null && st.uid !== uid)) {
-    throw new Error(`${home} is not a directory of your own (a link, a file, or another user's): the run's temporary files cannot go there. Set TMPDIR to a directory of your own`);
-  }
+  const makeHome = () => {
+    try {
+      fs.mkdirSync(home, { mode: 0o700 });
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw new Error(`the run's temporary directory could not be made under ${base} (${err.code ?? err.message}); set TMPDIR to a directory you can write to`);
+    }
+    const st = fs.lstatSync(home);
+    const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+    if (!st.isDirectory() || st.isSymbolicLink() || (uid !== null && st.uid !== uid)) {
+      throw new Error(`${home} is not a directory of your own (a link, a file, or another user's): the run's temporary files cannot go there. Set TMPDIR to a directory of your own`);
+    }
+  };
+  makeHome();
   const root = path.join(home, scratchRootName(runId));
   const createdAt = new Date(now()).toISOString();
   let repo = repoRoot;
@@ -222,7 +225,15 @@ export async function allocateScratch({ repoRoot, mainRoot, runId, env = process
     throw new Error(`the run's temporary directory could not be put on the index ${indexPath(mainRoot, runId)} (${err.code ?? err.message})`);
   }
   try {
-    fs.mkdirSync(root, { mode: 0o700 });
+    try {
+      fs.mkdirSync(root, { mode: 0o700 });
+    } catch (err) {
+      // Another run's end removed the empty home between its making here and
+      // this line (dropEmptyHome): made again, once, with the same checks.
+      if (err.code !== 'ENOENT') throw err;
+      makeHome();
+      fs.mkdirSync(root, { mode: 0o700 });
+    }
   } catch (err) {
     // Not this run's: the entry that would hand it to a sweep goes.
     try { removeScratchIndex(mainRoot, runId); } catch { /* the sweep refuses a root with another's marker */ }
@@ -382,6 +393,7 @@ export async function removeScratch(dir, ident, { rm = fs.promises.rm } = {}) {
     if (left.length > 0) throw new Error(`${ident.root} is not empty (${left.slice(0, 3).join(', ')})`);
     try { fs.unlinkSync(path.join(ident.root, SCRATCH_MARKER)); } catch (err) { if (err.code !== 'ENOENT') throw err; }
     fs.rmdirSync(ident.root);
+    dropEmptyHome(ident.root);
     return 'removed';
   }
   if (p.gone) return 'gone';
@@ -393,6 +405,17 @@ export async function removeScratch(dir, ident, { rm = fs.promises.rm } = {}) {
   }
   await rm(target, { recursive: true, force: true, maxRetries: 2 });
   return 'removed';
+}
+
+// The home goes with its last root, so an ended run leaves nothing under the
+// base. `rmdir` removes an empty directory and nothing else: a home that
+// holds another run's root, a link, or one already gone stays as it is. The
+// caller has judged `root` (its parent is named `agentic-ap`). A run that is
+// starting meanwhile makes the home again (allocateScratch).
+function dropEmptyHome(root) {
+  const home = path.dirname(root);
+  if (path.basename(home) !== SCRATCH_HOME) return;
+  try { fs.rmdirSync(home); } catch { /* not empty, a link, or gone */ }
 }
 
 // Whether `root` is the run's own path (its layout), a real directory
@@ -427,6 +450,7 @@ export async function sweepScratch({ root, runId, commonDir, env = process.env, 
     if (result.refused === 'no-marker' && emptyRoot(root, ident)) {
       try {
         fs.rmdirSync(root);
+        dropEmptyHome(root);
         result.refused = null;
         result.rootRemoved = true;
       } catch { /* not empty after all, or gone: refused as it was */ }

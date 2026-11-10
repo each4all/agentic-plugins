@@ -218,6 +218,19 @@ describe('removal', () => {
     ok(existsSync(a.base) && existsSync(a.repo));
   });
 
+  it('the home goes with its last root, stays while another run\'s root is in it, and a later run makes it again', async (t) => {
+    const a = await allocated(t);
+    const home = join(a.base, 'agentic-ap');
+    const other = await S.allocateScratch({ repoRoot: a.repo, mainRoot: a.repo, runId: OTHER, env: a.env });
+    strictEqual(await S.removeScratch(a.root, a.ident), 'removed');
+    deepStrictEqual(readdirSync(home), [OTHER.slice(10)], 'another run\'s root keeps the home, untouched');
+    strictEqual(await S.removeScratch(other.root, { root: other.root, runId: OTHER, commonDir: other.commonDir }), 'removed');
+    deepStrictEqual(readdirSync(a.base).filter((n) => n === 'agentic-ap'), [], 'an ended run leaves nothing under the base');
+    S.removeScratchIndex(a.repo, RUN);
+    const again = await S.allocateScratch({ repoRoot: a.repo, mainRoot: a.repo, runId: RUN, env: a.env });
+    ok(existsSync(join(again.root, S.SCRATCH_MARKER)));
+  });
+
   it('a removal a crash interrupted is finished by the next pass, without judging it again', async (t) => {
     const a = await allocated(t);
     const step = join(a.root, 's1');
@@ -528,7 +541,7 @@ describe('a run gives each step its own TMPDIR and removes it when the step ends
       strictEqual(firstGoneDuringRun, true, 'the first step\'s directory went when that step ended');
       deepStrictEqual(t.workerEnvs().map((e) => e.TMPDIR), seen, 'the worker\'s TMPDIR is its step\'s');
       ok(!existsSync(root), 'the root is gone at the run\'s end');
-      deepStrictEqual(readdirSync(join(t.base, 'agentic-ap')), []);
+      ok(!existsSync(join(t.base, 'agentic-ap')), 'the home went with the run\'s root');
       deepStrictEqual(S.listScratchIndex(t.work), []);
       deepStrictEqual([r.run.scratch.root, r.run.scratch.deferred, r.run.scratch.failures, typeof r.run.scratch.removed_at], [root, [], 0, 'string']);
       strictEqual(t.fx.git('status', '--porcelain'), '', 'nothing of it dirtied the worktree');
