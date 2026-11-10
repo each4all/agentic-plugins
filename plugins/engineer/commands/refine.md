@@ -248,9 +248,29 @@ Where a long check runs depends on the session:
   ends, and the step that follows reads their results, which Phase 0 prints.
   Failing tests named there are the evidence to work from; a check that ended
   with no evidence (a timeout, one cut short or never reached) says nothing
-  about the code. Recording the same checks again on an unchanged tree, after
-  they passed or one failed, halts the lane `no-progress`: change the code
-  first (the owner reruns a flaky check with `--next verify`).
+  about the code. What a request names depends on the step that follows it
+  (ADR-0068 Decision 5, amendment of 2026-11-10):
+  - **An intermediate request** (its `on_pass` is a verb, as after composing
+    or refining): name only the test files the change touches. Do not name
+    the whole suite, a broad `npm test` or a broad mutation set: the driver
+    adds the small and medium tests the change selects, and the large ones
+    wait for the final run. Name mutation cases only when the change touches
+    gate or fail-closed code (a check that refuses, a guard, a bound), and
+    then only those cases. A step with no test file to name names the
+    cheapest declared check its change triggers.
+  - **The final request** (its `on_pass` is `commit` or `done`): name the
+    whole suite, the `test-suite` check, when the repository declares it. Its
+    pass is the evidence the commit needs, and it holds only for the tree it
+    ran on: after any later edit, regeneration, commit or rebase the driver
+    asks for it again, and resumes a verb that asks for the commit without it.
+  - **One batch runs at most 6 case ids of mutation in all**, the request's
+    and the driver's together: a request over that is refused before any
+    write.
+
+  Recording the same checks again on an unchanged tree after they passed
+  runs nothing: the driver reuses the pass once. A second time, or after one
+  failed, it halts the lane `no-progress`: change the code first (the owner
+  reruns a flaky check with `--next verify`).
 - **Under an autopilot run that does not offer it** (the banner ends `This
   run does not offer verification`): in the step, as before.
 - **Interactively:** run a long check under the repository's heavy-work lock,
@@ -663,6 +683,17 @@ tree (`verb` with its `verb`, `commit` or `done`, and its confidence); and
   "confidence": "HIGH"
 }
 ```
+
+Size the request by its `on_pass` (ADR-0068 Decision 5, amendment of
+2026-11-10). With `on_pass` a verb the request is intermediate: name only the
+test files the change touches, never the whole suite or a broad mutation set
+(the driver adds the small and medium tests the change selects, and leaves the
+large ones to the final run), and name mutation cases only for gate or
+fail-closed code. With `on_pass` `commit` or `done` it is final: name the
+whole suite, the `test-suite` check, when the repository declares it. The
+driver takes the commit only with that suite passed on the tree as it is, and
+resumes a verb that asks for the commit without it. A request that names more
+than 6 mutation case ids in all is refused.
 
 Then `next-action.txt` names the verification (for example `Verify: the
 changed tests and the mutation cases, then critique`). When every check

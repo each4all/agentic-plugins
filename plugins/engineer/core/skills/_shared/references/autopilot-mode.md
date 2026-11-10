@@ -131,10 +131,28 @@ an offering run:
   tests and its log. Failing tests are the evidence to work from; a check with
   no evidence (a timeout, one cut short or never reached) says nothing about
   the code.
-- **Repeats.** The same checks recorded again on an unchanged tree, after they
-  all passed or one failed, halt the lane `no-progress` and run nothing; after
-  a batch that ended with no evidence they run again. A flaky check is rerun
-  only after a change, or by the owner (`--next verify`).
+- **Intermediate and final requests** (amendment of 2026-11-10). A request
+  whose `on_pass` is a verb is intermediate: it names the test files the
+  change touches, no whole suite and no broad mutation set, and its batch
+  leaves the repository's large tests to the final run. A request whose
+  `on_pass` is `commit` or `done` is final: its batch holds the whole suite
+  once, when the repository declares a `test-suite` check. One batch runs at
+  most 6 mutation case ids in all, named only for gate or fail-closed code.
+- **The commit gate.** Where the repository declares a `test-suite` check,
+  the driver takes the commit only when a batch passed the whole suite on the
+  lane's tree as it is, with the run's declaration and the lane's base. A verb
+  that records `commit`, or `done` over a changed tree, without it is resumed
+  once with the driver's sentence after its command: end that step with the
+  verify form, the suite named, `on_pass` commit. A second resume on the same
+  tree halts the lane `no-progress`. The owner's forced commit is refused the
+  same way, and an interrupted commit is taken up only on the content it was
+  admitted on.
+- **Repeats.** The same checks recorded again on an unchanged tree after they
+  all passed run nothing: the driver reuses that pass once, and `on_pass`
+  follows. A second time, or after one failed, they halt the lane
+  `no-progress` and run nothing; after a batch that ended with no evidence
+  they run again. A flaky check is rerun only after a change, or by the owner
+  (`--next verify`).
 
 A run that does not offer verification takes no request (`finish-verb`
 refuses one), and its steps check as before.
