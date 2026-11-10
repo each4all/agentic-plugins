@@ -60,13 +60,18 @@ directory as `arguments.json`, where every later block reads them:
 - `subtask_id` ← the leading word (e.g., `PR1`), or empty if absent.
 - `workflow_id` ← the value of `--workflow=<id>`, or empty if absent.
 
-A refused text (an unknown option, a second subtask id, a word holding a quote
-or backslash) stops Phase 0 with the reason, and nothing is selected; the
+A refused text stops Phase 0 with the reason, and nothing is selected; the
 parse removed the args file, so write a new one before running Phase 0 again.
-Once Phase 0 has kept `arguments.json`, Phase 0 run again with the same text
-directory reads it; a new args file there is parsed too, and refused unless it
-names the same arguments: to run with other arguments, start again from step 1
-with a new text directory.
+To run with other arguments, start again from step 1 with a new text
+directory.
+
+**When a phase refuses, or a block runs again**, read the section of
+`${CLAUDE_PLUGIN_ROOT}/core/skills/_shared/references/next-dispatch.md` (the
+file shipped with this command text, whatever root the blocks' scripts are
+pinned to) that names what you see: a dirty tree, a hold gate's refusal, a
+refused join, a refused writeback or re-attach, a rerun of Phase 0. It also
+holds the reason for each block's steps. A dispatch that runs through needs
+none of it.
 
 **Critical rules** (ADR-0019 §1):
 - Do NOT invoke the engineer skill directly (`core/skills/<verb>/SKILL.md`) — bypasses Phase 0 bootstrap and drops the parent linkage the engineer terminal note needs.
@@ -93,12 +98,9 @@ if [ -z "$GIT_BRANCH" ]; then
   echo "  Switch to the macro branch first: git switch <branch>" >&2
   exit 1
 fi
-# The arguments, parsed from the args file the agent wrote (ADR-0059, C134(a)):
-# command-args reads it by next's grammar and removes it, so its fields are kept
-# in the text directory, where Phase 1 and a rerun of this block read them. No
-# character the user typed is shell source. A new args file beside kept
-# arguments is parsed too, and refused unless it names the same arguments: a
-# rerun never selects by other arguments than the kept ones without a word.
+# The arguments, parsed from the args file the agent wrote (ADR-0059, C134(a))
+# and kept in the text directory; a new args file beside kept arguments must
+# name the same ones.
 if [ ! -f "$TEXT_DIR/arguments.json" ]; then
   ARGS_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" command-args \
     --command next --args-file "$ARGS_DIR/args.json")" || exit 1
@@ -114,20 +116,15 @@ fi
 ARG_WORKFLOW_ID="$(node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>process.stdout.write(JSON.parse(d).workflow_id))' < "$TEXT_DIR/arguments.json")" || exit 1
 MACRO_PATH=""
 if [ -n "$ARG_WORKFLOW_ID" ]; then
-  # Reject path-component overrides — `--workflow=../archive/<id>` would
-  # otherwise let the macro path escape `workflows/` and target archived
-  # or unrelated files (Codex P2 finding; mirrors PR-C's path-traversal
-  # guard in parent-writeback.mjs).
+  # A basename-shaped id only: a path component would let the macro path
+  # escape `workflows/`. No NUL case, which matched every id.
   case "$ARG_WORKFLOW_ID" in
-    # No NUL case: a shell variable cannot hold NUL, and bash expands $'\0'
-    # to an empty string, which made the pattern match every id.
     */*|*\\*|..|.*)
       echo "✗ --workflow=$ARG_WORKFLOW_ID invalid — must be a basename-shaped workflow id (no '/', '\\\\', '..', or leading '.')." >&2
       exit 1;;
   esac
-  # ADR-0067 Decision 4, item 2 — the macro file in the orchestrator workflow
-  # homes of this checkout's read set, the default state root's first. Two
-  # files holding the id are an error, named on stderr, never a choice.
+  # ADR-0067 Decision 4, item 2 — the one macro file holding the id in this
+  # checkout's read set; two are an error, never a choice.
   if ! MACRO_PATH="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
     resolve-workflow --repo-root "$REPO_ROOT" --workflow-id "$ARG_WORKFLOW_ID")"; then
     echo "✗ --workflow=$ARG_WORKFLOW_ID names no single macro file in the orchestrator workflow homes of this checkout's read set (the reason is above)." >&2
@@ -146,8 +143,7 @@ else
       find-macro --repo-root "$REPO_ROOT" --subtask-branch "$GIT_BRANCH")"
     RC=$?
     if [ "$RC" -ne 0 ]; then
-      # find-macro exits 1 + ambiguous diagnostic when two macros
-      # reference the same subtask branch (ADR-0019 §1 fail-closed).
+      # Two macros reference the same subtask branch (ADR-0019 §1 fail-closed).
       exit "$RC"
     fi
   fi
@@ -177,24 +173,18 @@ MACRO_PATH="$(cat "$TEXT_DIR/macro-path")" || exit 1
 ARG_SUBTASK_ID="$(node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>process.stdout.write(JSON.parse(d).subtask_id))' < "$TEXT_DIR/arguments.json")" || exit 1
 SUBTASK_JSON=""
 if [ -n "$ARG_SUBTASK_ID" ]; then
-  # Explicit id — read that subtask. PR-C0's absorbing-completed
-  # / terminal-partial preconditions reject downgrades downstream;
-  # the runbook only validates the id resolves cleanly here.
+  # Explicit id — read that subtask; the blocks below judge it.
   SUBTASK_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
     read-subtask --workflow-path "$MACRO_PATH" --subtask-id "$ARG_SUBTASK_ID")"
   if [ $? -ne 0 ]; then exit 1; fi
 else
-  # Automatic — first subtask with status=pending AND every blocked_by
-  # predecessor status=completed. next-ready emits a structured JSON
-  # diagnostic for the no-candidate cases so we can pick the right
-  # recovery message.
+  # Automatic — the first pending subtask whose predecessors are all
+  # completed, or a JSON diagnostic naming why there is none.
   NEXT_OUT="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
     next-ready --workflow-path "$MACRO_PATH")"
   if [ $? -ne 0 ]; then exit 1; fi
-  # The document goes through printf, not echo, whose zsh builtin (and a POSIX
-  # sh's) expands the backslash escapes inside JSON strings; the parse waits for
-  # the whole document, which a pipe hands over in chunks; and a document that
-  # does not parse fails the block rather than reading as nothing (C68).
+  # printf, not echo, which expands the backslash escapes inside JSON strings;
+  # a document that does not parse fails the block (C68).
   READY="$(printf '%s' "$NEXT_OUT" | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d);if(o.ready)process.stdout.write(JSON.stringify(o.ready))})')" || exit 1
   if [ -z "$READY" ]; then
     REASON="$(printf '%s' "$NEXT_OUT" | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>process.stdout.write(JSON.parse(d).reason||"unknown"))')" || exit 1
@@ -203,15 +193,12 @@ else
         echo "✗ Macro plan has no subtasks. Run /orchestrator:plan to add some." >&2
         exit 1;;
       all_terminal)
-        # Dispatch guard (not a verb completion) — names the single honest
-        # recovery for this state per session-handoff.md § Active Next-Action
-        # Proposal meta/guard exception: the macro is ready to close.
+        # A dispatch guard, not a verb completion: the macro is ready to close.
         echo "✓ All subtasks reached a terminal status — nothing to dispatch. The macro is ready to close via /orchestrator:finalize (terminal close), or the auto-archive Stop hook once terminal_marker is set." >&2
         exit 1;;
       in_progress_or_blocked)
-        # ADR-0062 §Decision 5 — print the facts next-ready computed from the
-        # plan, not a guess from the status. An in_progress subtask whose
-        # engineer workflow has committed stays in_progress until it lands.
+        # ADR-0062 §Decision 5 — the facts next-ready computed from the plan:
+        # a committed subtask stays in_progress until it lands.
         echo "✗ No subtask is ready to dispatch. Open subtasks:" >&2
         printf '%s' "$NEXT_OUT" | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d);for(const r of o.readiness||[]){let why;if(r.status==="in_progress")why="in progress; once its pull request has merged, record it with /orchestrator:done "+r.id;else if(r.stale_blocked)why="marked blocked, but every predecessor is completed (written before the shared unblock pass); repair: state.mjs subtask-update --subtask-id="+r.id+" --status=pending";else if(r.waiting_on.length>0)why="waiting on "+r.waiting_on.join(", ");else why=r.status;process.stderr.write("  - "+r.id+": "+why+"\n")}})'
         exit 1;;
@@ -227,9 +214,7 @@ fi
 printf '%s' "$SUBTASK_JSON" > "$TEXT_DIR/subtask.json" || exit 1
 # Prints the field named by JSON_KEY of the JSON document on stdin, or "" when
 # it is absent or null; a document that does not parse fails (C68). The key
-# travels in the environment: before any shell sees this file, Claude replaces
-# a dollar sign followed by a digit with the command's argument at that index
-# (C67).
+# travels in the environment, never as a positional parameter (C67).
 JSON_FIELD='let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const v=JSON.parse(d)[process.env.JSON_KEY];process.stdout.write(v==null?"":String(v))})'
 SUBTASK_ID="$(JSON_KEY=id node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
 if [ -z "$SUBTASK_ID" ]; then
@@ -238,7 +223,7 @@ if [ -z "$SUBTASK_ID" ]; then
 fi
 ```
 
-Validate the resolved subtask is dispatch-ready (mirrors `next-ready`'s gate so explicit-id selection cannot bypass dependency ordering — Codex P2 finding):
+Validate the resolved subtask is dispatch-ready (`next-ready`'s gate, for an explicit id too):
 
 ```bash
 TEXT_DIR='<directory from step 1>'
@@ -248,9 +233,7 @@ MACRO_PATH="$(cat "$TEXT_DIR/macro-path")" || exit 1
 JSON_FIELD='let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const v=JSON.parse(d)[process.env.JSON_KEY];process.stdout.write(v==null?"":String(v))})'
 SUBTASK_ID="$(JSON_KEY=id node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
 SUBTASK_STATUS="$(JSON_KEY=status node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
-# ADR-0062 §Decision 5 — the dependency facts come from the state CLI, which
-# parses the plan properly; they hold for an explicitly chosen subtask even
-# when another one is ready.
+# ADR-0062 §Decision 5 — the dependency facts, from the state CLI.
 READINESS="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
   subtask-readiness --workflow-path "$MACRO_PATH" --subtask-id "$SUBTASK_ID")" || exit 1
 WAITING_ON="$(printf '%s' "$READINESS" | node -e 'let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>process.stdout.write(JSON.parse(d).waiting_on.join(", ")))')" || exit 1
@@ -282,10 +265,8 @@ esac
 Then apply the plan-approval gate (ADR-0063 D4 rule 3, owner decision D3).
 `state.mjs approval-gate` decides from the approval facts `next-ready` reports
 (`{status, hash_ok}`), so this runbook never compares plan hashes itself. It
-runs for an explicit id as well as for the automatic pick, because
-`subtask-readiness` reports no approval. It is given the subtask as selected
-above, because that — not the plan the gate reads — is what Phases 4 and 5
-dispatch.
+runs for an explicit id as well as for the automatic pick, on the subtask as
+selected above.
 
 - **Autopilot** (`AGENTIC_AUTOPILOT` names a run): a plan that is not approved
   at its current hash — pending approval, changed since it was approved, or
@@ -312,13 +293,9 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" approval-gate \
 ```
 
 Then the hold gate (ADR-0068 Decision 2, item 5): a held subtask is never
-dispatched by hand, from whatever checkout this runs in. `state.mjs hold-gate`
-refuses a subtask whose hold is pending, held or cannot be read, whose release
-no run has compared yet or was rejected, and one with a persona operation open
-in its lane, naming the exit (the owner's `agentic-autopilot release`, a run
-that compares the release, or `writer-clear` for an operation whose session is
-gone). It only reads, and prints nothing for a macro whose holds are not on.
-Phase 3b judges it again under the admission.
+dispatched by hand. `state.mjs hold-gate` refuses one, naming the exit; it only
+reads, and prints nothing for a macro whose holds are not on. Phase 3b judges
+it again under the admission.
 
 ```bash
 TEXT_DIR='<directory from step 1>'
@@ -353,8 +330,7 @@ SUBTASK_EXISTING_ENG_WF_ID="$(JSON_KEY=engineer_workflow_id node -e "$JSON_FIELD
 if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=normal)" ]; then
   echo "✗ Working tree not clean — /orchestrator:next does not switch branches over uncommitted changes." >&2
   echo "  (engineer's Phase 0 status_digest capture is meaningful only on a clean tree.)" >&2
-  # ADR-0067 Decision 8, item 3 — a worktree first, from a fixed template,
-  # where the new worktree can find the macro; read-only.
+  # ADR-0067 Decision 8, item 3 — a worktree first; read-only.
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" worktree-proposal \
     --workflow-path "$MACRO_PATH" --repo-root "$REPO_ROOT" --subtask-id "$SUBTASK_ID" \
     --host claude --format text >&2 || true
@@ -371,9 +347,7 @@ if [ -z "$ENGINEER_PLUGIN_ROOT" ]; then
 fi
 
 # Step 3: ownership check on the subtask branch — re-attach / mismatch / no-active.
-# stderr is left alone, not redirected, so engineer's per-branch
-# single-active invariant violations (multiple workflow files on the branch,
-# corrupt file) reach the output rather than being swallowed (Codex P2 finding).
+# stderr is left alone, so the engineer's own refusals reach the output.
 EXISTING_ENG_PATH="$(node "$ENGINEER_PLUGIN_ROOT/scripts/state.mjs" \
   find-active --repo-root "$REPO_ROOT" --branch "$SUBTASK_BRANCH")"
 RC=$?
@@ -381,13 +355,9 @@ if [ "$RC" -ne 0 ]; then
   exit "$RC"
 fi
 
-# Recorded engineer_workflow_id missing from active workflows (Codex P2
-# finding): if the subtask already references an engineer workflow id
-# but find-active returns nothing on this branch, the previously
-# recorded child was archived (or moved/deleted). Creating a new
-# bootstrap would land an unrelated id, and Phase 5's writeback would
-# reject it as ownership mismatch — leaving the user on the subtask
-# branch with a stray active engineer workflow. Fail early instead.
+# A recorded engineer_workflow_id with no active workflow on the branch: the
+# child was archived, moved or deleted. Fail before a new bootstrap lands an
+# unrelated id.
 if [ -n "$SUBTASK_EXISTING_ENG_WF_ID" ] && [ -z "$EXISTING_ENG_PATH" ]; then
   echo "✗ Subtask $SUBTASK_ID references engineer_workflow_id=$SUBTASK_EXISTING_ENG_WF_ID but no active engineer workflow exists on branch '$SUBTASK_BRANCH'." >&2
   echo "  The recorded child has usually finished its commit and been archived; the subtask stays in_progress until the work lands (ADR-0062)." >&2
@@ -422,20 +392,9 @@ Phase 2 only reads: a refusal here leaves nothing behind. The switch is
 Phase 3b's, after the engineer preflight and the join.
 
 A dirty tree's refusal selects a worktree first (ADR-0067 Decision 8, item 3):
-`state.mjs worktree-proposal` prints the `git worktree add` command for the
-subtask's branch at `<parent>/<repo>-<slug>`, runtime:worktree's path, then the
-`/orchestrator:next` to run again inside the new worktree. Its proposal is the
-refusal's `selected_next`, with commit, stash or revert here among the rejected
-alternatives (right when the changes are this subtask's or finished; wrong when
-they are other work, which a switch would carry along). When the subtask's
-branch is checked out in this very checkout and the subtask is in progress, the
-changes are its engineer workflow's: the selection is the ordinary resume of
-that workflow on this branch (`/engineer:resume`), and no worktree is
-proposed. It proposes none, and says why, where a worktree cannot help
-otherwise: the macro is in a linked worktree's own home, which no other
-worktree reads (the state-root cutover, `docs/runbooks/state-root-cutover.md`,
-makes a second worktree usable), or the subtask's branch is checked out here
-for a subtask not yet in progress.
+`state.mjs worktree-proposal` prints the commands, or says why it proposes
+none. § Completion says what to select from what it printed; the reference's
+§ The working tree is not clean has each case.
 
 ---
 
@@ -475,28 +434,17 @@ The `preflight` subcommand prints the precise reason on its own stderr — surfa
 ## Phase 3b — Join the run locks, then switch (ADR-0067 Decision 4, item 5)
 
 An autopilot run holds this checkout's worktree lock and its macro's lock
-while it works. This command takes part in both, in the order the driver
-takes them, as an **admission**: `admission join` writes one entry under a
-random id in each, and refuses, naming the holder, when a run or another
-session is there. A worker of the run that holds them passes with no entry and
-an empty id. Then the block reads again what a run's step or a plan revision
-could have changed before the join (the tree, the subtask branch's engineer
-workflow, the selected subtask's status, engineer workflow id, branch, verb,
-profile and topic, and for a pending subtask whether it still waits on
-nothing) and switches. Every exit from the join until the switch has succeeded releases the
-admission.
-
-Before the switch it judges the hold gate again, under the holds lock, and,
-for a subtask with no engineer workflow yet and a macro whose holds are on,
-publishes the dispatch's **mark** (ADR-0068 Decision 2, item 5; N4): an
-operation record of the lane that the engineer's bootstrap continues under the
-id Phase 4 exports (`AGENTIC_OPERATION_ID`). A hold the owner sets from here on
-waits for the dispatch to finish, so this command never records a subtask in
-progress that its engineer then refuses. The block keeps the mark in the text
-directory (`dispatch-mark.json`); every exit from its publication on withdraws
-a mark no child carries (this block's on a refusal, Phase 5's on every path).
-A re-attach publishes none: the engineer's resume opens its own operation,
-which the mark would refuse.
+while it works. This command takes part in both as an **admission**:
+`admission join` writes this session's entry in each, and refuses, naming the
+holder, when a run or another session is there (a worker of the run that
+holds them passes with an empty id). The block then reads again what could
+have changed before the join, judges the hold gate again, publishes the
+dispatch's **mark** for a subtask with no engineer workflow yet when the
+macro's holds are on (its result is kept as `dispatch-mark.json` in the text
+directory, and Phase 4 exports a published mark's id as
+`AGENTIC_OPERATION_ID`; a re-attach publishes none) and switches. Every exit
+from the join until the switch has succeeded releases the admission and
+withdraws the mark.
 
 ```bash
 TEXT_DIR='<directory from step 1>'
@@ -547,10 +495,9 @@ if [ "$NOW_ENG_PATH" != "$EXISTING_ENG_PATH" ]; then
   echo "✗ The engineer workflow on '$SUBTASK_BRANCH' changed after Phase 2's ownership check (was '${EXISTING_ENG_PATH:-none}', now '${NOW_ENG_PATH:-none}'); nothing was switched. Rerun /orchestrator:next." >&2
   exit 1
 fi
-# The subtask as Phase 1 selected it, every field Phase 1 read that a later
-# phase acts on: a run's step may have completed it, and archived its child, and
-# a plan revision may have changed its branch, verb, profile or topic, before
-# the join. The read's status is its own, apart from the comparison's (C110).
+# The subtask as Phase 1 selected it, every field a later phase acts on: a
+# run's step or a plan revision may have changed it before the join. The
+# read's status is its own, apart from the comparison's (C110).
 NOW_SUBTASK="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read-subtask \
   --workflow-path "$MACRO_PATH" --subtask-id "$SUBTASK_ID")" || exit 1
 SUBTASK_CHANGES="$(printf '%s' "$NOW_SUBTASK" \
@@ -583,13 +530,9 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" dispatch-mark-publish \
   --checkout "$REPO_ROOT" --host "$DETECTED_HOST" --reattach "$REATTACH" \
   --mark-file "$TEXT_DIR/dispatch-mark.json" || exit 1
 
-# The switch. The user lands on $SUBTASK_BRANCH whether or not
-# we re-attached — engineer's resume keys on `git branch --show-current`.
-# A new branch starts from the integration branch (the macro's baseline
-# branch) as the remote last reported it, never from the checked-out HEAD:
-# after a squash or rebase merge, the previous subtask's branch is not part
-# of the integration branch, and a successor built on it would carry
-# obsolete history (ADR-0062 §Decision 2).
+# The switch. A new branch starts from the integration branch (the macro's
+# baseline branch) as the remote last reported it, never from the checked-out
+# HEAD (ADR-0062 §Decision 2).
 # --- ADR-0062 branch-base step (extracted by tests) ---
 # The read's status is its own, apart from the parser's: piped, a failed read
 # would show as a macro with no baseline branch (C110).
@@ -626,9 +569,7 @@ trap - EXIT
 
 ## Phase 4 — Invoke engineer command (single-shell-session contract)
 
-ADR-0019 §1 lines 252-287 — every emitted engineer snippet runs in a subshell with rebound `CLAUDE_PLUGIN_ROOT` and uses `$ENGINEER_PLUGIN_ROOT` directly in argv. Because the Bash tool spawns a fresh process per invocation, the exports MUST live in the **same bash block** as the engineer command's Phase 0 snippets — emit them as the prelude of a single combined Bash tool call.
-
-**Host auto-detection** (Codex P2 finding): the prelude below infers the host from the orchestrator root's path shape (Claude cache lives under `~/.claude/`; Codex cache lives under `~/.codex/`). Direct-checkout development falls back to `claude` (override via `AGENTIC_HOST=codex` env if needed).
+ADR-0019 §1 — every emitted engineer snippet runs in a subshell with rebound `CLAUDE_PLUGIN_ROOT` and uses `$ENGINEER_PLUGIN_ROOT` directly in argv. Because the Bash tool spawns a fresh process per invocation, the exports MUST live in the **same bash block** as the engineer command's Phase 0 snippets — emit them as the prelude of a single combined Bash tool call. The prelude infers the host from the orchestrator root's path; a direct checkout falls back to `claude` (override with `AGENTIC_HOST=codex`).
 
 Drive the engineer command's runbook from a single Bash tool call that opens with this prelude. It reads everything it exports from the text directory, so it runs as written in any shell. **Save the orchestrator's plugin root BEFORE rebinding** — after the rebind `$CLAUDE_PLUGIN_ROOT` names the engineer's root, and the `admission check` is an orchestrator CLI that MUST be invoked through the orchestrator's `state.mjs`, not engineer's:
 
@@ -676,37 +617,24 @@ fi
 export CLAUDE_PLUGIN_ROOT="$ENGINEER_PLUGIN_ROOT"
 export AGENTIC_PARENT_WORKFLOW="$MACRO_ID"
 # ADR-0067 Decision 3 — the macro file's absolute path, which the engineer
-# records beside the id and its writeback tries first, so a child whose own
-# checkout holds no copy of the macro still reaches it.
+# records beside the id.
 export AGENTIC_PARENT_WORKFLOW_PATH="$MACRO_PATH"
 export AGENTIC_ORIGINATING_SUBTASK="$SUBTASK_ID"
-# ADR-0067 Decision 4, item 5 — the selection Phase 1 made, which the engineer
-# records beside the ids: every later binding of the child to this subtask
-# (Phase 5, the engineer's terminal note, /orchestrator:done's owner scan)
-# compares it under the macro's file lock.
-# Built apart from its export, which would hide the node's failure: a selection
-# lost here would create a child without the record.
+# ADR-0067 Decision 4, item 5 — the selection Phase 1 made, which every later
+# binding of the child compares. Built apart from its export, which would hide
+# the node's failure.
 AGENTIC_DISPATCH_SELECTION="$(node -e 'const [subtask, branch, verb, profile, topic] = process.argv.slice(1); process.stdout.write(JSON.stringify({ subtask, branch, verb, profile, topic }))' -- "$SUBTASK_ID" "$SUBTASK_BRANCH" "$SUBTASK_VERB" "${SUBTASK_PROFILE:-}" "${SUBTASK_TOPIC:-}")" || exit 1
 export AGENTIC_DISPATCH_SELECTION
 export AGENTIC_HOST="$DETECTED_HOST"
 
-# Forward subtask profile/topic to the engineer command via env vars
-# (orchestrator-defined contract). engineer's Phase 0 boilerplate reads
-# AGENTIC_PROFILE and AGENTIC_TOPIC alongside the four parent-linkage
-# vars and forwards them as --profile / --original-request flags to
-# state.mjs create. This is the orchestrator-driven equivalent of the
-# user typing `--profile=<X>` / a topic argument at the command line —
-# the engineer command's argument placeholder is replaced by env vars in
-# the dispatched path because the host fills that placeholder from what the
-# user typed, not from the caller's environment. (This comment does not
-# spell the placeholder: Claude would substitute it here too.)
+# The subtask's profile and topic, which the engineer command's Phase 0 reads
+# in place of typed arguments.
 export AGENTIC_PROFILE="${SUBTASK_PROFILE:-}"
 export AGENTIC_TOPIC="${SUBTASK_TOPIC:-}"
 
 # Follow $ENGINEER_PLUGIN_ROOT/commands/$SUBTASK_VERB.md as if the user
-# typed `/engineer:$SUBTASK_VERB`. The engineer command's Phase 0
-# boilerplate reads all six AGENTIC_* env vars above and forwards
-# them to state.mjs create (parent linkage + host + profile + topic).
+# typed `/engineer:$SUBTASK_VERB`: its Phase 0 reads the AGENTIC_* variables
+# above.
 ```
 
 **Important**: the LLM following this runbook MUST read engineer's command markdown and execute its bash snippets in the same Bash tool invocation as the exports above, OR re-emit this prelude — its `TEXT_DIR` line, the `admission check` and the AGENTIC_* exports — at the top of each engineer Phase 0 bash block. The simplest and most robust shape is a single Bash tool call that begins with the prelude and proceeds through engineer's Phase 0+verb body inline. Re-emitted, the prelude's hold check passes once the engineer's own operation holds the lane, whatever hold was set since (ADR-0068 Decision 2, item 5).
@@ -717,7 +645,7 @@ Whatever the engineer runbook's outcome — it finished, stopped at a gate, or o
 
 ## Phase 5 — Post-create writeback (engineer_workflow_id + status=in_progress)
 
-After engineer's Phase 0 creates the workflow file and the verb skill begins, capture the engineer workflow id and write it back to the macro plan so `/orchestrator:done` and `find-active` can locate the child. The block reads `SUBTASK_ID`, `SUBTASK_BRANCH`, `SUBTASK_VERB`, `SUBTASK_PROFILE` and `SUBTASK_TOPIC` from the selection Phase 1 wrote (the writeback expects the last four unchanged), and the admission from the file Phase 3b wrote. It sets the orchestrator's plugin root itself, as `$ORCH_PLUGIN_ROOT`, and the host: in a fresh Bash call nothing Phase 4 set is left, and in the shell of Phase 4's engineer call `$CLAUDE_PLUGIN_ROOT` names the engineer's root until the opening line sets it back. Without them the check and the release would fail, and the admission would stay in both locks, blocking the macro until someone releases it by hand:
+After engineer's Phase 0 creates the workflow file and the verb skill begins, capture the engineer workflow id and write it back to the macro plan so `/orchestrator:done` and `find-active` can locate the child. The block reads the selection Phase 1 wrote and the admission Phase 3b wrote from the text directory, and sets the orchestrator's plugin root itself, as `$ORCH_PLUGIN_ROOT`, and the host. Run it as written, its opening lines included, in a fresh Bash call or in the shell of Phase 4's engineer call (where `$CLAUDE_PLUGIN_ROOT` names the engineer's root until the opening line sets it back): without them the release would fail, and the admission would block the macro until someone releases it by hand:
 
 ```bash
 TEXT_DIR='<directory from step 1>'
@@ -730,9 +658,7 @@ case "$ORCH_PLUGIN_ROOT" in
   *) DETECTED_HOST="${AGENTIC_HOST:-claude}" ;;
 esac
 # What the release needs, before anything else: every exit after these reads
-# releases the admission. Should one of them be gone, the block cannot release
-# an admission Phase 3b may have joined: the next join's refusal names it, with
-# the command that releases it.
+# releases the admission.
 for CARRIED in repo-root macro-path admission; do
   [ -f "$TEXT_DIR/$CARRIED" ] || { echo "✗ $TEXT_DIR/$CARRIED is missing, so this block cannot release the admission Phase 3b joined, if it joined: the next /orchestrator:next refusal names it and the command that releases it." >&2; exit 1; }
 done
@@ -741,12 +667,10 @@ MACRO_PATH="$(cat "$TEXT_DIR/macro-path")" || exit 1
 MACRO_ID="$(basename "$MACRO_PATH" .md)"
 ADMISSION="$(cat "$TEXT_DIR/admission")" || exit 1
 # ADR-0067 Decision 4, item 5 — every exit of this block releases the
-# admission Phase 3b joined; the writeback, which writes the macro, checks it
-# first. From the writeback on, the driver's own claim rules see the subtask.
+# admission Phase 3b joined; the writeback checks it first.
 # ADR-0068 Decision 2, item 5 — and withdraws the dispatch's mark Phase 3b
-# kept, unless the engineer's bootstrap took it over (its last write removes
-# it then). It reads the subtask itself: an exit may come before the reads
-# below.
+# kept, unless the engineer's bootstrap took it over. It reads the subtask
+# itself: an exit may come before the reads below.
 withdraw_mark() {
   [ -f "$TEXT_DIR/dispatch-mark.json" ] || return 0
   MARK_SUBTASK="$(node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).id||""))' "$TEXT_DIR/subtask.json")" || return 0
@@ -769,8 +693,7 @@ SUBTASK_VERB="$(JSON_KEY=verb node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")"
 SUBTASK_PROFILE="$(JSON_KEY=profile node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
 SUBTASK_TOPIC="$(JSON_KEY=topic node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
 # ADR-0068 Decision 2, item 5 — only a dispatch whose check before the
-# engineer passed is recorded, the holds on or off: a refused one is not (its
-# refusal removes any earlier pass), nor one whose switch left no mark to check.
+# engineer passed is recorded.
 if [ ! -f "$TEXT_DIR/dispatch-mark.json" ]; then
   echo "✗ $TEXT_DIR/dispatch-mark.json is missing, so no check before the engineer passed for this dispatch; subtask $SUBTASK_ID is not recorded in progress. A mark the switch published, if it did, stays open in subtask $SUBTASK_ID's lane until the owner clears it (agentic-autopilot status --macro $MACRO_ID names it; agentic-autopilot writer-clear ends it)." >&2
   exit 1
@@ -793,9 +716,7 @@ CHILD_DISPATCH="$(node "$ENGINEER_PLUGIN_ROOT/scripts/state.mjs" \
 node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" admission check \
   --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION" || exit 1
 # The child is bound only to the subtask it was dispatched for: the write is
-# refused, under the macro's file lock, when a plan revision since Phase 1
-# changed the subtask's branch, verb, profile or topic, or when the subtask is
-# no longer the one the child records it was dispatched for.
+# refused when the subtask changed since Phase 1.
 node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" subtask-update \
   --workflow-path="$MACRO_PATH" \
   --host="$DETECTED_HOST" \
@@ -810,7 +731,7 @@ node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" subtask-update \
 
 Surface the orchestrator JSON envelope. The block ends by withdrawing the dispatch's mark when no child carries it (the engineer's bootstrap refused or never ran) and releasing the admission, whatever the writeback's outcome; a failed `admission check` means the admission was released meanwhile (a run or another session may hold the macro now), and the child stays unrecorded until a later `/orchestrator:next` re-attaches it. PR-C0 handles single-writer ownership rejection, absorbing-completed precondition, and unblock/auto-terminal passes — surface its stderr verbatim on any non-zero exit.
 
-The admission keeps out a run and the other commands that join, not a plan revision (`/orchestrator:plan` stays available, ADR-0067 Decision 4): Phase 3b's re-read catches one made before it, and the writeback's expectations one made since; the child's recorded dispatch also refuses a re-attached child an earlier dispatch made for the subtask as it was then. A refused writeback names the field that changed. The child it would have bound was dispatched for the subtask as Phase 1 read it, so it stays unrecorded: report the refusal and the child's workflow id, and leave the choice to the user (archive the child with `/engineer:resume archive <id>` on its branch and rerun `/orchestrator:next`, or revise the plan back). A change of only the subtask's `topic` or `profile` has a third exit: the owner approves the revised plan with `/orchestrator:approve`, which rebinds the child to the words approved and tells it the change (ADR-0068 Decision 8); the re-attach then binds it. The refusal's `No rebinding applies: …` clause says why it was not rebound: the plan is pending approval or changed since, the approval rebound another child or other words, or the child has not been told yet. Whatever its dispatch, the re-attach also refuses a child the macro's record cannot vouch for (ADR-0068 Decision 8, item 4): one a note to which is still pending (`has not been told the subtask's words yet`), one last told other words for the subtask (`was last told other words`), and, after an approval replaced an unreadable record of rebindings, one whose last words are not known (`what <child> was last told is not known`). Its exits: deliver the note (a run does at the child's next boundary, or `state.mjs rebind-deliver` now); approve the plan as it stands, which tells the child the subtask's words (in full, when it replaced the record and can read the child); or revise the plan back to the words the child was last told. An archived child, which no note reaches, is completed by `/orchestrator:done --waive-dispatch` with a reason, which the macro records. A run asks the same check at the child's step boundary, of the child the step would run (the recorded owner, or, when none is recorded, the child the run selected): it does not step a child the check refuses (its lane parks, or a serial run halts) and names the same exits. An approval tells only the child it would rebind: when the subtask records no owner and several workflows claim it, the refusal names recording the child its owner first (`subtask-update --expect-dispatch`, which `/orchestrator:done` prints).
+A refused writeback names the field that changed: the plan was revised after Phase 1 read the subtask (the admission keeps out a run and the other commands that join, not `/orchestrator:plan`), or a re-attached child was dispatched for the subtask as it was before a revision. The child it would have bound stays unrecorded: report the refusal and the child's workflow id, and leave the choice to the user (archive the child with `/engineer:resume archive <id>` on its branch and rerun `/orchestrator:next`, or revise the plan back; for a change of only the subtask's `topic` or `profile`, the owner's `/orchestrator:approve` rebinds the child, ADR-0068 Decision 8). A refusal that speaks of rebinding or of what the child was told (`No rebinding applies: …`, `has not been told the subtask's words yet`, `was last told other words`, `what <child> was last told is not known`) has its exits in the reference's § The writeback or the re-attach was refused: read it before reporting.
 
 If the envelope reports `skipped: true` (deferred / abandoned absorbing-terminal state), report it and stop — `/orchestrator:next` should NOT advance a subtask the user has already terminated via `/finalize` / `/abort`.
 
