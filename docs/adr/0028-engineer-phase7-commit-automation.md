@@ -221,6 +221,30 @@ Sources 1–3 are concatenated as Markdown paragraphs separated by blank
 lines. The body MUST NOT include the raw frontmatter, raw peer output,
 or any field listed under P9.
 
+**Note of 2026-11-11 — the worker's body.** Composed this way, the body
+says what was asked (the topic) and not what the change does, so every
+autopilot landing rewrote each commit's message by hand, which changed the
+sha ADR-0069's committed comparison is keyed on. The driver now also takes
+the body from a file: `--body-file <path>` for a single commit,
+`--body-pkg-file <package>=<path>` per commit of a split (`docs` for a
+docs-only commit), read when it starts, as the subject files are (ADR-0059,
+amendment of 2026-10-10). A body given stands in for sources 1–3; the
+driver still appends the `Workflow-ID` trailer last, so the trailer is
+never the body's. A body is refused, never rewritten, when it is blank, over
+4000 characters, holds a NUL, a trailer-shaped line (`Release-As:`, the
+version override release-please reads, included) or a line shaped like a
+conventional headline (which release-please would read as an entry of its
+own), when its first line repeats the subject, or, under autopilot, when it
+is the topic copied or cut short; a file-level refusal exits 2 at start,
+one that needs the commit exits 9 before any write, interactively too. The
+message is committed with `--cleanup=verbatim`, and a commit-msg hook that
+changes it is reported. `--require-body` refuses a commit made with no body
+file (the recovery and the close take none): the autopilot commit runbook
+writes `body.txt` or `body-<n>.txt` beside the subjects and passes it,
+probing that the driver names the flag first, so an older driver keeps
+composing the body and an older runbook, which passes no body, still
+commits. Interactively the composed body stays the default.
+
 #### P2 — Partial split failure recovery
 
 When a per-package commit split lands N commits successfully and then

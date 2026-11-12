@@ -1313,6 +1313,10 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
                   // the recovery) takes no subject (C163 critique F1).
                   ok(block.includes('SUBJECT_ARGS=()\nif [ -n "$TEXT_DIR" ] && [ -e "$TEXT_DIR/subject.txt" ]; then\n  SUBJECT_ARGS+=(--subject-file "$TEXT_DIR/subject.txt")\nfi\n'), 'the step passes subject.txt when it is there');
                   ok(!tokens.includes('--subject-file'), 'the placeholder TEXT_DIR holds no subject.txt, so none is passed');
+                  // W8 stage (b) — the bodies, and the requirement, only for a
+                  // driver that names --require-body (the receiver ships first).
+                  ok(block.includes('BODY_ARGS=()\nif [ -n "$TEXT_DIR" ] && grep -q -e "\'require-body\'" "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" 2>/dev/null; then\n  BODY_ARGS+=(--require-body)\n'), 'the step passes the bodies only to a driver that names the flag');
+                  ok(!tokens.includes('--require-body'), 'a driver that does not name the flag gets no body arguments');
                   // Contract: the agent running the autopilot block — reading
                   // ACCEPT_CURRENT_TREE there would bypass the owner's staging-set confirmation.
                   ok(!block.includes('ACCEPT_CURRENT_TREE'), 'the autopilot block reads no accept bypass');

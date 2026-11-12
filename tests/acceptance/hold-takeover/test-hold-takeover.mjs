@@ -147,9 +147,9 @@ const textDir = (files) => {
 };
 
 // The commit runbook's Autopilot step, as a worker runs it (ADR-0028 §P6,
-// note of 2026-11-04): the plan block, then one commit's subject written to a
-// file (a type and scope its subject_rule allows, and a summary of the
-// change), then the step block with TEXT_DIR set to that directory.
+// note of 2026-11-04): the plan block, then one commit's subject and body
+// written to files (a type and scope its subject_rule allows, and a summary of
+// the change), then the step block with TEXT_DIR set to that directory.
 function commitAutopilot(lane, env) {
   const [planBlock, stepBlock] = regionBlocks('commands/commit.md', 'commit-autopilot', 2);
   const p = runBlock(lane, planBlock, env);
@@ -158,7 +158,11 @@ function commitAutopilot(lane, env) {
   strictEqual(plan.requires_split, false, 'one commit');
   const [c] = plan.commits;
   const scope = c.subject_rule?.scopes ? `(${c.subject_rule.scopes[0]})` : '';
-  const dir = textDir({ 'subject.txt': `${c.subject_rule ? c.subject_rule.allowed_types[0] : 'chore'}${scope}: commit the change the verb recorded` });
+  const dir = textDir({
+    'subject.txt': `${c.subject_rule ? c.subject_rule.allowed_types[0] : 'chore'}${scope}: commit the change the verb recorded`,
+    // Beside it the body the worker writes (ADR-0028 §P1, note of 2026-11-11).
+    'body.txt': 'Commits the change the verb recorded, as the lane left it.',
+  });
   return runBlock(lane, fill(stepBlock, [["TEXT_DIR='<the directory the subjects are in>'", `TEXT_DIR='${dir}'`]]), env);
 }
 

@@ -35,6 +35,8 @@ import { MANIFEST, REPO_ROOT, declaration, personaInfo } from './_personas.mjs';
 const COMMAND = 'commands/commit.md';
 const SKILL = 'core/skills/commit/SKILL.md';
 const AUTOPILOT_RUN_ID = 'autopilot-20260930T010203Z-abcdef';
+// The body a worker writes beside the subject (ADR-0028 §P1, note of 2026-11-11).
+const BODY = 'Wires the fixture through the commit block, so the step is run end to end.';
 const SHELLS = ['bash', 'zsh'].filter((sh) => spawnSync(sh, ['-c', 'true']).status === 0);
 
 const PERSONAS = [...new Set(MANIFEST.regions.filter((r) => r.dest === COMMAND).flatMap((r) => r.personas))].sort();
@@ -170,28 +172,37 @@ for (const persona of PERSONAS) {
       // The Autopilot block with the subject the worker wrote from the plan, as
       // the prose before it says (ADR-0028 §P6, note of 2026-11-04): a private
       // directory, subject.txt, and TEXT_DIR set at the block's first line.
-      const withSubject = async (autopilot, subject = 'feat(engineer): wire the runbook fixture') => {
+      // Beside it the body (ADR-0028 §P1, note of 2026-11-11), unless `body`
+      // is null.
+      const withSubject = async (autopilot, subject = 'feat(engineer): wire the runbook fixture', body = BODY) => {
         const text = await realpath(await mkdtemp(join(tmpdir(), `${persona} agentic subject.`)));
         await writeFile(join(text, 'subject.txt'), `${subject}\n`);
+        if (body !== null) await writeFile(join(text, 'body.txt'), `${body}\n`);
         const placeholder = "TEXT_DIR='<the directory the subjects are in>'\n";
         ok(autopilot.startsWith(placeholder), 'the Autopilot block opens with the TEXT_DIR placeholder');
         ok(autopilot.includes('  SUBJECT_ARGS+=(--subject-file "$TEXT_DIR/subject.txt")\n'), 'the Autopilot block passes the subject file');
         return `TEXT_DIR='${text}'\n${autopilot.slice(placeholder.length)}`;
       };
       // The Autopilot block for a split, as the prose says: subject-<n>.txt per
-      // commit, and one SUBJECT_ARGS+= line each where the block shows it.
+      // commit, and one SUBJECT_ARGS+= line each where the block shows it;
+      // body-<n>.txt likewise, with one BODY_ARGS+= line each.
       const withSplit = async (autopilot, subjects) => {
         const text = await realpath(await mkdtemp(join(tmpdir(), `${persona} agentic split.`)));
         const lines = [];
-        for (const [i, [pkg, subject]] of subjects.entries()) {
+        const bodyLines = [];
+        for (const [i, [pkg, subject, body]] of subjects.entries()) {
           await writeFile(join(text, `subject-${i + 1}.txt`), `${subject}\n`);
           lines.push(`SUBJECT_ARGS+=(--subject-pkg-file '${pkg}'="$TEXT_DIR/subject-${i + 1}.txt")`);
+          await writeFile(join(text, `body-${i + 1}.txt`), `${body}\n`);
+          bodyLines.push(`  BODY_ARGS+=(--body-pkg-file '${pkg}'="$TEXT_DIR/body-${i + 1}.txt")`);
         }
         const placeholder = "TEXT_DIR='<the directory the subjects are in>'\n";
         const shown = '#   SUBJECT_ARGS+=(--subject-pkg-file \'<package>\'="$TEXT_DIR/subject-<n>.txt")\n';
+        const bodyShown = '  #   BODY_ARGS+=(--body-pkg-file \'<package>\'="$TEXT_DIR/body-<n>.txt")\n';
         ok(autopilot.startsWith(placeholder), 'the Autopilot block opens with the TEXT_DIR placeholder');
         ok(autopilot.includes(shown), 'the Autopilot block shows where a split\'s lines go');
-        return `TEXT_DIR='${text}'\n${autopilot.slice(placeholder.length).replace(shown, `${shown}${lines.join('\n')}\n`)}`;
+        ok(autopilot.includes(bodyShown), 'the Autopilot block shows where a split\'s body lines go');
+        return `TEXT_DIR='${text}'\n${autopilot.slice(placeholder.length).replace(shown, `${shown}${lines.join('\n')}\n`).replace(bodyShown, `${bodyShown}${bodyLines.join('\n')}\n`)}`;
       };
       // The Autopilot block on a clean tree, as the prose says: no subject is
       // written and TEXT_DIR is left empty (C163 critique F1).
@@ -200,6 +211,8 @@ for (const persona of PERSONAS) {
         ok(autopilot.startsWith(placeholder), 'the Autopilot block opens with the TEXT_DIR placeholder');
         return `TEXT_DIR=''\n${autopilot.slice(placeholder.length)}`;
       };
+      // The message an autopilot commit lands with: subject, body, trailer.
+      const message = (dir, rev = 'HEAD') => execFileSync('git', ['log', '-1', '--format=%B', rev], { cwd: dir, encoding: 'utf8' }).trim();
       // A subject a shell would read if it were spliced into the command.
       const HOSTILE_SUBJECT = 'feat(engineer): it\'s "done" $(touch pwned) `touch pwned2`';
       const optIn = (execute) => {
@@ -227,7 +240,22 @@ for (const persona of PERSONAS) {
             strictEqual(r.status, 0, r.stderr);
             strictEqual(JSON.parse(r.stdout).action, 'committed');
             strictEqual(execFileSync('git', ['log', '-1', '--format=%s'], { cwd: dir, encoding: 'utf8' }).trim(), 'feat(engineer): wire the runbook fixture');
+            // The body the worker wrote, not the topic; the trailer the driver's.
+            strictEqual(message(dir), `feat(engineer): wire the runbook fixture\n\n${BODY}\n\nWorkflow-ID: ${(await readWorkflow(wf)).frontmatter.workflow_id}`);
             strictEqual((await readWorkflow(wf)).frontmatter.current_phase, 'commit-complete');
+          });
+        });
+
+        itDispatchOn('under autopilot: the Autopilot block with a subject but no body is refused, and nothing is committed or written (W8 stage b)', async () => {
+          await withRepo(async (dir) => {
+            const wf = await readyWorkflow(dir);
+            const before = await readFile(wf, 'utf8');
+            const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+            const r = runBlock(shell, dir, await withSubject(commandBlocks().autopilot, undefined, null), { AGENTIC_AUTOPILOT: AUTOPILOT_RUN_ID });
+            strictEqual(r.status, 9, r.stderr);
+            ok(r.stderr.includes('has no body: pass --body-file <file>'), r.stderr);
+            strictEqual(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim(), head);
+            strictEqual(await readFile(wf, 'utf8'), before);
           });
         });
 
@@ -259,12 +287,14 @@ for (const persona of PERSONAS) {
             strictEqual(r.status, 0, r.stderr);
             const plan = JSON.parse(r.stdout);
             strictEqual(plan.requires_split, true);
-            const subjects = plan.commits.map((c) => [c.package, `fix(${c.subject_rule.scopes[0]}): set ${c.files[0].split('/').pop()}`]);
+            const subjects = plan.commits.map((c) => [c.package, `fix(${c.subject_rule.scopes[0]}): set ${c.files[0].split('/').pop()}`, `Sets ${c.files[0]} for the split fixture.`]);
             r = runBlock(shell, dir, await withSplit(b.autopilot, subjects), { AGENTIC_AUTOPILOT: AUTOPILOT_RUN_ID });
             strictEqual(r.status, 0, r.stderr);
             strictEqual(JSON.parse(r.stdout).action, 'committed');
             const log = execFileSync('git', ['log', '-2', '--format=%s'], { cwd: dir, encoding: 'utf8' }).trim().split('\n').reverse();
             deepStrictEqual(log, subjects.map(([, s]) => s));
+            const bodies = [message(dir, 'HEAD~1'), message(dir)].map((m) => m.split('\n\n')[1]);
+            deepStrictEqual(bodies, subjects.map(([, , b]) => b));
           });
         });
 
