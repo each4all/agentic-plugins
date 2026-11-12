@@ -92,6 +92,21 @@ describe('compose-dispatch — estimateCost (surfaced, not hidden)', () => {
     strictEqual(estimateCost({ quality: 'high' }).estimate_usd, 0.19);
     strictEqual(estimateCost({}).tier, 'medium');
   });
+  it('says when its tier is assumed rather than requested', () => {
+    const cases = [
+      [{ quality: 'low' }, 'low', false, 0.005],
+      [{ quality: 'medium' }, 'medium', false, 0.04],
+      [{ quality: 'high' }, 'high', false, 0.19],
+      [{ quality: 'auto' }, 'auto', false, 0.04],
+      [{}, 'medium', true, 0.04],
+      [{ quality: '' }, 'medium', true, 0.04],
+      [{ quality: 'ultra' }, 'medium', true, 0.04],
+    ];
+    for (const [opts, tier, assumed, usd] of cases) {
+      const c = estimateCost(opts);
+      deepStrictEqual([c.tier, c.tier_assumed, c.estimate_usd], [tier, assumed, usd], JSON.stringify(opts));
+    }
+  });
 });
 
 describe('compose-dispatch — ADR-0037 guards (no direct API, no sandbox bypass)', () => {
@@ -263,6 +278,9 @@ describe('compose-dispatch — the background gate, end to end through a fixture
     strictEqual(m.observed_parameters.alpha.source, 'pixels', 'decided by decoding, not by a header flag');
     strictEqual(m.images.length, 1);
     strictEqual(m.generation_attempted, true);
+    deepStrictEqual([m.cost.tier, m.cost.tier_assumed], ['medium', true], 'no quality requested: the manifest says medium was assumed');
+    const q = await run('transparent', { background: 'transparent', quality: 'high' });
+    deepStrictEqual([q.cost.tier, q.cost.tier_assumed, q.cost.estimate_usd], ['high', false, 0.19]);
   });
 
   it('an UNHONORED transparent request fails, even though the file is a valid image', async () => {

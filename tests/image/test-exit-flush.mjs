@@ -215,7 +215,7 @@ describe('refusals return before any later work', () => {
     const r = await run([cli('refine-dispatch.mjs'), '--estimate-only', '--quality', 'low', '--base-prompt-file', join(h.dir, 'missing.txt')], { env: cliEnv(h) });
     strictEqual(r.code, 0, r.stderr);
     strictEqual(r.stderr, '');
-    deepStrictEqual(JSON.parse(r.stdout), { ok: true, estimate_only: true, cost: { estimate_usd: 0.005, tier: 'low', basis: 'gpt-image-2 approx per-image; prompt-mediated, actual billed by Codex/OpenAI' } });
+    deepStrictEqual(JSON.parse(r.stdout), { ok: true, estimate_only: true, cost: { estimate_usd: 0.005, tier: 'low', tier_assumed: false, basis: 'gpt-image-2 approx per-image; prompt-mediated, actual billed by Codex/OpenAI' } });
     deepStrictEqual(h.events(), [], 'nothing was discovered or run');
   });
 
