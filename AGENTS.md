@@ -223,6 +223,18 @@ PR (e.g. a BREAKING bump on an untargeted package). Rationale, the originating
 2. Fill out Status (start with `Proposed`), Context, Decision, Consequences, Alternatives Considered
 3. PR for review; on merge change Status to `Accepted`
 4. To supersede an ADR: create a new ADR that references the old one and change the old one's Status to `Superseded by ADR-NNNN`
+5. To amend an ADR: fold the change into its Decision text so the ADR states
+   the current decision, mark the changed item `*Amended YYYY-MM-DD …*`, and
+   append the dated record to `docs/adr/history/NNNN-<slug>.md`, in one
+   change. Implementation notes go to the history only, but any rule
+   still in force is stated in the Decision text, whatever section held
+   it; text that depends on a Proposed decision stays marked Proposed at
+   its clause. Keep headings'
+   text (anchors), leave dated citations (`ADR-NNNN …, amendment of
+   YYYY-MM-DD`) as written, update live `path:line` citations, and keep a
+   mixed status visible per decision; only the owner changes a status.
+   Rules and reasons:
+   [ADR-0070](docs/adr/0070-adr-current-decision-and-history.md).
 
 ---
 
