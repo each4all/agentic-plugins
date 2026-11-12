@@ -161,6 +161,93 @@ another one. Records written before this decision stay as written.
 > `/orchestrator:next` is unchanged: it switches to an existing branch and
 > creates a new one from the remote-tracking ref.
 
+> **Amendment of 2026-11-11 (owner request, macro diet subtask W8).** Each
+> landing had been Claude work by hand: a commit-tree rewrite of every
+> commit's body, a rebase onto `main`, a push, a pull request, a wait for CI
+> on the head, and a review binding recorded again because the rewrite
+> changed the commit ADR-0069's committed comparison is keyed on. Two changes
+> remove it, and the merge stays the owner's:
+>
+> 1. **The commit carries its intended body.** Under an autopilot run the
+>    worker writes `body.txt` (or `body-<n>.txt` per package) beside its
+>    subject files and Phase 7 commits it, with the `Workflow-ID` trailer still
+>    the driver's ([ADR-0028](0028-engineer-phase7-commit-automation.md) §P1,
+>    note of 2026-11-11). No landing rewrites a commit for its message, so the
+>    committed comparison Phase 7 records is the one the landed comparison
+>    reads.
+> 2. **An owner-invoked preparation helper**,
+>    `plugins/orchestrator/scripts/land-prepare.mjs --subtask <id> --macro
+>    <id> [--execute]`, takes a committed subtask to the point of merging.
+>    It is never run by the driver or a worker: it refuses when
+>    `AGENTIC_AUTOPILOT` is set, so the worker's no-push boundary and the
+>    git-level push block stay. Dry-run by default (it fetches into
+>    remote-tracking refs and reports); with `--execute` it derives each stage
+>    again from git and GitHub on every run, so a run interrupted anywhere
+>    (after the push and before the pull request, for instance) resumes on the
+>    next one:
+>    - before any write: the subtask's engineer workflow is archived
+>      `commit-complete`; every commit of `origin/<integration>..<branch>` names
+>      it in its `Workflow-ID` trailer, is not a merge, and touches at most one
+>      release-please package; a shallow clone, unrelated histories or several
+>      merge bases refuse; the pull request title and body it would write, the
+>      owner's files or the defaults, carry no line release-please would route;
+>      and every refusal the pull request gives (below) is reached before the
+>      first rebase or push. `gh` is bound to the GitHub repository `origin`'s
+>      configured URL names (`--repo`, never `GH_REPO` or gh's default), and
+>      the push must reach where the fetch does: one push URL, the expanded
+>      fetch URL (no `remote.origin.pushurl` or `pushInsteadOf` elsewhere), no
+>      transport override (`remote.origin.receivepack`, `uploadpack`, `vcs`),
+>      and a fetch rewrite to another GitHub repository, in any URL spelling,
+>      refuses; a rewrite to a mirror off GitHub, and the ssh command, stay the
+>      owner's; inherited
+>      `GIT_DIR`-style selectors and `git -c`-style configuration injected
+>      through the environment are dropped from every subprocess;
+>      fetches write only the remote-tracking ref they name (an empty
+>      `--refmap`, no pruning);
+>    - a rebase onto `origin/<integration>` when the branch does not contain
+>      its tip, in a scratch detached worktree with hooks, `rebase.updateRefs`
+>      and autosquash off. A conflict, or a result that does not keep every
+>      commit, message and path set, leaves the branch ref untouched; the ref
+>      moves by compare-and-swap, refused while any worktree has the branch
+>      checked out;
+>    - the committed comparison recorded for the head when none is (a rebase
+>      changes the head), through the engineer's `state.mjs
+>      review-binding-record` in a scratch worktree at the head; nothing is
+>      pushed until the record is there and reads back. The report
+>      shows what it found, `same`, `different`, `not-comparable` or
+>      `no-reviews`, and never claims a rebase kept a review: a rebase over
+>      changes elsewhere in a touched file can read `different`;
+>    - a push of the head sha with a lease on the remote head it read; a
+>      remote branch that moved past or beside the local head refuses, unless
+>      it is at (or behind) a head the local head was rebased from, directly or
+>      through earlier rebases of this helper. Each rebase appends its pair to
+>      the lineage before its ref move and none is dropped, so a pushed rebase
+>      rebased again (main moved during the CI wait) and a rebase whose ref
+>      move never happened both keep the remote accepted, while a head of
+>      another chain (a series someone grew and rebased) does not;
+>    - the pull request of this attempt chosen as `resolveLanding` chooses one
+>      (head the branch, same repository, opened after the dispatch), reused,
+>      or opened against the integration branch; one of this attempt already
+>      merged or closed, several open, or another base stops it;
+>    - CI: the latest run of each required workflow (`full-tests.yml`,
+>      `validate.yml`) on exactly the head, by when it started, so a rerun
+>      decides; a run on an older sha never counts, and cancelled or skipped is
+>      not green;
+>    - a recheck of the local head, remote head, pull request head and
+>      integration tip, then the readiness report: the head, the comparison,
+>      the packages the commits route to, and the merge command, which binds
+>      the head (`gh pr merge <n> --rebase --match-head-commit <head>`; for a
+>      single commit also the squash form, its title and body read from files
+>      kept under `.agentic-plugins/runs/landing/<macro>/<subtask>/`, written
+>      from the pull request's title and body as they read at the recheck,
+>      since the squash message comes from the pull request; a title or body
+>      the text rules refuse prints no squash form, with the reason).
+>
+>    It never merges. `/orchestrator:done` stays the step that records the
+>    landing, and a relaunched run does it as before. The lease is defence in
+>    depth: the remote head is checked again before every push, and the window
+>    it covers, between that look and the push, is not tested.
+
 ### 3. A recorded value is not replaced silently
 
 - `updateSubtask` refuses to replace a recorded `commit` or `pr_url` and

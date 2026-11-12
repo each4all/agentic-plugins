@@ -438,7 +438,8 @@ export async function perform({ prompt, cwd, env }) {
     // As the commit runbook's Autopilot block does (ADR-0028 §P6, note of
     // 2026-11-04): read the plan, write each commit's subject to a file — a
     // type the commit's subject_rule allows and a summary of the change —
-    // and pass the files; a clean tree takes none.
+    // and its body beside it (ADR-0028 §P1, note of 2026-11-11), and pass the
+    // files with --require-body; a clean tree takes none.
     const phase7 = path.join(env.AGENTIC_ENGINEER_ROOT, 'scripts', 'phase7-commit.mjs');
     const planned = JSON.parse(execFileSync(node, [phase7, '--mode', 'plan', '--workflow-path', active, '--repo-root', cwd, '--host', 'claude'], { cwd, env, encoding: 'utf8' }));
     const subjectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scripted-subjects-'));
@@ -449,8 +450,13 @@ export async function perform({ prompt, cwd, env }) {
         const scope = c.subject_rule?.scopes ? `(${c.subject_rule.scopes[0]})` : '';
         const file = path.join(subjectDir, `subject-${i + 1}.txt`);
         fs.writeFileSync(file, `${type}${scope}: scripted commit of ${c.files.length} file${c.files.length === 1 ? '' : 's'}\n`);
-        return planned.requires_split ? ['--subject-pkg-file', `${c.package ?? 'docs'}=${file}`] : ['--subject-file', file];
+        const body = path.join(subjectDir, `body-${i + 1}.txt`);
+        fs.writeFileSync(body, `Commits the ${c.files.length} file${c.files.length === 1 ? '' : 's'} the scripted step changed.\n`);
+        return planned.requires_split
+          ? ['--subject-pkg-file', `${c.package ?? 'docs'}=${file}`, '--body-pkg-file', `${c.package ?? 'docs'}=${body}`]
+          : ['--subject-file', file, '--body-file', body];
       });
+      if (subjectArgs.length > 0) subjectArgs.push('--require-body');
       for (const a of actionList) {
         if (a.startsWith('edit-before-commit:')) fs.appendFileSync(path.join(cwd, a.slice('edit-before-commit:'.length)), 'edited during the step\n');
       }

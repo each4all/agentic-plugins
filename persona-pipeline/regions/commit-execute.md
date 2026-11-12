@@ -24,6 +24,10 @@ ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "
 #   --subject-pkg-file '<package>'="$TEXT_DIR/subject-<n>.txt"
 #                                          repeated, one per commit of a split
 #                                          (the docs commit's key is `docs`).
+# Bodies, only when the user edited the composed one (written as subjects are):
+#   --body-file "$TEXT_DIR/body.txt"       one commit;
+#   --body-pkg-file '<package>'="$TEXT_DIR/body-<n>.txt"
+#                                          repeated, one per commit of a split.
 # Staging, only when the plan had ask_user=true and the user confirmed the set:
 #   --confirm-non-interactive, plus --include-extra <path> per extra they opted
 #   in, or --accept-current-tree to take every change.
