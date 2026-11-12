@@ -72,6 +72,14 @@ lists each waiting branch the same way, whatever its reason, and an
 landed meanwhile is not listed. After the merge, relaunch, and it records the
 landing with `/orchestrator:done` and goes on (ADR-0062, D3a).
 
+To take a reported branch to the point of merging, the owner, outside the run,
+runs `node plugins/orchestrator/scripts/land-prepare.mjs --subtask <id>
+--macro <macro-id>` (a dry run that reports the stage), then with `--execute`:
+it rebases onto the integration branch, records the committed comparison for
+the new head, pushes with a lease, opens or reuses the pull request, waits for
+CI on that head and prints the merge command, which stays the owner's to run
+(ADR-0062, amendment of 2026-11-11). It refuses inside a run.
+
 ---
 
 ## Lanes

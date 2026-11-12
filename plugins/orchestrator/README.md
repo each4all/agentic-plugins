@@ -67,6 +67,16 @@ the steps stay manual**, and the host-neutral state it reads (`next_step_*`,
   an `awaiting-landing` halt, and in a serial run's halt for any reason),
   `unknown` when the run could not confirm it (a failed look, an interrupt, an
   error), and not a branch that landed as the run ended.
+- **Landing preparation** (ADR-0062, amendment of 2026-11-11). Outside the run,
+  `node scripts/land-prepare.mjs --subtask <id> --macro <macro-id>` reports
+  where a committed subtask stands; with `--execute` it rebases the branch onto
+  the integration branch in a scratch worktree (a conflict leaves the branch
+  untouched), records the committed comparison for the new head, pushes with a
+  lease on the remote head it read, opens or reuses the pull request, waits for
+  CI on exactly that head and prints the merge command, bound to the head with
+  `--match-head-commit`. Every stage is derived again from git and GitHub, so a
+  rerun resumes after any interruption. It never merges, and it refuses under
+  an autopilot run.
 - **Halts** print the reason and its pointer, write
   `.agentic-plugins/runs/autopilot/<run-id>/halt.json` and exit 2;
   `--notify-local` adds one local macOS notification. There is no plugin notification.
