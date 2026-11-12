@@ -128,11 +128,22 @@ it.
 
 ## start --execute
 
-1. **Model plan (owner decision D5: asked before each start).** When the
-   arguments name none of `--models`, `--model` or `--effort`, ask the owner
-   which model plan this run's workers use — with the host's question tool
-   when the session has one — and set `MODELS` in the block below to the
-   answer:
+1. **Model plan (ADR-0071, amending owner decision D5).** When the arguments
+   name none of `--models`, `--model` or `--effort`, ask the owner which
+   model plan this run's workers use — with the host's question tool when the
+   session has one. Read the posture line of a `preview` of the same
+   arguments first:
+   - It reads `model plan (settings)`: the owner's `autopilot_*` settings
+     (`/runtime:settings --autopilot-<step>-model …`) set a plan. Offer it
+     first, with the table preview printed under that line, and the
+     suggestions below after it. The settings chosen, leave `MODELS` empty:
+     the start reads them once more, records that table and prints it under
+     `model table (recorded in run.json)`; that printed table, not the
+     preview's, is the one the run uses, so report it to the owner in step 4.
+   - It reads `model plan (asked at start)`: no setting is there. Offer the
+     suggestions only.
+
+   The suggestions, each fixing every step (set `MODELS` to the one chosen):
    - `owner-default` — every step on the owner's Claude Code default model and
      effort;
    - `mixed` — decide, critique, investigate and frame on the owner's default;
@@ -140,7 +151,10 @@ it.
      sonnet/low;
    - `sonnet` — every step on sonnet/medium.
 
-   When the arguments already name one of them, leave `MODELS` empty.
+   They are suggestions, not settings: to make one the default, the owner sets
+   the keys with `/runtime:settings`. When the arguments already name a model
+   flag, leave `MODELS` empty. A setting that cannot be used (unreadable, or
+   an invalid value) refuses the start, naming the key.
 2. **The two-hour limit.** A host background task is stopped after two hours.
    The run has no clock of its own: its steps, its cost, each step's timeout,
    a halt or `stop` end it (ADR-0063 D1, amendment of 2026-10-13). Do not
@@ -152,7 +166,7 @@ it.
    the state says. A run that may take longer than two hours belongs in a
    terminal: `preview` prints the command that installs the
    `agentic-autopilot` launcher, and then
-   `~/.agentic-plugins/bin/agentic-autopilot start --execute --repo <repo> --models <plan>`.
+   `~/.agentic-plugins/bin/agentic-autopilot start --execute --repo <repo>` (with `--models <plan>` unless the settings set one).
 3. Run the block **as a host background task** — on Claude, the Bash tool's
    `run_in_background`, with its longest timeout (7200000 ms) — never with a
    trailing `&`, so the session is told when the run ends:

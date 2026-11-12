@@ -27,8 +27,11 @@
 //
 // Dry-run by default (ADR-0035 §3 invariant 1 style): only `start --execute`
 // starts anything, and it needs a model plan (owner decision D5, 2026-10-01:
-// asked before each start). The command runbook asks the owner and passes
-// `--models`; a terminal start asks on the TTY; anything else must pass it.
+// asked before each start), amended by ADR-0071: the `autopilot_*` settings
+// are a plan of their own. With no model flag, a start takes the settings when
+// any key is set (a terminal start shows them first and offers the suggested
+// plans after); with none set, the command runbook asks the owner and passes
+// `--models`, a terminal start asks on the TTY, and anything else must pass it.
 //
 // Typed arguments arrive through an ADR-0059 args file (`--args-file`) from
 // the runbook, or as argv from a terminal.
@@ -66,10 +69,11 @@ import { deletePark, readPark, readParks, retiring } from './parks.mjs';
 import { applyRetention, describePlan, planRetention } from './retention.mjs';
 import { resolveRoots } from './roots.mjs';
 import { describeLeftovers, listScratchIndex, sweepLeftovers } from './scratch.mjs';
+import { EFFORTS, modelValueProblem, prepareModelTable } from './model-settings.mjs';
 import { observe } from './observe.mjs';
 import { INTERRUPT_BOUND_MS } from './offloop.mjs';
 import {
-  decide, decideLanes, fingerprint, forcedForLanes, haltScope, isSafeSubtaskId, MODEL_PLANS, parseForcedStep, proposalLines as haltProposalLines, proposalsOnce,
+  decide, decideLanes, fingerprint, forcedForLanes, haltScope, isSafeSubtaskId, MODEL_PLANS, MODEL_SUGGESTIONS, modelTableLines, parseForcedStep, resolveModelTable, proposalLines as haltProposalLines, proposalsOnce,
   renderStep, withProposals,
 } from './policy.mjs';
 import { verifyOfferFor } from './verify-run.mjs';
@@ -91,8 +95,6 @@ const SELF = fileURLToPath(import.meta.url);
 const SUBCOMMANDS = ['preview', 'start', 'status', 'stop', 'release', 'hold', 'writer-clear', 'instruct', 'events', 'retention'];
 // The subcommands that name a subtask as their one positional argument.
 const SUBTASK_SUBCOMMANDS = ['release', 'hold', 'writer-clear', 'instruct'];
-const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
-const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,63}$/;
 
 export const USAGE = `Usage: autopilot [preview|start|status|stop|release|hold|writer-clear|instruct|events|retention] [options]
        autopilot heavy [--purpose <text>] [--repo <dir>] [--declaration-ref <rev>] -- <command> [args...]
@@ -137,8 +139,10 @@ export const USAGE = `Usage: autopilot [preview|start|status|stop|release|hold|w
 Options:
   --repo <dir>            repository to drive (default: the current one)
   --macro <id>            the macro to drive (default: the one active on, or referencing, the current branch)
-  --models <plan>         owner-default | mixed | sonnet (start --execute asks when omitted)
-  --model <m> --effort <e>  one model / effort for every step (effort: ${EFFORTS.join(', ')})
+  --models <plan>         a suggested plan: owner-default | mixed | sonnet, all of it, over the settings;
+                          omitted, the autopilot_* settings (runtime:settings, ADR-0071) decide, and
+                          start --execute asks when none is set
+  --model <m> --effort <e>  one model / effort for every step, over everything else (effort: ${EFFORTS.join(', ')})
   --max-steps <n>         default ${DEFAULTS.maxSteps}
   --max-cost <usd>        default ${DEFAULTS.maxCostUsd}
   --step-budget <usd>     default ${DEFAULTS.stepBudgetUsd}
@@ -316,8 +320,10 @@ export function parseCli(argv) {
   if (o.sub === 'events' && (o.macro === null) === (o.checkout === null)) throw new UsageError('events needs one of --macro <id> or --checkout <dir>');
   if (o.sub === 'events' && o.after.length === 0) throw new UsageError('events needs --after <run-id>:<seq> (<run-id>:0 for a run\'s first line)');
   if (o.models !== null && !MODEL_PLANS.includes(o.models)) throw new UsageError(`--models must be one of ${MODEL_PLANS.join(', ')}`);
-  if (o.model !== null && !MODEL_RE.test(o.model)) throw new UsageError(`--model ${JSON.stringify(o.model)} is not a model name`);
-  if (o.effort !== null && !EFFORTS.includes(o.effort)) throw new UsageError(`--effort must be one of ${EFFORTS.join(', ')}`);
+  for (const coord of ['model', 'effort']) {
+    const problem = o[coord] !== null ? modelValueProblem(coord, o[coord], `--${coord}`) : null;
+    if (problem) throw new UsageError(problem);
+  }
   if (o.macro !== null && !/^macro-[a-z][a-z0-9-]*-\d{8}T\d{6}Z-[0-9a-f]{6}$/.test(o.macro)) {
     throw new UsageError(`--macro ${JSON.stringify(o.macro)} is not a macro workflow id`);
   }
@@ -515,7 +521,11 @@ function printLanesPreview(lp, out) {
 
 async function previewCmd(o, repoRoot, env, out) {
   const pre = await preflight({ repoRoot, env, lanes: o.lanes });
-  const p = posture(o);
+  // ADR-0071 — the table a start would record now, with each value's source;
+  // a setting that cannot be used is a start condition that fails.
+  const models = prepareModelTable({ repoRoot, options: o, homeDir: env.HOME || homedir() });
+  if (!models.ok) pre.problems.push(...models.errors.map((e) => `the model settings (ADR-0071) cannot be used: ${e}`));
+  const p = { ...posture(o), model_table: models.ok ? models.table : null };
   let view = null;
   let decision = null;
   let lanesPreview = null;
@@ -574,7 +584,8 @@ async function previewCmd(o, repoRoot, env, out) {
       for (const line of haltProposalLines(decision.proposals)) out(line);
     }
     if (lanesPreview) printLanesPreview(lanesPreview, out);
-    out(`posture: --permission-mode manual · --permission-prompts none · model plan ${p.model_plan ?? '(asked at start)'}${p.model_override.model || p.model_override.effort ? ` · override ${p.model_override.model ?? '-'}/${p.model_override.effort ?? '-'}` : ''}`);
+    out(`posture: --permission-mode manual · --permission-prompts none · model plan ${p.model_plan ?? (models.ok && (models.anySet || p.model_override.model || p.model_override.effort) ? '(settings)' : '(asked at start)')}${p.model_override.model || p.model_override.effort ? ` · override ${p.model_override.model ?? '-'}/${p.model_override.effort ?? '-'}` : ''}`);
+    if (models.ok && (p.model_plan || models.anySet || p.model_override.model || p.model_override.effort) ) for (const l of modelTableLines(models.table)) out(` ${l}`);
     out(`  budgets: ${o.maxSteps} steps · $${o.maxCostUsd} per run · $${o.stepBudgetUsd} and ${o.stepTimeoutSec} s per step${o.lanes >= 2 ? ` · each step's budget reserved before it spawns, up to ${o.lanes} at once` : ''}`);
     out(`  stall detector: ${o.stallDetector === 'on' ? `on (a stalled step is aborted; the step clock is ${o.stepTimeoutSec} s${o.stepTimeoutExplicit ? '' : ', the emergency cap'})` : 'log (verdicts recorded, no step stopped; the step clock stops a step)'}`);
     out(`  allowed: ${p.allowed_tools.join(' ')}`);
@@ -590,21 +601,38 @@ async function previewCmd(o, repoRoot, env, out) {
   return decision?.outcome === 'halt' ? 2 : 0;
 }
 
-async function askModelPlan(input, output) {
+// The suggested plans, one line each, from the one table policy.mjs keeps.
+function suggestionLines() {
+  const describe = (rows) => {
+    const groups = new Map();
+    for (const [step, r] of Object.entries(rows)) {
+      const text = r.model === null && r.effort === null ? 'your default' : `${r.model ?? 'default model'}/${r.effort ?? 'default effort'}`;
+      groups.set(text, [...(groups.get(text) ?? []), step]);
+    }
+    return groups.size === 1 ? `every step on ${[...groups.keys()][0]}` : [...groups].map(([text, steps]) => `${steps.join('/')} on ${text}`).join('; ');
+  };
+  return MODEL_PLANS.map((name) => ({ name, text: `${name} — ${describe(MODEL_SUGGESTIONS[name])}` }));
+}
+
+/**
+ * The start question (ADR-0071 D6, amending owner decision D5): the settings'
+ * table first when any key is set, then the suggested plans. Returns
+ * {plan: null} for the settings, {plan: <name>} for a suggestion, or null.
+ */
+async function askModelPlan(input, output, prepared) {
   const rl = readline.createInterface({ input, output });
   try {
-    output.write([
-      'Model plan for this run\'s workers (owner decision D5):',
-      '  1) owner-default — every step on your Claude Code default model and effort',
-      '  2) mixed — decide/critique/investigate/frame on your default; compose/refine on sonnet/medium;',
-      '             commit/done/finalize on sonnet/low',
-      '  3) sonnet — every step on sonnet/medium',
-      '',
-    ].join('\n'));
+    const choices = [...(prepared?.anySet ? [{ name: null, text: 'your autopilot settings (runtime:settings):' }] : []), ...suggestionLines()];
+    const lines = ['Model plan for this run\'s workers (ADR-0071; the suggestions are not settings):'];
+    choices.forEach((c, i) => {
+      lines.push(`  ${i + 1}) ${c.text}`);
+      if (c.name === null) lines.push(...modelTableLines(prepared.table).map((l) => `    ${l}`));
+    });
+    output.write([...lines, ''].join('\n'));
     for (let tries = 0; tries < 3; tries += 1) {
-      const a = (await rl.question('Choose 1-3: ')).trim();
-      const plan = { 1: 'owner-default', 2: 'mixed', 3: 'sonnet' }[a] ?? (MODEL_PLANS.includes(a) ? a : null);
-      if (plan) return plan;
+      const a = (await rl.question(`Choose 1-${choices.length}: `)).trim();
+      const picked = choices[Number(a) - 1] ?? (MODEL_PLANS.includes(a) ? { name: a } : null);
+      if (picked) return { plan: picked.name };
     }
     return null;
   } finally {
@@ -612,25 +640,44 @@ async function askModelPlan(input, output) {
   }
 }
 
-async function startCmd(o, repoRoot, env, out, err, io) {
+async function startCmd(o, repoRoot, env, out, err, io, hooks = {}) {
   if (!o.execute) {
     const code = await previewCmd(o, repoRoot, env, out);
     out('This was a preview. Add --execute to run.');
     return code;
   }
-  if (o.models === null) {
-    if (o.model !== null || o.effort !== null) {
-      o.models = 'owner-default';
-    } else if (io.stdin.isTTY) {
-      o.models = await askModelPlan(io.stdin, io.stderr);
-      if (!o.models) { err('✗ No model plan chosen.'); return 1; }
-    } else {
-      err(`✗ start --execute needs a model plan: --models ${MODEL_PLANS.join('|')} (or --model/--effort). /orchestrator:autopilot asks for it before it launches.`);
+  // ADR-0071 D5/D6 — the settings read once; the table shown is the one the
+  // run records. A setting that cannot be read or is invalid starts no run.
+  let prepared = prepareModelTable({ repoRoot, options: o, homeDir: env.HOME || homedir() });
+  if (!prepared.ok) {
+    err('✗ The autopilot cannot start: the model settings (ADR-0071) cannot be used:');
+    for (const e of prepared.errors) err(`  - ${e}`);
+    err('  Fix the key with /runtime:settings (--autopilot-<step>-model, --autopilot-<step>-effort), or remove it with --unset <key>.');
+    return 1;
+  }
+  // No model flag: a terminal start asks (the settings first, when set); any
+  // other start takes the settings, and refuses when none is set.
+  if (o.models === null && o.model === null && o.effort === null) {
+    if (io.stdin.isTTY) {
+      const chosen = await askModelPlan(io.stdin, io.stderr, prepared);
+      if (!chosen) { err('✗ No model plan chosen.'); return 1; }
+      o.models = chosen.plan;
+    } else if (!prepared.anySet) {
+      err(`✗ start --execute needs a model plan: set the autopilot_* keys with /runtime:settings, or pass --models ${MODEL_PLANS.join('|')} (or --model/--effort). /orchestrator:autopilot asks for it before it launches.`);
       return 1;
     }
   }
+  // A suggestion chosen at the question: its table, from the same read.
+  o.modelTable = o.models === prepared.table.preset
+    ? prepared.table
+    : resolveModelTable({ preset: o.models, flags: prepared.table.flags, settings: prepared.settings });
+  // The table the run records, printed before it starts: the owner sees what
+  // the run uses, whatever was shown when it was chosen.
+  out(`model table (recorded in run.json${o.models ? `, --models ${o.models}` : ''}):`);
+  for (const l of modelTableLines(o.modelTable)) out(l);
   if (o.lanes > 2) out(`⚠ --lanes ${o.lanes}: each lane is a worker drawing on the same rate limit at once; the owner's default is 2 (the throttle still gates each new lane)`);
-  return startRun({ repoRoot, options: o, env, out, err });
+  // `hooks.startRun` is a test seam: the options a start hands the run.
+  return (hooks.startRun ?? startRun)({ repoRoot, options: o, env, out, err });
 }
 
 // ADR-0067 Decision 4, item 5 — the interactive sessions admitted in the locks
@@ -1108,7 +1155,7 @@ export async function main(argv = process.argv.slice(2), { env = process.env, io
   }
   switch (o.sub) {
     case 'preview': return previewCmd(o, repoRoot, env, out);
-    case 'start': return startCmd(o, repoRoot, env, out, err, io);
+    case 'start': return startCmd(o, repoRoot, env, out, err, io, hooks);
     case 'status': return statusCmd(o, repoRoot, out, err);
     case 'stop': return stopCmd(o, repoRoot, out, err, { env, hooks });
     case 'release': return releaseCmd(o, repoRoot, env, out, err, hooks);

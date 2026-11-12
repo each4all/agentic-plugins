@@ -194,35 +194,112 @@ export function parseForcedStep(text) {
 }
 
 // ---------------------------------------------------------------------------
-// Model plans (owner decision D5, 2026-10-01: asked before each start)
+// Model and effort per step (ADR-0071; amends owner decision D5 of ADR-0063)
 
-export const MODEL_PLANS = Object.freeze(['owner-default', 'mixed', 'sonnet']);
-// `mixed`: the judgment verbs keep the owner's default; composing and
-// refining run on sonnet/medium; the mechanical steps on sonnet/low.
-const MIXED_BY_VERB = Object.freeze({
-  investigate: null, frame: null, decide: null, critique: null,
-  compose: { model: 'sonnet', effort: 'medium' },
-  refine: { model: 'sonnet', effort: 'medium' },
+const SETTING_STEPS = Object.freeze(['investigate', 'frame', 'decide', 'compose', 'critique', 'refine', 'commit', 'done', 'finalize']);
+// `judgment` keeps the owner's default; the rest are the presets' values.
+const JUDGMENT = Object.freeze({ model: null, effort: null });
+const SONNET_MEDIUM = Object.freeze({ model: 'sonnet', effort: 'medium' });
+const SONNET_LOW = Object.freeze({ model: 'sonnet', effort: 'low' });
+const preset = (rows) => Object.freeze(Object.fromEntries(SETTING_STEPS.map((step) => [step, rows[step] ?? rows.default])));
+/**
+ * The suggested plans: `--models <name>` selects one, and the start question
+ * offers them. Each fixes every step of the run (a null is the owner's Claude
+ * Code default, chosen, not a fall-through). With no preset selected none is
+ * consulted: the settings decide (resolveModelTable).
+ */
+export const MODEL_SUGGESTIONS = Object.freeze({
+  'owner-default': preset({ default: JUDGMENT }),
+  // The judgment verbs keep the owner's default; composing and refining run
+  // on sonnet/medium; the mechanical steps on sonnet/low.
+  mixed: preset({
+    investigate: JUDGMENT, frame: JUDGMENT, decide: JUDGMENT, critique: JUDGMENT,
+    compose: SONNET_MEDIUM, refine: SONNET_MEDIUM, default: SONNET_LOW,
+  }),
+  sonnet: preset({ default: SONNET_MEDIUM }),
 });
-const MECHANICAL = Object.freeze({ model: 'sonnet', effort: 'low' });
+// A preset's row for a step with no settings step (a dispatch whose verb is
+// unknown, a verification step): what the plans always gave it.
+const PRESET_FALLBACK = Object.freeze({ 'owner-default': JUDGMENT, mixed: JUDGMENT, sonnet: SONNET_MEDIUM });
+export const MODEL_PLANS = Object.freeze(Object.keys(MODEL_SUGGESTIONS));
 
 /**
- * {model, effort} for a step, either of them null for "the owner's Claude
- * Code setting". `override` ({model, effort} from --model/--effort) applies
- * to every step and wins field by field.
+ * The settings step a step is resolved by: a dispatch counts as its verb,
+ * done-no-commit as done. null for a step with none (a verification step,
+ * which runs no model, or a dispatch whose verb is unknown): the run-wide row.
+ */
+export function modelStep(s) {
+  if (s.kind === 'verb' || s.kind === 'dispatch') return SETTING_STEPS.includes(s.verb) ? s.verb : null;
+  if (s.kind === 'done-no-commit') return 'done';
+  return SETTING_STEPS.includes(s.kind) ? s.kind : null;
+}
+
+// One coordinate of one row: the flag, then the selected preset (all of it),
+// then the step's key, then the run-wide key, then the host's default.
+function resolveCoord(coord, step, { flags, presetName, settings }) {
+  if (flags[coord] != null) return { value: flags[coord], source: `--${coord}` };
+  if (presetName !== null) {
+    const row = step ? MODEL_SUGGESTIONS[presetName][step] : PRESET_FALLBACK[presetName];
+    return { value: row[coord], source: `--models ${presetName}` };
+  }
+  for (const key of [...(step ? [`autopilot_${step}_${coord}`] : []), `autopilot_${coord}`]) {
+    const v = settings[key];
+    if (v) return { value: v.value, source: `${key} (${v.layer})` };
+  }
+  return { value: null, source: 'host default' };
+}
+
+/**
+ * The run's model table (ADR-0071 D3), resolved once when it starts and
+ * recorded; every step of the run reads it, so an edit to the settings takes
+ * effect at the next run. Per coordinate, the first that sets it wins:
+ * --model/--effort, the selected --models preset (all of its row, a null
+ * included), autopilot_<step>_<coord>, autopilot_<coord> (each repository over
+ * user, readModelSettings), the host's default (null).
+ *
+ * @param a.preset    the --models name selected, or null
+ * @param a.flags     {model, effort} from --model/--effort, each or null
+ * @param a.settings  readModelSettings().values: {key: {value, layer}}
+ */
+export function resolveModelTable({ preset: presetName = null, flags = {}, settings = {} } = {}) {
+  if (presetName !== null && !MODEL_PLANS.includes(presetName)) throw new Error(`unknown model plan ${JSON.stringify(presetName)}`);
+  const ctx = { flags: { model: flags.model ?? null, effort: flags.effort ?? null }, presetName, settings };
+  const row = (step) => {
+    const model = resolveCoord('model', step, ctx);
+    const effort = resolveCoord('effort', step, ctx);
+    return { model: model.value, effort: effort.value, model_source: model.source, effort_source: effort.source };
+  };
+  return {
+    preset: presetName,
+    flags: ctx.flags,
+    steps: Object.fromEntries(SETTING_STEPS.map((step) => [step, row(step)])),
+    default: row(null),
+  };
+}
+
+/** {model, effort} for a step from the run's table, either null for "the owner's Claude Code setting". */
+export function stepModel(s, table) {
+  const step = modelStep(s);
+  const r = (step ? table?.steps?.[step] : table?.default) ?? null;
+  return { model: r?.model ?? null, effort: r?.effort ?? null };
+}
+
+/** The table as one line per distinct row, for preview, status and the start question. */
+export function modelTableLines(table) {
+  const groups = new Map();
+  for (const [step, r] of Object.entries(table.steps)) {
+    const text = `${r.model ?? 'default model'}/${r.effort ?? 'default effort'}  (${r.model_source === r.effort_source ? r.model_source : `${r.model_source}; ${r.effort_source}`})`;
+    groups.set(text, [...(groups.get(text) ?? []), step]);
+  }
+  return [...groups].map(([text, steps]) => `  ${steps.join(', ')}: ${text}`);
+}
+
+/**
+ * {model, effort} for a step under a preset and flags alone, no settings:
+ * the shape the plans had before ADR-0071, kept for a caller that has no table.
  */
 export function modelFor(s, { plan = 'owner-default', override = {} } = {}) {
-  if (!MODEL_PLANS.includes(plan)) throw new Error(`unknown model plan ${JSON.stringify(plan)}`);
-  let base = null;
-  if (plan === 'sonnet') base = { model: 'sonnet', effort: 'medium' };
-  if (plan === 'mixed') {
-    if (s.kind === 'verb' || s.kind === 'dispatch') base = MIXED_BY_VERB[s.verb] ?? null;
-    else base = MECHANICAL;
-  }
-  return {
-    model: override.model ?? base?.model ?? null,
-    effort: override.effort ?? base?.effort ?? null,
-  };
+  return stepModel(s, resolveModelTable({ preset: plan, flags: override }));
 }
 
 // ---------------------------------------------------------------------------
