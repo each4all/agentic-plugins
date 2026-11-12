@@ -48,9 +48,10 @@ import { ABORT_KINDS, createEventWriter, eventsPath, isHaltCode, READINESS, STAL
 import { landingLogPath, mergeOrderRecord, orderText, overlapText, reportLandingReady, syncText } from './landing-ready.mjs';
 import { lanesHoldingWork, lanesRequirements } from './lanes.mjs';
 import { launchProposals, mainCheckoutProposal, proposalLines } from './launch-proposals.mjs';
+import { prepareModelTable } from './model-settings.mjs';
 import { observe as defaultObserve } from './observe.mjs';
 import {
-  afterUnread, decide, fingerprint, modelFor, peersOnlyProgress, proposalLines as haltProposalLines, renderStep, reviewOutcomesText, stepEvidence, verifyStep, STEP_KINDS,
+  afterUnread, decide, fingerprint, stepModel, peersOnlyProgress, proposalLines as haltProposalLines, renderStep, reviewOutcomesText, stepEvidence, verifyStep, STEP_KINDS,
 } from './policy.mjs';
 import {
   appendStallLine, appendStep, acquireLock, createRunDir, LockHeldError, macroLockPath, mainWorktreeRoot, newRunId,
@@ -223,6 +224,8 @@ export function posture(options) {
     git_push_block: 'network pushes fail at the git level in every worker (pushInsteadOf)',
     model_plan: options.models ?? null,
     model_override: { model: options.model ?? null, effort: options.effort ?? null },
+    // ADR-0071 D5 — the table the run's steps read, when it is prepared.
+    model_table: options.modelTable ?? null,
     budgets: {
       max_steps: options.maxSteps, max_cost_usd: options.maxCostUsd, step_budget_usd: options.stepBudgetUsd,
       step_timeout_sec: options.stepTimeoutSec,
@@ -559,6 +562,19 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
   const roots = pinned.roots;
   const remotes = remoteUrls(repoRoot);
   const stateRoot = pre.stateRoot;
+  // ADR-0071 D5 — the run's model table, prepared once: the one the start
+  // question showed (cli.mjs), or, for a direct caller, read here. Every step
+  // reads it, so an edit to the settings takes effect at the next run; a
+  // setting that cannot be read or is invalid starts no run.
+  if (!options.modelTable) {
+    const prepared = (deps.prepareModelTable ?? prepareModelTable)({ repoRoot, options, homeDir: env.HOME || homedir() });
+    if (!prepared.ok) {
+      err('✗ The autopilot cannot start:');
+      for (const e of prepared.errors) err(`  - the model settings (ADR-0071): ${e}`);
+      return 1;
+    }
+    options = { ...options, modelTable: prepared.table };
+  }
 
   // What the run's looks found waiting to land (C128, scheduler.mjs
   // `reconcileWaiting`). Every look of the serial run goes through `look`,
@@ -636,7 +652,8 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     options: {
       max_steps: options.maxSteps, max_cost_usd: options.maxCostUsd, step_budget_usd: options.stepBudgetUsd,
       step_timeout_sec: options.stepTimeoutSec,
-      model_plan: options.models, model_override: { model: options.model ?? null, effort: options.effort ?? null },
+      model_plan: options.models ?? null, model_override: { model: options.model ?? null, effort: options.effort ?? null },
+      model_table: options.modelTable,
       forced: options.forcedText ?? null, notify_local: options.notifyLocal === true, lanes,
       stall_detector: stallMode,
     },
@@ -1463,7 +1480,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       const s = d.step;
       if (!STEP_KINDS.includes(s.kind)) throw new Error(`policy returned an unknown step kind ${s.kind}`);
       const command = renderStep(s, { macroId: view.macro.id, runId });
-      const { model, effort } = modelFor(s, { plan: options.models, override: { model: options.model, effort: options.effort } });
+      const { model, effort } = stepModel(s, options.modelTable);
       // The run's cost cap bounds the step too: the step may spend only what
       // is left. It runs for the whole per-step timeout, however late it starts.
       const stepBudgetUsd = reservation.usd;

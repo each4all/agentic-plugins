@@ -31,7 +31,7 @@ Ships `/orchestrator:plan` (macro plan + Plan-verify opposite-host peer ensemble
 | `/orchestrator:checkpoint <summary>` | ✅ shipping | Write `latest_checkpoint: {at, summary}` on the active macro workflow. Claude SessionStart re-injects it after compact (`matcher: "compact"`, so not on an arbitrary new session and not on `claude --continue`); Codex does the same once the bundled hooks load (generic `[features].hooks`) and are reviewed/trusted in `/hooks`. |
 | `/orchestrator:peer-now --peer <claude\|codex> (...)` | ✅ shipping | Raw side-channel peer consultation through `peer-runner.mjs --kind peer-now`; optionally appends a `[Peer]` note and stays out of `ensemble_results`. |
 | `/orchestrator:audit <findings>` | ✅ shipping | Audit follow-up alias that canonicalizes to `/orchestrator:plan Audit follow-up: ...`; state remains `verb=plan`, `workflow_id=macro-plan-...`. |
-| `/orchestrator:autopilot [preview\|start [--execute]\|status\|stop\|release <subtask> [--hold <id>\|--discard-unreadable]\|hold <subtask>\|writer-clear <subtask> --operation <id>\|instruct <subtask> --note-file <path> [--next <step>]] [options]` | ✅ shipping (Claude Code only) | Drive an approved macro without relaying commands between sessions (ADR-0063): each step runs as one command in a fresh `claude -p` worker, decided from closed-enum state only, and the run halts at owner judgment (an unapproved plan, an owner gate, a next step below HIGH confidence, a subtask waiting for its pull request to merge, a step that changed nothing). Dry-run by default; `start --execute` runs it and asks for the model plan first. `hold` takes a lane over for a person while the other lanes go on (ADR-0068 Decision 2); `instruct` tells a lane's child a note and a next step at its next step boundary (ADR-0068 Decision 7). See [Autopilot](#autopilot-claude-code-only) and [Holds](#holds). |
+| `/orchestrator:autopilot [preview\|start [--execute]\|status\|stop\|release <subtask> [--hold <id>\|--discard-unreadable]\|hold <subtask>\|writer-clear <subtask> --operation <id>\|instruct <subtask> --note-file <path> [--next <step>]] [options]` | ✅ shipping (Claude Code only) | Drive an approved macro without relaying commands between sessions (ADR-0063): each step runs as one command in a fresh `claude -p` worker, decided from closed-enum state only, and the run halts at owner judgment (an unapproved plan, an owner gate, a next step below HIGH confidence, a subtask waiting for its pull request to merge, a step that changed nothing). Dry-run by default; `start --execute` runs it, on the model plan the `autopilot_*` settings set (ADR-0071) or one it asks for first. `hold` takes a lane over for a person while the other lanes go on (ADR-0068 Decision 2); `instruct` tells a lane's child a note and a next step at its next step boundary (ADR-0068 Decision 7). See [Autopilot](#autopilot-claude-code-only) and [Holds](#holds). |
 
 ## Autopilot (Claude Code only)
 
@@ -47,6 +47,17 @@ the steps stay manual**, and the host-neutral state it reads (`next_step_*`,
   without a commit) and `/orchestrator:finalize`, each in its own `claude -p`
   process with `AGENTIC_AUTOPILOT` set. The driver is stateless: a relaunch
   continues from the state a halt left.
+- **Model and effort per step** (ADR-0071). Each step resolves its worker's model
+  and effort per coordinate: `--model`/`--effort`, then a `--models` preset
+  (`owner-default`, `mixed`, `sonnet`: suggestions that fix every step), then the
+  `autopilot_<step>_model`/`_effort` keys, then `autopilot_model`/`_effort`
+  (each repository over user, set with `/runtime:settings`), then the host's
+  default. A start resolves the table once and records it in `run.json`
+  (`options.model_table`, with each value's source); an edit to the settings
+  takes effect at the next run. With a key set and no flag, a start needs no
+  plan; with none, it asks for one, as owner decision D5 had it. An invalid or
+  unreadable setting refuses the start. The peer-companion `model`/`effort`
+  keys are never read here.
 - **Landing stays the owner's** (ADR-0062, owner decision D23). Workers never push or
   open a pull request — the denylist forbids it, and network pushes fail at the git
   level in every worker. Each commit is reported while the run goes on

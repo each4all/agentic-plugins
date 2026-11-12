@@ -110,7 +110,7 @@ import {
 import { parseWorkflowFile } from '../../../scripts/state.mjs';
 import {
   afterUnread, checkoutProblem, compareKept, consensusProposals, decideLanes, fingerprint, forcedForLanes, haltScope,
-  laneFingerprint, modelFor, PARK_FINGERPRINT_VERSION, parkFingerprint, peersOnlyProgress, proposalsAtEnd, renderStep, reviewOutcomesText, reviewResolutionText, stepEvidence,
+  laneFingerprint, stepModel, PARK_FINGERPRINT_VERSION, parkFingerprint, peersOnlyProgress, proposalsAtEnd, renderStep, reviewOutcomesText, reviewResolutionText, stepEvidence,
   RUN_WIDE_REASONS, STEP_KINDS, verifyStep, waitingToLand,
 } from './policy.mjs';
 import { driftOf, PLUGINS, resolveRoots } from './roots.mjs';
@@ -2236,7 +2236,8 @@ export async function runLanes(c) {
       delete lane(id).waits_for;
     }
     const command = renderStep(s, { macroId, runId });
-    const { model, effort } = modelFor(s, { plan: options.models, override: { model: options.model, effort: options.effort } });
+    // ADR-0071 D5 — the table startRun prepared and recorded.
+    const { model, effort } = stepModel(s, options.modelTable);
     const sessionId = randomUUID();
     // The step's own TMPDIR (scratch.mjs), on record before it is made.
     const tmpDir = c.scratch ? c.scratch.stepDir(mine) : null;
