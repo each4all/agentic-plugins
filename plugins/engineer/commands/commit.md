@@ -133,8 +133,23 @@ commit, `subject-<n>.txt` per commit when `requires_split` is true. Each is
 - the summary your own one line on what the change does, never the topic or
   `original_request` cut short: the driver refuses that.
 
+Beside each subject write its commit's body (ADR-0028 §P1, note of
+2026-11-11), in the same directory and the same way: `body.txt` for a single
+commit, `body-<n>.txt` per commit of a split. The body is what the commit
+changes and why, in a few plain paragraphs, as a pull request body would say
+it: never the topic or `original_request` copied, and never its first line the
+subject again. No line of it opens with a trailer key (`Workflow-ID:`,
+`Co-Authored-By:`, `BREAKING CHANGE:`, `Release-As:`, `Closes:`, `Fixes:` or
+`Refs:`; the driver writes the trailers, and release-please reads
+`Release-As:` as a version override), and none is shaped like a conventional headline
+(`fix: …`, `feat(x)!: …`), which release-please would read as a changelog
+entry of its own. It is committed as written, up to 4000 characters.
+
 On a clean tree (`branch: no-changes`) write none, and leave `TEXT_DIR` empty:
-the recovery and the close need no subject. Nothing deletes the files.
+the recovery and the close need no subject or body. Nothing in the step
+deletes the files, but they do not outlive it: the run removes the step's
+temporary directory, and when the step stops at the staging-set gate the
+owner's interactive commit composes the body unless the owner passes one.
 
 Writing the subjects is part of this step, and this text governs it. Where an
 older instruction says the step commits with the suggested subject (the
@@ -144,11 +159,12 @@ the suggestion to follow is the plan's `subject_rule`, and a
 `suggested_subject` whose description is the topic cut short is refused.
 
 Then run the step, with `TEXT_DIR` set to that directory. The block passes
-`subject.txt` when the directory holds it; for a split, add one
-`SUBJECT_ARGS+=` line per commit where the block shows it, after
-`SUBJECT_ARGS=()` (a line before it is cleared), `<n>` the 1-based
-index into the plan's `commits` and the key that commit's `package` (`docs`
-when it is null):
+`subject.txt` and `body.txt` when the directory holds them; for a split, add
+one `SUBJECT_ARGS+=` line per commit where the block shows it, after
+`SUBJECT_ARGS=()` (a line before it is cleared), and one `BODY_ARGS+=` line
+per commit where the block shows it, inside the `if` that passes the bodies,
+`<n>` the 1-based index into the plan's `commits` and the key that commit's
+`package` (`docs` when it is null):
 
 ```bash
 TEXT_DIR='<the directory the subjects are in>'
@@ -175,8 +191,21 @@ if [ -n "$TEXT_DIR" ] && [ -e "$TEXT_DIR/subject.txt" ]; then
 fi
 # A split: one line per commit here, after the two above, each as
 #   SUBJECT_ARGS+=(--subject-pkg-file '<package>'="$TEXT_DIR/subject-<n>.txt")
+# The bodies in TEXT_DIR, passed only to a driver that names --require-body
+# (an older one composes the body itself): with it, a commit made without a
+# body is refused.
+BODY_ARGS=()
+if [ -n "$TEXT_DIR" ] && grep -q -e "'require-body'" "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" 2>/dev/null; then
+  BODY_ARGS+=(--require-body)
+  if [ -e "$TEXT_DIR/body.txt" ]; then
+    BODY_ARGS+=(--body-file "$TEXT_DIR/body.txt")
+  fi
+  # A split: one line per commit here, each as
+  #   BODY_ARGS+=(--body-pkg-file '<package>'="$TEXT_DIR/body-<n>.txt")
+fi
 node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" --mode autopilot \
   --workflow-path "$ACTIVE" --repo-root "$REPO_ROOT" --host "${AGENTIC_HOST:-claude}" \
+  "${BODY_ARGS[@]}" \
   "${SUBJECT_ARGS[@]}"
 ```
 
@@ -189,7 +218,11 @@ none, and you write your own summary after the type and scope it names. A
 subject file that cannot be read, or a subject flag that does not match the
 plan's commits (a split given `--subject-file`), stops the step with exit 1 or
 2 before anything is written: fix the files or the `SUBJECT_ARGS` lines and run
-it again. A refusal that
+it again. A body is held to the same: one that breaks a rule above, a commit
+left without one, or a body flag that does not match the plan's commits is
+refused with each reason (exit 2 when the file alone shows it, exit 9
+otherwise) and nothing is written; write the body file anew, or fix the
+`BODY_ARGS` lines, and run the step again. A refusal that
 names a landed commit is the owner's to reword, or to split where it touches
 several packages: rewrite no history in the step (no amend, rebase or reset),
 and report it, with its reason, in the step's report. A refusal with exit 10
@@ -311,6 +344,10 @@ ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "
 #   --subject-pkg-file '<package>'="$TEXT_DIR/subject-<n>.txt"
 #                                          repeated, one per commit of a split
 #                                          (the docs commit's key is `docs`).
+# Bodies, only when the user edited the composed one (written as subjects are):
+#   --body-file "$TEXT_DIR/body.txt"       one commit;
+#   --body-pkg-file '<package>'="$TEXT_DIR/body-<n>.txt"
+#                                          repeated, one per commit of a split.
 # Staging, only when the plan had ask_user=true and the user confirmed the set:
 #   --confirm-non-interactive, plus --include-extra <path> per extra they opted
 #   in, or --accept-current-tree to take every change.

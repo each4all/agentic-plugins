@@ -113,8 +113,16 @@ const WORKFLOW_STORAGE_PREFIX = '.agentic-plugins/state/';
 // below — so the only Workflow-ID that survives is the current one.
 // This closes the A2 false-positive recovery vector where a stale
 // trailer would cause probeLandedRecovery to match an old workflow.
+//
+// `Release-As` (and its spaced spelling) is release-please's version
+// override footer: a body line of that shape would set the version of every
+// package the commit routes to, so it is stripped from composed sources and
+// refused in a body the worker wrote, as the breaking-change footer is.
 const TRAILER_RE =
-  /^(BREAKING CHANGE|BREAKING-CHANGE|Co-Authored-By|Closes|Fixes|Refs|Workflow-ID):/i;
+  /^(BREAKING CHANGE|BREAKING-CHANGE|Release-As|Release As|Co-Authored-By|Closes|Fixes|Refs|Workflow-ID):/i;
+// The footers of TRAILER_RE that release-please routes (a breaking change, a
+// version override): stripped from composed sources however indented.
+const ROUTED_FOOTER_RE = /^(BREAKING[ -]CHANGE|Release[ -]As):/i;
 
 // P12 — classifyMixedCase enum surface. Any consumer switch that does
 // not match every value is a programmer error; default-throws inside
@@ -136,8 +144,8 @@ const VALID_CLASSIFICATIONS = new Set([
 // specific entries from the plan-mode extras list back into the
 // execute-mode staging set without the all-or-nothing
 // `--accept-current-tree` bypass. `subject-pkg-file` is repeatable as
-// `subject-pkg` is (ADR-0059 amendment (j)).
-const REPEATABLE_FLAGS = new Set(['subject-pkg', 'subject-pkg-file', 'include-extra']);
+// `subject-pkg` is (ADR-0059 amendment (j)), and `body-pkg-file` as it is.
+const REPEATABLE_FLAGS = new Set(['subject-pkg', 'subject-pkg-file', 'body-pkg-file', 'include-extra']);
 const BOOLEAN_FLAGS = new Set([
   'accept-current-tree',
   'non-interactive',
@@ -147,11 +155,15 @@ const BOOLEAN_FLAGS = new Set([
   // ADR-0063 — take each commit's subject from inferSubject, the function
   // plan mode suggests with, so no subject text passes through a shell.
   'suggested-subjects',
+  // W8 stage (b) — every commit made takes a body file: the runbook that
+  // writes the bodies passes it, so an older runbook, which passes no body,
+  // still commits with the composed one.
+  'require-body',
   'help',
 ]);
 
 export function parseFlags(argv) {
-  const out = { 'subject-pkg': [], 'subject-pkg-file': [], 'include-extra': [] };
+  const out = { 'subject-pkg': [], 'subject-pkg-file': [], 'body-pkg-file': [], 'include-extra': [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (!a.startsWith('--')) {
@@ -175,8 +187,8 @@ export function parseFlags(argv) {
     if (REPEATABLE_FLAGS.has(name)) {
       out[name].push(val);
     } else {
-      // Given twice, the first subject file would go unread: refused.
-      if (name === 'subject-file' && name in out) throw new Error('--subject-file is given more than once');
+      // Given twice, the first subject or body file would go unread: refused.
+      if ((name === 'subject-file' || name === 'body-file') && name in out) throw new Error(`--${name} is given more than once`);
       out[name] = val;
     }
     i += 1;
@@ -226,6 +238,145 @@ export function resolveSubjectFiles(flags) {
     out['subject-pkg'].push(`${pkg}=${subject}`);
   }
   return out;
+}
+
+// =============================================================================
+// Commit bodies the worker wrote (W8, ADR-0028 §P1 note of 2026-11-11)
+// =============================================================================
+
+// The bodies read from `--body-file` / `--body-pkg-file`, kept under a symbol
+// so no `--<flag>` the parser keeps can stand in for them; `{ ...flags }`
+// copies it.
+export const BODIES = Symbol('phase7-bodies');
+
+// A body line that would be read as a trailer, or as a conventional headline
+// release-please parses as its own entry (AGENTS.md § Release process), is
+// refused, never stripped: the worker rewrites it. A known type (those
+// CONVENTIONAL_COMMIT_RE knows and those release-please also parses) with or
+// without a space after the colon; any word with the breaking `!`, which the
+// parser takes whatever the type. Prose such as `Note: …` stays allowed.
+const HEADLINE_LINE_RE = /^(?:(?:feat|fix|docs|ci|refactor|chore|test|perf|build|style|revert|deps)(?:\([^)]*\))?!?:|[A-Za-z][\w-]*(?:\([^)]*\))?!:)/i;
+const BODY_MAX_CHARS = 4000;
+
+/**
+ * The body as git will hold it: a leading BOM removed, CRLF and CR read as
+ * LF, and the blanks at both ends trimmed as commitStaged trims a body. The
+ * rules below are checked on this text, so what they pass is what lands.
+ */
+export function normalizeBodyText(text) {
+  if (typeof text !== 'string') return '';
+  return text.replace(/^﻿/, '').replace(/\r\n?/g, '\n').replace(/^\s+|\s+$/g, '');
+}
+
+const collapse = (text) => text.replace(/\s+/g, ' ').trim();
+
+/**
+ * The problems of a commit body the worker wrote, as sentences; none when it
+ * may be committed. `subject` (the commit's subject) and `originalRequest`
+ * (the workflow's topic, passed under autopilot only) add the rules that need
+ * them; without them only the body's own rules apply.
+ */
+export function checkBodyText({ body, subject = null, originalRequest = null }) {
+  const text = normalizeBodyText(body);
+  if (text.length === 0) return ['it is blank'];
+  const problems = [];
+  if (text.includes('\0')) problems.push('it holds a NUL byte');
+  if (text.length > BODY_MAX_CHARS) problems.push(`it is ${text.length} characters long, over the cap of ${BODY_MAX_CHARS}`);
+  text.split('\n').forEach((line, i) => {
+    const bare = line.replace(/^\s+/, '');
+    if (TRAILER_RE.test(bare)) {
+      problems.push(`line ${i + 1} is trailer-shaped (${JSON.stringify(bare.slice(0, 60))}); the driver writes the commit's trailers itself`);
+    } else if (HEADLINE_LINE_RE.test(bare)) {
+      problems.push(`line ${i + 1} is a conventional headline (${JSON.stringify(bare.slice(0, 60))}), which release-please would read as a changelog entry of its own`);
+    }
+  });
+  if (typeof subject === 'string' && subject.trim().length > 0 && text.split('\n')[0].trim() === subject.trim()) {
+    problems.push('its first line repeats the subject');
+  }
+  if (typeof originalRequest === 'string') {
+    const request = collapse(stripTrailers(originalRequest));
+    const mine = collapse(text);
+    if (request.length > 0 && (mine === request || request.startsWith(mine))) {
+      problems.push('it is the workflow\'s topic copied (or cut short), which says what was asked rather than what the change does');
+    }
+  }
+  return problems;
+}
+
+/**
+ * `--body-file <path>` for a single commit, a repeated
+ * `--body-pkg-file <package>=<path>` for a split (`docs` for a docs-only
+ * commit), read when the driver starts, before any mode runs, as the subject
+ * files are: a file it cannot read, or a body that fails a rule needing no
+ * commit (blank, NUL, the cap, a trailer- or headline-shaped line), refuses
+ * before anything is written. The rules that need the commit (its subject,
+ * the topic, the commit the package names) are executeMode's. The bodies are
+ * returned under BODIES: `{ single, byPackage }`.
+ */
+export function resolveBodyFiles(flags) {
+  const glued = Object.keys(flags).find((key) => /^body(-file|-pkg-file)=/.test(key));
+  if (glued !== undefined) {
+    throw new Error(`--${glued.slice(0, glued.indexOf('='))} takes its value as the next argument, not after '='`);
+  }
+  const out = { ...flags };
+  delete out['body-file'];
+  delete out['body-pkg-file'];
+  const read = (path, label) => {
+    const body = normalizeBodyText(readTextArgumentFile(path, label));
+    const problems = checkBodyText({ body });
+    if (problems.length > 0) throw new Error(`${label}: the body is refused: ${problems.join('; ')}`);
+    return body;
+  };
+  const bodies = { single: null, byPackage: new Map() };
+  if ('body-file' in flags) bodies.single = read(flags['body-file'], '--body-file');
+  for (const raw of flags['body-pkg-file'] ?? []) {
+    const eq = raw.indexOf('=');
+    if (eq <= 0) throw new Error(`--body-pkg-file expects '<pkg>=<path>' (got ${JSON.stringify(raw)})`);
+    const pkg = raw.slice(0, eq);
+    if (bodies.byPackage.has(pkg)) throw new Error(`commit '${pkg}' has more than one body: pass one --body-pkg-file for it`);
+    bodies.byPackage.set(pkg, read(raw.slice(eq + 1), `--body-pkg-file ${pkg}`));
+  }
+  out[BODIES] = bodies;
+  return out;
+}
+
+const commitKey = (commit) => (commit.package === null ? 'docs' : commit.package);
+
+/**
+ * The body each commit of `shape` takes from `bodies` (null: the composed
+ * body), or the problems that refuse them. A single commit takes
+ * `--body-file`, a split one `--body-pkg-file` per commit. A package key with
+ * no commit in the shape is refused, unless `landedKeys` (the keys this
+ * workflow's commits that already landed route to) names it: after a partial
+ * split its body is ignored, with a note, since a landed commit is never
+ * rewritten.
+ */
+export function pickBodiesForShape({ shape, bodies, landedKeys = () => new Set() }) {
+  const none = { bodies: shape.commits.map(() => null), problems: [], notes: [] };
+  if (!bodies || (bodies.single === null && bodies.byPackage.size === 0)) return none;
+  const problems = [];
+  const notes = [];
+  const keys = shape.commits.map(commitKey);
+  const out = shape.commits.map(() => null);
+  if (shape.requiresSplit) {
+    if (bodies.single !== null) problems.push('--body-file is for a single commit; this staging set splits, so pass --body-pkg-file <pkg>=<file> per commit');
+  } else if (bodies.single !== null) {
+    out[0] = bodies.single;
+  }
+  let landed = null;
+  for (const [pkg, body] of bodies.byPackage) {
+    const at = keys.indexOf(pkg);
+    if (at >= 0 && shape.requiresSplit) {
+      out[at] = body;
+    } else if (at >= 0) {
+      problems.push(`--body-pkg-file ${pkg} names the single commit of this staging set: pass its body with --body-file`);
+    } else if ((landed ??= landedKeys()).has(pkg)) {
+      notes.push(`the body for '${pkg}' is not used: its commit already landed, and a landed commit is never rewritten`);
+    } else {
+      problems.push(`--body-pkg-file ${pkg} names no commit of this staging set (its commits: ${keys.join(', ')})`);
+    }
+  }
+  return { bodies: out, problems, notes };
 }
 
 // =============================================================================
@@ -337,7 +488,11 @@ export function stripTrailers(text) {
   if (typeof text !== 'string' || text.length === 0) return '';
   return text
     .split('\n')
-    .filter((line) => !TRAILER_RE.test(line))
+    // The footers release-please routes are dropped indented too: the final
+    // trim, or a parser that reads an indented footer, would otherwise let one
+    // through. Other keys are dropped only unindented, so an indented example
+    // (`  refs: []` in a fenced block) stays.
+    .filter((line) => !TRAILER_RE.test(line) && !ROUTED_FOOTER_RE.test(line.replace(/^\s+/, '')))
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -352,8 +507,19 @@ export function stripTrailers(text) {
 // bootstrapped pre-PR4 fall back to the existing no-changes error.
 const WORKFLOW_ID_TRAILER_PREFIX = 'Workflow-ID:';
 
-export function composeBody({ originalRequest, diffStat, ensembleSummary, workflowId }) {
+export function composeBody({ originalRequest, diffStat, ensembleSummary, workflowId, intendedBody = null }) {
   const parts = [];
+  // W8 (ADR-0028 §P1 note of 2026-11-11) — a body the worker wrote stands in
+  // for the topic, the diff stat and the summary; the Workflow-ID trailer is
+  // still the driver's, appended last below. It is checked again here, so no
+  // caller can carry a trailer- or headline-shaped line past this function.
+  if (typeof intendedBody === 'string' && normalizeBodyText(intendedBody).length > 0) {
+    const problems = checkBodyText({ body: intendedBody });
+    if (problems.length > 0) throw new Error(`composeBody: the intended body is refused: ${problems.join('; ')}`);
+    parts.push(normalizeBodyText(intendedBody));
+    if (typeof workflowId === 'string' && workflowId.length > 0) parts.push(`${WORKFLOW_ID_TRAILER_PREFIX} ${workflowId}`);
+    return parts.join('\n\n');
+  }
   const cleanedRequest = stripTrailers(originalRequest ?? '');
   if (cleanedRequest.length > 0) parts.push(cleanedRequest);
   if (typeof diffStat === 'string' && diffStat.length > 0) {
@@ -2007,7 +2173,25 @@ async function commitStaged({ repoRoot, subject, body, stderr }) {
     const message = trimmedBody.length > 0 ? `${subject}\n\n${trimmedBody}\n` : `${subject}\n`;
     await writeFile(msgPath, message);
     try {
-      gitSync(repoRoot, ['commit', '-F', msgPath]);
+      // `--cleanup=verbatim` whatever commit.cleanup says: the message lands
+      // as composed (a body line opening with '#' is kept, nothing else is
+      // folded), so what the body rules passed is what the commit holds.
+      gitSync(repoRoot, ['commit', '--cleanup=verbatim', '-F', msgPath]);
+      // A commit-msg hook may still change it: the commit stands, and the
+      // change is reported.
+      // The stored message exactly: the commit object after its header's
+      // blank line (`log --format=%B` adds framing newlines of its own).
+      let landed = null;
+      try {
+        const raw = execFileSync('git', ['cat-file', 'commit', 'HEAD'], { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+        const at = raw.indexOf('\n\n');
+        landed = at >= 0 ? raw.slice(at + 2) : null;
+      } catch {
+        landed = null;
+      }
+      if (landed !== null && landed !== message) {
+        stderr.write('⚠ the commit message that landed differs from the one composed (a commit-msg hook changed it); check it with git log -1.\n');
+      }
       return { ok: true };
     } catch (err) {
       // Pre-commit / commit-msg hook failures land here. ADR §P4: both
@@ -2135,6 +2319,7 @@ async function executeMode({
         `${noChanges.marked_commits.map((s) => s.slice(0, 7)).join(', ')}). ` +
         `Skipping commit loop; running post-commit gates + set-terminal.\n`,
       );
+      noteUnusedBodies(flags, stderr, 'this workflow\'s commits already landed');
       // The landed commits are what this recovery finishes, so their subjects
       // are checked as a commit made here would be, before any write.
       const landedFailures = landedSubjectProblems({ repoRoot, shas: noChanges.marked_commits, packageMap, topicCut });
@@ -2270,6 +2455,42 @@ async function executeMode({
   if (enforceSubjects && (failures.length > 0 || landedFailures.length > 0)) {
     return { ok: false, reason: 'subject-refused', landed: [] };
   }
+  // W8 (ADR-0028 §P1 note of 2026-11-11) — the bodies the worker wrote, each
+  // matched to its commit and checked against its subject (and under
+  // autopilot against the topic) before anything is written. A body that was
+  // given is the author's: a refusal stands interactively too.
+  const picked = pickBodiesForShape({
+    shape,
+    bodies: flags[BODIES],
+    landedKeys: () => landedCommitKeys({ repoRoot, frontmatter, packageMap }),
+  });
+  const bodyProblems = [...picked.problems];
+  picked.bodies.forEach((body, i) => {
+    if (body === null) {
+      // W8 stage (b) — the runbook that writes the bodies asks for one per
+      // commit; a commit it left without one is refused, not composed.
+      if (flags['require-body'] === true) {
+        bodyProblems.push(
+          `commit ${i + 1}/${shape.commits.length} (package=${commitKey(shape.commits[i])}) has no body: ` +
+          (shape.requiresSplit
+            ? `pass --body-pkg-file ${commitKey(shape.commits[i])}=<file>`
+            : 'pass --body-file <file>'),
+        );
+      }
+      return;
+    }
+    const problems = checkBodyText({ body, subject: subjects[i], originalRequest: enforceSubjects ? (frontmatter.original_request ?? '') : null });
+    for (const p of problems) bodyProblems.push(`the body of commit ${i + 1}/${shape.commits.length} (package=${commitKey(shape.commits[i])}): ${p}`);
+  });
+  for (const note of picked.notes) stderr.write(`ℹ ${note}.\n`);
+  if (bodyProblems.length > 0) {
+    stderr.write(
+      `✗ the commit body is refused: nothing was committed and nothing was written.\n` +
+      bodyProblems.map((p) => `  - ${p}\n`).join('') +
+      '  Write the body file anew — what the commit changes and why, with no trailer or conventional-headline line — and run the commit again.\n',
+    );
+    return { ok: false, reason: 'body-refused', landed: [] };
+  }
   // C163 A1b (critique of 2026-11-07, MAJOR 1) — under autopilot the commit
   // is admitted only past a usable review, read again from the workflow file
   // here, just before the first write and the staging: an outcome recorded
@@ -2287,13 +2508,34 @@ async function executeMode({
   // workflow. Phase 7's terminal write after the gates turns it back on.
   const { operation: id } = await beginCommit({ workflowPath, host: flags.host });
   return underCommitOperation({ workflowPath, flags, stderr, id }, () => commitAll({
-    workflowPath, repoRoot, frontmatter, flags, stderr, shape, subjects, ensembleSummary,
+    workflowPath, repoRoot, frontmatter, flags, stderr, shape, subjects, bodies: picked.bodies, ensembleSummary,
   }));
+}
+
+// The keys (a package, or `docs`) this workflow's commits that already landed
+// in baseline..HEAD route to, as a split commit of them would be keyed.
+function landedCommitKeys({ repoRoot, frontmatter, packageMap }) {
+  const keys = new Set();
+  for (const sha of markedCommitShas({ repoRoot, frontmatter })) {
+    const routes = detectCrossPackageRoutes(commitTouchedPaths(repoRoot, sha), packageMap);
+    for (const c of routes.perPackageCommits) keys.add(c.package);
+    if (routes.docsCommit || routes.perPackageCommits.length === 0) keys.add('docs');
+  }
+  return keys;
+}
+
+// A body passed to a path that commits nothing new (the A2 recovery, the
+// no-changes close) is not used: what landed is never rewritten.
+function noteUnusedBodies(flags, stderr, why) {
+  const bodies = flags[BODIES];
+  if (bodies && (bodies.single !== null || bodies.byPackage.size > 0)) {
+    stderr.write(`ℹ the body files given are not used: ${why}, and a landed commit is never rewritten.\n`);
+  }
 }
 
 // The commits of an executeMode after its beginCommit, then the post-commit
 // gates and the terminal write.
-async function commitAll({ workflowPath, repoRoot, frontmatter, flags, stderr, shape, subjects, ensembleSummary }) {
+async function commitAll({ workflowPath, repoRoot, frontmatter, flags, stderr, shape, subjects, bodies = [], ensembleSummary }) {
   const landed = [];
   // C84 — the whole staging set is checked before the first git write, so a
   // refusal in a later package's files (an unapproved, recreated or partly
@@ -2411,6 +2653,8 @@ async function commitAll({ workflowPath, repoRoot, frontmatter, flags, stderr, s
       // can identify this commit as belonging to the workflow on a
       // future rerun.
       workflowId: frontmatter.workflow_id,
+      // W8 — the body the worker wrote for this commit, when it wrote one.
+      intendedBody: bodies[i] ?? null,
     });
 
     const commitResult = await commitStaged({
@@ -2460,6 +2704,7 @@ async function commitAll({ workflowPath, repoRoot, frontmatter, flags, stderr, s
  */
 async function closeMode({ workflowPath, repoRoot, frontmatter, flags, stderr }) {
   refuseOwnerGate(frontmatter);
+  noteUnusedBodies(flags, stderr, 'the workflow closes with no commit');
   const gitChanges = computeGitChanges(repoRoot);
   const manifest = Array.isArray(frontmatter.commit_manifest)
     ? frontmatter.commit_manifest
@@ -2786,6 +3031,19 @@ Execute mode requires the user-confirmed subject:
   --subject-pkg <pkg>=<subj>        passes an edited subject as a file (ADR-0059 amendment (j)).
   A subject file holds one line, read as UTF-8 with one trailing newline removed; it is
   read before anything is written, and kept.
+  --body-file <path>                Single-commit body, read from a file (optional; rejected
+                                    when shouldSplit). Without one the body is composed.
+  --body-pkg-file <pkg>=<path>      Per-package body, read from a file (repeatable; one per
+                                    commit of a split, docs for a docs-only commit).
+  A body file is what the commit changes and why: it stands in for the composed body, and
+  the driver still appends the Workflow-ID trailer. It is refused (exit 2 when the file
+  alone shows it, exit 9 otherwise, nothing written) when blank, over 4000 characters, or
+  holding a trailer-shaped or conventional-headline line, when its first line repeats the
+  subject, or (under autopilot) when it is the topic copied or cut short. The message is
+  committed with --cleanup=verbatim.
+  --require-body                    Refuse (exit 9, nothing written) a commit made with no
+                                    body file; the recovery and the close take none. The
+                                    autopilot commit runbook passes it with the bodies.
   --confirm-non-interactive         Skip the staging-intent confirm gate.
   --non-interactive                 Alias for --confirm-non-interactive.
 
@@ -2879,7 +3137,7 @@ async function runMain(argv) {
   // ADR-0059 amendment (j) — subject files are read before any mode runs, so
   // a bad one refuses before anything is written.
   try {
-    flags = resolveSubjectFiles(flags);
+    flags = resolveBodyFiles(resolveSubjectFiles(flags));
   } catch (err) {
     process.stderr.write(`✗ ${err.message}\n`);
     return 2;
@@ -2997,6 +3255,7 @@ async function runMain(argv) {
           'active-children': 6,
           'unclean-after-commit': 7,
           'subject-refused': 9,
+          'body-refused': 9,
           'review-held': 10,
         };
         return codeMap[result.reason] ?? 1;
@@ -3048,6 +3307,7 @@ async function runMain(argv) {
         'active-children': 6,
         'unclean-after-commit': 7,
         'subject-refused': 9,
+        'body-refused': 9,
         'review-binding-mismatch': 10,
       };
       return codeMap[result.reason] ?? 1;
