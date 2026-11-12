@@ -1969,6 +1969,28 @@ describe('runtime settings', () => {
     ok(next.includes('model = "shared"'));
   });
 
+  it('upsert writes only what the reader reads: a new key goes before the first table, a key inside a table is left alone (ADR-0071 P1)', async () => {
+    const { parseRuntimeConfigToml } = await import('../../plugins/runtime/scripts/lib/runtime-config.mjs');
+    const before = 'model = "top"\n\n[tools.other]\nautopilot_effort = "theirs"\nmodel = "theirs"\n';
+    const next = upsertRuntimeConfigToml(before, { autopilot_effort: 'high', model: 'shared' });
+    // The table and every line in it survive as they were.
+    ok(next.endsWith('[tools.other]\nautopilot_effort = "theirs"\nmodel = "theirs"\n'), next);
+    // The reader sees the written values: the new key landed above the table.
+    deepStrictEqual(parseRuntimeConfigToml(next), { model: 'shared', autopilot_effort: 'high' });
+    // CONTROL: with no table the key is appended at the end, as before.
+    deepStrictEqual(parseRuntimeConfigToml(upsertRuntimeConfigToml('model = "top"\n', { autopilot_effort: 'low' })), { model: 'top', autopilot_effort: 'low' });
+  });
+
+  it('the autopilot keys are validated: an effort outside the list and a malformed model are refused (ADR-0071 D2)', async () => {
+    const opts = await parseArgs(['--autopilot-effort', 'high', '--autopilot-compose-model', 'sonnet', '--autopilot-commit-effort', 'low']);
+    deepStrictEqual(opts.desired, { autopilot_effort: 'high', autopilot_compose_model: 'sonnet', autopilot_commit_effort: 'low' });
+    await rejects(async () => parseArgs(['--autopilot-effort', 'huge']), /autopilot_effort must be one of low, medium, high, xhigh, max/);
+    await rejects(async () => parseArgs(['--autopilot-refine-model', 'a b']), /autopilot_refine_model "a b" is not a model name/);
+    throws(() => upsertRuntimeConfigToml('', { autopilot_done_effort: 'none' }), /autopilot_done_effort must be one of/);
+    // The peer keys stay free-form: the autopilot validators are theirs only.
+    deepStrictEqual((await parseArgs(['--effort', 'whatever'])).desired, { effort: 'whatever' });
+  });
+
   it('every config flag is advertised on ALL THREE public surfaces — cross-host parity', async () => {
     // DERIVED from CONFIG_KEYS, never a hand-listed set: the flag surface is
     // auto-generated from that array, so a key added there gets a working flag
@@ -2732,7 +2754,7 @@ describe('settings: the surfaces ADR-0064 removed stay removed', () => {
       }
       ok(!Object.hasOwn(report.overall, 'notify_warnings'), `skip=${skipHostCliProbes}: no notify_warnings counter`);
       ok(Object.hasOwn(report.overall, 'session_warnings'), `skip=${skipHostCliProbes}: CONTROL — the surviving family counter is there`);
-      deepStrictEqual(Object.keys(report.config.key_families).sort(), ['model_effort', 'session']);
+      deepStrictEqual(Object.keys(report.config.key_families).sort(), ['autopilot', 'model_effort', 'session']);
       const text = formatText(report);
       for (const header of ['Notify (ADR-0040', 'Notification Plan', 'Egress Launcher Plan']) {
         ok(!text.includes(header), `skip=${skipHostCliProbes}: the text has no ${header} section`);

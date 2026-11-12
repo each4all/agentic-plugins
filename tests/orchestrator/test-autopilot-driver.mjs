@@ -1024,3 +1024,51 @@ describe("the run's state root (ADR-0067 Decision 2)", () => {
     }
   });
 });
+
+// ADR-0071 D5 — the run's model table is resolved once, when it starts, and
+// recorded: a settings edit during the run reaches no later step of it.
+describe('the model table from settings (ADR-0071)', () => {
+  it('is recorded at the start, and an edit to the settings during the run leaves every later step as it was', async () => {
+    const t = await setup({ scenario: { A: { next: [COMMIT], file: true }, B: { next: [DONE], file: false } } });
+    try {
+      const config = join(t.env.HOME, '.agentic-plugins', 'config.toml');
+      mkdirSync(dirname(config), { recursive: true });
+      writeFileSync(config, 'autopilot_model = "opus"\nautopilot_commit_effort = "low"\n');
+      let spawned = 0;
+      const startWorker = (a) => {
+        // Before the first step's worker runs, the owner edits the settings:
+        // a read at any spawn would see the edit for both steps.
+        if (++spawned === 1) writeFileSync(config, 'autopilot_model = "haiku"\nautopilot_commit_effort = "max"\n');
+        return realStartWorker(a);
+      };
+      strictEqual(await t.run({ models: null }, { startWorker }), 2, t.lines.join('\n'));
+      const r = t.latest();
+      deepStrictEqual(r.steps.map((s) => s.kind), ['dispatch', 'commit']);
+      strictEqual(r.run.options.model_plan, null);
+      deepStrictEqual([r.run.options.model_table.steps.commit.model, r.run.options.model_table.steps.commit.effort], ['opus', 'low']);
+      strictEqual(r.run.options.model_table.steps.commit.effort_source, 'autopilot_commit_effort (user)');
+      const argvs = readFileSync(join(t.fx.dir, 'claude.log'), 'utf8').trim().split('\n').map((l) => JSON.parse(l).argv);
+      const flag = (argv, name) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : null);
+      deepStrictEqual(argvs.map((a) => flag(a, '--model')), ['opus', 'opus']);
+      strictEqual(flag(argvs[1], '--effort'), 'low', 'the commit step kept the effort the run started with');
+      ok(spawned >= 2, 'CONTROL: both steps spawned after the edit');
+      strictEqual(readFileSync(config, 'utf8'), 'autopilot_model = "haiku"\nautopilot_commit_effort = "max"\n', 'CONTROL: the edit is on disk');
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+
+  it('a setting that cannot be used starts no run', async () => {
+    const t = await setup({ scenario: { A: { next: [COMMIT], file: true } } });
+    try {
+      mkdirSync(join(t.env.HOME, '.agentic-plugins'), { recursive: true });
+      writeFileSync(join(t.env.HOME, '.agentic-plugins', 'config.toml'), 'autopilot_compose_effort = "huge"\n');
+      strictEqual(await t.run({ models: null }), 1);
+      match(t.lines.join('\n'), /autopilot_compose_effort .* must be one of low, medium, high, xhigh, max/);
+      deepStrictEqual(L.listRuns(t.work), []);
+      ok(!existsSync(join(t.fx.dir, 'claude.log')), 'no worker started');
+    } finally {
+      t.fx.cleanup();
+    }
+  });
+});

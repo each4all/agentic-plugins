@@ -1097,6 +1097,9 @@ that part of §4 before this ADR was adopted.
   gaining only the rows.
 - **Q4. Model and effort defaults per verb** (D5, open). For example, compose/critique on the
   owner default and mechanical steps on sonnet.
+  *Note 2026-11-12:* answered by
+  [ADR-0071](0071-autopilot-step-model-from-settings.md) (Proposed): per-step
+  `autopilot_<step>_model`/`_effort` settings, read once when a run starts.
 - **Q5. Halt notification kind.** *Resolved 2026-09-25:* no plugin notification; terminal + ledger + optional `--notify-local`. (Previously: reuse `response-needed`, or add an
   `autopilot-halt` kind to ADR-0047.)
   *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 2,
@@ -1572,6 +1575,10 @@ roots, `driver.mjs` runs the loop, and `cli.mjs` is the entry of
     the mechanical steps on sonnet/low) or `sonnet`. `/orchestrator:autopilot
     start` asks; a terminal start asks on its TTY; anything else must pass
     `--models` (or `--model`/`--effort`).
+    *Note 2026-11-12 ([ADR-0071](0071-autopilot-step-model-from-settings.md),
+    Proposed):* on acceptance the plans become suggestions, and the
+    `autopilot_*` settings a plan of their own: with a key set and no flag a
+    start takes them without asking; with none set this decision stands.
   - D10: budgets stay finite, as D1 requires, but out of the way: 60 steps, $250
     a run, $25 and 60 minutes a step, 24 hours a run. The run's caps bound each
     step too (a step may spend only what is left, and run only until the run's

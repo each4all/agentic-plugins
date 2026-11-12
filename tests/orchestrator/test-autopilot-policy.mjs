@@ -457,6 +457,61 @@ describe('modelFor — owner decision D5 plans', () => {
   });
 });
 
+describe('resolveModelTable — ADR-0071 D3 precedence, per coordinate', () => {
+  const { resolveModelTable, stepModel, modelStep, MODEL_SUGGESTIONS } = P;
+  const set = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, { value: v, layer: 'repo' }]));
+  const SETTINGS = set({
+    autopilot_model: 'opus', autopilot_effort: 'high',
+    autopilot_compose_model: 'sonnet', autopilot_commit_effort: 'low', autopilot_done_model: 'haiku',
+  });
+
+  it('with no preset: the step key, then the run-wide key, then the host default, each coordinate on its own', () => {
+    const t = resolveModelTable({ settings: SETTINGS });
+    deepStrictEqual(stepModel({ kind: 'verb', verb: 'compose' }, t), { model: 'sonnet', effort: 'high' });
+    deepStrictEqual(stepModel({ kind: 'commit' }, t), { model: 'opus', effort: 'low' });
+    deepStrictEqual(stepModel({ kind: 'verb', verb: 'critique' }, t), { model: 'opus', effort: 'high' });
+    strictEqual(t.steps.compose.model_source, 'autopilot_compose_model (repo)');
+    strictEqual(t.steps.compose.effort_source, 'autopilot_effort (repo)');
+    const none = resolveModelTable({});
+    deepStrictEqual(stepModel({ kind: 'verb', verb: 'compose' }, none), { model: null, effort: null });
+    strictEqual(none.steps.compose.model_source, 'host default');
+  });
+
+  it('a flag beats everything for its coordinate only; a partial flag leaves the other coordinate to the settings', () => {
+    const t = resolveModelTable({ flags: { model: 'x1' }, settings: SETTINGS });
+    deepStrictEqual(stepModel({ kind: 'verb', verb: 'compose' }, t), { model: 'x1', effort: 'high' });
+    deepStrictEqual(stepModel({ kind: 'commit' }, t), { model: 'x1', effort: 'low' });
+    deepStrictEqual(stepModel({ kind: 'commit' }, resolveModelTable({ preset: 'mixed', flags: { effort: 'max' }, settings: SETTINGS })), { model: 'sonnet', effort: 'max' });
+  });
+
+  it('a selected preset fixes all of its row against populated settings, its nulls included', () => {
+    for (const [name, rows] of Object.entries(MODEL_SUGGESTIONS)) {
+      const t = resolveModelTable({ preset: name, settings: SETTINGS });
+      for (const [step, r] of Object.entries(rows)) {
+        deepStrictEqual({ model: t.steps[step].model, effort: t.steps[step].effort }, { model: r.model, effort: r.effort }, `${name} ${step}`);
+        strictEqual(t.steps[step].model_source, `--models ${name}`);
+      }
+    }
+    // owner-default chosen is the host default on every step, not the settings.
+    deepStrictEqual(stepModel({ kind: 'verb', verb: 'critique' }, resolveModelTable({ preset: 'owner-default', settings: SETTINGS })), { model: null, effort: null });
+    throws(() => resolveModelTable({ preset: 'cheap' }), /unknown model plan/);
+  });
+
+  it('a dispatch counts as its verb, done-no-commit as done, and verify uses the run-wide row', () => {
+    const t = resolveModelTable({ settings: SETTINGS });
+    strictEqual(modelStep({ kind: 'dispatch', verb: 'compose' }), 'compose');
+    deepStrictEqual(stepModel({ kind: 'dispatch', verb: 'compose' }, t), { model: 'sonnet', effort: 'high' });
+    deepStrictEqual(stepModel({ kind: 'done-no-commit' }, t), { model: 'haiku', effort: 'high' });
+    strictEqual(modelStep({ kind: 'verify' }), null);
+    deepStrictEqual(stepModel({ kind: 'verify' }, t), { model: 'opus', effort: 'high' });
+    strictEqual(modelStep({ kind: 'dispatch', subtaskId: 'S1' }), null);
+    // Under a preset, a dispatch with no verb keeps what the plans gave it.
+    deepStrictEqual(stepModel({ kind: 'dispatch', subtaskId: 'S1' }, resolveModelTable({ preset: 'sonnet' })), { model: 'sonnet', effort: 'medium' });
+    deepStrictEqual(stepModel({ kind: 'dispatch', subtaskId: 'S1' }, resolveModelTable({ preset: 'sonnet', flags: { effort: 'high' } })), { model: 'sonnet', effort: 'high' });
+    deepStrictEqual(stepModel({ kind: 'dispatch', subtaskId: 'S1' }, resolveModelTable({ preset: 'mixed' })), { model: null, effort: null });
+  });
+});
+
 describe('fingerprint', () => {
   it('ignores snapshots, updated_at and landing answers; moves on any semantic field', () => {
     const a = inProgressA();

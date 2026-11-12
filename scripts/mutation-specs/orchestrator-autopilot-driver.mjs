@@ -739,8 +739,8 @@ export const MUTATIONS = [
   },
   {
     id: 'C2', file: CLI, tests: [TC],
-    from: '    } else if (io.stdin.isTTY) {',
-    to: '    } else if (true) {',
+    from: '    if (io.stdin.isTTY) {',
+    to: '    if (true) {',
     why: 'a non-interactive start asks a question no one can answer instead of refusing (D5)',
   },
   {
