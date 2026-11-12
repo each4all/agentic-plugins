@@ -148,8 +148,87 @@ describe('refusals', () => {
       ok(/never starts another run/.test(nested.err));
       const plan = await main(['start', '--execute'], env, work);
       strictEqual(plan.code, 1);
-      ok(/needs a model plan: --models owner-default\|mixed\|sonnet/.test(plan.err), plan.err);
+      ok(/needs a model plan: set the autopilot_\* keys with \/runtime:settings, or pass --models owner-default\|mixed\|sonnet/.test(plan.err), plan.err);
       ok(!existsSync(join(fx.dir, 'claude.log')), 'no worker started');
+    });
+  });
+
+  // ADR-0071 D6 — with an autopilot key set and no model flag, a start takes
+  // the settings; one that cannot be used refuses before anything starts.
+  it('with autopilot settings and no model flag, a start needs no plan; an invalid setting refuses it', async () => {
+    await withRepo(async (fx, env, work) => {
+      const config = join(env.HOME, '.agentic-plugins', 'config.toml');
+      mkdirSync(join(env.HOME, '.agentic-plugins'));
+      writeFileSync(config, 'autopilot_compose_model = "sonnet"\n');
+      // It goes on to the run's own start conditions: an engineer root inside
+      // the repository stops it there, past the model plan.
+      const inside = join(work, 'vendored-engineer');
+      cpSync(ENG, inside, { recursive: true });
+      const settled = await main(['start', '--execute'], { ...env, AGENTIC_ENGINEER_ROOT: inside }, work);
+      strictEqual(settled.code, 1);
+      ok(!/needs a model plan/.test(settled.err), settled.err);
+      ok(/engineer root .* is inside the repository this run drives/.test(settled.err), settled.err);
+      writeFileSync(config, 'autopilot_compose_model = "sonnet"\nautopilot_effort = ""\n');
+      const bad = await main(['start', '--execute'], env, work);
+      strictEqual(bad.code, 1);
+      ok(/the model settings \(ADR-0071\) cannot be used/.test(bad.err) && /autopilot_effort .* must be one of/.test(bad.err), bad.err);
+      // Preview names it as a start condition that fails, in its JSON too.
+      const preview = await main(['preview', '--json'], env, work);
+      strictEqual(preview.code, 1);
+      const report = JSON.parse(preview.out);
+      strictEqual(report.start_conditions.ok, false);
+      ok(report.start_conditions.problems.some((x) => /model settings \(ADR-0071\).*autopilot_effort/.test(x)), preview.out);
+      strictEqual(report.posture.model_table, null);
+      // A flag does not route around a broken setting: the settings are read whole.
+      strictEqual((await main(['start', '--execute', '--models', 'sonnet'], env, work)).code, 1);
+      ok(!existsSync(join(fx.dir, 'claude.log')), 'no worker started');
+    });
+  });
+
+  it('a terminal start shows the settings first, then the suggestions, and records the choice from one read', async () => {
+    const { PassThrough } = await import('node:stream');
+    await withRepo(async (fx, env, work) => {
+      const config = join(env.HOME, '.agentic-plugins', 'config.toml');
+      mkdirSync(join(env.HOME, '.agentic-plugins'));
+      const ask = async (answer, { editWhileAsked = null } = {}) => {
+        writeFileSync(config, 'autopilot_model = "opus"\n');
+        const stdin = new PassThrough();
+        stdin.isTTY = true;
+        const stderr = new PassThrough();
+        let asked = '';
+        stderr.on('data', (d) => {
+          asked += d;
+          // The owner edits the settings while the question waits.
+          if (editWhileAsked && asked.includes('Choose')) writeFileSync(config, editWhileAsked);
+        });
+        let handed = null;
+        const startRun = async ({ options }) => { handed = options; return 0; };
+        const out = [];
+        const here = process.cwd();
+        process.chdir(work);
+        try {
+          setTimeout(() => stdin.end(answer), 50);
+          strictEqual(await C.main(['start', '--execute'], { env, io: { stdin, stderr }, out: (s) => out.push(s), err: () => {}, hooks: { startRun } }), 0);
+        } finally {
+          process.chdir(here);
+        }
+        return { asked, handed, out: out.join('\n') };
+      };
+      const first = await ask('1\n', { editWhileAsked: 'autopilot_model = "haiku"\n' });
+      const lines = first.asked.split('\n');
+      ok(lines[1].startsWith('  1) your autopilot settings'), first.asked);
+      ok(lines.some((l) => /investigate, frame, .*finalize: opus\/default effort {2}\(autopilot_model \(user\); host default\)/.test(l)), first.asked);
+      ok(lines.some((l) => l.startsWith('  2) owner-default')) && lines.some((l) => l.startsWith('  3) mixed')) && lines.some((l) => l.startsWith('  4) sonnet')), first.asked);
+      // The settings chosen: the table shown is the one handed to the run,
+      // though the file changed while the question waited.
+      strictEqual(readFileSync(config, 'utf8'), 'autopilot_model = "haiku"\n', 'CONTROL: the edit landed while the question waited');
+      strictEqual(first.handed.models, null);
+      strictEqual(first.handed.modelTable.steps.critique.model, 'opus');
+      ok(/model table \(recorded in run\.json\):/.test(first.out), first.out);
+      // A suggestion chosen: its whole row, over the settings.
+      const mixed = await ask('3\n');
+      strictEqual(mixed.handed.models, 'mixed');
+      deepStrictEqual([mixed.handed.modelTable.steps.critique.model, mixed.handed.modelTable.steps.commit.model], [null, 'sonnet']);
     });
   });
 });
