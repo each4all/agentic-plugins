@@ -323,10 +323,13 @@ export function buildPrompt(userPrompt, outPath, format = 'png', size = null, qu
 
 // gpt-image-2 per-image cost is size/quality dependent and prompt-mediated, so
 // this is a coarse surfaced estimate — actual spend is billed by Codex/OpenAI.
+// With no known tier requested the estimate prices `medium` and says so
+// (`tier_assumed`), so a quote is never read as the tier the run asked for.
 export function estimateCost(opts = {}) {
-  const tier = opts.quality && ['low', 'medium', 'high', 'auto'].includes(opts.quality) ? opts.quality : 'medium';
+  const requested = opts.quality && ['low', 'medium', 'high', 'auto'].includes(opts.quality);
+  const tier = requested ? opts.quality : 'medium';
   const perImage = { low: 0.005, medium: 0.04, high: 0.19, auto: 0.04 }[tier];
-  return { estimate_usd: perImage, tier, basis: 'gpt-image-2 approx per-image; prompt-mediated, actual billed by Codex/OpenAI' };
+  return { estimate_usd: perImage, tier, tier_assumed: !requested, basis: 'gpt-image-2 approx per-image; prompt-mediated, actual billed by Codex/OpenAI' };
 }
 
 // Normalize a requested format, or return null when it is not one this plugin

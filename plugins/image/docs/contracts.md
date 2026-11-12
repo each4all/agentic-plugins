@@ -131,7 +131,7 @@ bytes:
     }
   ],
   "failed_outputs": ["same shape as images[] — a file that landed but failed verification"],
-  "cost": { "estimate_usd": "number — surfaced, not hidden", "tier": "low | medium | high", "basis": "string" },
+  "cost": { "estimate_usd": "number — surfaced, not hidden", "tier": "low | medium | high | auto — the tier priced", "tier_assumed": "boolean — true when no known quality was requested, so `medium` was priced", "basis": "string" },
   "error": { "kind": "see §8 | null", "message": "string", "detail": "string" },
   "created_at": "iso-utc"
 }

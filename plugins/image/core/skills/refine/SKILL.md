@@ -11,6 +11,23 @@ critique/feedback and regenerates through Codex's integrated gpt-image — it
 
 ## When invoked
 
+0. **Quality tier** — the refine keeps the quality the image was made at,
+   never a fixed tier. Read it from two sources:
+
+   - the brief's `output.quality` (`brief.json`, `docs/contracts.md` §3);
+   - the previous run this refine iterates on — the compose run, or the last
+     refine run, whose image the feedback is about — its manifest's
+     `requested_parameters.quality` (`docs/contracts.md` §4). Identify that
+     run by its run id or image path; a run you cannot identify is no source.
+
+   When both name the same tier, or only one names a tier, use it. When they
+   name different tiers, or neither names one, do not pick silently: say
+   what each source holds, propose a tier with its reason (a conflict: the
+   brief's, as the stated intent; none: `medium`, the tier the estimate
+   prices by default), and ask the user to confirm or choose before step 1.
+   **The tier is not inherited by the helper:** pass it as `--quality <tier>`
+   on every call, the estimate's and the generation's.
+
 1. **Cost gate** (`docs/contracts.md` §7, §9): each refine is a **new
    generation** — disclose the per-iteration cost **before** regenerating, and
    with it, on the Claude host, that the base prompt and the feedback go to
@@ -19,8 +36,13 @@ critique/feedback and regenerates through Codex's integrated gpt-image — it
    sends, and computes the cost without spending:
 
    ```bash
-   node "$CLAUDE_PLUGIN_ROOT/scripts/refine-dispatch.mjs" --estimate-only --quality low
+   node "$CLAUDE_PLUGIN_ROOT/scripts/refine-dispatch.mjs" --estimate-only --quality <tier>
    ```
+
+   The disclosure names the tier the estimate priced (`cost.tier`) and where
+   it came from (the brief, the previous run, or the user). When
+   `cost.tier_assumed` is `true` no known tier reached the helper and it
+   priced `medium`: say so rather than quote it as the run's tier.
 
    There is a **hard iteration cap** (default 3, and a caller cannot raise it —
    `--max-iterations` is clamped); there is **no automatic retry** of
@@ -32,7 +54,7 @@ critique/feedback and regenerates through Codex's integrated gpt-image — it
    node "$CLAUDE_PLUGIN_ROOT/scripts/refine-dispatch.mjs" \
      --base-prompt-file <base.txt> --feedback-file <feedback.txt> \
      --iteration <N> --max-iterations 3 --repo-root "$REPO_ROOT" \
-     --format png --quality low [--size <WxH>] \
+     --format png --quality <tier> [--size <WxH>] \
      [--background opaque|auto|transparent]
    ```
 
