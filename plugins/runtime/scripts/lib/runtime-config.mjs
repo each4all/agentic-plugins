@@ -25,6 +25,25 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+// ADR-0071 — the steps an autopilot run spawns a worker for, each with a key
+// pair of its own. A dispatch counts as its verb, done-no-commit as done; a
+// verification step runs no model and has no key.
+export const AUTOPILOT_MODEL_STEPS = Object.freeze([
+  'investigate', 'frame', 'decide', 'compose', 'critique', 'refine', 'commit', 'done', 'finalize',
+]);
+// The efforts a Claude worker takes, and the model-name grammar the autopilot
+// CLI holds `--model` to: the same two the orchestrator's reader validates with.
+export const AUTOPILOT_EFFORTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
+export const AUTOPILOT_MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,63}$/;
+
+function autopilotConfigKeys() {
+  return [
+    'autopilot_model',
+    'autopilot_effort',
+    ...AUTOPILOT_MODEL_STEPS.flatMap((step) => [`autopilot_${step}_model`, `autopilot_${step}_effort`]),
+  ];
+}
+
 // Config keys are grouped into families so the plan/apply pipeline stays a
 // generic key-family differ: the differ, TOML parser/upsert, and CLI flag
 // mapping all derive from this table instead of hardcoding one family's
@@ -66,6 +85,13 @@ export const CONFIG_KEY_FAMILIES = Object.freeze({
     'entry_brief',
     'entry_brief_empty',
   ]),
+  // ADR-0071 — the model and effort of an autopilot run's workers: one pair for
+  // every step, and one pair per step the driver spawns a worker for. Read by
+  // the orchestrator's autopilot (adapters/claude/autopilot/model-settings.mjs,
+  // a copy of this contract, not an import: ADR-0010 §5) once, when a run
+  // starts. These are not the peer-companion keys above: an autopilot worker
+  // never reads `model`/`effort`/`claude_*`, and a peer never reads these.
+  autopilot: Object.freeze(autopilotConfigKeys()),
 });
 export const CONFIG_KEYS = Object.freeze(Object.values(CONFIG_KEY_FAMILIES).flat());
 
@@ -142,6 +168,18 @@ export const CONFIG_KEY_VALIDATORS = {
     }
   },
 };
+
+// ADR-0071 D2 — every autopilot key is validated, unlike the free-form peer
+// model/effort keys: the value reaches a worker's `--model`/`--effort`.
+for (const key of CONFIG_KEY_FAMILIES.autopilot) {
+  CONFIG_KEY_VALIDATORS[key] = key.endsWith('_effort')
+    ? (value, k) => {
+      if (!AUTOPILOT_EFFORTS.includes(value)) throw new Error(`${k} must be one of ${AUTOPILOT_EFFORTS.join(', ')}`);
+    }
+    : (value, k) => {
+      if (!AUTOPILOT_MODEL_RE.test(value)) throw new Error(`${k} ${JSON.stringify(value)} is not a model name`);
+    };
+}
 
 export function validateConfigValue(key, value) {
   CONFIG_KEY_VALIDATORS[key]?.(value, key);
