@@ -883,8 +883,18 @@ export function upsertRuntimeConfigToml(text, desired) {
   const lines = String(text ?? '').replace(/\r\n/g, '\n').split('\n');
   if (lines.length > 0 && lines.at(-1) === '') lines.pop();
   const output = [];
+  // The flat-key contract (scanRuntimeConfigLines): the reader stops at the
+  // first `[table]` header, so the writer rewrites only top-level assignments
+  // and adds a new key before that header, never inside a table, where the
+  // reader would not see it and the table's owner would find a stray key.
+  let firstTable = -1;
 
   for (const line of lines) {
+    if (firstTable < 0 && line.replace(/#.*/, '').trim().startsWith('[')) firstTable = output.length;
+    if (firstTable >= 0) {
+      output.push(line);
+      continue;
+    }
     const match = line.match(/^(\s*)([A-Za-z0-9_.-]+)(\s*=\s*)("?)(.*?)(\4)(\s*(?:#.*)?)$/);
     if (!match) {
       output.push(line);
@@ -905,11 +915,15 @@ export function upsertRuntimeConfigToml(text, desired) {
 
   const remaining = [...desiredMap].filter(([key]) => !replaced.has(key));
   if (remaining.length > 0) {
-    if (output.length > 0 && output.at(-1) !== '') output.push('');
-    output.push('# agentic-plugins runtime defaults');
+    const head = firstTable >= 0 ? output.slice(0, firstTable) : output;
+    const tail = firstTable >= 0 ? output.slice(firstTable) : [];
+    if (head.length > 0 && head.at(-1) !== '') head.push('');
+    head.push('# agentic-plugins runtime defaults');
     for (const [key, value] of remaining) {
-      output.push(`${key} = ${tomlString(value)}`);
+      head.push(`${key} = ${tomlString(value)}`);
     }
+    if (tail.length > 0) head.push('');
+    return `${[...head, ...tail].join('\n')}\n`;
   }
   return `${output.join('\n')}\n`;
 }
@@ -2654,6 +2668,11 @@ function usage() {
     '  [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>]',
     '  [--session-capture off|stop-hook] [--entry-brief off|startup] [--entry-brief-empty silent|report] [--model-effort-fallback host-native]',
     '    (entry-brief keys are user-scope-only per ADR-0045 §7: the repo target refuses them; effective value resolves env > user-global > default)',
+    '  [--autopilot-model <id>] [--autopilot-effort <level>]',
+    '  [--autopilot-investigate-model <id>] [--autopilot-investigate-effort <level>] [--autopilot-frame-model <id>] [--autopilot-frame-effort <level>] [--autopilot-decide-model <id>] [--autopilot-decide-effort <level>]',
+    '  [--autopilot-compose-model <id>] [--autopilot-compose-effort <level>] [--autopilot-critique-model <id>] [--autopilot-critique-effort <level>] [--autopilot-refine-model <id>] [--autopilot-refine-effort <level>]',
+    '  [--autopilot-commit-model <id>] [--autopilot-commit-effort <level>] [--autopilot-done-model <id>] [--autopilot-done-effort <level>] [--autopilot-finalize-model <id>] [--autopilot-finalize-effort <level>]',
+    '    (ADR-0071: the model/effort of an autopilot run\'s workers, every step or one step; validated, read once when a run starts)',
     '  [--unset <key>[,<key>...]]  (REMOVE a runtime config key from the selected layer(s) — the only way back to an unset posture,',
     '    e.g. a declared model_effort_fallback. Removal is not user-scope-filtered: deleting a key can never activate one.)',
     '  [--apply] [--attest-codex-hook-review] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--plugin-management-timeout-ms <n>]',
