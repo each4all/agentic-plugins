@@ -56,8 +56,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/engineer",
-        "ref": "plugin-engineer-v0.36.1",
-        "sha": "4dd4f058963113fc9fa67bec04d067957bfbd657"
+        "ref": "plugin-engineer-v0.37.0",
+        "sha": "91031fbf93e8c73c0f2a13c5f5bd53845357c64e"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -101,8 +101,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/orchestrator",
-        "ref": "plugin-orchestrator-v0.40.1",
-        "sha": "4dd4f058963113fc9fa67bec04d067957bfbd657"
+        "ref": "plugin-orchestrator-v0.41.0",
+        "sha": "91031fbf93e8c73c0f2a13c5f5bd53845357c64e"
       },
       "policy": {
         "installation": "AVAILABLE",
