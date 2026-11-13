@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.37.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.36.1...plugin-engineer-v0.37.0) (2026-11-13)
+
+
+### Features
+
+* **engineer:** commit with worker-written body files and refuse release-routing body lines ([18d7d4f](https://github.com/each4all/agentic-plugins/commit/18d7d4f77c99dd80226f362b9f2934c0c5a92541))
+
 ## [0.36.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.36.0...plugin-engineer-v0.36.1) (2026-11-10)
 
 
