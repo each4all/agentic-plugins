@@ -101,8 +101,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/orchestrator",
-        "ref": "plugin-orchestrator-v0.41.0",
-        "sha": "91031fbf93e8c73c0f2a13c5f5bd53845357c64e"
+        "ref": "plugin-orchestrator-v0.42.0",
+        "sha": "9dd6ed720f608850f17f5f763a149d1c87a8cc3a"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -116,8 +116,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/runtime",
-        "ref": "plugin-runtime-v0.103.6",
-        "sha": "be19cbf354ecc1a114983d45f13f53b691ce949a"
+        "ref": "plugin-runtime-v0.104.0",
+        "sha": "9dd6ed720f608850f17f5f763a149d1c87a8cc3a"
       },
       "policy": {
         "installation": "AVAILABLE",
