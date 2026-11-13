@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.2](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.17.1...plugin-founder-v0.17.2) (2026-11-13)
+
+
+### Bug Fixes
+
+* **founder:** say the always-max ensemble runs the peer at its host's configured effort ([7969229](https://github.com/each4all/agentic-plugins/commit/796922953e5219fb6a2f5176bac28650b88726da))
+
 ## [0.17.1](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.17.0...plugin-founder-v0.17.1) (2026-11-10)
 
 

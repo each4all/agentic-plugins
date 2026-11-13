@@ -2,6 +2,13 @@
 
 All notable changes to the `image` plugin are documented here.
 
+## [0.4.3](https://github.com/each4all/agentic-plugins/compare/plugin-image-v0.4.2...plugin-image-v0.4.3) (2026-11-13)
+
+
+### Bug Fixes
+
+* **image:** keep the image's quality tier on refine and flag an assumed tier in the cost estimate ([4fa0312](https://github.com/each4all/agentic-plugins/commit/4fa0312e9a1e32226286c43a737e96aa7ffa99b4))
+
 ## [0.4.2](https://github.com/each4all/agentic-plugins/compare/plugin-image-v0.4.1...plugin-image-v0.4.2) (2026-11-05)
 
 
