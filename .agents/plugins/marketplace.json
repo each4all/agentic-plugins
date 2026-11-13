@@ -41,8 +41,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/designer",
-        "ref": "plugin-designer-v0.16.1",
-        "sha": "4dd4f058963113fc9fa67bec04d067957bfbd657"
+        "ref": "plugin-designer-v0.16.2",
+        "sha": "40368f91adfe0e8764bd775600cfbddd575b8aa9"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -56,8 +56,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/engineer",
-        "ref": "plugin-engineer-v0.37.0",
-        "sha": "91031fbf93e8c73c0f2a13c5f5bd53845357c64e"
+        "ref": "plugin-engineer-v0.37.1",
+        "sha": "40368f91adfe0e8764bd775600cfbddd575b8aa9"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -71,8 +71,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/founder",
-        "ref": "plugin-founder-v0.17.1",
-        "sha": "4dd4f058963113fc9fa67bec04d067957bfbd657"
+        "ref": "plugin-founder-v0.17.2",
+        "sha": "40368f91adfe0e8764bd775600cfbddd575b8aa9"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -86,8 +86,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/image",
-        "ref": "plugin-image-v0.4.2",
-        "sha": "64011a83ef6d1dcfad0032ec3574becc4fdc555c"
+        "ref": "plugin-image-v0.4.3",
+        "sha": "40368f91adfe0e8764bd775600cfbddd575b8aa9"
       },
       "policy": {
         "installation": "AVAILABLE",
