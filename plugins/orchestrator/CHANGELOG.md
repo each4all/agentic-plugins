@@ -18,6 +18,13 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.41.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.40.1...plugin-orchestrator-v0.41.0) (2026-11-13)
+
+
+### Features
+
+* **orchestrator:** add land-prepare to rebase, push and open a committed subtask's pull request ([3c90587](https://github.com/each4all/agentic-plugins/commit/3c90587066c09dd81c246dcce6c84dee917d50ec))
+
 ## [0.40.1](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.40.0...plugin-orchestrator-v0.40.1) (2026-11-10)
 
 
