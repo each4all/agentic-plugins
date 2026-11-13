@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.2](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.16.1...plugin-designer-v0.16.2) (2026-11-13)
+
+
+### Bug Fixes
+
+* **designer:** say the always-max ensemble runs the peer at its host's configured effort ([a81cc72](https://github.com/each4all/agentic-plugins/commit/a81cc725431cad8bed7c80c4b74335751519b96f))
+
 ## [0.16.1](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.16.0...plugin-designer-v0.16.1) (2026-11-10)
 
 

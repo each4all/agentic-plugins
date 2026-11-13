@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.37.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.37.0...plugin-engineer-v0.37.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **engineer:** say the always-max ensemble runs the peer at its host's configured effort ([c4dbc2a](https://github.com/each4all/agentic-plugins/commit/c4dbc2a093ca5d35819a5d16afed9de04ddfd670))
+
 ## [0.37.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.36.1...plugin-engineer-v0.37.0) (2026-11-13)
 
 
