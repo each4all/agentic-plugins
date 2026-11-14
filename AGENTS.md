@@ -324,6 +324,22 @@ ADR-0001 final note.
   cannot be read or removed) fails whatever the declaration says.
   `--test-isolation=none` is refused under `npm test` (ADR-0033, second
   amendment of 2026-11-10).
+
+  **Adding a test.** Add a test, or a mutation case, only for a frequent
+  path or a fail-closed boundary, and at the smallest size that can show
+  it: a rule in process, through the function the CLI calls, before a CLI
+  call; a CLI call only for a branch of the CLI's own dispatcher; a
+  runbook block's run only for what its shell text decides (an `|| exit 1`,
+  a check before a write, what it exports). A runbook block's calls of a
+  persona's or the orchestrator's `state.mjs` and `peer-runner.mjs` have
+  their subcommand and flags checked statically, with no process
+  (`tests/plugin-shape/test-runbook-cli-contracts.mjs`; other scripts' calls
+  are counted, not checked), before any run of it. Each runbook path keeps one end-to-end run of its happy path, in a
+  file of its own on the large tier, in every shell the runbook may run in;
+  its branches and refusals run once, in one shell. Add no new test
+  infrastructure (a harness, a runner, a fixture service) by default: a
+  helper shared by a file's split halves is the most a change adds. The
+  pilot of this shape is `tests/orchestrator/test-next-holds.mjs`.
 - `npm run test:smoke` — the companion smoke tests
   (`companions/tests/*.smoke.mjs`, outside discovery).
 - `npm run lint:plugin-shape` — validate every plugin directory with `kit/lint`.
