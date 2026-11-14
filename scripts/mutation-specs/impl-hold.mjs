@@ -105,6 +105,8 @@ const TRR = 'tests/orchestrator/test-autopilot-scheduler-releases-recovery.mjs';
 const TRW = 'tests/orchestrator/test-autopilot-scheduler-releases-wake.mjs';
 const TLH = 'tests/orchestrator/test-autopilot-lanes-holds.mjs';
 const TN = 'tests/orchestrator/test-next-holds.mjs';
+// The happy path end to end, in the large tier (W7-tests pilot).
+const TNE = 'tests/orchestrator/test-next-holds-e2e.mjs';
 const TX = 'tests/orchestrator/test-holds-retirement.mjs';
 const TXR = 'tests/orchestrator/test-autopilot-holds-retire-run.mjs';
 const TCU = 'tests/orchestrator/test-cutover.mjs';
@@ -730,14 +732,14 @@ export const MUTATIONS = [
     killed_by: /refuses an open persona operation in the lane/,
   },
   {
-    id: 'N4', file: OPS, tests: [TN],
+    id: 'N4', file: OPS, tests: [TN, TNE],
     from: "    keep({ active: true, operationId: id });\n    publishOpRecord(mainRoot, macroId, subtaskId, {",
     to: "    keep({ active: true, operationId: id });\n    if (false) publishOpRecord(mainRoot, macroId, subtaskId, {",
     why: 'the dispatch publishes no mark: a hold set during it is handed over at once, and its engineer then runs in a held lane',
     killed_by: /Phase 3b publishes the mark|its switch publishes the mark/,
   },
   {
-    id: 'N5', file: OPS, tests: [TN],
+    id: 'N5', file: OPS, tests: [TN, TNE],
     from: "    if (carried.unreadable || carried.ids.has(operationId)) return { state: 'carried' };\n",
     to: "",
     why: "an exit withdraws the mark its engineer's bootstrap took over: the operation runs on with no record, and a hold is handed over beside it",
@@ -758,7 +760,7 @@ export const MUTATIONS = [
     killed_by: /an exit before the engineer took the mark over withdraws it/,
   },
   {
-    id: 'N8', file: NEXT_MD, tests: [TN],
+    id: 'N8', file: NEXT_MD, tests: [TN, TNE],
     from: "if [ -n \"$DISPATCH_OPERATION_ID\" ]; then\n  export AGENTIC_OPERATION_ID=\"$DISPATCH_OPERATION_ID\"\nelse\n  unset AGENTIC_OPERATION_ID\nfi\n\nexport CLAUDE_PLUGIN_ROOT=",
     to: "\nexport CLAUDE_PLUGIN_ROOT=",
     why: "the engineer's bootstrap is not given the mark's id: it opens another operation beside the mark, and refuses",
@@ -845,7 +847,7 @@ export const MUTATIONS = [
     id: 'N20', file: OPS, tests: [TN],
     from: "  for (const childPath of wf.linked.length ? wf.linked : [null]) {\n",
     to: "  for (const childPath of [null]) {\n",
-    why: "an operation begun before the holds turned on, an entry on the child with no record, is not seen: the subtask is dispatched beside it",
+    why: "an operation begun before the holds turned on, an entry on the child with no record, is seen only through the children's ids, without its kind: the refusal no longer says what operation is open (childEntries still refuses the dispatch)",
     killed_by: /begun before the holds turned on/,
   },
   // ---- X: every hold's exit (Task 12) ------------------------------------------

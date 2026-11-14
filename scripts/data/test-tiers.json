@@ -6,6 +6,7 @@
     "tests/orchestrator/test-autopilot-procs-live.mjs",
     "tests/orchestrator/test-autopilot-verify-select.mjs",
     "tests/orchestrator/test-autopilot-worker-stall-e2e.mjs",
+    "tests/orchestrator/test-next-holds-e2e.mjs",
     "tests/orchestrator/test-peer-snapshot-claude.mjs",
     "tests/orchestrator/test-peer-snapshot.mjs",
     "tests/persona-pipeline/test-peer-snapshot-claude.mjs",

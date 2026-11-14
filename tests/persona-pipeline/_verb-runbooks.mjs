@@ -118,50 +118,64 @@ export function stripComments(s) {
   return out;
 }
 
+// The end of a construct opened just before `i` (after its opening `'`, `"`,
+// backtick or `$(`), read with the shell's nesting: quotes and substitutions
+// inside a `$(` or a backtick open their own constructs, and a plain `(` in a
+// `$(` pairs with a `)`. -1 when the text ends first (an unterminated
+// construct). Not read: a `case` arm's `)` inside a `$(` closes it, and a `(`
+// inside a `${…}` in a `$(` opens a pair, and a backslash inside a backtick is
+// read once, not through the escaping layer the backtick removes (known
+// limits of the gate).
+function closeOf(s, i, kind) {
+  if (kind === "'") { const e = s.indexOf("'", i); return e === -1 ? -1 : e + 1; }
+  let paren = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === '\\') { i += 2; continue; }
+    if (kind === c && (c === '`' || c === '"')) return i + 1;
+    if (c === '$' && s[i + 1] === '(') { i = closeOf(s, i + 2, '$('); if (i === -1) return -1; continue; }
+    if (c === '`' || c === '"' || (kind !== '"' && c === "'")) { i = closeOf(s, i + 1, c); if (i === -1) return -1; continue; }
+    if (kind === '$(' && c === '(') paren++;
+    if (kind === '$(' && c === ')') { if (paren === 0) return i + 1; paren--; }
+    i++;
+  }
+  return -1;
+}
+
 /**
  * Split shell words from `s` starting at `i`, stopping at an unquoted line
  * end, `)`, `>`, `<`, `|`, `;`, `&`, a comment or the end. Each word keeps its
- * raw text; quotes are resolved by readWord().
+ * raw text; quotes are resolved by readWord(). When `stop` is an object, the
+ * character the split stopped at is set as its `char` ('' at the end), and
+ * its offset as its `at`; when the text ends inside a quote, a backtick or a
+ * `$(` the split never closed, `open` names it ('quote', 'backtick' or
+ * 'substitution', the outermost one), else ''.
  */
-function words(s, i = 0) {
+export function words(s, i = 0, stop = null) {
   const out = [];
   let cur = '';
-  let depth = 0; // $( … ) nesting outside quotes
+  let open = ''; // what the text ended inside, unclosed
   const flush = () => { if (cur !== '') out.push(cur); cur = ''; };
   while (i < s.length) {
     const c = s[i];
-    if (depth === 0 && c === '\n') break;
-    if (depth === 0 && /\s/.test(c)) { flush(); i++; continue; }
-    if (depth === 0 && /[)><|;&]/.test(c)) break;
-    if (depth === 0 && cur === '' && c === '#') break;
-    if (c === "'") {
-      const e = s.indexOf("'", i + 1);
-      const end = e === -1 ? s.length : e + 1;
-      cur += s.slice(i, end);
-      i = end;
-      continue;
-    }
-    if (c === '"') {
-      let j = i + 1;
-      let nest = 0;
-      while (j < s.length) {
-        if (s[j] === '\\') { j += 2; continue; }
-        if (s[j] === '$' && s[j + 1] === '(') { nest++; j += 2; continue; }
-        if (nest > 0 && s[j] === ')') { nest--; j++; continue; }
-        if (nest === 0 && s[j] === '"') break;
-        j++;
-      }
-      cur += s.slice(i, j + 1);
-      i = j + 1;
-      continue;
-    }
+    if (c === '\n') break;
+    if (/\s/.test(c)) { flush(); i++; continue; }
+    if (/[)><|;&]/.test(c)) break;
+    if (cur === '' && c === '#') break;
     if (c === '\\') { cur += s.slice(i, i + 2); i += 2; continue; }
-    if (c === '$' && s[i + 1] === '(') { depth++; cur += '$('; i += 2; continue; }
-    if (depth > 0 && c === ')') { depth--; cur += c; i++; continue; }
+    const kind = c === '$' && s[i + 1] === '(' ? '$(' : (c === "'" || c === '"' || c === '`' ? c : null);
+    if (kind !== null) {
+      const end = closeOf(s, i + kind.length, kind);
+      if (end === -1) open = { "'": 'quote', '"': 'quote', '`': 'backtick', '$(': 'substitution' }[kind];
+      cur += s.slice(i, end === -1 ? s.length : end);
+      i = end === -1 ? s.length : end;
+      continue;
+    }
     cur += c;
     i++;
   }
   flush();
+  if (stop !== null) { stop.char = s[i] ?? ''; stop.at = i; stop.open = open; }
   return out;
 }
 
@@ -170,7 +184,7 @@ function words(s, i = 0) {
  * expanded. An expansion outside quotes is split into words by the shell, so
  * such a value is marked `<unquoted>` — `"$NOTE"` and `$NOTE` read differently.
  */
-function readWord(raw, vars) {
+export function readWord(raw, vars) {
   const value = readWordValue(raw, vars);
   return value.unquotedExpansion ? `<unquoted>${value.text}` : value.text;
 }
