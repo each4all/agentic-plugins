@@ -2096,7 +2096,7 @@ export const MUTATIONS = [
   {
     // C134(a): the exclusion moved from the block to done's argument grammar,
     // which both hosts' blocks call.
-    id: 'A30', file: 'plugins/orchestrator/scripts/lib/command-args.mjs', tests: [T_DONE_RUNBOOK],
+    id: 'A30', file: 'plugins/orchestrator/scripts/lib/command-args.mjs', tests: ['tests/orchestrator/test-done-state.mjs'],
     from: "    const clash = ['pr', 'commit', 'correct', 'accept-landed-change'].filter((name) => given.has(name));",
     to: "    const clash = ['pr', 'correct', 'accept-landed-change'].filter((name) => given.has(name));",
     why: "done takes --no-commit with --commit, and completes without the commit it was given",
@@ -3023,19 +3023,19 @@ export const MUTATIONS = [
   // P1's recorded owner: owner-dispatch takes the owner the subtask records and
   // reads that workflow's own file (DS22 was done.md's lookup of it, gone with
   // the inline scan; DS24 below is the case where no file of it is left).
-  { id: 'DS22', file: ORCH_DS, tests: [T_DONE_RUNBOOK],
+  { id: 'DS22', file: ORCH_DS, tests: ['tests/orchestrator/test-done-state.mjs'],
     from: "    if (claims.has(owner)) return { status: 'found', claim: claims.get(owner) };",
     to: "    if (claims.has(owner)) return { status: 'found', claim: { ...claims.get(owner), dispatch: { macro: macroId, subtask: subtaskId, branch: claims.get(owner).dispatch.branch } } };",
     why: 'done compares only the branch of the dispatch its recorded owner records (P1)',
-    killed_by: [/a recorded owner is not bound to a subtask revised since its dispatch: the owner recorded on the subtask, the topic revised \(--no-commit\)/, /a recorded owner is not bound to a subtask revised since its dispatch: the owner recorded on the subtask, the topic revised \(the landing\)/] },
+    killed_by: /a recorded owner is not bound to a subtask revised since its dispatch: the dispatch it records is read whole and compared/ },
   // The fault cases inject their fault during the join: the active-child scan
   // after it still refuses what it cannot list (off-branch-archive G3 is the
   // same reader's listing; this is its unlistable-home case under --no-commit).
-  { id: 'DS23', file: ORCH_DS, tests: [T_DONE_RUNBOOK],
+  { id: 'DS23', file: ORCH_DS, tests: ['tests/orchestrator/test-done-state.mjs'],
     from: "          names = readdirSync(dir);\n        } catch (err) {\n          if (err.code === 'ENOENT') continue;\n          throw err;\n        }",
     to: "          names = readdirSync(dir);\n        } catch (err) {\n          continue;\n        }",
     why: "done --no-commit's active-child scan reads a home it cannot list as empty",
-    killed_by: /--no-commit refuses when an engineer workflow home cannot be listed/ },
+    killed_by: /the scans refuse, rather than guess, on a workflow home that cannot be listed/ },
   // The Refine-verify's R1-R3 (refine-verify-20261009T035420Z-ed9f8f): a
   // completion in a child's name compares that child's dispatch, and fails
   // closed when it cannot be read.
@@ -3049,17 +3049,17 @@ export const MUTATIONS = [
     to: "elif [ \"$OWNER_RC\" -eq 3 ]; then\n  DISPATCH_ARGS=()",
     why: "the Codex done takes a recorded owner whose file is gone as recorded (R1)",
     killed_by: [/a recorded owner with no file left refuses; --waive-dispatch with a reason completes and is recorded \(the landing\)/, /a recorded owner with no file left refuses; --waive-dispatch with a reason completes and is recorded \(--no-commit\)/] },
-  { id: 'DS26', file: ORCH_DS, tests: [T_DONE_RUNBOOK],
+  { id: 'DS26', file: ORCH_DS, tests: ['tests/orchestrator/test-done-state.mjs'],
     from: "  if (!raw.startsWith('\"')) return raw.trim();",
     to: "  if (raw.startsWith('\"')) return raw.slice(1, -1);\n  if (!raw.startsWith('\"')) return raw.trim();",
     why: "the owner and active-child scans compare the serialized text of a value, not the value (R3)",
-    killed_by: [/a subtask id holding a quote: the claimant is found by its value and the subtask completes/, /a subtask id holding a quote: its recorded owner's dispatch is read and compared/, /a subtask id holding a quote: --no-commit refuses while its child is active/] },
-  { id: 'DS27', file: ORCH_DS, tests: [T_DONE_RUNBOOK],
+    killed_by: /a subtask id holding a quote: the owner and active-child scans find its claimant by its value/ },
+  { id: 'DS27', file: ORCH_DS, tests: ['tests/orchestrator/test-done-state.mjs'],
     from: "    const newBody = `${body}${noteHeading}${noteSummary}${correctionNote}${waiverNote}${rebindNote}${retireNote}${reasonNote}`;",
     to: "    const newBody = `${body}${noteHeading}${noteSummary}${correctionNote}${rebindNote}${retireNote}${reasonNote}`;",
     why: 'a write not compared with its owner\'s dispatch leaves no record of the waiver',
-    killed_by: /a recorded owner with no file left refuses; --waive-dispatch with a reason completes and is recorded \(the landing\)/ },
-  { id: 'DS28', file: ORCH_DS, tests: [T_DONE_RUNBOOK],
+    killed_by: /a waived completion records the waiver and its reason in the macro/ },
+  { id: 'DS28', file: ORCH_DS, tests: ['tests/orchestrator/test-done-state.mjs'],
     from: "  if (waiveDispatch) {\n    if (reasonText.length === 0) {",
     to: "  if (waiveDispatch) {\n    if (false) {",
     why: 'subtask-update waives the comparison without a reason',
@@ -3069,18 +3069,18 @@ export const MUTATIONS = [
     to: "            '');",
     why: "done's ambiguity refusal prints a binding line that compares nothing (R2)",
     killed_by: /two claimants: each binding line carries its dispatch, refuses a revised subtask, and binds an unrevised one/ },
-  { id: 'DS30', file: ORCH_DS, tests: [T_DONE_RUNBOOK],
+  { id: 'DS30', file: ORCH_DS, tests: ['tests/orchestrator/test-done-state.mjs'],
     from: "    if (others.has(owner)) return { status: 'elsewhere', files: others.get(owner) };\n",
     to: '',
     why: 'a recorded owner dispatched for another subtask reads as gone, which the waiver then completes',
-    killed_by: /a recorded owner whose file claims another subtask refuses, --waive-dispatch or not/ },
+    killed_by: /a recorded owner whose file claims another subtask is found elsewhere, not missing/ },
   { id: 'DS31', file: DONE_DS, tests: [T_DONE_RUNBOOK],
     from: '  if [ "$WAIVE_DISPATCH" = true ]; then DISPATCH_ARGS+=(--waive-told); fi',
     to: '  if [ "$WAIVE_DISPATCH" = true ]; then DISPATCH_ARGS=(--waive-dispatch); fi',
     why: "--waive-dispatch is taken when the owner's dispatch was read, and the comparison is dropped",
     killed_by: /--waive-dispatch is refused while the owner's dispatch can be read and the record vouches for it, and nothing is written/ },
   // The fourth Refine-verify's findings (refine-verify-20261009T044549Z-bc0075).
-  { id: 'DS32', file: DONE_SKILL_DS, tests: [T_DONE_RUNBOOK],
+  { id: 'DS32', file: DONE_SKILL_DS, tests: ['tests/orchestrator/test-done-runbook-e2e.mjs'],
     from: "  EXISTING_ENG_WF_ID=\"$(printf '%s' \"$OWNER_JSON\" | JSON_KEY=engineer_workflow_id node -e \"$JSON_FIELD\")\" || exit 1\n",
     to: '',
     why: "the Codex done drops the owner the scan found, so neither the landing nor the write names it",

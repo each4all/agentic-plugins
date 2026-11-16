@@ -327,7 +327,7 @@ export const MUTATIONS = [
     why: '/done records the branch tip again',
   },
   {
-    id: 'D2', file: 'plugins/orchestrator/scripts/state.mjs', tests: [T_DONE],
+    id: 'D2', file: 'plugins/orchestrator/scripts/state.mjs', tests: ['tests/orchestrator/test-done-state.mjs'],
     from: "      for (const sub of activeOnly ? ['workflows'] : ['workflows', 'archive']) {",
     to: "      for (const sub of activeOnly ? ['workflows'] : ['workflows']) {",
     why: 'the owner of an archived child cannot be found after the merge',
@@ -363,7 +363,7 @@ export const MUTATIONS = [
     why: 'a plan revision during resolution lets the stale landing complete moved work',
   },
   {
-    id: 'D6', file: COMMAND_ARGS, tests: [T_DONE],
+    id: 'D6', file: COMMAND_ARGS, tests: ['tests/orchestrator/test-done-state.mjs'],
     from: '  if (fields.no_commit === true) {',
     to: '  if (false) {',
     why: '--no-commit is combined with a commit',
