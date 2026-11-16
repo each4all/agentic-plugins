@@ -835,7 +835,7 @@ export const MUTATIONS = [
   },
   // Critique of 2026-11-08, fourth pass.
   {
-    id: 'L38', file: ORCH_STATE, tests: [T_D],
+    id: 'L38', file: ORCH_STATE, tests: [T_D, 'tests/orchestrator/test-done-state.mjs'],
     from: '  if (overrides.length > 0 && isAutopilotRun(env)) {\n',
     to: '  if (false) {\n',
     why: "an autopilot worker reruns done with --accept-landed-change (or a waiver) and a reason it wrote, and the subtask completes as if the owner had said so",

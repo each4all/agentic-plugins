@@ -116,13 +116,13 @@ export const MUTATIONS = [
     why: 'the port splits on whitespace only; the quoted and shell-syntax cells must notice',
   },
   {
-    id: 'G6', file: T_DONE, tests: [T_DONE],
+    id: 'G6', file: 'tests/orchestrator/_done-runbook-fixture.mjs', tests: [T_DONE],
     from: "import { substituteClaudeArguments } from '../_claude-command-substitution.mjs';",
     to: 'const substituteClaudeArguments = (text) => text;',
     why: 'the runbook test stops rendering and runs the file as written again (the C67 blind spot); its check that the substitution ran must fail',
   },
   {
-    id: 'G7', file: T_DONE, tests: [T_DONE],
+    id: 'G7', file: 'tests/orchestrator/_done-runbook-fixture.mjs', tests: [T_DONE],
     from: 'const renderPhases = (args) => substituteClaudeArguments(PHASES, args, { appendIfUnused: false });',
     to: "const renderPhases = (args) => { const w = substituteClaudeArguments(DONE_TEXT, args); return w.slice(w.indexOf('## Phase 0'), w.indexOf('## Completion')); };",
     why: 'the section is found after rendering, so typed headings can move it',

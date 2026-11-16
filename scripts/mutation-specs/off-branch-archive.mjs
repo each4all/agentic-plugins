@@ -124,13 +124,15 @@ export const MUTATIONS = [
     why: '--no-commit reads a failed child scan as "no child" and completes the subtask',
   },
   {
-    id: 'G2', file: ORCH_STATE, tests: [T_DONE],
+    id: 'G2', file: ORCH_STATE, tests: ['tests/orchestrator/test-done-state.mjs'],
+    killed_by: /the scans refuse, rather than guess, on a workflow name that is a directory/,
     from: "          if (text === null) throw new Error(`${path} is not a regular file`);",
     to: "          if (text === null) continue;",
     why: 'the scans skip a workflow name that is not a file they can read (a directory)',
   },
   {
-    id: 'G3', file: ORCH_STATE, tests: [T_DONE],
+    id: 'G3', file: ORCH_STATE, tests: ['tests/orchestrator/test-done-state.mjs'],
+    killed_by: /the scans refuse, rather than guess, on a workflow home that cannot be listed/,
     from: "          names = readdirSync(dir);\n        } catch (err) {\n          if (err.code === 'ENOENT') continue;\n          throw err;\n        }",
     to: "          names = readdirSync(dir);\n        } catch (err) {\n          continue;\n        }",
     why: 'the scans skip a workflow home they cannot list',
@@ -142,7 +144,8 @@ export const MUTATIONS = [
     why: 'the owner scan reads a failed scan as its result and records a guessed owner',
   },
   {
-    id: 'G5', file: ORCH_STATE, tests: [T_DONE],
+    id: 'G5', file: ORCH_STATE, tests: ['tests/orchestrator/test-done-state.mjs'],
+    killed_by: /the scans refuse, rather than guess, on a workflow name that is a link loop/,
     from: "            text = readFrontmatterText(path);\n          } catch (err) {\n            if (err.code === 'ENOENT') continue;\n            throw err;\n          }",
     to: "            text = readFrontmatterText(path);\n          } catch (err) {\n            continue;\n          }",
     why: 'the scans skip a file they cannot read (a link loop), which could be a second claimant',

@@ -1585,7 +1585,7 @@ export const MUTATIONS = [
     // The done runbook's suite, run on its own from an agentic session
     // (an autopilot worker), ran the installed orchestrator instead of this
     // tree's: its shells inherited AGENTIC_ORCHESTRATOR_ROOT.
-    id: 'K5', file: TD, tests: [TD],
+    id: 'K5', file: 'tests/orchestrator/_done-runbook-fixture.mjs', tests: [TD],
     from: 'const runbookEnv = () => Object.fromEntries(Object.entries({ ...process.env, ...GIT_ENV, ...GIT_IDENTITY }).filter(([k]) => !isSessionVariable(k)));',
     to: 'const runbookEnv = () => ({ ...process.env, ...GIT_ENV, ...GIT_IDENTITY });',
     killed_by: [/the runbook shell starts without the session's inherited AGENTIC_\* variables/],
