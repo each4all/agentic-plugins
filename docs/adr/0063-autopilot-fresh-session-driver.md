@@ -2,69 +2,15 @@
 
 ## Status
 
-Accepted (2026-09-29, owner decision).
-- Drafted 2026-09-24/25 in the owner's handoff package, outside this repository.
-- Adopted here as Proposed on 2026-09-29 (#835) with its probe record,
-  [`docs/assurance/evidence/autopilot-probes-2026-09-24/`](../assurance/evidence/autopilot-probes-2026-09-24/).
-- Realigned before adoption to ADR-0059–0062 (§Context, "Since the probes").
-- Owner decisions taken for this ADR on 2026-09-29:
-  - D1: ADR-0035 is cross-referenced, not amended;
-  - D2: a new `/engineer:commit`;
-  - D4: v1 covers macros and verb-chains only;
-  - D23: the owner lands, and the driver records the landing.
-- Accepted the same day. The accepting commit applied the §Amendment cascade,
-  with one citation corrected:
-  - The draft named the entry-brief state→command table "ADR-0045 §16".
-  - ADR-0045 has no §16. The table is its §5, and §16 is the section of
-    `plugins/runtime/docs/session-capture-contract.md` that carries it.
-  - Cascade item 6 therefore amends ADR-0045 §5, and §Context and §References
-    cite §5.
-- Amended by [ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md)
-  (2026-10-08): R2's halt wording; D1's worktree-lanes clause; D3's
-  `/orchestrator:next` row and D4's proceed rules 1, 2, 4 and 5, per lane;
-  D4's gate enum, its `version-drift` and `budget` halt rows and its Lanes
-  paragraph; D5's Spawn paragraph and Env; D8's ledger location, run
-  directory list and Lock bullet.
-- Amended 2026-10-13 by the owner's review decisions C105 and C136 (recorded
-  outside this repository): D1's Bounded property, D4's proceed rule 6 and
-  its `budget` row lose the run's wall clock; D7's guards and D4's
-  `step-oversized` row retire the size halt, a step's size being an
-  observation. Each place keeps its text and carries a dated note.
-- Amended 2026-10-14 by the owner's review decision C120 (recorded outside
-  this repository): a document deliverable is critiqued in full once, then
-  re-checked only where a refine changed it, and its recurring findings come
-  from a review ledger. D4's ceremony gates carry a dated note; the contract
-  is § Amendment 2026-10-14 — document deliverables converge (C120).
-- Amended 2026-10-19 by
-  [ADR-0068](0068-autopilot-lanes-that-keep-going.md) (accepted 2026-10-20): with
-  lanes, a lane halt parks only its lane, and the owner can hold a lane and
-  release it. R2, D4's halt table and Lanes paragraph, D6's `next_step`,
-  D8's macro-scoped files and halt signal, and the S3+S4 note on
-  `finish-verb` carry dated notes.
-- Amended 2026-10-19 by ADR-0068's slice 2 (accepted 2026-10-20): stall
-  detection, log-only until the owner switches it on, and the driver's event
-  file that the main session watches. D1's Bounded property, D4's proceed
-  rule 6, D5's session hosting, D8's halt signal and Q5 carry dated notes.
-- Amended 2026-10-20 by ADR-0068's slice 3 (accepted 2026-10-20): a
-  verification step the driver runs with no LLM, and one heavy-work lock.
-  D1's effect domain, D3's step model, D4's `no-progress` trigger, D5's
-  worker contract and D8's Lock bullet carry dated notes.
-- Amended 2026-10-20 by ADR-0068's slice 4 (accepted 2026-10-20): the main
-  session's instructions to a lane, applied at its next step boundary, and
-  the rebinding of a dispatched subtask by an approved change of its
-  instructions. The S6 note and the S8 note's forced-step rules carry dated
-  notes.
-
-<!--
-Adds one named effect domain — S1, owner-launched fresh-session spawn —
-executed by the orchestrator Claude adapter, NOT by runtime. Cross-references
-(does not relax) ADR-0035 §2/§4 and ADR-0031 §6; notes ADR-0019 §1 and
-ADR-0062. On acceptance apply the §Amendment cascade blocks verbatim. The
-handoff package's DESIGN.md is the design source this ADR copies its names,
-enums and reason codes from; it wins on any drift until this ADR is Accepted.
-Citations are `path:line` at agentic-plugins 68438b9e (re-verified 2026-09-29;
-the draft was written at 1346e36).
--->
+Accepted (2026-09-29, owner decision). Amended since by
+[ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) (2026-10-08),
+[ADR-0068](0068-autopilot-lanes-that-keep-going.md) (2026-10-19 and
+2026-10-20, accepted 2026-10-20) and the owner's review decisions C105,
+C136, C127 and C123 (2026-10-13), C120 and C123 (2026-10-14), C176
+(2026-11-09) and C178 (2026-11-10); each item an amendment changed carries
+its dated marker. Two clauses rest on Proposed decisions and say so where
+they stand: D4's review binding (ADR-0069 Decisions 3 and 4) and D5's model
+plan (ADR-0071).
 
 ## Context
 
@@ -100,16 +46,10 @@ system already computes. Two gaps sit at the root:
 | id | requirement |
 |----|-------------|
 | R1 | Each step runs in a **truly fresh context**. No compaction-based continuation: the owner's primary concern is context contamination. Carry-over happens only through curated durable state. |
-| R2 | At a genuine judgment point the run **halts**, and reports it: terminal + `halt.json` + exit code 2. Nothing starts after the halt. With parallel lanes ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decision 6) the halt **drains**: no new lane or step starts, steps already running finish and are recorded, then every lane reports once. A subtask that waits for its PR to land is not a judgment point (D3a). |
+| R2 | At a genuine judgment point the run **halts**, and reports it: terminal + `halt.json` + exit code 2. Nothing starts after the halt. With parallel lanes ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decision 6) a judgment point in a lane parks that lane only, and the other lanes go on; a run-wide halt **drains**: no new lane or step starts, steps already running finish and are recorded, then the run reports once nothing can start ([ADR-0068](0068-autopilot-lanes-that-keep-going.md) Decision 1). A subtask that waits for its PR to land is not a judgment point (D3a). *Amended 2026-10-19 (ADR-0068, lanes that keep going): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-19--lanes-that-keep-going-adr-0068-slice-1).* |
 | R3 | **Claude-only.** Codex parity is not required (Claude adapter, documented non-parity). |
 | R4 | `decide` results are auto-accepted **unless** the ensemble verdict is CONFLICT or confidence is below HIGH. |
 | R5 | **Deterministic control.** The driver never synthesizes a command from free text. Commands come only from closed enums in state (same principle as entry-brief R0). |
-
-*Note 2026-10-19 on R2 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-accepted 2026-10-20):* with lanes, a judgment point in a
-lane parks that lane only, and the other lanes go on; the run-wide halts
-still drain, and the run reports once nothing can start (ADR-0068 Decision
-1).
 
 ### Host truth
 
@@ -185,7 +125,7 @@ them changes the model.
   - `/orchestrator:done` records `completed` once the pull request has merged.
     The recorded commit is its merge commit, reachable from
     `refs/remotes/origin/<integration branch>`
-    (`plugins/orchestrator/scripts/landing.mjs:82-87`).
+    (`plugins/orchestrator/scripts/landing.mjs:15-16`, `:137`, `:230-232`).
   - Successors unblock only then.
   - Workers may not push or open PRs (D5). So, as drafted, the driver would stop
     for good after the first subtask's commit. The measured prototype does
@@ -210,8 +150,8 @@ them changes the model.
 | ADR-0035 §4 | runtime MUST NOT "mutate active host session/context — no compaction, resume/fork/archive, session switching, or hidden host startup" | Runtime-scoped. The driver is not in runtime, but the same safety reasoning must hold. |
 | ADR-0031 §6 | runtime "never mutates/compacts/switches/starts host session context" | Unchanged for runtime. The autopilot acts on the recommendation from outside runtime. |
 | ADR-0024 §8 | the footer "must not auto-open new workflows or switch hosts without explicit user intent" | Launching the driver is the explicit intent. The footer itself stays advisory. |
-| ADR-0010 §5 | cross-plugin contact via artifacts, no imports | The driver reads state through CLIs and files and invokes commands through `claude`; it imports nothing. Precedent: orchestrator already runs engineer's `state.mjs find-active` (`plugins/orchestrator/core/skills/next/SKILL.md:107`). |
-| ADR-0019 §1 | dispatch must go through the engineer command, with exports + Phase 0 in one shell (`next/SKILL.md:134`, `:224`) | Preserved: each worker runs `/orchestrator:next` in full, in one process. |
+| ADR-0010 §5 | cross-plugin contact via artifacts, no imports | The driver reads state through CLIs and files and invokes commands through `claude`; it imports nothing. Precedent: orchestrator already runs engineer's `state.mjs find-active` (`plugins/orchestrator/core/skills/next/SKILL.md:277`, `:311-312`). |
+| ADR-0019 §1 | dispatch must go through the engineer command, with exports + Phase 0 in one shell (`next/SKILL.md:493`, `:528-529`) | Preserved: each worker runs `/orchestrator:next` in full, in one process. |
 | `plugins/runtime/scripts/dashboard.mjs:27-29` | "never an unattended daemon" | The driver is a foreground, bounded, owner-launched loop with an explicit exit. It is not a daemon. |
 | ADR-0062 §2 | a subtask is `completed` only by `/orchestrator:done` after its pull request merges | Preserved (D3a). The driver never pushes, opens or merges a PR. It records only landings the owner made, through the same `/orchestrator:done`. |
 
@@ -236,25 +176,28 @@ the owner's repo. The safety argument rests on seven properties:
   - every spawn is recorded in the ledger (D8) before it starts;
   - `status`/`stop` surfaces exist;
   - the process exits on halt, completion, budget exhaustion or SIGINT/SIGTERM.
-- **Bounded.** Max iterations, a total cost cap, a per-step `--max-budget-usd`,
-  and a per-step wall clock. On timeout or abort the driver may kill **only the
-  worker process group it spawned** (the ADR-0035 §4 child-only rule).
-  *Amendment 2026-10-13 (C105):* these, with a halt and `stop`, are the
-  bounds. No run wall clock bounds a run: a step that starts late gets its
-  whole per-step wall clock. The `--max-time` option that set one is
-  removed, and an args file that still passes it is refused as an unknown
-  option.
-
-  *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 2,
-  accepted 2026-10-20):* a stall
-  detector judges every step from its stream and its descendants' CPU. It
-  records only, and the per-step wall clock stays the step's bound, until
-  the owner switches it on after reviewing its verdicts; then a step stalled
-  10 minutes is aborted, and the wall clock's default becomes an 8-hour
-  emergency cap (ADR-0068 Decision 3).
+- **Bounded.** Max iterations, a total cost cap, a per-step `--max-budget-usd`
+  and a per-step wall clock, with a halt and `stop`, are the bounds. No run
+  wall clock bounds a run: a step that starts late gets its whole per-step
+  wall clock, and an args file that still passes the removed `--max-time`
+  is refused as an unknown option. *Amended 2026-10-13 (C105): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-13--bounds-and-the-report-close-c105-c136-c127-c123).*
+  The defaults stay finite but out of the way (owner decision D10): 60
+  steps, $250 a run, $25 and 60 minutes a step. A step may spend only what
+  the run has left, a killed worker that reported no cost is charged its
+  whole step budget, a time bound under 60 seconds is refused rather than
+  raised, and the state is read before the budgets, so completion on the
+  last step the cap allowed is completion. *Amended 2026-10-01 (S8, owner decision D10): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s8-the-driver-and-orchestratorautopilot).*
+  On timeout or abort the driver may kill **only the worker process group it
+  spawned** (the ADR-0035 §4 child-only rule).
+  A stall detector judges every step from its stream and its descendants'
+  CPU. It records only, and the per-step wall clock stays the step's bound,
+  until the owner switches it on after reviewing its verdicts; then a step
+  stalled 10 minutes is aborted, and the wall clock's default becomes an
+  8-hour emergency cap (ADR-0068 Decision 3). *Amended 2026-10-19 (ADR-0068, stall detection): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-19--stall-detection-and-the-drivers-event-file-adr-0068-slice-2).*
 - **No implicit retry loop.** A step never re-runs automatically. The loop
-  advances only on an **observed state change** (fingerprint differs).
-  `no-progress` halts.
+  advances only on an **observed state change** (the fingerprint, or the
+  content of the checkout's files, differs; D4 rule 5). `no-progress` halts.
+  *Amended 2026-11-04 (C163, content progress): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-11-04--a-verb-steps-evidence-c163).*
 - **Owner-declared permission posture.** The worker posture (D5) is shown before
   launch and fixed for the run.
   - The driver never escalates it.
@@ -292,19 +235,18 @@ the owner's repo. The safety argument rests on seven properties:
 
   In every run, serial or with lanes, S1 also covers the read-only overlap
   check `git merge-tree --write-tree` (ADR-0067 Decision 7), which writes no
-  ref.
+  ref. *Amended 2026-10-08 (ADR-0067, worktree lanes): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-08--worktree-lanes-adr-0067).*
 
-  *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 3,
-  accepted 2026-10-20):* S1 also covers the driver's
-  verification checks: each a kind the repository declares, read from the
-  run's baseline, run as an argv array with checked arguments in the lane's
-  checkout (serial: the driven checkout), in its own process group, which
-  only the driver kills, with a worker's environment minus the run's
-  admission token and autopilot flag, under the heavy-work lock (ADR-0068
-  Decisions 5 and 6).
+  S1 also covers the driver's verification checks: each a kind the
+  repository declares, read from the run's baseline, run as an argv array
+  with checked arguments in the lane's checkout (serial: the driven
+  checkout), in its own process group, which only the driver kills, with a
+  worker's environment minus the run's admission token and autopilot flag,
+  under the heavy-work lock (ADR-0068 Decisions 5 and 6). *Amended 2026-10-20 (ADR-0068, driver-run verification): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-20--driver-run-verification-and-the-heavy-work-lock-adr-0068-slice-3).*
 
 Runtime is **not** granted S1. Runtime's §4 ceiling, including "hidden host
-startup", is unchanged.
+startup", is unchanged. ADR-0035 is cross-referenced, not amended (owner
+decision D1, 2026-09-29).
 
 ### D2. Placement
 
@@ -319,10 +261,17 @@ startup", is unchanged.
   a thin shim that finds the installed orchestrator and delegates. It follows the
   statusline/codex-shuttle template pattern
   (`plugins/runtime/scripts/receiver-api.mjs:5-26`): logic lives in the plugin,
-  the installed file only bootstraps, and runtime never executes it.
+  the installed file only bootstraps, and runtime never executes it. The
+  launcher ships as `launcher.template.mjs`; `preview` prints the command that
+  installs it, and nothing installs it for the owner (owner decision D13). *Amended 2026-10-01 (S8, owner decision D13): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s8-the-driver-and-orchestratorautopilot).*
 - **Oracle:** `runtime:context entry-brief` stays runtime-owned and **R0**. It
   gains rows for the D6 fields (plugin change spec). The driver consumes it
-  through `--surface cli`, which always computes.
+  through `--surface cli`, which always computes. Until those rows ship (S7),
+  the driver composes the view itself and uses the brief as a guard:
+  `indeterminate`, `no-branch-context`, two live workflows competing on the
+  branch, or a lead outside the step table halt `owner-choice`, while the
+  entry-capture lead and a leaderless `owner-choice-required` are normal
+  between steps. *Amended 2026-10-01 (S8): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s8-the-driver-and-orchestratorautopilot).*
 - **Host-neutral vs adapter.** The D6 state additions are host-neutral core
   contract. Only the driver is adapter.
 
@@ -332,7 +281,7 @@ One **step** = one command executed in one fresh `claude` process.
 
 | step command | when | notes |
 |---|---|---|
-| `/orchestrator:next` | macro approved, a subtask is ready, no active engineer child (with lanes, [ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decision 6: none on that subtask, which gets its own lane) | dispatch + the subtask's first verb in the same process (ADR-0019 §1 requires the exports + Phase 0 + Phase 4 in one process) |
+| `/orchestrator:next` | macro approved, a subtask is ready, no active engineer child (with lanes, [ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decision 6: none on that subtask, which gets its own lane; *Amended 2026-10-08 (ADR-0067): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-08--worktree-lanes-adr-0067).*) | dispatch + the subtask's first verb in the same process (ADR-0019 §1 requires the exports + Phase 0 + Phase 4 in one process) |
 | `/engineer:<verb>` | active engineer child with `next_step.kind=verb`, `confidence=HIGH` | reattaches (append-on-resume) |
 | `/engineer:commit` | `next_step.kind ∈ {commit, done}`, `confidence=HIGH` | New verb-chain commit surface (Q1, D2; plugin change spec §1.8). `done` routes here too: with nothing staged it archives the workflow instead of committing (the no-changes close). It lands together with "autopilot verbs skip `set-terminal`". |
 | `/orchestrator:done <id>` | a committed subtask whose PR has merged (`state.mjs resolve-landing` ok), or `--no-commit` after a no-changes close | records completion (ADR-0062); successors unblock (D3a) |
@@ -340,20 +289,131 @@ One **step** = one command executed in one fresh `claude` process.
 
 The verb is the atomic durable unit. `/engineer:start` keeps direction
 approval, the exploration map and the plan only in conversation, so it is
-**out of scope**: autopilot runs macros whose subtasks are verb-chains. The
+**out of scope**: autopilot runs macros whose subtasks are verb-chains (v1
+covers macros and verb-chains only, owner decision D4, 2026-09-29). The
 driver is stateless across runs. It re-derives everything from durable state
 each iteration, so re-launching after a halt continues.
 
-*Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 3,
-accepted 2026-10-20):* one more step, which runs no
-`claude` process: when the child's next step is `verify` and the run offers
-verification, the driver runs the requested checks with no LLM, records each
-result in the workflow, and then dispatches the request's `on_pass` when
-every check passed on the lane's current tree, leaves the request for later
-when a stop, a hold, a drain or the driver's end cut the batch short, or
-resumes the requesting verb otherwise. It costs nothing and is bounded by
-the checks' timeouts, the batch's running time and its wait for the
-heavy-work lock (ADR-0068 Decision 5).
+**The step grammar.** The policy renders a step only from this closed set,
+and only identifiers checked against a closed alphabet enter a prompt:
+`/orchestrator:next <id> --workflow=<macro>`, `/engineer:<verb>`,
+`/engineer:commit`, `/orchestrator:done <id> --workflow=<macro>`,
+`/orchestrator:done <id> --no-commit --workflow=<macro> <fixed reason>` and
+`/orchestrator:finalize --workflow=<macro>`. The macro is pinned on the
+first look, so a later step finds it whatever branch is checked out. *Amended 2026-10-01 (S8): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s8-the-driver-and-orchestratorautopilot).*
+The one other text the driver puts in a prompt is a fixed sentence after a
+verb's command when it resumes that verb for the final verification (the
+commit gate, below): fixed in the driver (`policy.mjs`
+`FINAL_VERIFY_SENTENCE`), in a closed alphabet, and carrying no word of the
+owner's, of a worker's or of a file's. The owner's `--next` still accepts
+the bare commands alone. *Amended 2026-11-10 (C178, the commit gate): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-11-10--the-commit-gate-c178).*
+
+**The verification step.** One more step runs no `claude` process: when the
+child's next step is `verify` and the run offers verification, the driver
+runs the requested checks with no LLM, records each result in the workflow,
+and then dispatches the request's `on_pass` when every check passed on the
+lane's current tree, leaves the request for later when a stop, a hold, a
+drain or the driver's end cut the batch short, or resumes the requesting
+verb otherwise. It costs nothing and is bounded by the checks' timeouts, the
+batch's running time and its wait for the heavy-work lock (ADR-0068
+Decision 5). *Amended 2026-10-20 (ADR-0068, driver-run verification): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-20--driver-run-verification-and-the-heavy-work-lock-adr-0068-slice-3).*
+
+**`/engineer:commit`** is `phase7-commit.mjs --mode autopilot`, the whole
+step. It refuses outside an autopilot run, on an `/engineer:start`
+workflow, over an owner gate, and with a pending peer ensemble, before
+anything is committed. On a clean tree it recovers an interrupted commit,
+closes the workflow, or refuses with the reason: a close needs a clean `git
+status`, HEAD at the baseline, no marked commit, `next_step_kind: done` and
+a workflow that is not an `/engineer:start` one; a refusal (`blocked`)
+carries one of `partial-commit`, `unmarked-commits`, `next-step-not-done`,
+`no-baseline`, `git-probe-failed`, `status-not-clean` or `start-workflow`.
+`git diff --name-only HEAD` alone cannot prove a clean tree: it does not
+show a staged change the working tree reverted. It stops at `staging-set`
+when `ask_user` is true, when the workflow did not begin on a clean tree
+(its recorded status digest is not the digest of an empty status), or when
+the index is pre-staged: only the owner can tell pre-existing hunks
+from the workflow's own. Otherwise it commits under `--strict-cc`. Under
+autopilot every staging bypass (`--confirm-non-interactive`,
+`--non-interactive`, `--accept-current-tree`, `--include-extra`,
+`ACCEPT_CURRENT_TREE=1`) and a direct `--mode execute` or `--mode close` are
+refused with exit 2. A close writes `close-complete` with the marker and
+archives the workflow itself, printing no handoff; one stopped between its
+two writes is finished by running it again, and the handoff a Stop hook
+renders for such a workflow names that rerun, not a commit. The Stop hook
+never notes a `close-complete` workflow on its parent. In the clean-tree
+test both endpoints of a rename count, so a rename into workflow storage is
+a deletion outside it. Execute takes the workflow out of its terminal state
+(`beginCommit`: `phase-7-commit`, marker off) once every subject is checked,
+before the first commit, and before the A2 fast path's gates. Execute and close refuse while an owner gate is
+set, in either mode. The interactive `--suggested-subjects` option uses
+plan mode's `inferSubject` for every commit, single or split, so no subject
+passes through a shell. A commit leaves the next step as it was and sets no
+`pr-handling` gate: waiting to land is read from state (D3a). *Amended 2026-10-01 (S3+S4): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s3s4-verb-runbook-deltas-and-engineercommit).*
+The commit worker writes each subject, and Phase 7 checks its type and
+scope against the files that commit touches (ADR-0028 §P6, its
+implementation note of 2026-11-04). *Amended 2026-11-04 (C163): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s3s4-verb-runbook-deltas-and-engineercommit).*
+
+**The commit gate.** In a run that offers verification over a declaration
+with a suite kind, the driver takes the commit step only with the whole
+suite's evidence for the lane's tree as it is. Without it the driver resumes
+the workflow's last verb, with the fixed sentence above after the verb's
+command, so that the verb ends with the final verification. The owner's
+forced commit is refused the same way, and an interrupted commit is taken up
+only on the content it was admitted on. The rule, its routes, its records
+and its limits are ADR-0068's (Amendment 2026-11-10, rule 4). The resumed
+verb is usually a critique, and counts as a round of the critique cap (D4). *Amended 2026-11-10 (C178, the commit gate): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-11-10--the-commit-gate-c178).*
+
+**Postconditions.** Each step has one beyond "something changed": a dispatch
+leaves the subtask in progress with an active child; a commit archives,
+commits or sets a gate; a done completes the subtask; a finalize archives
+the macro. A commit recovery the Stop hook keeps refusing therefore halts
+once instead of repeating. *Amended 2026-10-01 (S8): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s8-the-driver-and-orchestratorautopilot).*
+A step that runs a verb (a dispatch's first verb, and every later verb step,
+a verification resumption included) must also leave, in what it appended to
+its child's phase notes, at least one new `### Phase 1: <Verb> (synthesized)`
+section of that verb, with text under its synthesis or its artifact (a
+subsection other than `Ensemble launched …` and `Active next-action
+proposal`; a fence delimiter is not text), among the headings after the
+body's `## Phase notes` (never the request quoted before it; a body with
+no recognized `## Phase notes` is no evidence): the body the look before the step read must be the start of the
+body after it, and the section must begin past it. The verb is the step's;
+a dispatch whose subtask names none is judged by the child's
+`dispatched_verb`, or else by any verb. A dispatch's child is new, so its
+baseline is an empty body; only a dispatch's is. A later verb step is bound to the child the look
+before it read, halts when that look held no child for the subtask, another
+workflow id or an `error` child, and must leave its child active (only
+`/engineer:commit` closes a workflow under autopilot), so a step that
+archives its child, completes its subtask or archives the macro cannot leave
+the rule with nothing to judge. A step that fails this, a look that could
+not read the notes before or after the step, and a step that changed the
+notes before its appended part halt `owner-choice` on the subtask with no
+pointer, the shape of every postcondition, the detail naming the missing
+section. A verb
+that concludes nothing records that in its own section and passes; no verb
+is required to change a file, and a changed file never stands in for the
+section. An owner-forced step, a verify step
+and a step whose child now records an owner gate are not held to it. All of
+this is read from facts the observer reads itself, never from the worker's
+report. It is judged after the step's other checks and after the peers it
+left are settled. The grammar reads the request before `## Phase notes` as
+no markdown (its first such line ends it), so a fence there cannot hide the
+notes, and inside the notes it opens a backtick fence only as CommonMark 4.5
+does (an info string with no backtick), so a note line such as "```a```
+inline" swallows no later section. The blank lines the engineer's writes add
+before a body are dropped before the comparison. A fence a note opens and
+never closes runs to the end of the body, as in CommonMark, and hides the
+sections after it: the step halts, a limit that fails closed. Its other
+limits: it proves a recorded completion, not the truth of the worker's
+analysis (a fabricated section with text passes, and so does a note appended
+twice); a worker that brings back an archived workflow of the subtask as its
+dispatch's child passes on that workflow's old sections; when the step fails
+the rule and a more precise diagnosis (a plan revised past its approval, a
+peer left pending) also holds, the step's halt is the one reported and the
+other shows at the next run; a child
+archived between the look's two reads is unreadable notes, a halt with no
+retry; and the content projection trusts each entry's stat as `git status`
+does, so an edit whose file times were put back reads as no progress, a
+halt. *Amended 2026-11-04 (C163, a verb step's evidence): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-11-04--a-verb-steps-evidence-c163).*
 
 ### D3a. Landing (ADR-0062; owner decision D23, 2026-09-29)
 
@@ -363,7 +423,7 @@ ADR-0062 is unchanged.
   - For every `in_progress` subtask whose engineer workflow is archived with its
     terminal marker set, the observer runs `git fetch origin <integration branch>`
     and then orchestrator `state.mjs resolve-landing`.
-    - That CLI is read-only (`plugins/orchestrator/scripts/state.mjs:4209-4237`).
+    - That CLI is read-only (`plugins/orchestrator/scripts/state.mjs:8470-8504`).
     - It answers `ok` or a closed `reason` enum.
   - "Waiting to land" is derived from these state facts, never from the macro
     note's text (R5).
@@ -378,10 +438,25 @@ ADR-0062 is unchanged.
     because an unlanded predecessor keeps its successors blocked.
   - When nothing is dispatchable and one or more subtasks wait, the run halts
     `awaiting-landing`. It lists each branch with the push and PR commands for
-    the owner.
+    the owner (none for a branch outside `[A-Za-z0-9._/-]`).
+  - Several subtasks may be in progress at once. *Amended 2026-10-01 (S8): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s8-the-driver-and-orchestratorautopilot).*
 - **Any other refusal** → halt `owner-choice` with the reason.
 - **Resume.** The owner pushes, reviews and merges, then relaunches. The driver
   is stateless, so it records the landings and continues.
+- **Success** is the archived macro, and only for the plan the owner approved:
+  an archived macro whose plan changed during the last step halts
+  `plan-unapproved`. *Amended 2026-10-01 (S8): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s8-the-driver-and-orchestratorautopilot).*
+- **Outcomes.** Once a workflow is terminal its phase is the outcome, and
+  `next_step` is history:
+
+  | durable state | meaning |
+  |---|---|
+  | active, not terminal (commits may exist) | in progress, or an interrupted commit: `/engineer:commit` recovers it |
+  | archived, terminal, `commit-complete` | committed: check the landing |
+  | archived, terminal, `close-complete` | closed without a commit: `/orchestrator:done <id> --no-commit` |
+  | active, terminal | the archive has not run (a Stop gate failed, or a close stopped before its archive): `/engineer:commit` again |
+
+  *Amended 2026-10-01 (S3+S4): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s3s4-verb-runbook-deltas-and-engineercommit).*
 
 A chain macro therefore needs one landing round per link. That cost is accepted,
 for three reasons:
@@ -408,20 +483,50 @@ view is:
 2. No `awaiting_owner` is set on the macro or on the active engineer
    workflow (with lanes, on the lane's).
 3. `plan_approval.status=approved` and `plan_approval.plan_hash` matches the
-   current `subtasks[]`.
+   current `subtasks[]`. `/orchestrator:next` holds the same gate itself
+   (`state.mjs approval-gate`, one decision point for both hosts, which no
+   runbook re-derives), in `commands/next.md` Phase 1 after the
+   dispatch-ready validation and before Phase 2, for an explicit id as well
+   as for the automatic pick, and the Codex mirror runs the same command
+   with `--host codex`. Under autopilot it refuses a plan pending approval,
+   changed since it was approved, or with no approval recorded (`✗
+   plan-unapproved`, then `Pointer: <path#anchor>` and the owner's action,
+   exit 1: the macro's `awaiting_owner_pointer` when a gate is set
+   (`#ensemble-synthesis` under `plan-conflict`), and `<macro file>#macro-plan`
+   otherwise), and a
+   selected subtask that differs from the approved plan's entry for its id in
+   any field the hash covers (that refusal tells the worker to run
+   `/orchestrator:next` again); interactively it never refuses, and prints one
+   warning line for a pending or stale approval. The gate checks at
+   dispatch and is not a lock; this rule halts before the next step. An
+   approval that changes the plan joins the run locks as an admission, so it
+   is refused beside a live run of the macro, and one that changes an
+   in-progress subtask's topic or profile records a rebinding of its child,
+   and is also refused while that lane is held, has a release awaiting
+   comparison or has a persona operation open; the dispatch comparison
+   accepts the rebinding only under the current approval, and for an active
+   child only once the child has been told (ADR-0068 Decision 8). *Amended 2026-09-30 (S6): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-09-30--s6-orchestratornext-approval-gate).* *Amended 2026-10-20 (ADR-0068, rebinding): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-20--main-session-instructions-and-rebinding-adr-0068-slice-4).*
 4. For `/orchestrator:next` only: the working tree it runs in is clean (with
    lanes, the lane's).
-5. The state fingerprint changed since the previous step: with lanes, a
+5. The step made progress since the previous step (its state fingerprint or
+   the content of the checkout's files changed, as below): with lanes, a
    lane's fingerprint since that lane's previous step, while `/orchestrator:done`
    and `/orchestrator:finalize` keep the macro-wide one. The first iteration
-   is exempt, and with lanes each lane's first step.
-6. Budgets remain: iterations, total cost, wall clock. *Amendment 2026-10-13
-   (C105):* the run's wall clock is removed. Iterations and total cost
-   remain, and each step's own wall clock (D1) still bounds that step.
-   *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 2,
-   accepted 2026-10-20):* once the
-   owner switches the stall detector on, a step is bounded by the stall rule
-   and by the emergency cap (ADR-0068 Decision 3, item 8).
+   is exempt, and with lanes each lane's first step. *Amended 2026-10-08 (ADR-0067, rules 1, 2, 4 and 5 per lane): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-08--worktree-lanes-adr-0067).*
+   `no-progress` (and the C127 peers-only check) hold a step unchanged only
+   when its fingerprint and the content of the checkout's files are both
+   unchanged, so an edit of an already-modified file is progress. The
+   content is `lane-digest.mjs` `contentProjection`: the tree the checkout's
+   non-ignored files make through a temporary index, without HEAD, without
+   `.agentic-plugins/state` and `.agentic-plugins/runs`, each checked-out
+   submodule by its own projection in place of its gitlink (so a commit
+   inside one is no content either). A look that could not project it
+   compares as before. The projection is no fingerprint's, so no park record
+   changes version, and it is never evidence of a verb. *Amended 2026-11-04 (C163): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-11-04--a-verb-steps-evidence-c163).*
+6. Budgets remain: iterations and total cost; each step's own wall clock
+   (D1) still bounds that step, and there is no run wall clock. *Amended 2026-10-13 (C105): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-13--bounds-and-the-report-close-c105-c136-c127-c123).*
+   Once the owner switches the stall detector on, a step is bounded by the
+   stall rule and by the emergency cap (ADR-0068 Decision 3, item 8). *Amended 2026-10-19 (ADR-0068, stall detection): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-19--stall-detection-and-the-drivers-event-file-adr-0068-slice-2).*
 
 **Halt** reason codes (closed set):
 
@@ -434,19 +539,18 @@ view is:
 | `plan-unapproved` | `plan_approval` missing, pending, or hash mismatch |
 | `awaiting-landing` | committed subtasks wait for their PRs to merge, and nothing else is dispatchable (D3a) |
 | `dirty-tree` | tree not clean before a dispatch |
-| `no-progress` | fingerprint unchanged after a step that exited 0 |
+| `no-progress` | fingerprint and content unchanged (proceed rule 5) after a step that exited 0; or a verb that asks for the same checks again on an unchanged tree after a verification batch in which they all passed or one failed (after a timeout with no failure they run again). A batch is judged by its results, never by `no-progress`, and its recorded results count as a change of the child for the step it dispatches (ADR-0068 Decision 5, items 7 and 10). *Amended 2026-10-20 (ADR-0068, driver-run verification): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-20--driver-run-verification-and-the-heavy-work-lock-adr-0068-slice-3).* |
 | `worker-failed` | non-zero exit, `is_error`, or timeout |
 | `permission-denied` | the worker hit a denied tool it needed (from `permission_denials`) and made no progress |
 | `compaction-imminent` | a PreCompact hook event appears in the worker stream (the step is aborted) |
-| `step-oversized` | the step's peak context exceeds the oversize threshold (D7). *Retired 2026-10-13 (C136):* never raised; a step's peak context is recorded, an observation (D7) |
-| `budget` | iteration, cost or time cap reached, or a rate-limit window that cannot reopen before the deadline ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decision 6). *Amendment 2026-10-13 (C105):* there is no time cap and no deadline: the iteration or cost cap, or a rate-limit window that throttles new lanes with no reset time while nothing runs to refresh it |
-| `version-drift` | installed plugin versions changed since the run started, or the content of a loaded plugin or a pinned script root did ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decision 8) |
+| `step-oversized` | retired: never raised; a step's peak context is recorded, an observation (D7). The code stays in the closed set. *Amended 2026-10-13 (C136): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-13--bounds-and-the-report-close-c105-c136-c127-c123).* |
+| `budget` | the iteration or cost cap reached, or a rate-limit window that throttles new lanes with no reset time while nothing runs to refresh it ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decision 6); there is no time cap and no deadline. *Amended 2026-10-13 (C105): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-13--bounds-and-the-report-close-c105-c136-c127-c123).* |
+| `version-drift` | installed plugin versions changed since the run started, or the content of a loaded plugin or a pinned script root did ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decision 8) *Amended 2026-10-08 (ADR-0067): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-08--worktree-lanes-adr-0067).* |
 | `interrupted` | SIGINT/SIGTERM from the owner |
 
-*Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-accepted 2026-10-20):* the codes are unchanged, and with
-lanes each halt has a scope, set by its cause, not by its code or by
-whether it names a subtask. The run-wide causes are a closed list:
+**Halt scope.** With lanes each halt has a scope, set by its cause, not by
+its code or by whether it names a subtask. The run-wide causes are a closed
+list:
 `version-drift`, `budget`, `plan-unapproved`, a gate on the macro, a halt
 that names no lane of the plan (the other macro-level halts, the aggregate
 halts), the run's footing wherever it is met (the baseline fetch, the
@@ -456,57 +560,496 @@ checkout, a worker group that outlived SIGKILL (in any lane, although its
 code is the lane's `worker-failed`) and an unreadable holds directory; they
 drain the run. `interrupted` aborts it. Every other halt is a lane halt and
 parks only that lane (ADR-0068 Decision 1, item 1). Serial runs keep the
-drain.
+drain. *Amended 2026-10-19 (ADR-0068, lanes that keep going): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-19--lanes-that-keep-going-adr-0068-slice-1).*
 
-*Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 3,
-accepted 2026-10-20):* `no-progress` gains one trigger: a
-verb that asks for the same checks again on an unchanged tree after a
-verification batch in which they all passed or one failed (after a timeout
-with no failure they run again). A batch is judged by its results, never
-by `no-progress`, and its recorded results count as a change of the child
-for the step it dispatches (ADR-0068 Decision 5, items 7 and 10).
+**Live workflows.** Every live engineer workflow that claims the macro must
+be the active child of an in-progress subtask: a dispatch interrupted before
+it recorded the subtask in progress halts instead of dispatching beside it.
+An archived child is held to the same linkage as an active one (parent,
+subtask, branch, id). A live workflow in `phase-7-commit` (an interrupted
+commit) or in a terminal commit phase routes to `/engineer:commit`, never to
+its stale next step; an `/engineer:start` workflow, a detached child and a
+pending peer ensemble halt. The worker's structured report is a cross-check
+only (owner decision D11): it names the engineer workflow it echoes, a
+report that disagrees with the state halts `owner-choice`, and it never
+allows a step. *Amended 2026-10-01 (S8, owner decision D11): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s8-the-driver-and-orchestratorautopilot).*
+
+**Owner-forced steps.** `--next` replaces only the judgment halts of the
+active engineer child (low confidence, an owner decision, no next step) and
+goes through its step's prerequisites. Its grammar is `/engineer:<verb>`,
+`/engineer:commit` and `/orchestrator:next [<subtask>]`: `/orchestrator:done`
+and `/orchestrator:finalize` run exactly when their prerequisites hold, so
+forcing one could only skip a prerequisite. *Amended 2026-10-01 (S8): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s8-the-driver-and-orchestratorautopilot).* While a
+run lives, the owner may also give a lane its next step as an instruction:
+the same grammar without the dispatch, and the same reach (it replaces the
+recorded step and its judgment halt, goes through the step's prerequisites,
+and leaves every gate, error and landing refusal standing), except that it
+never replaces an interrupted commit, which runs again first; with a note for
+the child, applied at the lane's next step boundary. A forced step on a lane
+with a pending instruction that carries a step is refused (ADR-0068
+Decision 7). *Amended 2026-10-20 (ADR-0068, main-session instructions): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-20--main-session-instructions-and-rebinding-adr-0068-slice-4).*
 
 **`awaiting_owner.gate`** is a closed enum of genuine-judgment gates only:
 `plan-approval`, `plan-conflict`, `scope-routing`, `decide-conflict`,
 `peer-conflict` ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md)
 Decision 8: a conflict verdict in critique or investigate),
-`recurring-finding`, `staging-set`, `pr-handling`, `duplicate-workflow`. The
-source of each gate is mapped in DESIGN §6.3.
+`recurring-finding`, `staging-set`, `pr-handling`, `critique-cap`,
+`duplicate-workflow`. The source of each gate is mapped in DESIGN §6.3. *Amended 2026-10-08 (ADR-0067): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-08--worktree-lanes-adr-0067).* *Amended 2026-11-09 (C176, `critique-cap`): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-11-09--critique-convergence-c176).*
+One more gate, `review-outcome`, is derived and never stored (the review
+gate, below).
 
 **Ceremony gates** auto-pass while `AGENTIC_AUTOPILOT` is set:
-- **Commit subject confirmation:** a conventional subject is inferred from verb, profile and package.
+- **Commit subject confirmation:** the commit worker writes each conventional
+  subject, and Phase 7 checks its type and scope against the files that
+  commit touches (D3). *Amended 2026-11-04 (C163; the subject was first
+  inferred from verb, profile and package): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s3s4-verb-runbook-deltas-and-engineercommit).*
 - **"Recommended: X. Proceed?":** proceed with X.
 - **Presentation-mode prompt:** batch.
 - **critique → refine MINOR selection:** the existing default rule, CRITICAL + MAJOR.
+  For a document deliverable that is the open CRITICAL and MAJOR findings
+  of the workflow's review ledger, a scoped re-critique leaves a new
+  non-CRITICAL finding outside the passages a refine changed open for the
+  owner instead of carrying it, and the `recurring-finding` gate fires on
+  the ledger's recurring findings only (§ Document deliverables, below);
+  code deliverables keep the default rule. *Amended 2026-10-14 (C120): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-14--the-ceremony-gates-c120).* From a
+  subtask's second critique the selection narrows further (§ Critique
+  convergence, below). *Amended 2026-11-09 (C176): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-11-09--critique-convergence-c176).*
 - **End-of-verb Active Next-Action Proposal:** persisted as `next_step`; the driver decides from it.
+- **The approval points inside the decide, compose and refine skills**, and
+  each verb's Autopilot section: their own "wait for the user" instructions
+  would otherwise stall an unattended step, since Claude commands run those
+  skills too. *Amended 2026-10-01 (S3+S4): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s3s4-verb-runbook-deltas-and-engineercommit).*
 
 The same gates stay interactive when a human drives.
-
-*Amendment 2026-10-14 (C120):* for a document deliverable, "CRITICAL + MAJOR"
-is the open CRITICAL and MAJOR findings of the workflow's review ledger, a
-scoped re-critique leaves a new non-CRITICAL finding outside the passages a
-refine changed open for the owner instead of carrying it, and the
-`recurring-finding` gate fires on the ledger's recurring findings only. Code
-deliverables keep the rule above. § Amendment 2026-10-14 — document
-deliverables converge (C120).
 
 **`decide` (R4):**
 - ensemble verdict CONFLICT → `awaiting_owner.gate=decide-conflict` → halt;
 - `next_step.confidence < HIGH` → halt (`low-confidence`);
 - otherwise proceed with the recommended direction.
 
-**Lanes (W2).** Any lane halt drains the run: no new lane or step starts,
-in-flight steps finish, then every lane reports once. SIGINT/SIGTERM aborts
-without draining. Scheduling, the per-lane fingerprint, budgets and the
-throttle: [ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md)
-Decision 6.
+**Lanes (W2).** Only a run-wide halt drains the run: no new lane or step
+starts, in-flight steps finish, then every lane reports once. A lane halt
+parks its lane while the other lanes go on, the park is kept for the next
+run, and the lane is judged again once its record changes or the owner
+releases it; a lane the owner holds is left alone (ADR-0068 Decisions 1 and
+2). SIGINT/SIGTERM aborts without draining. Scheduling, the per-lane
+fingerprint, budgets and the throttle:
+[ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decision 6. *Amended 2026-10-08 (ADR-0067): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-08--worktree-lanes-adr-0067).* *Amended 2026-10-19 (ADR-0068, lanes that keep going): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-19--lanes-that-keep-going-adr-0068-slice-1).*
 
-*Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-accepted 2026-10-20):* only a run-wide halt drains. A
-lane halt parks its lane while the other lanes go on, the park is kept for
-the next run, and the lane is judged again once its record changes or the
-owner releases it; a lane the owner holds is left alone (ADR-0068 Decisions
-1 and 2).
+#### The review gate
+
+The observer reads each child's review record through the orchestrator's
+byte copy of the persona library (`reviewGate`): its latest review outcome,
+whether that outcome holds the commit back, each outcome, and whether the
+history is complete. An outcome holds the commit back when it is `failed`,
+`degraded`, `unavailable`, `malformed` or `unknown`, or `skipped` with no
+reason given or as `owner-skip` (an autopilot step can write that with no
+owner present); no skip, of any reason, clears an earlier outcome that
+holds, and a superseded attempt listed last reads `unknown` (ADR-0028's
+implementation note of 2026-11-07 gives the rule and the owner's
+acceptance).
+
+1. *The halt.* A lane whose next step would run `/engineer:commit` (a commit
+   or done step, or the recovery of a commit begun) while its latest outcome
+   holds the commit back halts `awaiting-owner:review-outcome`, pointing at
+   the child's `review_attempts`. Its detail names the attempt, its outcome
+   and error kind, why no acceptance covers it, whether the history is
+   incomplete, and the ways on the command takes: run the review again
+   (`--next /engineer:critique`, or `--lane <subtask> --next
+   /engineer:critique` with lanes), or the owner's `state.mjs review-accept`
+   of that attempt in the lane's checkout, then relaunch. The command names
+   the workflow file's own path, quoted as one shell word when it holds a
+   space, a quote or a non-ASCII character; only a path with a control
+   character is left out, and the attempt is still named. Each `--next` is
+   printed with nothing attached that `parseForcedStep` would refuse. An
+   attempt still open offers only the new review; a record this reader cannot
+   use offers neither, and says to upgrade the plugins or repair
+   `review_attempts` by hand. A parked lane's `resolution.change` names the
+   same ways on, from its record. A verb next step is not held.
+2. *A derived gate.* `review-outcome` is never stored: a recorded owner gate
+   would stop classification before the owner's `--next` and be refused by
+   Phase 7. It is a judgment halt, so `--next <verb>` (a new review)
+   replaces it, while a forced `/engineer:commit` is refused while the lane
+   is held. A worker's report cannot name it. A forced commit a run with
+   lanes took at its start meets the gate again at each decision, so an
+   outcome recorded since holds it too.
+3. *Resolution.* An acceptance naming the latest attempt, with the outcome,
+   error kind and reason it reads now, lets the commit; the relaunched run
+   reads it at its first look. A later review attempt, another outcome of the
+   accepted attempt, or a gap in the history found since makes it stale for
+   good (the acceptance records the record as the owner saw it); the lane
+   halts again on the new outcome. Whether the working tree is still the
+   accepted one is Phase 7's to compare (it reads the tree a snapshot would
+   hold; this policy does not): the observer asks it (`state.mjs
+   review-gate`) in the checkout it looks from, for a child of that
+   checkout's branch whose accepted outcome blocks, and a tree that moved or
+   cannot be compared reads held: a serial run halts on the gate with no
+   worker spent. A run with lanes decides from the
+   main checkout, which reads no lane's tree, so there the commit step runs,
+   Phase 7 refuses it (exit 10, writing nothing), and the look from the lane
+   reads the gate holding; a commit step that leaves the gate holding, with
+   no new commit and no owner gate, is this same halt (`verifyStep`), with
+   the record, the ways on and what the worker reported. No new
+   commit alone says nothing of the review: a step stopped by a refused
+   subject or an unfinished recovery, whose acceptance still covers its tree,
+   is judged as any other. A worker that reports the refusal as a failure
+   stays `worker-failed`, so the run cancels its peers, and carries the
+   record. The latest outcome (while it blocks) and the acceptance with its
+   tree, its state (matching or stale, so a re-acceptance of the same attempt
+   and tree after it settled with another outcome counts) and its time (so
+   accepting the first tree again, after a refusal at a second, counts: an
+   act of the owner's is always reconsidered) are added to the lane's
+   fingerprint, only while one of them is there, so a child with neither
+   keeps the fingerprint it had: a lane parked on the gate is picked up again
+   when the owner accepts, accepts again for another tree, or a new outcome
+   is recorded (a no-run outcome moves no count the fingerprint held; a skip
+   after a failure clears nothing, so it moves nothing). Those facts changed
+   what a park's fingerprint hashes, so `PARK_FINGERPRINT_VERSION` is 4: a
+   park an earlier release kept is never compared, and resumes only on the
+   owner's release.
+4. *Reports.* Each subtask waiting to land carries its review record in the
+   landing report (the landing-ready event and its log line), the terminal
+   headline and the `awaiting-landing` halt: each outcome, whether the latest
+   holds the commit back, the acceptance, and an incomplete history with its
+   reasons. A review-outcome halt's record keeps the same, and so does a
+   lane's park, its entry in the run's lane report, its printed park line,
+   and the halt a run with lanes ends on (the first held lane's as the halt's
+   own, every other held lane's in its `also`). The landing log's
+   observation key includes the outcomes, the acceptance and the
+   completeness, so a new outcome at unchanged commits is reported again; a
+   record logged before the outcomes observed none, and its subject is
+   reported once more.
+
+The driver's capability floor requires an engineer with `review-accept`, and
+the observer also reads the record from an engineer's forward-compat
+carrier. Limits: a workflow begun before C163 A1a holds only legacy review
+rows, so its lane halts once on `unknown` and the owner accepts or reviews
+again; a `done` step is held like a commit, since `/engineer:commit` commits
+whatever the tree holds (over a clean tree it would only close, and the
+owner's acceptance lets it); in a run with lanes a commit step over a moved
+tree spends a worker, as above; a park's fingerprint holds the
+acceptance, not the tree compare, so a lane parked over a moved tree is
+picked up by a new acceptance or a new outcome, not by restoring the tree
+alone; a legacy row pruned from `ensemble_results` is no longer seen. *Amended 2026-11-07 (C163 A1b, the review gate): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-11-07--the-review-gate-c163-a1b).*
+
+#### The review binding
+
+*Proposed (ADR-0069 Decisions 3 and 4, which hold the rule):* no look
+compares a change with its reviews. The main checkout's look never runs
+`review-gate` in a lane's worktree nor touches a lane's index, and every look
+reads the review record as it is: the outcome gate above, and the committed
+comparison Phase 7 recorded, which the landing report shows as provisional.
+The comparison is Phase 7's, on every route that lands a commit; under
+autopilot its refusal (exit 10, `review-held`, nothing written) ends the
+step, whose report needs the owner, and the lane halts `owner-choice` with
+the refusal's text; the owner's `review-binding-accept` joins the lane's
+fingerprint once given, so it picks the parked lane up, and a worker's
+`review-binding-accept` is refused at the write. A landing that differs from what was committed halts
+`owner-choice` before the done step; one that cannot be compared goes on,
+and the macro records why. A worker's `/orchestrator:done` with
+`--accept-landed-change` or a waiver is refused at the write
+(`subtask-update`; `--correct` is not an owner override and is not refused),
+and a done step that completed its subtask with no landed commit
+(`--no-commit`) halts, the macro's last subtask included, whose done
+archives the macro: only the driver's done-no-commit step completes one that way. *Amended 2026-11-07 (C163 A2b, as simplified 2026-11-09): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-11-07--review-binding-under-autopilot-c163-a2b-adr-0069).*
+
+#### Document deliverables
+
+A document deliverable gets one full critique. After a refine, the next
+critique reviews the passages the refine changed and the findings it
+targeted (a *scoped* critique). A new finding outside those passages is left
+open for the owner (`### Left open` in the note), unless it is CRITICAL,
+which refine carries. Every CRITICAL and MAJOR finding open in the ledger is
+refine's work, targeted before or not. A finding a refine targeted that a
+critique leaves open is *recurring*, and fixing it again is the owner's call
+(`recurring-finding`). A code deliverable keeps the full critique and the
+judged recurring rule. *Amended 2026-10-14 (C120): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-14--document-deliverables-converge-c120).*
+
+**What is a document.** The artifact set is every path that differs between
+the workflow's `git_baseline.head` and the working tree (the state homes
+left out). The deliverable is a document only when that set is not empty,
+every path is a regular Markdown file ending in `.md` or `.markdown`
+(`.mdx` carries code), no changed line, on either side, blank lines
+included, is or may be code, and no path's code is changed by its prose: the
+sequence of CommonMark code blocks and HTML blocks in the old text, each
+block's kind, info string and content, is the one in the new text. A line is
+code when either of two readers says so:
+
+- *Reader 1*, a stateless over-reading with no fence pairing and no
+  container tracking: every line from the file's first fence-like line (one
+  holding three or more backticks or tildes, wherever they sit) to its last;
+  every line whose leading white space reaches column 4 at the line start, or
+  five columns past a block-quote or list marker in its prefix (tabs to the
+  next multiple of four), with no paragraph exception; each blank run between
+  two such lines; and each such line's neighbours.
+- *Reader 2*, the CommonMark reference parser (commonmark.js): every line a
+  code block spans, fenced or indented, fence lines included, and every line
+  an HTML block spans, whatever its tags. A text holding a bare CR is read as
+  code throughout (CommonMark ends a line there, git does not).
+
+Other prose formats stay full: a `.txt` name is no evidence, and
+reStructuredText and AsciiDoc have code block forms the test does not read.
+*Amended 2026-10-15 (the owner's ruling on the recurring M3 finding: the two readers, every HTML block, the block-sequence rule, the vendored parser): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-14--document-deliverables-converge-c120).*
+The parser is vendored byte for byte
+(`persona-pipeline/files/scripts/lib/vendor/commonmark.min.cjs`) under a
+copy notice carrying its LICENSE, the npm tarball's shasum and the sha256 of
+the upstream bytes, which a test checks; it is updated only for a CommonMark
+release or a parser fix that changes what it is read for, by replacing the
+bytes, the LICENSE and the two hashes together.
+
+**The review ledger** is the evidence a fresh worker reads:
+`<state home>/reviews/<workflow id>.json`, written by `state.mjs` holding
+the workflow's lock; no plan field and no frontmatter key is added. It holds
+one *generation* per critique (mode, reason, the working tree it reviewed as
+a tree object, HEAD, the baseline, the artifact set, the passages of a
+scoped one, its targets, the critique runs the workflow had noted when it
+opened, open / closed / abandoned), every finding with a workflow-wide id
+(`G<generation>-F<n>`), severity, location, text, disposition and the refine
+attempts that targeted it, and one refine attempt per critique
+(`R<generation>`: its targets and the tree it left). Each ledger has an id of
+its own, which `critique-scope` prints and `critique-close` must name. The
+ledger is not archived with its workflow and is not pruned.
+
+- `critique-scope` opens generation g at the working tree T, captured as a
+  peer snapshot is, without materializing it, and prints the scope. A
+  deliverable that is not a document records nothing and moves an earlier
+  ledger aside; so does a checkout the ledger cannot vouch for (a baseline
+  that is not a full commit id resolving to a commit, a working tree the
+  capture cannot read, or an index entry marked assume-unchanged or
+  skip-worktree). A generation a crashed run left open is abandoned by the
+  next `critique-scope`. The capture stamps its index copies with the live
+  index's times, so a same-size edit made in the second the index was
+  written is not missed (racy git).
+- `refine-record` (after the fix, before Refine-verify) records the targets
+  and the tree the refine left, and prints `verify`, the mode the next
+  critique would have on that tree: Refine-verify is scoped only when that
+  is `scoped`.
+- `critique-close --ledger <id> --generation g` records the synthesis's
+  findings and prints the disposition (`converged`, `carry`, `left_open`,
+  `recurring`). It refuses when the checkout no longer holds T, or the ledger
+  is not the one `critique-scope` named.
+- `review-status` prints refine's work (`carry`) and the recurring findings
+  (a refine targeted it, and a critique closed since judged it unresolved; a
+  target no critique has judged since its refine, such as one a partial
+  critique did not report, is not one), which end refine on the gate before
+  any fix, unless the owner already cleared that gate with Fix now after the
+  last critique's notes (the resume note a fresh worker writes after it does
+  not count against the ruling).
+- `refine-record` runs again after any later edit in the same refine: the
+  next critique is scoped only while the checkout holds the tree the last
+  record saw.
+- From a checkout that is not on the workflow's branch, whatever state its
+  working tree is in, `critique-scope` and `refine-record` record nothing
+  and leave the ledger alone, and `critique-close` refuses: a worktree
+  sharing the state root never writes another branch's ledger. A ledger
+  whose entries are malformed is moved aside and the critique is full;
+  `review-status` reads it as no ledger. So is one whose stored passages are
+  not line ranges on its artifact paths, or whose generation ids do not run
+  1, 2, 3 in order. A checkout whose HEAD git cannot read reaches the script
+  all the same, which falls back.
+- None of this stops a verb. The runbook blocks fall back when the script
+  fails (an older release without the subcommands answers `unknown
+  subcommand`): the critique runs unrecorded and full, refine reads no
+  ledger, and a missing refine record makes the next critique full unless an
+  earlier record of the refine saw the same tree. A critique whose close
+  refuses counts as a full one the ledger did not record, and until a later
+  critique closes the ledger vouches for nothing: `review-status` reads no
+  ledger, `refine-record` records nothing and the next critique is full.
+- A critique the ledger never opened a generation for (its `critique-scope`
+  failed, an older release ran it, the checkout was on another branch or
+  mid-rebase, a `/<persona>:start` lifecycle ran it in its own phase) is
+  caught from the workflow file, which the critique writes in any case:
+  `state.mjs append --verb critique`, which the critique command's resume and
+  each critique phase of a lifecycle run, notes a marker line
+  (`<!-- agentic: critique run -->`) before the phase note, and each
+  generation counts those notes when it opens. An older release noted only
+  the critique command's `Phase 0: Resume into critique` heading, which
+  counts when no marker stands on the line before it; a critique an older
+  release runs inside a lifecycle notes nothing and is not caught. A run
+  that names no verb in its writes (a host skill used outside the commands)
+  is not caught either, and its findings are not in the notes refine reads.
+  More runs noted than the last generation counted (plus the caller's own
+  run, for `critique-scope`) means a critique the ledger did not see:
+  `review-status` and `refine-record` read no ledger, and `critique-scope`
+  moves it aside and opens a full one. A run stopped before it reached
+  `critique-scope` counts too, which costs only the scope.
+
+**Scoped, or full.** A critique is scoped only when all of these hold, and
+full otherwise, with the first that failed as its reason: the default review
+profile (another profile is `partial`, below); no merge, rebase, cherry-pick
+or revert in progress; a non-empty document artifact set; a full generation
+closed in the ledger; a last closed generation that is not partial; a refine
+recorded after it whose tree the checkout still holds (nothing was edited
+after the record, and an older release's refine, which records nothing,
+falls back); HEAD and the baseline unchanged since that generation (no
+commit and no merge); the same artifact set (no path added, removed or
+renamed); every target a ledger finding; and the tree the last critique
+reviewed still readable (it is unreferenced, so `git gc` may prune it, and a
+lost file is not an absent one). A full critique never takes the left-open
+route: every CRITICAL and MAJOR it finds is carried, and a prior finding it
+does not report again is resolved (a deferred one excepted, § Critique
+convergence). A *partial* critique (a profile other than the default, such
+as a single lens) judges only what it reports: it resolves no finding it
+does not, leaves nothing open by scope, and is never the full critique a
+scoped one starts from. A refine's targets stay targets until a critique
+judges them (a full one judges them all, the ones it does not report
+included): one a partial critique does not report is open, it stays a target
+of the next partial critique, and since the lens may not cover it, the
+omission is no judgment the recurring rule counts. A finding's severity
+follows the latest judgment, except that a scoped or partial critique never
+lowers a CRITICAL or MAJOR one, and references that disagree take the
+highest. A scoped critique resolves a finding the refine did not target only
+when the critique places it in a passage, in the current text (the ledger's
+location is in the coordinates of the text it was found in, which the refine
+may have shifted): elsewhere it read no text, so the verdict is noted and
+the finding stays.
+
+**Passages.** The diff from the last critique's tree to the current one, per
+artifact path, at Markdown block level in the current text: a code or HTML
+block as CommonMark reads it, a list or a table with no blank line in it,
+and a heading are each one block. A deletion anchors to the blocks just
+before and after it, with the deleted text shown as before; a change that
+leaves a file with no block makes the whole file the passage. A finding is
+in scope when its location overlaps a passage, whatever scope the peer
+claimed, and when the review marks it in. A location with no line range on
+a passage path counts in scope unless marked outside; a finding with no
+location cannot be shown outside; a location on a path the artifact set does
+not hold (a relative path that only ends in an artifact path is another
+file) cannot be placed, and counts in scope. Locations are read the ways reviewers write them (`path:12`,
+`path:12-20`, `path:12:3`, `path#L12`, `./path`, an absolute path ending in
+an artifact path); a reversed range is refused. A left-open finding reported
+again, not CRITICAL, stays left open only when every report places it
+outside the passages in the current text; a report with no location is not
+placed outside. A finding a refine targeted is judged as any target,
+whatever it was before: left open, or resolved by an earlier critique and
+edited again, it is carried when unresolved or given no verdict.
+
+**The peer contract.** The Scoped review and Scoped refine-verify templates
+(the ensemble protocol's § Scoped re-check) give the peer the passages and
+the findings by id, and ask one line per finding: id or NEW, a verdict for
+an id, severity, location, in or outside, evidence. A target with no
+verdict, two or contradictory ones counts unresolved. The convergence rule
+is the script's, never the synthesis's.
+
+**Precedence.** A `conflict` verdict ends on `peer-conflict` first.
+`converged` only adds the commit route when the persona's own conditions
+also hold (designer's accessibility veto and re-render, founder's gate
+verdicts).
+
+**Plans.** `/orchestrator:plan` proposes an ADR or other document subtask
+that would settle more than two decisions as chained slices of one or two,
+each stating what it owns, the ADR number every slice claims and how later
+slices amend it. Advice, not a `plan-set` rule.
+
+**Known limits.** Interactively a verb's last write is terminal and the Stop
+hook archives the workflow (unless its subtask is held, has a kept lane park,
+or a run of its macro is live, D6), so the next verb starts a new workflow with no
+ledger and its critique is full; under autopilot one workflow carries the
+loop. `/engineer:commit` commits the tree as it is and does not check the
+tree the last critique reviewed. A `/<persona>:start` lifecycle runs
+critique and refine as skills, not as the commands that hold the ledger
+blocks, so its critique stays full; so does every critique on Codex. *Amended 2026-10-14 (C120): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-14--document-deliverables-converge-c120).*
+
+#### Critique convergence
+
+From a subtask's second critique, refine takes only CRITICAL findings and
+MAJOR findings on a frequent, natural path, test gaps included. A MAJOR on a
+rare path (a hand-made file, a gap of the same class as one already
+recorded, a special layout) is *deferred*: recorded as a known limit, its
+severity kept. This is the owner rule of 2026-10-25 applied by the loop
+itself. A recurring finding, one a peer contested and one a persona veto
+gate raised (designer accessibility, founder regulatory or safety) are never
+deferred. A subtask also gets a cap of critique rounds, 3 by default: a
+critique at the cap with nothing CRITICAL or MAJOR open proceeds to the
+commit; one that is not clean parks only its lane on the owner gate
+`critique-cap`, and the owner decides.
+
+- *The gate.* `critique-cap` is a stored engineer owner gate (heading
+  `### Critique cap reached`, anchor `critique-cap`), settable only with
+  `dispatch_target` on, as `pr-handling` is. The policy halts
+  `awaiting-owner:critique-cap` with the subtask id; the serial driver
+  halts; the lane scheduler parks that lane only; the owner's clear moves
+  the lane's fingerprint.
+- *The count.* `critique_rounds` counts the critique syntheses a
+  finish-verb recorded under an autopilot run, in all three of its forms
+  (verb, owner-decision, verify), inside the same locked write, once per
+  critique run (`critique_rounds_entry` keeps the run identity last counted:
+  the critique-run markers of the body, plus one for a workflow the critique
+  verb created). An interactive critique is no round. A critique stopped
+  before its finish-verb counts nothing, and a finalize run again counts
+  nothing more. A failed peer attempt is an attempt, not a synthesis: the
+  finalize settles the run's review attempt before finish-verb counts, and a
+  launched run whose critique attempt closed last ended with an outcome that
+  is no synthesis (anything but passed, concerns or conflict) counts nothing;
+  a critique that launched no
+  peer is a local synthesis and counts, and one resumed after a failed
+  verification batch is a new round. The keys are flat integers at the
+  frontmatter's tail.
+- *The limit.* `critique_round_limit` is absolute, 3 when absent. A critique
+  is at the cap when the rounds, this one counted, reach the limit. Only an
+  autopilot run enforces it: `finish-verb` refuses a next step that goes on
+  past the critique (any verb, or a verify request whose `on_pass` is one),
+  naming `OWNER_GATE=critique-cap`, before any write and again in its locked
+  write, and the critique's finalize asks the same before settle, its first
+  write (`state.mjs critique-cap-check` for the verb form,
+  `verify-request-check` for a request's `on_pass`), both read-only, so a
+  critique at the cap stops with nothing written and ends on its gate; run
+  before the settle, they take the run as counted. At the cap only commit, done and an owner gate end a critique.
+- *The deferral round.* A review ledger generation stores its `round`, 1
+  plus the closed generations of the current ledger; `critique-scope`
+  prints it, with the cap's `rounds` and `limit`. A `/<persona>:start`
+  lifecycle's critiques count here though they never call finish-verb, and a
+  ledger that replaced another starts again at round 1, so a finding
+  recurring in the old one cannot come back deferrable. With no ledger (a code deliverable) the
+  round is the cap's count with this run in it, and the deferral is applied
+  in the critique's note (`### Known limits (deferred)`) by the runbook, not
+  by code; the cap still bounds the loop in code.
+- *Deferral in the ledger.* `closeGeneration` alone decides it. A reference
+  may carry `defer` (its known limit, one line), `veto: true` and
+  `conflict: true`. A deferral is taken only from round 2, for a finding
+  that is MAJOR after this judgment, not recurring (computed before any
+  deferral, with each candidate still open), never flagged `veto` or
+  `conflict` (the flags are sticky across generations), and when every
+  reference to it in this close carries `defer`, with no `resolved` verdict
+  and one severity. Otherwise it stays open and the result names the refusal
+  (`deferral_refused`: round, critical, not-major, recurring, veto, conflict
+  or ambiguous). The
+  disposition `deferred` keeps the severity, stores `defer_reason`, and does
+  not block convergence. A later critique that does not report it, a full
+  one included, leaves it deferred; one that reports it with no `defer`
+  opens it again; a `resolved` verdict resolves it. The schema stays `review-ledger-1`.
+- *The owner's exits.* Clearing `critique-cap` with
+  `--grant-critique-rounds <n>` (n of 1 or more) and a verb as the next step
+  sets the limit to the rounds counted plus n in the same write. Or the owner
+  accepts the open findings as known limits: the next step commit, with a
+  resolution naming them; that grants no round and leaves the ledger as it
+  is. Clearing `critique-cap` or `peer-conflict` with another round while
+  the rounds have reached the limit, without a sufficient grant, is refused;
+  a grant on any other gate is refused; every clear stays refused under
+  autopilot (Q2). A `peer-conflict` at the cap ends on its own gate.
+
+The budget is per workflow: a replacement attempt of a subtask starts its
+count again. Engineer and orchestrator ship this in one release: an older
+reader refuses a workflow that holds `critique-cap` (a downgraded workflow
+is recovered by clearing the gate with the newer engineer first), and
+refuses a ledger that holds `deferred`, starting a new one with a full
+critique. Known limits: an engineer older than this amendment never writes
+the gate or the count, so the cap is not enforced; with no ledger the
+deferral round is the cap's count, which only an autopilot verb chain's
+finish-verb advances, so a code deliverable's critique in a
+`/<persona>:start` lifecycle, or in a persona with `dispatch_target` off,
+stays at round 1 and defers nothing; a note that quotes a critique-run
+marker (or an older release's resume heading) on a line of its own, appended
+again by a rerun of its finalize, counts as another round (only a hand-made
+note does that); the finalize's checks before settle take the run as
+counted, so a critique at the cap whose peer failed ends on `critique-cap`
+(the owner grants a round), though finish-verb would have counted nothing;
+the binding of a failed attempt to the run is the critique attempt closed
+last (`recorded_at`, to the second; a tie goes to the later entry), so a run
+settled by hand outside the finalize, or two finalizes in one second, can
+leave another run's attempt the one closed last; and a peer that fails on
+every critique counts no round, so the cap does not bound that loop (the
+driver's other halts do). *Amended 2026-11-09 (C176, critique convergence): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-11-09--critique-convergence-c176).*
 
 ### D5. Worker contract
 
@@ -523,31 +1066,52 @@ claude -p --input-format stream-json --output-format stream-json --verbose
        --session-id <uuid>
        --permission-mode manual --permission-prompts none
        --allowedTools <allowlist> --disallowedTools <denylist>
-       --append-system-prompt <plugin-root hint + autopilot rules>
+       --append-system-prompt <autopilot rules>
        --max-budget-usd <per-step cap>
        [--model <m>] [--effort <e>]
 ```
+
+*Amended 2026-10-08 (ADR-0067, the cwd): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-08--worktree-lanes-adr-0067).* The appended system prompt holds
+the step rules only; the plugin-root hint it once carried is gone (below). *Amended 2026-10-01 (S8): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s8-the-driver-and-orchestratorautopilot).*
+
+**Model plan.** The model plan is asked before each start (owner decision
+D5): `owner-default`, `mixed` (judgment verbs on the owner's default,
+compose and refine on sonnet/medium, the mechanical steps on sonnet/low) or
+`sonnet`. `/orchestrator:autopilot start` asks; a terminal start asks on its
+TTY; anything else must pass `--models` (or `--model`/`--effort`). *Amended 2026-10-01 (S8, owner decision D5): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s8-the-driver-and-orchestratorautopilot).*
+*Proposed ([ADR-0071](0071-autopilot-step-model-from-settings.md)):* on its
+acceptance the plans become suggestions, and the `autopilot_*` settings
+(`autopilot_<step>_model`/`_effort`, read once when a run starts) a plan of
+their own: with a key set and no flag a start takes them without asking;
+with none set the decision above stands. *Amended 2026-11-12 (ADR-0071 proposed): [history](history/0063-autopilot-fresh-session-driver.md#observation-2026-11-12--per-step-model-settings-proposed-adr-0071).*
 
 **Env.**
 - `AGENTIC_AUTOPILOT=<run-id>`, the mode flag read by runbooks and hooks.
 - Plugin roots resolved once by the driver, to the installed version (the
   ADR-0061 rule: the caller's own install cache, not the highest cached SemVer):
   - `AGENTIC_ORCHESTRATOR_ROOT` (already honored by
-    `plugins/engineer/scripts/parent-writeback.mjs:60`);
+    `plugins/engineer/scripts/parent-writeback.mjs:76`, `:289`);
   - `AGENTIC_ENGINEER_ROOT`;
   - `AGENTIC_RUNTIME_ROOT`.
 - `AGENTIC_STATE_BASE=<the run's effective state root>` and
   `AGENTIC_AUTOPILOT_TOKEN=<the run's admission secret>`
   ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decisions 2
-  and 4). An inherited value of either is scrubbed first.
+  and 4). An inherited value of either is scrubbed first. *Amended 2026-10-08 (ADR-0067): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-08--worktree-lanes-adr-0067).*
 - Scrubbed:
   - the launching session's identity (`CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`,
     `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_MESSAGING_*`,
     `CLAUDE_CODE_SESSION_ATTENDED`, `CLAUDE_PID`, `CLAUDE_EFFORT`,
     `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_EXECPATH`);
-  - `AGENTIC_NOTIFY_EGRESS_CHANNEL`, so there are no per-step E1 sends.
+  - `AGENTIC_NOTIFY_EGRESS_CHANNEL`, so there are no per-step E1 sends;
+  - the launching session's `CLAUDE_CODE_SESSION_*`, `CLAUDE_BG_*` and
+    `CLAUDE_RELAUNCH_*` variables (a background session's permission rules
+    travel there), and the dispatch contract variables an outer session may
+    have exported (`AGENTIC_PARENT_WORKFLOW`, `AGENTIC_ORIGINATING_SUBTASK`,
+    `AGENTIC_PROFILE`, `AGENTIC_TOPIC`, `AGENTIC_HOST`, `CLAUDE_PLUGIN_ROOT`). *Amended 2026-10-01 (S8): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s8-the-driver-and-orchestratorautopilot).*
 - Never set: `AGENTIC_COMPANION_DEPTH`. Workers are not companions, and an
   inherited depth would make in-worker peer ensembles refuse.
+- `GIT_CONFIG_*` entries that block every push at the git level (Permission
+  posture, below). *Amended 2026-10-01 (S8): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s8-the-driver-and-orchestratorautopilot).*
 
 **Session hosting (stream-json).**
 1. Write one user message carrying the step command.
@@ -560,27 +1124,23 @@ claude -p --input-format stream-json --output-format stream-json --verbose
 3. Close stdin only when a `result` has arrived **and** the pending background
    set is empty. Completion re-invokes the model, per probe D2.
 4. On timeout or abort, kill the worker's process group (the peer-runner
-   pattern, `plugins/engineer/scripts/peer-runner.mjs:711-725`).
-
-   *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 2,
-   accepted 2026-10-20):* the host also
-   keeps the time of the last stream event other than heartbeats and hooks,
-   and the driver samples the worker's descendants' CPU. Log-only, the
-   verdicts are recorded and nothing is aborted; switched on, a `stalled`
-   verdict is one more abort, `stalled`, with the timeout's teardown,
-   outranking a close on a finished report as every abort does. The detector
-   stops watching at that close (ADR-0068 Decision 3).
+   pattern, `plugins/engineer/scripts/peer-runner.mjs:711-725`). The host
+   also keeps the time of the last stream event other than heartbeats and
+   hooks, and the driver samples the worker's descendants' CPU. Log-only,
+   the stall verdicts are recorded and nothing is aborted; switched on, a
+   `stalled` verdict is one more abort, `stalled`, with the timeout's
+   teardown, outranking a close on a finished report as every abort does.
+   The detector stops watching at that close (ADR-0068 Decision 3). *Amended 2026-10-19 (ADR-0068, stall detection): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-19--stall-detection-and-the-drivers-event-file-adr-0068-slice-2).*
 5. The worker's own `Stop` hooks archive the engineer workflow and send its
    terminal note to the macro (probe E8). Since ADR-0062 that note no longer
    completes the subtask (D3a).
 
-*Amendment 2026-10-13 (C127, C123):* a worker that has finished its runbook
-can leave a background task pending (a test run, a monitor), and item 3 then
-held the step open to its wall clock: of the 11 step timeouts the owner
-measured over the 264 steps run before this change, 8 ended that way. The step report gains a required boolean,
+**The finished report.** A worker that has finished its runbook can leave a
+background task pending (a test run, a monitor), which item 3 would hold
+open to the step's wall clock. The step report carries a required boolean,
 `waiting_on_background`: `true` in a report the worker files while it still
 waits on a background task's notification (the provisional report, which also
-says `failed`), `false` in its last. The worker's appended rule 6 says both.
+says `failed`), `false` in its last. The worker's appended rule 6 says both. *Amended 2026-10-13 (C127, C123): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-13--bounds-and-the-report-close-c105-c136-c127-c123).*
 - **Close on a finished report.** Item 3 stands, and one more close is added:
   when the last `result` is not an error and its report is valid in every
   required field with `waiting_on_background: false`, stdin closes after the
@@ -643,11 +1203,69 @@ says `failed`), `false` in its last. The worker's appended rule 6 says both.
   interrupt there releases the step's reservation and ends the run
   `interrupted` with no worker started and no `started` line, before any
   drift the same resolution found. A run with lanes already yields at that
-  point.
+  point. *Amended 2026-10-13 (C127, C123): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-13--bounds-and-the-report-close-c105-c136-c127-c123).*
 
-**Plugin-root hint.** Until runbooks prefer `AGENTIC_<PLUGIN>_ROOT` over their
-cache fallback, the driver appends a short hint naming the resolved roots
-(proven in E7/E8).
+**Worker lifetime.** Everything that can fail is set up before the worker is
+spawned, and the worker is recorded in the run's locks before it receives
+its prompt, so a driver that dies in between leaves a worker with nothing to
+do, which exits when its stdin closes. An abort sends SIGTERM to the
+worker's process group, and SIGKILL five seconds later to a worker that has
+not exited; once the worker has exited, output a descendant still holds is
+abandoned after three seconds. A step is over only once its worker's process
+group is empty: after every step the group is sent SIGTERM (unless an abort
+already sent it) and polled, and five seconds after the signal what is left
+gets SIGKILL; the driver releases its locks and exits only after that. The
+ledger records `group_teardown` (`empty`, `terminated`, `killed`, or
+`lingering` when a process outlives SIGKILL); a `lingering` step halts
+`worker-failed` whatever else it did, and the run keeps its lock entries,
+which name the worker's process group, so no run starts beside them; a
+process group under that id whose leader is provably another process does
+not count. Only a different start time proves a reused pid: on macOS the
+fingerprint also holds the command line, which a wrapper that execs
+`claude` in place changes without becoming another process. After a
+step that was aborted or failed, the driver cancels the peer runs that step
+left pending on its own subtask's engineer workflows (ADR-0067 Decision 6),
+through engineer's own `peer-runner cancel`, which verifies the process
+fingerprint. *Amended 2026-10-01 (S8): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s8-the-driver-and-orchestratorautopilot).* *Amended 2026-10-08 (the scope narrowed to the step's own subtask): [ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decision 6.*
+
+**Plugin roots.** Every runbook block that uses its plugin root opens with
+`CLAUDE_PLUGIN_ROOT="${AGENTIC_<PLUGIN>_ROOT:-${CLAUDE_PLUGIN_ROOT}}"` (Claude
+Code writes the plugin's path in place of the braced form when it loads a
+command or skill; the bare variable is empty in a Bash call), and when that
+is still empty falls back to the newest cached release directory (`X.Y.Z`
+with no leading zeros, optionally with build metadata whose identifiers are
+all non-empty; `sort -V` alone ranks a prerelease or a stray name above the
+newest release). Path references in command prose use the braced form too,
+so the model reads where the skill files are. On a directory marketplace
+the substituted path is the marketplace source (on the owner's machine the
+repository's `plugins/<name>`, not the install cache), so an interactive
+session there runs the working tree's scripts with the text it loaded. A
+worker still runs the installed version the driver's exports name, since
+`AGENTIC_<PLUGIN>_ROOT` comes first, and no runbook shell removes a
+file (`rm`). *Amended 2026-09-29 (S0): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-09-29--s0-headless-safe-runbooks).* The driver's plugin-root hint is
+removed: the capability floor requires releases that carry S0. The step is
+aborted before its first turn when a plugin the worker loaded (its
+`system/init` event) is an orchestrator, engineer or runtime that lies inside
+the repository the run drives (`owner-choice`: drive a separate worktree),
+or differs from the pinned version or from what earlier steps loaded
+(`version-drift`); roots inside the repository are refused at start for the
+same reason. The driver requires the engineer release that carries S3+S4
+(`autopilot-preflight`, `finish-verb`, `/engineer:commit`'s modes) before it
+starts a run. *Amended 2026-10-01 (S8): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s8-the-driver-and-orchestratorautopilot).* *Amended 2026-10-01 (S3+S4, the capability floor): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s3s4-verb-runbook-deltas-and-engineercommit).*
+
+**Runbook blocks.** A block stops when one of its writes fails (a resume
+write, a phase note, an `ensemble-commit`), so a failed write never
+publishes a next step; `/orchestrator:abort` and `/orchestrator:finalize`
+run their Phases 0 to 3 in one Bash call, and each later block stops when
+Phase 0 has not run in its shell. Those two take the step-2 tally from the
+shim's exit status, exit non-zero when find-active or find-macro fails, fail
+their step-2 gate when the tally file is missing, and count a child of the
+macro the shim cannot read, so step 3 never closes the macro over a live
+child. compose and refine never commit. A verb
+runs its peer runner in the foreground of a host background task (on
+Claude, `run_in_background`), never behind a shell `&`, so the step can
+wait for it; at S3+S4 the rule covered engineer's verbs (designer and founder
+kept the `&`), and their runbooks now follow it too. *Amended 2026-09-29 (S0): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-09-29--s0-headless-safe-runbooks).* *Amended 2026-10-01 (S3+S4): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s3s4-verb-runbook-deltas-and-engineercommit).*
 
 **Permission posture.**
 - Mode: `manual`, not `auto`, because auto is classifier-driven and
@@ -660,35 +1278,35 @@ cache fallback, the driver appends a short hint naming the resolved roots
   `Bash(git push:*) Bash(gh pr:*) Bash(gh release:*) Bash(gh repo:*) Bash(gh api:*) Bash(gh issue:*) Bash(osascript:*) Bash(open:*) Bash(npm publish:*) Bash(git remote:*)`
   plus `PushNotification RemoteTrigger CronCreate ScheduleWakeup SendMessage EnterWorktree Workflow`.
   All of these appear in the `-p` worker tool list.
+- Pushes are blocked at the git level too, since Bash rules match a
+  command's leading words (`git -C <dir> push` passes `Bash(git push:*)`):
+  each worker's environment carries `GIT_CONFIG_*` entries that rewrite a
+  push to any https, http, ssh or git URL, and to each remote's own URL, to a
+  scheme no remote helper serves (`pushInsteadOf`; `insteadOf` for an
+  explicit pushurl). Local pushes and fetches are untouched; `git@` covers
+  the scp-style form of common hosts, and an scp-style URL with another user
+  that is no remote's URL is left open. The driver refuses to start on a
+  repository whose remote has an explicit pushurl equal to a fetch URL, and
+  says how to remove it. The denylist and this block are guardrails, not a
+  sandbox: `curl` stays allowed (owner decision D17), and `gh` subcommands
+  with global flags first pass the `Bash(gh pr:*)`-style rules. *Amended 2026-10-01 (S8): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s8-the-driver-and-orchestratorautopilot).*
 - A needed-but-denied action surfaces as `permission-denied` or
   `awaiting-owner:pr-handling`.
 - A dedicated worktree (the `runtime:worktree` planner) is recommended.
-
-*Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 3,
-accepted 2026-10-20):* in a run that offers verification
-(recorded in `run.json` and told to each worker), a worker makes its edits
-and the quick checks it judges to take minutes, runs no mutation run and not
-the whole test suite in its step, never waits there for the heavy-work lock,
-and ends with the next step `verify`, a request naming declared checks with
-data arguments and the step that follows. The posture does not bind the
-processes a check starts, as it does not bind those a worker's script starts
-(ADR-0068 Decision 5, items 1, 2 and 8).
+- In a run that offers verification (recorded in `run.json` and told to each
+  worker), a worker makes its edits and the quick checks it judges to take
+  minutes, runs no mutation run and not the whole test suite in its step,
+  never waits there for the heavy-work lock, and ends with the next step
+  `verify`, a request naming declared checks with data arguments and the
+  step that follows. The posture does not bind the processes a check starts,
+  as it does not bind those a worker's script starts (ADR-0068 Decision 5,
+  items 1, 2 and 8). *Amended 2026-10-20 (ADR-0068, driver-run verification): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-20--driver-run-verification-and-the-heavy-work-lock-adr-0068-slice-3).*
 
 ### D6. State contract additions (host-neutral core)
 
 - **`next_step` (engineer workflow).** Written at verb State finalize.
-
-  *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-  accepted 2026-10-20):* every persona operation of a
-  macro's child also stays visible, from its first write to its last (the
-  write that records `next_step`, the close without a commit, or, for a
-  commit, its archive and the parent writeback after it), through one new
-  field of the child and a record beside the macro's holds. A release can so
-  tell that no persona operation is still open in a held lane, those begun
-  before the macro had a holds directory included (ADR-0068 Decision 2,
-  items 7 and 9).
-
-  - `kind`: `verb | commit | owner-decision | done`.
+  - `kind`: `verb | commit | owner-decision | done`, and `verify` for the
+    driver-run verification step (ADR-0068 Decision 5). *Amended 2026-10-20 (ADR-0068, `verify`): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-20--driver-run-verification-and-the-heavy-work-lock-adr-0068-slice-3).*
     - `done` means the subtask needs no further step. `/engineer:commit`
       closes it without a commit, and `/orchestrator:done --no-commit` records
       completion (D3a).
@@ -698,13 +1316,123 @@ processes a check starts, as it does not bind those a worker's script starts
   - It is the persisted, closed-enum form of the end-of-verb Active Next-Action
     Proposal (ADR-0029). Free-text `next_action` stays for humans and is never
     parsed by the driver.
+  - Stored as the flat scalars `next_step_kind`, `next_step_verb` and
+    `next_step_confidence` (engineer schema 1.4; an absent key means null,
+    validation is per key, and a write never changes a file's schema). The
+    keys come after `parent_writeback_at`, where an older reader's
+    forward-compat carrier writes keys it does not know, so its write leaves
+    them byte for byte. `append` and `set-terminal` replace all three at
+    once, the verb required exactly when the kind is `verb`; `append
+    --clear-next-step true` clears them (never with the `--next-step-*`
+    flags; `false` changes nothing), and Phase 0's resume does. Input is
+    checked before the file lock is taken and the frontmatter again before
+    it is written. *Amended 2026-09-30 (S1): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-09-30--s1-engineer-schema-14).*
+  - `state.mjs finish-verb` is each verb's last write, in both modes.
+    Interactively it is the terminal `set-terminal summary-complete` plus the
+    next step; under autopilot it writes the next action and next step only,
+    turns the terminal marker off (an inherited one included), skips the
+    handoff sidecar, and refuses while a peer ensemble is pending.
+    `set-terminal` with the marker on is refused under autopilot. Each mode
+    decision is made in code: Phase 0's `state.mjs autopilot-preflight`
+    runs before any write, prints nothing interactively and the surface's
+    rules under autopilot, and with an owner gate set refuses under
+    autopilot, while interactively it prints the gate, its pointer, how it is
+    resolved and the clear command; no runbook
+    matches `AGENTIC_AUTOPILOT`. *Amended 2026-10-01 (S3+S4): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s3s4-verb-runbook-deltas-and-engineercommit).* Interactively,
+    too, `finish-verb` leaves the marker unset and records only the next step
+    while the workflow's subtask is held, has a kept lane park, or a run of
+    its macro is live, and the driver resumes the lane from that step
+    (ADR-0068 Decision 2, item 6). *Amended 2026-10-19 (ADR-0068): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-19--lanes-that-keep-going-adr-0068-slice-1).*
+  - Every persona operation of a macro's child stays visible, from its first
+    write to its last (the write that records `next_step`, the close without
+    a commit, or, for a commit, its archive and the parent writeback after
+    it), through one new field of the child and a record beside the macro's
+    holds, so a release can tell that no persona operation is still open in
+    a held lane, those begun before the macro had a holds directory included
+    (ADR-0068 Decision 2, items 7 and 9). *Amended 2026-10-19 (ADR-0068): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-19--lanes-that-keep-going-adr-0068-slice-1).*
 - **`awaiting_owner` (engineer workflow and macro).**
   - Carries `gate` from the D4 enum.
   - Set by the surface that pauses; cleared by the resolving surface, which
     records `resolved_at` (Q2).
+  - Stored as `awaiting_owner_gate`, `awaiting_owner_since`
+    (`YYYY-MM-DDTHH:MM:SSZ`, a real instant) and `awaiting_owner_pointer`
+    (`path#anchor`, both parts non-empty, only `[A-Za-z0-9._/-]`, no leading
+    `/` and no `..`; anchors are labels, not HTML ids), all three or none.
+    The keys come after `parent_writeback_at` on an engineer workflow and
+    after `terminal_marker` on a macro, where an older reader's
+    forward-compat carrier writes keys it does not know, so its write leaves
+    them byte for byte.
+    The engineer gates are `scope-routing`, `decide-conflict`,
+    `peer-conflict`, `recurring-finding`, `staging-set`, `pr-handling` and
+    `critique-cap`; the
+    macro's are `plan-approval` and `plan-conflict`; `duplicate-workflow` is
+    not stored. *Amended 2026-09-30 (S1): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-09-30--s1-engineer-schema-14).* *Amended 2026-09-30 (S2): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-09-30--s2-orchestrator-schema-12--plan-approval).* *Amended 2026-10-08 (`peer-conflict`): [ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decision 8.* *Amended 2026-11-09 (`critique-cap`, C176): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-11-09--critique-convergence-c176).*
+  - `awaiting-owner-set` defaults `--since` to now, replaces the pointer and
+    since of the gate already set and refuses a different one (raising `plan-approval` to
+    `plan-conflict` is the one change it allows). `awaiting-owner-clear` is
+    refused when no gate is set, when the gate named is not the one set, and
+    under an autopilot run. On the macro, clearing `plan-conflict` returns
+    the gate to `plan-approval`, which is never cleared, only resolved by
+    approving. On a workflow the clear takes the next step and the owner's
+    resolution in words, so the clear and the step it implies are one write,
+    and, since the keys are deleted, it appends `### Owner gate resolved:
+    <gate> at <iso>` with the since and pointer it cleared. Every resolving
+    block uses that one write, resolves the workflow itself rather than
+    relying on an earlier Bash call, and stops when a write fails, so a next
+    step never becomes runnable without the decision behind it. *Amended 2026-09-30 (S1): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-09-30--s1-engineer-schema-14).* *Amended 2026-10-01 (S3+S4): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s3s4-verb-runbook-deltas-and-engineercommit).*
+  - `decide-conflict`, `recurring-finding` and `scope-routing` are recorded
+    in both modes, by `finish-verb --owner-gate <gate> --owner-gate-anchor
+    <label>`, with the next step `owner-decision` in one write, at the
+    proposal's own confidence; the workflow stays non-terminal (interactively
+    too) until the owner resolves the gate; `staging-set`
+    and `pr-handling` are autopilot set points, interactively answered in the
+    dialog. Recording a gate turns an inherited terminal marker off in the
+    same write, and the Stop hook archives no workflow with a gate pending,
+    in the branch-agnostic sweep too, including for a workflow whose branch was
+    deleted. The gates are resolved by decide's
+    Owner selection step, refine's Owner decision step, interactive
+    `/engineer:commit` for `staging-set`, and `awaiting-owner-clear` for the
+    rest (D7's method, still open). Anchors are labels; `autopilot-mode.md`'s
+    table is the source, and a shape test holds the anchors the runbooks and
+    `phase7-commit.mjs` use to it. *Amended 2026-10-01 (S3+S4): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s3s4-verb-runbook-deltas-and-engineercommit).*
 - **`plan_approval` (macro).**
   - `status` (`pending | approved`) and `plan_hash` over `subtasks[]`.
   - Approval is an explicit owner act. A plan change invalidates it by hash.
+  - Stored as `plan_approval_status`, `plan_approval_approved_at` and
+    `plan_approval_plan_hash` (orchestrator schema 1.2, after
+    `terminal_marker`); `approved_at` and `plan_hash` are present exactly
+    when the status is `approved`, and a macro gate is set exactly while the
+    plan is pending (a pending plan carries one, and an approved plan none). `plan_hash` is sha256 over JSON with sorted keys and no
+    whitespace of `plan.subtasks[]` in order, each projected to `id`,
+    `label`, `branch`, `blocked_by`, `verb`, `profile` and `topic`, an absent
+    or null field left out and the order of `blocked_by` counting; `state.mjs
+    plan-hash` prints it, so no other plugin recomputes it.
+  - Each transition is one write under the macro's lock: `plan-set`, from
+    any state, gives `pending` with the gate `plan-conflict` when it is
+    passed `--verdict conflict` and `plan-approval` otherwise, and revokes an
+    approval on every write, a write that leaves the hash unchanged included;
+    `plan-approve --expect-hash` gives `approved` with no gate, and is
+    refused when that hash differs from the current one, while
+    `plan-conflict` is set, on an empty plan, on a terminal macro, and under
+    an autopilot run. Progress writes (`subtask-update`, the engineer
+    terminal note, `bulk-subtask-status`) revoke nothing. Approving the
+    same hash again writes nothing; a macro planned before 1.2, and a stale
+    approval whose hash an older writer's plan change no longer matches, may
+    be approved. `/orchestrator:approve` and its Codex mirror show every
+    field the hash covers, the topic included, then approve with
+    `--expect-hash` set to the hash shown. `next-ready`
+    reports `approval: {status: approved|pending|absent, hash_ok:
+    true|false|null}` on every output shape. `/orchestrator:plan` passes its
+    verdict to `plan-set`; the state script computes the pointer from the
+    macro's state home. The pointer anchors are labels, not HTML ids:
+    `#macro-plan` names the frontmatter `plan` block, and
+    `#ensemble-synthesis` the plan's Plan-verify synthesis (its `plan-verify`
+    entry in `ensemble_results` and the `### Ensemble synthesis` phase note),
+    which the owner finds by name. A macro
+    that `/orchestrator:finalize` or `/orchestrator:abort` closes keeps its
+    approval keys as they were. A plan hash is 64 hex characters, which the
+    state scripts' secret scrubber (`[a-fA-F0-9]{32,}`) redacts: a reader
+    that scrubs the frontmatter text before it reads the hash loses it. *Amended 2026-09-30 (S2): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-09-30--s2-orchestrator-schema-12--plan-approval).*
 - **entry-brief rows** for these fields. They are pointer-only and closed-enum,
   with commands synthesized only from the table (the ADR-0045 R0 principle).
 
@@ -718,21 +1446,17 @@ content lands with the implementing pull requests.
   depends on measured risk.
 - **Occupancy.** Per assistant message it is
   `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`.
-  Percent is that divided by `result.modelUsage.<model>.contextWindow`.
-  *Amendment 2026-10-13 (C136):* a `modelUsage` key may carry a window
-  suffix the stream's model name lacks (`<model>[1m]`). The key as written
-  decides first, then every key that is the model once a bracketed suffix is
-  dropped from both, the largest window among them.
+  Percent is that divided by `result.modelUsage.<model>.contextWindow`. A
+  `modelUsage` key may carry a window suffix the stream's model name lacks
+  (`<model>[1m]`): the key as written decides first, then every key that is
+  the model once a bracketed suffix is dropped from both, the largest window
+  among them. *Amended 2026-10-13 (C136): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-13--bounds-and-the-report-close-c105-c136-c127-c123).*
 - **Guards.**
-  - `step-oversized`: halt after the step if the peak exceeds 25% of the window
-    (configurable). The step or verb should be split.
-    *Amendment 2026-10-13 (C136):* retired, with its `--oversize-pct`
-    option. A step's size is an observation: the ledger records each step's
-    `peak_ctx`, `peak_pct` and `context_window`, and no halt reads them. Over
-    the 116 verb steps the owner measured, every size band ended normally 86%
-    of the time or more, and each abnormal end was a worker failure of
-    another cause. What a step's result shows (critique, a recurring finding,
-    a postcondition, the tests) is what halts.
+  - A step's size is an observation, not a guard: the ledger records each
+    step's `peak_ctx`, `peak_pct` and `context_window`, and no halt reads
+    them. What a step's result shows (critique, a recurring finding, a
+    postcondition, the tests) is what halts. The `step-oversized` halt and
+    its `--oversize-pct` option are retired. *Amended 2026-10-13 (C136): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-13--bounds-and-the-report-close-c105-c136-c127-c123).*
   - `compaction-imminent`: a PreCompact event aborts the step immediately.
     Compaction never happens inside autopilot (R1).
 - **Scope.** The sensor is scoped to the driver's worker streams. It does not
@@ -746,52 +1470,72 @@ in the checkout it was launched in. The macro-scoped files live under the
 main worktree's `.agentic-plugins/runs/autopilot/` instead: the lock, the
 landing log, the lane removal intents and the open-run records
 ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decisions 5,
-6 and 7). The run directory holds:
+6 and 7), and the macro's holds directory,
+`.agentic-plugins/runs/autopilot/holds/<macro-id>/`: the owner's hold
+records, what the driver and the persona record beside them, and the lane
+parks kept for the next run, under a lock of their own (ADR-0068 Decision
+1, item 3; Decision 2, item 1). *Amended 2026-10-08 (ADR-0067): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-08--worktree-lanes-adr-0067).* *Amended 2026-10-19 (ADR-0068, the holds directory): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-19--lanes-that-keep-going-adr-0068-slice-1).*
+The run directory holds:
 - `run.json`: config, pinned plugin versions, git baseline, start/end, final status.
 - `steps.jsonl`: one line per step with:
   - seq, command, session_id, timings, exit, is_error;
   - cost, peak_ctx, peak_pct, permission_denials;
   - fingerprint_before / fingerprint_after, outcome.
+
+  A step's `started` line is written before the worker is spawned and its
+  `finished` line after; `status` pairs them and names a driver that died
+  mid-step. *Amended 2026-10-01 (S8): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s8-the-driver-and-orchestratorautopilot).*
 - `worker-<seq>.jsonl`: the raw stream, pointer-referenced only, with bounded
-  retention.
+  retention (each capped at 64 MiB). *Amended 2026-10-01 (S8): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s8-the-driver-and-orchestratorautopilot).*
 - `halt.json`: reason code, pointers to the blocking file + field, resume hint.
 - `lanes.jsonl`: with lanes, one line per lane event — created, adopted,
   removed, kept, reconciled ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md)
   Decision 6).
-- `landing.jsonl` (listed 2026-10-14, docket C123): one line per landing
-  report the run published, each a subtask committed and not landed with its
-  commit, its readiness (`sync`: ready, needs-sync or unknown), its overlap and
-  the merge order. The macro's landing log under the main worktree holds the
-  same records across runs ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md)
-  Decision 7 and its note of that date).
-
-*Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-accepted 2026-10-20):* the macro-scoped files under the
-main worktree gain the macro's holds directory,
-`.agentic-plugins/runs/autopilot/holds/<macro-id>/`: the owner's hold
-records, what the driver and the persona record beside them, and the lane
-parks kept for the next run, under a lock of their own (ADR-0068 Decision
-1, item 3; Decision 2, item 1).
+- `landing.jsonl`: one line per landing report the run published, each a
+  subtask committed and not landed with its commit, its readiness (`sync`:
+  ready, needs-sync or unknown), its overlap and the merge order. The macro's
+  landing log under the main worktree holds the same records across runs
+  ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decision 7 and
+  its note of 2026-10-14). *Amended 2026-10-14 (C123): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-14--the-landing-report-in-the-ledger-c123).*
 
 Other rules:
-- **Status** (listed 2026-10-14, docket C123): `agentic-autopilot status`
-  reads these files, a run's landing records among them, one line each with
-  its readiness; `status --json` prints them as `landing`, beside `run`,
-  `steps`, `lanes` and `halt`.
+- **Status:** `agentic-autopilot status` reads these files, a run's landing
+  records among them, one line each with its readiness; `status --json`
+  prints them as `landing`, beside `run`, `steps`, `lanes` and `halt`. *Amended 2026-10-14 (C123): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-14--the-landing-report-in-the-ledger-c123).*
 - **Lock.** One run per macro: `<main>/.agentic-plugins/runs/autopilot/locks/<macro-id>.lock`,
   with a pid + start-time fingerprint. A run also holds the worktree lock of
   every checkout it drives, `<checkout>/.agentic-plugins/runs/autopilot/worktree.lock`:
-  its own, and with lanes each lane's. With lanes a run adds one entry per
+  its own, and with lanes each lane's, because two runs of different macros
+  must not switch one checkout's branch. With lanes a run adds one entry per
   worker group in flight, so a driver that died with a lane worker alive
   still holds its locks. The interactive orchestrator commands join the
   macro lock as admission entries, live until released, and
   `/orchestrator:next` first joins the worktree lock of its checkout
   ([ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) Decisions 4
-  and 6).
+  and 6). *Amended 2026-10-08 (ADR-0067): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-08--worktree-lanes-adr-0067).*
 
-  *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 3,
-  accepted 2026-10-20):* beside these, one heavy-work lock
-  per repository, the mutation harness's
+  A lock is a directory. Each run that wants it adds an entry of its own,
+  `h-<pid>-<random>.json`, written whole, recording the driver and, while a
+  step runs, its worker. An entry is stale only when both are gone; a
+  fingerprint that cannot be read counts as live, an exited but unreaped
+  process counts as gone although `kill(pid, 0)` still finds it, and the
+  start time is compared first: an exited process that started after the
+  recorded one is a stranger that reused the pid, not the recorded process
+  having exited. The fingerprints are the driver's own
+  (`processFingerprint`: `/proc` on Linux, `ps` in the C locale on macOS;
+  peer-runner's `fingerprintForPid` reads the start time in the caller's
+  locale, which fits only the C locale). A run holds the lock when, after
+  adding its entry, it finds no other live entry; otherwise it removes its
+  own entry and retries after a random pause, and it is refused when
+  another run already holds the lock, or on its last attempt. Only entries
+  whose runs are gone are removed, and no participant reuses another's
+  name, so no run removes a live participant's entry; "gone" holds only for
+  the record it was judged on, so a gone entry is read once more after the
+  check and removed only when unchanged. The run takes its locks after its first
+  look at the state, looks again once it holds them, and decides its first
+  step from that second look. *Amended 2026-10-01 (S8): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s8-the-driver-and-orchestratorautopilot).*
+
+  Beside these, one heavy-work lock per repository, the mutation harness's
   `<git-common-dir>/mutation-harness.lock`, with one holder at a time: the
   harness, or the wrapper `agentic-autopilot heavy --`, which the driver uses
   for a verification check whose command does not take the lock itself. A
@@ -800,30 +1544,31 @@ Other rules:
   group has stopped; an older harness copy, as a reader, may start after a
   holder's end beside a process that outlived it. The driver waits for it
   while holding its run locks; no holder of it waits for a run lock, so the
-  order cannot deadlock (ADR-0068 Decision 6).
+  order cannot deadlock (ADR-0068 Decision 6). *Amended 2026-10-20 (ADR-0068, the heavy-work lock): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-20--driver-run-verification-and-the-heavy-work-lock-adr-0068-slice-3).*
+- **`stop`** signals only a pid it can prove is the run's process: alive,
+  with a readable fingerprint that matches the lock's record. It signals the
+  driver, which then empties its worker's group and records the halt, or,
+  when the driver died, the worker's process group, which `stop` empties
+  itself, reporting success only once the group is empty. *Amended 2026-10-01 (S8): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s8-the-driver-and-orchestratorautopilot).*
 - **Resume a halted step interactively:** `claude --resume <session_id>`.
 - **Halt signal:** terminal output + `halt.json` + exit code 2. There is no plugin
   notification: the notification feature is removed ([ADR-0064](0064-runtime-surface-reduction.md), proposed alongside).
   The optional driver-local `--notify-local` shows one macOS notification through
   `osascript`, with a fixed script, the payload as argv, and no egress (Q5 resolved).
 
-  *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-  accepted 2026-10-20):* with lanes, the run ends when
-  nothing runs and nothing can start, every remaining lane parked, held
-  (its handoff done or pending, or its record unreadable), waiting to land,
-  or blocked behind one of those, or the plan done; exit 2 keeps its
-  meaning, and `halt.json` gives each lane its state and resolution
-  (ADR-0068 Decision 1, items 7 and 9).
+  With lanes, the run ends when nothing runs and nothing can start, every
+  remaining lane parked, held (its handoff done or pending, or its record
+  unreadable), waiting to land, or blocked behind one of those, or the plan
+  done; exit 2 keeps its meaning, and `halt.json` gives each lane its state
+  and resolution (ADR-0068 Decision 1, items 7 and 9). *Amended 2026-10-19 (ADR-0068, lanes that keep going): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-19--lanes-that-keep-going-adr-0068-slice-1).*
 
-  *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 2,
-  accepted 2026-10-20):* beside
-  these, the driver appends one JSON line per event (a park, a halt, a
-  failed step, a finished commit, a stall verdict, the run's end) to the
+  Beside these, the driver appends one JSON line per event (a park, a halt,
+  a failed step, a finished commit, a stall verdict, the run's end) to the
   event file of its lock scope, `events/<macro-id>.jsonl` under the main
   worktree's `.agentic-plugins/runs/autopilot/` for a macro, and the main
   session watches it with the Monitor tool. The lines hold codes, ids and
   pointers, never free text; `--notify-local` is unchanged (ADR-0068
-  Decision 4).
+  Decision 4). *Amended 2026-10-19 (ADR-0068, the event file): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-19--stall-detection-and-the-drivers-event-file-adr-0068-slice-2).*
 - **Consumer repos** must gitignore `.agentic-plugins/{runs,state,tmp,cache}/`.
   Otherwise session-capture writes trip the clean-tree gate (observed in E).
 
@@ -841,26 +1586,6 @@ ADR-0001 honest scope):
 Codex remains manual. It still benefits from the host-neutral D6 fields
 through entry-brief. A Codex driver would need its own host-truth probes and
 its own ADR.
-
-
-> **Implementation note of 2026-11-07 (C163 A2b, ADR-0069), as the owner's
-> instruction of 2026-11-09 simplified it.** No look compares a change with its
-> reviews: the main checkout's look never runs `review-gate` in a lane's worktree
-> nor touches a lane's index, and every look reads the review record as it is (the
-> outcome gate above, and the committed comparison Phase 7 recorded, which the
-> landing report shows as provisional). The comparison is Phase 7's, on every route
-> that lands a commit; under autopilot its refusal (exit 10, `review-held`, nothing
-> written) ends the step, whose report needs the owner, and the lane halts
-> `owner-choice` with the refusal's text; the owner's `review-binding-accept` joins the
-> lane's fingerprint once given, so it picks the parked lane up. A landing that differs from what was
-> committed halts `owner-choice` before the done step; one that cannot be compared
-> goes on, and the macro records why. ADR-0069 Decisions 3 and 4 hold the rule. A
-> worker's `/orchestrator:done` with `--accept-landed-change` or a waiver is refused
-> at the write, `subtask-update`, as the owner's acceptance of a review binding is
-> (`--correct` is not an owner override and is not refused), and a done step that
-> completed its subtask with no landed commit (`--no-commit`) halts, the macro's
-> last subtask included, whose done archives the macro: only the driver's
-> done-no-commit step completes one that way.
 
 ## Consequences
 
@@ -894,6 +1619,9 @@ its own ADR.
 - Every committed subtask waits for the owner's landing (D3a). A chain macro
   needs one push–review–merge round per link. Only independent subtasks overlap
   with a wait.
+- The model-judged set points (`recurring-finding`, `scope-routing`,
+  `pr-handling`) are pinned by shape tests, not by code; the driver's halts
+  are the backstop. *Amended 2026-10-01 (S3+S4, known limits): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s3s4-verb-runbook-deltas-and-engineercommit).*
 
 **Neutral**:
 
@@ -950,7 +1678,7 @@ state or the locally installed plugin set.
   ensembles refuse.
 - `--no-session-persistence` (`:297-298`) leaves no resumable transcript.
 - `--output-format text` carries no usage or hook events.
-- The consensus executor caps at 600 s (`plugins/runtime/scripts/consensus.mjs:49-50`),
+- The consensus executor caps at 600 s (`plugins/runtime/scripts/consensus.mjs:53`),
   while E steps took up to 284 s and verbs can exceed 600 s.
 - The supervision *pattern* (handle ledger, pgid, fingerprinted cancel) is
   reused; the launcher is not.
@@ -977,111 +1705,6 @@ cost profile). Deferred:
 - A split remains open if the cost/permission profile warrants its own install
   unit.
 
-## Amendment cascade (applied on acceptance, 2026-09-29)
-
-The accepting commit applied these blocks as written, except in three places:
-- item 1's date is filled in;
-- item 6 cites ADR-0045 §5, not §16 (§Status);
-- item 8's status column reads Accepted.
-
-**1. ADR-0035 — Status block, after the ADR-0044 paragraph:**
-
-```markdown
-**§2 / §4 cross-referenced by [ADR-0063](0063-autopilot-fresh-session-driver.md)
-(YYYY-MM-DD, domain S1).** ADR-0063 adds exactly one named effect domain —
-**S1 (owner-launched fresh-session spawn)** — executed by the orchestrator
-Claude adapter, **not by runtime**. Runtime's tiers and §4 ceiling are
-unchanged: runtime still MUST NOT start, resume, fork, compact or switch host
-sessions, and `runtime:context entry-brief` stays R0. See ADR-0063 D1 and the
-§4 note below.
-```
-
-**2. ADR-0035 §4 — after the tier-E1 amendment blockquote:**
-
-```markdown
-> **Cross-reference — domain S1 (owner-launched fresh-session spawn),
-> [ADR-0063](0063-autopilot-fresh-session-driver.md):** the "hidden host
-> startup" line above continues to bind runtime without exception. ADR-0063
-> authorizes, **outside runtime**, exactly one shape of host startup: the
-> orchestrator Claude adapter's foreground driver, started by an explicit owner
-> invocation, spawning **new** `claude -p` processes (never resuming, forking or
-> compacting an existing session) under an owner-declared, never-escalated
-> permission posture, with §3 invariants 2–10 adopted by reference, a finite
-> per-step timeout, and child-only process-group termination. This is a bounded
-> cross-reference, not a precedent for runtime-hosted session control.
-```
-
-**3. ADR-0031 §6 — appended note:**
-
-```markdown
-> **Note ([ADR-0063](0063-autopilot-fresh-session-driver.md)):** §6 continues to
-> bind runtime. The `fresh_or_resumed` recommendation may now be *acted on* by
-> the owner-launched autopilot driver outside runtime, which rotates at every
-> step boundary and never compacts. §7 is unchanged for the footer: the driver's
-> context sensor is scoped to its own worker streams. The Amendment item 7
-> residual ("cannot guarantee a workflow is driven to completion") narrows, for
-> autopilot runs, to "the driver halts at owner gates".
-```
-
-**4. ADR-0019 §1 — appended note:**
-
-```markdown
-> **Note ([ADR-0063](0063-autopilot-fresh-session-driver.md)):** the same-host
-> runbook path is unchanged. The autopilot driver invokes `/orchestrator:next`
-> and `/engineer:<verb>` inside fresh `claude -p` worker processes; each worker
-> runs this same-host path in full (exports, engineer Phase 0, Phase 4 writeback
-> in one process). `--peer` (PR-F) stays deferred and is not used for workers.
-```
-
-**5. ADR-0029 §3 — appended note (closed-enum sibling of `next_action`):**
-
-```markdown
-> **Amendment ([ADR-0063](0063-autopilot-fresh-session-driver.md)):** the compact
-> durable next-action (selected_next + one-line rationale + next_command) keeps
-> its free-text form for humans. Forward-decision verb completions additionally
-> persist its closed-enum projection as flat scalars `next_step_kind`
-> (`verb | commit | owner-decision | done`), `next_step_verb` (present iff
-> kind=verb) and `next_step_confidence` (`HIGH | MEDIUM | LOW`). Confidence
-> otherwise has no durable home. Machine consumers read only the closed-enum keys
-> and never parse `next_action`.
-```
-
-**6. ADR-0045 §5 — amendment (entry-brief 1.1 rows):**
-
-```markdown
-> **Amendment ([ADR-0063](0063-autopilot-fresh-session-driver.md)):** the §5 state
-> table (packaged as `session-capture-contract.md` §16) gains rows for engineer
-> `next_step_*`, `awaiting_owner_*` (engineer and macro), and an unapproved macro
-> plan (`plan_approval_status=pending`). Commands stay synthesized only from
-> the table, never from stored text; a set `awaiting_owner_gate` or a pending
-> approval yields `owner-choice-required`.
-> Schema `runtime-entry-brief-1.1` adds closed enums only. R0 is unchanged: no
-> writes, no consumption. Row design: ADR-0063's plugin change specification §3.
-```
-
-**7. ADR-0062 — appended note (autopilot and landing):**
-
-This item replaces the draft's amendment of ADR-0019 §4. ADR-0062 superseded
-that part of §4 before this ADR was adopted.
-
-```markdown
-> **Note ([ADR-0063](0063-autopilot-fresh-session-driver.md)):** completion is
-> unchanged — `/orchestrator:done` records it after the pull request merges. In
-> autopilot mode verbs do not set the terminal marker; only the verb-chain
-> commit surface (`/engineer:commit`) does, and a subtask with nothing to commit
-> is archived and then completed with `/orchestrator:done --no-commit`. The
-> autopilot driver never pushes, opens or merges a pull request: it waits for
-> the owner's landing, records it by running `/orchestrator:done` once
-> `state.mjs resolve-landing` reports the merge, and halts `awaiting-landing`
-> when nothing else can be dispatched (ADR-0063 D3a).
-```
-
-**8. `docs/adr/README.md` — index row:**
-
-```markdown
-| [0063](0063-autopilot-fresh-session-driver.md) | Autopilot — owner-launched fresh-session driver (Claude-only): adds one named effect domain **S1 (owner-launched fresh-session spawn)** executed by the orchestrator Claude adapter, **not runtime** (ADR-0035 §2/§4 cross-referenced, runtime ceiling unchanged); one command per fresh `claude -p` worker hosted over stream-json (background tasks survive, model re-invoked on completion); deterministic gate policy over closed-enum state (`next_step`, `awaiting_owner`, `plan_approval`) with halt-on-judgment and a closed halt reason set; boundary-based rotation with a context sensor as guard (oversize halt, PreCompact abort); `manual` + allow/deny posture, never escalated; ADR-0062 unchanged — the owner lands each pull request and the driver records the landing through `/orchestrator:done`, halting `awaiting-landing` when nothing else can run; ledger + terminal halt signal, no plugin notification; Codex non-parity documented | Proposed |
-```
-
 ## Open questions
 
 - **Q1. Verb-chain commit surface.** *Resolved 2026-09-29 (owner decision D2):* a
@@ -1093,20 +1716,20 @@ that part of §4 before this ADR was adopted.
   `decide-conflict`. That surface records `resolved_at` and clears the gate.
 - **Q3. Where view assembly lives** (D8, open). Does entry-brief grow an `autopilot` surface
   that returns the whole view, or does the driver compose entry-brief + next-ready +
-  workflow fields itself? Leaning towards the driver composing, with entry-brief
-  gaining only the rows.
-- **Q4. Model and effort defaults per verb** (D5, open). For example, compose/critique on the
-  owner default and mechanical steps on sonnet.
-  *Note 2026-11-12:* answered by
-  [ADR-0071](0071-autopilot-step-model-from-settings.md) (Proposed): per-step
-  `autopilot_<step>_model`/`_effort` settings, read once when a run starts.
+  workflow fields itself? *Resolved 2026-10-01 (owner decision D8 = a):* the
+  driver composes the view, and entry-brief, which has no next-step rows
+  yet, is a guard (D2). *Amended 2026-10-01 (S8): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s8-the-driver-and-orchestratorautopilot).*
+- **Q4. Model and effort defaults per verb** (D5). For example, compose/critique on the
+  owner default and mechanical steps on sonnet. *Resolved 2026-10-01 (owner
+  decision D5):* the model plan is asked before each start (D5, Model plan).
+  *Amended 2026-10-01 (S8): [history](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s8-the-driver-and-orchestratorautopilot).* *Proposed:*
+  [ADR-0071](0071-autopilot-step-model-from-settings.md) answers it with
+  per-step `autopilot_<step>_model`/`_effort` settings, read once when a run
+  starts. *Amended 2026-11-12 (ADR-0071 proposed): [history](history/0063-autopilot-fresh-session-driver.md#observation-2026-11-12--per-step-model-settings-proposed-adr-0071).*
 - **Q5. Halt notification kind.** *Resolved 2026-09-25:* no plugin notification; terminal + ledger + optional `--notify-local`. (Previously: reuse `response-needed`, or add an
-  `autopilot-halt` kind to ADR-0047.)
-  *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md), slice 2,
-  accepted 2026-10-20):* the
-  resolution stands. The driver's event file is part of the ledger, appended
-  and read by local processes: no plugin notification, no egress, no
-  ADR-0047 kind (ADR-0068 Decision 4, item 7).
+  `autopilot-halt` kind to ADR-0047.) The driver's event file is part of the
+  ledger, appended and read by local processes: no plugin notification, no
+  egress, no ADR-0047 kind (ADR-0068 Decision 4, item 7). *Amended 2026-10-19 (ADR-0068, the event file): [history](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-19--stall-detection-and-the-drivers-event-file-adr-0068-slice-2).*
 - **Q6** (raised by this ADR; **resolved**, D2 above). The command is dry-run
   by default, matching ADR-0035 §3 invariant 1:
   - A bare invocation or `preview` observes and decides, prints the posture, and
@@ -1114,1313 +1737,6 @@ that part of §4 before this ADR was adopted.
   - `start --execute` launches. Explicit invocation plus the action-specific flag
     is the opt-in.
   - The prototype mirrors this with `--dry-run`.
-
-## Implementation note 2026-09-29 — S0 (headless-safe runbooks)
-
-- **"Claude-provided" is a load-time substitution, not an environment
-  variable.**
-  - Claude Code 2.1.284 writes the plugin's path in place of the braced
-    `${CLAUDE_PLUGIN_ROOT}` when it loads a plugin command or skill body. It
-    leaves the bare `$CLAUDE_PLUGIN_ROOT` alone, and that is empty in a Bash
-    tool call (probe B). Measured with a `--plugin-dir` probe and with this
-    repository's directory marketplace.
-  - So every command block that uses the root now opens with
-    `CLAUDE_PLUGIN_ROOT="${AGENTIC_<PLUGIN>_ROOT:-${CLAUDE_PLUGIN_ROOT}}"`.
-    When that is still empty, it falls back to the newest cached version.
-    Only release directory names count: `X.Y.Z` without leading zeros,
-    optionally with build metadata whose identifiers are all non-empty. `sort -V` alone ranks a prerelease or a
-    stray name above the newest release. The resolution order in D5 is
-    unchanged.
-  - Path references in command prose use the braced form too, so the model
-    reads where the skill files are.
-- **On a directory marketplace the substituted path is the marketplace
-  source.** On the owner's machine that is the repository's `plugins/<name>`,
-  not the install cache. An interactive session there therefore runs the
-  working tree's scripts with the text it loaded. A worker still runs the
-  installed version, because the driver's `AGENTIC_<PLUGIN>_ROOT` exports come
-  first (D5 Env).
-- **No `rm` in runbook shell.** No runbook writes a temporary file it would
-  have to remove:
-  - stderr passes straight through;
-  - the decide context is printed
-    ([ADR-0027](0027-decide-skill-multi-axis-evolution.md) amendment of this
-    date);
-  - `/orchestrator:done` pipes its note to `state.mjs --reason-file -`;
-  - `/orchestrator:abort` and `/orchestrator:finalize` take the step-2 tally
-    from the shim's exit status;
-  - the args-file reader removes what it read
-    ([ADR-0059](0059-runbook-argument-transport.md) amendment of this date).
-- **Runbook defects found on the way.** `/abort` and `/finalize` had four:
-  - They ended with exit 0 when find-active or find-macro failed, because
-    `$?` inside an `if !` branch is the negation's status.
-  - Their step-2 gate skipped its check when the tally file was missing.
-  - Their step-2 shim logged a child of the macro it could not read and moved
-    on without counting it, so step 3 closed the macro over a live child.
-  - Phases 1–3 read what Phase 0 set, but nothing said to run them in one
-    shell. Run one per Bash call, they called `/scripts/state.mjs`, and
-    Phase 3 printed success anyway.
-
-  All four are fixed. The runbooks now say to run Phases 0–3 in one Bash
-  invocation, and each later block stops when Phase 0 has not run in its
-  shell. `tests/orchestrator/test-abort-finalize-runbook.mjs` runs the blocks
-  to show it.
-- `tests/plugin-shape/test-headless-safe-runbooks.mjs` pins both rules, and
-  `scripts/mutation-specs/headless-safe-runbooks.mjs` shows each check fails
-  on the defect it guards.
-- **The plugin-root hint (D5)** is no longer needed by an installed version
-  that carries S0.
-
-## Implementation note 2026-09-30 — S1 (engineer schema 1.4)
-
-- **Schema 1.4** adds the D6 engineer fields as six optional flat scalars:
-  `next_step_kind`, `next_step_verb`, `next_step_confidence`,
-  `awaiting_owner_gate`, `awaiting_owner_since` and `awaiting_owner_pointer`.
-  - An absent key means null.
-  - Validation is per key, so a file on disk schema 1.3 may carry them, and a
-    write never changes a file's schema.
-  - The engineer gates are `scope-routing`, `decide-conflict`,
-    `recurring-finding`, `staging-set` and `pr-handling`. `plan-approval` and
-    `plan-conflict` live on the macro, and `duplicate-workflow` is not stored.
-- **Their position matters.** A 1.3 reader keeps keys it does not know in its
-  forward-compat carrier and writes them after every key it knows. The six
-  keys come after `parent_writeback_at`, which is where that puts them, so a
-  1.3 reader's write leaves them byte for byte. A test builds such a reader
-  from this build minus the six keys.
-- **Formats the plugin change specification left open:**
-  - `awaiting_owner_since` has the form the state script writes for its own
-    timestamps, `YYYY-MM-DDTHH:MM:SSZ`, and must be a real instant.
-    `Date.parse` alone would turn 2026-02-30 into 2026-03-02.
-  - `awaiting_owner_pointer` is `path#anchor`. Both parts are non-empty, use
-    only `[A-Za-z0-9._/-]`, and the pointer has no leading `/` and no `..`.
-- **CLI:**
-  - `append` and `set-terminal` take `--next-step-kind`, `--next-step-verb`
-    and `--next-step-confidence`, which replace all three keys at once. The
-    verb is required exactly when the kind is `verb`.
-  - Every flag in this CLI takes a value, so clearing is
-    `append --clear-next-step true`, parsed strictly. It cannot be combined
-    with the `--next-step-*` flags; `--clear-next-step false` is the default
-    and changes nothing.
-  - `awaiting-owner-set` defaults `--since` to now. Setting the gate that is
-    already set replaces its pointer and since; a different gate is refused.
-  - `awaiting-owner-clear` is refused when no gate is set, when the gate named
-    is not the one set, and when `AGENTIC_AUTOPILOT` names an autopilot run.
-    The keys are deleted, so it appends
-    `### Owner gate resolved: <gate> at <iso>` with the since and pointer it
-    cleared (Q2).
-  - Input is checked before the file lock is taken, and the frontmatter is
-    checked again before it is written, so an inconsistent set never reaches
-    disk.
-- `tests/engineer/test-state-schema-14.mjs` and the last block of
-  `tests/engineer/test-state-schema-forward-compat.mjs` cover this.
-  `scripts/mutation-specs/engineer-schema-14.mjs` shows each check fails on
-  the defect it guards.
-
-## Implementation note 2026-09-30 — S2 (orchestrator schema 1.2 + plan approval)
-
-- **Schema 1.2** adds the D6 macro fields as six optional flat scalars:
-  `plan_approval_status`, `plan_approval_approved_at`,
-  `plan_approval_plan_hash`, `awaiting_owner_gate`, `awaiting_owner_since`
-  and `awaiting_owner_pointer`. They come after `terminal_marker`, where a 1.1
-  reader's forward-compat carrier writes keys it does not know, so a 1.1
-  reader's write leaves them byte for byte. The macro gates are
-  `plan-approval` and `plan-conflict`; the since and pointer formats are S1's.
-- **Invariants.** `approved_at` and `plan_hash` are present exactly when the
-  status is `approved`, and the three `awaiting_owner_*` keys appear all or
-  none. The specification required a pending plan to carry a macro gate. The
-  converse holds too, because both macro gates concern the approval: a macro
-  gate is set only while the plan is pending.
-- **`plan_hash`** is sha256 over JSON with sorted keys and no whitespace. The
-  input is `plan.subtasks[]` in order, each projected to `id`, `label`,
-  `branch`, `blocked_by`, `verb`, `profile` and `topic`. An absent or null
-  field is left out, because the serializer drops a null optional field, so
-  a plan hashes the same before and after it is written. The order of
-  `blocked_by` counts. `state.mjs plan-hash` prints the hash and the
-  projection it covers, so no other plugin recomputes it.
-- **Transitions.** Each is one write under the macro's lock:
-  - `plan-set`, from any state, gives `pending`. The gate is
-    `plan-conflict` when `--verdict conflict` is passed, and `plan-approval`
-    otherwise.
-  - `awaiting-owner-set --gate plan-conflict` raises `plan-approval` to
-    `plan-conflict`.
-  - `awaiting-owner-clear --gate plan-conflict` returns it to
-    `plan-approval`.
-  - `plan-approve` gives `approved` with no gate.
-
-  The specification contradicted itself here. `plan-set` sets
-  `plan-approval`, and the conflict path's later `awaiting-owner-set` would
-  then refuse a different gate under the engineer contract. A later write would
-  also leave a window in which another session could approve the disputed plan
-  (the Codex review reproduced it). `/orchestrator:plan` knows its verdict
-  before it writes the plan, so `plan-set` takes it and sets the conflict gate
-  in the same write. Raising `plan-approval` to `plan-conflict` is still the
-  one change of gate that `awaiting-owner-set` allows. Clearing
-  `plan-conflict` does not leave the plan without a gate, because it is still
-  pending. `plan-approval` is never cleared, only resolved by approving. This
-  is the method of owner decision D7, which is still open.
-- **`plan-set` revokes on every write.** That includes a write that leaves
-  the hash unchanged: the specification says any plan edit revokes, and a
-  re-plan is what the owner re-approves. Progress writes do not revoke an
-  approval: `subtask-update`, the engineer terminal note and
-  `bulk-subtask-status`.
-- **`plan-approve`** takes `--expect-hash`. It is refused when that hash
-  differs from the current one, while `plan-conflict` is set, on an empty
-  plan, on a terminal macro, and under an autopilot run. Approving the same
-  hash again writes nothing. Two cases are allowed, because each is the
-  owner acting on a plan they were shown:
-  - a macro planned before 1.2, which has no approval keys;
-  - a stale approval, one whose hash a 1.1 writer's plan change no longer
-    matches.
-- **`next-ready`** adds `approval: {status: approved|pending|absent,
-  hash_ok: true|false|null}` on every output shape.
-- **`/orchestrator:approve`** and its Codex mirror show every field the hash
-  covers, the topic included, then approve with `--expect-hash` set to the
-  hash shown. `/orchestrator:plan` passes its verdict to `plan-set`; the
-  state script computes the pointer from the macro's state home.
-- **Pointer anchors are labels.** `#macro-plan` names the frontmatter
-  `plan` block, and `#ensemble-synthesis` names the plan's Plan-verify
-  synthesis: its `plan-verify` entry in `ensemble_results`, and the
-  `### Ensemble synthesis` phase note that `/orchestrator:plan` appends.
-  Neither is an HTML id: a macro collects one synthesis per revision, so a
-  fixed id would be ambiguous, and the owner finds the section by name.
-- **Not in S2:** the `/orchestrator:next` gate (S6) and the entry-brief rows
-  (S7). Until S6 lands, nothing refuses to dispatch an unapproved plan: the
-  documentation says the autopilot "is to" dispatch only an approved plan.
-  - For S7: a plan hash is 64 hex characters, which the state scripts'
-    secret scrubber (`[a-fA-F0-9]{32,}`) redacts. A reader that scrubs the
-    frontmatter text before it reads the hash loses it.
-  - A macro that `/orchestrator:finalize` or `/orchestrator:abort` closes
-    keeps its approval keys as they were.
-- Tests:
-  - `tests/orchestrator/test-state-schema-12.mjs`;
-  - `tests/orchestrator/test-approve-runbook.mjs`, which runs the approve block
-    and `/orchestrator:plan`'s note + ensemble block in bash and zsh;
-  - the last two blocks of `tests/orchestrator/test-state-schema-forward-compat.mjs`,
-    one with a 1.1 reader derived from this build and one with the released
-    1.1 code, read from the tag `plugin-orchestrator-v0.14.1` (skipped in a
-    clone without it);
-  - `tests/plugin-shape/test-autopilot-enum-parity.mjs`, which holds the
-    engineer and orchestrator copies of `isAutopilotRun` and the pointer
-    shape equal.
-
-  `scripts/mutation-specs/orchestrator-schema-12.mjs` shows each check fails
-  on the defect it guards, the lock included.
-
-## Implementation note 2026-09-30 — S6 (`/orchestrator:next` approval gate)
-
-S6 closes the gap the S2 note leaves open: `/orchestrator:next` now refuses,
-under an autopilot run, a plan the owner has not approved at its current hash.
-
-- **One decision point.** `state.mjs approval-gate --workflow-path <macro>
-  --host claude|codex --subtask-json <subtask>` decides; `planApprovalGate`
-  is its function. It reads
-  the approval from `planApprovalState`, the facts `next-ready` reports, and
-  `isAutopilotRun` for the mode. The runbooks neither compare hashes nor match
-  `AGENTIC_AUTOPILOT` themselves, so the run-id pattern keeps the one copy per
-  plugin that `tests/plugin-shape/test-autopilot-enum-parity.mjs` holds equal,
-  and both hosts get the same decision and the same text.
-- **Where it runs.** `commands/next.md` Phase 1, after the dispatch-ready
-  validation and before Phase 2, for an explicit id as well as for the
-  automatic pick (`subtask-readiness` reports no approval). The Codex mirror
-  runs the same command with `--host codex`.
-- **Autopilot.** Only an approved plan whose hash matches proceeds. A plan
-  pending approval, one changed since it was approved, and one with no
-  approval recorded are refused: `✗ plan-unapproved — …`, then
-  `Pointer: <path#anchor>` and the owner's action, exit 1. The pointer is the
-  macro's `awaiting_owner_pointer` when a gate is set (`#ensemble-synthesis`
-  under `plan-conflict`), and `<macro file>#macro-plan` otherwise.
-- **Bound to the selection.** The runbook dispatches the subtask as its
-  selection step read it, which is an earlier read than the gate's. The gate
-  therefore takes that subtask (`--subtask-json`) and, under autopilot,
-  refuses it unless it equals the approved plan's entry for its id in every
-  field the hash covers. Without this, a plan rewritten and approved between
-  the two reads passed the gate while the old subtask went on to dispatch (the
-  Codex review reproduced it in bash and zsh, by explicit id and automatic
-  pick). The refusal tells the worker to run `/orchestrator:next` again.
-  Interactive dispatch is not refused over it.
-- **Interactive (D3 = a).** Never refused. One warning line for a plan pending
-  approval, and also for one whose approved hash no longer matches: the
-  specification names only pending, but D4 treats a mismatch as unapproved,
-  and staying silent would present a stale approval as valid. A macro with no
-  approval keys (planned before 1.2) and an approved plan get no line.
-- **Not a lock.** The gate checks at dispatch. A `plan-set` that lands between
-  the gate and Phase 5's `subtask-update` revokes the approval after the
-  check, and the dispatch goes on with the subtask as it was approved; the
-  driver's own policy (D4 rule 3, S8) halts before the next step.
-
-  *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-  slice 4, accepted 2026-10-20):* the gate is unchanged.
-  An approval that changes the plan joins the run locks as an admission, so
-  it is refused beside a live run of the macro. A `plan-set` followed by an
-  approval between two of the driver's looks therefore no longer passes
-  unseen: the approval is refused, and the run halts at its next look. An
-  approval that changes an in-progress subtask's topic or profile records a
-  rebinding of its child, and is also refused while that lane is held, has
-  a release awaiting comparison or has a persona operation open. The
-  dispatch comparison accepts the rebinding only under the current
-  approval, and for an active child only once the child has been told
-  (ADR-0068 Decision 8).
-- Tests: `tests/orchestrator/test-next-approval-gate.mjs` covers the function
-  over every approval state in both modes, the binding, the CLI, the runbook
-  block and Phase 1 end to end in bash and zsh (explicit id and automatic
-  pick, and a plan replaced and approved between selection and gate), and the
-  Codex mirror's snippet, run as written. `scripts/mutation-specs/orchestrator-next-approval-gate.mjs`
-  shows each check fails on the defect it guards.
-
-## Implementation note 2026-10-01 — S3+S4 (verb runbook deltas and `/engineer:commit`)
-
-S3 and S4 land together: once autopilot verbs stop writing the terminal
-marker, only the commit surface can close a workflow. The rules the runbooks
-follow live in one file, `plugins/engineer/core/skills/_shared/references/autopilot-mode.md`.
-
-- **Every mode decision is made in code.** A runbook never matches
-  `AGENTIC_AUTOPILOT`:
-  - `state.mjs autopilot-preflight [--surface verb|commit]` runs in Phase 0
-    before any write. Interactively it prints nothing. Under an autopilot run
-    it prints the rules for that surface. With an owner gate set it refuses
-    under autopilot; interactively it prints the gate, its pointer, how it is
-    resolved and the clear command.
-  - `state.mjs finish-verb` is each verb's last write, in both modes.
-    - Interactive: the old `set-terminal summary-complete` plus the next step,
-      so the footer prints as before.
-
-      *Note 2026-10-19 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-      accepted 2026-10-20):* not while the workflow's
-      subtask is held or has a kept lane park, nor while a run of its macro
-      is live: then it records the next step and leaves the terminal marker
-      unset, as under autopilot, and the driver resumes the lane from that
-      step (ADR-0068 Decision 2, item 6).
-    - Autopilot: the next action and next step only. The terminal marker is
-      turned off, an inherited one included, and the handoff sidecar is
-      skipped. A pending peer ensemble is refused.
-    - `set-terminal` with the marker on (the default) is refused under
-      autopilot.
-  - `phase7-commit.mjs --mode autopilot` is `/engineer:commit`'s whole step.
-- **`next_step`.**
-  - The six verbs pass kind, verb and confidence to `finish-verb`.
-  - Phase 0's resume clears the next step.
-  - Phase 0's resume write, Phase 2's note and Phase 2's `ensemble-commit`
-    stop the block when they fail. Before, the final write ran anyway, so a
-    failed write could still publish a next step.
-  - The entry-routing contract states the projection, including `done`, and
-    amends its "confidence has no durable home" paragraph (item 5 above).
-- **Owner gates.** Specification §1.4 and D6 have the pausing surface set
-  the gate, in either mode:
-  - `decide-conflict`, `recurring-finding` and `scope-routing` are recorded in
-    both modes. `finish-verb --owner-gate <gate> --owner-gate-anchor <label>`
-    writes the gate and the next step `owner-decision` in one write, at the
-    proposal's own confidence. The workflow stays non-terminal until the owner
-    resolves the gate.
-  - `staging-set` and `pr-handling` are autopilot set points, where the
-    specification places them. Interactively the owner answers in the dialog.
-  - Recording a gate turns an inherited terminal marker off in the same
-    write, whichever path records it. A workflow waiting on its owner is not
-    complete, and a refusal after the owner's resolution would otherwise leave
-    the old marker in front of a Stop hook that sees HEAD moved.
-  - They are resolved by D7's specification method, D7 still being open:
-    decide's Owner selection step, refine's Owner decision step, interactive
-    `/engineer:commit` for `staging-set`, and `awaiting-owner-clear` for the
-    rest.
-    - `awaiting-owner-clear` now takes `--next-step-*` and `--resolution`.
-      The owner's decision in words, the clear and the next step it implies
-      are one write. The next step therefore never becomes runnable without
-      the decision behind it, and a failure cannot leave the `owner-decision`
-      the gate recorded. Every resolving block uses it, resolves the workflow
-      itself rather than relying on an earlier Bash call, and stops when a
-      write fails.
-  - The Stop hook's gate 5 means a workflow with a gate pending is not
-    archived. The same holds in the branch-agnostic sweep, including for a
-    workflow whose branch was deleted.
-  - Anchors are labels, as in S2. `autopilot-mode.md`'s table is the source,
-    and a shape test holds the anchors the runbooks and `phase7-commit.mjs`
-    use to it.
-- **Ceremonies.** The rules are stated where each ceremony lives:
-  - the presentation-mode offer and "Recommended: X. Proceed?";
-  - critique's MINOR pick;
-  - each verb's Autopilot section;
-  - the approval points inside the decide, compose and refine skills. Their
-    own "wait for the user" instructions would otherwise stall an unattended
-    step, since Claude commands run those skills too.
-
-  compose and refine never commit.
-- **Peer collection.** The six verb launch blocks ran the runner behind a
-  shell `&`. That detaches it from the host's background-task tracking: under
-  stream-json hosting the step can end before the peer does, and a model left
-  waiting has nothing to wait on. Probe E saw workers sleep-poll for a peer;
-  that the detached runner is why is an inference. The blocks now run the runner
-  in the foreground of a host background task (Claude: `run_in_background`),
-  and `ensemble-protocol.md` states the rule. The designer and founder
-  runbooks keep the `&`; they are outside this slice.
-- **`/engineer:commit`** is a new meta command with a Codex skill, over the
-  ADR-0028 driver. Its changes to the driver:
-  - **`classifyNoChanges`** decides what a clean tree means. Plan reports it,
-    and execute and close act on it:
-    - `recovery` is the A2 fast path, on its old condition;
-    - `close` needs a clean `git status`, HEAD at the baseline, no marked
-      commit, `next_step_kind: done`, and a workflow that is not an
-      `/engineer:start` one;
-    - `blocked` carries one of `partial-commit`, `unmarked-commits`,
-      `next-step-not-done`, `no-baseline`, `git-probe-failed`,
-      `status-not-clean` or `start-workflow`.
-
-    `git diff --name-only HEAD` alone cannot prove a clean tree: it does not
-    show a staged change the working tree reverted. Both endpoints of a
-    rename count, so a rename into workflow storage is a deletion outside
-    it.
-  - **`--mode close`** writes `close-complete` with the marker, then archives
-    the workflow: its HEAD never moved, so the Stop hook would not. It prints
-    no handoff, whose projection would read the unmoved HEAD as blocked and
-    advise a commit.
-    - A close stopped between its two writes is finished by running it
-      again.
-    - The handoff a Stop hook renders for such a workflow names that rerun,
-      not a commit.
-    - The Stop hook never notes a `close-complete` workflow on its parent.
-  - **Execute** takes the workflow out of its terminal state (`beginCommit`:
-    `phase-7-commit`, marker off) once every subject is checked, before the
-    first commit, and before the A2 fast path's gates.
-    - Before this, a split failing at its second commit left an interactive
-      verb's inherited marker in front of a Stop that saw HEAD moved. That
-      Stop archived the half-committed workflow and noted its first commit on
-      the macro.
-    - `/engineer:start` gains only the phase name on a failed Phase 7 (ADR-0028
-      §P5 note).
-    - Execute and close refuse while an owner gate is set, in both modes.
-  - **`--suggested-subjects`** uses plan mode's `inferSubject` for every
-    commit, single or split, so no subject passes through a shell.
-  - **`--mode autopilot`** refuses:
-    - outside an autopilot run;
-    - on an `/engineer:start` workflow;
-    - over an owner gate;
-    - with a pending peer ensemble, before anything is committed.
-
-    On a clean tree it recovers, closes or refuses. It stops at `staging-set`
-    when `ask_user` is true, when the workflow did not begin on a clean tree
-    (its recorded status digest is not the digest of an empty status), or when
-    the index is pre-staged: only the owner can tell pre-existing hunks from
-    the workflow's own. Otherwise it commits with the suggested subjects and
-    `--strict-cc`.
-  - **Under autopilot** every staging bypass is refused with exit 2:
-    `--confirm-non-interactive`, `--non-interactive`, `--accept-current-tree`,
-    `--include-extra` and `ACCEPT_CURRENT_TREE=1`. So are `--mode execute` and
-    `--mode close`: they run only from inside `--mode autopilot`, so no direct
-    call steps around its clean-baseline and pre-staged rules.
-  - **The next step is left as it was on a commit.** `done` means the
-    no-commit close (D6), so writing it after a commit would send the driver
-    to `--no-commit`. A routine commit sets no `pr-handling` gate: waiting to
-    land is read from state (D3a).
-- **Outcomes S8 reads.** This refines D3a's "archived with its terminal marker
-  set". Once a workflow is terminal its phase is the outcome, and `next_step`
-  is history:
-
-  | durable state | meaning |
-  |---|---|
-  | active, not terminal (commits may exist) | in progress, or an interrupted commit: `/engineer:commit` recovers it |
-  | archived, terminal, `commit-complete` | committed: check the landing (D3a) |
-  | archived, terminal, `close-complete` | closed without a commit: `/orchestrator:done <id> --no-commit` |
-  | active, terminal | the archive has not run (a Stop gate failed, or a close stopped before its archive): `/engineer:commit` again |
-
-- **Capability floor for S8.** The S0 note explains how runbook text and
-  scripts can come from different versions. The released engineer 0.23.0
-  scripts have no `autopilot-preflight`, `finish-verb`, `--mode close` or
-  `--mode autopilot`. With them, a verb's Phase 0 fails before any write,
-  which a test checks against the tagged scripts. The driver has to require
-  the engineer release that carries S3+S4 before it starts a run.
-- **Known limits.**
-  - The suggested subject's type follows the workflow's last verb, so a
-    compose → critique → commit chain suggests `chore`. The squash title the
-    owner lands is what reaches `main`. *(2026-11-04, C163: no longer a
-    limit. The type is checked against the files each commit touches, and
-    under autopilot the commit worker writes the subject. ADR-0028 §P6, its
-    implementation note of that date.)*
-  - The model-judged set points (`recurring-finding`, `scope-routing`,
-    `pr-handling`) are pinned by shape tests, not by code; the driver's halts
-    are the backstop.
-- Tests:
-  - `tests/engineer/test-autopilot-verbs.mjs` (state);
-  - `tests/engineer/test-engineer-commit.mjs` (the driver against sandbox
-    repositories, including the half-commit Stop case and the spec §1.9 chain);
-  - `tests/engineer/test-verb-runbook-autopilot.mjs` (the blocks as written in
-    bash and zsh, including the released 0.23.0 scripts);
-  - `tests/plugin-shape/test-engineer-autopilot-runbooks.mjs` (placement and
-    anchors).
-
-  `scripts/mutation-specs/engineer-autopilot-verbs.mjs` shows each check fails
-  on the defect it guards.
-
-## Implementation note 2026-10-01 — S8 (the driver and `/orchestrator:autopilot`)
-
-S8 ports the handoff prototype into `plugins/orchestrator/adapters/claude/autopilot/`
-and replaces its four shims with the state the earlier slices added. The
-driver is one loop — observe, decide, act, verify — over seven modules:
-`observe.mjs` assembles the view through the owning plugins' CLIs and git,
-`policy.mjs` decides from it (pure), `worker.mjs` hosts each step, `ledger.mjs`
-keeps the run's record and locks, `roots.mjs` resolves and checks the plugin
-roots, `driver.mjs` runs the loop, and `cli.mjs` is the entry of
-`commands/autopilot.md` and of the optional launcher.
-
-- **The shims are gone.**
-  - SHIM-1: the next step and owner gates are read from the engineer workflow
-    (`next_step_*`, `awaiting_owner_*`) and the macro. The worker's structured
-    report stays as a cross-check (owner decision D11, 2026-10-01): it names the
-    engineer workflow it echoes, and a report that disagrees with the state halts
-    `owner-choice`. It never allows a step.
-  - SHIM-2: `plan_approval_*` through `next-ready`'s `approval`.
-  - SHIM-3: the plugin-root hint is removed. S0 is released, and the capability
-    floor below requires releases that carry it; the appended system prompt keeps
-    only the step rules.
-  - SHIM-4: `/engineer:commit`.
-- **Owner decisions taken for S8 (2026-10-01).**
-  - D5: the model plan is asked before each start — `owner-default`, `mixed`
-    (judgment verbs on the owner's default, compose and refine on sonnet/medium,
-    the mechanical steps on sonnet/low) or `sonnet`. `/orchestrator:autopilot
-    start` asks; a terminal start asks on its TTY; anything else must pass
-    `--models` (or `--model`/`--effort`).
-    *Note 2026-11-12 ([ADR-0071](0071-autopilot-step-model-from-settings.md),
-    Proposed):* on acceptance the plans become suggestions, and the
-    `autopilot_*` settings a plan of their own: with a key set and no flag a
-    start takes them without asking; with none set this decision stands.
-  - D10: budgets stay finite, as D1 requires, but out of the way: 60 steps, $250
-    a run, $25 and 60 minutes a step, 24 hours a run. The run's caps bound each
-    step too (a step may spend only what is left, and run only until the run's
-    deadline), a killed worker that reported no cost is charged its whole step
-    budget, and a time bound under 60 seconds is refused rather than raised.
-    The state is read before the budgets, so completion on the last step the cap
-    allowed is completion.
-  - D11: the report is kept as a cross-check (above).
-  - D13: the launcher ships (`launcher.template.mjs`); `preview` prints the
-    command that installs it, and nothing installs it for the owner.
-- **The step table** (D3) is the closed set the policy renders from; only
-  identifiers checked against a closed alphabet enter a prompt:
-  `/orchestrator:next <id> --workflow=<macro>`, `/engineer:<verb>`,
-  `/engineer:commit`, `/orchestrator:done <id> --workflow=<macro>`,
-  `/orchestrator:done <id> --no-commit --workflow=<macro> <fixed reason>` and
-  `/orchestrator:finalize --workflow=<macro>`. The macro is pinned on the first
-  look, so a later step finds it whatever branch is checked out.
-- **D3a, landing.** A subtask whose engineer workflow is archived terminal is
-  checked with `git fetch origin <integration>` and `state.mjs resolve-landing`:
-  merged → `/orchestrator:done`; `no_pr` or `not_merged` → it waits; any other
-  answer → `owner-choice`. `close-complete` → `/orchestrator:done --no-commit`.
-  When nothing else is dispatchable and a subtask waits, the run halts
-  `awaiting-landing` with each branch's push and pull-request commands (none
-  for a branch outside `[A-Za-z0-9._/-]`). Several subtasks may be in progress
-  at once; the prototype's "more than one in progress halts" rule is gone.
-  Success is the archived macro — and only for the plan the owner approved:
-  an archived macro whose plan changed during the last step halts
-  `plan-unapproved`. `gh` is found through PATH, the seam the tests use.
-- **Rules the review added (Codex Plan-verify, round 1).**
-  - Every live engineer workflow that claims the macro must be the active child
-    of an in-progress subtask; a dispatch interrupted before it recorded the
-    subtask in progress halts instead of dispatching beside it.
-  - An archived child is held to the same linkage as an active one (parent,
-    subtask, branch, id): a plan revision that moves an in-progress subtask to
-    another branch keeps its old engineer id.
-  - A live workflow in `phase-7-commit` (an interrupted commit) or in a terminal
-    commit phase routes to `/engineer:commit`, never to its stale next step; an
-    `/engineer:start` workflow, a detached child and a pending peer ensemble halt.
-  - `--next` replaces only the judgment halts of the active engineer child
-    (low confidence, an owner decision, no next step) and goes through its
-    step's prerequisites. Its grammar is `/engineer:<verb>`,
-    `/engineer:commit` and `/orchestrator:next [<subtask>]`:
-    `/orchestrator:done` and `/orchestrator:finalize` run exactly when their
-    prerequisites hold, so forcing one could only skip a prerequisite (round 2
-    reproduced a forced `--no-commit` completing unlanded work).
-
-    *Note 2026-10-20 ([ADR-0068](0068-autopilot-lanes-that-keep-going.md),
-    slice 4, accepted 2026-10-20):* the owner may also
-    give a lane its next step while a run lives, as an instruction: the same
-    grammar without the dispatch, and the same reach (it replaces the
-    recorded step and its judgment halt, goes through the step's
-    prerequisites, and leaves every gate, error and landing refusal
-    standing), except that it never replaces an interrupted commit, which
-    runs again first; with a note for the child, applied at the lane's next
-    step boundary. A forced step on a lane with a pending instruction that
-    carries a step is refused (ADR-0068 Decision 7).
-  - Each step has a postcondition beyond "something changed": a dispatch leaves
-    the subtask in progress with an active child; a commit archives, commits or
-    sets a gate; a done completes the subtask; a finalize archives the macro.
-    A commit recovery the Stop hook keeps refusing therefore halts once instead
-    of repeating.
-- **The worker's loaded plugins are checked at init.** The `system/init` event
-  lists the plugins the worker loaded, with their paths and versions. Measured
-  on the owner's machine (2.1.286): on a directory marketplace they are the
-  marketplace checkout, so commands, skills and hooks come from that checkout's
-  branch while the runbooks' scripts come from the pinned roots. The step is
-  aborted before its first turn when a loaded orchestrator, engineer or runtime
-  lies inside the repository the run drives (`owner-choice`: drive a separate
-  worktree), or differs from the pinned version, or from what earlier steps
-  loaded (`version-drift`). Roots inside the repository are refused at start for
-  the same reason.
-- **Pushes are blocked at the git level too.** Measured on 2.1.286: Claude
-  Code's Bash rules match a command's leading words, so `git -C <dir> push`
-  passes `Bash(git push:*)`, with or without a wildcard rule. Each worker's
-  environment therefore carries `GIT_CONFIG_*` entries that rewrite a push to any
-  https, http, ssh or git URL, and to each remote's own URL, to a scheme no
-  remote helper serves (`pushInsteadOf`; `insteadOf` for an explicit pushurl,
-  which git exempts from `pushInsteadOf`). Every push form fails at once; local
-  pushes and fetches are untouched. `git@` covers the scp-style form of
-  common hosts. A remote whose explicit pushurl equals a fetch URL cannot be
-  covered without breaking the fetch, so the driver refuses to start on such a
-  repository and says how to remove the redundant pushurl. Left open: an
-  scp-style URL with another user that is no remote's URL.
-- **The environment.** Beyond D5's list, the worker loses the launching
-  session's `CLAUDE_CODE_SESSION_*`, `CLAUDE_BG_*` and `CLAUDE_RELAUNCH_*`
-  variables (a background session's permission rules travel there), and the
-  dispatch contract variables an outer session may have exported
-  (`AGENTIC_PARENT_WORKFLOW`, `AGENTIC_ORIGINATING_SUBTASK`, `AGENTIC_PROFILE`,
-  `AGENTIC_TOPIC`, `AGENTIC_HOST`, `CLAUDE_PLUGIN_ROOT`).
-- **What a killed step leaves.** A peer runs detached from the worker's process
-  group, so after a step that was aborted or failed, the driver cancels the peer
-  runs that step left pending — on any engineer workflow of the macro, so a
-  dispatch killed before it recorded its subtask in progress is covered —
-  through engineer's own `peer-runner cancel`, which verifies the process
-  fingerprint. A step that ended normally with a peer still pending halts for the
-  owner instead.
-- **Starting and stopping a worker.** Everything that can fail is set up before
-  the worker is spawned, and the worker is recorded in the run's locks before it
-  receives its prompt: a driver that dies in between leaves a worker with nothing
-  to do, which exits when its stdin closes. An abort sends SIGTERM to the
-  worker's process group, and SIGKILL five seconds later to a worker that has
-  not exited. Once the worker has exited, output a descendant still holds is
-  abandoned after three seconds rather than waited on.
-- **Nothing a step started outlives it in its process group.** A step is over
-  only once its worker's process group is empty. After every step, aborted or
-  not, the group is sent SIGTERM (unless an abort already sent it) and is
-  polled; five seconds after the signal, what is left gets SIGKILL. The driver
-  releases its locks and exits only after that. Round 3 reproduced a driver that
-  exited before an unreferenced SIGKILL timer fired, leaving a member that
-  ignores SIGTERM running with no lock to show it. The ledger records
-  `group_teardown` for each step: `empty`, `terminated`, `killed`, or
-  `lingering` when a process outlives SIGKILL. A `lingering` step halts
-  `worker-failed` whatever else it did, and the run keeps its lock entries,
-  which name the worker's process group. Such an entry stays live while the
-  group has members, so no run starts beside them; round 4 reproduced a run
-  that went on to its next step. A process group under that id whose leader
-  is provably another process does not count. POSIX reuses neither a pid nor
-  a process group id while a group of that id exists, so a reused worker pid
-  means the worker's group had ended. Round 5 reproduced a dead run's lock
-  held by such an unrelated group. Only a different start time proves a
-  reused pid. On macOS the fingerprint also holds the command line, which a
-  wrapper that execs `claude` in place changes without becoming another
-  process; round 6 reproduced a live worker's lock taken that way.
-- **Locks.** There are two:
-  - one per macro under the main worktree (D8);
-  - one per worktree, because two runs of different macros must not switch one
-    checkout's branch.
-
-  A lock is a directory. Each run that wants it adds an entry of its own,
-  `h-<pid>-<random>.json`, written whole. An entry records the driver and,
-  while a step runs, its worker. It is stale only when both are gone, and a
-  fingerprint that cannot be read counts as live. A process that has exited
-  but that its parent has not yet reaped counts as gone, although
-  `kill(pid, 0)` still finds it. The start time is compared first: an exited
-  process that started after the recorded one is a stranger that reused the
-  pid, not the recorded process having exited (round 8). The fingerprints are the driver's own
-  (`processFingerprint`): `/proc` on Linux, and on macOS `ps` run in the C
-  locale. peer-runner's `fingerprintForPid` reads the start time in the
-  caller's locale, and its pattern fits only the C locale. Measured under
-  ko_KR on 2026-10-03: the start time then swallowed the command line. The
-  start alone could not be compared, and two processes in different locales
-  fingerprinted the same process differently. A run holds the lock when,
-  after adding its entry, it finds no other live entry. Otherwise it removes
-  its own entry and retries after a random pause. It is refused when another
-  run already holds the lock, or on its last attempt.
-
-  Only entries whose runs are gone are removed, and no participant reuses
-  another's name, so no run removes a live participant's entry. "Gone" holds
-  only for the record it was judged on. An entry is read, then its processes
-  are checked, so a gone entry is read once more after the check. Only an
-  unchanged one is removed: only its owner writes it, and the check found that
-  owner dead. Round 4 reproduced the failure this prevents. An owner recorded
-  its worker and died between another run's read and its check, and that run
-  removed the entry and started beside the worker. Two runs
-  cannot both hold the lock: whichever added its entry second sees the first
-  one's. This replaces the takeover protocol of rounds 1 and 2. Rounds 2 and 3
-  each reproduced two holders in it: a paused contender lost an age-expired
-  takeover, and then three contenders reclaimed one dead owner's takeover at
-  the same time.
-
-  The run takes its locks after its first look at the state. It looks again
-  once it holds them and decides its first step from that second look.
-  Round 6 reproduced the race this closes: a run that finished in between
-  left a halt, and the new run stepped past it.
-- **`stop`** signals only a pid it can prove is the run's process: alive, with
-  a readable fingerprint that matches the lock's record. Liveness alone, which
-  errs toward "held" for the lock, is not enough to signal. The pid it signals
-  is one of:
-  - the driver, which then empties its worker's group and records the halt;
-  - when the driver died, the worker's process group, which `stop` empties
-    itself the same way. It reports success only once the group is empty.
-- **The ledger** writes a step's `started` record before the worker is spawned
-  and its `finished` record after; `status` pairs them and names a driver that
-  died mid-step.
-- **Entry-brief.** Entry-brief 1.0 has no next-step rows (S7 has not shipped), so
-  the driver composes the view itself (D8 = a) and uses the brief as a guard:
-  `indeterminate`, `no-branch-context`, two live workflows competing on the
-  branch, or a lead outside the step table halt `owner-choice`. The entry-capture
-  lead and a leaderless `owner-choice-required` are normal between steps.
-- **Not in S8:** the V1 harness (`e2e-macro.sh` still drives the prototype's
-  interface), S7's entry-brief rows, worktree lanes, a dashboard row, and
-  cross-run retention of the autopilot ledger (each raw worker stream is capped
-  at 64 MiB).
-- **Known limits.**
-  - The denylist and the git-level block are guardrails, not a sandbox: a
-    worker with `Bash` can reach the network another way (`curl` stays allowed,
-    owner decision D17), and `gh` subcommands with global flags first pass the
-    `Bash(gh pr:*)`-style rules.
-  - The ADR-0059 args-file library's header still names four packages; the
-    orchestrator copy is byte-identical, and the header is corrected in all five
-    copies by a later change (one that touches those packages anyway).
-- Tests: `tests/orchestrator/test-autopilot-policy.mjs` (every step and reason),
-  `-worker.mjs` (a fake `claude`), `-ledger.mjs`, `-observe.mjs` (real state, a
-  bare origin, a fake `gh`), `-driver.mjs` (the loop end to end with a scripted
-  worker that runs `phase7-commit --mode autopilot` and the real Stop hooks,
-  including the landing round trip), `-cli.mjs` (the runbook blocks in bash and
-  zsh, the launcher); `tests/plugin-shape/test-orchestrator-plugin.mjs` (Claude
-  only, no Codex skill) and `test-autopilot-enum-parity.mjs` (the driver's copies
-  of the engineer enums and the D4 reason set).
-  `scripts/mutation-specs/orchestrator-autopilot-driver.mjs` shows each check
-  fails on the defect it guards.
-
-## Amendment 2026-10-14 — document deliverables converge (C120)
-
-**The problem.** A document subtask (an ADR, a runbook, other prose as the
-main artifact) under autopilot did not converge. Every critique reviewed the
-whole document again, so each round found new MINOR or MAJOR points in text
-no refine had touched; refine fixed them, the next full critique found more,
-and the model-judged recurring-finding rule could not tell a finding that
-survived a fix from a new one in unchanged text. Code does not show this: its
-review is held to the change set, and tests decide most findings.
-
-**The rule.** A document deliverable gets one full critique. After a refine,
-the next critique reviews the passages the refine changed and the findings it
-targeted (a *scoped* critique). A new finding outside those passages is left
-open for the owner (`### Left open` in the note), unless it is CRITICAL, which
-refine carries. Every CRITICAL and MAJOR finding open in the ledger is
-refine's work, targeted before or not, so a prior finding a refine skipped
-still blocks. A finding a refine targeted that a critique leaves open is
-*recurring*, and fixing it again is the owner's call (`recurring-finding`). A
-code deliverable keeps the full critique and the judged recurring rule.
-
-**What is a document.** The artifact set is every path that differs between
-the workflow's `git_baseline.head` and the working tree (the state homes left
-out). The deliverable is a document only when that set is not empty, every
-path is a regular Markdown file ending in `.md` or `.markdown` (`.mdx`
-carries code), no changed line, on either side, blank lines included, is or
-may be code, and no path's code is changed by its prose: the sequence of
-CommonMark code blocks and HTML blocks in the old text, each block's kind,
-info string and content, is the one in the new text. A line is code when
-either of two readers says so:
-
-- *Reader 1*, a stateless over-reading with no fence pairing and no container
-  tracking, so nothing in it can be paired or tracked wrong: every line from
-  the file's first fence-like line (one holding three or more backticks or
-  tildes, wherever they sit) to its last; every line whose leading white
-  space reaches column 4 at the line start, or five columns past a
-  block-quote or list marker in its prefix (tabs to the next multiple of
-  four), with no paragraph exception; each blank run between two such lines;
-  and each such line's neighbours.
-- *Reader 2*, the CommonMark reference parser (commonmark.js): every line a
-  code block spans, fenced or indented, fence lines included, and every line
-  an HTML block spans, whatever its tags (a `<pre><code>` block carries a
-  command as text, and a list of tags would pass one it does not name). CommonMark also
-  ends a line at a bare CR, which git does not, so a text holding one is read
-  as code throughout (its parser lines are not git's).
-
-Reader 2 settles where an unclosed or mis-paired fence ends, which reader 1
-cannot without pairing; reader 1 covers what the specification reads as text
-but an agent may run (an indented line CommonMark joins to a link definition's
-title or a paragraph). Markdown can execute, and a runbook's shell block is
-code. Other prose formats stay full: a `.txt` name is no evidence
-(`CMakeLists.txt`, `requirements.txt`), and reStructuredText and AsciiDoc have
-code block forms the test does not read.
-
-*Note 2026-10-15 (the owner's ruling on the recurring M3 finding).* Three
-refine rounds each fixed the reported cases of a hand-written classifier that
-paired fences and tracked containers, and each Refine-verify found new
-CommonMark cases where a command edit read as prose (a quoted fence closed
-early, a rejected closer that desynchronized later fences, code characters
-read as container markers, a paragraph exception that trusted a link title,
-a blank line inside indented code). The union above replaces that classifier.
-On the owner's prototype measurement (not peer-verified), of 204 all-Markdown
-commits on `main` the earlier classifier called documents, the union keeps
-183, and it only ever moves a change from document to code. Reader 2 is the
-persona scripts' first third-party code: commonmark.js 0.31.2 (BSD-2-Clause,
-with the MIT notice of one derived file), its self-contained
-`dist/commonmark.min.js` vendored byte for byte as
-`persona-pipeline/files/scripts/lib/vendor/commonmark.min.cjs` under a copy
-notice that carries its LICENSE, the npm tarball's shasum and the sha256 of
-the upstream bytes, which a test checks; `review-scope.mjs` loads it with
-`createRequire` on first use. It is a parser of a frozen specification, read
-for its code blocks and HTML blocks only (their positions, and the kind, info
-string and content the block-sequence rule compares), so it is updated only
-for a CommonMark release or a parser fix that changes those, by replacing
-the bytes, the LICENSE and the two hashes together. Refine-verify of the union
-found one more shape: an explicit HTML code block (`<pre><code
-class="language-sh">` with a command inside) is an HTML block to CommonMark,
-not a code block, and reader 1 has no rule for it, so a changed command there
-read as prose. The owner widened reader 2 to every HTML block, with no tag
-list: on `main` it moves 7 of the union's 183 documents to code (176 kept),
-where counting only blocks that name `<pre>`, `<code>`, `<script>`,
-`<textarea>` or `<style>` moved none but would pass a tag it does not name.
-The closing critique then found that a change can leave every changed line
-prose and still change code (its M1): dropping a list marker four lines above
-a fence pulls an unchanged, unindented `rm -rf ~/work` into the fence, the
-passage is only the edited line, and a new MAJOR at the command could be left
-open. A fuzzer found 25 of 1,187 document verdicts whose code or HTML block
-contents differed between the two texts. The owner ruled for the
-block-sequence rule above, beside the union: it reads what the blocks hold,
-not where, so prose that only moves a block changes nothing, and it only ever
-moves a change from document to code. On `main` it moves none of the 176
-documents.
-
-**The evidence a fresh worker reads** is the review ledger,
-`<state home>/reviews/<workflow id>.json`, written by `state.mjs` holding the
-workflow's lock; no plan field and no frontmatter key is added (the plan's
-field set is closed and hashed, and the ledger's name derives from the
-workflow's). It holds one *generation* per critique (mode, reason, the
-working tree it reviewed as a tree object, HEAD, the baseline, the artifact
-set, the passages of a scoped one, its targets, the critique runs the
-workflow had noted when it opened, open / closed / abandoned),
-every finding with a workflow-wide id (`G<generation>-F<n>`), severity,
-location, text, disposition (open / resolved / left-open) and the refine
-attempts that targeted it, and one refine attempt per critique (`R<generation>`:
-its targets and the tree it left). Each ledger has an id of its own, which
-`critique-scope` prints and `critique-close` must name: ids restart in a
-ledger that replaced another, so a close from before the reset is refused,
-never applied to findings it did not see.
-
-- `critique-scope` opens generation g at the working tree T, captured as
-  `peer-snapshot.mjs` captures a snapshot, without materializing it, and
-  prints the scope. A deliverable that is not a document records nothing,
-  and a ledger an earlier critique left is moved aside, so a document that
-  turned into code hands refine no findings its last critique never judged.
-  So does a checkout the ledger cannot vouch for: a baseline that is not a
-  full commit id resolving to a commit (a symbolic `HEAD` or branch moves
-  with the checkout), or a working tree the capture cannot read (a conflicted
-  merge, HEAD moving) or cannot vouch for (an index entry marked
-  assume-unchanged or skip-worktree: `git add -A` keeps its staged blob, so
-  an edit to that file would not be in T).
-- `refine-record` (after the fix, before Refine-verify) records the targets
-  and the tree the refine left; a later edit in the same refine re-records.
-  It also prints `verify`, the mode the next critique would have on that
-  tree: Refine-verify is scoped only when that is `scoped`, so it is held to
-  the same conditions.
-- `critique-close --ledger <id> --generation g` records the synthesis's
-  findings and prints the disposition (`converged`, `carry`, `left_open`,
-  `recurring`). It refuses when the checkout no longer holds T, or the
-  ledger is not the one `critique-scope` named: findings are never held to
-  text nobody reviewed. A generation a crashed run left open is abandoned by the next
-  `critique-scope`.
-- `review-status` prints the ledger for refine: its work (`carry`) and the
-  recurring findings (a refine targeted it, and a critique closed since
-  judged it unresolved; a target no critique has judged since its refine,
-  such as one a partial critique did not report, is not one),
-  which end it on the gate before any fix, unless the owner already cleared
-  that gate with Fix now after the last critique's notes (the resume note a
-  fresh worker writes after it does not count against the ruling).
-- From a checkout that is not on the workflow's branch, whatever state its
-  working tree is in, `critique-scope` and `refine-record` record nothing
-  and leave the ledger alone, and `critique-close` refuses: a worktree sharing the state root never writes
-  another branch's ledger. A ledger whose entries are malformed is moved
-  aside and the critique is full; `review-status` reads it as no ledger. So
-  is one whose stored passages are not line ranges on its artifact paths, or
-  whose generation ids do not run 1, 2, 3 in order. A checkout whose HEAD git
-  cannot read reaches the script all the same, which falls back.
-- None of this stops a verb. The runbook blocks fall back when the script
-  fails (an older release without the subcommands answers `unknown
-  subcommand`): the critique runs unrecorded and full, refine reads no
-  ledger, and a missing refine record makes the next critique full unless an
-  earlier record of the refine saw the same tree. A critique whose close
-  refuses counts as a full one the ledger did not record, and until a later
-  critique closes the ledger vouches for nothing: `review-status` reads no
-  ledger, `refine-record` records nothing and the next critique is full.
-- A critique the ledger never opened a generation for (its `critique-scope`
-  failed, an older release ran it, the checkout was on another branch or
-  mid-rebase, a `/<persona>:start` lifecycle ran it in its own phase) is
-  caught from the workflow file, which the critique writes in any case:
-  `state.mjs append --verb critique`, which the critique command's resume and
-  each critique phase of a lifecycle run, notes a marker line
-  (`<!-- agentic: critique run -->`) before the phase note, and each
-  generation counts those notes when it opens. An older release noted only
-  the critique command's `Phase 0: Resume into critique` heading, which
-  counts when no marker stands on the line before it; a critique an older
-  release runs inside a lifecycle notes nothing and is not caught. A run
-  that names no verb in its writes (a host skill used outside the commands)
-  is not caught either, and its findings are not in the notes refine reads. More runs noted than the last generation counted (plus the caller's
-  own run, for `critique-scope`) means a critique the ledger did not see:
-  `review-status` and `refine-record` read no ledger, and `critique-scope`
-  moves it aside and opens a full one. A run stopped before it reached
-  `critique-scope` counts too, which costs only the scope.
-
-**Scoped, or full.** A critique is scoped only when all of these hold, and
-full otherwise, with the first that failed as its reason: the default review
-profile (another profile is `partial`, below); no merge, rebase, cherry-pick
-or revert in progress; a non-empty
-document artifact set; a full generation closed in the ledger; a last closed
-generation that is not partial; a refine recorded after it whose tree the checkout still holds
-(nothing was edited after the record, and an older release's refine, which
-records nothing, falls back); HEAD and the baseline unchanged since that
-generation (no commit and no merge); the same artifact set (no path added,
-removed or renamed); every target a ledger finding; and the tree the last
-critique reviewed still readable (it is unreferenced, so `git gc` may prune
-it, and a lost file is not an absent one). A full critique never
-takes the left-open route: every CRITICAL and MAJOR it finds is carried, and
-a prior finding it does not report again is resolved. A *partial* critique (a
-profile other than the default, such as a single lens) judges only what it
-reports: it resolves no finding it does not, leaves nothing open by scope,
-and is never the full critique a scoped one starts from. A refine's targets
-stay targets until a critique judges them (a full one judges them all, the
-ones it does not report included): one a partial critique does not
-report is open, it stays a target of the next partial critique, and since the
-lens may not cover it, the omission is no judgment the recurring rule counts. A finding's severity
-follows the latest judgment, except that a scoped or partial critique never
-lowers a CRITICAL or MAJOR one, and references that disagree take the
-highest. A scoped critique resolves a finding the refine did not target only
-when the critique places it in a passage, in the current text (the ledger's
-location is in the coordinates of the text it was found in, which the refine
-may have shifted): elsewhere it read no text, so the verdict is noted and the
-finding stays.
-
-**Passages.** The diff from the last critique's tree to the current one, per
-artifact path, at Markdown block level in the current text: a code or HTML
-block as CommonMark reads it, a list or a table with no blank line in it, and a heading
-are each one block. A
-deletion anchors to the blocks just before and after it, with the deleted text
-shown as before; a change that leaves a file with no block makes the whole
-file the passage. A finding is in scope when its location overlaps a passage,
-whatever scope the peer claimed, and when the review marks it in; a location
-with no line range on a passage path counts in scope unless marked outside,
-and a finding with no location cannot be shown outside. A location is read
-the ways reviewers write it (`path:12`, `path:12-20`, `path:12:3`,
-`path#L12`, `./path`, an absolute path ending in an artifact path); one on
-a path the artifact set does not hold (a relative path that only ends in an
-artifact path is another file) cannot be placed, and counts in scope.
-A reversed line range is refused. A left-open finding reported again, not
-CRITICAL, stays left open only when every report of it places it outside the
-passages in the current text, or each scoped critique would pull it back
-into refine; a report with no location is not placed outside (the ledger's
-location may have shifted). A finding a refine targeted is judged as any
-target, whatever it was before: left open, or resolved by an earlier critique
-and edited again, it is carried when unresolved or given no verdict.
-
-**The peer contract.** Scoped review and Scoped refine-verify templates (the
-ensemble protocol's § Scoped re-check) give the peer the passages and the
-findings by id, and ask one line per finding: id or NEW, a verdict for an id,
-severity, location, in or outside, evidence. A target with no verdict, two or
-contradictory ones counts unresolved. The convergence rule is the script's,
-never the synthesis's.
-
-**Precedence.** A `conflict` verdict ends on `peer-conflict` first. `converged`
-only adds the commit route when the persona's own conditions also hold
-(designer's accessibility veto and re-render, founder's gate verdicts).
-
-**Plans.** `/orchestrator:plan` proposes an ADR or other document subtask
-that would settle more than two decisions as chained slices of one or two,
-each stating what it owns, the ADR number every slice claims and how later
-slices amend it, at the cost of one landing round per slice. Advice, not a
-`plan-set` rule.
-
-**Known limits.**
-
-- Interactively a verb's last write is terminal and the Stop hook archives the
-  workflow; the next verb starts a new workflow with no ledger, so its
-  critique is full. Under autopilot one workflow carries the critique-refine
-  loop, which is where the loop did not converge.
-- `/engineer:commit` commits the tree as it is; it does not check the tree the
-  last critique reviewed, for any verb (not a property this rule adds).
-- A `/<persona>:start` lifecycle runs critique and refine as skills, not as
-  the commands that hold the ledger blocks, so its critique stays full; so
-  does every critique on Codex, where the verbs run as skills.
-- The ledger is not archived with its workflow and is not pruned.
-
-Implemented in `persona-pipeline/files/scripts/lib/review-scope.mjs` and
-`state.mjs` (the four subcommands), the regions `critique-scope-prepare`,
-`critique-scope-close`, `refine-scope-record` and `ensemble-scoped-recheck`,
-the vendored CommonMark parser (`lib/vendor/commonmark.min.cjs`), and the
-orchestrator plan skill's Step 2. The capture now stamps its index
-copies with the live index's times, so a same-size edit made in the second the
-index was written is not missed (racy git). Tests:
-`tests/persona-pipeline/_review-scope-suite.mjs` (real repositories, every
-persona, run by one `test-review-scope-<persona>.mjs` each); `scripts/mutation-specs/review-scope.mjs`.
-
-## Implementation note 2026-11-04 — a verb step's evidence (C163)
-
-**The gap.** The step postconditions (S8 above) covered a dispatch, a commit,
-a done and a finalize; a dispatch was held only to leave its subtask in
-progress with an active child, and a later engineer verb step to nothing but
-`no-progress`. The fingerprint holds the child's next step and its event
-count, so a worker that only rewrote `next_step` (to `commit @ HIGH`, say)
-passed, on the dispatch's first verb or any later verb, and the driver
-followed it. The look's git facts were HEAD and the porcelain status, which an
-edit of a file it already lists leaves as they were.
-
-**The rule.** From facts the observer reads itself, never from the worker's
-report:
-
-1. *Evidence of the verb.* A step that runs a verb (a dispatch's first verb,
-   and every later verb step, a verification resumption included) must leave
-   at least one new `### Phase 1: <Verb> (synthesized)` section of that verb
-   in its child's phase notes (the headings after the body's `## Phase
-   notes`, never the request quoted before it), with text under its synthesis
-   or its artifact (a subsection other than `Ensemble launched …` and `Active
-   next-action proposal`; a fence delimiter is not text), in what the step
-   appended: the body the look before the step read must be the start of the
-   body after it, and the section must begin past it. So a heading put in
-   front of old findings does not make them new. The verb is the step's; a
-   dispatch whose subtask names none is judged by the verb its child recorded
-   at dispatch (`dispatched_verb`), or else by any verb. A dispatch's child is
-   new, so its baseline is an empty body; only a dispatch's is. A later verb
-   step is bound to the child the look before it read: when that look holds
-   no child for the subtask, one with another workflow id, or one it could not
-   resolve (an `error` child), its old sections would count as new, so the
-   step halts. A later verb step must also leave
-   its child active (only `/engineer:commit` closes a workflow under
-   autopilot), so a step that archives its child, completes its subtask or
-   archives the macro cannot leave the rule with nothing to judge. Otherwise
-   the step halts `owner-choice` on its subtask with no pointer, the shape of
-   every postcondition, its detail naming the missing section; so does a look
-   that could not read the notes before or after the step, and a step that
-   changed the notes before it.
-2. *Legitimate no-change outcomes.* A verb that concludes nothing changes
-   records that in its own section (a refine's `### Changes applied` saying
-   none, a critique's findings, a compose of a plan) and passes; no verb is
-   required to change a file, and a file changed never stands in for the
-   section.
-3. *Content progress.* The look also projects the content of the checkout's
-   files (`lane-digest.mjs` `contentProjection`: the tree its non-ignored
-   files make through a temporary index, without HEAD, without
-   `.agentic-plugins/state` and `.agentic-plugins/runs`, and with each
-   checked-out submodule by its own projection in place of its gitlink, so a
-   commit inside one is no content either). `no-progress` (and
-   the C127 peers-only check) hold a step unchanged only when its fingerprint
-   and that content are both unchanged, so an edit of an already-modified file
-   is progress. A look that could not project it compares as before. The
-   projection is no fingerprint's, so no park record changes version, and it
-   is never evidence of a verb.
-4. *Kept as they are.* An owner-forced step (the owner named it), a verify
-   step (it runs no verb), and a step whose child now records an owner gate
-   (the gate halts the next decision for the owner) are not held to rule 1.
-
-**Where.** `stepEvidence` and `contentMoved` in `policy.mjs`; the serial
-driver and the scheduler call `stepEvidence` after a step's other checks and
-after the peers a step left are settled (C127), so that accounting still runs
-before it. The observer reads the phase notes as the artifact they are
-(`phase-evidence.mjs`): no engineer CLI prints a workflow's body, and ADR-0010
-§5 forbids an import, not reading an artifact, so its header now says "CLIs
-and git", with this one read. The six `--phase-label` literals of the
-engineer's finalize blocks are held equal to its grammar by a test, and a body
-it does not recognize (no `## Phase notes`) is no evidence, which halts. The
-grammar reads the request before `## Phase notes` as no markdown (its first
-such line ends it), so a fence there cannot hide the notes, and inside the
-notes it opens a backtick fence only as CommonMark 4.5 does (an info string
-with no backtick), so a note line such as "```a``` inline" swallows no later
-section.
-
-**Limits.** This proves a recorded completion, not the truth of the worker's
-analysis: a fabricated section with text passes, and so does a note appended
-twice. A dispatch's child is taken as new, which the look cannot prove (it
-observes no child of a pending subtask, and the claims it reads are active
-workflows only): a worker that brings back an archived workflow of the
-subtask as its child passes on that workflow's old sections, as one that
-fabricates a section does. When a step fails the rule and something the next decision would
-diagnose more precisely (a plan revised past its approval, a peer left
-pending) both hold, the step's halt is the one reported; the other shows at
-the next run. A child archived between the look's read of its frontmatter and
-of its body reads as unreadable notes, a halt, with no retry (a verb step
-under autopilot archives nothing). The look keeps each child's body in its
-view, and projects the content with a `git add -A` into a temporary index at
-every look (about 0.1–0.3 s measured on this repository). The content projection
-trusts each entry's stat as `git status` does, so an edit whose file times
-were put back is not seen (the step then reads as no progress, a halt). The
-blank lines the engineer's writes add before a body are dropped before the
-comparison, since they are no change of the notes. A fence a note opens and
-never closes runs to the end of the body, as in CommonMark, and hides the
-sections after it: the step halts, a limit that fails closed.
-
-Tests: `tests/orchestrator/test-autopilot-step-evidence.mjs` (the grammar,
-the rule, the projection) and `test-autopilot-step-evidence-runs.mjs` (the
-serial driver and the scheduler end to end, through the scripted worker's
-`handoff-only`, `no-change` and `edit-only` steps);
-`scripts/mutation-specs/autopilot-step-evidence.mjs`.
-
-## Implementation note 2026-11-07 — the review gate (C163 A1b)
-
-**The gap.** A lane reached `/engineer:commit` on the next step its last verb
-recorded. Since C163 A1a each review attempt keeps one outcome in its
-workflow (ADR-0023 implementation note of 2026-11-05), but nothing read it: a
-review that failed, degraded or never ran was followed by a commit like any
-other, and the landing report said nothing of it.
-
-**The rule.** The observer reads each child's review record through the
-orchestrator's byte copy of the persona library (`reviewGate`,
-`observe.mjs reviewSummary`): its latest review outcome, whether that outcome
-holds the commit back (`failed`, `degraded`, `unavailable`, `malformed` or
-`unknown`, and `skipped` with no reason given or as `owner-skip`, which an
-autopilot step can write with no owner present; no skip, of any reason,
-clears an earlier outcome that holds, and a superseded
-attempt listed last reads `unknown`; ADR-0028's note of the same date gives
-the rule and the owner's acceptance), each outcome, and whether the history
-is complete.
-
-1. *The halt.* A lane whose next step would run `/engineer:commit` (a commit
-   or done step, or the recovery of a commit begun) while its latest outcome
-   holds the commit back halts `awaiting-owner:review-outcome`, pointing at
-   the child's `review_attempts`. Its detail names the attempt, its outcome
-   and error kind, why no acceptance covers it, whether the history is
-   incomplete, and both ways on: run the review again (`--next
-   /engineer:critique`, or `--lane <subtask> --next /engineer:critique` in a
-   run with lanes), or the owner's `state.mjs review-accept` of that attempt in
-   the lane's checkout, then relaunch. The command names the workflow file's
-   own path, quoted as one shell word when it holds a space, a quote or a
-   non-ASCII character; only a path with a control character, which no line can
-   print, is left out, and the attempt is still named. Each way on is one the
-   command takes, the `--next` printed with nothing attached that
-   `parseForcedStep` would refuse: an attempt still open offers only the new
-   review, and a record this reader cannot use offers neither, saying to
-   upgrade the plugins or to repair `review_attempts` by hand. A parked lane's
-   `resolution.change` names the same ways on, from its record, since there is
-   no gate to clear. A verb next step is not held: the lane can review again.
-2. *A derived gate.* `review-outcome` is never stored (codes.mjs
-   `DERIVED_OWNER_GATES`): a recorded owner gate would stop classification
-   before the owner's `--next` and would be refused by Phase 7, leaving no way
-   on but a hand edit. The halt is a judgment halt, so the owner's `--next
-   <verb>` (a new review) replaces it; `--next /engineer:commit`, and `--lane
-   <id> /engineer:commit` with lanes, are refused while the lane is held. A
-   worker's step report cannot name it (the report's gates are the stored
-   ones). A forced commit a run with lanes took at its start meets the gate
-   again at each decision, so an outcome recorded since holds it too.
-3. *Resolution, restart, invalidation.* An acceptance naming the latest
-   attempt, with the outcome, error kind and reason it reads now, lets the
-   commit; the relaunched run reads it at its first look. A later review
-   attempt makes it stale for good, and so do another outcome of the attempt
-   accepted and a gap in the history found since (ADR-0028's note: the
-   acceptance records the record as the owner saw it); the lane halts again
-   on the new outcome. Whether the working tree is still the accepted one is Phase 7's
-   to compare (it reads the tree a snapshot would hold; this policy does not).
-   The observer asks it (`state.mjs review-gate`) in the checkout it looks from,
-   for a child of that checkout's branch whose accepted outcome blocks, and a
-   tree that moved or cannot be compared reads `held`: a serial run halts on
-   the gate with no worker spent. A run with lanes decides from the main
-   checkout, which reads no lane's tree, so there the commit step runs, Phase 7
-   refuses it (exit 10, writing nothing), and the look from the lane reads the
-   gate holding. `verifyStep` turns a commit step that leaves the gate holding,
-   with no new commit and no owner gate, into this same halt, with the record,
-   the ways on and what the worker reported; no new commit alone says nothing
-   of the review, so a step stopped by a refused subject or an unfinished
-   recovery, whose acceptance still covers its tree, is judged as any other. A
-   worker that reports the refusal as a failure stays `worker-failed`, so the
-   run cancels its peers, and carries the record. The latest outcome (while it
-   blocks) and the acceptance with its tree, its state (matching or stale, so a
-   re-acceptance of the same attempt and tree after it settled with another
-   outcome counts) and its time (so accepting the first tree again, after a
-   refusal at a second, counts: an act of the owner's is always reconsidered)
-   are added to the lane's fingerprint, only while
-   one of them is there, so a child with neither keeps the fingerprint it had:
-   a lane parked on the gate is picked up again when the owner accepts, accepts
-   again for another tree, or a new outcome is recorded (a no-run outcome
-   moves no count the fingerprint held; a skip after a failure clears
-   nothing, so it moves nothing). Those facts changed what a park's
-   fingerprint hashes, so `PARK_FINGERPRINT_VERSION` is 4: a park an earlier
-   release kept is never compared, and resumes only on the owner's release.
-4. *Reports.* Each subtask waiting to land carries its review record: the
-   landing-ready event and its log line (`review`), the terminal headline and
-   the `awaiting-landing` halt name each outcome (id, phase, type, outcome,
-   error kind or reason), whether the latest holds the commit back, the
-   acceptance, and when the history is incomplete with its reasons. A
-   review-outcome halt's record keeps the same, and so does a lane's park,
-   its entry in the run's lane report (a lane parked in the run, one parked
-   by an earlier run, a release re-applied), its printed park line, and the
-   halt a run with lanes ends on, the first held lane's as the halt's own and
-   every other held lane's in its `also`. The landing log's observation
-   key includes the outcomes, the acceptance and the completeness, so a new
-   outcome at unchanged commits is reported again; a record logged before the
-   outcomes observed none, and its subject is reported once more.
-
-*Version floor.* The driver's capability floor (roots.mjs) requires an
-engineer with `review-accept`, so a run never pairs this gate with an
-engineer that can neither record an acceptance nor refuse the commit itself.
-The observer also reads the record from an engineer's forward-compat carrier
-(`_forward_compat_unknowns`), where an engineer older than the record lists
-it.
-
-*Limits.* A workflow begun before C163 A1a holds only legacy review rows:
-its lane halts once on `unknown`, and the owner accepts or reviews again. A `done`
-step is held like a commit, since `/engineer:commit` commits whatever the tree
-holds; over a clean tree it would only close, and the owner's acceptance lets
-it. In a run with lanes a commit step over a moved tree spends a worker, as
-above. A park's fingerprint holds the acceptance, not the tree compare, so a
-lane parked over a moved tree is picked up by a new acceptance or a new outcome,
-not by restoring the tree alone. A legacy row pruned from `ensemble_results` is
-no longer seen (ADR-0028's note, Limits).
-
-Tests: `tests/orchestrator/test-autopilot-review-gate.mjs`, with a serial run and
-a run with lanes through the real `review-accept` and the real Phase 7;
-`scripts/mutation-specs/review-gate.mjs` (groups L, K and O, one case for each
-outcome class).
-
-## Amendment 2026-11-09 — critique convergence (C176)
-
-**The problem.** The critique → refine loop of an autopilot subtask had no
-bound. The 2026-10-14 amendment made a document deliverable's re-critique
-scoped, but every CRITICAL and MAJOR it found was still refine's work, and a
-code deliverable kept the full critique: each round could find a new MAJOR on
-a path almost no one walks, refine fixed it, and the next critique found
-another. Nothing counted the rounds.
-
-**The rule.** From a subtask's second critique, refine takes only CRITICAL
-findings and MAJOR findings on a frequent, natural path, test gaps included.
-A MAJOR on a rare path — a hand-made file, a gap of the same class as one
-already recorded, a special layout — is *deferred*: recorded as a known limit,
-its severity kept. This is the owner rule of 2026-10-25 (fix the defects and
-test gaps of frequent, natural use; document the rare cases as limits) applied
-by the loop itself. A recurring finding, one a peer contested and one a
-persona veto gate raised (designer accessibility, founder regulatory or
-safety) are never deferred. A subtask also gets a cap of critique rounds,
-3 by default: a critique at the cap with nothing CRITICAL or MAJOR open
-proceeds to the commit; one that is not clean parks only its lane on a new
-owner gate, `critique-cap`, and the owner decides.
-
-**Decisions.**
-
-- *D-A, the gate.* `critique-cap` is a stored engineer owner gate (heading
-  `### Critique cap reached`, anchor `critique-cap`), settable only with
-  `dispatch_target` on, as `pr-handling` is: only an autopilot subject has a
-  cap. The existing paths do the rest: the policy halts
-  `awaiting-owner:critique-cap` with the subtask id; the serial driver halts;
-  the lane scheduler parks that lane only; the owner's clear moves the lane's
-  fingerprint. The orchestrator's copy of the gate list
-  (`codes.mjs ENGINEER_OWNER_GATES`) gains it, held equal by the enum parity
-  test.
-- *D-B, the count.* `critique_rounds` counts the critique syntheses a
-  finish-verb recorded under an autopilot run, in all three of its forms
-  (verb, owner-decision, verify), inside the same locked write; an
-  interactive critique is no round, so a workflow the owner drives alone never
-  reaches the cap. It counts once per critique run:
-  `critique_rounds_entry` keeps the run identity last counted, the
-  critique-run markers of the body (`lib/review-scope.mjs critiqueEntries`)
-  plus one for a workflow the critique verb created. A finalize run again
-  counts nothing more; a critique stopped before its finish-verb counts
-  nothing; a failed peer attempt is an attempt, not a synthesis: the
-  finalize settles the run's review attempt before finish-verb counts, and a
-  launched run whose critique attempt closed last ended with an outcome that is
-  no synthesis (anything but passed, concerns or conflict) counts nothing. A
-  critique that launched no peer (skipped, or the peer unavailable) is a
-  local synthesis and counts. A critique
-  resumed after a failed verification batch is a new run and a new round. The
-  keys are flat integers at the frontmatter's tail (`dispatch_target`'s), so a
-  relaunch, an install and an older reader's carrier keep them.
-- *D-C, the limit.* `critique_round_limit` is absolute, the default 3 when
-  absent. A critique is at the cap when the rounds, this one counted, reach
-  the limit. Only an autopilot run enforces it: `finish-verb` refuses a next
-  step that goes on past the critique (any verb — refine, compose, a critique
-  again — or a verify request whose `on_pass` is one), naming
-  `OWNER_GATE=critique-cap`, before any write and again in its locked write,
-  so a writer between the two cannot carry a round past the cap. The
-  critique's finalize block asks the same before settle, its first write:
-  `state.mjs critique-cap-check` for the verb form (`NEXT_STEP_KIND`) and
-  `verify-request-check` for a request's `on_pass`, both read-only, so a
-  critique at the cap stops with nothing written and ends on its gate. Run
-  before the settle, they take the run as counted. At the cap only commit,
-  done and an owner gate end a critique.
-- *D-D, the deferral round.* A review ledger generation stores its `round`,
-  1 plus the closed generations of the current ledger; `critique-scope`
-  prints it, with the cap's `rounds` and `limit`. A `/<persona>:start`
-  lifecycle's critiques count here though they never call finish-verb, and a
-  ledger that replaced another starts again at round 1, so a finding recurring
-  in the old one cannot come back deferrable. With no ledger (a code
-  deliverable) the round is the cap's count with this run in it.
-- *D-E, deferral in the ledger.* `closeGeneration` alone decides it. A
-  reference may carry `defer` (its known limit, one line), `veto: true` and
-  `conflict: true`. A deferral is taken only from round 2, for a finding that
-  is MAJOR after this judgment, not recurring (computed before any deferral,
-  with each candidate still open), never flagged `veto` or `conflict` (the
-  flags are sticky across generations), and when every reference to it in
-  this close carries `defer`, with no `resolved` verdict and one severity.
-  Otherwise it stays open and the result names the refusal
-  (`deferral_refused`: round, critical, not-major, recurring, veto, conflict
-  or ambiguous). The disposition `deferred` keeps the severity, stores
-  `defer_reason`, and does not block convergence. A later critique that does
-  not report it, a full one included, leaves it deferred; one that reports it
-  with no `defer` opens it again; a `resolved` verdict resolves it. The schema
-  stays `review-ledger-1`.
-- *D-F, the owner's exits.* Clearing `critique-cap` with
-  `--grant-critique-rounds <n>` (n of 1 or more) and a verb as the next step
-  (refine) sets
-  the limit to the rounds counted plus n in the same write, so the cap does
-  not fire again at once. Or
-  the owner accepts the open findings as known limits: the next step commit,
-  with a resolution naming them. Acceptance is the owner's and distinct from
-  the automatic deferral; it grants no round and leaves the ledger as it is.
-  Clearing `critique-cap` or `peer-conflict` with another round while the
-  rounds have reached the limit, without a sufficient grant, is refused; a
-  grant on any other gate is refused; every clear stays refused under
-  autopilot (Q2). A `peer-conflict` at the cap keeps precedence: the conflict
-  ends on its own gate.
-
-**Where it lives.** `persona-pipeline/files/scripts/lib/review-scope.mjs`
-(D-D, D-E), `persona-pipeline/files/scripts/state.mjs` (D-A to D-C, D-F,
-the banner's wording), the critique, refine and finalize regions, and the
-engineer's `autopilot-mode.md` § Critique convergence; the orchestrator's
-`codes.mjs`.
-
-**Known limits.**
-
-- The budget is per workflow: a replacement attempt of a subtask (a new
-  workflow) starts its count again.
-- For a code deliverable, which has no ledger, the deferral is applied in the
-  critique's note (`### Known limits (deferred)`) by the runbook, not by code;
-  the cap still bounds the loop in code.
-- Mixed versions. An engineer older than this amendment never writes the gate
-  or the count, so the cap is simply not enforced, as before. An older reader
-  refuses a workflow that holds `critique-cap`: ship engineer and orchestrator
-  in one release, and recover a downgraded workflow by clearing the gate with
-  the newer engineer first. An older reader also refuses a ledger that holds
-  `deferred` and starts a new one with a full critique, which only costs a
-  round.
-- With no ledger, the deferral round is the cap's count, which only an
-  autopilot verb chain's finish-verb advances: a code deliverable's critique
-  in a `/<persona>:start` lifecycle, or in a persona with `dispatch_target`
-  off, stays at round 1 and defers nothing (it converges as before).
-- The run identity counts critique-run marker lines in the body; a note that
-  quotes one (or the resume heading of an older release) on a line of its
-  own, appended again by a rerun of its finalize, counts as another round.
-  Only a hand-made note does that.
-- The finalize's checks before settle cannot see how the run ended, and take
-  it as counted: a critique at the cap whose peer failed ends on
-  `critique-cap` (the owner grants a round), though finish-verb would have
-  counted nothing. The binding of a failed attempt to the run is the critique
-  attempt closed last (`recorded_at`, to the second; a tie goes to the later
-  entry), never the one registered last; a run settled by hand outside the
-  finalize, or two finalizes in one second, can leave another run's attempt
-  the one closed last.
-- A peer that fails on every critique counts no round, so the cap does not
-  bound that loop; the driver's other halts do.
-
-Tests: `tests/persona-pipeline/test-critique-convergence.mjs` (the deferral
-boundary in every persona, the cap's count, enforcement and the owner's
-exits), `tests/orchestrator/test-autopilot-critique-cap.mjs` (the serial halt,
-the lane park, and park → grant → resume through the real scheduler).
-
-## Amendment 2026-11-10 — the commit gate (C178)
-
-D4's rule that only `/engineer:commit` closes a workflow under autopilot gains
-a condition the driver holds before it starts that command. In a run that
-offers verification over a declaration with a suite kind, the commit step is
-taken only with the whole suite's evidence for the lane's tree as it is.
-Without it the driver resumes the workflow's last verb, with one fixed
-sentence of its own after the verb's command, so that the verb ends with the
-final verification. The owner's forced commit is refused the same way, and an
-interrupted commit is taken up only on the content it was admitted on.
-
-The sentence is the first text the driver puts after a verb's command. It is
-fixed in the driver (`policy.mjs` `FINAL_VERIFY_SENTENCE`), in a closed
-alphabet, and carries no word of the owner's, of a worker's or of a file's:
-the rule that the driver hands a worker only the step grammar holds with this
-one addition. The owner's `--next` still accepts the bare commands alone.
-
-The rule, its routes, its records and its limits are ADR-0068's (Amendment
-2026-11-10, rule 4). The resumed verb is usually a critique, and counts as a
-round of the critique cap of the 2026-11-09 amendment above.
 
 ## References
 
@@ -2443,3 +1759,34 @@ round of the critique cap of the 2026-11-09 amendment above.
   - `DESIGN.md` (the design source);
   - `design/plugin-changes.md` (the field/file/test specification);
   - `DECISIONS.md` (owner decisions D1–D23, W1–W9).
+- The `path:line` citations of the text adopted on 2026-09-29 were verified at
+  agentic-plugins `68438b9e` (the draft was written at `1346e36`).
+
+## History
+
+The records behind this decision, in [the history file](history/0063-autopilot-fresh-session-driver.md):
+
+- 2026-09-29, amendment cascade: [Amendment cascade (applied on acceptance, 2026-09-29)](history/0063-autopilot-fresh-session-driver.md#amendment-cascade-applied-on-acceptance-2026-09-29)
+- 2026-09-29, implementation note: [S0 (headless-safe runbooks)](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-09-29--s0-headless-safe-runbooks)
+- 2026-09-30, implementation note: [S1 (engineer schema 1.4)](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-09-30--s1-engineer-schema-14)
+- 2026-09-30, implementation note: [S2 (orchestrator schema 1.2 + plan approval)](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-09-30--s2-orchestrator-schema-12--plan-approval)
+- 2026-09-30, implementation note: [S6 (`/orchestrator:next` approval gate)](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-09-30--s6-orchestratornext-approval-gate)
+- 2026-10-01, implementation note: [S3+S4 (verb runbook deltas and `/engineer:commit`)](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s3s4-verb-runbook-deltas-and-engineercommit)
+- 2026-10-01, implementation note: [S8 (the driver and `/orchestrator:autopilot`)](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-10-01--s8-the-driver-and-orchestratorautopilot)
+- 2026-10-08, amendment: [worktree lanes (ADR-0067)](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-08--worktree-lanes-adr-0067)
+- 2026-10-13, amendment: [bounds and the report close (C105, C136, C127, C123)](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-13--bounds-and-the-report-close-c105-c136-c127-c123)
+- 2026-10-14, amendment: [document deliverables converge (C120)](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-14--document-deliverables-converge-c120)
+- 2026-10-14, amendment: [the ceremony gates (C120)](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-14--the-ceremony-gates-c120)
+- 2026-10-14, amendment: [the landing report in the ledger (C123)](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-14--the-landing-report-in-the-ledger-c123)
+- 2026-10-15, note: the owner's ruling on the recurring M3 finding, inside [document deliverables converge (C120)](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-14--document-deliverables-converge-c120)
+- 2026-10-19, amendment: [lanes that keep going (ADR-0068, slice 1)](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-19--lanes-that-keep-going-adr-0068-slice-1)
+- 2026-10-19, amendment: [stall detection and the driver's event file (ADR-0068, slice 2)](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-19--stall-detection-and-the-drivers-event-file-adr-0068-slice-2)
+- 2026-10-20, amendment: [driver-run verification and the heavy-work lock (ADR-0068, slice 3)](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-20--driver-run-verification-and-the-heavy-work-lock-adr-0068-slice-3)
+- 2026-10-20, amendment: [main-session instructions and rebinding (ADR-0068, slice 4)](history/0063-autopilot-fresh-session-driver.md#amendment-2026-10-20--main-session-instructions-and-rebinding-adr-0068-slice-4)
+- 2026-11-04, implementation note: [a verb step's evidence (C163)](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-11-04--a-verb-steps-evidence-c163)
+- 2026-11-07, implementation note: [the review gate (C163 A1b)](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-11-07--the-review-gate-c163-a1b)
+- 2026-11-07, implementation note: [review binding under autopilot (C163 A2b, ADR-0069)](history/0063-autopilot-fresh-session-driver.md#implementation-note-2026-11-07--review-binding-under-autopilot-c163-a2b-adr-0069)
+- 2026-11-09, amendment: [critique convergence (C176)](history/0063-autopilot-fresh-session-driver.md#amendment-2026-11-09--critique-convergence-c176)
+- 2026-11-10, amendment: [the commit gate (C178)](history/0063-autopilot-fresh-session-driver.md#amendment-2026-11-10--the-commit-gate-c178)
+- 2026-11-12, observation: [per-step model settings proposed (ADR-0071)](history/0063-autopilot-fresh-session-driver.md#observation-2026-11-12--per-step-model-settings-proposed-adr-0071)
+- 2026-11-14, superseded text: [the Status section before the ADR-0070 migration](history/0063-autopilot-fresh-session-driver.md#superseded-text-2026-11-14--the-status-section-before-the-adr-0070-migration)
