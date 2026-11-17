@@ -60,7 +60,7 @@ const C84_MARKER_OFF =
 export const MUTATIONS = [
   // ---- S: state.mjs ------------------------------------------------------------
   {
-    id: 'S1', file: STATE, tests: [T_AV, T_RB],
+    id: 'S1', file: STATE, tests: [T_AV],
     from: '  if (autopilot || ownerGate !== undefined) {',
     to: '  if (ownerGate !== undefined) {',
     why: 'an autopilot verb ends terminal, so the next Stop archives it before /engineer:commit',
@@ -84,13 +84,13 @@ export const MUTATIONS = [
     why: 'a verb that calls set-terminal under autopilot closes the workflow',
   },
   {
-    id: 'S5', file: STATE, tests: [T_AV, T_RB],
+    id: 'S5', file: STATE, tests: [T_AV],
     from: '  if (mode.active && gate) {',
     to: '  if (false) {',
     why: 'an autopilot step runs over a pending owner gate',
   },
   {
-    id: 'S6', file: STATE, tests: [T_AV, T_RB],
+    id: 'S6', file: STATE, tests: [T_AV],
     // The branch's condition alone: its body (since ADR-0068 Decision 5, the
     // verification offer before the return) is no part of the anchor.
     from: '  if (mode.active) {',
@@ -326,7 +326,7 @@ export const MUTATIONS = [
   },
 
   {
-    id: 'X9', file: STATE, tests: [T_AV, T_RB],
+    id: 'X9', file: STATE, tests: [T_AV],
     from: "      (resolution !== undefined ? `${resolution.trim()}\\n\\n` : '') +\n",
     to: '',
     why: 'the owner\'s decision is dropped, so the next step is published without it (round-3 F1)',
@@ -341,8 +341,8 @@ export const MUTATIONS = [
   // ---- C: the tests' own controls ----------------------------------------------
   {
     id: 'C1', file: T_RB, tests: [T_RB],
-    from: '              const r = runBlock(shell, dir, find, { STUB_ACTIVE: wf }, old);',
-    to: '              const r = runBlock(shell, dir, find, { STUB_ACTIVE: wf }, P.root);',
+    from: '            const r = runBlock(shell, dir, find, { STUB_ACTIVE: wf }, old);',
+    to: '            const r = runBlock(shell, dir, find, { STUB_ACTIVE: wf }, P.root);',
     why: 'the old-install case runs the current scripts, so it cannot fail: its stand-in really lacks the preflight. (The released-scripts case skips in this harness, whose copy has no git tags.)',
   },
   // Why P1 bites. The half-commit case has two assertions that can see a

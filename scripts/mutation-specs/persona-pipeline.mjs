@@ -2861,7 +2861,7 @@ export const MUTATIONS = [
       from: 'node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" settle \\\n',
       to: 'true "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" settle \\\n',
     }),
-    killed_by: /(?:^| > )engineer: verb runbook blocks \(bash, committed\) > frame's finalize: /,
+    killed_by: /(?:^| > )engineer: verb runbook blocks \(bash, committed\) > compose's finalize: /,
     why: "engineer's generated finalize never settles: a completed run's verdict is not recorded and its pending row stays",
   },
   // Dropped with C1 (E1 rule 3): N36 — the phase note's wording, which no program reads (the characterization fixture records it, C3's to judge).
@@ -3342,21 +3342,21 @@ export const MUTATIONS = [
       to: 'true "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" settle \\\n',
     }),
     killed_by: [
-      /(?:^| > )engineer: verb runbook blocks \(bash, assembled from the templates\) > frame's finalize: /,
-      /(?:^| > )founder: verb runbook blocks \(bash, assembled from the templates\) > frame's finalize: /,
+      /(?:^| > )engineer: verb runbook blocks \(bash, assembled from the templates\) > compose's finalize: /,
+      /(?:^| > )founder: verb runbook blocks \(bash, assembled from the templates\) > compose's finalize: /,
     ],
     why: 'the assembled runs are skipped although the template differs from the committed runbooks, so a finalize defect the next --write would generate passes',
   },
   {
-    id: 'M90', tests: [T_VERB_RB],
+    id: 'M90', tests: [T_S14],
     prepare: (copy, tools) => canonicalDefect(copy, tools, {
       dest: 'scripts/state.mjs',
       from: "  if (named && capabilityOn('dispatch_target') && host === 'claude') {\n",
       to: "  if (named && host === 'claude') {\n",
     }),
     killed_by: [
-      /(?:^| > )founder: verb runbook blocks \(bash, committed\) > Phase 0: /,
-      /(?:^| > )designer: verb runbook blocks \(bash, committed\) > Phase 2 under an autopilot run: /,
+      /(?:^| > )founder: autopilot-preflight \(ADR-0066 Decision 3: dispatch_target off\) > an inherited AGENTIC_AUTOPILOT: one line saying it is ignored/,
+      /(?:^| > )designer: schema 1\.4 — finish-verb \(commit_surface off, dispatch_target off\) > an inherited AGENTIC_AUTOPILOT does not suppress the terminal write/,
     ],
     why: 'an inherited AGENTIC_AUTOPILOT makes founder and designer, which are no dispatch target, follow the autopilot rules: the banner, a refusal at a gate, a verb that never closes',
   },
