@@ -122,6 +122,8 @@ const T_OBSERVE = 'tests/orchestrator/test-autopilot-observe.mjs';
 const T_DRIVER = 'tests/orchestrator/test-autopilot-driver.mjs';
 const T_ADMISSION = 'tests/orchestrator/test-admission.mjs';
 const T_ADMISSION_RUNBOOKS = 'tests/orchestrator/test-admission-runbooks.mjs';
+const T_ADMISSION_CLOSE = 'tests/orchestrator/test-admission-close-runbooks.mjs';
+const T_ADMISSION_E2E = 'tests/orchestrator/test-admission-runbooks-e2e.mjs';
 const T_DONE_RUNBOOK = 'tests/orchestrator/test-done-runbook.mjs';
 const T_CLI = 'tests/orchestrator/test-autopilot-cli.mjs';
 const T_CUTOVER = 'tests/orchestrator/test-cutover.mjs';
@@ -167,6 +169,8 @@ const T_PROV_RF = 'tests/orchestrator/test-subtask-provenance.mjs';
 const WAITING_RF = /a plan revision during the join that makes the subtask wait on a predecessor is judged after it/;
 const BINDING_RF = /a plan revision after the switch that changes the subtask's branch, verb, profile or topic refuses the writeback/;
 const EXPECT_API_RF = /refuses the write when the subtask verb, profile or topic no longer matches the expectation/;
+// RF13-RF15: the subtask-update CLI's own dispatcher, a CLI call for each flag.
+const T_EXPECT_CLI_RF = 'tests/orchestrator/test-subtask-update-expect-cli.mjs';
 
 /** Move the re-read chunk of `file` (from `startMarker` through `endMarker`) to just before `before`. */
 // The Codex next's join and switching blocks are separate shell calls that
@@ -273,7 +277,7 @@ const T_SEL_DS = 'tests/persona-pipeline/test-dispatch-selection.mjs';
 const T_DISC_DS = 'tests/orchestrator/test-discover-engineer.mjs';
 const STOP_REFUSED_DS = /a recorded dispatch, the branch revised — the Stop binds nothing on the macro/;
 
-export const TESTS = [T_ROOT, T_WRITERS, T_WORKER, T_HERMETIC, T_ORCH, T_RESOLVER, T_OBSERVE, T_DRIVER, T_ADMISSION, T_ADMISSION_RUNBOOKS, T_DONE_RUNBOOK, T_CLI, T_CUTOVER, 'tests/orchestrator/test-stop-archive.mjs', 'tests/persona-pipeline/test-state-root-archive-resume.mjs', T_TERM_DS, T_P7_DS, T_STOP_DS, T_NPP_DS, T_SEL_DS, T_DISC_DS];
+export const TESTS = [T_ROOT, T_WRITERS, T_WORKER, T_HERMETIC, T_ORCH, T_RESOLVER, T_OBSERVE, T_DRIVER, T_ADMISSION, T_ADMISSION_RUNBOOKS, T_ADMISSION_CLOSE, T_ADMISSION_E2E, T_EXPECT_CLI_RF, T_DONE_RUNBOOK, T_CLI, T_CUTOVER, 'tests/orchestrator/test-stop-archive.mjs', 'tests/persona-pipeline/test-state-root-archive-resume.mjs', T_TERM_DS, T_P7_DS, T_STOP_DS, T_NPP_DS, T_SEL_DS, T_DISC_DS];
 
 export const MUTATIONS = [
   // ---- L: the library -------------------------------------------------------
@@ -1993,28 +1997,28 @@ export const MUTATIONS = [
     killed_by: /a session holding the macro lock refuses the write, naming it/,
   },
   {
-    id: 'A13', file: 'plugins/orchestrator/commands/finalize.md', tests: [T_ADMISSION_RUNBOOKS],
+    id: 'A13', file: 'plugins/orchestrator/commands/finalize.md', tests: [T_ADMISSION_CLOSE],
     from: "ADMISSION=\"$(node \"$ORCH_PLUGIN_ROOT/scripts/state.mjs\" admission join \\\n  --macro \"$MACRO_ID\" --checkout \"$REPO_ROOT\" --command finalize",
     to: "ADMISSION=\"$(true \\\n  --macro \"$MACRO_ID\" --checkout \"$REPO_ROOT\" --command finalize",
     why: "finalize writes beside a session holding the macro lock",
     killed_by: /finalize\.md \(\w+\): a session holding the macro lock refuses before the first write/,
   },
   {
-    id: 'A14', file: 'plugins/orchestrator/commands/finalize.md', tests: [T_ADMISSION_RUNBOOKS],
+    id: 'A14', file: 'plugins/orchestrator/commands/finalize.md', tests: [T_ADMISSION_CLOSE],
     from: "}\ntrap 'release_admission' EXIT\n# ADR-0068 Decision 2, item 8 — the holds are checked before the first bulk\n",
     to: "}\n# ADR-0068 Decision 2, item 8 — the holds are checked before the first bulk\n",
     why: "finalize never releases its admission",
     killed_by: /finalize\.md: a step that fails after the first write releases the admission|finalize\.md \(\w+\): a session holding/,
   },
   {
-    id: 'A15', file: 'plugins/orchestrator/commands/abort.md', tests: [T_ADMISSION_RUNBOOKS],
+    id: 'A15', file: 'plugins/orchestrator/commands/abort.md', tests: [T_ADMISSION_CLOSE],
     from: "ADMISSION=\"$(node \"$ORCH_PLUGIN_ROOT/scripts/state.mjs\" admission join \\\n  --macro \"$MACRO_ID\" --checkout \"$REPO_ROOT\" --command abort",
     to: "ADMISSION=\"$(true \\\n  --macro \"$MACRO_ID\" --checkout \"$REPO_ROOT\" --command abort",
     why: "abort writes beside a session holding the macro lock",
     killed_by: /abort\.md \(\w+\): a session holding the macro lock refuses before the first write/,
   },
   {
-    id: 'A16', file: 'plugins/orchestrator/commands/resume.md', tests: [T_ADMISSION_RUNBOOKS],
+    id: 'A16', file: 'plugins/orchestrator/commands/resume.md', tests: [T_ADMISSION_CLOSE],
     from: "ADMISSION=\"$(node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" admission join \\\n  --macro \"$MACRO_ID\" --checkout \"$REPO_ROOT\" --command resume",
     to: "ADMISSION=\"$(true \\\n  --macro \"$MACRO_ID\" --checkout \"$REPO_ROOT\" --command resume",
     why: "resume archives beside a session holding the macro lock",
@@ -2072,21 +2076,21 @@ export const MUTATIONS = [
   },
   ...['finalize', 'abort'].flatMap((name, i) => [
     {
-      id: `A${24 + 2 * i}`, file: `plugins/orchestrator/core/skills/${name}/SKILL.md`, tests: [T_ADMISSION_RUNBOOKS],
+      id: `A${24 + 2 * i}`, file: `plugins/orchestrator/core/skills/${name}/SKILL.md`, tests: [T_ADMISSION_CLOSE],
       from: "trap 'release_admission' EXIT\nnode \"<orchestrator-plugin-root>/scripts/state.mjs\" admission check \\\n  --macro \"$MACRO_ID\" --checkout \"$REPO_ROOT\" --admission \"$ADMISSION\" || exit 1\n# ARCHIVE TIMING",
       to: "trap 'release_admission' EXIT\n# ARCHIVE TIMING",
       why: `the Codex ${name} sets the macro terminal after its admission was released`,
       killed_by: new RegExp(`${name} \\(Codex mirror\\): an admission released after Phase 1 stops Phases 2 and 3`),
     },
     {
-      id: `A${25 + 2 * i}`, file: `plugins/orchestrator/core/skills/${name}/SKILL.md`, tests: [T_ADMISSION_RUNBOOKS],
+      id: `A${25 + 2 * i}`, file: `plugins/orchestrator/core/skills/${name}/SKILL.md`, tests: [T_ADMISSION_CLOSE],
       from: '--admission "$ADMISSION" || {\n  node "<orchestrator-plugin-root>/scripts/state.mjs" admission release \\\n    --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION"\n  exit 1\n}\n```\n\n---\n\n## Phase 3',
       to: '--admission "$ADMISSION" || true\n```\n\n---\n\n## Phase 3',
       why: `the Codex ${name} archives children after its admission was released`,
       killed_by: new RegExp(`${name} \\(Codex mirror\\): an admission released after Phase 1 stops Phases 2 and 3`),
     },
     {
-      id: `A${28 + i}`, file: `plugins/orchestrator/core/skills/${name}/SKILL.md`, tests: [T_ADMISSION_RUNBOOKS],
+      id: `A${28 + i}`, file: `plugins/orchestrator/core/skills/${name}/SKILL.md`, tests: [T_ADMISSION_CLOSE],
       from: '--admission "$ADMISSION" || {\n  node "<orchestrator-plugin-root>/scripts/state.mjs" admission release \\\n    --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION"\n  exit 1\n}\n```\n\n---\n\n## Phase 3',
       to: '--admission "$ADMISSION" || exit 1\n```\n\n---\n\n## Phase 3',
       why: `the Codex ${name} leaves its admission behind when the Phase 2 check fails on a permission error`,
@@ -2702,11 +2706,11 @@ export const MUTATIONS = [
     killed_by: [BINDING_RF, EXPECT_API_RF],
   },
   ...[['expectVerb', 'expect-verb', 13], ['expectProfile', 'expect-profile', 14], ['expectTopic', 'expect-topic', 15]].map(([option, flag, n]) => ({
-    id: `RF${n}`, file: ORCH_STATE, tests: [T_RA],
+    id: `RF${n}`, file: ORCH_STATE, tests: [T_EXPECT_CLI_RF],
     from: `          ${option}: flags['${flag}'],\n`,
     to: '',
     why: `the subtask-update CLI drops --${flag}, so the writeback binds the child whatever that field now says`,
-    killed_by: BINDING_RF,
+    killed_by: new RegExp(`CLI: --${flag} that the subtask's \\w+ no longer matches refuses the write`),
   })),
   {
     id: 'RF16', file: ORCH_STATE, tests: [T_PROV_RF],
