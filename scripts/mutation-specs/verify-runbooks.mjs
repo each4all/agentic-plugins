@@ -20,13 +20,16 @@
 
 const T_REC = 'tests/persona-pipeline/test-verify-record.mjs';
 const T_VR = 'tests/persona-pipeline/test-verify-runbooks.mjs';
+// The rules the CLI applies on a verb's Phase 0, in process (the banner, the
+// results text) and its verify-results dispatcher, one CLI call.
+const T_VRES = 'tests/persona-pipeline/test-verify-results.mjs';
 const T_WORK = 'tests/orchestrator/test-autopilot-worker.mjs';
 
 const STATE = 'plugins/engineer/scripts/state.mjs';
 const ENG = 'plugins/engineer';
 const WORKER = 'plugins/orchestrator/adapters/claude/autopilot/worker.mjs';
 
-export const TESTS = [T_REC, T_VR, T_WORK];
+export const TESTS = [T_REC, T_VR, T_VRES, T_WORK];
 
 export const MUTATIONS = [
   // ---- K: the check before the first write ---------------------------------
@@ -66,7 +69,7 @@ export const MUTATIONS = [
     killed_by: /each refusal of finish-verb, with the same message/,
   },
   {
-    id: 'K7', file: STATE, tests: [T_VR],
+    id: 'K7', file: STATE, tests: [T_VRES],
     from: "    const offer = surface === 'verb' ? verifyOffer({ env, host, cwd }) : null;\n",
     to: '    const offer = null;\n',
     why: 'the preflight banner no longer says whether the run offers verification, so a step cannot tell which branch of the long-check guidance applies',
@@ -233,7 +236,7 @@ export const MUTATIONS = [
     killed_by: /digest alike; each change moves it/,
   },
   {
-    id: 'R5', file: STATE, tests: [T_VR],
+    id: 'R5', file: STATE, tests: [T_VRES],
     from: '      if (r && r.failing_tests.length > 0) {\n',
     to: '      if (false) {\n',
     why: 'the resumed verb never sees which tests failed, the evidence it works from',
@@ -241,21 +244,21 @@ export const MUTATIONS = [
   },
 
   {
-    id: 'R6', file: STATE, tests: [T_VR],
+    id: 'R6', file: STATE, tests: [T_VRES],
     from: "  const added = last ? last.checks.filter((c) => c.origin === 'driver').length : 0;\n",
     to: '  const added = 0;\n',
     why: 'the header counts the request\'s checks while the rows list the batch\'s, the driver\'s additions among them',
     killed_by: /the header counts the checks requested and those the driver added apart/,
   },
   {
-    id: 'R7', file: STATE, tests: [T_VR],
+    id: 'R7', file: STATE, tests: [T_VRES],
     from: "        lines.push(typeof r.log === 'string' && r.log !== ''\n",
     to: '        lines.push(true\n',
     why: 'a result that kept no log prints a log path ending /null',
     killed_by: /a result with no log says so/,
   },
   {
-    id: 'R8', file: STATE, tests: [T_VR],
+    id: 'R8', file: STATE, tests: [T_VRES],
     from: "        if ('current-tree' in flags && flags['current-tree'] !== 'true' && flags['current-tree'] !== 'false') throw new Error('--current-tree is true or false');\n",
     to: '',
     why: '--current-tree yes, 1 or TRUE is silently read as false, and the results are read against no tree',

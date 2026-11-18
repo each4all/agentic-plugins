@@ -4,13 +4,18 @@
 // temporary repositories holding the repository's check declaration, with the
 // persona's real scripts, for every persona whose runbooks render the verify
 // form (dispatch_target on; a persona with it off renders none, which the
-// first case pins).
+// first case pins). Each branch and refusal runs once here, in bash; the happy
+// path of every runbook rendering the verify form runs end to end in
+// test-verify-runbooks-e2e.mjs (large tier, every shell), and the rules the
+// CLI applies (the preflight banner, the results text, verify-results' flag)
+// in test-verify-results.mjs, in process. The fixture they share is
+// _verify-runbook-fixture.mjs.
 //
 // Covers:
 //   - the finalize of compose, refine and critique (each finalize template:
 //     the plain one and the consensus variant), on a macro's child with the
 //     operation Phase 0 opened: a request in TEXT_DIR under an offering run
-//     ends the verb with the next step verify and the request, the operation
+//     ends compose with the next step verify and the request, the operation
 //     closed and no terminal marker; with no request, the verb form; a run
 //     that offers no verification, a request the last write would refuse,
 //     and (consensus) a conflict verdict stop the block before any write; run
@@ -18,12 +23,12 @@
 //     stops it before any write, the same request is taken again, and one
 //     whose last write failed is recorded on the rerun; a dangling request
 //     link refuses, and (critique) a conflict for a real peer run stops the
-//     block before settle;
-//   - the resume of a verb prints the results: a failed batch's failing test
-//     and log, a passed batch's results as applying to the tree now (the
-//     on_pass critique), not applying once the tree changed, nothing with no
-//     request, and a warning (exit 0) for a results record a later release
-//     wrote;
+//     block before settle; an owner gate beside a request, OWNER_GATE's
+//     owner-decision form, the critique cap and NEXT_STEP_KIND;
+//   - the resume of a verb prints the results: a passed batch's results as
+//     applying to the tree now (the on_pass critique), not applying once the
+//     tree changed, and a warning (exit 0) for a results record a later
+//     release wrote;
 //   - the persona's tree digest is the driver's (lane-digest.mjs treeDigest)
 //     on a tree with staged, unstaged, untracked, assume-unchanged and
 //     skip-worktree changes and the driver's lock fence;
@@ -33,147 +38,28 @@
 //
 // Run via `npm test -- tests/persona-pipeline/test-verify-runbooks.mjs`.
 
-import './_drop-session.mjs';
-import { describe, it, after } from 'node:test';
+import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile, unlink } from 'node:fs/promises';
+import { mkdir, readFile, symlink, unlink, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
-import { renderingDeclaration } from '../../scripts/lib/persona-pipeline.mjs';
 import { treeDigest as driverTreeDigest } from '../../plugins/orchestrator/scripts/lib/lane-digest.mjs';
-import { REPO_ROOT, personaInfo, personasFor } from './_personas.mjs';
+import { personaInfo } from './_personas.mjs';
+import { fileTmpDirs } from '../_tmp.mjs';
+import { PERSONAS, REQ, RUN, VERBS, VERIFY_PERSONAS, fill, git, verifyFixture, withGate } from './_verify-runbook-fixture.mjs';
 
-for (const k of Object.keys(process.env)) if (k.startsWith('GIT_')) delete process.env[k];
+// The repositories' directories, removed when the file's tests end: taken
+// here, before any test is declared (_verify-runbook-fixture.mjs).
+const tmpDirs = fileTmpDirs();
 
-const RUN = 'autopilot-20261031T010203Z-abcdef';
-const MACRO = 'macro-plan-20261031T000000Z-abcdef';
-const SUBTASK = 'verify-persona';
-const DECLARATION = readFileSync(join(REPO_ROOT, '.agentic-plugins/verify-checks.json'), 'utf8');
-const VERBS = { compose: 'critique', refine: 'critique', critique: 'refine' };
-const REQ = Object.freeze({
-  checks: [{ kind: 'test', args: { files: ['tests/a.mjs'] } }, { kind: 'mutate', args: { spec: 'scripts/mutation-specs/s.mjs', ids: ['S1'] } }],
-  on_pass: { kind: 'verb', verb: 'critique', confidence: 'HIGH' },
-  confidence: 'HIGH',
-});
-
-const TEXT_DIR_LINE = "TEXT_DIR='<directory from step 1>'";
-const DISPATCH_DIR_LINE = "DISPATCH_DIR='<the directory the dispatch block ran with; empty when no run launched; the run ledger directory when a run launched and that directory is gone>'";
-const VERDICT_LINE = "VERDICT='<the synthesis verdict>'";
-const CONFIDENCE_LINE = "CONFIDENCE='<HIGH|MEDIUM|LOW>'";
-const OP_DIR_LINE = "OP_DIR='<the operation directory the Phase 0 block printed as OP_DIR; empty when it printed none>'";
-
-function section(text, heading) {
-  const start = text.indexOf(heading);
-  ok(start >= 0, `missing ${heading}`);
-  const next = text.indexOf('\n## ', start + heading.length);
-  return text.slice(start, next < 0 ? undefined : next);
-}
-const blocks = (text) => [...text.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]);
-const dedent = (b) => {
-  const lines = b.split('\n');
-  const ind = Math.min(...lines.filter((l) => l.trim()).map((l) => l.match(/^ */)[0].length));
-  return lines.map((l) => l.slice(ind)).join('\n');
-};
-function fill(block, placeholder, value) {
-  ok(block.includes(placeholder), `the block holds ${placeholder}`);
-  return block.replaceAll(placeholder, value);
-}
-
-const PERSONAS = personasFor('scripts/state.mjs');
-
-describe('the verify form reaches exactly the personas with dispatch_target on (guards a vacuous pass)', () => {
-  it('engineer renders it in every verb finalize; a persona with dispatch_target off renders none of it', () => {
-    const on = PERSONAS.filter((p) => personaInfo(p).capabilities.dispatch_target === true);
-    ok(on.includes('engineer'), 'engineer has dispatch_target on');
-    for (const persona of PERSONAS) {
-      const P = personaInfo(persona);
-      for (const verb of Object.keys(VERBS)) {
-        const text = readFileSync(P.path(`commands/${verb}.md`), 'utf8');
-        const has = /--next-step-kind verify --next-step-confidence "\$CONFIDENCE"/.test(text) && text.includes('verify-request-check');
-        strictEqual(has, on.includes(persona), `${persona}/${verb}`);
-      }
-    }
-  });
-});
-
-const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', '-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-
-for (const persona of PERSONAS.filter((p) => personaInfo(p).capabilities.dispatch_target === true)) {
-  const P = personaInfo(persona);
-  const STATE = P.path('scripts/state.mjs');
-  const S = await import(pathToFileURL(STATE).href);
-  const V = await import(pathToFileURL(P.path('scripts/lib/verify.mjs')).href);
-  const decl = V.parseDeclaration(DECLARATION);
-  const ROOT_ENV = renderingDeclaration(P.declaration).derived.root_env;
-  const text = Object.fromEntries([...Object.keys(VERBS), 'decide'].map((v) => [v, readFileSync(P.path(`commands/${v}.md`), 'utf8')]));
-  const resumeOf = (verb) => blocks(section(text[verb], '## Phase 0')).map(dedent).find((b) => b.includes('state.mjs" append'));
-  const finalizeOf = (verb) => blocks(section(text[verb], '## Phase 2 — State finalize')).filter((b) => !/^\s*mktemp -d /.test(b))[0];
-
-  const areas = [];
-  after(() => Promise.all(areas.map((d) => rm(d, { recursive: true, force: true }))));
-
-  async function withRepo(fn) {
-    const area = await realpath(await mkdtemp(join(tmpdir(), `${persona}-verify-runbooks-`)));
-    areas.push(area);
-    const dir = join(area, 'repo');
-    await mkdir(dir);
-    git(dir, 'init', '-q', '-b', 'feat/r');
-    await writeFile(join(dir, '.gitignore'), '.agentic-plugins/state/\n.agentic-plugins/runs/\n');
-    for (const f of ['tests/a.mjs', 'scripts/mutation-specs/s.mjs', 'notes.txt']) {
-      await mkdir(join(dir, f, '..'), { recursive: true });
-      await writeFile(join(dir, f), '// fixture\n');
-    }
-    await mkdir(join(dir, '.agentic-plugins'), { recursive: true });
-    await writeFile(join(dir, '.agentic-plugins/verify-checks.json'), DECLARATION);
-    git(dir, 'add', '-A');
-    git(dir, 'commit', '-q', '-m', 'chore: base', '--no-verify');
-    const sha = git(dir, 'rev-parse', 'HEAD');
-    // The hold protocol a macro child's persona operation is published under.
-    const holds = join(dir, '.agentic-plugins/runs/autopilot/holds', MACRO);
-    await mkdir(holds, { recursive: true });
-    await writeFile(join(holds, 'protocol.json'), JSON.stringify({ schema: 'agentic-holds-protocol-1', protocol: 1, written_by: 'test', at: '2026-10-31T00:00:00Z' }));
-    const head = sha;
-    const digest = execFileSync('shasum', ['-a', '256'], { input: execFileSync('git', ['status', '--porcelain=v1', '-z', '--untracked-files=normal'], { cwd: dir }), encoding: 'utf8' }).trim().split(/\s+/)[0];
-    const wf = execFileSync('node', [STATE, 'create', '--repo-root', dir, '--verb', 'compose', '--host', 'claude',
-      '--parent-workflow', MACRO, '--originating-subtask', SUBTASK,
-      '--git-baseline-branch', 'feat/r', '--git-baseline-head', head, '--status-digest', digest,
-      '--original-request', 'verify runbooks fixture'], { encoding: 'utf8' }).trim();
-    return fn({ dir, sha, wf, area });
-  }
-
-  const offer = (sha, step = '3') => ({ AGENTIC_AUTOPILOT: RUN, AGENTIC_AUTOPILOT_STEP: step, AGENTIC_AUTOPILOT_VERIFY: sha });
-  function runBlock(dir, block, extra = {}) {
-    const env = { ...process.env, [ROOT_ENV]: P.root, TMPDIR: tmpdir(), ...extra };
-    delete env.CLAUDE_PLUGIN_ROOT;
-    return spawnSync('bash', ['-c', block], { cwd: dir, encoding: 'utf8', env });
-  }
-  // Phase 0's resume, as the step runs it: it opens the verb's operation on
-  // the macro's child and prints its directory.
-  function resume(dir, verb, env) {
-    const b = resumeOf(verb).replaceAll('"<profile or empty>"', '""');
-    const r = runBlock(dir, b, env);
-    strictEqual(r.status, 0, r.stderr);
-    const opDir = /^OP_DIR=(.+)$/m.exec(r.stdout)?.[1];
-    ok(opDir, r.stdout);
-    return { ...r, opDir };
-  }
-  async function textDir(area, files) {
-    const d = await mkdtemp(join(area, 'text '));
-    for (const [name, content] of Object.entries(files)) {
-      await writeFile(join(d, name), typeof content === 'string' ? `${content}\n` : `${JSON.stringify(content, null, 2)}\n`);
-    }
-    return d;
-  }
-  const finalize = (verb, { tdir, opDir, verdict = 'agreed' }) => fill(fill(fill(fill(fill(finalizeOf(verb), TEXT_DIR_LINE, `TEXT_DIR='${tdir}'`),
-    DISPATCH_DIR_LINE, "DISPATCH_DIR=''"), VERDICT_LINE, `VERDICT='${verdict}'`), CONFIDENCE_LINE, "CONFIDENCE='HIGH'"), OP_DIR_LINE, `OP_DIR='${opDir}'`);
-  const texts = (extra = {}) => ({ 'note.md': '### Ensemble synthesis: fixture', 'summary.txt': 'fine', 'next-action.txt': 'Verify the change, then critique', ...extra });
-  const front = async (wf) => (await S.readWorkflow(wf)).frontmatter;
+for (const persona of VERIFY_PERSONAS) {
+  const fx = await verifyFixture(persona, tmpDirs);
+  const { S, withRepo, offer, runBlock, resume, textDir, finalize, texts, front, realRun } = fx;
 
   describe(`${persona}: the finalize hands long checks to the verification step (bash, committed runbooks)`, () => {
+    // The verify form's two branches, with the operation Phase 0 opened
+    // closed by each, in every verb with long-check guidance.
     for (const [verb, nextVerb] of Object.entries(VERBS)) {
       it(`${verb}: a request under an offering run ends with next step verify, the request, the operation closed and no terminal marker; with none, the verb form`, async () => {
         await withRepo(async ({ dir, sha, wf, area }) => {
@@ -236,7 +122,6 @@ for (const persona of PERSONAS.filter((p) => personaInfo(p).capabilities.dispatc
     // verify would hide the gate, and the driver would run on_pass past it.
     // decide's owner selection or veto records decide-conflict under its
     // ordinary synthesis heading, so only OWNER_GATE names it.
-    const withGate = (block, gate) => fill(block, "OWNER_GATE=''", `OWNER_GATE='${gate}'`);
     for (const verb of [...Object.keys(VERBS), 'decide']) {
       it(`${verb}: an owner gate (OWNER_GATE, or its note's heading) beside a request stops the block before any write`, async () => {
         await withRepo(async ({ dir, sha, wf, area }) => {
@@ -313,30 +198,6 @@ for (const persona of PERSONAS.filter((p) => personaInfo(p).capabilities.dispatc
       });
     }
 
-    // A stub companion that answers at once, and the real runner's dispatch,
-    // as the runbook's dispatch block runs it: a completed run, pending on the
-    // workflow until the finalize settles it, and the dispatch directory the
-    // finalize reads it from.
-    async function realRun({ dir, sha, wf, area, phase }) {
-      const companions = join(area, 'companions');
-      await mkdir(companions);
-      await writeFile(join(companions, 'discover-peer.mjs'), 'export async function discoverPeerCompanion({ peer } = {}) { return { ok: true, path: new URL("./" + peer + "-companion.mjs", import.meta.url).pathname }; }\n');
-      await writeFile(join(companions, 'codex-companion.mjs'), "#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({ status: 'success', peer_host: 'codex', peer_model: null, stdout: 'the peer answer', exit_code: 0 }));\n");
-      execFileSync('chmod', ['755', join(companions, 'codex-companion.mjs')]);
-      await writeFile(join(companions, 'prompt.xml'), '<task>fixture</task>\n');
-      const runId = `${phase}-20261031T010203Z-abcdef`;
-      const env = { ...process.env, ...offer(sha), AGENTIC_COMPANIONS_ROOT: companions };
-      const run = spawnSync('node', [P.path('scripts/peer-runner.mjs'), 'run', '--repo-root', dir, '--kind', 'ensemble',
-        '--peer', 'codex', '--prompt-file', join(companions, 'prompt.xml'), '--output-format', 'json',
-        '--workflow-path', wf, '--phase', phase, '--host', 'claude', '--cwd', dir,
-        '--ensemble-type', phase, '--run-id', runId], { cwd: dir, encoding: 'utf8', env });
-      strictEqual(run.status, 0, run.stderr);
-      const ddir = await mkdtemp(join(area, 'dispatch '));
-      await writeFile(join(ddir, 'prompt.xml.run.json'), run.stdout);
-      ok((await front(wf)).pending_ensemble?.some((e) => e.run_id === runId), 'the run is pending');
-      return { runId, ddir };
-    }
-
     it('critique: a conflict verdict for a real completed peer run, with a request beside it, stops the block before settle', async () => {
       await withRepo(async ({ dir, sha, wf, area }) => {
         const { opDir } = resume(dir, 'critique', offer(sha));
@@ -410,7 +271,9 @@ for (const persona of PERSONAS.filter((p) => personaInfo(p).capabilities.dispatc
     // The verify form's usual case: a verb whose peer ran (Plan-verify,
     // Review, Refine-verify) ends with a request. The check sets aside the run
     // the block settles first, and only that one.
-    for (const verb of Object.keys(VERBS)) {
+    // compose here; every runbook's verify form after its peer run runs end
+    // to end in the e2e file.
+    for (const verb of ['compose']) {
       it(`${verb}: a real completed peer run with a non-conflict verdict and a request: settled, then the verify form records the request`, async () => {
         await withRepo(async ({ dir, sha, wf, area }) => {
           const { opDir } = resume(dir, verb, offer(sha));
@@ -427,27 +290,6 @@ for (const persona of PERSONAS.filter((p) => personaInfo(p).capabilities.dispatc
         });
       });
     }
-
-    it('Phase 0: the preflight banner says whether the run offers verification, the signal the long-check guidance names', async () => {
-      await withRepo(async ({ dir, sha }) => {
-        for (const verb of Object.keys(VERBS)) {
-          const phase0 = blocks(section(text[verb], '## Phase 0')).map(dedent).find((b) => b.includes('autopilot-preflight'));
-          ok(phase0, `${verb}: the Phase 0 preflight block`);
-          const offered = runBlock(dir, phase0, offer(sha));
-          strictEqual(offered.status, 0, offered.stderr);
-          ok(offered.stdout.includes('This run offers verification:'), offered.stdout);
-          const unoffered = runBlock(dir, phase0, { AGENTIC_AUTOPILOT: RUN, AGENTIC_AUTOPILOT_STEP: '3' });
-          strictEqual(unoffered.status, 0, unoffered.stderr);
-          ok(unoffered.stdout.includes('This run does not offer verification:') && !unoffered.stdout.includes('This run offers verification'), unoffered.stdout);
-          // A declaration the offer's commit does not hold is no offer.
-          const undeclared = runBlock(dir, phase0, offer('f'.repeat(40)));
-          ok(undeclared.stdout.includes('This run does not offer verification:'), undeclared.stdout);
-          const interactive = runBlock(dir, phase0, {});
-          strictEqual(interactive.status, 0, interactive.stderr);
-          ok(!/This run (?:does not )?offers? verification/.test(interactive.stdout), interactive.stdout);
-        }
-      });
-    });
 
     it('compose, run again with the same TEXT_DIR: the request removed, changed or added since stops the block before any write; the same request is taken again', async () => {
       await withRepo(async ({ dir, sha, wf, area }) => {
@@ -533,57 +375,16 @@ for (const persona of PERSONAS.filter((p) => personaInfo(p).capabilities.dispatc
     }
   });
 
-  // The driver's records, as the driver writes them (owner writes: no
-  // AGENTIC_* variable in this process).
-  const resolved = (request) => request.checks.map((c, i) => ({ index: i, kind: c.kind, origin: 'worker', argv: V.resolveCheck(decl, c) }));
-  // `added`: a check the driver added to the request's (origin driver);
-  // `noLog`: the first result keeps no log.
-  async function driverBatch(wf, { tree, outcome, pass = false, added = false, noLog = false }) {
-    const fm = await front(wf);
-    const request = fm.verify_request;
-    const checks = resolved(request);
-    if (added) checks.push({ index: checks.length, kind: 'test-suite', origin: 'driver', argv: V.resolveCheck(decl, { kind: 'test-suite', args: {} }) });
-    await S.recordBatchStart({ workflowPath: wf, host: 'claude', requestId: request.id, input: {
-      batch_id: 'b1', run_id: RUN, continues: null, tree_start: tree, declaration_commit: request.baseline, declaration_digest: decl.digest,
-      checks, checks_digest: V.checksDigest(checks.map((c) => c.argv)), started_at: '2026-10-31T01:00:00Z',
-    } });
-    const result = (index, failed) => ({
-      index, outcome: failed ? 'failed' : 'passed', exit: failed ? 1 : 0, signal: null, duration_ms: 5,
-      failing_tests: failed ? ['suite > the changed case fails'] : [], failing_tests_more: 0, log: noLog && index === 0 ? null : `verify/b1/${index}.log`, ended_at: '2026-10-31T01:01:00Z',
-    });
-    await S.recordResult({ workflowPath: wf, host: 'claude', requestId: request.id, batchId: 'b1', input: result(0, outcome === 'failed') });
-    if (outcome === 'passed') await S.recordResult({ workflowPath: wf, host: 'claude', requestId: request.id, batchId: 'b1', input: result(1, false) });
-    await S.recordBatchEnd({ workflowPath: wf, host: 'claude', requestId: request.id, batchId: 'b1', input: { tree_end: tree, end: outcome, cause: null, ended_at: '2026-10-31T01:02:00Z' } });
-    if (pass) await S.recordPass({ workflowPath: wf, host: 'claude', requestId: request.id, batchId: 'b1' });
-  }
-  async function requested(dir, sha, area, wf) {
-    const { opDir } = resume(dir, 'compose', offer(sha));
-    const tdir = await textDir(area, texts({ 'verify-request.json': REQ }));
-    const r = runBlock(dir, finalize('compose', { tdir, opDir }), offer(sha));
-    strictEqual(r.status, 0, r.stderr);
-    strictEqual((await front(wf)).next_step_kind, 'verify');
-  }
-
+  // The request is recorded in process, as the verify form's last write
+  // records it, and the batch as the driver records it: what these cases run
+  // is the resume block that reads them back.
   describe(`${persona}: a verb's resume prints the results the verification step recorded`, () => {
-    it('a failed batch: the resumed verb (compose) reads the failing test, its log, and that it applies to the tree now', async () => {
-      await withRepo(async ({ dir, sha, wf, area }) => {
-        await requested(dir, sha, area, wf);
-        await driverBatch(wf, { tree: S.currentTreeDigest(dir), outcome: 'failed' });
-        const r = resume(dir, 'compose', offer(sha, '4'));
-        ok(/Verification request [0-9a-f]+ \(step 3 of run autopilot-/.test(r.stdout), r.stdout);
-        ok(r.stdout.includes('- Batch b1: ended failed.'), r.stdout);
-        ok(/1\. test \[worker\] npm test -- tests\/a\.mjs: failed \(exit 1\); evidence yes; applies to the tree now: yes\./.test(r.stdout), r.stdout);
-        ok(r.stdout.includes('failing: suite > the changed case fails'), r.stdout);
-        ok(r.stdout.includes(`log: .agentic-plugins/runs/autopilot/${RUN}/verify/b1/0.log`), r.stdout);
-        ok(/2\. mutate \[worker\] npm run mutate -- scripts\/mutation-specs\/s\.mjs --only S1 --timeout 1800: not run/.test(r.stdout), r.stdout);
-      });
-    });
-
     it('a passed batch: on_pass critique reads the results as applying; once the tree changed, as not applying', async () => {
       for (const changed of [false, true]) {
-        await withRepo(async ({ dir, sha, wf, area }) => {
-          await requested(dir, sha, area, wf);
-          await driverBatch(wf, { tree: S.currentTreeDigest(dir), outcome: 'passed', pass: true });
+        await withRepo(async (ctx) => {
+          const { dir, sha, wf } = ctx;
+          await fx.requestInProcess(ctx);
+          await fx.driverBatch(wf, { tree: S.currentTreeDigest(dir), outcome: 'passed', pass: true });
           deepStrictEqual([(await front(wf)).next_step_kind, (await front(wf)).next_step_verb], ['verb', 'critique']);
           if (changed) await writeFile(join(dir, 'tests/a.mjs'), '// edited since the batch\n');
           const r = resume(dir, 'critique', offer(sha, '4'));
@@ -593,52 +394,11 @@ for (const persona of PERSONAS.filter((p) => personaInfo(p).capabilities.dispatc
       }
     });
 
-    it('the header counts the checks requested and those the driver added apart; a result with no log says so, never a path ending /null', async () => {
-      await withRepo(async ({ dir, sha, wf, area }) => {
-        await requested(dir, sha, area, wf);
-        await driverBatch(wf, { tree: S.currentTreeDigest(dir), outcome: 'failed', added: true, noLog: true });
-        const r = resume(dir, 'compose', offer(sha, '4'));
-        ok(/\(step 3 of run [^;]+; 2 check\(s\) requested, 1 added by the driver; on_pass verb critique\)/.test(r.stdout), r.stdout);
-        ok(/3\. test-suite \[driver\] /.test(r.stdout), r.stdout);
-        ok(r.stdout.includes('log: none was kept for this check'), r.stdout);
-        ok(!/\/null\b/.test(r.stdout), r.stdout);
-      });
-      await withRepo(async ({ dir, sha, wf, area }) => {
-        await requested(dir, sha, area, wf);
-        await driverBatch(wf, { tree: S.currentTreeDigest(dir), outcome: 'failed' });
-        const r = resume(dir, 'compose', offer(sha, '4'));
-        ok(/; 2 check\(s\) requested; on_pass /.test(r.stdout), r.stdout);
-      });
-    });
-
-    it('verify-results reads --current-tree as true or false and refuses any other word', async () => {
-      await withRepo(async ({ dir, sha, wf, area }) => {
-        await requested(dir, sha, area, wf);
-        await driverBatch(wf, { tree: S.currentTreeDigest(dir), outcome: 'failed' });
-        const run = (v) => spawnSync('node', [STATE, 'verify-results', '--workflow-path', wf, '--current-tree', v], { cwd: dir, encoding: 'utf8' });
-        strictEqual(JSON.parse(run('true').stdout).tree_digest, S.currentTreeDigest(dir));
-        const no = run('false');
-        strictEqual(no.status, 0, no.stderr);
-        ok(!('tree_digest' in JSON.parse(no.stdout)), no.stdout);
-        for (const word of ['yes', '1', 'TRUE']) {
-          const r = run(word);
-          ok(r.status !== 0, `${word}: refused`);
-          ok(/--current-tree is true or false/.test(r.stderr), r.stderr);
-        }
-      });
-    });
-
-    it('no request: the resume prints nothing of it', async () => {
-      await withRepo(async ({ dir, sha }) => {
-        const r = resume(dir, 'refine', offer(sha));
-        ok(!/Verification request|could not be read/.test(r.stdout + r.stderr), r.stdout + r.stderr);
-      });
-    });
-
     it('a results record a later release wrote: a warning, and the verb goes on', async () => {
-      await withRepo(async ({ dir, sha, wf, area }) => {
-        await requested(dir, sha, area, wf);
-        await driverBatch(wf, { tree: S.currentTreeDigest(dir), outcome: 'failed' });
+      await withRepo(async (ctx) => {
+        const { dir, wf } = ctx;
+        await fx.requestInProcess(ctx);
+        await fx.driverBatch(wf, { tree: S.currentTreeDigest(dir), outcome: 'failed' });
         // A later release's results record (a higher v), carried as written.
         const raw = await readFile(wf, 'utf8');
         const line = raw.match(/^verify_results: (".*")$/m);
@@ -679,6 +439,23 @@ for (const persona of PERSONAS.filter((p) => personaInfo(p).capabilities.dispatc
     });
   });
 }
+
+// Declared after the persona loop, as every test here: a test declared before
+// its top-level await would run, and end the file's root, during that await.
+describe('the verify form reaches exactly the personas with dispatch_target on (guards a vacuous pass)', () => {
+  it('engineer renders it in every verb finalize; a persona with dispatch_target off renders none of it', () => {
+    const on = PERSONAS.filter((p) => personaInfo(p).capabilities.dispatch_target === true);
+    ok(on.includes('engineer'), 'engineer has dispatch_target on');
+    for (const persona of PERSONAS) {
+      const P = personaInfo(persona);
+      for (const verb of Object.keys(VERBS)) {
+        const text = readFileSync(P.path(`commands/${verb}.md`), 'utf8');
+        const has = /--next-step-kind verify --next-step-confidence "\$CONFIDENCE"/.test(text) && text.includes('verify-request-check');
+        strictEqual(has, on.includes(persona), `${persona}/${verb}`);
+      }
+    }
+  });
+});
 
 // The prose an LLM step follows: under an offering run the worker's own step
 // runs no whole suite and no mutation run. The rendered runbooks and skills of

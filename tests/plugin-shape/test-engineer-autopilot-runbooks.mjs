@@ -236,6 +236,7 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
 
 // ADR-0068 Decision 5 (`verify-runbooks`): a verb hands its long checks to
 // the driver's verification step. The behaviour is run end to end in
+// tests/persona-pipeline/test-verify-runbooks-e2e.mjs, its branches in
 // tests/persona-pipeline/test-verify-runbooks.mjs; this pins where each
 // runbook makes the calls.
 describe('verb runbooks — the verify form (ADR-0068 Decision 5)', () => {
