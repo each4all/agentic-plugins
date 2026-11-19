@@ -2,6 +2,7 @@
   "schema": 1,
   "large": [
     "tests/orchestrator/test-admission-runbooks-e2e.mjs",
+    "tests/orchestrator/test-approve-runbook-e2e.mjs",
     "tests/orchestrator/test-autopilot-dead-runs.mjs",
     "tests/orchestrator/test-autopilot-offloop-interrupt.mjs",
     "tests/orchestrator/test-autopilot-procs-live.mjs",

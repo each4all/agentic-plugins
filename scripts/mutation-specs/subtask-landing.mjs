@@ -30,7 +30,9 @@ const T_WB = 'tests/persona-pipeline/test-parent-writeback.mjs';
 const T_STOP = 'tests/persona-pipeline/test-stop-archive.mjs';
 const T_P7 = 'tests/persona-pipeline/test-phase7-commit.mjs';
 const T_PLAN_RUN = 'tests/orchestrator/test-approve-runbook.mjs';
-// The test that runs plan's blocks with hostile text files, in both shells.
+// The test that runs plan's blocks with hostile text files, in every installed
+// shell: the happy path of plan's text blocks, in the large-tier e2e file.
+const T_PLAN_E2E = 'tests/orchestrator/test-approve-runbook-e2e.mjs';
 const K_TEXT = /the request, decision, architecture, note and summary are recorded as written/;
 
 const STATE = 'plugins/orchestrator/scripts/state.mjs';
@@ -385,31 +387,31 @@ export const MUTATIONS = [
   // The note back in shell source, as NOTE="…" had it: the agent's text,
   // with the peer's sentences in it, inside a double-quoted assignment.
   {
-    id: 'N3', file: PLAN, tests: [T_PLAN_RUN], killed_by: K_TEXT,
+    id: 'N3', file: PLAN, tests: [T_PLAN_E2E], killed_by: K_TEXT,
     from: '  --phase-note-file "$TEXT_DIR/note.md" \\',
     to: '  --phase-note "$(eval "NOTE=\\"$(cat "$TEXT_DIR/note.md")\\""; printf \'%s\' "$NOTE")" \\',
     why: 'plan\'s phase note is shell source again: NOTE="…" restored (C130)',
   },
   {
-    id: 'N4', file: PLAN, tests: [T_PLAN_RUN], killed_by: K_TEXT,
+    id: 'N4', file: PLAN, tests: [T_PLAN_E2E], killed_by: K_TEXT,
     from: '--verdict "${ENSEMBLE_VERDICT:-$VERDICT}" --summary-file "$TEXT_DIR/summary.txt"',
     to: '--verdict "${ENSEMBLE_VERDICT:-$VERDICT}" --summary "$SUMMARY"',
     why: 'the ensemble summary comes from a SUMMARY nothing in the runbook sets (C130)',
   },
   {
-    id: 'N5', file: PLAN, tests: [T_PLAN_RUN], killed_by: K_TEXT,
+    id: 'N5', file: PLAN, tests: [T_PLAN_E2E], killed_by: K_TEXT,
     from: '  --decision-file "$TEXT_DIR/decision.txt" \\',
     to: '  --decision "$(eval "printf \'%s\' \\"$(cat "$TEXT_DIR/decision.txt")\\"")" \\',
     why: 'the shell evaluates the decision text (C130)',
   },
   {
-    id: 'N6', file: PLAN, tests: [T_PLAN_RUN], killed_by: K_TEXT,
+    id: 'N6', file: PLAN, tests: [T_PLAN_E2E], killed_by: K_TEXT,
     from: '  --architecture-file "$TEXT_DIR/architecture.txt" \\',
     to: '  --architecture "$(eval "printf \'%s\' \\"$(cat "$TEXT_DIR/architecture.txt")\\"")" \\',
     why: 'the shell evaluates the architecture text (C130)',
   },
   {
-    id: 'N7', file: PLAN, tests: [T_PLAN_RUN], killed_by: K_TEXT,
+    id: 'N7', file: PLAN, tests: [T_PLAN_E2E], killed_by: K_TEXT,
     from: '    --original-request-file "$TEXT_DIR/request.txt" \\',
     to: '    --original-request "$(eval "printf \'%s\' \\"$(cat "$TEXT_DIR/request.txt")\\"")" \\',
     why: 'the shell evaluates the feature description (C130)',

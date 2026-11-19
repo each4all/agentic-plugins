@@ -275,7 +275,9 @@ export const MUTATIONS = [
     from: '      --text-file "$CONTESTED_FILE")" || exit $?\n',
     to: '      --text-file "$CONTESTED_FILE")"\n',
     why: 'a refused task file passes, and an empty proposal is printed',
-    killed_by: /a rerun after a failure at any write keeps the ensemble result once/,
+    // The Claude rerun case's title (it matched no test before: a caught
+    // defect scored KILLED-ELSEWHERE).
+    killed_by: /a rerun after a failure at any write records the note and the result once/,
   },
   {
     id: 'O8', file: ORCH_STATE, tests: [TO],
