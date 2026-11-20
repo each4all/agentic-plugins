@@ -5,7 +5,12 @@
 //
 // The fixtures are real git repositories with fixed commit dates; every git
 // selector of the caller is scrubbed, and no AGENTIC_* variable of an
-// autopilot worker reaches the commands. The cases:
+// autopilot worker reaches the commands. The commands run in this process,
+// through the functions the CLI calls (openCritiqueScope, closeCritiqueScope,
+// recordRefineScope, readReviewStatus, appendPhase), inside the checkout's
+// runInCommandDirectory as the CLI runs a --repo-root command, and their
+// results read as the CLI prints them (JSON); one test runs the CLI's own
+// dispatcher (its flags, its files, its exit status). The cases:
 //   - the cycle: a full critique, a recorded refine, a scoped re-critique of
 //     the passages the refine changed and the findings it targeted
 //   - an unrelated MAJOR outside the passages is left open and the critique
@@ -41,11 +46,12 @@ import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual, match, throws } from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { fileTmpDirs } from '../_tmp.mjs';
 import { personaInfo } from './_personas.mjs';
 
 const GIT_ENV = {
@@ -53,6 +59,10 @@ const GIT_ENV = {
   GIT_AUTHOR_DATE: '2026-10-14T00:00:00Z', GIT_COMMITTER_DATE: '2026-10-14T00:00:00Z',
   GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0',
 };
+// The environment the commands ran with as children, now this process's own:
+// the caller's git selectors scrubbed, the fixed identity and dates set.
+for (const name of Object.keys(process.env)) if (name.startsWith('GIT_')) delete process.env[name];
+Object.assign(process.env, GIT_ENV);
 const cleanEnv = () => ({
   ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AGENTIC_') && !k.startsWith('GIT_'))),
   ...GIT_ENV,
@@ -114,75 +124,89 @@ export async function reviewScopeSuite(persona) {
   const STATE = P.path('scripts/state.mjs');
   const state = await import(pathToFileURL(STATE).href);
   const lib = await import(pathToFileURL(P.path('scripts/lib/review-scope.mjs')).href);
+  // The module state.mjs itself imports: the command directory it reads is
+  // the one this sets.
+  const { runInCommandDirectory } = await import(pathToFileURL(P.path('scripts/lib/state-root.mjs')).href);
+  const tmpDirs = fileTmpDirs();
 
-  const cli = (args, cwd) => spawnSync(process.execPath, [STATE, ...args], { encoding: 'utf8', env: cleanEnv(), cwd });
-  const json = (r) => {
-    strictEqual(r.status, 0, r.stderr);
-    return JSON.parse(r.stdout);
+  // A command as the CLI runs it: in the checkout it names (--repo-root, or
+  // the working directory it was started in), its result as the JSON it
+  // prints. A refusal is the CLI's exit 1 with the message on stderr.
+  const inCheckout = async (dir, fn) => JSON.parse(JSON.stringify(await runInCommandDirectory(dir, fn)));
+  const outcome = async (dir, fn) => {
+    try {
+      return { status: 0, stderr: '', value: await inCheckout(dir, fn) };
+    } catch (err) {
+      return { status: 1, stderr: err?.message ?? String(err) };
+    }
   };
+  // The CLI itself, for its own dispatcher only.
+  const cli = (args, cwd) => spawnSync(process.execPath, [STATE, ...args], { encoding: 'utf8', env: cleanEnv(), cwd });
 
   async function fixture(fn, { extra = {}, head = null } = {}) {
-    const dir = mkdtempSync(join(tmpdir(), `${persona}-review-scope-`));
-    try {
-      const top = join(dir, 'repo');
-      mkdirSync(top);
-      git(top, 'init', '-q', '-b', 'feat/doc');
-      write(top, DOC_PATH, '# Decision\n\nDraft.\n');
-      write(top, 'scripts/run.mjs', 'export const x = 1;\n');
-      write(top, 'docs/runbook.md', '# Runbook\n\n```bash\necho one\n```\n');
-      for (const [rel, text] of Object.entries(extra)) write(top, rel, text);
-      git(top, 'add', '-A');
-      git(top, 'commit', '-q', '-m', 'base');
-      const base = git(top, 'rev-parse', 'HEAD').trim();
-      write(top, DOC_PATH, DOC);
-      const { filePath } = await state.createWorkflow({
-        repoRoot: top, verb: 'critique', host: 'claude',
-        gitBaseline: { branch: 'feat/doc', head: head === null ? base : head(base), status_digest: '' },
-        originalRequest: 'review scope', currentPhase: 'phase-0-bootstrap',
-      });
-      const tmp = join(dir, 'texts');
-      mkdirSync(tmp);
-      let n = 0;
-      const file = (value) => {
-        n += 1;
-        const p = join(tmp, `f${n}.json`);
-        writeFileSync(p, typeof value === 'string' ? value : JSON.stringify(value));
-        return p;
-      };
-      const ctx = {
-        top, wf: filePath, base,
-        // The ledger the last recorded scope named, which a close names.
-        ledger: null,
-        scope: (profile) => {
-          const s = json(cli(['critique-scope', '--workflow-path', filePath, '--repo-root', top, ...(profile === undefined ? [] : ['--profile', profile])], top));
-          if (s.recorded) ctx.ledger = s.ledger;
-          return s;
-        },
-        close: (generation, findings) => json(ctx.closeRaw(generation, findings)),
-        closeRaw: (generation, findings, ledger = ctx.ledger) => cli(['critique-close', '--workflow-path', filePath, '--repo-root', top, '--ledger', String(ledger), '--generation', String(generation), '--findings-file', file({ findings })], top),
-        record: (targets) => json(cli(['refine-record', '--workflow-path', filePath, '--repo-root', top, '--targets-file', file(targets.join('\n') + '\n')], top)),
-        recordRaw: (targets) => cli(['refine-record', '--workflow-path', filePath, '--repo-root', top, '--targets-file', file(targets)], top),
-        status: () => json(cli(['review-status', '--workflow-path', filePath], top)),
-        ledgerFile: () => {
-          const dirPath = join(dirname(dirname(filePath)), 'reviews');
-          return join(dirPath, readdirSync(dirPath).find((f) => f.endsWith('.json')));
-        },
-      };
-      await fn(ctx);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    const dir = tmpDirs(`${persona}-review-scope-`);
+    const top = join(dir, 'repo');
+    mkdirSync(top);
+    git(top, 'init', '-q', '-b', 'feat/doc');
+    write(top, DOC_PATH, '# Decision\n\nDraft.\n');
+    write(top, 'scripts/run.mjs', 'export const x = 1;\n');
+    write(top, 'docs/runbook.md', '# Runbook\n\n```bash\necho one\n```\n');
+    for (const [rel, text] of Object.entries(extra)) write(top, rel, text);
+    git(top, 'add', '-A');
+    git(top, 'commit', '-q', '-m', 'base');
+    const base = git(top, 'rev-parse', 'HEAD').trim();
+    write(top, DOC_PATH, DOC);
+    const { filePath } = await state.createWorkflow({
+      repoRoot: top, verb: 'critique', host: 'claude',
+      gitBaseline: { branch: 'feat/doc', head: head === null ? base : head(base), status_digest: '' },
+      originalRequest: 'review scope', currentPhase: 'phase-0-bootstrap',
+    });
+    const tmp = join(dir, 'texts');
+    mkdirSync(tmp);
+    let n = 0;
+    const file = (value) => {
+      n += 1;
+      const p = join(tmp, `f${n}.json`);
+      writeFileSync(p, typeof value === 'string' ? value : JSON.stringify(value));
+      return p;
+    };
+    const ctx = {
+      top, wf: filePath, base, file,
+      // The ledger the last recorded scope named, which a close names.
+      ledger: null,
+      scope: async (profile) => {
+        const s = await inCheckout(top, () => state.openCritiqueScope({ workflowPath: filePath, repoRoot: top, profile: profile ?? '' }));
+        if (s.recorded) ctx.ledger = s.ledger;
+        return s;
+      },
+      close: async (generation, findings) => {
+        const r = await ctx.closeRaw(generation, findings);
+        strictEqual(r.status, 0, r.stderr);
+        return r.value;
+      },
+      closeRaw: (generation, findings, ledger = ctx.ledger) => outcome(top, () => state.closeCritiqueScope({
+        workflowPath: filePath, repoRoot: top, ledgerId: String(ledger), generation, input: { findings },
+      })),
+      record: (targets) => inCheckout(top, () => state.recordRefineScope({ workflowPath: filePath, repoRoot: top, targets })),
+      recordRaw: (targets) => outcome(top, () => state.recordRefineScope({ workflowPath: filePath, repoRoot: top, targets })),
+      status: () => inCheckout(top, () => state.readReviewStatus({ workflowPath: filePath })),
+      ledgerFile: () => {
+        const dirPath = join(dirname(dirname(filePath)), 'reviews');
+        return join(dirPath, readdirSync(dirPath).find((f) => f.endsWith('.json')));
+      },
+    };
+    await fn(ctx);
   }
 
   // A full critique with a MAJOR in the decision paragraph (line 5), a MAJOR in
   // the context paragraph (line 3) and a MINOR, then a refine of line 5 that
   // targets only the first.
-  function fullThenRefine(ctx, { targets = ['G1-F1'], edit = () => replaceLine(ctx.top, DOC_PATH, 5, 'Decision paragraph, revised.') } = {}) {
-    const first = ctx.scope();
+  async function fullThenRefine(ctx, { targets = ['G1-F1'], edit = () => replaceLine(ctx.top, DOC_PATH, 5, 'Decision paragraph, revised.') } = {}) {
+    const first = await ctx.scope();
     strictEqual(first.recorded, true);
     strictEqual(first.mode, 'full');
     strictEqual(first.reason, 'no-full-critique-recorded');
-    const closed = ctx.close(first.generation, [
+    const closed = await ctx.close(first.generation, [
       { id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:5`, text: 'decision is ambiguous' },
       { id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:3`, text: 'context omits the incident' },
       { id: 'NEW', severity: 'MINOR', location: `${DOC_PATH}:7`, text: 'wording' },
@@ -190,7 +214,7 @@ export async function reviewScopeSuite(persona) {
     deepStrictEqual(closed.carry, ['G1-F1', 'G1-F2']);
     strictEqual(closed.converged, false);
     edit();
-    const attempt = ctx.record(targets);
+    const attempt = await ctx.record(targets);
     strictEqual(attempt.recorded, true);
     strictEqual(attempt.attempt, 'R1');
     return attempt;
@@ -199,8 +223,8 @@ export async function reviewScopeSuite(persona) {
   describe(`${persona}: document re-critique scope (C120)`, () => {
     it('a full critique, a recorded refine, then a scoped critique of the changed passage and the targeted finding', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-        const scope = ctx.scope();
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        const scope = await ctx.scope();
         strictEqual(scope.mode, 'scoped', scope.reason);
         strictEqual(scope.generation, 2);
         deepStrictEqual(scope.targets, ['G1-F1', 'G1-F2']);
@@ -209,7 +233,7 @@ export async function reviewScopeSuite(persona) {
         strictEqual(scope.passages[0].before, 'Decision paragraph.');
         ok(scope.findings.some((f) => f.id === 'G1-F1' && f.disposition === 'open'));
         // An unrelated MAJOR outside the passage is left open: converged.
-        const closed = ctx.close(2, [
+        const closed = await ctx.close(2, [
           { id: 'G1-F1', verdict: 'resolved' },
           { id: 'G1-F2', verdict: 'resolved' },
           { id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:9`, text: 'alternatives thin', scope: 'outside' },
@@ -220,16 +244,16 @@ export async function reviewScopeSuite(persona) {
         deepStrictEqual(closed.carry, []);
         deepStrictEqual(closed.left_open_now, ['G2-F1']);
         deepStrictEqual(closed.new, ['G2-F1', 'G2-F2']);
-        deepStrictEqual(ctx.status().left_open, ['G2-F1']);
+        deepStrictEqual((await ctx.status()).left_open, ['G2-F1']);
       });
     });
 
     it('a new CRITICAL outside the passages is carried, not left open', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-        const scope = ctx.scope();
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        const scope = await ctx.scope();
         strictEqual(scope.mode, 'scoped');
-        const closed = ctx.close(scope.generation, [
+        const closed = await ctx.close(scope.generation, [
           { id: 'G1-F1', verdict: 'resolved' },
           { id: 'G1-F2', verdict: 'resolved' },
           { id: 'NEW', severity: 'CRITICAL', location: `${DOC_PATH}:9`, text: 'contradicts ADR-0001', scope: 'outside' },
@@ -242,9 +266,9 @@ export async function reviewScopeSuite(persona) {
 
     it('a finding claimed outside but located in a passage counts in scope', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-        const scope = ctx.scope();
-        const closed = ctx.close(scope.generation, [
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        const scope = await ctx.scope();
+        const closed = await ctx.close(scope.generation, [
           { id: 'G1-F1', verdict: 'resolved' },
           { id: 'G1-F2', verdict: 'resolved' },
           { id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:5`, text: 'new gap in the revision', scope: 'outside' },
@@ -256,20 +280,20 @@ export async function reviewScopeSuite(persona) {
 
     it('a target left unresolved is carried and recurring; no verdict and two verdicts count unresolved', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-        const scope = ctx.scope();
-        const closed = ctx.close(scope.generation, [
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        const scope = await ctx.scope();
+        const closed = await ctx.close(scope.generation, [
           { id: 'G1-F2', verdict: 'resolved' },
           { id: 'G1-F2', verdict: 'unresolved' },
         ]);
         deepStrictEqual(closed.carry, ['G1-F1', 'G1-F2']);
         deepStrictEqual(closed.recurring, ['G1-F1', 'G1-F2']);
-        deepStrictEqual(ctx.status().recurring, ['G1-F1', 'G1-F2']);
+        deepStrictEqual((await ctx.status()).recurring, ['G1-F1', 'G1-F2']);
       });
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-        const scope = ctx.scope();
-        const closed = ctx.close(scope.generation, [
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        const scope = await ctx.scope();
+        const closed = await ctx.close(scope.generation, [
           { id: 'G1-F1', verdict: 'unresolved', location: `${DOC_PATH}:5` },
           { id: 'G1-F2', verdict: 'resolved' },
         ]);
@@ -280,10 +304,10 @@ export async function reviewScopeSuite(persona) {
 
     it('a prior MAJOR the refine did not target still blocks the scoped critique', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1'] });
-        const scope = ctx.scope();
+        await fullThenRefine(ctx, { targets: ['G1-F1'] });
+        const scope = await ctx.scope();
         strictEqual(scope.mode, 'scoped');
-        const closed = ctx.close(scope.generation, [{ id: 'G1-F1', verdict: 'resolved' }]);
+        const closed = await ctx.close(scope.generation, [{ id: 'G1-F1', verdict: 'resolved' }]);
         deepStrictEqual(closed.carry, ['G1-F2']);
         strictEqual(closed.converged, false);
         deepStrictEqual(closed.recurring, [], 'no refine targeted G1-F2 yet');
@@ -292,11 +316,11 @@ export async function reviewScopeSuite(persona) {
 
     it('a full critique carries every new MAJOR wherever it is, and resolves a prior finding it does not report', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
         replaceLine(ctx.top, DOC_PATH, 9, 'Alternatives, edited after the record.');
-        const scope = ctx.scope();
+        const scope = await ctx.scope();
         strictEqual(scope.mode, 'full');
-        const closed = ctx.close(scope.generation, [
+        const closed = await ctx.close(scope.generation, [
           { id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:9`, text: 'alternatives thin', scope: 'outside' },
         ]);
         strictEqual(closed.mode, 'full');
@@ -309,12 +333,12 @@ export async function reviewScopeSuite(persona) {
 
     it('another profile is partial: it resolves nothing it does not judge and is no full baseline', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-        const scope = ctx.scope('a-narrower-lens');
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        const scope = await ctx.scope('a-narrower-lens');
         strictEqual(scope.recorded, true);
         strictEqual(scope.mode, 'partial');
         strictEqual(scope.reason, 'not-the-default-profile');
-        const closed = ctx.close(scope.generation, [
+        const closed = await ctx.close(scope.generation, [
           { id: 'G1-F1', verdict: 'resolved' },
           { id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:9`, text: 'alternatives thin', scope: 'outside' },
         ]);
@@ -323,57 +347,57 @@ export async function reviewScopeSuite(persona) {
         deepStrictEqual(closed.carry, ['G1-F2', 'G2-F1'], 'the MAJOR it did not report stays open; its own is carried');
         deepStrictEqual(closed.left_open, []);
         strictEqual(closed.converged, false);
-        ctx.record(['G1-F2', 'G2-F1']);
-        const next = ctx.scope();
+        await ctx.record(['G1-F2', 'G2-F1']);
+        const next = await ctx.scope();
         strictEqual(next.mode, 'full');
         strictEqual(next.reason, 'last-critique-had-another-profile');
       });
       // A partial critique alone is no full baseline either.
       await fixture(async (ctx) => {
-        const first = ctx.scope('a-narrower-lens');
+        const first = await ctx.scope('a-narrower-lens');
         strictEqual(first.mode, 'partial');
-        ctx.close(first.generation, []);
+        await ctx.close(first.generation, []);
         replaceLine(ctx.top, DOC_PATH, 5, 'Decision paragraph, revised.');
-        ctx.record([]);
-        strictEqual(ctx.scope().reason, 'no-full-critique-recorded');
+        await ctx.record([]);
+        strictEqual((await ctx.scope()).reason, 'no-full-critique-recorded');
       });
     });
 
     it('a narrower critique never lowers a blocking severity, and an ambiguous judgment keeps the highest', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-        const scope = ctx.scope();
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        const scope = await ctx.scope();
         strictEqual(scope.mode, 'scoped');
-        const closed = ctx.close(scope.generation, [
+        const closed = await ctx.close(scope.generation, [
           { id: 'G1-F1', verdict: 'unresolved', severity: 'MAJOR' },
           { id: 'G1-F1', verdict: 'resolved', severity: 'MINOR' },
           { id: 'G1-F2', verdict: 'unresolved', severity: 'MINOR' },
         ]);
         deepStrictEqual(closed.carry, ['G1-F1', 'G1-F2']);
         strictEqual(closed.converged, false);
-        const sev = Object.fromEntries(ctx.status().findings.map((f) => [f.id, f.severity]));
+        const sev = Object.fromEntries((await ctx.status()).findings.map((f) => [f.id, f.severity]));
         strictEqual(sev['G1-F1'], 'MAJOR');
         strictEqual(sev['G1-F2'], 'MAJOR');
       });
       // A full critique re-judges: a single, unambiguous MINOR lowers it.
       await fixture(async (ctx) => {
-        const first = ctx.scope();
-        ctx.close(first.generation, [{ id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:5`, text: 'x' }]);
+        const first = await ctx.scope();
+        await ctx.close(first.generation, [{ id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:5`, text: 'x' }]);
         replaceLine(ctx.top, DOC_PATH, 9, 'Edited without a refine record.');
-        const again = ctx.scope();
+        const again = await ctx.scope();
         strictEqual(again.mode, 'full');
-        const closed = ctx.close(again.generation, [{ id: 'G1-F1', verdict: 'unresolved', severity: 'MINOR' }]);
+        const closed = await ctx.close(again.generation, [{ id: 'G1-F1', verdict: 'unresolved', severity: 'MINOR' }]);
         deepStrictEqual(closed.carry, []);
-        strictEqual(ctx.status().findings[0].severity, 'MINOR');
+        strictEqual((await ctx.status()).findings[0].severity, 'MINOR');
       });
     });
 
     it('a location spelled another way still counts in the passage it names; an unknown path counts in scope', async () => {
       for (const location of [`./${DOC_PATH}:5`, `${DOC_PATH}:5:3`, `${DOC_PATH}#L5`, `${DOC_PATH}:L5`, `\`${DOC_PATH}\`:5`, 'ABS', 'docs/adr/other.md:9', `other/${DOC_PATH}:9`, '#L9']) {
         await fixture(async (ctx) => {
-          fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-          const scope = ctx.scope();
-          const closed = ctx.close(scope.generation, [
+          await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+          const scope = await ctx.scope();
+          const closed = await ctx.close(scope.generation, [
             { id: 'G1-F1', verdict: 'resolved' },
             { id: 'G1-F2', verdict: 'resolved' },
             { id: 'NEW', severity: 'MAJOR', location: location === 'ABS' ? `${ctx.top}/${DOC_PATH}:5` : location, text: 'a gap', scope: 'outside' },
@@ -384,9 +408,9 @@ export async function reviewScopeSuite(persona) {
       }
       // The same spellings outside the passage stay outside.
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-        const scope = ctx.scope();
-        const closed = ctx.close(scope.generation, [
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        const scope = await ctx.scope();
+        const closed = await ctx.close(scope.generation, [
           { id: 'G1-F1', verdict: 'resolved' },
           { id: 'G1-F2', verdict: 'resolved' },
           { id: 'NEW', severity: 'MAJOR', location: `./${DOC_PATH}:9`, text: 'a', scope: 'outside' },
@@ -400,35 +424,35 @@ export async function reviewScopeSuite(persona) {
 
     it('a target is recurring only once a critique closed after its refine left it open', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-        const status = ctx.status();
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        const status = await ctx.status();
         deepStrictEqual(status.carry, ['G1-F1', 'G1-F2']);
         deepStrictEqual(status.recurring, [], 'no critique has judged the refine yet');
         // A retried record before the next critique is still not recurring.
-        ctx.record(['G1-F1']);
-        deepStrictEqual(ctx.status().recurring, []);
-        const scope = ctx.scope();
-        ctx.close(scope.generation, [{ id: 'G1-F1', verdict: 'unresolved' }, { id: 'G1-F2', verdict: 'resolved' }]);
-        deepStrictEqual(ctx.status().recurring, ['G1-F1']);
+        await ctx.record(['G1-F1']);
+        deepStrictEqual((await ctx.status()).recurring, []);
+        const scope = await ctx.scope();
+        await ctx.close(scope.generation, [{ id: 'G1-F1', verdict: 'unresolved' }, { id: 'G1-F2', verdict: 'resolved' }]);
+        deepStrictEqual((await ctx.status()).recurring, ['G1-F1']);
       });
       // A partial critique that does not report a target judged nothing: not
       // recurring. One that reports it unresolved did judge it.
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-        const partial = ctx.scope('a-narrower-lens');
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        const partial = await ctx.scope('a-narrower-lens');
         strictEqual(partial.mode, 'partial');
-        ctx.close(partial.generation, [{ id: 'G1-F2', verdict: 'unresolved' }]);
-        deepStrictEqual(ctx.status().recurring, ['G1-F2']);
+        await ctx.close(partial.generation, [{ id: 'G1-F2', verdict: 'unresolved' }]);
+        deepStrictEqual((await ctx.status()).recurring, ['G1-F2']);
       });
     });
 
     it('refine-record says whether Refine-verify may be scoped, on the same conditions as the next critique', async () => {
       await fixture(async (ctx) => {
-        const attempt = fullThenRefine(ctx, { targets: ['G1-F1'] });
+        const attempt = await fullThenRefine(ctx, { targets: ['G1-F1'] });
         deepStrictEqual(attempt.verify, { mode: 'scoped', reason: 'scoped' });
       });
       await fixture(async (ctx) => {
-        const attempt = fullThenRefine(ctx, {
+        const attempt = await fullThenRefine(ctx, {
           edit: () => {
             replaceLine(ctx.top, DOC_PATH, 5, 'Decision paragraph, revised.');
             write(ctx.top, 'scripts/run.mjs', 'export const x = 2;\n');
@@ -437,35 +461,35 @@ export async function reviewScopeSuite(persona) {
         deepStrictEqual(attempt.verify, { mode: 'full', reason: 'not-prose:scripts/run.mjs' });
       });
       await fixture(async (ctx) => {
-        const first = ctx.scope();
-        ctx.close(first.generation, [{ id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:5`, text: 'x' }]);
+        const first = await ctx.scope();
+        await ctx.close(first.generation, [{ id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:5`, text: 'x' }]);
         replaceLine(ctx.top, DOC_PATH, 5, 'Decision paragraph, revised.');
         git(ctx.top, 'commit', '-q', '--allow-empty', '-m', 'moved');
-        deepStrictEqual(ctx.record(['G1-F1']).verify, { mode: 'full', reason: 'head-moved' });
+        deepStrictEqual((await ctx.record(['G1-F1'])).verify, { mode: 'full', reason: 'head-moved' });
       });
       await fixture(async (ctx) => {
-        const first = ctx.scope('a-narrower-lens');
-        ctx.close(first.generation, [{ id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:5`, text: 'x' }]);
+        const first = await ctx.scope('a-narrower-lens');
+        await ctx.close(first.generation, [{ id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:5`, text: 'x' }]);
         replaceLine(ctx.top, DOC_PATH, 5, 'Decision paragraph, revised.');
-        deepStrictEqual(ctx.record(['G1-F1']).verify, { mode: 'full', reason: 'no-full-critique-recorded' });
+        deepStrictEqual((await ctx.record(['G1-F1'])).verify, { mode: 'full', reason: 'no-full-critique-recorded' });
       });
     });
 
     it('a baseline that names no commit records nothing: symbolic, unresolvable, abbreviated', async () => {
       for (const head of [() => 'HEAD', () => 'feat/doc', () => 'f'.repeat(40), (b) => b.slice(0, 12)]) {
         await fixture(async (ctx) => {
-          const scope = ctx.scope();
+          const scope = await ctx.scope();
           strictEqual(scope.recorded, false);
           strictEqual(scope.mode, 'full');
           strictEqual(scope.reason, 'no-baseline-commit');
-          strictEqual(ctx.status().ledger, false);
+          strictEqual((await ctx.status()).ledger, false);
         }, { head });
       }
     });
 
     it('a checkout it cannot read, or an unreadable ledger, falls back instead of failing', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx);
+        await fullThenRefine(ctx);
         // A conflicted merge: the index holds unmerged paths.
         git(ctx.top, 'checkout', '-q', '-b', 'side');
         write(ctx.top, 'notes.md', 'side\n');
@@ -476,17 +500,17 @@ export async function reviewScopeSuite(persona) {
         git(ctx.top, 'add', 'notes.md');
         git(ctx.top, 'commit', '-q', '-m', 'main');
         strictEqual(spawnSync('git', ['-C', ctx.top, 'merge', '-q', 'side'], { env: cleanEnv() }).status, 1, 'the merge conflicts');
-        const scope = ctx.scope();
+        const scope = await ctx.scope();
         strictEqual(scope.recorded, false);
         strictEqual(scope.reason, 'checkout-unreadable:unmerged-index');
         ok(existsSync(scope.ledger_moved_aside), 'a critique the ledger did not record supersedes it');
-        strictEqual(ctx.status().ledger, false);
+        strictEqual((await ctx.status()).ledger, false);
       });
       await fixture(async (ctx) => {
-        fullThenRefine(ctx);
+        await fullThenRefine(ctx);
         writeFileSync(ctx.ledgerFile(), '{not json');
-        deepStrictEqual(ctx.status(), { ledger: false, reason: 'unreadable-ledger' });
-        const rec = ctx.record(['G1-F1']);
+        deepStrictEqual(await ctx.status(), { ledger: false, reason: 'unreadable-ledger' });
+        const rec = await ctx.record(['G1-F1']);
         strictEqual(rec.recorded, false);
         strictEqual(rec.reason, 'unreadable-ledger');
         strictEqual(rec.verify.mode, 'full');
@@ -495,7 +519,7 @@ export async function reviewScopeSuite(persona) {
 
     it('a deletion-only refine is in scope through the blocks around the deletion', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, {
+        await fullThenRefine(ctx, {
           targets: ['G1-F1'],
           edit: () => {
             const lines = readFileSync(join(ctx.top, DOC_PATH), 'utf8').split('\n');
@@ -503,11 +527,11 @@ export async function reviewScopeSuite(persona) {
             writeFileSync(join(ctx.top, DOC_PATH), lines.join('\n'));
           },
         });
-        const scope = ctx.scope();
+        const scope = await ctx.scope();
         strictEqual(scope.mode, 'scoped', scope.reason);
         deepStrictEqual(scope.passages.map((p) => [p.start, p.end]), [[3, 3], [5, 5]]);
         ok(scope.passages.some((p) => p.before.includes('Decision paragraph.')), 'the deleted text is shown');
-        const closed = ctx.close(scope.generation, [
+        const closed = await ctx.close(scope.generation, [
           { id: 'G1-F1', verdict: 'resolved' },
           { id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:5`, text: 'consequences now dangle', scope: 'outside' },
         ]);
@@ -518,16 +542,16 @@ export async function reviewScopeSuite(persona) {
     it('prose mixed with code, a fenced-block change and an empty artifact set record nothing and stay full', async () => {
       await fixture(async (ctx) => {
         write(ctx.top, 'scripts/run.mjs', 'export const x = 2;\n');
-        const scope = ctx.scope();
+        const scope = await ctx.scope();
         strictEqual(scope.recorded, false);
         strictEqual(scope.mode, 'full');
         strictEqual(scope.reason, 'not-prose:scripts/run.mjs');
-        strictEqual(ctx.status().ledger, false, 'no ledger for a code deliverable');
-        strictEqual(ctx.record(['G1-F1']).recorded, false, 'refine-record records nothing without a ledger');
+        strictEqual((await ctx.status()).ledger, false, 'no ledger for a code deliverable');
+        strictEqual((await ctx.record(['G1-F1'])).recorded, false, 'refine-record records nothing without a ledger');
       });
       await fixture(async (ctx) => {
         write(ctx.top, 'docs/runbook.md', '# Runbook\n\n```bash\necho two\n```\n');
-        const scope = ctx.scope();
+        const scope = await ctx.scope();
         strictEqual(scope.recorded, false);
         strictEqual(scope.reason, 'code-changed:docs/runbook.md');
       });
@@ -535,20 +559,20 @@ export async function reviewScopeSuite(persona) {
         // A fence added (only the new side holds it) and a fence removed
         // (only the old side did) are each a code change.
         write(ctx.top, 'docs/runbook.md', '# Runbook\n\n```bash\necho one\n```\n\n```sh\nrm -rf x\n```\n');
-        strictEqual(ctx.scope().reason, 'code-changed:docs/runbook.md');
+        strictEqual((await ctx.scope()).reason, 'code-changed:docs/runbook.md');
       });
       await fixture(async (ctx) => {
         write(ctx.top, 'docs/runbook.md', '# Runbook\n');
-        strictEqual(ctx.scope().reason, 'code-changed:docs/runbook.md');
+        strictEqual((await ctx.scope()).reason, 'code-changed:docs/runbook.md');
       });
       await fixture(async (ctx) => {
         // Prose around a fence may change; the fence may not.
         write(ctx.top, 'docs/runbook.md', '# Runbook\n\nIntro.\n\n```bash\necho one\n```\n');
-        strictEqual(ctx.scope().recorded, true);
+        strictEqual((await ctx.scope()).recorded, true);
       });
       await fixture(async (ctx) => {
         git(ctx.top, 'checkout', '--', DOC_PATH);
-        const scope = ctx.scope();
+        const scope = await ctx.scope();
         strictEqual(scope.recorded, false);
         strictEqual(scope.reason, 'empty-artifact-set');
       });
@@ -556,9 +580,9 @@ export async function reviewScopeSuite(persona) {
 
     it('two identical resolved verdicts on a target still count unresolved', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-        const scope = ctx.scope();
-        const closed = ctx.close(scope.generation, [
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        const scope = await ctx.scope();
+        const closed = await ctx.close(scope.generation, [
           { id: 'G1-F1', verdict: 'resolved' },
           { id: 'G1-F1', verdict: 'resolved' },
           { id: 'G1-F2', verdict: 'resolved' },
@@ -569,9 +593,9 @@ export async function reviewScopeSuite(persona) {
 
     it('a left-open finding reported again outside the passages stays left open; one in a changed passage is carried', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-        let scope = ctx.scope();
-        ctx.close(scope.generation, [
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        let scope = await ctx.scope();
+        await ctx.close(scope.generation, [
           { id: 'G1-F1', verdict: 'resolved' },
           { id: 'G1-F2', verdict: 'resolved' },
           { id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:9`, text: 'alternatives thin', scope: 'outside' },
@@ -579,10 +603,10 @@ export async function reviewScopeSuite(persona) {
         ]);
         // A refine with no targets touches the consequences paragraph only.
         replaceLine(ctx.top, DOC_PATH, 7, 'Consequences one, sharpened.');
-        ctx.record([]);
-        scope = ctx.scope();
+        await ctx.record([]);
+        scope = await ctx.scope();
         strictEqual(scope.mode, 'scoped', scope.reason);
-        const closed = ctx.close(scope.generation, [
+        const closed = await ctx.close(scope.generation, [
           { id: 'G2-F1', verdict: 'unresolved', location: `${DOC_PATH}:9` },
           { id: 'G2-F2', verdict: 'unresolved', location: `${DOC_PATH}:7` },
         ]);
@@ -595,10 +619,10 @@ export async function reviewScopeSuite(persona) {
     // in the coordinates of the text it was found in, which the refine may have
     // shifted, so only this critique's reports can place it outside, all of them.
     it('a re-reported left-open finding stays left open only when every report places it outside now', async () => {
-      const leftOpenThenRefine = (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-        const scope = ctx.scope();
-        const first = ctx.close(scope.generation, [
+      const leftOpenThenRefine = async (ctx) => {
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        const scope = await ctx.scope();
+        const first = await ctx.close(scope.generation, [
           { id: 'G1-F1', verdict: 'resolved' },
           { id: 'G1-F2', verdict: 'resolved' },
           { id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:9`, text: 'alternatives thin', scope: 'outside' },
@@ -607,8 +631,8 @@ export async function reviewScopeSuite(persona) {
         // The refine inserts a paragraph above it: the alternatives paragraph
         // moves from line 9 to 11, and the new paragraph is line 5.
         replaceLine(ctx.top, DOC_PATH, 3, 'Context paragraph.\n\nA new paragraph.');
-        ctx.record([]);
-        const next = ctx.scope();
+        await ctx.record([]);
+        const next = await ctx.scope();
         strictEqual(next.mode, 'scoped', next.reason);
         return next;
       };
@@ -625,10 +649,10 @@ export async function reviewScopeSuite(persona) {
       ];
       for (const { refs, left } of cases) {
         await fixture(async (ctx) => {
-          const scope = leftOpenThenRefine(ctx);
+          const scope = await leftOpenThenRefine(ctx);
           ok(scope.passages.some((p) => p.start <= 5 && p.end >= 5), JSON.stringify(scope.passages));
           ok(!scope.passages.some((p) => p.start <= 11 && p.end >= 11), JSON.stringify(scope.passages));
-          const closed = ctx.close(scope.generation, refs.map((r) => ({ id: 'G2-F1', verdict: 'unresolved', ...r })));
+          const closed = await ctx.close(scope.generation, refs.map((r) => ({ id: 'G2-F1', verdict: 'unresolved', ...r })));
           deepStrictEqual(closed.left_open, left ? ['G2-F1'] : [], JSON.stringify(refs));
           deepStrictEqual(closed.carry, left ? [] : ['G2-F1'], JSON.stringify(refs));
           strictEqual(closed.converged, left, JSON.stringify(refs));
@@ -639,18 +663,18 @@ export async function reviewScopeSuite(persona) {
     it('a resolved finding a refine targets again is carried when the scoped critique gives it no verdict', async () => {
       for (const refs of [[], [{ id: 'G1-F1', verdict: 'resolved' }]]) {
         await fixture(async (ctx) => {
-          fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-          let scope = ctx.scope();
-          const first = ctx.close(scope.generation, [{ id: 'G1-F1', verdict: 'resolved' }, { id: 'G1-F2', verdict: 'resolved' }]);
+          await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+          let scope = await ctx.scope();
+          const first = await ctx.close(scope.generation, [{ id: 'G1-F1', verdict: 'resolved' }, { id: 'G1-F2', verdict: 'resolved' }]);
           strictEqual(first.converged, true);
           // The refine edits the decision paragraph again and targets G1-F1.
           replaceLine(ctx.top, DOC_PATH, 5, 'Decision paragraph, revised twice.');
-          ctx.record(['G1-F1']);
-          scope = ctx.scope();
+          await ctx.record(['G1-F1']);
+          scope = await ctx.scope();
           strictEqual(scope.mode, 'scoped', scope.reason);
           deepStrictEqual(scope.targets, ['G1-F1']);
           ok(scope.findings.some((f) => f.id === 'G1-F1' && f.disposition === 'resolved'), 'the reviewer gets the target to judge');
-          const closed = ctx.close(scope.generation, refs);
+          const closed = await ctx.close(scope.generation, refs);
           const carried = refs.length === 0; // control: one resolved verdict
           deepStrictEqual(closed.carry, carried ? ['G1-F1'] : [], JSON.stringify(refs));
           strictEqual(closed.converged, !carried, JSON.stringify(refs));
@@ -665,18 +689,18 @@ export async function reviewScopeSuite(persona) {
       // every report outside it stays left open (control).
       for (const [ref, left] of [[{}, false], [{ location: `${DOC_PATH}:9`, scope: 'outside' }, true]]) {
         await fixture(async (ctx) => {
-          fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-          let scope = ctx.scope();
-          ctx.close(scope.generation, [
+          await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+          let scope = await ctx.scope();
+          await ctx.close(scope.generation, [
             { id: 'G1-F1', verdict: 'resolved' },
             { id: 'G1-F2', verdict: 'resolved' },
             { id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:9`, text: 'alternatives thin', scope: 'outside' },
           ]);
           replaceLine(ctx.top, DOC_PATH, 7, 'Consequences one, sharpened.');
-          ctx.record([]);
-          scope = ctx.scope();
+          await ctx.record([]);
+          scope = await ctx.scope();
           strictEqual(scope.mode, 'scoped', scope.reason);
-          const closed = ctx.close(scope.generation, [{ id: 'G2-F1', verdict: 'resolved', ...ref }]);
+          const closed = await ctx.close(scope.generation, [{ id: 'G2-F1', verdict: 'resolved', ...ref }]);
           deepStrictEqual(closed.left_open, left ? ['G2-F1'] : [], JSON.stringify(ref));
           deepStrictEqual(closed.carry, left ? [] : ['G2-F1'], JSON.stringify(ref));
         });
@@ -684,9 +708,9 @@ export async function reviewScopeSuite(persona) {
       // An open MINOR reported resolved at MAJOR outside the passages: the
       // resolution is not taken, the MAJOR is, and it is carried.
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-        const scope = ctx.scope();
-        const closed = ctx.close(scope.generation, [
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        const scope = await ctx.scope();
+        const closed = await ctx.close(scope.generation, [
           { id: 'G1-F1', verdict: 'resolved' },
           { id: 'G1-F2', verdict: 'resolved' },
           { id: 'G1-F3', verdict: 'resolved', severity: 'MAJOR', location: `${DOC_PATH}:7` },
@@ -698,9 +722,9 @@ export async function reviewScopeSuite(persona) {
       // outside, in either order: not every report places it, so it stays open.
       for (const order of [[5, 3], [3, 5]]) {
         await fixture(async (ctx) => {
-          fullThenRefine(ctx, { targets: ['G1-F1'] });
-          const scope = ctx.scope();
-          const closed = ctx.close(scope.generation, [
+          await fullThenRefine(ctx, { targets: ['G1-F1'] });
+          const scope = await ctx.scope();
+          const closed = await ctx.close(scope.generation, [
             { id: 'G1-F1', verdict: 'resolved' },
             ...order.map((n) => ({ id: 'G1-F2', verdict: 'resolved', location: `${DOC_PATH}:${n}` })),
           ]);
@@ -710,14 +734,14 @@ export async function reviewScopeSuite(persona) {
       // A resolved finding reported resolved again outside the passages stays
       // resolved.
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-        let scope = ctx.scope();
-        ctx.close(scope.generation, [{ id: 'G1-F1', verdict: 'resolved' }, { id: 'G1-F2', verdict: 'resolved' }]);
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        let scope = await ctx.scope();
+        await ctx.close(scope.generation, [{ id: 'G1-F1', verdict: 'resolved' }, { id: 'G1-F2', verdict: 'resolved' }]);
         replaceLine(ctx.top, DOC_PATH, 7, 'Consequences one, sharpened.');
-        ctx.record([]);
-        scope = ctx.scope();
+        await ctx.record([]);
+        scope = await ctx.scope();
         strictEqual(scope.mode, 'scoped', scope.reason);
-        const closed = ctx.close(scope.generation, [{ id: 'G1-F2', verdict: 'resolved', location: `${DOC_PATH}:3` }]);
+        const closed = await ctx.close(scope.generation, [{ id: 'G1-F2', verdict: 'resolved', location: `${DOC_PATH}:3` }]);
         deepStrictEqual(closed.carry, []);
         strictEqual(closed.converged, true);
       });
@@ -727,34 +751,34 @@ export async function reviewScopeSuite(persona) {
     // judge is carried, and is not recurring for it.
     it('a partial critique carries a target it does not judge, a resolved one targeted again included', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-        let scope = ctx.scope();
-        ctx.close(scope.generation, [{ id: 'G1-F1', verdict: 'resolved' }, { id: 'G1-F2', verdict: 'resolved' }]);
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        let scope = await ctx.scope();
+        await ctx.close(scope.generation, [{ id: 'G1-F1', verdict: 'resolved' }, { id: 'G1-F2', verdict: 'resolved' }]);
         replaceLine(ctx.top, DOC_PATH, 5, 'Decision paragraph, revised twice.');
-        ctx.record(['G1-F1']);
-        scope = ctx.scope('a-narrower-lens');
+        await ctx.record(['G1-F1']);
+        scope = await ctx.scope('a-narrower-lens');
         strictEqual(scope.mode, 'partial');
         deepStrictEqual(scope.targets, ['G1-F1']);
         ok(scope.findings.some((f) => f.id === 'G1-F1'), 'the reviewer gets the target to judge');
-        const closed = ctx.close(scope.generation, []);
+        const closed = await ctx.close(scope.generation, []);
         deepStrictEqual(closed.carry, ['G1-F1']);
         strictEqual(closed.converged, false);
         deepStrictEqual(closed.recurring, []);
         // A second partial critique, with no refine between, still holds it: two
         // resolved verdicts are no single one.
-        scope = ctx.scope('a-narrower-lens');
+        scope = await ctx.scope('a-narrower-lens');
         deepStrictEqual(scope.targets, ['G1-F1']);
-        const again = ctx.close(scope.generation, [{ id: 'G1-F1', verdict: 'resolved' }, { id: 'G1-F1', verdict: 'resolved' }]);
+        const again = await ctx.close(scope.generation, [{ id: 'G1-F1', verdict: 'resolved' }, { id: 'G1-F1', verdict: 'resolved' }]);
         deepStrictEqual(again.carry, ['G1-F1']);
         deepStrictEqual(again.recurring, ['G1-F1']);
         // One resolved verdict resolves it, and a later partial critique does
         // not take it up again.
-        scope = ctx.scope('a-narrower-lens');
-        const resolved = ctx.close(scope.generation, [{ id: 'G1-F1', verdict: 'resolved' }]);
+        scope = await ctx.scope('a-narrower-lens');
+        const resolved = await ctx.close(scope.generation, [{ id: 'G1-F1', verdict: 'resolved' }]);
         deepStrictEqual(resolved.carry, []);
-        scope = ctx.scope('a-narrower-lens');
+        scope = await ctx.scope('a-narrower-lens');
         deepStrictEqual(scope.targets, []);
-        strictEqual(ctx.close(scope.generation, []).converged, true);
+        strictEqual((await ctx.close(scope.generation, [])).converged, true);
       });
     });
 
@@ -762,21 +786,21 @@ export async function reviewScopeSuite(persona) {
     // target of a later partial critique, even one already resolved.
     it('a full critique retires a target it does not report, a resolved one included', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-        let scope = ctx.scope();
-        ctx.close(scope.generation, [{ id: 'G1-F1', verdict: 'resolved' }, { id: 'G1-F2', verdict: 'resolved' }]);
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        let scope = await ctx.scope();
+        await ctx.close(scope.generation, [{ id: 'G1-F1', verdict: 'resolved' }, { id: 'G1-F2', verdict: 'resolved' }]);
         replaceLine(ctx.top, DOC_PATH, 5, 'Decision paragraph, revised twice.');
-        ctx.record(['G1-F1']);
+        await ctx.record(['G1-F1']);
         // A commit makes the next critique full.
         git(ctx.top, 'add', '-A');
         git(ctx.top, 'commit', '-q', '-m', 'refined');
-        scope = ctx.scope();
+        scope = await ctx.scope();
         strictEqual(scope.mode, 'full', scope.reason);
-        strictEqual(ctx.close(scope.generation, []).converged, true);
-        scope = ctx.scope('a-narrower-lens');
+        strictEqual((await ctx.close(scope.generation, [])).converged, true);
+        scope = await ctx.scope('a-narrower-lens');
         strictEqual(scope.mode, 'partial');
         deepStrictEqual(scope.targets, []);
-        const closed = ctx.close(scope.generation, []);
+        const closed = await ctx.close(scope.generation, []);
         deepStrictEqual(closed.carry, []);
         strictEqual(closed.converged, true);
       });
@@ -794,9 +818,9 @@ export async function reviewScopeSuite(persona) {
       ];
       for (const { refs, carried } of cases) {
         await fixture(async (ctx) => {
-          fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-          let scope = ctx.scope();
-          const first = ctx.close(scope.generation, [
+          await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+          let scope = await ctx.scope();
+          const first = await ctx.close(scope.generation, [
             { id: 'G1-F1', verdict: 'resolved' },
             { id: 'G1-F2', verdict: 'resolved' },
             { id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:9`, text: 'alternatives thin', scope: 'outside' },
@@ -804,11 +828,11 @@ export async function reviewScopeSuite(persona) {
           deepStrictEqual(first.left_open, ['G2-F1']);
           // The refine targets it but edits another paragraph.
           replaceLine(ctx.top, DOC_PATH, 7, 'Consequences one, sharpened.');
-          ctx.record(['G2-F1']);
-          scope = ctx.scope();
+          await ctx.record(['G2-F1']);
+          scope = await ctx.scope();
           strictEqual(scope.mode, 'scoped', scope.reason);
           deepStrictEqual(scope.targets, ['G2-F1']);
-          const closed = ctx.close(scope.generation, refs.map((r) => ({ id: 'G2-F1', ...r })));
+          const closed = await ctx.close(scope.generation, refs.map((r) => ({ id: 'G2-F1', ...r })));
           const why = JSON.stringify(refs);
           deepStrictEqual(closed.carry, carried ? ['G2-F1'] : [], why);
           deepStrictEqual(closed.left_open, [], why);
@@ -820,12 +844,12 @@ export async function reviewScopeSuite(persona) {
 
     it('a new finding with no location cannot be shown outside; a reversed range is refused', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-        const scope = ctx.scope();
-        const reversed = ctx.closeRaw(scope.generation, [{ id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:9-3`, text: 'x' }]);
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        const scope = await ctx.scope();
+        const reversed = await ctx.closeRaw(scope.generation, [{ id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:9-3`, text: 'x' }]);
         strictEqual(reversed.status, 1);
         match(reversed.stderr, /names no line range/);
-        const closed = ctx.close(scope.generation, [
+        const closed = await ctx.close(scope.generation, [
           { id: 'G1-F1', verdict: 'resolved' },
           { id: 'G1-F2', verdict: 'resolved' },
           { id: 'NEW', severity: 'MAJOR', text: 'somewhere', scope: 'outside' },
@@ -839,11 +863,11 @@ export async function reviewScopeSuite(persona) {
 
     it('a refine that leaves the file with no block makes the whole file the passage', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'], edit: () => writeFileSync(join(ctx.top, DOC_PATH), '\n') });
-        const scope = ctx.scope();
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'], edit: () => writeFileSync(join(ctx.top, DOC_PATH), '\n') });
+        const scope = await ctx.scope();
         strictEqual(scope.mode, 'scoped', scope.reason);
         ok(scope.passages.some((p) => p.whole), 'a whole-file passage');
-        const closed = ctx.close(scope.generation, [
+        const closed = await ctx.close(scope.generation, [
           { id: 'G1-F1', verdict: 'resolved' },
           { id: 'G1-F2', verdict: 'resolved' },
           { id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:1`, text: 'the decision is gone', scope: 'outside' },
@@ -855,11 +879,11 @@ export async function reviewScopeSuite(persona) {
     it('a fence inside a block quote or a list item is code', async () => {
       await fixture(async (ctx) => {
         write(ctx.top, 'docs/runbook.md', '# Runbook\n\n```bash\necho one\n```\n\n> ```sh\n> echo two\n> ```\n');
-        strictEqual(ctx.scope().reason, 'code-changed:docs/runbook.md');
+        strictEqual((await ctx.scope()).reason, 'code-changed:docs/runbook.md');
       }, { extra: {} });
       await fixture(async (ctx) => {
         write(ctx.top, 'docs/runbook.md', '# Runbook\n\n```bash\necho one\n```\n\n- step\n\n    ```sh\n    echo two\n    ```\n');
-        strictEqual(ctx.scope().reason, 'code-changed:docs/runbook.md');
+        strictEqual((await ctx.scope()).reason, 'code-changed:docs/runbook.md');
       });
       // A fence that opens on the list marker's own line: a change to the
       // command inside it is code, and its closer closes it.
@@ -867,124 +891,124 @@ export async function reviewScopeSuite(persona) {
       for (const marker of ['-', '1.']) {
         await fixture(async (ctx) => {
           write(ctx.top, 'docs/runbook.md', listFence('echo two').replace('- ', `${marker} `));
-          strictEqual(ctx.scope().reason, 'code-changed:docs/runbook.md', marker);
+          strictEqual((await ctx.scope()).reason, 'code-changed:docs/runbook.md', marker);
         }, { extra: { 'docs/runbook.md': listFence('echo one').replace('- ', `${marker} `) } });
       }
       await fixture(async (ctx) => {
         write(ctx.top, 'docs/runbook.md', listFence('echo one').replace('After.', 'After, revised.'));
-        strictEqual(ctx.scope().recorded, true, 'prose after the closed fence is prose');
+        strictEqual((await ctx.scope()).recorded, true, 'prose after the closed fence is prose');
       }, { extra: { 'docs/runbook.md': listFence('echo one') } });
     });
 
     it('a malformed ledger entry moves the ledger aside', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx);
+        await fullThenRefine(ctx);
         const file = ctx.ledgerFile();
         const ledger = JSON.parse(readFileSync(file, 'utf8'));
         ledger.generations.push(null);
         writeFileSync(file, JSON.stringify(ledger));
-        const scope = ctx.scope();
+        const scope = await ctx.scope();
         strictEqual(scope.reason, 'no-full-critique-recorded');
         ok(existsSync(scope.ledger_moved_aside));
       });
       // A passage whose range is not one would bound the left-open route
       // wrongly: the ledger is not used.
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-        const scoped = ctx.scope();
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        const scoped = await ctx.scope();
         strictEqual(scoped.mode, 'scoped');
         const file = ctx.ledgerFile();
         const ledger = JSON.parse(readFileSync(file, 'utf8'));
         // Each malformed passage is refused by the close itself, which reads
         // the open generation (review-status reads no ledger while one is open).
-        const closeAgainst = (passage) => {
+        const closeAgainst = async (passage) => {
           const bad = structuredClone(ledger);
           Object.assign(bad.generations.at(-1).passages[0], passage);
           writeFileSync(file, JSON.stringify(bad));
-          const r = ctx.closeRaw(scoped.generation, [{ id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:5`, text: 'x', scope: 'outside' }]);
+          const r = await ctx.closeRaw(scoped.generation, [{ id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:5`, text: 'x', scope: 'outside' }]);
           strictEqual(r.status, 1, `no close against ${JSON.stringify(passage)}`);
           match(r.stderr, /generations\[1\] is malformed/);
         };
-        closeAgainst({ start: 9, end: 3 });
+        await closeAgainst({ start: 9, end: 3 });
         // Nor one on a path the generation's artifact set does not hold.
-        closeAgainst({ path: 'docs/not-an-artifact.md' });
-        ok(existsSync(ctx.scope().ledger_moved_aside));
+        await closeAgainst({ path: 'docs/not-an-artifact.md' });
+        ok(existsSync((await ctx.scope()).ledger_moved_aside));
       });
       // Generation ids out of order would defeat the unclosed-critique rule.
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-        const scoped = ctx.scope();
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        const scoped = await ctx.scope();
         const file = ctx.ledgerFile();
         const ledger = JSON.parse(readFileSync(file, 'utf8'));
         ledger.generations.at(-1).id = 1;
         writeFileSync(file, JSON.stringify(ledger));
-        strictEqual(ctx.status().ledger, false);
-        strictEqual(ctx.record(['G1-F1']).recorded, false);
-        strictEqual(ctx.scope().reason, 'no-full-critique-recorded');
+        strictEqual((await ctx.status()).ledger, false);
+        strictEqual((await ctx.record(['G1-F1'])).recorded, false);
+        strictEqual((await ctx.scope()).reason, 'no-full-critique-recorded');
         strictEqual(scoped.generation, 2);
       });
     });
 
     it('a document that turns into code drops its ledger: refine reads no stale findings', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx);
+        await fullThenRefine(ctx);
         write(ctx.top, 'scripts/run.mjs', 'export const x = 2;\n');
-        const scope = ctx.scope();
+        const scope = await ctx.scope();
         strictEqual(scope.recorded, false);
         ok(existsSync(scope.ledger_moved_aside), 'the ledger is kept aside, not deleted');
-        strictEqual(ctx.status().ledger, false);
-        strictEqual(ctx.record(['G1-F1']).recorded, false);
+        strictEqual((await ctx.status()).ledger, false);
+        strictEqual((await ctx.record(['G1-F1'])).recorded, false);
       });
     });
 
     it('HEAD moved, a path added since the last critique, an edit after the refine record: full', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx);
+        await fullThenRefine(ctx);
         git(ctx.top, 'commit', '-q', '--allow-empty', '-m', 'moved');
-        const scope = ctx.scope();
+        const scope = await ctx.scope();
         strictEqual(scope.mode, 'full');
         strictEqual(scope.reason, 'head-moved');
       });
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, {
+        await fullThenRefine(ctx, {
           edit: () => {
             replaceLine(ctx.top, DOC_PATH, 5, 'Decision paragraph, revised.');
             write(ctx.top, 'docs/adr/0002-y.md', '# Another\n');
           },
         });
-        const scope = ctx.scope();
+        const scope = await ctx.scope();
         strictEqual(scope.mode, 'full');
         strictEqual(scope.reason, 'artifact-set-changed');
       });
       await fixture(async (ctx) => {
-        fullThenRefine(ctx);
+        await fullThenRefine(ctx);
         replaceLine(ctx.top, DOC_PATH, 9, 'Alternatives, edited after the record.');
-        const scope = ctx.scope();
+        const scope = await ctx.scope();
         strictEqual(scope.mode, 'full');
         strictEqual(scope.reason, 'tree-changed-since-the-refine-record');
         // The full critique that follows never converges by leaving a MAJOR open.
-        const closed = ctx.close(scope.generation, [{ id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:9`, text: 'x', scope: 'outside' }]);
+        const closed = await ctx.close(scope.generation, [{ id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:9`, text: 'x', scope: 'outside' }]);
         strictEqual(closed.converged, false);
       });
     });
 
     it('no refine recorded, an operation in progress, an unreadable ledger: full', async () => {
       await fixture(async (ctx) => {
-        const first = ctx.scope();
-        ctx.close(first.generation, []);
+        const first = await ctx.scope();
+        await ctx.close(first.generation, []);
         replaceLine(ctx.top, DOC_PATH, 5, 'Edited without a refine record.');
-        strictEqual(ctx.scope().reason, 'no-refine-recorded-since-the-last-critique');
+        strictEqual((await ctx.scope()).reason, 'no-refine-recorded-since-the-last-critique');
       });
       await fixture(async (ctx) => {
-        fullThenRefine(ctx);
+        await fullThenRefine(ctx);
         writeFileSync(join(ctx.top, '.git', 'MERGE_HEAD'), `${ctx.base}\n`);
-        strictEqual(ctx.scope().reason, 'operation-in-progress:MERGE_HEAD');
+        strictEqual((await ctx.scope()).reason, 'operation-in-progress:MERGE_HEAD');
       });
       await fixture(async (ctx) => {
-        fullThenRefine(ctx);
+        await fullThenRefine(ctx);
         const ledger = ctx.ledgerFile();
         writeFileSync(ledger, '{not json');
-        const scope = ctx.scope();
+        const scope = await ctx.scope();
         strictEqual(scope.mode, 'full');
         strictEqual(scope.reason, 'no-full-critique-recorded');
         ok(existsSync(scope.ledger_moved_aside), 'the unreadable ledger is kept aside');
@@ -993,54 +1017,54 @@ export async function reviewScopeSuite(persona) {
 
     it('a critique whose close refused leaves the ledger vouching for nothing until a critique closes', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-        const scoped = ctx.scope();
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        const scoped = await ctx.scope();
         strictEqual(scoped.mode, 'scoped');
         // The tree changes while the critique runs: its close refuses.
         replaceLine(ctx.top, DOC_PATH, 9, 'Alternatives, changed during the critique.');
-        strictEqual(ctx.closeRaw(scoped.generation, [{ id: 'G1-F1', verdict: 'resolved' }]).status, 1);
-        deepStrictEqual(ctx.status(), { ledger: false, reason: 'unclosed-critique' });
-        const rec = ctx.record(['G1-F1']);
+        strictEqual((await ctx.closeRaw(scoped.generation, [{ id: 'G1-F1', verdict: 'resolved' }])).status, 1);
+        deepStrictEqual(await ctx.status(), { ledger: false, reason: 'unclosed-critique' });
+        const rec = await ctx.record(['G1-F1']);
         strictEqual(rec.recorded, false);
         strictEqual(rec.reason, 'unclosed-critique');
-        const next = ctx.scope();
+        const next = await ctx.scope();
         strictEqual(next.mode, 'full');
         strictEqual(next.reason, 'unclosed-critique-since-the-last-close');
         // A full critique that closes restores the ledger.
-        ctx.close(next.generation, [{ id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:9`, text: 'x' }]);
-        strictEqual(ctx.status().ledger, true);
+        await ctx.close(next.generation, [{ id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:9`, text: 'x' }]);
+        strictEqual((await ctx.status()).ledger, true);
       });
     });
 
     it('an open critique a run never closed is abandoned by the next one', async () => {
       await fixture(async (ctx) => {
-        const first = ctx.scope();
-        const second = ctx.scope();
+        const first = await ctx.scope();
+        const second = await ctx.scope();
         strictEqual(second.generation, first.generation + 1);
-        const r = ctx.closeRaw(first.generation, []);
+        const r = await ctx.closeRaw(first.generation, []);
         strictEqual(r.status, 1);
         match(r.stderr, /not the open critique/);
-        strictEqual(ctx.close(second.generation, []).converged, true);
+        strictEqual((await ctx.close(second.generation, [])).converged, true);
       });
     });
 
     it('refuses a stale close, an unknown refine target, a finding id not in the ledger and a malformed finding', async () => {
       await fixture(async (ctx) => {
-        const first = ctx.scope();
+        const first = await ctx.scope();
         replaceLine(ctx.top, DOC_PATH, 9, 'changed while the critique ran');
-        const stale = ctx.closeRaw(first.generation, []);
+        const stale = await ctx.closeRaw(first.generation, []);
         strictEqual(stale.status, 1);
         match(stale.stderr, /the checkout changed since generation 1/);
-        const again = ctx.scope();
-        ctx.close(again.generation, [{ id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:3`, text: 'x' }]);
-        const unknown = ctx.recordRaw('G9-F9\n');
+        const again = await ctx.scope();
+        await ctx.close(again.generation, [{ id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:3`, text: 'x' }]);
+        const unknown = await ctx.recordRaw(['G9-F9']);
         strictEqual(unknown.status, 1);
         match(unknown.stderr, /G9-F9.*not a finding in the review ledger/);
-        const scope = ctx.scope();
-        const bad = ctx.closeRaw(scope.generation, [{ id: 'G7-F1', verdict: 'resolved' }]);
+        const scope = await ctx.scope();
+        const bad = await ctx.closeRaw(scope.generation, [{ id: 'G7-F1', verdict: 'resolved' }]);
         strictEqual(bad.status, 1);
         match(bad.stderr, /not in the review ledger/);
-        const badSeverity = ctx.closeRaw(scope.generation, [{ id: 'NEW', severity: 'HIGH', text: 'x' }]);
+        const badSeverity = await ctx.closeRaw(scope.generation, [{ id: 'NEW', severity: 'HIGH', text: 'x' }]);
         strictEqual(badSeverity.status, 1);
         match(badSeverity.stderr, /severity must be one of/);
       });
@@ -1050,23 +1074,21 @@ export async function reviewScopeSuite(persona) {
       await fixture(async (ctx) => {
         const other = join(dirname(ctx.top), 'other');
         git(ctx.top, 'worktree', 'add', '-q', '-b', 'feat/other', other);
-        const first = ctx.scope();
-        ctx.close(first.generation, [{ id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:5`, text: 'x' }]);
+        const first = await ctx.scope();
+        await ctx.close(first.generation, [{ id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:5`, text: 'x' }]);
         const before = readFileSync(ctx.ledgerFile(), 'utf8');
-        const scope = json(cli(['critique-scope', '--workflow-path', ctx.wf, '--repo-root', other], other));
+        const scope = await inCheckout(other, () => state.openCritiqueScope({ workflowPath: ctx.wf, repoRoot: other }));
         strictEqual(scope.recorded, false);
         strictEqual(scope.reason, 'other-branch:feat/other');
         match(scope.detail, /not the workflow's branch feat\/doc/);
         // Nor may it record a refine in this workflow's ledger.
-        const targets = join(dirname(ctx.top), 'targets.txt');
-        writeFileSync(targets, 'G1-F1\n');
-        const rec = json(cli(['refine-record', '--workflow-path', ctx.wf, '--repo-root', other, '--targets-file', targets], other));
+        const rec = await inCheckout(other, () => state.recordRefineScope({ workflowPath: ctx.wf, repoRoot: other, targets: ['G1-F1'] }));
         strictEqual(rec.recorded, false);
         strictEqual(rec.reason, 'other-branch:feat/other');
         strictEqual(readFileSync(ctx.ledgerFile(), 'utf8'), before, 'the ledger is untouched');
-        deepStrictEqual(ctx.status().findings[0].targeted_by, []);
+        deepStrictEqual((await ctx.status()).findings[0].targeted_by, []);
         // A close from there refuses: the findings were held to another tree.
-        const reopened = ctx.scope();
+        const reopened = await ctx.scope();
         // A conflicted working tree there is still another branch's: the
         // ledger stays.
         write(other, 'notes.md', 'x\n');
@@ -1078,13 +1100,13 @@ export async function reviewScopeSuite(persona) {
         git(other, 'commit', '-q', '-m', 'other side');
         git(other, 'checkout', '-q', 'feat/other');
         strictEqual(spawnSync('git', ['-C', other, 'merge', '-q', 'other-side'], { env: cleanEnv() }).status, 1, 'the merge conflicts');
-        const conflicted = json(cli(['critique-scope', '--workflow-path', ctx.wf, '--repo-root', other], other));
+        const conflicted = await inCheckout(other, () => state.openCritiqueScope({ workflowPath: ctx.wf, repoRoot: other }));
         strictEqual(conflicted.recorded, false);
         strictEqual(conflicted.reason, 'other-branch:feat/other');
         ok(existsSync(ctx.ledgerFile()), 'the ledger is not moved aside');
-        const findings = join(dirname(ctx.top), 'findings.json');
-        writeFileSync(findings, '{"findings": []}\n');
-        const close = cli(['critique-close', '--workflow-path', ctx.wf, '--repo-root', other, '--ledger', ctx.ledger, '--generation', String(reopened.generation), '--findings-file', findings], other);
+        const close = await outcome(other, () => state.closeCritiqueScope({
+          workflowPath: ctx.wf, repoRoot: other, ledgerId: ctx.ledger, generation: reopened.generation, input: { findings: [] },
+        }));
         strictEqual(close.status, 1);
         match(close.stderr, /not the workflow's branch feat\/doc/);
       });
@@ -1092,12 +1114,12 @@ export async function reviewScopeSuite(persona) {
 
     it('a second refine record after the same critique adds its targets and moves the tree', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1'] });
+        await fullThenRefine(ctx, { targets: ['G1-F1'] });
         replaceLine(ctx.top, DOC_PATH, 3, 'Context paragraph, with the incident.');
-        const second = ctx.record(['G1-F2']);
+        const second = await ctx.record(['G1-F2']);
         strictEqual(second.attempt, 'R1');
         deepStrictEqual(second.targets, ['G1-F1', 'G1-F2']);
-        const scope = ctx.scope();
+        const scope = await ctx.scope();
         strictEqual(scope.mode, 'scoped');
         deepStrictEqual(scope.passages.map((p) => p.start), [3, 5]);
       });
@@ -1106,31 +1128,30 @@ export async function reviewScopeSuite(persona) {
     // A critique run the ledger never saw: its critique-scope failed, an
     // older state.mjs ran it, or its checkout could not be vouched for. The
     // workflow file still notes the run, and that is what gives it away.
-    const noteCritiqueRun = (ctx) => {
-      const r = cli(['append', '--workflow-path', ctx.wf, '--host', 'claude', '--verb', 'critique',
-        '--phase-label', 'Phase 0: Resume into critique', '--phase-note', 'Resumed from prior verb.',
-        '--current-phase', 'phase-0-resume', '--next-action', 'Run critique skill', '--event', 'resumed'], ctx.top);
-      strictEqual(r.status, 0, r.stderr);
-    };
+    const noteCritiqueRun = (ctx) => runInCommandDirectory(ctx.top, () => state.appendPhase({
+      workflowPath: ctx.wf, host: 'claude', verb: 'critique',
+      phaseLabel: 'Phase 0: Resume into critique', phaseNote: 'Resumed from prior verb.',
+      currentPhase: 'phase-0-resume', nextAction: 'Run critique skill', event: 'resumed',
+    }));
 
     it('a critique the ledger never recorded makes refine read no ledger and the next critique full', async () => {
       // Control: the next critique's own run is noted, and it is scoped.
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-        strictEqual(ctx.status().ledger, true);
-        noteCritiqueRun(ctx);
-        strictEqual(ctx.scope().mode, 'scoped');
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        strictEqual((await ctx.status()).ledger, true);
+        await noteCritiqueRun(ctx);
+        strictEqual((await ctx.scope()).mode, 'scoped');
       });
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
         const before = ctx.ledger;
-        noteCritiqueRun(ctx); // a critique whose critique-scope failed
-        deepStrictEqual(ctx.status(), { ledger: false, reason: 'unrecorded-critique' });
-        const rec = ctx.record(['G1-F1']);
+        await noteCritiqueRun(ctx); // a critique whose critique-scope failed
+        deepStrictEqual(await ctx.status(), { ledger: false, reason: 'unrecorded-critique' });
+        const rec = await ctx.record(['G1-F1']);
         strictEqual(rec.recorded, false);
         strictEqual(rec.reason, 'unrecorded-critique');
-        noteCritiqueRun(ctx); // the next critique
-        const scope = ctx.scope();
+        await noteCritiqueRun(ctx); // the next critique
+        const scope = await ctx.scope();
         strictEqual(scope.recorded, true);
         strictEqual(scope.mode, 'full');
         strictEqual(scope.reason, 'unrecorded-critique');
@@ -1145,12 +1166,13 @@ export async function reviewScopeSuite(persona) {
     // critique-scope, and an older release notes the heading alone.
     it('a lifecycle critique phase, which notes no resume heading, is a critique the ledger never recorded', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-        const r = cli(['append', '--workflow-path', ctx.wf, '--host', 'claude', '--verb', 'critique', '--profile', 'parallel-review',
-          '--current-phase', 'phase-5-review', '--next-action', 'Review', '--event', 'updated'], ctx.top);
-        strictEqual(r.status, 0, r.stderr);
-        deepStrictEqual(ctx.status(), { ledger: false, reason: 'unrecorded-critique' });
-        strictEqual(ctx.record(['G1-F1']).reason, 'unrecorded-critique');
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        await runInCommandDirectory(ctx.top, () => state.appendPhase({
+          workflowPath: ctx.wf, host: 'claude', verb: 'critique', profile: 'parallel-review',
+          currentPhase: 'phase-5-review', nextAction: 'Review', event: 'updated',
+        }));
+        deepStrictEqual(await ctx.status(), { ledger: false, reason: 'unrecorded-critique' });
+        strictEqual((await ctx.record(['G1-F1'])).reason, 'unrecorded-critique');
       });
     });
 
@@ -1170,14 +1192,14 @@ export async function reviewScopeSuite(persona) {
     it('an index entry marked assume-unchanged or skip-worktree makes the checkout one the ledger cannot vouch for', async () => {
       for (const flag of ['--assume-unchanged', '--skip-worktree']) {
         await fixture(async (ctx) => {
-          fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+          await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
           git(ctx.top, 'add', DOC_PATH);
           git(ctx.top, 'update-index', flag, DOC_PATH);
           replaceLine(ctx.top, DOC_PATH, 9, 'rm -rf ~/work');
-          const rec = ctx.record([]);
+          const rec = await ctx.record([]);
           strictEqual(rec.recorded, false, flag);
           strictEqual(rec.reason, 'checkout-unreadable:index-flags', flag);
-          const scope = ctx.scope();
+          const scope = await ctx.scope();
           strictEqual(scope.recorded, false, flag);
           strictEqual(scope.mode, 'full', flag);
           strictEqual(scope.reason, 'checkout-unreadable:index-flags', flag);
@@ -1189,9 +1211,9 @@ export async function reviewScopeSuite(persona) {
 
     it('a critique opened again with no close between is full: the open one may have seen findings', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
-        strictEqual(ctx.scope().mode, 'scoped');
-        const again = ctx.scope();
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        strictEqual((await ctx.scope()).mode, 'scoped');
+        const again = await ctx.scope();
         strictEqual(again.mode, 'full');
         strictEqual(again.reason, 'unclosed-critique-since-the-last-close');
       });
@@ -1199,11 +1221,11 @@ export async function reviewScopeSuite(persona) {
 
     it('a scoped critique resolves a finding the refine did not target only in a passage', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1'] });
-        const scope = ctx.scope();
+        await fullThenRefine(ctx, { targets: ['G1-F1'] });
+        const scope = await ctx.scope();
         strictEqual(scope.mode, 'scoped');
         // G1-F2 sits at line 3, which the refine did not touch.
-        const closed = ctx.close(scope.generation, [
+        const closed = await ctx.close(scope.generation, [
           { id: 'G1-F1', verdict: 'resolved' },
           { id: 'G1-F2', verdict: 'resolved' },
         ]);
@@ -1216,9 +1238,9 @@ export async function reviewScopeSuite(persona) {
       });
       // Control: placed in the changed passage, the same verdict resolves it.
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1'] });
-        const scope = ctx.scope();
-        const closed = ctx.close(scope.generation, [
+        await fullThenRefine(ctx, { targets: ['G1-F1'] });
+        const scope = await ctx.scope();
+        const closed = await ctx.close(scope.generation, [
           { id: 'G1-F1', verdict: 'resolved' },
           { id: 'G1-F2', verdict: 'resolved', location: `${DOC_PATH}:5` },
         ]);
@@ -1230,19 +1252,19 @@ export async function reviewScopeSuite(persona) {
     it('executable text is no document: a .txt build file, an indented code block, content after a deep closer', async () => {
       await fixture(async (ctx) => {
         write(ctx.top, 'CMakeLists.txt', 'add_custom_command(rm -rf build)\n');
-        const scope = ctx.scope();
+        const scope = await ctx.scope();
         strictEqual(scope.recorded, false);
         strictEqual(scope.reason, 'not-prose:CMakeLists.txt');
       });
       await fixture(async (ctx) => {
         write(ctx.top, DOC_PATH, `${DOC}\n    rm -rf build\n`);
-        const scope = ctx.scope();
+        const scope = await ctx.scope();
         strictEqual(scope.recorded, false);
         strictEqual(scope.reason, `code-changed:${DOC_PATH}`);
       });
       await fixture(async (ctx) => {
         write(ctx.top, DOC_PATH, `${DOC}\n\`\`\`sh\necho ok\n    \`\`\`\nrm -rf build\n`);
-        const scope = ctx.scope();
+        const scope = await ctx.scope();
         strictEqual(scope.recorded, false);
         strictEqual(scope.reason, `code-changed:${DOC_PATH}`);
       }, { extra: { [DOC_PATH]: `${DOC}\n\`\`\`sh\necho ok\n    \`\`\`\n` } });
@@ -1257,7 +1279,7 @@ export async function reviewScopeSuite(persona) {
         old[line - 1] = old[line - 1].trim() === '' ? ' ' : `${old[line - 1]} 2`;
         await fixture(async (ctx) => {
           write(ctx.top, 'docs/shape.md', text);
-          const scope = ctx.scope();
+          const scope = await ctx.scope();
           strictEqual(scope.recorded, !code);
           strictEqual(scope.reason, code ? 'code-changed:docs/shape.md' : 'no-full-critique-recorded');
         }, { extra: { 'docs/shape.md': old.join('\n') } });
@@ -1273,13 +1295,13 @@ export async function reviewScopeSuite(persona) {
       const v2 = v1.replace('- Run this:', 'Run this:');
       await fixture(async (ctx) => {
         write(ctx.top, 'docs/m1.md', v1);
-        const first = ctx.scope();
+        const first = await ctx.scope();
         strictEqual(first.recorded, true, first.reason);
         strictEqual(first.mode, 'full');
-        ctx.close(first.generation, [{ id: 'NEW', severity: 'MAJOR', location: 'docs/m1.md:3', text: 'intro vague' }]);
+        await ctx.close(first.generation, [{ id: 'NEW', severity: 'MAJOR', location: 'docs/m1.md:3', text: 'intro vague' }]);
         write(ctx.top, 'docs/m1.md', v2);
-        ctx.record(['G1-F1']);
-        const scope = ctx.scope();
+        await ctx.record(['G1-F1']);
+        const scope = await ctx.scope();
         strictEqual(scope.mode, 'full');
         strictEqual(scope.reason, 'code-blocks-changed:docs/m1.md');
         deepStrictEqual(scope.passages, []);
@@ -1288,12 +1310,12 @@ export async function reviewScopeSuite(persona) {
 
     it('a pruned tree of the last critique makes the next critique full, never scoped on a guess', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
         const tree = JSON.parse(readFileSync(ctx.ledgerFile(), 'utf8')).generations[0].tree;
         const loose = join(ctx.top, '.git', 'objects', tree.slice(0, 2), tree.slice(2));
         ok(existsSync(loose), 'the reviewed tree is a loose object');
         rmSync(loose);
-        const scope = ctx.scope();
+        const scope = await ctx.scope();
         strictEqual(scope.mode, 'full');
         match(scope.reason, /^passages-unreadable:/);
         deepStrictEqual(scope.passages, []);
@@ -1304,17 +1326,17 @@ export async function reviewScopeSuite(persona) {
       await fixture(async (ctx) => {
         // The refine inserts a paragraph at line 3: G1-F2, found at line 3,
         // moves to line 5 untouched, and its old line now holds new text.
-        fullThenRefine(ctx, {
+        await fullThenRefine(ctx, {
           targets: ['G1-F1'],
           edit: () => replaceLine(ctx.top, DOC_PATH, 3, 'Inserted paragraph.\n\nContext paragraph.'),
         });
-        const scope = ctx.scope();
+        const scope = await ctx.scope();
         strictEqual(scope.mode, 'scoped', scope.reason);
         ok(scope.passages.some((p) => p.start <= 3 && p.end >= 3), JSON.stringify(scope.passages));
         ok(!scope.passages.some((p) => p.start <= 5 && p.end >= 5), JSON.stringify(scope.passages));
         // G1-F2 (ledger line 3, inside a passage now) is reported at its
         // current line 5, untouched: the ledger's line does not resolve it.
-        const closed = ctx.close(scope.generation, [
+        const closed = await ctx.close(scope.generation, [
           { id: 'G1-F1', verdict: 'resolved' },
           { id: 'G1-F2', verdict: 'resolved', location: `${DOC_PATH}:5` },
         ]);
@@ -1325,31 +1347,102 @@ export async function reviewScopeSuite(persona) {
 
     it('refine-record holds Refine-verify to the same tree check as the next critique', async () => {
       await fixture(async (ctx) => {
-        ctx.scope();
-        ctx.close(1, [{ id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:5`, text: 'x' }]);
+        await ctx.scope();
+        await ctx.close(1, [{ id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:5`, text: 'x' }]);
         const tree = JSON.parse(readFileSync(ctx.ledgerFile(), 'utf8')).generations[0].tree;
         rmSync(join(ctx.top, '.git', 'objects', tree.slice(0, 2), tree.slice(2)));
         replaceLine(ctx.top, DOC_PATH, 5, 'Decision paragraph, revised.');
-        const rec = ctx.record(['G1-F1']);
+        const rec = await ctx.record(['G1-F1']);
         strictEqual(rec.recorded, true);
         strictEqual(rec.verify.mode, 'full');
         match(rec.verify.reason, /^passages-unreadable:/);
-        strictEqual(ctx.scope().mode, 'full');
+        strictEqual((await ctx.scope()).mode, 'full');
       });
     });
 
     it('a close names its ledger: one from before a reset is refused', async () => {
       await fixture(async (ctx) => {
-        fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
+        await fullThenRefine(ctx, { targets: ['G1-F1', 'G1-F2'] });
         const old = ctx.ledger;
         writeFileSync(ctx.ledgerFile(), '{"not": "a ledger"}\n');
-        const fresh = ctx.scope();
+        const fresh = await ctx.scope();
         strictEqual(fresh.generation, 1);
         ok(fresh.ledger !== old);
-        const stale = ctx.closeRaw(1, [], old);
+        const stale = await ctx.closeRaw(1, [], old);
         strictEqual(stale.status, 1);
         match(stale.stderr, /not this workflow's review ledger now/);
-        strictEqual(ctx.close(1, []).converged, true, 'the ledger the scope named closes');
+        strictEqual((await ctx.close(1, [])).converged, true, 'the ledger the scope named closes');
+      });
+    });
+  });
+
+  // The CLI's own dispatcher, once: what it reads from its flags and files
+  // before it calls the functions the tests above call, and its exit status.
+  describe(`${persona}: the review-scope CLI dispatcher (C120)`, () => {
+    it('critique-close reads --generation and --findings-file, refine-record --targets-file, a refusal exits 1', async () => {
+      await fixture(async (ctx) => {
+        const run = (args) => cli([...args, '--workflow-path', ctx.wf], ctx.top);
+        const json = (r) => {
+          strictEqual(r.status, 0, r.stderr);
+          return JSON.parse(r.stdout);
+        };
+        const scope = json(run(['critique-scope', '--repo-root', ctx.top]));
+        strictEqual(scope.mode, 'full');
+        const close = (generation, findingsFile, ledger = scope.ledger) => run(['critique-close', '--repo-root', ctx.top, '--ledger', ledger, '--generation', generation, '--findings-file', findingsFile]);
+        const badGeneration = close('1.5', ctx.file({ findings: [] }));
+        strictEqual(badGeneration.status, 1);
+        match(badGeneration.stderr, /--generation must be a generation id/);
+        const unreadable = close('1', join(ctx.top, 'no-findings.json'));
+        strictEqual(unreadable.status, 1);
+        match(unreadable.stderr, /--findings-file .* is not a readable JSON file/);
+        const closed = json(close(String(scope.generation), ctx.file({ findings: [
+          { id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:5`, text: 'x' },
+          { id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:3`, text: 'y' },
+          { id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:7`, text: 'z' },
+          { id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:9`, text: 'w' },
+          { id: 'NEW', severity: 'MAJOR', location: `${DOC_PATH}:1`, text: 'v' },
+        ] })));
+        deepStrictEqual(closed.carry, ['G1-F1', 'G1-F2', 'G1-F3', 'G1-F4', 'G1-F5']);
+        replaceLine(ctx.top, DOC_PATH, 5, 'Decision paragraph, revised.');
+        const unknown = run(['refine-record', '--repo-root', ctx.top, '--targets-file', ctx.file('G9-F9\n')]);
+        strictEqual(unknown.status, 1);
+        match(unknown.stderr, /G9-F9.*not a finding in the review ledger/);
+        // A blank file first, a refine that targeted nothing: the attempt
+        // holds no target yet, so a reader that returns any id for it fails.
+        // Then a list of LF lines (the form an agent writes), a list of CRLF
+        // lines with a blank line, and a JSON list, each bringing only
+        // targets the attempt does not hold yet, so a reader that drops any
+        // of its lines or its list, or splits on one line ending only,
+        // fails here. A blank file again keeps the targets recorded.
+        deepStrictEqual(json(run(['refine-record', '--repo-root', ctx.top, '--targets-file', ctx.file('\n')])).targets, []);
+        deepStrictEqual(json(run(['refine-record', '--repo-root', ctx.top, '--targets-file', ctx.file('G1-F1\nG1-F2\n')])).targets, ['G1-F1', 'G1-F2']);
+        deepStrictEqual(json(run(['refine-record', '--repo-root', ctx.top, '--targets-file', ctx.file('G1-F3\r\n\r\nG1-F4\r\n')])).targets, ['G1-F1', 'G1-F2', 'G1-F3', 'G1-F4']);
+        deepStrictEqual(json(run(['refine-record', '--repo-root', ctx.top, '--targets-file', ctx.file('["G1-F5"]\n')])).targets, ['G1-F1', 'G1-F2', 'G1-F3', 'G1-F4', 'G1-F5']);
+        deepStrictEqual(json(run(['refine-record', '--repo-root', ctx.top, '--targets-file', ctx.file('\n')])).targets, ['G1-F1', 'G1-F2', 'G1-F3', 'G1-F4', 'G1-F5']);
+        const status = json(cli(['review-status', '--workflow-path', ctx.wf], ctx.top));
+        deepStrictEqual(status.carry, ['G1-F1', 'G1-F2', 'G1-F3', 'G1-F4', 'G1-F5']);
+        // The re-critique opens generation 2, and critique-close forwards the
+        // --ledger and --generation it reads: another ledger and the stale
+        // generation 1 refuse, the scope's ledger at generation 2 closes.
+        const rescope = json(run(['critique-scope', '--repo-root', ctx.top]));
+        strictEqual(rescope.mode, 'scoped', rescope.reason);
+        strictEqual(rescope.generation, 2);
+        const resolved = ctx.file({ findings: ['G1-F1', 'G1-F2', 'G1-F3', 'G1-F4', 'G1-F5'].map((id) => ({ id, verdict: 'resolved' })) });
+        // Another ledger id of the same shape, never the scope's own.
+        const wrongLedger = scope.ledger.replace(/^./, (c) => (c === '0' ? '1' : '0'));
+        const otherLedger = close('2', resolved, wrongLedger);
+        strictEqual(otherLedger.status, 1);
+        ok(otherLedger.stderr.includes(`ledger "${wrongLedger}" is not this workflow's review ledger now`), otherLedger.stderr);
+        const staleClose = close('1', resolved);
+        strictEqual(staleClose.status, 1);
+        match(staleClose.stderr, /generation 1 is not the open critique/);
+        const reclosed = json(close('2', resolved));
+        strictEqual(reclosed.converged, true);
+        deepStrictEqual(reclosed.carry, []);
+        // critique-scope reads --profile: another profile is partial.
+        const partial = json(run(['critique-scope', '--repo-root', ctx.top, '--profile', 'a-narrower-lens']));
+        strictEqual(partial.mode, 'partial');
+        strictEqual(partial.reason, 'not-the-default-profile');
       });
     });
   });
