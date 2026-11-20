@@ -14,6 +14,7 @@
     "tests/orchestrator/test-peer-snapshot.mjs",
     "tests/persona-pipeline/test-peer-snapshot-claude.mjs",
     "tests/persona-pipeline/test-peer-snapshot.mjs",
+    "tests/persona-pipeline/test-review-scope-runbook-e2e.mjs",
     "tests/persona-pipeline/test-verb-runbook-killed-dispatch.mjs",
     "tests/persona-pipeline/test-verb-runbook-runs-e2e.mjs",
     "tests/persona-pipeline/test-verify-runbooks-e2e.mjs",
