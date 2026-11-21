@@ -50,6 +50,7 @@ import { join, isAbsolute, resolve, dirname, relative, basename } from 'node:pat
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { exitAfterFlush } from './lib/exit-after-flush.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 const ENV_OVERRIDE = 'AGENTIC_RUNTIME_ROOT';
 
@@ -535,19 +536,10 @@ async function cliMain(argv) {
 // canonical and as paths, so an install reached through a symlink (with or
 // without --preserve-symlinks-main), or under a directory whose name needs URL
 // escaping (a space, '#', non-ASCII), still runs (ADR-0061 S2).
-function invokedAsCli() {
-  if (!process.argv[1]) return false;
-  try {
-    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    return false;
-  }
-}
-
 // Ends through exitAfterFlush (R2): `process.exit` right after a write cut a
 // diagnostic echoing a long flag at 64 KiB on a pipe. A rejection prints its
 // message and exits 1, where it used to surface as an unhandled rejection.
-if (invokedAsCli()) {
+if (isCliEntry(import.meta.url)) {
   cliMain(process.argv.slice(2)).then(
     (code) => exitAfterFlush(code ?? 0),
     (err) => {
