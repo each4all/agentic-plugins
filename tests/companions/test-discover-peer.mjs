@@ -13,12 +13,13 @@
 import { describe, it, before, after } from 'node:test';
 import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { defineExitAfterFlushSuite } from '../../companions/tests/exit-flush.suite.mjs';
+import { tmpDir } from '../_tmp.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const CANONICAL = join(REPO_ROOT, 'companions', 'discover-peer.mjs');
@@ -232,3 +233,67 @@ process.on('exit', () => writeFileSync(process.env.FS_SPY_OUT, JSON.stringify(ca
 });
 
 defineExitAfterFlushSuite({ label: 'discover-peer', modulePath: CANONICAL });
+
+// C180, C48 — each companion imports its sibling cli-entry.mjs, so a
+// companions directory without it cannot load the companion. Discovery skips
+// such an install for an older complete one, and an AGENTIC_COMPANIONS_ROOT
+// override missing it is refused with the file it lacks named; a companion
+// that imports no sibling (a release before C180) still passes.
+describe('discover-peer.mjs — a companion needs the siblings it imports (C180, C48)', () => {
+  let discoverPeerCompanion;
+  before(async () => {
+    ({ discoverPeerCompanion } = await import(pathToFileURL(CANONICAL).href));
+  });
+  const IMPORTING_BODY = `import { isCliEntry } from './cli-entry.mjs';\n${COMPANION_BODY}`;
+
+  it('an override directory with the new companions but no cli-entry.mjs is refused, naming it', async (t) => {
+    const root = tmpDir(t, 'dp-override-');
+    for (const file of ['claude-companion.mjs', 'codex-companion.mjs']) writeFileSync(join(root, file), IMPORTING_BODY);
+    const got = await discoverPeerCompanion({ peer: 'codex', env: { AGENTIC_COMPANIONS_ROOT: root }, home: root });
+    strictEqual(got.ok, false);
+    ok(got.reason.includes(join(root, 'cli-entry.mjs')), got.reason);
+    writeFileSync(join(root, 'cli-entry.mjs'), 'export const isCliEntry = () => false;\n');
+    deepStrictEqual(await discoverPeerCompanion({ peer: 'codex', env: { AGENTIC_COMPANIONS_ROOT: root }, home: root }),
+      { ok: true, path: join(root, 'codex-companion.mjs'), source: 'env' });
+  });
+
+  it('an older companion that imports no sibling still passes from an override directory', async (t) => {
+    const root = tmpDir(t, 'dp-old-');
+    for (const file of ['claude-companion.mjs', 'codex-companion.mjs']) writeFileSync(join(root, file), COMPANION_BODY);
+    strictEqual((await discoverPeerCompanion({ peer: 'codex', env: { AGENTIC_COMPANIONS_ROOT: root }, home: root })).ok, true);
+  });
+
+  it('a newest install missing cli-entry.mjs is skipped for an older complete one', async (t) => {
+    const home = tmpDir(t, 'dp-cache-');
+    const cache = claudeCache(home);
+    await plantCompanions(cache, '0.9.0', { manifestRel: CLAUDE_MANIFEST, body: IMPORTING_BODY });
+    writeFileSync(join(cache, '0.9.0', 'scripts', 'cli-entry.mjs'), 'export const isCliEntry = () => false;\n');
+    await plantCompanions(cache, '1.0.0', { manifestRel: CLAUDE_MANIFEST, body: IMPORTING_BODY });
+    const got = await discoverPeerCompanion({ peer: 'codex', env: {}, home });
+    deepStrictEqual(got, { ok: true, path: join(cache, '0.9.0', 'scripts', 'codex-companion.mjs'), source: 'cache-glob', version: '0.9.0' });
+  });
+
+  it('a cache whose every install lacks cli-entry.mjs is refused, naming the file', async (t) => {
+    const home = tmpDir(t, 'dp-cache-none-');
+    const cache = claudeCache(home);
+    await plantCompanions(cache, '1.0.0', { manifestRel: CLAUDE_MANIFEST, body: IMPORTING_BODY });
+    const got = await discoverPeerCompanion({ peer: 'codex', env: {}, home });
+    strictEqual(got.ok, false);
+    ok(got.reason.includes(join(cache, '1.0.0', 'scripts', 'cli-entry.mjs')), got.reason);
+  });
+
+  it('a companion reached through a symlink needs cli-entry.mjs beside its target, where Node resolves it', async (t) => {
+    const base = tmpDir(t, 'dp-link-');
+    const real = join(base, 'real');
+    const linked = join(base, 'override');
+    mkdirSync(real);
+    mkdirSync(linked);
+    writeFileSync(join(real, 'codex-companion.mjs'), IMPORTING_BODY);
+    symlinkSync(join(real, 'codex-companion.mjs'), join(linked, 'codex-companion.mjs'));
+    // Beside the link only: the target cannot load it.
+    writeFileSync(join(linked, 'cli-entry.mjs'), 'export const isCliEntry = () => false;\n');
+    strictEqual((await discoverPeerCompanion({ peer: 'codex', env: { AGENTIC_COMPANIONS_ROOT: linked }, home: base })).ok, false);
+    writeFileSync(join(real, 'cli-entry.mjs'), 'export const isCliEntry = () => false;\n');
+    strictEqual((await discoverPeerCompanion({ peer: 'codex', env: { AGENTIC_COMPANIONS_ROOT: linked }, home: base })).ok, true);
+  });
+});

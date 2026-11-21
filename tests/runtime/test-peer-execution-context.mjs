@@ -261,11 +261,14 @@ describe('peer execution context (filesystem-only seam)', () => {
       );
     });
 
-    // The companion's CLI entry guard compares argv[1] with Node's canonical
-    // module path, so a path spelled through a symlink runs nothing. Each case
-    // runs the selected companion with no subcommand: the real CLI answers with
-    // a usage error (exit 2), the silent no-op exits 0 with no output.
+    // The resolver hands back the canonical path. The companion runs from any
+    // spelling since its entry guard became isCliEntry (C180, C48); before, a
+    // path spelled through a symlink ran nothing. Each case runs the selected
+    // companion with no subcommand: the real CLI answers with a usage error
+    // (exit 2), a silent no-op would exit 0 with no output. The companion
+    // imports its sibling cli-entry.mjs, which each fixture carries beside it.
     const REAL_COMPANION = join(REPO_ROOT, 'companions', 'claude-companion.mjs');
+    const ENTRY_HELPER = join(REPO_ROOT, 'companions', 'cli-entry.mjs');
     const runs = (script) => spawnSync(process.execPath, [script], { encoding: 'utf8' });
 
     it('under a symlinked CODEX_HOME the selected companion is canonical and actually runs', async () => {
@@ -279,6 +282,7 @@ describe('peer execution context (filesystem-only seam)', () => {
       await mkdir(join(versionRoot, 'scripts'), { recursive: true });
       await writeFile(join(versionRoot, '.codex-plugin', 'plugin.json'), JSON.stringify({ name: 'companions', version: '0.5.0' }));
       await copyFile(REAL_COMPANION, join(versionRoot, 'scripts', 'claude-companion.mjs'));
+      await copyFile(ENTRY_HELPER, join(versionRoot, 'scripts', 'cli-entry.mjs'));
 
       const { companions } = await resolvePeerExecutionContext({ repoRoot, homeDir, codexHome: link });
       const selected = companions.directions.codex_to_claude.selected.path;
@@ -286,21 +290,35 @@ describe('peer execution context (filesystem-only seam)', () => {
       const run = runs(selected);
       strictEqual(run.status, 2, 'the canonical path reaches the companion CLI');
       ok(/subcommand/.test(run.stderr), run.stderr);
-      // Control (docket C48): the link spelling of the same file runs nothing.
+      // C48: the link spelling of the same file runs the same CLI, once.
       const viaLink = runs(join(versionRoot, 'scripts', 'claude-companion.mjs'));
-      deepStrictEqual([viaLink.status, viaLink.stdout, viaLink.stderr], [0, '', '']);
+      deepStrictEqual([viaLink.status, viaLink.stdout, viaLink.stderr], [run.status, run.stdout, run.stderr]);
     });
 
     it('an override that names a symlink selects the canonical companion, which runs', async () => {
       const { repoRoot, homeDir } = await seedFixture();
       const realDir = await canonicalTmp('peer-ctx-override-real-');
       await copyFile(REAL_COMPANION, join(realDir, 'claude-companion.mjs'));
+      await copyFile(ENTRY_HELPER, join(realDir, 'cli-entry.mjs'));
       const link = join(homeDir, 'companions-link');
       await symlink(realDir, link);
       const { companions } = await resolvePeerExecutionContext({ repoRoot, homeDir, companionsOverride: link });
       const selected = companions.directions.codex_to_claude.selected.path;
       strictEqual(selected, join(realDir, 'claude-companion.mjs'));
       strictEqual(runs(selected).status, 2);
+    });
+
+    it('a companion missing the cli-entry.mjs it imports is blocked, naming it (C180, C48)', async () => {
+      const { repoRoot, homeDir } = await seedFixture();
+      const dir = await canonicalTmp('peer-ctx-sibling-');
+      await copyFile(REAL_COMPANION, join(dir, 'claude-companion.mjs'));
+      const missing = (await resolvePeerExecutionContext({ repoRoot, homeDir, companionsOverride: dir })).companions.directions.codex_to_claude;
+      strictEqual(missing.selected, null);
+      strictEqual(missing.candidates[0].status, 'blocked');
+      strictEqual(missing.candidates[0].reason, 'imports ./cli-entry.mjs, which is missing beside it');
+      await copyFile(ENTRY_HELPER, join(dir, 'cli-entry.mjs'));
+      const whole = (await resolvePeerExecutionContext({ repoRoot, homeDir, companionsOverride: dir })).companions.directions.codex_to_claude;
+      strictEqual(whole.selected.path, join(dir, 'claude-companion.mjs'));
     });
   });
 });

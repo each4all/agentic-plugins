@@ -30,12 +30,13 @@
 //
 // Exit 0 when every topic passes, 1 when any fails, 2 on a usage error.
 
-import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { replayTopic } from '../tests/_args-file-replay.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const FIXTURE = join(REPO_ROOT, 'tests', 'fixtures', 'args-file-topic-shapes.json');
@@ -152,15 +153,6 @@ async function main(argv) {
 
 // Compared canonically, so a checkout under a symlink or a path that needs URL
 // escaping still runs (the engineer state.mjs guard).
-function invokedAsCli() {
-  if (!process.argv[1]) return false;
-  try {
-    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    return false;
-  }
-}
-
-if (invokedAsCli()) {
+if (isCliEntry(import.meta.url)) {
   (async () => { process.exitCode = await main(process.argv.slice(2)); })();
 }

@@ -34,7 +34,7 @@
 // Canonical "companions" (the non-plugin entry) is skipped — it has no
 // plugin.json or marketplace presence.
 
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -43,6 +43,7 @@ import {
   CODEX_CATALOG_PATH, checkPinShape, compareSemver, mayTrail, releaseLag, sourceKind,
 } from './lib/codex-catalog-pins.mjs';
 import { absorbOutputErrors, exitAfterFlush } from './lib/exit-after-flush.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 const MANIFEST_PATH = '.release-please-manifest.json';
 const CLAUDE_MARKETPLACE_PATH = '.claude-plugin/marketplace.json';
@@ -143,16 +144,6 @@ export function validateVersions(repoRoot, { allowReleaseLag = false } = {}) {
   return { errors, warnings, manifest, codexPinsChecked };
 }
 
-// CLI entry — realpath on both sides, as in validate-marketplace.mjs.
-function invokedAsCLI() {
-  if (!process.argv[1]) return false;
-  try {
-    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    return false;
-  }
-}
-
 // The CLI: returns its exit code, which the entry below exits with once
 // stdout and stderr have flushed.
 function main() {
@@ -190,8 +181,10 @@ function main() {
   return 0;
 }
 
-// A throw is reported with its stack, as an uncaught one was, and exits 1.
-if (invokedAsCLI()) {
+// CLI entry: isCliEntry compares both sides canonical, so a linked invocation
+// still runs, and runs once. A throw is reported with its stack, as an uncaught
+// one was, and exits 1.
+if (isCliEntry(import.meta.url)) {
   absorbOutputErrors();
   let code;
   try {

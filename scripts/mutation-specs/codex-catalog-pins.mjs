@@ -408,14 +408,14 @@ export const MUTATIONS = [
   // ---- G: CLI entry guards ----------------------------------------------------------------
   {
     id: 'G1', file: VM,
-    from: 'return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));',
-    to: 'return resolve(process.argv[1]) === fileURLToPath(import.meta.url);',
+    from: 'if (isCliEntry(import.meta.url)) {',
+    to: 'if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {',
     why: 'validate-marketplace does nothing and exits 0 when invoked through a link',
   },
   {
     id: 'G2', file: VV,
-    from: 'return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));',
-    to: 'return resolve(process.argv[1]) === fileURLToPath(import.meta.url);',
+    from: 'if (isCliEntry(import.meta.url)) {',
+    to: 'if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {',
     why: 'validate-versions does nothing and exits 0 when invoked through a link',
   },
 

@@ -56,6 +56,7 @@ import { fileURLToPath } from 'node:url';
 
 import { listTestFiles } from './lib/discover-tests.mjs';
 import { partitionByTier, readTiers } from './lib/suite-tiers.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 const DEFAULT_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -360,5 +361,4 @@ export function main(argv) {
   }
 }
 
-const invoked = process.argv[1] ? fs.realpathSync(process.argv[1]) : '';
-if (invoked === fs.realpathSync(fileURLToPath(import.meta.url))) process.exitCode = main(process.argv.slice(2));
+if (isCliEntry(import.meta.url)) process.exitCode = main(process.argv.slice(2));
