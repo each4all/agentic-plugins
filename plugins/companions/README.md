@@ -83,8 +83,30 @@ into this plugin rather than spun out as a separate framework primitive).
 
 When set to an absolute path, the discovery script uses that path
 directly and skips cache-glob. The path points to a directory
-containing `claude-companion.mjs`, `codex-companion.mjs`, AND
-`discover-peer.mjs` (the script-pair plus the discovery library).
+containing `claude-companion.mjs`, `codex-companion.mjs`,
+`discover-peer.mjs` AND `cli-entry.mjs` (the script pair, the discovery
+library, and the CLI entry helper all three import).
+
+**Layout change in the release after 0.4.3 (C180, C48)**: the two
+companions and `discover-peer.mjs` now import their sibling
+`cli-entry.mjs`, the canonical CLI entry guard (both sides compared
+canonical, so a companion reached through a symlink or a path that needs
+URL escaping runs, and runs once). An override directory assembled from
+three files of a newer release must add `cli-entry.mjs` from the same
+release: discovery refuses such a directory and names the missing file. A
+complete three-file directory of an older release, whose companions
+import nothing, still passes. runtime's companion reader marks such a
+companion `blocked` with the same reason.
+
+Two cases end in a Node `ERR_MODULE_NOT_FOUND` that names
+`cli-entry.mjs` instead of discovery's diagnosis, since the consumer
+imports `discover-peer.mjs` itself before discovery runs: an override
+directory that lacks `cli-entry.mjs` beside a newer `discover-peer.mjs`,
+and an installed cache version missing only that file (an installer
+writes the whole directory, so only a hand edit makes one). A companion
+run through a loose file symlink with `--preserve-symlinks-main` cannot
+load its sibling either, as with every multi-file CLI here; run it
+through its real path or a symlinked directory.
 
 **Breaking change in v0.3.0**: prior to v0.3.0 the discovery library
 lived inline inside each consumer plugin's adapter script, and the
@@ -93,13 +115,14 @@ the canonical discovery library was extracted into the companions
 plugin (`scripts/discover-peer.mjs`), so the env-override directory
 must include `discover-peer.mjs` alongside the script pair.
 
-The canonical source-tree `companions/` directory now ships all
-three files and remains the documented dev/CI override target —
+The canonical source-tree `companions/` directory ships all
+four files and remains the documented dev/CI override target —
 existing workflows that set `AGENTIC_COMPANIONS_ROOT=$REPO/companions`
 continue to work after pulling v0.3.0. Users with custom override
 directories that include only the script pair must add
-`discover-peer.mjs` (drop in a copy from `companions/discover-peer.mjs`
-or from any installed `companions` plugin v0.3.0+ cache directory).
+`discover-peer.mjs`, and from the release after 0.4.3 `cli-entry.mjs`
+too, each copied from the same release as the companions (from
+`companions/` or from one installed `companions` cache directory).
 
 If the directory lacks `discover-peer.mjs`, the wrapper fails fast
 with a clear diagnostic (no silent fall-through to cache-glob —
