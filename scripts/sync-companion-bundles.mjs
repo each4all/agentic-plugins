@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Sync the canonical companions/ scripts (the two companions, discover-peer.mjs
-// and the cli-entry.mjs helper they import) into plugins/companions/scripts/ as
+// and the cli-entry.mjs and peer-cli.mjs helpers they import) into plugins/companions/scripts/ as
 // byte-identical copies (ADR-0008 § (d)).
 //
 //   node scripts/sync-companion-bundles.mjs            # drift-detector mode
@@ -26,7 +26,7 @@ import { absorbOutputErrors, exitAfterFlush } from './lib/exit-after-flush.mjs';
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../..');
 const CANONICAL_DIR = resolve(REPO_ROOT, 'companions');
 const BUNDLE_DIR = resolve(REPO_ROOT, 'plugins/companions/scripts');
-const SCRIPTS = ['claude-companion.mjs', 'codex-companion.mjs', 'discover-peer.mjs', 'cli-entry.mjs'];
+const SCRIPTS = ['claude-companion.mjs', 'codex-companion.mjs', 'discover-peer.mjs', 'cli-entry.mjs', 'peer-cli.mjs'];
 
 // The CLI: returns its exit code, which the entry below exits with once
 // stdout and stderr have flushed.

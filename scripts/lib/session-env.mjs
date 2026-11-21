@@ -35,6 +35,12 @@ export const SESSION_VARIABLES = Object.freeze([
   // a fixture's harness join the operator's lock instead of its own.
   'AGENTIC_HEAVY_LOCK_PROOF',
   'AGENTIC_HEAVY_LOCK_VIA',
+  // C180 part 1 — the operator's peer-CLI overrides, which both companions
+  // (companions/peer-cli.mjs) read. Inherited, they would make a test that
+  // stubs spawn resolve the operator's executable, or fail on a path the
+  // fixture never made.
+  'CODEX_BIN',
+  'CLAUDE_BIN',
 ]);
 
 /**
