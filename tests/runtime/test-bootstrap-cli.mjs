@@ -27,6 +27,7 @@ import {
   runBootstrap,
 } from '../../plugins/runtime/scripts/bootstrap.mjs';
 import { makeDefValidator, makeValidator } from '../../plugins/runtime/scripts/lib/schema-validate.mjs';
+import { resolveHostLaunch, unresolvedLaunchResult } from '../../plugins/runtime/scripts/lib/host-cli-launch.mjs';
 import {
   projectModelEffort,
   readUserGlobalModelEffort,
@@ -477,6 +478,32 @@ describe('runtime bootstrap CLI — machine seam (#1, #2)', () => {
     for (const host of ['claude', 'codex']) {
       deepStrictEqual(result.report.stage0[host].commands, [...STAGE0_COMMANDS[host]]);
     }
+  });
+});
+
+// C180: a host CLI runtime cannot resolve (CODEX_BIN naming nothing) is not a
+// missing install: Stage 0 and the host step name the variable to set.
+describe('runtime:bootstrap — an unresolved host CLI (C180)', () => {
+  it('names the variable to set in Stage 0 and the host step, not an install', async () => {
+    const { home, cwd } = await makeHome();
+    const unresolved = resolveHostLaunch('codex', { env: { CODEX_BIN: join(home, 'no-such-codex') }, platform: 'linux' });
+    const hosted = hostedRunner();
+    const runner = async (name, args, options) => (name === 'codex' ? unresolvedLaunchResult(unresolved) : hosted(name, args, options));
+    const result = await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd, runner, subprocess: spySubprocess().runner });
+    match(result.report.stage0.codex.reason, /the codex CLI cannot be started: peer CLI "codex": CODEX_BIN=.* names no file/);
+    const step = result.report.steps.find((s) => s.id === 'host.codex.present');
+    strictEqual(step.status, 'pending');
+    match(step.recovery, /CODEX_BIN=.* names no file.*then re-run bootstrap/);
+    strictEqual(result.report.stage0.claude, undefined, 'the resolved host raises nothing');
+    deepStrictEqual(result.report.stage0.codex.commands, [], 'no install commands: the fix is the variable');
+  });
+
+  it('the default runner resolves the host CLIs: an unresolvable override spawns nothing', async () => {
+    const { home, cwd } = await makeHome();
+    const env = { PATH: process.env.PATH, CLAUDE_BIN: join(home, 'no-such-claude'), CODEX_BIN: join(home, 'no-such-codex') };
+    const result = await runBootstrap({ argv: ['plan', '--bundle', 'base', '--format', 'json'], env, homeDir: home, cwd, now: NOW, subprocessRunner: spySubprocess().runner, pluginRoot: PLUGIN_ROOT });
+    match(result.report.stage0.claude.reason, /CLAUDE_BIN=.* names no file/);
+    match(result.report.stage0.codex.reason, /CODEX_BIN=.* names no file/);
   });
 });
 

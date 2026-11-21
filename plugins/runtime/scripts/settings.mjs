@@ -63,6 +63,7 @@ import { parseCodexCliVersion, resolveCodexInstalledPluginVersion } from './lib/
 import { expandArgsFile } from './lib/args-file.mjs';
 import { exitAfterFlush } from './lib/exit-after-flush.mjs';
 import { isCliEntry } from './lib/cli-entry.mjs';
+import { resolveHostLaunches } from './lib/host-cli-launch.mjs';
 
 // 1.17 → 1.18 (additive): report.plugin_management / report.plugin_cleanup gain
 // `plan_hash` (§1.6 drift guard) so bootstrap can read a dry-run plan's hash and
@@ -99,7 +100,7 @@ import { isCliEntry } from './lib/cli-entry.mjs';
 // 1.28 (additive, R2): a plugin-management or cleanup `result` gains
 // `child_running` / `child_pid` — a mutating command still running after its
 // timeout is reported as such (failure_type `timeout_child_running`).
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.28';
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.29';
 
 // 1.1 → 1.2 (machine-bootstrap-contract.md §1.5, ADR-0046 §5): the plugin-
 // management and cleanup executors are now write-ahead — the artifact gains the
@@ -108,7 +109,7 @@ export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.28';
 // 1.2 → 1.3 (additive, S8a4): artifact.codex_hook_review gains the canonical
 // `bound_versions` + `attested_plugins` the completion reducer re-validates (§8.2),
 // alongside the retained legacy `plugin_versions` for the compat window.
-export const SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION = 'runtime-settings-execution-artifact-1.3';
+export const SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION = 'runtime-settings-execution-artifact-1.4';
 // The config-key contract — key families, session defaults, per-key
 // validators, and the TOML read parser — lives in lib/runtime-config.mjs so a
 // consumer reads the OFFICIAL key surface without loading this plan pipeline.
@@ -327,12 +328,18 @@ export async function runSettings({
     // PURE plan halves (§1.3) — build candidates with NO subprocess. Execution is
     // the separate write-ahead block below so the durable record precedes any
     // machine mutation (§1.5).
+    // C180: how each host CLI starts (the resolved executable and argument
+    // prefix), resolved once here, a filesystem read, and handed to the pure
+    // planners as data. The plan hash covers it, and execution spawns exactly
+    // the launch the plan recorded, never a second resolution.
+    const hostLaunches = resolveHostLaunches({ env });
     pluginManagement = buildPluginManagementPlan({
       plugins: pluginPlans,
       clis: doctor.clis,
       execute: executePluginManagement,
       hostFilter: effectivePluginManagementHost,
       timeoutMs: effectivePluginManagementTimeoutMs,
+      launches: hostLaunches,
     });
     cliPlans = buildCliPlans(doctor.clis);
     pluginCleanup = buildPluginCleanupPlans({
@@ -340,6 +347,7 @@ export async function runSettings({
       clis: doctor.clis,
       execute: executePluginCleanup,
       timeoutMs: effectivePluginManagementTimeoutMs,
+      launches: hostLaunches,
     });
 
     // §1.6 plan hash over the mode-invariant executable-action set — exposed on
@@ -1010,24 +1018,33 @@ function buildCliPlans(clis) {
 
 function buildCliInstallPlan(name, cli) {
   const available = cli.status === 'available';
+  // C180: a CLI that could not be resolved needs its override or shim fixed,
+  // not an install: the reason names the variable to set.
+  const launchFailure = available ? null : cli.launch_failure?.reason ?? null;
+  const advice = launchFailure ?? DEFAULT_HOST_INSTALL_COMMANDS[name];
   return {
     status: available ? 'not_needed' : 'manual_required',
     host: name,
     executable: false,
     command: null,
-    recommendation: available ? null : DEFAULT_HOST_INSTALL_COMMANDS[name],
+    recommendation: available ? null : advice,
     next_step: available
       ? 'No host CLI installation action is required.'
-      : DEFAULT_HOST_INSTALL_COMMANDS[name],
+      : advice,
     evidence: {
       cli_status: cli.status,
       version_status: cli.version?.status ?? 'unknown',
       version_error_code: cli.version?.error_code ?? null,
     },
-    limits: [
-      'runtime:settings does not install Claude Code or Codex CLI.',
-      'Install host CLIs with their host-native installer, then rerun runtime:doctor or runtime:settings.',
-    ],
+    limits: launchFailure
+      ? [
+        'runtime:settings does not change CLAUDE_BIN or CODEX_BIN.',
+        'Fix the variable the next step names, then rerun runtime:doctor or runtime:settings.',
+      ]
+      : [
+        'runtime:settings does not install Claude Code or Codex CLI.',
+        'Install host CLIs with their host-native installer, then rerun runtime:doctor or runtime:settings.',
+      ],
   };
 }
 
@@ -1096,7 +1113,7 @@ async function executePluginCleanupPlans({ plan: pluginCleanup, runner, cwd, env
       continue;
     }
     const startedAt = new Date();
-    const result = await runner(plan.argv.command, plan.argv.args, { cwd, env, timeoutMs, closeGraceMs: MUTATING_COMMAND_CLOSE_GRACE_MS });
+    const result = await runner(plan.argv.command, plan.argv.args, { cwd, env, timeoutMs, closeGraceMs: MUTATING_COMMAND_CLOSE_GRACE_MS, ...launchOption(plan) });
     trackStillRunningCommand(stillRunningCommands, plan.host, result);
     const completedAt = new Date();
     const semanticFailure = classifyPluginManagementSemanticFailure({ plan, result });
@@ -1147,6 +1164,13 @@ function makeExecutionJournalEntry({ area, plan }) {
 
 
 
+// C180: the launch a plan recorded, which its commands then start with: the
+// argv the plan hash covers. A plan built without launches passes none, and
+// the runner resolves the host CLI itself.
+function launchOption(plan) {
+  return plan?.launch ? { launch: plan.launch } : {};
+}
+
 // ADR-0035 §6 (C) — codex install policy pre-flight + post-verify helpers.
 // The plugin name is the argv install target's local part (`<name>@agentic-plugins`).
 function codexInstallTargetName(plan) {
@@ -1176,7 +1200,7 @@ function parseCodexPluginListEntry(stdout, name) {
 // (ON_INSTALL) nor is unknown (null). Read-only `codex plugin list --available --json`.
 async function codexInstallPreflight({ plan, runner, cwd, env, timeoutMs }) {
   const name = codexInstallTargetName(plan);
-  const probe = await runner('codex', ['plugin', 'list', '--available', '--json'], { cwd, env, timeoutMs });
+  const probe = await runner('codex', ['plugin', 'list', '--available', '--json'], { cwd, env, timeoutMs, ...launchOption(plan) });
   const base = { probed: true, found: false, install_policy: null, auth_policy: null };
   if (!probe.ok) return { ok: false, reason: 'preflight-list-unavailable', evidence: base };
   const { parseError, entry } = parseCodexPluginListEntry(probe.stdout, name);
@@ -1194,7 +1218,7 @@ async function codexInstallPreflight({ plan, runner, cwd, env, timeoutMs }) {
 // Post-verify: confirm the plugin now appears installed via the read-only list.
 async function codexInstallPostverify({ plan, runner, cwd, env, timeoutMs }) {
   const name = codexInstallTargetName(plan);
-  const probe = await runner('codex', ['plugin', 'list', '--json'], { cwd, env, timeoutMs });
+  const probe = await runner('codex', ['plugin', 'list', '--json'], { cwd, env, timeoutMs, ...launchOption(plan) });
   if (!probe.ok) return { installed: false, evidence: { probed: true, installed: null, version: null, enabled: null } };
   const { entry } = parseCodexPluginListEntry(probe.stdout, name);
   const installed = entry?.installed === true;
@@ -1230,7 +1254,7 @@ async function executePluginManagementPlans({ plan: pluginManagement, runner, cw
       }
     }
     const startedAt = new Date();
-    const result = await runner(plan.argv.command, plan.argv.args, { cwd, env, timeoutMs, closeGraceMs: MUTATING_COMMAND_CLOSE_GRACE_MS });
+    const result = await runner(plan.argv.command, plan.argv.args, { cwd, env, timeoutMs, closeGraceMs: MUTATING_COMMAND_CLOSE_GRACE_MS, ...launchOption(plan) });
     trackStillRunningCommand(stillRunningCommands, plan.host, result);
     const completedAt = new Date();
     // ADR-0035 §6 post-verify: confirm the install landed via a read-only list.

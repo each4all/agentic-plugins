@@ -30,6 +30,7 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 import { singleLine, redactSecrets, sanitizeValue } from './sanitize.mjs';
 import { readJsonIfExists, readTextIfExists, resolveCodexHome } from './state-readers.mjs';
 import { semverCompare } from './semver.mjs';
+import { HOST_CLI_NOT_FOUND } from './host-cli-launch.mjs';
 import { comparePrereleaseAware } from './runtime-floor.mjs';
 import {
   assessCodexCurrentness,
@@ -247,6 +248,13 @@ async function inspectCli(name, { versionArgs, helpArgs, extraHelpArgs = null, f
   return {
     name,
     status: available ? 'available' : 'unavailable',
+    // C180: the CLI could not be resolved (an override that names nothing
+    // runnable, a Windows shim runtime cannot run): no process ran, and the
+    // reason names the variable to set, which every reader shows in place of a
+    // bare "unavailable".
+    launch_failure: version.error_code === HOST_CLI_NOT_FOUND
+      ? { variable: version.launch_failure?.variable ?? null, reason: redactSecrets(singleLine(version.error_message ?? '')) }
+      : null,
     version: {
       status: commandStatus(version),
       text: singleLine(version.ok ? version.stdout || version.stderr : version.stderr || version.error_message || ''),
@@ -326,7 +334,7 @@ function skipped(reason) {
 
 function commandStatus(result) {
   if (result.ok) return 'available';
-  if (result.error_code === 'ENOENT') return 'unavailable';
+  if (result.error_code === 'ENOENT' || result.error_code === HOST_CLI_NOT_FOUND) return 'unavailable';
   if (result.error_code === 'ETIMEDOUT') return 'blocked';
   if (result.error_code === 'skipped') return 'unknown';
   return 'unknown';

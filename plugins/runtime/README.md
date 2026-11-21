@@ -131,6 +131,84 @@ $runtime:context status --latest --stale-after-hours 12
 $runtime:context check --token-budget 100000 --used-tokens 82000
 ```
 
+## Host CLI resolution and Windows
+
+Runtime starts `claude` and `codex` the way the companions start their peer
+(C180): doctor's and bootstrap's host probes, settings' plugin commands and
+their Codex install pre- and post-checks all resolve the CLI through
+`scripts/lib/peer-cli.mjs`, a copy of `companions/peer-cli.mjs` held byte for
+byte by `tests/scripts/test-orchestrator-peer-snapshot-parity.mjs`. Runtime
+keeps its own copy, so it resolves the same way with the companions plugin
+absent or older. The rules are the companions' (`companions/README.md`
+§ Peer CLI resolution):
+
+- **Override**: `CLAUDE_BIN` and `CODEX_BIN`, on every platform, when set and
+  non-empty. A path is resolved against the working directory runtime was
+  started in, never against the neutral directory doctor runs its probes in;
+  a bare file name is looked up on `PATH`. An override that names nothing
+  runnable is an error naming the variable, never a fallback to `PATH`.
+- **Elsewhere than Windows**, with no override: the bare name, found on
+  `PATH` as before.
+- **Windows**, with no override: the `PATH` directories in order, each
+  preferring `claude.exe` / `codex.exe` over an npm `.cmd` shim in the same
+  directory. A shim is never run itself: one in a layout npm's cmd-shim
+  writes runs its target with this Node (or the `.exe` it points at), and any
+  other `.cmd` is refused.
+
+A CLI that cannot be resolved starts no process. Doctor reports it as
+`unavailable` with `clis.<host>.launch_failure` (`variable`, `reason`), shows
+`cannot start: <reason>` under Host CLIs, and puts the reason, which names the
+variable to set, in each readiness blocker, in bootstrap's Stage 0 and host
+step recovery and in settings' host-CLI install plan, where each used to say
+only that the CLI was unavailable (or to install it) and skip the proofs
+behind it. Settings blocks that host's plugin plans with the same reason. The reason is redacted like
+any other report text, so a secret pasted into an override does not reach a
+report or artifact. These are failures of resolution: elsewhere than Windows
+with no override, a CLI that is simply not installed still fails at spawn
+(`ENOENT`) and is reported, as before, as unavailable with install
+guidance.
+
+Settings shows the owner the logical command (`codex plugin add
+runtime@agentic-plugins`) and records the resolved launch beside it, as
+`launch` (`command`, `args_prefix`), in the plan. The plan hash covers the
+launch (machine-bootstrap-contract.md §1.6), and execution spawns exactly the
+launch the plan recorded, never a second resolution. So an override that
+changes, or a shim whose target moves, between the presented plan and
+`--execute-plugin-management --expected-plan-hash` is a different plan: the
+executor refuses and presents the fresh hash, as for any other plan change. The plan's `launch`, the mismatch
+(`plan_hash_status: mismatch`) and the fresh hash are in the JSON report
+(`--format json`); the default text output does not show them.
+
+Limits (ADR-0001, honest scope):
+
+- No Windows CI job runs these paths; the Windows rules are tested in process
+  with a simulated file system and `path.win32`.
+- The hash covers the launch's paths, not the bytes at them: a file replaced
+  in place at the same path is not detected.
+- Elsewhere than Windows with no override, the launch is the bare name, as
+  the companions use it, and `spawn` finds it on `PATH`: a `PATH` that
+  selects another `codex` between plan and execution is not detected. Set
+  `CODEX_BIN` / `CLAUDE_BIN` to an absolute path to pin the executable.
+- Prefer an absolute override. A relative one is resolved against runtime's
+  own working directory, while the proofs doctor runs start a companion
+  whose own resolution reads it against that companion's working directory.
+- Doctor's probes and settings' plan each resolve the CLI themselves, a
+  moment apart: a shim retargeted in that moment can have the plan judged on
+  one executable and hashed and run against another.
+- On a Node shim runtime supervises the launcher process; a CLI whose
+  launcher starts the real program as a child (as npm's codex package does,
+  on every platform) can leave that child running after a timeout kills the
+  launcher.
+- Recorded doctor proofs are reused on matching versions; they do not record
+  which executable ran, so switching an override to another build of the same
+  version keeps an earlier proof. Rerun the proofs after such a switch.
+- `PATHEXT` is ignored, and only `.exe` and npm `.cmd` shims are found on
+  `PATH`; a CLI installed some other way needs `CLAUDE_BIN` / `CODEX_BIN`.
+- Only `claude` and `codex` are resolved. Runtime's other subprocesses (`git`,
+  `node`) start as before, and the runbooks' shell blocks and the hooks
+  assume a POSIX shell, which Windows provides only through one such as Git
+  Bash or WSL.
+
 ## Doctor behavior
 
 Doctor is read-only with respect to source files, host configuration, host trust, auth, secrets, sandbox, and permission state. With `--record`, it may write only a generated runtime artifact under `.agentic-plugins/runs/doctor/`. It does not:

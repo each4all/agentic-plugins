@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import { execFile } from 'node:child_process';
 import { deepStrictEqual, notStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert/strict';
-import { cp, lstat, mkdir, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, cp, lstat, mkdir, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +15,7 @@ import {
   removeRuntimeConfigKeys,
 } from '../../plugins/runtime/scripts/settings.mjs';
 import { RUNTIME_VERSION } from '../../plugins/runtime/scripts/version.mjs';
+import { resolveHostLaunch, unresolvedLaunchResult } from '../../plugins/runtime/scripts/lib/host-cli-launch.mjs';
 import { skillsPath } from '../_helpers.mjs';
 import { fileTmpDirs } from '../_tmp.mjs';
 
@@ -79,7 +80,7 @@ describe('runtime settings', () => {
       runner: fakeRunner({}),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.28');
+    strictEqual(report.schema_version, 'runtime-settings-1.29');
     strictEqual(report.clis.claude.status, 'unavailable');
     strictEqual(report.clis.codex.status, 'unavailable');
     for (const host of ['claude', 'codex']) {
@@ -452,6 +453,78 @@ describe('runtime settings', () => {
     strictEqual(report.plugin_management.plan_hash_status, 'validated');
     strictEqual(report.plugin_management.plan_hash, hash);
     ok(calls.includes(MARKETPLACE_ADD), 'the validated plan executes');
+  });
+
+  // C180: the plan records how codex starts (CODEX_BIN here) and hashes it, and
+  // execution spawns that launch. An override that changes between the
+  // presented plan and its execution is refused like any other plan change.
+  it('plan-hash: executes the launch the plan recorded, and refuses an override changed since (C180)', async () => {
+    const root = newTmp('runtime-settings-launch-repo-');
+    const home = newTmp('runtime-settings-launch-home-');
+    const bin = newTmp('runtime-settings-launch-bin-');
+    await seedRepo(root);
+    const codexA = join(bin, 'codex-a');
+    const codexB = join(bin, 'codex-b');
+    for (const file of [codexA, codexB]) {
+      await writeFile(file, '#!/bin/sh\n');
+      await chmod(file, 0o755);
+    }
+    const envWith = (codexBin) => ({ ...process.env, CODEX_BIN: codexBin });
+    const map = { ...defaultCliMap(), [MARKETPLACE_ADD]: okResult('marketplace ok\n') };
+    const dry = await runSettings({ repoRoot: root, homeDir: home, pluginManagementHost: 'codex', env: envWith(codexA), runner: fakeRunner(map) });
+    const hash = dry.plugin_management.plan_hash;
+    const planned = dry.plugin_management.plans.find((plan) => plan.status === 'planned');
+    strictEqual(planned.command, 'codex plugin marketplace add each4all/agentic-plugins', 'the owner is shown the logical command');
+    deepStrictEqual(planned.launch, { command: codexA, args_prefix: [] });
+
+    const refusedCalls = [];
+    const refused = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runId: SETTINGS_RUN_ID,
+      executePluginManagement: true,
+      pluginManagementHost: 'codex',
+      expectedPlanHash: hash,
+      env: envWith(codexB),
+      runner: fakeRunner(map, refusedCalls),
+    });
+    strictEqual(refused.plugin_management.plan_hash_status, 'mismatch');
+    ok(!refusedCalls.includes(MARKETPLACE_ADD), 'a plan whose launch changed is not executed');
+
+    const launches = [];
+    const executed = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runId: 'settings-20260513T000001Z-abcdef',
+      executePluginManagement: true,
+      pluginManagementHost: 'codex',
+      expectedPlanHash: hash,
+      env: envWith(codexA),
+      runner: async (command, args, options) => {
+        if (`${command} ${args.join(' ')}` === MARKETPLACE_ADD) launches.push(options.launch);
+        return fakeRunner(map)(command, args);
+      },
+    });
+    strictEqual(executed.plugin_management.plan_hash_status, 'validated');
+    deepStrictEqual(launches, [{ command: codexA, args_prefix: [] }], 'the runner is handed the launch the hash covers');
+  });
+
+  it('a host CLI it cannot resolve gets the variable to set, not an install command (C180)', async () => {
+    const root = newTmp('runtime-settings-unresolved-repo-');
+    const home = newTmp('runtime-settings-unresolved-home-');
+    await seedRepo(root);
+    const unresolved = resolveHostLaunch('codex', { env: { CODEX_BIN: join(home, 'no-such-codex') }, platform: 'linux' });
+    const base = fakeRunner(defaultCliMap());
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runner: async (command, args, options) => (command === 'codex' ? unresolvedLaunchResult(unresolved) : base(command, args, options)),
+    });
+    const plan = report.clis.codex.install_plan;
+    strictEqual(plan.status, 'manual_required');
+    ok(plan.next_step.includes('CODEX_BIN=') && plan.next_step.includes('names no file'), plan.next_step);
+    strictEqual(plan.recommendation, plan.next_step);
+    ok(!plan.limits.some((limit) => /installer/.test(limit)), JSON.stringify(plan.limits));
   });
 
   it('applies only selected agentic-plugins-owned config writes', async () => {
@@ -1111,7 +1184,7 @@ describe('runtime settings', () => {
       runner: fakeRunner(defaultCliMap()),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.28');
+    strictEqual(report.schema_version, 'runtime-settings-1.29');
     strictEqual(report.plugins.runtime.installed.codex_cache, null);
     strictEqual(report.plugins.runtime.marketplace_cache.codex_tmp_marketplace.version, '0.1.0');
     const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
@@ -1880,7 +1953,7 @@ describe('runtime settings', () => {
     ok(failed.result.retry_after.includes('network'));
 
     const artifact = await readJson(join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json'));
-    strictEqual(artifact.schema_version, 'runtime-settings-execution-artifact-1.3');
+    strictEqual(artifact.schema_version, 'runtime-settings-execution-artifact-1.4');
     strictEqual(artifact.run_id, SETTINGS_RUN_ID);
     strictEqual(artifact.status, 'failed');
     strictEqual(artifact.terminal, true);

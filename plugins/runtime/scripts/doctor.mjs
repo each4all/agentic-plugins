@@ -56,6 +56,7 @@ import { parseCodexCatalogTarget, selectInstalledCacheDir } from './lib/codex-in
 import { expandArgsFile } from './lib/args-file.mjs';
 import { exitAfterFlush } from './lib/exit-after-flush.mjs';
 import { isCliEntry } from './lib/cli-entry.mjs';
+import { isHostCli, resolveHostLaunch, unresolvedLaunchResult } from './lib/host-cli-launch.mjs';
 
 export { RUNTIME_VERSION };
 
@@ -513,7 +514,23 @@ async function recordDoctorArtifact({ repoRoot, now, runId, report }) {
 // also carries a non-enumerable `closed` promise: the output is still read
 // until the child closes, and a caller that exited before then would close the
 // read end of the child's pipes, failing its next write (EPIPE).
-export async function runCommand(command, args = [], { cwd = process.cwd(), env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS, closeGraceMs } = {}) {
+//
+// `claude` and `codex` are started through lib/host-cli-launch.mjs (C180): a
+// caller that resolved the launch passes it as `launch`, and exactly that argv
+// is spawned (settings executes the launch its plan hash covers); otherwise it
+// is resolved here, from `env`. A host CLI that cannot be resolved spawns
+// nothing: the result says why, naming the variable to set
+// (`error_code: 'peer_cli_not_found'`).
+export async function runCommand(command, args = [], { cwd = process.cwd(), env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS, closeGraceMs, launch } = {}) {
+  if (isHostCli(command)) {
+    // The passthrough parameters become the launch, so the spawn below still
+    // starts `command` (tests/plugin-shape/runtime-executor-registry.mjs): an
+    // allowlisted host CLI, resolved.
+    const resolved = launch ?? resolveHostLaunch(command, { env });
+    if (resolved.ok === false) return unresolvedLaunchResult(resolved);
+    args = [...resolved.args_prefix, ...args];
+    command = resolved.command;
+  }
   return new Promise((resolvePromise) => {
     const child = spawn(command, args, {
       cwd,
@@ -4469,8 +4486,8 @@ function buildDirectionReadiness({
 }) {
   const blockers = [];
   const warnings = [];
-  if (caller.status !== 'available') blockers.push(`${caller.name} CLI unavailable`);
-  if (peer.status !== 'available') blockers.push(`${peer.name} CLI unavailable`);
+  if (caller.status !== 'available') blockers.push(cliUnavailableText(caller));
+  if (peer.status !== 'available') blockers.push(cliUnavailableText(peer));
   if (peer.auth.status === 'unauthenticated') blockers.push(`${peer.name} unauthenticated`);
   if (peer.auth.status === 'sandbox_limited') blockers.push(`${peer.name} auth probe sandbox-limited`);
   if (peer.auth.status === 'blocked') blockers.push(`${peer.name} auth probe blocked`);
@@ -4619,6 +4636,15 @@ function probeResult({ name, status, evidence }) {
   };
 }
 
+// A CLI that is not available, and, when it could not be resolved (C180), the
+// reason, which names the variable to set: the operator then sees what to
+// change rather than a bare "unavailable" and proofs skipped behind it. The
+// text keeps "unavailable", which classifyPrimaryBlocker keys on.
+function cliUnavailableText(cli) {
+  const reason = cli.launch_failure?.reason;
+  return reason ? `${cli.name} CLI unavailable: ${reason}` : `${cli.name} CLI unavailable`;
+}
+
 function classifyPrimaryBlocker(blockers) {
   if (blockers.some((b) => /unavailable/.test(b))) return 'unavailable';
   if (blockers.some((b) => /unauthenticated/.test(b))) return 'unauthenticated';
@@ -4629,7 +4655,9 @@ function classifyPrimaryBlocker(blockers) {
 function summarizeOverall(report) {
   const hardFailures = [];
   for (const [name, cli] of Object.entries(report.clis)) {
-    if (cli.status !== 'available') hardFailures.push(`${name} cli ${cli.status}`);
+    if (cli.status !== 'available') {
+      hardFailures.push(cli.launch_failure?.reason ? `${name} cli ${cli.status}: ${cli.launch_failure.reason}` : `${name} cli ${cli.status}`);
+    }
     if (cli.auth.status === 'unauthenticated') hardFailures.push(`${name} auth unauthenticated`);
     if (cli.auth.status === 'sandbox_limited') hardFailures.push(`${name} auth sandbox_limited`);
   }
@@ -4811,6 +4839,7 @@ export function formatText(report) {
   for (const name of ['claude', 'codex']) {
     const cli = report.clis[name];
     lines.push(`- ${name}: ${cli.status}; version=${cli.version.text || cli.version.status}; auth=${cli.auth.status}`);
+    if (cli.launch_failure) lines.push(`  cannot start: ${cli.launch_failure.reason}`);
     if (name === 'codex') {
       lines.push(`  hooks: global=${featureFlagEvidence(cli.feature_surface.codex_global_hooks, cli.feature_surface.codex_global_hooks_stage)}; plugin-local=${featureFlagEvidence(cli.feature_surface.codex_plugin_hooks, cli.feature_surface.codex_plugin_hooks_stage)}; automatic-plugin-hooks=${Boolean(cli.feature_surface.automatic_plugin_hooks)}`);
     }
@@ -5177,6 +5206,8 @@ function redactCommandDetails(cli) {
   return {
     name: cli.name,
     status: cli.status,
+    // C180: why the CLI could not be started, naming the variable to set.
+    launch_failure: cli.launch_failure ?? null,
     version: cli.version,
     auth: cli.auth,
     feature_surface: cli.feature_surface,

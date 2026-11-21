@@ -12,7 +12,13 @@
 //
 // HASH INVARIANTS (do not reorder — the §1.6 drift guard depends on byte-exact repro):
 //   * collectMutationActions emits action objects with the FIXED key order
-//     {area, host, plugin, action, command, args};
+//     {area, host, plugin, action, command, args, launch};
+//   * `launch` is the argv the host CLI is started with (C180: the resolved
+//     executable, then its argument prefix — lib/host-cli-launch.mjs), or null
+//     when it could not be resolved. It is a hash input, so an override or a
+//     Windows shim target that changes between the presented plan and its
+//     execution makes the executor refuse, as any other plan change does. The
+//     logical `command`/`args` stay what the owner is shown.
 //   * it sorts by JSON.stringify([area, command, args, host, plugin ?? '']);
 //   * computeMutationPlanHash = sha256(JSON.stringify(sorted actions)).
 //   * CLI availability is a hash input: buildPluginManagementCandidates dedups only
@@ -33,7 +39,7 @@ const EXECUTABLE_PLUGIN_CLEANUP_ACTIONS = new Set(['uninstall-retired-plugin']);
 // PURE plan half — identical durability rationale as buildPluginManagementPlan.
 // The retired-plugin cleanup executor had the identical ordering defect
 // (machine-bootstrap-contract.md §1.5 part 4), so it is split the same way.
-function buildPluginCleanupPlans({ hostParityIssues, clis, execute, timeoutMs }) {
+function buildPluginCleanupPlans({ hostParityIssues, clis, execute, timeoutMs, launches = null }) {
   const plans = [];
   for (const issue of hostParityIssues) {
     if (issue.id !== 'claude_retired_or_unknown_plugin') continue;
@@ -46,6 +52,7 @@ function buildPluginCleanupPlans({ hostParityIssues, clis, execute, timeoutMs })
       argv: command?.argv ?? null,
       clis,
       execute,
+      launches,
     });
     plans.push({
       host,
@@ -57,6 +64,7 @@ function buildPluginCleanupPlans({ hostParityIssues, clis, execute, timeoutMs })
       executed: false,
       command: command?.display ?? null,
       argv: command?.argv ?? null,
+      ...(command ? hostLaunchFields(launches, host) : {}),
       detail: issue.summary,
       evidence: issue.evidence,
       next_step: execute
@@ -95,7 +103,22 @@ function buildPluginCleanupCommand({ host, plugin }) {
   return commandSpec('claude', ['plugin', 'uninstall', `${plugin}@agentic-plugins`]);
 }
 
-function classifyPluginCleanupPlan({ host, action, argv, clis, execute }) {
+// C180: the launch each host CLI resolved to, as the planner records it: the
+// resolved executable and its argument prefix, or null when it could not be
+// resolved. Settings resolves the launches (a filesystem read) and passes them
+// in, so the planner stays pure; a caller that passes none records none.
+function hostLaunchFields(launches, host) {
+  if (!launches) return {};
+  const launch = launches[host];
+  return { launch: launch?.ok ? { command: launch.command, args_prefix: [...launch.args_prefix] } : null };
+}
+
+function unresolvedLaunch(launches, host) {
+  const launch = launches?.[host];
+  return launch && !launch.ok ? launch : null;
+}
+
+function classifyPluginCleanupPlan({ host, action, argv, clis, execute, launches = null }) {
   if (!execute) {
     return {
       status: 'manual_required',
@@ -125,6 +148,15 @@ function classifyPluginCleanupPlan({ host, action, argv, clis, execute }) {
       executable: false,
       reason: 'only Claude retired plugin cleanup is supported',
       next_step: 'Use that host-native plugin manager manually.',
+    };
+  }
+  const unresolved = unresolvedLaunch(launches, host);
+  if (unresolved) {
+    return {
+      status: 'blocked',
+      executable: false,
+      reason: unresolved.reason,
+      next_step: `Set ${unresolved.variable} to the ${host} executable, then retry cleanup.`,
     };
   }
   const cli = clis[host];
@@ -595,8 +627,8 @@ function commandSpec(command, args) {
 // executePluginManagementPlans() below, which the write-ahead orchestrator drives
 // AFTER the `planned` record lands on disk. Splitting alone changes nothing about
 // durability (§1.5) — the write-ahead sequencing in runSettings is the fix.
-function buildPluginManagementPlan({ plugins, clis, execute, hostFilter, timeoutMs }) {
-  const plans = buildPluginManagementCandidates({ plugins, clis, hostFilter });
+function buildPluginManagementPlan({ plugins, clis, execute, hostFilter, timeoutMs, launches = null }) {
+  const plans = buildPluginManagementCandidates({ plugins, clis, hostFilter, launches });
   return {
     requested: execute,
     executed: execute,
@@ -616,7 +648,7 @@ function buildPluginManagementPlan({ plugins, clis, execute, hostFilter, timeout
   };
 }
 
-function buildPluginManagementCandidates({ plugins, clis, hostFilter }) {
+function buildPluginManagementCandidates({ plugins, clis, hostFilter, launches = null }) {
   const plans = [];
   const seenExecutableCommands = new Map();
   for (const [pluginName, plugin] of Object.entries(plugins)) {
@@ -628,13 +660,14 @@ function buildPluginManagementCandidates({ plugins, clis, hostFilter }) {
         action: recommendation.action,
         command: recommendation.command,
         argv: recommendation.argv ?? null,
+        ...(recommendation.argv?.command ? hostLaunchFields(launches, recommendation.host) : {}),
         executed: false,
         result: null,
         detail: recommendation.detail,
         next_step: recommendation.next_step ?? null,
         evidence: recommendation.evidence ?? null,
       };
-      const status = classifyPluginManagementPlan({ recommendation, hostFilter, clis });
+      const status = classifyPluginManagementPlan({ recommendation, hostFilter, clis, launches });
       plans.push({ ...basePlan, ...status });
       const plan = plans.at(-1);
       if (plan.status !== 'planned') continue;
@@ -855,7 +888,7 @@ function uniqueStrings(values) {
   return Array.from(new Set(values));
 }
 
-function classifyPluginManagementPlan({ recommendation, hostFilter, clis }) {
+function classifyPluginManagementPlan({ recommendation, hostFilter, clis, launches = null }) {
   if (hostFilter !== 'all' && recommendation.host !== hostFilter) {
     return {
       status: 'skipped',
@@ -875,6 +908,14 @@ function classifyPluginManagementPlan({ recommendation, hostFilter, clis }) {
       status: 'manual',
       executable: false,
       reason: 'recommendation has no argv command spec',
+    };
+  }
+  const unresolved = unresolvedLaunch(launches, recommendation.host);
+  if (unresolved) {
+    return {
+      status: 'blocked',
+      executable: false,
+      reason: unresolved.reason,
     };
   }
   const cli = clis[recommendation.host];
@@ -943,12 +984,12 @@ function collectMutationActions({ pluginManagement, pluginCleanup }) {
     if (!EXECUTABLE_PLUGIN_ACTIONS.has(plan.action)) continue;
     if (!plan.argv?.command || !Array.isArray(plan.argv?.args)) continue;
     if (plan.status === 'skipped' || plan.status === 'deduplicated') continue;
-    actions.push({ area: 'plugin-management', host: plan.host, plugin: plan.plugin ?? null, action: plan.action, command: plan.argv.command, args: plan.argv.args });
+    actions.push({ area: 'plugin-management', host: plan.host, plugin: plan.plugin ?? null, action: plan.action, command: plan.argv.command, args: plan.argv.args, launch: launchArgvOf(plan) });
   }
   for (const plan of pluginCleanup?.plans ?? []) {
     if (!EXECUTABLE_PLUGIN_CLEANUP_ACTIONS.has(plan.action)) continue;
     if (!plan.argv?.command || !Array.isArray(plan.argv?.args)) continue;
-    actions.push({ area: 'plugin-cleanup', host: plan.host, plugin: plan.plugin ?? null, action: plan.action, command: plan.argv.command, args: plan.argv.args });
+    actions.push({ area: 'plugin-cleanup', host: plan.host, plugin: plan.plugin ?? null, action: plan.action, command: plan.argv.command, args: plan.argv.args, launch: launchArgvOf(plan) });
   }
   const sortKey = (a) => JSON.stringify([a.area, a.command, a.args, a.host, a.plugin ?? '']);
   actions.sort((a, b) => {
@@ -957,6 +998,11 @@ function collectMutationActions({ pluginManagement, pluginCleanup }) {
     return ka < kb ? -1 : ka > kb ? 1 : 0;
   });
   return actions;
+}
+
+// The argv a plan's host CLI starts with (C180), or null when none was resolved.
+function launchArgvOf(plan) {
+  return plan.launch ? [plan.launch.command, ...plan.launch.args_prefix] : null;
 }
 
 // §1.6 drift guard: bootstrap presents `runtime:settings --execute-plugin-management`

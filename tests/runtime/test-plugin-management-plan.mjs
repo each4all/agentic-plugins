@@ -94,7 +94,7 @@ describe('plugin-management-plan: shared §1.6 plan hash', () => {
   it('serializes actions with the byte-exact key order + sort the §1.6 guard depends on', () => {
     const { actions } = planHash({ clis: CLIS_CODEX_DOWN });
     for (const action of actions) {
-      deepStrictEqual(Object.keys(action), ['area', 'host', 'plugin', 'action', 'command', 'args'], 'fixed key insertion order');
+      deepStrictEqual(Object.keys(action), ['area', 'host', 'plugin', 'action', 'command', 'args', 'launch'], 'fixed key insertion order');
     }
     const sortKey = (a) => JSON.stringify([a.area, a.command, a.args, a.host, a.plugin ?? '']);
     const keys = actions.map(sortKey);
@@ -115,6 +115,65 @@ describe('plugin-management-plan: shared §1.6 plan hash', () => {
 
   it('host filter changes the hash (filtered plans become `skipped` and drop out)', () => {
     notStrictEqual(planHash({ hostFilter: 'all' }).hash, planHash({ hostFilter: 'claude' }).hash);
+  });
+});
+
+// C180: settings resolves how each host CLI starts and hands the planner the
+// launches as data. The plan shows the owner the logical command, records the
+// resolved argv beside it, and hashes it, so an override or Windows shim
+// target that changes between the presented plan and its execution is a plan
+// change the §1.6 guard refuses.
+describe('plugin-management-plan: host CLI launches (C180)', () => {
+  const bare = deepFreeze({
+    claude: { ok: true, name: 'claude', command: 'claude', args_prefix: [], source: 'bare', shim: null },
+    codex: { ok: true, name: 'codex', command: 'codex', args_prefix: [], source: 'bare', shim: null },
+  });
+  const viaOverride = (path) => deepFreeze({ ...bare, codex: { ok: true, name: 'codex', command: path, args_prefix: [], source: 'override', shim: null } });
+  const viaShim = (target) => deepFreeze({ ...bare, codex: { ok: true, name: 'codex', command: 'C:\\node\\node.exe', args_prefix: [target], source: 'path', shim: 'C:\\npm\\codex.cmd' } });
+  const unresolved = deepFreeze({
+    ...bare,
+    codex: { ok: false, name: 'codex', variable: 'CODEX_BIN', reason: 'peer CLI "codex": CODEX_BIN=/gone names no file; set CODEX_BIN to the codex executable, or unset it', detail: null },
+  });
+  function launchHash(launches, { execute = false } = {}) {
+    const pluginManagement = buildPluginManagementPlan({ plugins: PLUGINS, clis: CLIS_UP, execute, hostFilter: 'all', timeoutMs: 120000, launches });
+    const pluginCleanup = buildPluginCleanupPlans({ hostParityIssues: HOST_PARITY_ISSUES, clis: CLIS_UP, execute, timeoutMs: 120000, launches });
+    const actions = collectMutationActions({ pluginManagement, pluginCleanup });
+    return { hash: computeMutationPlanHash(actions), actions, pluginManagement, pluginCleanup };
+  }
+
+  it('records the resolved launch beside the logical command it shows', () => {
+    const { pluginManagement, actions } = launchHash(viaOverride('/opt/codex/bin/codex'));
+    const codexPlan = pluginManagement.plans.find((plan) => plan.host === 'codex' && plan.status === 'planned');
+    strictEqual(codexPlan.command, 'codex plugin marketplace add each4all/agentic-plugins', 'the owner sees the logical command');
+    deepStrictEqual(codexPlan.argv, { command: 'codex', args: ['plugin', 'marketplace', 'add', 'each4all/agentic-plugins'] });
+    deepStrictEqual(codexPlan.launch, { command: '/opt/codex/bin/codex', args_prefix: [] });
+    deepStrictEqual(actions.find((a) => a.host === 'codex').launch, ['/opt/codex/bin/codex']);
+    deepStrictEqual(actions.find((a) => a.area === 'plugin-cleanup').launch, ['claude'], 'the cleanup action hashes its launch too');
+  });
+
+  it('a changed override or shim target changes the hash; the same launches do not', () => {
+    strictEqual(launchHash(bare).hash, launchHash(bare).hash);
+    strictEqual(launchHash(bare).hash, launchHash(bare, { execute: true }).hash, 'still mode-invariant');
+    notStrictEqual(launchHash(viaOverride('/opt/a/codex')).hash, launchHash(viaOverride('/opt/b/codex')).hash, 'override path');
+    notStrictEqual(launchHash(viaShim('C:\\npm\\a\\cli.js')).hash, launchHash(viaShim('C:\\npm\\b\\cli.js')).hash, 'shim target');
+    notStrictEqual(launchHash(bare).hash, launchHash(viaOverride('/opt/a/codex')).hash, 'an override set after the plan');
+  });
+
+  it('blocks the plans of a host CLI it could not resolve, with the reason naming the variable', () => {
+    const { pluginManagement, pluginCleanup } = launchHash(unresolved, { execute: true });
+    const codexPlans = pluginManagement.plans.filter((plan) => plan.host === 'codex');
+    ok(codexPlans.length > 0);
+    for (const plan of codexPlans) {
+      strictEqual(plan.status, 'blocked');
+      strictEqual(plan.executable, false);
+      ok(plan.reason.includes('CODEX_BIN'), plan.reason);
+      strictEqual(plan.launch, null);
+    }
+    strictEqual(pluginManagement.plans.find((plan) => plan.host === 'claude').status, 'planned', 'the other host is unaffected');
+    strictEqual(pluginCleanup.plans[0].status, 'planned');
+    const cleanupBlocked = launchHash({ ...bare, claude: { ok: false, name: 'claude', variable: 'CLAUDE_BIN', reason: 'peer CLI "claude": CLAUDE_BIN=x is not on PATH', detail: null } }, { execute: true }).pluginCleanup.plans[0];
+    strictEqual(cleanupBlocked.status, 'blocked');
+    ok(cleanupBlocked.next_step.includes('CLAUDE_BIN'), cleanupBlocked.next_step);
   });
 });
 

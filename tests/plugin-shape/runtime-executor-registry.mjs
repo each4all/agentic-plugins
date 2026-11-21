@@ -165,7 +165,10 @@ export const ALLOWED_COMMAND_VARIABLES = {
 // Exec wrappers whose first positional is a passthrough parameter; the raw
 // spawn/exec inside them uses that param, and the param's safety is enforced at
 // the wrapper's CALL sites instead. doctor.runCommand(command,...) and
-// migrate.defaultRunner(command,...) are the two.
+// migrate.defaultRunner(command,...) are the two. runCommand rebinds `command`
+// and `args` to the resolved launch of `claude` or `codex` (C180,
+// lib/host-cli-launch.mjs: a CLAUDE_BIN / CODEX_BIN override or a Windows npm
+// shim's target), which only those two names reach.
 export const EXEC_PASSTHROUGH_FNS = {
   'doctor.mjs': [{ fn: 'runCommand', param: 'command' }],
   'migrate-workflow-storage.mjs': [{ fn: 'defaultRunner', param: 'command' }],

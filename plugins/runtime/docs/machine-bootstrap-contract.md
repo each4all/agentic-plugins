@@ -413,6 +413,12 @@ executing a plan the operator never saw. Bootstrap re-probes after execution and
 reconciles observed against planned; any divergence is reported, never silently
 absorbed.
 
+*Amended 2026-11-21 (C180).* The hashed actions include each host CLI's
+resolved launch (the executable and argument prefix the `CLAUDE_BIN` /
+`CODEX_BIN` override or a Windows npm shim resolves to), and execution spawns
+that launch, so a launch that changes after the plan was presented is refused
+like any other plan change. The command shown stays the logical one.
+
 ---
 
 ## 2. Stage model

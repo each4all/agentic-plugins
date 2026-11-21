@@ -38,6 +38,7 @@ import { fileURLToPath } from 'node:url';
 import { comparePrereleaseAware } from './lib/runtime-floor.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 import { isCliEntry } from './lib/cli-entry.mjs';
+import { isHostCli, resolveHostLaunch, unresolvedLaunchResult } from './lib/host-cli-launch.mjs';
 
 export { comparePrereleaseAware };
 import {
@@ -391,8 +392,8 @@ function guidance103(target) {
   return `Backup ${target} before applying (copy it aside); after applying, re-run \`runtime:bootstrap resume --latest-open\` so a live re-probe confirms the step; to undo, restore your backup manually — bootstrap never reverses an operator edit (§10.3).`;
 }
 
-function raiseStage0(presentation, host, reason) {
-  presentation.stage0[host] = { needed: true, reason, commands: [...STAGE0_COMMANDS[host]] };
+function raiseStage0(presentation, host, reason, commands = STAGE0_COMMANDS[host]) {
+  presentation.stage0[host] = { needed: true, reason, commands: [...commands] };
 }
 
 /**
@@ -481,6 +482,9 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
       const host = hostOf();
       const status = raw?.[host]?.status;
       if (status === 'available') return { status: 'satisfied', observed: probe.hosts[host].cli_version ?? 'available' };
+      // C180: a CLI that could not be resolved names the variable to set.
+      const launchFailure = raw?.[host]?.launch_failure?.reason;
+      if (status === 'unavailable' && launchFailure) return { status: 'pending', recovery: `${launchFailure}; then re-run bootstrap.` };
       if (status === 'unavailable') return { status: 'pending', recovery: `Install the ${host} CLI, then re-run bootstrap.` };
       return { status: 'unknown' };
     }
@@ -1136,7 +1140,11 @@ export function applyAnswers({ steps, answers, now, selection = null, pluginSet 
 function buildStage0(probe, raw) {
   const presentation = { stage0: {} };
   for (const host of ['claude', 'codex']) {
-    if (raw?.[host]?.status !== 'available') {
+    if (raw?.[host]?.launch_failure?.reason) {
+      // C180: the CLI may well be installed; what is wrong is how it is found.
+      // No install commands: the fix is the variable the reason names.
+      raiseStage0(presentation, host, `the ${host} CLI cannot be started: ${raw[host].launch_failure.reason}`, []);
+    } else if (raw?.[host]?.status !== 'available') {
       raiseStage0(presentation, host, `the ${host} CLI is not present — Stage 0 is manual until ADR-0006 is superseded (§2)`);
     } else if (probe.hosts[host].marketplace !== 'registered') {
       // Running does not prove registration: a marketplace can be removed after
@@ -1543,7 +1551,17 @@ async function selectRun({ homeDir, opts, defaultSelector, validateRun }) {
 // Shared verb plumbing
 // ---------------------------------------------------------------------------
 
+// `claude` and `codex` start as runtime resolves them (C180,
+// lib/host-cli-launch.mjs), as in doctor's runCommand: the passthrough
+// parameters become the launch, and a CLI that cannot be resolved spawns
+// nothing and says why, naming the variable to set.
 function defaultRunner(name, args, { cwd, env, timeoutMs }) {
+  if (isHostCli(name)) {
+    const resolved = resolveHostLaunch(name, { env });
+    if (!resolved.ok) return Promise.resolve(unresolvedLaunchResult(resolved));
+    args = [...resolved.args_prefix, ...args];
+    name = resolved.command;
+  }
   return new Promise((resolvePromise) => {
     let stdout = '';
     let stderr = '';
