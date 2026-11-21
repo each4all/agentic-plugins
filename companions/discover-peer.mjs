@@ -43,9 +43,10 @@
 // tracks the repository's main branch; the cache holds what Codex installed,
 // which after ADR-0061's activation is the package's release commit.
 
-import { readFile, stat, readdir } from 'node:fs/promises';
-import { join, isAbsolute, resolve } from 'node:path';
+import { readFile, realpath, stat, readdir } from 'node:fs/promises';
+import { dirname, join, isAbsolute, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { isCliEntry } from './cli-entry.mjs';
 
 const ENV_VAR = 'AGENTIC_COMPANIONS_ROOT';
 const COMPATIBLE_MAJOR = 0;
@@ -106,6 +107,13 @@ export async function discoverPeerCompanion({
     if (!(await fileExists(candidate))) {
       return { ok: false, reason: `${ENV_VAR}=${envRoot} but ${candidate} not found` };
     }
+    const sibling = await missingSibling(candidate);
+    if (sibling) {
+      return {
+        ok: false,
+        reason: `${ENV_VAR}=${envRoot} but ${join(envRoot, sibling)} not found (${peerFilename} imports it; copy it from the same companions release)`,
+      };
+    }
     if (!(await preflight(candidate))) {
       return {
         ok: false,
@@ -160,13 +168,17 @@ async function discoverMultiVersion({ cacheBase, peerFilename, manifestPath }) {
 
   candidates.sort((a, b) => semverCompare(b.version, a.version));
 
+  let lacking = null;
   for (const c of candidates) {
     if (await preflight(c.path)) {
       return { ok: true, path: c.path, source: 'cache-glob', version: c.version };
     }
+    const sibling = await missingSibling(c.path);
+    if (sibling) lacking ??= join(dirname(c.path), sibling);
   }
 
-  return { ok: false, reason: `no companions plugin in ${cacheBase} passed preflight (${peerFilename})` };
+  const why = lacking ? `; ${lacking} not found, which ${peerFilename} imports` : '';
+  return { ok: false, reason: `no companions plugin in ${cacheBase} passed preflight (${peerFilename})${why}` };
 }
 
 export async function fileExists(path) {
@@ -187,6 +199,27 @@ export async function dirExists(path) {
   }
 }
 
+// A sibling a companion imports (cli-entry.mjs, its entry guard since C180):
+// the name of the first one missing, or null. Node resolves it beside the
+// file the path leads to, so a companion reached through a symlink is checked
+// beside its target. A companion that imports none, as releases before C180
+// did not, needs none, so a complete older layout still passes.
+const SIBLING_IMPORT = /(?:\bfrom\s*|^\s*import\s*)['"]\.\/([\w.-]+\.mjs)['"]/gm;
+export async function missingSibling(companionPath) {
+  let text;
+  let dir;
+  try {
+    text = await readFile(companionPath, 'utf8');
+    dir = dirname(await realpath(companionPath));
+  } catch {
+    return null;
+  }
+  for (const m of text.matchAll(SIBLING_IMPORT)) {
+    if (!(await fileExists(join(dir, m[1])))) return m[1];
+  }
+  return null;
+}
+
 export async function preflight(companionPath) {
   let text;
   try {
@@ -194,6 +227,7 @@ export async function preflight(companionPath) {
   } catch {
     return false;
   }
+  if (await missingSibling(companionPath)) return false;
   if (!/['"]prompt-file['"]/.test(text)) return false;
   const m = text.match(/CONTRACT_VERSION\s*=\s*['"]([0-9]+)\.([0-9]+)\.([0-9]+)['"]/);
   if (!m) return false;
@@ -268,7 +302,7 @@ async function runCli(args) {
   return 1;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isCliEntry(import.meta.url)) {
   runCli(process.argv.slice(2)).then(
     (code) => exitAfterFlush(code),
     (err) => {
