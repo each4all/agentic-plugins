@@ -10,6 +10,7 @@ import { parseArgs } from 'node:util';
 import process from 'node:process';
 
 import { isCliEntry } from './cli-entry.mjs';
+import { PEER_CLI_OVERRIDE_ENV, resolvePeerCli, showValue } from './peer-cli.mjs';
 
 export const PEER_HOST = 'claude';
 export const PEER_CLI_BIN = 'claude';
@@ -303,7 +304,12 @@ export function buildClaudeArgs({ model, effort }) {
 
 export function invokePeer(
   { prompt, options },
-  { spawnImpl = spawn, onPeerStart = () => {}, env = process.env } = {},
+  {
+    spawnImpl = spawn,
+    resolveImpl = resolvePeerCli,
+    onPeerStart = () => {},
+    env = process.env,
+  } = {},
 ) {
   // NOTE: the nesting guard is enforced at the main() invocation boundary
   // (it must emit a classified envelope and refuse before any I/O), not in
@@ -316,10 +322,29 @@ export function invokePeer(
   const startedAt = new Date();
   const startMs = Date.now();
 
+  // How to start the peer CLI without a shell (peer-cli.mjs: the override
+  // variable, then the platform's lookup). A failure spawns nothing and is
+  // reported as the exit-3 peer_cli_not_found envelope by classifyResult.
+  const launch = resolveImpl(PEER_CLI_BIN, { env });
+  if (!launch.ok) {
+    return Promise.resolve({
+      resolutionError: launch,
+      launch: null,
+      spawnError: null,
+      exitCode: null,
+      signal: null,
+      stdout: '',
+      stderr: '',
+      startedAt: startedAt.toISOString(),
+      completedAt: new Date().toISOString(),
+      durationMs: Date.now() - startMs,
+    });
+  }
+
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawnImpl(PEER_CLI_BIN, args, {
+      child = spawnImpl(launch.command, [...launch.argsPrefix, ...args], {
         cwd: options.cwd ?? process.cwd(),
         // Nesting guard marker (see § Cooperative nested-peer-invocation guard
         // above). `claude -p` forwards its environment to the shell commands
@@ -330,6 +355,7 @@ export function invokePeer(
       });
     } catch (err) {
       resolve({
+        launch,
         spawnError: err,
         exitCode: null,
         signal: null,
@@ -358,6 +384,7 @@ export function invokePeer(
       resolved = true;
       resolve({
         ...payload,
+        launch,
         stdout: Buffer.concat(stdoutChunks).toString('utf8'),
         stderr: Buffer.concat(stderrChunks).toString('utf8'),
         startedAt: startedAt.toISOString(),
@@ -379,17 +406,43 @@ export function invokePeer(
   });
 }
 
+// The launch a spawn error came from, for its message: the resolved command
+// (an override or shim the user should check) and the variable that sets it.
+function describeLaunch(launch) {
+  const variable = PEER_CLI_OVERRIDE_ENV[PEER_CLI_BIN];
+  if (!launch || launch.source === 'bare') return ` ("${PEER_CLI_BIN}" on PATH; set ${variable} to its path if it is installed elsewhere)`;
+  const via = launch.shim ? ` through the npm shim ${showValue(launch.shim)}` : '';
+  return ` (${showValue([launch.command, ...launch.argsPrefix].join(' '))}${via}, from ${launch.source === 'override' ? variable : 'PATH'})`;
+}
+
 export function classifyResult(invocation) {
   const { spawnError, exitCode, signal, stderr, stdout } = invocation;
 
+  // The resolver found nothing it can start (contract § 5.3: not on PATH or
+  // not invokable); its message names the override variable.
+  if (invocation.resolutionError) {
+    return {
+      status: STATUS.COMPANION_ERROR,
+      exit_code: EXIT_PEER_INFRA,
+      error: {
+        kind: ERROR_KIND.CLI_NOT_FOUND,
+        message: invocation.resolutionError.message,
+        detail: invocation.resolutionError.detail ?? null,
+      },
+    };
+  }
+
   if (spawnError) {
-    if (spawnError.code === 'ENOENT' || spawnError.code === 'EACCES') {
+    // Not there, not permitted (EACCES; EPERM for a Windows execute ACL), or
+    // not an executable the OS can load (libuv's EFTYPE on Windows, ENOEXEC
+    // elsewhere): contract § 5.3 "not invokable".
+    if (['ENOENT', 'EACCES', 'EPERM', 'EFTYPE', 'ENOEXEC'].includes(spawnError.code)) {
       return {
         status: STATUS.COMPANION_ERROR,
         exit_code: EXIT_PEER_INFRA,
         error: {
           kind: ERROR_KIND.CLI_NOT_FOUND,
-          message: `peer CLI "${PEER_CLI_BIN}" not found or not executable`,
+          message: `peer CLI "${PEER_CLI_BIN}" not found or not executable${describeLaunch(invocation.launch)}`,
           detail: spawnError.message,
         },
       };
@@ -399,7 +452,7 @@ export function classifyResult(invocation) {
       exit_code: EXIT_PEER_INFRA,
       error: {
         kind: ERROR_KIND.INVOKE,
-        message: `peer process failed to start (${spawnError.code ?? 'unknown'})`,
+        message: `peer process failed to start (${spawnError.code ?? 'unknown'})${describeLaunch(invocation.launch)}`,
         detail: spawnError.message,
       },
     };
@@ -495,6 +548,7 @@ export async function main(
     stdout = process.stdout,
     stderr = process.stderr,
     spawnImpl = spawn,
+    resolveImpl = resolvePeerCli,
     env = process.env,
   } = {},
 ) {
@@ -582,7 +636,7 @@ export async function main(
 
     const invocation = await invokePeer(
       { prompt, options: parsed.options },
-      { spawnImpl, onPeerStart: (c) => { peerChild = c; }, env },
+      { spawnImpl, resolveImpl, onPeerStart: (c) => { peerChild = c; }, env },
     );
 
     const classification = classifyResult(invocation);
