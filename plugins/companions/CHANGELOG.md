@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/each4all/agentic-plugins/compare/plugin-companions-v0.4.4...plugin-companions-v0.5.0) (2026-11-21)
+
+
+### Features
+
+* **plugin/companions:** ship peer-cli.mjs and the companions that resolve their peer CLI with it ([caf0510](https://github.com/each4all/agentic-plugins/commit/caf0510d354225f3d6adb18e5daf6313122af7b8))
+
 ## [0.4.4](https://github.com/each4all/agentic-plugins/compare/plugin-companions-v0.4.3...plugin-companions-v0.4.4) (2026-11-21)
 
 
