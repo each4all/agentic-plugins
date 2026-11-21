@@ -11,7 +11,8 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import process from 'node:process';
-import { fileURLToPath } from 'node:url';
+
+import { isCliEntry } from './cli-entry.mjs';
 
 export const PEER_HOST = 'codex';
 export const PEER_CLI_BIN = 'codex';
@@ -677,10 +678,7 @@ export function exitAfterFlush(code, fallbackMs = EXIT_FLUSH_FALLBACK_MS) {
   }
 }
 
-const isMainModule = !!(
-  process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
-);
-if (isMainModule) {
+if (isCliEntry(import.meta.url)) {
   main().then(
     (code) => exitAfterFlush(code),
     (err) => {
