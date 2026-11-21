@@ -15,6 +15,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { absorbOutputErrors, exitAfterFlush } from './lib/exit-after-flush.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 const DEFAULT_REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../..');
 
@@ -208,7 +209,7 @@ function main() {
 }
 
 // A throw is reported with its stack, as an uncaught one was, and exits 1.
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isCliEntry(import.meta.url)) {
   absorbOutputErrors();
   let code;
   try {

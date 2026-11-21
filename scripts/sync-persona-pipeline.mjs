@@ -73,6 +73,7 @@ import {
   variantEnrolmentFailures,
   withNotice,
 } from './lib/persona-pipeline.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // The format the generated loader reads (lib/persona.mjs READER_MINOR): the
@@ -759,17 +760,7 @@ function parseCli(argv) {
   return opts;
 }
 
-function invokedAsCli() {
-  if (!process.argv[1]) return false;
-  try {
-    const { realpathSync } = process.getBuiltinModule('node:fs');
-    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    return false;
-  }
-}
-
-if (invokedAsCli()) {
+if (isCliEntry(import.meta.url)) {
   (async () => {
     let opts;
     try {

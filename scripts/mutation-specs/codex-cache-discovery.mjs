@@ -369,15 +369,15 @@ export const MUTATIONS = [
   // ---- E: CLI entry guards on the paths the resolvers hand out ------------
   // Ids are pinned rather than derived from the position: E4 (notify.mjs) went
   // with the emitter in R4n2, and E5/E6 keep the names they were scored under.
-  // E2/E3/E5: engineer's scripts are generated from persona-pipeline/ and guard
-  // their CLI with the shared lib/cli-entry.mjs (ADR-0066 Stage 1), so the
-  // defect replaces that call.
+  // Every script guards its CLI with its package's lib/cli-entry.mjs: engineer's
+  // generated from persona-pipeline/ (ADR-0066 Stage 1), the orchestrator's
+  // since C48. The defect replaces that call.
   ...[
-    ['E1', 'plugins/orchestrator/scripts/state.mjs', 'if (invokedAsCli()) {'],
+    ['E1', 'plugins/orchestrator/scripts/state.mjs', 'if (isCliEntry(import.meta.url)) {'],
     ['E2', 'plugins/engineer/scripts/state.mjs', 'if (isCliEntry(import.meta.url)) {'],
     ['E3', 'plugins/engineer/scripts/dispatch-peer.mjs', 'if (isCliEntry(import.meta.url)) {'],
     ['E5', 'plugins/engineer/scripts/discover-runtime.mjs', 'if (isCliEntry(import.meta.url)) {'],
-    ['E6', 'plugins/orchestrator/scripts/discover-engineer.mjs', 'if (invokedAsCli()) {'],
+    ['E6', 'plugins/orchestrator/scripts/discover-engineer.mjs', 'if (isCliEntry(import.meta.url)) {'],
   ].map(([id, file, from]) => ({
     id, file, tests: [T_SIBLINGS],
     from,

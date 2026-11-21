@@ -19,6 +19,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -102,7 +103,7 @@ function main() {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   try {
     main();
   } catch (e) {

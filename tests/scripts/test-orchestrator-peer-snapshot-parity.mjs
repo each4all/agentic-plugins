@@ -10,6 +10,12 @@
 // of them judges the others' snapshots, and every CLI of the four exits the
 // same way, once its output has drained (the owner's discussion-2 decision
 // R2): a copy that drifts fails here, naming the file.
+//
+// The cli-entry helper is copied the same way into runtime, image, attention
+// and companions (C180, C48: every CLI entry guard is its isCliEntry), each
+// under the same notice; plugins/companions/scripts/cli-entry.mjs is the
+// companions bundle of companions/cli-entry.mjs, held by
+// scripts/sync-companion-bundles.mjs and tests/plugin-shape/test-companions-plugin.mjs.
 
 import { describe, it } from 'node:test';
 import { ok, strictEqual } from 'node:assert/strict';
@@ -19,6 +25,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const LIBS = ['peer-snapshot.mjs', 'process-identity.mjs', 'cli-entry.mjs', 'evidence-boundary.mjs'];
+// The other packages' copies of the cli-entry helper.
+const CLI_ENTRY_COPIES = [
+  'plugins/runtime/scripts/lib/cli-entry.mjs',
+  'plugins/image/scripts/lib/cli-entry.mjs',
+  'plugins/attention/scripts/lib/cli-entry.mjs',
+  'companions/cli-entry.mjs',
+];
 // The orchestrator CLIs and hooks that exit through the cli-entry copy, each
 // with the import specifier its directory reaches the copy by.
 const CLI_ENTRY_CONSUMERS = [
@@ -49,6 +62,17 @@ describe('orchestrator peer snapshot and CLI exit libraries are the persona-pipe
         `plugins/orchestrator/scripts/lib/${name} drifted from persona-pipeline/files/scripts/lib/${name}: `
           + 'edit the source, then copy it here under the notice',
       );
+    });
+  }
+
+  for (const rel of CLI_ENTRY_COPIES) {
+    it(`${rel} is its notice, then the cli-entry source byte for byte (C180, C48)`, () => {
+      const source = readFileSync(join(REPO_ROOT, 'persona-pipeline/files/scripts/lib/cli-entry.mjs'));
+      const copy = readFileSync(join(REPO_ROOT, rel));
+      const head = Buffer.from(notice('cli-entry.mjs'), 'utf8');
+      ok(copy.subarray(0, head.length).equals(head), `${rel}: the copy notice is missing or changed`);
+      ok(copy.subarray(head.length).equals(source),
+        `${rel} drifted from persona-pipeline/files/scripts/lib/cli-entry.mjs: edit the source, then copy it here under the notice`);
     });
   }
 

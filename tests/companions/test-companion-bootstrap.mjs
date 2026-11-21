@@ -30,6 +30,8 @@ import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const LIBRARY = join(REPO_ROOT, 'companions', 'discover-peer.mjs');
+// discover-peer.mjs imports its sibling cli-entry.mjs (C180, C48).
+const ENTRY_HELPER = join(REPO_ROOT, 'companions', 'cli-entry.mjs');
 
 const COMPANION_BODY = "const CONTRACT_VERSION = '0.1.1';\nconst FLAGS = ['prompt-file'];\n";
 const INCOMPATIBLE_BODY = "const CONTRACT_VERSION = '1.0.0';\nconst FLAGS = ['prompt-file'];\n";
@@ -58,6 +60,7 @@ async function plantCompanions(base, version, {
   await mkdir(dirname(join(root, manifestRel)), { recursive: true });
   await writeFile(join(root, manifestRel), JSON.stringify({ name, version }));
   await copyFile(LIBRARY, join(root, 'scripts', 'discover-peer.mjs'));
+  await copyFile(ENTRY_HELPER, join(root, 'scripts', 'cli-entry.mjs'));
   for (const file of ['claude-companion.mjs', 'codex-companion.mjs']) {
     await writeFile(join(root, 'scripts', file), body);
   }
@@ -70,6 +73,7 @@ async function plantClone(codexHome) {
   await mkdir(join(clone, '.codex-plugin'), { recursive: true });
   await writeFile(join(clone, '.codex-plugin', 'plugin.json'), JSON.stringify({ name: 'companions', version: '99.0.0' }));
   await copyFile(LIBRARY, join(clone, 'scripts', 'discover-peer.mjs'));
+  await copyFile(ENTRY_HELPER, join(clone, 'scripts', 'cli-entry.mjs'));
   for (const file of ['claude-companion.mjs', 'codex-companion.mjs']) {
     await writeFile(join(clone, 'scripts', file), COMPANION_BODY);
   }

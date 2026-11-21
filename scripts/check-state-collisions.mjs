@@ -23,13 +23,12 @@
 // Exit 0: no collision. 1: collisions listed. 2: usage error, or git failed.
 
 import { spawnSync } from 'node:child_process';
-import { realpathSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { listingFailed, scanWorkflowFiles, workflowFileKeys } from '../plugins/runtime/scripts/lib/state-readers.mjs';
 import { STATE_LOCATION_DEFAULT_ROOT, defaultStateRoot, stateReadSet } from '../plugins/runtime/scripts/lib/state-root.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 const NAMESPACES = Object.freeze([
   { plugin: 'engineer', legacy: 'agentic-engineer' },
@@ -206,15 +205,6 @@ async function main() {
 // CLI entry. Both sides are realpath'd: Node resolves the main module through
 // symlinks before building import.meta.url, so comparing it with argv[1] as
 // spelled makes a linked invocation exit 0 having done nothing.
-function invokedAsCLI() {
-  if (!process.argv[1]) return false;
-  try {
-    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    return false;
-  }
-}
-
-if (invokedAsCLI()) {
+if (isCliEntry(import.meta.url)) {
   main().then((code) => { process.exitCode = code; });
 }

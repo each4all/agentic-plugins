@@ -80,12 +80,13 @@ import {
 } from 'node:fs';
 import { constants as osConstants, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 
 import {
   HeavyLockError, acquire, groupState, lockPath, processInfo, reapStale as reapStaleLock, registerGroup,
 } from '../plugins/orchestrator/scripts/lib/heavy-lock.mjs';
 import { isSessionVariable } from './lib/session-env.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 export class MutationHarnessError extends Error {
   constructor(message) {
@@ -1083,7 +1084,7 @@ async function main(argv) {
   }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+if (isCliEntry(import.meta.url)) {
   (async () => { process.exitCode = await main(process.argv.slice(2)); })();
 }
 

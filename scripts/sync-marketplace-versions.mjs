@@ -63,7 +63,7 @@
 //       found diffs
 //   2 — usage error
 
-import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -85,6 +85,7 @@ import {
 import { absorbOutputErrors, exitAfterFlush } from './lib/exit-after-flush.mjs';
 import { validateMarketplace } from './validate-marketplace.mjs';
 import { validateVersions } from './validate-versions.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 const MANIFEST_PATH = '.release-please-manifest.json';
 const CLAUDE_MARKETPLACE_PATH = '.claude-plugin/marketplace.json';
@@ -336,16 +337,6 @@ export function syncCatalogs(repoRoot, { checkOnly = false, activate = false } =
   return { claude, codex, written, errors };
 }
 
-// CLI entry — realpath on both sides, as in validate-marketplace.mjs.
-function invokedAsCLI() {
-  if (!process.argv[1]) return false;
-  try {
-    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    return false;
-  }
-}
-
 // The CLI: returns its exit code, which the entry below exits with once
 // stdout and stderr have flushed. The release workflow reads it: 2 misuse,
 // 1 a throw, a refusal, --check drift or a failed validation, 0 otherwise.
@@ -415,8 +406,10 @@ function main() {
   return 0;
 }
 
-// A throw is reported with its stack, as an uncaught one was, and exits 1.
-if (invokedAsCLI()) {
+// CLI entry: isCliEntry compares both sides canonical, so a linked invocation
+// still runs, and runs once. A throw is reported with its stack, as an uncaught
+// one was, and exits 1.
+if (isCliEntry(import.meta.url)) {
   absorbOutputErrors();
   let code;
   try {

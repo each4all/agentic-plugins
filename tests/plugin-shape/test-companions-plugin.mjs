@@ -134,7 +134,7 @@ describe('plugins/companions — bundled scripts', () => {
 });
 
 describe('plugins/companions — drift detector vs canonical companions/', () => {
-  for (const name of ['claude-companion.mjs', 'codex-companion.mjs', 'discover-peer.mjs']) {
+  for (const name of ['claude-companion.mjs', 'codex-companion.mjs', 'discover-peer.mjs', 'cli-entry.mjs']) {
     it(`${name} bundled copy is byte-identical to canonical`, async () => {
       const canonical = await readFile(resolve(CANONICAL_DIR, name));
       const bundled = await readFile(resolve(PLUGIN_ROOT, 'scripts', name));

@@ -76,12 +76,12 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { listTestFiles } from './lib/discover-tests.mjs';
 import { partitionByTier, readTiers } from './lib/suite-tiers.mjs';
 import { holdBase, removeTree } from './lib/remove-tree.mjs';
 import { GUARD_DIR_VAR, GUARD_OWNER_VAR, collectRun, guardFailures, readLeaks, startRun, summarize } from './lib/tmp-leaks.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 export const LARGE_CONCURRENCY = 2;
 
@@ -486,7 +486,6 @@ export async function main(argv, { repoRoot = process.cwd() } = {}) {
   }
 }
 
-const invoked = process.argv[1] ? fs.realpathSync(process.argv[1]) : '';
-if (invoked === fs.realpathSync(fileURLToPath(import.meta.url))) {
+if (isCliEntry(import.meta.url)) {
   (async () => { process.exitCode = await main(process.argv.slice(2)); })();
 }

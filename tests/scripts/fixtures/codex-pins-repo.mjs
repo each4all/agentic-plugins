@@ -29,8 +29,9 @@ const SCRIPTS = [
   'scripts/validate-versions.mjs',
   'scripts/sync-marketplace-versions.mjs',
   'scripts/lib/codex-catalog-pins.mjs',
-  // The CLIs' exit, and the source it re-exports.
+  // The CLIs' exit and entry guard, and the source they re-export.
   'scripts/lib/exit-after-flush.mjs',
+  'scripts/lib/cli-entry.mjs',
   'persona-pipeline/files/scripts/lib/cli-entry.mjs',
 ];
 
