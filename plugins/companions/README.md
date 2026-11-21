@@ -84,8 +84,21 @@ into this plugin rather than spun out as a separate framework primitive).
 When set to an absolute path, the discovery script uses that path
 directly and skips cache-glob. The path points to a directory
 containing `claude-companion.mjs`, `codex-companion.mjs`,
-`discover-peer.mjs` AND `cli-entry.mjs` (the script pair, the discovery
-library, and the CLI entry helper all three import).
+`discover-peer.mjs`, `cli-entry.mjs` AND `peer-cli.mjs` (the script pair,
+the discovery library, the CLI entry helper all three import, and the peer
+CLI launch resolver the two companions import).
+
+**Layout change in the release after 0.4.4 (C180 part 1)**: the two
+companions also import their sibling `peer-cli.mjs`, which decides how to
+start the peer CLI (the `CODEX_BIN` / `CLAUDE_BIN` override, and on Windows
+the `.exe` or npm `.cmd` shim on `PATH`; `companions/README.md` § Peer CLI
+resolution). An override directory must hold all five files from one
+release: replace it as a whole, from `companions/` or from one installed
+`companions` cache directory, rather than adding files one at a time.
+Discovery refuses a directory whose companions import a missing
+`peer-cli.mjs` and names it, and runtime's companion reader marks such a
+companion `blocked` with the same reason, exactly as for `cli-entry.mjs`
+below.
 
 **Layout change in the release after 0.4.3 (C180, C48)**: the two
 companions and `discover-peer.mjs` now import their sibling
@@ -116,12 +129,12 @@ plugin (`scripts/discover-peer.mjs`), so the env-override directory
 must include `discover-peer.mjs` alongside the script pair.
 
 The canonical source-tree `companions/` directory ships all
-four files and remains the documented dev/CI override target —
+five files and remains the documented dev/CI override target —
 existing workflows that set `AGENTIC_COMPANIONS_ROOT=$REPO/companions`
 continue to work after pulling v0.3.0. Users with custom override
 directories that include only the script pair must add
-`discover-peer.mjs`, and from the release after 0.4.3 `cli-entry.mjs`
-too, each copied from the same release as the companions (from
+`discover-peer.mjs`, from the release after 0.4.3 `cli-entry.mjs`, and
+from the release after 0.4.4 `peer-cli.mjs` too, each copied from the same release as the companions (from
 `companions/` or from one installed `companions` cache directory).
 
 If the directory lacks `discover-peer.mjs`, the wrapper fails fast
@@ -179,7 +192,8 @@ The discovery algorithm (mandatory, applies to both hosts; see ADR-0008
 ## Drift protection
 
 The bundled scripts MUST stay byte-identical to the canonical
-`companions/{claude,codex}-companion.mjs`. Three mechanisms enforce
+`companions/{claude,codex}-companion.mjs`, `discover-peer.mjs`,
+`cli-entry.mjs` and `peer-cli.mjs`. Three mechanisms enforce
 this:
 
 1. **Sync script**: `npm run sync:companions -- --write` reads
