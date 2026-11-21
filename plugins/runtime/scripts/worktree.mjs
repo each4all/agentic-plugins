@@ -2,11 +2,11 @@
 
 import { lstat } from 'node:fs/promises';
 import { basename, dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { runCommand } from './doctor.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 import { expandArgsFile } from './lib/args-file.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 const VERSION = RUNTIME_VERSION;
 const SCHEMA_VERSION = 'runtime-worktree-plan-1.0';
@@ -459,7 +459,7 @@ async function main() {
   }
 }
 
-const isDirect = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isDirect = isCliEntry(import.meta.url);
 if (isDirect) {
   await main();
 }

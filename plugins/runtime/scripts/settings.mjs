@@ -62,6 +62,7 @@ import {
 import { parseCodexCliVersion, resolveCodexInstalledPluginVersion } from './lib/codex-attestation-versions.mjs';
 import { expandArgsFile } from './lib/args-file.mjs';
 import { exitAfterFlush } from './lib/exit-after-flush.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 // 1.17 → 1.18 (additive): report.plugin_management / report.plugin_cleanup gain
 // `plan_hash` (§1.6 drift guard) so bootstrap can read a dry-run plan's hash and
@@ -2868,7 +2869,7 @@ function ignoreOutputError() {}
 // `timeout_child_running`), its host gets no further command, and main waits
 // for it after the report or a failure (stillRunningCommands); read-only
 // probes are not waited for.
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isCliEntry(import.meta.url)) {
   main().then(
     (code) => exitAfterFlush(code),
     (err) => {

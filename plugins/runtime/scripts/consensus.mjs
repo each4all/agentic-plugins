@@ -13,7 +13,6 @@ import {
 } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, relative, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { runCommand } from './doctor.mjs';
 import { resolvePeerExecutionContext } from './lib/peer-execution-context.mjs';
@@ -21,6 +20,7 @@ import { resolveCodexHome } from './lib/state-readers.mjs';
 import { expandArgsFile } from './lib/args-file.mjs';
 import { EVIDENCE_BOUNDARY, withEvidenceBoundaryBytes } from './lib/evidence-boundary.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 const VERSION = RUNTIME_VERSION;
 const MANIFEST_SCHEMA = 'runtime-consensus-run-1.0';
@@ -3328,7 +3328,7 @@ async function main() {
   }
 }
 
-const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = isCliEntry(import.meta.url);
 if (isMain) {
   main().catch((error) => {
     console.error(`runtime:consensus: ${error.message}`);

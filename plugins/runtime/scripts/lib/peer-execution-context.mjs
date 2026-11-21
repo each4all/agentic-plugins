@@ -33,8 +33,8 @@
 // canonical module path and silently does nothing through a symlink spelling (a
 // symlinked CODEX_HOME, or an override that names a link).
 
-import { readdir, realpath } from 'node:fs/promises';
-import { isAbsolute, join } from 'node:path';
+import { readdir, realpath, stat } from 'node:fs/promises';
+import { dirname, isAbsolute, join } from 'node:path';
 
 import { readJsonIfExists, readTextIfExists } from './state-readers.mjs';
 import { semverCompare } from './semver.mjs';
@@ -175,12 +175,25 @@ async function preflightCompanionScript(path, contractVersion) {
   const scriptMajor = scriptVersion ? Number.parseInt(scriptVersion.split('.')[0], 10) : null;
   const contractMajor = contractVersion ? Number.parseInt(contractVersion.split('.')[0], 10) : CONTRACT_COMPATIBLE_MAJOR;
   const compatible = hasPromptFile && scriptMajor === contractMajor && scriptMajor === CONTRACT_COMPATIBLE_MAJOR;
+  // A companion imports its sibling cli-entry.mjs (C180, C48); without it the
+  // script cannot load, whatever its contract says. Node resolves the sibling
+  // beside the file the path leads to, so it is looked for there. One that
+  // imports no sibling, as releases before C180 did not, needs none.
+  let missingSibling = null;
+  const dir = dirname(await realpath(path).catch(() => path));
+  for (const m of text.text.matchAll(/(?:\bfrom\s*|^\s*import\s*)['"]\.\/([\w.-]+\.mjs)['"]/gm)) {
+    const found = await stat(join(dir, m[1])).then((s) => s.isFile(), () => false);
+    if (!found) { missingSibling = m[1]; break; }
+  }
+  const usable = compatible && missingSibling === null;
   return {
-    status: compatible ? 'available' : 'blocked',
+    status: usable ? 'available' : 'blocked',
     contract_version: scriptVersion,
     has_prompt_file: hasPromptFile,
     compatible,
-    reason: compatible ? null : 'missing --prompt-file support or incompatible CONTRACT_VERSION major',
+    reason: !compatible
+      ? 'missing --prompt-file support or incompatible CONTRACT_VERSION major'
+      : missingSibling ? `imports ./${missingSibling}, which is missing beside it` : null,
   };
 }
 

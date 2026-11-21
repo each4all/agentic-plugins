@@ -11,12 +11,12 @@
 // its containment + no-follow + receipt + lock + plan-hash safety layers.
 
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { RETENTION_FAMILIES, planRetention, projectRetentionAttention } from './lib/retention-planner.mjs';
 import { applyRetention, resolveOpenReceipt, computeExpectedHashHex, RETENTION_APPLY_VERSIONS } from './lib/retention-apply.mjs';
 import { resolveRepoRoot } from './lib/repo-root.mjs';
 import { ArgsFileError, expandArgsFile } from './lib/args-file.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 function parseArgs(argv) {
   const opts = { command: null, family: null, format: 'text', execute: false, expectedPlanHash: null, repoRoot: null };
@@ -168,7 +168,7 @@ async function main(argv) {
   if (res.result && (res.result.status === 'refused' || res.result.status === 'blocked')) process.exitCode = 2;
 }
 
-const isEntry = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isEntry = isCliEntry(import.meta.url);
 if (isEntry) {
   (async () => {
     try {
