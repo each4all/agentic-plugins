@@ -55,6 +55,7 @@ import { semverCompare } from './lib/semver.mjs';
 import { parseCodexCatalogTarget, selectInstalledCacheDir } from './lib/codex-install-identity.mjs';
 import { expandArgsFile } from './lib/args-file.mjs';
 import { exitAfterFlush } from './lib/exit-after-flush.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 export { RUNTIME_VERSION };
 
@@ -5679,7 +5680,7 @@ async function main() {
 // ignores SIGTERM would hold the CLI open until it ended. The probes are
 // read-only, so a child left running changes nothing on the machine; every
 // `--record` write is awaited before runDoctor resolves.
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isCliEntry(import.meta.url)) {
   main().then(
     (code) => exitAfterFlush(code),
     (err) => {

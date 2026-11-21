@@ -58,6 +58,7 @@ import {
   projectRetentionAttention,
   reconcileRetentionAttention,
 } from './lib/retention-planner.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 // 1.0 → 1.1 (additive, ADR-0045 S8): tier1.entry_advisory — present only
 // when the caller opts the snapshot into the entry advisory; never present
@@ -945,7 +946,7 @@ async function main(rawArgv) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isCliEntry(import.meta.url)) {
   (async () => {
     try {
       await main(process.argv.slice(2));

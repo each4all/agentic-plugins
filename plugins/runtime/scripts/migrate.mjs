@@ -34,11 +34,10 @@
 // point so the direct path that shipped in earlier versions still works. One
 // help surface, one exit-code rule, one argv contract.
 
-import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { safeOperatorText } from './lib/operator-text.mjs';
 import { ArgsFileError, expandArgsFile } from './lib/args-file.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 // The workflow-storage half — the M1 MUTATOR, which imports node:child_process
 // at module scope — is loaded DYNAMICALLY, inside the branch that routes to it,
@@ -170,7 +169,7 @@ async function main() {
   if (res.exitCode) process.exitCode = res.exitCode;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   main().catch((err) => {
     process.stderr.write(`runtime:migrate failed: ${err.stack ?? err.message}\n`);
     process.exitCode = 1;

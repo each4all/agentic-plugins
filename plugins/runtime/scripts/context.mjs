@@ -4,7 +4,6 @@ import { createHash, randomBytes } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { link, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { canonicalJson, loadSchema, validateAgainstSchema } from './lib/schema-validate.mjs';
 import { FUTURE_SKEW_TOLERANCE_MS } from './lib/clock.mjs';
@@ -19,6 +18,7 @@ import {
   sessionCaptureDir,
   truncateReason,
 } from './lib/session-capture-inspect.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 // Re-export for existing consumers — the value moved to the session-capture
 // inspection leaf (ADR-0045 S7a) so entry-brief-readers can share the gate
@@ -2655,7 +2655,7 @@ async function main() {
   }
 }
 
-const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = isCliEntry(import.meta.url);
 if (isMain) {
   main().catch((error) => {
     // Backstop for the hook-grade contract: a failure that escapes main()

@@ -8,13 +8,13 @@
 import { spawn } from 'node:child_process';
 import { lstat, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { RUNTIME_VERSION } from './version.mjs';
 // Rejected argv reaches stderr, which is outside every report defuser and
 // just as forgeable. The dispatcher learned this; this entry point is its
 // sibling.
 import { safeOperatorText } from './lib/operator-text.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 export const MIGRATION_SCHEMA_VERSION = 'workflow-storage-migration-1.0';
 export const MIGRATION_ID = 'workflow-storage-v1';
@@ -838,7 +838,7 @@ async function main() {
   if (res.exitCode) process.exitCode = res.exitCode;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   main().catch((err) => {
     process.stderr.write(`runtime:migrate workflow-storage failed: ${err.stack ?? err.message}\n`);
     process.exitCode = 1;

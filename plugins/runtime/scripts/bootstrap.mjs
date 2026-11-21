@@ -37,6 +37,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { comparePrereleaseAware } from './lib/runtime-floor.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 export { comparePrereleaseAware };
 import {
@@ -3657,7 +3658,7 @@ async function main() {
 // on a probe child that ignored SIGTERM after its timeout (defaultRunner
 // resolves without waiting for `close`). The probes are read-only, so a child
 // left running changes nothing on the machine.
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isCliEntry(import.meta.url)) {
   main().then(
     (code) => exitAfterFlush(code),
     (err) => {

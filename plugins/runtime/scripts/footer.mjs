@@ -2,7 +2,6 @@
 
 import { readdir, readFile } from 'node:fs/promises';
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { runConsensus } from './consensus.mjs';
 import { buildHandoffGuidance, evaluateSessionHandoff, loadWorkflowProjection } from './context.mjs';
@@ -14,6 +13,7 @@ import {
 } from './lib/host-localization.mjs';
 import { buildSourceFreshness, formatSourceFreshness, resolveSourceSnapshot } from './source-snapshot.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 const VERSION = RUNTIME_VERSION;
 const VALID_CONTEXT_STATES = new Set(['green', 'yellow', 'red']);
@@ -1354,7 +1354,7 @@ async function main() {
   }
 }
 
-const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = isCliEntry(import.meta.url);
 if (isMain) {
   main().catch((error) => {
     console.error(`runtime:footer: ${error.message}`);
