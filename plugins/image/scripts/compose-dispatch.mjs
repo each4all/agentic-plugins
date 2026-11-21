@@ -33,6 +33,7 @@ import { parseArgs } from 'node:util';
 
 import { inspectAlpha } from './alpha-inspect.mjs';
 import { exitAfterFlush } from './exit-after-flush.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 // Typed error taxonomy (contracts.md §8). No blind retry of user/auth errors.
 // The six image-facing kinds, two transport kinds for malformed/other
@@ -684,7 +685,7 @@ async function runCli(argv = process.argv.slice(2)) {
   return manifest.status === 'success' ? 0 : 1;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isCliEntry(import.meta.url)) {
   runCli().then((code) => exitAfterFlush(code), (err) => {
     process.stderr.write(`compose-dispatch: ${err?.message ?? err}\n`);
     exitAfterFlush(1);

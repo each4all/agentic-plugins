@@ -22,6 +22,7 @@ import { parseArgs } from 'node:util';
 import { findCodexCompanion, sniffImage, classifyError, sendDisclosure } from './compose-dispatch.mjs';
 import { exitAfterFlush } from './exit-after-flush.mjs';
 import { EVIDENCE_BOUNDARY } from './lib/evidence-boundary.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 const IMAGE_EXT_RE = /\.(?:png|jpe?g|webp)$/i;
 const MAX_IMAGE_BYTES = 64 * 1024 * 1024;
@@ -195,7 +196,7 @@ async function runCli(argv = process.argv.slice(2)) {
   return result.ok ? 0 : 1;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isCliEntry(import.meta.url)) {
   runCli().then((code) => exitAfterFlush(code), (err) => {
     process.stderr.write(`critique-dispatch: ${err?.message ?? err}\n`);
     exitAfterFlush(1);

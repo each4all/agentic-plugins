@@ -16,6 +16,7 @@ import { readFileSync, writeFileSync, existsSync, lstatSync, realpathSync, unlin
 import { resolve, dirname, sep } from 'node:path';
 import { parseArgs } from 'node:util';
 import { exitAfterFlush } from './exit-after-flush.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 const IMAGE_EXT_RE = /\.(?:png|jpe?g|webp)$/i;
 
@@ -111,7 +112,7 @@ async function runCli(argv = process.argv.slice(2)) {
   return 0;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isCliEntry(import.meta.url)) {
   runCli().then((code) => exitAfterFlush(code), (err) => {
     process.stderr.write(`variant-select: ${err?.message ?? err}\n`);
     exitAfterFlush(1);

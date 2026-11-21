@@ -27,6 +27,7 @@ import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { dispatch as composeDispatch, estimateCost, normalizeFormat, BACKGROUNDS, TRANSPARENT_FORMATS } from './compose-dispatch.mjs';
 import { exitAfterFlush } from './exit-after-flush.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 export const MAX_ITERATIONS = 3;
 
@@ -156,7 +157,7 @@ async function runCli(argv = process.argv.slice(2)) {
   return result.ok ? 0 : 1;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isCliEntry(import.meta.url)) {
   runCli().then((code) => exitAfterFlush(code), (err) => {
     process.stderr.write(`refine-dispatch: ${err?.message ?? err}\n`);
     exitAfterFlush(1);
