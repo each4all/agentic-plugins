@@ -104,6 +104,7 @@ import { moveCutover, moveRollback, planCutover, planRollback, verifyCutover } f
 import { laneAdvice, laneAdviceLine } from './lib/lane-advice.mjs';
 import { readCommandArguments } from './lib/command-args.mjs';
 import { macroInDefaultRoot, nextWorktreeProposal, worktreeProposalText } from './lib/worktree-proposal.mjs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 // -----------------------------------------------------------------------------
 // Constants — ADR-0018 §sub-decision-1 + §sub-decision-2
@@ -8967,17 +8968,12 @@ async function cliRun(subcommand, flags) {
 // Run as a CLI only when this file is the entry point. Both sides are compared
 // canonical and as paths, so an install reached through a symlink (with or
 // without --preserve-symlinks-main), or under a directory whose name needs URL
-// escaping (a space, '#', non-ASCII), still runs (ADR-0061 S2).
-function invokedAsCli() {
-  if (!process.argv[1]) return false;
-  try {
-    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    return false;
-  }
-}
-
-if (invokedAsCli()) {
+// escaping (a space, '#', non-ASCII), still runs (ADR-0061 S2). It runs once:
+// set-terminal imports session-handoff.mjs, which imports this file again by
+// its real path, and under --preserve-symlinks-main that second instance also
+// compared equal; isCliEntry lets only the first instance claim the entry
+// (C48, ADR-0066 D1).
+if (isCliEntry(import.meta.url)) {
   // Wrap cliMain in an async IIFE rather than awaiting it at top level.
   // Top-level await blocks circular dynamic imports performed inside cliMain
   // (the ADR-0031 activation sidecar in setMacroTerminal / updateSubtask

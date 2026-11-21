@@ -46,7 +46,7 @@ import readline from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 
 import { expandArgsFile } from '../../../scripts/lib/args-file.mjs';
-import { absorbOutputErrors } from '../../../scripts/lib/cli-entry.mjs';
+import { absorbOutputErrors, isCliEntry } from '../../../scripts/lib/cli-entry.mjs';
 import { holderName, holderOf } from '../../../scripts/lib/heavy-lock.mjs';
 import { HeavyUsageError, parseHeavy, runHeavy } from '../../../scripts/lib/heavy-run.mjs';
 import { describeAdmission } from '../../../scripts/lib/run-locks.mjs';
@@ -1347,12 +1347,7 @@ export const heavyForTests = { parseHeavy, HeavyUsageError };
 
 // Run only as the entry script, compared canonically (an install reached
 // through a symlink, or a path that needs URL escaping, still runs).
-function invokedAsCli() {
-  if (!process.argv[1]) return false;
-  try { return realpathSync(process.argv[1]) === realpathSync(SELF); } catch { return false; }
-}
-
-if (invokedAsCli()) {
+if (isCliEntry(import.meta.url)) {
   main().then((code) => { process.exitCode = code; }, (e) => {
     process.stderr.write(`autopilot: ${e?.stack ?? e}\n`);
     process.exitCode = 1;

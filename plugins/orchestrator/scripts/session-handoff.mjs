@@ -42,7 +42,6 @@
 import { execFile } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import { discoverRuntimePluginRoot } from './discover-runtime.mjs';
 import {
@@ -56,7 +55,7 @@ import {
 } from './state.mjs';
 import { evaluateMacroStopArchive } from './stop-archive.mjs';
 import { aliasedComponent } from './lib/state-root.mjs';
-import { absorbOutputErrors, exitAfterFlush } from './lib/cli-entry.mjs';
+import { absorbOutputErrors, exitAfterFlush, isCliEntry } from './lib/cli-entry.mjs';
 
 // Default routing recommendation for an active macro workflow: resume it.
 const DEFAULT_ROUTING = '/orchestrator:resume';
@@ -906,7 +905,7 @@ async function cliRun(argv) {
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+if (isCliEntry(import.meta.url)) {
   absorbOutputErrors();
   // Async IIFE wrapper (project convention) — avoids the unsettled top-level
   // await deadlock when state.mjs's dynamic imports run during module load.
