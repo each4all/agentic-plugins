@@ -208,7 +208,8 @@ describe('halts', () => {
       const r = t.latest();
       deepStrictEqual(r.steps.map((s) => [s.kind, s.outcome]), [['dispatch', 'ok'], ['verb', 'no-progress']]);
       strictEqual(r.halt.reason, 'no-progress');
-      ok(r.halt.resume[0].startsWith('claude --resume '), 'the halt names the session to inspect');
+      // C180: the resume runs the run's claude, here the fake AUTOPILOT_CLAUDE_BIN names.
+      ok(r.halt.resume[0].startsWith(`${FAKE} --resume `), `the halt names the session to inspect: ${r.halt.resume[0]}`);
     } finally {
       t.fx.cleanup();
     }

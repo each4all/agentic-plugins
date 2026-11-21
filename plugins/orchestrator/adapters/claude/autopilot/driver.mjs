@@ -77,13 +77,14 @@ import {
   reconcileWaiting, reportClosePeersUnlisted, runLanes,
 } from './scheduler.mjs';
 import {
-  ALLOWED_TOOLS, COMMIT_DENY, DENIED_TOOLS, claudeBin, startWorker as defaultStartWorker, terminateGroupsSync, workerEnv,
+  ALLOWED_TOOLS, COMMIT_DENY, DENIED_TOOLS, launchText, resolveClaudeLaunch, startWorker as defaultStartWorker, terminateGroupsSync, workerEnv,
 } from './worker.mjs';
 import {
   checkEnvOf, noteGateStep, offerRecord, personaEnvOf, requestKnownIn, selectionBase, startVerify as defaultStartVerify, suiteArgvOf, verifyFacts, verifyOfferFor,
 } from './verify-run.mjs';
 import { DEFAULT_OPS as VERIFY_OPS } from './verify-ops.mjs';
 import { checkStateBase, creationRoot, STATE_BASE_ENV } from '../../../scripts/lib/state-root.mjs';
+import { shellQuote } from '../../../scripts/lib/worktree-proposal.mjs';
 import { tokenDigest } from '../../../scripts/lib/run-locks.mjs';
 import { holdStateOf, HOLDS_CAPABILITY, listRecordIds } from '../../../scripts/lib/holds-records.mjs';
 import { activateHolds } from '../../../scripts/lib/hold-activation.mjs';
@@ -105,7 +106,7 @@ export const STALL_DETECTOR_MODES = Object.freeze(['log', 'on']);
 export const EMERGENCY_CAP_SEC = 28800;
 // The Claude Code flags the worker host depends on (verified on 2.1.281 and
 // 2.1.286).
-const REQUIRED_CLAUDE_FLAGS = ['--input-format', '--permission-prompts', '--include-hook-events', '--max-budget-usd', '--json-schema'];
+export const REQUIRED_CLAUDE_FLAGS = ['--input-format', '--permission-prompts', '--include-hook-events', '--max-budget-usd', '--json-schema'];
 // D8: what a consumer repository must ignore.
 const IGNORED_STATE = ['runs', 'state', 'tmp', 'cache'];
 
@@ -137,6 +138,32 @@ export function remoteUrls(repoRoot) {
 }
 
 /**
+ * C180 — the Claude Code CLI the run starts, resolved once (worker.mjs
+ * resolveClaudeLaunch) and probed through that launch: `--version`, then the
+ * flags the host needs in `--help`. The launch it returns is the one every
+ * worker of the run spawns, so a step never runs another CLI than the one
+ * checked here. One that cannot be resolved is a problem naming the variable
+ * to set, and no process is started.
+ */
+export function checkClaudeCli({ env = process.env, resolve: resolveLaunch = resolveClaudeLaunch, spawn = spawnSync } = {}) {
+  const launch = resolveLaunch(env);
+  if (!launch.ok) return { problems: [`the Claude Code CLI cannot be started: ${launch.reason}`], claude: null, launch: null };
+  const run = (arg) => spawn(launch.command, [...launch.argsPrefix, arg], { encoding: 'utf8', timeout: 30_000, env });
+  const v = run('--version');
+  if (v.status !== 0) {
+    return { problems: [`the Claude Code CLI (${launchText(launch)}) did not run: ${(v.stderr || v.error?.message || '').trim()}`], claude: null, launch: null };
+  }
+  const claude = (v.stdout ?? '').trim();
+  const h = run('--help');
+  if (h.status !== 0) {
+    return { problems: [`the Claude Code CLI (${launchText(launch)}) did not run --help: ${(h.stderr || h.error?.message || '').trim()}`], claude, launch: null };
+  }
+  const missing = REQUIRED_CLAUDE_FLAGS.filter((f) => !(h.stdout ?? '').includes(f));
+  if (missing.length > 0) return { problems: [`Claude Code ${claude} lacks ${missing.join(', ')}; update it`], claude, launch: null };
+  return { problems: [], claude, launch };
+}
+
+/**
  * The start conditions (plugin change spec §5): a git work tree that ignores
  * the agentic state, a Claude Code that has the flags the host needs, the
  * plugin roots with their capability floor, and no root inside the repository.
@@ -158,16 +185,12 @@ export async function preflight({ repoRoot, env = process.env, checkClaude = tru
   const tmp = scratchBase({ repoRoot, env });
   if (tmp.problem) problems.push(tmp.problem);
   let claude = null;
+  let claudeLaunch = null;
   if (checkClaude) {
-    const v = spawnSync(claudeBin(env), ['--version'], { encoding: 'utf8', timeout: 30_000, env });
-    if (v.status !== 0) {
-      problems.push(`the Claude Code CLI (${claudeBin(env)}) did not run: ${(v.stderr || v.error?.message || '').trim()}`);
-    } else {
-      claude = (v.stdout ?? '').trim();
-      const h = spawnSync(claudeBin(env), ['--help'], { encoding: 'utf8', timeout: 30_000, env });
-      const missing = REQUIRED_CLAUDE_FLAGS.filter((f) => !(h.stdout ?? '').includes(f));
-      if (missing.length > 0) problems.push(`Claude Code ${claude} lacks ${missing.join(', ')}; update it`);
-    }
+    const checked = checkClaudeCli({ env });
+    problems.push(...checked.problems);
+    claude = checked.claude;
+    claudeLaunch = checked.launch;
   }
   const remotes = remoteUrls(repoRoot);
   const unguarded = remotes.pushUrls.filter((u) => remotes.fetchUrls.includes(u));
@@ -181,7 +204,7 @@ export async function preflight({ repoRoot, env = process.env, checkClaude = tru
   if (lanes >= 2) problems.push(...lanesCapabilityProblems(resolved.roots, repoRoot, { env }));
   const { stateRoot, problem } = effectiveStateRoot(repoRoot, env);
   if (problem) problems.push(problem);
-  return { problems, warnings, roots: resolved, claude, stateRoot };
+  return { problems, warnings, roots: resolved, claude, claudeLaunch, stateRoot };
 }
 
 /**
@@ -373,9 +396,11 @@ export function settleAbandonedPeers(targets, { roots, checkout, env }) {
   });
 }
 
-function haltRecord({ runId, d, lastSessionId, repoRoot, macroId, lanes }) {
+function haltRecord({ runId, d, lastSessionId, repoRoot, macroId, lanes, claudeLaunch = null }) {
   const resume = [];
-  if (lastSessionId) resume.push(`claude --resume ${lastSessionId}   # inspect the last step interactively`);
+  // The resume runs the CLI the run's workers ran (C180), quoted for a shell.
+  const claude = claudeLaunch?.ok ? [claudeLaunch.command, ...claudeLaunch.argsPrefix].map(shellQuote).join(' ') : 'claude';
+  if (lastSessionId) resume.push(`${claude} --resume ${lastSessionId}   # inspect the last step interactively`);
   resume.push(d.reason === 'awaiting-landing'
     ? `Bring each branch that needs a sync up to date with ${d.integration ? `origin/${d.integration}` : 'the integration branch'} (merge or rebase, then push), push the others, open and review each pull request, merge it once its CI passes on the merged tree, then relaunch:`
     : 'Resolve what the reason names, then relaunch:');
@@ -529,11 +554,15 @@ export function serialRefusal({ repoRoot, macroId, view, env }) {
  */
 export async function startRun({ repoRoot, options, env = process.env, out = console.log, err = console.error, deps = {} }) {
   const observe = deps.observe ?? defaultObserve;
-  const startWorker = deps.startWorker ?? defaultStartWorker;
+  const startWorkerSeam = deps.startWorker ?? defaultStartWorker;
   const now = deps.now ?? (() => Date.now());
   // ADR-0067 Decision 6: absent or 1, the serial driver; 2 or more, lanes.
   const lanes = Number.isInteger(options.lanes) && options.lanes >= 2 ? options.lanes : 1;
   const pre = await preflight({ repoRoot, env, checkClaude: deps.checkClaude ?? true, lanes });
+  // C180 — every worker of the run, serial or in a lane, spawns the launch
+  // the preflight checked (none when the check was skipped: the worker then
+  // resolves it itself, the same way).
+  const startWorker = (o) => startWorkerSeam({ claudeLaunch: pre.claudeLaunch ?? null, ...o });
   for (const w of pre.warnings) out(`⚠ ${w}`);
   if (pre.problems.length > 0) {
     err('✗ The autopilot cannot start:');
@@ -848,7 +877,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     run.ended_at = new Date(now()).toISOString();
     if (d) {
       pendingEndHalt = laneReport?.publishHalt ?? (() => publishHalt(d));
-      run.halt = haltRecord({ runId, d: laneReport ? { ...d, lanes: laneReport.lanes } : d, lastSessionId, repoRoot, macroId, lanes });
+      run.halt = haltRecord({ runId, d: laneReport ? { ...d, lanes: laneReport.lanes } : d, lastSessionId, repoRoot, macroId, lanes, claudeLaunch: pre.claudeLaunch });
       // ADR-0068 Decision 7, items 6 and 8 — the macro's instructions and
       // what became of each (a dropped one with its cause), ids only.
       let instructions = [];
@@ -1536,6 +1565,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       current = null;
       if (w.groupTeardown === 'lingering') lingering = true;
       else setWorker(null);
+      // A step that never started has no session: the halt offers none.
       lastSessionId = w.sessionId;
       ctx.forced = null;
       if (s.kind === 'finalize') ctx.finalizeAttempted = true;
