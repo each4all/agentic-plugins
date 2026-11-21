@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/each4all/agentic-plugins/compare/companions-v0.3.4...companions-v0.4.0) (2026-11-21)
+
+
+### Features
+
+* **companions:** resolve the peer CLI through CODEX_BIN, CLAUDE_BIN and Windows npm shims ([3226bd5](https://github.com/each4all/agentic-plugins/commit/3226bd5e17f9afdbbb3a3e96e7e023ba18edf5df))
+
 ## [0.3.4](https://github.com/each4all/agentic-plugins/compare/companions-v0.3.3...companions-v0.3.4) (2026-11-21)
 
 
