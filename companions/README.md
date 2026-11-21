@@ -20,6 +20,11 @@ broader Stage 1 scope.
   invocation. Shells out to the public `claude -p` CLI.
 - **[`codex-companion.mjs`](codex-companion.mjs)** — Claude → Codex peer-agent
   invocation. Shells out to the public `codex exec` CLI.
+- **[`peer-cli.mjs`](peer-cli.mjs)** — how both companions start their peer
+  CLI without a shell: the `CODEX_BIN` / `CLAUDE_BIN` override, then the
+  platform's lookup (§ Peer CLI resolution below).
+- **[`cli-entry.mjs`](cli-entry.mjs)** — the canonical CLI entry guard the two
+  companions and `discover-peer.mjs` import.
 - **[`tests/`](tests/)** — hermetic unit tests (`*.test.mjs`, mocked spawn) plus
   env-gated smoke tests (`*.smoke.mjs`) against the real peer CLIs. Smoke tests
   use the `*.smoke.mjs` name (outside Node's default discovery) so `npm test`
@@ -60,12 +65,67 @@ honor the five pinned options from contract § 2.2: `--prompt-file`,
 contract § 5.1 (`0` success, `1` peer run error, `2` companion misuse,
 `3` peer infra error).
 
+## Peer CLI resolution
+
+Each companion decides how to start its peer CLI (`codex`, `claude`) in
+`peer-cli.mjs` before it spawns anything, and spawns it without
+`shell: true`. (On Linux, glibc's `execvp` itself runs an executable text
+file that has no `#!` line through `/bin/sh`; a real CLI has one.) This is
+implementation behaviour, not part of the wire contract: a failure is the
+existing contract § 5.3 row `companion_error` / exit `3` /
+`peer_cli_not_found`, whose message names the override variable.
+
+1. **Override**: `CODEX_BIN` (for `codex-companion.mjs`) or `CLAUDE_BIN` (for
+   `claude-companion.mjs`), on every platform, when set and non-empty. A value
+   with a path separator is a path, relative ones resolved against the
+   companion's working directory; a value without one is a file name looked up
+   on `PATH` (`CODEX_BIN=codex-nightly`). An override that names no file, a
+   directory, or something that cannot run is an error naming the variable:
+   the companion never falls back to `PATH`. On Windows an override may name
+   an `.exe` or `.com`, an npm `.cmd` shim, or a JavaScript file (run with the
+   companion's own Node); a drive-relative value such as `C:codex.exe` is
+   refused.
+2. **macOS and Linux**: the bare name, which `spawn` looks up on `PATH` as it
+   always has.
+3. **Windows**: the `PATH` directories in order (the working directory is not
+   searched, and `PATHEXT` is ignored), each trying `<name>.exe`, then
+   `<name>.cmd`. An `.exe` runs as is. A `.cmd` is read as an npm cmd-shim and
+   is never run itself: a node shim (the `npm install -g @openai/codex` case)
+   runs its target script as `process.execPath <target>`, and a shim with no
+   program whose target is an `.exe` (the `npm install -g
+   @anthropic-ai/claude-code` case, whose bin is `claude.exe`) runs that
+   `.exe`. The first hit is final, so an unreadable or malformed shim in an
+   earlier directory is reported rather than skipped.
+
+**Windows limits** (honest scope, ADR-0001): only the npm cmd-shim layout is
+read (every layout cmd-shim 2.x to 9.x writes); a shim that runs another
+program, passes shebang arguments or sets variables is refused, as are `.ps1`,
+`.bat` and extensionless shims; the companion's own Node replaces a
+`node.exe` installed beside the shim. A cancel ends the process the companion
+started: for the node `codex` shim that is the Node launcher, and the native
+`codex` it starts may outlive it. Windows is verified by tests that simulate
+the platform, `PATH` and a shim tree in process; there is no Windows CI job.
+When a launch fails, set the variable to the CLI's executable.
+
+An override path is normalized before it is checked, as `path.resolve` does
+(`a/../b` is `b`, without asking whether `a` exists or is a link), and an
+override or shim target that is a JavaScript file the user may not read
+passes the check and fails in Node, reported as a peer run error (exit 1)
+rather than `peer_cli_not_found`; both take a hand-made path or file.
+
+An override name without a separator is looked up in the `PATH` entries
+only, each resolved to an absolute path: unlike a shell, an empty `PATH`
+entry does not stand for the working directory. The companions' own unit
+tests stub `spawn` and resolve the peer the Linux and macOS way; the Windows
+lookup is held by `tests/peer-cli.test.mjs`, which simulates it.
+
 ## Tests
 
 ```bash
 # Hermetic unit tests (mocked spawn, no network, fast)
 node --test companions/tests/claude-companion.test.mjs
 node --test companions/tests/codex-companion.test.mjs
+node --test companions/tests/peer-cli.test.mjs
 
 # Env-gated smoke tests against real peer CLIs (require auth + network)
 COMPANIONS_SMOKE=1 node --test companions/tests/claude-companion.smoke.mjs

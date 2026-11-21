@@ -125,6 +125,10 @@ describe('companions contract parity', () => {
         invocation: { stdout: '', stderr: '', exitCode: null, signal: null, spawnError: Object.assign(new Error('missing'), { code: 'ENOENT' }) },
       },
       {
+        name: 'unresolvable peer CLI',
+        invocation: { stdout: '', stderr: '', exitCode: null, signal: null, spawnError: null, resolutionError: { ok: false, kind: 'peer_cli_not_found', message: 'm', detail: 'd' } },
+      },
+      {
         name: 'signal',
         invocation: { stdout: '', stderr: '', exitCode: null, signal: 'SIGTERM', spawnError: null },
       },

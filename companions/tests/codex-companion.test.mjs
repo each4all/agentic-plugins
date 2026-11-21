@@ -40,6 +40,14 @@ import {
 import * as companionModule from '../codex-companion.mjs';
 import { fileURLToPath } from 'node:url';
 import { defineNestingGuardSuite } from './nesting-guard.suite.mjs';
+import { definePeerLaunchSuite } from './peer-launch.suite.mjs';
+
+// The operator's peer-CLI overrides (companions/peer-cli.mjs) would make every
+// test here that stubs spawn resolve the operator's executable instead, or
+// fail before the stub on a path that does not exist. `npm test` scrubs them
+// (scripts/lib/session-env.mjs); a direct `node --test` run does not.
+delete process.env.CODEX_BIN;
+delete process.env.CLAUDE_BIN;
 import { defineExitAfterFlushSuite, defineLargeEnvelopeRegression } from './exit-flush.suite.mjs';
 
 // --- helpers ---------------------------------------------------------------
@@ -503,7 +511,8 @@ describe('§ 5.3 — classifyResult', () => {
   });
 
   it('spawnError other code → companion_error / 3 / peer_invocation_error', () => {
-    const err = Object.assign(new Error('weird'), { code: 'EPERM' });
+    // EPERM is not "other": a Windows execute ACL denial, peer_cli_not_found.
+    const err = Object.assign(new Error('weird'), { code: 'EMFILE' });
     const r = classifyResult({ ...baseInvocation, spawnError: err });
     assert.equal(r.error.kind, ERROR_KIND.INVOKE);
   });
@@ -944,4 +953,14 @@ describe('contract version export', () => {
   it('exports CONTRACT_VERSION matching contract.md', () => {
     assert.equal(CONTRACT_VERSION, '0.1.1');
   });
+});
+
+// --- peer CLI launch (shared suite, both companions) ----------------------
+
+definePeerLaunchSuite({
+  label: 'codex-companion',
+  mod: companionModule,
+  scriptPath: fileURLToPath(new URL('../codex-companion.mjs', import.meta.url)),
+  peerBin: PEER_CLI_BIN,
+  overrideEnv: 'CODEX_BIN',
 });
