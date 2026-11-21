@@ -43,12 +43,92 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
 import readline from 'node:readline';
 
+import { readEnv, resolvePeerCli, showValue } from '../../../scripts/lib/peer-cli.mjs';
 import { reportSaysFinished, STEP_REPORT_SCHEMA } from './policy.mjs';
 import { createStallDetector, roundedSummary, stalledDetail } from './stall.mjs';
 
-export const claudeBin = (env = process.env) => env.AUTOPILOT_CLAUDE_BIN || 'claude';
+// How the run starts Claude Code (C180): the driver's preflight resolves it
+// once and every worker of the run spawns that launch, so the CLI the
+// preflight checked is the CLI each step runs. Resolution is the companions'
+// (../../../scripts/lib/peer-cli.mjs, a copy of companions/peer-cli.mjs under
+// a drift check): AUTOPILOT_CLAUDE_BIN first, then CLAUDE_BIN, each a path or
+// a name looked up on PATH; with neither, the bare `claude` off Windows, and
+// on Windows claude.exe or the npm claude.cmd shim on PATH, never through a
+// shell; the bare name is pinned to its absolute path at the run's start. A launch is `{ ok: true, command, argsPrefix, source, shim, variable }`,
+// spawned as spawn(command, [...argsPrefix, ...args]); a failure is
+// `{ ok: false, variable, reason }`, whose reason names the variable to set.
+export const AUTOPILOT_CLAUDE_ENV = 'AUTOPILOT_CLAUDE_BIN';
+
+export function resolveClaudeLaunch(env = process.env, {
+  platform = process.platform, cwd = process.cwd(), execPath = process.execPath, fs: fsSeam,
+} = {}) {
+  const windows = platform === 'win32';
+  const own = readEnv(env, AUTOPILOT_CLAUDE_ENV, windows);
+  const viaOwn = own !== undefined && own !== '';
+  // AUTOPILOT_CLAUDE_BIN keeps precedence: it stands in for CLAUDE_BIN, every
+  // spelling of which (Windows names are case-insensitive) it replaces.
+  const shared = readEnv(env, 'CLAUDE_BIN', windows);
+  // With no override off Windows the resolver hands back the bare name, which
+  // spawn would look up afresh at every start: the run pins it instead, as
+  // the absolute path PATH gives now, so its workers run the claude the
+  // preflight probed and a claude removed since fails the step rather than
+  // falling through to the next one on PATH. Where the resolver's search
+  // finds none (it skips an empty PATH entry and needs PATH set, where
+  // execvp does not) the bare name stays.
+  const pinBare = !viaOwn && !windows && (shared === undefined || shared === '');
+  const withoutShared = () => Object.fromEntries(Object.entries(env).filter(([k]) => k.toUpperCase() !== 'CLAUDE_BIN'));
+  const lookup = viaOwn ? { ...withoutShared(), CLAUDE_BIN: own }
+    : pinBare ? { ...withoutShared(), CLAUDE_BIN: 'claude' }
+      : env;
+  const variable = viaOwn ? AUTOPILOT_CLAUDE_ENV : 'CLAUDE_BIN';
+  const r = resolvePeerCli('claude', { env: lookup, platform, cwd, execPath, ...(fsSeam ? { fs: fsSeam } : {}) });
+  if (!r.ok) {
+    // A pin that finds nothing leaves the bare name, as before: spawn's own
+    // search (an empty PATH entry, an unset PATH) may still find claude, and
+    // the preflight's probe says whether it did.
+    if (pinBare) return { ok: true, command: 'claude', argsPrefix: [], source: 'bare', shim: null, variable };
+    // The resolver names CLAUDE_BIN; the variable the operator set is named in
+    // the two places the resolver puts it (its label, opening the message, and
+    // its last advice), never inside a path the message quotes.
+    return { ok: false, variable, reason: viaOwn ? renamed(r.message) : r.message, detail: r.detail ?? null };
+  }
+  return { ok: true, command: r.command, argsPrefix: [...r.argsPrefix], source: pinBare ? 'path' : r.source, shim: r.shim ?? null, variable };
+}
+
+function renamed(message) {
+  const label = 'peer CLI "claude": CLAUDE_BIN=';
+  let out = message.startsWith(label) ? `peer CLI "claude": ${AUTOPILOT_CLAUDE_ENV}=${message.slice(label.length)}` : message;
+  const advice = out.lastIndexOf('; set CLAUDE_BIN ');
+  if (advice >= 0) out = `${out.slice(0, advice)}; set ${AUTOPILOT_CLAUDE_ENV} ${out.slice(advice + '; set CLAUDE_BIN '.length)}`;
+  return out;
+}
+
+// The launch as one line, for a message.
+export const launchText = (launch) => [launch.command, ...launch.argsPrefix].map((a) => showValue(a)).join(' ');
+
+/**
+ * Why a launch resolved at the run's start can no longer run, or null: a file
+ * it names (its command, or the script a node shim or JavaScript override
+ * runs) is gone or is no longer a file. A bare name is spawn's to find. The
+ * step that finds it fails with this reason and starts no process.
+ */
+export function launchGone(launch, { statSync = fs.statSync } = {}) {
+  if (launch.source === 'bare') return null;
+  for (const file of [launch.command, ...launch.argsPrefix].filter((a) => path.isAbsolute(a) || path.win32.isAbsolute(a))) {
+    let st;
+    try { st = statSync(file); } catch (err) {
+      const why = err?.code === 'ENOENT' ? 'no longer exists' : `cannot be read (${showValue(err?.message ?? err)})`;
+      return `the Claude Code CLI the run resolved at its start (${launchText(launch)}) cannot start: ${showValue(file)} ${why}; restore it, or set ${launch.variable} to the claude executable, then run the autopilot again`;
+    }
+    if (!st.isFile()) {
+      return `the Claude Code CLI the run resolved at its start (${launchText(launch)}) cannot start: ${showValue(file)} is no longer a file; restore it, or set ${launch.variable} to the claude executable, then run the autopilot again`;
+    }
+  }
+  return null;
+}
 
 // ADR-0063 D5. `Task` is the subagent tool's name in a `-p` worker (2.1.281);
 // interactive sessions call it `Agent`. `Monitor` lets a worker wait on its
@@ -345,6 +425,23 @@ export function terminateGroupsSync(pgids, { graceMs = KILL_GRACE_MS } = {}) {
   for (const t of left) { try { process.kill(t, 'SIGKILL'); } catch { /* emptied meanwhile */ } }
 }
 
+// A worker that never started: its result is a spawn error's (no process,
+// no cost reported, so the driver charges the whole reservation), and the
+// policy halts the step with the reason ("the worker could not start: …").
+function unstartedWorker(sessionId, reason) {
+  return {
+    sessionId, pid: null, begin: () => {}, abort: () => {},
+    // No session ever existed: none for a halt to offer to resume.
+    done: Promise.resolve({
+      sessionId: null, exitCode: null, signal: null, spawnError: reason, aborted: null, abortReason: null, abortDetail: null,
+      timeoutSec: null, lastResult: null, report: null, costUsd: null, turns: 0, model: null, plugins: null,
+      peakCtx: 0, contextWindow: null, peakPct: null, denials: [], stderrTail: '', rawTruncated: false, rateLimit: null,
+      reportEof: false, closedOnReport: false, abandonedBackground: [], reportTeardown: null,
+      groupTeardown: 'empty', pgid: null, stall: null,
+    }),
+  };
+}
+
 /**
  * Start one worker. Returns { sessionId, pid, begin(), abort(reason), done }.
  * The worker gets its prompt only from `begin()`: the driver records the
@@ -370,6 +467,8 @@ export function terminateGroupsSync(pgids, { graceMs = KILL_GRACE_MS } = {}) {
  *                         detector's mode, the run's sampler (stall-sampler.mjs) and
  *                         the detector's options (stall.mjs, a test seam)
  * @param o.onStall        (record) => void: each verdict change, as it comes
+ * @param o.claudeLaunch   the run's resolved launch (resolveClaudeLaunch), from the
+ *                         driver's preflight; null = resolve it here
  */
 export function startWorker(o) {
   const env = o.env ?? process.env;
@@ -383,10 +482,20 @@ export function startWorker(o) {
   });
   // Everything that can fail before the worker runs is done before it starts.
   const raw = fs.openSync(o.rawPath, 'a');
+  // C180 — the launch the driver's preflight resolved and checked, the same
+  // for every step of the run; resolved here only for a caller that passes
+  // none. One that cannot run any more fails the step, with its reason, as a
+  // spawn error does, and starts nothing.
+  const launch = o.claudeLaunch ?? resolveClaudeLaunch(env);
+  const unrunnable = launch.ok ? launchGone(launch) : launch.reason;
+  if (unrunnable) {
+    try { fs.closeSync(raw); } catch { /* closed */ }
+    return unstartedWorker(sessionId, unrunnable);
+  }
   const workerEnvironment = workerEnv(env, { runId: o.runId, seq: o.seq, roots: o.roots, remotes: o.remotes ?? {}, stateBase: o.stateBase ?? null, autopilotToken: o.autopilotToken ?? null, verifyBaseline: o.verifyBaseline ?? null, tmpDir: o.tmpDir ?? null });
   let child;
   try {
-    child = spawn(claudeBin(env), args, {
+    child = spawn(launch.command, [...launch.argsPrefix, ...args], {
       cwd: o.cwd, env: workerEnvironment, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32',
     });
   } catch (err) {

@@ -76,23 +76,25 @@ describe('orchestrator peer snapshot and CLI exit libraries are the persona-pipe
     });
   }
 
-  // C180: runtime resolves claude and codex with the companions' launch
-  // resolver, kept as a copy so runtime runs with the companions plugin absent
-  // or older (a plugin may not import another's script, ADR-0010 §5).
-  it('plugins/runtime/scripts/lib/peer-cli.mjs is its notice, then companions/peer-cli.mjs byte for byte (C180)', () => {
-    const rel = 'plugins/runtime/scripts/lib/peer-cli.mjs';
-    const source = readFileSync(join(REPO_ROOT, 'companions/peer-cli.mjs'));
-    const copy = readFileSync(join(REPO_ROOT, rel));
-    const head = Buffer.from([
-      '// COPIED from companions — do not edit this copy.',
-      '// Source: companions/peer-cli.mjs, byte for byte below these',
-      '// three lines; tests/scripts/test-orchestrator-peer-snapshot-parity.mjs checks it.',
-      '',
-    ].join('\n'), 'utf8');
-    ok(copy.subarray(0, head.length).equals(head), `${rel}: the copy notice is missing or changed`);
-    ok(copy.subarray(head.length).equals(source),
-      `${rel} drifted from companions/peer-cli.mjs: edit the source, then copy it here under the notice`);
-  });
+  // C180: runtime resolves claude and codex, and the orchestrator's autopilot
+  // resolves claude, with the companions' launch resolver, kept as a copy so
+  // each runs with the companions plugin absent or older (a plugin may not
+  // import another's script, ADR-0010 §5).
+  for (const rel of ['plugins/runtime/scripts/lib/peer-cli.mjs', 'plugins/orchestrator/scripts/lib/peer-cli.mjs']) {
+    it(`${rel} is its notice, then companions/peer-cli.mjs byte for byte (C180)`, () => {
+      const source = readFileSync(join(REPO_ROOT, 'companions/peer-cli.mjs'));
+      const copy = readFileSync(join(REPO_ROOT, rel));
+      const head = Buffer.from([
+        '// COPIED from companions — do not edit this copy.',
+        '// Source: companions/peer-cli.mjs, byte for byte below these',
+        '// three lines; tests/scripts/test-orchestrator-peer-snapshot-parity.mjs checks it.',
+        '',
+      ].join('\n'), 'utf8');
+      ok(copy.subarray(0, head.length).equals(head), `${rel}: the copy notice is missing or changed`);
+      ok(copy.subarray(head.length).equals(source),
+        `${rel} drifted from companions/peer-cli.mjs: edit the source, then copy it here under the notice`);
+    });
+  }
 
   it('the run locks and the runner judge a process by the copy\'s one definition', async () => {
     const lib = (rel) => import(pathToFileURL(join(REPO_ROOT, 'plugins/orchestrator/scripts', rel)).href);
