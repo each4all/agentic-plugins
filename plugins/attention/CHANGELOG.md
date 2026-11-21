@@ -2,6 +2,13 @@
 
 All notable changes to the `attention` plugin are documented here.
 
+## [0.10.2](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.10.1...plugin-attention-v0.10.2) (2026-11-21)
+
+
+### Bug Fixes
+
+* **attention:** guard discover-runtime with the canonical isCliEntry ([8c0cdcc](https://github.com/each4all/agentic-plugins/commit/8c0cdccdfeecc7dd84d227875a70f4ca804c59e6))
+
 ## [0.10.1](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.10.0...plugin-attention-v0.10.1) (2026-10-16)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.4](https://github.com/each4all/agentic-plugins/compare/companions-v0.3.3...companions-v0.3.4) (2026-11-21)
+
+
+### Bug Fixes
+
+* **companions:** guard both companions and discovery with the canonical isCliEntry ([7efd64d](https://github.com/each4all/agentic-plugins/commit/7efd64d4f0c38ac299685d3740e383c425a279bc))
+
 ## [0.3.3](https://github.com/each4all/agentic-plugins/compare/companions-v0.3.2...companions-v0.3.3) (2026-10-16)
 
 

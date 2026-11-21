@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.4](https://github.com/each4all/agentic-plugins/compare/plugin-companions-v0.4.3...plugin-companions-v0.4.4) (2026-11-21)
+
+
+### Bug Fixes
+
+* **plugin/companions:** ship cli-entry.mjs beside the bundled companions ([7814327](https://github.com/each4all/agentic-plugins/commit/7814327ce0bdffe60970a30d311fc3930c2588c7))
+
 ## [0.4.3](https://github.com/each4all/agentic-plugins/compare/plugin-companions-v0.4.2...plugin-companions-v0.4.3) (2026-10-16)
 
 

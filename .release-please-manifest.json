@@ -1,11 +1,11 @@
 {
-  "companions": "0.3.3",
-  "plugins/attention": "0.10.1",
-  "plugins/companions": "0.4.3",
+  "companions": "0.3.4",
+  "plugins/attention": "0.10.2",
+  "plugins/companions": "0.4.4",
   "plugins/designer": "0.16.2",
   "plugins/engineer": "0.37.1",
   "plugins/founder": "0.17.2",
-  "plugins/image": "0.4.3",
-  "plugins/orchestrator": "0.42.0",
-  "plugins/runtime": "0.104.0"
+  "plugins/image": "0.4.4",
+  "plugins/orchestrator": "0.42.1",
+  "plugins/runtime": "0.104.1"
 }

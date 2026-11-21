@@ -2,6 +2,13 @@
 
 All notable changes to the `image` plugin are documented here.
 
+## [0.4.4](https://github.com/each4all/agentic-plugins/compare/plugin-image-v0.4.3...plugin-image-v0.4.4) (2026-11-21)
+
+
+### Bug Fixes
+
+* **image:** guard the five image CLIs with the canonical isCliEntry ([b339d59](https://github.com/each4all/agentic-plugins/commit/b339d59f888f33acf7647d523e1f91808a437662))
+
 ## [0.4.3](https://github.com/each4all/agentic-plugins/compare/plugin-image-v0.4.2...plugin-image-v0.4.3) (2026-11-13)
 
 
