@@ -11,8 +11,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/attention",
-        "ref": "plugin-attention-v0.10.1",
-        "sha": "fa2aa1aabf7146ed69c5cf8d1a917d50292bdcc0"
+        "ref": "plugin-attention-v0.10.2",
+        "sha": "aa2af53bfc8289e64b85d105c3fe66a1dafc8981"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -26,8 +26,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/companions",
-        "ref": "plugin-companions-v0.4.3",
-        "sha": "b983d33766f6b605914dfc6d7b39add5a18022bb"
+        "ref": "plugin-companions-v0.4.4",
+        "sha": "aa2af53bfc8289e64b85d105c3fe66a1dafc8981"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -86,8 +86,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/image",
-        "ref": "plugin-image-v0.4.3",
-        "sha": "40368f91adfe0e8764bd775600cfbddd575b8aa9"
+        "ref": "plugin-image-v0.4.4",
+        "sha": "aa2af53bfc8289e64b85d105c3fe66a1dafc8981"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -101,8 +101,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/orchestrator",
-        "ref": "plugin-orchestrator-v0.42.0",
-        "sha": "9dd6ed720f608850f17f5f763a149d1c87a8cc3a"
+        "ref": "plugin-orchestrator-v0.42.1",
+        "sha": "aa2af53bfc8289e64b85d105c3fe66a1dafc8981"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -116,8 +116,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/runtime",
-        "ref": "plugin-runtime-v0.104.0",
-        "sha": "9dd6ed720f608850f17f5f763a149d1c87a8cc3a"
+        "ref": "plugin-runtime-v0.104.1",
+        "sha": "aa2af53bfc8289e64b85d105c3fe66a1dafc8981"
       },
       "policy": {
         "installation": "AVAILABLE",
