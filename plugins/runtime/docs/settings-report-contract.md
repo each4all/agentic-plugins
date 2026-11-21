@@ -123,7 +123,7 @@ Line references below are anchors observed at decision time
   `!(apply || executePluginManagement || executePluginCleanup || attestCodexHookReview)`).
   Evidence collection never affects `dry_run`.
 
-## 3. Report schema contract (`runtime-settings-1.28`)
+## 3. Report schema contract (`runtime-settings-1.29`)
 
 `SETTINGS_SCHEMA_VERSION` bumped `runtime-settings-1.16` → `runtime-settings-1.17`
 for the discriminator below, then `runtime-settings-1.17` →
@@ -194,6 +194,19 @@ the readiness **status** exactly like `session_readiness_warnings`).
 Same observed-current semantics and the same additive-section erratum
 scope (1.23 `entry_readiness` appends its own text block in both
 scopes).
+`runtime-settings-1.28` → `runtime-settings-1.29` (additive, C180), with
+`runtime-settings-execution-artifact-1.3` → `-1.4`: every plugin-management and
+cleanup plan with an argv gains `launch`, how its host CLI starts (`command`,
+the resolved executable, and `args_prefix`), or null when the CLI could not be
+resolved, beside the logical `command` and `argv` the owner is shown; a plan of
+a host whose CLI could not be resolved is `blocked` with the reason, which
+names `CLAUDE_BIN` or `CODEX_BIN`. Each `planned_actions` entry, and so the
+§1.6 plan hash, gains `launch` as its last key: an override or a Windows shim
+target that changes between the presented plan and its execution changes the
+hash, and the executor refuses. Execution spawns the launch the plan recorded.
+The hash of an unchanged plan differs from a 1.28 one, so a hash presented by
+an older runtime is refused once and re-presented (plugins/runtime/README.md
+§ Host CLI resolution and Windows).
 `runtime-settings-1.27` → `runtime-settings-1.28` (additive, R2): a
 plugin-management or cleanup `result` gains `child_running` and `child_pid`.
 The CLI now exits once its report has flushed instead of waiting for every
@@ -253,7 +266,7 @@ with the text renderer appending `(form=…)` to the read-check line, until
 The execution artifact
 carries the same hash plus the `planned_actions`/`journal[]` write-ahead fields, and
 the same additive `codex_hook_review` canonical fields,
-under its own `runtime-settings-execution-artifact-1.3` schema
+under its own `runtime-settings-execution-artifact-1.4` schema
 ([machine-bootstrap-contract.md §1.5/§1.6/§8.2](machine-bootstrap-contract.md)). The
 discriminator exists in **both** modes — a narrowed report must never be
 distinguishable only by what it lacks:
@@ -363,8 +376,8 @@ distinguishable only by what it lacks:
    output byte-compatible (modulo nothing), JSON delta limited to the §3 keys.
 3. Renderer guards: `summarizeSettings` and `formatText` on a narrowed report
    (no throw, qualified output, explicit not-evaluated lines).
-4. Schema-version lockstep: the `runtime-settings-1.28` report constant and the
-   `runtime-settings-execution-artifact-1.3` execution-artifact constant, and the
+4. Schema-version lockstep: the `runtime-settings-1.29` report constant and the
+   `runtime-settings-execution-artifact-1.4` execution-artifact constant, and the
    exact-version assertions that pin each (`test-settings-probe-boundary.mjs` pins
    both constants; `test-settings.mjs` pins the report version and the artifact
    version), updated together.

@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { evaluateCodexHookStateGate, formatText, parseArgs, projectCodexHookStateForProbe, runDoctor, RUNTIME_VERSION, PLUGIN_NAMES, resolveInstalledEngineerRoot } from '../../plugins/runtime/scripts/doctor.mjs';
+import { evaluateCodexHookStateGate, formatText, parseArgs, projectCodexHookStateForProbe, runCommand, runDoctor, RUNTIME_VERSION, PLUGIN_NAMES, resolveInstalledEngineerRoot } from '../../plugins/runtime/scripts/doctor.mjs';
 import { recomputeHookAttestation } from '../../plugins/runtime/scripts/lib/completion-reducer.mjs';
 import { makeDefValidator } from '../../plugins/runtime/scripts/lib/schema-validate.mjs';
 import { buildClone, installFromClone, pinned, writeCatalog } from './_codex-pinned-fixture.mjs';
@@ -1934,6 +1934,32 @@ describe('runtime doctor', () => {
     const serialized = JSON.stringify(report);
     ok(!serialized.includes('person@example.com'), 'email must be redacted from sandbox-limited auth JSON');
     ok(!serialized.includes('11111111-2222-3333-4444-555555555555'), 'org id must be redacted from sandbox-limited auth JSON');
+  });
+
+  // C180: a host CLI that cannot be resolved (here CODEX_BIN names no file)
+  // spawns nothing, and doctor names the variable to set instead of a bare
+  // "unavailable" with the proofs skipped behind it.
+  it('names the variable to set when a host CLI cannot be resolved (C180)', async () => {
+    const root = newTmp('runtime-doctor-unresolved-cli-');
+    const home = newTmp('runtime-doctor-home-');
+    await seedRepo(root);
+    const missing = join(home, 'no-such-codex');
+    const env = { ...process.env, CODEX_BIN: missing };
+    const claude = fakeRunner(defaultRuntimeProbeMap());
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      env,
+      runner: (command, args, options) => (command === 'codex' ? runCommand(command, args, options) : claude(command, args, options)),
+    });
+    strictEqual(report.clis.codex.status, 'unavailable');
+    strictEqual(report.clis.codex.launch_failure.variable, 'CODEX_BIN');
+    ok(report.clis.codex.launch_failure.reason.includes(`CODEX_BIN=${missing} names no file`), report.clis.codex.launch_failure.reason);
+    strictEqual(report.clis.claude.launch_failure, null, 'a CLI that resolved carries no failure');
+    ok(report.readiness.claude_to_codex.blockers.some((b) => b.startsWith('codex CLI unavailable: ') && b.includes('CODEX_BIN')),
+      JSON.stringify(report.readiness.claude_to_codex.blockers));
+    strictEqual(report.readiness.claude_to_codex.status, 'unavailable', 'still classified unavailable');
+    ok(formatText(report).includes(`cannot start: peer CLI "codex": CODEX_BIN=${missing} names no file`));
   });
 
   it('reports stale retired Claude plugin entries as host parity issues', async () => {
