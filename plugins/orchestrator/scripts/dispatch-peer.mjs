@@ -52,7 +52,7 @@ import { join, isAbsolute, resolve, dirname, relative, basename } from 'node:pat
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { constants as osConstants, homedir, tmpdir } from 'node:os';
 import { recordPendingEnsemble } from './state.mjs';
-import { absorbOutputErrors, exitAfterFlush } from './lib/cli-entry.mjs';
+import { absorbOutputErrors, exitAfterFlush, isCliEntry } from './lib/cli-entry.mjs';
 import { EVIDENCE_BOUNDARY, withEvidenceBoundaryBytes } from './lib/evidence-boundary.mjs';
 import { createRunCancellation, fingerprintForPid, stopProcessGroup } from './lib/process-identity.mjs';
 import {
@@ -1009,7 +1009,7 @@ async function cliRun(argv) {
 
 // Run as a CLI only when this file is the entry point. A refusal dispatchPeer
 // throws is reported as the uncaught error was, with its stack, and exits 1.
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isCliEntry(import.meta.url)) {
   absorbOutputErrors();
   let code;
   try {

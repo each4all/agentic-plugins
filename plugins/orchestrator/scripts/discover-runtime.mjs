@@ -53,7 +53,7 @@ import { join, isAbsolute, resolve, dirname, relative, basename } from 'node:pat
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 
-import { absorbOutputErrors, exitAfterFlush } from './lib/cli-entry.mjs';
+import { absorbOutputErrors, exitAfterFlush, isCliEntry } from './lib/cli-entry.mjs';
 
 const ENV_OVERRIDE = 'AGENTIC_RUNTIME_ROOT';
 
@@ -491,16 +491,7 @@ async function cliMain(argv) {
 // escaping (a space, '#', non-ASCII), still runs (ADR-0061 S2). It exits once,
 // after the output has drained (the owner's discussion-2 decision R2); a
 // rejection is reported with its stack, as an unhandled one was, and exits 1.
-function invokedAsCli() {
-  if (!process.argv[1]) return false;
-  try {
-    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    return false;
-  }
-}
-
-if (invokedAsCli()) {
+if (isCliEntry(import.meta.url)) {
   absorbOutputErrors();
   (async () => {
     let code;
