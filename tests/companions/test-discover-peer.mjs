@@ -282,6 +282,34 @@ describe('discover-peer.mjs — a companion needs the siblings it imports (C180,
     ok(got.reason.includes(join(cache, '1.0.0', 'scripts', 'cli-entry.mjs')), got.reason);
   });
 
+  // C180 part 1: the real companions also import peer-cli.mjs, so a directory
+  // assembled with cli-entry.mjs alone cannot load them either.
+  const REAL_CODEX = readFileSync(join(CANONICAL, '..', 'codex-companion.mjs'), 'utf8');
+  const REAL_CLAUDE = readFileSync(join(CANONICAL, '..', 'claude-companion.mjs'), 'utf8');
+
+  it('an override directory of the current companions with cli-entry.mjs but no peer-cli.mjs is refused, naming it', async (t) => {
+    const root = tmpDir(t, 'dp-launcher-');
+    writeFileSync(join(root, 'codex-companion.mjs'), REAL_CODEX);
+    writeFileSync(join(root, 'claude-companion.mjs'), REAL_CLAUDE);
+    writeFileSync(join(root, 'cli-entry.mjs'), 'export const isCliEntry = () => false;\n');
+    const got = await discoverPeerCompanion({ peer: 'codex', env: { AGENTIC_COMPANIONS_ROOT: root }, home: root });
+    strictEqual(got.ok, false);
+    ok(got.reason.includes(join(root, 'peer-cli.mjs')), got.reason);
+    writeFileSync(join(root, 'peer-cli.mjs'), 'export const PEER_CLI_OVERRIDE_ENV = {}; export const resolvePeerCli = () => null; export const showValue = String;\n');
+    strictEqual((await discoverPeerCompanion({ peer: 'codex', env: { AGENTIC_COMPANIONS_ROOT: root }, home: root })).ok, true);
+  });
+
+  it('a newest install of the current companions missing peer-cli.mjs is skipped for an older complete one', async (t) => {
+    const home = tmpDir(t, 'dp-launcher-cache-');
+    const cache = claudeCache(home);
+    await plantCompanions(cache, '0.9.0', { manifestRel: CLAUDE_MANIFEST, body: IMPORTING_BODY });
+    writeFileSync(join(cache, '0.9.0', 'scripts', 'cli-entry.mjs'), 'export const isCliEntry = () => false;\n');
+    await plantCompanions(cache, '1.0.0', { manifestRel: CLAUDE_MANIFEST, body: REAL_CODEX });
+    writeFileSync(join(cache, '1.0.0', 'scripts', 'cli-entry.mjs'), 'export const isCliEntry = () => false;\n');
+    const got = await discoverPeerCompanion({ peer: 'codex', env: {}, home });
+    deepStrictEqual(got, { ok: true, path: join(cache, '0.9.0', 'scripts', 'codex-companion.mjs'), source: 'cache-glob', version: '0.9.0' });
+  });
+
   it('a companion reached through a symlink needs cli-entry.mjs beside its target, where Node resolves it', async (t) => {
     const base = tmpDir(t, 'dp-link-');
     const real = join(base, 'real');

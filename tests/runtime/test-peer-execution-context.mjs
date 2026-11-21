@@ -266,9 +266,11 @@ describe('peer execution context (filesystem-only seam)', () => {
     // path spelled through a symlink ran nothing. Each case runs the selected
     // companion with no subcommand: the real CLI answers with a usage error
     // (exit 2), a silent no-op would exit 0 with no output. The companion
-    // imports its sibling cli-entry.mjs, which each fixture carries beside it.
+    // imports its siblings cli-entry.mjs and peer-cli.mjs, which each fixture
+    // carries beside it.
     const REAL_COMPANION = join(REPO_ROOT, 'companions', 'claude-companion.mjs');
     const ENTRY_HELPER = join(REPO_ROOT, 'companions', 'cli-entry.mjs');
+    const LAUNCH_HELPER = join(REPO_ROOT, 'companions', 'peer-cli.mjs');
     const runs = (script) => spawnSync(process.execPath, [script], { encoding: 'utf8' });
 
     it('under a symlinked CODEX_HOME the selected companion is canonical and actually runs', async () => {
@@ -283,6 +285,7 @@ describe('peer execution context (filesystem-only seam)', () => {
       await writeFile(join(versionRoot, '.codex-plugin', 'plugin.json'), JSON.stringify({ name: 'companions', version: '0.5.0' }));
       await copyFile(REAL_COMPANION, join(versionRoot, 'scripts', 'claude-companion.mjs'));
       await copyFile(ENTRY_HELPER, join(versionRoot, 'scripts', 'cli-entry.mjs'));
+      await copyFile(LAUNCH_HELPER, join(versionRoot, 'scripts', 'peer-cli.mjs'));
 
       const { companions } = await resolvePeerExecutionContext({ repoRoot, homeDir, codexHome: link });
       const selected = companions.directions.codex_to_claude.selected.path;
@@ -300,6 +303,7 @@ describe('peer execution context (filesystem-only seam)', () => {
       const realDir = await canonicalTmp('peer-ctx-override-real-');
       await copyFile(REAL_COMPANION, join(realDir, 'claude-companion.mjs'));
       await copyFile(ENTRY_HELPER, join(realDir, 'cli-entry.mjs'));
+      await copyFile(LAUNCH_HELPER, join(realDir, 'peer-cli.mjs'));
       const link = join(homeDir, 'companions-link');
       await symlink(realDir, link);
       const { companions } = await resolvePeerExecutionContext({ repoRoot, homeDir, companionsOverride: link });
@@ -317,6 +321,11 @@ describe('peer execution context (filesystem-only seam)', () => {
       strictEqual(missing.candidates[0].status, 'blocked');
       strictEqual(missing.candidates[0].reason, 'imports ./cli-entry.mjs, which is missing beside it');
       await copyFile(ENTRY_HELPER, join(dir, 'cli-entry.mjs'));
+      // C180 part 1: the launch resolver is a sibling too.
+      const noLauncher = (await resolvePeerExecutionContext({ repoRoot, homeDir, companionsOverride: dir })).companions.directions.codex_to_claude;
+      strictEqual(noLauncher.selected, null);
+      strictEqual(noLauncher.candidates[0].reason, 'imports ./peer-cli.mjs, which is missing beside it');
+      await copyFile(LAUNCH_HELPER, join(dir, 'peer-cli.mjs'));
       const whole = (await resolvePeerExecutionContext({ repoRoot, homeDir, companionsOverride: dir })).companions.directions.codex_to_claude;
       strictEqual(whole.selected.path, join(dir, 'claude-companion.mjs'));
     });
