@@ -231,7 +231,7 @@ describe('cleaning up after a dead run (ADR-0067 Decision 6, Locks)', () => {
       await t.deadRun(DEAD);
       const stuck = await t.peer('plan-verify-20261009T010001Z-bbbb01', { names: DEAD, live: true });
       const h = stuck.handle();
-      writeFileSync(join(t.work, '.agentic-plugins/state/engineer/peer-runs', stuck.id, 'handle.json'), JSON.stringify({ ...h, process_fingerprint: { ...h.process_fingerprint, ...(h.process_fingerprint.lstart ? { lstart: 'Thu Jan  1 00:00:00 1970' } : { starttime: '1' }) } }));
+      writeFileSync(join(t.work, '.agentic-plugins/state/engineer/peer-runs', stuck.id, 'handle.json'), JSON.stringify({ ...h, process_fingerprint: { ...h.process_fingerprint, ...(h.process_fingerprint.lstart ? { lstart: 'Thu Jan  1 00:00:00 1970', pinned: { lstart: 'Thu Jan  1 00:00:00 1970', command: '' } } : { starttime: '1' }) } }));
 
       const { results, lines, of } = await t.cleanup();
       deepStrictEqual(results.map((r) => r.run_id).sort(), [DEAD, grouped, liveRun, lost].sort(), lines.join('\n'));
@@ -290,7 +290,7 @@ describe('cleaning up after a dead run (ADR-0067 Decision 6, Locks)', () => {
       const reused = 'autopilot-20261009T010000Z-2e05ed';
       const reusedDir = await t.deadRun(reused, { record: false, steps: [] });
       const self = await L.processFingerprint(process.pid);
-      const older = self.kind === 'linux_proc_starttime' ? { ...self, starttime: '1' } : { ...self, lstart: 'Thu Jan  1 00:00:00 1970' };
+      const older = self.kind === 'linux_proc_starttime' ? { ...self, starttime: '1' } : { ...self, lstart: 'Thu Jan  1 00:00:00 1970', pinned: { lstart: 'Thu Jan  1 00:00:00 1970', command: '' } };
       L.writeOpenRun(t.mainRoot, { runId: reused, macroId: t.fx.macroId, checkout: t.work, runDir: reusedDir, pid: process.pid, fingerprint: older, startedAt: t.t0 });
 
       const { lines, of } = await t.cleanup();

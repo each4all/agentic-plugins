@@ -615,7 +615,7 @@ describe('orchestrator: peer-runner — a run its host killed before its cleanup
       const stray = await leaderlessGroup(t, dir);
       // A live supervisor read under another fingerprint (C141's locale, an
       // incomplete record): `differ`, which is no proof it is gone.
-      const differ = { pid: process.pid, fingerprint: { ...me.fingerprint, lstart: 'Thu Jan  1 00:00:00 1970', starttime: '1' } };
+      const differ = { pid: process.pid, fingerprint: { ...me.fingerprint, lstart: 'Thu Jan  1 00:00:00 1970', pinned: { lstart: 'Thu Jan  1 00:00:00 1970', command: '' }, starttime: '1' } };
       // The handle and the owner record naming one companion, as the runner
       // writes them: `leader`, or `stray`.
       const asLeader = (h) => { h.pid = leader.pid; h.pgid = leader.pid; h.peer_process = { pid: leader.pid, pgid: leader.pid }; h.process_fingerprint = { kind: 'none' }; };

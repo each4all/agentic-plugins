@@ -17,6 +17,10 @@ retention), both 2026-11-10; each item an amendment changed carries its dated
 marker. Decision 3's stall detector ships log-only: switching it on is the
 owner's review, not yet recorded (Decision 3, item 8).
 
+Decision 3, item 6, its clause that both macOS fingerprint readers compare a
+start read in UTC (2026-11-22, C141): Proposed, as it rests on ADR-0023 §4's
+Proposed amendment of that date.
+
 On its acceptance it amended
 [ADR-0063](0063-autopilot-fresh-session-driver.md) and
 [ADR-0067](0067-autopilot-worktree-lanes-and-proposals.md) at the places the
@@ -211,7 +215,9 @@ node driver (its socket format is undocumented), and `--notify-local` stays.
   (`persona-pipeline/files/scripts/lib/process-identity.mjs:34-44`; docket
   C141, recorded outside this repository); the run locks' fingerprint
   already pins `LC_ALL=C` (`plugins/orchestrator/scripts/lib/run-locks.mjs:100-106`,
-  `:125-127`).
+  `:125-127`). *(2026-11-22, Proposed: both readers would compare a start
+  read in the C locale and UTC under C141; Decision 3, item 6, holds its
+  status.)*
 - **The run's records** are its run directory (`run.json`, `steps.jsonl`,
   `lanes.jsonl`, `landing.jsonl`, `halt.json`, the worker streams) in the
   launching checkout, and the macro-scoped files under the main worktree
@@ -1669,12 +1675,12 @@ clock stays exactly as it is.
    a start time that makes its identity; and output that does not depend on
    the caller's locale or environment. Linux reads `/proc/<pid>/stat` (procps
    `ps` prints whole seconds, too coarse). macOS reads `ps` with its locale
-   pinned to C, as the run locks already do for their fingerprint
-   (`plugins/orchestrator/scripts/lib/run-locks.mjs:100-106`, `:125-127`),
-   not the persona's reader, whose `ps` start time follows the caller's
-   locale (`persona-pipeline/files/scripts/lib/process-identity.mjs:34-44`,
-   docket C141, which stays its own item). The sample interval is 10 s, as
-   measured.
+   pinned to C, as the run locks do for their fingerprint
+   (`plugins/orchestrator/scripts/lib/run-locks.mjs:102-109`, `:143-149`) and
+   the persona's reader does for its own
+   (`persona-pipeline/files/scripts/lib/process-identity.mjs:19`, `:76-98`),
+   both of which compare a start read in UTC as well (C141). The sample interval
+   is 10 s, as measured. *Proposed 2026-11-22 (C141), resting on ADR-0023 §4's Proposed amendment: [history](history/0068-autopilot-lanes-that-keep-going.md#amendment-2026-11-22--the-persona-reader-pins-its-locale-c141).*
 
 7. **Log-only, which ships first.** The detector records and never acts.
    - Each verdict change is a `stall` line in `steps.jsonl` and an event

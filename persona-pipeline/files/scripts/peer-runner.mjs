@@ -53,12 +53,14 @@ import { withEvidenceBoundaryBytes } from './lib/evidence-boundary.mjs';
 import { capabilityOn, personaName, personaOrRefuse, stateDirRel } from './lib/persona.mjs';
 import {
   createRunCancellation,
+  fingerprintComparison,
   fingerprintForPid,
   fingerprintsMatch,
   identityState,
   isGroupAlive,
   isProcessAlive,
   stopProcessGroup,
+  supervisorUnchanged,
 } from './lib/process-identity.mjs';
 // How long a peer's group may outlive the companion's own exit before it is
 // stopped (C96): the close barrier waits on pipes a child may hold.
@@ -700,7 +702,11 @@ async function originalProcessAliveForHandle(handle) {
   if (handle.process_fingerprint?.kind === 'none') return true;
 
   const current = await fingerprintForPid(handle.pid);
-  return fingerprintsMatch(handle.process_fingerprint, current);
+  if (current.kind === 'none') return false;
+  // A macOS record with no reading under PS_START_ENV (an earlier writer's,
+  // C141) cannot be told from this process: it is taken for the original,
+  // never for another, so the run is not orphaned under it.
+  return fingerprintComparison(handle.process_fingerprint, current) !== 'differ';
 }
 
 // `groupOnly`: the group alone, never the pid, which may have been reused once
@@ -1253,8 +1259,10 @@ async function endCapturePending(handle) {
   if (!s?.identity || typeof s.end_tree === 'string' || s.end_tree_reason) return false;
   const supervisor = handleSupervisor(handle);
   if (!supervisor || supervisor.malformed || !(await isProcessAlive(supervisor.pid))) return false;
+  // The supervisor is unchanged, as an earlier runner judged it, but for a
+  // macOS reading's locale and time zone (C141).
   try {
-    return JSON.stringify(await supervisorFingerprint(supervisor.pid)) === JSON.stringify(supervisor.fingerprint);
+    return supervisorUnchanged(supervisor.fingerprint, await supervisorFingerprint(supervisor.pid));
   } catch {
     return false;
   }

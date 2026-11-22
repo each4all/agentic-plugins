@@ -526,7 +526,7 @@ for (const persona of personasFor('scripts/lib/peer-snapshot.mjs')) {
         const top = makeDirtyRepo(dir);
         const snap = await lib.createPeerSnapshot({ cwd: top, persona, env });
         editOwner(snap, (o) => {
-          o.supervisor.fingerprint = { ...o.supervisor.fingerprint, lstart: 'Thu Jan  1 00:00:00 1970', starttime: '1' };
+          o.supervisor.fingerprint = { ...o.supervisor.fingerprint, lstart: 'Thu Jan  1 00:00:00 1970', pinned: { lstart: 'Thu Jan  1 00:00:00 1970', command: '' }, starttime: '1' };
         });
         strictEqual(await identity.identityState(JSON.parse(readFileSync(snap.owner_path, 'utf8')).supervisor), 'differ');
         const report = await reclaim({ cwd: top, env });
@@ -770,13 +770,16 @@ for (const persona of personasFor('scripts/lib/peer-snapshot.mjs')) {
       const fingerprint = (await me()).fingerprint;
       // A fingerprint that differs as a reused pid's would, one recorded
       // incomplete, and one of a kind this platform does not take: each reads
-      // `differ` against the live process, this one.
-      for (const recorded of [{ ...fingerprint, lstart: 'Thu Jan  1 00:00:00 1970', starttime: '1' }, { kind: fingerprint.kind }, { kind: 'another_platform_kind' }]) {
+      // `differ` against the live process, this one, but a macOS record with
+      // no start read under PS_START_ENV, which proves nothing (`unknown`,
+      // C141). Either way the supervisor is not proven gone.
+      const incomplete = fingerprint.kind === 'macos_lstart_command' ? 'unknown' : 'differ';
+      for (const [recorded, state] of [[{ ...fingerprint, lstart: 'Thu Jan  1 00:00:00 1970', pinned: { lstart: 'Thu Jan  1 00:00:00 1970', command: '' }, starttime: '1' }, 'differ'], [{ kind: fingerprint.kind }, incomplete], [{ kind: 'another_platform_kind' }, 'differ']]) {
         const supervisor = { pid: process.pid, fingerprint: recorded };
-        strictEqual(await identity.identityState(supervisor), 'differ', JSON.stringify(recorded));
-        deepStrictEqual(await judge({ supervisor, companion: null }), ['unknown', 'supervisor-unknown', 'differ', null], JSON.stringify(recorded));
+        strictEqual(await identity.identityState(supervisor), state, JSON.stringify(recorded));
+        deepStrictEqual(await judge({ supervisor, companion: null }), ['unknown', 'supervisor-unknown', state, null], JSON.stringify(recorded));
         const companionPid = await deadPid();
-        deepStrictEqual(await judge({ supervisor, companion: { pid: companionPid, pgid: companionPid, fingerprint: { kind: 'none' } }, launched_at: new Date().toISOString() }), ['unknown', 'supervisor-unknown', 'differ', 'gone'], JSON.stringify(recorded));
+        deepStrictEqual(await judge({ supervisor, companion: { pid: companionPid, pgid: companionPid, fingerprint: { kind: 'none' } }, launched_at: new Date().toISOString() }), ['unknown', 'supervisor-unknown', state, 'gone'], JSON.stringify(recorded));
       }
     });
 
@@ -2570,7 +2573,7 @@ for (const persona of personasFor('scripts/lib/peer-snapshot.mjs')) {
         // A live supervisor read under another fingerprint (C141's locale, an
         // incomplete record): `differ`, which is no proof it is gone.
         const fingerprint = await identity.fingerprintForPid(process.pid);
-        const differ = { pid: process.pid, fingerprint: { ...fingerprint, lstart: 'Thu Jan  1 00:00:00 1970', starttime: '1' } };
+        const differ = { pid: process.pid, fingerprint: { ...fingerprint, lstart: 'Thu Jan  1 00:00:00 1970', pinned: { lstart: 'Thu Jan  1 00:00:00 1970', command: '' }, starttime: '1' } };
         // The handle and the owner record naming one companion, as the runner
         // writes them: `leader`, or `stray`.
         const asLeader = (h) => { h.pid = leader.pid; h.pgid = leader.pid; h.peer_process = { pid: leader.pid, pgid: leader.pid }; h.process_fingerprint = { kind: 'none' }; };
@@ -3191,7 +3194,7 @@ for (const persona of personasFor('scripts/lib/peer-snapshot.mjs')) {
         run = await hosted(t, f, snaps, 'host-8', 'deaf', ensemble);
         await hostTeardown(run, runner.readHandle);
         const fingerprint = await identity.fingerprintForPid(process.pid);
-        const differ = { pid: process.pid, fingerprint: { ...fingerprint, lstart: 'Thu Jan  1 00:00:00 1970', starttime: '1' } };
+        const differ = { pid: process.pid, fingerprint: { ...fingerprint, lstart: 'Thu Jan  1 00:00:00 1970', pinned: { lstart: 'Thu Jan  1 00:00:00 1970', command: '' }, starttime: '1' } };
         editJson(run.ownerPath, (o) => { o.supervisor = differ; });
         editJson(run.handlePath, (h) => { h.snapshot.supervisor = differ; });
         settled = await runner.settleEnsemble({ repoRoot: f.top, workflowPath, phase: 'compose', runId: 'host-8', staleGraceMs: 1 });

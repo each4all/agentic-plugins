@@ -1207,7 +1207,7 @@ export const MUTATIONS = [
   {
     id: 'H91', tests: [T_SNAP],
     prepare: inEveryCopy('lib/process-identity.mjs',
-      "['-A', '-o', 'pid=,ppid=,ruid=,stat=,lstart='], { LC_ALL: 'C', TZ: 'UTC0' });",
+      "['-A', '-o', 'pid=,ppid=,ruid=,stat=,lstart='], PS_START_ENV);",
       "['-A', '-o', 'pid=,ppid=,ruid=,stat=,lstart=']);"),
     why: "on macOS the process table is read in the caller's locale and time zone: a start time this does not read (another locale's) leaves every listing unproved, and one read in local time compares with none recorded in UTC. Only the macOS child's stub ps checks the environment, so the case survives elsewhere",
     ...(process.platform === 'darwin' ? { killed_by: /a tree is never read empty from a listing that failed/ } : { expect: 'SURVIVED' }),
@@ -1510,7 +1510,7 @@ export const MUTATIONS = [
   {
     id: 'H129', tests: [T_SNAP],
     prepare: inEveryCopy('lib/process-identity.mjs',
-      "    if (!(await procReadsSelf(SYSTEM))) return { kind: 'none' };\n",
+      "    if (!(await procReadsSelf(system))) return { kind: 'none' };\n",
       ''),
     why: "on Linux a process is fingerprinted through a /proc of another pid namespace: one there under the companion's pid with the recorded start time matches it, the judgment reads the companion alive, and cancel signals the reader's group of that id, another process's (C142, refine-verify of the fourteenth review's fixes, F1)",
     killed_by: /a process read through a \/proc that is not the reader.s fingerprints none/,
@@ -1622,7 +1622,7 @@ export const MUTATIONS = [
   {
     id: 'H143', tests: [T_SNAP],
     prepare: inEveryCopy('lib/process-identity.mjs',
-      "    if (typeof clock === 'string' && !(await inPidNamespace(clock, SYSTEM))) return { kind: 'none' };\n",
+      "    if (typeof clock === 'string' && !(await inPidNamespace(clock, system))) return { kind: 'none' };\n",
       ''),
     why: "a Linux reader in another pid namespace than the run's clock names fingerprints the process of its own namespace under the recorded pid, and a start tick it shares reads as the run's: its group is signalled (C142, eighteenth review's Y-F1)",
     killed_by: /by a reader in another pid namespace than the run's supervisor's clock names, fingerprints none/,
@@ -1630,16 +1630,16 @@ export const MUTATIONS = [
   {
     id: 'H144', tests: [T_SNAP],
     prepare: inEveryCopy('lib/process-identity.mjs',
-      'fingerprintForPid(pid, { clock });',
-      'fingerprintForPid(pid);'),
+      'fingerprintForPid(pid, { clock, system });',
+      'fingerprintForPid(pid, { system });'),
     why: "identityState fingerprints its pid in the reader's own namespace whatever clock it was given: a companion, a supervisor or a group leader of another namespace reads as a match (C142, eighteenth review's Y-F1)",
     killed_by: /by a reader in another pid namespace than the run's supervisor's clock names, fingerprints none/,
   },
   {
     id: 'H145', tests: [T_SNAP],
     prepare: inEveryCopy('lib/process-identity.mjs',
-      '{ clock = record?.fingerprint?.clock ?? null } = {}',
-      '{ clock = null } = {}'),
+      '{ clock = record?.fingerprint?.clock ?? null, system = SYSTEM } = {}',
+      '{ clock = null, system = SYSTEM } = {}'),
     why: "a supervisor is fingerprinted with no clock, not the one its own fingerprint keeps: read in another pid namespace it is 'supervisor-alive' (C142, eighteenth review's Y-F1)",
     killed_by: /by a reader in another pid namespace than the run's supervisor's clock names, fingerprints none/,
   },

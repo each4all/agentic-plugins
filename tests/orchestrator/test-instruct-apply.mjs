@@ -30,7 +30,7 @@ const IB = await import(pathToFileURL(join(REPO_ROOT, 'plugins/orchestrator/adap
 const HIGH = (verb) => ({ kind: 'verb', verb, confidence: 'HIGH' });
 // A probe that finds another process under the applier's pid: it is gone.
 const SELF = await RL.processFingerprint(process.pid);
-const dead = async () => ({ ...SELF, lstart: 'another start', starttime: -1 });
+const dead = async () => ({ ...SELF, lstart: 'another start', starttime: -1, pinned: { lstart: 'Thu Jan  1 00:00:00 1970', command: '' } });
 
 async function withLane(fn) {
   const fx = await makeRepo({ subtasks: [{ id: 'A' }, { id: 'B', blocked_by: ['A'] }] });

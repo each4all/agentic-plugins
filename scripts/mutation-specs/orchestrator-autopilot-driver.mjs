@@ -472,8 +472,8 @@ export const MUTATIONS = [
   },
   {
     id: 'L14', file: LOCKS, tests: [TL],
-    from: "env: { ...process.env, LC_ALL: 'C' },",
-    to: 'env: process.env,',
+    from: "const m = read({ ...process.env, LC_ALL: 'C' });",
+    to: 'const m = read(process.env);',
     why: 'the start time is read in the caller\'s locale, so outside the C locale it cannot be told from the command line',
   },
   {
