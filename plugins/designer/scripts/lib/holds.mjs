@@ -21,6 +21,8 @@ import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { isPinnedReading, PS_START_ENV } from './process-identity.mjs';
+
 export const AUTOPILOT_DIR_REL = '.agentic-plugins/runs/autopilot';
 export const HOLDS_PROTOCOL_SCHEMA = 'agentic-holds-protocol-1';
 export const HOLDS_PROTOCOL = 1;
@@ -237,14 +239,16 @@ export function readKeptPark(mainRoot, macroId, subtaskId) {
 // --- process liveness, as run-locks.mjs judges a run's driver ----------------
 
 /**
- * A process's fingerprint in the C locale (so two readers in different
- * locales agree), with `zombie: true` for one that exited and waits to be
- * reaped. `{ kind: 'none' }` when it cannot be read. run-locks.mjs
- * `processFingerprint`, restated.
+ * A process's fingerprint, its macOS start read in the C locale, and again in
+ * UTC as `pinned` (so two readers in different time zones agree, C141), with
+ * `zombie: true` for one that exited and waits to be reaped.
+ * `{ kind: 'none' }` when it cannot be read. run-locks.mjs
+ * `processFingerprint`, restated. `platform` and `execFile` are what the
+ * read uses (the system's; a test passes its own).
  */
-export function processFingerprint(pid) {
+export function processFingerprint(pid, { platform = process.platform, execFile = execFileSync } = {}) {
   if (!Number.isInteger(pid) || pid <= 0) return { kind: 'none' };
-  if (process.platform === 'linux') {
+  if (platform === 'linux') {
     try {
       const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
       const rest = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/);
@@ -256,18 +260,30 @@ export function processFingerprint(pid) {
       return { kind: 'none' };
     }
   }
-  if (process.platform === 'darwin') {
-    try {
-      const out = execFileSync('ps', ['-p', String(pid), '-o', 'stat=', '-o', 'lstart=', '-o', 'command='], {
-        encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, LC_ALL: 'C' },
-      }).trim();
-      const m = /^(\S+)\s+([A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d \d{4})\s*([\s\S]*)$/.exec(out);
-      if (!m) return { kind: 'none' };
-      const fp = { kind: 'macos_lstart_command', lstart: m[2], command: m[3] };
-      return m[1].startsWith('Z') ? { ...fp, zombie: true } : fp;
-    } catch {
-      return { kind: 'none' };
-    }
+  if (platform === 'darwin') {
+    const read = (env) => {
+      try {
+        const out = execFile('ps', ['-p', String(pid), '-o', 'stat=', '-o', 'lstart=', '-o', 'command='], {
+          encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env,
+        }).trim();
+        return /^(\S+)\s+([A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d \d{4})\s*([\s\S]*)$/.exec(out);
+      } catch {
+        return null;
+      }
+    };
+    // The earlier reading (the locale pinned, the caller's time zone), which
+    // an earlier reader compares, between two under PS_START_ENV
+    // (`pinned`), which this one does (C141). The pid may pass to another
+    // process between two reads: `pinned` is kept only when both pinned
+    // reads name one process, which then ran through the earlier read too,
+    // so the earlier fields and the zombie flag are that process's.
+    const before = read({ ...process.env, ...PS_START_ENV });
+    const m = read({ ...process.env, LC_ALL: 'C' });
+    if (!m) return { kind: 'none' };
+    const fp = { kind: 'macos_lstart_command', lstart: m[2], command: m[3] };
+    const after = read({ ...process.env, ...PS_START_ENV });
+    if (before && after && before[2] === after[2] && before[3] === after[3]) fp.pinned = { lstart: after[2], command: after[3] };
+    return m[1].startsWith('Z') ? { ...fp, zombie: true } : fp;
   }
   return { kind: 'none' };
 }
@@ -286,7 +302,11 @@ function pidAlive(pid) {
 function startDiffers(recorded, current) {
   if (recorded.kind !== current.kind) return false;
   if (recorded.kind === 'linux_proc_starttime') return recorded.starttime !== current.starttime;
-  if (recorded.kind === 'macos_lstart_command') return recorded.lstart !== current.lstart;
+  // A macOS start compares only as both read under PS_START_ENV (`pinned`):
+  // an earlier writer's, read in its own time zone, proves nothing (C141).
+  if (recorded.kind === 'macos_lstart_command') {
+    return isPinnedReading(recorded.pinned) && isPinnedReading(current.pinned) && recorded.pinned.lstart !== current.pinned.lstart;
+  }
   return false;
 }
 
