@@ -180,7 +180,7 @@ describe('locks', () => {
     const main = scratch();
     try {
       const lock = L.macroLockPath(main, MACRO);
-      const reused = { ...self, ...(self.kind === 'macos_lstart_command' ? { lstart: 'Thu Jan  1 00:00:00 1970' } : { starttime: '1' }) };
+      const reused = { ...self, ...(self.kind === 'macos_lstart_command' ? { lstart: 'Thu Jan  1 00:00:00 1970', pinned: { lstart: 'Thu Jan  1 00:00:00 1970', command: '' } } : { starttime: '1' }) };
       plant(lock, { ...record('run-a'), pid: process.pid, fingerprint: reused, worker: null });
       const b = await L.acquireLock(lock, { record: record('run-b') });
       deepStrictEqual(holders(lock), ['run-b'], 'a live pid with another start time is another process');
@@ -244,7 +244,7 @@ describe('locks', () => {
     try {
       const current = await fingerprintForPid(leader.pid);
       if (current.kind === 'none') { t.skip('no process fingerprint on this platform'); return; }
-      const recorded = { ...current, ...(current.kind === 'macos_lstart_command' ? { lstart: 'Thu Jan  1 00:00:00 1970' } : { starttime: '1' }) };
+      const recorded = { ...current, ...(current.kind === 'macos_lstart_command' ? { lstart: 'Thu Jan  1 00:00:00 1970', pinned: { lstart: 'Thu Jan  1 00:00:00 1970', command: '' } } : { starttime: '1' }) };
       const holder = { ...record('run-a'), pid: await deadPid(), fingerprint: { kind: 'none' }, worker: { pid: leader.pid, pgid: leader.pid, fingerprint: recorded } };
       strictEqual(await L.holderAlive(holder), false, 'the leader started after the worker did: the worker\'s group had ended');
       strictEqual(await L.holderAlive({ ...holder, worker: { ...holder.worker, fingerprint: current } }), true, 'the worker itself, still running');
@@ -288,7 +288,7 @@ describe('locks', () => {
     // A live group leader whose pid the worker record names.
     const leader = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
     try {
-      const mac = (lstart, command) => ({ kind: 'macos_lstart_command', lstart, command });
+      const mac = (lstart, command) => ({ kind: 'macos_lstart_command', lstart, command, pinned: { lstart, command } });
       const linux = (starttime) => ({ kind: 'linux_proc_starttime', starttime });
       const deadDriver = await deadPid();
       const holder = (fingerprint) => ({ ...record('run-a'), pid: deadDriver, fingerprint: { kind: 'none' }, worker: { pid: leader.pid, pgid: leader.pid, fingerprint } });
@@ -383,12 +383,12 @@ describe('locks', () => {
     strictEqual(await L.provablySame(process.pid, self, { probe: async () => ({ kind: 'none' }) }), false, 'an unreadable fingerprint is not proof');
     // A signal needs the whole fingerprint: the start time alone, which is
     // enough to keep a lock held, is not proof (round 7).
-    const mac = (command) => ({ kind: 'macos_lstart_command', lstart: 'Fri Oct  2 10:00:00 2026', command });
+    const mac = (command) => ({ kind: 'macos_lstart_command', lstart: 'Fri Oct  2 10:00:00 2026', command, pinned: { lstart: 'Fri Oct  2 10:00:00 2026', command } });
     strictEqual(await L.provablySame(process.pid, mac('claude -p'), { probe: async () => mac('node /x/cli.js -p') }), false, 'same start, another command');
     strictEqual(await L.provablySame(process.pid, mac('claude -p'), { probe: async () => mac('claude -p') }), true, 'the whole fingerprint matches');
     if (self.kind === 'none') { t.skip('no process fingerprint on this platform'); return; }
     strictEqual(await L.provablySame(process.pid, self), true);
-    strictEqual(await L.provablySame(process.pid, { ...self, lstart: 'x', starttime: 'x' }), false, 'a reused pid');
+    strictEqual(await L.provablySame(process.pid, { ...self, lstart: 'x', starttime: 'x', pinned: { lstart: 'Thu Jan  1 00:00:00 1970', command: '' } }), false, 'a reused pid');
   });
 
   it('three contenders that all added their entries before any looked again: at most one holds (round 3)', async () => {

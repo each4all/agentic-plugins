@@ -1068,6 +1068,7 @@ setInterval(() => {}, 1000);
           process_fingerprint: {
             kind: 'macos_lstart_command',
             lstart: 'Mon Jan  1 00:00:00 2001',
+            pinned: { lstart: 'Mon Jan  1 00:00:00 2001', command: 'definitely-not-this-process' },
             command: 'definitely-not-this-process',
           },
         });

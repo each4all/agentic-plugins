@@ -3454,3 +3454,23 @@ Proposed 2026-10-19.
   [ADR-0067](../0067-autopilot-worktree-lanes-and-proposals.md) at the places
   listed under §Amendments. Each place keeps its text and carries a dated note
   that points here.
+
+## Amendment 2026-11-22 — the persona reader pins its locale (C141)
+
+Decision 3, item 6 named the persona's process reader as one whose `ps` start
+time follows the caller's locale, and cited the lines of both readers. C141
+gave that reader and the run locks' reader, which pinned only the locale, a
+second reading under `LC_ALL=C` and `TZ=UTC0`, recorded as the macOS
+fingerprint's `pinned` field, which alone each compares (ADR-0023 §4,
+amendment of 2026-11-22). The item's sentence and its citations now name
+both readers as pinned. The clause stays Proposed while ADR-0023's amendment
+is (ADR-0070: text that depends on a Proposed decision stays marked Proposed
+at its clause), and the Status section says so. The text it replaced:
+
+> macOS reads `ps` with its locale
+> pinned to C, as the run locks already do for their fingerprint
+> (`plugins/orchestrator/scripts/lib/run-locks.mjs:100-106`, `:125-127`),
+> not the persona's reader, whose `ps` start time follows the caller's
+> locale (`persona-pipeline/files/scripts/lib/process-identity.mjs:34-44`,
+> docket C141, which stays its own item). The sample interval is 10 s, as
+> measured.

@@ -27,7 +27,7 @@ const DISPATCH = 'plugins/orchestrator/scripts/dispatch-peer.mjs';
 const LOCKS = 'plugins/orchestrator/scripts/lib/run-locks.mjs';
 const SNAPSHOT_LIB = 'plugins/orchestrator/scripts/lib/peer-snapshot.mjs';
 // A definition of the run locks' own, the same rule as the shared one.
-const L2_LOCAL = "export { isProcessAlive };\nexport function fingerprintsMatch(recorded, current) {\n  if (!recorded || recorded.kind === 'none') return false;\n  if (!current || current.kind !== recorded.kind) return false;\n  if (recorded.kind === 'linux_proc_starttime') return recorded.starttime === current.starttime;\n  if (recorded.kind === 'macos_lstart_command') return recorded.lstart === current.lstart && recorded.command === current.command;\n  return false;\n}";
+const L2_LOCAL = "export { isProcessAlive };\nexport function fingerprintsMatch(recorded, current) {\n  if (!recorded || recorded.kind === 'none') return false;\n  if (!current || current.kind !== recorded.kind) return false;\n  if (recorded.kind === 'linux_proc_starttime') return recorded.starttime === current.starttime;\n  if (recorded.kind === 'macos_lstart_command') return isPinnedReading(recorded.pinned) && isPinnedReading(current.pinned) && recorded.pinned.lstart === current.pinned.lstart && recorded.pinned.command === current.pinned.command;\n  return false;\n}";
 
 export const MUTATIONS = [
   // ── P: the runner ──────────────────────────────────────────────────────
@@ -292,7 +292,7 @@ export const MUTATIONS = [
   {
     id: 'L2', tests: [T_PARITY],
     prepare: (copy, tools) => {
-      tools.applyEdit(copy, { file: LOCKS, from: "import { fingerprintsMatch, isProcessAlive } from './process-identity.mjs';", to: "import { isProcessAlive } from './process-identity.mjs';" });
+      tools.applyEdit(copy, { file: LOCKS, from: "import { fingerprintsMatch, isPinnedReading, isProcessAlive, PS_START_ENV } from './process-identity.mjs';", to: "import { isPinnedReading, isProcessAlive, PS_START_ENV } from './process-identity.mjs';" });
       tools.applyEdit(copy, { file: LOCKS, from: 'export { fingerprintsMatch, isProcessAlive };', to: L2_LOCAL });
     },
     why: 'the run locks keep a definition of their own, which a later change to the shared rule would leave behind',

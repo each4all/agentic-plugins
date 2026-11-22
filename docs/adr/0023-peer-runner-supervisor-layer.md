@@ -4,6 +4,9 @@
 
 Accepted (PR-A through PR-E shipped — [#80](https://github.com/each4all/agentic-plugins/pull/80) ADR text, [#81](https://github.com/each4all/agentic-plugins/pull/81) engineer primitive, [#82](https://github.com/each4all/agentic-plugins/pull/82) engineer command integration, [#83](https://github.com/each4all/agentic-plugins/pull/83) orchestrator mirror, PR-E peer-now operational controls)
 
+§4, the macOS fingerprint's `pinned` reading (amendment of 2026-11-22,
+C141): Proposed.
+
 ## Context
 
 `companions/contract.md` v0.1.1 intentionally defines a stateless,
@@ -227,6 +230,17 @@ Allowed `process_fingerprint.kind` values:
 - `linux_proc_starttime` - derived from `/proc/<pid>/stat` where
   available
 - `none` - no reliable fingerprint is available
+
+A `macos_lstart_command` fingerprint keeps `lstart` and `command` as an
+earlier writer read them (the same `ps`, found the same way, failing to
+`none` where it did), and adds `pinned`: the same two read under
+`LC_ALL=C` and `TZ=UTC0`, whatever the caller's locale and time zone,
+before and after that read, and kept only when both name one process.
+Only `pinned` is compared. A record with no `pinned` (an earlier
+writer's) cannot be told from the process, whatever its `lstart` says: it
+is no proof for a signal (a cancel refuses), and no reused pid (a reclaim
+keeps the snapshot as for any identity that cannot be told, and a sweep does
+not orphan the run). *Proposed 2026-11-22 (C141): [history](history/0023-peer-runner-supervisor-layer.md#amendment-2026-11-22--a-macos-start-read-in-the-c-locale-and-utc-c141).*
 
 When the implementation cannot verify a process fingerprint, cancellation
 must fail closed with an explicit `unsupported_unverifiable` reason

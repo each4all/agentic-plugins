@@ -149,7 +149,7 @@ for (const persona of personasFor('scripts/lib/holds.mjs')) {
     it('a pid reused by a process that started at another time: no live run', () => withMain((main) => {
       const fp = holds.processFingerprint(process.pid);
       ok(fp.kind !== 'none', 'this platform fingerprints processes');
-      const other = fp.kind === 'linux_proc_starttime' ? { ...fp, starttime: '1' } : { ...fp, lstart: 'Thu Jan  1 00:00:00 1970' };
+      const other = fp.kind === 'linux_proc_starttime' ? { ...fp, starttime: '1' } : { ...fp, lstart: 'Thu Jan  1 00:00:00 1970', pinned: { lstart: 'Thu Jan  1 00:00:00 1970', command: '' } };
       entry(main, `h-${process.pid}-aa.json`, { run_id: 'autopilot-x', pid: process.pid, fingerprint: other, worker: null });
       strictEqual(holds.macroRunLive(main, CASES.macro).live, false);
     }));
