@@ -244,6 +244,34 @@ the steps stay manual**, and the host-neutral state it reads (`next_step_*`,
   code a worker loads must not live inside the repository the run drives (on a
   directory marketplace, drive a separate worktree), and it must be the version the
   run pinned. Launch from the home worktree (below). Holds need more (below).
+- **Which Claude Code it starts** (C180). The preflight resolves the CLI once and
+  probes it (`--version`, the flags it needs in `--help`); every worker of the run
+  spawns that same launch, with no shell asked for (`shell: false`; glibc's
+  `execvp` still hands an executable text file with no `#!` line to `/bin/sh`),
+  and a halt's resume line runs it too. The order is the companions'
+  (`scripts/lib/peer-cli.mjs`, a copy of `companions/peer-cli.mjs` under a drift
+  test): `AUTOPILOT_CLAUDE_BIN`, then `CLAUDE_BIN`, each a path (resolved against
+  the directory the run was started in) or a name looked up on `PATH`; with
+  neither, on macOS and Linux the `claude` that `PATH` gives at the start, pinned
+  as its absolute path (the companions and runtime keep spawning the bare name;
+  where the resolver's search finds none, which skips empty `PATH` entries and
+  needs `PATH` set, the bare name stays, as before), and on Windows `claude.exe` or
+  the npm `claude.cmd` shim in a `PATH` directory, whose target runs directly. An
+  override that names nothing runnable refuses the start, naming the variable;
+  it never falls back. A file of the launch removed after the preflight fails
+  the step that finds it (`worker-failed`, the worker could not start, with the
+  file and the variable to set); the serial driver's halt then offers no session
+  to resume, while a lane run keeps the last session any of its steps had. Limits:
+  a launch retargeted in place (a reinstall at the same path) is not detected; a
+  file removed between that check and the spawn ends the step as a worker that
+  exited without a result; such a failure is charged and judged like any spawn
+  error, so after restoring the CLI a lane it parked stays parked until released,
+  and a final-verification resume it was admitted for counts as taken; the
+  resolver normalizes `..` in an override or a `PATH` entry before the
+  filesystem sees it, so through a symbolic link it can check another file than
+  `execvp` would run (the companions' rule, changed only in
+  `companions/peer-cli.mjs`). Windows is checked by tests that simulate it; the
+  autopilot itself has not run there.
 
 ### Holds
 
