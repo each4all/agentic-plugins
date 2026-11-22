@@ -11,31 +11,61 @@
 // both peer dispatchers stop a peer's process group here.
 // Generated from persona-pipeline/ (ADR-0066).
 
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { readdir, readFile, readlink, stat } from 'node:fs/promises';
+
+// C141 — macOS `ps` prints a start time (`lstart`) in the caller's locale and
+// time zone (measured: one process reads `Wed Oct 14 10:31:38 2026` under
+// `LC_ALL=C` and a Korean date under `ko_KR.UTF-8`), so every reader here
+// pins both: one process fingerprints the same from a terminal, a headless
+// worker and a launchd job alike.
+export const PS_START_ENV = Object.freeze({ LC_ALL: 'C', TZ: 'UTC0' });
+
+// A macOS fingerprint (`macos_lstart_command`) keeps the fields an earlier
+// reader compares, `lstart` and `command` read as it reads them, and adds
+// `pinned`, the same two read under PS_START_ENV. Only `pinned` is compared
+// here (fingerprintComparison): an earlier reader, which knows no `pinned`,
+// judges a later record as it always has, and a later reader tells an
+// earlier record, which has no `pinned`, from no process (C141).
+
+// A C-locale `lstart`, then the command line.
+export const MACOS_LSTART_COMMAND = /^([A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d \d{4})\s*([\s\S]*)$/;
+
+// A C-locale `lstart` alone, nothing after it.
+const MACOS_LSTART = /^[A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d \d{4}$/;
+
+// Whether `p` is a `pinned` reading: a C-locale start and a command line.
+export function isPinnedReading(p) {
+  return p !== null && typeof p === 'object' && typeof p.lstart === 'string' && MACOS_LSTART.test(p.lstart) && typeof p.command === 'string';
+}
 
 // `clock`, when a string, is the clock the process was recorded in
 // (clockDomain): a Linux reader in another pid namespace than the one it
 // names reads, under `pid`, a process of its own namespace, which no start
 // time it shares proves the one recorded, and it fingerprints none (C142,
 // eighteenth review's Y-F1). One given no clock (an earlier runner's record,
-// or a recording) is read in the reader's namespace, as before.
-export async function fingerprintForPid(pid, { clock = null } = {}) {
+// or a recording) is read in the reader's namespace, as before. On macOS the
+// start time is read as an earlier writer read it, in the caller's locale and
+// time zone (`lstart`, `command`), and under PS_START_ENV before and after
+// that (`pinned`, left out when the two do not read as one C-locale start
+// and command; C141). `system` is what the read uses (the system itself; a
+// test passes its own).
+export async function fingerprintForPid(pid, { clock = null, system = SYSTEM } = {}) {
   if (!Number.isInteger(pid) || pid <= 0) return { kind: 'none' };
 
-  if (process.platform === 'linux') {
+  if (system.platform === 'linux') {
     // A /proc of another pid namespace than the reader's names, under `pid`,
     // a process of that namespace, not the one a signal to `pid` reaches: it
     // fingerprints none (procReadsSelf; C142, refine-verify of the fourteenth
     // review's fixes, F1).
-    if (!(await procReadsSelf(SYSTEM))) return { kind: 'none' };
-    if (typeof clock === 'string' && !(await inPidNamespace(clock, SYSTEM))) return { kind: 'none' };
+    if (!(await procReadsSelf(system))) return { kind: 'none' };
+    if (typeof clock === 'string' && !(await inPidNamespace(clock, system))) return { kind: 'none' };
     try {
-      const statText = await readFile(`/proc/${pid}/stat`, 'utf8');
+      const statText = await system.readFile(`/proc/${pid}/stat`, 'utf8');
       const end = statText.lastIndexOf(')');
       const rest = statText.slice(end + 2).trim().split(/\s+/);
       const starttime = rest[19]; // proc_pid_stat(5): field 22 after comm/state offset.
-      const cmdline = await readFile(`/proc/${pid}/cmdline`, 'utf8').catch(() => '');
+      const cmdline = await system.readFile(`/proc/${pid}/cmdline`, 'utf8').catch(() => '');
       return {
         kind: 'linux_proc_starttime',
         starttime,
@@ -46,22 +76,29 @@ export async function fingerprintForPid(pid, { clock = null } = {}) {
     }
   }
 
-  if (process.platform === 'darwin') {
-    try {
-      const out = execFileSync('ps', ['-p', String(pid), '-o', 'lstart=', '-o', 'command='], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim();
-      if (!out) return { kind: 'none' };
-      const m = out.match(/^(\S+\s+\S+\s+\d+\s+\d+:\d+:\d+\s+\d+)\s+([\s\S]*)$/);
-      return {
-        kind: 'macos_lstart_command',
-        lstart: m ? m[1] : out,
-        command: m ? m[2] : '',
-      };
-    } catch {
-      return { kind: 'none' };
-    }
+  if (system.platform === 'darwin') {
+    const args = ['-p', String(pid), '-o', 'lstart=', '-o', 'command='];
+    const pinnedRead = () => {
+      const run = runTool(system, 'ps', '/bin/ps', args, PS_START_ENV);
+      return !run.error && run.status === 0 && typeof run.stdout === 'string' ? MACOS_LSTART_COMMAND.exec(run.stdout.trim()) : null;
+    };
+    // The earlier reading, made as an earlier writer made it (`ps` found on
+    // PATH alone, its output buffer, no fallback and no time limit; any
+    // failure fingerprints none), so an earlier reader judges this record as
+    // it judges its own,
+    // between two under PS_START_ENV. The pid may pass to another process
+    // between two reads: `pinned` is kept only when both pinned reads name
+    // one process, which then held the pid through the earlier read too
+    // (C141).
+    const before = pinnedRead();
+    const ps = system.spawnSync('ps', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 1024 * 1024 });
+    const out = !ps.error && ps.status === 0 && typeof ps.stdout === 'string' ? ps.stdout.trim() : '';
+    if (!out) return { kind: 'none' };
+    const m = out.match(/^(\S+\s+\S+\s+\d+\s+\d+:\d+:\d+\s+\d+)\s+([\s\S]*)$/);
+    const fingerprint = { kind: 'macos_lstart_command', lstart: m ? m[1] : out, command: m ? m[2] : '' };
+    const after = pinnedRead();
+    if (before !== null && after !== null && before[1] === after[1] && before[2] === after[2]) fingerprint.pinned = { lstart: after[1], command: after[2] };
+    return fingerprint;
   }
 
   return { kind: 'none' };
@@ -398,9 +435,11 @@ function readLsofRecords(stdout, names) {
 
 // A tool by its name on PATH, else where macOS keeps it: a PATH without the
 // tool is no reason the processes cannot be listed. `env` extends the
-// caller's environment.
+// caller's environment. The tool reads no input: its stdin is closed, since a
+// sandbox may refuse the pipe a spawn opens for it (EPERM beside a tool that
+// ran and printed), and a reading discarded for it is no reading (C141).
 function runTool(system, name, fallback, args, env = null) {
-  const options = { encoding: 'utf8', timeout: 10000, maxBuffer: 64 * 1024 * 1024, ...(env === null ? {} : { env: { ...system.env, ...env } }) };
+  const options = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000, maxBuffer: 64 * 1024 * 1024, ...(env === null ? {} : { env: { ...system.env, ...env } }) };
   const run = system.spawnSync(name, args, options);
   return run.error?.code === 'ENOENT' ? system.spawnSync(fallback, args, options) : run;
 }
@@ -414,7 +453,7 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 // or null when ps fails or prints a line this does not read. The ps run
 // itself (set-uid on macOS, so one lsof would leave out) is not among them.
 function darwinProcessTable(system) {
-  const ps = runTool(system, 'ps', '/bin/ps', ['-A', '-o', 'pid=,ppid=,ruid=,stat=,lstart='], { LC_ALL: 'C', TZ: 'UTC0' });
+  const ps = runTool(system, 'ps', '/bin/ps', ['-A', '-o', 'pid=,ppid=,ruid=,stat=,lstart='], PS_START_ENV);
   if (ps.status !== 0 || typeof ps.stdout !== 'string') return null;
   const table = new Map();
   for (const line of ps.stdout.split('\n')) {
@@ -683,16 +722,54 @@ export async function undeletedCwd(link, system = SYSTEM) {
   }
 }
 
-export function fingerprintsMatch(recorded, current) {
-  if (!recorded || recorded.kind === 'none') return false;
-  if (!current || current.kind !== recorded.kind) return false;
+// What a recorded fingerprint says of a process read now (`current`):
+//   'match'   the same process: the same kind and start, and on macOS the
+//             same command, both read under PS_START_ENV (`pinned`);
+//   'differ'  another one: a fingerprint of the same kind whose start or
+//             command differs as read the same way, or one of a kind this
+//             reading never gives;
+//   'unknown' it cannot be told: no fingerprint on either side, or a macOS
+//             one with no `pinned` reading (an earlier writer's, read in
+//             its own locale and time zone). Its `lstart`, equal or not,
+//             proves nothing: two readings in different zones spell two
+//             starts hours apart alike, and one start differently (C141).
+export function fingerprintComparison(recorded, current) {
+  if (!recorded || recorded.kind === 'none' || !current || current.kind === 'none') return 'unknown';
+  if (current.kind !== recorded.kind) return 'differ';
   if (recorded.kind === 'linux_proc_starttime') {
-    return recorded.starttime === current.starttime;
+    return recorded.starttime === current.starttime ? 'match' : 'differ';
   }
   if (recorded.kind === 'macos_lstart_command') {
-    return recorded.lstart === current.lstart && recorded.command === current.command;
+    const [a, b] = [recorded.pinned, current.pinned];
+    if (!isPinnedReading(a) || !isPinnedReading(b)) return 'unknown';
+    return a.lstart === b.lstart && a.command === b.command ? 'match' : 'differ';
   }
-  return false;
+  return 'differ';
+}
+
+// Whether `current` is provably the recorded process, the proof a signal
+// needs: an identity that cannot be told is no match.
+export function fingerprintsMatch(recorded, current) {
+  return fingerprintComparison(recorded, current) === 'match';
+}
+
+// Whether a run's supervisor, recorded as `recorded` and read now as
+// `current` (the snapshot's supervisor fingerprints), is unchanged: every
+// field equal, as an earlier runner compared it, but for a macOS reading's
+// locale and time zone. With a reading under PS_START_ENV on both sides the
+// caller-local `lstart` and `command` are left out; otherwise `pinned` is,
+// so a record without one (an earlier runner's, or a pinned read that
+// failed) is compared as it always was. `pinned` itself is compared by its
+// two values, whatever order its keys were written in. Neither waits on a
+// process an earlier runner would have told apart, nor lets go of one it
+// held (C141).
+export function supervisorUnchanged(recorded, current) {
+  if (recorded === null || typeof recorded !== 'object' || current === null || typeof current !== 'object') return false;
+  const pinned = isPinnedReading(recorded.pinned) && isPinnedReading(current.pinned);
+  if (pinned && (recorded.pinned.lstart !== current.pinned.lstart || recorded.pinned.command !== current.pinned.command)) return false;
+  const left = ['pinned', ...(pinned ? ['lstart', 'command'] : [])];
+  const without = (fp) => JSON.stringify(Object.fromEntries(Object.entries(fp).filter(([k]) => !left.includes(k))));
+  return without(recorded) === without(current);
 }
 
 // What is known of a recorded process `{ pid, fingerprint }` now:
@@ -700,23 +777,24 @@ export function fingerprintsMatch(recorded, current) {
 //   'match'   a process has its pid and its recorded fingerprint;
 //   'differ'  a process has its pid and another fingerprint (the pid reused);
 //   'unknown' a process has its pid, and no fingerprint was recorded or none
-//             can be taken now, so it may be the original.
+//             can be taken now, or the two cannot be compared
+//             (fingerprintComparison), so it may be the original.
 // A record without a pid is 'gone': nothing was recorded to be alive.
 // `clock` is the clock its pid was read in (fingerprintForPid): its
 // fingerprint's own, or, for one recorded with none (a companion's), the
-// clock of the supervisor that recorded it.
-export async function identityState(record, { clock = record?.fingerprint?.clock ?? null } = {}) {
+// clock of the supervisor that recorded it. `system` is fingerprintForPid's.
+export async function identityState(record, { clock = record?.fingerprint?.clock ?? null, system = SYSTEM } = {}) {
   const pid = record?.pid;
   if (!Number.isInteger(pid) || pid <= 0) return 'gone';
   if (!(await isProcessAlive(pid))) return 'gone';
   const recorded = record.fingerprint;
   if (!recorded || recorded.kind === 'none') return 'unknown';
-  const current = await fingerprintForPid(pid, { clock });
+  const current = await fingerprintForPid(pid, { clock, system });
   if (current.kind === 'none') {
     // It may have exited between the two looks.
     return (await isProcessAlive(pid)) ? 'unknown' : 'gone';
   }
-  return fingerprintsMatch(recorded, current) ? 'match' : 'differ';
+  return fingerprintComparison(recorded, current);
 }
 
 // Stop what is left of a peer's process group (a child that outlived the
