@@ -1031,10 +1031,10 @@ function lineageOf(ancestors) {
 //             A supervisor pid a process has under another fingerprint
 //             (identityState's `differ`) is one that cannot be told: a
 //             recorded fingerprint that is incomplete or of a kind this
-//             platform does not take reads `differ`, and so does a macOS
-//             `lstart` read under another locale or time zone than the
-//             runner's (C141), the runner alive. A pid truly reused is left
-//             to the reclaim.
+//             platform does not take reads `differ`, the runner alive. (A
+//             macOS start is read in the C locale and UTC whatever the
+//             reader's, and one recorded in the writer's own reads
+//             `unknown`, C141.) A pid truly reused is left to the reclaim.
 // `supervisor` and `companion` are the states the verdict came from
 // (identityState's and companionState's), so a caller can tell a companion
 // group outliving its dead supervisor from a supervisor still at work. A
