@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { readRegular } from './holds-records.mjs';
-import { fingerprintsMatch, isProcessAlive } from './process-identity.mjs';
+import { fingerprintsMatch, isPinnedReading, isProcessAlive, PS_START_ENV } from './process-identity.mjs';
 
 export const AUTOPILOT_DIR_REL = '.agentic-plugins/runs/autopilot';
 
@@ -93,22 +93,24 @@ const TEMP = /^t-(\d+)-[0-9a-f]+\.tmp$/;
 
 /**
  * A process's fingerprint, in the shape peer-runner's `fingerprintsMatch`
- * compares — `{kind: 'macos_lstart_command', lstart, command}` or
+ * compares — `{kind: 'macos_lstart_command', lstart, command, pinned}` or
  * `{kind: 'linux_proc_starttime', starttime, command}` — plus `zombie: true`
  * for a process that has exited and waits only for its parent to reap it,
  * which `kill(pid, 0)` still reports as alive. `{kind: 'none'}` when it
  * cannot be read.
  *
- * Not peer-runner's `fingerprintForPid`: that one parses `ps`'s start time
- * in whatever locale the caller runs in, and its pattern only fits the C
- * locale. Under any other, the start time swallows the command line, so the
- * start alone could not be compared, and two processes in different locales
- * would fingerprint the same process differently (measured: ko_KR, 2026-10-03).
- * `ps` runs here with LC_ALL=C.
+ * Not peer-runner's `fingerprintForPid`, which marks no zombie. `lstart` is
+ * read in the C locale, as earlier readers read and compare it: under another
+ * locale the start time swallows the command line (measured: ko_KR,
+ * 2026-10-03). `pinned` is the start and command read under PS_START_ENV,
+ * the C locale and UTC, which alone this reader compares: in another time
+ * zone a start names another hour, so two processes in different zones would
+ * fingerprint one process differently (C141). `platform` and `execFile` are
+ * what the read uses (the system's; a test passes its own).
  */
-export async function processFingerprint(pid) {
+export async function processFingerprint(pid, { platform = process.platform, execFile = execFileSync } = {}) {
   if (!Number.isInteger(pid) || pid <= 0) return { kind: 'none' };
-  if (process.platform === 'linux') {
+  if (platform === 'linux') {
     try {
       const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
       // Fields after the command name, which may itself hold ') '.
@@ -121,18 +123,30 @@ export async function processFingerprint(pid) {
       return { kind: 'none' };
     }
   }
-  if (process.platform === 'darwin') {
-    try {
-      const out = execFileSync('ps', ['-p', String(pid), '-o', 'stat=', '-o', 'lstart=', '-o', 'command='], {
-        encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, LC_ALL: 'C' },
-      }).trim();
-      const m = /^(\S+)\s+([A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d \d{4})\s*([\s\S]*)$/.exec(out);
-      if (!m) return { kind: 'none' };
-      const fp = { kind: 'macos_lstart_command', lstart: m[2], command: m[3] };
-      return m[1].startsWith('Z') ? { ...fp, zombie: true } : fp;
-    } catch {
-      return { kind: 'none' };
-    }
+  if (platform === 'darwin') {
+    const read = (env) => {
+      try {
+        const out = execFile('ps', ['-p', String(pid), '-o', 'stat=', '-o', 'lstart=', '-o', 'command='], {
+          encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env,
+        }).trim();
+        return /^(\S+)\s+([A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d \d{4})\s*([\s\S]*)$/.exec(out);
+      } catch {
+        return null;
+      }
+    };
+    // The earlier reading (the locale pinned, the caller's time zone), which
+    // an earlier reader compares, between two under PS_START_ENV
+    // (`pinned`), which this one does (C141). The pid may pass to another
+    // process between two reads: `pinned` is kept only when both pinned
+    // reads name one process, which then ran through the earlier read too,
+    // so the earlier fields and the zombie flag are that process's.
+    const before = read({ ...process.env, ...PS_START_ENV });
+    const m = read({ ...process.env, LC_ALL: 'C' });
+    if (!m) return { kind: 'none' };
+    const fp = { kind: 'macos_lstart_command', lstart: m[2], command: m[3] };
+    const after = read({ ...process.env, ...PS_START_ENV });
+    if (before && after && before[2] === after[2] && before[3] === after[3]) fp.pinned = { lstart: after[2], command: after[3] };
+    return m[1].startsWith('Z') ? { ...fp, zombie: true } : fp;
   }
   return { kind: 'none' };
 }
@@ -144,7 +158,11 @@ export async function processFingerprint(pid) {
 function startDiffers(recorded, current) {
   if (recorded.kind !== current.kind) return false;
   if (recorded.kind === 'linux_proc_starttime') return recorded.starttime !== current.starttime;
-  if (recorded.kind === 'macos_lstart_command') return recorded.lstart !== current.lstart;
+  // A macOS start compares only as both read under PS_START_ENV (`pinned`):
+  // an earlier writer's, read in its own time zone, proves nothing (C141).
+  if (recorded.kind === 'macos_lstart_command') {
+    return isPinnedReading(recorded.pinned) && isPinnedReading(current.pinned) && recorded.pinned.lstart !== current.pinned.lstart;
+  }
   return false;
 }
 

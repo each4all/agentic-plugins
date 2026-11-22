@@ -35,6 +35,7 @@ import { absorbOutputErrors, exitAfterFlush, isCliEntry } from './lib/cli-entry.
 import { withEvidenceBoundaryBytes } from './lib/evidence-boundary.mjs';
 import {
   createRunCancellation,
+  fingerprintComparison,
   fingerprintForPid,
   fingerprintsMatch,
   identityState,
@@ -626,7 +627,11 @@ async function originalProcessAliveForHandle(handle) {
   if (handle.process_fingerprint?.kind === 'none') return true;
 
   const current = await fingerprintForPid(handle.pid);
-  return fingerprintsMatch(handle.process_fingerprint, current);
+  if (current.kind === 'none') return false;
+  // A macOS record with no reading under PS_START_ENV (an earlier writer's,
+  // C141) cannot be told from this process: it is taken for the original,
+  // never for another, so the run is not orphaned under it.
+  return fingerprintComparison(handle.process_fingerprint, current) !== 'differ';
 }
 
 // `groupOnly`: the group alone, never the pid, which may have been reused once
