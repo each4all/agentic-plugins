@@ -7,6 +7,9 @@ Accepted (PR-A through PR-E shipped — [#80](https://github.com/each4all/agenti
 §4, the macOS fingerprint's `pinned` reading (amendment of 2026-11-22,
 C141): Proposed.
 
+§6, the processes outside the companion's group a run may signal
+(amendment of 2026-11-22, C181): Proposed.
+
 ## Context
 
 `companions/contract.md` v0.1.1 intentionally defines a stateless,
@@ -284,6 +287,237 @@ Cancellation sequence:
 (2026-10-19: a run whose companion is gone and whose runner its host killed
 before its cleanup, and the end of the companion's whole group, are in the
 amendment of that date, C142.)
+
+**Outside the companion's group.** Status: Proposed (2026-11-22, C181).
+Every signal above goes to the companion's process group, or to its pid,
+and keeps the fingerprint check of step 3 under the rules of 2026-10-19 for
+reading it (a fingerprint or a group's listing is read only through a
+`/proc` that is the reader's and, where the record keeps a clock, only in
+the pid namespace that clock names); that boundary is what this paragraph
+amends, and those signals stay as they are. A process that has left that
+group is never signalled for what it says or where it stands: a working
+directory or an open file in the run's snapshot, a marker variable, an
+argument list (which any process of the user can write for itself), a name,
+or a snapshot past its age, alone or together, grant nothing. The rule of
+2026-10-19 that a location proves no ancestry stands. A reclaim still keeps
+a tree an outside process occupies (`tree-occupied`), while the runner's
+normal end removes its snapshot once its bounded stop of the companion's
+group returns, whatever that stop achieved, as it does today. How long a
+snapshot is kept and when a reclaim runs stay as that amendment decided
+until the second amendment named below changes them.
+
+Outside the group, a run may end exactly one thing: **a cgroup the run made
+for itself before anything it launched ran, closed to entry and holding no
+process older than its launch**, ended whole. The kernel keeps a cgroup's
+membership across every group, session and pid namespace a process enters
+(the codex sandbox enters a session and a pid namespace of its own, and a
+headless claude's Bash tool a session per command; in the runs measured on
+2026-11-22 neither left the cgroup), so the authority reads no ancestry,
+argument list or location. It holds on Linux with a systemd user manager,
+under these conditions, each of which the run proves or it has no
+authority, save the one limit the last of them states:
+
+- **Launched through a gate.** The runner starts, under
+  `systemd-run --user --scope`, a gate: a process that runs nothing until
+  the runner tells it to, then executes the companion in its place. While
+  the gate waits, the runner reads, from its own child, which no other
+  process can take the pid of before the runner reaps it, that the gate is
+  in the new scope's cgroup; records the identity below; closes the scope;
+  and only then tells the gate to go. It reads the placement in its own
+  view of the hierarchy, which shares the manager's pid and cgroup
+  namespaces (see where no scope can be made, below): it opens the scope's
+  directory there, finds the gate's pid in its `cgroup.procs` as the only
+  entry, with no cgroup below it, reads `domain` from its `cgroup.type` (a
+  threaded cgroup refuses `cgroup.kill`), and opens its `cgroup.kill` for
+  writing, which writes nothing. The word is given once the runner first
+  tries to send it: from that try on, whatever its outcome, the companion
+  counts as launched. A failure before the word ends the gate, which is the
+  runner's own child, and ends the scope only as any kill of it below, with
+  every check made and through the checked directory. The start check below
+  names the gate by its recorded pid and start together, so where the
+  runtime reaps a child by itself (Node does, from its event loop) and the
+  pid passes to another process, that process is judged as any other member.
+  A scope that fails a check is left as it is, and nothing was launched. A
+  bare `systemd-run --scope` executes the command at once, which leaves no
+  point to record before it runs, so it is never used alone.
+- **A scope that is new.** The unit's name is used once (a prefix every
+  launcher's scope shares, the run's id and a random suffix), and the
+  manager creates it as a new transient scope: a name the manager already
+  holds refuses the create, and the gate never runs. A create that fails or
+  collides grants nothing, and the run touches no unit of that name. A new
+  unit does not prove a new cgroup directory (the manager accepts one that
+  exists): the gate being the only entry, above, shows the scope held
+  nothing else when the runner read it, not that no process made its
+  directory first, which only one that predicts the random suffix can do.
+- **An identity recorded before the word**, and checked at the end: the unit
+  name, the manager's `InvocationID` for it, its cgroup path, the cgroup's
+  64-bit id (the inode number of its directory, read as a whole 64-bit
+  integer, where `ino_t` is 64 bits, which carries the kernel's generation,
+  so a running kernel gives a cgroup made again under the same name a new
+  one; where it is narrower the id can recur within a boot, and the run has
+  no authority), the boot id, and the gate's pid and start with the clock
+  they were read in (its time and pid namespaces, as the records of
+  2026-10-19 keep a start), by which the start check below knows the gate,
+  or the companion it became, and dates the other members, also for a
+  reader that comes after the runner and the companion have ended. At the
+  kill the manager still holds the unit with the recorded `InvocationID` and
+  path, the directory opened at that path carries the recorded id under the
+  recorded boot, and the kill is written through that open directory, never
+  through a path resolved again. Once the cgroup is gone the write finds
+  nothing, so a scope that was collected and made again under its name is
+  never reached.
+- **Closed to entry, and nothing in it older than the launch.** The scope
+  holds against a kill reaching a process nobody put in the run on purpose,
+  not against a process of the user that sets out to put one there. Before
+  the word, the runner takes the write permission off the scope's
+  `cgroup.procs`, its `cgroup.threads` and its directory, so no process is
+  written into the scope and no member makes a cgroup below it; and it never
+  asks for delegation, without which the user's manager attaches no process
+  to the scope. Three ways in are left, each a deliberate act that names
+  this scope. A process of the user that gives the permission back, or that
+  opened the scope's `cgroup.procs` before it was closed, can write into it
+  only a process of the user manager's delegated subtree (the kernel also
+  checks the common ancestor's `cgroup.procs`, and above `user@UID.service`
+  that file is root's), which it could already move into a cgroup of its own
+  and end through that cgroup's `cgroup.kill`. A process of the user that
+  asks the system manager to attach a process to the scope's path below the
+  delegated user manager moves it there past the modes, and from anywhere:
+  measured on 2026-11-23, an unprivileged call moved a process of the user's
+  login session into a closed scope. That third way the scope does not
+  close: its caller chooses which of the user's processes the run's kill
+  ends, one in a pid namespace it does not see included, and, when that
+  process is the init of a pid namespace that is neither the writer's own
+  nor one above it (whose inits the kill spares, below), every process of
+  its namespace with it. The run narrows it with what it can read. The
+  runner gives the word only once the clock has passed the gate's start
+  tick, so what the run starts, which descends from the gate, starts at a
+  later tick than the gate. At the kill, read through a `/proc` that is the
+  reader's, in the recorded clock (the rules of 2026-10-19 for a
+  fingerprint), every member other than the gate, or the companion it became
+  (the recorded pid with the recorded start), started after the gate's tick,
+  as the rule of 2026-10-19 places a process by its start, and no later than
+  the clock's current time. A member that started at that tick or earlier,
+  or whose start cannot be read so, grants nothing; a start later than the
+  clock's current time is not read so (the kernel adds a time namespace's
+  boottime offset to the start as an unsigned value, and a negative offset
+  can wrap an older start into a later one). A pid that passes to another
+  process between the two reads names no member, and the write reaches
+  members only. Not told apart: a process started later and attached on
+  purpose, and any process attached on purpose between that reading and the
+  write, whatever its start, a namespace's init included. This amendment
+  accepts that, as a move made deliberately through the system manager by a
+  process acting as the user, and says so. At the kill the scope also holds
+  the modes the runner set and is a leaf; one that is not grants nothing.
+
+What the kill reaches. A write to `cgroup.kill` sends `SIGKILL` to every
+process in the cgroup and in the cgroups below it at the time of the write,
+save the init of the writer's own pid namespace and that of each pid
+namespace above it, each of which ignores a kill sent by a process its
+namespace can see (only an attach made on purpose brings such an init into
+the scope). The scope was a leaf when the run read it, so they are its own
+members, unless a process of the user gave the permission back and made and
+filled a cgroup below it on purpose since, as the first way in above lets
+it. Past the scope, the kernel alone reaches further, by the rules it
+applies when a process exits, which the run does not choose; among them:
+when the init of a pid namespace that a process of the run made dies, the
+kernel ends every process of that namespace, one that moved out of the scope
+included, and the children a process outside made there after a `setns` into
+it; a process that asked for a signal at its parent's death
+(`PR_SET_PDEATHSIG`) gets it when the thread that is its parent, or a
+subreaper that adopted it later, dies in the scope; and a process group
+outside the scope that the exits leave orphaned gets `SIGHUP` and `SIGCONT`
+when it has a stopped member. The run signals none of them; they end, or are
+signalled, as they would if those processes ended by themselves. A write to
+`cgroup.kill` asks for the end and proves nothing. The run says its scope
+emptied only once the cgroup reads empty (`populated 0` in `cgroup.events`)
+or the cgroup it opened is gone (the open directory holds no
+`cgroup.events`): the kernel removes no cgroup that has a live member, and
+nothing enters a removed one. The manager tries to remove an emptied scope
+by itself once it handles the notice of the emptying, and may fail to (in
+the runs measured it removed it before the run read it), so either reading
+may come. Neither says anything of a process that left the scope.
+
+A process may still leave the scope by its own act: by writing itself into
+another cgroup of the subtree it may write (the kernel checks the
+destination and the common ancestor, not the scope it leaves), or through a
+scope of its own. It then leaves the scope's authority, as a process that
+leaves the group leaves the group's today. A process still in the
+companion's group keeps the group's signals, under their own checks,
+wherever its cgroup is.
+
+Who uses it, and what each records. Each launcher writes the identity,
+before the word, to a durable record of its own launch, bound to what
+already makes that launch its own: a peer run, to its handle and, where it
+has a snapshot, to the snapshot's owner record as well, the two agreeing (a
+run with no snapshot, its handle alone); the autopilot worker, to the step's
+record in its run, for the claude it starts for that step; the mutation
+harness, to its heavy-work lock ownership, one entry for each test launch,
+written while it holds that ownership or has validly joined it, for the test
+runs it starts. A record that lacks the identity, or two that disagree,
+grant nothing. No other launcher has the authority, `dispatch-peer.mjs`
+included, until it has a record of the same kind. A launcher already inside
+another launcher's scope (the harness run within an autopilot step, or a
+peer run the step's claude starts) makes no scope of its own, since the
+manager would put it beside the enclosing one, outside its kill: it stays in
+the enclosing scope, whose kill covers it, and keeps only the authority over
+its group. It tells from two readings that must agree: its own cgroup path,
+which the shared cgroup namespace (below) makes the manager's path, read
+before the manager is asked and again after its answer, the two the same,
+and the unit the user manager names for its pid. A scope named with the
+launchers' prefix, in both, means it is inside one. A path outside
+`user@UID.service` (a process of a login session) with the manager naming no
+unit of its own, or a path in a unit of the manager that is not a launcher's
+scope with the manager naming that unit, means it is not. The manager also
+answers that no unit holds a pid when it failed to read that pid's cgroup;
+with both path readings outside `user@UID.service`, which the check below
+requires to be the cgroup the manager manages, that answer changes nothing,
+since a launcher outside it at both readings was in no launcher's scope
+unless moved in and out between them. Any other pair, a reading that fails
+included, withholds a scope. A move of the launcher after its second path
+reading is not seen. Into an enclosing scope, which once that scope is
+closed only an attach made on purpose achieves, it puts the launcher under
+that scope's kill while what it launches goes into a scope beside it; out of
+one, it leaves what it launches under no scope's kill. Either way each kill
+still reaches only its own scope's members, the class of attach above. That
+reading only withholds a scope, never grants a kill.
+
+Where no scope can be made. Before a scoped launch the runner checks that it
+can: Linux, a cgroup v2 hierarchy mounted in its view, a reachable user
+manager that reports `user@UID.service` as the cgroup it manages (its
+`ControlGroup` property; its own process runs in `init.scope` below it, as
+measured on 2026-11-24 with systemd 255) and whose pid and cgroup namespaces
+are the runner's (the namespace links of the manager's main process match
+its own), a `/proc` that is the runner's (the reading of 2026-10-19), and
+`cgroup.kill` in that manager's subtree. The shared namespaces make the pids
+and cgroup paths the runner reads the manager's (a start is read in the
+runner's own clock, which the record keeps, and is compared only in that
+clock), and leave no cgroup-namespace root between the runner and the scope
+to refuse its `cgroup.kill`; the gate's placement, above, proves the rest
+for the scope itself. When the check fails (no systemd user manager, a
+container or a host sandbox that hides it or gives the runner namespaces of
+its own), the runner launches as it does today, has no authority outside the
+group, and says so on its handle. When a scoped launch fails before the
+word, the runner marks the attempt's record abandoned where it wrote one (a
+record so marked grants nothing) and, once the mark is written or when no
+record was written, launches directly, since the gate has run nothing; a
+mark it cannot write leaves it launching nothing. A runner that dies before
+the word, or that could not write the mark, may leave a record that carries
+the whole identity, agrees where it is bound twice, and is not marked
+abandoned. No reader can tell that record from a launched one, and its kill,
+under every check above, reaches only what the scope then holds: the gate,
+which has run nothing, if it still lives, and what was attached on purpose,
+with the processes those started there. A record it left without the
+identity, or bound twice and disagreeing, grants nothing, as above. From the
+word on, whatever happens to the gate or to `systemd-run`, it never launches
+again. A kill the kernel refuses to write ends nothing and is recorded as
+refused. macOS keeps its verified POSIX group handling and Windows its
+pid-only handling: neither gains any authority, and what leaves the group
+there stays as before.
+
+When each launcher uses this authority, what a run records when it cannot
+see its cgroup empty, and the races it must handle are decided in a second
+amendment; until that one is accepted, nothing uses this one.
+*Proposed 2026-11-22 (C181): [history](history/0023-peer-runner-supervisor-layer.md#amendment-2026-11-22--which-processes-outside-the-companions-group-a-run-may-signal-c181).*
 
 Cross-host cancellation means "called from the other local agent host in
 the same repo checkout" (for example, Codex asks to cancel a run started
