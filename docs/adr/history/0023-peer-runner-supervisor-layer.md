@@ -478,3 +478,402 @@ a runner killed while codex is still mid-command; codex itself inside a
 closed scope; macOS; a claude peer's commands at a run's end; the system
 manager's attach of another user's process, or a caller in a pid namespace
 of its own; a launcher in a cgroup namespace asking the manager for its unit.
+
+## Amendment 2026-11-24 — when a run ends its scope, and what it keeps (C181)
+
+**Why.** The amendment of 2026-11-22 decided which processes outside the
+companion's group a run may end, and how: its own closed scope, through
+`cgroup.kill`. It left when each launcher uses that kill, what a run records
+and keeps when it cannot see its scope emptied, how a reader of an earlier
+release treats the new records, and the races, to this second slice, and
+said nothing uses the first until both are accepted (subtask
+`orphan-adr-lifecycle` of macro `macro-plan-20261120T224328Z-9b3901`). The
+measurement it rests on is the first slice's (2026-11-22, Linux 6.8,
+codex-cli 0.171.0): every orphan sampled came from a run that ended, by a
+normal end (a command that never returned) or by its runner's `SIGKILL`, and
+from an autopilot step's or a test's process that left its group.
+
+**Decision.** §6 now says who writes the kill, and when:
+
+- the peer runner at every end of a run, in one sequence every cleanup path
+  awaits: at the companion's exit, or the event that ends the run where no
+  exit comes, it stops the group, checks the scope within two seconds and
+  then writes the kill, waits up to ten seconds for the scope, drains its
+  pipes within two seconds of that observation, captures the snapshot for
+  the review's binding only on gone (otherwise the review stays
+  unbound for good), writes the handle terminal with the teardown and the
+  capture's outcome in one write, and removes the snapshot only on a
+  reading of gone it makes itself;
+- for a peer run whose runner is gone (its supervisor, which the scope's own
+  record names, proven gone by a check that validates the record and the
+  reader's namespace and boot before any probe), whichever of its persona's
+  `cancel`, `settle` and `sweep` reads it, as a step apart from their
+  snapshot branches, and the next dispatch's reclaim for a snapshot of its
+  own persona only; a live run's cancel writes none, since the runner's own
+  end follows;
+- the autopilot worker at every end of a step, after its group signals and
+  without waiting for the claude to exit, and, for a step whose driver (the
+  scope's recorded supervisor) is gone, the dead-run cleanup or a lock or
+  lane path that meets it first;
+- the mutation harness at the end of each test launch, and whichever process
+  next waits on, closes or collects an ownership holding a dead harness's
+  entry;
+- no launcher inside another's scope.
+
+Two records bind on the identity's fields written before the word; a run
+with a snapshot binds only while its owner record exists and agrees, and a
+run with none binds on its handle alone. A reader observes a scope `gone`
+(final: under the recorded boot, the recorded path absent or of another id;
+or a boot id other than the recorded one), `emptied` (that moment only,
+reported and never consumed), or `unproven`, `withheld`, `refused`,
+`pending`; every reading needs the reachability check, a proof that the
+reader's cgroup mount shows the hierarchy's root and the manager in it, and
+a lookup from that mount's opened root that never crosses a mount, for
+`cgroup.events` and `cgroup.kill` alike. No reader asks the manager to
+stop a unit. A stored teardown is a report, since nothing orders two
+processes' writes: removing a snapshot whose owner record carries a scope
+(one whose owner record reads whole with no scope, or whose owner record
+and tree are both absent, goes as 2026-10-19 decides; one whose owner
+record cannot be read, or is absent while a tree is left, is kept; and
+`directory-gone` and `owner-unreadable-expired` remove
+one that may have carried a scope without a reading, each on its proof),
+binding a review, reusing or
+removing a checkout or lane, and dropping a lock entry, deleting its copy or
+giving the lock to another holder each rest on a reading of gone the actor
+made itself (the dead-run cleanup, for a step's records alone, takes the
+one a `cancel` it called made at that call and returned to it); retention
+alone takes a stored teardown. While a scope is not read gone,
+the snapshot is kept by every remover (the gate sits in the shared
+removal and comes before every 2026-10-19 verdict, the age rule included,
+save a directory both lookups found absent and an owner record read whole
+that does not parse or is no owner record; a directory left with neither
+owner record nor tree is outside the gate, as one whose owner record reads
+whole with no scope is, while one whose owner record is absent but whose
+tree is left is kept; and a remover may rest on its own earlier reading of
+gone), the handle is not pruned, `sweep` retries, the
+answers report it apart, an autopilot checkout takes no step and no lock or lane path drops it (the
+block is read from the step records, so it survives the driver), a dead
+step's peer runs with scopes of their own keep its scratch, and a harness
+launch gives no verdict. Sweeps, reclaims, dead-run cleanups and lock
+collectors write their kills once and read without waiting of their own,
+once an invocation, or once a pass of a loop that already polls (a
+heavy-work acquire, a joined wrapper's wait, a release); only the
+launcher's own end waits.
+
+The new fields are an optional `scope` object with its own version; the
+handle's `schema_version` and the owner record's schema stay as they are,
+and a harness entry rides on the group entry an earlier lock reader parses.
+An earlier reader of a later record acts on processes as it does today but
+can erase what a later reader needs (a snapshot removed under a live scope,
+a pruned handle, a dropped ownership), and an earlier driver takes a later
+run's cancel `ok` as settled; the owner installs scope-writing releases of
+every persona and the orchestrator together and lets runs finish before a
+rollback, as practice.
+
+Races: a runner dead after the word but before naming its companion leaves
+the scope to a reader that proves its supervisor gone, and the group stays
+`unknown` as 2026-10-19 decides; a runner dead before its records leaves a
+gate that exits on the end of its word channel; a reused pid widens nothing;
+a reader in another namespace withholds, and its misses are no reading of
+gone; a held pipe is drained within a bound after the scope's end and
+recorded `pipe_held`; concurrent kills of one cgroup reach its members at
+each write, and only the deliberate-attach limit of the first slice widens
+that.
+
+`dispatch-peer.mjs` gains no record and keeps its limit.
+
+**How the draft changed.** The plan-verify review (codex, run
+`plan-verify-20261123T222917Z-e56e54`, verdict conflict) found the first
+draft unsound in three places and incomplete in nine; every finding was
+taken:
+
+- the reclaim, which reads no handle, could not check the two records agree,
+  and a removal of the owner record left a handle that could not bind
+  alone: the reclaim was to read the handle by run id, a remover of this
+  release to record the removal on the handle first (replaced after the
+  critique, below), and an earlier release's removal is stated as erasing
+  the authority;
+- the normal end wrote the handle terminal before the pipes were joined and
+  the answer read: the order is now group stop, scope end, bounded drain,
+  answer, terminal write, snapshot;
+- the autopilot block lived only in one driver, while the serial path and
+  the lanes released lock entries and scratch on the group's end alone and
+  the dead-run cleanup removed the open-run record: the block is read from
+  the step records at every start and dispatch, and holds those releases;
+- the recovery steps of `cancel`, `settle` and `sweep` ran only inside their
+  snapshot branches, and the supervisor lived in the snapshot record: the
+  scope step stands apart, and the scope's record names its supervisor;
+- the worker's recovery was keyed to "the worker" though the worker runs in
+  the driver, and its scope end waited on the claude's exit: the driver is
+  the recorded supervisor, and the bound ends the scope regardless;
+- the harness gated only the next launch and the release, not the
+  unregistering of its entry, the deletion of its copy, or the two ways an
+  acquirer collects a dead holder's ownership;
+- "a teardown only rises" could not hold across processes, and an emptied
+  scope was taken as final: stored teardowns are reports, and the acts read
+  the cgroup;
+- the age rule was stated as removing a snapshot "whatever it holds", wider
+  than `judgeSnapshot`'s live vetoes;
+- hooks and dispatches had no budget for a backlog of ten-second waits;
+- a miss read from another namespace could have counted as gone;
+- a proven scope was taken for the end of an unnamed companion's group, part
+  of which may have left the scope;
+- an earlier driver's reading of a later run's cancel was not stated.
+
+**How the critique changed it.** The first critique of the revision (codex,
+run `review-20261123T223645Z-d14e85`, with a local reviewer of the code
+claims; eleven major findings, six minor) found it inconsistent in its
+removals, incomplete in its gates, and unbuildable in one rule; every major
+finding was taken:
+
+- the reclaim's age and owners-gone removals contradicted "a snapshot is
+  removed only on gone or emptied", and removers were missing (the
+  autopilot's `scratchBusy`, `dispatch-peer.mjs`'s reclaim, the
+  orchestrator's copies): the gate now sits in the shared removal, before
+  every 2026-10-19 verdict, with its two exceptions named;
+- the removal recorded on the handle could not be built (a runner refuses
+  another persona's handle, and the repository-wide reclaim removes every
+  persona's snapshots), could be erased by a whole-handle write, and turned
+  a two-record binding into one: dropped, since no remover of this release
+  now removes a snapshot under a scope it has not read gone or emptied, and
+  binding is defined over the fields written before the word, a run with a
+  snapshot binding only while its owner record agrees;
+- the install practice named the engineer only, though the founder's,
+  designer's and orchestrator's reclaims remove an engineer snapshot: every
+  persona and the orchestrator move together;
+- `gone` both required the recorded boot and accepted another, and a mount
+  that does not show the hierarchy's root could read a live scope absent:
+  the two readings are separated, and every reading needs proof of the
+  hierarchy it reads;
+- the supervisor's death "as `snapshotEnded` judges it" inherited
+  `identityState`'s reading of a pid it cannot find as gone, probed before
+  the namespace is checked: the check is now specified, the record and the
+  reader's namespace and boot validated before any probe, failures not gone;
+- the reclaim could not discover a run with no snapshot: those runs are left
+  to their persona's `cancel`, `settle` and `sweep`, and the reclaim ends
+  only its own persona's;
+- the autopilot hold missed the paths that drop a worker lock entry as
+  debris (`acquireLock`, `joinAdmission`), the driver's start, and a lane's
+  retirement, reconciliation and removal: each is named and gated;
+- a dead step's peer runs with scopes of their own, terminal ones included,
+  were not read by the dead-run cleanup, which takes a cancel's `ok` as
+  settled: it now reads them and keeps the step's scratch;
+- the heavy-work gate named the reaper, which acquisition's earlier waits
+  never let a busy entry reach, and missed the joined wrapper's wait and the
+  autopilot verification's releases, and said a joined release waits, which
+  does nothing: each wait that first meets the entry ends the scope;
+- the drain's two-second deadline and the ten-second empty wait did not
+  fit, and the runner's and harness's cleanup paths diverged: one sequence,
+  with its deadlines, which every path awaits, on the companion's exit
+  rather than its pipes' close;
+- a withheld end capture let a completed review settle unbound by accident:
+  the capture now depends on the teardown, and its `scope-unproven` reason
+  is final.
+
+The refine's own verification (codex, run
+`refine-verify-20261123T224930Z-df26cb`) found the first pass short in
+ten places, and the second pass took each: the two exceptions to the
+snapshot gate now need proof (a lookup that found nothing, a record read
+whole that does not parse), since the reclaim folds access errors into
+them; `emptied` was argued as the end of what the run owes its scope,
+which let a removal or a pruning rest on it (the third pass withdrew that,
+below);
+a reading stays on the mount it attested; a supervisor is proven gone only
+in the whole recorded clock (boot, time and pid namespaces) and through a
+`/proc` that hides no process; the run's end starts at whatever event ends
+it, bounds its checks, and writes the terminal status with the end
+capture's outcome in one write; the autopilot hold rides on the driver's
+existing `lingering` mark and on gates at the places a lock entry, a lane,
+a scratch or an open-run record is dropped; a step's scoped peers are found
+by an association their scope records, across every persona's ledger; and a
+check's scratch directory is swept only when no harness entry names a copy
+in it with a live scope.
+
+The second pass's verification (codex, run
+`refine-verify-20261123T225601Z-ac6fa9`) found six more targets resolved
+and the rest short, and the third pass took each: removal, pruning and the
+end of retries rest on `gone` alone, a reader that reads `emptied` asking
+the manager to stop the unit; every lookup and the read of `cgroup.events`
+go through the attested mount's opened root, refusing to cross a mount; the
+step's scope survives every rewrite of its lock entry, and admission runs
+the gate before it refuses; a scoped peer handle with a missing or
+ambiguous association, an unreadable one and an unlistable ledger keep the
+step's records; a check records the heavy-work ownership it holds, and a
+harness entry names its copy by device and inode too, which a
+`.removing-` rename keeps; the scope's part of an end is bounded after the
+checks; another writer's terminal write leaves the capture to the runner;
+and the dead-run cleanup's delegated `cancel`, with its sixty-second bound,
+is placed in the kills-first order.
+
+The third pass's verification (codex, run
+`refine-verify-20261123T230255Z-f6dc71`) found the binding, the gate's
+exceptions, the supervisor check and the reclaim's reach resolved, and the
+rest of the short items traced to two causes, which the fourth pass
+removed: acts that still rested on `emptied` (a worker entry, a harness
+entry, a capture, the dead-run cleanup's selection), now all on `gone`;
+and the manager stop the third pass added, now withdrawn (above). It also
+pinned the open root to the attested mount by its mount id and put
+`cgroup.kill` under the no-crossing rule; had the harness, not the check,
+record the ownership it really holds; widened the ambiguous-peer hold to
+every ledger the cleanup scans; had settlement read the handle again after
+proving the runner gone; and stated what has no deadline and the order of
+delegated cancels as they are.
+
+The fourth pass's verification (codex, run
+`refine-verify-20261123T230948Z-070f2b`) found the worker's releases and
+the harness's ownership resolved, and the rest narrowed to races and three
+gaps, which a last edit, after that verification, took: settlement binds to
+the capture the runner recorded on its own reading of gone; retention keeps
+a handle whose owner record could not be read, as its snapshot is kept; the
+dead-run cleanup also scans the state roots the run's records name, a
+lane's checkout among them, and takes each delegated `cancel`'s reading.
+Two races are stated as limits rather than closed: a whole-handle write
+(C139) that erases the capture outcome, which leaves a review unbound and
+never wrongly bound, and a mount table changed on purpose between a
+reader's sample and its lookup, a rare move of a process acting as the user
+like the first slice's deliberate attach. The fourteen-second bound leaves
+out the kernel's own time inside the kill's write.
+
+The minor findings were folded in as well: the symmetric `owner-incomplete`
+case, `unproven` defined at each reader's deadline and the budget stated
+per scope, "starts in that scope" for what the step's claude launches, a
+pointer that read "below" for a paragraph above, the reclaim's conditions,
+and this record's count.
+
+A second critique (scoped, codex run `review-20261123T232042Z-f620c6`)
+found five of those fixes still short, and the owner ruled they be fixed
+rather than recorded as limits. The binding paragraph no longer says no
+remover of this release removes an unread scope's snapshot: it names the
+two removals that read no scope, `directory-gone` and
+`owner-unreadable-expired`, and when each leaves a handle that binds
+nothing. The other-boot reading of gone and a supervisor's start are read
+through a `/proc` the reader opened once and checked by mount id, refusing
+to cross a mount, as the cgroup lookup is; a reader that cannot read its
+boot so reads no boot at all. The mount race is restated for what that
+pinning leaves: a mount replaced, between the sample and the opening of its
+root, by one with the same reused mount id, which a unique mount id closes
+where the kernel has one; an overmount placed after the sample is refused,
+never read. Its verification found one more way to hide a live supervisor,
+a remount of the same procfs that changes its `hidepid` and keeps its mount
+id: so no such process is read from a signal-0 probe's `ESRCH`, never from
+a miss in `/proc`. The dead-run cleanup's scan for a dead step's scoped
+peers no longer skips a handle whose stored teardown says gone, and for a
+handle that binds nothing because its snapshot's owner record is proven
+absent, its `cancel` writes no kill but still reads the scope, a reading
+needing no authority. The gate keeps a snapshot whose owner record could
+not be read, as before. The
+dead-run cleanup's release of a step's records rests on the reading each
+`cancel` it called returned, which the consuming rule now admits, not on a
+second reading of its own. And a collector inside a loop that already
+polls (a heavy-work acquire, a joined wrapper's wait, a release) reads
+the scope again at each pass, so it advances within its
+invocation; the kill is still written once an invocation. Two minors rode
+along: the step a settlement's capture comes from is step 5, and a nested
+peer's survivor may run in its removed tree until the enclosing kill, as
+today. Two findings of that critique stay limits, on rare paths: a live
+driver releasing a fallback worker's records without the peer-scope scan,
+and a handle pruned between a runner's terminal write and its snapshot's
+removal.
+
+A third critique (scoped, codex run `review-20261123T234730Z-6d1123`) hit
+the critique cap with five majors open; the owner granted one more round
+and ruled which to fix. The consume rule now names the snapshot removals
+that rest on no reading, as the binding paragraph does, and so does the
+Decision summary here. The supervisor check decides the boot before the
+rest of the clock, so a verified reboot proves the supervisor gone however
+the namespaces compare. Every autopilot check now gets a record before its
+scratch, naming whether it runs the harness, so the scratch sweep tells an
+ordinary check, or a harness that never reached a launch, from a check
+whose record was lost, which keeps its directory; a root marker field tells
+this release's roots from an earlier one's. A snapshot directory with
+neither an owner record nor a tree (a failed first owner write, or a
+removal stopped short) passes the gate, having no tree for a scope to use,
+while one whose owner record is absent but whose tree is left is kept, since
+a lost record may have carried a scope; the race summary
+admits the dead-run cleanup's delegated reading; and the persona check's
+citation is corrected. Two findings of that critique became limits, on the
+owner's ruling: same-boot gone across containers sharing run records, and
+retention pruning an unbound handle a dead step's scan needs. A Known limits
+paragraph now states all four rare-path limits in the Decision text.
+
+A fourth critique (scoped, codex run `review-20261124T025722Z-01f613`) hit
+the raised cap with two majors open; the owner granted a last round. The
+gate bullet and the race summary now name the snapshot directory left with
+its owner record absent, as the binding paragraph and the consume rule
+decide it (gone with no tree, kept with one), where today's reclaim folds it
+into `owner-unreadable-expired`; and both say a remover may rest on a
+reading of gone its own process made earlier, as the runner's end does
+after its capture and terminal write. The scratch sweep reads an ownership
+the check's record names that is absent (no directory of its token, though
+other tokens' may stay) as retired, since every remover of an ownership in
+this release removes it only once none of its entries holds a running group
+or a scope not read gone; that is the normal end of a `mutate` check, whose
+harness's release removes its ownership. It reads absence only where it
+finds the lock's directory by the device and inode the harness recorded,
+and reads the groups directory from it without crossing a mount, so a sweep
+that cannot see that directory, or sees a mount over its groups, keeps the
+check's. The empty
+snapshot directory is stated as outside the gate, not a third exception to
+it. An ownership
+removed outside those removers cannot be told from one retired, a fifth
+Known limit, which also names a mount over the groups directory that only
+the harness's mount namespace has.
+
+**Alternatives weighed.**
+
+- *A kill only when something is seen left.* The runner would look for
+  members after the companion's exit and write the kill only when it found
+  one. It reads the same cgroup either way, and a kill of an empty scope
+  costs nothing, so the check adds a window between the reading and the
+  write and saves nothing. Rejected.
+- *Keep the normal end's removal as it is (2026-10-19) and leave a scope that
+  did not empty to the reclaim.* That removes a tree under what may still run
+  there, which the first slice set out to stop; and a reclaim's own run is
+  not guaranteed (nothing observes a repository after an interactive session
+  ends). Rejected: the snapshot stays until a remover reads its scope gone,
+  the age rule included.
+- *A removal record, written before a snapshot is removed, that lets the
+  handle bind alone.* The critique showed it cannot be written on the
+  handle across personas, and a record of its own would add a third record
+  to keep in agreement. With every removal gated on a reading of gone,
+  which is final, nothing is owed to the scope after a removal of this
+  release, so the record serves nothing. Rejected.
+- *Removal on a reading of emptied.* The second pass let it rest there,
+  arguing that only a deliberate attach repopulates a closed scope. The
+  second pass's verification showed the premise wrong for the run's own
+  processes: one that left the scope may be attached back. Removing the
+  owner record then would end the binding while the scope may fill again,
+  and the third pass's verification found the same for every other act
+  (a lock entry, a capture, a copy). Every act waits for gone, which the
+  manager's own collection of an emptied scope brings. Rejected.
+- *A reader that asks the manager to stop an emptied unit.* The third pass
+  had it, to hasten gone. A stop sends the manager's own signals to what the
+  scope holds when the stop runs, a second way to signal outside the
+  companion's group that no identity check binds to the invocation checked.
+  Rejected: the manager removes an emptied scope by itself, and one it
+  leaves is the owner's to stop.
+- *A version bump of the handle or the owner record.* Rejected for the
+  reasons the C141 amendment recorded for a new fingerprint kind: an earlier
+  runner would refuse the handle and stop its sweep, and an earlier reclaim
+  would read the owner record as none.
+- *A lock around the teardown.* The acts that rely on a teardown read the
+  cgroup themselves, so a stored one overwritten by an older observation
+  costs one more reading; the handle's two-process races (C139) are not this
+  amendment's to close. Rejected.
+- *A teardown failure that turns a run `failed`.* The answer was the
+  companion's and is complete at its exit; the scope is the run's
+  operational cleanup, reported apart, as the snapshot's removal is.
+  Rejected.
+- *`sweep` kept to reconcile only, the kill left to `cancel` and the
+  reclaim.* After an interactive session ends, `sweep` from the next
+  session's hook may be the only reader that ever comes; a run whose runner
+  is gone has no work left to cancel. Rejected, under the condition that
+  the supervisor is proven gone.
+
+**Not observed.** No part of this slice was measured beyond the first
+slice's: the drain bound, the empty wait and the ordering against the
+handle's terminal write are design values, to be measured by the
+implementation. Whether the worker's step record and the harness's
+ownership entry pass an unknown field in each earlier release is for the
+implementation to show; the decision requires that they do, or that the
+field go where they do not read it.
