@@ -10,7 +10,7 @@
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, rejects, strictEqual } from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -31,12 +31,26 @@ async function writeCompanions(root, { missing = false } = {}) {
     ? 'export async function discoverPeerCompanion() { return { ok: false, reason: "not installed" }; }\n'
     : 'export async function discoverPeerCompanion({ peer } = {}) { return { ok: true, path: new URL("./" + peer + "-companion.mjs", import.meta.url).pathname }; }\n');
   if (missing) return dir;
+  // Each stub records its pid beside itself as it starts (C162), so the
+  // workflow's teardown finds every one a case started, whether or not the
+  // case got as far as reading it from a handle. It then looks its record up
+  // again through `pids/`, and exits when that fails: a write already under
+  // way when the teardown renamed `pids/` aside can land in the renamed
+  // directory after the teardown's last read, but then the lookup that
+  // follows it fails; a lookup that succeeds means the record was there
+  // before the rename, where the teardown's reads find it (R2-F2).
+  await mkdir(join(dir, 'pids'), { recursive: true });
   const companion = `#!/usr/bin/env node
+import { existsSync, writeFileSync } from 'node:fs';
+writeFileSync(new URL('./pids/' + process.pid, import.meta.url), '');
+if (!existsSync(new URL('./pids/' + process.pid, import.meta.url))) process.exit(1);
 const mode = process.env.FAKE_COMPANION_MODE || 'json-success';
 const envelope = (stdout) => JSON.stringify({ status: 'success', peer_host: 'codex', peer_model: null, stdout, exit_code: 0 });
 if (mode === 'long') {
   process.stdout.write('started\\n');
   setInterval(() => {}, 1000);
+  // Never forever (C162): a test process killed outright runs no teardown.
+  setTimeout(() => process.exit(0), 600000);
 } else if (mode === 'json-empty') {
   process.stdout.write(envelope(''));
 } else if (mode === 'malformed') {
@@ -62,6 +76,120 @@ async function waitFor(predicate, message, timeoutMs = 15000) {
   throw new Error(`timed out waiting for ${message}`);
 }
 
+// The command line names `mark` as a whole path: an argument of its own or
+// its start (after a blank, or at the start), followed by a separator, a
+// blank or its end, never inside or as the prefix of a longer name.
+function namesMark(args, mark) {
+  for (let i = args.indexOf(mark); i !== -1; i = args.indexOf(mark, i + 1)) {
+    const before = i === 0 ? undefined : args[i - 1];
+    const next = args[i + mark.length];
+    if (before !== undefined && !/\s/.test(before)) continue;
+    if (next === undefined || next === '/' || /\s/.test(next)) return true;
+  }
+  return false;
+}
+
+// C162 — whose a pid is: `gone` (no such process), `ours` (alive, and its
+// command line names the case's temporary repository, which every runner
+// (--repo-root) and stub companion (its path) of that case carries, so a pid
+// reused by another process is never taken for it; `mark` may list several
+// spellings of that path, any of which counts), `other`, or `unknown`
+// when `ps` cannot say (missing, timed out, failed on a live pid). Unknown is
+// never signalled, and counts as left over: the check fails closed.
+function ownership(pid, mark) {
+  const alive = () => {
+    try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+  };
+  if (!alive()) return 'gone';
+  // -ww: the whole command line, whatever the terminal width; SIGKILL at the
+  // timeout, which a `ps` that ignores SIGTERM cannot outlast.
+  const r = spawnSync('ps', ['-ww', '-o', 'args=', '-p', String(pid)], { encoding: 'utf8', timeout: 5000, killSignal: 'SIGKILL' });
+  if (r.error || r.signal) return 'unknown';
+  if (r.status !== 0 || r.stdout.trim() === '') return alive() ? 'unknown' : 'gone';
+  return [].concat(mark).some((m) => namesMark(r.stdout, m)) ? 'ours' : 'other';
+}
+
+// Each of `pids` still the case's, checked again just before its signal: its
+// group (a stub leads its own), then the pid.
+function killStarted(pids, mark) {
+  for (const pid of pids) {
+    if (ownership(pid, mark) !== 'ours') continue;
+    try { process.kill(-pid, 'SIGKILL'); } catch { /* not a group leader, or gone */ }
+    try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
+  }
+}
+
+// C162 — the processes a case started that outlived it: the runners it
+// tracked, then the stubs that recorded themselves. Each is given a short
+// grace to end, then stopped. Registration is closed first: `pids/` is
+// renamed aside in one step, so a stub starting after it fails its first act,
+// recording itself, and exits; one whose write was already under way and
+// lands in the renamed directory fails the lookup that follows it and exits
+// too (writeCompanions), so none outlives the teardown unseen. The renamed
+// directory is read again after any stub was found or stopped, and once
+// after a pause when `recheck` is set (the case failed, or tracked a runner,
+// so something may still be launching) or a stub had to be stopped, until a
+// read finds nothing new. Each phase runs whatever the other did. Returns those still
+// there after the grace (or whose owner `ps` could not tell), and every error
+// met on the way.
+async function stopLeftovers(mark, companionsDir, tracked, { recheck = false } = {}) {
+  const left = [];
+  const errors = [];
+  const valid = (list) => [...new Set(list)].filter((p) => Number.isInteger(p) && p > 1);
+  const lingering = (p) => ['ours', 'unknown'].includes(ownership(p, mark));
+  const stop = async (pids, what) => {
+    const living = () => pids.filter(lingering);
+    const after = await waitFor(() => (living().length === 0 ? [] : null), `the case's ${what} to end`, 3000).catch(() => living());
+    killStarted(after, mark);
+    if (after.length > 0) {
+      await waitFor(() => !after.some((p) => ownership(p, mark) === 'ours'), `the leftover ${what} to be stopped`, 5000)
+        .catch((e) => errors.push(e));
+    }
+    left.push(...after);
+  };
+  try { await stop(valid([...tracked]), 'runners'); } catch (e) { errors.push(e); }
+  if (!companionsDir) return { left, errors };
+  // Close registration (R2-F2). A `pids/` that is not there has no stub to
+  // read; any other failure is reported, and the open directory is read.
+  let pidsDir = join(companionsDir, 'pids.closed');
+  try {
+    await rename(join(companionsDir, 'pids'), pidsDir);
+  } catch (e) {
+    if (e.code === 'ENOENT') return { left, errors };
+    errors.push(e);
+    pidsDir = join(companionsDir, 'pids');
+  }
+  const seen = new Set();
+  // A pause still owed before the read that ends the loop: a stub found and
+  // ended on its own does not cancel it.
+  let pause = recheck || left.length > 0;
+  for (let round = 0; ; round += 1) {
+    if (round === 20) { errors.push(new Error('pids/ kept gaining stubs after 20 reads')); break; }
+    let names;
+    try {
+      names = await readdir(pidsDir);
+    } catch (e) {
+      // Only a directory that is not there reads as no stub.
+      if (e.code !== 'ENOENT') { errors.push(e); break; }
+      names = [];
+    }
+    const fresh = valid(names.map(Number)).filter((p) => !seen.has(p));
+    if (fresh.length === 0) {
+      if (!pause) break;
+      pause = false;
+      await new Promise((r) => setTimeout(r, 250));
+      continue;
+    }
+    for (const p of fresh) seen.add(p);
+    const before = left.length;
+    try { await stop(fresh, 'stubs'); } catch (e) { errors.push(e); }
+    // A stub launches nothing: only one that had to be stopped (something
+    // went wrong) earns another pause before the read that ends the loop.
+    if (left.length > before) pause = true;
+  }
+  return { left, errors };
+}
+
 for (const persona of personasFor('scripts/peer-runner.mjs')) {
   const P = personaInfo(persona);
   const RUNNER = P.path('scripts/peer-runner.mjs');
@@ -79,16 +207,44 @@ for (const persona of personasFor('scripts/peer-runner.mjs')) {
   const { createWorkflow, listWorkflowFiles, parseWorkflowFile, recordPendingEnsemble, commitEnsemble } =
     await import(pathToFileURL(P.path('scripts/state.mjs')).href);
 
+  // C162 — the teardown stops whatever the case started (a runner it
+  // passed to track, every stub companion), however the case ended, and a
+  // case that passed fails when one of them outlived it. A case that failed
+  // reports its own error, never one of the teardown's.
   async function withWorkflow(fn) {
     const repoRoot = await mkdtemp(join(tmpdir(), `${persona}-settle-`));
+    const tracked = new Set();
+    let companions = null;
+    let failed = false;
+    let caseError;
+    // The repository as the case names it, and as a stub's command line does:
+    // the ESM loader hands discover-peer the stub at its real path, so where
+    // the temporary directory lies behind a link (macOS: /var → /private/var)
+    // only the real path matches. A realpath that fails fails the case.
+    let marks = [repoRoot];
     try {
+      marks = [repoRoot, await realpath(repoRoot)];
       await createWorkflow({ repoRoot, verb: 'compose', host: 'claude', persona, gitBaseline: BASELINE, originalRequest: 'settle' });
       const [workflowPath] = await listWorkflowFiles(repoRoot);
-      const companions = await writeCompanions(repoRoot);
-      await fn({ repoRoot, workflowPath, companions });
-    } finally {
-      await rm(repoRoot, { recursive: true, force: true });
+      companions = await writeCompanions(repoRoot);
+      await fn({ repoRoot, workflowPath, companions, track: (pid) => tracked.add(pid) });
+    } catch (e) {
+      failed = true;
+      caseError = e;
     }
+    let teardown = { left: [], errors: [] };
+    try {
+      teardown = await stopLeftovers(marks, companions, tracked, { recheck: failed || tracked.size > 0 });
+    } catch (e) {
+      teardown.errors.push(e);
+    }
+    // Retries: a record whose create was under way at the rename can land in
+    // pids.closed while rm empties it (ENOTEMPTY); its stub exits on its own.
+    await rm(repoRoot, { recursive: true, force: true, maxRetries: 3 }).catch((e) => teardown.errors.push(e));
+    if (failed) throw caseError;
+    if (teardown.errors.length === 1) throw teardown.errors[0];
+    if (teardown.errors.length > 1) throw new AggregateError(teardown.errors, 'the teardown failed');
+    deepStrictEqual(teardown.left, [], 'a process the case started outlived it');
   }
 
   const fm = async (workflowPath) => parseWorkflowFile(await readFile(workflowPath, 'utf8')).frontmatter;
@@ -313,6 +469,8 @@ for (const persona of personasFor('scripts/peer-runner.mjs')) {
           '--cwd', ctx.repoRoot, '--ensemble-type', 'plan-verify', '--run-id', 'plan-verify-killed'], {
           env: { ...process.env, AGENTIC_COMPANIONS_ROOT: ctx.companions, FAKE_COMPANION_MODE: 'long' }, stdio: 'ignore',
         });
+        // A wait below that runs out leaves the runner to the teardown.
+        ctx.track(runner.pid);
         const paths = peerRunPaths(ctx.repoRoot, 'plan-verify-killed');
         // Its one line already written: killed before it, the stub would die
         // writing to the broken pipe, and the case would test nothing.
