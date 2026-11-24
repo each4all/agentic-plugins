@@ -877,3 +877,14 @@ implementation. Whether the worker's step record and the harness's
 ownership entry pass an unknown field in each earlier release is for the
 implementation to show; the decision requires that they do, or that the
 field go where they do not read it.
+
+**Accepted 2026-11-24.** The owner accepted both C181 amendments (this one
+and the 2026-11-22 amendment above) explicitly, in the main session. On
+acceptance, the known limit for a heavy-work ownership removed outside its
+removers no longer says that "the install practice keeps away" an earlier
+release's remover: the decision states no such practice, and an older
+install a session or an autopilot pin keeps, or a harness loaded from a
+checkout of an earlier commit, still runs one. The sentence now names
+those cases. The clauses that held each amendment's effect until both were
+accepted (the second amendment's pointer and the rollout's last sentence)
+were dropped, since both now are.
