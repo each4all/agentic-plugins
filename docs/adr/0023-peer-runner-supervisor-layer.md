@@ -8,10 +8,9 @@ Accepted (PR-A through PR-E shipped — [#80](https://github.com/each4all/agenti
 C141): Proposed.
 
 §6, the processes outside the companion's group a run may signal
-(amendment of 2026-11-22, C181): Proposed.
-
-§6, when a run ends its scope and what it keeps when it cannot see it
-emptied (amendment of 2026-11-24, C181): Proposed.
+(amendment of 2026-11-22, C181) and when a run ends its scope and what it
+keeps when it cannot see it emptied (amendment of 2026-11-24, C181):
+Accepted (2026-11-24, the owner explicitly in the main session).
 
 ## Context
 
@@ -291,11 +290,11 @@ Cancellation sequence:
 before its cleanup, and the end of the companion's whole group, are in the
 amendment of that date, C142.)
 
-**Outside the companion's group.** Status: Proposed (2026-11-22, C181).
-Every signal above goes to the companion's process group, or to its pid,
-and keeps the fingerprint check of step 3 under the rules of 2026-10-19 for
-reading it (a fingerprint or a group's listing is read only through a
-`/proc` that is the reader's and, where the record keeps a clock, only in
+**Outside the companion's group.** Every signal above goes to the
+companion's process group, or to its pid, and keeps the fingerprint
+check of step 3 under the rules of 2026-10-19 for reading it (a
+fingerprint or a group's listing is read only through a `/proc` that is
+the reader's and, where the record keeps a clock, only in
 the pid namespace that clock names); that boundary is what this paragraph
 amends, and those signals stay as they are. A process that has left that
 group is never signalled for what it says or where it stands: a working
@@ -519,11 +518,10 @@ there stays as before.
 
 When each launcher uses this authority, what a run records when it cannot
 see its cgroup empty, and the races it must handle are decided in a second
-amendment (the paragraphs that follow, of 2026-11-24); until both are
-accepted, nothing uses either.
-*Proposed 2026-11-22 (C181): [history](history/0023-peer-runner-supervisor-layer.md#amendment-2026-11-22--which-processes-outside-the-companions-group-a-run-may-signal-c181).*
+amendment (the paragraphs that follow, of 2026-11-24).
+*Amended 2026-11-22 (C181), accepted 2026-11-24: [history](history/0023-peer-runner-supervisor-layer.md#amendment-2026-11-22--which-processes-outside-the-companions-group-a-run-may-signal-c181).*
 
-**When the scope is ended.** Status: Proposed (2026-11-24, C181). Every
+**When the scope is ended.** Every
 end below writes the kill above, under every check above, and nothing else
 outside the companion's group: none grants a kill those checks withhold,
 each takes the identity from the records its launcher wrote, and none reads
@@ -1073,8 +1071,7 @@ to the worker's records only where an earlier reader passes it.
   `withheld`.
 - The autopilot driver runs the pinned engineer's runner (2026-10-19,
   rollout), so the runner's ends reach autopilot only through a release
-  installed and pinned. No release writes a scope or a kill until both
-  amendments are accepted.
+  installed and pinned.
 
 **Races.**
 
@@ -1178,13 +1175,15 @@ owner's rule of 2026-10-25 for rare paths):
 - **A heavy-work ownership removed outside its removers.** The scratch
   sweep reads an absent ownership as retired (above), where it sees the
   lock's directory as the harness recorded it, so one removed by an
-  earlier release's remover, which the install practice keeps away, or by
-  hand, while an entry of it held a scope not read gone, lets the check's
-  directory go under what that scope may still run there. Only a removal
-  outside this release's removers reaches it, or a mount over the lock's
-  groups directory that the harness's mount namespace has and the sweep's
-  lacks: the sweep checks its own view only, and then finds no token in
-  the directory beneath that mount.
+  earlier release's remover, or by hand, while an entry of it held a scope
+  not read gone, lets the check's directory go under what that scope may
+  still run there. Only a removal outside this release's removers reaches
+  it (an earlier release's remover still runs where a session or an
+  autopilot pin keeps an older install, or a harness is loaded from a
+  checkout of an earlier commit), or a mount over the lock's groups
+  directory that the harness's mount namespace has and the sweep's lacks:
+  the sweep checks its own view only, and then finds no token in the
+  directory beneath that mount.
 
 None widens a kill. What the first three leave running runs on as it does
 today, and the owner may stop the unit by hand.
@@ -1197,7 +1196,7 @@ managed path), and its normal end keeps today's limit: it removes its
 snapshot after stopping the companion's group alone, so what a command it
 ran left outside the group runs on there. A record of its own, of the
 handle's kind, is its route, and a change of its own.
-*Proposed 2026-11-24 (C181): [history](history/0023-peer-runner-supervisor-layer.md#amendment-2026-11-24--when-a-run-ends-its-scope-and-what-it-keeps-c181).*
+*Amended 2026-11-24 (C181), accepted 2026-11-24: [history](history/0023-peer-runner-supervisor-layer.md#amendment-2026-11-24--when-a-run-ends-its-scope-and-what-it-keeps-c181).*
 
 Cross-host cancellation means "called from the other local agent host in
 the same repo checkout" (for example, Codex asks to cancel a run started
