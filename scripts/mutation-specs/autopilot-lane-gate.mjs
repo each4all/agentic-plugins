@@ -71,8 +71,8 @@ export const MUTATIONS = [
   },
   {
     id: 'L17', file: POLICY, tests: [TP],
-    from: "(ps -g ${w.pgid ?? '<pgid>'})`, { scope: 'run' });",
-    to: "(ps -g ${w.pgid ?? '<pgid>'})`);",
+    from: "  if (lingers(w)) return halt('worker-failed', lingeringDetail(w), { scope: 'run' });",
+    to: "  if (lingers(w)) return halt('worker-failed', lingeringDetail(w));",
     why: 'a worker group that outlived SIGKILL parks its lane, and the run starts more beside a process it cannot stop',
     killed_by: /verifyStep marks a lingering group and an unread macro run-wide/,
   },
@@ -255,7 +255,7 @@ export const MUTATIONS = [
   },
   {
     id: 'S88', file: SCHED, tests: [TE],
-    from: "    } else if (after.lookError && w.groupTeardown !== 'lingering') {",
+    from: "    } else if (after.lookError && !lingers(w)) {",
     to: '    } else if (after.lookError) {',
     why: 'a worker group that outlived SIGKILL whose look then failed parks its lane, and the run starts more beside a process it cannot stop',
     killed_by: /a lingering group whose lane look fails drains the run/,

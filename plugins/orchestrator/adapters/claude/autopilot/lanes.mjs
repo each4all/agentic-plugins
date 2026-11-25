@@ -40,7 +40,7 @@ import path from 'node:path';
 import { appendLaneEvent } from './ledger.mjs';
 import { isSafeBranch, isSafeMacroId, isSafeSubtaskId } from './policy.mjs';
 import { subtaskReadiness } from '../../../scripts/state.mjs';
-import { acquireLock, AUTOPILOT_DIR_REL, holderAlive, readLockEntries, worktreeLockPath } from '../../../scripts/lib/run-locks.mjs';
+import { acquireLock, AUTOPILOT_DIR_REL, createScopeJudge, holderAlive, judgeStepScope, readLockEntries, worktreeLockPath } from '../../../scripts/lib/run-locks.mjs';
 import { holdStateOf } from '../../../scripts/lib/holds-records.mjs';
 import {
   attestationChecks, checkStateBase, gitCommonDir, isUnderLanesDirectory, lanesDirectory, readSharedCreation, sameDirectory,
@@ -349,11 +349,15 @@ function branchTip(checkout, branch, env) {
 }
 
 // Whether a lane's worktree lock has a live participant other than `exclude`
-// (a run driving it, or an owner session's admission there).
-async function laneLockHeld(lane, exclude) {
+// (a run driving it, or an owner session's admission there), or (C181) an
+// entry whose step scope is not read gone: the lane's removal and adoption
+// are gated where they are made, through the run locks' own gate, which ends
+// the scope first where it proves the entry's driver gone.
+async function laneLockHeld(lane, exclude, { scopes = createScopeJudge() } = {}) {
   for (const e of readLockEntries(worktreeLockPath(lane))) {
     if (exclude && e.file === exclude) continue;
     if (e.session || e.holder === null || await holderAlive(e.holder)) return true;
+    if (judgeStepScope(e.holder, scopes)?.state === 'held') return true;
   }
   return false;
 }

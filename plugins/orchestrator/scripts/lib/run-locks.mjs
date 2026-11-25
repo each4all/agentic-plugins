@@ -14,6 +14,8 @@ import path from 'node:path';
 
 import { readRegular } from './holds-records.mjs';
 import { fingerprintsMatch, isPinnedReading, isProcessAlive, PS_START_ENV } from './process-identity.mjs';
+import { scopeRecordState, scopeRecordsAgree } from './scope.mjs';
+import { createScopeEnder } from './scope-reader.mjs';
 
 export const AUTOPILOT_DIR_REL = '.agentic-plugins/runs/autopilot';
 
@@ -72,10 +74,13 @@ export function worktreeLockPath(repoRoot) {
 }
 
 export class LockHeldError extends Error {
-  constructor(lock, holder, { now = Date.now() } = {}) {
+  constructor(lock, holder, { now = Date.now(), scopeHold = null } = {}) {
     super(holder?.kind === 'session'
       ? `an interactive session holds ${lock}: ${describeAdmission(holder, { now })}`
-      : `another autopilot run holds ${lock}: ${holder?.run_id ?? 'unknown run'} (pid ${holder?.pid ?? '?'}${holder?.worker?.pid ? `, worker ${holder.worker.pid}` : ''})${holder?.repo ? `, launched in ${holder.repo}: run /orchestrator:autopilot status there` : ''}`);
+      : scopeHold
+        ? heldScopeText(lock, holder, scopeHold)
+        : `another autopilot run holds ${lock}: ${holder?.run_id ?? 'unknown run'} (pid ${holder?.pid ?? '?'}${holder?.worker?.pid ? `, worker ${holder.worker.pid}` : ''})${holder?.repo ? `, launched in ${holder.repo}: run /orchestrator:autopilot status there` : ''}`);
+    this.scopeHold = scopeHold;
     this.name = 'LockHeldError';
     this.lock = lock;
     this.holder = holder;
@@ -264,12 +269,108 @@ export function readLockEntries(lock) {
 
 const pause = (ms) => new Promise((r) => { setTimeout(r, ms); });
 
-async function judgeOne(e, { probe, now }) {
+// C181 (ADR-0023, what is kept while a scope is not read gone: an autopilot
+// step) — a worker entry whose `worker.scope` records a step's scope is no
+// debris while that scope is not read gone, whatever holderAlive says. Its
+// gate, run at the act by every judge of the entry (acquireLock's and
+// joinAdmission's check and recheck, before either refuses, and so before
+// their debris collection; laneLockRivals), reads the scope; where the entry
+// binds the scope and the step's record agrees with it, and the driver it
+// names as supervisor is proven gone, it writes the scope's kill first. A live
+// driver's entry is live, as before, and its scope is not read.
+//
+// The step's record is the `scope` line of the step's seq in the run's step
+// ledger (`<repo>/.agentic-plugins/runs/autopilot/<run>/steps.jsonl`, the
+// last such line); an entry it does not agree with, or that names another run,
+// step or driver, still holds while its scope is not read gone (a reading
+// needs no authority), but gets no kill.
+//
+// `scopes` is one invocation's ender (each scope killed and read at most once
+// in it) and its reader of a step's record; a test passes its own.
+export function createScopeJudge({ ender = createScopeEnder(), stepRecord = readStepScopeRecord } = {}) {
+  return { ender, stepRecord };
+}
+
+// The step's last scope line, as a record carrying `scope`, or null.
+export function readStepScopeRecord(holder) {
+  const repo = holder?.repo;
+  const run = holder?.run_id;
+  const seq = holder?.worker?.seq;
+  if (typeof repo !== 'string' || !path.isAbsolute(repo) || typeof run !== 'string' || !/^[A-Za-z0-9._:-]{1,200}$/.test(run) || !Number.isSafeInteger(seq)) return null;
+  let text;
+  try {
+    text = fs.readFileSync(path.join(repo, AUTOPILOT_DIR_REL, run, 'steps.jsonl'), 'utf8');
+  } catch {
+    return null;
+  }
+  let found = null;
+  for (const line of text.split('\n')) {
+    if (!line.includes('"scope"')) continue;
+    let rec;
+    try { rec = JSON.parse(line); } catch { continue; }
+    if (rec?.event === 'scope' && rec.seq === seq && Object.hasOwn(rec, 'scope')) found = { scope: rec.scope };
+  }
+  return found;
+}
+
+// Whether a worker entry's step scope holds it: null when the entry carries
+// no step scope to keep (none, abandoned, an earlier release's entry, one this
+// version does not parse), else { state: 'gone' | 'held', unit, run, step,
+// reading }.
+export function judgeStepScope(holder, scopes) {
+  const worker = holder?.worker;
+  if (worker === null || typeof worker !== 'object' || !Object.hasOwn(worker, 'scope')) return null;
+  let st;
+  try { st = scopeRecordState(worker); } catch { return null; }
+  if (st.state === 'unknown-version') {
+    return { state: 'held', unit: null, run: holder.run_id ?? null, step: worker.seq ?? null, reading: { state: 'withheld', check: 'unknown-version' } };
+  }
+  // A record that claims a scope but does not parse grants no kill, and is
+  // still held: the scope it names may hold processes.
+  if (st.state === 'malformed' && worker.scope?.state === 'scoped') {
+    return { state: 'held', unit: typeof worker.scope?.identity?.unit === 'string' ? worker.scope.identity.unit : null, run: holder.run_id ?? null, step: worker.seq ?? null, reading: { state: 'withheld', check: 'malformed' } };
+  }
+  if (st.state !== 'scoped') return null;
+  const id = st.identity;
+  const binds = id.owner.kind === 'autopilot-step' && id.owner.run === holder.run_id
+    && Number.isSafeInteger(worker.seq) && id.owner.step === String(worker.seq) && id.supervisor.pid === holder.pid;
+  let agrees = false;
+  if (binds) {
+    try { agrees = scopeRecordsAgree(worker, scopes.stepRecord(holder)); } catch { agrees = false; }
+  }
+  if (agrees) {
+    let sup;
+    try { sup = scopes.ender.supervisorGone(id.supervisor); } catch { sup = { gone: false }; }
+    if (sup.gone) {
+      try { scopes.ender.kill(id); } catch { /* kept withheld by the ender */ }
+    }
+  }
+  let reading;
+  try { reading = scopes.ender.read(id); } catch { reading = { state: 'withheld', check: 'reading-failed' }; }
+  return { state: reading?.state === 'gone' ? 'gone' : 'held', unit: id.unit, run: id.owner.run, step: id.owner.step, reading };
+}
+
+function heldScopeText(lock, holder, hold) {
+  const r = hold.reading ?? {};
+  return `${lock} is held by the step scope ${hold.unit ?? '(unreadable)'} of run ${hold.run ?? holder?.run_id ?? '?'}, step ${hold.step ?? '?'}, which was not read gone (${r.state ?? '?'}${r.check ? `: ${r.check}` : ''}); its driver (pid ${holder?.pid ?? '?'}) is not running. A later run reads it again, and ends it once its driver is proven gone; or stop it: systemctl --user stop ${hold.unit ?? '<unit>'}`;
+}
+
+async function judgeOne(e, { probe, now, scopes = null }) {
   // An admission entry is live until released: its command may be paused
   // inside a step, and no process proves it gone (ADR-0067 Decision 4, item 5).
   // One that does not parse is shown to the owner, never cleared as debris.
   if (e.session) return e.holder === null && now() - e.mtimeMs < FRESH_UNPARSED_MS ? 'busy' : 'live';
   if (e.holder === null) return now() - e.mtimeMs < FRESH_UNPARSED_MS ? 'busy' : 'gone';
+  const carries = e.holder.worker !== null && typeof e.holder.worker === 'object' && Object.hasOwn(e.holder.worker, 'scope');
+  if (carries) {
+    // A live driver's entry is live: its own step, whose scope it ends.
+    if ((await processState(e.holder.pid, e.holder.fingerprint, probe)) === 'live') return 'live';
+    const hold = judgeStepScope(e.holder, scopes ?? createScopeJudge());
+    if (hold !== null && hold.state !== 'gone') {
+      e.scopeHold = hold;
+      return 'held';
+    }
+  }
   return (await holderAlive(e.holder, { probe })) ? 'live' : 'gone';
 }
 
@@ -282,12 +383,12 @@ async function judgeOne(e, { probe, now }) {
 // check: unchanged, it stays gone, and stays unchanged, since only its owner
 // writes it and the check found that owner dead. Changed, it is judged again.
 // `hooks.afterRead` is a test seam between the read and the check.
-async function judgeEntries(lock, { exclude = null, probe, now, hooks = {}, phase }) {
+async function judgeEntries(lock, { exclude = null, probe, now, hooks = {}, phase, scopes = null }) {
   const judged = [];
   const entries = readLockEntries(lock).filter((e) => e.file !== exclude);
   if (hooks.afterRead) await hooks.afterRead(phase);
   for (let e of entries) {
-    let state = await judgeOne(e, { probe, now });
+    let state = await judgeOne(e, { probe, now, scopes });
     for (let rereads = 0; state === 'gone'; rereads += 1) {
       const again = readEntry(e.file);
       if (!again) { state = 'missing'; break; }
@@ -295,7 +396,7 @@ async function judgeEntries(lock, { exclude = null, probe, now, hooks = {}, phas
       // Rewritten again and again while judged dead: not settled, so not gone.
       if (rereads === 3) { state = 'busy'; break; }
       e = again;
-      state = await judgeOne(e, { probe, now });
+      state = await judgeOne(e, { probe, now, scopes });
     }
     if (state !== 'missing') judged.push({ ...e, state });
   }
@@ -351,23 +452,31 @@ async function clearDebris(lock, judged) {
  * already read it (a process's start does not change): a caller that takes a
  * lock often spares a `ps` each time.
  */
-export async function acquireLock(lock, { record, now = () => Date.now(), probe = processFingerprint, hooks = {}, attempts = 20, selfFingerprint = null }) {
+export async function acquireLock(lock, { record, now = () => Date.now(), probe = processFingerprint, hooks = {}, attempts = 20, selfFingerprint = null, scopes = createScopeJudge() }) {
   fs.mkdirSync(lock, { recursive: true });
   const self = { pid: process.pid, fingerprint: selfFingerprint ?? await processFingerprint(process.pid) };
   const base = { ...record, ...self, worker: null };
   const mine = path.join(lock, `h-${process.pid}-${randomBytes(6).toString('hex')}.json`);
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const before = await judgeEntries(lock, { probe, now, hooks, phase: 'check' });
+    const before = await judgeEntries(lock, { probe, now, hooks, phase: 'check', scopes });
     const live = before.find((e) => e.state === 'live');
     if (live) throw new LockHeldError(lock, live.holder);
+    // C181 — an entry held by a step scope not read gone refuses, naming the
+    // unit and the step: the run halts for the owner.
+    const held = before.find((e) => e.state === 'held');
+    if (held) throw new LockHeldError(lock, held.holder, { scopeHold: held.scopeHold });
     if (before.some((e) => e.state === 'busy')) { await pause(100); continue; }
 
     if (hooks.beforeCreate) await hooks.beforeCreate();
     writeWhole(lock, mine, base);
     if (hooks.afterCreate) await hooks.afterCreate();
 
-    const after = await judgeEntries(lock, { exclude: mine, probe, now, hooks, phase: 'recheck' });
+    const after = await judgeEntries(lock, { exclude: mine, probe, now, hooks, phase: 'recheck', scopes });
     const rival = after.find((e) => e.state !== 'gone');
+    if (rival?.state === 'held') {
+      unlinkQuiet(mine);
+      throw new LockHeldError(lock, rival.holder, { scopeHold: rival.scopeHold });
+    }
     if (!rival) {
       await clearDebris(lock, after);
       return {
@@ -551,14 +660,22 @@ export async function joinAdmission({
   // false: `checkout` is already the root the locks derive from (state.mjs
   // plan-approve passes the macro's state root, which need not be a checkout).
   resolveCheckout = true,
+  scopes = createScopeJudge(),
 }) {
   checkout = resolveCheckout ? checkoutRoot(checkout) : path.resolve(checkout);
   if (host !== 'claude' && host !== 'codex') throw new AdmissionError(`--host must be claude or codex (got ${JSON.stringify(host)})`, 'usage');
   const locks = admissionLocks({ command, checkout, macroId });
   const seen = [];
   for (const lock of locks) {
-    const judged = await judgeEntries(lock, { probe, now, hooks, phase: 'check' });
+    const judged = await judgeEntries(lock, { probe, now, hooks, phase: 'check', scopes });
     seen.push({ lock, others: judged.filter((e) => e.state !== 'gone') });
+  }
+  // C181 — a step scope not read gone refuses before anything else, naming
+  // the unit and the step (a held entry is no live run, so no worker of one
+  // passes on it).
+  for (const { lock, others } of seen) {
+    const held = others.find((e) => e.state === 'held');
+    if (held) throw new LockHeldError(lock, held.holder, { now: now(), scopeHold: held.scopeHold });
   }
   const worker = seen.every(({ others }) => others.length > 0 && others.every((e) => e.state === 'live' && isHoldingRunWorker(e.holder, env)));
   if (worker) return { admissionId: '', workerOf: env.AGENTIC_AUTOPILOT, locks };
@@ -582,9 +699,9 @@ export async function joinAdmission({
     if (hooks.afterCreate) await hooks.afterCreate();
     // Look again: a run, or another session, that added its entry meanwhile.
     for (const lock of locks) {
-      const after = await judgeEntries(lock, { exclude: admissionEntryPath(lock, admissionId), probe, now, hooks, phase: 'recheck' });
+      const after = await judgeEntries(lock, { exclude: admissionEntryPath(lock, admissionId), probe, now, hooks, phase: 'recheck', scopes });
       const rival = after.find((e) => e.state !== 'gone');
-      if (rival) throw new LockHeldError(lock, rival.holder ?? { run_id: 'a participant taking the lock' }, { now: now() });
+      if (rival) throw new LockHeldError(lock, rival.holder ?? { run_id: 'a participant taking the lock' }, { now: now(), scopeHold: rival.scopeHold ?? null });
       await clearDebris(lock, after);
     }
   } catch (err) {

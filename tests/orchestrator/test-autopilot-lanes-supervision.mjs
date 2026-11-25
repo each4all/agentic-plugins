@@ -454,7 +454,10 @@ describe('an interrupt, and the driver\'s exit, with a task in flight', () => {
       const code = await t.run({}, {
         startWorker: (o) => {
           const w = realStartWorker(o);
+          // The child that gets the prompt is known once the launch is ready
+          // (a scoped one after its handshake, C181).
           pids[o.seq] = w.pid;
+          w.ready?.then((r) => { if (r) pids[o.seq] = r.pid; });
           const abort = w.abort;
           w.abort = (...a) => { aborted.push(o.seq); return abort(...a); };
           if (o.seq === 1) w.done.then(() => { aDone = true; });

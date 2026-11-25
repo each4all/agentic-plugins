@@ -370,8 +370,8 @@ export const MUTATIONS = [
   },
   {
     id: 'K2', file: WK, tests: [TW],
-    from: '  const closeStdin = () => {\n    if (st.stdinClosed) return;\n    st.stdinClosed = true;',
-    to: '  const closeStdin = () => {\n    if (st.stdinClosed) return;\n    st.stdinClosed = true;\n    endWatch();',
+    from: '  const closeStdin = () => {\n    if (st.stdinClosed || !child) return;\n    st.stdinClosed = true;',
+    to: '  const closeStdin = () => {\n    if (st.stdinClosed || !child) return;\n    st.stdinClosed = true;\n    endWatch();',
     why: 'an idle close of stdin ends the watch, so a worker that ignores it is never judged',
     killed_by: /a worker that ignores an idle close of stdin is judged until it exits/,
   },

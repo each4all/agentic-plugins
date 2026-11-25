@@ -77,7 +77,7 @@ import {
   reconcileWaiting, reportClosePeersUnlisted, runLanes,
 } from './scheduler.mjs';
 import {
-  ALLOWED_TOOLS, COMMIT_DENY, DENIED_TOOLS, launchText, resolveClaudeLaunch, startWorker as defaultStartWorker, terminateGroupsSync, workerEnv,
+  ALLOWED_TOOLS, COMMIT_DENY, DENIED_TOOLS, launchText, lingerReason, lingers, readyOf, resolveClaudeLaunch, startWorker as defaultStartWorker, terminateGroupsSync, workerEnv,
 } from './worker.mjs';
 import {
   checkEnvOf, noteGateStep, offerRecord, personaEnvOf, requestKnownIn, selectionBase, startVerify as defaultStartVerify, suiteArgvOf, verifyFacts, verifyOfferFor,
@@ -745,6 +745,22 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     while (locks.length) locks.pop().release();
   };
   const setWorker = (worker) => { for (const l of locks) l.setWorker(worker); };
+  // A step's worker on the locks before it has anything to do (its scope's
+  // record, then the child that will get the prompt).
+  const registerWorker = (worker) => setWorker(worker);
+  // C181 — a step's scope record: a `scope` line on the step's record, then
+  // the lock entries' copy (a scoped record names the gate, the child the
+  // prompt goes to). Throws when either cannot be written.
+  const recordStepScope = async (seq, sessionId, record) => {
+    appendStep(runDir, { event: 'scope', seq, scope: record, at: new Date(now()).toISOString() });
+    const pid = record?.identity?.gate?.pid;
+    if (record?.state === 'scoped' || record?.state === 'abandoned') {
+      registerWorker({
+        pid: Number.isInteger(pid) ? pid : null, pgid: Number.isInteger(pid) ? pid : null,
+        fingerprint: Number.isInteger(pid) ? await processFingerprint(pid) : null, session_id: sessionId, seq, scope: record,
+      });
+    }
+  };
   let lastSessionId = null;
   let current = null;
   // The step whose started line is written and whose finished line is not:
@@ -1555,15 +1571,26 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         checkInit: (plugins) => provenanceProblem(plugins, { pinned, repoRoot, loaded }),
         ...stallOf({ seq, subtaskId: s.subtaskId ?? null }),
         ...(deps.terminateGroup ? { terminateGroup: deps.terminateGroup } : {}),
+        // C181 (ADR-0023, the autopilot worker) — the step's scope record, on
+        // the step's record and its lock entries before the word; a write
+        // that fails throws, and a scoped launch then launches nothing.
+        recordScope: (record) => recordStepScope(seq, sessionId, record),
       });
       // The worker is on the locks before it has anything to do: a driver
       // that dies here leaves a worker with no prompt, which exits when its
-      // stdin closes, and a lock no second run reclaims while it lives.
-      if (Number.isInteger(current.pid)) setWorker({ pid: current.pid, pgid: process.platform === 'win32' ? null : current.pid, fingerprint: await processFingerprint(current.pid), session_id: sessionId });
+      // stdin closes, and a lock no second run reclaims while it lives. The
+      // child registered is the one that will get the prompt (a gated launch's
+      // gate, or the direct launch after a failed handshake), with its scope.
+      const started = await readyOf(current);
+      if (started && Number.isInteger(started.pid)) {
+        registerWorker({ pid: started.pid, pgid: started.pgid, fingerprint: await processFingerprint(started.pid), session_id: sessionId, seq, ...(started.scope ? { scope: started.scope } : {}) });
+      }
       current.begin();
       const w = await current.done;
       current = null;
-      if (w.groupTeardown === 'lingering') lingering = true;
+      // C181 — a step scope not read gone is kept as a group that outlived
+      // SIGKILL is: its entries, which carry the scope, stay.
+      if (lingers(w)) lingering = true;
       else setWorker(null);
       // A step that never started has no session: the halt offers none.
       lastSessionId = w.sessionId;
@@ -1648,6 +1675,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
         turns: w.turns, cost_usd: w.costUsd, cost_charged_usd: cost, peak_ctx: w.peakCtx, peak_pct: w.peakPct,
         context_window: w.contextWindow, permission_denials: w.denials, report: w.report, raw_truncated: w.rawTruncated,
         group_teardown: w.groupTeardown,
+        scope_teardown: w.scopeTeardown ?? null, pipe_held: w.pipeHeld === true,
         report_eof: w.reportEof === true, closed_on_report: w.closedOnReport === true, abandoned_background: w.abandonedBackground ?? [], report_teardown: w.reportTeardown ?? null,
         peer_cancellations: cancelled, peer_settlements: settlements, peers_unaccounted: unaccounted,
         stall: w.stall ?? null,
@@ -1657,7 +1685,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       // The step's peers are settled: its TMPDIR goes, in the background,
       // unless its group outlived SIGKILL or its peers are unaccounted for
       // (the run then holds it, as it keeps its locks or its open-run record).
-      scratch.release(tmpDir, w.groupTeardown === 'lingering' ? 'the step\'s process group outlived SIGKILL' : unaccounted ? 'the step\'s peers are unaccounted for' : null);
+      scratch.release(tmpDir, lingers(w) ? lingerReason(w) : unaccounted ? 'the step\'s peers are unaccounted for' : null);
       publishStepEnd(seq, s, id, verdict, w.aborted);
       writeRun(runDir, run);
       const pct = w.peakPct == null ? '?' : `${(w.peakPct * 100).toFixed(1)}%`;
@@ -1675,7 +1703,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
     if (current) {
       current.abort('interrupted');
       const w = await current.done;
-      if (w?.groupTeardown === 'lingering') lingering = true;
+      if (lingers(w)) lingering = true;
       if (active) active.aborted = w?.aborted ?? null;
       current = null;
     }

@@ -545,9 +545,10 @@ async function importSchema11Reader(dir, { alsoUnknown = [] } = {}) {
   // command-argument grammar with its codec (C134(a)), and the holds next's
   // hold gate reads (ADR-0068 Decision 2, item 5), and the instructions' record
   // and application (ADR-0068 Decision 7), and the review attempts' record
-  // (C163 A1a), and its entry guard (C48), the script imports beside it.
+  // (C163 A1a), and its entry guard (C48), and the step scope's record and
+  // reader the run locks consult (C181), the script imports beside it.
   await mkdir(join(dir, 'lib'), { recursive: true });
-  for (const lib of ['state-root.mjs', 'run-locks.mjs', 'process-identity.mjs', 'cutover.mjs', 'lane-advice.mjs', 'worktree-proposal.mjs', 'command-args.mjs', 'args-file.mjs', 'rebind.mjs', 'holds-records.mjs', 'holds.mjs', 'hold-ops.mjs', 'hold-activation.mjs', 'instructions.mjs', 'instruct-apply.mjs', 'review-attempts.mjs', 'cli-entry.mjs']) {
+  for (const lib of ['state-root.mjs', 'run-locks.mjs', 'process-identity.mjs', 'cutover.mjs', 'lane-advice.mjs', 'worktree-proposal.mjs', 'command-args.mjs', 'args-file.mjs', 'rebind.mjs', 'holds-records.mjs', 'holds.mjs', 'hold-ops.mjs', 'hold-activation.mjs', 'instructions.mjs', 'instruct-apply.mjs', 'review-attempts.mjs', 'cli-entry.mjs', 'scope.mjs', 'scope-reader.mjs']) {
     await copyFile(resolve(REPO_ROOT, 'plugins/orchestrator/scripts/lib', lib), join(dir, 'lib', lib));
   }
   return import(pathToFileURL(join(dir, 'state.mjs')).href);
