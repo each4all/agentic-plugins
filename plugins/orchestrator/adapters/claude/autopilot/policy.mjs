@@ -20,6 +20,7 @@
 
 import { createHash } from 'node:crypto';
 import { subtaskReadiness } from '../../../scripts/state.mjs';
+import { lingeringDetail, lingers } from './step-scope.mjs';
 import { digestOf, parseRebindRecord, REBIND_KEY, wordsDigest } from '../../../scripts/lib/rebind.mjs';
 import { isReviewAttemptId, latestOutcomeText, reviewRecordRepairText, REVIEW_OUTCOME_GATE } from '../../../scripts/lib/review-attempts.mjs';
 import {
@@ -1720,9 +1721,8 @@ export function afterUnread(after, subtaskId) {
 export function verifyStep({ step: s, worker: w, before, after }) {
   // Before anything else: the run cannot go on beside what is left.
   // With lanes it drains the run, in any lane (ADR-0068 Decision 1, item 1).
-  if (w.groupTeardown === 'lingering') {
-    return halt('worker-failed', `a process in the step's process group (${w.pgid ?? '?'}) is still there after SIGKILL; the run keeps its locks until that group is empty (ps -g ${w.pgid ?? '<pgid>'})`, { scope: 'run' });
-  }
+  // C181 — or beside a step scope its teardown did not read gone.
+  if (lingers(w)) return halt('worker-failed', lingeringDetail(w), { scope: 'run' });
   if (w.aborted === 'interrupted') return halt('interrupted', 'the owner interrupted the run');
   if (w.aborted === 'compaction-imminent') return halt('compaction-imminent', 'a PreCompact hook event appeared in the worker stream; the step was aborted');
   if (w.aborted === 'timeout') return halt('worker-failed', `the step exceeded its wall clock (${w.timeoutSec ?? '?'} s) and its process group was killed`);

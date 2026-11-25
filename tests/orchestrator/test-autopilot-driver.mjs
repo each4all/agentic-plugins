@@ -108,7 +108,10 @@ describe('the landing round trip (D23 = A)', () => {
       const archived = readdirSync(join(t.work, '.agentic-plugins/state/orchestrator/archive')).filter((n) => n.startsWith(t.fx.macroId));
       strictEqual(archived.length, 1);
       const steps = readFileSync(join(r.dir, 'steps.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-      deepStrictEqual(steps.map((s) => s.event), ['started', 'finished', 'started', 'finished', 'started', 'finished', 'started', 'finished']);
+      // C181 — each step's scope record (a `scope` line, before the word)
+      // sits between its started and finished lines.
+      deepStrictEqual(steps.filter((s) => s.event !== 'scope').map((s) => s.event), ['started', 'finished', 'started', 'finished', 'started', 'finished', 'started', 'finished']);
+      ok(steps.every((s, i) => s.event !== 'scope' || steps.slice(0, i).some((x) => x.event === 'started' && x.seq === s.seq)), 'a scope line follows its step\'s started');
       ok(r.steps.every((s) => typeof s.session_id === 'string' && typeof s.fingerprint_before === 'string' && typeof s.fingerprint_after === 'string'));
       ok(r.run.loaded_plugins.engineer, 'the run records which plugin code its workers loaded');
     } finally {
@@ -800,7 +803,9 @@ describe('a process group that outlives SIGKILL (round 4)', () => {
       // nothing, so the member is really there.
       t.env.FAKE_CLAUDE_MODE = 'leaves-child';
       t.env.FAKE_CLAUDE_PIDFILE = pidfile;
-      strictEqual(await t.run({}, { terminateGroup: async () => 'lingering' }), 2, t.lines.join('\n'));
+      // Unscoped (C181): a step scope's kill would end the member the
+      // simulated teardown leaves.
+      strictEqual(await t.run({}, { terminateGroup: async () => 'lingering', startWorker: (o) => realStartWorker({ ...o, scope: false }) }), 2, t.lines.join('\n'));
       // readPid, never Number(readFileSync(...)): an empty read is 0, and a
       // kill of 0 is one of the runner's own group (docket C169).
       member = readPid(pidfile);

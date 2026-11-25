@@ -471,7 +471,7 @@ export const MUTATIONS = [
   },
   {
     id: 'D17', file: DRIVER, tests: [TD],
-    from: "      if (w?.groupTeardown === 'lingering') lingering = true;\n      if (active) active.aborted = w?.aborted ?? null;\n      current = null;",
+    from: "      if (lingers(w)) lingering = true;\n      if (active) active.aborted = w?.aborted ?? null;\n      current = null;",
     to: '      if (active) active.aborted = w?.aborted ?? null;\n      current = null;',
     why: 'an error mid-step releases the entries that name a group still running',
     killed_by: /tears the step down before it releases anything/,

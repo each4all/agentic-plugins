@@ -152,8 +152,8 @@ export const MUTATIONS = [
   },
   {
     id: 'V5', file: POLICY, tests: [TP, TD],
-    from: "  if (w.groupTeardown === 'lingering') {",
-    to: '  if (false) {',
+    from: "  if (lingers(w)) return halt(",
+    to: '  if (false) return halt(',
     why: 'a step whose process group outlived SIGKILL is judged like any other, and the run goes on beside it (round 4)',
   },
   {
@@ -297,7 +297,7 @@ export const MUTATIONS = [
   },
   {
     id: 'W12', file: WORKER, tests: [TW],
-    from: '      setTimeout(() => finish(code, signal), DRAIN_AFTER_EXIT_MS).unref?.();',
+    from: '      setTimeout(() => finishRef(code, signal), DRAIN_AFTER_EXIT_MS).unref?.();',
     to: '      void code;',
     why: 'a descendant holding the output pipes keeps the step open forever',
   },
@@ -315,8 +315,8 @@ export const MUTATIONS = [
   },
   {
     id: 'W13', file: WORKER, tests: [TW],
-    from: '  return { sessionId, pid: child.pid, begin, abort, done };',
-    to: '  begin();\n  return { sessionId, pid: child.pid, begin, abort, done };',
+    from: '  return {\n    sessionId,\n    get pid() {',
+    to: '  begin();\n  return {\n    sessionId,\n    get pid() {',
     why: 'a worker gets its prompt before the driver has recorded it',
   },
   {
@@ -400,8 +400,8 @@ export const MUTATIONS = [
   // ---- L: the ledger and locks --------------------------------------------------
   {
     id: 'L1', file: LOCKS, tests: [TL],
-    from: "    const rival = after.find((e) => e.state !== 'gone');\n    if (!rival) {",
-    to: '    const rival = undefined;\n    if (!rival) {',
+    from: "    const rival = after.find((e) => e.state !== 'gone');\n    if (rival?.state === 'held') {",
+    to: "    const rival = undefined;\n    if (rival?.state === 'held') {",
     why: 'contenders that added their entries at the same time all take the lock',
   },
   {
@@ -588,7 +588,7 @@ export const MUTATIONS = [
   },
   {
     id: 'D12', file: DRIVER, tests: [TD],
-    from: "      if (w.groupTeardown === 'lingering') lingering = true;\n      else setWorker(null);",
+    from: "      if (lingers(w)) lingering = true;\n      else setWorker(null);",
     to: '      setWorker(null);',
     why: 'a run halted beside a group that outlived SIGKILL releases its locks, so the next run starts beside it (round 4)',
   },
@@ -619,8 +619,8 @@ export const MUTATIONS = [
   },
   {
     id: 'D11', file: DRIVER, tests: [TD],
-    from: "      if (Number.isInteger(current.pid)) setWorker({ pid: current.pid, pgid: process.platform === 'win32' ? null : current.pid, fingerprint: await processFingerprint(current.pid), session_id: sessionId });\n      current.begin();",
-    to: '      current.begin();',
+    from: '  const registerWorker = (worker) => setWorker(worker);',
+    to: '  const registerWorker = () => {};',
     why: 'a driver that dies after the spawn leaves a working worker no lock records',
   },
 

@@ -8,7 +8,9 @@
 //                       baseline, macro, status, step count, cost, halt
 //   steps.jsonl         a `started` line written BEFORE the worker is spawned
 //                       (D1: every spawn is on record before it starts), then a
-//                       `finished` line after it; between them, observations
+//                       `finished` line after it; between them, the step's
+//                       `scope` lines (C181: its scope record, written before
+//                       the word, the last one the step's), observations
 //                       of no step's lifecycle: a step's `stall` lines
 //                       (ADR-0068 Decision 3), and a serial run's
 //                       `instruction` lines (Decision 7), each carrying the
@@ -323,6 +325,12 @@ export function readRun(repoRoot, runId) {
       continue;
     }
     const prev = steps.get(rec.seq) ?? {};
+    // C181 — a step's scope record, written before the word and again when a
+    // failed launch marks it abandoned: the last one is the step's.
+    if (rec.event === 'scope') {
+      steps.set(rec.seq, { seq: rec.seq, ...prev, scope: rec.scope ?? null });
+      continue;
+    }
     steps.set(rec.seq, rec.event === 'finished' ? { ...prev, ...rec } : { ...rec, ...prev });
   }
   return {

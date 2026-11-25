@@ -1446,7 +1446,7 @@ export const MUTATIONS = [
   },
   {
     id: 'K3', file: RUN_LOCKS, tests: [T_ADMISSION],
-    from: "      if (rival) throw new LockHeldError(lock, rival.holder ?? { run_id: 'a participant taking the lock' }, { now: now() });\n      await clearDebris(lock, after);",
+    from: "      if (rival) throw new LockHeldError(lock, rival.holder ?? { run_id: 'a participant taking the lock' }, { now: now(), scopeHold: rival.scopeHold ?? null });\n      await clearDebris(lock, after);",
     to: "      await clearDebris(lock, after);",
     why: "a join does not look again after writing its entries, so a run that added its own meanwhile runs beside the session",
     killed_by: /a run that adds its entry while a session joins is seen on the second look/,
