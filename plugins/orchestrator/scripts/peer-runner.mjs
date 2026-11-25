@@ -25,7 +25,7 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { constants as fsConstants } from 'node:fs';
+import { constants as fsConstants, realpathSync } from 'node:fs';
 import { constants as osConstants, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 
@@ -53,12 +53,15 @@ import {
   handleSupervisor,
   peerSnapshotRecord,
   judgeRunEnded,
+  lookupSnapshotOwner,
   reclaimPeerSnapshots,
   recordSnapshotCompanion,
   recordSnapshotLaunch,
+  recordSnapshotScope,
   removeOwnedSnapshot,
   removePeerSnapshot,
   scrubGitSelectors,
+  SNAPSHOT_OWNER_FILE,
   SNAPSHOT_TREE_DIR,
   treeOccupancy,
   writeSnapshotPrompt,
@@ -82,6 +85,13 @@ import {
   StateRootError,
   sweepSelection,
 } from './lib/state-root.mjs';
+import { SCOPE_VERSION, handleBinds, scopeRecordState, scopeRecordsAgree, teardownOf } from './lib/scope.mjs';
+import { createScopeEnder, readGoneHere } from './lib/scope-reader.mjs';
+import { beginLaunch, planLaunch } from './lib/scope-run.mjs';
+
+// The persona this runner's snapshots are made for, and so the one its owner
+// records name: a scope it ends is only one of its own snapshots (C181).
+const RUNNER_PERSONA = 'orchestrator';
 
 
 // ADR-0061 §Decision 4: record where the companion came from — which host
@@ -429,7 +439,9 @@ function updateHandle(handlePath, mutator, options = {}) {
 
 // null when the write was refused: `expect`, asked of the handle re-read
 // here, says it is not the ledger the caller read, or the guard refused.
-async function updateHandleNow(handlePath, mutator, { guard = null, expect = null } = {}) {
+// `touch: false` keeps `updated_at`: a scope's teardown, which a reader
+// records, is no move of the run and must not restart its stale grace (C181).
+async function updateHandleNow(handlePath, mutator, { guard = null, expect = null, touch = true } = {}) {
   const hook = handleHooks.get(handlePath);
   let handle;
   try {
@@ -452,7 +464,7 @@ async function updateHandleNow(handlePath, mutator, { guard = null, expect = nul
   const before = handle.status;
   const next = await mutator(handle) ?? handle;
   hook?.(next, before);
-  next.updated_at = new Date().toISOString();
+  if (touch) next.updated_at = new Date().toISOString();
   return await writeHandle(handlePath, next, { guard }) ? next : null;
 }
 
@@ -782,6 +794,9 @@ async function runPeerInCheckout(args) {
   let snapshot = null;
   let peerProcess = null;
   let ownerWrite = null;
+  // C181 — the companion's launch (lib/scope-run.mjs), set by the spawn
+  // section: its end is awaited before anything is removed.
+  let launch = null;
   let killTimer = null;
   let exitWatch = null;
   let retireCancel = null;
@@ -859,7 +874,9 @@ async function runPeerInCheckout(args) {
       // A child the companion leaves behind with its stdout or stderr keeps
       // the pipes, and so the close barrier, open: once the companion itself
       // has exited, what is left of its group gets a moment, then is stopped.
-      if (Number.isInteger(peerProcess.pgid)) {
+      // A scoped run's end stops its group at the exit itself (C181), and no
+      // later signal goes to a group id the kernel may have handed on.
+      if (Number.isInteger(peerProcess.pgid) && launch?.scoped !== true) {
         let goneSince = null;
         exitWatch = setInterval(() => {
           void isProcessAlive(peerProcess.pid).then((alive) => {
@@ -893,33 +910,38 @@ async function runPeerInCheckout(args) {
     const peerCwd = snapshot?.peer_cwd ?? options.cwd;
     if (peerCwd) childArgs.push('--cwd', resolve(peerCwd));
 
-    const detached = process.platform !== 'win32';
-
-    // Every lifecycle observer below is registered in the SAME synchronous
-    // block as spawn(). An await between spawn() and these registrations
-    // opens a window in which a fast-exiting companion emits 'spawn',
-    // 'exit', 'close' — and its only output chunks — into zero listeners.
-    // Those events are not replayed: the close wait would then never settle,
-    // the event loop would drain, and node:test's keep-alive would hold the
-    // process forever (the 2026-07-11 CI 30-minute-hang root cause).
-    let child;
-    try {
-      child = spawn('node', [companionPath, ...childArgs], {
-        env: options.env,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached,
-      });
-    } catch (err) {
-      // A synchronous spawn throw (invalid options) must still leave a
-      // terminal ledger rather than a workflow stuck at `spawning`.
-      await updateHandle(paths.handle, (h) => {
-        h.status = 'failed';
+    // C181 (ADR-0023, amendments of 2026-11-22 and 2026-11-24) — whether the
+    // run makes a scope of its own, and the writer its launch uses: the scope
+    // to the owner record first, then the handle (a record the handle carries
+    // alone binds nothing). This runner's runs are no reviews, so its end
+    // captures nothing. The end's teardown goes to the owner record in the
+    // finally below, after the companion's record there.
+    const launchPlan = await planLaunch({
+      runId,
+      hasSnapshot: snapshot !== null,
+      env: options.env,
+      ...(options.scopeSystem ? { system: options.scopeSystem } : {}),
+      cancellation,
+      graceMs,
+      writeRecord: async (scope) => {
+        if (snapshot) await recordSnapshotScope(snapshot, scope);
+        await updateHandle(paths.handle, (h) => {
+          h.scope = scope;
+        });
+      },
+      capture: async () => ({}),
+    });
+    // A cancellation asked for while the plan was made launches nothing.
+    if (cancellation?.signal) {
+      const cancelled = await updateHandle(paths.handle, (h) => {
+        h.status = 'cancelled';
         h.completed_at = nowIso();
-        h.exit_code = null;
-        h.error_kind = err.code ?? 'spawn_error';
+        h.error_kind = 'cancelled';
       });
-      throw err;
+      return runResult(paths, cancelled, { ok: false, companionPath });
     }
+
+    const detached = process.platform !== 'win32';
 
     const stdoutChunks = [];
     const stderrChunks = [];
@@ -969,50 +991,123 @@ async function runPeerInCheckout(args) {
       });
     };
 
-    child.stdout.on('data', (chunk) => {
-      stdoutChunks.push(Buffer.from(chunk));
-      stdoutStream.write(chunk);
-      void queueOutputNote('stdout', chunk);
-    });
-    child.stderr.on('data', (chunk) => {
-      stderrChunks.push(Buffer.from(chunk));
-      stderrStream.write(chunk);
-      void queueOutputNote('stderr', chunk);
-    });
-
-    // 'error' is collected, not rejected: a failed spawn emits 'error' and
-    // then 'close' (never 'spawn'), so the close barrier still settles and
-    // the terminal finalize below runs on that path too.
+    // Every lifecycle observer of a child is registered by watch(), called in
+    // the SAME synchronous block as the spawn() that made it (beginLaunch, or
+    // a relaunch after a gate that never got the word). An await between
+    // spawn() and these registrations opens a window in which a fast-exiting
+    // companion emits 'spawn', 'exit', 'close' — and its only output chunks —
+    // into zero listeners. Those events are not replayed: the close wait would
+    // then never settle, the event loop would drain, and node:test's
+    // keep-alive would hold the process forever (the 2026-07-11 CI 30-minute-
+    // hang root cause).
     let childError = null;
-    child.once('error', (err) => {
-      childError = err;
-      void queueHandleUpdate((h) => {
+    const watch = (run) => {
+      const { child } = run;
+      child.stdout.on('data', (chunk) => {
+        stdoutChunks.push(Buffer.from(chunk));
+        stdoutStream.write(chunk);
+        void queueOutputNote('stdout', chunk);
+      });
+      child.stderr.on('data', (chunk) => {
+        stderrChunks.push(Buffer.from(chunk));
+        stderrStream.write(chunk);
+        void queueOutputNote('stderr', chunk);
+      });
+
+      // 'error' is collected, not rejected: a failed spawn emits 'error' and
+      // then 'close' (never 'spawn'), so the close barrier still settles and
+      // the terminal finalize below runs on that path too. A gate's error
+      // before its word is its launch's to judge (counts()), not the run's.
+      child.once('error', (err) => {
+        if (!run.counts()) return;
+        childError = err;
+        void queueHandleUpdate((h) => {
+          h.status = 'failed';
+          h.error_kind = err.code ?? 'spawn_error';
+        });
+      });
+
+      // The running transition is driven by 'spawn' (success only, emitted
+      // before any child output reaches 'data') and, for a gate, by its word
+      // (`run.started`): a failed spawn never records `running` and never
+      // serializes an undefined pid into the handle, and a gate that never got
+      // the word records nothing.
+      child.once('spawn', () => {
+        void run.started.then((ran) => {
+          if (!ran) return;
+          void queueHandleUpdate(async (h) => {
+            h.status = 'running';
+            h.pid = child.pid;
+            h.pgid = detached ? child.pid : null;
+            // Kept past the run's end, which clears pid and pgid: the process
+            // that ran as the peer, the evidence an owner record is checked
+            // against before the run's snapshot is removed (C142).
+            h.peer_process = { pid: child.pid, pgid: h.pgid };
+            h.process_fingerprint = await fingerprintForPid(child.pid);
+          });
+        });
+      });
+
+      // Non-rejecting close barrier — the lifecycle join point for the
+      // success, kill, and spawn-failure paths alike — and the exit, where a
+      // scoped run's end starts (a held pipe delays the close, not the exit).
+      const closed = new Promise((resolveP) => {
+        child.once('close', (exitCode, exitSignal) => resolveP({ code: exitCode, signal: exitSignal }));
+      });
+      const exited = new Promise((resolveP) => {
+        child.once('exit', (exitCode, exitSignal) => resolveP({ code: exitCode, signal: exitSignal }));
+        void closed.then(resolveP);
+      });
+      return { child, closed, exited };
+    };
+
+    const launchFailed = async (err) => {
+      // A synchronous spawn throw (invalid options) must still leave a
+      // terminal ledger rather than a workflow stuck at `spawning`.
+      stdoutStream.destroy();
+      stderrStream.destroy();
+      await updateHandle(paths.handle, (h) => {
         h.status = 'failed';
+        h.completed_at = nowIso();
+        h.exit_code = null;
         h.error_kind = err.code ?? 'spawn_error';
       });
-    });
-
-    // The running transition is driven by 'spawn' (success only, emitted
-    // before any child output reaches 'data'): a failed spawn never records
-    // `running` and never serializes an undefined pid into the handle.
-    child.once('spawn', () => {
-      void queueHandleUpdate(async (h) => {
-        h.status = 'running';
-        h.pid = child.pid;
-        h.pgid = detached ? child.pid : null;
-        // Kept past the run's end, which clears pid and pgid: the process
-        // that ran as the peer, the evidence an owner record is checked
-        // against before the run's snapshot is removed (C142).
-        h.peer_process = { pid: child.pid, pgid: h.pgid };
-        h.process_fingerprint = await fingerprintForPid(child.pid);
+    };
+    let watched;
+    try {
+      launch = beginLaunch(launchPlan, 'node', [companionPath, ...childArgs], {
+        env: options.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached,
       });
-    });
+      watched = watch(launch);
+    } catch (err) {
+      await launchFailed(err);
+      throw err;
+    }
+    // A gated launch's handshake, up to the word: on a failure before it the
+    // gate has run nothing, and once it has closed the companion is launched
+    // directly, or not at all where the attempt's record could not be marked
+    // abandoned or a cancellation came (the end then says why).
+    if (launch.handshake) {
+      const answer = await launch.handshake();
+      if (answer.relaunch) {
+        await watched.closed;
+        try {
+          launch = answer.relaunch();
+          watched = watch(launch);
+        } catch (err) {
+          await launchFailed(err);
+          throw err;
+        }
+      }
+    }
 
-    // Non-rejecting close barrier — the single lifecycle join point for the
-    // success, kill, and spawn-failure paths alike.
-    const { code, signal } = await new Promise((resolveP) => {
-      child.once('close', (exitCode, exitSignal) => resolveP({ code: exitCode, signal: exitSignal }));
-    });
+    // The run's one end: for a scoped run, from the companion's exit, its
+    // group stopped, its scope killed and waited for, its pipes drained within
+    // a bound; for any other, the close barrier.
+    const ending = await launch.end(watched);
+    const { code, signal } = ending;
     stdoutStream.end();
     stderrStream.end();
     await Promise.all([stdoutStreamDone, stderrStreamDone]);
@@ -1033,9 +1128,14 @@ async function runPeerInCheckout(args) {
       h.process_fingerprint = { kind: 'none' };
       h.completed_at = nowIso();
       h.exit_code = Number.isInteger(code) ? code : null;
-      if (cancelled) {
+      if (cancelled || ending.failure === 'cancelled') {
         h.status = 'cancelled';
         h.error_kind = 'cancelled';
+      } else if (ending.failure) {
+        // Nothing was launched: the gate never got the word.
+        h.status = 'failed';
+        h.error_kind = ending.failure;
+        h.exit_code = null;
       } else if (childError) {
         h.status = 'failed';
         h.error_kind = childError.code ?? 'spawn_error';
@@ -1059,6 +1159,9 @@ async function runPeerInCheckout(args) {
         h.status = 'failed';
         h.error_kind = signal ? `signal_${signal}` : 'peer_run_error';
       }
+      // A scoped run's teardown, its pipes held, and its end capture or the
+      // reason it has none, in this one terminal write.
+      ending.record(h);
     });
 
     return runResult(paths, final, {
@@ -1070,12 +1173,16 @@ async function runPeerInCheckout(args) {
     // Whatever threw (the prompt copy, the launch record, a ledger write),
     // the ledger ends terminal: a run left queued or spawning reads as live
     // to every reader, and its pending ensemble never settles.
+    // C181 — a scoped run's end, when it ran, is recorded in this terminal
+    // write too, its teardown included.
+    const ended = launch?.ending ? await launch.ending.catch(() => null) : null;
     await updateHandle(paths.handle, (h) => {
       if (isTerminalStatus(h.status)) return h;
       h.status = 'failed';
       h.completed_at = nowIso();
       h.exit_code = null;
       h.error_kind = err?.code ?? 'runner_error';
+      ended?.record?.(h);
     }).catch(() => {});
     throw err;
   } finally {
@@ -1089,14 +1196,34 @@ async function runPeerInCheckout(args) {
     // Nothing of the peer's group outlives the run, whatever its peer: a
     // child left behind would run on unseen (and, in a checkout, in a
     // snapshot about to be removed).
-    await stopProcessGroup(peerProcess?.pgid, graceMs);
+    // C181 — a scoped run's one end is awaited before anything is removed
+    // (the spawn section ran it; a run that threw after it holds its result).
+    const scopeEnd = launch?.ending ? await launch.ending.catch(() => null) : null;
+    const scoped = scopeEnd?.scoped === true;
+    // A scoped run's end stopped its group at the exit: no second signal to a
+    // group id the kernel may have handed on since.
+    if (!scoped) await stopProcessGroup(peerProcess?.pgid, graceMs);
     if (snapshot) {
       // Every end — completed, failed, cancelled, thrown — removes the
       // snapshot. A cleanup failure is recorded and reported; it never
       // changes the run's status.
       await ownerWrite;
-      const removed = await removePeerSnapshot(snapshot, { env: options.env });
+      // C181 — what the end read, to the owner record, once the companion's
+      // record there is written (a snapshot kept keeps it for a later reader).
+      if (scoped) {
+        await recordSnapshotScope(snapshot, null, { teardown: scopeEnd.teardown }).catch((e) => {
+          process.stderr.write(`peer-runner: the scope's teardown was not written to the owner record: ${e?.message ?? e}\n`);
+        });
+      }
+      // C181 — a scoped run's snapshot is removed only on the reading of gone
+      // its end made, of the scope it launched in (the gate takes that
+      // reading, never a second one), and only once its terminal write, which
+      // carries the teardown, is in the ledger.
+      const removed = scoped && !(await scopedEndCommitted(paths, scopeEnd))
+        ? { removed: false, error: null, kept: 'terminal-write-missing' }
+        : await removePeerSnapshot(snapshot, { env: options.env, ...(scoped ? { readScope: (identity) => endReadingOf(scopeEnd, identity) } : {}) });
       if (removed.error) process.stderr.write(`peer-runner: snapshot cleanup failed: ${removed.error}\n`);
+      if (removed.kept) process.stderr.write(`peer-runner: snapshot kept (${removed.kept}${removed.unit ? `; stop ${removed.unit} by hand to free it` : ''})\n`);
       await updateHandle(paths.handle, (h) => {
         // A run that threw before the record was written gets it here.
         h.snapshot = { ...(h.snapshot ?? peerSnapshotRecord(snapshot)), removed_at: removed.removed ? nowIso() : null, cleanup_error: removed.error };
@@ -1119,13 +1246,14 @@ async function isolatePeer({ options, runId, paths, companion, cancellation }) {
   const record = async (fields) => updateHandle(paths.handle, (h) => {
     h.snapshot = peerSnapshotRecord(fields);
   });
-  await reclaimPeerSnapshots({ cwd: options.cwd, env: options.env }).catch(() => {});
+  // C181 — the next dispatch's reclaim ends its own persona's scopes too.
+  await reclaimWithScopes({ repoRoot: options.repoRoot, cwd: options.cwd, env: options.env }).catch(() => {});
   let snapshot;
   // A cancellation stops the capture, not only what follows it.
   const abort = new AbortController();
   const retireAbort = cancellation?.onRequest(() => abort.abort());
   try {
-    snapshot = await createPeerSnapshot({ cwd: options.cwd, runId, persona: 'orchestrator', env: options.env, signal: abort.signal });
+    snapshot = await createPeerSnapshot({ cwd: options.cwd, runId, persona: RUNNER_PERSONA, env: options.env, signal: abort.signal });
     retireAbort?.();
   } catch (err) {
     retireAbort?.();
@@ -1175,6 +1303,25 @@ async function cancelOwnPeer(paths, proc) {
     h.error_kind = 'cancelled';
   }).catch(() => {});
   if (!ended) await sendSignal({ pid: proc.pid, pgid: proc.pgid }, 'SIGTERM');
+}
+
+// C181 — the end's reading for the scope the removal gate reads, only where
+// it is the scope the run launched in; any other scope reads withheld.
+function endReadingOf(end, identity) {
+  const as = (id) => ({ scope: { version: SCOPE_VERSION, state: 'scoped', identity: id } });
+  return scopeRecordsAgree(as(identity), as(end.identity)) ? end.reading : { state: 'withheld', check: 'owner-scope-changed' };
+}
+
+// C181 — whether a scoped run's terminal write, the one that carries its
+// teardown, is in the ledger.
+async function scopedEndCommitted(paths, end) {
+  try {
+    const h = await readHandle(paths.handle);
+    return isTerminalStatus(h.status) && h.scope?.state === 'scoped' && h.scope.teardown?.at === end.teardown.at
+      && h.scope.teardown.state === end.teardown.state;
+  } catch {
+    return false;
+  }
 }
 
 async function runResult(paths, handle, extra = {}) {
@@ -1238,12 +1385,23 @@ export async function cancelPeerRun({
   repoRoot = process.cwd(),
   runId,
   graceMs = DEFAULT_CANCEL_GRACE_MS,
+  // C181 — the ender of this call's scope step (a test passes its own).
+  scopeEnder = createScopeEnder(),
 } = {}) {
   assertSafeRunId(runId);
   const paths = await resolvePeerRunPathsForRead(repoRoot, runId);
   refuseMissingLedger(paths, runId);
   const handle = await readHandle(paths.handle);
+  // C181 — the run's scope, ended where its runner is proven gone, before and
+  // apart from the branches below: their snapshot removal then rests on the
+  // reading of gone this step made. A live run's cancel writes no kill of its
+  // own (its runner's end takes the sequence). The answer reports the
+  // teardown apart; it never changes `ok`.
+  const scope = await runScopeStep(paths, handle, { ender: scopeEnder });
+  return withScopeTeardown(await cancelReadRun(paths, handle, runId, graceMs, enderReading(scopeEnder)), scope);
+}
 
+async function cancelReadRun(paths, handle, runId, graceMs, readScope) {
   if (isTerminalStatus(handle.status)) {
     // C142 — a runner killed inside its own end wrote the run terminal and
     // left its snapshot, and may have left a process of its peer's group: that
@@ -1283,7 +1441,7 @@ export async function cancelPeerRun({
       run_id: runId,
       status: handle.status,
       reason: 'already_terminal',
-      ...(await snapshotCleanupField(paths, handle, run)),
+      ...(await snapshotCleanupField(paths, handle, run, handle, readScope)),
     };
   }
   if (handle.status !== 'running' && handle.status !== 'cancel_requested') {
@@ -1297,7 +1455,7 @@ export async function cancelPeerRun({
 
   const verified = await verifiedProcessForHandle(handle);
   if (!verified.ok) {
-    if (verified.reason === 'not_running' && snapshotOwnerPath(handle) !== null) return finishHostKilledRun(paths, handle, graceMs);
+    if (verified.reason === 'not_running' && snapshotOwnerPath(handle) !== null) return finishHostKilledRun(paths, handle, graceMs, readScope);
     return {
       ok: false,
       run_id: runId,
@@ -1370,7 +1528,7 @@ export async function cancelPeerRun({
     ok: true,
     run_id: runId,
     status: final.status,
-    ...(await snapshotCleanupField(paths, final, null, handle)),
+    ...(await snapshotCleanupField(paths, final, null, handle, readScope)),
   };
 }
 
@@ -1386,7 +1544,7 @@ export async function cancelPeerRun({
 // this command was asked for; then its own snapshot is removed. Each refusal
 // writes nothing and has a reason of its own, never `not_running`, which a
 // caller reads as nothing left to cancel.
-async function finishHostKilledRun(paths, handle, graceMs) {
+async function finishHostKilledRun(paths, handle, graceMs, readScope) {
   const refused = (reason, why) => ({ ok: false, run_id: handle.run_id, status: handle.status, reason, why });
   let run = await judgeHostKilledRun(handle, graceMs);
   // A snapshot a reclaim removed leaves no record to judge. A reclaim also
@@ -1437,7 +1595,7 @@ async function finishHostKilledRun(paths, handle, graceMs) {
     run_id: handle.run_id,
     status: final.status,
     reason: 'ended',
-    ...(await snapshotCleanupField(paths, final, run)),
+    ...(await snapshotCleanupField(paths, final, run, final, readScope)),
   };
 }
 
@@ -1576,17 +1734,22 @@ function snapshotOwnerPath(handle) {
 // before this command's own write cleared the companion's process from it (a
 // cancel's, or a settle's reconcile), the evidence the judgment checks the
 // owner record against (snapshotEnded's rule).
-async function snapshotCleanupField(paths, handle, run = null, recorded = handle) {
+// `readScope`, when given, is the reading the removal gate makes: the scope
+// ender of the invocation, so a scope its step read is not read again (C181).
+async function snapshotCleanupField(paths, handle, run = null, recorded = handle, readScope = undefined) {
   const ownerPath = snapshotOwnerPath(handle);
   if (ownerPath === null) return {};
   try {
     const { judged, owner, gone = false } = run ?? await judgeRunEnded(ownerPath, { runId: handle.run_id, handle: recorded });
     if (judged.verdict !== 'ended') return { snapshot_cleanup: { removed: false, skipped: judged.why, error: null } };
-    const removed = gone ? { removed: true, error: null } : await removeOwnedSnapshot(ownerPath, owner, { root: handle.snapshot.root ?? null });
+    const removed = gone ? { removed: true, error: null } : await removeOwnedSnapshot(ownerPath, owner, { root: handle.snapshot.root ?? null, ...(readScope ? { readScope } : {}) });
     // A record that names anything but the run's own snapshot removes
     // nothing and writes nothing: the reclaim, which takes its worktree from
     // git's lock and never from the record, is its route.
     if (removed.refused) return { snapshot_cleanup: { removed: false, skipped: removed.refused, error: null } };
+    // C181 — a snapshot the removal gate keeps (its run's scope not read
+    // gone, or an owner record that may have carried one) is kept whole.
+    if (removed.kept) return { snapshot_cleanup: { removed: false, skipped: removed.kept, error: null, ...(removed.unit ? { unit: removed.unit } : {}) } };
     await updateHandle(paths.handle, (h) => {
       h.snapshot = { ...(h.snapshot ?? handle.snapshot), removed_at: removed.removed ? nowIso() : null, cleanup_error: removed.error };
     }, { expect: (h) => h.run_id === handle.run_id && h.started_at === handle.started_at }).catch(() => {});
@@ -1596,44 +1759,363 @@ async function snapshotCleanupField(paths, handle, run = null, recorded = handle
   }
 }
 
+// C181 — the scope step of a reader of a run whose runner may be gone
+// (ADR-0023, amendment of 2026-11-24, who else ends it): `cancel` and
+// `sweep` each end the scope of a run they read, before and apart from their
+// snapshot branches (this runner has no `settle`). The plan says what the
+// step owes the run:
+//   null                     the run made no scope (an earlier release's
+//                            handle, none made, an abandoned launch): nothing,
+//                            and no `scope_teardown`;
+//   { report }               nothing is read or written, and the report says
+//                            why (a scope this reader does not parse or know,
+//                            a handle that binds nothing and keeps its records,
+//                            a supervisor not proven gone, a run neither
+//                            terminal nor stale);
+//   { identity, kill }       a reading, after a kill when `kill`: a stored
+//                            teardown of gone, or a handle that binds nothing
+//                            because its owner record is proven absent (a
+//                            reading needs no authority), is read only.
+// The kill waits on a handle that binds (scope.mjs handleBinds), a supervisor
+// proven gone (scope-reader.mjs supervisorGone) and a run that is terminal or
+// has not moved for the stale grace. A run whose supervisor lives, or cannot
+// be told, keeps its scope for its runner.
+function scopeRecordStateOf(record) {
+  try {
+    return scopeRecordState(record);
+  } catch {
+    return { state: 'malformed' };
+  }
+}
+
+// The owner record a handle's snapshot names, looked up whether or not its
+// removal is recorded: a scope's binding asks whether the record exists. The
+// scope's own word on a snapshot and the handle's snapshot record must agree,
+// and the record must name an owner record where createPeerSnapshot makes one
+// (`owner.json` beside the snapshot's `tree`): a lookup of any other path
+// proves nothing, so the handle is read as one whose owner record cannot be
+// read (`unreadable`, `snapshot-mismatch`), which keeps everything. null for
+// a run with no snapshot.
+async function scopeOwnerLookup(handle, identity) {
+  const rec = handle?.snapshot;
+  const hasRecord = rec !== null && typeof rec === 'object' && rec.isolation === 'snapshot';
+  if (!identity.has_snapshot) return hasRecord ? { outcome: 'unreadable', code: 'snapshot-mismatch' } : null;
+  const ownerPath = hasRecord ? rec.owner_path : null;
+  if (typeof ownerPath !== 'string' || !ownerPath.startsWith('/') || basename(ownerPath) !== SNAPSHOT_OWNER_FILE
+    || (rec.root !== null && rec.root !== undefined && rec.root !== join(dirname(ownerPath), SNAPSHOT_TREE_DIR))) {
+    return { outcome: 'unreadable', code: 'snapshot-mismatch' };
+  }
+  return lookupSnapshotOwner(ownerPath);
+}
+
+// Whether a scoped handle binds (scope.mjs handleBinds), its snapshot record
+// checked against the scope's word first: handleBinds binds an identity that
+// says no snapshot without asking the owner record, so a mismatch is refused
+// here, as an owner record that cannot be read.
+async function scopeBinding(handle, identity) {
+  const owner = await scopeOwnerLookup(handle, identity);
+  if (owner?.code === 'snapshot-mismatch') return { binds: false, reason: 'owner-unreadable', keep: true };
+  // An owner record of another persona, or of another run, is no record this
+  // run's runner wrote: its scope is that persona's readers' to end.
+  if (owner?.outcome === 'read' && (owner.record.persona !== RUNNER_PERSONA || owner.record.run_id !== handle.run_id)) {
+    return { binds: false, reason: 'owner-mismatch', keep: true };
+  }
+  return handleBinds(handle, owner);
+}
+
+// The reading a snapshot removal gate makes, through the invocation's ender:
+// a scope its step already read is not read again.
+function enderReading(ender) {
+  return async (identity) => ender.read(identity);
+}
+
+// `reread`, when given, reads the run's handle again (null when it cannot, or
+// when the caller's own guard refuses, a sweep's sole-ledger check): the kill
+// rests on the handle as it is after the supervisor check, never on one read
+// before it, so a runner that moved meanwhile keeps its scope.
+async function planScopeStep(handle, { ender, now = new Date(), staleGraceMs = DEFAULT_STALE_GRACE_MS, reread = null } = {}) {
+  const state = scopeRecordStateOf(handle);
+  if (state.state === 'legacy-missing' || state.state === 'none' || state.state === 'abandoned') return null;
+  if (state.state !== 'scoped') return { report: { state: 'withheld', check: `scope-${state.state}` } };
+  const { identity } = state;
+  const unit = identity.unit;
+  if (state.teardown?.state === 'gone') return { identity, kill: false, unit };
+  const bind = await scopeBinding(handle, identity);
+  if (!bind.binds) {
+    if (bind.reason === 'owner-absent') return { identity, kill: false, unit, read_only: 'owner-absent' };
+    return { report: { state: 'withheld', check: bind.reason, unit } };
+  }
+  let supervisor;
+  try {
+    supervisor = ender.supervisorGone(identity.supervisor);
+  } catch {
+    supervisor = { gone: false, check: 'supervisor-check-failed' };
+  }
+  if (supervisor?.gone !== true) return { report: { state: 'withheld', check: `supervisor-${supervisor?.check ?? 'unknown'}`, unit } };
+  let current = handle;
+  if (reread !== null) {
+    try {
+      current = await reread();
+    } catch {
+      current = null;
+    }
+    if (current === null || current.run_id !== handle.run_id || current.started_at !== handle.started_at || !scopeRecordsAgree(current, handle)) {
+      return { report: { state: 'withheld', check: 'handle-changed', unit } };
+    }
+    const again = await scopeBinding(current, identity);
+    if (!again.binds) return { report: { state: 'withheld', check: again.reason, unit } };
+  }
+  if (!isTerminalStatus(current.status)) {
+    const refMs = Date.parse(current.updated_at ?? current.started_at);
+    if (!Number.isFinite(refMs) || now.getTime() - refMs <= staleGraceMs) return { report: { state: 'withheld', check: 'not-stale', unit } };
+  }
+  return { identity, kill: true, unit };
+}
+
+// The kill a plan owes, at most once in the invocation (the ender's).
+function killScopeStep(plan, ender) {
+  if (plan?.identity && plan.kill) {
+    try {
+      ender.kill(plan.identity);
+    } catch {
+      /* the reading below reports what is left */
+    }
+  }
+}
+
+// The reading a plan owes, recorded as the handle's teardown, and the report
+// an answer carries (`scope_teardown`). The record keeps `updated_at`, is
+// written only to the same run whose identity it read, and never replaces a
+// stored gone (gone is final); a write that fails is no change of the answer.
+async function readScopeStep(paths, handle, plan, ender, guard = null) {
+  if (plan === null) return null;
+  if (!plan.identity) return plan.report;
+  let reading;
+  try {
+    reading = ender.read(plan.identity);
+  } catch {
+    reading = { state: 'withheld', check: 'reading-failed' };
+  }
+  const report = { state: reading.state, ...(reading.check ? { check: reading.check } : {}), unit: plan.unit, ...(plan.read_only ? { read_only: plan.read_only } : {}) };
+  await updateHandle(paths.handle, (h) => {
+    if (!scopeRecordsAgree(h, handle) || h.scope.teardown?.state === 'gone') return h;
+    h.scope = { ...h.scope, teardown: teardownOf(reading) };
+    return h;
+  }, { expect: (h) => h.run_id === handle.run_id && h.started_at === handle.started_at, touch: false, guard }).catch(() => {});
+  return report;
+}
+
+// The whole step, for a reader of one run (a cancel).
+async function runScopeStep(paths, handle, { ender = createScopeEnder(), now, staleGraceMs } = {}) {
+  try {
+    const plan = await planScopeStep(handle, { ender, now, staleGraceMs, reread: () => readHandle(paths.handle) });
+    killScopeStep(plan, ender);
+    return await readScopeStep(paths, handle, plan, ender);
+  } catch (err) {
+    return { state: 'withheld', check: `scope-step-failed: ${String(err?.message ?? err)}` };
+  }
+}
+
+// C181 — the reclaim's route to a snapshot's scope (ADR-0023, amendment of
+// 2026-11-24, who else ends a scope): the reclaim ends, under the readers'
+// conditions (planScopeStep: the handle binds, the supervisor is proven gone,
+// the run is terminal or stale), the scope only of a snapshot of this persona,
+// whose handle it reads by the run id and persona its owner record names, and
+// only where that handle's snapshot record names this very owner record.
+// Another persona's snapshot, a run id no ledger or two ledgers hold, or a
+// handle of another snapshot gets no kill: the gate keeps that snapshot until
+// its own readers end the scope. `kill` writes the kills (reclaimPeerSnapshots
+// calls it for every scoped snapshot before any reading); `finish`, once the
+// reclaim is done, records each reading as its handle's teardown and returns
+// the reports, the readings the ender made at the gate included, never a
+// second one.
+function reclaimScopeSteps(repoRoot, ender, { now = new Date(), staleGraceMs = DEFAULT_STALE_GRACE_MS } = {}) {
+  const planned = [];
+  return {
+    async kill({ ownerPath, owner }) {
+      const target = await reclaimScopeTarget(repoRoot, ownerPath, owner);
+      if (target === null) return;
+      // Read again after the supervisor check, the whole route: the same one
+      // ledger, a handle naming this owner record, and the owner record as it
+      // was judged (its persona, run id and scope).
+      const reread = async () => {
+        const again = await reclaimScopeTarget(repoRoot, ownerPath, owner);
+        return again !== null && sameDirectory(again.paths.dir, target.paths.dir) ? again.handle : null;
+      };
+      const plan = await planScopeStep(target.handle, { ender, now, staleGraceMs, reread });
+      if (plan === null) return;
+      killScopeStep(plan, ender);
+      planned.push({ ...target, plan });
+    },
+    async finish() {
+      const reports = [];
+      for (const { paths, handle, plan } of planned) {
+        const report = await readScopeStep(paths, handle, plan, ender);
+        if (report !== null) reports.push({ run_id: handle.run_id, ...report });
+      }
+      return reports;
+    },
+  };
+}
+
+// The run of a scoped snapshot of this persona, found by its owner record's
+// run id: { paths, handle }, or null when the record is another persona's, its
+// scope names another run or a supervisor other than the record's own, the
+// record at `ownerPath` now reads otherwise than `owner`, no ledger or more
+// than one holds the run id (or a prune claimed it), its handle cannot be
+// read, or the handle's snapshot is another owner record than `ownerPath`.
+async function reclaimScopeTarget(repoRoot, ownerPath, owner) {
+  if (owner === null || typeof owner !== 'object' || owner.persona !== RUNNER_PERSONA || !validRunId(owner.run_id)) return null;
+  const state = scopeRecordStateOf(owner);
+  if (state.state !== 'scoped' || state.identity.owner.kind !== 'peer-run' || state.identity.owner.run_id !== owner.run_id) return null;
+  if (!ownerSupervisorAgrees(owner.supervisor, state.identity.supervisor)) return null;
+  const now = await lookupSnapshotOwner(ownerPath);
+  if (now.outcome !== 'read' || JSON.stringify(now.record) !== JSON.stringify(owner)) return null;
+  let found;
+  try {
+    found = await findPeerRunPaths(repoRoot, owner.run_id);
+  } catch {
+    return null;
+  }
+  if (found.length !== 1 || found[0].claim) return null;
+  let handle;
+  try {
+    handle = await readHandle(found[0].handle);
+  } catch {
+    return null;
+  }
+  const rec = handle.snapshot;
+  if (handle.run_id !== owner.run_id || rec === null || typeof rec !== 'object' || rec.isolation !== 'snapshot' || !sameOwnerRecord(rec.owner_path, ownerPath)) return null;
+  return { paths: found[0], handle };
+}
+
+// Whether the owner record's supervisor is the one its scope names: the same
+// pid, and, where the record keeps a Linux start, the same start in the same
+// clock. A record whose supervisor's identity was never told (kind `none`)
+// agrees by its pid, the scope's start then deciding; one of another kind
+// does not agree.
+function ownerSupervisorAgrees(recorded, scoped) {
+  if (recorded === null || typeof recorded !== 'object' || recorded.pid !== scoped.pid) return false;
+  const f = recorded.fingerprint;
+  if (f === null || typeof f !== 'object') return false;
+  if (f.kind === 'none') return true;
+  return f.kind === 'linux_proc_starttime' && f.starttime === scoped.fingerprint.starttime && f.clock === scoped.clock;
+}
+
+// Whether two spellings name one owner record: both resolve, through every
+// link, to the same file (a lexical match is no proof: a link followed by
+// `..` names another file).
+function sameOwnerRecord(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a === '' || b === '') return false;
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return false;
+  }
+}
+
+// The reclaim a runner runs, with its scope steps (reclaimScopeSteps): the
+// reclaim's report, with `scope_teardowns` when it read any scope. `now` (a
+// Date) is the scope steps' clock; `snapshotNow`, the reclaim's age rule's,
+// the wall clock unless a test sets it.
+export async function reclaimWithScopes({ repoRoot, cwd, env, ender = createScopeEnder(), now = new Date(), snapshotNow = new Date(), staleGraceMs } = {}) {
+  const steps = reclaimScopeSteps(repoRoot, ender, { now, staleGraceMs });
+  const report = await reclaimPeerSnapshots({ cwd, env, now: snapshotNow.getTime(), readScope: enderReading(ender), endScope: steps })
+    .catch((error) => ({ reclaimed: [], kept: [], errors: [String(error?.message ?? error)] }));
+  let teardowns = [];
+  try {
+    teardowns = await steps.finish();
+  } catch (error) {
+    report.errors.push(`scope teardown: ${String(error?.message ?? error)}`);
+  }
+  return teardowns.length > 0 ? { ...report, scope_teardowns: teardowns } : report;
+}
+
+function withScopeTeardown(answer, scope) {
+  return scope === null || scope === undefined ? answer : { ...answer, scope_teardown: scope };
+}
+
+// C181 — whether retention keeps a terminal handle (ADR-0023, amendment of
+// 2026-11-24, what is kept while a scope is not read gone): one whose scope
+// is not read gone, by a stored teardown or a reading this process made, is
+// counted with the non-terminal runs, whatever its status says; one of a
+// version this reader does not know is too. One that binds nothing because
+// its owner record is proven absent (its lookup found nothing) holds no
+// authority and is pruned as before; one whose owner record cannot be read is
+// kept. A run with no scope, or one this release does not parse, which grants
+// nothing, is pruned as before. Returns the reason it is kept, or null.
+async function retentionHold(handle) {
+  const state = scopeRecordStateOf(handle);
+  if (state.state === 'unknown-version') return 'scope-unknown-version';
+  if (state.state === 'malformed') return 'scope-malformed';
+  if (state.state !== 'scoped') return null;
+  if (state.teardown?.state === 'gone' || readGoneHere(state.identity)) return null;
+  const owner = await scopeOwnerLookup(handle, state.identity);
+  if (state.identity.has_snapshot && owner?.outcome === 'absent') return null;
+  return 'scope-not-gone';
+}
+
 // ADR-0067 Decision 1(a) — the sweep reads every root of the checkout's read
 // set, each directory under its own retention plan. A run id held by two of
 // those directories is left alone in both and listed in `ambiguous`
 // (Decision 4, item 2). `root` is the checkout's own directory, `roots`
 // every directory read, and the lists are all of theirs.
-export async function sweepPeerRuns({ repoRoot = process.cwd(), applyRetention = false, ...options } = {}) {
-  // C96 — the peer snapshots of this repository whose owners are gone,
-  // reclaimed first: they are no ledger, and a scan below that refuses (two
-  // homes holding ledgers) must not keep them.
-  const snapshots = await reclaimPeerSnapshots({ cwd: repoRoot }).catch((error) => ({ reclaimed: [], kept: [], errors: [String(error?.message ?? error)] }));
-  // The checkout's own directory, found apart from the scans (when it is
-  // linked to another root's, the scans hold that root's spelling only), and
-  // before any of them changes a home: a prune must not move it.
-  const own = await resolvePeerRunsDirForSweep(resolve(repoRoot));
-  const scans = await peerRunsDirsToScan(repoRoot);
-  // Asked again before each change: every home of every read root, an empty
-  // one included, since a second ledger may appear in either.
-  const dirs = peerRunReadRoots(repoRoot).flatMap((root) => Object.keys(PEER_RUNS_DIR_RELS).map((home) => peerRunsDir(root, { home })));
-  // A claim an interrupted prune left is put back under its run id first, so
-  // the selection below sees that ledger by its name (Decision 4, item 2).
-  const claims = recoverClaims({
-    scanDirs: scans.map((scan) => scan.dir),
-    dirs,
-    graceMs: options.staleGraceMs ?? DEFAULT_STALE_GRACE_MS,
-    now: options.now ?? new Date(),
-    handleFile: HANDLE_FILE,
-    validName: validRunId,
-  });
-  // Each physical ledger is swept once, through one spelling chosen with all
-  // of them in view; a run id two ledgers hold is swept through none, and one
-  // that a second ledger takes meanwhile is left alone from then on.
-  const { ambiguous, chosen } = sweepSelection(scans.map((scan) => scan.dir), validRunId);
+export async function sweepPeerRuns({ repoRoot = process.cwd(), applyRetention = false, scopeEnder = createScopeEnder(), now = new Date(), ...options } = {}) {
+  // C181 — one pass over every directory: each scans its runs and writes the
+  // kills it owes, then the reclaim writes its own, and only then is any scope
+  // read, each once (the readers' budget of ADR-0023, amendment of
+  // 2026-11-24), before retention. C96 — the reclaim runs whatever the scans
+  // do: the snapshots are no ledger, and a scan that refuses (two homes
+  // holding ledgers) must not keep them; its refusal is thrown once the
+  // reclaim is done.
+  let scanError = null;
+  let own;
+  let dirs;
+  let claims;
+  let ambiguous;
+  const scanned = [];
+  try {
+    // The checkout's own directory, found apart from the scans (when it is
+    // linked to another root's, the scans hold that root's spelling only), and
+    // before any of them changes a home: a prune must not move it.
+    own = await resolvePeerRunsDirForSweep(resolve(repoRoot));
+    const scans = await peerRunsDirsToScan(repoRoot);
+    // Asked again before each change: every home of every read root, an empty
+    // one included, since a second ledger may appear in either.
+    dirs = peerRunReadRoots(repoRoot).flatMap((root) => Object.keys(PEER_RUNS_DIR_RELS).map((home) => peerRunsDir(root, { home })));
+    // A claim an interrupted prune left is put back under its run id first, so
+    // the selection below sees that ledger by its name (Decision 4, item 2).
+    claims = recoverClaims({
+      scanDirs: scans.map((scan) => scan.dir),
+      dirs,
+      graceMs: options.staleGraceMs ?? DEFAULT_STALE_GRACE_MS,
+      now,
+      handleFile: HANDLE_FILE,
+      validName: validRunId,
+    });
+    // Each physical ledger is swept once, through one spelling chosen with all
+    // of them in view; a run id two ledgers hold is swept through none, and one
+    // that a second ledger takes meanwhile is left alone from then on.
+    const selection = sweepSelection(scans.map((scan) => scan.dir), validRunId);
+    ambiguous = selection.ambiguous;
+    for (const { stateRoot, dir, home } of scans) {
+      scanned.push(await scanPeerRunsDir({ stateRoot, root: dir, home, chosen: selection.chosen, dirs, ambiguous, scopeEnder, now, ...options }));
+    }
+  } catch (error) {
+    scanError = error;
+  }
+  // C96 — the peer snapshots of this repository whose owners are gone; C181,
+  // reclaimed after the scans' kills and before the readings and the
+  // retention below, so its kills come first and a teardown it reads counts
+  // at retention.
+  const snapshots = await reclaimWithScopes({ repoRoot, cwd: repoRoot, ender: scopeEnder, now, staleGraceMs: options.staleGraceMs });
+  if (scanError !== null) throw scanError;
   const reports = [];
-  for (const { stateRoot, dir, home } of scans) {
-    reports.push(await sweepPeerRunsDir({ stateRoot, root: dir, home, applyRetention, chosen, dirs, ambiguous, ...options }));
+  for (const scan of scanned) {
+    reports.push(await finishPeerRunsDir(scan, { applyRetention, dirs, ambiguous, scopeEnder, now, ...options }));
   }
   const merged = { ...reports[reports.length - 1], root: own, roots: reports.map((r) => r.root) };
-  for (const key of ['reconciled', 'planned_prunes', 'pruned', 'undateable', 'prune_skipped']) {
+  for (const key of ['reconciled', 'planned_prunes', 'pruned', 'undateable', 'prune_skipped', 'scope_teardowns', 'scope_held']) {
     merged[key] = reports.flatMap((r) => r[key]);
   }
   merged.scanned = reports.reduce((n, r) => n + r.scanned, 0);
@@ -1645,18 +2127,19 @@ export async function sweepPeerRuns({ repoRoot = process.cwd(), applyRetention =
   return merged;
 }
 
-async function sweepPeerRunsDir({
+// One directory's scan: its runs reconciled, each run's scope step planned
+// and its kill written (C181). The readings and the retention are
+// finishPeerRunsDir's, once every directory is scanned.
+async function scanPeerRunsDir({
   stateRoot,
   root,
   home,
-  applyRetention = false,
   staleGraceMs = DEFAULT_STALE_GRACE_MS,
-  retentionTtlDays = DEFAULT_RETENTION_TTL_DAYS,
-  retentionCap = DEFAULT_RETENTION_CAP,
   now = new Date(),
   chosen = null,
   dirs = [root],
   ambiguous = new Map(),
+  scopeEnder,
 }) {
   // ADR-0067 Decision 4, item 2 — the selection is checked again before each
   // change: a run id that a second ledger now holds is left alone and listed.
@@ -1693,19 +2176,26 @@ async function sweepPeerRunsDir({
     // rather than dropped: a plan whose deletions silently do not happen is the
     // same dishonesty as a preview whose deletions silently do.
     prune_skipped: [],
+    // C181 — each scope this sweep read or held off, with its run id (the
+    // teardown, reported apart from the run's status), and the terminal runs
+    // retention keeps because their scope is not read gone.
+    scope_teardowns: [],
+    scope_held: [],
     missing: false,
   };
   // Only absence (ENOENT) is a missing directory; one that cannot be listed
   // is refused, as runDirectoryEntries refuses it (Decision 4, item 2).
+  const terminal = [];
+  const steps = [];
+  const scan = { report, terminal, steps };
   try {
     await readdir(root);
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error;
     report.missing = true;
-    return report;
+    return scan;
   }
 
-  const terminal = [];
   // ADR-0067 Decision 4, items 1 and 2 — the identity rule every listing of
   // run directories follows: a directory is one, a link is none.
   for (const { runId, runDir } of runDirectoryEntries(root)) {
@@ -1726,6 +2216,18 @@ async function sweepPeerRunsDir({
     if (after.status !== before.status) {
       report.reconciled.push({ run_id: runId, from: before.status, to: after.status });
     }
+    // C181 — the run's scope step: planned on the handle as reconciled, its
+    // kill written now, its reading made once every directory is scanned.
+    try {
+      const plan = await planScopeStep(after, { ender: scopeEnder, now, staleGraceMs, reread: async () => (stillSole(runId, runDir) ? readHandle(paths.handle) : null) });
+      if (plan !== null) {
+        killScopeStep(plan, scopeEnder);
+        const soleNow = () => stillSole(runId, runDir);
+        steps.push({ run_id: runId, paths, handle: after, plan, guard: soleNow });
+      }
+    } catch (err) {
+      report.scope_teardowns.push({ run_id: runId, state: 'withheld', check: `scope-step-failed: ${String(err?.message ?? err)}` });
+    }
     if (isTerminalStatus(after.status)) {
       let identity = null;
       try {
@@ -1735,6 +2237,39 @@ async function sweepPeerRunsDir({
       }
       terminal.push({ run_id: runId, paths, handle: after, identity });
     }
+  }
+  return scan;
+}
+
+// One directory's end: the readings its scope steps owe, then its retention,
+// planned and, under --apply, applied.
+async function finishPeerRunsDir({ report, terminal: scannedTerminal, steps }, {
+  applyRetention = false,
+  retentionTtlDays = DEFAULT_RETENTION_TTL_DAYS,
+  retentionCap = DEFAULT_RETENTION_CAP,
+  now = new Date(),
+  dirs,
+  ambiguous = new Map(),
+  scopeEnder,
+}) {
+  if (report.missing) return report;
+  for (const { run_id, paths, handle, plan, guard } of steps) {
+    const reading = await readScopeStep(paths, handle, plan, scopeEnder, guard);
+    if (reading !== null) report.scope_teardowns.push({ run_id, ...reading });
+  }
+  // C181 — a terminal run whose scope is not read gone (a stored teardown or
+  // a reading of this process) is counted with the non-terminal runs: it is
+  // neither ranked nor pruned.
+  const terminal = [];
+  for (const item of scannedTerminal) {
+    let hold;
+    try {
+      hold = await retentionHold(await readHandle(item.paths.handle).catch(() => item.handle));
+    } catch {
+      hold = 'scope-unreadable';
+    }
+    if (hold === null) terminal.push(item);
+    else report.scope_held.push({ run_id: item.run_id, reason: hold, ...(scopeRecordStateOf(item.handle).identity ? { unit: scopeRecordStateOf(item.handle).identity.unit } : {}) });
   }
 
   // The plan is computed UNCONDITIONALLY; only the deletion below is gated.
@@ -1805,6 +2340,12 @@ async function sweepPeerRunsDir({
         report.prune_skipped.push({ run_id: planned.run_id, reason: 'replaced' });
         continue;
       }
+      // C181 — checked again before the deletion: a scope not read gone
+      // keeps the run (retentionHold), whatever the plan said.
+      if (await retentionHold(current) !== null) {
+        report.prune_skipped.push({ run_id: planned.run_id, reason: 'scope-not-gone' });
+        continue;
+      }
       const outcome = await pruneClaimed({ planned, paths, identity, dirs, ambiguous });
       if (outcome === null) report.pruned.push(planned);
       else report.prune_skipped.push(outcome);
@@ -1841,6 +2382,8 @@ async function pruneClaimed({ planned, paths, identity, dirs, ambiguous }) {
     }
     if (reason === null && (handle.run_id !== runId || !isTerminalStatus(handle.status))) reason = 'no-longer-terminal';
     if (reason === null && ledgerIdentity(claim, handle) !== identity) reason = 'replaced';
+    // C181 — and once more on the claimed handle, as the deletion reads it.
+    if (reason === null && await retentionHold(handle) !== null) reason = 'scope-not-gone';
     if (reason === null) {
       const held = ledgersHolding(dirs, runId).filter((h) => !samePhysicalFile(h, claim));
       if (held.length > 0) {
