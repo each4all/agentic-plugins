@@ -1,0 +1,840 @@
+// scripts/lib/scope-reader.mjs
+//
+// The reader of a run's own scope (ADR-0023 §6, amendments of 2026-11-22 and
+// 2026-11-24, C181): what a reader may observe of the cgroup a launcher
+// recorded (gone, emptied, unproven, withheld), the checks a kill of it needs
+// and the kill itself, written through the directory it opened and checked,
+// and whether the scope's supervisor is proven gone. The records' rules are
+// lib/scope.mjs's.
+//
+// Every lookup is pinned. Node has no openat2 and no statx mount id, so the
+// reader resolves a path one component at a time, each through the directory
+// it opened last (`/proc/self/fd/<fd>/<name>`, O_NOFOLLOW), and checks each
+// descriptor's mount id (`mnt_id` in its fdinfo) against the mount it
+// attested: a mount placed over the path, over its root or over a file alone
+// is refused, never read or written. The fdinfo is read through the /proc
+// descriptor the reader opened and checked (its filesystem's type, its device,
+// its mount id against the procfs line of mountinfo), and is taken as the
+// reader's own only when the file read is on that device and names the inode
+// of the descriptor it describes. What stays unseen is the class the
+// amendment accepts: a process acting as the user that changes the reader's
+// own mount namespace on purpose during the reading (a mount over /proc
+// itself between two of its lookups, or a mount replaced by one that got the
+// same mount id; Node reaches neither `statmount` nor `STATX_MNT_ID_UNIQUE`,
+// so the unique-id check is not available to this reader).
+//
+// A reader that cannot prove a check reads nothing and writes no kill: it
+// answers `withheld` with the check that withheld it. A lookup that finds
+// nothing is a reading of gone only once the reader's anchors read the same
+// again after it.
+//
+// `system` is what the reader reads (the system itself; a test passes its own).
+// Generated from persona-pipeline/ (ADR-0066).
+
+import { closeSync, constants as FS, fchmodSync, fstatSync, openSync, readdirSync, readFileSync, readlinkSync, statfsSync, writeSync } from 'node:fs';
+import { machine, release } from 'node:os';
+import { spawnSync } from 'node:child_process';
+
+import { SCOPE_CHECK_MS, scopeIdentityProblems, validSupervisor } from './scope.mjs';
+
+const PROC_SUPER_MAGIC = 0x9fa0;
+const CGROUP2_SUPER_MAGIC = 0x63677270;
+const BOOT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// cgroup.kill came with Linux 5.14.
+const KILL_KERNEL = [5, 14];
+// The kernels whose `ino_t` is 64 bits, so a cgroup's inode number carries the
+// kernfs generation and a cgroup made again under the same name gets a new
+// one (ADR-0023, an identity recorded before the word). A 32-bit kernel keeps
+// only the low bits and the id can recur within a boot: no authority.
+const WIDE_INO_MACHINES = new Set(['x86_64', 'aarch64', 'arm64', 'ppc64', 'ppc64le', 's390x', 'riscv64', 'loongarch64', 'mips64', 'sparc64', 'alpha']);
+
+const DIR = FS.O_RDONLY | FS.O_DIRECTORY | FS.O_NOFOLLOW | FS.O_CLOEXEC;
+const FILE = FS.O_RDONLY | FS.O_NOFOLLOW | FS.O_CLOEXEC;
+const WRITE = FS.O_WRONLY | FS.O_NOFOLLOW | FS.O_CLOEXEC;
+
+export const SYSTEM = {
+  platform: process.platform,
+  pid: process.pid,
+  uid: () => process.getuid(),
+  release: () => release(),
+  machine: () => machine(),
+  open: (path, flags) => openSync(path, flags),
+  close: (fd) => closeSync(fd),
+  // libuv reads a Linux stat through statx, whose `stx_ino` is 64 bits, and
+  // bigint keeps all of them: the cgroup id is read whole.
+  fstat: (fd) => {
+    const s = fstatSync(fd, { bigint: true });
+    return { dev: s.dev, ino: s.ino, mode: Number(s.mode), directory: s.isDirectory() };
+  },
+  read: (fd) => readFileSync(fd, 'utf8'),
+  write: (fd, text) => writeSync(fd, text),
+  fchmod: (fd, mode) => fchmodSync(fd, mode),
+  statfsType: (path) => Number(statfsSync(path).type),
+  readlink: (path) => readlinkSync(path),
+  readdir: (path) => readdirSync(path, { withFileTypes: true }).map((e) => ({ name: e.name, directory: e.isDirectory() })),
+  kill0: (pid) => {
+    try {
+      process.kill(pid, 0);
+      return 'alive';
+    } catch (err) {
+      return err?.code ?? 'error';
+    }
+  },
+  run: (cmd, args, timeoutMs) => {
+    const r = spawnSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: Math.max(1, timeoutMs), env: { ...process.env, LC_ALL: 'C' } });
+    return { status: r.error ? null : r.status, stdout: typeof r.stdout === 'string' ? r.stdout : '', stderr: typeof r.stderr === 'string' ? r.stderr : '' };
+  },
+  now: () => Date.now(),
+};
+
+function withheld(check) {
+  return { ok: false, state: 'withheld', check };
+}
+
+// The scopes this process read gone itself. Gone is final (nothing enters a
+// removed cgroup), so a reading made earlier in the same process stands for
+// one at a later act (ADR-0023, what is kept while a scope is not read gone):
+// the removal gate of lib/peer-snapshot.mjs takes it. Only this file's
+// readings add to it; no record, file or argument does.
+const READ_GONE = new Set();
+
+function scopeKey(identity) {
+  return [identity.unit, identity.invocation_id, identity.cgroup_path, identity.cgroup_id, identity.boot_id].join('\n');
+}
+
+// Only a reader attestReader returned (`ok`) adds to it.
+function goneReading(identity, reading, reader) {
+  if (reader?.ok === true) READ_GONE.add(scopeKey(identity));
+  return reading;
+}
+
+// Whether this process read the scope `identity` names gone.
+export function readGoneHere(identity) {
+  return scopeIdentityProblems(identity).length === 0 && READ_GONE.has(scopeKey(identity));
+}
+
+function closeQuiet(system, fd) {
+  if (!Number.isInteger(fd)) return;
+  try {
+    system.close(fd);
+  } catch {
+    // Nothing is left to do with a descriptor that would not close.
+  }
+}
+
+function errCode(err) {
+  return typeof err?.code === 'string' ? err.code : 'error';
+}
+
+// proc_pid_mountinfo(5) lines: { id, major:minor, root, point, type, options }.
+export function parseMountinfo(text) {
+  const mounts = [];
+  for (const line of String(text).split('\n')) {
+    const at = line.indexOf(' - ');
+    if (at < 0) continue;
+    const f = line.slice(0, at).split(' ');
+    const [type = '', , superOptions = ''] = line.slice(at + 3).split(' ');
+    if (f.length < 6) continue;
+    mounts.push({ id: f[0], dev: f[2], root: unescape(f[3]), point: unescape(f[4]), type, options: `${f[5]},${superOptions}`.split(',') });
+  }
+  return mounts;
+}
+
+// mountinfo escapes a space, tab, newline and backslash as octal.
+function unescape(s) {
+  return s.replace(/\\([0-7]{3})/g, (_, o) => String.fromCharCode(parseInt(o, 8)));
+}
+
+function devString(dev) {
+  // The kernel's new_encode_dev: major in bits 8-19 and 32-43, minor in 0-7
+  // and 20-31 (Node's stat dev is the userspace encoding glibc's makedev
+  // gives, which is the same split).
+  const d = BigInt(dev);
+  const major = ((d >> 8n) & 0xfffn) | ((d >> 32n) & ~0xfffn);
+  const minor = (d & 0xffn) | ((d >> 12n) & ~0xffn);
+  return `${major}:${minor}`;
+}
+
+// A descriptor's mount id, read from its fdinfo through the /proc anchor, or
+// null when it cannot be proven the descriptor's: the fdinfo read must be on
+// the anchor's device and name the inode of the descriptor it describes.
+function fdMountId(system, anchor, fd) {
+  let info;
+  try {
+    info = system.open(`/proc/self/fd/${anchor.fd}/self/fdinfo/${fd}`, FILE);
+  } catch {
+    return null;
+  }
+  try {
+    if (system.fstat(info).dev !== anchor.dev) return null;
+    const text = system.read(info);
+    const mnt = /^mnt_id:\s*(\d+)$/m.exec(text);
+    const ino = /^ino:\s*(\d+)$/m.exec(text);
+    if (mnt === null || ino === null) return null;
+    if (BigInt(ino[1]) !== system.fstat(fd).ino) return null;
+    return mnt[1];
+  } catch {
+    return null;
+  } finally {
+    closeQuiet(system, info);
+  }
+}
+
+// Resolve `rel` from the open directory `root` (on mount `mntId`), one
+// component at a time, refusing to cross a mount or follow a link. Answers
+// { fd } (the caller closes it), { enoent: true }, or { refused: check }.
+export function pinnedOpen(system, anchor, root, mntId, rel, { flags = FILE } = {}) {
+  const parts = String(rel).split('/').filter((p) => p !== '');
+  if (parts.length === 0 || parts.some((p) => p === '.' || p === '..')) return { refused: 'path' };
+  let parent = root;
+  for (let i = 0; i < parts.length; i++) {
+    const last = i === parts.length - 1;
+    let fd;
+    try {
+      fd = system.open(`/proc/self/fd/${parent}/${parts[i]}`, last ? flags : DIR);
+    } catch (err) {
+      if (parent !== root) closeQuiet(system, parent);
+      return errCode(err) === 'ENOENT' ? { enoent: true } : { refused: `lookup-${errCode(err)}` };
+    }
+    if (parent !== root) closeQuiet(system, parent);
+    if (fdMountId(system, anchor, fd) !== mntId) {
+      closeQuiet(system, fd);
+      return { refused: 'mount-crossed' };
+    }
+    parent = fd;
+  }
+  return { fd: parent };
+}
+
+function pinnedRead(system, anchor, root, mntId, rel) {
+  const r = pinnedOpen(system, anchor, root, mntId, rel);
+  if (r.fd === undefined) return r;
+  try {
+    return { text: system.read(r.fd) };
+  } catch (err) {
+    return { refused: `read-${errCode(err)}` };
+  } finally {
+    closeQuiet(system, r.fd);
+  }
+}
+
+// The /proc anchor: /proc opened once, a procfs, the reader's own (its `self`
+// names the reader), and on the procfs mount mountinfo names for /proc (the
+// only procfs line there, by mount id and device). Answers { ok, fd, dev,
+// mntId, mounts } or a withheld check. The caller closes it (closeReader).
+export function openProcAnchor(system = SYSTEM) {
+  if (system.platform !== 'linux') return withheld('platform');
+  let fd;
+  try {
+    if (system.readlink('/proc/self') !== String(system.pid)) return withheld('proc-not-own');
+    fd = system.open('/proc', DIR);
+  } catch {
+    return withheld('proc-open');
+  }
+  const fail = (check) => {
+    closeQuiet(system, fd);
+    return withheld(check);
+  };
+  let dev;
+  try {
+    if (system.statfsType(`/proc/self/fd/${fd}`) !== PROC_SUPER_MAGIC) return fail('proc-type');
+    dev = system.fstat(fd).dev;
+  } catch {
+    return fail('proc-type');
+  }
+  const anchor = { fd, dev };
+  const mntId = fdMountId(system, anchor, fd);
+  if (mntId === null) return fail('proc-mount-id');
+  let mounts;
+  try {
+    const m = system.open(`/proc/self/fd/${fd}/self/mountinfo`, FILE);
+    try {
+      if (system.fstat(m).dev !== dev) return fail('proc-mountinfo');
+      mounts = parseMountinfo(system.read(m));
+    } finally {
+      closeQuiet(system, m);
+    }
+  } catch {
+    return fail('proc-mountinfo');
+  }
+  const at = mounts.filter((m) => m.point === '/proc');
+  if (at.length === 0 || at.some((m) => m.type !== 'proc')) return fail('proc-mountinfo');
+  const line = at.find((m) => m.id === mntId);
+  if (!line || line.dev !== devString(dev)) return fail('proc-mount-id');
+  // A mount at the reader's own process directory would stand in for the
+  // `self` every pinned lookup passes through.
+  if (mounts.some((m) => new RegExp(`^/proc/(self|thread-self|${system.pid})(/|$)`).test(m.point))) return fail('proc-self-covered');
+  return { ok: true, fd, dev, mntId, mounts };
+}
+
+// Whether the anchor still reads as it did (its descriptor on the same mount
+// and device): the check a lookup that found nothing needs after it.
+function anchorHolds(system, anchor) {
+  try {
+    return system.fstat(anchor.fd).dev === anchor.dev && fdMountId(system, anchor, anchor.fd) === anchor.mntId;
+  } catch {
+    return false;
+  }
+}
+
+// The boot id, read pinned through the /proc anchor, or null.
+export function readBootId(system, anchor) {
+  const r = pinnedRead(system, anchor, anchor.fd, anchor.mntId, 'sys/kernel/random/boot_id');
+  if (r.text === undefined) return null;
+  const boot = r.text.trim();
+  return BOOT_ID.test(boot) ? boot : null;
+}
+
+// The reader's own clock, spelled as process-identity.mjs's clockDomain
+// spells it (boot id, time namespace, pid namespace), every part read through
+// the anchor, or null.
+export function readClock(system, anchor, bootId) {
+  if (bootId === null) return null;
+  const parts = [bootId];
+  for (const kind of ['time', 'pid']) {
+    try {
+      parts.push(system.readlink(`/proc/self/fd/${anchor.fd}/self/ns/${kind}`));
+    } catch (err) {
+      if (errCode(err) !== 'ENOENT') return null;
+      parts.push('-');
+    }
+  }
+  return parts.join('/');
+}
+
+// Whether the anchored /proc lists every process (process-identity.mjs's
+// procListsAll, on the mountinfo the anchor read).
+function procListsAll(mounts) {
+  let n = 0;
+  for (const m of mounts) {
+    if (/^\/proc\/\d+(\/|$)/.test(m.point)) return false;
+    if (m.point !== '/proc') continue;
+    n++;
+    if (m.type !== 'proc') return false;
+    if (m.options.some((o) => o.startsWith('hidepid=') && !['0', '1', 'off', 'noaccess'].includes(o.slice(8)))) return false;
+  }
+  return n > 0;
+}
+
+function kernelHasKill(system) {
+  const m = /^(\d+)\.(\d+)/.exec(String(system.release()));
+  if (m === null) return false;
+  const [maj, min] = [Number(m[1]), Number(m[2])];
+  return maj > KILL_KERNEL[0] || (maj === KILL_KERNEL[0] && min >= KILL_KERNEL[1]);
+}
+
+function remaining(system, deadline) {
+  return deadline - system.now();
+}
+
+function systemctl(system, args, deadline) {
+  const left = remaining(system, deadline);
+  if (left <= 0) return null;
+  const r = system.run('systemctl', args, left);
+  if (r.status !== 0 || system.now() > deadline) return null;
+  const props = {};
+  for (const line of r.stdout.split('\n')) {
+    const at = line.indexOf('=');
+    if (at > 0) props[line.slice(0, at)] = line.slice(at + 1);
+  }
+  return props;
+}
+
+// The checks every reading needs (ADR-0023, where no scope can be made, and
+// what a reader may observe): Linux with cgroup.kill, the /proc anchor, the
+// boot read pinned, a user manager that manages `user@UID.service` and whose
+// main process shares the reader's pid and cgroup namespaces and sits in
+// `init.scope` below it, and the cgroup v2 mount whose root is the
+// hierarchy's, opened once and checked by mount id, with no other mount
+// between it and `cgroupPath` when one is given. Answers a reader
+// ({ ok: true, ... }; closeReader frees it) or a withheld check, within
+// SCOPE_CHECK_MS of `deadline`'s start.
+export function attestReader({ system = SYSTEM, cgroupPath = null, deadline = system.now() + SCOPE_CHECK_MS } = {}) {
+  if (system.platform !== 'linux') return withheld('platform');
+  if (!kernelHasKill(system)) return withheld('kernel');
+  if (!WIDE_INO_MACHINES.has(String(system.machine?.() ?? ''))) return withheld('ino-width');
+  const anchor = openProcAnchor(system);
+  if (!anchor.ok) return anchor;
+  const reader = { ok: true, system, anchor, cg: null, deadline };
+  const fail = (check) => {
+    closeReader(reader);
+    return withheld(check);
+  };
+  reader.bootId = readBootId(system, anchor);
+  if (reader.bootId === null) return fail('boot-id');
+  reader.clock = readClock(system, anchor, reader.bootId);
+  if (reader.clock === null) return fail('clock');
+  const uid = system.uid();
+  const manager = systemctl(system, ['--user', 'show', '-p', 'ControlGroup'], deadline);
+  if (manager === null) return fail(system.now() > deadline ? 'check-timeout' : 'user-manager');
+  reader.managerCgroup = manager.ControlGroup;
+  if (typeof reader.managerCgroup !== 'string' || !new RegExp(`^(/[^/]+)*/user@${uid}\\.service$`).test(reader.managerCgroup)) return fail('user-manager');
+  const main = systemctl(system, ['show', `user@${uid}.service`, '-p', 'MainPID'], deadline);
+  const mainPid = Number(main?.MainPID);
+  if (!Number.isInteger(mainPid) || mainPid <= 1) return fail(system.now() > deadline ? 'check-timeout' : 'manager-pid');
+  try {
+    for (const ns of ['pid', 'cgroup']) {
+      if (system.readlink(`/proc/self/fd/${anchor.fd}/${mainPid}/ns/${ns}`) !== system.readlink(`/proc/self/fd/${anchor.fd}/self/ns/${ns}`)) return fail('manager-namespace');
+    }
+  } catch {
+    return fail('manager-namespace');
+  }
+  const own = pinnedRead(system, anchor, anchor.fd, anchor.mntId, `${mainPid}/cgroup`);
+  if (own.text === undefined || !own.text.split('\n').includes(`0::${reader.managerCgroup}/init.scope`)) return fail('manager-cgroup');
+  const cg2 = anchor.mounts.filter((m) => m.type === 'cgroup2' && m.root === '/');
+  if (cg2.length !== 1) return fail('hierarchy');
+  const line = cg2[0];
+  // No other mount at the hierarchy's mount point, nor between it and the
+  // path read, that path's own included.
+  const base = line.point.replace(/\/$/, '');
+  const target = `${base}${cgroupPath ?? reader.managerCgroup}`;
+  if (anchor.mounts.some((m) => m !== line && m.point === line.point)) return fail('hierarchy');
+  if (anchor.mounts.some((m) => m.point.startsWith(`${base}/`) && (target === m.point || target.startsWith(`${m.point}/`)))) return fail('mount-on-path');
+  let root;
+  try {
+    root = system.open(line.point, DIR);
+  } catch {
+    return fail('hierarchy');
+  }
+  reader.cg = { fd: root, mntId: line.id };
+  try {
+    if (system.statfsType(`/proc/self/fd/${root}`) !== CGROUP2_SUPER_MAGIC) return fail('hierarchy');
+  } catch {
+    return fail('hierarchy');
+  }
+  if (fdMountId(system, anchor, root) !== line.id) return fail('hierarchy-mount-id');
+  // cgroup.kill is write-only, so its presence is read from the manager's
+  // directory, opened as every lookup is.
+  const mgr = pinnedOpen(system, anchor, root, line.id, reader.managerCgroup, { flags: DIR });
+  if (mgr.fd === undefined) return fail('manager-cgroup');
+  try {
+    if (!system.readdir(`/proc/self/fd/${mgr.fd}`).some((e) => e.name === 'cgroup.kill' && !e.directory)) return fail('no-cgroup-kill');
+  } catch {
+    return fail('no-cgroup-kill');
+  } finally {
+    closeQuiet(system, mgr.fd);
+  }
+  if (system.now() > deadline) return fail('check-timeout');
+  return reader;
+}
+
+export function closeReader(reader) {
+  if (!reader?.system) return;
+  if (reader.cg) closeQuiet(reader.system, reader.cg.fd);
+  if (reader.anchor?.fd !== undefined) closeQuiet(reader.system, reader.anchor.fd);
+  reader.cg = null;
+}
+
+// Whether both of the reader's anchors still read as they did.
+function anchorsHold(reader) {
+  const { system, anchor, cg } = reader;
+  return anchorHolds(system, anchor) && cg !== null && fdMountId(system, anchor, cg.fd) === cg.mntId;
+}
+
+// Open the recorded cgroup's directory through the attested mount. Answers
+// { fd }, { gone: true } (nothing at the path, or a cgroup of another id, the
+// anchors holding after), or { refused: check }.
+function openScopeDir(reader, identity) {
+  const { system, anchor, cg } = reader;
+  const r = pinnedOpen(system, anchor, cg.fd, cg.mntId, identity.cgroup_path, { flags: DIR });
+  if (r.enoent) return anchorsHold(reader) ? { gone: true } : { refused: 'anchor-moved' };
+  if (r.fd === undefined) return r;
+  let ino;
+  try {
+    ino = system.fstat(r.fd).ino;
+  } catch {
+    closeQuiet(system, r.fd);
+    return { refused: 'cgroup-stat' };
+  }
+  if (ino !== BigInt(identity.cgroup_id)) {
+    closeQuiet(system, r.fd);
+    return anchorsHold(reader) ? { gone: true } : { refused: 'anchor-moved' };
+  }
+  return { fd: r.fd };
+}
+
+// One reading of a scope by an attested reader: gone (under another boot, or
+// the recorded path holds no cgroup of the recorded id), emptied (`populated
+// 0`), unproven (still populated), or withheld with its check. A cgroup that
+// lost its `cgroup.events` while the reader held it open is read again by its
+// path, which decides.
+export function observeScope(reader, identity) {
+  if (scopeIdentityProblems(identity).length > 0) return { state: 'withheld', check: 'identity' };
+  if (reader.bootId !== identity.boot_id) return goneReading(identity, { state: 'gone', check: 'other-boot' }, reader);
+  const { system, anchor } = reader;
+  const dir = openScopeDir(reader, identity);
+  if (dir.gone) return goneReading(identity, { state: 'gone' }, reader);
+  if (dir.fd === undefined) return { state: 'withheld', check: dir.refused };
+  try {
+    const ev = pinnedRead(system, anchor, dir.fd, reader.cg.mntId, 'cgroup.events');
+    if (ev.enoent) {
+      const again = openScopeDir(reader, identity);
+      if (again.gone) return goneReading(identity, { state: 'gone' }, reader);
+      if (again.fd !== undefined) closeQuiet(system, again.fd);
+      return { state: 'unproven', check: 'events-missing' };
+    }
+    if (ev.text === undefined) return { state: 'withheld', check: ev.refused };
+    const populated = /^populated ([01])$/m.exec(ev.text);
+    if (populated === null) return { state: 'withheld', check: 'events-parse' };
+    return populated[1] === '0' ? { state: 'emptied' } : { state: 'unproven' };
+  } finally {
+    closeQuiet(system, dir.fd);
+  }
+}
+
+// One reading of a scope with no kill and no wait, by a reader attested for
+// its path: what a remover with no reading of its own reads at the act.
+export function readScopeOnce(identity, { system = SYSTEM } = {}) {
+  if (scopeIdentityProblems(identity).length > 0) return { state: 'withheld', check: 'identity' };
+  const reader = attestReader({ system, cgroupPath: identity.cgroup_path });
+  if (!reader.ok) return { state: 'withheld', check: reader.check };
+  try {
+    return observeScope(reader, identity);
+  } finally {
+    closeReader(reader);
+  }
+}
+
+// One invocation's ender of scopes it does not wait for (ADR-0023, amendment
+// of 2026-11-24, readers' budget): a `cancel`, a `settle`, a `sweep` and the
+// reclaim it runs write every kill they owe first (`kill`), then read each
+// scope once (`read`), with no wait. Each scope's kill is written at most once
+// and each scope read at most once in the invocation, whichever of its paths
+// meets it first; a reading needs no authority, so `read` alone serves a
+// handle that binds nothing because its owner record is proven absent. What
+// `read` answers is the teardown to record: gone and emptied as read; else the
+// kill's own refusal or withholding, when it had one, since no kill reached
+// the scope; else the reading. `supervisorGone` is the check a kill waits on
+// (a test passes its own ender).
+export function createScopeEnder({ system = SYSTEM } = {}) {
+  const kills = new Map();
+  const readings = new Map();
+  return {
+    supervisorGone: (supervisor) => supervisorGone(supervisor, { system }),
+    kill(identity) {
+      if (scopeIdentityProblems(identity).length > 0) return { state: 'withheld', check: 'identity' };
+      const key = scopeKey(identity);
+      if (!kills.has(key)) {
+        // A kill that throws is kept as withheld, so the invocation's later
+        // asks and its reading see the same outcome.
+        let kill;
+        try {
+          kill = killOnce(system, identity);
+        } catch {
+          kill = { state: 'withheld', check: 'kill-failed' };
+        }
+        kills.set(key, kill);
+      }
+      return kills.get(key);
+    },
+    read(identity) {
+      if (scopeIdentityProblems(identity).length > 0) return { state: 'withheld', check: 'identity' };
+      const key = scopeKey(identity);
+      if (!readings.has(key)) {
+        const kill = kills.get(key) ?? null;
+        // A reading that throws is kept as withheld too: the removal gate,
+        // the report and retention consume the one observation.
+        let reading;
+        try {
+          reading = kill?.state === 'gone' ? { state: 'gone', ...(kill.check ? { check: kill.check } : {}) } : readScopeOnce(identity, { system });
+        } catch {
+          reading = { state: 'withheld', check: 'reading-failed' };
+        }
+        const keepKill = kill !== null && (kill.state === 'withheld' || kill.state === 'refused') && reading.state !== 'gone' && reading.state !== 'emptied';
+        readings.set(key, keepKill ? { state: kill.state, check: kill.check } : reading);
+      }
+      return readings.get(key);
+    },
+  };
+}
+
+// One kill of a scope, by a reader attested for its path: `written`,
+// `refused` (the kernel refused the write), `gone` (the checks read it gone)
+// or `withheld` with its check.
+function killOnce(system, identity) {
+  const reader = attestReader({ system, cgroupPath: identity.cgroup_path });
+  if (!reader.ok) return { state: 'withheld', check: reader.check };
+  try {
+    const auth = authorizeKill(reader, identity);
+    if (auth.ok) return writeKill(reader, auth);
+    if (auth.state === 'gone') return { state: 'gone', ...(auth.check ? { check: auth.check } : {}) };
+    return { state: 'withheld', check: auth.check };
+  } finally {
+    closeReader(reader);
+  }
+}
+
+// proc_pid_stat(5)'s starttime, or null.
+function statStart(text) {
+  const rest = String(text).slice(String(text).lastIndexOf(')') + 2).trim().split(/\s+/);
+  return /^\d+$/.test(rest[19] ?? '') ? BigInt(rest[19]) : null;
+}
+
+// The clock's current time in ticks since boot, rounded up, read through the
+// anchor (`/proc/uptime` follows the reader's time namespace, as a start
+// does), or null.
+function nowTicks(reader, { floor = false } = {}) {
+  const { system, anchor } = reader;
+  const hz = reader.hz ?? clockTicks(system, reader.deadline);
+  if (hz === null) return null;
+  reader.hz = hz;
+  const r = pinnedRead(system, anchor, anchor.fd, anchor.mntId, 'uptime');
+  const m = r.text === undefined ? null : /^(\d+)\.(\d{2})\s/.exec(r.text);
+  if (m === null) return null;
+  const centis = BigInt(m[1]) * 100n + BigInt(m[2]);
+  // /proc/uptime truncates to the centisecond, so the floor is a lower bound
+  // of the clock and the ceiling an upper bound.
+  return floor ? (centis * BigInt(hz)) / 100n : (centis * BigInt(hz) + 99n) / 100n;
+}
+
+function clockTicks(system, deadline) {
+  const left = remaining(system, deadline);
+  if (left <= 0) return null;
+  const r = system.run('getconf', ['CLK_TCK'], left);
+  const hz = Number(String(r.stdout).trim());
+  return r.status === 0 && Number.isInteger(hz) && hz > 0 ? hz : null;
+}
+
+// The checks a kill needs, read at the act within the reader's deadline: the
+// manager holds the unit with the recorded InvocationID and path; the
+// directory at that path is the recorded cgroup (under the recorded boot), a
+// leaf, closed (no write permission on it, its cgroup.procs or its
+// cgroup.threads); and every member other than the gate, or what it became
+// (the recorded pid with the recorded start), started after the gate's tick
+// and no later than now, read in the recorded clock. Answers { ok: true, dir,
+// kill } (descriptors writeKill uses and closes), { ok: false, state: 'gone' }
+// when the reading finds it gone, or a withheld check.
+export function authorizeKill(reader, identity) {
+  if (scopeIdentityProblems(identity).length > 0) return withheld('identity');
+  if (reader.bootId !== identity.boot_id) return goneReading(identity, { ok: false, state: 'gone', check: 'other-boot' }, reader);
+  const { system, anchor, deadline } = reader;
+  if (reader.clock !== identity.gate.clock) return withheld('clock');
+  const unit = systemctl(system, ['--user', 'show', identity.unit, '-p', 'InvocationID', '-p', 'ControlGroup'], deadline);
+  if (unit === null) return withheld(system.now() > deadline ? 'check-timeout' : 'manager-unit');
+  if (unit.InvocationID !== identity.invocation_id || unit.ControlGroup !== identity.cgroup_path) return withheld('manager-identity');
+  const dir = openScopeDir(reader, identity);
+  if (dir.gone) return goneReading(identity, { ok: false, state: 'gone' }, reader);
+  if (dir.fd === undefined) return withheld(dir.refused);
+  const fail = (check) => {
+    closeQuiet(system, dir.fd);
+    return withheld(check);
+  };
+  try {
+    if ((system.fstat(dir.fd).mode & 0o222) !== 0) return fail('modes');
+    if (system.readdir(`/proc/self/fd/${dir.fd}`).some((e) => e.directory)) return fail('not-leaf');
+  } catch {
+    return fail('modes');
+  }
+  let procs;
+  for (const name of ['cgroup.threads', 'cgroup.procs']) {
+    const f = pinnedOpen(system, anchor, dir.fd, reader.cg.mntId, name);
+    if (f.fd === undefined) return fail(f.enoent ? 'modes' : f.refused);
+    try {
+      if ((system.fstat(f.fd).mode & 0o222) !== 0) return fail('modes');
+      if (name === 'cgroup.procs') procs = system.read(f.fd);
+    } catch {
+      return fail('modes');
+    } finally {
+      closeQuiet(system, f.fd);
+    }
+  }
+  const gateTick = BigInt(identity.gate.starttime);
+  const now = nowTicks(reader);
+  if (now === null) return fail('clock');
+  // A member whose start cannot be read grants nothing (ADR-0023, kill
+  // authorization). Pid 0 is a member in a pid namespace the reader does not
+  // see, or one reaped while the kernel listed cgroup.procs: either way its
+  // start cannot be read, and the next reader asks again.
+  const listsAll = procListsAll(anchor.mounts);
+  for (const line of procs.split('\n')) {
+    if (line.trim() === '') continue;
+    if (!/^[1-9]\d*$/.test(line.trim())) return fail('member-start');
+    const pid = Number(line.trim());
+    const st = pinnedRead(system, anchor, anchor.fd, anchor.mntId, `${pid}/stat`);
+    // A pid gone between the two reads names no member, and the write
+    // reaches members only; a miss is that only under a /proc that lists
+    // every process and the kernel's answer to a signal-0 probe (ESRCH), as
+    // supervisorGone reads it. Any other miss may be a hidden member.
+    if (st.enoent) {
+      if (listsAll && system.kill0(pid) === 'ESRCH') continue;
+      return fail('member-start');
+    }
+    const start = st.text === undefined ? null : statStart(st.text);
+    if (start === null) return fail('member-start');
+    if (pid === identity.gate.pid && start === gateTick) continue;
+    if (start <= gateTick || start > now) return fail('member-start');
+  }
+  if (system.now() > deadline) return fail('check-timeout');
+  const kill = pinnedOpen(system, anchor, dir.fd, reader.cg.mntId, 'cgroup.kill', { flags: WRITE });
+  if (kill.fd === undefined) return fail(kill.enoent ? 'no-cgroup-kill' : kill.refused);
+  return { ok: true, dir: dir.fd, kill: kill.fd };
+}
+
+// Write the kill through the checked descriptors: `written`, or `refused`
+// (the kernel refused the write) with its code. Closes both descriptors.
+export function writeKill(reader, auth) {
+  const { system } = reader;
+  try {
+    system.write(auth.kill, '1');
+    return { state: 'written' };
+  } catch (err) {
+    return { state: 'refused', check: errCode(err) };
+  } finally {
+    closeQuiet(system, auth.kill);
+    closeQuiet(system, auth.dir);
+  }
+}
+
+// Whether the supervisor a scope's record names is proven gone (ADR-0023, a
+// supervisor proven gone). The record is checked before any probe: one that
+// is not whole grants nothing (`grants: false`), never a reading of gone.
+// The boot is read first, pinned: another boot is gone. Under the recorded
+// boot, only a reader in the rest of the recorded clock whose /proc lists
+// every process may read the pid's start, pinned: another start is gone, the
+// recorded start alive. That no such process exists is the kernel's answer to
+// a signal-0 probe (`ESRCH`), never a miss in /proc. Anything else cannot be
+// told, which is not gone. This is not process-identity.mjs's identityState.
+export function supervisorGone(supervisor, { system = SYSTEM } = {}) {
+  if (!validSupervisor(supervisor)) return { gone: false, grants: false, check: 'record' };
+  const anchor = openProcAnchor(system);
+  if (!anchor.ok) return { gone: false, check: anchor.check };
+  try {
+    const boot = readBootId(system, anchor);
+    if (boot === null) return { gone: false, check: 'boot-id' };
+    if (boot !== supervisor.boot_id) return { gone: true, check: 'other-boot' };
+    if (readClock(system, anchor, boot) !== supervisor.clock) return { gone: false, check: 'clock' };
+    if (!procListsAll(anchor.mounts)) return { gone: false, check: 'proc-hides' };
+    const st = pinnedRead(system, anchor, anchor.fd, anchor.mntId, `${supervisor.pid}/stat`);
+    if (st.text !== undefined) {
+      const start = statStart(st.text);
+      if (start === null) return { gone: false, check: 'start-parse' };
+      return start === BigInt(supervisor.fingerprint.starttime) ? { gone: false, check: 'alive' } : { gone: true, check: 'other-start' };
+    }
+    if (!st.enoent) return { gone: false, check: st.refused };
+    return system.kill0(supervisor.pid) === 'ESRCH' ? { gone: true, check: 'esrch' } : { gone: false, check: 'proc-miss' };
+  } finally {
+    closeQuiet(system, anchor.fd);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// A new scope, read before the word (ADR-0023, launched through a gate):
+// what lib/scope-launch.mjs reads of the gate and of the scope it is in, every
+// read pinned as a reading's.
+
+// The cgroup path /proc names for `pid` (its one `0::` line), read through the
+// anchor, or null.
+export function readCgroupOf(system, anchor, pid) {
+  const r = pinnedRead(system, anchor, anchor.fd, anchor.mntId, `${pid}/cgroup`);
+  if (r.text === undefined) return null;
+  const lines = r.text.split('\n').filter((l) => l.startsWith('0::'));
+  return lines.length === 1 && lines[0].length > 3 ? lines[0].slice(3) : null;
+}
+
+// The start of `pid` in ticks since boot, as a decimal string, read through
+// the anchor, or null.
+export function readStart(system, anchor, pid) {
+  const r = pinnedRead(system, anchor, anchor.fd, anchor.mntId, `${pid}/stat`);
+  const start = r.text === undefined ? null : statStart(r.text);
+  return start === null ? null : String(start);
+}
+
+// Whether the reader's clock has surely passed `tick` (a lower bound of its
+// current time is later), or null when it cannot be read.
+export function clockPassed(reader, tick) {
+  const now = nowTicks(reader, { floor: true });
+  return now === null ? null : now > BigInt(tick);
+}
+
+// The scope a gate waits in, as the runner reads it before the word: the
+// directory at `path` through the attested mount, a leaf of type `domain`
+// whose `cgroup.procs` lists the gate's pid as its only entry, and whose
+// `cgroup.kill` opens for writing (nothing is written). Answers { ok: true,
+// cgroupId } (the directory's 64-bit inode number, as a decimal string) or a
+// withheld check.
+//
+// With `closed` (the recheck just before the word) the directory must be the
+// cgroup of `closed.cgroupId`, and it, its cgroup.procs and its cgroup.threads
+// must hold no write permission.
+export function inspectNewScope(reader, { path, gatePid, closed = null }) {
+  const { system, anchor, cg } = reader;
+  const dir = pinnedOpen(system, anchor, cg.fd, cg.mntId, path, { flags: DIR });
+  if (dir.fd === undefined) return withheld(dir.enoent ? 'scope-missing' : dir.refused);
+  try {
+    let ino;
+    try {
+      const st = system.fstat(dir.fd);
+      ino = st.ino;
+      if (closed !== null && (st.mode & 0o222) !== 0) return withheld('close-modes');
+      if (system.readdir(`/proc/self/fd/${dir.fd}`).some((e) => e.directory)) return withheld('not-leaf');
+    } catch {
+      return withheld('cgroup-stat');
+    }
+    if (closed !== null) {
+      if (ino !== BigInt(closed.cgroupId)) return withheld('cgroup-id');
+      for (const name of ['cgroup.procs', 'cgroup.threads']) {
+        const f = pinnedOpen(system, anchor, dir.fd, cg.mntId, name);
+        if (f.fd === undefined) return withheld(f.enoent ? 'close-missing' : f.refused);
+        try {
+          if ((system.fstat(f.fd).mode & 0o222) !== 0) return withheld('close-modes');
+        } catch {
+          return withheld('close-modes');
+        } finally {
+          closeQuiet(system, f.fd);
+        }
+      }
+    }
+    if (typeof ino !== 'bigint' || ino <= 0n) return withheld('cgroup-id');
+    const type = pinnedRead(system, anchor, dir.fd, cg.mntId, 'cgroup.type');
+    if (type.text === undefined || type.text.trim() !== 'domain') return withheld('cgroup-type');
+    const procs = pinnedRead(system, anchor, dir.fd, cg.mntId, 'cgroup.procs');
+    if (procs.text === undefined) return withheld(procs.refused ?? 'gate-placement');
+    const members = procs.text.split('\n').filter((l) => l.trim() !== '');
+    if (members.length !== 1 || members[0].trim() !== String(gatePid)) return withheld('gate-placement');
+    const kill = pinnedOpen(system, anchor, dir.fd, cg.mntId, 'cgroup.kill', { flags: WRITE });
+    if (kill.fd === undefined) return withheld(kill.enoent ? 'no-cgroup-kill' : kill.refused);
+    closeQuiet(system, kill.fd);
+    return { ok: true, cgroupId: String(ino) };
+  } finally {
+    closeQuiet(system, dir.fd);
+  }
+}
+
+// Close the scope to entry before the word: the write permission comes off
+// its `cgroup.procs`, its `cgroup.threads` and its directory, each through a
+// descriptor opened pinned, the directory checked to be the cgroup of
+// `cgroupId`, and each mode read back. Answers { ok: true } or a withheld
+// check (the scope is then left as it is, and nothing was launched).
+export function closeNewScope(reader, { path, cgroupId }) {
+  const { system, anchor, cg } = reader;
+  const dir = pinnedOpen(system, anchor, cg.fd, cg.mntId, path, { flags: DIR });
+  if (dir.fd === undefined) return withheld(dir.enoent ? 'scope-missing' : dir.refused);
+  try {
+    try {
+      if (system.fstat(dir.fd).ino !== BigInt(cgroupId)) return withheld('cgroup-id');
+    } catch {
+      return withheld('cgroup-stat');
+    }
+    for (const name of ['cgroup.procs', 'cgroup.threads']) {
+      const f = pinnedOpen(system, anchor, dir.fd, cg.mntId, name);
+      if (f.fd === undefined) return withheld(f.enoent ? 'close-missing' : f.refused);
+      try {
+        system.fchmod(f.fd, system.fstat(f.fd).mode & 0o7555);
+        if ((system.fstat(f.fd).mode & 0o222) !== 0) return withheld('close-modes');
+      } catch {
+        return withheld('close-modes');
+      } finally {
+        closeQuiet(system, f.fd);
+      }
+    }
+    try {
+      system.fchmod(dir.fd, system.fstat(dir.fd).mode & 0o7555);
+      if ((system.fstat(dir.fd).mode & 0o222) !== 0) return withheld('close-modes');
+    } catch {
+      return withheld('close-modes');
+    }
+    return { ok: true };
+  } finally {
+    closeQuiet(system, dir.fd);
+  }
+}

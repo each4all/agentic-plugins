@@ -616,8 +616,8 @@ export const MUTATIONS = [
     id: 'E6', tests: [T_SETTLE],
     prepare: (copy, tools) => canonicalDefect(copy, tools, {
       dest: 'scripts/peer-runner.mjs',
-      from: "  if (!isTerminalStatus(handle.status)) {\n    refuse(",
-      to: "  if (false) {\n    refuse(",
+      from: "  if (!isTerminalStatus(handle.status)) {\n    // The teardown this call made is reported on the refusal too.\n    try {\n      refuse(",
+      to: "  if (false) {\n    // The teardown this call made is reported on the refusal too.\n    try {\n      refuse(",
     }),
     why: "a live run is settled before it is collected",
   },

@@ -872,6 +872,7 @@ export async function dispatchPeer({
       await ownerWrite;
       const removed = await removePeerSnapshot(snapshot, { env });
       if (removed.error) process.stderr.write(`dispatch-peer: snapshot cleanup failed: ${removed.error}\n`);
+      if (removed.kept) process.stderr.write(`dispatch-peer: snapshot kept (${removed.kept}${removed.unit ? `; stop ${removed.unit} by hand to free it` : ''})\n`);
     }
     if (cleanupTmpDir) {
       try {

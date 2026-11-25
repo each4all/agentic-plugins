@@ -797,3 +797,176 @@ describe('a driver killed in the middle of a step whose verb started a peer', ()
     }
   });
 });
+
+// C181 (ADR-0023, peer runs of a dead step that hold scopes of their own) —
+// the scan's judgments, through the cancel and the reading a test passes: a
+// handle whose scope's association names the dead run goes through its
+// persona's cancel whatever its status and stored teardown, and only that
+// cancel's own reading of gone releases the record.
+describe('a dead run\'s peers that hold scopes of their own (C181)', () => {
+  const BOOT = 'e55a09fa-13b3-445f-9aa0-4b51e123717f';
+  const CLOCK = `${BOOT}/time:[4026531834]/pid:[4026531836]`;
+  const unitOf = (id) => `agentic-launch-${id}-k3j9.scope`;
+  const identity = (id, association) => ({
+    owner: { kind: 'peer-run', run_id: id },
+    unit: unitOf(id),
+    invocation_id: '0123456789abcdef0123456789abcdef',
+    cgroup_path: `/user.slice/user-1000.slice/user@1000.service/app.slice/${unitOf(id)}`,
+    cgroup_id: '18446744073709551615',
+    boot_id: BOOT,
+    gate: { pid: 4242, starttime: '123456', clock: CLOCK },
+    supervisor: { pid: 4200, fingerprint: { kind: 'linux_proc_starttime', starttime: '123400' }, clock: CLOCK, boot_id: BOOT },
+    has_snapshot: false,
+    association,
+  });
+  // A terminal handle with a scope of its own, in `root`'s home of `plugin`.
+  const scopedPeer = (root, id, { plugin = 'engineer', association = null, teardown, status = 'completed', scope, names, dirName = id } = {}) => {
+    const dir = join(root, `.agentic-plugins/state/${plugin}/peer-runs`, dirName);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'handle.json'), JSON.stringify({
+      schema_version: RUNNER.HANDLE_SCHEMA_VERSION, run_id: id, plugin, kind: 'ensemble', status,
+      pid: null, pgid: null, process_fingerprint: { kind: 'none' }, started_at: new Date().toISOString(),
+      ...(names !== undefined ? { autopilot_run: names } : {}),
+      ...(scope === null ? {} : { scope: scope ?? { version: 1, state: 'scoped', identity: identity(id, association), ...(teardown ? { teardown: { state: teardown, at: '2026-11-24T12:00:00Z' } } : {}) } }),
+    }, null, 2));
+    return id;
+  };
+  const ours = (step = '2') => ({ autopilot_run: DEAD, autopilot_step: step });
+  // A cancel that answers `reading` for every run (a scope read gone by
+  // default), and records each call.
+  const fakeCancel = (calls, reading = { state: 'gone' }) => (runner, runId, root) => {
+    calls.push({ runner, runId, root });
+    return { run_id: runId, root, exit: 0, settled: true, result: { ok: true, run_id: runId, reason: 'already_terminal', ...(reading ? { scope_teardown: reading } : {}) } };
+  };
+  const noRead = () => { throw new Error('read'); };
+
+  it('cancels a terminal peer whose scope names the dead run, a stored gone notwithstanding, and releases the record only on that cancel\'s reading of gone', { timeout: 60_000 }, async () => {
+    const t = await setup();
+    try {
+      await t.deadRun();
+      const id = scopedPeer(t.work, 'plan-verify-20261009T010001Z-cccc01', { association: ours(), teardown: 'gone' });
+      const calls = [];
+      const kept = await t.cleanup({ cancel: fakeCancel(calls, { state: 'emptied' }), readScope: noRead });
+      const k = kept.of(DEAD);
+      strictEqual(k.outcome, 'kept', kept.lines.join('\n'));
+      deepStrictEqual(calls.map((c) => [c.runId, c.runner]), [[id, ENG]], 'the stored gone does not exclude it from the cancel');
+      deepStrictEqual(k.unresolved.map((p) => p.run_id), [id]);
+      ok(kept.lines.some((l) => l.includes(id) && l.includes('was not read gone (emptied)')), kept.lines.join('\n'));
+      ok(L.readOpenRun(t.mainRoot, DEAD), 'the record is kept');
+
+      const none = await t.cleanup({ cancel: fakeCancel([], null), readScope: noRead });
+      strictEqual(none.of(DEAD).outcome, 'kept', 'a cancel that read no scope (an earlier runner) releases nothing');
+
+      const again = [];
+      const done = await t.cleanup({ cancel: fakeCancel(again), readScope: noRead });
+      const r = done.of(DEAD);
+      strictEqual(r.outcome, 'cleaned', done.lines.join('\n'));
+      deepStrictEqual(r.cancelled.map((c) => c.run_id), [id]);
+      strictEqual(L.readOpenRun(t.mainRoot, DEAD), null);
+    } finally {
+      t.done();
+    }
+  });
+
+  it('finds a scoped peer in another persona\'s ledger and in a lane\'s checkout, and cancels it with that persona\'s runner', { timeout: 60_000 }, async () => {
+    const t = await setup();
+    try {
+      const laneRoot = join(t.work, '.lane-checkout');
+      mkdirSync(laneRoot, { recursive: true });
+      const runDir = await t.deadRun(DEAD, { steps: [{ seq: 2, subtask_id: 'A', step_budget_usd: 25, cwd: laneRoot }] });
+      // The run's state root and the default state root, each apart from
+      // its checkout: a ledger under either is scanned.
+      const stateRoot = join(t.work, '.state-root');
+      const defaultRoot = join(t.work, '.default-root');
+      const written = L.readRun(t.work, DEAD).run;
+      L.writeRun(runDir, { ...written, state_root: { ...written.state_root, root: stateRoot, default_state_root: defaultRoot } });
+      const designerRoot = join(t.work, '.designer-root');
+      mkdirSync(join(designerRoot, 'scripts'), { recursive: true });
+      writeFileSync(join(designerRoot, 'scripts', 'peer-runner.mjs'), '');
+      const des = scopedPeer(defaultRoot, 'review-20261009T010001Z-cccc09', { plugin: 'designer', association: ours() });
+      const founderRoot = join(t.work, '.founder-root');
+      mkdirSync(join(founderRoot, 'scripts'), { recursive: true });
+      writeFileSync(join(founderRoot, 'scripts', 'peer-runner.mjs'), '');
+      const id = scopedPeer(laneRoot, 'review-20261009T010001Z-cccc02', { plugin: 'founder', association: ours() });
+      const orch = scopedPeer(stateRoot, 'plan-verify-20261009T010001Z-cccc03', { plugin: 'orchestrator', association: ours() });
+      const calls = [];
+      const done = await t.cleanup({ cancel: fakeCancel(calls), readScope: noRead, extraEnv: { AGENTIC_FOUNDER_ROOT: founderRoot, AGENTIC_DESIGNER_ROOT: designerRoot } });
+      strictEqual(done.of(DEAD).outcome, 'cleaned', done.lines.join('\n'));
+      deepStrictEqual(calls.map((c) => [c.runId, c.runner, c.root]).sort(), [[orch, ORCH, stateRoot], [id, founderRoot, laneRoot], [des, designerRoot, defaultRoot]].sort());
+
+      // With no founder runner to cancel it with, the record is kept.
+      L.writeOpenRun(t.mainRoot, { runId: DEAD, macroId: t.fx.macroId, checkout: t.work, runDir: L.readRun(t.work, DEAD).dir, pid: 1 << 22, fingerprint: { kind: 'none' }, startedAt: t.t0 });
+      const kept = await t.cleanup({ cancel: fakeCancel([]), readScope: noRead, extraEnv: { AGENTIC_FOUNDER_ROOT: join(t.work, 'nowhere'), AGENTIC_DESIGNER_ROOT: designerRoot } });
+      strictEqual(kept.of(DEAD).outcome, 'kept', kept.lines.join('\n'));
+      ok(kept.lines.some((l) => l.includes(id) && l.includes('no founder peer-runner')), kept.lines.join('\n'));
+    } finally {
+      t.done();
+    }
+  });
+
+  it('keeps the record for a scope that names the run but no step of it, one that names no run and is not read gone, and one that does not read; leaves another run\'s', { timeout: 60_000 }, async () => {
+    const t = await setup();
+    try {
+      await t.deadRun();
+      const other = scopedPeer(t.work, 'plan-verify-20261009T010001Z-cccc04', { association: { autopilot_run: OTHER, autopilot_step: '2' } });
+      const nostep = scopedPeer(t.work, 'plan-verify-20261009T010001Z-cccc05', { association: ours('9') });
+      const calls = [];
+      const a = await t.cleanup({ cancel: fakeCancel(calls), readScope: noRead });
+      strictEqual(a.of(DEAD).outcome, 'kept', a.lines.join('\n'));
+      deepStrictEqual(calls.map((c) => c.runId), [nostep], 'another run\'s scope is not cancelled');
+      deepStrictEqual(a.of(DEAD).unresolved.map((p) => p.run_id), [nostep]);
+      ok(a.lines.some((l) => l.includes(nostep) && l.includes('names this run but no step of it')), a.lines.join('\n'));
+      ok(!a.lines.some((l) => l.includes(other)), 'another run\'s scope keeps nothing');
+
+      rmSync(join(t.work, '.agentic-plugins/state/engineer/peer-runs', nostep), { recursive: true });
+      const unnamed = scopedPeer(t.work, 'plan-verify-20261009T010001Z-cccc06');
+      const reads = [];
+      const b = await t.cleanup({ cancel: fakeCancel([]), readScope: (identityRead) => { reads.push(identityRead.unit); return { state: 'withheld', check: 'supervisor-alive' }; } });
+      strictEqual(b.of(DEAD).outcome, 'kept', b.lines.join('\n'));
+      deepStrictEqual(reads, [unitOf(unnamed)], 'only the scope that names no run is read, once');
+      ok(b.lines.some((l) => l.includes(unnamed) && l.includes('names no run and was not read gone (withheld: supervisor-alive)')), b.lines.join('\n'));
+
+      const bad = scopedPeer(t.work, 'plan-verify-20261009T010001Z-cccc07', { scope: { version: 1, state: 'scoped', identity: { unit: 'x' } } });
+      const c = await t.cleanup({ cancel: fakeCancel([]), readScope: () => ({ state: 'gone' }) });
+      deepStrictEqual(c.of(DEAD).unresolved.map((p) => p.run_id), [bad], 'the unnamed scope read gone releases; the malformed one keeps');
+      ok(c.lines.some((l) => l.includes(bad) && l.includes('its scope record does not read (scope-malformed)')), c.lines.join('\n'));
+
+      rmSync(join(t.work, '.agentic-plugins/state/engineer/peer-runs', bad), { recursive: true });
+      rmSync(join(t.work, '.agentic-plugins/state/engineer/peer-runs', unnamed), { recursive: true });
+      const stored = scopedPeer(t.work, 'plan-verify-20261009T010001Z-cccc08', { teardown: 'gone' });
+      const d = await t.cleanup({ cancel: fakeCancel([]), readScope: () => ({ state: 'withheld', check: 'scope-populated' }) });
+      deepStrictEqual(d.of(DEAD).unresolved.map((p) => p.run_id), [stored], `a stored gone is a report: the scope is read now, and keeps the record when not gone:\n${d.lines.join('\n')}`);
+      const e = await t.cleanup({ cancel: fakeCancel([]), readScope: () => ({ state: 'gone' }) });
+      strictEqual(e.of(DEAD).outcome, 'cleaned', e.lines.join('\n'));
+    } finally {
+      t.done();
+    }
+  });
+
+  it('a top-level tag never authorizes a cancel of another run\'s scope; a scope the cancel reads not gone keeps the record though the handle showed none; a handle under a claim\'s name is read, never cancelled', { timeout: 60_000 }, async () => {
+    const t = await setup();
+    try {
+      await t.deadRun();
+      const crossed = scopedPeer(t.work, 'plan-verify-20261009T010001Z-cccc10', { status: 'running', names: DEAD, association: { autopilot_run: OTHER, autopilot_step: '2' } });
+      const late = scopedPeer(t.work, 'plan-verify-20261009T010001Z-cccc11', { status: 'running', names: DEAD, scope: null });
+      const calls = [];
+      const a = await t.cleanup({ cancel: fakeCancel(calls, { state: 'withheld', check: 'not-stale', unit: 'u' }), readScope: noRead });
+      deepStrictEqual(calls.map((c) => c.runId), [late], `the tagged peer whose scope names another run is not cancelled:\n${a.lines.join('\n')}`);
+      ok(!a.lines.some((l) => l.includes(crossed)), a.lines.join('\n'));
+      deepStrictEqual(a.of(DEAD).unresolved.map((p) => p.run_id), [late], 'the scope reading the cancel returned keeps the record');
+
+      rmSync(join(t.work, '.agentic-plugins/state/engineer/peer-runs', late), { recursive: true });
+      const claimed = 'plan-verify-20261009T010001Z-cccc12';
+      scopedPeer(t.work, claimed, { association: ours(), dirName: `~prune~${claimed}~x1` });
+      const reads = [];
+      const b = await t.cleanup({ cancel: fakeCancel(calls), readScope: (i) => { reads.push(i.unit); return { state: 'emptied' }; } });
+      deepStrictEqual(b.of(DEAD).unresolved.map((p) => p.run_id), [claimed], b.lines.join('\n'));
+      ok(b.lines.some((l) => l.includes('not its run\'s name')), b.lines.join('\n'));
+      deepStrictEqual([reads, calls.length], [[unitOf(claimed)], 1], 'read once, never cancelled');
+      const c = await t.cleanup({ cancel: fakeCancel(calls), readScope: () => ({ state: 'gone' }) });
+      strictEqual(c.of(DEAD).outcome, 'cleaned', c.lines.join('\n'));
+    } finally {
+      t.done();
+    }
+  });
+});

@@ -74,6 +74,16 @@ for (const persona of personasFor('scripts/lib/peer-snapshot.mjs')) {
   const state = await import(pathToFileURL(P.path('scripts/state.mjs')).href);
   const stateRoot = await import(pathToFileURL(P.path('scripts/lib/state-root.mjs')).href);
   const env = cleanEnv();
+  // C181 — the environment of a runner CLI a row pins to a run that makes no
+  // scope, whatever this host allows: neither variable the user manager's bus
+  // address derives from, so the runner's scope checks refuse. A row that
+  // passes it shows from the run's handle that no scope was recorded.
+  const unscopedEnv = (() => {
+    const e = { ...env };
+    delete e.DBUS_SESSION_BUS_ADDRESS;
+    delete e.XDG_RUNTIME_DIR;
+    return e;
+  })();
   // C142 O-F2 — the real listing without the processes it could not read: a
   // process of the user's own that hides its directory (a `login` or a `sudo`
   // on macOS, one not dumpable on Linux) and is not placed outside the run
@@ -2050,6 +2060,12 @@ for (const persona of personasFor('scripts/lib/peer-snapshot.mjs')) {
 
   describe(`${persona}: peer-runner — a codex peer runs in the snapshot (C96)`, () => {
     const PEER_RUNNER = P.path('scripts/peer-runner.mjs');
+    // The rows that pass it hold the end of a run that makes no scope (C181:
+    // where none can be made, or on an earlier release): the ledger refusing
+    // its writes, and the group handling of its companion. They pin that path
+    // with a system the scope checks refuse at once; a scoped run's end is
+    // tests/persona-pipeline/test-peer-runner-scope.mjs's.
+    const NO_SCOPE = { platform: 'none', now: () => Date.now(), pid: process.pid, uid: () => 0 };
 
     async function fixture(dir) {
       const top = makeDirtyRepo(dir);
@@ -2152,7 +2168,7 @@ for (const persona of personasFor('scripts/lib/peer-snapshot.mjs')) {
         // The update that records the running peer is shown to the run, then
         // its write fails: the ledger directory is read-only from here on.
         const hooks = { beforeHandleWrite: (h) => { if (h.status === 'running') chmodSync(ledger, 0o500); } };
-        const running = runner.runPeer({ repoRoot: f.top, runId: 'eacces-1', peer: 'codex', promptText: 'x', cwd: f.top, env: fakeEnv(f, 'hang'), cancellation, cancelGraceMs: 500, hooks });
+        const running = runner.runPeer({ repoRoot: f.top, runId: 'eacces-1', peer: 'codex', promptText: 'x', cwd: f.top, env: fakeEnv(f, 'hang'), cancellation, cancelGraceMs: 500, hooks, scopeSystem: NO_SCOPE });
         // Handled now, judged below: an early rejection must fail this test,
         // not end it while it still holds TMPDIR.
         running.catch(() => {});
@@ -2301,7 +2317,7 @@ for (const persona of personasFor('scripts/lib/peer-snapshot.mjs')) {
     it('a child holding the companion\'s stdout open does not hold the run: it is stopped once the companion exits', async () => {
       await withTmp(async (dir, snaps) => {
         const f = await fixture(dir);
-        const running = runner.runPeer({ repoRoot: f.top, peer: 'codex', promptText: 'x', cwd: f.top, env: fakeEnv(f, 'leaky'), cancelGraceMs: 300 });
+        const running = runner.runPeer({ repoRoot: f.top, peer: 'codex', promptText: 'x', cwd: f.top, env: fakeEnv(f, 'leaky'), cancelGraceMs: 300, scopeSystem: NO_SCOPE });
         let grandchild = null;
         try {
           const result = await within(running, 'the run to end with a child holding its pipes');
@@ -2322,7 +2338,7 @@ for (const persona of personasFor('scripts/lib/peer-snapshot.mjs')) {
         const f = await fixture(dir);
         const plain = join(dir, 'plain');
         mkdirSync(plain);
-        const result = await runner.runPeer({ repoRoot: f.top, peer: 'claude', promptText: 'x', cwd: plain, env: fakeEnv(f, 'stubborn'), cancelGraceMs: 300 });
+        const result = await runner.runPeer({ repoRoot: f.top, peer: 'claude', promptText: 'x', cwd: plain, env: fakeEnv(f, 'stubborn'), cancelGraceMs: 300, scopeSystem: NO_SCOPE });
         const { grandchild } = JSON.parse(readFileSync(f.record, 'utf8'));
         try {
           strictEqual(result.status, 'completed');
@@ -2372,7 +2388,9 @@ for (const persona of personasFor('scripts/lib/peer-snapshot.mjs')) {
     it('a child the companion leaves running is stopped before the snapshot is removed', async () => {
       await withTmp(async (dir, snaps) => {
         const f = await fixture(dir);
-        const result = await runner.runPeer({ repoRoot: f.top, peer: 'codex', promptText: 'x', cwd: f.top, env: fakeEnv(f, 'stubborn'), cancelGraceMs: 300 });
+        // The legacy group stop, pinned: a scope's kill would stop the child
+        // whatever that stop does.
+        const result = await runner.runPeer({ repoRoot: f.top, peer: 'codex', promptText: 'x', cwd: f.top, env: fakeEnv(f, 'stubborn'), cancelGraceMs: 300, scopeSystem: NO_SCOPE });
         strictEqual(result.status, 'completed');
         const { grandchild } = JSON.parse(readFileSync(f.record, 'utf8'));
         try {
@@ -2426,10 +2444,14 @@ for (const persona of personasFor('scripts/lib/peer-snapshot.mjs')) {
     it('a runner killed outright leaves a snapshot its live peer keeps; the next sweep reclaims it once the peer ends', async (t) => {
       await withTmp(async (dir, snaps) => {
         const f = await fixture(dir);
+        // The reclaim of a run that makes no scope (C181: a scoped one's is
+        // test-peer-runner-scope-live.mjs's), pinned with `unscopedEnv`.
         const cli = spawn(process.execPath, [PEER_RUNNER, 'run', '--repo-root', f.top, '--run-id', 'kill-1', '--peer', 'codex', '--prompt-text', 'x', '--cwd', f.top], {
-          env: { ...fakeEnv(f, 'hang'), TMPDIR: snaps }, stdio: ['ignore', 'pipe', 'pipe'],
+          env: { ...unscopedEnv, AGENTIC_COMPANIONS_ROOT: f.companions, FAKE_COMPANION_MODE: 'hang', FAKE_RECORD: f.record, TMPDIR: snaps }, stdio: ['ignore', 'pipe', 'pipe'],
         });
         await waitFor(() => existsSync(f.record), { message: 'the companion to start' });
+        const started = await runner.readHandle(runner.peerRunPaths(f.top, 'kill-1').handle);
+        strictEqual(started.scope?.state, 'none', `the run makes no scope: ${JSON.stringify(started.scope)}`);
         const { pid } = JSON.parse(readFileSync(f.record, 'utf8'));
         t.after(() => killGroup(pid));
         const [snap] = snapshotWorktrees(f.top);
@@ -2457,11 +2479,21 @@ for (const persona of personasFor('scripts/lib/peer-snapshot.mjs')) {
   describe(`${persona}: peer-runner — a run its host killed before its cleanup (C142)`, () => {
     const PEER_RUNNER = P.path('scripts/peer-runner.mjs');
     const fixture = async (dir) => ({ top: makeDirtyRepo(dir), companions: await writeFakeCompanions(dir), record: join(dir, 'record.json') });
-    const hosted = (t, f, snaps, runId, mode, extra = []) => startHostedRun(t, {
-      runnerPath: PEER_RUNNER, readHandle: runner.readHandle, handlePath: runner.peerRunPaths(f.top, runId).handle, top: f.top, runId,
-      env: { ...env, AGENTIC_COMPANIONS_ROOT: f.companions, FAKE_COMPANION_MODE: mode, FAKE_RECORD: f.record, TMPDIR: snaps }, extra,
-      ready: () => existsSync(f.record),
-    });
+    // These rows hold the judgments of a run that makes no scope (C181: where
+    // none can be made, or one an earlier release ran), whatever this host
+    // allows: the runner is started with `unscopedEnv`, and each run is shown
+    // to have recorded no scope before the row goes on. A scoped run's end is
+    // test-peer-runner-scope.mjs's.
+    const hosted = async (t, f, snaps, runId, mode, extra = []) => {
+      const run = await startHostedRun(t, {
+        runnerPath: PEER_RUNNER, readHandle: runner.readHandle, handlePath: runner.peerRunPaths(f.top, runId).handle, top: f.top, runId,
+        env: { ...unscopedEnv, AGENTIC_COMPANIONS_ROOT: f.companions, FAKE_COMPANION_MODE: mode, FAKE_RECORD: f.record, TMPDIR: snaps }, extra,
+        ready: () => existsSync(f.record),
+      });
+      const scope = (await runner.readHandle(run.handlePath)).scope;
+      strictEqual(scope?.state, 'none', `the run makes no scope: ${JSON.stringify(scope)}`);
+      return run;
+    };
     // The leak, as the host leaves it: one snapshot, its worktree registered.
     const assertLeftover = (f, snaps) => {
       strictEqual(leftovers(snaps).length, 1, 'the snapshot directory is left');

@@ -1,0 +1,405 @@
+// scripts/lib/scope-launch.mjs
+//
+// A launch in a scope of its own (ADR-0023 §6, amendments of 2026-11-22 and
+// 2026-11-24, C181): the runner starts, under `systemd-run --user --scope`, a
+// gate that runs nothing until it is told to, reads from its own child that
+// the gate is the only member of the new scope, records the identity, closes
+// the scope to entry, and only then gives the word, on which the gate
+// executes the companion in its place (same pid, same start). Before a scoped
+// launch, whether one can be made (`scopeAvailability`) and whether the
+// launcher already runs inside another launcher's scope (`launcherPlacement`),
+// which makes none of its own.
+//
+// Every read of /proc and of the cgroup hierarchy is lib/scope-reader.mjs's,
+// pinned; the records' rules are lib/scope.mjs's. `system` is what the reader
+// reads (the system itself; a test passes its own).
+// Generated from persona-pipeline/ (ADR-0066).
+
+import { spawn, spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+
+import { SCOPE_CHECK_MS, SCOPE_UNIT_PREFIX, SCOPE_VERSION, scopeIdentityProblems } from './scope.mjs';
+import {
+  SYSTEM,
+  attestReader,
+  clockPassed,
+  closeNewScope,
+  closeReader,
+  inspectNewScope,
+  openProcAnchor,
+  readCgroupOf,
+  readStart,
+} from './scope-reader.mjs';
+
+// How long the runner waits for the gate to say it waits (systemd-run has
+// asked the manager for the scope and executed the gate in its place).
+export const GATE_READY_MS = 10000;
+// How long the runner waits for its clock to pass the gate's start tick
+// before it gives up the scoped launch (a tick is 1/CLK_TCK of a second).
+export const GATE_TICK_WAIT_MS = 1000;
+
+// The gate: it says `ready` on its descriptor 3 (a socket the runner holds),
+// then waits there for the word. The word `go` executes the companion in its
+// place; anything else, the end of the channel without the word included (the
+// runner gone, or a failure before the word), ends it with nothing run.
+export const GATE_SCRIPT = 'printf "ready\\n" >&3 || exit 125; IFS= read -r w <&3 || exit 125; [ "$w" = go ] || exit 125; exec 3>&-; exec "$@"';
+
+const UNIT_RUN_ID = /[^A-Za-z0-9._:-]/g;
+
+// The unit's name, used once: the launchers' prefix, the run's id and a
+// random suffix.
+export function scopeUnitName(runId, suffix = randomBytes(8).toString('hex')) {
+  return `${SCOPE_UNIT_PREFIX}${String(runId).replace(UNIT_RUN_ID, '_').slice(0, 150)}-${suffix}.scope`;
+}
+
+// The records a launcher writes: a scope it made, one it abandoned before the
+// word, and one it did not make, with why.
+export function scopedRecord(identity) {
+  return { version: SCOPE_VERSION, state: 'scoped', identity };
+}
+
+export function abandonedRecord(identity) {
+  return { version: SCOPE_VERSION, state: 'abandoned', identity };
+}
+
+export function noScopeRecord(reason, enclosingUnit = null) {
+  return reason === 'inside-launcher'
+    ? { version: SCOPE_VERSION, state: 'none', reason, enclosing_unit: enclosingUnit }
+    : { version: SCOPE_VERSION, state: 'none', reason };
+}
+
+// Whether a scoped launch can be made here (ADR-0023, where no scope can be
+// made): the checks every reading needs, made by attestReader (Linux with
+// cgroup.kill, a /proc that is the runner's, the user manager managing
+// `user@UID.service` in the runner's pid and cgroup namespaces, the cgroup v2
+// hierarchy). Answers { available: true } or { available: false, check }.
+export function scopeAvailability({ system = SYSTEM } = {}) {
+  const reader = attestReader({ system });
+  if (!reader.ok) return { available: false, check: reader.check };
+  closeReader(reader);
+  return { available: true };
+}
+
+// systemd's bus-path escaping of a unit's name (`_xx`, two hex digits, for
+// every byte that is not a letter or digit), undone.
+function unitFromBusPath(text) {
+  const m = /^o "\/org\/freedesktop\/systemd1\/unit\/([A-Za-z0-9_]+)"\s*$/.exec(String(text));
+  if (m === null) return null;
+  const name = m[1].replace(/_([0-9a-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+  return /^[A-Za-z0-9:_.\\@-]+$/.test(name) ? name : null;
+}
+
+// Whether the launcher already runs inside a launcher's scope (ADR-0023, a
+// launcher inside another's scope), from two readings that must agree: its own
+// cgroup path, read before the user manager is asked and again after its
+// answer, the two the same, and the unit the manager names for its pid.
+//   { inside: true, enclosingUnit }  a scope named with the launchers' prefix
+//                                    in both: it makes no scope of its own;
+//   { inside: false }                a path outside `user@UID.service` with the
+//                                    manager naming no unit, or a path in a
+//                                    unit of the manager that is no launcher's
+//                                    scope with the manager naming that unit;
+//   { withheld: check }              any other pair, a failed reading
+//                                    included: no scope.
+// It only withholds a scope, never grants a kill.
+export function launcherPlacement({ system = SYSTEM, deadline = system.now() + SCOPE_CHECK_MS } = {}) {
+  const anchor = openProcAnchor(system);
+  if (!anchor.ok) return { withheld: anchor.check };
+  let before;
+  let after;
+  let answer;
+  try {
+    before = readCgroupOf(system, anchor, system.pid);
+    const left = deadline - system.now();
+    answer = left > 0
+      ? system.run('busctl', ['--user', 'call', 'org.freedesktop.systemd1', '/org/freedesktop/systemd1', 'org.freedesktop.systemd1.Manager', 'GetUnitByPID', 'u', String(system.pid)], left)
+      : null;
+    after = readCgroupOf(system, anchor, system.pid);
+  } finally {
+    try {
+      system.close(anchor.fd);
+    } catch {
+      // Nothing is left to do with a descriptor that would not close.
+    }
+  }
+  if (answer === null || system.now() > deadline) return { withheld: 'check-timeout' };
+  return placementFrom({ before, after, answer, uid: system.uid() });
+}
+
+// The judgment of launcherPlacement, from what it read: the two path readings
+// (`before`, `after`; null when one failed), the manager's answer to
+// GetUnitByPID (`{ status, stdout, stderr }`) and the user's uid.
+export function placementFrom({ before, after, answer, uid }) {
+  if (typeof before !== 'string' || typeof after !== 'string' || before !== after) return { withheld: 'placement-path' };
+  const parts = before.split('/');
+  const managerAt = parts.indexOf(`user@${uid}.service`);
+  const underManager = managerAt > 0;
+  const unit = answer?.status === 0 ? unitFromBusPath(answer.stdout) : null;
+  // The manager's NoUnitForPID: with both paths outside `user@UID.service` it
+  // changes nothing whether the manager could read the pid's cgroup.
+  const noUnit = Number.isInteger(answer?.status) && answer.status !== 0 && /does not belong to any loaded unit/.test(String(answer.stderr ?? ''));
+  if (!underManager && noUnit) return { inside: false };
+  // The unit the manager names holds the path: a component of it below the
+  // manager's own cgroup (a process in a cgroup a unit made below itself is
+  // in that unit).
+  if (underManager && unit !== null && parts.indexOf(unit, managerAt + 1) > managerAt) {
+    if (unit.startsWith(SCOPE_UNIT_PREFIX) && unit.endsWith('.scope')) return { inside: true, enclosingUnit: unit };
+    return { inside: false };
+  }
+  return { withheld: 'placement' };
+}
+
+// Start the gate under `systemd-run --user --scope`, in the unit `unit`, with
+// `command` and `args` to execute on the word. Returns the child at once, in
+// the caller's synchronous block, so the caller arms its observers before any
+// event; its descriptor 3 is the gate's channel (gateHandshake's). The gate's
+// pid is the companion's: systemd-run executes the gate in its place, and the
+// gate the companion in its.
+//
+// systemd 258 expands `$NAME` in a scope's command line by default, so where
+// systemd-run knows `--expand-environment` it is turned off: the arguments
+// reach the gate as written. A systemd-run that predates the option expands
+// nothing.
+export function spawnGated({ unit, command, args = [], options = {} }) {
+  const stdio = [...(options.stdio ?? ['ignore', 'pipe', 'pipe'])].slice(0, 3);
+  const child = spawn('systemd-run', [
+    '--user', '--scope', '--quiet', '--collect', `--unit=${unit}`, ...(knowsExpandEnvironment() ? ['--expand-environment=no'] : []), '--',
+    '/bin/sh', '-c', GATE_SCRIPT, 'agentic-gate', command, ...args,
+  ], { ...options, stdio: [...stdio, 'pipe'] });
+  // The channel's errors (an EPIPE when the gate died before the word) are
+  // the handshake's to judge, never an uncaught error of the runner.
+  child.stdio[3]?.on('error', () => {});
+  return child;
+}
+
+let expandOption = null;
+function knowsExpandEnvironment() {
+  if (expandOption === null) {
+    const r = spawnSync('systemd-run', ['--help'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000, env: { ...process.env, LC_ALL: 'C' } });
+    expandOption = r.status === 0 && /--expand-environment/.test(String(r.stdout));
+  }
+  return expandOption;
+}
+
+function exited(child) {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+// The gate's `ready`, or why it did not come: 'ready', 'exit', 'error',
+// 'garbage' or 'timeout'.
+function waitReady(child, ms) {
+  if (exited(child)) return Promise.resolve('exit');
+  const channel = child.stdio?.[3];
+  if (!channel) return Promise.resolve('error');
+  return new Promise((resolveP) => {
+    let text = '';
+    const done = (why) => {
+      clearTimeout(timer);
+      channel.off('data', onData);
+      channel.off('end', onEnd);
+      child.off('exit', onExit);
+      child.off('error', onError);
+      channel.pause();
+      resolveP(why);
+    };
+    const onData = (chunk) => {
+      text += String(chunk);
+      if (!text.includes('\n')) return text.length > 64 ? done('garbage') : undefined;
+      done(text === 'ready\n' ? 'ready' : 'garbage');
+    };
+    const onEnd = () => done('exit');
+    const onExit = () => done('exit');
+    const onError = () => done('error');
+    const timer = setTimeout(() => done('timeout'), ms);
+    channel.on('data', onData);
+    channel.once('end', onEnd);
+    child.once('exit', onExit);
+    child.once('error', onError);
+  });
+}
+
+// A failure before the word ends the gate, the runner's own child: its channel
+// closes without the word (the gate then exits by itself) and the gate's pid
+// gets SIGKILL while the child has not been seen to exit. The scope is left as
+// it is: only a kill under every check of lib/scope-reader.mjs ends one.
+export function abortGate(child) {
+  try {
+    child.stdio?.[3]?.destroy();
+  } catch {
+    // A channel that will not close: the kill below ends the gate.
+  }
+  if (!exited(child)) {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      // The gate has already gone.
+    }
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolveP) => {
+    setTimeout(resolveP, ms);
+  });
+}
+
+// The handshake with a gate spawnGated started, up to the word:
+//   1. the gate says it waits (within GATE_READY_MS);
+//   2. within SCOPE_CHECK_MS: a reader attested, the gate's cgroup read from
+//      its own child (its pid no other process can take before the runner
+//      reaps it), in the unit `unit` below the user manager, the manager
+//      naming that cgroup and an InvocationID for the unit, the scope a
+//      `domain` leaf holding the gate alone with a `cgroup.kill` that opens,
+//      the gate's start, the runner's own (its supervisor), the boot and the
+//      clock read;
+//   3. the identity recorded (`record`, which writes it to the run's records
+//      and throws when it cannot);
+//   4. the scope closed to entry;
+//   5. the clock past the gate's start tick;
+//   6. the word: from the first try to send it, whatever its outcome, the
+//      companion counts as launched.
+// A cancellation (`signal`) before the word is a failure before it. Answers
+// { launched: true, identity } or { launched: false, check, recorded }, where
+// `recorded` says whether `record` was called (its records may then carry the
+// identity, which the caller marks abandoned before it launches directly);
+// the gate has then been ended by abortGate and has run nothing.
+export async function gateHandshake(child, {
+  unit,
+  owner,
+  hasSnapshot,
+  association = null,
+  record,
+  signal = null,
+  system = SYSTEM,
+  readyMs = GATE_READY_MS,
+  tickWaitMs = GATE_TICK_WAIT_MS,
+} = {}) {
+  let recorded = false;
+  let reader = null;
+  let launched = false;
+  // A cancellation before the word ends the gate at once, a pending record()
+  // included; the handshake still awaits that record before it answers, so no
+  // write of it lands after the caller's abandoned mark.
+  const onAbort = () => abortGate(child);
+  signal?.addEventListener?.('abort', onAbort, { once: true });
+  const fail = (check) => ({ launched: false, check, recorded });
+  try {
+    const ready = await waitReady(child, readyMs);
+    if (ready !== 'ready') return fail(`gate-${ready}`);
+    if (signal?.aborted) return fail('cancelled');
+    const pid = child.pid;
+    if (!Number.isInteger(pid) || pid <= 0 || exited(child)) return fail('gate-exit');
+    const deadline = system.now() + SCOPE_CHECK_MS;
+    // The gate's cgroup decides which path the reader attests for.
+    const first = attestReader({ system, deadline });
+    if (!first.ok) return fail(first.check);
+    const path = readCgroupOf(system, first.anchor, pid);
+    const managerCgroup = first.managerCgroup;
+    closeReader(first);
+    if (path === null) return fail('gate-cgroup');
+    const parts = path.split('/');
+    if (parts[parts.length - 1] !== unit || !path.startsWith(`${managerCgroup}/`)) return fail('gate-placement');
+    const attested = attestReader({ system, cgroupPath: path, deadline });
+    if (!attested.ok) return fail(attested.check);
+    reader = attested;
+    const unitShown = () => {
+      const left = deadline - system.now();
+      if (left <= 0) return null;
+      const shown = system.run('systemctl', ['--user', 'show', unit, '-p', 'InvocationID', '-p', 'ControlGroup'], left);
+      if (shown.status !== 0 || system.now() > deadline) return null;
+      const props = {};
+      for (const line of String(shown.stdout ?? '').split('\n')) {
+        const at = line.indexOf('=');
+        if (at > 0) props[line.slice(0, at)] = line.slice(at + 1);
+      }
+      return props;
+    };
+    if (readCgroupOf(system, reader.anchor, pid) !== path) return fail('gate-placement');
+    const props = unitShown();
+    if (props === null) return fail(system.now() > deadline ? 'check-timeout' : 'manager-unit');
+    if (props.ControlGroup !== path) return fail('manager-identity');
+    const scope = inspectNewScope(reader, { path, gatePid: pid });
+    if (!scope.ok) return fail(scope.check);
+    const gateStart = readStart(system, reader.anchor, pid);
+    const ownStart = readStart(system, reader.anchor, system.pid);
+    if (gateStart === null || ownStart === null) return fail('start');
+    if (exited(child)) return fail('gate-exit');
+    const identity = {
+      owner,
+      unit,
+      invocation_id: props.InvocationID,
+      cgroup_path: path,
+      cgroup_id: scope.cgroupId,
+      boot_id: reader.bootId,
+      gate: { pid, starttime: gateStart, clock: reader.clock },
+      supervisor: {
+        pid: system.pid,
+        fingerprint: { kind: 'linux_proc_starttime', starttime: ownStart },
+        clock: reader.clock,
+        boot_id: reader.bootId,
+      },
+      has_snapshot: hasSnapshot === true,
+      association,
+    };
+    if (scopeIdentityProblems(identity).length > 0) return fail('identity');
+    // The clock's tick rate is read now, within the checks' budget; the wait
+    // for the gate's tick below reads only the clock.
+    if (clockPassed(reader, gateStart) === null) return fail('clock');
+    if (system.now() > deadline) return fail('check-timeout');
+    if (signal?.aborted) return fail('cancelled');
+    recorded = true;
+    try {
+      await record(identity);
+    } catch {
+      return fail('record');
+    }
+    if (signal?.aborted) return fail('cancelled');
+    const closed = closeNewScope(reader, { path, cgroupId: scope.cgroupId });
+    if (!closed.ok) return fail(closed.check);
+    // What the run starts descends from the gate, so it starts at a later tick
+    // than the gate's once the clock has surely passed it.
+    const until = system.now() + tickWaitMs;
+    for (;;) {
+      const passed = clockPassed(reader, gateStart);
+      if (passed === null) return fail('clock');
+      if (passed) break;
+      if (system.now() > until) return fail('clock-tick');
+      await sleep(5);
+    }
+    // The recheck, with no await between it and the word: the scope may have
+    // taken a member while the record was written and before it was closed.
+    // The manager still holds the unit with the recorded InvocationID and
+    // path, the gate is still the only member of a closed domain leaf of the
+    // recorded id whose cgroup.kill opens, at the recorded start.
+    const recheckBy = system.now() + SCOPE_CHECK_MS;
+    const left = recheckBy - system.now();
+    const again = system.run('systemctl', ['--user', 'show', unit, '-p', 'InvocationID', '-p', 'ControlGroup'], left);
+    if (again.status !== 0 || system.now() > recheckBy) return fail('recheck-manager');
+    const againProps = {};
+    for (const line of String(again.stdout ?? '').split('\n')) {
+      const at = line.indexOf('=');
+      if (at > 0) againProps[line.slice(0, at)] = line.slice(at + 1);
+    }
+    if (againProps.InvocationID !== identity.invocation_id || againProps.ControlGroup !== path) return fail('recheck-manager');
+    const still = inspectNewScope(reader, { path, gatePid: pid, closed: { cgroupId: scope.cgroupId } });
+    if (!still.ok) return fail(`recheck-${still.check}`);
+    if (readCgroupOf(system, reader.anchor, pid) !== path || readStart(system, reader.anchor, pid) !== gateStart) return fail('recheck-gate');
+    if (signal?.aborted) return fail('cancelled');
+    if (exited(child)) return fail('gate-exit');
+    // The word. From this try on the companion counts as launched.
+    launched = true;
+    try {
+      child.stdio[3].end('go\n');
+    } catch {
+      // A try that failed still counts: the runner never launches again.
+    }
+    return { launched: true, identity };
+  } catch {
+    return fail('handshake-error');
+  } finally {
+    signal?.removeEventListener?.('abort', onAbort);
+    if (reader !== null) closeReader(reader);
+    // Every answer before the word ends the gate, whatever path it took.
+    if (!launched) abortGate(child);
+  }
+}
