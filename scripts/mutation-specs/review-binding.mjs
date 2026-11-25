@@ -365,7 +365,7 @@ export const MUTATIONS = [
   },
   {
     id: 'I7', file: RUNNER, tests: [T_P],
-    from: "      const ended = options.kind === 'ensemble' && isReviewType(options.ensembleType) ? await endCapture(snapshot, options.env) : {};\n",
+    from: "      const ended = !scoped && options.kind === 'ensemble' && isReviewType(options.ensembleType) ? await endCapture(snapshot, options.env) : {};\n",
     to: '      const ended = {};\n',
     why: 'no second capture: every run reads as not recaptured, so no review ever binds',
     killed_by: [T_BIND_RUN, T_SNAP_EDIT],

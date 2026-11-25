@@ -1,0 +1,335 @@
+// scripts/lib/scope-run.mjs
+//
+// A peer run's launch and its one end (ADR-0023 §6, amendments of 2026-11-22
+// and 2026-11-24, C181), as the runner's spawn section calls them:
+//
+//   planLaunch   before the launch: whether the run makes a scope of its own
+//                (lib/scope-launch.mjs scopeAvailability, launcherPlacement),
+//                and, where it makes none, the record that says why;
+//   beginLaunch  in the spawn section's synchronous block: the child, gated in
+//                a new scope or direct, with what its observers wait on;
+//   handshake    for a gated child, up to the word: the identity recorded to
+//                the handle and the owner record before it; on a failure
+//                before it, the attempt marked abandoned where it was
+//                recorded, then a direct launch, or none where the mark could
+//                not be written or a cancellation came;
+//   end          every end of the run: for a scoped one, from the companion's
+//                exit, the group stop, the scope's kill under every check of
+//                lib/scope-reader.mjs, the wait for a reading of gone up to
+//                SCOPE_EMPTY_WAIT_MS, the pipes' drain up to
+//                PEER_RUN_PIPE_DRAIN_MS (`pipe_held` past it), the end capture
+//                only on gone (else `scope-unproven`), and what the terminal
+//                write records in its one write; for any other, the close
+//                barrier, as before.
+//
+// The runner passes its writers: `writeRecord` writes a `scope` to the owner
+// record and the handle (and throws when it cannot), `capture` the end
+// capture's fields. The end's teardown goes to the owner record from the
+// runner, once the companion's own record there is written (the end answers
+// it as `teardown`).
+// Generated from persona-pipeline/ (ADR-0066).
+
+import { spawn } from 'node:child_process';
+
+import { stopProcessGroup } from './process-identity.mjs';
+import { PEER_RUN_PIPE_DRAIN_MS, SCOPE_EMPTY_WAIT_MS, teardownOf } from './scope.mjs';
+import {
+  abandonedRecord,
+  gateHandshake,
+  launcherPlacement,
+  noScopeRecord,
+  scopeAvailability,
+  scopeUnitName,
+  scopedRecord,
+  spawnGated,
+} from './scope-launch.mjs';
+import { SYSTEM, createScopeEnder, readScopeOnce } from './scope-reader.mjs';
+
+// How often the end reads a killed scope while it waits for gone.
+const GONE_POLL_MS = 50;
+// How long the end waits for the close of a child whose pipes it closed.
+const CLOSE_AFTER_DESTROY_MS = 1000;
+
+const ASSOCIATION_ID = /^[A-Za-z0-9._:-]{1,200}$/;
+
+function sleep(ms) {
+  return new Promise((resolveP) => {
+    setTimeout(resolveP, ms);
+  });
+}
+
+// A race of `promise` against `ms`: true when it settled first. The timer is
+// cleared either way, so a lost race keeps nothing alive.
+function settlesWithin(promise, ms) {
+  let timer;
+  return Promise.race([
+    promise.then(() => true),
+    new Promise((resolveP) => {
+      timer = setTimeout(() => resolveP(false), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+function warnDefault(text) {
+  try {
+    process.stderr.write(`${text}\n`);
+  } catch {
+    // A closed stderr loses the warning, never the run.
+  }
+}
+
+// The autopilot run and step the run was launched under (worker.mjs exports
+// both to the step), which only finds the run; null outside one, or where
+// either is not an id.
+export function associationOf(env = process.env) {
+  const run = env?.AGENTIC_AUTOPILOT;
+  const step = env?.AGENTIC_AUTOPILOT_STEP;
+  return typeof run === 'string' && ASSOCIATION_ID.test(run) && typeof step === 'string' && ASSOCIATION_ID.test(step)
+    ? { autopilot_run: run, autopilot_step: step }
+    : null;
+}
+
+// Whether the run makes a scope, and the plan beginLaunch takes. Where it
+// makes none (no scope can be made here, the launcher runs inside another
+// launcher's scope, or its placement cannot be told), the record that says
+// why is written first, best effort: a run whose record could not be written
+// carries no `scope`, an earlier release's shape, which grants nothing.
+export async function planLaunch({
+  runId,
+  hasSnapshot = false,
+  env = process.env,
+  system = SYSTEM,
+  writeRecord,
+  capture = async () => ({}),
+  cancellation = null,
+  graceMs = 10000,
+  warn = warnDefault,
+} = {}) {
+  const base = { writeRecord, capture, cancellation, graceMs, system, warn };
+  let none = null;
+  let why = null;
+  try {
+    const availability = scopeAvailability({ system });
+    if (!availability.available) {
+      none = noScopeRecord('unavailable');
+      why = availability.check;
+    } else {
+      const placement = launcherPlacement({ system });
+      if (placement.inside === true) {
+        none = noScopeRecord('inside-launcher', placement.enclosingUnit);
+      } else if (placement.inside !== false) {
+        none = noScopeRecord('unavailable');
+        why = placement.withheld ?? 'placement';
+      }
+    }
+  } catch (err) {
+    none = noScopeRecord('unavailable');
+    why = `check-failed: ${String(err?.message ?? err)}`;
+  }
+  if (none !== null) {
+    if (why !== null && why !== 'platform') warn(`peer-runner: no scope for the run (${why}); it launches as before`);
+    try {
+      await writeRecord(none);
+    } catch (err) {
+      warn(`peer-runner: the run's scope record was not written: ${String(err?.message ?? err)}`);
+    }
+    return { kind: 'direct', ...base };
+  }
+  return {
+    kind: 'gated',
+    unit: scopeUnitName(runId),
+    owner: { kind: 'peer-run', run_id: runId },
+    hasSnapshot: hasSnapshot === true,
+    association: associationOf(env),
+    ...base,
+  };
+}
+
+// A child spawned directly, as before: its errors are the run's, it counts
+// as started at its spawn, and its end is the close barrier.
+export function directLaunch(command, args, options) {
+  const launch = {
+    child: spawn(command, args, options),
+    started: Promise.resolve(true),
+    counts: () => true,
+    handshake: null,
+    scoped: false,
+    ending: null,
+  };
+  launch.end = (watched) => {
+    launch.ending ??= watched.closed.then(({ code, signal }) => ({ code, signal, scoped: false, record() {} }));
+    return launch.ending;
+  };
+  return launch;
+}
+
+// The child of a plan, in the caller's synchronous block (the caller arms its
+// observers before any event). A gated child's errors before the word are the
+// handshake's, never the run's, and it counts as started only at the word.
+export function beginLaunch(plan, command, args, options) {
+  if (plan?.kind !== 'gated') return directLaunch(command, args, options);
+  const child = spawnGated({ unit: plan.unit, command, args, options });
+  let resolveStarted;
+  const started = new Promise((resolveP) => {
+    resolveStarted = resolveP;
+  });
+  let word = false;
+  const launch = {
+    child,
+    started,
+    counts: () => word,
+    scoped: false,
+    identity: null,
+    failure: null,
+    ending: null,
+  };
+  launch.handshake = async () => {
+    let recordedIdentity = null;
+    const abort = new AbortController();
+    const retire = plan.cancellation?.onRequest?.(() => abort.abort());
+    let answer;
+    try {
+      answer = await gateHandshake(child, {
+        unit: plan.unit,
+        owner: plan.owner,
+        hasSnapshot: plan.hasSnapshot,
+        association: plan.association,
+        system: plan.system,
+        signal: abort.signal,
+        record: async (identity) => {
+          recordedIdentity = identity;
+          await plan.writeRecord(scopedRecord(identity));
+        },
+      });
+    } finally {
+      retire?.();
+    }
+    if (answer.launched) {
+      word = true;
+      launch.scoped = true;
+      launch.identity = answer.identity;
+      resolveStarted(true);
+      return { launched: true };
+    }
+    resolveStarted(false);
+    // A failure before the word: the gate has run nothing. A record that may
+    // carry the identity is marked abandoned before any direct launch; a mark
+    // that cannot be written leaves the run launching nothing.
+    if (answer.recorded) {
+      try {
+        if (recordedIdentity === null) throw new Error('no identity to mark');
+        await plan.writeRecord(abandonedRecord(recordedIdentity));
+      } catch (err) {
+        plan.warn(`peer-runner: the scoped launch failed before the word (${answer.check}) and its record could not be marked abandoned (${String(err?.message ?? err)}); nothing is launched`);
+        launch.failure = 'scope_abandon_unwritten';
+        return { launched: false };
+      }
+    } else {
+      try {
+        await plan.writeRecord(noScopeRecord('unavailable'));
+      } catch (err) {
+        plan.warn(`peer-runner: the run's scope record was not written: ${String(err?.message ?? err)}`);
+      }
+    }
+    if (abort.signal.aborted || plan.cancellation?.signal) {
+      launch.failure = 'cancelled';
+      return { launched: false };
+    }
+    plan.warn(`peer-runner: the scoped launch failed before the word (${answer.check}); it launches as before`);
+    return { launched: false, relaunch: () => directLaunch(command, args, options) };
+  };
+  launch.end = (watched) => {
+    launch.ending ??= word
+      ? endScoped(plan, launch, watched)
+      : watched.closed.then(() => ({ code: null, signal: null, scoped: false, failure: launch.failure ?? 'scope_launch_failed', record() {} }));
+    return launch.ending;
+  };
+  return launch;
+}
+
+// A reading that never throws (lib/scope-reader.mjs's readings are kept as
+// withheld when they do).
+function readOnce(identity, system) {
+  try {
+    return readScopeOnce(identity, { system });
+  } catch {
+    return { state: 'withheld', check: 'reading-failed' };
+  }
+}
+
+// The one end of a scoped run (ADR-0023, amendment of 2026-11-24, one end of
+// a run), steps 1 to 5; the runner's terminal write is step 6 (`record`), its
+// removal of the snapshot on this reading of gone step 7.
+async function endScoped(plan, launch, watched) {
+  const { child } = launch;
+  const { system, identity } = { system: plan.system, identity: launch.identity };
+  // 1. From the companion's exit, not its pipes' close: its group stopped.
+  const { code, signal } = await watched.exited;
+  const pgid = Number.isInteger(child.pid) && child.pid > 1 ? child.pid : null;
+  try {
+    if (pgid !== null) await stopProcessGroup(pgid, plan.graceMs);
+  } catch {
+    // A group that cannot be signalled: the scope's kill below still runs.
+  }
+  // 2. The kill, under every check, then the wait for gone.
+  const ender = createScopeEnder({ system });
+  const kill = ender.kill(identity);
+  let reading;
+  if (kill.state === 'gone') {
+    reading = { state: 'gone', ...(kill.check ? { check: kill.check } : {}) };
+  } else if (kill.state !== 'written') {
+    // A kill withheld or refused (a scope the manager already collected, once
+    // the companion left it empty, withholds at the manager's check): one
+    // reading, which needs no authority, with no wait; gone or emptied as
+    // read, else the kill's own withholding or refusal (the ender's read).
+    reading = ender.read(identity);
+  } else {
+    const until = system.now() + SCOPE_EMPTY_WAIT_MS;
+    for (;;) {
+      reading = readOnce(identity, system);
+      if (reading.state === 'gone' || system.now() >= until) break;
+      await sleep(GONE_POLL_MS);
+    }
+  }
+  // 3. The pipes drained to end of file within PEER_RUN_PIPE_DRAIN_MS of that
+  // observation; a pipe still open is held by a process outside the scope, or
+  // one the kill could not end: its ends are closed and the run says so.
+  let pipeHeld = false;
+  const drained = await settlesWithin(watched.closed, PEER_RUN_PIPE_DRAIN_MS);
+  if (!drained) {
+    pipeHeld = true;
+    for (const stream of [child.stdout, child.stderr]) {
+      try {
+        stream?.destroy();
+      } catch {
+        // A stream that will not close: the bounded wait below moves on.
+      }
+    }
+    await settlesWithin(watched.closed, CLOSE_AFTER_DESTROY_MS);
+  }
+  // 5. The end capture only on gone; otherwise its reason (step 4, the logs'
+  // flush and the answer, is the runner's, after this).
+  const gone = reading.state === 'gone';
+  let captured = {};
+  try {
+    captured = gone ? await plan.capture() : await plan.capture({ unproven: true });
+  } catch {
+    captured = gone ? { end_tree_reason: 'snapshot-recapture-failed' } : { end_tree_reason: 'scope-unproven' };
+  }
+  const teardown = teardownOf(reading);
+  return {
+    code,
+    signal,
+    scoped: true,
+    identity,
+    reading,
+    teardown,
+    pipeHeld,
+    // 6. What the runner's one terminal write records with the status.
+    record(h) {
+      if (h.scope !== null && typeof h.scope === 'object' && h.scope.state === 'scoped') h.scope = { ...h.scope, teardown };
+      if (pipeHeld) h.pipe_held = true;
+      if (Object.keys(captured).length > 0 && h.snapshot !== null && typeof h.snapshot === 'object') h.snapshot = { ...h.snapshot, ...captured };
+    },
+  };
+}

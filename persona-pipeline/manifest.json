@@ -62,6 +62,50 @@
       "requires": []
     },
     {
+      "id": "lib-scope",
+      "source": "files/scripts/lib/scope.mjs",
+      "dest": "scripts/lib/scope.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
+      "id": "lib-scope-reader",
+      "source": "files/scripts/lib/scope-reader.mjs",
+      "dest": "scripts/lib/scope-reader.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
+      "id": "lib-scope-launch",
+      "source": "files/scripts/lib/scope-launch.mjs",
+      "dest": "scripts/lib/scope-launch.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
+      "id": "lib-scope-run",
+      "source": "files/scripts/lib/scope-run.mjs",
+      "dest": "scripts/lib/scope-run.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
       "id": "lib-evidence-boundary",
       "source": "files/scripts/lib/evidence-boundary.mjs",
       "dest": "scripts/lib/evidence-boundary.mjs",
