@@ -18,7 +18,9 @@
 //                        materialize them in a locked worktree outside the
 //                        checkout, with an owner record beside it
 //   removePeerSnapshot   remove the worktree, its registration and its
-//                        directory, the owner record last
+//                        directory, the owner record last, once the removal
+//                        gate passes (snapshotRemovalGate, C181: a snapshot
+//                        whose run's scope is not read gone is kept)
 //   reclaimPeerSnapshots remove the snapshots of this repository whose owner
 //                        processes are gone (a supervisor that died before
 //                        its cleanup), never one a live process may be using
@@ -41,6 +43,8 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { allProcessCwds, fingerprintForPid, groupMemberCwds, identityState, isGroupAlive, processLineage, stopProcessGroup } from './process-identity.mjs';
+import { scopeRecordState } from './scope.mjs';
+import { readGoneHere, readScopeOnce } from './scope-reader.mjs';
 
 export const SNAPSHOT_LOCK_PREFIX = 'peer-snapshot v1 ';
 export const SNAPSHOT_OWNER_FILE = 'owner.json';
@@ -543,6 +547,23 @@ export async function recordSnapshotCompanion(snapshot, { pid, pgid, fingerprint
   await writeJsonAtomic(snapshot.owner_path, owner);
 }
 
+// C181 — the run's `scope` in the owner record (ADR-0023, amendment of
+// 2026-11-24, how the records bind): the identity before the word, an
+// abandoned mark, a run that made none and why, or the teardown its end read
+// (`teardown`, merged into a scope the record already carries, never one it
+// does not). Throws when it cannot write.
+export async function recordSnapshotScope(snapshot, scope, { teardown = null } = {}) {
+  if (!snapshot?.owner_path) return;
+  const owner = JSON.parse(await readFile(snapshot.owner_path, 'utf8'));
+  if (teardown !== null) {
+    if (owner.scope === null || typeof owner.scope !== 'object' || owner.scope.state !== 'scoped') return;
+    owner.scope = { ...owner.scope, teardown };
+  } else {
+    owner.scope = scope;
+  }
+  await writeJsonAtomic(snapshot.owner_path, owner);
+}
+
 // The handle's `snapshot` field: what was isolated, where, and from what.
 // `supervisor` is the owner record's (the run that made the snapshot, its pid
 // and fingerprint), kept on the handle so that a run whose snapshot a reclaim
@@ -641,13 +662,117 @@ export async function writeSnapshotPrompt(snapshot, text, callerPaths = []) {
   return { path, count };
 }
 
+// C181 — the lookup of a snapshot's owner record, its outcomes kept apart
+// (ADR-0023, amendment of 2026-11-24): { outcome: 'read', record } (read whole,
+// an owner record), 'not-owner' (read whole, and its content does not parse or
+// is no owner record), 'absent' (the lookup found nothing, ENOENT) or
+// 'unreadable' with its code (a permission, an I/O error, anything else).
+export async function lookupSnapshotOwner(ownerPath) {
+  let text;
+  try {
+    text = await readFile(ownerPath, 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { outcome: 'absent' };
+    return { outcome: 'unreadable', code: error?.code ?? 'error' };
+  }
+  let record;
+  try {
+    record = JSON.parse(text);
+  } catch {
+    return { outcome: 'not-owner' };
+  }
+  return record !== null && typeof record === 'object' && record.schema === SNAPSHOT_OWNER_SCHEMA ? { outcome: 'read', record } : { outcome: 'not-owner' };
+}
+
+// Whether a path's lookup finds nothing: 'absent' (ENOENT), 'present', or
+// 'unreadable' (any other failure, which proves nothing).
+async function lookupPath(path) {
+  try {
+    await stat(path);
+    return 'present';
+  } catch (error) {
+    return error?.code === 'ENOENT' ? 'absent' : 'unreadable';
+  }
+}
+
+// A record's scope state (scopeRecordState), `malformed` for one whose parse
+// throws.
+function scopeStateOf(record) {
+  try {
+    return scopeRecordState(record).state;
+  } catch {
+    return 'malformed';
+  }
+}
+
+// C181 — the removal gate every remover of a snapshot passes, placed where the
+// removal is made (ADR-0023, amendment of 2026-11-24, what is kept while a
+// scope is not read gone). It reads the owner record in the snapshot's
+// directory `parent`, and the snapshot's tree there, the directory's own
+// `tree` and `root` when the caller names another. Returns { pass: true, why }
+// or { pass: false, why }:
+//   an owner record read whole that carries no scope (an earlier release's,
+//   one that made none, or one whose scoped launch was abandoned before the
+//   word, which then launched directly) passes, as 2026-10-19 decides;
+//   one that carries a scope passes only on a reading of gone this process
+//   made, earlier (readGoneHere) or here (`readScope`, one reading, no kill);
+//   a scope this release does not parse, or of a version it does not know,
+//   is kept;
+//   a record read whole that is no owner record passes (the proof
+//   `owner-unreadable-expired` rests on; its age is the caller's rule);
+//   an owner record whose lookup finds nothing passes only where the tree's
+//   finds nothing too, and is kept while a tree is left or its lookup fails;
+//   one that cannot be read (a permission, an I/O error) is kept.
+// `judged`, when given, is the owner record a verdict to remove was made on
+// (null for a verdict made on none): a record that reads otherwise now, one
+// that turned unreadable or gained a scope since, is kept (`owner-changed`),
+// so the verdict and the gate rest on the same record.
+// `readScope` is the reading (readScopeOnce; a test passes its own).
+export async function snapshotRemovalGate({ parent, root = null }, { readScope = readScopeOnce, judged } = {}) {
+  if (typeof parent !== 'string' || parent === '') return { pass: false, why: 'owner-unknown' };
+  const owner = await lookupSnapshotOwner(join(parent, SNAPSHOT_OWNER_FILE));
+  if (judged !== undefined && (judged === null ? owner.outcome === 'read' : owner.outcome !== 'read' || JSON.stringify(owner.record) !== JSON.stringify(judged))) {
+    return { pass: false, why: 'owner-changed' };
+  }
+  if (owner.outcome === 'unreadable') return { pass: false, why: 'owner-unreadable' };
+  if (owner.outcome === 'not-owner') return { pass: true, why: 'owner-not-a-record' };
+  if (owner.outcome === 'absent') {
+    const trees = [...new Set([join(parent, SNAPSHOT_TREE_DIR), ...(typeof root === 'string' && root !== '' ? [root] : [])])];
+    for (const tree of trees) {
+      if ((await lookupPath(tree)) !== 'absent') return { pass: false, why: 'owner-absent-tree-left' };
+    }
+    return { pass: true, why: 'owner-and-tree-absent' };
+  }
+  let scope;
+  try {
+    scope = scopeRecordState(owner.record);
+  } catch {
+    scope = { state: 'malformed' };
+  }
+  if (scope.state === 'legacy-missing' || scope.state === 'none' || scope.state === 'abandoned') return { pass: true, why: 'no-scope' };
+  if (scope.state !== 'scoped') return { pass: false, why: `scope-${scope.state}` };
+  if (readGoneHere(scope.identity)) return { pass: true, why: 'scope-gone' };
+  let reading;
+  try {
+    reading = await readScope(scope.identity);
+  } catch {
+    reading = { state: 'withheld', check: 'reading-failed' };
+  }
+  if (reading?.state === 'gone') return { pass: true, why: 'scope-gone' };
+  return { pass: false, why: `scope-${reading?.state ?? 'withheld'}`, unit: scope.identity.unit };
+}
+
 // Remove a snapshot: its worktree and registration (`worktree remove -f -f`
 // works on a locked worktree and on one whose directory is gone), the orphan
 // branch an unborn HEAD's snapshot may have got a commit on, then its
-// directory, the owner record last, and only once all else is gone. Returns
-// { removed, error }.
-export async function removePeerSnapshot(snapshot, { env = process.env } = {}) {
+// directory, the owner record last, and only once all else is gone. The
+// removal gate (snapshotRemovalGate) comes first: a snapshot it keeps is left
+// whole; `judged` is the gate's. Returns { removed, error }, with `kept` (why) and `unit` (a scope's
+// unit, which the owner may stop by hand) when the gate kept it.
+export async function removePeerSnapshot(snapshot, { env = process.env, readScope = readScopeOnce, judged } = {}) {
   const { live_toplevel: top, root: tree, parent } = snapshot;
+  const gate = await snapshotRemovalGate({ parent, root: tree ?? null }, { readScope, judged });
+  if (!gate.pass) return { removed: false, error: null, kept: gate.why, ...(gate.unit ? { unit: gate.unit } : {}) };
   const errors = [];
   if (top && tree) {
     let admin = null;
@@ -1068,7 +1193,14 @@ export async function snapshotEnded(owner, { handle = null, tree = null, listPro
   const kept = handleSupervisor(handle);
   if (shown?.malformed || kept?.malformed) return { verdict: 'unknown', why: 'handle-malformed', supervisor: null, companion: null };
   const handleNames = shown !== null;
-  const handleDisagrees = handleNames && (named === null || typeof named !== 'object' || named.pid !== shown.pid || (Number.isInteger(shown.pgid) && named.pgid !== shown.pgid));
+  // C181 — for a run with a scope, an owner record naming a companion the
+  // handle does not name is one the runner did not write either (ADR-0023,
+  // amendment of 2026-11-24, a death between the record and the companion's
+  // naming): the runner names the companion on the handle as on the record.
+  const scopedRun = handle !== null && (scopeStateOf(handle) === 'scoped' || scopeStateOf(owner) === 'scoped');
+  const handleDisagrees = handleNames
+    ? named === null || typeof named !== 'object' || named.pid !== shown.pid || (Number.isInteger(shown.pgid) && named.pgid !== shown.pgid)
+    : scopedRun && named !== null && named !== undefined;
   // The supervisor too: the runner copies the record's onto the handle, so a
   // record naming another (an exited one, while the handle's runs) is one it
   // did not write.
@@ -1133,13 +1265,13 @@ export async function judgeRunEnded(ownerPath, { runId = null, handle = null } =
 // run's handle recorded. Returns removePeerSnapshot's { removed, error }, or
 // { removed: false, error: null, refused } when the record names anything
 // but its own snapshot (ownedSnapshotTarget).
-export async function removeOwnedSnapshot(ownerPath, owner, { env = process.env, root } = {}) {
+export async function removeOwnedSnapshot(ownerPath, owner, { env = process.env, root, readScope = readScopeOnce } = {}) {
   let top = owner.live_toplevel;
   if ((await mtimeMs(top)) === null && typeof owner.common_dir === 'string' && (await mtimeMs(owner.common_dir)) !== null) top = owner.common_dir;
   const target = await ownedSnapshotTarget(ownerPath, owner, top, root, env);
   if (target.refused) return { removed: false, error: null, refused: target.refused };
   if (target.error) return { removed: false, error: target.error };
-  return removePeerSnapshot(target.snapshot, { env });
+  return removePeerSnapshot(target.snapshot, { env, readScope, judged: owner });
 }
 
 // What an owner record may remove, confirmed apart from the record's own
@@ -1232,9 +1364,17 @@ async function mtimeMs(path) {
 // Reclaim this repository's abandoned snapshots: every worktree locked as a
 // peer snapshot, and every snapshot directory an interrupted creation left in
 // a temporary directory naming this repository, whose owners judgeSnapshot
-// finds gone. A snapshot another reclaimer removed first is not an error.
-// `listProcesses` is judgeSnapshot's.
-export async function reclaimPeerSnapshots({ cwd, env = process.env, now = Date.now(), ttlMs = SNAPSHOT_TTL_MS, hooks = {}, listProcesses = listProcessesHere } = {}) {
+// finds gone. A snapshot another reclaimer removed first is not an error; one
+// the removal gate keeps (C181) is reported kept, with its why.
+// `listProcesses` is judgeSnapshot's, `readScope` the gate's.
+// `endScope`, when given, is the runner's route to a snapshot's scope (C181,
+// ADR-0023, amendment of 2026-11-24, who else ends a scope): its
+// `kill({ ownerPath, owner })` is called once for each snapshot whose owner
+// record reads whole and carries a scope, every one before any snapshot is
+// judged or any scope read (the readers' budget: kills first), and decides
+// alone whether the run's handle lets it write the kill. This file reads no
+// handle; a runner ends the scope only of its own persona's snapshot.
+export async function reclaimPeerSnapshots({ cwd, env = process.env, now = Date.now(), ttlMs = SNAPSHOT_TTL_MS, hooks = {}, listProcesses = listProcessesHere, readScope = readScopeOnce, endScope = null } = {}) {
   const report = { reclaimed: [], kept: [], errors: [] };
   let live;
   try {
@@ -1252,25 +1392,17 @@ export async function reclaimPeerSnapshots({ cwd, env = process.env, now = Date.
   }
   const worktrees = parseWorktreeList(listed.stdout);
   const registered = new Set();
+  const lockedSnapshots = [];
   for (const { worktree, locked } of worktrees) {
     const ownerPath = snapshotOwnerPathOf(worktree, locked);
     if (ownerPath === null) continue;
     registered.add(dirname(ownerPath));
     registered.add(dirname(worktree));
-    const parentGone = (await mtimeMs(dirname(ownerPath))) === null && (await mtimeMs(worktree)) === null;
-    const { judged, owner } = parentGone
-      ? { judged: { verdict: 'reclaim', why: 'directory-gone' }, owner: null }
-      : await judgeOwnerRecord(ownerPath, { now, ttlMs, recordedAtMs: (await mtimeMs(ownerPath)) ?? (await mtimeMs(dirname(ownerPath))), tree: worktree, listProcesses }, hooks);
-    if (judged.verdict !== 'reclaim') {
-      report.kept.push({ tree: worktree, why: judged.why });
-      continue;
-    }
-    const removed = await removePeerSnapshot({ live_toplevel: top, root: worktree, parent: dirname(ownerPath), branch: snapshotBranchOf(dirname(ownerPath), owner) }, { env });
-    if (removed.removed) report.reclaimed.push({ tree: worktree, why: judged.why });
-    else report.errors.push(`${worktree}: ${removed.error}`);
+    lockedSnapshots.push({ worktree, ownerPath });
   }
   // Interrupted creations: a snapshot directory with this repository's owner
   // record and no registered worktree.
+  const interrupted = [];
   const bases = new Set();
   for (const b of [tmpdir(), '/tmp']) {
     try {
@@ -1293,16 +1425,50 @@ export async function reclaimPeerSnapshots({ cwd, env = process.env, now = Date.
       const seen = await readOwner(join(parent, SNAPSHOT_OWNER_FILE));
       if (seen === null || !ownsRepository(seen, live)) continue;
       if (worktrees.some((w) => w.worktree === seen.tree)) continue;
-      const { judged, owner } = await judgeOwnerRecord(join(parent, SNAPSHOT_OWNER_FILE), { now, ttlMs, tree: join(parent, SNAPSHOT_TREE_DIR), listProcesses }, hooks);
-      if (owner === null) continue;
-      if (judged.verdict !== 'reclaim') {
-        report.kept.push({ tree: owner.tree, why: judged.why });
-        continue;
-      }
-      const removed = await removePeerSnapshot({ live_toplevel: top, root: null, parent, branch: snapshotBranchOf(parent, owner) }, { env });
-      if (removed.removed) report.reclaimed.push({ tree: owner.tree, why: `interrupted-${judged.why}` });
-      else report.errors.push(`${parent}: ${removed.error}`);
+      interrupted.push(parent);
     }
+  }
+  // C181 — every kill the runner owes, before any judgment or reading.
+  if (endScope !== null && typeof endScope?.kill === 'function') {
+    for (const ownerPath of [...lockedSnapshots.map((s) => s.ownerPath), ...interrupted.map((p) => join(p, SNAPSHOT_OWNER_FILE))]) {
+      const owner = await lookupSnapshotOwner(ownerPath);
+      if (owner.outcome !== 'read' || scopeStateOf(owner.record) !== 'scoped') continue;
+      try {
+        await endScope.kill({ ownerPath, owner: owner.record });
+      } catch {
+        /* the gate's reading below reports what is left */
+      }
+    }
+  }
+  for (const { worktree, ownerPath } of lockedSnapshots) {
+    const parentGone = (await mtimeMs(dirname(ownerPath))) === null && (await mtimeMs(worktree)) === null;
+    // C181 — a verdict that removes passes the removal gate first
+    // (removePeerSnapshot), which parts what judgeSnapshot folds into
+    // `owner-unreadable`: a record that cannot be read, or is absent while a
+    // tree is left, is kept whatever its age.
+    const { judged, owner } = parentGone
+      ? { judged: { verdict: 'reclaim', why: 'directory-gone' }, owner: null }
+      : await judgeOwnerRecord(ownerPath, { now, ttlMs, recordedAtMs: (await mtimeMs(ownerPath)) ?? (await mtimeMs(dirname(ownerPath))), tree: worktree, listProcesses }, hooks);
+    if (judged.verdict !== 'reclaim') {
+      report.kept.push({ tree: worktree, why: judged.why });
+      continue;
+    }
+    const removed = await removePeerSnapshot({ live_toplevel: top, root: worktree, parent: dirname(ownerPath), branch: snapshotBranchOf(dirname(ownerPath), owner) }, { env, readScope, judged: owner });
+    if (removed.removed) report.reclaimed.push({ tree: worktree, why: judged.why });
+    else if (removed.kept) report.kept.push({ tree: worktree, why: removed.kept, ...(removed.unit ? { unit: removed.unit } : {}) });
+    else report.errors.push(`${worktree}: ${removed.error}`);
+  }
+  for (const parent of interrupted) {
+    const { judged, owner } = await judgeOwnerRecord(join(parent, SNAPSHOT_OWNER_FILE), { now, ttlMs, tree: join(parent, SNAPSHOT_TREE_DIR), listProcesses }, hooks);
+    if (owner === null) continue;
+    if (judged.verdict !== 'reclaim') {
+      report.kept.push({ tree: owner.tree, why: judged.why });
+      continue;
+    }
+    const removed = await removePeerSnapshot({ live_toplevel: top, root: null, parent, branch: snapshotBranchOf(parent, owner) }, { env, readScope, judged: owner });
+    if (removed.removed) report.reclaimed.push({ tree: owner.tree, why: `interrupted-${judged.why}` });
+    else if (removed.kept) report.kept.push({ tree: owner.tree, why: removed.kept, ...(removed.unit ? { unit: removed.unit } : {}) });
+    else report.errors.push(`${parent}: ${removed.error}`);
   }
   return report;
 }
