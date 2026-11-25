@@ -383,7 +383,7 @@ export async function scratchBusy(dir, { env = process.env } = {}) {
     } catch (err) {
       removed = { removed: false, error: String(err?.message ?? err) };
     }
-    if (removed.removed !== true) keep(`the peer snapshot ${snap} could not be removed (${removed.refused ?? removed.error ?? 'unknown'})`);
+    if (removed.removed !== true) keep(`the peer snapshot ${snap} could not be removed (${removed.refused ?? removed.kept ?? removed.error ?? 'unknown'})`);
   }
   return reason;
 }

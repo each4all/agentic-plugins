@@ -45,17 +45,39 @@
 // peer-runner writes the handle field at spawn. That change is the persona
 // pipeline's (engineer, founder, designer), apart from this package: until it
 // ships, every pending peer names no run, and is reported.
+//
+// C181 (ADR-0023, peer runs of a dead step that hold scopes of their own) — a
+// step that could make no scope leaves its peers to make their own, and each
+// such scope records the autopilot run and step it was launched under (its
+// identity's `association`, which only finds the run and grants nothing). The
+// scan reads every persona's ledger (engineer, founder, designer, and the
+// orchestrator's own) in every state root the run's records name, its lanes'
+// checkouts among them, and every handle there, terminal ones included. Each
+// handle whose scope names the dead run goes through its persona's `cancel`,
+// whatever teardown it stores, and the record is kept unless that cancel's
+// own reading (`scope_teardown`) is gone. A scope that names the run but no
+// step of it, and a scope not read gone that names no run or cannot be read,
+// keep the record too, and the run halts naming them.
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { listOpenRuns, openRunsDir, readRun, relaunchCommand, removeOpenRun, writeHalt, writeRun } from './ledger.mjs';
 import { createEventWriter, eventsPath, isHaltCode, RUN_STATUSES } from './events.mjs';
-import { ENGINEER_STATE_HOMES } from './observe.mjs';
 import {
   acquireLock, holderAlive, LockHeldError, macroLockPath, processFingerprint, readLockEntries, worktreeLockPath,
 } from '../../../scripts/lib/run-locks.mjs';
+import { SHARED_HOMES } from '../../../scripts/lib/state-root.mjs';
+import { scopeRecordState } from '../../../scripts/lib/scope.mjs';
+import { readScopeOnce } from '../../../scripts/lib/scope-reader.mjs';
+
+// This orchestrator's root: the runner of its own peer runs when the dead
+// run's pinned one is gone.
+const SELF_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+const SEMVER_DIR = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
+const STEP_SEQ = /^[1-9][0-9]*$/;
 
 // The handle field naming the run whose worker started a peer.
 export const AUTOPILOT_RUN_FIELD = 'autopilot_run';
@@ -97,21 +119,23 @@ export function workflowLinkage(file) {
   return { parent_workflow: scalar('parent_workflow'), originating_subtask: scalar('originating_subtask') };
 }
 
-// The engineer peer-run homes a dead run's peers can be in: under the state
-// root its workers created records in, the default state root, and its
-// checkout (a run from before the shared state root keeps them there). Only
-// a home that does not exist (ENOENT) holds none; one whose path cannot be
+// The peer-run homes a dead run's peers can be in: every persona's, and the
+// orchestrator's (SHARED_HOMES), under the state root its workers created
+// records in, the default state root, its checkout (a run from before the
+// shared state root keeps them there), and the checkout of each of its steps
+// (a lane's own, which the scheduler records as the step's `cwd`). Only a
+// home that does not exist (ENOENT) holds none; one whose path cannot be
 // resolved for another reason (EACCES, EIO, …) may hold the run's peers, and
 // is returned unreadable, which keeps the record.
-function peerRunDirs(run, record) {
-  const roots = [run?.state_root?.root, run?.state_root?.default_state_root, record.checkout]
-    .filter((r) => typeof r === 'string' && r !== '');
+function peerRunDirs(run, record, steps = []) {
+  const roots = [run?.state_root?.root, run?.state_root?.default_state_root, record.checkout, ...steps.map((s) => s?.cwd)]
+    .filter((r) => typeof r === 'string' && r !== '' && path.isAbsolute(r));
   const seen = new Set();
   const dirs = [];
   const unreadable = [];
   for (const root of roots) {
-    for (const home of ENGINEER_STATE_HOMES) {
-      const dir = path.join(root, home, 'peer-runs');
+    for (const { plugin, rel } of SHARED_HOMES) {
+      const dir = path.join(root, rel, 'peer-runs');
       let key;
       try {
         key = fs.realpathSync(dir);
@@ -124,19 +148,20 @@ function peerRunDirs(run, record) {
       }
       if (seen.has(key)) continue;
       seen.add(key);
-      dirs.push({ root, dir });
+      dirs.push({ root, dir, plugin });
     }
   }
   return { dirs, unreadable };
 }
 
-// Every peer run in those homes whose handle says it may still be going, and
-// the ones that cannot be told: a home or a handle that does not read (a run
-// directory with no handle yet is one being created, or pruned).
-function pendingPeers({ dirs, unreadable: unresolvedHomes }) {
+// Every peer run in those homes, terminal ones included (a scope's
+// association is read whatever the run's status), and the ones that cannot
+// be told: a home or a handle that does not read (a run directory with no
+// handle yet is one being created, or pruned).
+function scanPeers({ dirs, unreadable: unresolvedHomes }) {
   const peers = [];
   const unreadable = [...unresolvedHomes];
-  for (const { root, dir } of dirs) {
+  for (const { root, dir, plugin } of dirs) {
     let names = [];
     try {
       names = fs.readdirSync(dir);
@@ -151,13 +176,88 @@ function pendingPeers({ dirs, unreadable: unresolvedHomes }) {
         handle = JSON.parse(fs.readFileSync(file, 'utf8'));
       } catch (err) {
         if (err.code === 'ENOENT' || err.code === 'ENOTDIR') continue;
-        unreadable.push({ run_id: name, root, why: `its handle ${file} does not read (${err.code ?? err.message})` });
+        unreadable.push({ run_id: name, root, plugin, why: `its handle ${file} does not read (${err.code ?? err.message})` });
         continue;
       }
-      if (handle?.run_id === name && PENDING.has(handle.status)) peers.push({ root, handle });
+      // A handle under a directory not named for its run (a retention
+      // claim's `~prune~` name, an interrupted rename) cannot be cancelled by
+      // its id, but its scope is still read below.
+      if (handle !== null && typeof handle === 'object') peers.push({ root, plugin, handle, misplaced: handle.run_id !== name ? name : null });
     }
   }
   return { peers, unreadable };
+}
+
+// What a handle's scope says of the dead run (C181):
+//   null                 no scope of its own (an earlier release's handle,
+//                        none made, an abandoned launch): nothing;
+//   { ours, step }       a scope whose association names the run; `step`
+//                        is false when it names no step of the run's;
+//   { other }            a scope another run, or no run, launched;
+//   { unreadable }       a scope record this reader cannot read.
+function scopeClaim(handle, runId, stepSeqs) {
+  let state;
+  try {
+    state = scopeRecordState(handle);
+  } catch {
+    state = { state: 'malformed' };
+  }
+  if (state.state === 'legacy-missing' || state.state === 'none' || state.state === 'abandoned') return null;
+  if (state.state !== 'scoped') return { unreadable: `scope-${state.state}` };
+  const a = state.identity.association ?? null;
+  if (a !== null && a.autopilot_run === runId) {
+    return { ours: true, unit: state.identity.unit, identity: state.identity, step: STEP_SEQ.test(a.autopilot_step) && stepSeqs.has(Number(a.autopilot_step)) };
+  }
+  return { other: a === null ? 'no-association' : 'another-run', unit: state.identity.unit, identity: state.identity };
+}
+
+// The root of the plugin whose peer-runner ends a peer run of `plugin`: the
+// engineer the dead run pinned (or the caller's), the orchestrator it pinned
+// (or this one), and a founder or designer from its root variable, else
+// beside the engineer (the same install cache, newest version first, or the
+// same checkout), else from either host's install cache (the engineer may be
+// pinned to a checkout while the persona is installed). null when none
+// carries a peer-runner.
+function newestIn(base, has) {
+  let versions = [];
+  try {
+    versions = fs.readdirSync(base).filter((v) => SEMVER_DIR.test(v));
+  } catch {
+    return null;
+  }
+  versions.sort((x, y) => {
+    const a = x.split('.').map(Number);
+    const b = y.split('.').map(Number);
+    return b[0] - a[0] || b[1] - a[1] || b[2] - a[2];
+  });
+  for (const v of versions) if (has(path.join(base, v))) return path.join(base, v);
+  return null;
+}
+
+function runnerFor(plugin, { run, engineer, env }) {
+  const has = (root) => typeof root === 'string' && root !== '' && fs.existsSync(path.join(root, 'scripts', 'peer-runner.mjs'));
+  if (plugin === 'engineer') return engineer;
+  if (plugin === 'orchestrator') {
+    const pinned = run?.roots?.orchestrator;
+    return has(pinned) ? pinned : (has(SELF_ROOT) ? SELF_ROOT : null);
+  }
+  const override = env?.[`AGENTIC_${plugin.toUpperCase()}_ROOT`];
+  if (typeof override === 'string' && override !== '') return path.isAbsolute(override) && has(override) ? override : null;
+  if (has(engineer)) {
+    const parent = path.dirname(engineer);
+    const beside = path.basename(parent) === 'engineer' && SEMVER_DIR.test(path.basename(engineer))
+      ? newestIn(path.join(path.dirname(parent), plugin), has)
+      : (has(path.join(parent, plugin)) ? path.join(parent, plugin) : null);
+    if (beside) return beside;
+  }
+  const home = typeof env?.HOME === 'string' && path.isAbsolute(env.HOME) ? env.HOME : null;
+  const codexHome = typeof env?.CODEX_HOME === 'string' && path.isAbsolute(env.CODEX_HOME) ? env.CODEX_HOME : (home ? path.join(home, '.codex') : null);
+  for (const cache of [home && path.join(home, '.claude/plugins/cache'), codexHome && path.join(codexHome, 'plugins/cache')]) {
+    if (!cache) continue;
+    const found = newestIn(path.join(cache, 'agentic-plugins', plugin), has);
+    if (found) return found;
+  }
+  return null;
 }
 
 // A run's steps, read strictly: a step log that does not read, or holds a
@@ -258,10 +358,13 @@ async function liveEntry(record, mainRoot, probe) {
  * @param a.mainRoot      the main worktree (where the records are)
  * @param a.engineerRoot  the engineer to cancel with when the dead run's is gone
  * @param a.by            { run_id (the caller's run, or null), label }
+ * @param a.cancel        the cancel of one peer run (a test passes its own)
+ * @param a.readScope     one reading of a scope, with no kill (a test's own)
  */
 export async function cleanupDeadRuns({
   mainRoot, macroId = null, selfRunId = null, engineerRoot = null, by,
   env = process.env, now = () => Date.now(), out = () => {}, probe = processFingerprint,
+  cancel = cancelPeer, readScope = readScopeOnce,
 }) {
   const results = [];
   let records;
@@ -280,7 +383,7 @@ export async function cleanupDeadRuns({
     if (macroId !== null && record.macro_id !== macroId) continue;
     let r;
     try {
-      r = await cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, probe });
+      r = await cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, probe, cancel, readScope });
     } catch (e) {
       r = { run_id: runId, outcome: 'kept', detail: `the cleanup failed (${e?.message ?? e}); its record is kept` };
     }
@@ -290,7 +393,7 @@ export async function cleanupDeadRuns({
   return results;
 }
 
-async function cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, probe }) {
+async function cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, probe, cancel, readScope }) {
   const runId = record.run_id;
   if (await holderAlive({ pid: record.pid, fingerprint: record.fingerprint, worker: null }, { probe })) {
     return { run_id: runId, outcome: 'live', detail: `its driver (pid ${record.pid}) is running` };
@@ -341,27 +444,92 @@ async function cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, 
     const engineer = engineerFor(run, engineerRoot);
     const cancelled = [];
     const reported = [];
-    const { peers, unreadable } = pendingPeers(peerRunDirs(run, record));
-    const unresolved = unreadable.map((p) => ({ ...p, engineer }));
-    for (const { root, handle } of peers) {
+    const { peers, unreadable } = scanPeers(peerRunDirs(run, record, strict.steps));
+    const unresolved = unreadable.map((p) => ({ ...p, runner: p.plugin ? runnerFor(p.plugin, { run, engineer, env }) : engineer }));
+    const stepSeqs = new Set(strict.steps.map((s) => s.seq));
+    // One reading of a scope, with no kill: a reading needs no authority.
+    const readOnce = (identity) => {
+      try {
+        return readScope(identity) ?? { state: 'withheld', check: 'no-reading' };
+      } catch (e) {
+        return { state: 'withheld', check: `reading-failed: ${e?.message ?? e}` };
+      }
+    };
+    const said = (reading) => `${reading?.state ?? 'unknown'}${reading?.check ? `: ${reading.check}` : ''}`;
+    for (const { root, plugin, handle, misplaced } of peers) {
       const names = handle[AUTOPILOT_RUN_FIELD];
-      if (names === runId) {
-        if (!engineer) {
-          unresolved.push({ run_id: handle.run_id, root, why: 'no engineer peer-runner to cancel it with' });
+      const pending = PENDING.has(handle.status);
+      const claim = scopeClaim(handle, runId, stepSeqs);
+      // Another run's scope is that run's, whatever the handle's top-level
+      // tag says: the tag never authorizes a kill of a scope another run's
+      // association names.
+      if (claim?.other === 'another-run') continue;
+      const keep = (why, extra = {}) => unresolved.push({
+        run_id: handle.run_id ?? misplaced, root, plugin, why, runner: runnerFor(plugin, { run, engineer, env }), ...(claim?.unit ? { unit: claim.unit } : {}), ...extra,
+      });
+      if (misplaced !== null) {
+        // Not cancellable by its id; its scope is read, and keeps the record
+        // unless gone.
+        if (claim === null) continue;
+        const where = path.join(root, '…', misplaced);
+        if (claim.unreadable) { keep(`its handle lies under ${misplaced}, not its run's name, and its scope record does not read (${claim.unreadable})`, { action: `check ${where}` }); continue; }
+        if (!claim.ours && claim.other !== 'no-association') continue;
+        const reading = readOnce(claim.identity);
+        if (reading.state !== 'gone') keep(`its handle lies under ${misplaced}, not its run's name, so it cannot be cancelled, and its scope ${claim.unit} was not read gone (${said(reading)})`, { action: `check ${where}` });
+        else if (claim.ours && !claim.step) keep(`its scope ${claim.unit} names this run but no step of it`, { action: `check ${where}` });
+        continue;
+      }
+      if ((pending && names === runId) || claim?.ours) {
+        const runner = runnerFor(plugin, { run, engineer, env });
+        if (!runner) {
+          unresolved.push({ run_id: handle.run_id, root, plugin, why: `no ${plugin} peer-runner to cancel it with` });
           continue;
         }
-        const c = cancelPeer(engineer, handle.run_id, root, env);
-        if (c.settled) cancelled.push(c);
-        else {
-          const reason = typeof c.result === 'object' ? (c.result.reason ?? JSON.stringify(c.result)) : c.result;
-          unresolved.push({ run_id: handle.run_id, root, why: reason, engineer, action: OWNER_ACTION[reason]?.(engineer, root) ?? null });
+        // The cancel ends the scope under its own conditions, and its answer
+        // carries its own reading of it: the only reading that releases the
+        // record. A stored teardown, the cancel's `ok` and a settlement say
+        // nothing of the scope. A scope the handle gained after the scan is
+        // in that answer too, and keeps the record unless read gone.
+        const c = cancel(runner, handle.run_id, root, env);
+        const result = typeof c.result === 'object' && c.result !== null ? c.result : null;
+        const reading = result?.scope_teardown ?? null;
+        const failure = (why, action = null) => unresolved.push({ run_id: handle.run_id, root, plugin, why, runner, action, ...(claim?.unit ? { unit: claim.unit } : {}) });
+        if (pending && !c.settled) {
+          const reason = result ? (result.reason ?? JSON.stringify(result)) : c.result;
+          failure(reason, OWNER_ACTION[reason]?.(runner, root) ?? null);
+        } else if (claim?.unreadable) {
+          failure(`its scope record does not read (${claim.unreadable})`);
+        } else if (reading !== null && reading.state !== 'gone') {
+          failure(`its scope ${reading.unit ?? claim?.unit ?? ''} was not read gone (${said(reading)})`);
+        } else if (claim && reading === null) {
+          failure(`its scope ${claim.unit} was not read gone (the cancel read none)`);
+        } else if (claim?.ours && !claim.step) {
+          failure(`its scope ${claim.unit} names this run but no step of it`);
+        } else {
+          cancelled.push(c);
         }
         continue;
       }
+      // A scope of its own that is not the dead run's: one that names no
+      // run, or cannot be read, may be a peer of a step that could not tell
+      // its run, so it keeps the record unless this reading, made now, is
+      // gone (a stored teardown is a report).
+      if (claim?.unreadable) {
+        keep(`its scope record does not read (${claim.unreadable})`);
+        continue;
+      }
+      if (claim?.other === 'no-association') {
+        const reading = readOnce(claim.identity);
+        if (reading.state !== 'gone') {
+          keep(`its scope ${claim.unit} names no run and was not read gone (${said(reading)})`);
+          continue;
+        }
+      }
+      if (!pending) continue;
       // Another run's peer, or the owner's.
       if (names !== undefined && names !== null && names !== '') continue;
       const step = stepOfUnnamed(handle, unaccounted, record.macro_id);
-      if (step) reported.push({ run_id: handle.run_id, root, workflow: handle.workflow_path ?? null, subtask_id: step.subtask_id, seq: step.seq, engineer });
+      if (step) reported.push({ run_id: handle.run_id, root, workflow: handle.workflow_path ?? null, subtask_id: step.subtask_id, seq: step.seq, runner: runnerFor(plugin, { run, engineer, env }) });
     }
 
     // What run.json does not count yet: the driver charges a step in memory
@@ -437,7 +605,7 @@ async function cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, 
     return {
       run_id: runId,
       outcome: complete ? 'cleaned' : 'kept',
-      detail: complete ? 'cleaned up after its dead driver' : 'a peer run that may be its could not be cancelled or read; its record is kept',
+      detail: complete ? 'cleaned up after its dead driver' : 'a peer run that may be its could not be cancelled or read, or its scope was not read gone; its record is kept',
       cancelled, reported, unresolved, settled,
     };
   } finally {
@@ -488,10 +656,11 @@ export function describe(r) {
       lines.push(`  ✗ ${p.why}: its peers cannot be told; check that run's peers there`);
       continue;
     }
-    lines.push(`  ✗ peer run ${p.run_id} may be its but was not cancelled (${p.why}); check it, then: ${p.action ?? `node ${p.engineer ?? '<engineer>'}/scripts/peer-runner.mjs cancel --run-id ${p.run_id} --repo-root ${p.root}`}`);
+    const runner = p.runner ?? p.engineer ?? `<${p.plugin ?? 'engineer'}>`;
+    lines.push(`  ✗ ${p.plugin && p.plugin !== 'engineer' ? `${p.plugin} ` : ''}peer run ${p.run_id} may be its but was not cancelled or read gone (${p.why}); check it, then: ${p.action ?? `node ${runner}/scripts/peer-runner.mjs cancel --run-id ${p.run_id} --repo-root ${p.root}`}`);
   }
   for (const p of r.reported ?? []) {
-    lines.push(`  ⚠ peer run ${p.run_id} on ${p.workflow ?? '?'} (subtask ${p.subtask_id}, step [${p.seq}]) names no run (its peer-runner records none), so it was not cancelled; if it is that step's, cancel it: node ${p.engineer ?? '<engineer>'}/scripts/peer-runner.mjs cancel --run-id ${p.run_id} --repo-root ${p.root}`);
+    lines.push(`  ⚠ peer run ${p.run_id} on ${p.workflow ?? '?'} (subtask ${p.subtask_id}, step [${p.seq}]) names no run (its peer-runner records none), so it was not cancelled; if it is that step's, cancel it: node ${p.runner ?? p.engineer ?? '<engineer>'}/scripts/peer-runner.mjs cancel --run-id ${p.run_id} --repo-root ${p.root}`);
   }
   return lines;
 }
