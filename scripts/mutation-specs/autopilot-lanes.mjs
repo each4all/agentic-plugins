@@ -359,8 +359,8 @@ export const MUTATIONS = [
   // ---- D: the dead-run cleanup --------------------------------------------
   {
     id: 'D1', file: DEAD, tests: [TDR],
-    from: '      if (names === runId) {',
-    to: '      if (names === runId || !names) {',
+    from: '      if ((pending && names === runId) || claim?.ours) {',
+    to: '      if ((pending && (names === runId || !names)) || claim?.ours) {',
     why: 'the cleanup cancels a peer that names no run — the owner\'s, or an older runner\'s it can only report',
     killed_by: /cancels only the peers that name the dead run/,
   },

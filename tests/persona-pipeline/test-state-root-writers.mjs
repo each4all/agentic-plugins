@@ -1120,13 +1120,23 @@ for (const persona of personasFor('scripts/state.mjs')) {
         { mode: 0o755 });
       return companions;
     };
+    // These rows judge the ledgers of runs that make no scope (C181: where
+    // none can be made, or on an earlier release); their races count the
+    // sweep's reads of the run directory, which a scoped run's retention
+    // check adds to. The run is pinned to that path with a system the scope
+    // checks refuse at once, and shown to have made none; a scoped run's
+    // retention is tests/persona-pipeline/test-peer-runner-scope-readers.mjs's.
+    const NO_SCOPE = { platform: 'none', now: () => Date.now(), pid: process.pid, uid: () => 0 };
     const ensembleRun = async (workflowPath, runId, root = repo.main) => {
       const runner = await import(script('peer-runner.mjs'));
-      await runner.runPeer({
+      const result = await runner.runPeer({
         repoRoot: root, runId, kind: 'ensemble', workflowPath, phase: 'compose', ensembleType: 'plan-verify',
         host: 'claude', peer: 'codex', promptText: '<task>u4e</task>', outputFormat: 'json', cwd: root,
         env: { ...cleanEnv(), AGENTIC_COMPANIONS_ROOT: fakeCompanions() },
+        scopeSystem: NO_SCOPE,
       });
+      const scope = JSON.parse(readFileSync(result.handle_path, 'utf8')).scope;
+      strictEqual(scope?.state, 'none', `the run makes no scope: ${JSON.stringify(scope)}`);
       return runner;
     };
     const dropPending = (workflowPath) => writeFileSync(workflowPath, readFileSync(workflowPath, 'utf8').replace(/^pending_ensemble:\n(?:  .*\n)+/m, 'pending_ensemble: []\n'));

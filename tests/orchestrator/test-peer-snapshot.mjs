@@ -73,6 +73,22 @@ const state = await import(pathToFileURL(ORCH('scripts/state.mjs')).href);
 const stateRoot = await import(pathToFileURL(ORCH('scripts/lib/state-root.mjs')).href);
 const env = cleanEnv();
 const persona = 'orchestrator';
+// C181 — an environment a row pins to a run that makes no scope, whatever
+// this host allows: neither variable the user manager's bus address derives
+// from, so the runner's scope checks refuse. A row that passes it shows from
+// the run's handle that no scope was recorded.
+const unscoped = (e) => {
+  const out = { ...e };
+  delete out.DBUS_SESSION_BUS_ADDRESS;
+  delete out.XDG_RUNTIME_DIR;
+  return out;
+};
+// The in-process rows that pass it hold the end of a run that makes no scope
+// (C181: where none can be made, or on an earlier release): the ledger
+// refusing its writes, and the group handling of its companion. They pin that
+// path with a system the scope checks refuse at once; a scoped run's end is
+// tests/orchestrator/test-peer-runner-scope.mjs's.
+const NO_SCOPE = { platform: 'none', now: () => Date.now(), pid: process.pid, uid: () => 0 };
 
 async function fixture(dir) {
   const top = makeDirtyRepo(dir);
@@ -220,7 +236,7 @@ describe('orchestrator: peer-runner — a codex peer runs in the snapshot (C96)'
       const ledger = runner.peerRunPaths(f.top, 'eacces-1').dir;
       const cancellation = runner.createRunCancellation();
       const hooks = { beforeHandleWrite: (h) => { if (h.status === 'running') chmodSync(ledger, 0o500); } };
-      const running = runner.runPeer({ repoRoot: f.top, runId: 'eacces-1', peer: 'codex', promptText: 'x', cwd: f.top, env: fakeEnv(f, 'hang'), cancellation, cancelGraceMs: 500, hooks });
+      const running = runner.runPeer({ repoRoot: f.top, runId: 'eacces-1', peer: 'codex', promptText: 'x', cwd: f.top, env: fakeEnv(f, 'hang'), cancellation, cancelGraceMs: 500, hooks, scopeSystem: NO_SCOPE });
       running.catch(() => {});
       let pid = null;
       try {
@@ -356,7 +372,7 @@ describe('orchestrator: peer-runner — a codex peer runs in the snapshot (C96)'
   it('a child holding the companion\'s stdout open does not hold the run: it is stopped once the companion exits', async () => {
     await withTmp(async (dir, snaps) => {
       const f = await fixture(dir);
-      const running = runner.runPeer({ repoRoot: f.top, peer: 'codex', promptText: 'x', cwd: f.top, env: fakeEnv(f, 'leaky'), cancelGraceMs: 300 });
+      const running = runner.runPeer({ repoRoot: f.top, peer: 'codex', promptText: 'x', cwd: f.top, env: fakeEnv(f, 'leaky'), cancelGraceMs: 300, scopeSystem: NO_SCOPE });
       let grandchild = null;
       try {
         const result = await within(running, 'the run to end with a child holding its pipes');
@@ -375,7 +391,7 @@ describe('orchestrator: peer-runner — a codex peer runs in the snapshot (C96)'
   it('a child the companion leaves running is stopped before the snapshot is removed', async () => {
     await withTmp(async (dir, snaps) => {
       const f = await fixture(dir);
-      const result = await runner.runPeer({ repoRoot: f.top, peer: 'codex', promptText: 'x', cwd: f.top, env: fakeEnv(f, 'stubborn'), cancelGraceMs: 300 });
+      const result = await runner.runPeer({ repoRoot: f.top, peer: 'codex', promptText: 'x', cwd: f.top, env: fakeEnv(f, 'stubborn'), cancelGraceMs: 300, scopeSystem: NO_SCOPE });
       strictEqual(result.status, 'completed');
       const { grandchild } = JSON.parse(readFileSync(f.record, 'utf8'));
       try {
@@ -393,7 +409,7 @@ describe('orchestrator: peer-runner — a codex peer runs in the snapshot (C96)'
       const f = await fixture(dir);
       const plain = join(dir, 'plain');
       mkdirSync(plain);
-      const result = await runner.runPeer({ repoRoot: f.top, peer: 'claude', promptText: 'x', cwd: plain, env: fakeEnv(f, 'stubborn'), cancelGraceMs: 300 });
+      const result = await runner.runPeer({ repoRoot: f.top, peer: 'claude', promptText: 'x', cwd: plain, env: fakeEnv(f, 'stubborn'), cancelGraceMs: 300, scopeSystem: NO_SCOPE });
       const { grandchild } = JSON.parse(readFileSync(f.record, 'utf8'));
       try {
         strictEqual(result.status, 'completed');
@@ -481,10 +497,13 @@ describe('orchestrator: peer-runner — a codex peer runs in the snapshot (C96)'
   it('a runner killed outright leaves a snapshot its live peer keeps; the next sweep reclaims it once the peer ends', async (t) => {
     await withTmp(async (dir, snaps) => {
       const f = await fixture(dir);
+      // A run that makes no scope (C181): a scoped one's reclaim after its
+      // runner's death is test-peer-runner-scope's.
       const cli = spawn(process.execPath, [PEER_RUNNER, 'run', '--repo-root', f.top, '--run-id', 'kill-1', '--peer', 'codex', '--prompt-text', 'x', '--cwd', f.top], {
-        env: { ...fakeEnv(f, 'hang'), TMPDIR: snaps }, stdio: ['ignore', 'pipe', 'pipe'],
+        env: unscoped({ ...fakeEnv(f, 'hang'), TMPDIR: snaps }), stdio: ['ignore', 'pipe', 'pipe'],
       });
       await waitFor(() => existsSync(f.record), { message: 'the companion to start' });
+      strictEqual((await runner.readHandle(runner.peerRunPaths(f.top, 'kill-1').handle)).scope?.state, 'none', 'the run makes no scope');
       const { pid } = JSON.parse(readFileSync(f.record, 'utf8'));
       t.after(() => killGroup(pid));
       const [snap] = snapshotWorktrees(f.top);
@@ -521,10 +540,19 @@ describe('orchestrator: peer-runner — a codex peer runs in the snapshot (C96)'
 // and the whole set of cases): the orchestrator's cancel finishes such a run
 // as the personas' does. The orchestrator has no settle.
 describe('orchestrator: peer-runner — a run its host killed before its cleanup (C142)', () => {
-  const hosted = (t, f, snaps, runId, mode) => startHostedRun(t, {
-    runnerPath: PEER_RUNNER, readHandle: runner.readHandle, handlePath: runner.peerRunPaths(f.top, runId).handle, top: f.top, runId,
-    env: { ...fakeEnv(f, mode), TMPDIR: snaps }, ready: () => existsSync(f.record),
-  });
+  // These rows hold the judgments of a run that makes no scope (C181: where
+  // none can be made, or one an earlier release ran), whatever this host
+  // allows: the runner is started with `unscoped`, and each run is shown to
+  // have recorded no scope before the row goes on.
+  const hosted = async (t, f, snaps, runId, mode) => {
+    const run = await startHostedRun(t, {
+      runnerPath: PEER_RUNNER, readHandle: runner.readHandle, handlePath: runner.peerRunPaths(f.top, runId).handle, top: f.top, runId,
+      env: unscoped({ ...fakeEnv(f, mode), TMPDIR: snaps }), ready: () => existsSync(f.record),
+    });
+    const scope = (await runner.readHandle(run.handlePath)).scope;
+    strictEqual(scope?.state, 'none', `the run makes no scope: ${JSON.stringify(scope)}`);
+    return run;
+  };
   const removedClean = { removed: true, skipped: null, error: null };
 
   const cancelCli = (f, runId) => {

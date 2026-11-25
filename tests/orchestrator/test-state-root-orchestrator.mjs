@@ -868,10 +868,22 @@ describe('orchestrator: every --repo-root command judges that checkout, and one 
     const r = run(['plan-set', '--workflow-path', macroPath, '--host', 'claude', '--subtasks-json-file', at]);
     strictEqual(r.status, 0, r.stderr);
   };
-  const peerNow = async (runner, runId, root = repo.main) => runner.runPeer({
-    repoRoot: root, runId, kind: 'peer-now', host: 'claude', peer: 'codex', promptText: '<task>u4f</task>',
-    outputFormat: 'json', cwd: root, env: { ...cleanEnv(), AGENTIC_COMPANIONS_ROOT: companions() },
-  });
+  // These rows judge the ledgers of runs that make no scope (C181: where
+  // none can be made, or on an earlier release); their races count the
+  // sweep's reads of the run directory, which a scoped run's retention check
+  // adds to. The run is pinned to that path with a system the scope checks
+  // refuse at once, and shown to have made none.
+  const NO_SCOPE = { platform: 'none', now: () => Date.now(), pid: process.pid, uid: () => 0 };
+  const peerNow = async (runner, runId, root = repo.main) => {
+    const result = await runner.runPeer({
+      repoRoot: root, runId, kind: 'peer-now', host: 'claude', peer: 'codex', promptText: '<task>u4f</task>',
+      outputFormat: 'json', cwd: root, env: { ...cleanEnv(), AGENTIC_COMPANIONS_ROOT: companions() },
+      scopeSystem: NO_SCOPE,
+    });
+    const scope = JSON.parse(readFileSync(result.handle_path, 'utf8')).scope;
+    strictEqual(scope?.state, 'none', `the run makes no scope: ${JSON.stringify(scope)}`);
+    return result;
+  };
   const later = new Date('2031-01-01T00:00:00Z');
   before(() => {
     dir = realpathSync(mkdtempSync(join(tmpdir(), 'state-root-orch-u4e-')));

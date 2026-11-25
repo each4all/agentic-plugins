@@ -54,8 +54,8 @@ export const MUTATIONS = [
   },
   {
     id: 'P4', file: RUNNER, tests: [T_SNAP],
-    from: '      const removed = await removePeerSnapshot(snapshot, { env: options.env });',
-    to: '      const removed = { removed: false, error: null };',
+    from: 'await removePeerSnapshot(snapshot, { env: options.env',
+    to: '({ removed: false, error: null }) ?? await removePeerSnapshot(snapshot, { env: options.env',
     why: 'the snapshot outlives the run that made it',
     killed_by: /a failed peer run removes its snapshot too/,
   },
@@ -82,8 +82,8 @@ export const MUTATIONS = [
   },
   {
     id: 'P8', file: RUNNER, tests: [T_SNAP],
-    from: '  const next = await mutator(handle) ?? handle;\n  hook?.(next, before);\n  next.updated_at = new Date().toISOString();\n  return await writeHandle(handlePath, next, { guard }) ? next : null;',
-    to: '  const next = await mutator(handle) ?? handle;\n  next.updated_at = new Date().toISOString();\n  if (!await writeHandle(handlePath, next, { guard })) return null;\n  hook?.(next, before);\n  return next;',
+    from: '  const next = await mutator(handle) ?? handle;\n  hook?.(next, before);\n  if (touch) next.updated_at = new Date().toISOString();\n  return await writeHandle(handlePath, next, { guard }) ? next : null;',
+    to: '  const next = await mutator(handle) ?? handle;\n  if (touch) next.updated_at = new Date().toISOString();\n  if (!await writeHandle(handlePath, next, { guard })) return null;\n  hook?.(next, before);\n  return next;',
     why: 'process control is armed only when the ledger takes the write that records the running peer',
     killed_by: /a cancellation still reaches the peer when the ledger refuses the write that records it running/,
   },
@@ -96,8 +96,8 @@ export const MUTATIONS = [
   },
   {
     id: 'P10', file: RUNNER, tests: [T_SNAP],
-    from: '      if (Number.isInteger(peerProcess.pgid)) {\n        let goneSince = null;',
-    to: '      if (false) {\n        let goneSince = null;',
+    from: '      if (Number.isInteger(peerProcess.pgid)',
+    to: '      if (false && Number.isInteger(peerProcess.pgid)',
     why: "a child holding the companion's pipes holds the run open",
     killed_by: /a child holding the companion's stdout open does not hold the run/,
   },
@@ -127,12 +127,11 @@ export const MUTATIONS = [
     prepare: (copy, tools) => {
       tools.applyEdit(copy, {
         file: RUNNER,
-        from: '  const snapshots = await reclaimPeerSnapshots({ cwd: repoRoot }).catch(',
-        to: '  const snapshots = () => reclaimPeerSnapshots({ cwd: repoRoot }).catch(',
+        from: '  const snapshots = await reclaimWithScopes({ repoRoot, cwd: repoRoot, ender: scopeEnder, now, staleGraceMs: options.staleGraceMs });\n  if (scanError !== null) throw scanError;',
+        to: '  if (scanError !== null) throw scanError;\n  const snapshots = await reclaimWithScopes({ repoRoot, cwd: repoRoot, ender: scopeEnder, now, staleGraceMs: options.staleGraceMs });',
       });
-      tools.applyEdit(copy, { file: RUNNER, from: '  merged.snapshots = snapshots;', to: '  merged.snapshots = await snapshots();' });
     },
-    why: 'the sweep reclaims snapshots after its ledger scan, so a scan that refuses keeps them',
+    why: 'the sweep throws a refused ledger scan before its reclaim, so a scan that refuses keeps the snapshots',
     killed_by: /a sweep that refuses its ledger scan \(two homes holding ledgers\) still reclaims the abandoned snapshots first/,
   },
   {
@@ -212,8 +211,8 @@ export const MUTATIONS = [
   },
   {
     id: 'Q4', file: RUNNER, tests: [T_CLAUDE],
-    from: '      const removed = await removePeerSnapshot(snapshot, { env: options.env });',
-    to: "      const removed = options.peer === 'codex' ? await removePeerSnapshot(snapshot, { env: options.env }) : { removed: false, error: null };",
+    from: 'await removePeerSnapshot(snapshot, { env: options.env',
+    to: "options.peer !== 'codex' ? { removed: false, error: null } : await removePeerSnapshot(snapshot, { env: options.env",
     why: "a claude run's snapshot outlives the run that made it",
     killed_by: /runPeer: a cancelled claude run removes its snapshot/,
   },
@@ -301,14 +300,14 @@ export const MUTATIONS = [
   // ── H: a run its host killed before its cleanup (C142) ─────────────────
   {
     id: 'H1', file: RUNNER, tests: [T_SNAP],
-    from: "    if (verified.reason === 'not_running' && snapshotOwnerPath(handle) !== null) return finishHostKilledRun(paths, handle, graceMs);\n",
+    from: "    if (verified.reason === 'not_running' && snapshotOwnerPath(handle) !== null) return finishHostKilledRun(paths, handle, graceMs, readScope);\n",
     to: '',
     why: "the orchestrator's cancel answers not_running for a run its host killed: the run stays live and its snapshot stays",
     killed_by: /the host leaves the snapshot and a cancel_requested handle; cancel finishes the run cancelled/,
   },
   {
     id: 'H2', file: RUNNER, tests: [T_SNAP],
-    from: "      ...(await snapshotCleanupField(paths, handle, run)),\n    };\n  }\n  if (handle.status !== 'running' && handle.status !== 'cancel_requested') {",
+    from: "      ...(await snapshotCleanupField(paths, handle, run, handle, readScope)),\n    };\n  }\n  if (handle.status !== 'running' && handle.status !== 'cancel_requested') {",
     to: "    };\n  }\n  if (handle.status !== 'running' && handle.status !== 'cancel_requested') {",
     why: "a runner killed inside its cleanup leaves its snapshot, which the orchestrator's cancel of the ended run never removes",
     killed_by: /a runner killed inside its cleanup \(terminal, its snapshot not removed\)/,
@@ -544,8 +543,8 @@ export const MUTATIONS = [
   },
   {
     id: 'H35', file: RUNNER, tests: [T_SNAP],
-    from: '    await stopProcessGroup(peerProcess?.pgid, graceMs);\n    if (snapshot) {',
-    to: '    if (snapshot) {\n      await stopProcessGroup(peerProcess?.pgid, graceMs);',
+    from: 'await stopProcessGroup(peerProcess?.pgid, graceMs);\n    if (snapshot) {',
+    to: 'await 0;\n    if (snapshot) {\n      await stopProcessGroup(peerProcess?.pgid, graceMs);',
     why: "an orchestrator peer with no snapshot (one outside any checkout, as this claude peer is) leaves its children running after the run (persona P10)",
     killed_by: /a claude peer's leftover child is stopped too/,
   },
@@ -572,7 +571,7 @@ export const MUTATIONS = [
   },
   {
     id: 'H39', file: RUNNER, tests: [T_SNAP],
-    from: '    const removed = gone ? { removed: true, error: null } : await removeOwnedSnapshot(ownerPath, owner, { root: handle.snapshot.root ?? null });',
+    from: '    const removed = gone ? { removed: true, error: null } : await removeOwnedSnapshot(ownerPath, owner, { root: handle.snapshot.root ?? null, ...(readScope ? { readScope } : {}) });',
     to: '    const removed = { removed: false, error: null };',
     why: "an orchestrator run proven over is finished, and its own snapshot is left (persona H3)",
     killed_by: /the host leaves the snapshot and a cancel_requested handle; cancel finishes the run cancelled/,

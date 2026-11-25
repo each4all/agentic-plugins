@@ -177,8 +177,15 @@ for (const persona of ALL_OFF_PERSONAS) {
         };
         for (const sub of ['commands', 'core', 'scripts', 'adapters', 'hooks']) if (existsSync(P.path(sub))) walk(P.path(sub));
         // Contract: Node, running the generated scripts — any script but state.mjs that names the
-        // variable can act on an inherited autopilot run with dispatch_target off.
-        deepStrictEqual(readers, ['scripts/state.mjs'], 'only state.mjs reads the variable');
+        // variable can act on an inherited autopilot run with dispatch_target off. The one
+        // exception is lib/scope-run.mjs's associationOf: ADR-0023 (C181) has every persona's
+        // peer scope record the run and step it was launched under, so a dead run's cleanup
+        // finds it; that association only finds the run and grants nothing.
+        deepStrictEqual(readers, ['scripts/lib/scope-run.mjs', 'scripts/state.mjs'], 'only state.mjs, and the scope association, read the variable');
+        const scopeRun = readFileSync(P.path('scripts/lib/scope-run.mjs'), 'utf8');
+        const association = scopeRun.match(/\nexport function associationOf\([^)]*\) \{\n[\s\S]*?\n\}\n/);
+        ok(association && /env\?\.AGENTIC_AUTOPILOT;/.test(association[0]), 'associationOf reads the variable');
+        ok(!scopeRun.replace(association[0], '\n').includes('AGENTIC_AUTOPILOT'), 'lib/scope-run.mjs names the variable only in associationOf');
       });
 
       it('dispatch_target off: the Stop hook archives the same with and without an inherited AGENTIC_AUTOPILOT', () => {

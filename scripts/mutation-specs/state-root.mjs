@@ -1686,8 +1686,8 @@ export const MUTATIONS = [
   },
   {
     id: 'H4', file: ORCH_RUNNER, tests: [T_ORCH],
-    from: "  const dirs = peerRunReadRoots(repoRoot).flatMap((root) => Object.keys(PEER_RUNS_DIR_RELS).map((home) => peerRunsDir(root, { home })));",
-    to: "  const dirs = scans.map((scan) => scan.dir);",
+    from: "    dirs = peerRunReadRoots(repoRoot).flatMap((root) => Object.keys(PEER_RUNS_DIR_RELS).map((home) => peerRunsDir(root, { home })));",
+    to: "    dirs = scans.map((scan) => scan.dir);",
     why: "orchestrator's sweep asks again only in the homes it selected",
     killed_by: /a second ledger made in an empty legacy home/,
   },
