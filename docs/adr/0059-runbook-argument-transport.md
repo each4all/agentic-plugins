@@ -4,6 +4,11 @@
 
 Accepted
 
+Decision 9, which directories a runbook may remove and how (amendment of
+2026-11-25, C175): the scope (item 1) Proposed; the proof (items 2 and 3)
+Proposed; the removal and its report (items 4 and 5) Proposed; the rollout
+rule and its constraints (item 6) Proposed.
+
 <!--
 No supersedure. This decides a mechanism the runbooks never had an explicit
 contract for. It makes the guard shipped by `27a980d` unnecessary, so the
@@ -168,6 +173,370 @@ no splice it protects nothing, and
 guard survives — so it would **block this change**. Its guard-presence
 assertion is replaced with transport assertions; the rest of its
 portability coverage is retained.
+
+<a id="decision-9"></a>
+**9. A runbook's text and operation directories are removed through a CLI
+that proves it made them.**
+
+Status: Proposed, each of item 1 (the scope), items 2 and 3 (the proof),
+items 4 and 5 (the removal and its report) and item 6's rollout rule with
+the constraints it hands the second slice on its own; item 7 states the
+limits of the Proposed proof. *Amended 2026-11-25 (C175, slice 1): [history](history/0059-runbook-argument-transport.md#amendment-2026-11-25--which-directories-a-runbook-may-remove-and-how-c175).*
+
+1. **Scope.** The directories a runbook or skill block makes for the text an
+   agent writes (`agentic-text.<suffix>`, the amendment of 2026-10-10), for a
+   command's persona operation (`agentic-op.<suffix>`, ADR-0068 Decision 2,
+   item 7), and the one operation directory a peer consultation makes inside
+   its text directory (`op`). An args directory (`agentic-args.<suffix>`)
+   keeps the reader's removal of the amendment of 2026-09-29. A test's
+   temporary trees (`scripts/lib/remove-tree.mjs`), an autopilot run's
+   scratch root (ADR-0068 Decision 5, item 13) and a peer run's ledger
+   directory keep their own rules; the release refuses each of them, since
+   none carries this decision's marker, `.agentic-dir.json` (item 2; the
+   scratch root's own marker, `.scratch.json`, is another file and proves
+   nothing here).
+2. **The CLI makes the directory and marks it.** *Proposed.* Such a
+   directory is made by a subcommand of the persona `state.mjs` (generated
+   from `persona-pipeline/`) and of the orchestrator's `state.mjs`, not by
+   `mktemp -d`; the subcommands' spelling is the implementation's.
+   - **Where.** At the top level, directly under `$TMPDIR` when it is set,
+     and under `/tmp` only when it is not. A `TMPDIR` that is set but not an
+     absolute path to a directory fails the make: there is no fallback, so a
+     bounded root such as an autopilot step's is never left for `/tmp`. The
+     nested operation directory is made only inside a text directory that
+     passes item 3's path, directory and marker checks, and only under the
+     name `op`: it is the one directory a text directory may hold.
+   - **How.** The directory is created exclusively, mode 0700, named for its
+     kind with a random suffix of at least six letters and digits (`op` for
+     the nested one). Before the path is printed, the CLI writes the marker
+     `.agentic-dir.json` aside and renames it into place, so a marker is
+     whole or absent. A top-level directory's aside file is written inside
+     that directory; the nested `op`'s is written in its parent text
+     directory, so an interrupted make leaves `op` empty and the aside a
+     plain file of the parent. The marker holds a schema, the kind (`text`
+     or `op`), a random id of at least 128 bits drawn for this directory
+     alone, the directory's basename and device and inode, its owner's uid,
+     the time it was made, and its parent: for a top-level directory
+     the root's real path, device and inode; for `op` the parent text
+     directory's device and inode only, which a rename of that parent does
+     not change. The CLI prints the path, absolute and canonical, only once
+     the marker is in place. When it cannot place the marker it prints no
+     path, fails, and removes what it made: its own aside file, then the
+     directory when that is empty.
+   - **Interrupted makes.** A make killed after its `mkdir` leaves a
+     directory with no marker (empty, or holding only the aside file), and
+     one killed after the marker but before it printed leaves a marked
+     directory whose path no block holds. No release removes either, since
+     the release takes only a printed path and never removes a top-level
+     directory with no marker; the second slice decides what becomes of
+     them (item 6). A nested `op` left empty is removed with its parent
+     (item 4).
+   - **Platforms.** A platform whose `stat` reports no owner, or an inode of
+     zero, fails the make, as the release would refuse what it made. Windows
+     is one: Node reports uid 0 for every file there and has no
+     `process.geteuid`, so the proof's owner check means nothing, and the
+     make fails on `win32` whatever `stat` reports.
+3. **The proof.** *Proposed.* The release is given the path the make
+   printed, or the `.removing-` path a release's report gave for it, never
+   a path a block derived from another. It removes the
+   directory only when each check holds, the path's first with no file
+   system call:
+   - **The path.** Absolute, with no `.` or `..` component, no doubled or
+     trailing separator; refused, not normalized, otherwise (a `..` after a
+     link would mean one directory to the operating system and another to a
+     normalizing string). Its basename has a top-level kind's form, or that
+     form behind the `.removing-` prefix of item 4. A nested `op` is never
+     released on its own: it goes with its parent.
+   - **The directory.** Not a symbolic link (`lstat`), owned by the
+     release's effective uid. A top-level directory's parent, as the given
+     path spells it, is canonical: that spelling equals, as a string, both
+     the parent's real path now and the root real path the marker records,
+     and the parent's device and inode are the marker's. A nested `op`'s
+     parent is the text directory being judged, whose device and inode its
+     marker must name. Comparing real paths alone would
+     accept a path through a linked ancestor that resolves to the same
+     root; the string comparison refuses it.
+   - **The control files.** The marker, and in an operation directory
+     `operation.json`, are read without following a link: each must be a
+     regular file with one link and at most 64 KiB, opened with no-follow
+     and compared with its `lstat` by device and inode. The marker must
+     parse as its schema and name this directory's kind, basename (the name
+     behind `.removing-` once claimed), device and inode, its parent's
+     identity as item 2 records it, and the release's uid. A marker copied
+     or written into another directory proves nothing, nor does a directory
+     put where the CLI made one.
+   - **The entries.** Every other entry is a regular file or a symbolic
+     link (a hard link is removed by its own name like any file), or, in a
+     text directory, a directory named `op`. That `op` passes the directory
+     and control-file checks above with this text directory as its parent,
+     and the operation check below, and holds only files and links itself;
+     or it is empty and has no marker (item 4, **An empty `op`**). Anything
+     else refuses the whole release: another directory, a non-empty `op`
+     with no marker (an older runbook's `mkdir -m 700 "$TEXT_DIR/op"` once
+     written into included), a directory below `op`, a FIFO, a socket or a
+     device.
+   - **The operation.** An operation directory, at the top or nested,
+     passes only when its `operation.json` is absent, or parses as the full
+     transport schema (`holds.mjs`) with `closed` and names this
+     directory's marker id. That field is new: the first write reads the
+     operation directory's marker, as this item reads it, and records its
+     id in the transport when it opens the operation. It records the id
+     only from a marker that passes the control-file and marker checks
+     above; in a directory with no marker, or one those checks refuse (every
+     directory a runbook makes with `mktemp -d` until it switches, item 6),
+     the write opens, carries and closes the operation as it does today, with
+     no field and no refusal of its own, and no release removes what that
+     write wrote: a top-level directory fails the marker check, its marker
+     missing or refused, and a nested `op` holding a field-less transport
+     fails the operation check, or the entries check when it has no marker
+     (only an empty `op` with no marker goes with its proven parent, item 4,
+     and it holds no transport). A `closed` record
+     copied or restored from another directory's operation does not pass,
+     even into a directory whose inode the file system has reused, since
+     the id is drawn per directory, not derived from where it lives. A
+     transport without the field (written by a `state.mjs` older than this
+     decision's implementation, or into a directory with no marker) refuses
+     like a stale state below. `opening`, `open` or a malformed file
+     refuses the whole release, and one that cannot be read stops it as
+     `error` (item 5). Such a state may be stale (a first
+     write that failed after it kept `opening`, a close whose last
+     transport write did not land); neither the command's exit nor the
+     owner's `writer-clear` makes it releasable under this decision.
+   - **What an absent transport means.** No transport file in the
+     directory: no command opened an operation there (outside a macro's
+     lane no command writes one), a first write died before its rename (its
+     aside file is then an entry, and it published nothing), or an earlier
+     release of this directory unlinked it after the directory passed
+     (found only under the `.removing-` name). The release judges this
+     directory's file and nothing else: an operation a workflow keeps open
+     elsewhere, or one a dispatched bootstrap took over from its
+     dispatcher, is not visible here, and its directory not being written
+     is the caller's precondition (item 4, **Writers**). The same holds for
+     the holds' external record of a `closed` operation: the close tries to
+     remove it before it writes `closed`, and writes `closed` even when that
+     removal failed; a record left behind so is
+     in the holds directory, which no release touches.
+
+   The name, the location, or both never suffice alone: they are what a
+   model transcribes from one call to the next. A report names a failed
+   check by a fixed reason code, never by a parser's message or a file's
+   contents.
+4. **The claim, then the removal.** *Proposed.*
+   - **Before the claim** the release checks the path, the directory and
+     its marker. A failure there changes nothing. Every report that judges
+     `<name>` also gives the `.removing-<name>` sibling's path when one is
+     there, whatever its outcome, so a directory a late writer's recreated
+     `<name>` hides is still found.
+   - **The claim.** The release first makes `.removing-<name>` in the same
+     parent with an exclusive `mkdir`, mode 0700, then renames the
+     directory onto that empty placeholder. `mkdir` fails when anything has
+     the name, so of two releases at most one claims, and the other reports
+     `contention` and changes nothing. POSIX `rename(2)` replaces an empty
+     directory, so the rename replaces only the placeholder this release
+     made an instant before; Node offers no rename that refuses to replace,
+     and the placeholder is how the claim avoids replacing anyone else's
+     directory. A `mkdir` that fails other than because the name is taken
+     is `error`, and nothing changed. A rename that fails leaves the
+     placeholder, which the release removes with `rmdir` (it made it, and
+     it is empty), and reports `contention` when `<name>` is gone, `error`
+     otherwise; when that `rmdir` fails too, the report names the
+     placeholder left and its error code. A
+     release killed between the `mkdir` and the rename leaves an empty
+     `.removing-<name>` with no marker: the next release of `<name>`
+     reports `contention` naming it, and the second slice treats it with
+     the other directories that have no marker (item 6). On Windows a
+     rename onto an existing directory fails rather than replaces it,
+     though the make fails there anyway (item 2).
+   - **What the claim stops.** After the claim the old path names nothing.
+     A write that opens a file under it fails, so a first write racing the
+     release fails loudly instead of writing into a directory being
+     emptied. A writer that creates missing parent directories, as an
+     agent's file-writing tool does, instead recreates `<name>` as a new
+     directory with no marker: its file lands there, outside the claimed
+     directory, and no release removes it. Keeping writers away is the
+     caller's precondition (**Writers**, below).
+   - **After the claim** the release checks the directory and the marker
+     again on the claimed directory, then the entries and the operation.
+     When the directory or marker check fails, a control file that cannot
+     be read included, the thing at `.removing-<name>` is not proven, and
+     it is left where it is, reported `claimed`: after this release's own
+     claim, `claimed` takes precedence over `not-owned` and `error`. When only the entries or the operation stop it,
+     the release renames the directory back the way it claimed it: an
+     exclusive `mkdir` of `<name>`, then the rename onto it. It reports the
+     outcome the failed check names (`refused`, or `error` for a read that
+     failed) when the directory is back at `<name>`, and `claimed` when it
+     is not (`<name>` exists, the `mkdir` or the rename failed; a
+     placeholder it made and could not fill is removed with `rmdir` when
+     empty, and one that `rmdir` could not remove is named in the report
+     with its error code). Only the release that made the claim renames back, and only
+     in the same invocation: a release that finishes another's claim never
+     renames anything.
+   - **The removal.** Each entry but the marker is unlinked (a link's own
+     name, never its target), `operation.json` among them, and the nested
+     `op` the same way down to its own marker and `rmdir`. Then the
+     directory is listed again; only when the marker is its one entry is
+     the marker unlinked and the directory removed with `rmdir`. Nothing is
+     removed recursively or through a link.
+   - **An empty `op`.** The text directory's marker proves the container,
+     and every entry of a proven container is removed on that proof by its
+     type alone: a file or a link has no marker of its own either. The
+     nested `op` needs its own marker only when it holds entries, since
+     they are what its marker proves; an `op` that is empty and has no
+     marker (an interrupted nested make, a removal killed between `op`'s
+     marker and its `rmdir`, or an older runbook's unused `mkdir`) holds
+     nothing to prove, and is removed with `rmdir` under its parent's
+     proof. A top-level directory has no container that proves it: one
+     with no marker is never removed, empty or not, and its name and
+     emptiness alone are not a proof.
+   - **Finishing.** A release given `<name>` when only `.removing-<name>` is
+     there, or given `.removing-<name>`, starts at the checks after the
+     claim, under the same proof: a claimed directory is finished only
+     while its directory and marker checks hold. A finisher whose checks
+     fail leaves the directory where it is, reporting the failed check's
+     outcome (`not-owned`, `refused` or `error`) with its `.removing-`
+     path. A kill between the marker's unlink and the last `rmdir` leaves
+     an empty `.removing-<name>` with no marker, which no release removes
+     (item 6). A release given `<name>` when both `<name>` and
+     `.removing-<name>` are there judges `<name>` alone (a recreated
+     `<name>` with no marker is `not-owned`; a marked one meets
+     `contention` at its claim); the claimed directory is reached by its
+     `.removing-` path, which the report gives.
+   - **Concurrent releases.** The claim is exclusive, by its `mkdir`: of
+     two releases that start together, at most one claims. The other
+     reports `contention`, or, when it looks `<name>` up only after the
+     claim, finds the claimed directory and finishes it beside the
+     claimer, which the precondition below excludes. Nothing more is
+     serialized. A release that finishes a
+     claimed directory while another release of the same directory still
+     runs (the claimer's checks or rename back, or a second finisher) is
+     not guarded: one may rename back a directory the other has partly
+     emptied, or remove with its last `rmdir` a placeholder a later claim
+     made at the same name. Running one release of a directory at a time
+     is the caller's precondition, as keeping writers away is: a block
+     releases only the path its own make printed, once, and a finisher
+     runs only after the release that left the directory claimed has
+     ended. Within that precondition each step stays bound to the proof:
+     an entry already gone is counted gone, the marker goes only after a
+     fresh listing finds it alone, and `rmdir` fails on a directory that is
+     not empty.
+   - **Writers.** That no shell, file tool or runner still writes into the
+     directory is the caller's precondition, which the second slice states.
+     A process that already holds a file open keeps writing to it after the
+     claim; its data goes with the unlink.
+5. **Outcomes.** *Proposed.* The release prints one JSON line and exits
+   with status 0 for `removed` and `absent`, which the line's outcome tells
+   apart, and with a non-zero status of its own for each other outcome; the
+   non-zero numbers are the implementation's. A report gives the path the directory has as the
+   release ends; another release may change it after.
+   - `removed`, status 0: the directory is gone.
+   - `absent`, status 0: nothing at the path or at its `.removing-` name,
+     and the path passed the path checks. A release given a `.removing-`
+     path judges that name alone: nothing there is `absent`, whatever
+     `<name>` holds, and the report says whether `<name>` exists. A second release of one directory,
+     once both its names are gone, succeeds and removes nothing; a path of another form is `not-owned`.
+   - `not-owned`, non-zero: a path, directory or marker check failed: a
+     marker absent, malformed, of another directory or not a single
+     regular file, or a directory or parent that does not match. Before the
+     claim nothing changed; in a finisher the directory stays at its
+     `.removing-` path.
+   - `refused`, non-zero: owned, but an entry or the operation stops it: a
+     forbidden entry, a nested `op` that fails its checks, or an
+     `operation.json` that is not `closed`, does not name this directory,
+     is malformed or is not a single regular file. The directory has its
+     old name (a finisher's stays at its `.removing-` path), and nothing
+     else changed.
+   - `contention`, non-zero: `.removing-<name>` is there, or `<name>` went
+     between the checks and the claim. Nothing changed, but a placeholder
+     the report names as left (item 4).
+   - `error`, non-zero: a system call failed for a reason other than what
+     the checks judge (a permission, an I/O error) in a lookup, a read of
+     a control file, a listing, the claim's `mkdir` or its rename. A
+     control file that cannot be read is `error`; one that reads and fails
+     its check is `not-owned` or `refused`; after this release's own claim,
+     a failed directory or marker check of either kind is `claimed`. The
+     directory has its old name (a finisher's stays at its `.removing-`
+     path), and nothing changed but a placeholder the report names as
+     left.
+   - `claimed`, non-zero: after this release's claim, the directory could
+     not be judged or put back: its directory or marker check failed, or
+     the rename back did not happen. Nothing was removed. The report gives
+     the `.removing-` path, the check that failed, and why the directory is
+     not back: the original name taken, or the error code of the `mkdir`,
+     lookup or rename that failed, or that it was not tried because the
+     claimed directory is not proven. A later release given the
+     `.removing-` path judges it again.
+   - `partial`, non-zero: the removal began and did not finish. The report
+     gives the path the directory has now, each entry this release
+     unlinked, each it found already gone, each it kept with its error
+     code, and whether any part could not be listed. It cannot name
+     entries an earlier or concurrent release unlinked, which this release
+     never saw. The marker stays while any other entry does, so a later
+     release finishes the directory under the same proof. When the
+     marker went and the last `rmdir` then failed (an entry that appeared
+     after the listing, or a system error), the directory has no marker
+     and no release finishes it: the report says so, and names the
+     entries it finds there when it can still list the directory.
+6. **Rollout and what this leaves.** *The rollout rule and the constraints
+   it hands the second slice Proposed.* The make
+   and release subcommands ship in a release before any runbook calls
+   them, as the receivers of the amendment of 2026-10-10 did, and before
+   any runbook switches, the implementation measures a same-parent rename and the release under a
+   headless Claude run and Codex's `workspace-write` sandbox. Until the
+   runbooks call them, that amendment's rule stands: no block deletes the
+   file; once the second slice is accepted, the amendment's bullet saying
+   so ("The CLI never deletes the file", which says a block does not
+   either) and the matching sentence of `AGENTS.md` ("Nothing in such a
+   block deletes the file") are folded for these directories. The second slice decides when a block calls the
+   release, within these constraints:
+   - the release is given the path the make printed, carried apart from the
+     paths a block reads (a finalize's `DISPATCH_DIR` may name a peer run's
+     ledger directory, which is never released);
+   - `/orchestrator:next` reads its text directory in the exit trap that
+     withdraws its dispatch mark and releases its admission, so that
+     directory outlives the trap;
+   - a peer's directory outlives the run's settlement and the operation's
+     close;
+   - a rerun of the write that closed an operation, given its released
+     directory, fails on the missing directory, whose message advises
+     running the write with no operation directory, where with the
+     directory still there it would have refused on the `closed` record:
+     the second slice decides whether the directory outlives a possible
+     rerun or that message changes;
+   - no writer, the agent's file tool included, names a directory after
+     its release, since that tool would recreate it with no marker (item
+     4);
+   - one release of a directory runs at a time, and a finisher only after
+     the release that left the directory claimed has ended (item 4,
+     **Concurrent releases**).
+
+   It also decides what a failed block, an admission release or a commit
+   retry keeps, how a refusal or an older CLI is reported after the
+   operation it followed succeeded, what a runbook does on a platform whose
+   make fails, and what becomes of directories with no marker (an
+   interrupted make, an interrupted last `rmdir`, a claim's placeholder
+   left by a kill, a directory a late writer recreated), marked
+   directories whose path no block holds, directories left at a
+   `.removing-` path (`claimed`), and directories with a stale open
+   operation or a transport older than this decision.
+7. **Limits.** The checks and the removal are separate system calls: a
+   process of the same user that swaps the directory for another between
+   them is not caught, and a marker is written by the same user it proves.
+   The proof guards against a wrong path, as the args reader's rule and
+   `remove-tree.mjs` do, not against a hostile process of the same user.
+   Nor against a restore: a backup that puts a released directory back,
+   marker and `operation.json` included, under the same name in the same
+   parent at an inode the file system reused passes every check, and a
+   release of its path removes that restored copy. A restore of a
+   temporary directory into `$TMPDIR` is a hand-made state the proof does
+   not try to tell from the original; what it loses is the copy of a
+   directory the CLI made and released.
+   Nor does it tell one valid directory from another: it proves that the
+   path names a directory the CLI made, of this kind, the user's own and
+   with no operation open in its transport file, not that it is the
+   directory this block made. A transcription that swaps the path of one live text directory
+   for another's releases the other, losing whatever files a later block
+   of that other command would have read; that the path is this block's
+   own is the second slice's to carry (item 6, its first constraint).
 
 ## Consequences
 
@@ -683,3 +1052,10 @@ its return. Neither is claimed here.
 
 **Still open.** (j)'s second finding, `decide` writing its workflow before it
 reads the args file, is not decided here.
+
+## History
+
+The records dated before 2026-11-25 stay above, as they were written. Later
+records are in [the history file](history/0059-runbook-argument-transport.md):
+
+- 2026-11-25, amendment: [Amendment 2026-11-25 — which directories a runbook may remove, and how (C175)](history/0059-runbook-argument-transport.md#amendment-2026-11-25--which-directories-a-runbook-may-remove-and-how-c175)
