@@ -112,9 +112,17 @@ describe('the landing-ready event, driven (ADR-0067 Decision 7)', () => {
       const line = t.lines.findIndex((l) => l.startsWith(`◆ landing-ready: A on feat/a at ${shaA.slice(0, 10)} (no pull request yet); the run goes on`));
       const nextDispatch = t.lines.findIndex((l) => l.startsWith('[3] /orchestrator:next B '));
       ok(line >= 0 && line < nextDispatch, t.lines.join('\n'));
-      // The steps ledger keeps one line per step.
-      deepStrictEqual(readFileSync(join(r.dir, 'steps.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l).event),
-        ['started', 'finished', 'started', 'finished', 'started', 'finished', 'started', 'finished']);
+      // The steps ledger keeps one start and one end per step, and any scope
+      // line (C181; a fallen-back launch writes two) inside its own step.
+      const ledger = readFileSync(join(r.dir, 'steps.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+      deepStrictEqual(ledger.filter((x) => x.event !== 'scope').map((x) => [x.event, x.seq]),
+        [['started', 1], ['finished', 1], ['started', 2], ['finished', 2], ['started', 3], ['finished', 3], ['started', 4], ['finished', 4]]);
+      let open = null;
+      for (const x of ledger) {
+        if (x.event === 'started') open = x.seq;
+        else if (x.event === 'finished') open = null;
+        else if (x.event === 'scope') strictEqual(x.seq, open, `a scope line inside its own step: ${JSON.stringify(x)}`);
+      }
       // The watchable log, under the main worktree, holds the same records, once each.
       notStrictEqual(realpathSync(t.fx.main), t.work);
       deepStrictEqual(t.log(), r.landing);

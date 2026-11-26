@@ -767,6 +767,19 @@ async function driverSetup() {
   };
 }
 
+// How the dead run's peer ended. C181: where the step made a scope (a
+// reachable user manager), the cleanup ends that scope first, and its kill
+// ends the peer, which the step's claude started inside it, before the
+// peer's cancel, which then finds nothing running and leaves the handle as
+// the runner left it; where it made none, the cancel ends the peer and
+// records it cancelled.
+function expectPeerEnd(work, runId, peer) {
+  const step = L.readRun(work, runId).steps.find((x) => x.seq === 1);
+  const status = JSON.parse(readFileSync(peer.handle, 'utf8')).status;
+  if (step?.scope?.state === 'scoped') ok(['cancelled', 'running'].includes(status), `the scope's kill ended the peer: ${status}`);
+  else strictEqual(status, 'cancelled');
+}
+
 describe('a driver killed in the middle of a step whose verb started a peer', () => {
   // A worker whose driver died exits once its stdin closes; a worker group
   // that outlives its driver is stop's to empty first (the worker-group test in
@@ -782,7 +795,7 @@ describe('a driver killed in the middle of a step whose verb started a peer', ()
       match(stop.stdout, /no autopilot run is active/);
       match(stop.stdout, new RegExp(`dead run ${runId}: cleaned up after its dead driver: cancelled its peer run\\(s\\) ${peer.peer_run_id}`));
       ok(await until(() => !alive(peer.peer)), 'the peer is gone');
-      strictEqual(JSON.parse(readFileSync(peer.handle, 'utf8')).status, 'cancelled');
+      expectPeerEnd(d.work, runId, peer);
       const r = L.readRun(d.work, runId);
       deepStrictEqual([r.run.status, r.run.halt.reason, r.run.steps, r.run.cost_complete], ['halted', 'interrupted', 1, false]);
       strictEqual(r.run.cost_usd, DEFAULTS.stepBudgetUsd, 'the killed step counts its whole budget');
@@ -809,7 +822,7 @@ describe('a driver killed in the middle of a step whose verb started a peer', ()
         env: d.env, out: (s) => lines.push(s), err: (s) => lines.push(`ERR ${s}`), deps: { signals: new EventEmitter() },
       });
       ok(await until(() => !alive(peer.peer)), `the next run cancelled the dead run's peer:\n${lines.join('\n')}`);
-      strictEqual(JSON.parse(readFileSync(peer.handle, 'utf8')).status, 'cancelled');
+      expectPeerEnd(d.work, runId, peer);
       const dead = L.readRun(d.work, runId).run;
       deepStrictEqual([dead.status, dead.halt.reason, dead.dead_run_cleanup.by], ['halted', 'interrupted', `run ${L.listRuns(d.work).at(-1)}`]);
       strictEqual(L.readOpenRun(L.mainWorktreeRoot(d.work), runId), null);
@@ -992,6 +1005,83 @@ describe('a dead run\'s peers that hold scopes of their own (C181)', () => {
       deepStrictEqual([reads, calls.length], [[unitOf(claimed)], 1], 'read once, never cancelled');
       const c = await t.cleanup({ cancel: fakeCancel(calls), readScope: () => ({ state: 'gone' }) });
       strictEqual(c.of(DEAD).outcome, 'cleaned', c.lines.join('\n'));
+    } finally {
+      t.done();
+    }
+  });
+});
+
+// C181 (ADR-0023, the autopilot worker) — a dead driver's step that holds a
+// scope of its own: the cleanup ends it under its lock, before it judges the
+// run's worker groups, with the ender a test passes. The kill is written only
+// for a scope the step's record binds (its run, its step, its driver) whose
+// driver is proven gone; the record is kept, naming the unit, until the
+// scope is read gone.
+describe('a dead driver\'s step that holds a scope (C181)', () => {
+  const BOOT = 'e55a09fa-13b3-445f-9aa0-4b51e123717f';
+  const CLOCK = `${BOOT}/time:[4026531834]/pid:[4026531836]`;
+  const UNIT = `agentic-launch-${DEAD}-s2-0123456789abcdef.scope`;
+  const stepScope = (driverPid, step = '2') => ({
+    version: 1, state: 'scoped',
+    identity: {
+      owner: { kind: 'autopilot-step', run: DEAD, step },
+      unit: UNIT,
+      invocation_id: '0123456789abcdef0123456789abcdef',
+      cgroup_path: `/user.slice/user-1000.slice/user@1000.service/app.slice/${UNIT}`,
+      cgroup_id: '18446744073709551615',
+      boot_id: BOOT,
+      gate: { pid: 4242, starttime: '123456', clock: CLOCK },
+      supervisor: { pid: driverPid, fingerprint: { kind: 'linux_proc_starttime', starttime: '123400' }, clock: CLOCK, boot_id: BOOT },
+      has_snapshot: false,
+      association: null,
+    },
+  });
+  const ender = ({ gone = true, reads }) => {
+    const calls = [];
+    let i = 0;
+    return {
+      calls,
+      supervisorGone: () => { calls.push('supervisorGone'); return { gone }; },
+      kill: () => { calls.push('kill'); return { state: 'written' }; },
+      read: () => { calls.push('read'); const r = reads[Math.min(i, reads.length - 1)]; i += 1; return r; },
+    };
+  };
+
+  it('kills a bound step scope of a proven-dead driver first, keeps the record while it is not read gone, and cleans once it is', { timeout: 60_000 }, async () => {
+    const t = await setup();
+    try {
+      const runDir = await t.deadRun();
+      const driverPid = L.readOpenRun(t.mainRoot, DEAD).pid;
+      L.appendStep(runDir, { event: 'scope', seq: 2, scope: stepScope(driverPid) });
+      const held = ender({ reads: [{ state: 'unproven', check: 'members' }] });
+      const kept = await t.cleanup({ scopeEnder: held });
+      const k = kept.of(DEAD);
+      strictEqual(k.outcome, 'kept', kept.lines.join('\n'));
+      deepStrictEqual(held.calls, ['supervisorGone', 'kill', 'read']);
+      ok(k.unresolved.some((p) => p.step_scope && p.unit === UNIT), JSON.stringify(k.unresolved));
+      ok(kept.lines.some((l) => l.includes(UNIT) && l.includes('unproven: members') && l.includes(`systemctl --user stop ${UNIT}`)), kept.lines.join('\n'));
+      ok(L.readOpenRun(t.mainRoot, DEAD), 'the record is kept');
+
+      const done = await t.cleanup({ scopeEnder: ender({ reads: [{ state: 'gone' }] }) });
+      strictEqual(done.of(DEAD).outcome, 'cleaned', done.lines.join('\n'));
+      strictEqual(L.readOpenRun(t.mainRoot, DEAD), null);
+    } finally {
+      t.done();
+    }
+  });
+
+  it('writes no kill for a scope that names another driver or step, or whose driver is not proven gone, and still reads it', { timeout: 60_000 }, async () => {
+    const t = await setup();
+    try {
+      const runDir = await t.deadRun();
+      const driverPid = L.readOpenRun(t.mainRoot, DEAD).pid;
+      for (const [scope, gone] of [[stepScope(driverPid + 1), true], [stepScope(driverPid, '9'), true], [stepScope(driverPid), false]]) {
+        L.appendStep(runDir, { event: 'scope', seq: 2, scope });
+        const e = ender({ gone, reads: [{ state: 'unproven' }] });
+        const r = await t.cleanup({ scopeEnder: e });
+        strictEqual(r.of(DEAD).outcome, 'kept', r.lines.join('\n'));
+        ok(!e.calls.includes('kill') && e.calls.includes('read'), JSON.stringify(e.calls));
+      }
     } finally {
       t.done();
     }

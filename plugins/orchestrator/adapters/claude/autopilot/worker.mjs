@@ -49,6 +49,8 @@ import readline from 'node:readline';
 import { readEnv, resolvePeerCli, showValue } from '../../../scripts/lib/peer-cli.mjs';
 import { reportSaysFinished, STEP_REPORT_SCHEMA } from './policy.mjs';
 import { createStallDetector, roundedSummary, stalledDetail } from './stall.mjs';
+import { endStepScope, launchStep, planStepScope } from './step-scope.mjs';
+import { scopedRecord } from '../../../scripts/lib/scope-launch.mjs';
 
 // How the run starts Claude Code (C180): the driver's preflight resolves it
 // once and every worker of the run spawns that launch, so the CLI the
@@ -357,6 +359,11 @@ const REPORT_EXIT_GRACE_MS = 10_000;
 // descendant that inherited the pipes (and left the process group) would
 // otherwise hold the step open forever.
 const DRAIN_AFTER_EXIT_MS = 3000;
+// C181 — how long after its SIGKILL a step's teardown waits for the worker's
+// own exit or close before it runs anyway: a worker that emits neither (a
+// process the kernel cannot stop yet) must not leave the step's end, and its
+// scope's kill, unreached.
+const BOUND_AFTER_KILL_MS = 5000;
 
 const parseJson = (line) => {
   try { return JSON.parse(line); } catch { return null; }
@@ -430,16 +437,27 @@ export function terminateGroupsSync(pgids, { graceMs = KILL_GRACE_MS } = {}) {
 // policy halts the step with the reason ("the worker could not start: …").
 function unstartedWorker(sessionId, reason) {
   return {
-    sessionId, pid: null, begin: () => {}, abort: () => {},
+    sessionId, pid: null, begin: () => {}, abort: () => {}, ready: Promise.resolve(null),
     // No session ever existed: none for a halt to offer to resume.
     done: Promise.resolve({
       sessionId: null, exitCode: null, signal: null, spawnError: reason, aborted: null, abortReason: null, abortDetail: null,
       timeoutSec: null, lastResult: null, report: null, costUsd: null, turns: 0, model: null, plugins: null,
       peakCtx: 0, contextWindow: null, peakPct: null, denials: [], stderrTail: '', rawTruncated: false, rateLimit: null,
       reportEof: false, closedOnReport: false, abandonedBackground: [], reportTeardown: null,
-      groupTeardown: 'empty', pgid: null, stall: null,
+      groupTeardown: 'empty', pgid: null, stall: null, scope: null, scopeTeardown: null, pipeHeld: false,
     }),
   };
+}
+
+// C181 — lingers and lingeringDetail live with the step's scope.
+export { lingerReason, lingers, lingeringDetail } from './step-scope.mjs';
+
+// The child a started worker will give the prompt to, once its launch is
+// done: { pid, pgid, scoped, scope } or null when it launched nothing. A
+// handle with no `ready` (an earlier shape, a test's) is ready at once.
+export async function readyOf(handle) {
+  if (handle?.ready) return handle.ready;
+  return Number.isInteger(handle?.pid) ? { pid: handle.pid, pgid: process.platform === 'win32' ? null : handle.pid, scoped: false, scope: null } : null;
 }
 
 /**
@@ -473,7 +491,7 @@ function unstartedWorker(sessionId, reason) {
 export function startWorker(o) {
   const env = o.env ?? process.env;
   const timing = {
-    closeDebounceMs: CLOSE_DEBOUNCE_MS, reportExitGraceMs: REPORT_EXIT_GRACE_MS, killGraceMs: KILL_GRACE_MS, ...(o.timing ?? {}),
+    closeDebounceMs: CLOSE_DEBOUNCE_MS, reportExitGraceMs: REPORT_EXIT_GRACE_MS, killGraceMs: KILL_GRACE_MS, boundAfterKillMs: BOUND_AFTER_KILL_MS, ...(o.timing ?? {}),
   };
   const sessionId = o.sessionId ?? randomUUID();
   const args = workerArgs({
@@ -493,14 +511,42 @@ export function startWorker(o) {
     return unstartedWorker(sessionId, unrunnable);
   }
   const workerEnvironment = workerEnv(env, { runId: o.runId, seq: o.seq, roots: o.roots, remotes: o.remotes ?? {}, stateBase: o.stateBase ?? null, autopilotToken: o.autopilotToken ?? null, verifyBaseline: o.verifyBaseline ?? null, tmpDir: o.tmpDir ?? null });
-  let child;
-  try {
-    child = spawn(launch.command, [...launch.argsPrefix, ...args], {
-      cwd: o.cwd, env: workerEnvironment, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32',
-    });
-  } catch (err) {
-    try { fs.closeSync(raw); } catch { /* closed */ }
-    throw err;
+  // C181 (ADR-0023, the autopilot worker) — the step's scope. Planned here,
+  // synchronously; a direct plan spawns at once (a spawn that throws throws,
+  // as before), a gated one through the handshake, whose identity reaches the
+  // step's records (`o.recordScope`) before the word. `o.scope` is a test
+  // seam: false launches as before with no record, or { plan, launch, end }.
+  const spawnOptions = { cwd: o.cwd, env: workerEnvironment, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' };
+  const command = launch.command;
+  const commandArgs = [...launch.argsPrefix, ...args];
+  const recordScope = async (record) => { if (o.recordScope) await o.recordScope(record); };
+  const scopeSeam = o.scope === false ? null : (o.scope ?? {});
+  let plan = { kind: 'direct', record: null };
+  if (scopeSeam !== null) {
+    try {
+      plan = (scopeSeam.plan ?? planStepScope)({ runId: o.runId, seq: o.seq, env });
+    } catch {
+      plan = { kind: 'direct', record: null };
+    }
+  }
+  let child = null;
+  // The step's scope record as the worker's result reports it, its identity
+  // when the word went, and its teardown once read.
+  let scopeRecord = null;
+  let identity = null;
+  let launchFailure = null;
+  const cancellation = new AbortController();
+  let directRecorded = null;
+  if (plan.kind !== 'gated') {
+    try {
+      child = spawn(command, commandArgs, spawnOptions);
+    } catch (err) {
+      try { fs.closeSync(raw); } catch { /* closed */ }
+      throw err;
+    }
+    scopeRecord = plan.record ?? null;
+    // The `none` record grants nothing: written best effort, before ready.
+    directRecorded = scopeRecord === null ? Promise.resolve() : recordScope(scopeRecord).catch(() => {});
   }
 
   const rawMax = o.rawMaxBytes ?? RAW_STREAM_MAX_BYTES;
@@ -536,13 +582,6 @@ export function startWorker(o) {
   // error; a callback that throws is the driver's.
   const stallMode = o.stall?.mode === 'on' ? 'on' : 'log';
   let stall = null;
-  if (o.stall?.sampler && Number.isInteger(child.pid)) {
-    const clock = o.stall.sampler.clock ?? { mono: () => performance.now(), wall: () => Date.now() };
-    stall = {
-      clock, watching: true, last: null, summary: null, registration: null,
-      detector: createStallDetector({ ...(o.stall.detector ?? {}), workerPid: child.pid, startMono: clock.mono(), startWall: clock.wall() }),
-    };
-  }
 
   // A verdict change: recorded through onStall, and, with the detector on, a
   // `stalled` one aborts the step. None is acted on once the watch ended.
@@ -574,16 +613,48 @@ export function startWorker(o) {
     stall.summary = closed?.summary ?? null;
     onVerdict(closed?.record ?? null, false);
   }
-  if (stall) {
+  const startWatch = () => {
+    if (!o.stall?.sampler || !Number.isInteger(child?.pid)) return;
+    const clock = o.stall.sampler.clock ?? { mono: () => performance.now(), wall: () => Date.now() };
+    stall = {
+      clock, watching: true, last: null, summary: null, registration: null,
+      detector: createStallDetector({ ...(o.stall.detector ?? {}), workerPid: child.pid, startMono: clock.mono(), startWall: clock.wall() }),
+    };
     try {
       stall.registration = o.stall.sampler.register((snapshot, mono, wall) => feed(() => stall.detector.observeSample(snapshot, mono, wall)));
     } catch {
       stall.registration = null;
     }
-  }
+  };
 
+  // C181 — once the step's teardown has begun, its group is the teardown's
+  // (terminateGroup signals it, then the scope's end runs): nothing else
+  // signals the worker's id, which may be another group's once emptied.
+  let teardownBegun = false;
   const killGroup = (signal) => {
+    if (!child || teardownBegun) return;
     try { process.kill(-child.pid, signal); } catch { try { child.kill(signal); } catch { /* gone */ } }
+  };
+  // C181 — the step's end is reached by its bound whatever the worker does:
+  // after the SIGKILL, a worker that emits neither exit nor close is not
+  // waited on past BOUND_AFTER_KILL_MS (finish is idempotent).
+  let boundTimer = null;
+  const armBound = (afterMs) => {
+    if (boundTimer !== null) return;
+    boundTimer = setTimeout(() => { finishRef?.(st.exit?.code ?? null, st.exit?.signal ?? null); }, afterMs + timing.boundAfterKillMs);
+    boundTimer.unref?.();
+  };
+  let finishRef = null;
+  let groupReleased = false;
+  // An abort's signals: SIGTERM on the group; a worker that does not exit on
+  // it is killed; what the group still holds after the worker exits is
+  // emptied before the step finishes (terminateGroup, awaited below). Nothing
+  // before the child exists (a launch the abort cancels runs nothing).
+  const escalate = () => {
+    if (!child) return;
+    killGroup('SIGTERM');
+    setTimeout(() => { if (st.exit === null) killGroup('SIGKILL'); }, timing.killGraceMs).unref?.();
+    armBound(timing.killGraceMs);
   };
   const clearReportTimers = () => {
     for (const t of st.reportTimers) clearTimeout(t);
@@ -600,14 +671,12 @@ export function startWorker(o) {
     clearTimeout(st.closeTimer);
     st.closeArm = null;
     clearReportTimers();
-    killGroup('SIGTERM');
-    // A worker that does not exit on SIGTERM is killed; what the group still
-    // holds after the worker exits is emptied before the step finishes
-    // (terminateGroup, awaited below).
-    setTimeout(() => { if (st.exit === null) killGroup('SIGKILL'); }, timing.killGraceMs).unref?.();
+    // A cancellation before the word launches nothing (step-scope.mjs).
+    cancellation.abort();
+    escalate();
   };
   const closeStdin = () => {
-    if (st.stdinClosed) return;
+    if (st.stdinClosed || !child) return;
     st.stdinClosed = true;
     try { child.stdin.end(); } catch { /* already closed */ }
   };
@@ -634,6 +703,7 @@ export function startWorker(o) {
         if (st.exit !== null || st.aborted) return;
         st.reportTeardown = 'killed';
         killGroup('SIGKILL');
+        armBound(0);
       }, timing.killGraceMs));
     }, timing.reportExitGraceMs));
   };
@@ -662,6 +732,12 @@ export function startWorker(o) {
   };
 
   const timer = setTimeout(() => abort('timeout'), o.stepTimeoutSec * 1000);
+
+  // The observers of the child that will get the prompt, armed once it exists
+  // (at once for a direct launch, after the handshake for a gated one).
+  let closed = false;
+  const attach = () => {
+  startWatch();
   child.stdin.on('error', () => {});
 
   readline.createInterface({ input: child.stdout }).on('line', (line) => {
@@ -711,20 +787,39 @@ export function startWorker(o) {
     maybeClose();
   });
   child.stderr.on('data', (d) => { st.stderrTail = (st.stderrTail + d.toString()).slice(-2000); });
+    child.on('error', (err) => finishRef(null, null, err.message));
+    child.on('exit', (code, signal) => {
+      st.exit = { code, signal };
+      endWatch();
+      setTimeout(() => finishRef(code, signal), DRAIN_AFTER_EXIT_MS).unref?.();
+    });
+    child.on('close', (code, signal) => { closed = true; finishRef(st.exit?.code ?? code, st.exit?.signal ?? signal); });
+  };
 
   const done = new Promise((resolve) => {
     let settled = false;
     const finish = async (code, signal, spawnError) => {
       if (settled) return;
       settled = true;
+      teardownBegun = true;
       endWatch();
       clearTimeout(timer);
+      clearTimeout(boundTimer);
       clearTimeout(st.closeTimer);
       clearReportTimers();
       try { fs.closeSync(raw); } catch { /* already closed */ }
+      // C181 — a pipe not closed by now is held by a process outside the
+      // worker, or one its kill could not end: reported, not waited on.
+      const pipeHeld = child !== null && !closed && !spawnError;
       // Output a descendant still holds is abandoned, not waited on.
-      child.stdout.destroy();
-      child.stderr.destroy();
+      try { child?.stdout?.destroy(); } catch { /* closed */ }
+      try { child?.stderr?.destroy(); } catch { /* closed */ }
+      // A step ended by its bound with the worker still there (a process the
+      // kernel cannot stop yet) keeps no hold on the driver's own exit.
+      if (child !== null && st.exit === null) {
+        try { child.stdin?.destroy(); } catch { /* closed */ }
+        try { child.unref?.(); } catch { /* gone */ }
+      }
       const last = st.results.at(-1) ?? null;
       const usage = last?.modelUsage && typeof last.modelUsage === 'object' ? last.modelUsage : {};
       // Each main-thread sample against its own model's window.
@@ -749,11 +844,28 @@ export function startWorker(o) {
       // Nothing the step started outlives it in its process group: on a close
       // on a report, the background tasks it abandoned included.
       const signalled = st.aborted !== null || st.reportTeardown !== null;
-      const groupTeardown = spawnError
+      const groupTeardown = spawnError || child === null
         ? 'empty'
         : await (o.terminateGroup ?? terminateGroup)(child.pid, { signalled, signalledAt: st.abortedAt ?? st.reportSignalledAt ?? Date.now() });
+      // C181 — once its group is emptied the step names no group to signal
+      // (the driver's exit list): its id may be another's while the scope's
+      // end runs.
+      if (groupTeardown !== 'lingering') groupReleased = true;
+      // C181 (ADR-0023, the autopilot worker) — once the group's signals and
+      // their grace are done, the step's scope is ended, whatever the claude's
+      // own exit or close: the kill under every check, then the wait for gone.
+      // A teardown not read gone keeps the step as a lingering group is kept.
+      let scopeTeardown = null;
+      if (identity !== null) {
+        try {
+          scopeTeardown = (await (scopeSeam?.end ?? endStepScope)(identity)).teardown;
+        } catch (err) {
+          scopeTeardown = { state: 'withheld', at: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'), check: `end-failed: ${String(err?.message ?? err)}` };
+        }
+      }
       resolve({
-        sessionId,
+        // No session when the launch ran nothing.
+        sessionId: child === null ? null : sessionId,
         exitCode: code,
         signal,
         spawnError: spawnError ?? null,
@@ -789,26 +901,87 @@ export function startWorker(o) {
         abandonedBackground: reportEof ? st.abandoned : [],
         reportTeardown: st.reportTeardown,
         groupTeardown,
-        pgid: spawnError || process.platform === 'win32' ? null : child.pid,
+        pgid: spawnError || child === null || process.platform === 'win32' ? null : child.pid,
+        // C181 — the step's scope record (scoped, abandoned or none; null when
+        // the launch wrote none), its teardown (null when it made no scope),
+        // and whether a pipe was still held at the step's end.
+        scope: scopeRecord,
+        scopeTeardown,
+        pipeHeld,
         // ADR-0068 Decision 3, item 7 — the detector's mode, its summary (whole
         // ms) and its last verdict's record; null when no sampler watched.
         stall: stall ? { mode: stallMode, summary: roundedSummary(stall.summary), last: stall.last } : null,
       });
     };
-    child.on('error', (err) => finish(null, null, err.message));
-    child.on('exit', (code, signal) => {
-      st.exit = { code, signal };
-      endWatch();
-      setTimeout(() => finish(code, signal), DRAIN_AFTER_EXIT_MS).unref?.();
-    });
-    child.on('close', (code, signal) => finish(st.exit?.code ?? code, st.exit?.signal ?? signal));
+    finishRef = finish;
   });
 
+  // The prompt goes only from begin(), and only to the child that will get
+  // it: begin() before ready sends it once the child is armed.
   let begun = false;
+  let sent = false;
+  let armed = false;
+  const send = () => {
+    // An abort is final for the prompt: a queued one is never sent after it.
+    if (!begun || sent || !armed || !child || st.aborted) return;
+    sent = true;
+    child.stdin.write(`${JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: o.prompt }] } })}\n`);
+  };
   const begin = () => {
     if (begun) return;
     begun = true;
-    child.stdin.write(`${JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: o.prompt }] } })}\n`);
+    send();
   };
-  return { sessionId, pid: child.pid, begin, abort, done };
+  const readyInfo = () => (child === null ? null : {
+    pid: child.pid, pgid: process.platform === 'win32' ? null : child.pid, scoped: identity !== null, scope: scopeRecord,
+  });
+  let ready;
+  if (child !== null) {
+    attach();
+    armed = true;
+    send();
+    ready = directRecorded.then(readyInfo);
+  } else {
+    ready = (async () => {
+      let res;
+      try {
+        res = await (scopeSeam.launch ?? launchStep)({
+          plan, command, args: commandArgs, options: spawnOptions, recordScope, signal: cancellation.signal,
+        });
+      } catch (err) {
+        res = { child: null, failure: `spawn-failed: ${String(err?.message ?? err)}` };
+      }
+      if (!res.child) {
+        launchFailure = res.failure ?? 'scope_launch_failed';
+        // A recorded identity whose abandoned mark was not written: the
+        // step's records name that scope, so its end reads it (C181).
+        if (res.identity) {
+          identity = res.identity;
+          scopeRecord = scopedRecord(res.identity);
+        }
+        // Nothing runs: the step ends as an unstarted one does, aborted when
+        // an abort cancelled the launch.
+        finishRef(null, null, st.aborted ? null : `the step's scoped launch launched nothing (${launchFailure})`);
+        return null;
+      }
+      child = res.child;
+      identity = res.scoped ? res.identity : null;
+      scopeRecord = res.scoped ? scopedRecord(res.identity) : (res.record ?? null);
+      attach();
+      armed = true;
+      // An abort that came while the launch was under way reaches the child,
+      // which then never gets the prompt.
+      if (st.aborted) escalate();
+      else send();
+      return readyInfo();
+    })();
+  }
+  return {
+    sessionId,
+    get pid() { return groupReleased ? null : (child?.pid ?? null); },
+    ready,
+    begin,
+    abort,
+    done,
+  };
 }

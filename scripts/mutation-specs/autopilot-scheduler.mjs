@@ -403,8 +403,8 @@ export const MUTATIONS = [
   },
   {
     id: 'S9', file: SCHED, tests: TS,
-    from: "      for (const l of [c.macroLock, inLane ? held.lock : c.driverLock]) entry.groups.push(l.addWorkerGroup(group));",
-    to: "      for (const l of [c.macroLock, c.driverLock]) entry.groups.push(l.addWorkerGroup(group));",
+    from: "    const groupLocks = () => [c.macroLock, inLane ? held.lock : c.driverLock];",
+    to: "    const groupLocks = () => [c.macroLock, c.driverLock];",
     why: "a lane's worker group is recorded in the driver checkout's lock, not in the lock of the lane it runs in",
     killed_by: /progress independently, each in its own worktree/,
   },
@@ -473,7 +473,7 @@ export const MUTATIONS = [
   },
   {
     id: 'S19', file: SCHED, tests: TS,
-    from: "    } else if (after.lookError && w.groupTeardown !== 'lingering') {",
+    from: "    } else if (after.lookError && !lingers(w)) {",
     to: "    } else if (false) {",
     why: "a failed look after a step passes as progress: the step is never verified",
     killed_by: /a look that fails after a step halts the run unverified/,

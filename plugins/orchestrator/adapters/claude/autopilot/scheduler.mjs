@@ -115,7 +115,7 @@ import {
 } from './policy.mjs';
 import { driftOf, PLUGINS, resolveRoots } from './roots.mjs';
 import { checkEnvOf, noteGateStep, personaEnvOf, requestKnownIn, selectionBase, suiteArgvOf, verifyFacts } from './verify-run.mjs';
-import { workerEnv } from './worker.mjs';
+import { lingerReason, lingers, readyOf, workerEnv } from './worker.mjs';
 import {
   applyRateLimitEvent, createThrottleState, gateNewLane, judgeThrottle, throttleSnapshot, throttleText,
 } from './throttle.mjs';
@@ -670,7 +670,8 @@ export async function runLanes(c) {
   // A worker whose host has returned its result (`e.w`) has had its group
   // emptied, and the loop has not settled it yet: nothing signals that group
   // id again, which may be another process's group by then. One that outlived
-  // SIGKILL (`lingering`) is still the run's.
+  // SIGKILL (`lingering`) is still the run's. A step kept only for its scope
+  // (C181) is not: its group is empty, and its id may be another's by now.
   const running = (e) => !e.w;
   c.onInterrupt(() => {
     for (const e of inflight.values()) if (running(e)) e.worker?.abort('interrupted');
@@ -1573,7 +1574,7 @@ export async function runLanes(c) {
     // The scope the run judged the verdict in, recorded on its finished line;
     // a line from before it has its reason and teardown only.
     const scope = fin?.halt_scope ?? null;
-    const runWide = scope ? scope !== 'lane' : (RUN_WIDE_REASONS.includes(outcome) || fin?.group_teardown === 'lingering');
+    const runWide = scope ? scope !== 'lane' : (RUN_WIDE_REASONS.includes(outcome) || fin?.group_teardown === 'lingering' || (fin?.scope_teardown != null && fin.scope_teardown.state !== 'gone'));
     if (outcome === 'ok' || outcome === 'interrupted' || outcome === 'error' || runWide) {
       await parkOp(() => deletePark(mainRoot, macroId, id, { expect: rec.record_id, event: 'settled', fields: { run_id: runId, recovered_from: rec.run_id, outcome } }));
       return;
@@ -2258,6 +2259,9 @@ export async function runLanes(c) {
     // The lane's report names its last step, the done in the driver's checkout included.
     if (id && (inLane || report.has(id))) lane(id).last_step = { seq: mine, kind: s.kind, verb: s.verb ?? null, command, outcome: 'running' };
     const entry = { seq: mine, step: s, subtaskId: id, lane: inLane ? id : null, cwd, before, reservation, groups: [], worker: null, w: null, done: null, tmpDir };
+    // The locks a step's group goes on: the macro lock and the lock of the
+    // checkout it runs in, never another lane's.
+    const groupLocks = () => [c.macroLock, inLane ? held.lock : c.driverLock];
     inflight.set(mine, entry);
     try {
       // A directory that cannot be made fails the step as a spawn that
@@ -2274,6 +2278,23 @@ export async function runLanes(c) {
         // of its verdicts (driver.mjs stallOf).
         ...(c.stallOf ? c.stallOf({ seq: mine, lane: inLane ? id : null, subtaskId: id }) : {}),
         ...(c.terminateGroup ? { terminateGroup: c.terminateGroup } : {}),
+        // C181 (ADR-0023, the autopilot worker) — the step's scope record, on
+        // the step's record and its group's lock entries before the word; a
+        // write that fails throws, and a scoped launch then launches nothing.
+        recordScope: async (record) => {
+          appendStep(runDir, { event: 'scope', seq: mine, lane: inLane ? id : null, scope: record, at: new Date(now()).toISOString() });
+          if (record?.state !== 'scoped' && record?.state !== 'abandoned') return;
+          // An abandoned record replaces the scoped one: its entries go, and
+          // the child that will get the prompt is registered once ready.
+          for (const g of entry.groups.splice(0)) g.release();
+          if (record.state !== 'scoped') return;
+          const pid = record.identity.gate.pid;
+          const group = {
+            pid, pgid: process.platform === 'win32' ? null : pid, fingerprint: await processFingerprint(pid),
+            session_id: sessionId, lane: inLane ? id : null, subtask_id: id, cwd, seq: mine, scope: record,
+          };
+          for (const l of groupLocks()) entry.groups.push(l.addWorkerGroup(group));
+        },
       });
     } catch (e) {
       entry.w = spawnFailure(e, sessionId);
@@ -2284,14 +2305,17 @@ export async function runLanes(c) {
     }
     entry.done = entry.worker.done.then((w) => { entry.w = w; ended.push(entry); wake(); });
     // The group is on the locks before it has anything to do: the macro lock
-    // and the lock of the checkout it runs in, never another lane's.
+    // and the lock of the checkout it runs in, never another lane's. The
+    // child registered is the one that will get the prompt; a scoped one is
+    // on them already, with its scope (recordScope above).
     const w = entry.worker;
-    if (Number.isInteger(w.pid)) {
+    const ready = await readyOf(w);
+    if (ready && Number.isInteger(ready.pid) && !(ready.scoped && entry.groups.length > 0)) {
       const group = {
-        pid: w.pid, pgid: process.platform === 'win32' ? null : w.pid, fingerprint: await processFingerprint(w.pid),
-        session_id: sessionId, lane: inLane ? id : null, subtask_id: id, cwd,
+        pid: ready.pid, pgid: ready.pgid, fingerprint: await processFingerprint(ready.pid),
+        session_id: sessionId, lane: inLane ? id : null, subtask_id: id, cwd, seq: mine,
       };
-      for (const l of [c.macroLock, inLane ? held.lock : c.driverLock]) entry.groups.push(l.addWorkerGroup(group));
+      for (const l of groupLocks()) entry.groups.push(l.addWorkerGroup(group));
     }
     w.begin();
     return { admitted: true };
@@ -2305,7 +2329,8 @@ export async function runLanes(c) {
     const w = entry.w;
     inflight.delete(entry.seq);
     settling = entry;
-    if (w.groupTeardown === 'lingering') c.markLingering();
+    // C181 — a step scope not read gone is kept as a lingering group is.
+    if (lingers(w)) c.markLingering();
     else for (const g of entry.groups) g.release();
     entry.groups = [];
     c.setLastSessionId(w.sessionId);
@@ -2341,7 +2366,7 @@ export async function runLanes(c) {
     if (after.lookError) keep();
     if ((c.interrupted() && !w.aborted) || w.aborted === 'interrupted') {
       verdict = asHalt({ reason: 'interrupted', detail: 'the owner interrupted the run' });
-    } else if (after.lookError && w.groupTeardown !== 'lingering') {
+    } else if (after.lookError && !lingers(w)) {
       // A group that outlived SIGKILL is judged by verifyStep below, whatever
       // the look: it drains the run (ADR-0068 Decision 1, item 1).
       // Unverified, and its peers unknown: the run halts, and keeps its
@@ -2411,7 +2436,7 @@ export async function runLanes(c) {
       spawn_error: w.spawnError, is_error: w.lastResult?.is_error ?? null, result_subtype: w.lastResult?.subtype ?? null,
       turns: w.turns, cost_usd: w.costUsd, cost_charged_usd: cost, peak_ctx: w.peakCtx, peak_pct: w.peakPct,
       context_window: w.contextWindow, permission_denials: w.denials, report: w.report, raw_truncated: w.rawTruncated,
-      group_teardown: w.groupTeardown, rate_limit: w.rateLimit ?? null,
+      group_teardown: w.groupTeardown, scope_teardown: w.scopeTeardown ?? null, pipe_held: w.pipeHeld === true, rate_limit: w.rateLimit ?? null,
       report_eof: w.reportEof === true, closed_on_report: w.closedOnReport === true, abandoned_background: w.abandonedBackground ?? [], report_teardown: w.reportTeardown ?? null,
       peer_cancellations: cancelled, peer_settlements: settlements, peers_unaccounted: unaccounted,
       stall: w.stall ?? null,
@@ -2421,7 +2446,7 @@ export async function runLanes(c) {
     // The step's peers are settled: its TMPDIR goes, in the background,
     // unless its group outlived SIGKILL or its peers are unaccounted for
     // (the run then holds it, as it keeps its locks or its open-run record).
-    if (entry.tmpDir) c.scratch.release(entry.tmpDir, w.groupTeardown === 'lingering' ? 'the step\'s process group outlived SIGKILL' : unaccounted ? 'the step\'s peers are unaccounted for' : null);
+    if (entry.tmpDir) c.scratch.release(entry.tmpDir, lingers(w) ? lingerReason(w) : unaccounted ? 'the step\'s peers are unaccounted for' : null);
     settling = null;
     pub.stepEnd(entry.seq, s, id, verdict, w.aborted);
     writeRun(runDir, run);
@@ -2979,7 +3004,7 @@ export async function runLanes(c) {
     await Promise.all(open.map((entry) => entry.done ?? Promise.resolve()));
     for (const entry of open) {
       try {
-        if (entry.w?.groupTeardown === 'lingering') c.markLingering();
+        if (lingers(entry.w)) c.markLingering();
         else for (const g of entry.groups) g.release();
         const charged = budget.settle(entry.reservation, { spawned: true, costUsd: entry.w?.costUsd ?? null });
         run.accounted_seqs.push(entry.seq);

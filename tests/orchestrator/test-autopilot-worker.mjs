@@ -177,7 +177,16 @@ describe('stream-json hosting', () => {
       await watch;
       clearTimeout(watchdog);
       holder = readPid(pidfile);
-      ok(alive(holder), 'the holder is outside the worker\'s group and still holds the pipes');
+      // C181 — where the step made a scope, its kill ends the holder too (it
+      // left the group, not the scope); where it made none, the holder is
+      // outside the worker's group and still holds the pipes.
+      if (w.scopeTeardown?.state === 'gone') {
+        for (let i = 0; i < 20 && alive(holder); i += 1) await new Promise((r) => { setTimeout(r, 50); });
+        ok(!alive(holder), 'the step\'s scope was read gone, so the holder in it is gone');
+      } else {
+        ok(alive(holder), 'the holder is outside the worker\'s group and still holds the pipes');
+      }
+      strictEqual(w.pipeHeld, true, 'the pipe was still held at the step\'s end');
       deepStrictEqual([w.exitCode, w.turns, w.aborted], [0, 1, null]);
       ok(Date.now() - t0 < 20_000, `the step ended ${Date.now() - t0} ms after it started`);
     } finally {

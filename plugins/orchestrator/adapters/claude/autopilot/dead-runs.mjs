@@ -71,7 +71,7 @@ import {
 } from '../../../scripts/lib/run-locks.mjs';
 import { SHARED_HOMES } from '../../../scripts/lib/state-root.mjs';
 import { scopeRecordState } from '../../../scripts/lib/scope.mjs';
-import { readScopeOnce } from '../../../scripts/lib/scope-reader.mjs';
+import { createScopeEnder, readScopeOnce } from '../../../scripts/lib/scope-reader.mjs';
 import { checkHolds } from '../../../scripts/lib/heavy-check.mjs';
 
 // This orchestrator's root: the runner of its own peer runs when the dead
@@ -261,6 +261,53 @@ function runnerFor(plugin, { run, engineer, env }) {
   return null;
 }
 
+// C181 (ADR-0023, the autopilot worker) — the scopes of a dead driver's
+// steps, ended before the cleanup judges the run's worker groups: each step
+// whose record holds a scope (its last `scope` line) that binds it (owner
+// `autopilot-step`, the run, the step's seq, the driver as supervisor) and
+// whose driver is proven gone has its kill written, every kill first; then
+// each such scope is read once, with no wait. Answers the ones not read gone,
+// which keep the record. A scope of a version this reader does not know, or
+// one that binds another run, step or driver, gets no kill and is still read
+// (a reading needs no authority).
+function endStepScopes({ runId, record, steps, ender }) {
+  const owned = [];
+  const held = [];
+  for (const s of steps) {
+    if (!s || !Object.hasOwn(s, 'scope')) continue;
+    let st;
+    try { st = scopeRecordState(s); } catch { st = { state: 'malformed' }; }
+    if (st.state === 'unknown-version') {
+      held.push({ seq: s.seq, unit: null, reading: { state: 'withheld', check: 'unknown-version' } });
+      continue;
+    }
+    // A record that claims a scope but does not parse grants no kill, and
+    // keeps the record (its scope may hold processes).
+    if (st.state === 'malformed' && s.scope?.state === 'scoped') {
+      held.push({ seq: s.seq, unit: typeof s.scope?.identity?.unit === 'string' ? s.scope.identity.unit : null, reading: { state: 'withheld', check: 'malformed' } });
+      continue;
+    }
+    if (st.state !== 'scoped') continue;
+    const id = st.identity;
+    const binds = id.owner.kind === 'autopilot-step' && id.owner.run === runId && id.owner.step === String(s.seq) && id.supervisor.pid === record.pid;
+    owned.push({ seq: s.seq, id, binds });
+  }
+  for (const o of owned) {
+    if (!o.binds) continue;
+    let sup;
+    try { sup = ender.supervisorGone(o.id.supervisor); } catch { sup = { gone: false }; }
+    if (sup.gone) {
+      try { ender.kill(o.id); } catch { /* the ender keeps it withheld */ }
+    }
+  }
+  for (const o of owned) {
+    let reading;
+    try { reading = ender.read(o.id); } catch { reading = { state: 'withheld', check: 'reading-failed' }; }
+    if (reading?.state !== 'gone') held.push({ seq: o.seq, unit: o.id.unit, reading });
+  }
+  return held;
+}
+
 // A run's steps, read strictly: a step log that does not read, or holds a
 // line that does not parse before its last, cannot say which steps were left
 // unfinished. A last line cut short is a write a crash interrupted, before
@@ -293,6 +340,12 @@ function readStepsStrictly(runDir) {
     if (!Number.isInteger(rec?.seq)) return { error: `line ${i + 1} of its step log has no seq` };
     if (rec.event === 'stall' || rec.event === 'instruction') continue;
     const prev = bySeq.get(rec.seq) ?? {};
+    // C181 — a step's scope line (readRun's rule): the last one is the step's,
+    // and it never stands for the step's `started`.
+    if (rec.event === 'scope') {
+      bySeq.set(rec.seq, { seq: rec.seq, ...prev, scope: rec.scope ?? null });
+      continue;
+    }
     bySeq.set(rec.seq, rec.event === 'finished' ? { ...prev, ...rec } : { ...rec, ...prev });
   }
   return { steps: [...bySeq.values()].sort((a, b) => a.seq - b.seq) };
@@ -395,7 +448,7 @@ function checksHeld(runDir, holds) {
 export async function cleanupDeadRuns({
   mainRoot, macroId = null, selfRunId = null, engineerRoot = null, by,
   env = process.env, now = () => Date.now(), out = () => {}, probe = processFingerprint,
-  cancel = cancelPeer, readScope = readScopeOnce, holds = checkHolds,
+  cancel = cancelPeer, readScope = readScopeOnce, holds = checkHolds, scopeEnder = createScopeEnder(),
 }) {
   const results = [];
   let records;
@@ -414,7 +467,7 @@ export async function cleanupDeadRuns({
     if (macroId !== null && record.macro_id !== macroId) continue;
     let r;
     try {
-      r = await cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, probe, cancel, readScope, holds });
+      r = await cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, probe, cancel, readScope, holds, scopeEnder });
     } catch (e) {
       r = { run_id: runId, outcome: 'kept', detail: `the cleanup failed (${e?.message ?? e}); its record is kept` };
     }
@@ -424,13 +477,10 @@ export async function cleanupDeadRuns({
   return results;
 }
 
-async function cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, probe, cancel, readScope, holds }) {
+async function cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, probe, cancel, readScope, holds, scopeEnder }) {
   const runId = record.run_id;
   if (await holderAlive({ pid: record.pid, fingerprint: record.fingerprint, worker: null }, { probe })) {
     return { run_id: runId, outcome: 'live', detail: `its driver (pid ${record.pid}) is running` };
-  }
-  if (await liveEntry(record, mainRoot, probe)) {
-    return { run_id: runId, outcome: 'live', detail: 'its driver is gone, but a worker group of it still runs: /orchestrator:autopilot stop empties it, then cleans up' };
   }
 
   // The lock sits beside the record, under the main worktree, which outlives
@@ -451,13 +501,22 @@ async function cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, 
       return { run_id: runId, outcome: 'cleaned', detail: 'another process cleaned up after it', cancelled: [], reported: [], settled: [] };
     }
     const r = readRun(record.checkout, runId);
+    const ledgerOk = Boolean(r) && real(r.dir) === real(record.run_dir) && r.run.run_id === runId && (r.run.macro_id ?? null) === (record.macro_id ?? null);
+    const strict = ledgerOk ? readStepsStrictly(r.dir) : null;
+    // C181 — under the cleanup lock, before the worker groups are judged:
+    // the dead driver's step scopes are ended, so a live claude left in one
+    // no longer makes the run live (one that left its scope is judged as
+    // before), and a scope not read gone keeps the record.
+    const heldSteps = strict && !strict.error ? endStepScopes({ runId, record, steps: strict.steps, ender: scopeEnder }) : [];
+    if (await liveEntry(record, mainRoot, probe)) {
+      return { run_id: runId, outcome: 'live', detail: 'its driver is gone, but a worker group of it still runs: /orchestrator:autopilot stop empties it, then cleans up' };
+    }
     if (!r || real(r.dir) !== real(record.run_dir)) {
       return { run_id: runId, outcome: 'kept', detail: `its ledger ${record.run_dir} is gone; check that run's peers, then delete ${file}` };
     }
     if (r.run.run_id !== runId || (r.run.macro_id ?? null) !== (record.macro_id ?? null)) {
       return { run_id: runId, outcome: 'kept', detail: `its ledger ${r.dir} names run ${r.run.run_id ?? '?'} of macro ${r.run.macro_id ?? '-'}, not its record's; check it, then delete ${file}` };
     }
-    const strict = readStepsStrictly(r.dir);
     if (strict.error) {
       return { run_id: runId, outcome: 'kept', detail: `${strict.error}, so its unfinished steps are not known; check ${r.dir}, then delete ${file}` };
     }
@@ -477,6 +536,9 @@ async function cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, 
     const reported = [];
     const { peers, unreadable } = scanPeers(peerRunDirs(run, record, strict.steps));
     const unresolved = unreadable.map((p) => ({ ...p, runner: p.plugin ? runnerFor(p.plugin, { run, engineer, env }) : engineer }));
+    for (const h of heldSteps) {
+      unresolved.push({ run_id: null, step_scope: true, seq: h.seq, unit: h.unit, why: `step [${h.seq}]'s scope ${h.unit ?? '(of a version this reader does not know)'} was not read gone (${h.reading?.state ?? '?'}${h.reading?.check ? `: ${h.reading.check}` : ''})` });
+    }
     const stepSeqs = new Set(strict.steps.map((s) => s.seq));
     // One reading of a scope, with no kill: a reading needs no authority.
     const readOnce = (identity) => {
@@ -695,6 +757,10 @@ export function describe(r) {
     lines.push(`${r.outcome === 'kept' ? '✗ dead run' : 'run'} ${id}: ${r.detail}`);
   }
   for (const p of r.unresolved ?? []) {
+    if (p.step_scope) {
+      lines.push(`  ✗ ${p.why}: its scratch, open-run record and lock entries are kept; a later cleanup reads it again, or stop it: systemctl --user stop ${p.unit ?? '<unit>'}`);
+      continue;
+    }
     if (p.run_id === null) {
       lines.push(`  ✗ ${p.why}: its peers cannot be told; check that run's peers there`);
       continue;
