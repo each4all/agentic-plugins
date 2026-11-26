@@ -370,11 +370,17 @@ ADR-0001 final note.
   user's command arguments go through the args file instead. Fixed literals,
   enums, values the generator escapes, and the quoted expansion of data a
   program has already read stay inline. Nothing in such a block deletes the
-  file. A CLI gains the `-file` form in a release before any runbook passes
-  it. Do not invent a file option a tool lacks: `gh pr merge --subject` takes
-  a variable a program filled. Contract:
+  file, and no block runs `rm`. *Proposed, not yet implemented (ADR-0059
+  Decisions 9 and 10):* a CLI will make the directory and mark it. A path
+  will release the directory through that CLI after its last read, write
+  and cleanup, once no later block, rerun or continuation reads it: on each successful
+  end, as a rule. Every other path keeps each directory a remaining block
+  or a rerun still reads, and the owner removes what is abandoned. Until a package's runbooks switch, its blocks keep
+  `mktemp -d` and delete nothing. A CLI gains the `-file` form in a
+  release before any runbook passes it. Do not invent a file option a tool
+  lacks: `gh pr merge --subject` takes a variable a program filled. Contract:
   [ADR-0059](docs/adr/0059-runbook-argument-transport.md), amendments of
-  2026-09-29 and 2026-10-10.
+  2026-09-29, 2026-10-10, 2026-11-25 and 2026-11-26.
 - `npm run mutate -- <spec>` — run a mutation spec from
   `scripts/mutation-specs/`. A green suite is not evidence that it tests
   anything; the harness breaks the tree on purpose and scores each defect

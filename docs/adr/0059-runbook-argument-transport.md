@@ -9,6 +9,13 @@ Decision 9, which directories a runbook may remove and how (amendment of
 Proposed; the removal and its report (items 4 and 5) Proposed; the rollout
 rule and its constraints (item 6) Proposed.
 
+Decision 10, when a runbook releases its directories (amendment of
+2026-11-26, C175): the releasing steps and their timing (items 1 and 2)
+Proposed; what a failure keeps (item 3) Proposed; the report of a release
+(item 4) Proposed; the closing write's message (item 5) Proposed; the
+listing and the owner's removal of abandoned directories (item 6) Proposed;
+the rollout (item 8) Proposed.
+
 <!--
 No supersedure. This decides a mechanism the runbooks never had an explicit
 contract for. It makes the guard shipped by `27a980d` unnecessary, so the
@@ -518,6 +525,8 @@ limits of the Proposed proof. *Amended 2026-11-25 (C175, slice 1): [history](his
    directories whose path no block holds, directories left at a
    `.removing-` path (`claimed`), and directories with a stale open
    operation or a transport older than this decision.
+   [Decision 10](#decision-10) decides each of them (Proposed). *Amended
+   2026-11-26 (C175, slice 2): [history](history/0059-runbook-argument-transport.md#amendment-2026-11-26--when-a-runbook-releases-its-directories-c175).*
 7. **Limits.** The checks and the removal are separate system calls: a
    process of the same user that swaps the directory for another between
    them is not caught, and a marker is written by the same user it proves.
@@ -537,6 +546,454 @@ limits of the Proposed proof. *Amended 2026-11-25 (C175, slice 1): [history](his
    for another's releases the other, losing whatever files a later block
    of that other command would have read; that the path is this block's
    own is the second slice's to carry (item 6, its first constraint).
+   Decision 10, item 7 keeps this a limit and says why. *Amended
+   2026-11-26 (C175, slice 2): [history](history/0059-runbook-argument-transport.md#amendment-2026-11-26--when-a-runbook-releases-its-directories-c175).*
+
+<a id="decision-10"></a>
+**10. A runbook releases each directory it made once, after the last read
+of it, on each path that leaves no reader of it, and keeps it on every
+other path.**
+
+Status: Proposed, each of items 1 and 2 (where and when the release runs),
+item 3 (what a failure keeps), item 4 (how a release is reported), item 5 (the closing write's message), item 6 (abandoned
+directories) and item 8 (the rollout) on its own; item 7 states the limits.
+*Amended 2026-11-26 (C175, slice 2): [history](history/0059-runbook-argument-transport.md#amendment-2026-11-26--when-a-runbook-releases-its-directories-c175).*
+
+This decision applies Decision 9 to the runbooks. It changes nothing in
+Decision 9's proof, claim or outcomes (items 2 to 5), with three exceptions:
+the `unsupported` and `unsupported-path` outcomes that items 4 and 1
+add, the message that item 5 changes, and the owner's release path of
+item 6.
+
+1. **A releasing step on every successful end of the command.** *Proposed.*
+   A command's phases run in separate shell calls, and each one reads the
+   directory again, so the block that made a directory is rarely the last
+   one to read it. The runbook therefore names a releasing step for each
+   directory on **each path where item 2 makes it releasable**, not on one
+   block: every path that ends the command successfully, a directory whose
+   last reader has run before the command ends, and an end that no rerun
+   reads. Each releasing step is the last step of its path. It comes
+   after every write and every read of the directory on that path: the
+   block's own reads, its exit trap, and any file the runbook has the agent
+   read after the block exits (a response, or an error file such as
+   `prompt.xml.err`). No successful end is exempt. Where the agent would
+   read a file of the directory after the last block of a successful end,
+   that block prints the file's text, or the path of a copy outside the
+   directory (a peer run's ledger file), to its own output before it
+   releases; where it cannot, the runbook adds a last block whose only
+   work is the release, after the agent's read. The runbook change that
+   switches a command lists every path that ends it and the releasing step
+   on each, and item 8's static check holds every make to that list. The
+   bullets below give the kinds of end the measurement found (history),
+   with the sites it named; they are the classes a runbook change starts
+   from, not a complete list of its paths:
+   - **A persona verb.** The bootstrap block releases its request
+     directory after `create` succeeded. The topic directory it makes for
+     `AGENTIC_TOPIC` is made and released in that same block, from the
+     variable it holds. The finalize releases its own text directory, the
+     dispatch's text directory and `OP_DIR` after its last write succeeded.
+     That holds whichever form the last write took: the verb, verify or
+     owner-decision form. Inside `/engineer:start`, and on refine's
+     owner-gate paths (close inside `/start`, *Fix now* carrying `OP_DIR`
+     into another finalize, the *Defer* block), the releasing step is on
+     the path that makes the operation's last write. The same holds for
+     decide's owner-selection resolution, its text directory and the
+     operation directory it opens when `OP_DIR` is empty
+     (`decide-owner-selection.md`).
+   - **Directories a verb makes inside its own run**, for a block whose
+     write is not the operation's last: critique's scope close, refine's
+     scope record, a skill's review settle and the routing owner gates
+     (`critique-scope-close.md`, `refine-scope-record.md`,
+     `skill-review-settle.md`, `routing-owner-gates.md`). Each such
+     directory is released by the block that reads it last, after its
+     write succeeded, and only when neither a later block nor a retry of
+     the command reads it. Work a runbook repeats (refine's scope record,
+     run again after a later edit) makes a fresh directory each time, so
+     each run's release ends only its own.
+   - **`/<persona>:start`.** Its bootstrap and each phase boundary make
+     directories of their own (`start-bootstrap.md`,
+     `start-phase-boundary.md`); each is released by the block that reads
+     it last. The terminal step releases what it made: after the commit
+     (below), or, on the founder and designer terminal that commits
+     nothing, after its terminal write (`start-terminal.md`).
+   - **Persona `/checkpoint` and `/resume`.** The block that writes the
+     checkpoint or the resume marker releases its text
+     directory after that write (`checkpoint-set.md`, `resume-*.md`).
+     `/resume` also makes a read directory (`READ_DIR`, `resume-read.md`)
+     that the drift report and the marker block read; the marker block
+     releases both, after the marker's write, and also on its successful
+     path that skips the marker (an invalid baseline, which it reports and
+     ends with status 0, `resume-marker.md`). `/resume archive <id>`
+     resolves the id in a block of its own, which reads `workflow-id.txt`
+     from its text directory and prints the workflow path
+     (`resume-archive-resolve.md`); the archive block, run after the user
+     confirms, is given only that path (`resume-archive.md`). The resolver
+     block therefore releases its directory after it prints the path, its
+     last read, so that confirmation and cancellation alike leave nothing to
+     release. A refused resolution keeps it: the user corrects the id file
+     and runs the block again (item 3).
+   - **A peer consultation** (`peer-now`, persona and orchestrator). With a
+     workflow, the persona's note block appends the note and closes the
+     nested `op`; the orchestrator's has no nested `op`, and appends only.
+     The response the command then shows is the run's stdout file in the
+     peer-run ledger, which the note block names from the run result in the
+     text directory: the block prints that ledger path (or the response)
+     before it releases, so no later read touches the text directory.
+     Standalone, the block that shows the response releases, after
+     printing it. A run with no terminal result leaves its operation open
+     on purpose, and is no successful end: its directory is kept (item 3).
+     The persona skill's separate note directory is released by the note's
+     block.
+   - **The commit** (`/engineer:commit`, `/engineer:start`'s Phase 7 and
+     their persona twins). The subject and body directory is released only
+     after the driver's whole success: the commits made, the gates after
+     them passed and the terminal write done, or, on the close path, the
+     workflow archived. A stop at the staging-set gate is also a whole
+     success, since its gate write was the driver's last write and the
+     owner's commit composes its own body.
+   - **`/orchestrator:next`.** The release is the last step of Phase 5's
+     exit trap (Phase 4's writeback on the Codex skill). It runs only when
+     each of three results authorizes it, each read on its own: the
+     writeback exited 0; the admission release exited 0; and the mark's
+     withdrawal reported, in a form the block reads rather than an exit
+     status, one of four dispositions: `withdrawn` (removed now), `gone`
+     (shown absent: the lane's operation registry was read `absent`, or
+     read `ok` with no record of the id), `unpublished` (the mark file
+     names no operation id) or `carried` (a child linked to the subtask
+     holds its id, and the record stays under the child's ownership, which
+     the child's last write ends). Each of these authorizes the release.
+     Nothing else does, since none of the rest shows who holds the mark:
+     `unknown` (a child that could not be read, which may own the record),
+     `unreadable` (a registry that could not be read, so absence is not
+     shown), a withdrawal that failed outright (a mark file or state root
+     that cannot be read, a lock that fails: an error raised before any
+     ownership is established) and a reply the block does not recognize (an
+     older CLI). Today the helper reports `carried` for both a carrying
+     child and an unreadable one, `gone` for an unreadable registry
+     (`readOps` returns `unreadable` with no records, and
+     `withdrawDispatchMark` reads that as no record), and exits 0 with no
+     word for a null operation id, so the CLI that ships first (item 8)
+     reports each of them apart. A trap whose helper cannot read the
+     subtask (today `|| return 0`) authorizes nothing either. The trap sets
+     the block's exit status from these results, so an exit 0 with a failed
+     cleanup cannot happen: an `EXIT` trap that only runs commands leaves
+     the status the block had. Phase 3b's trap never releases, since a
+     rerun of Phase 3b reads the directory. A refusal, in Phase 3b or
+     before it, keeps its directory too: each refusal message either tells
+     the user to rerun `/orchestrator:next`, or points to another command
+     (`/orchestrator:plan` for an empty plan, `/orchestrator:finalize` when
+     every subtask is terminal) without saying whether a later
+     `/orchestrator:next` may start from this directory, and the command's
+     own text lets a block run again over what the earlier phases kept, so
+     a reader may be left (item 2). Retention is the default while such
+     reuse remains possible. A switching
+     change that releases on some refusal (every subtask terminal, say)
+     rewrites that refusal's message in the same change to say what item 2
+     requires (item 8).
+   - **`/orchestrator:plan`.** The last block that succeeds releases the
+     directory: the one that appends the note, commits the summary and
+     records `contested.md` when there is a conflict. Its retries read the
+     directory, and so does a report of a prompt that could not be read
+     (`prompt.xml.err`). A persisted consensus task is read from its own
+     path, never from the text directory.
+   - **`/orchestrator:done`** and the other orchestrator commands. The path
+     that reads the reason file, or the text, last releases its directory,
+     after that read. `done` makes its reason directory inside its one
+     block, on every run, so no rerun reads an earlier run's: the block
+     releases it on each of its exits, as the last step, after the
+     admission trap's release where the path joined the admission. Its
+     path for a subtask already completed exits 0 without recording
+     anything on the subtask and never reads the reason file, but it runs
+     `holds-retire`, which may finish a retirement of the subtask's hold
+     records (a write). That call's exit 0 is no evidence that the
+     retirement happened: it exits 0 after warning that the retirement is
+     waiting, is unreadable or failed (`state.mjs`, the holds-retire
+     helper). The release does not wait on it, since the call is no reader
+     of the directory: a retirement not finished is retried by a later
+     `done`, `holds-retire`, `status`, the next Stop or the next run, none
+     of which reads it. The release follows the call whatever it reports,
+     and the call's own warning is the report of a deferred retirement.
+   - An args directory keeps the reader's removal (the amendment of
+     2026-09-29).
+
+   **What the release is given.** A directory that a later block releases
+   reaches that block on a line of its own: the releasing block opens with
+   one line per such directory, the path the make printed, apart from the
+   lines it reads through. A block that makes and releases a directory in
+   the same shell call has no such line, since the path does not exist when
+   the block opens: it releases the directory from the variable that
+   captured the make's output, never from a path it reads (a file, an
+   argument, another block's output). The dispatched bootstrap's topic
+   directory and `/orchestrator:done`'s reason directory are released this
+   way. A finalize's `DISPATCH_DIR` may name a peer run's ledger
+   directory, or be empty when no run launched, while the
+   dispatch still made a text directory. That text directory has its own
+   line, and is released even when no run launched. A ledger directory is
+   never given to the release. The make refuses a path that a
+   single-quoted shell literal cannot carry (a `'`, or a control character
+   such as a line break) with the reason `unsupported-path`, and makes
+   nothing. No fallback follows that refusal: `mktemp -d` under the same
+   `TMPDIR` would make a path that the later blocks cannot carry either, so
+   the block stops and says to set `TMPDIR` to a path without such
+   characters (item 4).
+2. **Once no reader is left, and never twice.** *Proposed.* This is the
+   one rule of when a directory may be released; items 1 and 3 apply it. A
+   directory is releasable at a point of a path when both hold:
+   - every write and read of it the path makes has completed, and so has
+     every cleanup the path runs before that point; and
+   - no reader of it is left after that point: no later block of the path,
+     no rerun or retry that the runbook, its reference or the block's own
+     message directs from that state, and no continuation of the command
+     (a finalize after a dispatch, a commit after a verb).
+
+   A path's success is the ordinary case: its last write having completed,
+   whatever it recorded (an owner gate written by the block's last write
+   is a success, while a block that stops before its last write, a gate
+   written earlier in the block included, is not), or, for a path that
+   ends the command with status 0 and writes nothing (a no-op the command
+   reports as done), its last read. A release inside a run (item 1's
+   bootstrap and in-verb directories) is the same rule met before the
+   command ends. A path that ends non-zero leaves a reader whenever its
+   message directs a rerun of the block or the command over the same
+   directory, or says nothing of what follows while the runbook lets a
+   block run again over what earlier blocks kept; it is releasable only
+   where no rerun can read the directory (a block that makes the directory
+   afresh on every run) or the message itself says that nothing reads it
+   again. The runbook never tells the agent to release a directory by
+   hand, or to run the release again, and never runs a block again over a
+   directory it has released. Work the runbook repeats makes a fresh
+   directory each time (item 1), so the rule is kept per directory, not
+   per command. Whether the inputs are gone is no replay guard: when a
+   release is refused or skipped they remain, and a block run again over
+   them could repeat its writes. Item 4's line therefore says that nothing
+   is to be repeated.
+3. **What a failure keeps.** *Proposed.* On every path that does not end in
+   a success, the command keeps each directory it made that a remaining
+   block, a retry or a continuation of the command still reads (item 2).
+   A directory item 1 released earlier, after its last reader and with no
+   retry reading it, is not among them, nor is one that every run of its
+   block makes afresh (`/orchestrator:done`'s reason directory). The
+   directories kept are the inputs the next step reads:
+   - a block that exits non-zero, a finalize's later step included, which
+     its rerun repeats from the same directories;
+   - a refusal the runbook answers by rewriting a file and running the
+     block again: a commit subject or body refused (exit 9 or 2), a verify
+     request the finalize refuses, and a `review-held` commit (exit 10),
+     whose report is the owner's;
+   - a split commit that stopped halfway, a gate that failed after commits
+     landed, and an archive that was refused, each of which a rerun of the
+     commit resumes;
+   - in `/orchestrator:next`, a writeback that succeeded while the
+     withdrawal or the admission release did not authorize the release
+     (item 1). The admission id and the mark file stay readable. Recovery
+     is cleanup only, never a rerun of Phase 5, which checks the admission
+     before it writes, and each leftover has its own action. An admission
+     still held is released by `admission release`, which takes the
+     admission id (`admission`), whatever became of the mark. A mark whose
+     withdrawal did not show who holds it (`unknown`, `unreadable`, a
+     withdrawal that failed outright, or a reply the block does not
+     recognize, item 1) is of unresolved ownership, and is never cleared on
+     that ground: the child may hold the operation, and a `writer-clear`,
+     which records the clear without checking whether the child still
+     runs, would lift its lane exclusion and make its closing write refuse.
+     The directory is kept, and recovery runs the withdrawal again once its
+     cause is fixed (`dispatch-mark-withdraw` with the kept mark file,
+     which goes through the ownership check) until it reports one of item
+     1's authorizing dispositions. The owner's `writer-clear`, which takes
+     the mark's operation id (`dispatch-mark.json`), is for one case only:
+     the owner has established that the operation's session is gone. The
+     block's message names whichever is left, with its id, and for a mark
+     the withdrawal to retry first.
+
+   The ownership rule of the last bullet holds for every exit of
+   `/orchestrator:next` that leaves a mark, not only a writeback that
+   succeeded, and on both hosts (the Codex skill's Phase 3b and Phase 4
+   blocks included):
+   - **A writeback that failed, or an exit before it.** The mark is ended
+     as above: the withdrawal, retried with the original lane arguments
+     (the subtask and branch kept in `subtask.json`) and the kept mark
+     file, until it reports an authorizing disposition. Where the mark
+     file is gone (today's Phase 5 refusal for a missing
+     `dispatch-mark.json` sends the owner straight to `writer-clear`), the
+     operation is found by its exact id (`agentic-autopilot status`), and
+     cleared only once the owner has established that its session is gone.
+     The switching change rewrites that refusal's message to say so.
+   - **A rerun of Phase 3b over a kept mark.** Phase 3b withdraws a mark an
+     earlier run of the block left before it publishes a new one, and the
+     publication rewrites the mark file. Today it calls the withdrawal
+     without reading its result, so an indeterminate withdrawal followed
+     by a publication replaces the only record of the old operation id.
+     The block proceeds to the publication only on an authorizing
+     disposition; on any other it stops, keeps the mark file and the lane
+     arguments as they are, and names the withdrawal to retry.
+
+   "Kept" is bounded by where the directory was made. In an autopilot step
+   the directory is under the step's `TMPDIR`, which ADR-0068, Decision 5,
+   item 13 removes once the step's peers are settled, whatever the outcome
+   and subject to its guards. There, what crosses into a later step is
+   what the workflow and the run record, not these directories, and a
+   later step starts in directories of its own (as ADR-0068 already
+   expects of a replay).
+4. **How a release is reported.** *Proposed.* This covers every release
+   attempt, on a successful end or on any other end item 2 allows. The release
+   reports on the directory, never on the command. Its line goes to
+   standard error, so that the block's own output on standard output (a
+   driver's JSON) stays intact. This rule is for the release's own
+   outcome: it never changes the block's exit status, which stays what the
+   path's own work set, the primary operation's, or, in
+   `/orchestrator:next`'s Phase 5 trap, the status item 1 has the trap set
+   from the writeback, withdrawal and admission release results.
+   - `removed` and `absent` print nothing.
+   - Each other outcome prints one line with the disposition Decision 9,
+     item 5 gives it:
+     - `not-owned`, `refused`, `contention` or `error`: the directory is
+       kept at its path, which the line names;
+     - `claimed`: it is left at its `.removing-` path, which the line names,
+       together with the check that failed;
+     - `partial`: some entries are gone, and the line says whether the
+       marker remains.
+     The line never suggests rerunning the block, the release or the
+     command.
+   - A release that dies, or prints nothing, or prints a line that does not
+     parse: the block prints one line saying that the release's result is
+     unknown, and that the directory may remain at its path or at its
+     `.removing-` path.
+   - **An older CLI.** The block looks for the subcommand as the runbooks
+     look for a flag. A CLI that can be read and lacks the release
+     subcommand skips the release with one line: the directory is kept. A
+     CLI that cannot be read stops the block, as running it would. A CLI
+     that lacks the make subcommand makes the directory with
+     `mktemp -d "${TMPDIR:-/tmp}/…"` as today, with what that does with an
+     empty `TMPDIR`. A nested make whose parent text directory has no
+     marker (a parent made the old way) makes `op` the old way too,
+     `mkdir -m 700`, so a legacy parent always holds a legacy `op`.
+   - **Where the make is unsupported** (the platform of Decision 9, item 2,
+     **Platforms**): the make exits with the reason `unsupported`, and the
+     block makes the directory with `mktemp -d` and prints one line saying
+     that it will not be released. The path travels to later blocks as
+     today's `mktemp -d` path does.
+   - **A path no fallback may carry.** Every branch that hands a path to
+     later shell calls checks it first: the make refuses it as
+     `unsupported-path` (item 1), and the fallback branches (an older CLI,
+     an unsupported platform, a legacy nested `op`) check the path
+     `mktemp -d` or `mkdir` produced with the same rule in the block's own
+     shell (a `case` on `'` and control characters) before printing it,
+     and stop the block when it fails. A `TMPDIR` a single-quoted literal
+     cannot carry thus stops the block on every branch.
+     The release of such a directory changes nothing, reports
+     `unsupported` with status 0, and prints nothing. Any other failure of
+     the make (a `TMPDIR` that is set but unusable, no space) stops the
+     block, as a failed `mktemp -d` does today.
+5. **The closing write's message.** *Proposed.* A missing operation
+   directory does not tell which write already ran: the workflow's list of
+   open operations may hold a later operation, and an empty list does not
+   prove that the write landed. So the last write, given an operation
+   directory that is missing, no longer advises running the write with no
+   operation directory. It writes nothing, exits non-zero, and says that
+   the directory may have been released after this write already ran, in
+   which case nothing is to be repeated, or lost. It names the workflow's
+   open operations, and for a lost directory it names the owner's
+   `writer-clear`, with item 3's condition: only once the owner has
+   established that the operation's session is gone, since a clear while
+   the session still runs lifts its lane exclusion and makes its closing
+   write refuse.
+6. **Abandoned directories: listed, and removed by the owner.** *Proposed.*
+   No CLI removes a directory by age on its own. Seven days without a write
+   does not prove that a command is over: a `/orchestrator:next` paused
+   after its switch keeps its admission id and dispatch mark in its text
+   directory, outside the `operation.json` that Decision 9 judges, and a
+   later read would find them gone.
+   - **The listing.** A subcommand of each CLI that makes directories reads
+     the root and changes nothing. It names every entry of a top-level
+     kind's form, with the newest modification time among the directory
+     and its entries (`lstat`) and its state: marked and releasable,
+     marked and refused (with the reason code), claimed (a `.removing-`
+     path), or without a marker.
+   - **`--execute`.** The owner's run releases marked directories the
+     listing found, each `<name>` passed to the release one at a time,
+     through the full proof. This is the CLI reading the root itself, not a
+     path a block transcribed, which is what Decision 9, item 3 guards
+     against. Age only narrows the candidates: a directory whose newest
+     modification time is younger than an age the owner gives (7 days by
+     default) is never selected, but an older one is not thereby over, for
+     the reason this item opens with. What the run relies on instead is the
+     owner's precondition, stated in its output before it acts: **no
+     command whose directories the root could hold is running, paused or
+     awaiting a retry** — no `/orchestrator:next` between its switch and
+     its writeback, no admission held, no persona operation open, no peer
+     run unsettled, no finalize or commit the owner means to rerun — and no
+     other run of `--execute`. Two checks narrow what a mistaken
+     precondition costs. The run skips every directory that holds a file a
+     paused `/orchestrator:next` keeps outside `operation.json`
+     (`admission`, `dispatch-mark.json`); the owner releases such a
+     directory by naming its path, after clearing what it records. And it
+     runs **claim-only**: when `.removing-<name>` exists, or appears before
+     the claim, it skips that directory rather than finishing it. It
+     finishes a `.removing-` path only when the owner names that path, on
+     the same precondition.
+   - **What no CLI removes**, though the listing names it: a directory
+     with no marker (made by `mktemp -d` before the switch, an interrupted
+     make, a directory a late writer recreated, a `.removing-` path emptied
+     down to no marker); a marked directory whose operation is not
+     `closed`, or whose transport has no marker id; and an empty
+     `.removing-` placeholder left by a claim.
+7. **Limits.**
+   - Abandoned directories now grow only on paths that end without a
+     success (item 3) or are abandoned. They are not bounded until the owner
+     runs `--execute`, outside autopilot steps.
+   - `--execute` rests on the owner's precondition, which no CLI checks: a
+     command paused across sessions, or a retry the owner forgot, is not
+     visible in a directory's age. The skip of `/orchestrator:next`'s kept
+     files covers the case that motivated item 6; any other paused reader
+     (a finalize, a commit, a `/start` between phases) loses its inputs if
+     the owner runs `--execute` while it waits, and its retry then starts
+     from fresh directories.
+   - An owner's `--execute` after a failed finalize can still change that
+     finalize's retry. An open `OP_DIR` is refused and stays. A text
+     directory that goes takes `finalize-run.json` and
+     `finalize-verify.json` with it. The run's ledger recovers a launched
+     run, but not a verify request, nor the identity of a review attempt
+     that never launched, which is derived from the text directory's path.
+     A retry from a fresh directory may then register a second attempt, or
+     append a second phase note.
+   - The swap of two live directories' paths (Decision 9, item 7) stays a
+     limit. Giving the release the marker id beside the path would not bind
+     it: the id travels the way the path does, and a model that copies
+     another command's directory copies that command's id with it. What
+     narrows the window is item 1: a directory released is live only until
+     its last reader has run. A directory kept (item 3) stays live across
+     the command's exit while a retry or a cleanup still uses it, and the
+     window stays open for it until then.
+8. **Rollout.** *Proposed.* Decision 9, item 6 stands: the CLI ships first,
+   and its measurements come before any runbook switches. Then each
+   runbook switches in one change per package, its make and its releasing
+   steps together, the persona pipeline's regions first and the
+   orchestrator's commands and skills after. Each change lists, for each
+   directory it makes, every path through the command, not only its
+   successful ends: on each path the directory's last write, last read and
+   the cleanup before the release, the readers a retry or rerun from that
+   state would have, and whether item 2 releases it there (where) or keeps
+   it (item 3). Early releases inside a run, and releases on a non-zero
+   end such as `done`'s, are entries of that list like any other. A static
+   check refuses two things: a `mktemp -d` of a text or operation
+   directory, or a raw `mkdir` of a nested `op`, left in a switched
+   runbook outside item 4's fallback branches (the make's `unsupported`
+   platform outcome, a CLI that lacks the make, a legacy parent's `op`),
+   and a make whose releasing steps do not match that list (a path the
+   list releases on with no releasing step, or a releasing step on a path
+   the list keeps). It also holds each releasing step to item 1's input:
+   the directory's line at the head of the releasing block, or, for a
+   directory the same block made, the variable that captured that make's
+   output, and nothing else. A change that releases a directory on an end
+   with a non-zero status rewrites that end's message in the same change, so that
+   the message says that nothing reads the directory again, unless every
+   run of the block makes that directory afresh (item 2). A count of make
+   sites
+   does not show that the timing is right; the list of paths does. Once a
+   package's runbooks have switched, the sentence of the amendment of
+   2026-10-10 that says a block never deletes the file is folded for that
+   package's text and operation directories, and so is the `AGENTS.md`
+   sentence. The rule that a block never runs `rm` stands.
 
 ## Consequences
 
@@ -1059,3 +1516,4 @@ The records dated before 2026-11-25 stay above, as they were written. Later
 records are in [the history file](history/0059-runbook-argument-transport.md):
 
 - 2026-11-25, amendment: [Amendment 2026-11-25 — which directories a runbook may remove, and how (C175)](history/0059-runbook-argument-transport.md#amendment-2026-11-25--which-directories-a-runbook-may-remove-and-how-c175)
+- 2026-11-26, amendment: [Amendment 2026-11-26 — when a runbook releases its directories (C175)](history/0059-runbook-argument-transport.md#amendment-2026-11-26--when-a-runbook-releases-its-directories-c175)
