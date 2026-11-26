@@ -466,6 +466,9 @@ const READER_SUBCOMMANDS = [
   'find-active', 'resolve-workflow', 'list-workflows', 'dispatch-selection', 'read', 'review-status', 'ensemble-verdict',
   'consensus-proposal', 'autopilot-preflight', 'critique-cap-check', 'verify-request-check', 'verify-results', 'verify-capability', 'hold-capability', 'content-digest',
   'diagnose-redundancy', 'check-clean-baseline', 'state-root', 'shared-creation', 'review-attempts', 'review-gate', 'review-compare-landed',
+  // ADR-0059 Decisions 9 and 10 — the runbook directories: each makes,
+  // releases or lists a directory under TMPDIR and writes no workflow.
+  'tmpdir-make', 'tmpdir-release', 'tmpdir-list',
 ];
 
 // What every other script and hook imports from state.mjs: each writer among

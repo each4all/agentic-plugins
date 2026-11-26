@@ -789,6 +789,33 @@ assignment of agent text, and no free-text flag (`--phase-note`,
 `--summary`, `--next-action`, `--original-request`, `--resolution`,
 `--subject`, `--subject-pkg`) given a placeholder or the agent's words.
 
+The directories themselves (ADR-0059 Decisions 9 and 10, C175):
+`scripts/lib/agentic-dir.mjs`, the unit `lib-agentic-dir` for every persona,
+copied into the orchestrator under its COPIED notice
+(`tests/scripts/test-orchestrator-peer-snapshot-parity.mjs` keeps the copy
+byte-equal), makes a text or operation directory with a marker
+(`.agentic-dir.json`, schema `agentic-dir-1`: an id, the directory's device
+and inode, its owner and its parent) and releases one only on that proof:
+the path, directory, parent and marker checks, control files read without
+following a link and bounded to 64 KiB, the entries check, the operation
+check (an operation directory holds no transport, or a closed one whose
+`dir_marker_id` names the marker), an exclusive claim at
+`.removing-<name>` (or, for a directory already left there, the same checks
+on it, never a rename), then a removal entry by entry, never recursive.
+`state.mjs` exposes it as `tmpdir-make --kind text|op` (with `--parent
+<dir>` only for `--kind op`, the nested `op` of a text directory),
+`tmpdir-release --path <p>` (one JSON report on stdout, and a line on
+stderr for any outcome but removed, absent or unsupported) and `tmpdir-list
+[--execute true [--age-days N]]`, the owner's listing and claim-only cleanup;
+either package's CLI judges every kind. An operation's first write records
+`dir_marker_id` only on a fresh open whose directory and marker pass the
+release's checks. No block calls the CLI
+yet: a package's runbooks switch from `mktemp -d` only once a release carrying
+it is installed (Decision 10, item 8), so an older installed CLI never meets
+newer prose. `tests/persona-pipeline/test-agentic-dir-*.mjs` hold it in
+process, and `scripts/mutation-specs/agentic-dir.mjs` puts its gates' defects
+back.
+
 decide's Phase 0.5 region (`decide-resolve.md`) holds the args-file steps
 (ADR-0059) and the resolver block, which opens with the `ARGS_DIR` the agent
 wrote into and then the plugin root; the resolved context reaches the

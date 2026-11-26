@@ -818,3 +818,46 @@ The deferred rare-path MAJORs (D1, D2, M6, M7 of this slice; P1, P3, P4, P5,
 D1, D2 and the path swap of Decision 9) stay the stated limits. Nothing is
 implemented yet: `tmpdir-cli` and the two runbook rollouts follow, under
 Decision 10, item 8.
+
+**Implementation note 2026-11-26 (`tmpdir-cli`, the CLI that ships first
+under Decision 10, item 8).** `scripts/lib/agentic-dir.mjs` (the
+persona-pipeline unit `lib-agentic-dir`, generated into engineer, designer and
+founder, and copied into the orchestrator under its COPIED notice) holds the
+make, the marker, the release, the listing and the owner's claim-only run.
+Each persona's and the orchestrator's `state.mjs` exposes them as
+`tmpdir-make`, `tmpdir-release` and `tmpdir-list`; an operation's first write
+records `dir_marker_id` only on a fresh open whose directory and marker pass
+the release's checks, and a replay keeps the field it finds; a last write
+given a missing operation directory refuses for any workflow, with the
+message of Decision 10, item 5, which for a workflow that keeps no persona
+operation (no macro's child, or a persona with its dispatch target off) adds
+its way forward: once the workflow's record shows the write did not land, the
+write again with no operation directory, since no operation of it is open to
+lose; a nested make whose parent is a legacy text directory, however the
+shell spelled it (macOS's `$TMPDIR` ends in `/` under a linked `/var`, so
+the legacy parent reads `…/T//agentic-text.X`), exits `parent-legacy` for
+item 4's fallback, while a parent that is itself a link (only its ancestors
+may be) never does; both CLIs judge their tmpdir words in one shared check
+(a bare flag, a value joined to its flag as `--name=value`, which the
+persona parser has no form for, an `--execute` other than `true` or
+`false`, a stray word),
+so they answer every call alike; `dispatch-mark-withdraw --format json`
+prints the dispositions of Decision 10, item 1 as one JSON line, and without
+it stdout stays empty while stderr names a mark kept as `unknown` or
+`unreadable`. No runbook, skill or region calls
+the CLI: each package's switch waits for a release carrying it, installed
+where the runbooks run, since an installed CLI older than the checkout's prose
+would otherwise meet a make it lacks. Decision 9, item 6's measurement, so
+far: in a headless Claude autopilot step (Linux, TMPDIR the step's scratch
+root), `mkdtemp` gave mode 700 and the step's uid, an exclusive `mkdir` of
+the placeholder then a rename onto it succeeded, a second `mkdir` failed
+`EEXIST` and a rename onto a non-empty directory `ENOTEMPTY`; the working
+tree's CLIs (base `addee03d` plus this change, unreleased) made a text
+directory and its nested `op`, released it (`removed`, status 0) and
+reported a second release `absent`, through both the engineer's and the
+orchestrator's. A Codex peer run from that step, in `workspace-write`
+(uid 1000, the TMPDIR it inherited from the step), ran the same round trip
+through the engineer's CLI with the same outcomes and statuses. A Codex
+session the owner starts directly, with its own TMPDIR, is not measured; the
+rollouts wait for a release carrying the CLI, installed where they run. Tests: `tests/persona-pipeline/test-agentic-dir-*.mjs`;
+mutation spec `scripts/mutation-specs/agentic-dir.mjs`.

@@ -3,7 +3,7 @@
 //
 // A plugin may not import another's script (ADR-0010 §5), and the
 // persona-pipeline manifest generates only into personas (ADR-0066), so
-// plugins/orchestrator/scripts/lib/{peer-snapshot,process-identity,cli-entry,evidence-boundary,scope,scope-reader,scope-launch,scope-run}.mjs
+// plugins/orchestrator/scripts/lib/{peer-snapshot,process-identity,cli-entry,evidence-boundary,scope,scope-reader,scope-launch,scope-run,agentic-dir}.mjs
 // are copies of the persona-pipeline sources: a three-line copy notice, then
 // the source byte for byte. One owner-record schema, worktree lock reason and
 // reclaim rule must hold across the four plugins, since a reclaim run by any
@@ -26,8 +26,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 // scope.mjs and scope-reader.mjs (C181) are the removal gate's, which
 // peer-snapshot.mjs imports; scope-launch.mjs and scope-run.mjs, the scoped
-// launch and the one end of a run, which the runner imports.
-const LIBS = ['peer-snapshot.mjs', 'process-identity.mjs', 'cli-entry.mjs', 'evidence-boundary.mjs', 'scope.mjs', 'scope-reader.mjs', 'scope-launch.mjs', 'scope-run.mjs'];
+// launch and the one end of a run, which the runner imports. agentic-dir.mjs
+// (ADR-0059 Decision 9, C175) makes and releases a runbook's text and
+// operation directories, so either CLI judges what the other made.
+const LIBS = ['peer-snapshot.mjs', 'process-identity.mjs', 'cli-entry.mjs', 'evidence-boundary.mjs', 'scope.mjs', 'scope-reader.mjs', 'scope-launch.mjs', 'scope-run.mjs', 'agentic-dir.mjs'];
 // The other packages' copies of the cli-entry helper.
 const CLI_ENTRY_COPIES = [
   'plugins/runtime/scripts/lib/cli-entry.mjs',

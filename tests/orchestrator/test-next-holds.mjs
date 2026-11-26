@@ -19,7 +19,8 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, match, ok, strictEqual } from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import fs from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileTmpDirs } from '../_tmp.mjs';
 import {
@@ -150,6 +151,111 @@ describe('/orchestrator:next and holds (ADR-0068 Decision 2, item 5)', () => {
     });
   });
 
+  // ADR-0059 Decision 10, item 2 — each disposition apart: only withdrawn,
+  // gone, unpublished and carried show who holds the mark.
+  describe("the withdrawal's dispositions, in the library", () => {
+    const withdraw = (operationId) => ops.withdrawDispatchMark({ ...lib(), operationId });
+    const archive = () => {
+      const d = join(f.lane, '.agentic-plugins/state/engineer/archive');
+      mkdirSync(d, { recursive: true });
+      return d;
+    };
+    const carrier = (id) => writeFileSync(join(archive(), 'compose-20261026T000000Z-aaaaaa.md'), [
+      '---', 'workflow_id: "compose-20261026T000000Z-aaaaaa"', `parent_workflow: "${f.macroId}"`, 'originating_subtask: "T1"',
+      'git_baseline:', '  branch: "feat/t1"',
+      `persona_operations: ${JSON.stringify(JSON.stringify({ v: 1, ops: [{ id, kind: 'verb', opened_at: '2026-10-26T00:00:00Z', ext: true }] }))}`,
+      '---', '', 'body', '',
+    ].join('\n'));
+
+    it('withdrawn: the mark no child carries is removed now', async () => {
+      f.activate();
+      const m = await ops.publishDispatchMark(lib());
+      deepStrictEqual(await withdraw(m.operationId), { state: 'withdrawn' });
+      deepStrictEqual(f.records(), []);
+    });
+
+    it('gone: a registry read ok with no record of the id, absent under active holds, or holding only a clear of it', async () => {
+      f.activate();
+      const m = await ops.publishDispatchMark(lib());
+      rmSync(join(holds.opsDir(f.main, f.macroId, 'T1'), `${m.operationId}.json`));
+      deepStrictEqual(await withdraw(m.operationId), { state: 'gone' }, 'ok, no record');
+      holds.clearOperation(f.main, f.macroId, 'T1', m.operationId, { by: 'test' });
+      deepStrictEqual(await withdraw(m.operationId), { state: 'gone' }, 'a clear only');
+      rmSync(holds.opsDir(f.main, f.macroId, 'T1'), { recursive: true });
+      deepStrictEqual(await withdraw(m.operationId), { state: 'gone' }, 'absent, the marker there');
+    });
+
+    it('unreadable: a registry that cannot be read, and holds not on under the root, take no lock and make no holds directory', async () => {
+      const id = 'op-20261026T000000Z-0000cafe';
+      const off = await withdraw(id);
+      strictEqual(off.state, 'unreadable');
+      match(off.error, /are not on under .*the mark's absence is not shown/);
+      strictEqual(existsSync(holds.holdsDir(f.main, f.macroId)), false, 'no holds directory made under a root not shown');
+      f.activate();
+      mkdirSync(join(holds.holdsDir(f.main, f.macroId), 'ops'), { recursive: true });
+      writeFileSync(holds.opsDir(f.main, f.macroId, 'T1'), 'not a directory');
+      const bad = await withdraw(id);
+      strictEqual(bad.state, 'unreadable');
+      match(bad.error, /is not a directory/);
+      rmSync(holds.opsDir(f.main, f.macroId, 'T1'));
+      writeFileSync(holds.protocolPath(f.main, f.macroId), '{');
+      strictEqual((await withdraw(id)).state, 'unreadable', 'a marker that cannot be read');
+    });
+
+    it('unknown: a child that cannot be read keeps the mark, even beside a child shown to carry it; carried needs every candidate read', async () => {
+      f.activate();
+      const m = await ops.publishDispatchMark(lib());
+      writeFileSync(join(archive(), 'compose-20261026T000000Z-bbbbbb.md'), 'no frontmatter\n');
+      const lone = await withdraw(m.operationId);
+      strictEqual(lone.state, 'unknown');
+      match(lone.error, /may be a child of subtask T1 cannot be read \(.*compose-20261026T000000Z-bbbbbb\.md\)/);
+      carrier(m.operationId);
+      strictEqual((await withdraw(m.operationId)).state, 'unknown', 'indeterminate wins over a proven carrier');
+      deepStrictEqual(f.records(), [`${m.operationId}.json`], 'the mark stays');
+      rmSync(join(archive(), 'compose-20261026T000000Z-bbbbbb.md'));
+      deepStrictEqual(await withdraw(m.operationId), { state: 'carried' });
+    });
+
+    it('unknown: a carrying child an archive moves between the archive listing and its read keeps the mark', async () => {
+      f.activate();
+      const m = await ops.publishDispatchMark(lib());
+      git(f.lane, 'switch', '-q', 'feat/t1');
+      const child = f.bootstrap(m.operationId);
+      strictEqual(child.status, 0, child.stderr);
+      const archiveDir = join(dirname(dirname(child.path)), 'archive');
+      mkdirSync(archiveDir, { recursive: true });
+      const realReaddir = fs.readdirSync;
+      fs.readdirSync = function (p, ...rest) {
+        const names = realReaddir.call(this, p, ...rest);
+        if (p === archiveDir && fs.existsSync(child.path)) fs.renameSync(child.path, join(archiveDir, basename(child.path)));
+        return names;
+      };
+      let r;
+      try { r = await withdraw(m.operationId); } finally { fs.readdirSync = realReaddir; }
+      strictEqual(r.state, 'unknown');
+      match(r.error, new RegExp(basename(child.path).replace('.', '\\.')));
+      deepStrictEqual(f.records(), [`${m.operationId}.json`], 'the mark stays');
+    });
+
+    it('a record that cannot be read is kept, unreadable; a record of another lane refuses, and removes nothing', async () => {
+      f.activate();
+      const m = await ops.publishDispatchMark(lib());
+      const file = join(holds.opsDir(f.main, f.macroId, 'T1'), `${m.operationId}.json`);
+      const good = fs.readFileSync(file, 'utf8');
+      writeFileSync(file, '{');
+      const bad = await withdraw(m.operationId);
+      strictEqual(bad.state, 'unreadable');
+      ok(existsSync(file), 'kept');
+      writeFileSync(file, good);
+      await ops.withdrawDispatchMark({ ...lib(), branch: 'feat/other', operationId: m.operationId })
+        .then(() => ok(false, 'refused'), (err) => match(err.message, /names .*\/T1 on feat\/t1, not .*\/T1 on feat\/other; nothing was removed/));
+      await ops.withdrawDispatchMark({ ...lib(), subtaskId: 'T2', operationId: m.operationId })
+        .then(() => ok(false, 'refused'), (err) => match(err.message, /is in another lane than .*\/T2; nothing was removed/));
+      deepStrictEqual(f.records(), [`${m.operationId}.json`]);
+      deepStrictEqual(await withdraw(m.operationId), { state: 'withdrawn' });
+    });
+  });
+
   describe("the CLI's own branches (state.mjs hold-gate, dispatch-mark-publish, dispatch-mark-check)", () => {
     const markDir = () => mkdtempSync(join(f.dir, 'mark-'));
     const publish = (d, ...extra) => f.orchCli('dispatch-mark-publish', '--mark-file', join(d, 'dispatch-mark.json'), ...extra);
@@ -160,6 +266,42 @@ describe('/orchestrator:next and holds (ADR-0068 Decision 2, item 5)', () => {
       const r = f.gateCli('--engineer-root', f.fakeEngineer);
       deepStrictEqual([r.status, r.stdout, r.stderr], [0, '', '']);
       strictEqual(existsSync(holds.holdsDir(f.main, f.macroId)), false);
+    });
+
+    // ADR-0059 Decision 10, item 2 — the disposition, opt-in, on stdout; the
+    // default output as before.
+    it('dispatch-mark-withdraw --format json prints the disposition as one line; without it stdout stays empty', () => {
+      f.activate();
+      const d = markDir();
+      strictEqual(publish(d).status, 0);
+      const id = f.mark(d).operation_id;
+      const withdraw = (...extra) => f.orchCli('dispatch-mark-withdraw', '--mark-file', join(d, 'dispatch-mark.json'), ...extra);
+      const bad = withdraw('--format', 'text');
+      strictEqual(bad.status, 1);
+      match(bad.stderr, /--format takes json \(got "text"\)/);
+      deepStrictEqual(f.records(), [`${id}.json`], 'refused before anything is read');
+      const r = withdraw('--format', 'json');
+      deepStrictEqual([r.status, r.stdout], [0, `${JSON.stringify({ disposition: 'withdrawn', operation_id: id, subtask_id: 'T1' })}\n`]);
+      match(r.stderr, new RegExp(`withdrew the dispatch mark ${id} of subtask T1`));
+      const again = withdraw();
+      deepStrictEqual([again.status, again.stdout, again.stderr], [0, '', ''], 'gone, by default: as before');
+      strictEqual(JSON.parse(withdraw('--format', 'json').stdout).disposition, 'gone');
+    });
+
+    it('dispatch-mark-withdraw: a mark naming no id is unpublished, silent by default; the unreadable registry has its own words', () => {
+      const d = markDir();
+      strictEqual(publish(d).status, 0);
+      const withdraw = (...extra) => f.orchCli('dispatch-mark-withdraw', '--mark-file', join(d, 'dispatch-mark.json'), ...extra);
+      deepStrictEqual([withdraw().status, withdraw().stdout, withdraw().stderr], [0, '', '']);
+      strictEqual(withdraw('--format', 'json').stdout, `${JSON.stringify({ disposition: 'unpublished', operation_id: null, subtask_id: 'T1' })}\n`);
+      f.activate();
+      const d2 = markDir();
+      strictEqual(publish(d2).status, 0);
+      writeFileSync(holds.protocolPath(f.main, f.macroId), '{');
+      const r = f.orchCli('dispatch-mark-withdraw', '--mark-file', join(d2, 'dispatch-mark.json'), '--format', 'json');
+      strictEqual(r.status, 0);
+      strictEqual(JSON.parse(r.stdout).disposition, 'unreadable');
+      match(r.stderr, /the dispatch mark op-\S+ of subtask T1 is kept: /);
     });
 
     it("the check refuses a mark whose operation record cannot be read, naming it: the dispatch's own mark is no pass", () => {

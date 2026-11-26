@@ -370,14 +370,18 @@ ADR-0001 final note.
   user's command arguments go through the args file instead. Fixed literals,
   enums, values the generator escapes, and the quoted expansion of data a
   program has already read stay inline. Nothing in such a block deletes the
-  file, and no block runs `rm`. *Accepted, not yet implemented (ADR-0059
-  Decisions 9 and 10):* a CLI will make the directory and mark it. A path
-  will release the directory through that CLI after its last read, write
+  file, and no block runs `rm`. *Accepted (ADR-0059 Decisions 9 and 10);
+  the CLI is in the source, and no runbook calls it yet:* each persona's and
+  the orchestrator's `state.mjs` makes the directory and marks it
+  (`tmpdir-make`), removes it only on that mark's proof (`tmpdir-release`)
+  and lists candidates for the owner (`tmpdir-list`). A path will release
+  the directory through that CLI after its last read, write
   and cleanup, once no later block, rerun or continuation reads it: on
   each successful end, as a rule. Every other path keeps each directory a
   remaining block, a rerun or a continuation still reads; the owner lists
   candidates and removes what is abandoned. Until a package's runbooks
-  switch, its blocks keep `mktemp -d` and delete nothing. A CLI gains the
+  switch, which waits for a release carrying the CLI to be installed, its
+  blocks keep `mktemp -d` and delete nothing. A CLI gains the
   `-file` form in a release before any runbook passes it. Do not invent a
   file option a tool lacks: `gh pr merge --subject` takes a variable a
   program filled. Contract:

@@ -740,10 +740,10 @@ export const MUTATIONS = [
   },
   {
     id: 'N5', file: OPS, tests: [TN, TNE],
-    from: "    if (carried.unreadable || carried.ids.has(operationId)) return { state: 'carried' };\n",
+    from: "    if (carried.ids.has(operationId)) return { state: 'carried' };\n",
     to: "",
     why: "an exit withdraws the mark its engineer's bootstrap took over: the operation runs on with no record, and a hold is handed over beside it",
-    killed_by: /the real engineer bootstrap continues it, and its last write ends it/,
+    killed_by: /the real engineer bootstrap continues it, and its last write ends it|a mark an archived child carries is not withdrawn|carried needs every candidate read/,
   },
   {
     id: 'N6', file: NEXT_MD, tests: [TN],
