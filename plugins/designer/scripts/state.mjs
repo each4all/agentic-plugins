@@ -125,6 +125,10 @@ import {
   writeOperationTransport,
 } from './lib/holds.mjs';
 import {
+  RELEASE_EXIT, TMPDIR_HELP, executeAbandoned, executePrecondition, listDirs, makeDir, makeExit, makeLine, operationDirMarkerId, parseAgeDays, releaseDir,
+  releaseLine, tmpdirArgProblem, writeFullySync,
+} from './lib/agentic-dir.mjs';
+import {
   MAX_BATCH_MUTATE_CASES,
   MAX_REQUEST_BYTES,
   caseCount as verifyCaseCount,
@@ -5754,13 +5758,57 @@ function afterWrite(what, fn) {
   }
 }
 
+// The operation directory as a lookup finds it: `{ missing }` (nothing there,
+// or a link to nothing), `{ code }` (the lookup failed, so whether it is there
+// cannot be told), or `{ directory }`.
+function lookupOperationDir(operationDir) {
+  try {
+    return { directory: statSync(operationDir).isDirectory() };
+  } catch (err) {
+    return err?.code === 'ENOENT' ? { missing: true } : { code: err?.code ?? String(err?.message ?? err) };
+  }
+}
+
+/**
+ * ADR-0059 Decision 10, item 5 — the refusal of a last write whose operation
+ * directory is missing: it may have been released after this write already
+ * ran, or lost. It names the workflow's open operations and, for a macro's
+ * child, the owner's writer-clear with its condition. A workflow that keeps no
+ * operations (no macro's child, or dispatch_target off) has none to lose, so the way forward there is the
+ * write itself, run with no operation directory once the workflow shows it did
+ * not land: the refusal never strands it (an owner gate's clear that landed
+ * before a last write that refuses included).
+ */
+function closingDirMissing(operationDir, frontmatter, child) {
+  const wf = frontmatter?.workflow_id ?? 'the workflow';
+  const doc = frontmatter?.[PERSONA_OPERATIONS_KEY];
+  let open;
+  if (doc === undefined) open = `No operation is open on ${wf}`;
+  else if (doc?.v !== PERSONA_OPERATIONS_VERSION || !Array.isArray(doc.ops)) open = `The open operations of ${wf} cannot be listed (persona_operations v ${doc?.v})`;
+  else if (doc.ops.length === 0) open = `No operation is open on ${wf}`;
+  else open = `Open on ${wf}: ${doc.ops.map((o) => `${o.id} (${o.kind})`).join(', ')}`;
+  const lost = child === null
+    ? ` ${wf} keeps no persona operation (it is no macro's child, or this persona's dispatch target is off), so none is open to lose: once its record (\`state.mjs read\`: current_phase, terminal_marker and next_step; the workflow file's last phase note) ` +
+      'shows that this write did not land, run this write again with no operation directory (an empty OP_DIR), on its own when the ' +
+      "block's earlier writes already landed (an owner gate's clear, the phase note); when it shows the write landed, nothing is to be repeated."
+    : ` When it was lost, its operation stays open until the owner clears it with \`agentic-autopilot writer-clear ${child.subtaskId} --macro ${child.macroId} --operation <id>\`, ` +
+      "only once the owner has established that the operation's session is gone: a clear while that session still runs lifts its lane " +
+      "exclusion and, while the macro's holds are on, makes its closing write refuse.";
+  return new Error(
+    `the operation directory ${operationDir} is missing; nothing was written. It may have been released after this write already ran, ` +
+      `and then nothing is to be repeated; or it was lost. ${open}.${lost} (ADR-0059 Decision 10, item 5)`,
+  );
+}
+
 /**
  * N4 — the operation a command's first write opens (`point: 'open'`) or its
  * last write closes (`'close'`), as a step of that write: `inLock(frontmatter)`
  * runs holding the workflow's lock, before the write, and throws to refuse
  * it; `after(ok)` runs once the lock is released. With no operation directory,
  * or for a workflow that is no macro's child (or a persona with
- * dispatch_target off), there is none and the write is as before.
+ * dispatch_target off), there is none and the write is as before, with one
+ * exception for any workflow: a last write given a directory that is missing
+ * refuses (ADR-0059 Decision 10, item 5; closingDirMissing).
  *
  * `create` ({ repoRoot, parentWorkflow, originatingSubtask }) for a bootstrap,
  * whose child does not exist yet; else `workflowPath`.
@@ -5776,7 +5824,8 @@ export async function prepareOperation({
     throw new Error(`an operation point is open, carry or close (got ${JSON.stringify(point)})`);
   }
   // Only a macro's child has operations: for any other workflow, and with
-  // dispatch_target off, the directory is not looked at and the write is as
+  // dispatch_target off, the directory is only looked up, for the refusal of
+  // a last write given a missing one below, and the write is otherwise as
   // before.
   let child = null;
   let frontmatter = null;
@@ -5788,17 +5837,16 @@ export async function prepareOperation({
     ({ frontmatter } = await readWorkflow(workflowPath));
     child = macroChildOf(workflowPath, frontmatter);
   }
+  const look = lookupOperationDir(operationDir);
+  // ADR-0059 Decision 10, item 5 — a last write given a directory that is
+  // missing cannot tell whether it already ran (the directory released after
+  // it) or the directory was lost: it writes nothing, for any workflow.
+  if (look.missing && point === 'close') throw closingDirMissing(operationDir, frontmatter, child);
   if (child === null) return NO_OPERATION;
-  let dirStat = null;
-  try { dirStat = statSync(operationDir); } catch { /* below */ }
-  if (dirStat === null || !dirStat.isDirectory()) {
-    throw new Error(
-      `the operation directory ${operationDir} is not a directory; nothing was written` +
-        (point === 'close'
-          ? '. When it is lost, run the write with no operation directory: the operation it opened stays open on the workflow until the owner clears it'
-          : ''),
-    );
+  if (look.code) {
+    throw new Error(`the operation directory ${operationDir} cannot be looked up (${look.code}); nothing was written`);
   }
+  if (!look.directory) throw new Error(`the operation directory ${operationDir} is not a directory; nothing was written`);
   if (point === 'open' && !PERSONA_OPERATION_KINDS.has(kind)) {
     throw new Error(`an operation kind is one of ${[...PERSONA_OPERATION_KINDS].join(', ')} (got ${JSON.stringify(kind)})`);
   }
@@ -5844,7 +5892,7 @@ function carryOperation({ child, operationDir, transport, frontmatter }) {
 // transport file of an operation directory, or, for a commit (`childStore`),
 // the child's own entry.
 function dirStore(operationDir) {
-  return { write: (value) => writeOperationTransport(operationDir, value), announce: true };
+  return { write: (value) => writeOperationTransport(operationDir, value), announce: true, directory: true };
 }
 
 /**
@@ -5953,7 +6001,19 @@ function openOperation({ child, kind, operationDir, store, transport, frontmatte
     }
     openedAt = isoUtc(now);
   }
-  const binding = { operation_id: id, kind, macro_id: macroId, subtask_id: subtaskId, branch, workflow_id: workflowId, opened_at: openedAt };
+  // ADR-0059 Decision 9, item 3 — the operation directory's marker id, which
+  // the release requires of a closed operation: read on a fresh open of a
+  // directory (none for a commit's child-only operation), kept as the file has
+  // it on a replay (a field-less one stays field-less), and absent when the
+  // directory has no marker that passes the release's checks.
+  const dirMarkerId = replay ? transport.value.dir_marker_id : (store.directory ? operationDirMarkerId(operationDir) ?? undefined : undefined);
+  const binding = {
+    operation_id: id, kind, macro_id: macroId, subtask_id: subtaskId, branch, workflow_id: workflowId, opened_at: openedAt,
+    ...(dirMarkerId === undefined ? {} : { dir_marker_id: dirMarkerId }),
+  };
+  // The lane's record carries no directory: the marker id stays in the
+  // transport file the release reads.
+  const { dir_marker_id: _dirMarkerId, ...recordBinding } = binding;
   const activation = readActivation(mainRoot, macroId);
   if (activation.state === 'unreadable') {
     throw operationRefusal(
@@ -5969,7 +6029,7 @@ function openOperation({ child, kind, operationDir, store, transport, frontmatte
   if (ext) {
     // Published before the write takes its locks, then the lane is looked at
     // again: two first writes at once may both refuse, never both proceed.
-    const pub = publishOpRecord(mainRoot, macroId, subtaskId, { ...binding, host, pid: process.pid });
+    const pub = publishOpRecord(mainRoot, macroId, subtaskId, { ...recordBinding, host, pid: process.pid });
     // A record of the id already there is this operation's (its first write
     // run again, or the dispatch's own record a dispatched bootstrap
     // continues) only when it names this kind, lane and child, or no child yet.
@@ -8303,6 +8363,13 @@ function cliRequire(flags, names) {
   }
 }
 
+// A tmpdir subcommand takes only its own flags: any other, --repo-root
+// included, is refused before any file system call.
+function cliTmpdirOnly(flags, allowed) {
+  const extra = Object.keys(flags).filter((n) => !allowed.includes(n));
+  if (extra.length > 0) throw new Error(`unexpected flag --${extra[0]}`);
+}
+
 // An unknown subcommand, or one whose capability is off (ADR-0066 Decision 3).
 function unknownSubcommand(subcommand) {
   process.stderr.write(`state.mjs: unknown subcommand: ${subcommand}\n`);
@@ -8730,6 +8797,7 @@ function cliPrintHelp() {
       '    checks, appends the inventory to the cutover manifest and turns shared',
       '    creation on; --disable (rollback) is refused once lanes have run.',
       '',
+      ...TMPDIR_HELP,
       'Text files (ADR-0059 amendment (j)): --original-request, --next-action,',
       '--phase-note, --summary, --resolution and --workflow-id each have a',
       '--<name>-file <path> twin, read as UTF-8 with one trailing newline removed (an empty value, a NUL',
@@ -8754,6 +8822,11 @@ async function cliMain(argv) {
 
   let flags;
   try {
+    // ADR-0059 Decision 9 — a tmpdir subcommand refuses a flag it does not
+    // take, a repeated one (the parser keeps the last) and an empty --name=,
+    // on the raw words: before the parser, and before a text file is read.
+    const tmpdirProblem = tmpdirArgProblem(subcommand, rest);
+    if (tmpdirProblem !== null) throw new Error(tmpdirProblem);
     const { rest: valued, presence } = cliPresenceFlags(subcommand, rest);
     flags = { ...cliParseFlags(valued), ...presence };
   } catch (err) {
@@ -9667,6 +9740,55 @@ async function cliRun(subcommand, flags) {
         }
         process.stdout.write(`${JSON.stringify(result)}\n`);
         return 0;
+      }
+
+      // ADR-0059 Decision 9 — make and mark a text or operation directory
+      // (lib/agentic-dir.mjs): the path on stdout, or a line on stderr and the
+      // exit status a block branches on.
+      case 'tmpdir-make': {
+        cliTmpdirOnly(flags, ['kind', 'parent']);
+        cliRequire(flags, ['kind']);
+        const made = makeDir({ kind: flags.kind, parent: flags.parent ?? null });
+        if (made.ok) {
+          process.stdout.write(`${made.path}\n`);
+          return 0;
+        }
+        process.stderr.write(`${makeLine(made)}\n`);
+        return makeExit(made);
+      }
+
+      // ADR-0059 Decision 9, items 3 to 5, and Decision 10, item 4 — release a
+      // directory a make printed: one JSON report on stdout always, its line on
+      // stderr.
+      case 'tmpdir-release': {
+        cliTmpdirOnly(flags, ['path']);
+        cliRequire(flags, ['path']);
+        const report = releaseDir(flags.path);
+        process.stdout.write(`${JSON.stringify(report)}\n`);
+        const line = releaseLine(report);
+        if (line !== null) process.stderr.write(`${line}\n`);
+        return RELEASE_EXIT[report.outcome] ?? RELEASE_EXIT.error;
+      }
+
+      // ADR-0059 Decision 10, item 6 — the listing, and the owner's --execute.
+      case 'tmpdir-list': {
+        cliTmpdirOnly(flags, ['execute', 'age-days']);
+        const execute = cliBoolean(flags, 'execute', false);
+        if (!execute) {
+          if ('age-days' in flags) throw new Error('--age-days takes --execute true');
+          const listing = listDirs();
+          process.stdout.write(`${JSON.stringify(listing)}\n`);
+          return listing.ok ? 0 : 1;
+        }
+        const ageDays = parseAgeDays(flags['age-days']);
+        if (ageDays === null) throw new Error(`--age-days must be a whole number of days from 0 to 36500 (got '${flags['age-days']}')`);
+        const run = executeAbandoned({ ageDays, onStart: (root) => writeFullySync(2, `${executePrecondition(root, ageDays)}\n`) });
+        for (const r of run.results ?? []) {
+          const line = r.action === 'released' ? releaseLine(r.report) : null;
+          if (line !== null) process.stderr.write(`${line}\n`);
+        }
+        process.stdout.write(`${JSON.stringify(run)}\n`);
+        return run.ok ? 0 : 1;
       }
 
       default:

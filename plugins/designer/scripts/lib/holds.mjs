@@ -21,6 +21,7 @@ import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { OPERATION_TRANSPORT_FILE, OPERATION_TRANSPORT_SCHEMA, validateOperationTransport } from './agentic-dir.mjs';
 import { isPinnedReading, PS_START_ENV } from './process-identity.mjs';
 
 export const AUTOPILOT_DIR_REL = '.agentic-plugins/runs/autopilot';
@@ -470,9 +471,9 @@ export function opRecordState(mainRoot, macroId, subtaskId, id) {
 
 // --- the operation's transport file (N4) ------------------------------------
 
-export const OPERATION_TRANSPORT_SCHEMA = 'agentic-persona-op-transport-1';
-export const OPERATION_TRANSPORT_FILE = 'operation.json';
-const TRANSPORT_STATES = Object.freeze(['opening', 'open', 'closed']);
+// The schema and its check are agentic-dir.mjs's, which the release of an
+// operation directory reads them by (ADR-0059 Decision 9, item 3).
+export { OPERATION_TRANSPORT_FILE, OPERATION_TRANSPORT_SCHEMA };
 
 /**
  * The transport file a command's first write leaves in its operation
@@ -484,14 +485,7 @@ export function readOperationTransport(dir) {
   const r = readJson(file);
   if (r.absent || r.error) return r;
   const t = r.value;
-  const ok = t !== null && typeof t === 'object' && t.schema === OPERATION_TRANSPORT_SCHEMA
-    && typeof t.operation_id === 'string' && OPERATION_ID_RE.test(t.operation_id)
-    && typeof t.kind === 'string' && /^[a-z]+$/.test(t.kind) && isSafeMacroId(t.macro_id) && isSafeSubtaskId(t.subtask_id)
-    && typeof t.branch === 'string' && t.branch.length > 0
-    && typeof t.opened_at === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(t.opened_at)
-    && (t.workflow_id === null || typeof t.workflow_id === 'string')
-    && TRANSPORT_STATES.includes(t.state);
-  return ok ? { value: t } : { error: `${file} is not an operation transport file (${OPERATION_TRANSPORT_SCHEMA})` };
+  return validateOperationTransport(t) ? { value: t } : { error: `${file} is not an operation transport file (${OPERATION_TRANSPORT_SCHEMA})` };
 }
 
 /** Write the transport file whole (aside, then renamed over it). */
