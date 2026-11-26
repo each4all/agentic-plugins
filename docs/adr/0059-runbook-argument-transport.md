@@ -5,16 +5,11 @@
 Accepted
 
 Decision 9, which directories a runbook may remove and how (amendment of
-2026-11-25, C175): the scope (item 1) Proposed; the proof (items 2 and 3)
-Proposed; the removal and its report (items 4 and 5) Proposed; the rollout
-rule and its constraints (item 6) Proposed.
-
-Decision 10, when a runbook releases its directories (amendment of
-2026-11-26, C175): the releasing steps and their timing (items 1 and 2)
-Proposed; what a failure keeps (item 3) Proposed; the report of a release
-(item 4) Proposed; the closing write's message (item 5) Proposed; the
-listing and the owner's removal of abandoned directories (item 6) Proposed;
-the rollout (item 8) Proposed.
+2026-11-25, C175), and Decision 10, when a runbook releases its directories
+(amendment of 2026-11-26, C175): Accepted (2026-11-26, the owner explicitly
+in the main session). Not yet implemented: until a package's runbooks
+switch (Decision 10, item 8), its blocks keep `mktemp -d` and delete
+nothing.
 
 <!--
 No supersedure. This decides a mechanism the runbooks never had an explicit
@@ -185,10 +180,7 @@ portability coverage is retained.
 **9. A runbook's text and operation directories are removed through a CLI
 that proves it made them.**
 
-Status: Proposed, each of item 1 (the scope), items 2 and 3 (the proof),
-items 4 and 5 (the removal and its report) and item 6's rollout rule with
-the constraints it hands the second slice on its own; item 7 states the
-limits of the Proposed proof. *Amended 2026-11-25 (C175, slice 1): [history](history/0059-runbook-argument-transport.md#amendment-2026-11-25--which-directories-a-runbook-may-remove-and-how-c175).*
+Item 7 states the limits of the proof. *Amended 2026-11-25 (C175, slice 1): [history](history/0059-runbook-argument-transport.md#amendment-2026-11-25--which-directories-a-runbook-may-remove-and-how-c175).*
 
 1. **Scope.** The directories a runbook or skill block makes for the text an
    agent writes (`agentic-text.<suffix>`, the amendment of 2026-10-10), for a
@@ -202,7 +194,7 @@ limits of the Proposed proof. *Amended 2026-11-25 (C175, slice 1): [history](his
    none carries this decision's marker, `.agentic-dir.json` (item 2; the
    scratch root's own marker, `.scratch.json`, is another file and proves
    nothing here).
-2. **The CLI makes the directory and marks it.** *Proposed.* Such a
+2. **The CLI makes the directory and marks it.** Such a
    directory is made by a subcommand of the persona `state.mjs` (generated
    from `persona-pipeline/`) and of the orchestrator's `state.mjs`, not by
    `mktemp -d`; the subcommands' spelling is the implementation's.
@@ -243,7 +235,7 @@ limits of the Proposed proof. *Amended 2026-11-25 (C175, slice 1): [history](his
      is one: Node reports uid 0 for every file there and has no
      `process.geteuid`, so the proof's owner check means nothing, and the
      make fails on `win32` whatever `stat` reports.
-3. **The proof.** *Proposed.* The release is given the path the make
+3. **The proof.** The release is given the path the make
    printed, or the `.removing-` path a release's report gave for it, never
    a path a block derived from another. It removes the
    directory only when each check holds, the path's first with no file
@@ -328,7 +320,7 @@ limits of the Proposed proof. *Amended 2026-11-25 (C175, slice 1): [history](his
    model transcribes from one call to the next. A report names a failed
    check by a fixed reason code, never by a parser's message or a file's
    contents.
-4. **The claim, then the removal.** *Proposed.*
+4. **The claim, then the removal.**
    - **Before the claim** the release checks the path, the directory and
      its marker. A failure there changes nothing. Every report that judges
      `<name>` also gives the `.removing-<name>` sibling's path when one is
@@ -430,7 +422,7 @@ limits of the Proposed proof. *Amended 2026-11-25 (C175, slice 1): [history](his
      directory is the caller's precondition, which the second slice states.
      A process that already holds a file open keeps writing to it after the
      claim; its data goes with the unlink.
-5. **Outcomes.** *Proposed.* The release prints one JSON line and exits
+5. **Outcomes.** The release prints one JSON line and exits
    with status 0 for `removed` and `absent`, which the line's outcome tells
    apart, and with a non-zero status of its own for each other outcome; the
    non-zero numbers are the implementation's. A report gives the path the directory has as the
@@ -483,8 +475,7 @@ limits of the Proposed proof. *Amended 2026-11-25 (C175, slice 1): [history](his
      after the listing, or a system error), the directory has no marker
      and no release finishes it: the report says so, and names the
      entries it finds there when it can still list the directory.
-6. **Rollout and what this leaves.** *The rollout rule and the constraints
-   it hands the second slice Proposed.* The make
+6. **Rollout and what this leaves.** The make
    and release subcommands ship in a release before any runbook calls
    them, as the receivers of the amendment of 2026-10-10 did, and before
    any runbook switches, the implementation measures a same-parent rename and the release under a
@@ -500,7 +491,8 @@ limits of the Proposed proof. *Amended 2026-11-25 (C175, slice 1): [history](his
      ledger directory, which is never released);
    - `/orchestrator:next` reads its text directory in the exit trap that
      withdraws its dispatch mark and releases its admission, so that
-     directory outlives the trap;
+     directory outlives every read of it in that trap (Decision 10, item 1
+     releases it as the trap's last step);
    - a peer's directory outlives the run's settlement and the operation's
      close;
    - a rerun of the write that closed an operation, given its released
@@ -525,8 +517,8 @@ limits of the Proposed proof. *Amended 2026-11-25 (C175, slice 1): [history](his
    directories whose path no block holds, directories left at a
    `.removing-` path (`claimed`), and directories with a stale open
    operation or a transport older than this decision.
-   [Decision 10](#decision-10) decides each of them (Proposed). *Amended
-   2026-11-26 (C175, slice 2): [history](history/0059-runbook-argument-transport.md#amendment-2026-11-26--when-a-runbook-releases-its-directories-c175).*
+   [Decision 10](#decision-10) decides each of them. *Amended
+   2026-11-26 (C175, slice 2; the trap constraint reworded on acceptance): [history](history/0059-runbook-argument-transport.md#amendment-2026-11-26--when-a-runbook-releases-its-directories-c175).*
 7. **Limits.** The checks and the removal are separate system calls: a
    process of the same user that swaps the directory for another between
    them is not caught, and a marker is written by the same user it proves.
@@ -554,9 +546,7 @@ limits of the Proposed proof. *Amended 2026-11-25 (C175, slice 1): [history](his
 of it, on each path that leaves no reader of it, and keeps it on every
 other path.**
 
-Status: Proposed, each of items 1 and 2 (where and when the release runs),
-item 3 (what a failure keeps), item 4 (how a release is reported), item 5 (the closing write's message), item 6 (abandoned
-directories) and item 8 (the rollout) on its own; item 7 states the limits.
+Item 7 states the limits.
 *Amended 2026-11-26 (C175, slice 2): [history](history/0059-runbook-argument-transport.md#amendment-2026-11-26--when-a-runbook-releases-its-directories-c175).*
 
 This decision applies Decision 9 to the runbooks. It changes nothing in
@@ -565,14 +555,15 @@ the `unsupported` and `unsupported-path` outcomes that items 4 and 1
 add, the message that item 5 changes, and the owner's release path of
 item 6.
 
-1. **A releasing step on every successful end of the command.** *Proposed.*
+1. **A releasing step on every successful end of the command.**
    A command's phases run in separate shell calls, and each one reads the
    directory again, so the block that made a directory is rarely the last
    one to read it. The runbook therefore names a releasing step for each
    directory on **each path where item 2 makes it releasable**, not on one
    block: every path that ends the command successfully, a directory whose
    last reader has run before the command ends, and an end that no rerun
-   reads. Each releasing step is the last step of its path. It comes
+   reads. Each releasing step is the last step on that directory's path,
+   not necessarily the command's (the early releases above). It comes
    after every write and every read of the directory on that path: the
    block's own reads, its exit trap, and any file the runbook has the agent
    read after the block exits (a response, or an error file such as
@@ -725,7 +716,9 @@ item 6.
    captured the make's output, never from a path it reads (a file, an
    argument, another block's output). The dispatched bootstrap's topic
    directory and `/orchestrator:done`'s reason directory are released this
-   way. A finalize's `DISPATCH_DIR` may name a peer run's ledger
+   way. A nested `op` has no line and no releasing step of its own: it is
+   never released on its own and goes with its parent's release (Decision
+   9, item 3). A finalize's `DISPATCH_DIR` may name a peer run's ledger
    directory, or be empty when no run launched, while the
    dispatch still made a text directory. That text directory has its own
    line, and is released even when no run launched. A ledger directory is
@@ -736,7 +729,7 @@ item 6.
    `TMPDIR` would make a path that the later blocks cannot carry either, so
    the block stops and says to set `TMPDIR` to a path without such
    characters (item 4).
-2. **Once no reader is left, and never twice.** *Proposed.* This is the
+2. **Once no reader is left, and never twice.** This is the
    one rule of when a directory may be released; items 1 and 3 apply it. A
    directory is releasable at a point of a path when both hold:
    - every write and read of it the path makes has completed, and so has
@@ -767,7 +760,7 @@ item 6.
    release is refused or skipped they remain, and a block run again over
    them could repeat its writes. Item 4's line therefore says that nothing
    is to be repeated.
-3. **What a failure keeps.** *Proposed.* On every path that does not end in
+3. **What a failure keeps.** On every path that does not end in
    a success, the command keeps each directory it made that a remaining
    block, a retry or a continuation of the command still reads (item 2).
    A directory item 1 released earlier, after its last reader and with no
@@ -777,9 +770,10 @@ item 6.
    - a block that exits non-zero, a finalize's later step included, which
      its rerun repeats from the same directories;
    - a refusal the runbook answers by rewriting a file and running the
-     block again: a commit subject or body refused (exit 9 or 2), a verify
-     request the finalize refuses, and a `review-held` commit (exit 10),
-     whose report is the owner's;
+     block again: a commit subject or body refused (exit 9 or 2), and a
+     verify request the finalize refuses;
+   - a `review-held` commit (exit 10), whose report is the owner's: the
+     commit runs again after the owner's acceptance or a new review;
    - a split commit that stopped halfway, a gate that failed after commits
      landed, and an archive that was refused, each of which a rerun of the
      commit resumes;
@@ -834,7 +828,7 @@ item 6.
    what the workflow and the run record, not these directories, and a
    later step starts in directories of its own (as ADR-0068 already
    expects of a replay).
-4. **How a release is reported.** *Proposed.* This covers every release
+4. **How a release is reported.** This covers every release
    attempt, on a successful end or on any other end item 2 allows. The release
    reports on the directory, never on the command. Its line goes to
    standard error, so that the block's own output on standard output (a
@@ -884,7 +878,7 @@ item 6.
      `unsupported` with status 0, and prints nothing. Any other failure of
      the make (a `TMPDIR` that is set but unusable, no space) stops the
      block, as a failed `mktemp -d` does today.
-5. **The closing write's message.** *Proposed.* A missing operation
+5. **The closing write's message.** A missing operation
    directory does not tell which write already ran: the workflow's list of
    open operations may hold a later operation, and an empty list does not
    prove that the write landed. So the last write, given an operation
@@ -897,7 +891,7 @@ item 6.
    established that the operation's session is gone, since a clear while
    the session still runs lifts its lane exclusion and makes its closing
    write refuse.
-6. **Abandoned directories: listed, and removed by the owner.** *Proposed.*
+6. **Abandoned directories: listed, and removed by the owner.**
    No CLI removes a directory by age on its own. Seven days without a write
    does not prove that a command is over: a `/orchestrator:next` paused
    after its switch keeps its admission id and dispatch mark in its text
@@ -938,8 +932,10 @@ item 6.
      `closed`, or whose transport has no marker id; and an empty
      `.removing-` placeholder left by a claim.
 7. **Limits.**
-   - Abandoned directories now grow only on paths that end without a
-     success (item 3) or are abandoned. They are not bounded until the owner
+   - Once the runbooks switch, abandoned directories grow only on paths
+     that end without a success (item 3) or are abandoned, and on a
+     successful end whose release was refused or skipped, or whose make
+     was unsupported (item 4). They are not bounded until the owner
      runs `--execute`, outside autopilot steps.
    - `--execute` rests on the owner's precondition, which no CLI checks: a
      command paused across sessions, or a retry the owner forgot, is not
@@ -964,7 +960,7 @@ item 6.
      its last reader has run. A directory kept (item 3) stays live across
      the command's exit while a retry or a cleanup still uses it, and the
      window stays open for it until then.
-8. **Rollout.** *Proposed.* Decision 9, item 6 stands: the CLI ships first,
+8. **Rollout.** Decision 9, item 6 stands: the CLI ships first,
    and its measurements come before any runbook switches. Then each
    runbook switches in one change per package, its make and its releasing
    steps together, the persona pipeline's regions first and the
