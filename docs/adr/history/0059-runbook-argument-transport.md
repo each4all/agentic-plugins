@@ -791,3 +791,30 @@ implementation:
   entries);
 - whether a modification time read with `lstat` moves when an agent's file
   tool rewrites a file in place, on each platform.
+
+**Accepted 2026-11-26.** The owner accepted Decision 9 (amendment of
+2026-11-25) and Decision 10 (this amendment) explicitly, in the main session,
+after both landed (#1081, #1084). The acceptance change folds the round-5
+review's open items, as the owner ruled at the critique cap:
+
+- **P2.** Decision 9 item 6's second constraint said `/orchestrator:next`'s
+  text directory "outlives the trap", while Decision 10 item 1 releases it as
+  the trap's last step. It now says the directory outlives every read of it in
+  that trap.
+- **P1.** Decision 10 item 1 now says that a nested `op` has no line and no
+  releasing step of its own; it goes with its parent's release (Decision 9,
+  item 3).
+- **MINORs.**
+  - Item 3 lists the `review-held` commit (exit 10) apart from the refusals
+    answered by rewriting a file.
+  - Item 1's "last step of its path" now reads "last step on that directory's
+    path".
+  - Item 7's first limit names the successful ends that still keep a
+    directory.
+  - `AGENTS.md`'s summary keeps "continuation" and says that the owner lists
+    candidates.
+
+The deferred rare-path MAJORs (D1, D2, M6, M7 of this slice; P1, P3, P4, P5,
+D1, D2 and the path swap of Decision 9) stay the stated limits. Nothing is
+implemented yet: `tmpdir-cli` and the two runbook rollouts follow, under
+Decision 10, item 8.
