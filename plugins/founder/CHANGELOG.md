@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.18.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.17.2...plugin-founder-v0.18.0) (2026-11-26)
+
+
+### Features
+
+* **founder:** add the tmpdir-make, tmpdir-release and tmpdir-list state subcommands ([b503e74](https://github.com/each4all/agentic-plugins/commit/b503e74347cfcf0d65e6a8c5db1d27d255f96277))
+
+
+### Bug Fixes
+
+* **founder:** compare macOS process start times read in the C locale and UTC ([bd70032](https://github.com/each4all/agentic-plugins/commit/bd700320cde81c0918a44f0f5848afd364bb41b0))
+* **founder:** stop a peer run's leftover descendants at run end and snapshot reclaim ([30e2ad4](https://github.com/each4all/agentic-plugins/commit/30e2ad48ee4ffaac9f0be8a8547fc044bf05b67a))
+
 ## [0.17.2](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.17.1...plugin-founder-v0.17.2) (2026-11-13)
 
 

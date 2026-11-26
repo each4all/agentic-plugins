@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.17.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.16.2...plugin-designer-v0.17.0) (2026-11-26)
+
+
+### Features
+
+* **designer:** add the tmpdir-make, tmpdir-release and tmpdir-list state subcommands ([6287931](https://github.com/each4all/agentic-plugins/commit/628793180b8ebd842738c2cc53732c694ad33d44))
+
+
+### Bug Fixes
+
+* **designer:** compare macOS process start times read in the C locale and UTC ([249b866](https://github.com/each4all/agentic-plugins/commit/249b8667024b13f9a2ac90163a8ed79d4ff02e53))
+* **designer:** stop a peer run's leftover descendants at run end and snapshot reclaim ([56fcc27](https://github.com/each4all/agentic-plugins/commit/56fcc27fc23e4486955ff068fbe0f08564ab3014))
+
 ## [0.16.2](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.16.1...plugin-designer-v0.16.2) (2026-11-13)
 
 

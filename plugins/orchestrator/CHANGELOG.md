@@ -18,6 +18,22 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.43.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.42.1...plugin-orchestrator-v0.43.0) (2026-11-26)
+
+
+### Features
+
+* **orchestrator:** add the tmpdir subcommands and a dispatch-mark withdrawal that proves ownership ([d921822](https://github.com/each4all/agentic-plugins/commit/d9218224ed51b0c0dc4e9eabbca425bbedca237e))
+
+
+### Bug Fixes
+
+* **orchestrator:** compare macOS process and lock start times read in the C locale and UTC ([2ea9ee1](https://github.com/each4all/agentic-plugins/commit/2ea9ee1980e5a1ae9da9ee9836e83268235d24fc))
+* **orchestrator:** end a mutation run's leftover processes through a per-launch scope ([#1083](https://github.com/each4all/agentic-plugins/issues/1083)) ([a668fb6](https://github.com/each4all/agentic-plugins/commit/a668fb6228f818a40fa78553dee52764b98ccb1f))
+* **orchestrator:** end what an autopilot step leaves outside its process group through a step scope ([#1082](https://github.com/each4all/agentic-plugins/issues/1082)) ([4c1ff2e](https://github.com/each4all/agentic-plugins/commit/4c1ff2ef605750d63ca05d96a35ceae84c9fbeba))
+* **orchestrator:** run every autopilot worker on the Claude Code launch its preflight resolved ([#1074](https://github.com/each4all/agentic-plugins/issues/1074)) ([3040c33](https://github.com/each4all/agentic-plugins/commit/3040c33bdd2f2028527cb05c128110fc602ad37b))
+* **orchestrator:** stop a peer run's leftover descendants at run end, snapshot reclaim and dead-run cleanup ([9a6c914](https://github.com/each4all/agentic-plugins/commit/9a6c914fcb8299227aa72d5aadcf00db86453b97))
+
 ## [0.42.1](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.42.0...plugin-orchestrator-v0.42.1) (2026-11-21)
 
 
