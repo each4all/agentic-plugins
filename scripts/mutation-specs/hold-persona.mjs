@@ -37,6 +37,7 @@ const T_INV = 'tests/persona-pipeline/test-hold-writer-inventory.mjs';
 const T_TAKE = 'tests/acceptance/hold-takeover/test-hold-takeover.mjs';
 
 const HOLDS = 'plugins/engineer/scripts/lib/holds.mjs';
+const AGDIR = 'plugins/engineer/scripts/lib/agentic-dir.mjs';
 const STATE = 'plugins/engineer/scripts/state.mjs';
 const PHASE7 = 'plugins/engineer/scripts/phase7-commit.mjs';
 const STOP = 'plugins/engineer/scripts/stop-archive.mjs';
@@ -515,10 +516,10 @@ export const MUTATIONS = [
   },
   {
     id: 'N18', file: STATE, tests: [T_LIFE],
-    from: '  if (dirStat === null || !dirStat.isDirectory()) {',
-    to: '  if (false) {',
-    why: 'a lost operation directory reads as no operation, and the last write leaves its operation open unsaid',
-    killed_by: /a lost directory refuses the last write/,
+    from: "  if (look.missing && point === 'close') throw closingDirMissing(",
+    to: '  if (false) throw closingDirMissing(',
+    why: "a last write given a missing operation directory goes through for a workflow with no operations, and a macro's child's is refused with no word that the directory may have been released or of the open operations (ADR-0059 Decision 10, item 5)",
+    killed_by: [/a lost directory refuses the last write/, /with no macro child, a missing directory changes nothing but the last write, which refuses/],
   },
   {
     id: 'N19', file: STATE, tests: [T_LIFE],
@@ -612,18 +613,18 @@ export const MUTATIONS = [
     killed_by: /an operation file missing a field, or naming another kind, is refused/,
   },
   {
-    id: 'N32', file: HOLDS, tests: [T_LIFE],
+    id: 'N32', file: AGDIR, tests: [T_LIFE],
     from: "    && typeof t.opened_at === 'string' && /^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$/.test(t.opened_at)\n",
     to: '',
-    why: 'an operation file with no opening time writes an entry the next read of the workflow refuses',
+    why: "a last write accepts an operation file with no opening time and closes the workflow's entry on it",
     killed_by: /an operation file missing a field, or naming another kind, is refused/,
   },
   {
     id: 'N33', file: STATE, tests: [T_LIFE],
-    from: '  if (child === null) return NO_OPERATION;\n  let dirStat = null;',
-    to: '  let dirStat = null;',
-    why: 'a missing operation directory refuses the write of a workflow that has no operations',
-    killed_by: /with no macro child, even a missing directory changes nothing/,
+    from: "  if (look.missing && point === 'close') throw closingDirMissing(",
+    to: '  if (look.missing) throw closingDirMissing(',
+    why: 'a first write given a missing operation directory refuses, for a workflow that has no operations',
+    killed_by: /with no macro child, a missing directory changes nothing but the last write, which refuses/,
   },
   {
     id: 'N34', file: 'plugins/engineer/commands/decide.md', tests: [T_LIFE],

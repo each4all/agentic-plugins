@@ -10,7 +10,7 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -55,21 +55,24 @@ async function workflowWith(state, persona, dir, head, raw) {
   return filePath;
 }
 
-const oldRoot = mkdtempSync(join(tmpdir(), 'engineer-previous-'));
-process.on('exit', () => rmSync(oldRoot, { recursive: true, force: true }));
-{
-  const tag = spawnSync('git', ['-C', REPO_ROOT, 'rev-parse', '--verify', '-q', `${PREVIOUS}^{commit}`], { encoding: 'utf8' });
-  if (tag.status !== 0) throw new Error(`${PREVIOUS} is not in this clone: fetch the tags (CI checks out with fetch-depth 0); this test fails rather than skip`);
+// The engineer of release `release`, extracted from its tag: its plugin root.
+function releasedEngineer(release) {
+  const root = mkdtempSync(join(tmpdir(), 'engineer-previous-'));
+  process.on('exit', () => rmSync(root, { recursive: true, force: true }));
+  const tag = spawnSync('git', ['-C', REPO_ROOT, 'rev-parse', '--verify', '-q', `${release}^{commit}`], { encoding: 'utf8' });
+  if (tag.status !== 0) throw new Error(`${release} is not in this clone: fetch the tags (CI checks out with fetch-depth 0); this test fails rather than skip`);
   // Through a file, never tar's stdin: bsdtar exits at the end-of-archive
   // blocks, before reading git archive's record padding, so a write still in
   // flight fails with EPIPE.
-  const archive = join(oldRoot, '.release.tar');
-  execFileSync('git', ['-C', REPO_ROOT, 'archive', '--format=tar', '-o', archive, PREVIOUS, 'plugins/engineer']);
-  execFileSync('tar', ['-xf', archive, '-C', oldRoot]);
+  const archive = join(root, '.release.tar');
+  execFileSync('git', ['-C', REPO_ROOT, 'archive', '--format=tar', '-o', archive, release, 'plugins/engineer']);
+  execFileSync('tar', ['-xf', archive, '-C', root]);
   rmSync(archive);
+  return join(root, 'plugins/engineer');
 }
-const OLD = join(oldRoot, 'plugins/engineer');
-const oldCli = (args, dir) => spawnSync(process.execPath, [join(OLD, 'scripts/state.mjs'), ...args], { cwd: dir, encoding: 'utf8', env: cleanEnv() });
+const OLD = releasedEngineer(PREVIOUS);
+const cliOf = (pluginRoot) => (args, dir) => spawnSync(process.execPath, [join(pluginRoot, 'scripts/state.mjs'), ...args], { cwd: dir, encoding: 'utf8', env: cleanEnv() });
+const oldCli = cliOf(OLD);
 
 describe(`an earlier engineer (${PREVIOUS}) beside persona_operations`, () => {
   it('does not know the field', () => {
@@ -124,4 +127,69 @@ describe(`an earlier engineer (${PREVIOUS}) beside persona_operations`, () => {
     strictEqual(r.status, 0, r.stderr);
     strictEqual((await engineer.contentDigest(filePath)).digest, before);
   }));
+});
+
+// ADR-0059 Decision 9, item 3 — the transport's `dir_marker_id` beside the
+// last engineer released before it: that engineer reads a transport holding
+// the field, and its last write keeps it (it spreads the record it read), so a
+// directory this release opened is released after the earlier one closed it.
+// Its first write run again rebuilds the record and drops the field, and the
+// release then refuses the directory (`operation-unbound`): kept, never
+// removed on a proof it lacks.
+const TRANSPORT_PREVIOUS = 'plugin-engineer-v0.37.1';
+const TRANSPORT_OLD = releasedEngineer(TRANSPORT_PREVIOUS);
+const transportCli = cliOf(TRANSPORT_OLD);
+const adir = await import(pathToFileURL(personaInfo('engineer').path('scripts/lib/agentic-dir.mjs')).href);
+
+describe(`an earlier engineer (${TRANSPORT_PREVIOUS}) beside the transport's marker id`, () => {
+  const MACRO = 'macro-plan-20261025T000000Z-abcdef';
+  const transport = (opDir) => JSON.parse(readFileSync(join(opDir, 'operation.json'), 'utf8'));
+  const madeOp = (root) => {
+    const m = adir.makeDir({ kind: 'op', env: { TMPDIR: root } });
+    ok(m.ok, JSON.stringify(m));
+    return m;
+  };
+  const child = (dir, head, opDir) => engineer.createWorkflow({
+    repoRoot: dir, verb: 'compose', host: 'claude', persona: 'engineer', originalRequest: 'op', env: cleanEnv(),
+    gitBaseline: { branch: 'main', head, status_digest: '' }, parentWorkflow: MACRO, originatingSubtask: 'hold-persona', operationDir: opDir,
+  });
+  const withRoot = async (fn) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'adir-mixed-')));
+    try { return await fn(root); } finally { rmSync(root, { recursive: true, force: true }); }
+  };
+
+  it('does not know the field', () => {
+    ok(!readFileSync(join(TRANSPORT_OLD, 'scripts/state.mjs'), 'utf8').includes('dir_marker_id'));
+  });
+
+  it('its last write keeps the field this release recorded, and the release removes the directory', () => withRepo(({ dir, head }) => withRoot(async (root) => {
+    const m = madeOp(root);
+    const { filePath } = await child(dir, head, m.path);
+    strictEqual(transport(m.path).dir_marker_id, m.marker.id);
+    const next = join(root, 'next-action.txt');
+    writeFileSync(next, 'Critique\n');
+    const f = transportCli(['finish-verb', '--workflow-path', filePath, '--host', 'codex', '--next-action-file', next,
+      '--next-step-kind', 'verb', '--next-step-verb', 'critique', '--next-step-confidence', 'HIGH', '--operation-dir', m.path], dir);
+    strictEqual(f.status, 0, f.stderr);
+    deepStrictEqual([transport(m.path).state, transport(m.path).dir_marker_id], ['closed', m.marker.id]);
+    strictEqual(adir.releaseDir(m.path).outcome, 'removed');
+  })));
+
+  it('its first write run again drops the field, and the release then keeps the directory', () => withRepo(({ dir, head }) => withRoot(async (root) => {
+    const m = madeOp(root);
+    const { filePath } = await engineer.createWorkflow({
+      repoRoot: dir, verb: 'compose', host: 'claude', persona: 'engineer', originalRequest: 'op', env: cleanEnv(),
+      gitBaseline: { branch: 'main', head, status_digest: '' }, parentWorkflow: MACRO, originatingSubtask: 'hold-persona',
+    });
+    await engineer.appendPhase({ workflowPath: filePath, host: 'claude', event: 'resumed', env: cleanEnv(), operationDir: m.path, openOperation: 'verb' });
+    strictEqual(transport(m.path).dir_marker_id, m.marker.id);
+    const again = transportCli(['append', '--workflow-path', filePath, '--host', 'codex', '--operation-dir', m.path, '--open-operation', 'verb'], dir);
+    strictEqual(again.status, 0, again.stderr);
+    strictEqual(Object.hasOwn(transport(m.path), 'dir_marker_id'), false, 'the earlier engineer rebuilt the record');
+    await engineer.appendPhase({ workflowPath: filePath, host: 'claude', event: 'updated', env: cleanEnv(), operationDir: m.path, closeOperation: true });
+    strictEqual(transport(m.path).state, 'closed');
+    const r = adir.releaseDir(m.path);
+    deepStrictEqual([r.outcome, r.reason], ['refused', 'operation-unbound']);
+    ok(existsSync(m.path), 'kept');
+  })));
 });

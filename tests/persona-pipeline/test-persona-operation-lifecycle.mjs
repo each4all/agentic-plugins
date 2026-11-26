@@ -357,12 +357,15 @@ describe('engineer: the operation directory', () => {
     await rejects(finish(engineer, filePath, opDir), /operation file cannot be used/);
   }));
 
+  // ADR-0059 Decision 10, item 5: a missing directory may have been released
+  // after the last write ran, so the refusal no longer advises the write
+  // without one (test-agentic-dir-transport.mjs holds the message).
   it('a lost directory refuses the last write; with none, the write is as before and the operation stays open', () => withRepo(async ({ dir, head }) => {
     const opDir = tempDir('op-');
     const { filePath } = await create(engineer, 'engineer', dir, head, { opDir });
     const id = transport(opDir).operation_id;
     rmSync(opDir, { recursive: true, force: true });
-    await rejects(finish(engineer, filePath, opDir), /is not a directory; nothing was written\. When it is lost/);
+    await rejects(finish(engineer, filePath, opDir), new RegExp(`is missing; nothing was written\\. It may have been released after this write already ran.*Open on [^:]+: ${id} \\(verb\\)`));
     const result = await finish(engineer, filePath);
     strictEqual(result.terminal, true);
     deepStrictEqual(opsOf(engineer, filePath).map((o) => o.id), [id]);
@@ -455,9 +458,17 @@ describe('engineer: the operation directory', () => {
     await rejects(open(engineer, filePath, fresh), /operation file cannot be used/);
   }));
 
-  it('with no macro child, even a missing directory changes nothing', () => withRepo(async ({ dir, head }) => {
+  // ADR-0059 Decision 10, item 5: a last write given a missing directory
+  // cannot tell whether it already ran, for any workflow; a first write is as
+  // before. With no operation to lose, the refusal names its way forward (the
+  // write with no directory), never the owner's writer-clear (C175 F1).
+  it('with no macro child, a missing directory changes nothing but the last write, which refuses and names the write with no directory', () => withRepo(async ({ dir, head }) => {
     const { filePath } = await create(engineer, 'engineer', dir, head, { opDir: join(tmpdir(), 'op-never-made-x'), linked: false });
-    strictEqual((await finish(engineer, filePath, join(tmpdir(), 'op-never-made-x'))).terminal, true);
+    const refusal = await finish(engineer, filePath, join(tmpdir(), 'op-never-made-x')).then(() => null, (e) => e);
+    ok(refusal instanceof Error, 'the last write refuses');
+    match(refusal.message, /is missing; nothing was written\..*keeps no persona operation .*run this write again with no operation directory \(an empty OP_DIR\)/);
+    ok(!refusal.message.includes('writer-clear'), refusal.message);
+    strictEqual((await finish(engineer, filePath)).terminal, true);
   }));
 
   it('a workflow that is no macro child keeps no operation, whatever the directory', () => withRepo(async ({ dir, head }) => {
