@@ -105,6 +105,9 @@ import { laneAdvice, laneAdviceLine } from './lib/lane-advice.mjs';
 import { readCommandArguments } from './lib/command-args.mjs';
 import { macroInDefaultRoot, nextWorktreeProposal, worktreeProposalText } from './lib/worktree-proposal.mjs';
 import { isCliEntry } from './lib/cli-entry.mjs';
+import {
+  RELEASE_EXIT, TMPDIR_HELP, executeAbandoned, executePrecondition, listDirs, makeDir, makeExit, makeLine, parseAgeDays, releaseDir, releaseLine, tmpdirArgProblem, writeFullySync,
+} from './lib/agentic-dir.mjs';
 
 // -----------------------------------------------------------------------------
 // Constants — ADR-0018 §sub-decision-1 + §sub-decision-2
@@ -7247,6 +7250,13 @@ function cliRequire(flags, names) {
   }
 }
 
+// A tmpdir subcommand takes only its own flags: any other, --repo-root
+// included, is refused before any file system call.
+function cliTmpdirOnly(flags, allowed) {
+  const extra = Object.keys(flags).filter((n) => !allowed.includes(n));
+  if (extra.length > 0) throw new Error(`unexpected flag --${extra[0]}`);
+}
+
 // A boolean flag given without a value (`--correct`) or as `--correct=true`.
 // cliParseFlags would hand a following bare token to the flag as its value,
 // so anything other than '', 'true' or 'false' is refused instead of read as
@@ -7692,6 +7702,7 @@ function cliPrintHelp() {
       '    checks, appends the inventory to the cutover manifest and turns shared',
       '    creation on; --disable (rollback) is refused once lanes have run.',
       '',
+      ...TMPDIR_HELP,
       '  cutover --repo-root <main checkout> --plan | --move | --verify',
       '    The operator cutover (ADR-0067 Decision 4, item 4, steps 3, 4 and 6;',
       "    docs/runbooks/state-root-cutover.md). --plan (read-only) prints the set: each",
@@ -7765,6 +7776,11 @@ async function cliMain(argv) {
 
   let flags;
   try {
+    // ADR-0059 Decision 9 — a tmpdir subcommand refuses a flag it does not
+    // take, a repeated one (the parser keeps the last) and an empty --name=,
+    // on the raw words: before the parser, and before a text file is read.
+    const tmpdirProblem = tmpdirArgProblem(subcommand, rest);
+    if (tmpdirProblem !== null) throw new Error(tmpdirProblem);
     flags = cliParseFlags(rest);
   } catch (err) {
     process.stderr.write(`state.mjs: ${err.message}\n`);
@@ -7937,6 +7953,13 @@ async function cliRun(subcommand, flags) {
       case 'dispatch-mark-check':
       case 'dispatch-mark-withdraw': {
         cliRequire(flags, ['workflow-path', 'subtask-id', 'branch', 'checkout']);
+        // ADR-0059 Decision 10, item 2 — the withdrawal's disposition as one
+        // JSON line on stdout, opt-in, so a block that reads it can tell each
+        // apart; without the flag the output is as before. Judged before
+        // anything is read.
+        if (subcommand === 'dispatch-mark-withdraw' && flags.format !== undefined && flags.format !== 'json') {
+          throw new Error(`--format takes json (got ${JSON.stringify(flags.format)})`);
+        }
         // A check takes its earlier pass away before it judges anything, and
         // before any discovery that can fail (the state root, the
         // repository's worktrees), and writes it back only when it passes: a
@@ -7981,13 +8004,23 @@ async function cliRun(subcommand, flags) {
           }
         }
         if (subcommand === 'dispatch-mark-withdraw') {
-          if (mark.operation_id === null) return 0;
-          const w = await withdrawDispatchMark({ mainRoot, macroId, subtaskId, branch, stateRoots, operationId: mark.operation_id });
+          // A mark file that names no operation id: nothing was published.
+          const w = mark.operation_id === null
+            ? { state: 'unpublished' }
+            : await withdrawDispatchMark({ mainRoot, macroId, subtaskId, branch, stateRoots, operationId: mark.operation_id });
+          const id = mark.operation_id;
           process.stderr.write({
-            withdrawn: `withdrew the dispatch mark ${mark.operation_id} of subtask ${subtaskId}\n`,
-            carried: `the dispatch mark ${mark.operation_id} of subtask ${subtaskId} is its engineer's operation now\n`,
+            withdrawn: `withdrew the dispatch mark ${id} of subtask ${subtaskId}\n`,
+            carried: `the dispatch mark ${id} of subtask ${subtaskId} is its engineer's operation now\n`,
             gone: '',
+            unpublished: '',
+            unknown: `the dispatch mark ${id} of subtask ${subtaskId} is kept: ${w.error}, and it may carry the mark\n`,
+            unreadable: `the dispatch mark ${id} of subtask ${subtaskId} is kept: ${w.error}\n`,
           }[w.state]);
+          if (flags.format === 'json') {
+            const out = { disposition: w.state, operation_id: id, subtask_id: subtaskId, ...(w.error !== undefined ? { error: w.error } : {}) };
+            process.stdout.write(`${JSON.stringify(out)}\n`);
+          }
           return 0;
         }
         if (subcommand === 'dispatch-mark-publish') {
@@ -8953,6 +8986,56 @@ async function cliRun(subcommand, flags) {
           return 1;
         }
         return 0;
+      }
+
+      // ADR-0059 Decision 9 — make and mark a text or operation directory
+      // (lib/agentic-dir.mjs, the persona pipeline's, copied): the path on
+      // stdout, or a line on stderr and the exit status a block branches on.
+      case 'tmpdir-make': {
+        cliTmpdirOnly(flags, ['kind', 'parent']);
+        cliRequire(flags, ['kind']);
+        const made = makeDir({ kind: flags.kind, parent: flags.parent ?? null });
+        if (made.ok) {
+          process.stdout.write(`${made.path}\n`);
+          return 0;
+        }
+        process.stderr.write(`${makeLine(made)}\n`);
+        return makeExit(made);
+      }
+
+      // ADR-0059 Decision 9, items 3 to 5, and Decision 10, item 4 — release a
+      // directory a make printed: one JSON report on stdout always, its line on
+      // stderr.
+      case 'tmpdir-release': {
+        cliTmpdirOnly(flags, ['path']);
+        cliRequire(flags, ['path']);
+        const report = releaseDir(flags.path);
+        process.stdout.write(`${JSON.stringify(report)}\n`);
+        const line = releaseLine(report);
+        if (line !== null) process.stderr.write(`${line}\n`);
+        return RELEASE_EXIT[report.outcome] ?? RELEASE_EXIT.error;
+      }
+
+      // ADR-0059 Decision 10, item 6 — the listing, and the owner's --execute.
+      case 'tmpdir-list': {
+        cliTmpdirOnly(flags, ['execute', 'age-days']);
+        // tmpdirArgProblem admitted only `true` or `false`, as the persona CLI's.
+        const execute = flags.execute === 'true';
+        if (!execute) {
+          if ('age-days' in flags) throw new Error('--age-days takes --execute true');
+          const listing = listDirs();
+          process.stdout.write(`${JSON.stringify(listing)}\n`);
+          return listing.ok ? 0 : 1;
+        }
+        const ageDays = parseAgeDays(flags['age-days']);
+        if (ageDays === null) throw new Error(`--age-days must be a whole number of days from 0 to 36500 (got '${flags['age-days']}')`);
+        const run = executeAbandoned({ ageDays, onStart: (root) => writeFullySync(2, `${executePrecondition(root, ageDays)}\n`) });
+        for (const r of run.results ?? []) {
+          const line = r.action === 'released' ? releaseLine(r.report) : null;
+          if (line !== null) process.stderr.write(`${line}\n`);
+        }
+        process.stdout.write(`${JSON.stringify(run)}\n`);
+        return run.ok ? 0 : 1;
       }
 
       default:
