@@ -3,6 +3,11 @@
 // ownership before the run starts (the go line), a run settles only once its
 // group is gone, a harness under a wrapper joins the wrapper's lock instead of
 // waiting on it, and neither a test run nor a worker inherits the lock's proof.
+// These cases judge the group, the run's only bound where no scope is made:
+// those that leave a process in the group make no scope (a scope's kill would
+// end it), in process through runTests's `scope` hooks, in the CLI through a
+// systemd-run on the PATH that fails, so the harness starts the run as before.
+// The scope itself is tests/scripts/test-mutation-harness-scope*.mjs's.
 // The harness's other behaviour is tests/scripts/test-mutation-harness.mjs's.
 
 import { afterEach, describe, it } from 'node:test';
@@ -12,8 +17,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { MutationHarnessError, acquireRunLock, childEnv, runTests } from '../../scripts/mutation-harness.mjs';
+import { MutationHarnessError, acquireRunLock, childEnv, runTests, takeCheckRecord } from '../../scripts/mutation-harness.mjs';
 import { closeOwnership, mintProof, ownershipGroups } from '../../plugins/orchestrator/scripts/lib/heavy-lock.mjs';
+import { CHECK_RECORD_ENV, writeCheckRecord } from '../../plugins/orchestrator/scripts/lib/heavy-check.mjs';
 import { workerEnv } from '../../plugins/orchestrator/adapters/claude/autopilot/worker.mjs';
 import {
   BOUNDED, HARNESS, REPO_ROOT, barrierCommand, gone, heavy, letGo, lockOf, makeRepo, ready, running, sleep, spawnNode,
@@ -53,6 +59,15 @@ function scoringRepo({ marker, leftover = null, hang = false } = {}) {
   return root;
 }
 
+// No scope: the hooks in process, a PATH whose systemd-run fails for a CLI.
+const NO_SCOPE = { plan: () => ({ kind: 'direct' }) };
+function noScopeEnv(dir, extra = {}) {
+  const bin = join(dir, 'no-scope-bin');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, 'systemd-run'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  return testEnv({ ...extra, PATH: `${bin}:${process.env.PATH}` });
+}
+
 const pids = (file) => (existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).map(Number) : []);
 
 describe('the go line', () => {
@@ -67,7 +82,7 @@ describe('the go line', () => {
       `import { acquireRunLock, runTests } from ${JSON.stringify(pathToFileURL(HARNESS).href)};`,
       `import { ownershipGroups } from ${JSON.stringify(pathToFileURL(LOCK_MODULE).href)};`,
       `const lock = await acquireRunLock(${JSON.stringify(root)}, { log: () => {} });`,
-      `await runTests(${JSON.stringify(root)}, ['tests/test-value.mjs'], { ownership: lock.ownership, beforeGo: (child) => {`,
+      `await runTests(${JSON.stringify(root)}, ['tests/test-value.mjs'], { ownership: lock.ownership, scope: { plan: () => ({ kind: 'direct' }) }, beforeGo: (child) => {`,
       '  const registered = ownershipGroups(lock.path, lock.ownership.token).map((g) => g.pgid);',
       `  writeFileSync(${JSON.stringify(supFile)}, JSON.stringify({ pid: child.pid, registered }));`,
       '  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);',
@@ -95,7 +110,7 @@ describe('the go line', () => {
     const lock = await acquireRunLock(root, { log: () => {} });
     try {
       closeOwnership(lock.path, lock.ownership.token);
-      await rejects(runTests(root, ['tests/test-value.mjs'], { ownership: lock.ownership }),
+      await rejects(runTests(root, ['tests/test-value.mjs'], { ownership: lock.ownership, scope: NO_SCOPE }),
         (err) => err instanceof MutationHarnessError && /ownership .* is closed/.test(err.message));
       await sleep(300);
       deepStrictEqual(pids(marker), [], 'the run never started');
@@ -107,6 +122,7 @@ describe('the go line', () => {
     let seen = [];
     const out = await runTests(root, ['tests/test-value.mjs'], {
       ownership: fresh.ownership,
+      scope: NO_SCOPE,
       beforeGo: () => { seen = ownershipGroups(fresh.path, fresh.ownership.token).map((g) => g.pgid); },
     });
     strictEqual(out.status, 0);
@@ -138,7 +154,7 @@ describe('a run settles only once its group is gone', () => {
     const since = Date.now();
     const restore = holdKills(() => Date.now() - since > 1500);
     try {
-      const out = await runTests(root, ['tests/test-value.mjs'], { ownership: lock.ownership });
+      const out = await runTests(root, ['tests/test-value.mjs'], { ownership: lock.ownership, scope: NO_SCOPE });
       strictEqual(out.status, 0);
       const left = t.pidFile(leftover);
       strictEqual(left.length, 1);
@@ -161,7 +177,7 @@ describe('a run settles only once its group is gone', () => {
     let allow = false;
     const restore = holdKills(() => allow);
     try {
-      await rejects(runTests(root, ['tests/test-value.mjs'], { ownership: lock.ownership }),
+      await rejects(runTests(root, ['tests/test-value.mjs'], { ownership: lock.ownership, scope: NO_SCOPE }),
         (err) => err instanceof MutationHarnessError && /still runs 5 s after its runner ended; it stays in the lock's ownership/.test(err.message));
       strictEqual(ownershipGroups(lock.path, lock.ownership.token).length, 1, 'the group is kept in the ownership');
       lock.release();
@@ -193,7 +209,7 @@ describe('a run settles only once its group is gone', () => {
       '',
     ].join('\n'));
     const cli = await spawnNode([HARNESS, 'spec.mjs', '--repo-root', root], {
-      cwd: root, env: testEnv({ NODE_OPTIONS: `--require ${JSON.stringify(preload)}` }), track: t,
+      cwd: root, env: noScopeEnv(S, { NODE_OPTIONS: `--require ${JSON.stringify(preload)}` }), track: t,
     }).exited;
     for (const pid of t.pidFile(leftover)) try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
     strictEqual(cli.code, 1, cli.out);
@@ -201,6 +217,65 @@ describe('a run settles only once its group is gone', () => {
     ok(kept, cli.out);
     t.dir(kept);
     ok(existsSync(join(kept, 'control', 'tests', 'test-value.mjs')), 'the copy the group ran in is still there');
+  });
+});
+
+describe('an autopilot check\'s record (AGENTIC_CHECK_RECORD or --check-record, C154)', () => {
+  // The record verify-run writes before the check's scratch; the harness writes
+  // its ownership there before its first test run.
+  function checkRecord(dir) {
+    const file = join(dir, 'checks', '4-0.json');
+    mkdirSync(join(dir, 'checks'), { recursive: true });
+    writeCheckRecord(file, { check: { batch_id: 'b', index: 0, kind: 'mutate' }, runsHarness: true });
+    return file;
+  }
+
+  it('the record comes from the flag, else the variable, which is taken out of the environment either way; no test run inherits it', () => {
+    const env = { [CHECK_RECORD_ENV]: '/r/env.json', PATH: '/bin' };
+    strictEqual(takeCheckRecord({}, env), '/r/env.json');
+    deepStrictEqual(env, { PATH: '/bin' });
+    const both = { [CHECK_RECORD_ENV]: '/r/env.json' };
+    strictEqual(takeCheckRecord({ checkRecord: '/r/flag.json' }, both), '/r/flag.json');
+    strictEqual(CHECK_RECORD_ENV in both, false);
+    strictEqual(takeCheckRecord({}, {}), undefined);
+    strictEqual(CHECK_RECORD_ENV in childEnv({ [CHECK_RECORD_ENV]: '/r/env.json', PATH: '/bin' }), false);
+  });
+
+  it('the harness writes the ownership it holds into the record its variable names before its first test run', BOUNDED, async () => {
+    t = tracker();
+    const S = t.scratch();
+    const marker = join(S, 'marker');
+    const root = scoringRepo({ marker });
+    const record = checkRecord(S);
+    const seen = join(S, 'seen');
+    // The test notes the record as its run finds it.
+    write(root, 'tests/test-value.mjs', [
+      "import { test } from 'node:test';",
+      "import { appendFileSync, readFileSync } from 'node:fs';",
+      "import { VALUE } from '../src/value.mjs';",
+      `appendFileSync(${JSON.stringify(seen)}, JSON.stringify(process.env.${CHECK_RECORD_ENV} ?? null) + '\\n' + readFileSync(${JSON.stringify(record)}, 'utf8'));`,
+      "test('value', () => { if (VALUE !== 1) throw new Error('VALUE'); });",
+      '',
+    ].join('\n'));
+    const cli = await spawnNode([HARNESS, 'spec.mjs', '--repo-root', root], { cwd: root, env: noScopeEnv(S, { [CHECK_RECORD_ENV]: record }), track: t }).exited;
+    strictEqual(cli.code, 0, cli.out);
+    const [inherited, line] = readFileSync(seen, 'utf8').split('\n');
+    strictEqual(JSON.parse(inherited), null, 'the test run did not inherit the variable');
+    const first = JSON.parse(line);
+    strictEqual(first.ownership.lock_path, lockOf(root), 'the first test run already found the ownership on the record');
+    ok(/^[0-9a-f-]{36}$/.test(first.ownership.token));
+    ok(/^\d+$/.test(first.ownership.lock_dir.ino));
+  });
+
+  it('a record it cannot write runs nothing, with no verdict', BOUNDED, async () => {
+    t = tracker();
+    const S = t.scratch();
+    const marker = join(S, 'marker');
+    const root = scoringRepo({ marker });
+    const cli = await spawnNode([HARNESS, 'spec.mjs', '--repo-root', root, '--check-record', join(S, 'no-such-record.json')], { cwd: root, env: noScopeEnv(S), track: t }).exited;
+    strictEqual(cli.code, 1, cli.out);
+    ok(/cannot write the heavy-work ownership into the check record .*nothing ran — treat as no verdict/.test(cli.out), cli.out);
+    strictEqual(existsSync(marker), false, 'no test ran');
   });
 });
 
@@ -251,7 +326,7 @@ describe('a harness under a wrapper', () => {
       '',
     ].join('\n'));
     const cli = spawnNode([HARNESS, 'spec.mjs', '--repo-root', root, '--timeout', '600'], {
-      cwd: root, env: testEnv({ NODE_OPTIONS: `--require ${JSON.stringify(preload)}` }), track: t,
+      cwd: root, env: noScopeEnv(S, { NODE_OPTIONS: `--require ${JSON.stringify(preload)}` }), track: t,
     });
     ok(await until(() => pids(leftover).length === 1, 30_000), cli.output());
     const left = t.pidFile(leftover)[0];

@@ -99,8 +99,8 @@ export const MUTATIONS = [
   // ---- R: a run past the timeout is no verdict -------------------------------
   {
     id: 'R1', file: H,
-    from: '      if (timedOut) {\n        done(',
-    to: '      if (false) {\n        done(',
+    from: '  if (timedOut) return { value: { status: null, timedOut: true,',
+    to: '  if (false) return { value: { status: null, timedOut: true,',
     why: 'a stopped run is read as an exit: a timeout becomes a kill or "did not exit" (C135)',
     killed_by: [T_HUNG, T_CONTROL_HUNG],
   },
@@ -167,8 +167,8 @@ export const MUTATIONS = [
   },
   {
     id: 'R10', file: H,
-    from: '      if (report === null) {\n',
-    to: '      if (report === null) {\n        done({ status: exit.code, timedOut: false, failing: [], failingPaths: [], stdout });\n        return;\n',
+    from: '  if (report === null) {\n',
+    to: '  if (report === null) {\n    return { value: { status: exit?.code, timedOut: false, failing: [], failingPaths: [], stdout } };\n',
     why: 'the supervisor\'s exit status is read as the test result: a supervisor that died scores as a test that failed, so as a kill',
     killed_by: T_LAUNCH,
   },
@@ -300,8 +300,8 @@ export const MUTATIONS = [
   },
   {
     id: 'L14', file: H,
-    from: '    if (stopping) {\n',
-    to: '    if (false) {\n',
+    from: "  if (stopping) return Promise.reject(new MutationHarnessError('the harness is stopping; no test run starts'));\n",
+    to: "  if (false) return Promise.reject(new MutationHarnessError('the harness is stopping; no test run starts'));\n",
     why: 'a run starts while the harness stops its runs: nothing stops it, and the lock is released beside it',
     killed_by: T_STOPPING,
   },

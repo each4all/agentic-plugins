@@ -184,6 +184,33 @@ describe('cleaning up after a dead run (ADR-0067 Decision 6, Locks)', () => {
     }
   });
 
+  it('a dead run whose verification check\'s harness left work not over is live: its record stays until the check record lets it go (C154)', { timeout: 60_000 }, async () => {
+    const t = await setup();
+    try {
+      const runDir = await t.deadRun();
+      mkdirSync(join(runDir, 'checks'), { recursive: true });
+      const record = join(runDir, 'checks', '3-0.json');
+      writeFileSync(record, '{}\n');
+      const named = await t.peer('plan-verify-20261009T010001Z-cccc07', { names: DEAD, live: true });
+      const seen = [];
+      const held = await t.cleanup({ holds: ({ recordFile }) => { seen.push(recordFile); return 'its harness\'s test run agentic-launch-harness-1-x.scope is unproven'; } });
+      const h = held.of(DEAD);
+      strictEqual(h.outcome, 'live', held.lines.join('\n'));
+      match(h.detail, /check 3-0: its harness's test run agentic-launch-harness-1-x\.scope is unproven/);
+      deepStrictEqual(seen, [record]);
+      ok(L.readOpenRun(t.mainRoot, DEAD), 'the record stays');
+      deepStrictEqual(h.cancelled.map((c) => c.run_id), [named.id], 'its peers are cancelled all the same');
+      ok(await until(() => !alive(named.pid)), 'the named peer is gone');
+      deepStrictEqual(h.settled, [{ seq: 2, charged_usd: 25, finished: false }], 'and its steps settled');
+      const free = await t.cleanup({ holds: () => null });
+      strictEqual(free.of(DEAD).outcome, 'cleaned', free.lines.join('\n'));
+      deepStrictEqual(free.of(DEAD).settled, [], 'a step is settled once');
+      strictEqual(L.readOpenRun(t.mainRoot, DEAD), null);
+    } finally {
+      t.done();
+    }
+  });
+
   it('searches a finished step whose run could not account for its peers as an unfinished one: its pending peer that names no run is reported; a finished step that accounted for them is not searched', { timeout: 60_000 }, async () => {
     for (const [flag, expected] of [[true, 1], [false, 0]]) {
       const t = await setup();

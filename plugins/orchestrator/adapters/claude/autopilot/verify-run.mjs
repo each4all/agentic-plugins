@@ -83,6 +83,24 @@
 // no check (`not-started`). A check whose group outlived SIGKILL keeps its
 // directory, which the run then holds. A reused pass starts no process and
 // makes none. The status and go files stay in the run's directory.
+//
+// CHECK RECORDS (ADR-0023, amendments of 2026-11-22 and 2026-11-24, the
+// harness bullet; C154). Before its scratch is made, each check that runs gets
+// a record in the run's directory, `checks/<seq>-<index>.json`
+// (lib/heavy-check.mjs): the check, and whether it runs the mutation harness
+// (a `mutate` check). One that cannot be written starts no check
+// (`not-started`) and makes no scratch. A `mutate` check hands the harness
+// that record's path in its environment (`CHECK_RECORD_ENV`, never on the
+// argv, so the declared argv and the batch's digest are untouched, and never
+// probed for in the harness's text: an older harness ignores the variable),
+// and the harness writes there the heavy-work ownership it holds before its
+// first test run. No other check gets the variable, nor inherits it from the
+// worker's environment (`CHECK_SCRUB`). The check's release of its lock entries
+// and of its scratch reads that ownership first (`checkHolds`), for up to
+// `lingerMs`: a test run of the harness that still runs, or whose scope is not
+// read gone (the harness was killed mid-teardown), or an entry that names a
+// copy inside the scratch, keeps both, and the check is no result: the run
+// halts run-wide naming it (`retained`), as for a group that outlived SIGKILL.
 
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -100,6 +118,8 @@ import {
 import { contentProjection } from '../../../scripts/lib/lane-digest.mjs';
 import { SUPERVISOR, readSupervisorReport, supervisorEnd } from '../../../scripts/lib/heavy-run.mjs';
 import { groupState, holderName, lockPath, readLock, signalGroup as signalLeader } from '../../../scripts/lib/heavy-lock.mjs';
+import { CHECK_RECORD_ENV, checkHolds, checkRecordPath, writeCheckRecord } from '../../../scripts/lib/heavy-check.mjs';
+import { scopeCollector } from '../../../scripts/lib/heavy-scope.mjs';
 import { verifyCapabilityProblem } from './roots.mjs';
 import { VERIFY_DECLARATION_PATH, readDeclarationAt } from './verify-decl.mjs';
 
@@ -116,10 +136,12 @@ export const BOUNDS = Object.freeze({
 
 // The variables a check never inherits from the worker environment: what
 // would make it act as a worker of the run (item 8), or join a holder's
-// heavy-work ownership it does not belong to.
+// heavy-work ownership it does not belong to, or write into a check record
+// that is not its own.
 export const CHECK_SCRUB = Object.freeze([
   'AGENTIC_AUTOPILOT', 'AGENTIC_AUTOPILOT_TOKEN', 'AGENTIC_AUTOPILOT_STEP', 'AGENTIC_AUTOPILOT_VERIFY', 'AGENTIC_STATE_BASE',
   'AGENTIC_HEAVY_LOCK_PROOF', 'AGENTIC_HEAVY_LOCK_VIA',
+  CHECK_RECORD_ENV,
 ]);
 
 /** A worker's environment, scrubbed for a check (item 8). */
@@ -626,6 +648,48 @@ export function waitHolder(file, pgid) {
   return rec;
 }
 
+// What keeps a check's lock entries and scratch once its groups are gone: the
+// check record's judgment (`retain`), or null. A judgment that throws keeps them.
+async function retainedBy(retain) {
+  if (typeof retain !== 'function') return null;
+  try {
+    return await retain();
+  } catch (e) {
+    return `its harness's ownership could not be judged (${e?.message ?? e})`;
+  }
+}
+
+/**
+ * The judgment `retain` of a check that runs the harness: checkHolds read
+ * again, with one collector (its kills written once), until it lets go or
+ * `waitMs` has passed. Resolves null or why the check's entries and scratch stay.
+ */
+export function harnessRetainer({ recordFile, dirs, waitMs, pollMs, holds = checkHolds, collector = scopeCollector }) {
+  return async () => {
+    const scopes = collector();
+    const until = Date.now() + waitMs;
+    for (;;) {
+      const why = holds({ recordFile, dirs, scopes });
+      if (why === null || Date.now() >= until) return why;
+      await sleep(Math.max(10, Math.min(pollMs, 100)));
+    }
+  };
+}
+
+/**
+ * The environment check `index` runs with: the scrubbed check environment,
+ * its own TMPDIR when it has one, and, for a check that runs the harness, its
+ * record's path (header, CHECK RECORDS). Any other check runs without the
+ * variable, whatever the base holds.
+ */
+export function checkRunEnv(base, { tmpDir = null, recordFile = null, runsHarness = false } = {}) {
+  const env = { ...base };
+  delete env[CHECK_RECORD_ENV];
+  if (tmpDir) env.TMPDIR = tmpDir;
+  if (runsHarness && recordFile) env[CHECK_RECORD_ENV] = recordFile;
+  return env;
+}
+
 /**
  * Run one check to its end: resolves { outcome, exit, signal, durationMs,
  * runMs, lingering, bound }. `ctl` is the batch's control: `stopCause()` (a
@@ -633,7 +697,7 @@ export function waitHolder(file, pgid) {
  * driver's signal: the group is killed), `register(group)` (puts the group on
  * the run's locks; a throw kills it, and nothing ran), `waiting(holder)`.
  */
-async function runCheck({ check, lane, env, baseline, logFile, statusFile, goFile, label, deadlineMs, ctl, bounds }) {
+async function runCheck({ check, lane, env, baseline, logFile, statusFile, goFile, label, deadlineMs, ctl, bounds, retain = null }) {
   const viaWrapper = check.locks_itself !== true;
   const command = viaWrapper
     ? [process.execPath, HEAVY, '--repo', lane, '--declaration-ref', baseline, '--purpose', label, '--status-file', statusFile, '--go-file', goFile, '--', ...check.argv]
@@ -675,8 +739,9 @@ async function runCheck({ check, lane, env, baseline, logFile, statusFile, goFil
     signalGroup(pgid, 'SIGKILL');
     await Promise.race([closed, sleep(bounds.lingerMs)]);
     const lingering = groupAlive(pgid);
-    if (!lingering) for (const e of entries) { try { e.release(); } catch { /* released meanwhile */ } }
-    return { outcome: 'stopped', exit: null, signal: null, durationMs: Date.now() - t0, runMs: 0, lingering, pgid };
+    const retained = lingering ? null : await retainedBy(retain);
+    if (!lingering && retained === null) for (const e of entries) { try { e.release(); } catch { /* released meanwhile */ } }
+    return { outcome: 'stopped', exit: null, signal: null, durationMs: Date.now() - t0, runMs: 0, lingering, pgid, ...(retained ? { retained } : {}) };
   }
   sup.stdin.write('go\n');
   const goAt = Date.now();
@@ -772,10 +837,19 @@ async function runCheck({ check, lane, env, baseline, logFile, statusFile, goFil
     await Promise.race([closed, sleep(bounds.lingerMs)]);
     const until = Date.now() + bounds.lingerMs;
     while ((groupAlive(pgid) || innerAlive()) && Date.now() < until) await sleep(20);
-    if (!groupAlive(pgid) && !innerAlive()) for (const x of entries) { try { x.release(); } catch { /* released meanwhile */ } }
-    // A group that outlived SIGKILL rides on the error: the run halts on it
-    // run-wide and keeps its lock entries, as after a check that ended.
-    else {
+    if (!groupAlive(pgid) && !innerAlive()) {
+      // The harness's ownership is read before the entries go: a test run of
+      // it that is not read gone keeps them, and rides on the error.
+      const retained = await retainedBy(retain);
+      if (retained === null) for (const x of entries) { try { x.release(); } catch { /* released meanwhile */ } }
+      else {
+        const err = e instanceof Error ? e : new Error(String(e));
+        err.retained = retained;
+        throw err;
+      }
+    } else {
+      // A group that outlived SIGKILL rides on the error: the run halts on it
+      // run-wide and keeps its lock entries, as after a check that ended.
       const err = e instanceof Error ? e : new Error(String(e));
       err.lingering = groupAlive(pgid) ? pgid : inner.pgid;
       throw err;
@@ -795,10 +869,14 @@ async function runCheck({ check, lane, env, baseline, logFile, statusFile, goFil
     lingering = groupAlive(pgid) || innerAlive();
     if (lingering && !groupAlive(pgid)) lingeringPgid = inner.pgid;
   }
-  if (!lingering) for (const e of entries) { try { e.release(); } catch { /* released meanwhile */ } }
+  // The harness's ownership is read before the entries go (header, CHECK
+  // RECORDS): a test run of it not read gone keeps them, and the check is no
+  // result.
+  const retained = lingering ? null : await retainedBy(retain);
+  if (!lingering && retained === null) for (const e of entries) { try { e.release(); } catch { /* released meanwhile */ } }
   const durationMs = Date.now() - t0;
   const runMs = acquiredAt === null ? 0 : Date.now() - acquiredAt;
-  const base = { durationMs, runMs, lingering, pgid: lingeringPgid };
+  const base = { durationMs, runMs, lingering, pgid: lingeringPgid, ...(retained ? { retained } : {}) };
   // How the command's supervisor ended (C169), whatever ended the check: the
   // wrapper's ended line, or for a command run directly its own close and fd 3.
   // It rides beside the result, for the driver's journal only.
@@ -853,7 +931,8 @@ function readTail(file, max = 1024 * 1024) {
  * the batch started, and nothing ran; `refusal` true when only the persona's
  * held-lane refusal named it, no read of the driver's) with `batch` (id, end, cause, checks run), `follow` (what the next decision
  * takes: on_pass, the requesting verb, or nothing), `halt` ({reason, detail}),
- * `lingering` (a check group that outlived SIGKILL), `wrote` (whether any
+ * `lingering` (a check group that outlived SIGKILL), `retained` (why a
+ * check's harness ownership keeps its entries and scratch), `wrote` (whether any
  * persona write was made).
  *
  * @param o.job  { runId, seq, runDir, mainRoot, workflowPath, workflowId, lane, engineerRoot, offer: {baseline, declaration},
@@ -868,7 +947,11 @@ export function startVerify({ job, register, stopCause = () => null, onWait = ()
   let abortedBy = null;
   const ctlBase = { stopCause, aborted: () => abortedBy !== null, register, waiting: onWait };
   const done = runStep({ job, ctl: ctlBase, ops, bounds: { ...BOUNDS, ...bounds }, now, abortedBy: () => abortedBy })
-    .catch((e) => ({ outcome: 'error', detail: String(e?.message ?? e).slice(0, 500), wrote: true, ...(Number.isInteger(e?.lingering) ? { lingering: e.lingering } : {}) }));
+    .catch((e) => ({
+      outcome: 'error', detail: String(e?.message ?? e).slice(0, 500), wrote: true,
+      ...(Number.isInteger(e?.lingering) ? { lingering: e.lingering } : {}),
+      ...(typeof e?.retained === 'string' ? { retained: e.retained } : {}),
+    }));
   return {
     done,
     abort(why = 'interrupted') { abortedBy ??= why; },
@@ -1117,6 +1200,7 @@ async function runStep({ job, ctl, ops, bounds, now, abortedBy }) {
   let cut = null;
   let bound = false;
   let lingering = null;
+  let retained = null;
   let batchUsedMs = 0;
   for (let i = results.length; i < checks.length; i += 1) {
     const cause = abortedBy() ? 'driver-end' : ctl.stopCause();
@@ -1136,31 +1220,46 @@ async function runStep({ job, ctl, ops, bounds, now, abortedBy }) {
       ran.push({ index: i, kind: check.kind, origin: check.origin, outcome: 'passed', duration_ms: 0, reused: true });
       continue;
     }
-    // The check's own TMPDIR. A removal's failure is the run's to count,
-    // never the check's result.
+    // The check's record, then its own TMPDIR (header, CHECK RECORDS). A
+    // removal's failure is the run's to count, never the check's result.
     const tmpDir = job.scratch ? job.scratch.checkDir(job.seq, i) : null;
+    const recordFile = checkRecordPath(job.runDir, job.seq, i);
+    const runsHarness = check.kind === 'mutate';
     let r;
     let made = false;
     try {
-      if (tmpDir) { job.scratch.make(tmpDir); made = true; }
+      fs.mkdirSync(path.dirname(recordFile), { recursive: true });
+      writeCheckRecord(recordFile, { check: { batch_id: batchId, index: i, kind: check.kind }, runsHarness });
+    } catch (e) {
+      r = { outcome: 'not-started', exit: null, signal: null, durationMs: 0, runMs: 0, detail: `the check's record could not be written (${e?.message ?? e})` };
+    }
+    try {
+      if (!r && tmpDir) { job.scratch.make(tmpDir); made = true; }
     } catch (e) {
       r = { outcome: 'not-started', exit: null, signal: null, durationMs: 0, runMs: 0, detail: `the check's temporary directory could not be made (${e?.message ?? e})` };
     }
+    // The record's path rides in the environment of a check that runs the
+    // harness, never on its argv (the batch's digest is of the declared one).
+    const retain = runsHarness
+      ? (job.retainer ?? harnessRetainer)({ recordFile, dirs: tmpDir ? [tmpDir] : [], waitMs: bounds.lingerMs, pollMs: bounds.pollMs })
+      : null;
+    const kept = (x) => (Number.isInteger(x?.lingering) || x?.lingering === true ? 'the check\'s process group outlived SIGKILL' : (typeof x?.retained === 'string' ? x.retained : null));
     try {
       r ??= await runCheck({
-        check, lane: job.lane, env: tmpDir ? { ...job.checkEnv, TMPDIR: tmpDir } : job.checkEnv, baseline: job.offer.baseline,
+        check, lane: job.lane, env: checkRunEnv(job.checkEnv, { tmpDir, recordFile, runsHarness }), baseline: job.offer.baseline,
         logFile: path.join(job.runDir, logRel), statusFile: path.join(dir, `${i}.status`), goFile: path.join(dir, `${i}.go`), label: `verify ${batchId} #${i} ${check.kind}`,
-        deadlineMs: { declared: check.timeout_s * bounds.secondMs, batchLeft: bounds.batchMs - batchUsedMs }, ctl, bounds,
+        deadlineMs: { declared: check.timeout_s * bounds.secondMs, batchLeft: bounds.batchMs - batchUsedMs }, ctl, bounds, retain,
       });
     } catch (e) {
-      // A supervision that threw: a group that outlived SIGKILL rides on the
-      // error, and keeps the directory.
-      if (made) { try { job.scratch.release(tmpDir, Number.isInteger(e?.lingering) ? 'the check\'s process group outlived SIGKILL' : null); } catch { /* counted by the run */ } }
+      // A supervision that threw: a group that outlived SIGKILL, or a harness
+      // ownership not let go, rides on the error, and keeps the directory.
+      if (made) { try { job.scratch.release(tmpDir, kept(e)); } catch { /* counted by the run */ } }
       throw e;
     }
-    if (made) { try { job.scratch.release(tmpDir, r.lingering ? 'the check\'s process group outlived SIGKILL' : null); } catch { /* counted by the run */ } }
+    if (made) { try { job.scratch.release(tmpDir, kept(r)); } catch { /* counted by the run */ } }
     batchUsedMs += r.runMs;
     if (r.lingering) { lingering = r.pgid; }
+    if (r.retained) { retained = r.retained; break; }
     const failing = r.outcome === 'failed' ? parseFailingTests(readTail(path.join(job.runDir, logRel))) : { names: [], more: 0 };
     const payload = resultPayload({
       index: i, outcome: r.outcome, exit: r.outcome === 'passed' ? 0 : r.exit, signal: r.signal, durationMs: r.durationMs,
@@ -1179,6 +1278,11 @@ async function runStep({ job, ctl, ops, bounds, now, abortedBy }) {
   }
   if (lingering !== null) {
     return { outcome: 'ran', lingering, batch: { batch_id: batchId, end: null, checks: ran }, wrote };
+  }
+  // A check whose harness ownership was not let go has no result either, and
+  // the run holds its lock entries and scratch (header, CHECK RECORDS).
+  if (retained !== null) {
+    return { outcome: 'ran', retained, batch: { batch_id: batchId, end: null, checks: ran }, wrote };
   }
   let treeEnd = null;
   try { treeEnd = await ops.treeDigest(job.lane); } catch { treeEnd = null; }

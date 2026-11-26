@@ -19,6 +19,7 @@
     "tests/persona-pipeline/test-verb-runbook-killed-dispatch.mjs",
     "tests/persona-pipeline/test-verb-runbook-runs-e2e.mjs",
     "tests/persona-pipeline/test-verify-runbooks-e2e.mjs",
-    "tests/runtime/test-bootstrap-render-timing.mjs"
+    "tests/runtime/test-bootstrap-render-timing.mjs",
+    "tests/scripts/test-mutation-harness-scope-live.mjs"
   ]
 }
