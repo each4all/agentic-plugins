@@ -16,7 +16,7 @@ import { randomBytes } from 'node:crypto';
 import {
   appendHoldEvent, branchWorkflows, decodePersonaOperations, describeOperations, dirState, holdApplies, holdsDir, holdsRoot, holdStateOf, holdTransition,
   isSafeMacroId, isSafeSubtaskId, laneBusy, PERSONA_HOMES, listRecordIds, liveRuns, newOperationId, newRecordId, openOperations, publishOpRecord, readActivation,
-  readKeptPark, readOps, readOwnerHold, readRecord, readWorkflowFacts, recordPath, removeKeptPark, removeOpRecord, unlinkQuiet, withHoldsLock,
+  opsDir, readKeptPark, readOps, readOwnerHold, readRecord, readWorkflowFacts, recordPath, removeKeptPark, removeOpRecord, unlinkQuiet, withHoldsLock,
   validHold, validRelease, workflowLockPresent, writeWhole, HANDOFF_SCHEMA, RELEASE_SCHEMA,
 } from './holds.mjs';
 import {
@@ -768,19 +768,103 @@ export async function publishDispatchMark({
 /**
  * Every exit of `/orchestrator:next` after its mark was published: remove the
  * mark unless a child linked to the subtask carries its id (its engineer's
- * bootstrap took it over, and its last write removes it). `{ state:
- * 'withdrawn' | 'carried' | 'gone' }`.
+ * bootstrap took it over, and its last write removes it). `{ state, error? }`,
+ * one of the dispositions of ADR-0059 Decision 10, item 2:
+ * - `withdrawn`: removed now;
+ * - `gone`: shown absent, the lane's registry read `ok` with no record of the
+ *   id, or `absent` under holds whose marker is there (the root it was read
+ *   under is established, not a fallback of `mainWorktreeRoot`);
+ * - `carried`: a child linked to the subtask holds the id, every candidate
+ *   read;
+ * - `unknown`: a child that could not be read may own the record, whatever
+ *   else was read (the mark stays, for the owner);
+ * - `unreadable`: the registry, the mark's own record, or the holds marker
+ *   that establishes the registry, cannot be read, or the holds are not on
+ *   here: absence is not shown, and a record that cannot be read is kept.
+ * A lock, discovery or removal that fails throws, and so does a record of
+ * the id that names, or lies in, another lane than the one given (the mark
+ * file names no lane, so the lane is bound through the record): no ownership
+ * was shown, and nothing is removed.
  */
 export async function withdrawDispatchMark({ mainRoot, macroId, subtaskId, branch, stateRoots, operationId }) {
+  // Read before the lock, which makes the holds directory: holds that are
+  // not on under this root show nothing about where the mark was published.
+  const notOn = (a) => ({
+    state: 'unreadable',
+    error: a.state === 'unreadable' ? a.error : `the holds of ${macroId} are not on under ${mainRoot}, so the mark's absence is not shown`,
+  });
+  const before = readActivation(mainRoot, macroId);
+  if (before.state !== 'active') return notOn(before);
   return withHoldsLock(mainRoot, macroId, () => {
+    const atLock = readActivation(mainRoot, macroId);
+    if (atLock.state !== 'active') return notOn(atLock);
     const ops = readOps(mainRoot, macroId, subtaskId);
-    if (!ops.ops.some((o) => o.id === operationId && (o.record !== null || o.error !== undefined))) return { state: 'gone' };
-    const carried = childEntries({ macroId, subtaskId, branch, stateRoots });
-    // A child that cannot be read may carry it: the mark stays, for the owner.
-    if (carried.unreadable || carried.ids.has(operationId)) return { state: 'carried' };
-    removeOpRecord(mainRoot, macroId, subtaskId, operationId);
+    if (ops.state === 'unreadable') return { state: 'unreadable', error: ops.error };
+    const own = ops.ops.find((o) => o.id === operationId && (o.record !== null || o.error !== undefined));
+    if (own === undefined) {
+      // Absent from the lane given, which may not be the mark's (the mark
+      // file names no lane): gone only when no lane holds it.
+      const elsewhere = opRecordElsewhere(mainRoot, operationId, { macroId, subtaskId });
+      if (elsewhere.found) throw new Error(`the record of operation ${elsewhere.found} is in another lane than ${macroId}/${subtaskId}; nothing was removed`);
+      if (elsewhere.unreadable) return { state: 'unreadable', error: elsewhere.unreadable };
+      return { state: 'gone' };
+    }
+    // A record that cannot be read names no lane and no owner: it is kept.
+    if (own.error !== undefined) return { state: 'unreadable', error: own.error };
+    const r = own.record;
+    if (r.macro_id !== macroId || r.subtask_id !== subtaskId || r.branch !== branch) {
+      throw new Error(
+        `the record of operation ${operationId} names ${r.macro_id}/${r.subtask_id} on ${r.branch}, not ${macroId}/${subtaskId} on ${branch}; nothing was removed`,
+      );
+    }
+    // A candidate that vanished between its discovery and its read (an
+    // archive moving it) may carry the id: it counts as unreadable here.
+    const carried = childEntries({ macroId, subtaskId, branch, stateRoots, vanishedUnreadable: true });
+    // A child that cannot be read may carry it: indeterminate, even beside a
+    // child shown to carry it, so the mark stays, for the owner.
+    if (carried.unreadable) {
+      return { state: 'unknown', error: `a workflow that may be a child of subtask ${subtaskId} cannot be read (${carried.files.join(', ')})` };
+    }
+    if (carried.ids.has(operationId)) return { state: 'carried' };
+    // Removed by another (its owner's last write) since the read: gone, not
+    // withdrawn by this call.
+    try {
+      fs.unlinkSync(path.join(opsDir(mainRoot, macroId, subtaskId), `${operationId}.json`));
+    } catch (err) {
+      if (err?.code === 'ENOENT') return { state: 'gone' };
+      throw err;
+    }
     return { state: 'withdrawn' };
   });
+}
+
+/**
+ * Whether a record of operation `id` is in any lane of the holds root other
+ * than `macroId`/`subtaskId` (an id is drawn per operation, so it names one
+ * lane): `{ found: path }`, `{ unreadable: error }` when a directory of the
+ * search cannot be read, or `{ none: true }`.
+ */
+function opRecordElsewhere(mainRoot, id, { macroId, subtaskId }) {
+  const root = holdsRoot(mainRoot);
+  const macros = dirState(root);
+  if (macros.state === 'unreadable') return { unreadable: macros.error };
+  for (const m of macros.state === 'ok' ? macros.names : []) {
+    if (!isSafeMacroId(m)) continue;
+    const opsRoot = path.join(root, m, 'ops');
+    const lanes = dirState(opsRoot);
+    if (lanes.state === 'unreadable') return { unreadable: lanes.error };
+    for (const s of lanes.state === 'ok' ? lanes.names : []) {
+      if (m === macroId && s === subtaskId) continue;
+      const file = path.join(opsRoot, s, `${id}.json`);
+      try {
+        fs.lstatSync(file);
+        return { found: file };
+      } catch (err) {
+        if (err?.code !== 'ENOENT' && err?.code !== 'ENOTDIR') return { unreadable: `${file} cannot be looked up (${err?.code})` };
+      }
+    }
+  }
+  return { none: true };
 }
 
 /**
@@ -791,7 +875,10 @@ export async function withdrawDispatchMark({ mainRoot, macroId, subtaskId, branc
  * archived workflow that cannot be read may be one of them (its linkage
  * cannot be told), so it counts, named in `files`.
  */
-export function childEntries({ macroId, subtaskId, branch, stateRoots }) {
+// `vanishedUnreadable`: a file found and then gone when read counts as one
+// that cannot be read (named in `files`), for a caller whose answer must not
+// miss a workflow an archive moved between the listing and the read.
+export function childEntries({ macroId, subtaskId, branch, stateRoots, vanishedUnreadable = false }) {
   const ids = new Set();
   let unreadable = false;
   const files = [];
@@ -809,7 +896,7 @@ export function childEntries({ macroId, subtaskId, branch, stateRoots }) {
   }
   for (const file of scan) {
     const facts = readWorkflowFacts(file);
-    if (facts.state === 'absent') continue;
+    if (facts.state === 'absent' && !vanishedUnreadable) continue;
     if (facts.state !== 'ok') { unreadable = true; files.push(file); continue; }
     if (facts.fields.parent_workflow !== macroId || facts.fields.originating_subtask !== subtaskId) continue;
     const decoded = decodePersonaOperations(facts.fields.persona_operations);
