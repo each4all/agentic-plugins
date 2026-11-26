@@ -55,8 +55,22 @@
 // older harness took a killed wrapper's lock some 50 ms after its death, with
 // the wrapper's group still running; a reader of this release took a killed
 // older holder's lock some 20 ms after its death, about when that holder's
-// supervisor had stopped its test run. A process that leaves its holder's
-// group (a daemon, a detached child) outlives every holder's release.
+// supervisor had stopped its test run.
+//
+// SCOPES (ADR-0023, amendments of 2026-11-22 and 2026-11-24; C154). A process
+// that leaves its holder's group (a daemon, a detached child, `setsid`)
+// outlives every group signal. Where the harness made a scope for a test
+// launch (lib/heavy-scope.mjs), the launch's entry carries its identity
+// (`scope`), recorded before the gate's word, and the copy the launch runs in
+// (`copy`). Every reader of an ownership counts such an entry as running
+// while its group runs OR its scope is not read gone, and ends the scope first
+// where it proves the harness, the scope's supervisor, gone (`ownershipGroups`
+// with a collector: kills first, then one reading each, no wait). So the
+// acquirer's wait, the stale lock's reaper and the holder's release hold the
+// lock until what left the group has ended. A process that leaves its holder's
+// group outlives every holder's release only where no scope was made (no user
+// manager, a launcher inside another's scope, macOS, Windows), or where it
+// leaves the scope too.
 
 import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
@@ -65,6 +79,8 @@ import {
 } from 'node:fs';
 import { hostname } from 'node:os';
 import { join, resolve } from 'node:path';
+
+import { entryScope, heldText, processCollector } from './heavy-scope.mjs';
 
 export class HeavyLockError extends Error {
   constructor(message) {
@@ -348,23 +364,84 @@ export function signalGroup(pgid, leaderStarted, signal, sys = {}) {
 }
 
 /**
- * The running groups of `token`'s ownership: `[{ pgid, name, via }]`, an entry
- * that does not parse as `{ pgid: null }`. With `via`, only the entries
- * registered under that handle (its own and its descendants'); a scan whose
- * directories kept moving counts for every handle. `listed` is for tests.
+ * The running groups of `token`'s ownership: `[{ pgid, name, via, scope? }]`,
+ * an entry that does not parse as `{ pgid: null }`. With `via`, only the
+ * entries registered under that handle (its own and its descendants'); a scan
+ * whose directories kept moving counts for every handle.
+ *
+ * An entry whose scope binds it (lib/heavy-scope.mjs entryScope) counts as
+ * running while its group runs or its scope is not read gone, `scope` then
+ * naming the reading and the unit; one whose scope is of a version this reader
+ * does not know counts as running (withheld). The pass goes through `scopes`
+ * (a collector, lib/heavy-scope.mjs scopeCollector): every owed kill first, a
+ * scope whose harness is proven gone, then one fresh reading of each scope
+ * whose group has ended. A collector that throws leaves the entry running.
+ * `listed`, `found` and `sys` are for tests. A reader that read the entries
+ * itself (lib/heavy-check.mjs, pinned to the lock directory's mount) passes
+ * them as `entries` (as ownershipEntries answers them) and its own read again
+ * of one entry as `reread(dir, name)` (as findEntry answers).
  */
-export function ownershipGroups(path, token, { via = null, sys, listed } = {}) {
+export function ownershipGroups(path, token, { via = null, sys, listed, found, entries = null, reread = null, scopes = processCollector() } = {}) {
   if (token === null || !UUID.test(token)) return [];
   const out = [];
-  for (const { name, entry, moving } of ownershipEntries(path, token, { listed })) {
+  const scoped = [];
+  for (const listedEntry of entries ?? ownershipEntries(path, token, { listed })) {
+    const { dir, name, moving } = listedEntry;
+    let { entry } = listedEntry;
     if (entry === null) {
       if (via === null || moving) out.push({ pgid: null, name, via: [] });
       continue;
     }
     const chain = Array.isArray(entry.via) ? entry.via : [];
     if (via !== null && !chain.includes(via)) continue;
-    if (groupState(entry.pgid, entry.leader_started, sys) !== 'running') continue;
-    out.push({ pgid: entry.pgid, name, via: chain });
+    const running = groupState(entry.pgid, entry.leader_started, sys) === 'running';
+    let held = entryScope(entry, { token, name });
+    if (!running && held.held === null) {
+      // The entry was read before its group was probed: a harness may have
+      // recorded a scope on it since, then launched, and its group ended while
+      // what left the group runs on in the scope. So an entry read with no
+      // scope is read again, wherever it lies now, once its group reads ended;
+      // a read again that cannot be made holds it.
+      let again;
+      try {
+        again = reread ? reread(dir, name) : findEntry(path, token, dir, name, found);
+      } catch {
+        again = { moving: true };
+      }
+      if (again.absent) continue;
+      if (again.moving || again.entry === null || !Number.isInteger(again.entry.pgid) || again.entry.pgid !== entry.pgid) {
+        out.push({ pgid: entry.pgid, name, via: chain, scope: { state: 'withheld', check: 'entry-reread', unit: null } });
+        continue;
+      }
+      entry = again.entry;
+      held = entryScope(entry, { token, name });
+    }
+    if (held.held === 'withheld') {
+      out.push({ pgid: entry.pgid, name, via: chain, scope: { state: 'withheld', check: held.check, unit: null } });
+      continue;
+    }
+    if (held.held === 'scoped') {
+      scoped.push({ identity: held.identity, groupRunning: running, row: { pgid: entry.pgid, name, via: chain } });
+      continue;
+    }
+    if (running) out.push({ pgid: entry.pgid, name, via: chain });
+  }
+  if (scoped.length > 0) {
+    let readings;
+    try {
+      readings = scopes.pass(scoped.map(({ identity, groupRunning }) => ({ identity, groupRunning })));
+    } catch {
+      readings = scoped.map(() => ({ state: 'withheld', check: 'collector-failed' }));
+    }
+    scoped.forEach(({ identity, groupRunning, row }, i) => {
+      const reading = readings?.[i];
+      if (groupRunning) {
+        out.push({ ...row, scope: { state: reading?.state ?? 'withheld', group: 'running', unit: identity.unit } });
+        return;
+      }
+      if (reading?.state === 'gone') return;
+      out.push({ ...row, scope: { state: reading?.state ?? 'withheld', ...(reading?.check ? { check: reading.check } : {}), unit: identity.unit } });
+    });
   }
   return out;
 }
@@ -459,14 +536,113 @@ export function collectOwnerships(path, own) {
   return running;
 }
 
+// Where the entry `name` of `token`'s ownership lies now (its directory may
+// have been closed, renamed, since it was written), read whole:
+//   { dir, entry }   found, `entry` its content (null when it does not parse);
+//   { absent: true } in no directory of the ownership: unregistered, or its
+//                    directory retired;
+//   { moving: true } its directories kept moving while it was looked for.
+// A listed directory that is gone by the time it is read (a close renamed it)
+// starts the search again, so an entry is never read absent between the two
+// names; `first` too when this scan listed it. `first` is looked in first; a
+// `first` this scan did not list was renamed before the listing, which then
+// names it under its new name, so its absence alone does not search again. A
+// read that fails otherwise throws. `found` (called once the directories are
+// listed) is for tests.
+function findEntry(path, token, first, name, found = () => {}) {
+  for (let scan = 0; scan < MAX_SCANS; scan++) {
+    const listed = ownershipDirs(path, token);
+    found();
+    const dirs = [...new Set([first, ...listed].filter(Boolean))];
+    let moved = false;
+    for (const d of dirs) {
+      let text;
+      try {
+        text = readFileSync(join(d, name), 'utf8');
+      } catch (err) {
+        if (err.code === 'ENOENT' || err.code === 'ENOTDIR') {
+          if ((d !== first || listed.includes(d)) && !existsSync(d)) moved = true;
+          continue;
+        }
+        throw new HeavyLockError(`cannot read ${join(d, name)}: ${err.message}`);
+      }
+      let entry = null;
+      try {
+        entry = JSON.parse(text);
+      } catch { /* does not parse */ }
+      return { dir: d, entry };
+    }
+    if (!moved) return { absent: true };
+  }
+  return { moving: true };
+}
+
+// Remove the file `base` from whichever directory of `token`'s ownership holds
+// it now: a temporary file whose directory a close renamed after it was
+// written.
+function dropMoved(path, token, base) {
+  for (const d of ownershipDirs(path, token)) rmSync(join(d, base), { force: true });
+}
+
+// Rewrite the entry `name` of `token`'s ownership wherever it lies now, whole:
+// a new file under a unique name in the same directory, renamed over the
+// entry. An entry that is gone (unregistered, or its directory retired) is
+// never made again: HeavyLockClosedError. `change` takes the entry as read and
+// answers the entry to write, or null to write nothing. A write or a rename
+// that a close overtakes (the directory moved) starts the search again, and
+// its temporary file is removed where the close moved it.
+function rewriteEntry(path, token, first, name, change) {
+  for (let scan = 0; scan < MAX_SCANS; scan++) {
+    const found = findEntry(path, token, first, name);
+    if (found.absent) break;
+    if (found.moving) throw new HeavyLockError(`the directories of ${token} kept moving while ${name} was rewritten`);
+    if (found.entry === null) throw new HeavyLockError(`the entry ${join(found.dir, name)} does not parse; it is not rewritten`);
+    const next = change(found.entry);
+    if (next === null) return;
+    const base = `${name}.${randomUUID()}.tmp`;
+    const tmp = join(found.dir, base);
+    try {
+      writeFileSync(tmp, `${JSON.stringify(next)}\n`, { flag: 'wx' });
+    } catch (err) {
+      if (err.code === 'ENOENT') continue;
+      throw new HeavyLockError(`cannot rewrite ${name}: ${err.message}`);
+    }
+    let renamed = false;
+    try {
+      // Only over the entry where it is: the rename of a directory that moved
+      // since fails, and the search starts again.
+      if (existsSync(join(found.dir, name))) {
+        renameSync(tmp, join(found.dir, name));
+        renamed = true;
+        return;
+      }
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw new HeavyLockError(`cannot rewrite ${name}: ${err.message}`);
+    } finally {
+      if (!renamed) {
+        rmSync(tmp, { force: true });
+        dropMoved(path, token, base);
+      }
+    }
+  }
+  throw new HeavyLockClosedError(`the heavy-work lock's entry ${name} of ${token} is gone; it is not written again`);
+}
+
 /**
  * Register the process group `pgid` in an ownership `{ path, token, chain }`,
  * before anything in it starts. Throws HeavyLockClosedError when the ownership
  * has been closed (its directory is gone): the registrant then starts nothing.
- * Returns `{ name, leaderStarted, unregister() }`; unregister removes this
- * entry only, wherever it lies now.
+ * `scope` (a `scope` record: none, with why) and `copy` (`{ path, dev, ino }`,
+ * the directory the launch runs in, device and inode as decimal strings) are
+ * kept on the entry. Returns `{ name, leaderStarted, unregister(),
+ * recordScope(record), recordTeardown(teardown) }`; unregister removes this
+ * entry only, wherever it lies now. recordScope writes the entry's `scope`
+ * (the identity before the gate's word, or the abandoned mark), never
+ * replacing an abandoned mark with a scope; recordTeardown writes the latest
+ * observation into a scoped entry's `scope`. Both throw HeavyLockClosedError
+ * when the entry is gone, which they never make again.
  */
-export function registerGroup(ownership, pgid, { leaderStarted } = {}) {
+export function registerGroup(ownership, pgid, { leaderStarted, scope, copy } = {}) {
   const { path, token, chain = [] } = ownership;
   if (token === null || !UUID.test(String(token))) throw new HeavyLockError(`the ownership token ${shown(token)} is not a UUID`);
   if (!Number.isInteger(pgid) || pgid <= 0) throw new HeavyLockError(`the process group ${shown(pgid)} is not a positive integer`);
@@ -476,7 +652,10 @@ export function registerGroup(ownership, pgid, { leaderStarted } = {}) {
   const tmp = join(dir, `${name}.tmp`);
   const closed = () => new HeavyLockClosedError(`the heavy-work lock's ownership ${token} is closed; nothing more joins it`);
   try {
-    writeFileSync(tmp, `${JSON.stringify({ pgid, leader_started: started, via: chain, at: new Date().toISOString() })}\n`, { flag: 'wx' });
+    const entry = { pgid, leader_started: started, via: chain, at: new Date().toISOString() };
+    if (scope !== undefined) entry.scope = scope;
+    if (copy !== undefined) entry.copy = copy;
+    writeFileSync(tmp, `${JSON.stringify(entry)}\n`, { flag: 'wx' });
   } catch (err) {
     if (err.code === 'ENOENT') throw closed();
     throw new HeavyLockError(`cannot register process group ${pgid}: ${err.message}`);
@@ -499,6 +678,19 @@ export function registerGroup(ownership, pgid, { leaderStarted } = {}) {
           if (err.code !== 'ENOENT') throw new HeavyLockError(`cannot unregister ${name}: ${err.message}`);
         }
       }
+    },
+    recordScope(record) {
+      rewriteEntry(path, token, dir, name, (current) => {
+        if (current?.scope?.state === 'abandoned' && record?.state !== 'abandoned') {
+          throw new HeavyLockError(`the entry ${name} was marked abandoned; its scope is not written over the mark`);
+        }
+        return { ...current, scope: record };
+      });
+    },
+    recordTeardown(teardown) {
+      rewriteEntry(path, token, dir, name, (current) => (current?.scope?.state === 'scoped'
+        ? { ...current, scope: { ...current.scope, teardown } }
+        : null));
     },
   };
 }
@@ -773,7 +965,7 @@ export async function acquire(repoRoot, {
     const seen = readLock(path);
     if (seen === null) {
       if (orphans.length === 0) continue;
-      const g = orphans.map((o) => o.pgid ?? 'unreadable').join(', ');
+      const g = orphans.map(heldText).join(', ');
       say(`orphan:${g}`, `${prefix}: waiting for process group ${g} of an earlier holder (token ${orphans[0].token}), which still runs though its lock is gone; its lock was ${path}`);
     } else if (seen.record === null || !holderRunning(seen.record)) {
       const left = seen.record === null ? [] : ownershipGroups(path, tokenOf(seen.record));
@@ -783,7 +975,7 @@ export async function acquire(repoRoot, {
         const h = seen.record;
         if (inherited !== null && h.token === inherited) throw ownAncestors(inherited, path, h.pid);
         say(`${h.token}:left`, `${prefix}: waiting for the run of ${holderName(h)} in ${h.worktree} `
-          + `(pid ${h.pid} exited; its group ${left.map((o) => o.pgid ?? 'unreadable').join(', ')} still runs, since ${h.started_at}); its lock is ${path}`);
+          + `(pid ${h.pid} exited; its group ${left.map(heldText).join(', ')} still runs, since ${h.started_at}); its lock is ${path}`);
       }
     } else {
       const h = seen.record;
@@ -803,7 +995,7 @@ export async function acquire(repoRoot, {
       closeOwnership(path, record.token);
       const left = ownershipGroups(path, record.token);
       if (left.length > 0) {
-        const groups = left.map((o) => o.pgid ?? 'unreadable').join(', ');
+        const groups = left.map(heldText).join(', ');
         throw new HeavyLockBusyError(`process group ${groups} of this lock's ownership still runs; the lock is kept`, left);
       }
       removeOwnership(path, record.token);

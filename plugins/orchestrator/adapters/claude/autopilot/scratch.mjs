@@ -47,6 +47,16 @@
 // half-removed snapshot again. Removal is asynchronous and one at a time, and
 // its failure is counted, never a step's or a check's outcome.
 //
+// A CHECK'S DIRECTORY (ADR-0023, the harness bullet; C154) goes only once its
+// check record lets it (lib/heavy-check.mjs checkHolds): a check that ran the
+// mutation harness may have left a test run, a scope not read gone, or a copy
+// a heavy-work entry still names, inside it. The record lies in the run's
+// directory, `<repo>/.agentic-plugins/runs/autopilot/<run>/checks/<seq>-<i>.json`.
+// A root whose marker says `check_records: true` (this release's) keeps a
+// check directory whose record is missing or does not read; an earlier
+// release's root, whose marker lacks the field, sweeps its checks as before.
+// The same judgment holds a `.removing-` name of a check's directory.
+//
 // Limits. A snapshot directory with no owner record that reads (a creation in
 // flight, or a test's leftover) defers its step directory until someone
 // removes it; `agentic-autopilot retention` lists what is deferred. On a
@@ -61,6 +71,7 @@ import path from 'node:path';
 import { isAutopilotRun } from '../../../scripts/state.mjs';
 import { AUTOPILOT_DIR_REL, holderAlive, processFingerprint } from '../../../scripts/lib/run-locks.mjs';
 import { SNAPSHOT_OWNER_FILE, judgeRunEnded, removeOwnedSnapshot } from '../../../scripts/lib/peer-snapshot.mjs';
+import { checkDirNames, checkHolds } from '../../../scripts/lib/heavy-check.mjs';
 import { listOpenRuns, openRunPath } from './ledger.mjs';
 
 export const SCRATCH_SCHEMA = 'agentic-autopilot-scratch-1.0';
@@ -250,7 +261,7 @@ export async function allocateScratch({ repoRoot, mainRoot, runId, env = process
     try { removeScratchIndex(mainRoot, runId); } catch { /* the sweep refuses a root with another's marker */ }
     throw new Error(`the run's temporary directory ${root} could not be made exclusively (${err.code ?? err.message})`);
   }
-  writeJsonExclusive(path.join(root, SCRATCH_MARKER), { schema: SCRATCH_SCHEMA, run_id: runId, repo, common_dir: commonDir, created_at: createdAt });
+  writeJsonExclusive(path.join(root, SCRATCH_MARKER), { schema: SCRATCH_SCHEMA, run_id: runId, repo, common_dir: commonDir, created_at: createdAt, check_records: true });
   return { root, base, commonDir };
 }
 
@@ -307,16 +318,33 @@ export function proveScratch(dir, { root, runId, commonDir } = {}) {
   if (marker === null || typeof marker !== 'object') throw new ScratchRefusal('no-marker', dir);
   if (marker.schema !== SCRATCH_SCHEMA || marker.run_id !== runId) throw new ScratchRefusal('marker-of-another-run', dir);
   if (marker.common_dir !== commonDir) throw new ScratchRefusal('marker-of-another-repository', dir);
-  if (t.kind === 'root') return { kind: t.kind, gone: false };
+  if (t.kind === 'root') return { kind: t.kind, gone: false, marker };
   let ds;
   try {
     ds = fs.lstatSync(dir);
   } catch (err) {
-    if (err.code === 'ENOENT') return { kind: t.kind, gone: true };
+    if (err.code === 'ENOENT') return { kind: t.kind, gone: true, marker };
     throw new ScratchRefusal(`unreadable (${err.code ?? err.message})`, dir);
   }
   if (ds.isSymbolicLink() || !ds.isDirectory()) throw new ScratchRefusal('not-a-directory', dir);
-  return { kind: t.kind, gone: false };
+  return { kind: t.kind, gone: false, marker };
+}
+
+/**
+ * Why a check's directory `dir` (its name, or a `.removing-` name of it) is
+ * kept by its check record, or null (header, A CHECK'S DIRECTORY). `marker` is
+ * the root's, as proveScratch read it. A directory that is no check's is never
+ * kept here. `holds` is a seam for tests.
+ */
+export function checkDirKept(dir, { runId, marker }, { holds = checkHolds } = {}) {
+  const names = checkDirNames(dir);
+  const m = /^v([1-9]\d*)-(\d+)$/.exec(path.basename(names[0]));
+  if (!m) return null;
+  const required = marker?.check_records === true;
+  if (typeof marker?.repo !== 'string' || !path.isAbsolute(marker.repo)) return required ? 'the root\'s marker names no repository, so the check\'s record cannot be found' : null;
+  const recordFile = path.join(marker.repo, AUTOPILOT_DIR_REL, runId, 'checks', `${m[1]}-${m[2]}.json`);
+  if (!required && !fs.existsSync(recordFile)) return null;
+  return holds({ recordFile, dirs: names, required });
 }
 
 // ---------------------------------------------------------------------------
@@ -448,7 +476,7 @@ function emptyRoot(root, { runId }) {
  * refused } (`refused`: the root is not proven the run's, and nothing was
  * touched).
  */
-export async function sweepScratch({ root, runId, commonDir, env = process.env, hold = new Map(), busy = scratchBusy, rm }) {
+export async function sweepScratch({ root, runId, commonDir, env = process.env, hold = new Map(), busy = scratchBusy, rm, checkKept = checkDirKept }) {
   const ident = { root, runId, commonDir };
   const result = { removed: 0, deferred: [], failures: [], rootRemoved: false, refused: null };
   try {
@@ -490,10 +518,12 @@ export async function sweepScratch({ root, runId, commonDir, env = process.env, 
     try {
       // Proven first: the scan below removes the snapshots whose runs are
       // over, so it never opens a link, or a root that is not the run's.
-      if (proveScratch(dir, ident).gone) continue;
+      const proven = proveScratch(dir, ident);
+      if (proven.gone) continue;
       // A check's directory holds no peer's snapshot of the run's (a check is
-      // no worker); what a test left there under that name is the check's.
-      const why = t.kind === 'step' ? await busy(dir, { env }) : null;
+      // no worker); what a test left there under that name is the check's,
+      // once its record lets it go (header, A CHECK'S DIRECTORY).
+      const why = t.kind === 'step' ? await busy(dir, { env }) : checkKept(dir, { runId, marker: proven.marker });
       if (why) {
         result.deferred.push({ dir, why });
         continue;
@@ -526,7 +556,7 @@ export async function sweepScratch({ root, runId, commonDir, env = process.env, 
  *   end({ sweep })  the run's end: the removals in flight, then (`sweep`) one
  *                   pass over the root; resolves the record run.json keeps.
  */
-export function createRunScratch({ root, runId, commonDir, mainRoot, env = process.env, busy = scratchBusy, rm, now = () => Date.now() }) {
+export function createRunScratch({ root, runId, commonDir, mainRoot, env = process.env, busy = scratchBusy, rm, now = () => Date.now(), checkKept = checkDirKept }) {
   const ident = { root, runId, commonDir };
   const hold = new Map();
   const deferred = new Map();
@@ -553,7 +583,7 @@ export function createRunScratch({ root, runId, commonDir, mainRoot, env = proce
         // are over (proveScratch throws for anything not the run's).
         const t = proveScratch(dir, ident);
         if (t.gone) return;
-        const reason = t.kind === 'step' ? await busy(dir, { env }) : null;
+        const reason = t.kind === 'step' ? await busy(dir, { env }) : checkKept(dir, { runId, marker: t.marker });
         if (reason) {
           deferred.set(dir, reason);
           return;
@@ -574,7 +604,7 @@ export function createRunScratch({ root, runId, commonDir, mainRoot, env = proce
         } catch { /* gone, or unreadable: the next sweep says */ }
         return record;
       }
-      const r = await sweepScratch({ ...ident, env, hold, busy, rm });
+      const r = await sweepScratch({ ...ident, env, hold, busy, rm, checkKept });
       record.deferred = r.refused ? [{ dir: root, why: `not proven the run's (${r.refused})` }] : r.deferred;
       record.failures = failures + r.failures.length;
       if (r.rootRemoved) {

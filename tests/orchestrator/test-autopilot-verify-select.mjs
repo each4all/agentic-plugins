@@ -1161,6 +1161,14 @@ describe('verify-select — on this repository', () => {
     // process CPU and 6.9 s of this thread's, against 7.0 s of wall clock;
     // the parent commit, unchanged, took 12.1 s of process CPU, so the bound
     // failed with no change of the selection.
+    // On 2026-11-26 (C154) the ADR selected 96: verify-run.mjs read the
+    // harness's text through a path literal, an edge the selector follows, so
+    // nearly every autopilot test reached the docs walk; with that read
+    // replaced by an environment handoff, 17, the harness's new scope tests
+    // reaching the same walk. The walk then moved out of
+    // test-set-terminal-archive-timing.mjs into
+    // test-session-end-archiving-prose.mjs, which nothing imports or names in a
+    // spec, and the ADR selects 3.
     const tree = fsTree(REPO_ROOT);
     const all = vs.discoverTests(tree).length;
     const run = (p) => {

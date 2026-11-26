@@ -176,7 +176,8 @@ describe('the proof a removal needs', () => {
       try { S.proveScratch(dir, ident); return null; } catch (e) { ok(e instanceof S.ScratchRefusal, String(e)); return e.why; }
     };
     strictEqual(why(step), null);
-    deepStrictEqual(S.proveScratch(join(a.root, 's2'), a.ident), { kind: 'step', gone: true });
+    const proven = S.proveScratch(join(a.root, 's2'), a.ident);
+    deepStrictEqual([proven.kind, proven.gone, proven.marker.run_id], ['step', true, RUN]);
     strictEqual(why(step, { ...a.ident, commonDir: join(a.dir, 'another.git') }), 'marker-of-another-repository');
     strictEqual(why(step, { ...a.ident, commonDir: '' }), 'no-repository');
     // A child that is a link, and one that is a file.
@@ -252,6 +253,10 @@ describe('removal', () => {
     const hold = new Map([[join(a.root, 's2'), 'the step\'s process group outlived SIGKILL']]);
     const judged = [];
     const busy = async (dir) => { judged.push(dir); return dir.endsWith('s3') ? 'a peer still uses it' : null; };
+    // The check's record (C154): one that runs no harness lets its directory go.
+    const checks = join(a.repo, '.agentic-plugins/runs/autopilot', RUN, 'checks');
+    mkdirSync(checks, { recursive: true });
+    writeFileSync(join(checks, '4-0.json'), `${JSON.stringify({ schema: 'agentic-check-record-1', check: {}, runs_harness: false, ownership: null })}\n`);
     const r = await S.sweepScratch({ ...a.ident, hold, busy });
     strictEqual(r.removed, 2);
     strictEqual(r.rootRemoved, false);
@@ -287,6 +292,25 @@ describe('removal', () => {
     const r = await S.sweepScratch({ ...a.ident, busy: async () => null });
     deepStrictEqual([r.refused, r.removed, r.rootRemoved], ['no-marker', 0, false]);
     ok(existsSync(join(a.root, 's1')));
+  });
+
+  it('a check\'s directory goes only once its record lets it (C154): a missing record keeps it in a root that has records, one naming no harness lets it go', async (t) => {
+    const a = await allocated(t);
+    strictEqual(JSON.parse(readFileSync(join(a.root, S.SCRATCH_MARKER), 'utf8')).check_records, true, 'this release\'s marker says its checks have records');
+    for (const n of ['v4-0', 'v4-1']) mkdirSync(join(a.root, n, 'mutation-run-x'), { recursive: true });
+    const checks = join(a.repo, '.agentic-plugins/runs/autopilot', RUN, 'checks');
+    mkdirSync(checks, { recursive: true });
+    writeFileSync(join(checks, '4-1.json'), `${JSON.stringify({ schema: 'agentic-check-record-1', check: {}, runs_harness: false, ownership: null })}\n`);
+    const r = await S.sweepScratch({ ...a.ident, busy: async () => null });
+    deepStrictEqual(r.deferred.map((d) => d.dir.slice(a.root.length + 1)), ['v4-0']);
+    match(r.deferred[0].why, /check record .*is missing/);
+    deepStrictEqual(readdirSync(a.root).sort(), [S.SCRATCH_MARKER, 'v4-0']);
+    // The run's own release takes the same judgment.
+    const run = S.createRunScratch({ ...a.ident, mainRoot: a.repo, env: a.env, checkKept: () => 'its harness\'s test run 7 still runs' });
+    await run.release(join(a.root, 'v4-0'));
+    ok(existsSync(join(a.root, 'v4-0')), 'a release the record does not let go removes nothing');
+    const ended = await run.end();
+    match(ended.deferred[0].why, /still runs/);
   });
 
   it('a sweep of a root that is not proven the run\'s touches nothing', async (t) => {
@@ -465,6 +489,11 @@ describe('what earlier runs left', () => {
     // A run that drove the linked checkout: its index entry is the main one's.
     const made = await S.allocateScratch({ repoRoot: lane, mainRoot: p.repo, runId: RUN, env: p.env, pid: dead.pid });
     mkdirSync(join(made.root, 'v2-0', 'mutation-copy-x'), { recursive: true });
+    // Its check's record, in that run's directory of the checkout it drove
+    // (C154: a root that has records keeps a check directory with none).
+    const records = join(realpathSync(lane), '.agentic-plugins/runs/autopilot', RUN, 'checks');
+    mkdirSync(records, { recursive: true });
+    writeFileSync(join(records, '2-0.json'), `${JSON.stringify({ schema: 'agentic-check-record-1', check: {}, runs_harness: false, ownership: null })}\n`);
     const wrong = await S.allocateScratch({ repoRoot: p.repo, mainRoot: p.repo, runId: OTHER, env: p.env, pid: dead.pid });
     mkdirSync(join(wrong.root, 's1'));
     const marker = join(wrong.root, S.SCRATCH_MARKER);

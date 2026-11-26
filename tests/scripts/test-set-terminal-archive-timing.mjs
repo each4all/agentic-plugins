@@ -22,16 +22,16 @@
 //   (iii) The statement names all three load-bearing facts, and does not carry
 //         their inversions.
 //   (iv)  The disproved claim is absent across every markdown file in the repo,
-//         not just the runbooks.
+//         not just the runbooks: tests/scripts/test-session-end-archiving-prose.mjs,
+//         a file of its own so that a documentation change does not select
+//         this one (C154 F2).
 //   (v)   Every persona/capability shared reference carries the canonical
 //         section — discovered, so orchestrator's cannot be forgotten again.
 //
 // Known limits, stated rather than papered over: (a) the fact regexes test
 // vocabulary, and the inversion list catches only the phrasings enumerated in
 // FORBIDDEN_IN_ANNOTATION — a sufficiently creative rewording that means the
-// opposite would still pass; (b) the repo-wide sweep exempts lines carrying an
-// `amended` marker, because ADR body text is deliberately preserved as written
-// with an inline correction pointer.
+// opposite would still pass.
 //
 // Invariant (i)'s per-document rule — the detector, the comment-block binding,
 // the facts and the inversions — lives in tests/_runbook-checks.mjs, so it can
@@ -70,15 +70,6 @@ const skillsRootOf = (plugin) => resolveSkillsRoot(path.join(PLUGINS_DIR, plugin
 // REQUIRED_FACTS (the three load-bearing facts), INVOCATION_LABEL and
 // FORBIDDEN_IN_ANNOTATION (the inversions) are imported: the sweep's rule and
 // the two pinned checks below read the same copy.
-
-// The disproved claim, and the shapes it takes elsewhere in the repo.
-const DISPROVED_CLAIMS = [
-  /closes the session/i,
-  /Stop[^.\n]{0,60}\bat session end\b/i,
-  /Stop[^.\n]{0,60}\bend-of-session\b/i,
-];
-// ADR body text is preserved as written and corrected by an inline pointer.
-const AMENDED_MARKER = /amended|Amendment/;
 
 // Paths that reach terminal state without a literal `set-terminal` invocation:
 // `subtask-update`'s auto-terminal pass marks the macro. Undiscoverable by
@@ -150,19 +141,6 @@ function runbookFiles() {
     out.push(...walkMarkdown(skillsRootOf(plugin.name)));
   }
   return out.sort();
-}
-
-// Every markdown file that teaches, anywhere in the repo. CHANGELOGs are
-// generated release history and are excluded.
-function allMarkdown() {
-  const out = [
-    ...walkMarkdown(path.join(REPO_ROOT, 'docs')),
-    ...walkMarkdown(PLUGINS_DIR),
-    ...walkMarkdown(path.join(REPO_ROOT, 'companions')),
-    ...walkMarkdown(path.join(REPO_ROOT, 'kit')),
-    ...fs.readdirSync(REPO_ROOT).filter((f) => f.endsWith('.md')).map((f) => path.join(REPO_ROOT, f)),
-  ];
-  return out.filter((f) => !path.basename(f).startsWith('CHANGELOG')).sort();
 }
 
 function sharedReferences() {
@@ -260,29 +238,6 @@ test('the implicit auto-terminal paths carry the statement too', () => {
     }
   }
   assert.deepEqual(problems, [], `implicit terminal paths:\n  ${problems.join('\n  ')}`);
-});
-
-test('no markdown in the repo still teaches session-end archiving', () => {
-  const offenders = [];
-  for (const file of allMarkdown()) {
-    const rel = path.relative(REPO_ROOT, file);
-    const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
-    lines.forEach((line, i) => {
-      if (AMENDED_MARKER.test(line)) return; // preserved-as-written, pointer attached
-      for (const claim of DISPROVED_CLAIMS) {
-        if (claim.test(line)) offenders.push(`${rel}:${i + 1} — ${claim} — ${line.trim().slice(0, 110)}`);
-      }
-    });
-  }
-  // Contract: an agent reading the repo's markdown before a terminal write —
-  // the runbooks, the plugin READMEs, AGENTS.md and the ADRs a session starts
-  // from — a line that still says the Stop hook archives at session end or
-  // close teaches it to write the marker and expect a later, deliberate close.
-  assert.deepEqual(
-    offenders, [],
-    'Stop fires at every turn end, not at session close — these lines still claim otherwise:\n  ' +
-      offenders.join('\n  '),
-  );
 });
 
 // Slice out one `## `-level section, bounded by the NEXT `## ` heading. Reading

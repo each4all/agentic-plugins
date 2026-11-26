@@ -1297,6 +1297,11 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       if (r.lingering) {
         lingering = true;
         verdict = { reason: 'worker-failed', detail: `a verification check's process group (${r.lingering}) is still there after SIGKILL; the run keeps its locks until that group is empty (ps -g ${r.lingering})`, scope: 'run' };
+      } else if (r.retained) {
+        // ADR-0023, the harness bullet (C154): the check's harness ownership
+        // was not let go; the run keeps the check's locks and scratch.
+        lingering = true;
+        verdict = { reason: 'worker-failed', detail: `a verification check's mutation harness left work that is not over: ${r.retained}; while this driver lives it keeps its locks, and once it has ended its open-run record and the check's temporary directory stay (heavy work waits behind the harness's own lock ownership) until that work reads gone — another run's other work is not held back`, scope: 'run' };
       } else if (interrupted) {
         verdict = { reason: 'interrupted', detail: 'the owner interrupted the run' };
       } else if (r.outcome === 'halt') {

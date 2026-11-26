@@ -72,6 +72,7 @@ import {
 import { SHARED_HOMES } from '../../../scripts/lib/state-root.mjs';
 import { scopeRecordState } from '../../../scripts/lib/scope.mjs';
 import { createScopeEnder, readScopeOnce } from '../../../scripts/lib/scope-reader.mjs';
+import { checkHolds } from '../../../scripts/lib/heavy-check.mjs';
 
 // This orchestrator's root: the runner of its own peer runs when the dead
 // run's pinned one is gone.
@@ -401,6 +402,34 @@ async function liveEntry(record, mainRoot, probe) {
   return false;
 }
 
+// ADR-0023, the harness bullet (C154) — what the verification checks of the
+// run keep: each check record in its directory (lib/heavy-check.mjs) whose
+// harness's test run still runs or whose scope is not read gone, judged as
+// the check's own release judges it. The driver keeps its locks for such a
+// check only while it lives; once it is gone, its record stays here, so the
+// leftover sweep keeps the run's temporary directories and `stop` reports the
+// run not stopped, until the scope reads gone. A record that does not read
+// keeps the run too. Answers the reasons, one per check that holds. KNOWN
+// LIMIT: a record removed by hand is not seen here (nothing lists the checks
+// a run started but their records); the leftover sweep still keeps a marked
+// check directory whose record is missing (scratch.mjs checkDirKept).
+function checksHeld(runDir, holds) {
+  const dir = path.join(runDir, 'checks');
+  let names;
+  try {
+    names = fs.readdirSync(dir);
+  } catch (e) {
+    if (e?.code === 'ENOENT') return [];
+    return [`its check records ${dir} cannot be listed (${e?.code ?? e?.message ?? e})`];
+  }
+  const out = [];
+  for (const n of names.filter((x) => /^\d+-\d+\.json$/.test(x)).sort()) {
+    const why = holds({ recordFile: path.join(dir, n), dirs: [], required: true });
+    if (why !== null) out.push(`check ${n.replace(/\.json$/, '')}: ${why}`);
+  }
+  return out;
+}
+
 /**
  * Clean up after the dead runs of a macro (every macro's when `macroId` is
  * null): the outcome of each open-run record looked at, other than the
@@ -413,11 +442,13 @@ async function liveEntry(record, mainRoot, probe) {
  * @param a.by            { run_id (the caller's run, or null), label }
  * @param a.cancel        the cancel of one peer run (a test passes its own)
  * @param a.readScope     one reading of a scope, with no kill (a test's own)
+ * @param a.holds         a check record's judgment (lib/heavy-check.mjs
+ *                        checkHolds; a test's own)
  */
 export async function cleanupDeadRuns({
   mainRoot, macroId = null, selfRunId = null, engineerRoot = null, by,
   env = process.env, now = () => Date.now(), out = () => {}, probe = processFingerprint,
-  cancel = cancelPeer, readScope = readScopeOnce, scopeEnder = createScopeEnder(),
+  cancel = cancelPeer, readScope = readScopeOnce, holds = checkHolds, scopeEnder = createScopeEnder(),
 }) {
   const results = [];
   let records;
@@ -436,7 +467,7 @@ export async function cleanupDeadRuns({
     if (macroId !== null && record.macro_id !== macroId) continue;
     let r;
     try {
-      r = await cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, probe, cancel, readScope, scopeEnder });
+      r = await cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, probe, cancel, readScope, holds, scopeEnder });
     } catch (e) {
       r = { run_id: runId, outcome: 'kept', detail: `the cleanup failed (${e?.message ?? e}); its record is kept` };
     }
@@ -446,7 +477,7 @@ export async function cleanupDeadRuns({
   return results;
 }
 
-async function cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, probe, cancel, readScope, scopeEnder }) {
+async function cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, probe, cancel, readScope, holds, scopeEnder }) {
   const runId = record.run_id;
   if (await holderAlive({ pid: record.pid, fingerprint: record.fingerprint, worker: null }, { probe })) {
     return { run_id: runId, outcome: 'live', detail: `its driver (pid ${record.pid}) is running` };
@@ -627,7 +658,11 @@ async function cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, 
       if (!costKnown) run.cost_complete = false;
     }
 
-    complete = unresolved.length === 0;
+    // ADR-0023, the harness bullet (C154): its peers are cancelled and its
+    // steps settled as for any dead run, but while a check's harness left
+    // work that is not over, its record stays (checksHeld).
+    const held = checksHeld(r.dir, holds);
+    complete = unresolved.length === 0 && held.length === 0;
     const at = iso(now());
     const prev = run.dead_run_cleanup ?? {};
     run.dead_run_cleanup = {
@@ -664,6 +699,14 @@ async function cleanupOne({ mainRoot, file, record, engineerRoot, by, env, now, 
     writeRun(r.dir, run);
     if (complete && !publishEnd({ mainRoot, record, run, dir: r.dir, now, haltFile })) writeRun(r.dir, run);
     if (complete) removeOpenRun(mainRoot, runId);
+    if (unresolved.length === 0 && held.length > 0) {
+      return {
+        run_id: runId,
+        outcome: 'live',
+        detail: `its driver is gone, but a verification check's mutation harness left work that is not over (${held.join('; ')}); its peers are cancelled, and its record and temporary directories stay until that work reads gone`,
+        cancelled, reported, unresolved, settled,
+      };
+    }
     return {
       run_id: runId,
       outcome: complete ? 'cleaned' : 'kept',

@@ -43,7 +43,8 @@ const mode = process.argv[2];
 if (process.env.VERIFY_FIXTURE_LOG) fs.appendFileSync(process.env.VERIFY_FIXTURE_LOG, mode + '\\n');
 const hang = () => setInterval(() => {}, 1000);
 switch (mode) {
-  case 'pass': case 'pass2': case 'driver': case 'files': case 'suite': case 'selfpass': case 'mutate': process.exit(0);
+  case 'pass': case 'pass2': case 'driver': case 'files': case 'suite': case 'selfpass': process.exit(0);
+  case 'mutate': if (process.env.VERIFY_FIXTURE_ENV) fs.writeFileSync(process.env.VERIFY_FIXTURE_ENV, JSON.stringify({ record: process.env.AGENTIC_CHECK_RECORD ?? null })); process.exit(0);
   case 'fail':
     console.log('TAP version 13');
     console.log('not ok 1 - suite > it fails');
