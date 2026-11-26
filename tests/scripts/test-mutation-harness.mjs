@@ -1012,6 +1012,16 @@ function spawnNode(args, env = {}, deadlineMs = 30_000) {
 
 const runCli = (args, env, deadlineMs) => spawnNode([HARNESS, ...args], env, deadlineMs);
 
+// A PATH whose systemd-run fails, so the CLI makes no scope and its test runs
+// are bounded by their group alone: the cases that hold a group's kill judge
+// that bound (a scope's kill would end the run; test-mutation-harness-scope*.mjs).
+function noScopePath(dir) {
+  const bin = join(dir, 'no-scope-bin');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, 'systemd-run'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  return `${bin}:${process.env.PATH}`;
+}
+
 // Take the lock of `root` and release it, in a process of its own.
 const acquireInChild = (root, env) => spawnNode([
   '--input-type=module', '-e',
@@ -1402,7 +1412,7 @@ export const MUTATIONS = [
     const path = runLockPath(root);
     const cli = runCli(
       [join(root, 'spec.mjs'), '--repo-root', root, '--timeout', '600'],
-      { NODE_OPTIONS: `--require ${JSON.stringify(preload)}` },
+      { NODE_OPTIONS: `--require ${JSON.stringify(preload)}`, PATH: noScopePath(root) },
     );
     try {
       ok(await until(() => pidsIn(pidFile).length === 2, 30_000), 'the test file and the process it started are running');

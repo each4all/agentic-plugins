@@ -1861,7 +1861,7 @@ export async function runLanes(c) {
     // A group that outlived SIGKILL keeps the run's locks from now. The look
     // comes next, and the verdict after it: an interrupt that comes while it
     // awaits is judged as one that came during the batch.
-    if (r.lingering) c.markLingering();
+    if (r.lingering || r.retained) c.markLingering();
     // A batch that yielded before it started ran nothing: the owner's rerun
     // it carried stays for the batch that runs.
     if (r.outcome === 'stopped' && entry.forcedStep && !forced.has(id)) forced.set(id, entry.forcedStep);
@@ -1869,6 +1869,10 @@ export async function runLanes(c) {
     let verdict = null;
     if (r.lingering) {
       verdict = { reason: 'worker-failed', detail: `a verification check's process group (${r.lingering}) is still there after SIGKILL; the run keeps its locks until that group is empty (ps -g ${r.lingering})`, scope: 'run' };
+    } else if (r.retained) {
+      // ADR-0023, the harness bullet (C154): the check's harness ownership
+      // was not let go; the run keeps the check's locks and scratch.
+      verdict = { reason: 'worker-failed', detail: `a verification check's mutation harness left work that is not over: ${r.retained}; while this driver lives it keeps its locks, and once it has ended its open-run record and the check's temporary directory stay (heavy work waits behind the harness's own lock ownership) until that work reads gone — another run's other work is not held back`, scope: 'run' };
     } else if (c.interrupted()) {
       // The owner's interrupt is judged before what the step returned: a
       // Ctrl-C reaches the persona's writes too, and the step they fail is no
@@ -2988,7 +2992,10 @@ export async function runLanes(c) {
     const batch = verifyActive;
     if (batch) {
       batch.handle?.abort('interrupted');
-      await batch.handle?.done.catch(() => {});
+      const ended = await batch.handle?.done.catch(() => null);
+      // A check group that outlived SIGKILL, or a check whose harness
+      // ownership was not let go (C154), keeps the run's locks here too.
+      if (ended?.lingering || ended?.retained) c.markLingering();
       try {
         appendStep(runDir, { event: 'finished', seq: batch.seq, lane: batch.subtaskId, kind: 'verify', ended_at: new Date(now()).toISOString(), cost_usd: 0, cost_charged_usd: 0, outcome: 'error' });
       } catch { /* the next run's journal recovery reads the batch */ }

@@ -181,12 +181,12 @@ describe('verify-run: order, stops and the step that follows', () => {
   it('a check gets the worker\'s environment without the run\'s token, flag, step, offer or state base', BOUNDED, async () => {
     const t = await setUp([{ kind: 'env' }]);
     const envFile = join(t.logs, 'env.json');
-    const job = t.job({ envFile, extraEnv: { AGENTIC_ENGINEER_ROOT: '/kept' } });
+    const job = t.job({ envFile, extraEnv: { AGENTIC_ENGINEER_ROOT: '/kept', AGENTIC_CHECK_RECORD: '/a/worker/record.json' } });
     ok(job.checkEnv.AGENTIC_ENGINEER_ROOT === '/kept');
     const r = await runStep(job);
     strictEqual(r.batch.end, 'passed');
     const names = JSON.parse(readFileSync(envFile, 'utf8'));
-    for (const k of ['AGENTIC_AUTOPILOT', 'AGENTIC_AUTOPILOT_TOKEN', 'AGENTIC_AUTOPILOT_STEP', 'AGENTIC_AUTOPILOT_VERIFY', 'AGENTIC_STATE_BASE']) ok(!names.includes(k), `${k}: ${names}`);
+    for (const k of ['AGENTIC_AUTOPILOT', 'AGENTIC_AUTOPILOT_TOKEN', 'AGENTIC_AUTOPILOT_STEP', 'AGENTIC_AUTOPILOT_VERIFY', 'AGENTIC_STATE_BASE', 'AGENTIC_CHECK_RECORD']) ok(!names.includes(k), `${k}: ${names}`);
     ok(names.includes('AGENTIC_ENGINEER_ROOT'), 'the rest of the worker environment is kept (control)');
   });
 
@@ -318,6 +318,51 @@ describe('verify-run: each check\'s own TMPDIR', () => {
     const rn = await runStep(n.job({ envFile: nEnv, extraEnv: { TMPDIR: own } }));
     strictEqual(rn.batch.end, 'passed');
     strictEqual(JSON.parse(readFileSync(nEnv, 'utf8')).tmp, own);
+  });
+});
+
+describe('verify-run: a check\'s record and its harness ownership (C154)', () => {
+  it('each check gets its record before its scratch; a mutate check whose harness ownership is not let go keeps its lock entries and scratch, and is no result', BOUNDED, async () => {
+    const t = await setUp([{ kind: 'pass' }, { kind: 'mutate', args: { ids: ['M1'] } }]);
+    const released = [];
+    const base = realpathSync(mkdtempSync(join(tmpdir(), 'verify-scratch-')));
+    dirs.push(base);
+    const recordAtMake = [];
+    const envFile = join(t.logs, 'env.json');
+    const job0 = t.job({ envFile });
+    const scratch = {
+      checkDir: (seq, i) => join(base, `v${seq}-${i}`),
+      make: (d) => { recordAtMake.push(existsSync(join(job0.runDir, 'checks', `4-${d.slice(-1)}.json`))); mkdirSync(d); },
+      release: (d, why) => { released.push([d.slice(base.length + 1), why]); },
+    };
+    const asked = [];
+    const retainer = (o) => { asked.push(o); return async () => 'its harness\'s test run 7 (its scope agentic-h.scope is populated) still runs or is not read gone'; };
+    const job = { ...job0, scratch, retainer };
+    const r = await runStep(job);
+    match(r.retained ?? '', /agentic-h\.scope is populated/);
+    strictEqual(r.batch.end, null, 'the batch is not ended: the check has no result');
+    // The passed check ran through the wrapper (its group and its command's);
+    // the mutate check locks itself and runs directly (one group).
+    deepStrictEqual(r.groups.map((g) => g.released === true), [true, true, false], 'the passed check\'s entries go; the retained check\'s stay');
+    deepStrictEqual(released, [['v4-0', null], ['v4-1', r.retained]]);
+    deepStrictEqual(recordAtMake, [true, true], 'each check\'s record was there before its scratch was made');
+    deepStrictEqual(latest(await readWorkflow(t.wf)).results.map((x) => x.outcome), ['passed'], 'no result for the retained check');
+    const rec = (i) => JSON.parse(readFileSync(join(job.runDir, 'checks', `4-${i}.json`), 'utf8'));
+    deepStrictEqual([rec(0).runs_harness, rec(1).runs_harness, rec(1).ownership], [false, true, null]);
+    deepStrictEqual(asked.map((o) => [o.recordFile, o.dirs]), [[join(job.runDir, 'checks', '4-1.json'), [join(base, 'v4-1')]]], 'only the harness check is judged');
+    deepStrictEqual(JSON.parse(readFileSync(envFile, 'utf8')), { record: join(job.runDir, 'checks', '4-1.json') }, 'the mutate check ran with its record in AGENTIC_CHECK_RECORD');
+  });
+
+  it('a record that cannot be written starts no check and makes no scratch', BOUNDED, async () => {
+    const t = await setUp([{ kind: 'pass' }]);
+    const job = t.job();
+    writeFileSync(join(job.runDir, 'checks'), 'a file where the records go');
+    const made = [];
+    const scratch = { checkDir: (seq, i) => `/nowhere/v${seq}-${i}`, make: (d) => { made.push(d); }, release: () => {} };
+    const r = await runStep({ ...job, scratch });
+    deepStrictEqual([ran(t.log), made], [[], []]);
+    deepStrictEqual(latest(await readWorkflow(t.wf)).results.map((x) => x.outcome), ['not-started']);
+    strictEqual(r.batch.end, 'no-evidence');
   });
 });
 

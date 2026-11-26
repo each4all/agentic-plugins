@@ -35,6 +35,7 @@
 // Usage:
 //   node scripts/mutation-harness.mjs <spec.mjs> [--only id,id] [--repo-root d]
 //                                     [--work-dir d] [--keep] [--timeout s]
+//                                     [--check-record f]
 //   node scripts/mutation-harness.mjs --static [spec.mjs ...] [--only id,id]
 //                                     [--repo-root d] [--work-dir d] [--keep]
 //
@@ -54,6 +55,18 @@
 // Each test run may take `--timeout` seconds (or `MUTATION_HARNESS_TIMEOUT`;
 // 900 by default). A run that takes longer is stopped and reported as TIMEOUT,
 // which is no verdict: the defect was neither caught nor missed (C135).
+//
+// `--check-record`, or the `AGENTIC_CHECK_RECORD` environment variable (an
+// autopilot verification check's record, lib/heavy-check.mjs, whose path
+// verify-run.mjs hands a `mutate` check in that variable; the flag wins when
+// both are given). The CLI removes the variable from its own environment
+// before it loads a spec or starts a test run, and `childEnv` drops it too, so
+// no test run inherits it. Once it
+// holds or has joined the lock, and before its first test run, the harness
+// writes there the lock path and token of that ownership, with the device and
+// inode of the lock's directory, so whatever removes the check's entries or
+// scratch can read the harness's entries, scopes and copies first. A record
+// it cannot write runs nothing (no verdict).
 //
 // Runs of the CLI in worktrees of one repository take turns: the second waits
 // for the first (C101). The lock is the repository's heavy-work lock (ADR-0068
@@ -76,7 +89,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import {
   chmodSync, copyFileSync, cpSync, existsSync, lstatSync, lutimesSync, mkdirSync, mkdtempSync, readdirSync,
-  readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync,
+  readFileSync, readlinkSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { constants as osConstants, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
@@ -85,6 +98,16 @@ import { pathToFileURL } from 'node:url';
 import {
   HeavyLockError, acquire, groupState, lockPath, processInfo, reapStale as reapStaleLock, registerGroup,
 } from '../plugins/orchestrator/scripts/lib/heavy-lock.mjs';
+import {
+  endHarnessScope, harnessOwner, harnessUnitName, planHarnessScope,
+} from '../plugins/orchestrator/scripts/lib/heavy-scope.mjs';
+import {
+  abandonedRecord, abortGate, gateHandshake, noScopeRecord, scopedRecord, spawnGated,
+} from '../plugins/orchestrator/scripts/lib/scope-launch.mjs';
+import { CHECK_RECORD_ENV, recordOwnership } from '../plugins/orchestrator/scripts/lib/heavy-check.mjs';
+import { readScopeOnce } from '../plugins/orchestrator/scripts/lib/scope-reader.mjs';
+import { associationOf } from '../plugins/orchestrator/scripts/lib/scope-run.mjs';
+import { PEER_RUN_PIPE_DRAIN_MS, SCOPE_EMPTY_WAIT_MS, teardownOf } from '../plugins/orchestrator/scripts/lib/scope.mjs';
 import { isSessionVariable } from './lib/session-env.mjs';
 import { isCliEntry } from './lib/cli-entry.mjs';
 
@@ -201,12 +224,14 @@ export function fileAt(repoRoot, copy, ref, file) {
  *
  * The operator's agentic session is dropped too, as `npm test` drops it
  * (`scripts/lib/session-env.mjs`): inherited, it fails the control under an
- * autopilot worker, and the harness refuses to score anything.
+ * autopilot worker, and the harness refuses to score anything. So is a check
+ * record's variable (`CHECK_RECORD_ENV`): a test run that spawns a harness of
+ * its own must not write into the check's record.
  */
 export function childEnv(env = process.env) {
   const out = {};
   for (const [key, value] of Object.entries(env)) {
-    if (key.startsWith('NODE_TEST_') || isSessionVariable(key)) continue;
+    if (key.startsWith('NODE_TEST_') || key === CHECK_RECORD_ENV || isSessionVariable(key)) continue;
     out[key] = value;
   }
   return out;
@@ -257,6 +282,19 @@ export function resolveTimeoutSeconds(flag, env = process.env) {
 // its lifeline, which the harness does only once the group is registered in the
 // lock's ownership (ADR-0068 Decision 6). A harness killed before that leaves an
 // idle supervisor, which its lifeline's end stops: nothing ran unregistered.
+//
+// A group signal does not reach a process that left the group (a detached
+// spawn, `setsid`, a nested `agentic-autopilot heavy`): it survives the run,
+// with ppid 1, whatever the supervisor does. So under the CLI's lock, where the
+// user manager can make one, each test run starts in a scope of its own
+// (`runScoped`, lib/heavy-scope.mjs): its identity is recorded on the run's
+// ownership entry before the gate's word, the harness is the scope's
+// supervisor, and every end of the run ends the scope and waits to read it
+// gone before the entry goes. A harness killed with SIGKILL leaves the entry,
+// and the next reader of the lock that proves the harness gone ends the scope
+// before it lets the lock go (lib/heavy-lock.mjs ownershipGroups). Where no
+// scope can be made (no user manager, a run inside another launcher's scope,
+// macOS, Windows) the entry says why, and the group is the run's only bound.
 const GROUPS = process.platform !== 'win32';
 const KILL_GRACE_MS = 5000;
 const REPORT = 'mutation-harness-run ';
@@ -330,17 +368,37 @@ let OWNERSHIP = null;
 // The groups of test runs that failed because they would not end: the CLI
 // keeps the copies while one of them runs, since it may still write there.
 const STUCK = new Set();
+// The test runs that have not settled yet, a scoped one's end included: a
+// signal's cleanup waits for each before it removes the copies and releases
+// the lock (ADR-0023, amendment of 2026-11-24, the mutation harness).
+const PENDING = new Set();
+// The scopes of test runs that were not read gone at their end, by the
+// group's pid: their entries and copies stay, no further test run starts in
+// this harness, and the CLI keeps the copies while one is not read gone.
+const KEPT = new Map();
+
+// The scoped runs among them, whose end takes longer than a group's, each to
+// what ends its wait for the supervisor's exit: a supervisor that does not
+// exit once its group was killed (uninterruptible sleep) still has its scope
+// ended (`stopRuns`, the timeout's grace).
+const SCOPED = new Map();
+
+// How long a signal's cleanup waits for the runs it stopped: the group's
+// grace, and while a scoped run is in progress its end too (its kill and the
+// wait for gone, then the bounded drain of its pipes), with a margin.
+const STOP_WAIT_MS = KILL_GRACE_MS + SCOPE_EMPTY_WAIT_MS + PEER_RUN_PIPE_DRAIN_MS + 2000;
 
 /**
  * Stop every test run in progress, start no more, and wait, up to `ms`, until
- * each run's supervisor has exited and nothing in its group is left; resolves
- * whether that happened in time. The CLI calls it on a signal before it removes
- * the copies and releases the lock: a run still writing into a copy, or still
- * running once another harness holds the lock, is what the lock exists to
- * prevent. A run that ends while this waits would otherwise let `runSpec` start
- * the next one.
+ * each run has settled (a scoped run's end, its scope's kill and the wait for
+ * gone, included), its supervisor has exited and nothing in its group is left;
+ * resolves whether that happened in time. The CLI calls it on a signal before
+ * it removes the copies and releases the lock: a run still writing into a
+ * copy, or still running once another harness holds the lock, is what the lock
+ * exists to prevent. A run that ends while this waits would otherwise let
+ * `runSpec` start the next one.
  */
-export async function stopRuns(ms = KILL_GRACE_MS) {
+export async function stopRuns(ms = SCOPED.size > 0 ? STOP_WAIT_MS : KILL_GRACE_MS) {
   stopping = true;
   for (const child of LIVE) HALTED.add(child);
   for (const child of HALTED) {
@@ -348,12 +406,41 @@ export async function stopRuns(ms = KILL_GRACE_MS) {
     child.stdout.destroy();
     child.stderr.destroy();
   }
+  for (const force of SCOPED.values()) setTimeout(force, KILL_GRACE_MS).unref?.();
   const exited = (child) => child.exitCode !== null || child.signalCode !== null;
   for (const end = Date.now() + ms; Date.now() < end;) {
-    if ([...HALTED].every((child) => exited(child) && !groupAlive(child.pid))) return true;
+    if (PENDING.size === 0 && [...HALTED].every((child) => exited(child) && !groupAlive(child.pid))) return true;
     await new Promise((wake) => setTimeout(wake, 20));
   }
   return false;
+}
+
+// The scope hooks of a test run (lib/heavy-scope.mjs, lib/scope-launch.mjs):
+// whether this process makes scopes (asked once), how a gated child starts,
+// the handshake up to the gate's word, and the end of its scope. A test passes
+// its own.
+let PLAN = null;
+export const SCOPE_HOOKS = Object.freeze({
+  plan: () => {
+    PLAN ??= planHarnessScope();
+    return PLAN;
+  },
+  spawnGated,
+  handshake: gateHandshake,
+  end: (identity) => endHarnessScope(identity),
+});
+
+// The directory a test run runs in, as its entry names it: its path, and the
+// device and inode a rename keeps (decimal strings: a JSON number cannot carry
+// 64 bits).
+function copyIdentity(copy) {
+  let st;
+  try {
+    st = statSync(copy, { bigint: true });
+  } catch (err) {
+    throw new MutationHarnessError(`cannot read the copy ${copy}: ${err.message}`);
+  }
+  return { path: resolve(copy), dev: String(st.dev), ino: String(st.ino) };
 }
 
 /**
@@ -368,12 +455,63 @@ export async function stopRuns(ms = KILL_GRACE_MS) {
  * settles only once nothing of its group is left, or, past KILL_GRACE_MS of
  * SIGKILLs, fails with the group kept in the ownership, so the lock outlives
  * it. A registration the ownership refuses (it was closed) starts nothing.
- * `beforeGo` (called between the registration and the go line) is for tests.
+ * The entry names the copy the run runs in.
+ *
+ * With an ownership, and where the user manager can make one, the run starts
+ * in a scope of its own (`runScoped`), whose kill ends what left the group; a
+ * scope not read gone at the run's end fails the run as no verdict and keeps
+ * its entry. Where no scope can be made, the entry says why. With no
+ * ownership (a library caller), the run starts as before. `beforeGo` (called
+ * between the registration and the go line) and `scope` are for tests.
  */
-export function runTests(copy, tests, { timeoutSeconds = DEFAULT_TIMEOUT_SECONDS, ownership = OWNERSHIP, beforeGo = () => {} } = {}) {
+export function runTests(copy, tests, { timeoutSeconds = DEFAULT_TIMEOUT_SECONDS, ownership = OWNERSHIP, beforeGo = () => {}, scope = SCOPE_HOOKS } = {}) {
+  if (stopping) return Promise.reject(new MutationHarnessError('the harness is stopping; no test run starts'));
+  if (KEPT.size > 0) {
+    const units = [...KEPT.values()].map((k) => k.unit).join(', ');
+    return Promise.reject(new MutationHarnessError(
+      `the scope ${units} of an earlier test run was not read gone; no further test run starts in this harness`,
+    ));
+  }
+  const plan = ownership ? scope.plan() : null;
+  if (plan?.kind === 'gated') return runScoped(copy, tests, { timeoutSeconds, ownership, beforeGo, scope });
+  return runDirect(copy, tests, { timeoutSeconds, ownership, beforeGo, scopeRecord: plan?.record });
+}
+
+// The result of a run that ended, its group gone and its entry unregistered:
+// `{ value }` or `{ error }`.
+function runResult({ refused, timedOut, stdout, stderr, exit }) {
+  if (refused !== null) {
+    return { error: refused instanceof MutationHarnessError ? refused : new MutationHarnessError(`test run not started: ${refused.message}`) };
+  }
+  if (timedOut) return { value: { status: null, timedOut: true, failing: [], failingPaths: [], stdout } };
+  const report = runReport(stderr);
+  if (report === null) {
+    return { error: new MutationHarnessError(
+      `test run ended without reporting how its runner exited (supervisor exit ${exit?.code ?? exit?.signal}) — treat as no verdict`,
+    ) };
+  }
+  if (report.error !== undefined) return { error: new MutationHarnessError(`test run failed to start: ${report.error}`) };
+  if (!Number.isInteger(report.code)) return { error: new MutationHarnessError(`test run did not exit (signal ${report.signal}) — treat as no verdict`) };
+  const failed = failingTests(stdout);
+  return { value: {
+    status: report.code,
+    timedOut: false,
+    failing: failed.map((f) => f.name),
+    failingPaths: failed.map((f) => f.path),
+    stdout,
+  } };
+}
+
+// A test run started directly, as before scopes: its group is its only bound.
+// `scopeRecord`, where the run has an ownership, says on its entry why no
+// scope was made.
+function runDirect(copy, tests, { timeoutSeconds, ownership, beforeGo, scopeRecord }) {
   return new Promise((done, fail) => {
-    if (stopping) {
-      fail(new MutationHarnessError('the harness is stopping; no test run starts'));
+    let copyId;
+    try {
+      copyId = ownership ? copyIdentity(copy) : undefined;
+    } catch (err) {
+      fail(err);
       return;
     }
     const child = spawn(
@@ -382,6 +520,8 @@ export function runTests(copy, tests, { timeoutSeconds = DEFAULT_TIMEOUT_SECONDS
       { cwd: copy, env: childEnv(), detached: GROUPS, stdio: ['pipe', 'pipe', 'pipe'] },
     );
     LIVE.add(child);
+    const pending = {};
+    PENDING.add(pending);
     let stdout = '';
     let stderr = '';
     let exit = null;
@@ -408,6 +548,7 @@ export function runTests(copy, tests, { timeoutSeconds = DEFAULT_TIMEOUT_SECONDS
       if (settled) return;
       settled = true;
       LIVE.delete(child);
+      PENDING.delete(pending);
       clearTimeout(timer);
       clearTimeout(grace);
       child.stdin.destroy();
@@ -434,37 +575,9 @@ export function runTests(copy, tests, { timeoutSeconds = DEFAULT_TIMEOUT_SECONDS
         fail(err);
         return;
       }
-      if (refused !== null) {
-        fail(refused instanceof MutationHarnessError ? refused : new MutationHarnessError(`test run not started: ${refused.message}`));
-        return;
-      }
-      if (timedOut) {
-        done({ status: null, timedOut: true, failing: [], failingPaths: [], stdout });
-        return;
-      }
-      const report = runReport(stderr);
-      if (report === null) {
-        fail(new MutationHarnessError(
-          `test run ended without reporting how its runner exited (supervisor exit ${exit.code ?? exit.signal}) — treat as no verdict`,
-        ));
-        return;
-      }
-      if (report.error !== undefined) {
-        fail(new MutationHarnessError(`test run failed to start: ${report.error}`));
-        return;
-      }
-      if (!Number.isInteger(report.code)) {
-        fail(new MutationHarnessError(`test run did not exit (signal ${report.signal}) — treat as no verdict`));
-        return;
-      }
-      const failed = failingTests(stdout);
-      done({
-        status: report.code,
-        timedOut: false,
-        failing: failed.map((f) => f.name),
-        failingPaths: failed.map((f) => f.path),
-        stdout,
-      });
+      const out = runResult({ refused, timedOut, stdout, stderr, exit });
+      if (out.error) fail(out.error);
+      else done(out.value);
     })); });
     // Registered, then started: no group of the lock's ownership runs
     // unregistered (the go line).
@@ -472,7 +585,7 @@ export function runTests(copy, tests, { timeoutSeconds = DEFAULT_TIMEOUT_SECONDS
       const leaderStarted = processInfo(child.pid)?.started ?? null;
       STARTS.set(child.pid, leaderStarted);
       try {
-        if (ownership) entry = harnessError(() => registerGroup(ownership, child.pid, { leaderStarted }));
+        if (ownership) entry = harnessError(() => registerGroup(ownership, child.pid, { leaderStarted, scope: scopeRecord, copy: copyId }));
         beforeGo(child);
         child.stdin.write('go\n');
       } catch (err) {
@@ -481,6 +594,310 @@ export function runTests(copy, tests, { timeoutSeconds = DEFAULT_TIMEOUT_SECONDS
       }
     }
   });
+}
+
+// A race of `promise` against `ms`: true when it settled first.
+function settlesWithin(promise, ms) {
+  let timer;
+  return Promise.race([
+    promise.then(() => true),
+    new Promise((wake) => { timer = setTimeout(() => wake(false), ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * A test run in a scope of its own (ADR-0023, amendments of 2026-11-22 and
+ * 2026-11-24, the mutation harness). The gate (lib/scope-launch.mjs) starts
+ * under `systemd-run --user --scope` and executes the supervisor in its place
+ * on its word, so the gate's pid is the supervisor's and leads the run's group
+ * as before. In order:
+ *
+ *   1. the group is registered, naming the copy, before the handshake: the
+ *      identity's owner is the entry, which exists only once registered;
+ *   2. the handshake records the identity on the entry (`recordScope`) before
+ *      the gate's word, and the harness, the scope's supervisor, sends `go` to
+ *      the supervisor only after the word: nothing of the run starts before
+ *      its group and its scope are recorded;
+ *   3. a failure before the word marks the entry abandoned where it recorded
+ *      the identity (a mark it cannot write launches nothing, keeps the entry
+ *      and is no verdict), drains the gate's group, unregisters, and starts the
+ *      run directly, unless the harness is stopping;
+ *   4. every end after the word (the run exited, its timeout, a signal) takes
+ *      one sequence from the supervisor's exit: the group stopped and waited
+ *      for, the scope's kill and the wait for gone (`scope.end`), the pipes
+ *      drained within PEER_RUN_PIPE_DRAIN_MS (`pipe_held` past it), the
+ *      teardown recorded on the entry; the entry is unregistered, and the copy
+ *      may go, only on a reading of gone. A scope not read gone fails the run
+ *      as no verdict, keeps the entry, and starts no further run here.
+ */
+function runScoped(copy, tests, { timeoutSeconds, ownership, beforeGo, scope }) {
+  return new Promise((done, fail) => {
+    let copyId;
+    try {
+      copyId = copyIdentity(copy);
+    } catch (err) {
+      fail(err);
+      return;
+    }
+    const unit = harnessUnitName(process.pid);
+    const args = ['-e', SUPERVISOR, '--', '--test', '--test-concurrency=1', '--test-reporter=tap', ...tests];
+    const options = { cwd: copy, env: childEnv(), detached: GROUPS, stdio: ['pipe', 'pipe', 'pipe'] };
+    let child;
+    try {
+      child = scope.spawnGated({ unit, command: process.execPath, args, options });
+    } catch (err) {
+      fail(new MutationHarnessError(`test run failed to start: ${err.message}`));
+      return;
+    }
+    LIVE.add(child);
+    const pending = {};
+    PENDING.add(pending);
+    let resolveForce;
+    const forced = new Promise((wake) => { resolveForce = wake; });
+    SCOPED.set(pending, () => resolveForce());
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let refused = null;
+    let timer;
+    let grace;
+    let resolveExit;
+    let resolveClose;
+    const exited = new Promise((wake) => { resolveExit = wake; });
+    const closed = new Promise((wake) => { resolveClose = wake; });
+    child.stdin?.on('error', () => { /* the supervisor has exited */ });
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk) => { stdout += chunk; });
+    child.stderr?.setEncoding('utf8');
+    child.stderr?.on('data', (chunk) => { stderr += chunk; });
+    // Before the word a gated child's errors are the handshake's; after it, a
+    // child that errs without an exit (it could not be signalled) is left to
+    // the timeout.
+    child.on('error', () => {});
+    child.on('exit', (code, signal) => {
+      resolveExit({ code, signal });
+      stopRun(child.pid, 'SIGKILL');
+    });
+    child.on('close', () => resolveClose());
+    const finish = (result) => {
+      LIVE.delete(child);
+      PENDING.delete(pending);
+      SCOPED.delete(pending);
+      clearTimeout(timer);
+      clearTimeout(grace);
+      try {
+        child.stdin?.destroy();
+      } catch {
+        // A pipe that will not close: the supervisor has exited.
+      }
+      result();
+    };
+    // A gate that ends before its word has run nothing: its group is waited
+    // for, and the entry, where there is one, goes.
+    const drainGate = async (entry) => {
+      await settlesWithin(exited, KILL_GRACE_MS);
+      const ended = Number.isInteger(child.pid) ? await groupEnded(child.pid) : true;
+      if (!ended) {
+        STUCK.add(child.pid);
+        return new MutationHarnessError(
+          `the process group ${child.pid} of a test run's gate still runs ${KILL_GRACE_MS / 1000} s after its launch failed; `
+          + 'it stays in the lock\'s ownership — treat as no verdict',
+        );
+      }
+      try {
+        harnessError(() => entry?.unregister());
+      } catch (err) {
+        return err;
+      }
+      return null;
+    };
+    (async () => {
+      if (!Number.isInteger(child.pid)) {
+        // systemd-run could not be started: nothing ran, and nothing is
+        // registered.
+        await settlesWithin(closed, KILL_GRACE_MS);
+        finish(() => {});
+        if (stopping) fail(new MutationHarnessError('the harness is stopping; no test run starts'));
+        else runDirect(copy, tests, { timeoutSeconds, ownership, beforeGo, scopeRecord: noScopeRecord('unavailable') }).then(done, fail);
+        return;
+      }
+      const leaderStarted = processInfo(child.pid)?.started ?? null;
+      STARTS.set(child.pid, leaderStarted);
+      let entry;
+      try {
+        entry = harnessError(() => registerGroup(ownership, child.pid, { leaderStarted, copy: copyId }));
+      } catch (err) {
+        abortGate(child);
+        const left = await drainGate(null);
+        finish(() => fail(left ?? (err instanceof MutationHarnessError ? err : new MutationHarnessError(`test run not started: ${err.message}`))));
+        return;
+      }
+      let recorded = null;
+      let answer;
+      try {
+        answer = await scope.handshake(child, {
+          unit,
+          owner: harnessOwner(ownership.token, entry.name),
+          hasSnapshot: false,
+          association: associationOf(process.env),
+          record: async (identity) => {
+            recorded = identity;
+            harnessError(() => entry.recordScope(scopedRecord(identity)));
+          },
+        });
+      } catch {
+        answer = { launched: false, check: 'handshake-error', recorded: recorded !== null };
+      }
+      if (!answer?.launched) {
+        abortGate(child);
+        if (answer?.recorded) {
+          try {
+            if (recorded === null) throw new Error('no identity to mark');
+            harnessError(() => entry.recordScope(abandonedRecord(recorded)));
+          } catch (err) {
+            // The entry may carry the identity: the CLI keeps the copies until
+            // that scope reads gone, and no further run starts here.
+            KEPT.set(child.pid, { unit, identity: recorded });
+            await settlesWithin(exited, KILL_GRACE_MS);
+            finish(() => fail(new MutationHarnessError(
+              `the scoped test run failed before its word (${answer.check}) and its entry ${entry.name} could not be marked abandoned (${err.message}); `
+              + 'nothing is launched, and the entry stays in the lock\'s ownership — treat as no verdict',
+            )));
+            return;
+          }
+        }
+        const left = await drainGate(entry);
+        if (left !== null) {
+          finish(() => fail(left));
+          return;
+        }
+        finish(() => {});
+        if (stopping) {
+          fail(new MutationHarnessError('the harness is stopping; no test run starts'));
+          return;
+        }
+        console.error(`mutation-harness: the scoped test run failed before its word (${answer?.check ?? 'unknown'}); it starts as before`);
+        runDirect(copy, tests, { timeoutSeconds, ownership, beforeGo, scopeRecord: noScopeRecord('unavailable') }).then(done, fail);
+        return;
+      }
+      const { identity } = answer;
+      // The word was sent: the harness never launches this run again. The
+      // supervisor starts the runner on its go line, sent once the group and
+      // the scope are recorded.
+      timer = setTimeout(() => {
+        timedOut = true;
+        stopRun(child.pid, 'SIGTERM');
+        grace = setTimeout(() => {
+          stopRun(child.pid, 'SIGKILL');
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          grace = setTimeout(() => resolveForce(), KILL_GRACE_MS);
+        }, KILL_GRACE_MS);
+      }, timeoutSeconds * 1000);
+      try {
+        if (stopping) throw new MutationHarnessError('the harness is stopping; no test run starts');
+        beforeGo(child);
+        child.stdin.write('go\n');
+      } catch (err) {
+        refused = err;
+        stopRun(child.pid, 'SIGKILL');
+      }
+      // One end, from the supervisor's exit, not its pipes' close; or, for a
+      // supervisor that does not exit KILL_GRACE_MS after its group's SIGKILL
+      // (the timeout's grace, a signal's stop), from that bound: its group then
+      // reads running, and the scope is ended all the same.
+      const exit = await Promise.race([exited, forced.then(() => null)]);
+      stopRun(child.pid, 'SIGKILL');
+      let ended = await groupEnded(child.pid);
+      let reading;
+      try {
+        reading = await scope.end(identity);
+      } catch {
+        reading = { state: 'withheld', check: 'end-failed' };
+      }
+      if (!ended) ended = !groupAlive(child.pid);
+      let pipeHeld = false;
+      if (!(await settlesWithin(closed, PEER_RUN_PIPE_DRAIN_MS))) {
+        pipeHeld = true;
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        await settlesWithin(closed, 1000);
+      }
+      try {
+        entry.recordTeardown({ ...teardownOf(reading), ...(pipeHeld ? { pipe_held: true } : {}) });
+      } catch {
+        // The teardown is a report: a reader reads the scope itself.
+      }
+      // A group that still runs keeps the copies whatever its scope reads
+      // later: the CLI reads the scope again at its end, and a scope read gone
+      // by then must not let the copies go under a live group.
+      if (!ended) STUCK.add(child.pid);
+      if (reading.state !== 'gone') {
+        KEPT.set(child.pid, { unit, identity });
+        finish(() => fail(new MutationHarnessError(
+          `the scope ${unit} of a test run is ${reading.state}${reading.check ? ` (${reading.check})` : ''} after the run ended; `
+          + `its entry and copy stay in the lock's ownership, and no further test run starts — treat as no verdict; `
+          + `the owner may stop it with systemctl --user stop ${unit}`,
+        )));
+        return;
+      }
+      if (!ended) {
+        finish(() => fail(new MutationHarnessError(
+          `the process group ${child.pid} of a test run still runs ${KILL_GRACE_MS / 1000} s after its runner ended; `
+          + 'it stays in the lock\'s ownership — treat as no verdict',
+        )));
+        return;
+      }
+      try {
+        harnessError(() => entry.unregister());
+      } catch (err) {
+        finish(() => fail(err));
+        return;
+      }
+      const out = runResult({ refused, timedOut, stdout, stderr, exit });
+      finish(() => (out.error ? fail(out.error) : done(out.value)));
+    })().catch((err) => finish(() => fail(err instanceof MutationHarnessError ? err : new MutationHarnessError(`test run failed: ${err?.message ?? err}`))));
+  });
+}
+
+// The units of the scopes kept at a run's end that are still not read gone,
+// each read once now through `read`; a reading that fails keeps its scope.
+function keptScopes(read) {
+  const out = [];
+  for (const { unit, identity } of KEPT.values()) {
+    let reading;
+    try {
+      if (identity === null) throw new Error('no identity to read');
+      reading = read(identity);
+    } catch {
+      reading = { state: 'withheld' };
+    }
+    if (reading?.state !== 'gone') out.push(unit);
+  }
+  return out;
+}
+
+/**
+ * The CLI's removal of its copies at its end: kept, with a line saying why,
+ * while a test run's process group still runs there or a scope kept at a run's
+ * end is not read gone (each read once now through `read`); otherwise removed
+ * unless `remove` is false (the owner's `--keep`, or a work directory the
+ * owner named). Answers 'stuck', 'kept-scope', 'removed' or 'left'.
+ */
+export function removeCopies(workDir, { remove = true, read = readScopeOnce, log = console.error } = {}) {
+  const stuck = [...STUCK].filter(groupAlive);
+  if (stuck.length > 0) {
+    log(`mutation-harness: copies kept under ${workDir}: process group ${stuck.join(', ')} of a test run still runs there`);
+    return 'stuck';
+  }
+  const kept = keptScopes(read);
+  if (kept.length > 0) {
+    log(`mutation-harness: copies kept under ${workDir}: the scope ${kept.join(', ')} of a test run is not read gone (the owner may stop it with systemctl --user stop <unit>)`);
+    return 'kept-scope';
+  }
+  if (!remove) return 'left';
+  rmSync(workDir, { recursive: true, force: true, maxRetries: 3 });
+  return 'removed';
 }
 
 // Whether the group of a run whose supervisor has ended is gone, SIGKILL sent
@@ -995,6 +1412,7 @@ function parseArgs(argv) {
     else if (arg === '--work-dir') opts.workDir = argv[++i];
     else if (arg === '--keep') opts.keep = true;
     else if (arg === '--timeout') opts.timeout = argv[++i] ?? '';
+    else if (arg === '--check-record') opts.checkRecord = argv[++i] ?? '';
     else rest.push(arg);
   }
   opts.spec = rest[0];
@@ -1002,10 +1420,22 @@ function parseArgs(argv) {
   return opts;
 }
 
+/**
+ * The check record named by the flag, else by `CHECK_RECORD_ENV`, which is
+ * removed from `env` either way (header): undefined when neither names one.
+ */
+export function takeCheckRecord(opts, env = process.env) {
+  const fromEnv = env[CHECK_RECORD_ENV];
+  delete env[CHECK_RECORD_ENV];
+  return opts.checkRecord !== undefined ? opts.checkRecord : fromEnv;
+}
+
 async function main(argv) {
   const opts = parseArgs(argv);
+  // Before any spec loads or test run starts (header, `--check-record`).
+  opts.checkRecord = takeCheckRecord(opts);
   if (!opts.spec && !opts.static) {
-    console.error('Usage: node scripts/mutation-harness.mjs <spec.mjs> [--only id,id] [--repo-root d] [--work-dir d] [--keep] [--timeout s]');
+    console.error('Usage: node scripts/mutation-harness.mjs <spec.mjs> [--only id,id] [--repo-root d] [--work-dir d] [--keep] [--timeout s] [--check-record f]');
     console.error('       node scripts/mutation-harness.mjs --static [spec.mjs ...] [--only id,id] [--repo-root d] [--work-dir d] [--keep]');
     return 2;
   }
@@ -1017,10 +1447,7 @@ async function main(argv) {
   // starts beside what is left of this one.
   const cleanUp = () => {
     try {
-      const stuck = [...STUCK].filter(groupAlive);
-      if (stuck.length > 0) {
-        console.error(`mutation-harness: copies kept under ${workDir}: process group ${stuck.join(', ')} of a test run still runs there`);
-      } else if (!opts.keep && !opts.workDir) rmSync(workDir, { recursive: true, force: true, maxRetries: 3 });
+      removeCopies(workDir, { remove: !opts.keep && !opts.workDir });
     } finally {
       lock?.release();
       lock = null;
@@ -1060,6 +1487,15 @@ async function main(argv) {
     const timeoutSeconds = resolveTimeoutSeconds(opts.timeout);
     await loadSpec(opts.spec, { repoRoot, only: opts.only });
     lock = await acquireRunLock(repoRoot, { spec: opts.spec });
+    // The ownership on the check's record before any test run (ADR-0023, the
+    // harness bullet): a record that cannot be written runs nothing.
+    if (opts.checkRecord !== undefined) {
+      try {
+        recordOwnership(opts.checkRecord, { lockPath: lock.path, token: lock.ownership.token });
+      } catch (err) {
+        throw new MutationHarnessError(`cannot write the heavy-work ownership into the check record ${opts.checkRecord}: ${err.message}; nothing ran — treat as no verdict`);
+      }
+    }
     OWNERSHIP = lock.ownership;
     const { unexpected } = await runSpec(opts.spec, {
       repoRoot,
