@@ -18,6 +18,13 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.44.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.43.0...plugin-orchestrator-v0.44.0) (2026-11-27)
+
+
+### Features
+
+* **orchestrator:** release runbook text directories through tmpdir-release ([#1089](https://github.com/each4all/agentic-plugins/issues/1089)) ([f66b60e](https://github.com/each4all/agentic-plugins/commit/f66b60edfd52101ea31bbb80862c4fe15a597155))
+
 ## [0.43.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.42.1...plugin-orchestrator-v0.43.0) (2026-11-26)
 
 

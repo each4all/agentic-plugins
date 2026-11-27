@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.18.0...plugin-founder-v0.19.0) (2026-11-27)
+
+
+### Features
+
+* **founder:** release runbook text and operation directories through tmpdir-release ([75b6979](https://github.com/each4all/agentic-plugins/commit/75b69793608841ac9ba005674e71092c17060925))
+
 ## [0.18.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.17.2...plugin-founder-v0.18.0) (2026-11-26)
 
 
