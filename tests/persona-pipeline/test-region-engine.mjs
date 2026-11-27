@@ -369,6 +369,27 @@ describe('region rendering', () => {
     throws(() => renderTemplate('```sh\nV={{q}}\n```', { declaration: declaration({ deliverable_noun: 'a\nrm -rf /' }), substitutions: subs }), /newline/);
     strictEqual(renderTemplate('{{noun}}', { declaration: declaration({ deliverable_noun: 'a\nb' }), substitutions: subs }), 'a\nb');
   });
+
+  // ADR-0059 Decision 10: the make and the release, one source each, reach a
+  // template only by an include of a name in the closed set.
+  it('expands an include alone on its line into the snippet, indented as the line, and refuses any other include', () => {
+    const snippets = { 'tmpdir-make.sh': 'A "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs"\n\nB\n', 'tmpdir-release.sh': 'R\n' };
+    const opts = { declaration: declaration(), substitutions: subs, readSnippet: (f) => snippets[f] };
+    strictEqual(renderTemplate('```bash\nX={{q}}\n  {{> tmpdir-make}}\n{{> tmpdir-release}}\n```', opts),
+      "```bash\nX='alpha deliverable'\n  A \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\"\n\n  B\nR\n```");
+    // A skill's form names the root by its placeholder.
+    strictEqual(renderTemplate('{{> tmpdir-make-skill}}', opts), 'A "<plugin-root>/scripts/state.mjs"\n\nB');
+    // Inside a capability block, the snippet goes with the block.
+    strictEqual(renderTemplate('{{^capability dispatch_target}}\n{{> tmpdir-release}}\n{{/capability}}\nend', opts), 'end');
+    throws(() => renderTemplate('{{> tmpdir-other}}', opts), /unknown snippet tmpdir-other/);
+    throws(() => renderTemplate('x {{> tmpdir-make}}', opts), /an include stands alone on its line/);
+    throws(() => renderTemplate('{{> tmpdir-make}}', { ...opts, readSnippet: () => 'N={{q}}\n' }), /a snippet includes nothing and takes no placeholder/);
+    throws(() => renderTemplate('{{> tmpdir-make}}', { ...opts, readSnippet: () => '{{> tmpdir-release}}\n' }), /a snippet includes nothing/);
+    // The committed snippets render: no placeholder, no include of their own.
+    for (const name of ['tmpdir-make', 'tmpdir-release', 'tmpdir-make-skill', 'tmpdir-release-skill']) {
+      ok(renderTemplate(`{{> ${name}}}`, { declaration: declaration(), substitutions: subs }).includes(`state.mjs" ${name.replace(/-skill$/, '')} --`), name);
+    }
+  });
 });
 
 describe('regions in authored files (fixture)', () => {

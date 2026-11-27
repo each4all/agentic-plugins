@@ -163,7 +163,7 @@ const RESOLVER_TEMPLATES = [
   'regions/peer-now-dispatch.md', 'regions/peer-now-locate.md', 'regions/peer-now-note.md',
   'regions/refine-owner-decision.md', 'regions/refine-owner-decision-convergent.md',
   'regions/resume-archive.md', 'regions/resume-archive-resolve.md', 'regions/resume-marker.md', 'regions/resume-read.md',
-  'regions/start-bootstrap.md', 'regions/start-commit.md', 'regions/start-resume.md', 'regions/start-terminal.md',
+  'regions/start-bootstrap.md', 'regions/start-commit.md', 'regions/start-phase-boundary.md', 'regions/start-resume.md', 'regions/start-terminal.md',
   'regions/start-terminal-convergent.md', 'regions/verb-bootstrap-profiled.md',
   'regions/verb-bootstrap.md', 'regions/verb-dispatch.md', 'regions/verb-finalize.md',
   'regions/verb-finalize-consensus.md', 'regions/verb-finalize-convergent.md',
@@ -1039,12 +1039,9 @@ export const MUTATIONS = [
   // PC3b U1, peer review of step 1: the lifecycle stop is an exit; the type
   // read is checked on its own; the unconverged deferral replaces the gate's
   // next action too.
-  {
-    id: 'G67', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/refine-owner-decision.md', from: 'its refine phase fixes the finding." >&2\n  exit 0\n', to: 'its refine phase fixes the finding." >&2\n' }),
-    killed_by: templateCaught('regions/refine-owner-decision.md', /^Owner decision, run: fix now clears recurring-finding/),
-    why: "Fix now inside a start lifecycle prints the resume message but falls through, so whatever follows the block runs before the lifecycle resumes",
-  },
+  // G67 retired (ADR-0059 Decision 10): Fix now inside a start lifecycle no
+  // longer exits after its clear; it goes on to release its directories, and
+  // nothing else follows it in the block.
   {
     id: 'G68', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/refine-owner-decision.md', edits: [{ from: TYPE_READ_CHECKED, to: TYPE_READ_PIPED, count: 2 }] }),
@@ -1176,8 +1173,8 @@ export const MUTATIONS = [
     id: 'G5', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, {
       template: 'regions/resume-marker.md',
-      from: '  --event resumed\n',
-      to: '  --event updated\n',
+      from: '  --event resumed || exit $?\n',
+      to: '  --event updated || exit $?\n',
     }),
     why: 'the resume marker stops recording a resumed event',
   },
@@ -2129,7 +2126,7 @@ export const MUTATIONS = [
   },
   {
     id: 'M66', tests: [T_SKILL],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-checkpoint-set.md', from: ' --summary-file "$TEXT_DIR/summary.txt"\n```', to: '\n```' }),
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-checkpoint-set.md', from: ' --summary-file "$TEXT_DIR/summary.txt" || exit $?\n', to: ' || exit $?\n' }),
     killed_by: templateCaught('regions/skill-checkpoint-set.md', /^the checkpoint is written to the workflow Phase 1 found/),
     why: 'the checkpoint call loses the summary state.mjs requires',
   },
@@ -3082,8 +3079,8 @@ export const MUTATIONS = [
     id: 'N55', tests: [T_S14, 'tests/persona-pipeline/test-autopilot-verbs.mjs'],
     prepare: (copy, tools) => canonicalDefect(copy, tools, {
       dest: 'scripts/state.mjs',
-      from: '--resolution-file <decision file> ` +\n      `--next-action-file <action file>\\n`,',
-      to: '--resolution-file <decision file>\\n`,',
+      from: '--resolution-file <decision file> ` +\n      `--next-action-file <action file>\\n` +',
+      to: '--resolution-file <decision file>\\n` +',
     }),
     killed_by: [
       /^engineer: autopilot-preflight — a gate inside a start lifecycle \(PC3b U2\) > interactive, a gate on a start workflow/,

@@ -277,7 +277,7 @@ function regionBlocks(persona, dest, id) {
   const end = text.indexOf(`<!-- pipeline:end ${id} -->`);
   // Contract: the region this file runs — gone, the case would run nothing.
   ok(begin >= 0 && end > begin, `${persona}/${dest} holds region ${id}`);
-  return [...text.slice(begin, end).matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]).filter((b) => !/^\s*mktemp -d /.test(b));
+  return [...text.slice(begin, end).matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]).filter((b) => !/^\s*(?:mktemp -d |# Step 1: a private text directory)/.test(b));
 }
 const runBlock = (dir, block, persona) => spawnSync('bash', ['-c', block], {
   cwd: dir, encoding: 'utf8', env: { ...cleanEnv(), [`AGENTIC_${persona.toUpperCase()}_ROOT`]: personaInfo(persona).root },

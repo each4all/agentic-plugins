@@ -247,7 +247,7 @@ export const MUTATIONS = [
   {
     id: 'N8', tests: [T_RA],
     prepare: (copy, tools) => {
-      tools.applyEdit(copy, { file: 'persona-pipeline/regions/skill-start-command-intro.md', from: '--no-run-reason <peer-unavailable|local-only|privacy-gate|owner-skip>\n--subject-file <the paths it read, {"shown": [...], "covered": [...]}, ADR-0069>\n--attempt-key <a new text directory for that settle>`, so the workflow records\n', to: '`, so the workflow records\n' });
+      tools.applyEdit(copy, { file: 'persona-pipeline/regions/skill-start-command-intro.md', from: '--no-run-reason <peer-unavailable|local-only|privacy-gate|owner-skip>\n--subject-file <the paths it read, {"shown": [...], "covered": [...]}, ADR-0069>\n--attempt-key <the phase\'s text directory>`, so the workflow records\n', to: '`, so the workflow records\n' });
       regenerate(copy);
     },
     killed_by: /the shared skill Codex's \$start follows names it too$/,

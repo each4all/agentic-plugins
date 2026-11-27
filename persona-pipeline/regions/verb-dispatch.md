@@ -6,13 +6,20 @@ backtick or line of them would be read as code (ADR-0059, amendment of
 1. Create a private directory for it, and note the path it prints:
 
    ```bash
-   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   # Step 1: a private text directory, marked so that the step that reads it
+   # last releases it (ADR-0059 Decisions 9 and 10).
+   ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
+   CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+   [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/{{name}} -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+   MAKE_KIND='text'
+   MAKE_PARENT=''
+   {{> tmpdir-make}}
+   printf '%s\n' "$MADE_DIR"
    ```
 
 2. With your file-writing tool, not the shell, create `prompt.xml` in that
    directory holding the prompt (where this runbook has a privacy gate above,
    it must have passed, and the prompt carries only genericized text).
-   Nothing deletes it.
 
 3. When this ensemble is a review (`plan-verify`, `review`,
    `adversarial-scan`, `refine-verify`), with your file-writing tool create
@@ -31,7 +38,9 @@ backtick or line of them would be read as code (ADR-0059, amendment of
 Then run the block with `TEXT_DIR` set to that directory; a prompt left
 unwritten stops it before the dispatch. Keep the directory: the runner writes
 its result there, `prompt.xml.run.json`, and the finalize block reads the run's
-id from that file (its `DISPATCH_DIR`), never from this block's shell.
+id from that file (its `DISPATCH_DIR`), never from this block's shell. The
+finalize also releases the directory (its `DISPATCH_TEXT_DIR`) once its last
+write succeeded, whether or not a run launched; no block before it does.
 
 ```bash
 TEXT_DIR='<directory from step 1>'

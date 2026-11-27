@@ -21,13 +21,18 @@ the block:
 1. Create a private directory for it, and note the path it prints:
 
    ```bash
-   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   # Step 1: a private text directory, marked so that the step that reads it
+   # last releases it (ADR-0059 Decisions 9 and 10).
+   MAKE_KIND='text'
+   MAKE_PARENT=''
+   {{> tmpdir-make-skill}}
+   printf '%s\n' "$MADE_DIR"
    ```
 
 2. With your file-writing tool, not the shell, write the prompt there as
    `prompt.xml`: the `--prompt-text`, or the text of the `--prompt-file`,
    which you read with your file-reading tool. Write it as given, or as the
-   privacy gate leaves it where the runbook has one. Nothing deletes it.
+   privacy gate leaves it where the runbook has one.
 
 The runner sends the prompt as written, opened by the evidence boundary
 when it does not already open with it (C163 D2a;
@@ -82,10 +87,14 @@ ACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active --repo-root "$REPO_
 printf '%s\n' "$ACTIVE" > "$TEXT_DIR/prompt.xml.workflow" || { echo "✗ Could not record the consultation's workflow in TEXT_DIR ($TEXT_DIR); nothing was dispatched." >&2; exit 1; }
 OP_DIR=''
 if [ -n "$ACTIVE" ] && node "<plugin-root>/scripts/state.mjs" hold-capability >/dev/null 2>&1; then
-  OP_DIR="$TEXT_DIR/op"
   # A fresh directory for each consultation: run again from this one, the
-  # block would launch a second run under the first one's operation.
-  mkdir -m 700 "$OP_DIR" || { echo "✗ TEXT_DIR ($TEXT_DIR) already holds a consultation's operation directory, or op cannot be made there: dispatch each consultation from a fresh directory. Nothing was dispatched." >&2; exit 1; }
+  # block would launch a second run under the first one's operation, so the
+  # make refuses a TEXT_DIR that holds op already. Made and marked inside it
+  # (ADR-0059 Decision 9), it goes with TEXT_DIR's release.
+  MAKE_KIND='op'
+  MAKE_PARENT="$TEXT_DIR"
+  {{> tmpdir-make-skill}}
+  OP_DIR="$MADE_DIR"
   node "<plugin-root>/scripts/state.mjs" operation \
     --workflow-path "$ACTIVE" --host "$HOST" \
     --operation-dir "$OP_DIR" --open-operation peer >/dev/null \

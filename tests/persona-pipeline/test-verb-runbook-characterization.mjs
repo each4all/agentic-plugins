@@ -46,7 +46,8 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
       // VR: the verify form and the results on resume (ADR-0068 Decision 5, verify-runbooks).
       // C163: the review attempt of a run that never launched (C163 A1a).
       // C176: the critique cap and the verb form's NEXT_STEP_KIND (ADR-0063, amendment of 2026-11-09).
-      ok(/^(?:PC2(?:a[234]|b)|PC3b?|ADR-0067-WP|CP|C130|C120|R4|HP|VR|C163|C176) /.test(d.why), `${d.where}: a change with its reason`);
+      // C175: the release of text and operation directories (ADR-0059 Decision 10).
+      ok(/^(?:PC2(?:a[234]|b)|PC3b?|ADR-0067-WP|CP|C130|C120|R4|HP|VR|C163|C175|C176) /.test(d.why), `${d.where}: a change with its reason`);
       if (structural) ok(STRUCTURAL_OPS.includes(d.op), `${d.where}: a known op`);
       else ok(typeof d.from === 'string' && typeof d.to === 'string' && d.from !== d.to && d.from.length > 0, `${d.where}: a string change`);
     }

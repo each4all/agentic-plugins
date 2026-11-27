@@ -1,9 +1,23 @@
 ### Review ledger close (document deliverables, C120)
 
 When `critique-scope` recorded this critique (`recorded: true`), close it
-after the synthesis and before Phase 2, whatever the verdict. Write the
-findings with your file-writing tool, not the shell, as `findings.json` in a
-new `mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"` directory:
+after the synthesis and before Phase 2, whatever the verdict. Make a new
+private directory for the findings, and note the path it prints:
+
+```bash
+# A private text directory, marked so that the step that reads it
+# last releases it (ADR-0059 Decisions 9 and 10).
+ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/{{name}} -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+MAKE_KIND='text'
+MAKE_PARENT=''
+{{> tmpdir-make}}
+printf '%s\n' "$MADE_DIR"
+```
+
+Write the findings there with your file-writing tool, not the shell, as
+`findings.json`:
 
 ```json
 {"findings": [
@@ -24,7 +38,9 @@ target needs one verdict: a target with none, or with two, stays open.
 From round 2 (C176), a MAJOR on a rare path carries `defer`, its known limit
 in one line (`"defer": "only a hand-made file reaches it"`); a finding a peer
 contested carries `conflict: true`, and one a veto gate raised `veto: true`,
-which stay on it for every later critique.
+which stay on it for every later critique. Once the close has recorded them,
+the block releases the directory (ADR-0059 Decision 10); a refusal keeps it,
+so the fixed file can be run again.
 
 ```bash
 TEXT_DIR='<directory holding findings.json>'
@@ -39,12 +55,20 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || REPO_ROOT="$PWD"
 # reason to stop the critique: the fallback below says so, and the bullets say
 # what follows.
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")"
-[ -n "$ACTIVE" ] && node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" critique-close \
-  --workflow-path "$ACTIVE" --repo-root "$REPO_ROOT" \
-  --ledger '<ledger from critique-scope>' \
-  --generation '<generation from critique-scope>' \
-  --findings-file "$TEXT_DIR/findings.json" \
-  || echo '{"closed": false, "reason": "critique-close-refused"}'
+CLOSE_RC=1
+if [ -n "$ACTIVE" ]; then
+  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" critique-close \
+    --workflow-path "$ACTIVE" --repo-root "$REPO_ROOT" \
+    --ledger '<ledger from critique-scope>' \
+    --generation '<generation from critique-scope>' \
+    --findings-file "$TEXT_DIR/findings.json" \
+    && CLOSE_RC=0
+fi
+[ "$CLOSE_RC" -eq 0 ] || { echo '{"closed": false, "reason": "critique-close-refused"}'; exit 0; }
+# ADR-0059 Decision 10, item 1 — the close recorded the findings: no block,
+# rerun or continuation reads the directory again.
+RELEASE_PATH="$TEXT_DIR"
+{{> tmpdir-release}}
 ```
 
 It prints the disposition, which Phase 2 follows:

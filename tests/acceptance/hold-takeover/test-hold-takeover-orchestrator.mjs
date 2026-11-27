@@ -261,7 +261,8 @@ describe('the takeover against the orchestrator (Decision 2, item 10): the drive
     const { holdId, lane, child } = await heldMidStep(t);
     const env = personVerb(t, lane, child, { commit: true }, 'person.txt');
     const base = t.git(lane, 'rev-parse', 'HEAD');
-    const commit = RB.runBlock(lane, RB.regionBlock('commands/commit.md', 'commit-execute'), env);
+    // Every suggestion accepted: no subjects' directory, TEXT_DIR empty.
+    const commit = RB.runBlock(lane, RB.fill(RB.regionBlock('commands/commit.md', 'commit-execute'), [["TEXT_DIR='<the directory the edited subjects are in; empty when every suggestion was accepted>'", "TEXT_DIR=''"]]), env);
     strictEqual(commit.status, 0, `${commit.stdout}\n${commit.stderr}`);
     notStrictEqual(t.git(lane, 'rev-parse', 'HEAD'), base, 'the person committed');
     const [op] = opsOf(child);
@@ -362,13 +363,15 @@ describe('the takeover against the orchestrator (Decision 2, item 10): the drive
     ok(r.code === 1 && r.err.includes(op.id), `refused while the peer runs: ${r.err}`);
     writeFileSync(barrier, '');
     strictEqual((await running).status, 0);
+    // The run id the dispatch kept beside the prompt, read before the note
+    // releases that directory (ADR-0059 Decision 10).
+    const runId = readFileSync(join(dispatchDir, 'prompt.xml.run-id'), 'utf8').trim();
     r = await cli(t, ['release', 'A', '--hold', holdId]);
     ok(r.code === 1 && r.err.includes(op.id), `ended, it waits for its note: ${r.err}`);
     const n = RB.runBlock(lane, RB.fill(RB.regionBlock('commands/peer-now.md', 'peer-now-note'), [["DISPATCH_DIR='<the directory the dispatch ran with>'", `DISPATCH_DIR='${dispatchDir}'`]]), env);
     strictEqual(n.status, 0, n.stderr);
     strictEqual(fm(child).persona_operations, undefined);
     await releaseOk(t, holdId);
-    const runId = readFileSync(join(dispatchDir, 'prompt.xml.run-id'), 'utf8').trim();
     const handle = JSON.parse(readFileSync(join(resolve(child, '../..'), 'peer-runs', runId, 'handle.json'), 'utf8'));
     deepStrictEqual([handle.status, handle.workflow_path ?? null], ['completed', null], 'the consultation names no workflow');
     t.lines.length = 0;

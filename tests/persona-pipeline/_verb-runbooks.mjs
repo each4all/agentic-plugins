@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { REPO_ROOT, pluginRoot } from './_personas.mjs';
+import { snippetText } from '../../scripts/lib/persona-pipeline.mjs';
 
 // engineer's seven are recorded before its verb runbooks join the regions
 // (PC3 U7: characterize before rewriting).
@@ -333,9 +334,28 @@ function guardText(code, opener, closer = 'fi') {
   return m ? m[0].split('\n').map((l) => l.trimEnd()).filter((l) => l.trim() !== '').join('\n') : null;
 }
 
+// The make and the release of a text or operation directory (ADR-0059
+// Decision 10), each found by its exact lines and read as nothing here: what
+// a runbook makes and releases, and where, is held by the path list check
+// (tests/plugin-shape/test-runbook-cli-contracts.mjs) and the snippets by
+// test-tmpdir-snippets.mjs, so a characterization records the calls of the
+// runbook's own work.
+const SNIPPET_LINES = [snippetText('tmpdir-make'), snippetText('tmpdir-release')].map((s) => s.split('\n'));
+export function withoutSnippets(text) {
+  const lines = text.split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const indent = lines[i].slice(0, lines[i].length - lines[i].trimStart().length);
+    const hit = SNIPPET_LINES.find((s) => s.every((l, k) => lines[i + k] === (l === '' ? '' : `${indent}${l}`)));
+    if (hit) { i += hit.length - 1; continue; }
+    out.push(lines[i]);
+  }
+  return out.join('\n');
+}
+
 /** The characterization of one runbook. */
 export function characterize(text) {
-  const blocks = shellBlocks(text).map((b) => ({ ...b, code: stripComments(b.text) }));
+  const blocks = shellBlocks(withoutSnippets(text)).map((b) => ({ ...b, code: stripComments(b.text) }));
   const all = blocks.map((b) => b.code).join('\n');
   return {
     calls: blocks.flatMap((b) => scriptCalls(b.text)),

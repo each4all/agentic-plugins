@@ -42,11 +42,26 @@ ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "
   resembles an earlier one.
 
 After the fix and its checks, before Refine-verify, record what this refine
-targeted: write `targets.txt`, one ledger id per line (the findings it fixed),
-with your file-writing tool in a new `mktemp -d
-"${TMPDIR:-/tmp}/agentic-text.XXXXXX"` directory, then run the block. Run it
-again after any later edit in this refine: the next critique is scoped only
-while the checkout holds the tree the last record saw.
+targeted. Make a new private directory, and note the path it prints:
+
+```bash
+# A private text directory, marked so that the step that reads it
+# last releases it (ADR-0059 Decisions 9 and 10).
+ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/{{name}} -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+MAKE_KIND='text'
+MAKE_PARENT=''
+{{> tmpdir-make}}
+printf '%s\n' "$MADE_DIR"
+```
+
+Write `targets.txt` there, one ledger id per line (the findings it fixed),
+with your file-writing tool, then run the block. Once the record succeeded the
+block releases the directory (ADR-0059 Decision 10); a failure keeps it, so
+the fixed file can be run again. Run it again, from a new directory, after
+any later edit in this refine: the next critique is scoped only while the
+checkout holds the tree the last record saw.
 
 ```bash
 TEXT_DIR='<directory holding targets.txt>'
@@ -60,10 +75,18 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || REPO_ROOT="$PWD"
 # file it refuses (an id the ledger does not hold) is fixed and the block run
 # again.
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")"
-[ -n "$ACTIVE" ] && node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" refine-record \
-  --workflow-path "$ACTIVE" --repo-root "$REPO_ROOT" \
-  --targets-file "$TEXT_DIR/targets.txt" \
-  || echo '{"recorded": false, "reason": "refine-record-failed", "verify": {"mode": "full", "reason": "refine-record-failed"}}'
+RECORD_RC=1
+if [ -n "$ACTIVE" ]; then
+  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" refine-record \
+    --workflow-path "$ACTIVE" --repo-root "$REPO_ROOT" \
+    --targets-file "$TEXT_DIR/targets.txt" \
+    && RECORD_RC=0
+fi
+[ "$RECORD_RC" -eq 0 ] || { echo '{"recorded": false, "reason": "refine-record-failed", "verify": {"mode": "full", "reason": "refine-record-failed"}}'; exit 0; }
+# ADR-0059 Decision 10, item 1 — the record is written: no block, rerun or
+# continuation reads the directory again (a later record uses a new one).
+RELEASE_PATH="$TEXT_DIR"
+{{> tmpdir-release}}
 ```
 
 Refine-verify follows the record's `verify`. With `verify.mode: scoped`,

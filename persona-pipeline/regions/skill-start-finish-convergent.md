@@ -22,7 +22,12 @@ code (ADR-0059, amendment of 2026-10-10). Before the block:
 1. Create a private directory for it, and note the path it prints:
 
    ```bash
-   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   # Step 1: a private text directory, marked so that the step that reads it
+   # last releases it (ADR-0059 Decisions 9 and 10).
+   MAKE_KIND='text'
+   MAKE_PARENT=''
+   {{> tmpdir-make-skill}}
+   printf '%s\n' "$MADE_DIR"
    ```
 
 2. With your file-writing tool, not the shell, create `next-action.txt` in
@@ -32,7 +37,8 @@ code (ADR-0059, amendment of 2026-10-10). Before the block:
    {{next_action}}
    ```
 
-   Nothing deletes the file.
+   The block releases the directory once its last write succeeded; a block
+   that stops keeps it for its rerun.
 
 Then run the block with `TEXT_DIR` set to that directory.
 
@@ -60,6 +66,10 @@ node "<plugin-root>/scripts/state.mjs" finish-verb \
   --workflow-path "$ACTIVE" --host <claude|codex> \
   --next-action-file "$TEXT_DIR/next-action.txt" \
   --next-step-kind commit --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?
+# ADR-0059 Decision 10, item 1 — the last write succeeded: no block, rerun or
+# continuation reads the directory again.
+RELEASE_PATH="$TEXT_DIR"
+{{> tmpdir-release-skill}}
 ```
 
 The runtime completion footer is **code-emitted** on that terminal write

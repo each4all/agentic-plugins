@@ -2,7 +2,7 @@
 The block prints `OP_DIR=<path>`, this command's operation directory: when
 the workflow is a macro's child, its write opens the command's persona
 operation there (ADR-0068 Decision 2, item 7). Keep the path for the finalize
-block's `OP_DIR`.
+block's `OP_DIR`, which releases it after the operation's last write.
 
 After the append, the block prints the results of the checks a verification
 step ran for this workflow (ADR-0068 Decision 5), and nothing when it holds no
@@ -26,8 +26,24 @@ ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "
 [ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
 VERB={{verb}}
 {{#capability dispatch_target}}
-# ADR-0068 Decision 2, item 7 — this command's operation directory.
-OP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-op.XXXXXX")" || exit 1
+# ADR-0068 Decision 2, item 7 — this command's operation directory, which
+# every run makes afresh: released here when the block fails (ADR-0059
+# Decision 10, item 1), and otherwise by the finalize after the operation's
+# last write.
+unset OP_DIR
+release_failed() {
+  OWN_RC=$?
+  if [ "$OWN_RC" -ne 0 ]; then
+    RELEASE_PATH="$OP_DIR"
+    {{> tmpdir-release}}
+  fi
+  return "$OWN_RC"
+}
+trap release_failed EXIT
+MAKE_KIND='op'
+MAKE_PARENT=''
+{{> tmpdir-make}}
+OP_DIR="$MADE_DIR"
 {{/capability}}
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --verb {{verb}} \

@@ -373,6 +373,38 @@ test('stateCliContract refuses a source it cannot read, and marks flags it canno
   ok(branching.subs.get('pick').unsupported.some((r) => r.includes('reads flags on a line that tests the subcommand')));
 });
 
+test('stateCliContract reads a tmpdir subcommand: cliTmpdirOnly names the flags it takes (ADR-0059 Decision 9)', () => {
+  const source = STATE_SOURCE
+    .replace('async function cliRun(subcommand, flags) {', [
+      'function cliTmpdirOnly(flags, allowed) {',
+      '  const extra = Object.keys(flags).filter((n) => !allowed.includes(n));',
+      "  if (extra.length > 0) throw new Error('unexpected flag');",
+      '}',
+      'async function cliRun(subcommand, flags) {',
+    ].join('\n'))
+    .replace("      default:\n", [
+      "      case 'tmpdir-make': {",
+      "        cliTmpdirOnly(flags, ['kind', 'parent']);",
+      "        cliRequire(flags, ['kind']);",
+      '        return 0;',
+      '      }',
+      '      default:',
+      '',
+    ].join('\n'));
+  const make = stateCliContract(source).subs.get('tmpdir-make');
+  deepStrictEqual(make.unsupported, []);
+  deepStrictEqual([[...make.accepted].sort(), [...make.required]], [['kind', 'parent'], ['kind']]);
+  // The committed CLIs: each persona's and the orchestrator's tmpdir calls are checked, not unsupported.
+  for (const plugin of ['designer', 'engineer', 'founder', 'orchestrator']) {
+    const c = stateCliContract(readFileSync(join(REPO_ROOT, 'plugins', plugin, 'scripts', 'state.mjs'), 'utf8'));
+    deepStrictEqual(['tmpdir-make', 'tmpdir-release', 'tmpdir-list'].map((s) => [s, c.subs.get(s).unsupported, [...c.subs.get(s).accepted].sort()]), [
+      ['tmpdir-make', [], ['kind', 'parent']],
+      ['tmpdir-release', [], ['path']],
+      ['tmpdir-list', [], ['age-days', 'execute']],
+    ], plugin);
+  }
+});
+
 test('conditionFor and caseLinesFor evaluate a condition on the subcommand, leaving other operands open', () => {
   deepStrictEqual(
     ['a', 'b', 'c'].map((s) => conditionFor("(subcommand === 'a' || subcommand === 'b') && flags['x']", s)),

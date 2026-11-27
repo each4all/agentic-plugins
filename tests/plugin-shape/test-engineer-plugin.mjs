@@ -277,7 +277,9 @@ describe('plugins/engineer — ADR-0019 PR-D Phase 0 parent-linkage env-var cont
         // records that file, else the request.txt the agent wrote.
         const create = text.slice(text.indexOf('REQUEST_FILE="$TEXT_DIR/request.txt"'), text.indexOf('--original-request-file "$REQUEST_FILE"'));
         ok(create.length > 0, `commands/${verb}.md must pass the request as --original-request-file "$REQUEST_FILE"`);
-        ok(create.includes(`if [ -n "\${AGENTIC_TOPIC:-}" ]; then\n  REQUEST_FILE="$(mktemp -d "\${TMPDIR:-/tmp}/agentic-text.XXXXXX")/topic.txt" || exit 1\n  printf '%s\\n' "$AGENTIC_TOPIC" > "$REQUEST_FILE" || exit 1\nfi\n`),
+        // The topic directory comes from the make (ADR-0059 Decision 9), kept in
+        // TOPIC_DIR, which the block releases on each of its exits.
+        ok(create.includes(`if [ -n "\${AGENTIC_TOPIC:-}" ]; then\n  MAKE_KIND='text'\n  MAKE_PARENT=''\n`) && create.includes(`\n  TOPIC_DIR="$MADE_DIR"\n  REQUEST_FILE="$TOPIC_DIR/topic.txt"\n  printf '%s\\n' "$AGENTIC_TOPIC" > "$REQUEST_FILE" || exit 1\nfi\n`),
           `commands/${verb}.md must take a set AGENTIC_TOPIC in place of the agent's request.txt`);
         ok(!/--original-request "/.test(text), `commands/${verb}.md passes no inline request`);
       });

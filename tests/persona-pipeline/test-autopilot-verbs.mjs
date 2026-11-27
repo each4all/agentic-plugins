@@ -153,6 +153,15 @@ for (const persona of personasFor('scripts/state.mjs').filter((p) => personaInfo
           ok(r.stdout.includes(' --resolution-file <decision file> --next-action-file <action file>\n'), r.stdout);
           ok(r.stdout.includes('each to a file with your file-writing tool, never on the command line'), r.stdout);
           ok(!/--(resolution|next-action) "/.test(r.stdout), r.stdout);
+          // ADR-0059 Decisions 9 and 10: the files' directory is made marked
+          // and released once the clear succeeded, after the clear's recipe,
+          // by the reference's release block, never by hand (item 2).
+          const make = r.stdout.indexOf(' tmpdir-make --kind text');
+          const clear = r.stdout.indexOf('awaiting-owner-clear --workflow-path');
+          const release = r.stdout.indexOf('release their directory with the release block of ');
+          ok(make !== -1 && clear > make && release > clear, r.stdout);
+          ok(r.stdout.includes('/core/skills/_shared/references/entry-routing-contract.md § Owner gates'), r.stdout);
+          ok(!r.stdout.includes('tmpdir-release'), r.stdout);
           const cleared = runCli(['awaiting-owner-clear', '--workflow-path', wf, '--host', 'claude', '--gate', gate]);
           strictEqual(cleared.status, 0, cleared.stderr);
         }

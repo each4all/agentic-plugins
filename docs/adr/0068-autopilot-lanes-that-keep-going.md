@@ -13,8 +13,10 @@ to its implementation (2026-10-21, 2026-10-25, 2026-10-26, 2026-10-28,
 2026-10-29, 2026-10-30, 2026-10-31, 2026-11-01, 2026-11-03), the hold
 amendments of 2026-10-27 (impl-hold's critique rounds), and the owner's
 decisions C178 (verification policy) and C175 (temporary files and run
-retention), both 2026-11-10; each item an amendment changed carries its dated
-marker. Decision 3's stall detector ships log-only: switching it on is the
+retention), both 2026-11-10, and the cascade of ADR-0059 Decisions 9 and 10
+into Decision 2, item 12 and Decision 5, item 13 (2026-11-27, the persona
+runbooks release their directories); each item an amendment changed carries
+its dated marker. Decision 3's stall detector ships log-only: switching it on is the
 owner's review, not yet recorded (Decision 3, item 8).
 
 Decision 3, item 6, its clause that both macOS fingerprint readers compare a
@@ -1151,8 +1153,13 @@ start beside a hold or a kept park (Decision 2, item 2). With lanes:
       and meets the marker at its last write was open before activation
       (`ext: false`), and closes as active, refused only when cleared. The
       operation directory is a private directory the first-write block makes
-      (`mktemp -d`) and prints as `OP_DIR=<path>`, which the agent sets in
-      the finalize block as it sets `DISPATCH_DIR`. The
+      and prints as `OP_DIR=<path>`, which the agent sets in the finalize
+      block as it sets `DISPATCH_DIR`: in a package whose runbooks have
+      switched (ADR-0059 Decisions 9 and 10: today the persona plugins), made
+      and marked by `state.mjs tmpdir-make --kind op` and released by the
+      block that makes the operation's last write, once that write succeeded;
+      in one that has not, a `mktemp -d` directory. *Amended 2026-11-27 (the
+      persona runbooks release their directories): [history](history/0068-autopilot-lanes-that-keep-going.md#amendment-2026-11-27--the-persona-runbooks-release-their-directories).* The
       first write keeps `operation.json` in the operation directory (the id,
       kind, macro, subtask, branch and child, and `opening`, `open` or
       `closed`) before it publishes anything, so a first write run again
@@ -1163,9 +1170,13 @@ start beside a hold or a kept park (Decision 2, item 2). With lanes:
       write whose file names another kind than the child's entry. A first
       write reads activation again holding the workflow's lock and refuses, to
       be run again, when it changed since its first read. A directory that is
-      gone refuses the last write, which the person can run with no
-      directory, leaving the operation open for the owner to clear; with no
-      directory at all a write is as before. A bootstrap dispatched by
+      gone refuses the last write: it may have been released after that write
+      already ran, and then nothing is to be repeated, or lost. Only once the
+      workflow's record shows the write did not land can the person run it
+      with no directory, on a macro's child leaving the operation open for
+      the owner to clear (ADR-0059 Decision 10, item 5); with no directory at
+      all a write is as before. *Amended 2026-11-27 (the persona runbooks
+      release their directories): [history](history/0068-autopilot-lanes-that-keep-going.md#amendment-2026-11-27--the-persona-runbooks-release-their-directories).* A bootstrap dispatched by
       `/orchestrator:next` takes the id the dispatch exported
       (`AGENTIC_OPERATION_ID`), and continues a record of that id already
       published when it names the same kind and lane and no other child.
@@ -2669,9 +2680,15 @@ on Claude (ADR-0063 D9), once the driver offers it (item 11).
     verb, usually a critique, counts as a critique round of ADR-0063's cap.
     *Amended 2026-11-10 (C178, the commit gate): [history](history/0068-autopilot-lanes-that-keep-going.md#amendment-2026-11-10--verification-policy-c178).*
 
-13. **Temporary files and run retention.** ADR-0059 stands as written: a
-    runbook's directories are bounded by where they are made, not by a block
-    that deletes them. *Amended 2026-11-10 (C175): [history](history/0068-autopilot-lanes-that-keep-going.md#amendment-2026-11-10--temporary-files-and-run-retention-c175).*
+13. **Temporary files and run retention.** A runbook's directories are
+    bounded by where they are made, the step's or the check's `TMPDIR`
+    below. In a package whose runbooks have switched (ADR-0059 Decisions 9
+    and 10: today the persona plugins, designer, engineer and founder), a
+    block also releases each directory through the CLI's proof once no
+    reader of it is left, and the bound holds what a release keeps (a
+    refusal, a rerun, a pause); in a package that has not (today the
+    orchestrator), no block deletes them. *Amended 2026-11-10 (C175): [history](history/0068-autopilot-lanes-that-keep-going.md#amendment-2026-11-10--temporary-files-and-run-retention-c175).*
+    *Amended 2026-11-27 (the persona runbooks release their directories): [history](history/0068-autopilot-lanes-that-keep-going.md#amendment-2026-11-27--the-persona-runbooks-release-their-directories).*
     - **A TMPDIR per step and per check.** A run owns one root,
       `<base>/agentic-ap/<run>/` (the run id without its `autopilot-`
       prefix), made exclusively (mode 0700) before the run directory, with a
@@ -4389,3 +4406,4 @@ The records behind this decision, in [the history file](history/0068-autopilot-l
 - 2026-11-10, amendment: [Amendment 2026-11-10 — verification policy (C178)](history/0068-autopilot-lanes-that-keep-going.md#amendment-2026-11-10--verification-policy-c178)
 - 2026-11-10, amendment: [Amendment 2026-11-10 — temporary files and run retention (C175)](history/0068-autopilot-lanes-that-keep-going.md#amendment-2026-11-10--temporary-files-and-run-retention-c175)
 - 2026-11-17, superseded text: [Superseded text 2026-11-17 — the Status section before the ADR-0070 migration](history/0068-autopilot-lanes-that-keep-going.md#superseded-text-2026-11-17--the-status-section-before-the-adr-0070-migration)
+- 2026-11-27, amendment: [Amendment 2026-11-27 — the persona runbooks release their directories](history/0068-autopilot-lanes-that-keep-going.md#amendment-2026-11-27--the-persona-runbooks-release-their-directories)

@@ -330,7 +330,7 @@ export const MUTATIONS = [
   },
   {
     id: 'F7', tests: [RB],
-    prepare: every(CRITIQUE, `  || echo '{"closed": false, "reason": "critique-close-refused"}'`, '  || exit $?'),
+    prepare: every(CRITIQUE, `[ "$CLOSE_RC" -eq 0 ] || { echo '{"closed": false, "reason": "critique-close-refused"}'; exit 0; }`, '[ "$CLOSE_RC" -eq 0 ] || exit 1'),
     why: 'a refused close stops the critique instead of falling back to an unrecorded full one',
   },
   {

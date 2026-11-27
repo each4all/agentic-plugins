@@ -9156,6 +9156,24 @@
         "engineer/investigate"
       ],
       "why": "C176 (ADR-0063 amendment of 2026-11-09): with dispatch_target on, the consensus finalize checks the critique cap before settle, for the verb form's next step (frame); the check runs in critique only (its guard names the verb), and refuses only under an autopilot run."
+    },
+    {
+      "runbooks": [
+        "engineer/decide"
+      ],
+      "where": "call:state.mjs finish-verb#6:--operation-dir",
+      "from": "<the operation directory Phase 0 of this run printed as OP_DIR; empty when it printed none or the finalize of this verb already ran>",
+      "to": "${GATE_OP_DIR:-<the operation directory Phase 0 of this run printed as OP_DIR; empty when it printed none or the finalize of this verb already ran>}",
+      "why": "C175 ADR-0059 Decision 10: an operation directory the resolution makes is its own variable, released on each of the block's exits, never Phase 0's OP_DIR line reassigned; the terminal write closes whichever the clear wrote through"
+    },
+    {
+      "runbooks": [
+        "engineer/refine"
+      ],
+      "where": "call:state.mjs finish-verb#5:--operation-dir",
+      "from": "<the operation directory Phase 0 of this run printed as OP_DIR; empty when it printed none or the finalize of this refine already ran>",
+      "to": "${GATE_OP_DIR:-<the operation directory Phase 0 of this run printed as OP_DIR; empty when it printed none or the finalize of this refine already ran>}",
+      "why": "C175 ADR-0059 Decision 10: an operation directory the resolution makes is its own variable, released on each of the block's exits, never Phase 0's OP_DIR line reassigned; the terminal write closes whichever the clear wrote through"
     }
   ],
   "runbooks": {

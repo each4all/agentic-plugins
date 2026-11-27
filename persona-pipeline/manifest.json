@@ -2727,7 +2727,17 @@
         "designer",
         "engineer",
         "founder"
-      ]
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        }
+      }
     },
     {
       "id": "start-privacy-no-image",
@@ -3005,6 +3015,16 @@
       }
     },
     {
+      "id": "resume-archive-resolve",
+      "template": "regions/skill-resume-archive-resolve.md",
+      "dest": "core/skills/resume/SKILL.md",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ]
+    },
+    {
       "id": "compose-long-checks",
       "template": "regions/long-checks.md",
       "dest": "core/skills/compose/SKILL.md",
@@ -3137,6 +3157,14 @@
           "context": "markdown"
         }
       }
+    },
+    {
+      "id": "frame-dispatch-release",
+      "template": "regions/skill-frame-dispatch-release.md",
+      "dest": "core/skills/frame/SKILL.md",
+      "personas": [
+        "designer"
+      ]
     },
     {
       "id": "frame-present",

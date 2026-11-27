@@ -86,17 +86,27 @@ source a quote, `$`, backtick or line break of it would be read as code
 1. Create a private directory for it, and note the path it prints:
 
    ```bash
-   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   # Step 1: a private text directory, marked so that the step that reads it
+   # last releases it (ADR-0059 Decisions 9 and 10).
+   ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
+   CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+   [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/{{name}} -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+   MAKE_KIND='text'
+   MAKE_PARENT=''
+   {{> tmpdir-make}}
+   printf '%s\n' "$MADE_DIR"
    ```
 
 2. With your file-writing tool, not the shell, create `request.txt` in that
    directory holding a {{request_placeholder}}, ending with one newline.
-   Nothing deletes it.
 
 Then run the block with `TEXT_DIR` set to that directory; a request file left
-unwritten stops it before any write. When `AGENTIC_TOPIC` is set (a dispatched
-run), the block writes it to a file of its own and records that instead, and
-steps 1–2 are not needed. The block sets the repository and branch itself: a
+unwritten stops it before any write, and the directory is kept for the rerun.
+Once `create` has recorded the request, the block releases the directory
+(ADR-0059 Decision 10). When `AGENTIC_TOPIC` is set (a dispatched run), the
+block writes it to a directory of its own, records that instead and releases
+it on each of its exits; steps 1–2 are not needed, and the block releases no
+directory its `TEXT_DIR` names. The block sets the repository and branch itself: a
 shell variable does not outlive a Bash call.
 {{/capability}}
 
@@ -133,6 +143,17 @@ CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 PERSONA={{name}}
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 GIT_BRANCH="$(git branch --show-current)"
+# The directory this block writes the request in, for itself (ADR-0059
+# Decision 10, item 1): released on each of its exits from the variable its
+# make printed to; every run makes it afresh.
+REQUEST_DIR=''
+release_own() {
+  OWN_RC=$?
+  RELEASE_PATH="$REQUEST_DIR"
+  {{> tmpdir-release}}
+  return "$OWN_RC"
+}
+trap release_own EXIT
 {{#capability commit_surface}}
 START_ARGS="$(node "$CLAUDE_PLUGIN_ROOT/scripts/start-args.mjs" --args-file "$ARGS_DIR/args.json")" || exit $?
 # A command substitution drops trailing newlines; the sentinel keeps them.
@@ -190,7 +211,11 @@ STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum 
 # The description the extractor read reaches state.mjs as a file the block
 # writes (ADR-0059, amendment of 2026-10-10): program data, never shell source,
 # and a description that begins with `--` is not read as a flag.
-REQUEST_FILE="$(mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX")/request.txt" || exit 1
+MAKE_KIND='text'
+MAKE_PARENT=''
+{{> tmpdir-make}}
+REQUEST_DIR="$MADE_DIR"
+REQUEST_FILE="$REQUEST_DIR/request.txt"
 printf '%s\n' "$FEATURE" > "$REQUEST_FILE" || exit 1
 {{/capability}}
 {{^capability commit_surface}}
@@ -200,7 +225,11 @@ printf '%s\n' "$FEATURE" > "$REQUEST_FILE" || exit 1
 # inline and a dispatched run needs no file of the agent's.
 REQUEST_FILE="$TEXT_DIR/request.txt"
 if [ -n "${AGENTIC_TOPIC:-}" ]; then
-  REQUEST_FILE="$(mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX")/topic.txt" || exit 1
+  MAKE_KIND='text'
+  MAKE_PARENT=''
+  {{> tmpdir-make}}
+  REQUEST_DIR="$MADE_DIR"
+  REQUEST_FILE="$REQUEST_DIR/topic.txt"
   printf '%s\n' "$AGENTIC_TOPIC" > "$REQUEST_FILE" || exit 1
 fi
 grep -q '[^[:space:]]' "$REQUEST_FILE" 2>/dev/null || { echo "✗ request.txt in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was written." >&2; exit 1; }
@@ -214,4 +243,12 @@ ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
   --original-request-file "$REQUEST_FILE" \
   --current-phase phase-1-discover \
   --next-action "Run Phase 1 discover+frame+decide composite")" || exit $?
+{{^capability commit_surface}}
+# ADR-0059 Decision 10, item 1 — the request is recorded, so the directory
+# the agent wrote it in has no reader left; a dispatched run read none.
+if [ -z "$REQUEST_DIR" ]; then
+  RELEASE_PATH="$TEXT_DIR"
+  {{> tmpdir-release}}
+fi
+{{/capability}}
 ```

@@ -167,11 +167,15 @@ const commitSurfaceOn = (persona) => declaration(persona).capabilities?.commit_s
 /** A command block as its Codex skill states it: no resolver lines, the root and host as placeholders. */
 function asSkillBlock(block) {
   const lines = block.split('\n');
-  // The three resolver lines the Codex block leaves out; a command block that
-  // does not open with them would be compared from the wrong line.
-  ok(/^ROOT_OVERRIDE="\$\(printenv '[A-Z_]+' \|\| true\)"$/.test(lines[0]), `the block opens with the resolver: ${lines[0]}`);
-  ok(lines[1].startsWith('CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-') && lines[2].startsWith('[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT='), 'the resolver\'s three lines');
-  return lines.slice(3).join('\n').replaceAll('"$CLAUDE_PLUGIN_ROOT/', '"<plugin-root>/').replaceAll('"${AGENTIC_HOST:-claude}"', '<claude|codex>');
+  // The three resolver lines the Codex block leaves out, after the lines the
+  // agent fills and the comments that open the block; a command block without
+  // them there would be compared from the wrong line.
+  let r = 0;
+  while (r < lines.length && (/^[A-Z_][A-Z0-9_]*='<[^'\n]*>'$/.test(lines[r]) || lines[r].startsWith('#'))) r++;
+  ok(/^ROOT_OVERRIDE="\$\(printenv '[A-Z_]+' \|\| true\)"$/.test(lines[r] ?? ''), `the block opens with the resolver: ${lines[r]}`);
+  ok(lines[r + 1].startsWith('CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-') && lines[r + 2].startsWith('[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT='), 'the resolver\'s three lines');
+  // Every spelling of the root, as a skill's snippet names it (a message's too).
+  return [...lines.slice(0, r), ...lines.slice(r + 3)].join('\n').replaceAll('$CLAUDE_PLUGIN_ROOT/', '<plugin-root>/').replaceAll('"${AGENTIC_HOST:-claude}"', '<claude|codex>');
 }
 
 // The privacy gate a skill states before its peer step: the verb's
@@ -340,10 +344,13 @@ describe('skill regions: the contracts hold for every enrolled persona', () => {
               for (const [skillId, commandId] of COMMIT_BLOCK_PAIRS) {
                 const ours = shellBlocks(region(text, skillId));
                 const theirs = shellBlocks(region(command, commandId));
-                deepStrictEqual([ours.length, theirs.length], [1, 1], `${skillId}: one block each`);
+                // The execute region holds its step's make block too (ADR-0059 Decision 9).
+                ok(ours.length >= 1 && ours.length === theirs.length, `${skillId}: as many blocks each (${ours.length}, ${theirs.length})`);
                 // Contract: the agent running $<persona>:commit on Codex — a block that drifts from
                 // the command's runs another driver call than /<persona>:commit does.
-                strictEqual(ours[0], asSkillBlock(theirs[0]), `${persona}/${skillId}: the Codex block drifted from the command's ${commandId}`);
+                // A step's block sits in a list item, indented; compared without it.
+                const dedent = (b) => { const ind = /^ */.exec(b)[0]; return b.split('\n').map((l) => (l.startsWith(ind) ? l.slice(ind.length) : l)).join('\n'); };
+                ours.forEach((b, i) => strictEqual(dedent(b), asSkillBlock(dedent(theirs[i])), `${persona}/${skillId}: the Codex block drifted from the command's ${commandId}`));
               }
             });
 
@@ -371,8 +378,8 @@ describe('skill regions: the contracts hold for every enrolled persona', () => {
               // Contract (ADR-0059, amendment of 2026-10-10): checkpoint-set requires a summary, the
               // text the user typed — it goes as the file the agent wrote, never on the command line,
               // where the shell would split or run it.
-              strictEqual([...set.matchAll(/ --summary-file "\$TEXT_DIR\/summary\.txt"\n```/g)].length, 1, 'the summary goes as the agent\'s file, the call\'s last');
-              ok(set.includes("TEXT_DIR='<directory from step 1>'\n") && set.includes('mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"') && squash(set).includes('With your file-writing tool, not the shell, create `summary.txt`'), 'the steps that write it');
+              strictEqual([...set.matchAll(/ --summary-file "\$TEXT_DIR\/summary\.txt" \|\| exit \$\?\n/g)].length, 1, 'the summary goes as the agent\'s file, the call\'s last');
+              ok(set.includes("TEXT_DIR='<directory from step 1>'\n") && set.includes("MAKE_KIND='text'") && set.includes('tmpdir-make --kind "$MAKE_KIND"') && squash(set).includes('With your file-writing tool, not the shell, create `summary.txt`'), 'the steps that write it');
               ok(!/--summary "|single quoted argument/.test(set), 'no inline summary left');
               // R4 (C75): run in a fresh shell, the block finds the workflow
               // itself — an ACTIVE an earlier block left is not the one it
@@ -592,7 +599,7 @@ describe('skill regions: the contracts hold for every enrolled persona', () => {
                 const declared = declaration(persona).verbs.start.next_action;
                 const scaffold = (doc) => doc.split(`\n   \`\`\`text\n   ${declared}\n   \`\`\`\n`).length - 1;
                 deepStrictEqual([scaffold(body), scaffold(runbook)], [1, 1], 'the declared next action, as the next-action.txt scaffold of each');
-                ok(/--next-step-kind commit --next-step-confidence "<HIGH\|MEDIUM\|LOW>" \|\| exit \$\?$/.test(calls[0].trim()), 'kind commit, and a failed write stops');
+                ok(/--next-step-kind commit --next-step-confidence "<HIGH\|MEDIUM\|LOW>" \|\| exit \$\?\n/.test(calls[0]), 'kind commit, and a failed write stops');
               }
               // Contract: the agent following a citation — each names a heading of a file this
               // persona ships.

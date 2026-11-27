@@ -8,7 +8,7 @@
 // with `_`.
 
 import { ok, strictEqual } from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -41,12 +41,16 @@ export async function cleanupScratch() {
   for (const d of scratch.splice(0)) rmSync(d, { recursive: true, force: true });
 }
 
+// A block a case runs: not a step's make of a text directory (ADR-0059
+// Decision 9: its path printed for the agent), and not the peer-now note
+// region's standalone block, for a run with no workflow.
+const runnableBlock = (b) => !/^\s*mktemp -d /.test(b) && !/printf '%s\\n' "\$MADE_DIR"\s*$/.test(b) && !b.includes('STANDALONE_OUT=');
 export function regionBlock(dest, id) {
   const text = readFileSync(E.path(dest), 'utf8');
   const begin = text.indexOf(`<!-- pipeline:begin ${id} -->`);
   const end = text.indexOf(`<!-- pipeline:end ${id} -->`);
   ok(begin >= 0 && end > begin, `${dest} holds region ${id}`);
-  const runnable = [...text.slice(begin, end).matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]).filter((b) => !/^\s*mktemp -d /.test(b));
+  const runnable = [...text.slice(begin, end).matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]).filter(runnableBlock);
   strictEqual(runnable.length, 1, `${id}: one block to run`);
   return runnable[0];
 }
@@ -87,7 +91,10 @@ export const opDirOf = (r) => {
   return m[1];
 };
 export const textDir = (files) => {
-  const d = tempDir('hold-text-');
+  // A text directory as a step makes it, marked (ADR-0059 Decision 9), inside
+  // a scratch directory of the test's: a release removes it, and the nested
+  // op of a consultation is made in it.
+  const d = execFileSync(process.execPath, [E.path('scripts/state.mjs'), 'tmpdir-make', '--kind', 'text'], { encoding: 'utf8', env: { ...process.env, TMPDIR: tempDir('hold-text-') } }).trim();
   for (const [name, text] of Object.entries(files)) writeFileSync(join(d, name), `${text}\n`);
   return d;
 };
@@ -115,6 +122,7 @@ export function finalize(lane, env, opDir, next = {}, dispatchDir = '', verb = '
   let block = fill(regionBlock(`commands/${verb}.md`, `${verb}-finalize`), [
     ["TEXT_DIR='<directory from step 1>'", `TEXT_DIR='${textDir({ 'note.md': note, 'summary.txt': 'local only', 'next-action.txt': next.gate ? 'Owner: route it' : 'Next' })}'`],
     ["DISPATCH_DIR='<the directory the dispatch block ran with; empty when no run launched; the run ledger directory when a run launched and that directory is gone>'", `DISPATCH_DIR='${dispatchDir}'`],
+    ["DISPATCH_TEXT_DIR='<the directory the dispatch block ran with, a run launched or not; empty when no dispatch block ran>'", "DISPATCH_TEXT_DIR=''"],
     ["VERDICT='<the synthesis verdict>'", "VERDICT='agreed'"],
     ["CONFIDENCE='<HIGH|MEDIUM|LOW>'", "CONFIDENCE='HIGH'"],
     ["OP_DIR='<the operation directory the Phase 0 block printed as OP_DIR; empty when it printed none>'", `OP_DIR='${opDir}'`],
