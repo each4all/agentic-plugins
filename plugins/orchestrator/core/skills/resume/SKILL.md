@@ -92,20 +92,103 @@ If `latest_checkpoint` exists, include `at` and `summary`.
 
 Append a resume marker. Its note, a one-paragraph drift summary, is text
 you write, so it travels as a file, never as shell source (ADR-0059,
-amendment of 2026-10-10): create a private directory
-(`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`, noting the path it
-prints), write `note.md` there with your file-editing tool, ending with one
-newline, and put the directory in the block's `TEXT_DIR` line. `state.mjs`
-reads the file itself and refuses an empty or missing one before it writes;
-nothing deletes it.
+amendment of 2026-10-10).
+
+1. Create a private directory for it, and note the path it prints:
+
+   ```bash
+   # Step 1: a private text directory, marked so that the step that reads it
+   # last releases it (ADR-0059 Decisions 9 and 10).
+   MAKE_KIND='text'
+   MAKE_PARENT=''
+   # ADR-0059 Decision 9: make and mark the directory MAKE_KIND names (text or
+   # op; MAKE_PARENT, when set, for an op nested in it); its path is MADE_DIR.
+   # The fallbacks of Decision 10, item 4 make it the old way: an older
+   # state.mjs, lacking tmpdir-make, and a platform where the make is unsupported
+   # with mktemp -d, a nested op in a parent made the old way with mkdir. A fallback's path is
+   # checked for what a single-quoted shell literal cannot carry, as the make
+   # checks its own. Each status is read in a condition, so errexit changes
+   # nothing here.
+   MADE_DIR=''
+   if grep -q -e "'tmpdir-make'" "<plugin-root>/scripts/state.mjs" 2>/dev/null; then
+     if [ -n "${MAKE_PARENT:-}" ]; then
+       MADE_DIR="$(node "<plugin-root>/scripts/state.mjs" tmpdir-make --kind op --parent "$MAKE_PARENT")" && MAKE_RC=0 || MAKE_RC=$?
+     else
+       MADE_DIR="$(node "<plugin-root>/scripts/state.mjs" tmpdir-make --kind "$MAKE_KIND")" && MAKE_RC=0 || MAKE_RC=$?
+     fi
+   elif [ -r "<plugin-root>/scripts/state.mjs" ]; then
+     MAKE_RC=old
+   else
+     echo "✗ Cannot read <plugin-root>/scripts/state.mjs; no directory was made." >&2
+     exit 1
+   fi
+   case "$MAKE_RC" in
+     0) ;;
+     3|4|old)
+       if [ -n "${MAKE_PARENT:-}" ]; then
+         MADE_DIR="$MAKE_PARENT/op"
+         mkdir -m 700 "$MADE_DIR" || { echo "✗ $MADE_DIR already holds an operation directory, or cannot be made: run from a fresh directory. No directory was made." >&2; exit 1; }
+       else
+         MADE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-$MAKE_KIND.XXXXXX")" || exit 1
+         [ "$MAKE_RC" != 3 ] || echo "agentic-dir make: unsupported on this platform; $MADE_DIR was made with mktemp -d and will not be released" >&2
+       fi
+       node -e 'process.exit(/[\x00-\x1f\x7f\x27]/.test(process.argv[1])?1:0)' "$MADE_DIR" \
+         || { echo "✗ The directory made holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one." >&2; exit 1; }
+       ;;
+     5) echo "✗ TMPDIR (${TMPDIR:-/tmp}) holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one. No directory was made." >&2; exit 1 ;;
+     *) exit 1 ;;
+   esac
+   [ -n "$MADE_DIR" ] || { echo "✗ The make printed no directory; nothing can be written." >&2; exit 1; }
+   printf '%s\n' "$MADE_DIR"
+   ```
+
+2. With your file-editing tool, not the shell, write `note.md` there, ending
+   with one newline, and `workflow-id.txt` beside it: the `workflow_id` the
+   drift report read, ending with one newline.
+
+Put the directory in the block's `TEXT_DIR` line. The block finds the active
+workflow again and stops when it is not the one the drift report read (the
+branch or its workflow changed since): run the drift report again. `state.mjs` reads the note
+itself and refuses an empty or missing one before it writes. The block
+releases the directory once the marker is written (ADR-0059 Decision 10); a
+block that stops keeps it for its rerun.
 
 ```bash
-TEXT_DIR='<directory from mktemp>'
+TEXT_DIR='<directory from step 1>'
+# A fresh shell: the workflow is found again here, never carried from an
+# earlier command. A lookup that fails or finds none stops the block and keeps
+# the directory.
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+ACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
+[ -n "$ACTIVE" ] || { echo "✗ No active orchestrator workflow; nothing to resume." >&2; exit 1; }
+# The workflow the drift report read, from the file the agent wrote: a marker
+# on another one (the branch or its workflow changed since) would put this
+# drift note on a macro it does not describe.
+node -e 'let id;try{id=require("fs").readFileSync(process.argv[1],"utf8").replace(/\r?\n$/,"")}catch{process.exit(1)}process.exit(id!==""&&id===require("path").basename(process.argv[2],".md")?0:1)' "$TEXT_DIR/workflow-id.txt" "$ACTIVE" \
+  || { echo "✗ workflow-id.txt in TEXT_DIR ($TEXT_DIR) is missing or names another workflow than $ACTIVE (the branch or its workflow changed since the drift report); run the drift report again. Nothing was written." >&2; exit 1; }
 node "<plugin-root>/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host <claude|codex> \
   --phase-label "Resume: drift=<clean|dirty>" \
   --phase-note-file "$TEXT_DIR/note.md" \
-  --event resumed
+  --event resumed || exit $?
+# ADR-0059 Decision 10, item 1 — the marker is written: no block, rerun or
+# continuation reads the directory again.
+RELEASE_PATH="$TEXT_DIR"
+# ADR-0059 Decision 10, item 4: release RELEASE_PATH (nothing when it is
+# empty), cleanup only. On standard error the CLI's own line, or one of these
+# when its result cannot be read; the block's standard output and exit status
+# stay what its own work set, errexit or not.
+if [ -n "${RELEASE_PATH:-}" ]; then
+  if grep -q -e "'tmpdir-release'" "<plugin-root>/scripts/state.mjs" 2>/dev/null; then
+    RELEASE_REPORT="$(node "<plugin-root>/scripts/state.mjs" tmpdir-release --path "$RELEASE_PATH")" || :
+    node -e 'let r=null;try{r=JSON.parse(process.argv[1])}catch{}process.exit(r!==null&&typeof r==="object"&&typeof r.outcome==="string"?0:1)' "$RELEASE_REPORT" 2>/dev/null \
+      || echo "agentic-dir release: the result is unknown; the directory may remain at $RELEASE_PATH or at its .removing- path" >&2
+  elif [ -r "<plugin-root>/scripts/state.mjs" ]; then
+    echo "agentic-dir release: no tmpdir-release in this state.mjs; the directory is kept at $RELEASE_PATH" >&2
+  else
+    echo "agentic-dir release: the result is unknown (cannot read <plugin-root>/scripts/state.mjs); the directory may remain at $RELEASE_PATH" >&2
+  fi
+fi
 ```
 
 Do not mutate `current_phase`, `next_action`, or `plan`.
@@ -120,17 +203,86 @@ orchestrator workflow homes of the checkout's read set, the default state root
 first (ADR-0067 Decision 4, item 2); stop when it exits non-zero (3: no root
 holds the id; 1: two files do, or the id is not a macro id). The id reaches
 `state.mjs` as a file, never in a command: typed into one, a quote, `$` or
-backquote in it would be read as code (ADR-0059, C134(a)). Create a private
-directory (`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`, noting the path
-it prints), write `workflow-id.txt` in it with your file-editing tool, holding
-the id exactly as typed and ending with one newline, and put the directory in
-the block's `TEXT_DIR` line:
+backquote in it would be read as code (ADR-0059, C134(a)).
+
+1. Create a private directory for it, and note the path it prints:
+
+   ```bash
+   # Step 1: a private text directory, marked so that the step that reads it
+   # last releases it (ADR-0059 Decisions 9 and 10).
+   MAKE_KIND='text'
+   MAKE_PARENT=''
+   # ADR-0059 Decision 9: make and mark the directory MAKE_KIND names (text or
+   # op; MAKE_PARENT, when set, for an op nested in it); its path is MADE_DIR.
+   # The fallbacks of Decision 10, item 4 make it the old way: an older
+   # state.mjs, lacking tmpdir-make, and a platform where the make is unsupported
+   # with mktemp -d, a nested op in a parent made the old way with mkdir. A fallback's path is
+   # checked for what a single-quoted shell literal cannot carry, as the make
+   # checks its own. Each status is read in a condition, so errexit changes
+   # nothing here.
+   MADE_DIR=''
+   if grep -q -e "'tmpdir-make'" "<plugin-root>/scripts/state.mjs" 2>/dev/null; then
+     if [ -n "${MAKE_PARENT:-}" ]; then
+       MADE_DIR="$(node "<plugin-root>/scripts/state.mjs" tmpdir-make --kind op --parent "$MAKE_PARENT")" && MAKE_RC=0 || MAKE_RC=$?
+     else
+       MADE_DIR="$(node "<plugin-root>/scripts/state.mjs" tmpdir-make --kind "$MAKE_KIND")" && MAKE_RC=0 || MAKE_RC=$?
+     fi
+   elif [ -r "<plugin-root>/scripts/state.mjs" ]; then
+     MAKE_RC=old
+   else
+     echo "✗ Cannot read <plugin-root>/scripts/state.mjs; no directory was made." >&2
+     exit 1
+   fi
+   case "$MAKE_RC" in
+     0) ;;
+     3|4|old)
+       if [ -n "${MAKE_PARENT:-}" ]; then
+         MADE_DIR="$MAKE_PARENT/op"
+         mkdir -m 700 "$MADE_DIR" || { echo "✗ $MADE_DIR already holds an operation directory, or cannot be made: run from a fresh directory. No directory was made." >&2; exit 1; }
+       else
+         MADE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-$MAKE_KIND.XXXXXX")" || exit 1
+         [ "$MAKE_RC" != 3 ] || echo "agentic-dir make: unsupported on this platform; $MADE_DIR was made with mktemp -d and will not be released" >&2
+       fi
+       node -e 'process.exit(/[\x00-\x1f\x7f\x27]/.test(process.argv[1])?1:0)' "$MADE_DIR" \
+         || { echo "✗ The directory made holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one." >&2; exit 1; }
+       ;;
+     5) echo "✗ TMPDIR (${TMPDIR:-/tmp}) holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one. No directory was made." >&2; exit 1 ;;
+     *) exit 1 ;;
+   esac
+   [ -n "$MADE_DIR" ] || { echo "✗ The make printed no directory; nothing can be written." >&2; exit 1; }
+   printf '%s\n' "$MADE_DIR"
+   ```
+
+2. With your file-editing tool, not the shell, write `workflow-id.txt` in it,
+   holding the id exactly as typed and ending with one newline.
+
+Put the directory in the block's `ID_DIR` line. Once the block prints the
+workflow, it releases the directory (ADR-0059 Decision 10): the printed path
+is all a later step reads. A refusal keeps it for the rerun.
 
 ```bash
-TEXT_DIR='<directory from mktemp>'
+ID_DIR='<directory from step 1>'
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 node "<plugin-root>/scripts/state.mjs" resolve-workflow \
-  --repo-root "$REPO_ROOT" --workflow-id-file "$TEXT_DIR/workflow-id.txt"
+  --repo-root "$REPO_ROOT" --workflow-id-file "$ID_DIR/workflow-id.txt" || exit $?
+# ADR-0059 Decision 10, item 1 — the id is resolved and printed: no block,
+# rerun or continuation reads the directory again.
+RELEASE_PATH="$ID_DIR"
+# ADR-0059 Decision 10, item 4: release RELEASE_PATH (nothing when it is
+# empty), cleanup only. On standard error the CLI's own line, or one of these
+# when its result cannot be read; the block's standard output and exit status
+# stay what its own work set, errexit or not.
+if [ -n "${RELEASE_PATH:-}" ]; then
+  if grep -q -e "'tmpdir-release'" "<plugin-root>/scripts/state.mjs" 2>/dev/null; then
+    RELEASE_REPORT="$(node "<plugin-root>/scripts/state.mjs" tmpdir-release --path "$RELEASE_PATH")" || :
+    node -e 'let r=null;try{r=JSON.parse(process.argv[1])}catch{}process.exit(r!==null&&typeof r==="object"&&typeof r.outcome==="string"?0:1)' "$RELEASE_REPORT" 2>/dev/null \
+      || echo "agentic-dir release: the result is unknown; the directory may remain at $RELEASE_PATH or at its .removing- path" >&2
+  elif [ -r "<plugin-root>/scripts/state.mjs" ]; then
+    echo "agentic-dir release: no tmpdir-release in this state.mjs; the directory is kept at $RELEASE_PATH" >&2
+  else
+    echo "agentic-dir release: the result is unknown (cannot read <plugin-root>/scripts/state.mjs); the directory may remain at $RELEASE_PATH" >&2
+  fi
+fi
 ```
 
 Use the path it prints as `WORKFLOW`. Then join the

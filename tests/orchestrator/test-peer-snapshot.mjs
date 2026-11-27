@@ -1566,16 +1566,31 @@ describe('orchestrator peer-now: the note block runs in a fresh shell (C75)', as
     strictEqual(found.length, 1, `${rel}: one block finds the active macro`);
     return found[0];
   };
+  // The block that prints the response when the lookup found no macro, and
+  // releases the directory (ADR-0059 Decision 10).
+  const standaloneBlock = (rel) => {
+    const found = fencedBlocks(readFileSync(ORCH(rel), 'utf8')).map((b) => b.lines.join('\n')).filter((b) => b.includes('STANDALONE_OUT='));
+    strictEqual(found.length, 1, `${rel}: one block prints the response alone`);
+    return found[0];
+  };
   const fill = (block) => block.replaceAll('<plugin-root>', ORCH('')).replaceAll('<claude|codex>', 'codex');
   // Each test reads its blocks itself: a block missing fails that test.
   const blocks = [
-    ['claude', () => lookupBlock('commands/peer-now.md'), () => noteBlock('commands/peer-now.md'), "TEXT_DIR='<directory from step 1>'"],
-    ['codex', () => fill(lookupBlock('core/skills/peer-now/SKILL.md')), () => fill(noteBlock('core/skills/peer-now/SKILL.md')), "TEXT_DIR='<directory from mktemp>'"],
+    ['claude', () => lookupBlock('commands/peer-now.md'), () => noteBlock('commands/peer-now.md'), () => standaloneBlock('commands/peer-now.md')],
+    ['codex', () => fill(lookupBlock('core/skills/peer-now/SKILL.md')), () => fill(noteBlock('core/skills/peer-now/SKILL.md')), () => fill(standaloneBlock('core/skills/peer-now/SKILL.md'))],
   ];
+  const dirLine = "TEXT_DIR='<directory from step 1>'";
+  // A text directory as step 1 makes it: marked, so the last block releases it.
+  const madeText = () => execFileSync(process.execPath, [ORCH('scripts/state.mjs'), 'tmpdir-make', '--kind', 'text'], { encoding: 'utf8', env: { ...process.env, TMPDIR: realpathSync(tmpdir()) } }).trim();
+  const seedRun = (textDir, stdoutPath) => {
+    writeFileSync(join(textDir, 'peer'), 'codex');
+    writeFileSync(join(textDir, 'run-id'), 'peer-now-20261017T000000Z-0a0b0c');
+    writeFileSync(join(textDir, 'run.json'), JSON.stringify({ ok: true, run_id: 'peer-now-20261017T000000Z-0a0b0c', handle_path: join(textDir, 'handle.json'), stdout_path: stdoutPath }));
+  };
   const shells = ['bash', 'zsh', 'sh'].filter((s) => spawnSync(s, ['-c', 'exit 0']).status === 0);
   const git = (dir, ...args) => execFileSync('git', ['-C', dir, '-c', 'user.name=T', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args], { stdio: 'pipe' });
   for (const shell of shells) {
-    for (const [host, lookupOf, blockOf, dirLine] of blocks) {
+    for (const [host, lookupOf, blockOf, standaloneOf] of blocks) {
       // Critique H3 — the lookup and the note block, each in a fresh shell,
       // with a branch switched between them to one whose macro is another: the
       // note goes to the macro the lookup found.
@@ -1598,12 +1613,11 @@ describe('orchestrator peer-now: the note block runs in a fresh shell (C75)', as
           });
           git(dir, 'switch', '-q', 'main');
           const otherBefore = readFileSync(other, 'utf8');
-          const textDir = mkdtempSync(join(tmpdir(), 'agentic-text.'));
-          const stdoutPath = join(textDir, 'stdout.txt');
+          let textDir = madeText();
+          // The response, in the run ledger: outside the text directory.
+          const stdoutPath = join(dir, '.agentic-plugins', 'stdout.txt');
           writeFileSync(stdoutPath, 'line one\nline \\ two $(touch pwned) `touch pwned2`\n');
-          writeFileSync(join(textDir, 'peer'), 'codex');
-          writeFileSync(join(textDir, 'run-id'), 'peer-now-20261017T000000Z-0a0b0c');
-          writeFileSync(join(textDir, 'run.json'), JSON.stringify({ ok: true, run_id: 'peer-now-20261017T000000Z-0a0b0c', handle_path: join(textDir, 'handle.json'), stdout_path: stdoutPath }));
+          seedRun(textDir, stdoutPath);
           const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AGENTIC_') && k !== 'CLAUDE_PLUGIN_ROOT'));
           const run = (b) => {
             ok(b.startsWith(`${dirLine}\n`), 'the block opens with its TEXT_DIR line');
@@ -1621,7 +1635,21 @@ describe('orchestrator peer-now: the note block runs in a fresh shell (C75)', as
           ok(body.includes('line \\ two $(touch pwned) `touch pwned2`'), body);
           ok(!existsSync(join(dir, 'pwned')) && !existsSync(join(dir, 'pwned2')), 'nothing in the response ran');
           strictEqual(readFileSync(other, 'utf8'), otherBefore, 'the macro the switched branch names is untouched');
-          // A lookup that found no macro: the note block records nothing.
+          ok(r.stdout.includes(`response: ${stdoutPath}`), r.stdout);
+          ok(!existsSync(textDir), 'the note, the last write, released the text directory');
+          // A note whose append fails (the macro the lookup found is gone):
+          // the block stops with the append's status and keeps the directory.
+          textDir = madeText();
+          seedRun(textDir, stdoutPath);
+          writeFileSync(join(textDir, 'macro-path'), join(dir, '.agentic-plugins', 'gone.md'));
+          r = run(block);
+          ok(r.status !== 0, `a failed append stops the block: ${r.stdout}`);
+          ok(!r.stdout.includes('response:'), r.stdout);
+          ok(existsSync(textDir), 'a failed append keeps the directory');
+          // A lookup that found no macro: the note block records nothing and
+          // keeps the directory; the standalone block prints the response and
+          // releases it. The directory the failed append kept serves it.
+          seedRun(textDir, stdoutPath);
           git(dir, 'switch', '-q', '-c', 'feat/none');
           r = run(lookup);
           strictEqual(r.status, 0, r.stderr);
@@ -1631,7 +1659,20 @@ describe('orchestrator peer-now: the note block runs in a fresh shell (C75)', as
           strictEqual(r.status, 1, r.stderr);
           ok(r.stderr.includes('The lookup found no active macro'), r.stderr);
           deepStrictEqual([readFileSync(filePath, 'utf8'), readFileSync(other, 'utf8')], before, 'nothing was recorded');
-          rmSync(textDir, { recursive: true, force: true });
+          ok(existsSync(textDir), 'a note refused keeps the directory for the standalone block');
+          // A run whose result names no response keeps the directory.
+          const runJson = readFileSync(join(textDir, 'run.json'), 'utf8');
+          writeFileSync(join(textDir, 'run.json'), '{}');
+          r = run(standaloneOf());
+          strictEqual(r.status, 1, r.stderr);
+          ok(r.stderr.includes('the directory is kept'), r.stderr);
+          ok(existsSync(textDir), 'a refused standalone block keeps the directory');
+          writeFileSync(join(textDir, 'run.json'), runJson);
+          r = run(standaloneOf());
+          strictEqual(r.status, 0, r.stderr);
+          ok(r.stdout.includes('line \\ two $(touch pwned) `touch pwned2`'), r.stdout);
+          ok(!existsSync(join(dir, 'pwned')) && !existsSync(join(dir, 'pwned2')), 'nothing in the response ran');
+          ok(!existsSync(textDir), 'the standalone block released the text directory');
         } finally {
           rmSync(dir, { recursive: true, force: true });
         }

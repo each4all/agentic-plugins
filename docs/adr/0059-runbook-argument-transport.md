@@ -8,11 +8,11 @@ Decision 9, which directories a runbook may remove and how (amendment of
 2026-11-25, C175), and Decision 10, when a runbook releases its directories
 (amendment of 2026-11-26, C175): Accepted (2026-11-26, the owner explicitly
 in the main session). Implemented for the persona plugins (designer,
-engineer, founder; implementation note of 2026-11-27): their runbooks,
+engineer, founder; implementation note of 2026-11-27) and for the
+orchestrator (its implementation note of 2026-11-27): their runbooks,
 skills and references make each text and operation directory through the
 make and release it on the paths `persona-pipeline/tmpdir-paths.json`
-lists. Not yet implemented for the orchestrator: until its runbooks switch
-(Decision 10, item 8), its blocks keep `mktemp -d` and delete nothing.
+lists.
 
 <!--
 No supersedure. This decides a mechanism the runbooks never had an explicit
@@ -662,12 +662,10 @@ item 6.
      shown), a withdrawal that failed outright (a mark file or state root
      that cannot be read, a lock that fails: an error raised before any
      ownership is established) and a reply the block does not recognize (an
-     older CLI). Today the helper reports `carried` for both a carrying
-     child and an unreadable one, `gone` for an unreadable registry
-     (`readOps` returns `unreadable` with no records, and
-     `withdrawDispatchMark` reads that as no record), and exits 0 with no
-     word for a null operation id, so the CLI that ships first (item 8)
-     reports each of them apart. A trap whose helper cannot read the
+     older CLI). The block reads them from the withdrawal's JSON reply
+     (`dispatch-mark-withdraw --format json`), which reports each of the six
+     apart; without the flag the CLI's output is as before. *Amended
+     2026-11-27 (the CLI shipped, and next switched): [history](history/0059-runbook-argument-transport.md#implementation-note-2026-11-27--the-orchestrators-runbooks-switch).* A trap whose helper cannot read the
      subtask (today `|| return 0`) authorizes nothing either. The trap sets
      the block's exit status from these results, so an exit 0 with a failed
      cleanup cannot happen: an `EXIT` trap that only runs commands leaves
@@ -1426,13 +1424,15 @@ escaping, so no escape that is valid JSON but wrong can change it.
   can feed both `append` and `finish-verb`. No block deletes the file on its
   own or runs `rm`, since a headless run can deny `rm` (the amendment of
   2026-09-29 above). The file lives in a private directory under `$TMPDIR`.
-  In a package whose runbooks have switched (Decision 10, item 8: today the
-  persona plugins, designer, engineer and founder), the make marks that
-  directory, and the runbook releases it, with the file, through the CLI's
-  proof once no reader of it is left (Decisions 9 and 10). Until a package
-  switches (today the orchestrator), it is a `mktemp -d` directory and nothing
-  deletes the file. *Amended 2026-11-27 (folded for the persona plugins, as
-  Decision 9, item 6 and Decision 10, item 8 require): [history](history/0059-runbook-argument-transport.md#fold-2026-11-27--the-amendment-of-2026-10-10s-bullet-for-the-persona-plugins).*
+  Every package's runbooks have switched (Decision 10, item 8: the persona
+  plugins, designer, engineer and founder, and the orchestrator): the make
+  marks that directory, and the runbook releases it, with the file, through
+  the CLI's proof once no reader of it is left (Decisions 9 and 10). A
+  package's runbook that has not switched, or a fallback of Decision 10,
+  item 4, makes a `mktemp -d` directory, and nothing deletes the file there.
+  *Amended 2026-11-27 (folded for the persona plugins, as
+  Decision 9, item 6 and Decision 10, item 8 require): [history](history/0059-runbook-argument-transport.md#fold-2026-11-27--the-amendment-of-2026-10-10s-bullet-for-the-persona-plugins);
+  folded again for the orchestrator: [history](history/0059-runbook-argument-transport.md#fold-2026-11-27--the-amendment-of-2026-10-10s-bullet-for-the-orchestrator).*
 - After transport each field keeps its existing treatment: a request is
   scrubbed to one line, `settle` collapses a summary's whitespace, a
   resolution is trimmed, and a subject must be one line, with the
@@ -1523,3 +1523,6 @@ records are in [the history file](history/0059-runbook-argument-transport.md):
 
 - 2026-11-25, amendment: [Amendment 2026-11-25 — which directories a runbook may remove, and how (C175)](history/0059-runbook-argument-transport.md#amendment-2026-11-25--which-directories-a-runbook-may-remove-and-how-c175)
 - 2026-11-26, amendment: [Amendment 2026-11-26 — when a runbook releases its directories (C175)](history/0059-runbook-argument-transport.md#amendment-2026-11-26--when-a-runbook-releases-its-directories-c175)
+- 2026-11-27, fold: [Fold 2026-11-27 — the amendment of 2026-10-10's bullet, for the persona plugins](history/0059-runbook-argument-transport.md#fold-2026-11-27--the-amendment-of-2026-10-10s-bullet-for-the-persona-plugins)
+- 2026-11-27, implementation note: [Implementation note 2026-11-27 — the orchestrator's runbooks switch](history/0059-runbook-argument-transport.md#implementation-note-2026-11-27--the-orchestrators-runbooks-switch)
+- 2026-11-27, fold: [Fold 2026-11-27 — the amendment of 2026-10-10's bullet, for the orchestrator](history/0059-runbook-argument-transport.md#fold-2026-11-27--the-amendment-of-2026-10-10s-bullet-for-the-orchestrator)

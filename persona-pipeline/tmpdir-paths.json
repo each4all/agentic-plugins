@@ -1,7 +1,14 @@
 {
   "schema": 1,
-  "about": "ADR-0059 Decision 10, items 1 to 3 and 8: each text or operation directory a persona region makes, the blocks that read it, and every path through the command, with the releasing step (release) or the reason it is kept (keep). tests/plugin-shape/test-runbook-cli-contracts.mjs holds the rendered regions to this list both ways (tmpdirProblems in tests/_runbook-checks.mjs). A block is named by a pattern of its text; a directory by the variable the releasing block gives the release. optional_consumers: consumers some runbooks lack (an authored block of one persona). instead_of: blocks that run in place of the releasing block, on another path of the command, never after it. guard: the if condition an end release runs under, when it has one. at: end (on the block's success path, after its last exit and its last other use of the variable), exit (on each of the block's exits, from its EXIT trap), exit-failed (on its failing exits only). authored: each persona file whose authored text (its region bodies aside) tells the agent to make a directory, and the step that releases it (region:<id>, a region the file renders, or the authored sentence); held both ways by the same test file.",
+  "about": "ADR-0059 Decision 10, items 1 to 3 and 8: each text or operation directory a persona region, or an authored orchestrator command or skill, makes, the blocks that read it, and every path through the command, with the releasing step (release) or the reason it is kept (keep). tests/plugin-shape/test-runbook-cli-contracts.mjs holds the rendered regions, and each orchestrator file a group names in `files` (checked whole: it renders no region), to this list both ways (tmpdirProblems in tests/_runbook-checks.mjs). A block is named by a pattern of its text; a directory by the variable the releasing block gives the release. optional_consumers: consumers some runbooks lack (an authored block of one persona). instead_of: blocks that run in place of the releasing block, on another path of the command, never after it. guard: the if condition a release runs under, when it has one (an end release, or an exit release from its trap that the guard limits to the paths it authorizes, as next's three results do: the list then both keeps and releases it). at: end (on the block's success path, after its last exit and its last other use of the variable), exit (on each of the block's exits, from its EXIT trap), exit-failed (on its failing exits only). authored: each persona file whose authored text (its region bodies aside) tells the agent to make a directory, and the step that releases it (region:<id>, a region the file renders, or the authored sentence); held both ways by the same test file. pending: the files or templates that still make a directory the old way (the rollout's remainder). exempt: lines of prose an owner follows outside any runbook block, by file and text, each found exactly once.",
   "pending": [],
+  "exempt": [
+    {
+      "file": "plugins/orchestrator/commands/autopilot.md",
+      "line": "file-writing tool into a file in a `mktemp -d` directory and pass its path:",
+      "why": "the owner's own instruct note, written by the owner outside any runbook block and read by the driver's command; no runbook step makes or reads it"
+    }
+  ],
   "authored": [
     {
       "file": "plugins/designer/core/skills/critique/SKILL.md",
@@ -1100,6 +1107,257 @@
             "no finalize follows (no active workflow, or $designer:frame on its own), the synthesis has read the run's result": "release",
             "under /designer:frame or a start lifecycle": "keep: not this block's; the finalize releases it as DISPATCH_TEXT_DIR, or the start lifecycle's attempt release block after the phase's settle",
             "DISPATCH_TEXT_DIR left unfilled": "keep: the message directs filling it and running the block again"
+          }
+        }
+      ]
+    },
+    {
+      "files": [
+        "plugins/orchestrator/commands/checkpoint.md",
+        "plugins/orchestrator/core/skills/checkpoint/SKILL.md"
+      ],
+      "blocks": {
+        "checkpoint": "state\\.mjs\" checkpoint-set \\\\$"
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "made": "step",
+          "consumers": [
+            "checkpoint"
+          ],
+          "release": {
+            "block": "checkpoint",
+            "at": "end"
+          },
+          "paths": {
+            "the checkpoint is written": "release",
+            "the write fails": "keep: the block's rerun reads summary.txt"
+          }
+        }
+      ]
+    },
+    {
+      "files": [
+        "plugins/orchestrator/commands/resume.md",
+        "plugins/orchestrator/core/skills/resume/SKILL.md"
+      ],
+      "blocks": {
+        "marker": "--event resumed \\|\\| exit",
+        "resolve": "--workflow-id-file \"\\$ID_DIR/workflow-id\\.txt\""
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "made": "step",
+          "consumers": [
+            "marker"
+          ],
+          "release": {
+            "block": "marker",
+            "at": "end"
+          },
+          "paths": {
+            "the marker is written": "release",
+            "the append fails": "keep: the block's rerun reads note.md",
+            "the baseline commit is unavailable, so the marker is skipped before its directory is made": "keep: no directory was made"
+          }
+        },
+        {
+          "variable": "ID_DIR",
+          "made": "step",
+          "consumers": [
+            "resolve"
+          ],
+          "release": {
+            "block": "resolve",
+            "at": "end"
+          },
+          "paths": {
+            "the workflow is printed": "release: the printed path is all the archive step reads",
+            "the id names no single macro file, or the lookup fails": "keep: the message stops the archive; a rerun reads workflow-id.txt",
+            "the unnamed archive form": "keep: no directory is made"
+          }
+        }
+      ]
+    },
+    {
+      "files": [
+        "plugins/orchestrator/commands/peer-now.md",
+        "plugins/orchestrator/core/skills/peer-now/SKILL.md"
+      ],
+      "blocks": {
+        "dispatch": "--kind peer-now \\\\$",
+        "controls": "peer-runner\\.mjs\" status \\\\$",
+        "lookup": "> \"\\$TEXT_DIR/macro-path\"",
+        "note": "--phase-label \"\\[Peer\\] \\$PEER consultation\"",
+        "standalone": "STANDALONE_OUT="
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "made": "step",
+          "consumers": [
+            "dispatch",
+            "controls",
+            "lookup"
+          ],
+          "optional_consumers": [
+            "controls"
+          ],
+          "release": {
+            "block": "note",
+            "at": "end"
+          },
+          "paths": {
+            "the note is appended": "release: the response stays in the run ledger, whose path the block prints",
+            "no active macro, a lookup not yet run, a run that did not succeed (ok not true), or one with no response file": "keep: the standalone block, the lookup or the rerun reads it",
+            "the dispatch fails": "keep: run.err and run.json there say why",
+            "the append fails": "keep: the block's rerun reads it"
+          },
+          "instead_of": [
+            "standalone"
+          ]
+        },
+        {
+          "variable": "TEXT_DIR",
+          "made": "elsewhere",
+          "consumers": [
+            "dispatch",
+            "lookup"
+          ],
+          "release": {
+            "block": "standalone",
+            "at": "end"
+          },
+          "paths": {
+            "the response is printed (no active macro)": "release",
+            "the run's result is missing or unreadable, says the run did not succeed, or names no response file": "keep: run.err there says why",
+            "the response cannot be printed": "keep: the block's rerun reads run.json"
+          },
+          "instead_of": [
+            "note"
+          ]
+        }
+      ]
+    },
+    {
+      "files": [
+        "plugins/orchestrator/commands/plan.md",
+        "plugins/orchestrator/core/skills/plan/SKILL.md"
+      ],
+      "blocks": {
+        "phase0": "printf 'ACTIVE=%s\\\\n'",
+        "bootstrap": "--original-request-file \"\\$TEXT_DIR/request\\.txt\"",
+        "resume": "--phase-label \"Phase 0: Resume macro plan\"",
+        "dispatch": "--prompt-file \"\\$PROMPT_FILE\" --output-format json",
+        "planset": "state\\.mjs\" plan-set \\\\$",
+        "lane": "state\\.mjs\" lane-advice \\\\$",
+        "finalize": "state\\.mjs\" ensemble-commit \\\\$"
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "made": "step",
+          "consumers": [
+            "phase0",
+            "bootstrap",
+            "resume",
+            "dispatch",
+            "planset",
+            "lane",
+            "finalize"
+          ],
+          "optional_consumers": [
+            "phase0",
+            "bootstrap",
+            "resume",
+            "dispatch",
+            "planset",
+            "lane"
+          ],
+          "release": {
+            "block": "finalize",
+            "at": "end"
+          },
+          "paths": {
+            "the note and the result are recorded (a peer's synthesis, a LOCAL-ONLY plan under the id of the dispatch that found no peer, a run that failed, or after a plan-set rerun)": "release",
+            "a check before the writes refuses (a verdict, the run id, run-macro, note.md, summary.txt, contested.md, the macro's records)": "keep: the message directs the fix and the block's rerun reads the directory",
+            "the append, the ensemble commit or the consensus task fails": "keep: the block's rerun writes each once and reads the directory",
+            "the plan is left before Phase 2's last block (Phase 0 to the plan-set or the lane advice)": "keep: an abandoned path; the owner lists it (tmpdir-list)",
+            "run-id is empty (no dispatch reached the runner)": "keep: the message stops the block; a dispatch, then the block's rerun, reads the directory"
+          }
+        }
+      ]
+    },
+    {
+      "files": [
+        "plugins/orchestrator/commands/done.md",
+        "plugins/orchestrator/core/skills/done/SKILL.md"
+      ],
+      "blocks": {
+        "done": "--command done --args-file"
+      },
+      "directories": [
+        {
+          "variable": "REASON_DIR",
+          "made": "done",
+          "consumers": [
+            "done"
+          ],
+          "release": {
+            "block": "done",
+            "at": "exit"
+          },
+          "paths": {
+            "any exit after the make (a refusal, the completed no-op, a failed or refused write, the recorded write)": "release: each run of the block writes the reason afresh from its args file, so no rerun reads it"
+          }
+        }
+      ]
+    },
+    {
+      "files": [
+        "plugins/orchestrator/commands/next.md",
+        "plugins/orchestrator/core/skills/next/SKILL.md"
+      ],
+      "blocks": {
+        "args": "--command next --args-file \"\\$ARGS_DIR/args\\.json\"\\)\" \\|\\| exit 1$",
+        "join": "--command next --host codex\\)\" \\|\\| exit 1$",
+        "standalone": "^mark_kept$",
+        "switch": "state\\.mjs\" dispatch-mark-publish \\\\$",
+        "prelude": "^export AGENTIC_PARENT_WORKFLOW=\"\\$MACRO_ID\"$",
+        "writeback": "state\\.mjs\" subtask-update \\\\$"
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "made": "step",
+          "consumers": [
+            "args",
+            "join",
+            "standalone",
+            "switch",
+            "prelude"
+          ],
+          "optional_consumers": [
+            "join",
+            "standalone"
+          ],
+          "release": {
+            "block": "writeback",
+            "at": "exit",
+            "guard": "if [ \"$WRITEBACK_RC\" = 0 ] && [ \"$ADMISSION_RC\" = 0 ] && [ \"$MARK_OK\" = true ]; then"
+          },
+          "paths": {
+            "the writeback exited 0, the mark's withdrawal reported withdrawn, gone, unpublished or carried, and the admission release exited 0": "release: the trap's last step; no block, rerun or cleanup reads the directory",
+            "a refusal before the join (Phases 0 to 3: arguments, selection, readiness, approval, holds, a dirty tree, ownership, the engineer preflight)": "keep: its message directs a rerun, or another command, while the runbook lets a block run again over what the earlier phases kept",
+            "Phase 3b refuses or fails after the join, its trap releasing the admission and withdrawing the mark": "keep: a rerun of Phase 3b reads it",
+            "Phase 3b finds a kept mark whose withdrawal shows no owner (unknown, unreadable, a failed withdrawal, an unread reply)": "keep: the mark file and subtask.json are the only record of the old mark; the message names the withdrawal to retry",
+            "the Codex standalone release after its join": "keep: a rerun from the join reads it",
+            "the engineer runbook stops or fails (Phase 4)": "keep: the writeback block still runs and reads it",
+            "the writeback block exits before the writeback (a missing carried file, no mark file, a check that did not pass, no active child, an admission gone)": "keep: its message names what is left; the mark file or the admission id stays readable for that cleanup",
+            "the writeback is refused or fails": "keep: the cleanup its leftover lines name reads the admission id and the mark file",
+            "the writeback landed, but the withdrawal did not show who holds the mark, or the admission release failed": "keep: the block exits 1 and names each leftover with its id; recovery is that cleanup, never a rerun of the block"
           }
         }
       ]

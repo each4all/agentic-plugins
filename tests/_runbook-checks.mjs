@@ -1091,6 +1091,9 @@ export function cliCallProblems(call, kind, contract, capabilities = null) {
 const LEGACY_MAKE_RE = /\bmktemp\s+(?:-[a-zA-Z]*d[a-zA-Z]*|--directory)\b|\bmkdir\b[^\n]*\bop\b/;
 const legacyLine = (l) => LEGACY_MAKE_RE.test(l) && !/agentic-args\./.test(l);
 const TMPDIR_CALL_RE = /\btmpdir-(?:make|release)\b/;
+// The first line that sets the plugin root ends the lines the agent fills: a
+// persona block's ROOT_OVERRIDE, an orchestrator command's CLAUDE_PLUGIN_ROOT.
+const ROOT_LINE_RE = /^(?:ROOT_OVERRIDE|CLAUDE_PLUGIN_ROOT)=/;
 
 /**
  * The lines of `text` (1-based) that name the release subcommand outside the
@@ -1140,6 +1143,92 @@ function snippetAt(lines, i, snippet) {
 }
 
 /**
+ * The lines (0-based) of `blockText` where a node command starts whose
+ * failure does not stop the block: a command at the block's own level (not
+ * inside a quote or a command substitution) and in command position, unless
+ * its list hands the failure to an `||` whose handler exits (`|| exit …`, or a
+ * brace group that exits), records it (`&& NAME=0`, or `NAME=$?`, `case $?
+ * in` or `[ "$?"` next, for a check the block makes of it), or is an if or
+ * while condition (`then` or `do` next). A pipeline masks the write's status,
+ * and an `||` that only logs lets the block go on, so neither stops it; a
+ * release after such a write runs when it failed. Known limits: a node call
+ * inside a substitution (`X="$(node …)"`) is read through its value, which
+ * this reader does not judge, so it is not listed; and the reader does not
+ * follow heredoc bodies, a `case` pattern's `)` inside a substitution, or a
+ * recorded status to the check that reads it (no releasing block holds a
+ * heredoc).
+ */
+function unreadNodeCalls(blockText) {
+  const text = blockText;
+  const ops = [];
+  const calls = [];
+  const stack = [{ kind: 'code', depth: 0 }];
+  let commandAt = 0;
+  for (let i = 0; i < text.length; i++) {
+    const top = stack[stack.length - 1];
+    const c = text[i];
+    if (top.kind === 'single') { if (c === "'") stack.pop(); continue; }
+    if (top.kind === 'double') {
+      if (c === '\\') i++;
+      else if (c === '"') stack.pop();
+      else if (c === '$' && text[i + 1] === '(') { stack.push({ kind: 'subst', depth: 0 }); i++; }
+      continue;
+    }
+    const wordStart = i === 0 || /[\s;&|(]/.test(text[i - 1]);
+    if (c === '#' && wordStart) { while (i + 1 < text.length && text[i + 1] !== '\n') i++; continue; }
+    if (c === '\\') { i++; continue; }
+    // A `<placeholder>` the reader fills is one word, its `|` alternatives included.
+    const placeholder = c === '<' ? /^<[A-Za-z][A-Za-z0-9_|.-]*>/.exec(text.slice(i, i + 80)) : null;
+    if (placeholder) { i += placeholder[0].length - 1; continue; }
+    const bottom = stack.length === 1;
+    if (c === "'") stack.push({ kind: 'single' });
+    else if (c === '"') stack.push({ kind: 'double' });
+    else if (c === '$' && text[i + 1] === '(') { stack.push({ kind: 'subst', depth: 0 }); i++; }
+    else if (top.kind === 'subst' && c === '(') top.depth++;
+    else if (top.kind === 'subst' && c === ')') { if (top.depth > 0) top.depth--; else stack.pop(); }
+    else if (!bottom) continue;
+    // A redirection's & (2>&1, >&2, &>file) is no operator.
+    else if (c === '&' && (text[i - 1] === '>' || text[i - 1] === '<' || text[i + 1] === '>')) continue;
+    else if ((c === '&' || c === '|') && text[i + 1] === c) { ops.push({ at: i, op: c + c }); i++; commandAt = i + 1; }
+    else if (c === '\n' || c === ';' || c === '|' || c === '&') { ops.push({ at: i, op: c }); commandAt = i + 1; }
+    // `node` as the command: after an operator, a reserved word or assignments.
+    else if (wordStart && /^node\s/.test(text.slice(i, i + 5))
+      && /^\s*(?:(?:if|elif|while|until|then|do|else|!|\{)\s+|[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*$/.test(text.slice(commandAt, i))) calls.push(i);
+  }
+  const after = (t) => text.slice(t.at + t.op.length).replace(/^(?:[ \t]|\\\n)*/, '');
+  // The handler an || runs exits: `exit` or `return` as its command, or in
+  // the brace group it opens.
+  const stops = (t) => {
+    const h = after(t);
+    if (!h.startsWith('{')) return /^(?:exit|return)\b/.test(h);
+    let depth = 0;
+    for (let k = 0; k < h.length; k++) {
+      const ch = h[k];
+      if (ch === "'") { k = h.indexOf("'", k + 1); if (k < 0) return false; continue; }
+      if (ch === '"') { for (k++; k < h.length && h[k] !== '"'; k++) if (h[k] === '\\') k++; continue; }
+      if (ch === '{') depth++;
+      else if (ch === '}' && --depth === 0) return /(?:^|[\s;{])(?:exit|return)\b/.test(h.slice(1, k).replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, "''"));
+    }
+    return false;
+  };
+  const reads = (at) => {
+    // The operator that ends the call's command, past an && chain, whose
+    // later || still takes the call's failure.
+    let t = ops.find((o) => o.at > at);
+    while (t !== undefined && t.op === '&&' && !/^[A-Z_][A-Z0-9_]*=0(?:\s|$)/.test(after(t))) {
+      const from = t.at;
+      t = ops.find((o) => o.at > from);
+    }
+    if (t === undefined || t.op === '|' || t.op === '&') return false;
+    if (t.op === '&&') return true;
+    if (t.op === '||') return stops(t);
+    const rest = after(t).replace(/^(?:[ \t]*(?:#[^\n]*)?\n)*/, '');
+    return /^\s*(?:then|do)\b/.test(rest) || /^\s*(?:[A-Z_][A-Z0-9_]*=\$\?|case "?\$\?"? in|(?:if )?\[ "?\$\?)/.test(rest);
+  };
+  return calls.filter((at) => !reads(at)).map((at) => text.slice(0, at).split('\n').length - 1);
+}
+
+/**
  * One shell block's makes and releases: `{ makes, releases, legacy, problems }`.
  * `makes`: `{ line, variable }` (variable null for a step's printed path);
  * `releases`: `{ line, inputs, at }`; `legacy`: lines that make a directory
@@ -1170,7 +1259,7 @@ export function tmpdirBlockReads(blockText, snippets) {
   // The lines the agent fills, at the head of the block.
   const head = new Set();
   for (const l of lines) {
-    if (/^ROOT_OVERRIDE=/.test(l.trim())) break;
+    if (ROOT_LINE_RE.test(l.trim())) break;
     const m = /^([A-Z_][A-Z0-9_]*)='<[^'\n]*>'$/.exec(l.trim());
     if (m) head.add(m[1]);
   }
@@ -1201,7 +1290,8 @@ export function tmpdirBlockReads(blockText, snippets) {
       openIfs[i] = stack.filter((s) => s.startsWith('if ') || s.startsWith('else of ') || s.startsWith('elif ')).slice();
       blind[i] = stack.some((s) => s.startsWith('case ') || s.startsWith('while ') || s === '{');
       if (covered.has(i)) return;
-      const s = l.replace(/\s+#.*$/, '').trim();
+      // A case arm's closing `;;` after a `fi` or `done` closes that too.
+      const s = l.replace(/\s+#.*$/, '').trim().replace(/^(fi|done);;$/, '$1');
       if (/^if .*; then$/.test(s)) stack.push(s);
       else if (s === 'else' && stack.length > 0) stack.push(`else of ${stack.pop()}`);
       else if (/^elif .*; then$/.test(s) && stack.length > 0) { stack.pop(); stack.push(s); }
@@ -1217,10 +1307,26 @@ export function tmpdirBlockReads(blockText, snippets) {
     const m = new RegExp(`^\\s*${x}=(.*)$`).exec(l);
     return m !== null && m[1] !== '"$MADE_DIR"' && m[1] !== "''" && !/^'<[^'\n]*>'$/.test(m[1]);
   });
+  // A releasing trap is registered in the block's own shell: at its top level,
+  // outside a function, a condition or a construct this reader does not follow.
   const trapAt = new Map();
-  lines.forEach((l, i) => { const m = /^trap ([a-z_][a-z0-9_]*) EXIT$/.exec(l); if (m) trapAt.set(m[1], i); });
+  lines.forEach((l, i) => {
+    const m = /^trap ([a-z_][a-z0-9_]*) EXIT$/.exec(l);
+    if (m && !inFn(i) && openIfs[i].length === 0 && !blind[i]) trapAt.set(m[1], i);
+  });
+  // Every line that sets an EXIT trap, in any form (EXIT or 0 among its
+  // signals; `trap -p` and `trap -l` only print): a later one replaces the
+  // trap a release runs from, which then releases nothing.
+  const exitTraps = lines.flatMap((l, i) => {
+    if (covered.has(i)) return [];
+    const m = /^\s*trap\s+(?!-[pl]\b)(?:'[^']*'|"[^"]*"|\S+)((?:\s+[^\s#]+)+)\s*(?:#.*)?$/.exec(l);
+    return m && m[1].trim().split(/\s+/).some((sig) => sig === 'EXIT' || sig === '0' || sig === 'SIGEXIT') ? [i] : [];
+  });
   let lastExit = -1;
   lines.forEach((l, i) => { if (!covered.has(i) && !inFn(i) && /\bexit\b/.test(l.replace(/#.*$/, ''))) lastExit = i; });
+  // The node commands whose failure nothing reads, outside the snippets and
+  // the functions: a release after one runs when that write failed.
+  const unread = unreadNodeCalls(blockText).filter((i) => !covered.has(i) && !inFn(i));
 
   const makes = [];
   const releases = [];
@@ -1255,6 +1361,10 @@ export function tmpdirBlockReads(blockText, snippets) {
     let at = 'end';
     if (fn) {
       if (!trapAt.has(fn.name)) problems.push(`line ${f.start + 1}: a release in ${fn.name}(), which no EXIT trap of the block runs`);
+      else {
+        const replaced = exitTraps.find((i) => i > trapAt.get(fn.name));
+        if (replaced !== undefined) problems.push(`line ${f.start + 1}: the EXIT trap that runs ${fn.name}() (line ${trapAt.get(fn.name) + 1}) is replaced at line ${replaced + 1}, so the release may never run`);
+      }
       // The failing-exit guard holds only while it is open at the release: one
       // closed before it, or turned into its else, guards nothing.
       at = openIfs[f.start].includes('if [ "$OWN_RC" -ne 0 ]; then') ? 'exit-failed' : 'exit';
@@ -1264,6 +1374,7 @@ export function tmpdirBlockReads(blockText, snippets) {
     } else {
       if (blind[f.start]) problems.push(`line ${f.start + 1}: a release of ${inputs.join(', ')} inside a case arm, a while loop or a brace group, whose branch the path list cannot declare`);
       if (f.start <= lastExit) problems.push(`line ${f.start + 1}: a release of ${inputs.join(', ')} before the block's last exit (line ${lastExit + 1}): a path that stops after it would rerun over a released directory`);
+      for (const i of unread.filter((u) => u < f.start)) problems.push(`line ${f.start + 1}: a release of ${inputs.join(', ')} after the node command at line ${i + 1}, whose failure nothing reads (no || after it, no if, no $? read next): when that write fails, the block releases the directory and ends 0`);
       for (const x of inputs) {
         // The variable, and every variable assigned from it (an alias such as
         // a file path under it), read after the release.
@@ -1315,6 +1426,9 @@ export function tmpdirProblems(text, group, { snippets, capabilities = {}, label
   }
   const dirs = group.directories.filter((d) => capabilityHolds(d, capabilities));
   const actual = new Set();
+  // A releasing step declared once and found twice is refused, not collapsed:
+  // each release site is one the list names.
+  const sites = new Map();
   const actualMakes = new Set();
   let stepMakes = 0;
   shell.forEach((b, i) => {
@@ -1324,7 +1438,10 @@ export function tmpdirProblems(text, group, { snippets, capabilities = {}, label
     for (const rel of r.releases) {
       if (where === null) { problems.push(`${label}: block at line ${b.start}: a release in a block the path list does not name`); continue; }
       for (const x of rel.inputs) {
-        actual.add(`${where}:${x}:${rel.at}${rel.guards.map((g) => ` under ${g}`).join('')}`);
+        const key = `${where}:${x}:${rel.at}${rel.guards.map((g) => ` under ${g}`).join('')}`;
+        if (actual.has(key)) problems.push(`${label}: the releasing step ${key} is found ${sites.get(key) + 1} times (line ${b.start}); the path list names one`);
+        sites.set(key, (sites.get(key) ?? 0) + 1);
+        actual.add(key);
         // The directory's paths agree with when the shell releases it: from an
         // EXIT trap on every exit, no path keeps it; on failing exits only, the
         // success keeps it; on the success path of a block that can stop
@@ -1334,7 +1451,10 @@ export function tmpdirProblems(text, group, { snippets, capabilities = {}, label
         const keeps = values.some((v) => v.startsWith('keep'));
         const releasesOn = values.some((v) => v.startsWith('release'));
         if (d === undefined || values.length === 0) continue;
-        if (rel.at === 'exit' && keeps) problems.push(`${label}: ${where}:${x} is released on every exit, and the path list keeps it on a path`);
+        // From an EXIT trap under a guard (next's three results): the exits
+        // the guard turns away keep it, so the list both keeps and releases.
+        if (rel.at === 'exit' && rel.guards.length === 0 && keeps) problems.push(`${label}: ${where}:${x} is released on every exit, and the path list keeps it on a path`);
+        if (rel.at === 'exit' && rel.guards.length > 0 && !(keeps && releasesOn)) problems.push(`${label}: ${where}:${x} is released from an EXIT trap under ${rel.guards.join(' and ')}, and the path list does not both keep it (the exits the guard turns away) and release it`);
         if (rel.at === 'exit-failed' && !(keeps && releasesOn)) problems.push(`${label}: ${where}:${x} is released on failing exits only, and the path list does not both keep it (the success) and release it`);
         if (rel.at === 'end' && (rel.stops || rel.guards.length > 0) && !keeps) problems.push(`${label}: ${where}:${x} is released on the success path only, and the path list keeps it on no path (the block's earlier exits${rel.guards.length > 0 ? ' and its guard' : ''})`);
       }
@@ -1359,9 +1479,11 @@ export function tmpdirProblems(text, group, { snippets, capabilities = {}, label
 /**
  * In a rendered runbook, each directory's releasing block comes after every
  * block that reads it (the group's `consumers`), across regions; a consumer
- * named in `optional_consumers` may be missing from a runbook.
+ * named in `optional_consumers` may be missing from a runbook. `strict`: no
+ * placeholder names a fresh directory, as in an orchestrator file, whose
+ * blocks all share the one directory its step 1 made.
  */
-export function tmpdirOrderProblems(text, group, { capabilities = {}, label = 'runbook' } = {}) {
+export function tmpdirOrderProblems(text, group, { capabilities = {}, label = 'runbook', strict = false } = {}) {
   const shell = fencedBlocks(text).filter((b) => SHELL_LANGS.has(b.lang)).map((b) => b.lines.join('\n'));
   const where = (name) => {
     const re = new RegExp(group.blocks[name], 'm');
@@ -1397,7 +1519,7 @@ export function tmpdirOrderProblems(text, group, { capabilities = {}, label = 'r
       const own = headLines(shell[j]).get(d.variable);
       const made = new RegExp(`^\\s*${d.variable}="\\$MADE_DIR"$`, 'm').test(shell[j]);
       if (own === undefined && !made) problems.push(`${label}: a block after the ${d.release.block} block uses ${d.variable}, which it neither takes on a line of its own nor makes: the directory released there`);
-      else if (own !== undefined && own === placeholder && !FRESH_PLACEHOLDER_RE.test(own)) problems.push(`${label}: a block after the ${d.release.block} block takes ${d.variable} as ${own}, the directory released there`);
+      else if (own !== undefined && own === placeholder && (strict || !FRESH_PLACEHOLDER_RE.test(own))) problems.push(`${label}: a block after the ${d.release.block} block takes ${d.variable} as ${own}, the directory released there`);
     }
   }
   return problems;
@@ -1411,7 +1533,7 @@ const FRESH_PLACEHOLDER_RE = /^'<(?:directory from step 1|directory holding [^>]
 function headLines(block) {
   const out = new Map();
   for (const l of (block ?? '').split('\n')) {
-    if (/^ROOT_OVERRIDE=/.test(l.trim())) break;
+    if (ROOT_LINE_RE.test(l.trim())) break;
     const m = /^([A-Z_][A-Z0-9_]*)=('<[^'\n]*>')$/.exec(l.trim());
     if (m && !out.has(m[1])) out.set(m[1], m[2]);
   }

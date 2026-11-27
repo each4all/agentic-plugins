@@ -75,6 +75,9 @@ const TEXT_VARS = ['NOTE', 'SUMMARY', 'RESOLUTION', 'OWNER_RESOLUTION', 'APPROVE
 const STATE_TEXT_FILE_FLAGS = ['original-request', 'next-action', 'phase-note', 'summary', 'decision', 'architecture'];
 const SHELL_LANGS = new Set(['bash', 'sh', 'shell', 'zsh']);
 const MKTEMP_STEP = 'mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"';
+// The step that makes the text directory through the make snippet (ADR-0059
+// Decisions 9 and 10), which a switched runbook shows in place of mktemp.
+const MAKE_STEP = "MAKE_KIND='text'";
 const TEXT_DIR_LINES = ["TEXT_DIR='<directory from step 1>'", "TEXT_DIR='<directory from mktemp>'"];
 
 const ASSIGNMENT = new RegExp(`^(?:${TEXT_VARS.join('|')})\\+?=`);
@@ -96,8 +99,9 @@ const SCRIPT_FLAGS = ['-e', '--eval', '-p', '--print'];
 // line that names it (the text directory, or the args directory of ADR-0059).
 const ENUM_PLACEHOLDER = /^<[\w-]+(?:\|[\w-]+)+>$/;
 const ROOT_PLACEHOLDERS = ['<plugin-root>', '<orchestrator-plugin-root>'];
-// next.md makes its args directory in step 3, after the text directory's.
-const DIRECTORY_LINE = /^(?:TEXT_DIR='<directory from (?:step 1|mktemp)>'|ARGS_DIR='<directory from (?:step [13]|mktemp)>')$/;
+// next.md makes its args directory in step 3, after the text directory's;
+// resume's archive names its id directory ID_DIR.
+const DIRECTORY_LINE = /^(?:(?:TEXT_DIR|ID_DIR)='<directory from (?:step 1|mktemp)>'|ARGS_DIR='<directory from (?:step [13]|mktemp)>')$/;
 
 // The words of a shell block's source as the shell splits them (Critique
 // finding M2: a value read line by line, or up to the next quote character,
@@ -273,7 +277,7 @@ function textTransportProblems(text, label, kind = 'markdown') {
     }
   }
   if (usesTextDir) {
-    if (!text.includes(MKTEMP_STEP)) add(0, label, 'no mktemp -d step creates the text directory');
+    if (!text.includes(MKTEMP_STEP) && !text.includes(MAKE_STEP)) add(0, label, 'no mktemp -d step or make step creates the text directory');
     if (!/with your file-(?:writing|editing) tool/i.test(text.replace(/\s+/g, ' '))) add(0, label, 'the files are not written with the file tool');
   }
   // In document order (a stable sort keeps a line's own problems in order).

@@ -65,7 +65,55 @@ Follow the Presentation Mode Protocol (`../_shared/references/presentation-proto
 
 Full macro composition with Plan-verify opposite-host peer ensemble + state-write.
 
-**Text you write travels as files** (ADR-0059, amendment of 2026-10-10). The feature description, the Plan-verify prompt, the subtasks, the decision, the architecture, the phase note and the ensemble summary are text you write, and the note and summary carry the peer's sentences: a backtick or `$(…)` spliced into a command line runs as a command. Create a private directory once (`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`, noting the path it prints), write each value there with your file-editing tool, never with the shell, ending the file with one newline, and pass the file's path: `--original-request-file`, `--prompt-file`, `--subtasks-json-file`, `--decision-file`, `--architecture-file`, `--phase-note-file`, `--summary-file`. `state.mjs` reads each file itself, removes its final newline, and refuses an empty or missing one before it writes. Nothing deletes the files.
+**Text you write travels as files** (ADR-0059, amendment of 2026-10-10). The feature description, the Plan-verify prompt, the subtasks, the decision, the architecture, the phase note and the ensemble summary are text you write, and the note and summary carry the peer's sentences: a backtick or `$(…)` spliced into a command line runs as a command. Create a private directory once, noting the path it prints (`<plugin-root>` being the orchestrator plugin root, `../checkpoint/SKILL.md` § Command resolution):
+
+```bash
+# Step 1: a private text directory, marked so that the step that reads it
+# last releases it (ADR-0059 Decisions 9 and 10).
+MAKE_KIND='text'
+MAKE_PARENT=''
+# ADR-0059 Decision 9: make and mark the directory MAKE_KIND names (text or
+# op; MAKE_PARENT, when set, for an op nested in it); its path is MADE_DIR.
+# The fallbacks of Decision 10, item 4 make it the old way: an older
+# state.mjs, lacking tmpdir-make, and a platform where the make is unsupported
+# with mktemp -d, a nested op in a parent made the old way with mkdir. A fallback's path is
+# checked for what a single-quoted shell literal cannot carry, as the make
+# checks its own. Each status is read in a condition, so errexit changes
+# nothing here.
+MADE_DIR=''
+if grep -q -e "'tmpdir-make'" "<plugin-root>/scripts/state.mjs" 2>/dev/null; then
+  if [ -n "${MAKE_PARENT:-}" ]; then
+    MADE_DIR="$(node "<plugin-root>/scripts/state.mjs" tmpdir-make --kind op --parent "$MAKE_PARENT")" && MAKE_RC=0 || MAKE_RC=$?
+  else
+    MADE_DIR="$(node "<plugin-root>/scripts/state.mjs" tmpdir-make --kind "$MAKE_KIND")" && MAKE_RC=0 || MAKE_RC=$?
+  fi
+elif [ -r "<plugin-root>/scripts/state.mjs" ]; then
+  MAKE_RC=old
+else
+  echo "✗ Cannot read <plugin-root>/scripts/state.mjs; no directory was made." >&2
+  exit 1
+fi
+case "$MAKE_RC" in
+  0) ;;
+  3|4|old)
+    if [ -n "${MAKE_PARENT:-}" ]; then
+      MADE_DIR="$MAKE_PARENT/op"
+      mkdir -m 700 "$MADE_DIR" || { echo "✗ $MADE_DIR already holds an operation directory, or cannot be made: run from a fresh directory. No directory was made." >&2; exit 1; }
+    else
+      MADE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-$MAKE_KIND.XXXXXX")" || exit 1
+      [ "$MAKE_RC" != 3 ] || echo "agentic-dir make: unsupported on this platform; $MADE_DIR was made with mktemp -d and will not be released" >&2
+    fi
+    node -e 'process.exit(/[\x00-\x1f\x7f\x27]/.test(process.argv[1])?1:0)' "$MADE_DIR" \
+      || { echo "✗ The directory made holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one." >&2; exit 1; }
+    ;;
+  5) echo "✗ TMPDIR (${TMPDIR:-/tmp}) holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one. No directory was made." >&2; exit 1 ;;
+  *) exit 1 ;;
+esac
+[ -n "$MADE_DIR" ] || { echo "✗ The make printed no directory; nothing can be written." >&2; exit 1; }
+printf '%s\n' "$MADE_DIR"
+```
+
+Write each value there with your file-editing tool, never with the shell, ending the file with one newline, and pass the file's path: `--original-request-file`, `--prompt-file`, `--subtasks-json-file`, `--decision-file`, `--architecture-file`, `--phase-note-file`, `--summary-file`. `state.mjs` reads each file itself, removes its final newline, and refuses an empty or missing one before it writes. Step 6's block, the last step that reads the directory on every path to the end of the plan (a LOCAL-ONLY plan, a run that failed, a `plan-set` rerun included), releases it once it succeeded (ADR-0059 Decision 10); a block that stops keeps it for its rerun, and a plan left before Step 6 keeps it as abandoned, for the owner to list (`state.mjs tmpdir-list`).
 
 ### Step 1: Establish the active workflow
 
@@ -110,12 +158,12 @@ Subtask validation runs at the write boundary (schema 1.1):
 
 ### Step 6: Commit the ensemble result
 
-Record the phase note, then commit the ensemble result, and on a conflict write the consensus task file. Write the files first, in the text directory: `note.md`, the phase note (`--phase-note-file <note file>`) shaped as `commands/plan.md` Phase 2 shows it; `summary.txt`, a one-line résumé of the synthesis (`--summary-file <summary file>`); and on a conflict `contested.md`, each CONFLICT item, both positions and their evidence, prepared as the Plan-verify prompt was, since the consensus peers read it (they come from the peer's positions, so never put them into a command). Put the synthesized verdict (`pass`, `concerns` or `conflict`) in the block's `VERDICT` line. When the run launched and did not complete (`status` is `failed`, `cancelled` or `orphaned`, whatever its `error_kind`, `snapshot_failed` included), the plan is LOCAL-ONLY, `VERDICT` stays the local synthesis's that Step 5 recorded, and you also set the block's `ENSEMBLE_VERDICT` line to `failed` and name the `error_kind` in `summary.txt`, so the ensemble result records the run as failed; a run that found no peer never launched, and leaves it empty. A run that failed `prompt_unreadable` (the runner could not read the prompt file you wrote, so no companion ran) is recorded the same way, but it is an adapter or runbook error, not a peer that was unavailable: report it as a runtime error, naming the prompt path and the reason the runner wrote to its own stderr (the line `peer-runner: the prompt file cannot be read: …`; the run's `stderr_path` holds a companion's stderr and stays empty, since none ran), never as a silent degradation. Put the directory in the block's `TEXT_DIR` line, and run the block, `<plugin-root>` being the orchestrator plugin root (`../checkpoint/SKILL.md` § Command resolution). The block reads the macro from `macro-path` (Step 1) and the run id from `run-id`.
+Record the phase note, then commit the ensemble result, and on a conflict write the consensus task file. Write the files first, in the text directory: `note.md`, the phase note (`--phase-note-file <note file>`) shaped as `commands/plan.md` Phase 2 shows it; `summary.txt`, a one-line résumé of the synthesis (`--summary-file <summary file>`); and on a conflict `contested.md`, each CONFLICT item, both positions and their evidence, prepared as the Plan-verify prompt was, since the consensus peers read it (they come from the peer's positions, so never put them into a command). Put the synthesized verdict (`pass`, `concerns` or `conflict`) in the block's `VERDICT` line. When the run launched and did not complete (`status` is `failed`, `cancelled` or `orphaned`, whatever its `error_kind`, `snapshot_failed` included), the plan is LOCAL-ONLY, `VERDICT` stays the local synthesis's that Step 5 recorded, and you also set the block's `ENSEMBLE_VERDICT` line to `failed` and name the `error_kind` in `summary.txt`, so the ensemble result records the run as failed; a run that found no peer never launched, and leaves it empty. A run that failed `prompt_unreadable` (the runner could not read the prompt file you wrote, so no companion ran) is recorded the same way, but it is an adapter or runbook error, not a peer that was unavailable: report it as a runtime error, naming the prompt path and the reason the runner wrote to its own stderr (the line `peer-runner: the prompt file cannot be read: …`; the run's `stderr_path` holds a companion's stderr and stays empty, since none ran), never as a silent degradation. Read the dispatch's result and its stderr before the block: it releases the directory that holds them. Put the directory in the block's `TEXT_DIR` line, and run the block, `<plugin-root>` being the orchestrator plugin root (`../checkpoint/SKILL.md` § Command resolution). The block reads the macro from `macro-path` (Step 1) and the run id from `run-id`.
 
 The block checks every input before it writes anything, as `commands/plan.md` Phase 2 does (C132): the two verdicts, the run id (in the form the macro's records of a run take: letters, digits, `_` and `-`, opening with a letter or digit, which `peer-runner.mjs new-run-id` allocates) and `run-macro`, which must name the macro Step 1 wrote to `macro-path`, `note.md` and `summary.txt` with `state.mjs`'s own reader (missing, empty, a newline alone, a NUL byte, not UTF-8 are refused), and on a conflict `contested.md` as `consensus-task` reads it, and the macro's frontmatter (a terminal macro is refused; so is a verdict other than `conflict` for a run whose `plan-conflict` gate Step 5 set, whether the gate is still set or the owner has cleared it, a `conflict` for a run the macro records neither gate nor clear for, and a verdict other than the one a result already recorded for the run carries, since `ensemble-commit` keeps the first one). A refusal there writes nothing. A block that stops at one of the writes that follow is rerun as it is, after the cause is fixed, and each write then happens once: the append is keyed by the run (`--run-id`), and the macro's `phase_note_run_ids` makes an append keyed by a run it lists write nothing; `ensemble-commit` keeps a result already recorded for the run id; and `consensus-task` writes the same task file again while the run's `plan-conflict` gate is set. Once the owner has cleared that gate, the macro records the run as `plan_conflict_cleared_run_id` and no round is proposed for it, also when Step 5 run again has gated the run since (`consensus-task` refuses the run too, so a clear between the block's read and the task write stops the block, and its rerun finds the record). Each is decided from the macro's frontmatter, never from a note's text. `ensemble-commit` is a three-step atomic mutation: it pops the matching pending_ensemble entry, appends the result, and prunes to retention cap 20 — all under one `withFileLock` window.
 
 ```bash
-TEXT_DIR='<directory from mktemp>'
+TEXT_DIR='<directory from step 1>'
 VERDICT='<pass|concerns|conflict>'
 # The verdict the ensemble result records: VERDICT's when this stays empty,
 # failed for a run that launched and did not complete.
@@ -197,13 +245,32 @@ if [ "$VERDICT" = conflict ]; then
     echo "→ The owner has cleared the plan-conflict gate of run $RUN_ID (plan_conflict_cleared_run_id): its conflict is decided, and no consensus round is proposed." >&2
   fi
 fi
+# ADR-0059 Decision 10, item 1 — the note and the result are recorded, and the
+# task file written on a conflict: no block, rerun or continuation reads the
+# directory again.
+RELEASE_PATH="$TEXT_DIR"
+# ADR-0059 Decision 10, item 4: release RELEASE_PATH (nothing when it is
+# empty), cleanup only. On standard error the CLI's own line, or one of these
+# when its result cannot be read; the block's standard output and exit status
+# stay what its own work set, errexit or not.
+if [ -n "${RELEASE_PATH:-}" ]; then
+  if grep -q -e "'tmpdir-release'" "<plugin-root>/scripts/state.mjs" 2>/dev/null; then
+    RELEASE_REPORT="$(node "<plugin-root>/scripts/state.mjs" tmpdir-release --path "$RELEASE_PATH")" || :
+    node -e 'let r=null;try{r=JSON.parse(process.argv[1])}catch{}process.exit(r!==null&&typeof r==="object"&&typeof r.outcome==="string"?0:1)' "$RELEASE_REPORT" 2>/dev/null \
+      || echo "agentic-dir release: the result is unknown; the directory may remain at $RELEASE_PATH or at its .removing- path" >&2
+  elif [ -r "<plugin-root>/scripts/state.mjs" ]; then
+    echo "agentic-dir release: no tmpdir-release in this state.mjs; the directory is kept at $RELEASE_PATH" >&2
+  else
+    echo "agentic-dir release: the result is unknown (cannot read <plugin-root>/scripts/state.mjs); the directory may remain at $RELEASE_PATH" >&2
+  fi
+fi
 ```
 
 ### Step 7: Present and confirm
 
 Follow the Presentation Mode Protocol before presenting. Present the synthesized plan as one macro decision item. Wait for user approval before reporting completion.
 
-When the verdict was `conflict`, Step 5's write left the plan at `awaiting_owner_gate=plan-conflict` (ADR-0063 D6). `plan-approve` refuses while `plan-conflict` is set. The owner either revises the plan (a new `plan-set`), or decides the conflict, clears the gate with `state.mjs awaiting-owner-clear --gate plan-conflict` (which returns the plan to `plan-approval`), and approves. The owner's approval is recorded with `orchestrator:approve`; do not approve on the owner's behalf.
+When the verdict was `conflict`, Step 5's write left the plan at `awaiting_owner_gate=plan-conflict` (ADR-0063 D6). `plan-approve` refuses while `plan-conflict` is set. The owner either revises the plan (a fresh `$orchestrator:plan`, which makes its own text directory: Step 6 released this one), or decides the conflict, clears the gate with `state.mjs awaiting-owner-clear --gate plan-conflict` (which returns the plan to `plan-approval`), and approves. The owner's approval is recorded with `orchestrator:approve`; do not approve on the owner's behalf.
 
 A `conflict` also proposes a bounded consensus round before the owner decides (ADR-0067 Decision 8). Step 6's block, once it has recorded the run, passes `contested.md` to `state.mjs consensus-task --workflow-path <path> --host <claude|codex> --run-id <macro-plan-…> --text-file <file>`, which writes `.agentic-plugins/state/orchestrator/consensus/<macro-id>.<run-id>.md` and prints the round: `/runtime:consensus plan --task-file <its absolute path> --peers claude,codex --max-rounds 2`. That command is the proposal's `next_command`, with "the owner decides now" among its `rejected_alternatives`; the owner runs it, nothing else does. Clearing `plan-conflict`, or a re-plan, retires the file.
 

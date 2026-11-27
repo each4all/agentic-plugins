@@ -379,13 +379,13 @@ ADR-0001 final note.
   and cleanup, once no later block, rerun or continuation reads it: on
   each successful end, as a rule. Every other path keeps each directory a
   remaining block, a rerun or a continuation still reads; the owner lists
-  candidates and removes what is abandoned. The persona plugins' runbooks
-  have switched: a region makes and releases a directory only through the
+  candidates and removes what is abandoned. Every package's runbooks have
+  switched: a persona region makes and releases a directory only through the
   snippets in `persona-pipeline/snippets/` (`{{> tmpdir-make}}`,
-  `{{> tmpdir-release}}`), on the paths `persona-pipeline/tmpdir-paths.json`
+  `{{> tmpdir-release}}`), and an orchestrator command or skill only through
+  verbatim copies of them, on the paths `persona-pipeline/tmpdir-paths.json`
   lists, which `tests/plugin-shape/test-runbook-cli-contracts.mjs` holds
-  both ways. Until the orchestrator's runbooks switch, its blocks keep
-  `mktemp -d` and delete nothing. A CLI gains the
+  both ways. A CLI gains the
   `-file` form in a release before any runbook passes it. Do not invent a
   file option a tool lacks: `gh pr merge --subject` takes a variable a
   program filled. Contract:

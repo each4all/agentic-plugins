@@ -125,7 +125,81 @@ CORRECT="$(printf '%s' "$ARGS_JSON" | JSON_KEY=correct node -e "$JSON_FIELD")" |
 NO_COMMIT="$(printf '%s' "$ARGS_JSON" | JSON_KEY=no_commit node -e "$JSON_FIELD")" || exit 1
 WAIVE_DISPATCH="$(printf '%s' "$ARGS_JSON" | JSON_KEY=waive_dispatch node -e "$JSON_FIELD")" || exit 1
 ACCEPT_LANDED="$(printf '%s' "$ARGS_JSON" | JSON_KEY=accept_landed_change node -e "$JSON_FIELD")" || exit 1
-REASON_FILE="$(mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX")/reason.txt" || exit 1
+# ADR-0059 Decision 10, item 1 — one EXIT trap, set before the reason's
+# directory is made, runs on every exit of the block from here: it releases
+# the macro's admission once a join has set ADMISSION, then the reason's
+# directory, which no rerun reads (each run of the block writes the reason
+# afresh from its args file). No later line sets another EXIT trap.
+ADMISSION=''
+REASON_DIR=''
+release_admission() {
+  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" admission release \
+    --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION"
+}
+done_exit() {
+  # A failed admission release prints its own reason and changes neither the
+  # block's status nor the directory's release, errexit or not.
+  if [ -n "$ADMISSION" ]; then release_admission || :; fi
+  RELEASE_PATH="$REASON_DIR"
+  # ADR-0059 Decision 10, item 4: release RELEASE_PATH (nothing when it is
+  # empty), cleanup only. On standard error the CLI's own line, or one of these
+  # when its result cannot be read; the block's standard output and exit status
+  # stay what its own work set, errexit or not.
+  if [ -n "${RELEASE_PATH:-}" ]; then
+    if grep -q -e "'tmpdir-release'" "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" 2>/dev/null; then
+      RELEASE_REPORT="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-release --path "$RELEASE_PATH")" || :
+      node -e 'let r=null;try{r=JSON.parse(process.argv[1])}catch{}process.exit(r!==null&&typeof r==="object"&&typeof r.outcome==="string"?0:1)' "$RELEASE_REPORT" 2>/dev/null \
+        || echo "agentic-dir release: the result is unknown; the directory may remain at $RELEASE_PATH or at its .removing- path" >&2
+    elif [ -r "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ]; then
+      echo "agentic-dir release: no tmpdir-release in this state.mjs; the directory is kept at $RELEASE_PATH" >&2
+    else
+      echo "agentic-dir release: the result is unknown (cannot read $CLAUDE_PLUGIN_ROOT/scripts/state.mjs); the directory may remain at $RELEASE_PATH" >&2
+    fi
+  fi
+}
+trap done_exit EXIT
+MAKE_KIND='text'
+MAKE_PARENT=''
+# ADR-0059 Decision 9: make and mark the directory MAKE_KIND names (text or
+# op; MAKE_PARENT, when set, for an op nested in it); its path is MADE_DIR.
+# The fallbacks of Decision 10, item 4 make it the old way: an older
+# state.mjs, lacking tmpdir-make, and a platform where the make is unsupported
+# with mktemp -d, a nested op in a parent made the old way with mkdir. A fallback's path is
+# checked for what a single-quoted shell literal cannot carry, as the make
+# checks its own. Each status is read in a condition, so errexit changes
+# nothing here.
+MADE_DIR=''
+if grep -q -e "'tmpdir-make'" "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" 2>/dev/null; then
+  if [ -n "${MAKE_PARENT:-}" ]; then
+    MADE_DIR="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-make --kind op --parent "$MAKE_PARENT")" && MAKE_RC=0 || MAKE_RC=$?
+  else
+    MADE_DIR="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-make --kind "$MAKE_KIND")" && MAKE_RC=0 || MAKE_RC=$?
+  fi
+elif [ -r "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ]; then
+  MAKE_RC=old
+else
+  echo "✗ Cannot read $CLAUDE_PLUGIN_ROOT/scripts/state.mjs; no directory was made." >&2
+  exit 1
+fi
+case "$MAKE_RC" in
+  0) ;;
+  3|4|old)
+    if [ -n "${MAKE_PARENT:-}" ]; then
+      MADE_DIR="$MAKE_PARENT/op"
+      mkdir -m 700 "$MADE_DIR" || { echo "✗ $MADE_DIR already holds an operation directory, or cannot be made: run from a fresh directory. No directory was made." >&2; exit 1; }
+    else
+      MADE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-$MAKE_KIND.XXXXXX")" || exit 1
+      [ "$MAKE_RC" != 3 ] || echo "agentic-dir make: unsupported on this platform; $MADE_DIR was made with mktemp -d and will not be released" >&2
+    fi
+    node -e 'process.exit(/[\x00-\x1f\x7f\x27]/.test(process.argv[1])?1:0)' "$MADE_DIR" \
+      || { echo "✗ The directory made holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one." >&2; exit 1; }
+    ;;
+  5) echo "✗ TMPDIR (${TMPDIR:-/tmp}) holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one. No directory was made." >&2; exit 1 ;;
+  *) exit 1 ;;
+esac
+[ -n "$MADE_DIR" ] || { echo "✗ The make printed no directory; nothing can be written." >&2; exit 1; }
+REASON_DIR="$MADE_DIR"
+REASON_FILE="$REASON_DIR/reason.txt"
 printf '%s' "$ARGS_JSON" | node -e 'const fs=require("fs");let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>fs.writeFileSync(process.argv[1],JSON.parse(d).reason))' "$REASON_FILE" || exit 1
 
 MACRO_PATH=""
@@ -256,15 +330,10 @@ if [ "$NO_COMMIT" = true ]; then
   no_active_child || exit 1
   # ADR-0067 Decision 4, item 5 — join the macro's run lock before the write:
   # a refusal names the autopilot run or session holding it, and writes
-  # nothing. Every exit from here releases the admission.
+  # nothing. Every exit from here releases the admission (done_exit).
   ADMISSION="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" admission join \
     --macro "$MACRO_ID" --checkout "$REPO_ROOT" --command done \
     --host "$DETECTED_HOST" --session-id "${CLAUDE_CODE_SESSION_ID:-}")" || exit 1
-  release_admission() {
-    node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" admission release \
-      --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION"
-  }
-  trap 'release_admission' EXIT
   # A run's step could have dispatched the subtask again before the join.
   no_active_child || exit 1
   # The write completes the subtask in its owner's name: only while the
@@ -335,16 +404,11 @@ fi
 # ADR-0067 Decision 4, item 5 — join the macro's run lock before the write: a
 # routine refusal above (not_merged and the rest) left no entry; this one names
 # the autopilot run or session holding the lock, and writes nothing. Every exit
-# from here releases the admission. subtask-update checks ownership and
-# provenance itself, under the macro's file lock.
+# from here releases the admission (done_exit). subtask-update checks ownership
+# and provenance itself, under the macro's file lock.
 ADMISSION="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" admission join \
   --macro "$MACRO_ID" --checkout "$REPO_ROOT" --command done \
   --host "$DETECTED_HOST" --session-id "${CLAUDE_CODE_SESSION_ID:-}")" || exit 1
-release_admission() {
-  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" admission release \
-    --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION"
-}
-trap 'release_admission' EXIT
 
 UPDATE_ARGS=(--workflow-path="$MACRO_PATH" --host="$DETECTED_HOST" --subtask-id="$SUBTASK_ID"
   --status=completed --engineer-workflow-id="$EXISTING_ENG_WF_ID" --commit="$COMMIT_SHA"

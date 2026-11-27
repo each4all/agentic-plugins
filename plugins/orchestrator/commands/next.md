@@ -29,14 +29,62 @@ subtask Phases 3b to 5 act on is the one Phase 1 selected (ADR-0067 Decision
 1. Create the directory, and note the path it prints:
 
    ```bash
-   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   # Step 1: a private text directory, marked so that the step that reads it
+   # last releases it (ADR-0059 Decisions 9 and 10).
+   CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+   [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+   MAKE_KIND='text'
+   MAKE_PARENT=''
+   # ADR-0059 Decision 9: make and mark the directory MAKE_KIND names (text or
+   # op; MAKE_PARENT, when set, for an op nested in it); its path is MADE_DIR.
+   # The fallbacks of Decision 10, item 4 make it the old way: an older
+   # state.mjs, lacking tmpdir-make, and a platform where the make is unsupported
+   # with mktemp -d, a nested op in a parent made the old way with mkdir. A fallback's path is
+   # checked for what a single-quoted shell literal cannot carry, as the make
+   # checks its own. Each status is read in a condition, so errexit changes
+   # nothing here.
+   MADE_DIR=''
+   if grep -q -e "'tmpdir-make'" "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" 2>/dev/null; then
+     if [ -n "${MAKE_PARENT:-}" ]; then
+       MADE_DIR="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-make --kind op --parent "$MAKE_PARENT")" && MAKE_RC=0 || MAKE_RC=$?
+     else
+       MADE_DIR="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-make --kind "$MAKE_KIND")" && MAKE_RC=0 || MAKE_RC=$?
+     fi
+   elif [ -r "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ]; then
+     MAKE_RC=old
+   else
+     echo "✗ Cannot read $CLAUDE_PLUGIN_ROOT/scripts/state.mjs; no directory was made." >&2
+     exit 1
+   fi
+   case "$MAKE_RC" in
+     0) ;;
+     3|4|old)
+       if [ -n "${MAKE_PARENT:-}" ]; then
+         MADE_DIR="$MAKE_PARENT/op"
+         mkdir -m 700 "$MADE_DIR" || { echo "✗ $MADE_DIR already holds an operation directory, or cannot be made: run from a fresh directory. No directory was made." >&2; exit 1; }
+       else
+         MADE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-$MAKE_KIND.XXXXXX")" || exit 1
+         [ "$MAKE_RC" != 3 ] || echo "agentic-dir make: unsupported on this platform; $MADE_DIR was made with mktemp -d and will not be released" >&2
+       fi
+       node -e 'process.exit(/[\x00-\x1f\x7f\x27]/.test(process.argv[1])?1:0)' "$MADE_DIR" \
+         || { echo "✗ The directory made holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one." >&2; exit 1; }
+       ;;
+     5) echo "✗ TMPDIR (${TMPDIR:-/tmp}) holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one. No directory was made." >&2; exit 1 ;;
+     *) exit 1 ;;
+   esac
+   [ -n "$MADE_DIR" ] || { echo "✗ The make printed no directory; nothing can be written." >&2; exit 1; }
+   printf '%s\n' "$MADE_DIR"
    ```
 
 2. Put that path in the `TEXT_DIR` line each block opens with. The blocks
    write every file in it themselves; none is written with your
    file-writing tool, and a file missing there means the phase that writes it
-   has not run with this directory. Nothing deletes the directory: a headless
-   run can deny `rm`, and it is under `$TMPDIR`.
+   has not run with this directory. Phase 5's exit trap releases the
+   directory as its last step, and only when the writeback, the mark's
+   withdrawal and the admission release each succeeded (ADR-0059 Decision 10,
+   item 1). Every other exit keeps it, a refusal in any phase included: a
+   rerun of a block, or the cleanup a message names, reads what the earlier
+   phases kept there. No block runs `rm` (a headless run can deny it).
 
 The arguments above reach the blocks through an args file, never as shell
 source (ADR-0059, C134(a)): typed into a block, a quote, `$` or backquote in
@@ -444,7 +492,13 @@ macro's holds are on (its result is kept as `dispatch-mark.json` in the text
 directory, and Phase 4 exports a published mark's id as
 `AGENTIC_OPERATION_ID`; a re-attach publishes none) and switches. Every exit
 from the join until the switch has succeeded releases the admission and
-withdraws the mark.
+withdraws the mark. A mark an earlier run of the block left is withdrawn
+before the publication, which rewrites its file, and the block publishes only
+after a withdrawal that showed who holds the old mark (`withdrawn`, `gone`,
+`unpublished` or `carried`, ADR-0059 Decision 10, item 3). On any other reply
+it stops with the mark file and `subtask.json` kept as they are, and names the
+withdrawal to retry. The block never releases the text directory: its rerun
+reads it.
 
 ```bash
 TEXT_DIR='<directory from step 1>'
@@ -472,16 +526,34 @@ ADMISSION="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" admission join \
 # ADR-0068 Decision 2, item 5 — a dispatch mark kept in the text directory
 # goes with every exit that releases the admission, unless the engineer's
 # bootstrap took it over.
+# ADR-0059 Decision 10, item 3 — the withdrawal's disposition, read from its
+# JSON reply: MARK_DISPOSITION is missing with no mark file, and empty when
+# the withdrawal fails or replies in a form this block does not know (an older
+# CLI). Only withdrawn, gone, unpublished and carried show who holds the mark.
 withdraw_mark() {
-  [ -f "$TEXT_DIR/dispatch-mark.json" ] || return 0
-  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" dispatch-mark-withdraw \
+  MARK_DISPOSITION=''
+  [ -f "$TEXT_DIR/dispatch-mark.json" ] || { MARK_DISPOSITION=missing; return 0; }
+  MARK_REPLY="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" dispatch-mark-withdraw \
     --workflow-path "$MACRO_PATH" --subtask-id "$SUBTASK_ID" --branch "$SUBTASK_BRANCH" \
-    --checkout "$REPO_ROOT" --mark-file "$TEXT_DIR/dispatch-mark.json"
+    --checkout "$REPO_ROOT" --mark-file "$TEXT_DIR/dispatch-mark.json" --format json)" || return 0
+  MARK_DISPOSITION="$(node -e 'let r=null;try{r=JSON.parse(process.argv[1])}catch{}const d=r!==null&&typeof r==="object"?r.disposition:undefined;process.stdout.write(["withdrawn","gone","unpublished","carried","unknown","unreadable"].includes(d)?d:"")' "$MARK_REPLY")" || MARK_DISPOSITION=''
+}
+# A mark whose withdrawal did not show who holds it is of unresolved
+# ownership: its engineer may hold the operation, so it is never cleared on
+# that ground. The message names the withdrawal to retry.
+mark_kept() {
+  case "$MARK_DISPOSITION" in
+    withdrawn|gone|unpublished|carried|missing) return 0 ;;
+  esac
+  MARK_OPERATION="$(node -e 'let m;try{m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))}catch{process.stdout.write("unknown: the mark file cannot be read");process.exit(0)}process.stdout.write(m&&m.operation_id?String(m.operation_id):"none")' "$TEXT_DIR/dispatch-mark.json")" || MARK_OPERATION=unknown
+  echo "✗ The dispatch mark kept in $TEXT_DIR/dispatch-mark.json (operation $MARK_OPERATION) was not shown withdrawn (${MARK_DISPOSITION:-the withdrawal failed, or its reply was not read}), so who holds it is not known; it is kept, with subtask.json, in TEXT_DIR ($TEXT_DIR). Once the cause above is fixed, retry the withdrawal until it reports withdrawn, gone, unpublished or carried: node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" dispatch-mark-withdraw --workflow-path \"$MACRO_PATH\" --subtask-id $SUBTASK_ID --branch $SUBTASK_BRANCH --checkout \"$REPO_ROOT\" --mark-file \"$TEXT_DIR/dispatch-mark.json\" --format json. agentic-autopilot writer-clear is only for an operation whose session the owner has shown gone." >&2
 }
 release_admission() {
   withdraw_mark
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" admission release \
-    --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION"
+    --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION" \
+    || echo "✗ The admission $ADMISSION of macro $MACRO_ID is still held: its release failed (the reason is above). Release it once that is fixed: node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" admission release --macro $MACRO_ID --checkout \"$REPO_ROOT\" --admission $ADMISSION." >&2
+  mark_kept
 }
 trap 'release_admission' EXIT
 printf '%s' "$ADMISSION" > "$TEXT_DIR/admission" || exit 1
@@ -522,7 +594,16 @@ fi
 # ADR-0068 Decision 2, item 5 — the hold gate again, under the holds lock, and
 # the dispatch's mark for a bootstrap; a re-attach gets none. A mark an earlier
 # run of this block left goes first.
-withdraw_mark
+# ADR-0059 Decision 10, item 3 — the publication rewrites the mark file, the
+# only record of the old mark's id: it follows only a withdrawal that showed
+# who holds that mark. Any other reply stops here, the files kept as they are.
+if [ -f "$TEXT_DIR/dispatch-mark.json" ]; then
+  withdraw_mark
+  case "$MARK_DISPOSITION" in
+    withdrawn|gone|unpublished|carried) ;;
+    *) echo "✗ The mark an earlier run of this block left was not shown withdrawn; no new mark was published and nothing was switched." >&2; exit 1 ;;
+  esac
+fi
 REATTACH=false
 if [ -n "$EXISTING_ENG_PATH" ]; then REATTACH=true; fi
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" dispatch-mark-publish \
@@ -639,6 +720,13 @@ export AGENTIC_TOPIC="${SUBTASK_TOPIC:-}"
 
 **Important**: the LLM following this runbook MUST read engineer's command markdown and execute its bash snippets in the same Bash tool invocation as the exports above, OR re-emit this prelude — its `TEXT_DIR` line, the `admission check` and the AGENTIC_* exports — at the top of each engineer Phase 0 bash block. The simplest and most robust shape is a single Bash tool call that begins with the prelude and proceeds through engineer's Phase 0+verb body inline. Re-emitted, the prelude's hold check passes once the engineer's own operation holds the lane, whatever hold was set since (ADR-0068 Decision 2, item 5).
 
+The engineer's blocks have text directories of their own, which they make and
+release themselves: never put this command's text directory in an engineer
+block's `TEXT_DIR` line, which a release there would take from Phase 5. When
+the subtask records no topic (`AGENTIC_TOPIC` empty), the engineer's bootstrap
+reads its request from `request.txt` in the directory its own step 1 makes;
+write it there, as that runbook says, never here.
+
 Whatever the engineer runbook's outcome — it finished, stopped at a gate, or one of its blocks exited non-zero (a `create` the repository-wide check refused, for one) — go on to Phase 5: the engineer's exits cannot release this command's admission, and Phase 5 releases it on every path.
 
 ---
@@ -660,7 +748,7 @@ esac
 # What the release needs, before anything else: every exit after these reads
 # releases the admission.
 for CARRIED in repo-root macro-path admission; do
-  [ -f "$TEXT_DIR/$CARRIED" ] || { echo "✗ $TEXT_DIR/$CARRIED is missing, so this block cannot release the admission Phase 3b joined, if it joined: the next /orchestrator:next refusal names it and the command that releases it." >&2; exit 1; }
+  [ -f "$TEXT_DIR/$CARRIED" ] || { echo "✗ $TEXT_DIR/$CARRIED is missing, so this block cannot release the admission Phase 3b joined, if it joined: the next /orchestrator:next refusal names it and the command that releases it. A dispatch mark kept in $TEXT_DIR/dispatch-mark.json is not withdrawn either: retry its withdrawal (state.mjs dispatch-mark-withdraw with that mark file, the subtask and branch subtask.json keeps, and --format json) until it reports withdrawn, gone, unpublished or carried, never by running this block again; TEXT_DIR is kept." >&2; exit 1; }
 done
 REPO_ROOT="$(cat "$TEXT_DIR/repo-root")" || exit 1
 MACRO_PATH="$(cat "$TEXT_DIR/macro-path")" || exit 1
@@ -671,20 +759,77 @@ ADMISSION="$(cat "$TEXT_DIR/admission")" || exit 1
 # ADR-0068 Decision 2, item 5 — and withdraws the dispatch's mark Phase 3b
 # kept, unless the engineer's bootstrap took it over. It reads the subtask
 # itself: an exit may come before the reads below.
+# ADR-0059 Decision 10, items 1 and 3 — the three results the text
+# directory's release waits on, each read on its own: the writeback's status
+# (WRITEBACK_RC), the withdrawal's disposition from its JSON reply
+# (MARK_DISPOSITION: missing with no mark file; empty when the subtask cannot
+# be read, the withdrawal fails or its reply is not one this block knows, as
+# from an older CLI) and the admission release's status (ADMISSION_RC).
+WRITEBACK_RC=''
+MARK_DISPOSITION=''
+ADMISSION_RC=''
+MARK_SUBTASK=''
+MARK_BRANCH=''
 withdraw_mark() {
-  [ -f "$TEXT_DIR/dispatch-mark.json" ] || return 0
+  MARK_DISPOSITION=''
+  [ -f "$TEXT_DIR/dispatch-mark.json" ] || { MARK_DISPOSITION=missing; return 0; }
   MARK_SUBTASK="$(node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).id||""))' "$TEXT_DIR/subtask.json")" || return 0
   MARK_BRANCH="$(node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).branch||""))' "$TEXT_DIR/subtask.json")" || return 0
-  node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" dispatch-mark-withdraw \
+  MARK_REPLY="$(node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" dispatch-mark-withdraw \
     --workflow-path "$MACRO_PATH" --subtask-id "$MARK_SUBTASK" --branch "$MARK_BRANCH" \
-    --checkout "$REPO_ROOT" --mark-file "$TEXT_DIR/dispatch-mark.json"
+    --checkout "$REPO_ROOT" --mark-file "$TEXT_DIR/dispatch-mark.json" --format json)" || return 0
+  MARK_DISPOSITION="$(node -e 'let r=null;try{r=JSON.parse(process.argv[1])}catch{}const d=r!==null&&typeof r==="object"?r.disposition:undefined;process.stdout.write(["withdrawn","gone","unpublished","carried","unknown","unreadable"].includes(d)?d:"")' "$MARK_REPLY")" || MARK_DISPOSITION=''
 }
 release_admission() {
   withdraw_mark
+  ADMISSION_RC=0
   node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" admission release \
-    --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION"
+    --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION" || ADMISSION_RC=$?
 }
-trap 'release_admission' EXIT
+# The block's last step on every exit: the cleanup, then the text directory's
+# release when all three results authorize it, else each leftover named with
+# its id and the directory kept for that cleanup (never for a rerun of this
+# block, which checks the admission before it writes). The block's status is
+# set here: a writeback that landed with a cleanup that failed exits 1.
+next_exit() {
+  BLOCK_RC=$?
+  release_admission
+  case "$MARK_DISPOSITION" in
+    withdrawn|gone|unpublished|carried) MARK_OK=true ;;
+    *) MARK_OK=false ;;
+  esac
+  if [ "$WRITEBACK_RC" = 0 ] && [ "$ADMISSION_RC" = 0 ] && [ "$MARK_OK" = true ]; then
+    RELEASE_PATH="$TEXT_DIR"
+    # ADR-0059 Decision 10, item 4: release RELEASE_PATH (nothing when it is
+    # empty), cleanup only. On standard error the CLI's own line, or one of these
+    # when its result cannot be read; the block's standard output and exit status
+    # stay what its own work set, errexit or not.
+    if [ -n "${RELEASE_PATH:-}" ]; then
+      if grep -q -e "'tmpdir-release'" "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" 2>/dev/null; then
+        RELEASE_REPORT="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-release --path "$RELEASE_PATH")" || :
+        node -e 'let r=null;try{r=JSON.parse(process.argv[1])}catch{}process.exit(r!==null&&typeof r==="object"&&typeof r.outcome==="string"?0:1)' "$RELEASE_REPORT" 2>/dev/null \
+          || echo "agentic-dir release: the result is unknown; the directory may remain at $RELEASE_PATH or at its .removing- path" >&2
+      elif [ -r "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ]; then
+        echo "agentic-dir release: no tmpdir-release in this state.mjs; the directory is kept at $RELEASE_PATH" >&2
+      else
+        echo "agentic-dir release: the result is unknown (cannot read $CLAUDE_PLUGIN_ROOT/scripts/state.mjs); the directory may remain at $RELEASE_PATH" >&2
+      fi
+    fi
+    exit 0
+  fi
+  if [ "$ADMISSION_RC" != 0 ]; then
+    echo "✗ The admission $ADMISSION of macro $MACRO_ID is still held: its release failed (the reason is above). Release it: node \"$ORCH_PLUGIN_ROOT/scripts/state.mjs\" admission release --macro $MACRO_ID --checkout \"$REPO_ROOT\" --admission $ADMISSION. TEXT_DIR ($TEXT_DIR) is kept; do not run this block again." >&2
+  fi
+  if [ "$MARK_OK" != true ] && [ "$MARK_DISPOSITION" != missing ]; then
+    MARK_OPERATION="$(node -e 'let m;try{m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))}catch{process.stdout.write("unknown: the mark file cannot be read");process.exit(0)}process.stdout.write(m&&m.operation_id?String(m.operation_id):"none")' "$TEXT_DIR/dispatch-mark.json")" || MARK_OPERATION=unknown
+    [ -n "$MARK_SUBTASK" ] && [ -n "$MARK_BRANCH" ] \
+      || echo "✗ $TEXT_DIR/subtask.json could not be read, so the withdrawal below lacks the subtask and branch: restore the file Phase 1 wrote, then put its id and branch in the command." >&2
+    echo "✗ The dispatch mark kept in $TEXT_DIR/dispatch-mark.json (operation $MARK_OPERATION) was not shown withdrawn or carried (${MARK_DISPOSITION:-the withdrawal failed, or its reply was not read}), so who holds it is not known: a child may hold its operation, so it is not to be cleared on that ground. Once the cause above is fixed, retry the withdrawal, with the subtask and branch subtask.json keeps, until it reports withdrawn, gone, unpublished or carried: node \"$ORCH_PLUGIN_ROOT/scripts/state.mjs\" dispatch-mark-withdraw --workflow-path \"$MACRO_PATH\" --subtask-id \"$MARK_SUBTASK\" --branch \"$MARK_BRANCH\" --checkout \"$REPO_ROOT\" --mark-file \"$TEXT_DIR/dispatch-mark.json\" --format json. agentic-autopilot writer-clear is only for an operation whose session the owner has shown gone. TEXT_DIR is kept." >&2
+  fi
+  if [ "$BLOCK_RC" -eq 0 ]; then BLOCK_RC=1; fi
+  exit "$BLOCK_RC"
+}
+trap next_exit EXIT
 ENGINEER_PLUGIN_ROOT="$(cat "$TEXT_DIR/engineer-root")" || exit 1
 JSON_FIELD='let d="";process.stdin.setEncoding("utf8").on("data",c=>d+=c).on("end",()=>{const v=JSON.parse(d)[process.env.JSON_KEY];process.stdout.write(v==null?"":String(v))})'
 SUBTASK_ID="$(JSON_KEY=id node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json")" || exit 1
@@ -695,7 +840,7 @@ SUBTASK_TOPIC="$(JSON_KEY=topic node -e "$JSON_FIELD" < "$TEXT_DIR/subtask.json"
 # ADR-0068 Decision 2, item 5 — only a dispatch whose check before the
 # engineer passed is recorded.
 if [ ! -f "$TEXT_DIR/dispatch-mark.json" ]; then
-  echo "✗ $TEXT_DIR/dispatch-mark.json is missing, so no check before the engineer passed for this dispatch; subtask $SUBTASK_ID is not recorded in progress. A mark the switch published, if it did, stays open in subtask $SUBTASK_ID's lane until the owner clears it (agentic-autopilot status --macro $MACRO_ID names it; agentic-autopilot writer-clear ends it)." >&2
+  echo "✗ $TEXT_DIR/dispatch-mark.json is missing, so no check before the engineer passed for this dispatch; subtask $SUBTASK_ID is not recorded in progress. A mark the switch published, if it did, stays open in subtask $SUBTASK_ID's lane: find that operation by its exact id (agentic-autopilot status --macro $MACRO_ID lists the lane's operations), and clear it with agentic-autopilot writer-clear only once the owner has shown its session gone, since a clear while it runs lifts its lane exclusion and makes its closing write refuse. TEXT_DIR ($TEXT_DIR) is kept." >&2
   exit 1
 elif [ ! -f "$TEXT_DIR/dispatch-mark.json.checked" ]; then
   echo "✗ The hold check before the engineer did not pass for this dispatch; subtask $SUBTASK_ID is not recorded in progress. Rerun /orchestrator:next once it is free." >&2
@@ -716,7 +861,8 @@ CHILD_DISPATCH="$(node "$ENGINEER_PLUGIN_ROOT/scripts/state.mjs" \
 node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" admission check \
   --macro "$MACRO_ID" --checkout "$REPO_ROOT" --admission "$ADMISSION" || exit 1
 # The child is bound only to the subtask it was dispatched for: the write is
-# refused when the subtask changed since Phase 1.
+# refused when the subtask changed since Phase 1. Its status, set only once
+# it returned, is the first of the three results the trap reads.
 node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" subtask-update \
   --workflow-path="$MACRO_PATH" \
   --host="$DETECTED_HOST" \
@@ -726,14 +872,22 @@ node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" subtask-update \
   --expect-branch="$SUBTASK_BRANCH" --expect-verb="$SUBTASK_VERB" \
   --expect-profile="$SUBTASK_PROFILE" --expect-topic="$SUBTASK_TOPIC" \
   --expect-dispatch="$CHILD_DISPATCH" \
-  --event=updated
+  --event=updated && WRITEBACK_RC=0 || WRITEBACK_RC=$?
+exit "$WRITEBACK_RC"
 ```
 
 Surface the orchestrator JSON envelope. The block ends by withdrawing the dispatch's mark when no child carries it (the engineer's bootstrap refused or never ran) and releasing the admission, whatever the writeback's outcome; a failed `admission check` means the admission was released meanwhile (a run or another session may hold the macro now), and the child stays unrecorded until a later `/orchestrator:next` re-attaches it. PR-C0 handles single-writer ownership rejection, absorbing-completed precondition, and unblock/auto-terminal passes — surface its stderr verbatim on any non-zero exit.
 
+The text directory goes as the block's last step, and only when the writeback exited 0, the withdrawal reported `withdrawn`, `gone`, `unpublished` or `carried`, and the admission release exited 0 (ADR-0059 Decision 10, item 1). On any other exit the block keeps it, prints each leftover with its id and exits non-zero, a writeback that landed included:
+
+- an admission still held: run the `admission release` the line prints;
+- a mark not shown withdrawn (`unknown`, `unreadable`, a withdrawal that failed, or a reply the block does not read, as from an older CLI): its ownership is unresolved, since the child may hold the operation. Retry the `dispatch-mark-withdraw` the line prints once the cause is fixed, until it reports one of the four; never clear it with `writer-clear` on that ground, which is only for an operation whose session the owner has shown gone (ADR-0059 Decision 10, item 3).
+
+Recovery is that cleanup only, never this block run again: it checks the admission before it writes. The kept directory is left for the owner's listing (`state.mjs tmpdir-list`) once the cleanup is done.
+
 A refused writeback names the field that changed: the plan was revised after Phase 1 read the subtask (the admission keeps out a run and the other commands that join, not `/orchestrator:plan`), or a re-attached child was dispatched for the subtask as it was before a revision. The child it would have bound stays unrecorded: report the refusal and the child's workflow id, and leave the choice to the user (archive the child with `/engineer:resume archive <id>` on its branch and rerun `/orchestrator:next`, or revise the plan back; for a change of only the subtask's `topic` or `profile`, the owner's `/orchestrator:approve` rebinds the child, ADR-0068 Decision 8). A refusal that speaks of rebinding or of what the child was told (`No rebinding applies: …`, `has not been told the subtask's words yet`, `was last told other words`, `what <child> was last told is not known`) has its exits in the reference's § The writeback or the re-attach was refused: read it before reporting.
 
-If the envelope reports `skipped: true` (deferred / abandoned absorbing-terminal state), report it and stop — `/orchestrator:next` should NOT advance a subtask the user has already terminated via `/finalize` / `/abort`.
+If the envelope reports `skipped: true` (deferred / abandoned absorbing-terminal state), report it, with any leftover line the block printed after it (a cleanup that failed), and stop — `/orchestrator:next` should NOT advance a subtask the user has already terminated via `/finalize` / `/abort`.
 
 ---
 
@@ -747,6 +901,7 @@ Report one of:
 - `✗ Not dispatched: <holder>.` when Phase 3b's join was refused — an autopilot run or another session holds this checkout or the macro. Repeat the refusal's holder and the command it names (`/orchestrator:autopilot status` in the run's checkout, or the release command for a session the owner knows is gone); nothing was switched or written.
 - `✗ Not dispatched: subtask <id> is held.` when a hold gate refused (Phase 1, 3, 3b or 4): the owner holds the subtask, its release waits for a run's comparison or was rejected, a persona operation is open in its lane, or the macro's holds are on and the engineer is not hold-aware. Repeat the refusal's reason and the exit it names (the owner's `agentic-autopilot release`, a run, `writer-clear`, the engineer release to install); nothing was recorded, and the dispatch's mark is withdrawn.
 - `✗ Not recorded: subtask <id> changed after its dispatch (<field>).` when Phase 5's writeback was refused — the plan was revised after Phase 1 read the subtask. Name the child's engineer workflow id, which stays unrecorded, and the choice Phase 5 leaves to the user.
+- `✗ Cleanup left: <the admission | the dispatch mark> of subtask <id>.` when Phase 5's last step named a leftover (the writeback may have landed: report the envelope too). Repeat each leftover line, with the command it names; the text directory is kept, and nothing is to be rerun.
 - `✗ Not dispatched: the working tree is not clean.` when Phase 2's first check refused. The proposal below selects the worktree `worktree-proposal` printed (its commands, then the `/orchestrator:next` inside it) and rejects commit, stash or revert here with their reason. When it printed no worktree because the subtask's branch is checked out here with the subtask in progress, select continuing that subtask's engineer workflow on this branch (`/engineer:resume`), and reject commit, stash or revert by hand and a new worktree; when it printed none for another reason, name the reason and select commit, stash or revert.
 
 When the Phase 1 approval gate printed its warning line, repeat that line

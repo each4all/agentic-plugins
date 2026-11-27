@@ -140,7 +140,7 @@ export async function codexPlanCommitBlock(textDir, verdicts = { VERDICT: 'conce
   ok(from >= 0 && to > from, 'the plan skill carries Step 6');
   const blocks = [...text.slice(from, to).matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]);
   strictEqual(blocks.length, 1, 'Step 6 has one block');
-  const line = "TEXT_DIR='<directory from mktemp>'";
+  const line = "TEXT_DIR='<directory from step 1>'";
   // Contract: the Codex agent running $orchestrator:plan — a block that does
   // not open with this line reads its files from nowhere the agent wrote them.
   strictEqual(blocks[0].split('\n')[0], line, 'the block opens with its text directory');

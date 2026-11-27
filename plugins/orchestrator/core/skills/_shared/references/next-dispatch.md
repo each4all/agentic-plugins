@@ -99,6 +99,38 @@ release needs (`repo-root`, `macro-path`, `admission`) be gone, Phase 5 cannot
 release an admission Phase 3b may have joined: the next join's refusal names
 it, with the command that releases it.
 
+**The text directory** (ADR-0059 Decision 10, items 1 and 3). Step 1 makes
+it marked, and Phase 5's exit trap releases it as its last step, only when
+three results, each read on its own, authorize it: the writeback exited 0;
+the mark's withdrawal, asked for its disposition as JSON
+(`dispatch-mark-withdraw --format json`), reported `withdrawn` (removed now),
+`gone` (shown absent), `unpublished` (the mark names no operation) or
+`carried` (a child linked to the subtask holds it); and the admission release
+exited 0. Nothing else authorizes it: `unknown` (a child that could not be
+read, which may hold the record), `unreadable` (a registry that could not be
+read), a withdrawal that failed outright, a subtask the trap could not read,
+and a reply the block does not recognize (an older CLI, which prints none)
+all leave the mark's ownership unresolved. The trap sets the block's status
+from the three results, so a writeback that landed beside a cleanup that
+failed exits 1, never 0. Every other exit keeps the directory, a refusal in
+any phase included, because a rerun of a block reads what the earlier phases
+kept there; Phase 3b's trap never releases it.
+
+Recovery from a kept directory after Phase 5 is cleanup only, never Phase 5
+run again (it checks the admission before it writes): each leftover line
+names its command with its id. An admission still held goes with the
+`admission release` the line prints. A mark of unresolved ownership is never
+cleared on that ground, since the child may hold the operation and a
+`writer-clear` would lift its lane exclusion and make its closing write
+refuse: once the cause is fixed, the `dispatch-mark-withdraw` the line prints
+(the kept mark file, with the subtask and branch `subtask.json` keeps) runs
+again until it reports one of the four. `writer-clear` is for one case only:
+the owner has shown the operation's session gone. Where the mark file is gone,
+`agentic-autopilot status` lists the lane's operations, and the exact one is
+cleared on that same condition. Phase 3b, run again over a kept mark,
+withdraws it first and publishes a new one only after one of the four; on any
+other reply it stops with the mark file and `subtask.json` as they were.
+
 ---
 
 ## The writeback or the re-attach was refused

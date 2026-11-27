@@ -18,7 +18,13 @@
 // boundaries of its own (C14 to C19): a directory made outside the make, a
 // release before the block's last exit or a later use, one the path list
 // keeps, one of a value the block read, and a release that, failing under
-// errexit, ends the block with its own status.
+// errexit, ends the block with its own status; and, for the orchestrator's
+// files groups (C27 to C31), a replaced EXIT trap, a release site found twice,
+// and the orchestrator files leaving the gate's scope. /orchestrator:next's
+// trap release (C32 to C35): a guarded release on a list that keeps the
+// directory nowhere, and, in commands/next.md itself, a withdrawal that shows
+// no owner taken as authorizing, a landed writeback whose cleanup failed
+// exiting 0, and Phase 3b publishing over a kept mark it did not withdraw.
 
 const T_RULES = 'tests/scripts/test-runbook-checks.mjs';
 const T_GATE = 'tests/plugin-shape/test-runbook-cli-contracts.mjs';
@@ -27,8 +33,10 @@ const WORDS = 'tests/persona-pipeline/_verb-runbooks.mjs';
 const T_SNIPPETS = 'tests/persona-pipeline/test-tmpdir-snippets.mjs';
 const RELEASE = 'persona-pipeline/snippets/tmpdir-release.sh';
 const REFUSES = /the path list check refuses what it is for/;
+const T_NEXT = 'tests/orchestrator/test-next-text-dir-release.mjs';
+const NEXT_MD = 'plugins/orchestrator/commands/next.md';
 
-export const TESTS = [T_RULES, T_GATE, T_SNIPPETS];
+export const TESTS = [T_RULES, T_GATE, T_SNIPPETS, T_NEXT];
 
 export const MUTATIONS = [
   {
@@ -206,6 +214,86 @@ export const MUTATIONS = [
     to: '  return [];\n',
     why: 'prose telling the agent to release a directory by hand, which ADR-0059 Decision 10, item 2 rules out, passes',
     killed_by: REFUSES,
+  },
+  // The orchestrator slice (2026-11-27): the files groups, checked whole, and
+  // the orchestrator files' legacy makes are in scope; an EXIT trap replaced
+  // after the releasing one, and a release site found twice, are refused.
+  {
+    id: 'C27', file: CHECKS, tests: [T_GATE],
+    from: "        if (replaced !== undefined) problems.push(",
+    to: "        if (false) problems.push(",
+    why: 'a later EXIT trap replaces the one a release runs from, so the directory is never released, and passes',
+    killed_by: REFUSES,
+  },
+  {
+    id: 'C28', file: CHECKS, tests: [T_GATE],
+    from: "        if (actual.has(key)) problems.push(",
+    to: "        if (false) problems.push(",
+    why: 'a release site found twice collapses into the one the list declares, so a second release passes unseen',
+    killed_by: REFUSES,
+  },
+  {
+    id: 'C29', file: T_GATE, tests: [T_GATE],
+    from: "const fileProblems = (group, file, text) => [\n  ...tmpdirProblems(text, group, { snippets: SNIPPETS, label: file }),\n  ...tmpdirOrderProblems(text, group, { label: file, strict: true }),\n];",
+    to: "const fileProblems = (group, file, text) => [];",
+    why: "the orchestrator commands and skills are read and held to nothing: a release before the write, or a reader after it, passes",
+    killed_by: /the files-group check finds a defect planted in a real orchestrator runbook/,
+  },
+  {
+    id: 'C31', file: CHECKS, tests: [T_GATE],
+    from: "      else if (own !== undefined && own === placeholder && (strict || !FRESH_PLACEHOLDER_RE.test(own))) problems.push(",
+    to: "      else if (own !== undefined && own === placeholder && !FRESH_PLACEHOLDER_RE.test(own)) problems.push(",
+    why: "an orchestrator block after the release that takes the same step-1 directory reads it as fresh, and passes",
+    killed_by: /the files-group check finds a defect planted in a real orchestrator runbook/,
+  },
+  {
+    id: 'C30', file: T_GATE, tests: [T_GATE],
+    from: "  for (const file of files) {\n    const lines = text(file).split('\\n');",
+    to: "  for (const file of []) {\n    const lines = text(file).split('\\n');",
+    why: 'an orchestrator file that makes a directory the old way passes, the rollout remainder unlisted',
+    killed_by: /the orchestrator scan finds a make planted outside the snippet/,
+  },
+  {
+    id: 'C36', file: CHECKS, tests: [T_GATE],
+    from: "      for (const i of unread.filter((u) => u < f.start)) problems.push(",
+    to: "      for (const i of [].filter((u) => u < f.start)) problems.push(",
+    why: 'a write whose `|| exit` was removed before a release passes: the write fails, the directory is released and the block ends 0',
+    killed_by: /a release after a write whose failure nothing reads is refused/,
+  },
+  {
+    id: 'C37', file: CHECKS, tests: [T_GATE],
+    from: "    return /^\\s*(?:then|do)\\b/.test(rest) || /^\\s*(?:[A-Z_][A-Z0-9_]*=\\$\\?|case \"?\\$\\?\"? in|(?:if )?\\[ \"?\\$\\?)/.test(rest);",
+    to: "    return true;",
+    why: 'any command after a write reads as reading its status, so a bare write, a piped one or one whose || is only a comment passes before a release',
+    killed_by: /a release after a write whose failure nothing reads is refused/,
+  },
+  {
+    id: 'C32', file: CHECKS, tests: [T_GATE],
+    from: "        if (rel.at === 'exit' && rel.guards.length > 0 && !(keeps && releasesOn)) problems.push(",
+    to: "        if (false) problems.push(",
+    why: "a trap release under a guard passes on a list that keeps the directory on no path, the exits the guard turns away undeclared",
+    killed_by: /a list that keeps it nowhere is refused/,
+  },
+  {
+    id: 'C33', file: NEXT_MD, tests: [T_NEXT],
+    from: "    withdrawn|gone|unpublished|carried) MARK_OK=true ;;\n",
+    to: "    withdrawn|gone|unpublished|carried|unknown|unreadable|'') MARK_OK=true ;;\n",
+    why: "Phase 5 releases the text directory beside a mark whose withdrawal showed no owner, the only record of its id lost while its child may hold it",
+    killed_by: /a writeback that landed beside a withdrawal that/,
+  },
+  {
+    id: 'C34', file: NEXT_MD, tests: [T_NEXT],
+    from: '  if [ "$BLOCK_RC" -eq 0 ]; then BLOCK_RC=1; fi\n',
+    to: '',
+    why: 'a writeback that landed with a cleanup that failed exits 0, so the leftover reads as a dispatch done',
+    killed_by: /a writeback that landed beside a withdrawal that|an admission release that fails after a landed writeback/,
+  },
+  {
+    id: 'C35', file: NEXT_MD, tests: [T_NEXT],
+    from: 'if [ -f "$TEXT_DIR/dispatch-mark.json" ]; then\n  withdraw_mark\n  case "$MARK_DISPOSITION" in\n',
+    to: 'if false; then\n  withdraw_mark\n  case "$MARK_DISPOSITION" in\n',
+    why: "Phase 3b's rerun publishes over a kept mark it never withdrew, replacing the only record of the old operation's id",
+    killed_by: /publishes over a kept mark only after a withdrawal that showed who holds it/,
   },
   {
     id: 'C19', file: RELEASE, tests: [T_SNIPPETS],
