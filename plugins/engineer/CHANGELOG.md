@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.38.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.37.1...plugin-engineer-v0.38.0) (2026-11-26)
+
+
+### Features
+
+* **engineer:** add the tmpdir-make, tmpdir-release and tmpdir-list state subcommands ([441c7c1](https://github.com/each4all/agentic-plugins/commit/441c7c197665d8775108cee814e7437c5621a9af))
+
+
+### Bug Fixes
+
+* **engineer:** compare macOS process start times read in the C locale and UTC ([62e913f](https://github.com/each4all/agentic-plugins/commit/62e913fc09fe446371a6a2ced67266a28a92c4ff))
+* **engineer:** stop a peer run's leftover descendants at run end and snapshot reclaim ([564502e](https://github.com/each4all/agentic-plugins/commit/564502e35460861c3dbdfb6c6f4b6ed92f2a108a))
+
 ## [0.37.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.37.0...plugin-engineer-v0.37.1) (2026-11-13)
 
 
