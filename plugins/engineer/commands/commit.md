@@ -118,10 +118,59 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" --mode plan \
 
 Then write each commit's subject (ADR-0028 §P6, note of 2026-11-04). A subject
 reaches the driver as a file, never in the block (ADR-0059, amendment of
-2026-10-10): create a private directory with
-`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`, note the path it prints,
-and with your file-writing tool, not the shell, write there one line ending
-with one newline per entry of the plan's `commits`: `subject.txt` for a single
+2026-10-10). Create a private directory for them, and note the path it prints:
+
+```bash
+# The subjects' private text directory, marked so that the step that reads it
+# last releases it (ADR-0059 Decisions 9 and 10).
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+MAKE_KIND='text'
+MAKE_PARENT=''
+# ADR-0059 Decision 9: make and mark the directory MAKE_KIND names (text or
+# op; MAKE_PARENT, when set, for an op nested in it); its path is MADE_DIR.
+# The fallbacks of Decision 10, item 4 make it the old way: an older
+# state.mjs, lacking tmpdir-make, and a platform where the make is unsupported
+# with mktemp -d, a nested op in a parent made the old way with mkdir. A fallback's path is
+# checked for what a single-quoted shell literal cannot carry, as the make
+# checks its own. Each status is read in a condition, so errexit changes
+# nothing here.
+MADE_DIR=''
+if grep -q -e "'tmpdir-make'" "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" 2>/dev/null; then
+  if [ -n "${MAKE_PARENT:-}" ]; then
+    MADE_DIR="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-make --kind op --parent "$MAKE_PARENT")" && MAKE_RC=0 || MAKE_RC=$?
+  else
+    MADE_DIR="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-make --kind "$MAKE_KIND")" && MAKE_RC=0 || MAKE_RC=$?
+  fi
+elif [ -r "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ]; then
+  MAKE_RC=old
+else
+  echo "✗ Cannot read $CLAUDE_PLUGIN_ROOT/scripts/state.mjs; no directory was made." >&2
+  exit 1
+fi
+case "$MAKE_RC" in
+  0) ;;
+  3|4|old)
+    if [ -n "${MAKE_PARENT:-}" ]; then
+      MADE_DIR="$MAKE_PARENT/op"
+      mkdir -m 700 "$MADE_DIR" || { echo "✗ $MADE_DIR already holds an operation directory, or cannot be made: run from a fresh directory. No directory was made." >&2; exit 1; }
+    else
+      MADE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-$MAKE_KIND.XXXXXX")" || exit 1
+      [ "$MAKE_RC" != 3 ] || echo "agentic-dir make: unsupported on this platform; $MADE_DIR was made with mktemp -d and will not be released" >&2
+    fi
+    node -e 'process.exit(/[\x00-\x1f\x7f\x27]/.test(process.argv[1])?1:0)' "$MADE_DIR" \
+      || { echo "✗ The directory made holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one." >&2; exit 1; }
+    ;;
+  5) echo "✗ TMPDIR (${TMPDIR:-/tmp}) holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one. No directory was made." >&2; exit 1 ;;
+  *) exit 1 ;;
+esac
+[ -n "$MADE_DIR" ] || { echo "✗ The make printed no directory; nothing can be written." >&2; exit 1; }
+printf '%s\n' "$MADE_DIR"
+```
+
+With your file-writing tool, not the shell, write there one line ending with
+one newline per entry of the plan's `commits`: `subject.txt` for a single
 commit, `subject-<n>.txt` per commit when `requires_split` is true. Each is
 `<type>(<scope>): <summary>`:
 
@@ -145,11 +194,14 @@ subject again. No line of it opens with a trailer key (`Workflow-ID:`,
 (`fix: …`, `feat(x)!: …`), which release-please would read as a changelog
 entry of its own. It is committed as written, up to 4000 characters.
 
-On a clean tree (`branch: no-changes`) write none, and leave `TEXT_DIR` empty:
-the recovery and the close need no subject or body. Nothing in the step
-deletes the files, but they do not outlive it: the run removes the step's
-temporary directory, and when the step stops at the staging-set gate the
-owner's interactive commit composes the body unless the owner passes one.
+On a clean tree (`branch: no-changes`) make no directory, write none, and
+leave `TEXT_DIR` empty: the recovery and the close need no subject or body.
+Once the driver succeeds (a commit, a recovery, a close, or the stop at the
+staging-set gate, where the owner's interactive commit composes the body
+unless the owner passes one) the block releases the directory (ADR-0059
+Decision 10); a refusal keeps it, and the step's rerun reads the files again.
+The run's removal of the step's temporary directory is a backstop, not the
+release.
 
 Writing the subjects is part of this step, and this text governs it. Where an
 older instruction says the step commits with the suggested subject (the
@@ -206,7 +258,25 @@ fi
 node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" --mode autopilot \
   --workflow-path "$ACTIVE" --repo-root "$REPO_ROOT" --host "${AGENTIC_HOST:-claude}" \
   "${BODY_ARGS[@]}" \
-  "${SUBJECT_ARGS[@]}"
+  "${SUBJECT_ARGS[@]}" || exit $?
+# ADR-0059 Decision 10, item 1 — the driver succeeded: no block, rerun or
+# continuation reads the subjects again (nothing when TEXT_DIR is empty).
+RELEASE_PATH="$TEXT_DIR"
+# ADR-0059 Decision 10, item 4: release RELEASE_PATH (nothing when it is
+# empty), cleanup only. On standard error the CLI's own line, or one of these
+# when its result cannot be read; the block's standard output and exit status
+# stay what its own work set, errexit or not.
+if [ -n "${RELEASE_PATH:-}" ]; then
+  if grep -q -e "'tmpdir-release'" "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" 2>/dev/null; then
+    RELEASE_REPORT="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-release --path "$RELEASE_PATH")" || :
+    node -e 'let r=null;try{r=JSON.parse(process.argv[1])}catch{}process.exit(r!==null&&typeof r==="object"&&typeof r.outcome==="string"?0:1)' "$RELEASE_REPORT" 2>/dev/null \
+      || echo "agentic-dir release: the result is unknown; the directory may remain at $RELEASE_PATH or at its .removing- path" >&2
+  elif [ -r "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ]; then
+    echo "agentic-dir release: no tmpdir-release in this state.mjs; the directory is kept at $RELEASE_PATH" >&2
+  else
+    echo "agentic-dir release: the result is unknown (cannot read $CLAUDE_PLUGIN_ROOT/scripts/state.mjs); the directory may remain at $RELEASE_PATH" >&2
+  fi
+fi
 ```
 
 Report its JSON `action` in the Completion below. A subject that does not fit
@@ -322,17 +392,75 @@ Then commit with what the user confirmed.
 
 An edited subject reaches the driver as a file, never in the block: in shell
 source a quote, `$` or backtick of it would be read as code (ADR-0059,
-amendment of 2026-10-10). Create a private directory for it with
-`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`, note the path it prints,
-and with your file-writing tool, not the shell, write each edited subject
-there, one line ending with one newline: `subject.txt`, or `subject-<n>.txt`
-per commit of a split. Then add `TEXT_DIR='<that directory>'` at the top of
-the block. Nothing deletes the files.
+amendment of 2026-10-10). When the user edited a subject or a body:
+
+1. Create a private directory for them, and note the path it prints:
+
+   ```bash
+   # Step 1: a private text directory, marked so that the step that reads it
+   # last releases it (ADR-0059 Decisions 9 and 10).
+   ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+   CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+   [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+   MAKE_KIND='text'
+   MAKE_PARENT=''
+   # ADR-0059 Decision 9: make and mark the directory MAKE_KIND names (text or
+   # op; MAKE_PARENT, when set, for an op nested in it); its path is MADE_DIR.
+   # The fallbacks of Decision 10, item 4 make it the old way: an older
+   # state.mjs, lacking tmpdir-make, and a platform where the make is unsupported
+   # with mktemp -d, a nested op in a parent made the old way with mkdir. A fallback's path is
+   # checked for what a single-quoted shell literal cannot carry, as the make
+   # checks its own. Each status is read in a condition, so errexit changes
+   # nothing here.
+   MADE_DIR=''
+   if grep -q -e "'tmpdir-make'" "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" 2>/dev/null; then
+     if [ -n "${MAKE_PARENT:-}" ]; then
+       MADE_DIR="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-make --kind op --parent "$MAKE_PARENT")" && MAKE_RC=0 || MAKE_RC=$?
+     else
+       MADE_DIR="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-make --kind "$MAKE_KIND")" && MAKE_RC=0 || MAKE_RC=$?
+     fi
+   elif [ -r "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ]; then
+     MAKE_RC=old
+   else
+     echo "✗ Cannot read $CLAUDE_PLUGIN_ROOT/scripts/state.mjs; no directory was made." >&2
+     exit 1
+   fi
+   case "$MAKE_RC" in
+     0) ;;
+     3|4|old)
+       if [ -n "${MAKE_PARENT:-}" ]; then
+         MADE_DIR="$MAKE_PARENT/op"
+         mkdir -m 700 "$MADE_DIR" || { echo "✗ $MADE_DIR already holds an operation directory, or cannot be made: run from a fresh directory. No directory was made." >&2; exit 1; }
+       else
+         MADE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-$MAKE_KIND.XXXXXX")" || exit 1
+         [ "$MAKE_RC" != 3 ] || echo "agentic-dir make: unsupported on this platform; $MADE_DIR was made with mktemp -d and will not be released" >&2
+       fi
+       node -e 'process.exit(/[\x00-\x1f\x7f\x27]/.test(process.argv[1])?1:0)' "$MADE_DIR" \
+         || { echo "✗ The directory made holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one." >&2; exit 1; }
+       ;;
+     5) echo "✗ TMPDIR (${TMPDIR:-/tmp}) holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one. No directory was made." >&2; exit 1 ;;
+     *) exit 1 ;;
+   esac
+   [ -n "$MADE_DIR" ] || { echo "✗ The make printed no directory; nothing can be written." >&2; exit 1; }
+   printf '%s\n' "$MADE_DIR"
+   ```
+
+2. With your file-writing tool, not the shell, write each edited subject
+   there, one line ending with one newline: `subject.txt`, or
+   `subject-<n>.txt` per commit of a split.
+
+Then run the block with `TEXT_DIR` set to that directory, or empty when the
+user accepted every suggestion and none was made. Once the driver succeeds the
+block releases it (ADR-0059 Decision 10); a failure keeps it for the rerun.
 
 ```bash
+TEXT_DIR='<the directory the edited subjects are in; empty when every suggestion was accepted>'
 ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+case "$TEXT_DIR" in
+  *'<'*) echo "✗ TEXT_DIR is not set to the directory the edited subjects are in (empty when every suggestion was accepted); nothing was committed." >&2; exit 1 ;;
+esac
 PERSONA='engineer'
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
@@ -354,7 +482,25 @@ ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "
 # A recovery (no_changes.path=recovery) needs no subject flag.
 node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" --mode execute \
   --workflow-path "$ACTIVE" --repo-root "$REPO_ROOT" --host "${AGENTIC_HOST:-claude}" \
-  --suggested-subjects
+  --suggested-subjects || exit $?
+# ADR-0059 Decision 10, item 1 — the driver succeeded: no block, rerun or
+# continuation reads the subjects again (nothing when TEXT_DIR is empty).
+RELEASE_PATH="$TEXT_DIR"
+# ADR-0059 Decision 10, item 4: release RELEASE_PATH (nothing when it is
+# empty), cleanup only. On standard error the CLI's own line, or one of these
+# when its result cannot be read; the block's standard output and exit status
+# stay what its own work set, errexit or not.
+if [ -n "${RELEASE_PATH:-}" ]; then
+  if grep -q -e "'tmpdir-release'" "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" 2>/dev/null; then
+    RELEASE_REPORT="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-release --path "$RELEASE_PATH")" || :
+    node -e 'let r=null;try{r=JSON.parse(process.argv[1])}catch{}process.exit(r!==null&&typeof r==="object"&&typeof r.outcome==="string"?0:1)' "$RELEASE_REPORT" 2>/dev/null \
+      || echo "agentic-dir release: the result is unknown; the directory may remain at $RELEASE_PATH or at its .removing- path" >&2
+  elif [ -r "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ]; then
+    echo "agentic-dir release: no tmpdir-release in this state.mjs; the directory is kept at $RELEASE_PATH" >&2
+  else
+    echo "agentic-dir release: the result is unknown (cannot read $CLAUDE_PLUGIN_ROOT/scripts/state.mjs); the directory may remain at $RELEASE_PATH" >&2
+  fi
+fi
 ```
 
 The driver takes the workflow out of its terminal state before the first

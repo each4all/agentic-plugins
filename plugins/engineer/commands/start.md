@@ -182,6 +182,31 @@ CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 PERSONA='engineer'
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 GIT_BRANCH="$(git branch --show-current)"
+# The directory this block writes the request in, for itself (ADR-0059
+# Decision 10, item 1): released on each of its exits from the variable its
+# make printed to; every run makes it afresh.
+REQUEST_DIR=''
+release_own() {
+  OWN_RC=$?
+  RELEASE_PATH="$REQUEST_DIR"
+  # ADR-0059 Decision 10, item 4: release RELEASE_PATH (nothing when it is
+  # empty), cleanup only. On standard error the CLI's own line, or one of these
+  # when its result cannot be read; the block's standard output and exit status
+  # stay what its own work set, errexit or not.
+  if [ -n "${RELEASE_PATH:-}" ]; then
+    if grep -q -e "'tmpdir-release'" "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" 2>/dev/null; then
+      RELEASE_REPORT="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-release --path "$RELEASE_PATH")" || :
+      node -e 'let r=null;try{r=JSON.parse(process.argv[1])}catch{}process.exit(r!==null&&typeof r==="object"&&typeof r.outcome==="string"?0:1)' "$RELEASE_REPORT" 2>/dev/null \
+        || echo "agentic-dir release: the result is unknown; the directory may remain at $RELEASE_PATH or at its .removing- path" >&2
+    elif [ -r "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ]; then
+      echo "agentic-dir release: no tmpdir-release in this state.mjs; the directory is kept at $RELEASE_PATH" >&2
+    else
+      echo "agentic-dir release: the result is unknown (cannot read $CLAUDE_PLUGIN_ROOT/scripts/state.mjs); the directory may remain at $RELEASE_PATH" >&2
+    fi
+  fi
+  return "$OWN_RC"
+}
+trap release_own EXIT
 START_ARGS="$(node "$CLAUDE_PLUGIN_ROOT/scripts/start-args.mjs" --args-file "$ARGS_DIR/args.json")" || exit $?
 # A command substitution drops trailing newlines; the sentinel keeps them.
 FEATURE="$(printf '%s' "$START_ARGS" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>process.stdout.write(JSON.parse(s).feature))'; printf x)"; FEATURE="${FEATURE%x}"
@@ -222,7 +247,48 @@ STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum 
 # The description the extractor read reaches state.mjs as a file the block
 # writes (ADR-0059, amendment of 2026-10-10): program data, never shell source,
 # and a description that begins with `--` is not read as a flag.
-REQUEST_FILE="$(mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX")/request.txt" || exit 1
+MAKE_KIND='text'
+MAKE_PARENT=''
+# ADR-0059 Decision 9: make and mark the directory MAKE_KIND names (text or
+# op; MAKE_PARENT, when set, for an op nested in it); its path is MADE_DIR.
+# The fallbacks of Decision 10, item 4 make it the old way: an older
+# state.mjs, lacking tmpdir-make, and a platform where the make is unsupported
+# with mktemp -d, a nested op in a parent made the old way with mkdir. A fallback's path is
+# checked for what a single-quoted shell literal cannot carry, as the make
+# checks its own. Each status is read in a condition, so errexit changes
+# nothing here.
+MADE_DIR=''
+if grep -q -e "'tmpdir-make'" "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" 2>/dev/null; then
+  if [ -n "${MAKE_PARENT:-}" ]; then
+    MADE_DIR="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-make --kind op --parent "$MAKE_PARENT")" && MAKE_RC=0 || MAKE_RC=$?
+  else
+    MADE_DIR="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-make --kind "$MAKE_KIND")" && MAKE_RC=0 || MAKE_RC=$?
+  fi
+elif [ -r "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ]; then
+  MAKE_RC=old
+else
+  echo "✗ Cannot read $CLAUDE_PLUGIN_ROOT/scripts/state.mjs; no directory was made." >&2
+  exit 1
+fi
+case "$MAKE_RC" in
+  0) ;;
+  3|4|old)
+    if [ -n "${MAKE_PARENT:-}" ]; then
+      MADE_DIR="$MAKE_PARENT/op"
+      mkdir -m 700 "$MADE_DIR" || { echo "✗ $MADE_DIR already holds an operation directory, or cannot be made: run from a fresh directory. No directory was made." >&2; exit 1; }
+    else
+      MADE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-$MAKE_KIND.XXXXXX")" || exit 1
+      [ "$MAKE_RC" != 3 ] || echo "agentic-dir make: unsupported on this platform; $MADE_DIR was made with mktemp -d and will not be released" >&2
+    fi
+    node -e 'process.exit(/[\x00-\x1f\x7f\x27]/.test(process.argv[1])?1:0)' "$MADE_DIR" \
+      || { echo "✗ The directory made holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one." >&2; exit 1; }
+    ;;
+  5) echo "✗ TMPDIR (${TMPDIR:-/tmp}) holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one. No directory was made." >&2; exit 1 ;;
+  *) exit 1 ;;
+esac
+[ -n "$MADE_DIR" ] || { echo "✗ The make printed no directory; nothing can be written." >&2; exit 1; }
+REQUEST_DIR="$MADE_DIR"
+REQUEST_FILE="$REQUEST_DIR/request.txt"
 printf '%s\n' "$FEATURE" > "$REQUEST_FILE" || exit 1
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
   --repo-root "$REPO_ROOT" \
@@ -390,11 +456,133 @@ dispatches
 the per-phase peer ensemble per
 `core/skills/_shared/references/ensemble-protocol.md` (always-max). Every text
 a write carries (a phase note, a next action, a summary, an owner's
-decision) reaches `state.mjs` and `peer-runner.mjs` as a file: write it with
-the file-writing tool into a private directory
-(`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`) and pass the `-file`
-form of its flag, never the text in a command (ADR-0059, amendment of
-2026-10-10).
+decision) reaches `state.mjs` and `peer-runner.mjs` as a file, never the
+text in a command (ADR-0059, amendment of 2026-10-10). At each phase, make the
+phase's private text directory with this block, and note the path it prints:
+
+```bash
+# The phase's private text directory, marked so that the step that reads it
+# last releases it (ADR-0059 Decisions 9 and 10).
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+MAKE_KIND='text'
+MAKE_PARENT=''
+# ADR-0059 Decision 9: make and mark the directory MAKE_KIND names (text or
+# op; MAKE_PARENT, when set, for an op nested in it); its path is MADE_DIR.
+# The fallbacks of Decision 10, item 4 make it the old way: an older
+# state.mjs, lacking tmpdir-make, and a platform where the make is unsupported
+# with mktemp -d, a nested op in a parent made the old way with mkdir. A fallback's path is
+# checked for what a single-quoted shell literal cannot carry, as the make
+# checks its own. Each status is read in a condition, so errexit changes
+# nothing here.
+MADE_DIR=''
+if grep -q -e "'tmpdir-make'" "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" 2>/dev/null; then
+  if [ -n "${MAKE_PARENT:-}" ]; then
+    MADE_DIR="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-make --kind op --parent "$MAKE_PARENT")" && MAKE_RC=0 || MAKE_RC=$?
+  else
+    MADE_DIR="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-make --kind "$MAKE_KIND")" && MAKE_RC=0 || MAKE_RC=$?
+  fi
+elif [ -r "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ]; then
+  MAKE_RC=old
+else
+  echo "✗ Cannot read $CLAUDE_PLUGIN_ROOT/scripts/state.mjs; no directory was made." >&2
+  exit 1
+fi
+case "$MAKE_RC" in
+  0) ;;
+  3|4|old)
+    if [ -n "${MAKE_PARENT:-}" ]; then
+      MADE_DIR="$MAKE_PARENT/op"
+      mkdir -m 700 "$MADE_DIR" || { echo "✗ $MADE_DIR already holds an operation directory, or cannot be made: run from a fresh directory. No directory was made." >&2; exit 1; }
+    else
+      MADE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-$MAKE_KIND.XXXXXX")" || exit 1
+      [ "$MAKE_RC" != 3 ] || echo "agentic-dir make: unsupported on this platform; $MADE_DIR was made with mktemp -d and will not be released" >&2
+    fi
+    node -e 'process.exit(/[\x00-\x1f\x7f\x27]/.test(process.argv[1])?1:0)' "$MADE_DIR" \
+      || { echo "✗ The directory made holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one." >&2; exit 1; }
+    ;;
+  5) echo "✗ TMPDIR (${TMPDIR:-/tmp}) holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one. No directory was made." >&2; exit 1 ;;
+  *) exit 1 ;;
+esac
+[ -n "$MADE_DIR" ] || { echo "✗ The make printed no directory; nothing can be written." >&2; exit 1; }
+printf '%s\n' "$MADE_DIR"
+```
+
+With the file-writing tool, write each text of the phase's own writes into
+it (the phase note, the next action, the settle's summary, an owner's
+decision) and pass the `-file` form of its flag. The phase's dispatch is not
+one of them: each dispatch, and each pass of a refine that loops, writes its
+`prompt.xml` and `subject.json` in a directory of its own, made as the
+ensemble protocol's launch step says, where the runner writes its result.
+Each attempt's settle (the first rule below) is its dispatch directory's last
+reader, so once that settle has succeeded, release the directory with this
+block, a run launched or not; a settle that fails keeps it for the retry. A
+phase that dispatches more than one ensemble (an investigate, a frame and a
+decide in turn) runs it once per attempt, and a looping refine's pass settle
+releases each earlier pass's directory itself, so here the refine phase's
+last pass only (ADR-0059 Decision 10):
+
+```bash
+# The dispatch directory of the ensemble attempt whose settle succeeded.
+DISPATCH_TEXT_DIR='<the dispatch directory of the attempt whose settle succeeded>'
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+case "$DISPATCH_TEXT_DIR" in
+  ''|'<'*) echo "✗ DISPATCH_TEXT_DIR is empty or not filled in; nothing was released." >&2; exit 1 ;;
+esac
+# ADR-0059 Decision 10, item 1 — the attempt's settle succeeded: no block,
+# rerun or continuation reads its dispatch directory again.
+RELEASE_PATH="$DISPATCH_TEXT_DIR"
+# ADR-0059 Decision 10, item 4: release RELEASE_PATH (nothing when it is
+# empty), cleanup only. On standard error the CLI's own line, or one of these
+# when its result cannot be read; the block's standard output and exit status
+# stay what its own work set, errexit or not.
+if [ -n "${RELEASE_PATH:-}" ]; then
+  if grep -q -e "'tmpdir-release'" "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" 2>/dev/null; then
+    RELEASE_REPORT="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-release --path "$RELEASE_PATH")" || :
+    node -e 'let r=null;try{r=JSON.parse(process.argv[1])}catch{}process.exit(r!==null&&typeof r==="object"&&typeof r.outcome==="string"?0:1)' "$RELEASE_REPORT" 2>/dev/null \
+      || echo "agentic-dir release: the result is unknown; the directory may remain at $RELEASE_PATH or at its .removing- path" >&2
+  elif [ -r "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ]; then
+    echo "agentic-dir release: no tmpdir-release in this state.mjs; the directory is kept at $RELEASE_PATH" >&2
+  else
+    echo "agentic-dir release: the result is unknown (cannot read $CLAUDE_PLUGIN_ROOT/scripts/state.mjs); the directory may remain at $RELEASE_PATH" >&2
+  fi
+fi
+```
+
+Once the phase's last write has succeeded (its settle, its append, and an
+owner gate's set or clear), release the phase's text directory with this
+block; a write that fails keeps it for the retry:
+
+```bash
+TEXT_DIR='<the text directory of the phase>'
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+case "$TEXT_DIR" in
+  ''|'<'*) echo "✗ TEXT_DIR is empty or not filled in; nothing was released." >&2; exit 1 ;;
+esac
+# ADR-0059 Decision 10, item 1 — the phase's last write succeeded: no block,
+# rerun or continuation reads its text directory again.
+RELEASE_PATH="$TEXT_DIR"
+# ADR-0059 Decision 10, item 4: release RELEASE_PATH (nothing when it is
+# empty), cleanup only. On standard error the CLI's own line, or one of these
+# when its result cannot be read; the block's standard output and exit status
+# stay what its own work set, errexit or not.
+if [ -n "${RELEASE_PATH:-}" ]; then
+  if grep -q -e "'tmpdir-release'" "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" 2>/dev/null; then
+    RELEASE_REPORT="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-release --path "$RELEASE_PATH")" || :
+    node -e 'let r=null;try{r=JSON.parse(process.argv[1])}catch{}process.exit(r!==null&&typeof r==="object"&&typeof r.outcome==="string"?0:1)' "$RELEASE_REPORT" 2>/dev/null \
+      || echo "agentic-dir release: the result is unknown; the directory may remain at $RELEASE_PATH or at its .removing- path" >&2
+  elif [ -r "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ]; then
+    echo "agentic-dir release: no tmpdir-release in this state.mjs; the directory is kept at $RELEASE_PATH" >&2
+  else
+    echo "agentic-dir release: the result is unknown (cannot read $CLAUDE_PLUGIN_ROOT/scripts/state.mjs); the directory may remain at $RELEASE_PATH" >&2
+  fi
+fi
+```
 
 Inside the lifecycle each verb runs in place, so three rules hold at every
 phase (ADR-0066 PC2b):
@@ -415,7 +603,7 @@ phase (ADR-0066 PC2b):
   critique's `review` or `adversarial-scan`; refine's `refine-verify`), and
   why it never ran: `--ensemble-type <that
   type> --no-run-reason <peer-unavailable|local-only|privacy-gate|owner-skip>
-  --attempt-key <a new text directory for that settle>`, so the workflow records the
+  --attempt-key <the phase's text directory>`, so the workflow records the
   review's attempt with its outcome (`unavailable` or `skipped`) and a rerun
   of that settle records it once (C163 A1a). A dispatch that launched takes
   `--subject-file <file>` (`{"shown": [...], "covered": [...]}`, the paths its
@@ -684,12 +872,56 @@ block: in shell source a quote, `$` or backtick of it would be read as code
 1. Create a private directory for it, and note the path it prints:
 
    ```bash
-   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   # Step 1: a private text directory, marked so that the step that reads it
+   # last releases it (ADR-0059 Decisions 9 and 10).
+   ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+   CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+   [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+   MAKE_KIND='text'
+   MAKE_PARENT=''
+   # ADR-0059 Decision 9: make and mark the directory MAKE_KIND names (text or
+   # op; MAKE_PARENT, when set, for an op nested in it); its path is MADE_DIR.
+   # The fallbacks of Decision 10, item 4 make it the old way: an older
+   # state.mjs, lacking tmpdir-make, and a platform where the make is unsupported
+   # with mktemp -d, a nested op in a parent made the old way with mkdir. A fallback's path is
+   # checked for what a single-quoted shell literal cannot carry, as the make
+   # checks its own. Each status is read in a condition, so errexit changes
+   # nothing here.
+   MADE_DIR=''
+   if grep -q -e "'tmpdir-make'" "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" 2>/dev/null; then
+     if [ -n "${MAKE_PARENT:-}" ]; then
+       MADE_DIR="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-make --kind op --parent "$MAKE_PARENT")" && MAKE_RC=0 || MAKE_RC=$?
+     else
+       MADE_DIR="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-make --kind "$MAKE_KIND")" && MAKE_RC=0 || MAKE_RC=$?
+     fi
+   elif [ -r "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ]; then
+     MAKE_RC=old
+   else
+     echo "✗ Cannot read $CLAUDE_PLUGIN_ROOT/scripts/state.mjs; no directory was made." >&2
+     exit 1
+   fi
+   case "$MAKE_RC" in
+     0) ;;
+     3|4|old)
+       if [ -n "${MAKE_PARENT:-}" ]; then
+         MADE_DIR="$MAKE_PARENT/op"
+         mkdir -m 700 "$MADE_DIR" || { echo "✗ $MADE_DIR already holds an operation directory, or cannot be made: run from a fresh directory. No directory was made." >&2; exit 1; }
+       else
+         MADE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-$MAKE_KIND.XXXXXX")" || exit 1
+         [ "$MAKE_RC" != 3 ] || echo "agentic-dir make: unsupported on this platform; $MADE_DIR was made with mktemp -d and will not be released" >&2
+       fi
+       node -e 'process.exit(/[\x00-\x1f\x7f\x27]/.test(process.argv[1])?1:0)' "$MADE_DIR" \
+         || { echo "✗ The directory made holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one." >&2; exit 1; }
+       ;;
+     5) echo "✗ TMPDIR (${TMPDIR:-/tmp}) holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one. No directory was made." >&2; exit 1 ;;
+     *) exit 1 ;;
+   esac
+   [ -n "$MADE_DIR" ] || { echo "✗ The make printed no directory; nothing can be written." >&2; exit 1; }
+   printf '%s\n' "$MADE_DIR"
    ```
 
 2. With your file-writing tool, not the shell, create `subject.txt` in that
-   directory holding the subject, one line ending with one newline. Nothing
-   deletes it.
+   directory holding the subject, one line ending with one newline.
 
 Then run the block with `TEXT_DIR` set to that directory. When the user
 accepted the suggested subject as it stands, pass `--suggested-subjects`
@@ -702,7 +934,9 @@ the body (P1, with the P9 trailer allowlist) is shared by every per-package
 commit. Add each extra the user opted in with `--include-extra
 <path>`, or `--accept-current-tree` for the whole tree; when the bootstrap
 accepted the current tree (`ACCEPT_CURRENT_TREE=1`), pass it again here, so
-the driver stages all of `git_changes` rather than the intersection.
+the driver stages all of `git_changes` rather than the intersection. Once the
+driver succeeds the block releases the directory (ADR-0059 Decision 10); a
+failure keeps it, and the resumed Phase 7 reads the subject again.
 
 ARCHIVE TIMING — decide before running execute mode. The driver writes
 `set-terminal` as its last step, and on Claude the Stop hook fires at every
@@ -743,6 +977,24 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" \
 # set-terminal; the Stop hook evaluates the archive gates (ADR-0017
 # §sub-decision 5) and only retries the writeback idempotently, or backstops a
 # driver that died between the two writes.
+# ADR-0059 Decision 10, item 1 — the commit landed: no block, rerun or
+# continuation reads the subject again.
+RELEASE_PATH="$TEXT_DIR"
+# ADR-0059 Decision 10, item 4: release RELEASE_PATH (nothing when it is
+# empty), cleanup only. On standard error the CLI's own line, or one of these
+# when its result cannot be read; the block's standard output and exit status
+# stay what its own work set, errexit or not.
+if [ -n "${RELEASE_PATH:-}" ]; then
+  if grep -q -e "'tmpdir-release'" "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" 2>/dev/null; then
+    RELEASE_REPORT="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-release --path "$RELEASE_PATH")" || :
+    node -e 'let r=null;try{r=JSON.parse(process.argv[1])}catch{}process.exit(r!==null&&typeof r==="object"&&typeof r.outcome==="string"?0:1)' "$RELEASE_REPORT" 2>/dev/null \
+      || echo "agentic-dir release: the result is unknown; the directory may remain at $RELEASE_PATH or at its .removing- path" >&2
+  elif [ -r "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ]; then
+    echo "agentic-dir release: no tmpdir-release in this state.mjs; the directory is kept at $RELEASE_PATH" >&2
+  else
+    echo "agentic-dir release: the result is unknown (cannot read $CLAUDE_PLUGIN_ROOT/scripts/state.mjs); the directory may remain at $RELEASE_PATH" >&2
+  fi
+fi
 ```
 
 The runtime completion footer is **code-emitted** on this terminal path

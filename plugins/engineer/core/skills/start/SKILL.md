@@ -81,9 +81,11 @@ follows the same operational sequence inline, in this order, using the same
    start --verb investigate --persona engineer --original-request-file
    <the description's file>`: the description the extractor read, program
    data the block writes to a file (`printf '%s\n' "$FEATURE"`) in a
-   directory from `mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`, so a
-   description beginning with `--` is never read as a flag (ADR-0059,
-   amendment of 2026-10-10).
+   private text directory made with the make block of **Inside the
+   lifecycle** below (ADR-0059 Decision 9), so a description beginning with
+   `--` is never read as a flag (ADR-0059, amendment of 2026-10-10). Once
+   `create` has recorded the request, that section's text-directory release
+   block releases it; a failed `create` keeps it for the retry.
 
 Argument parsing is `scripts/start-args.mjs --args-file <path>` on both
 hosts (ADR-0059 Decision 7). The description, with any
@@ -140,8 +142,128 @@ matches what execute commits).
 
 **Inside the lifecycle** (both hosts, ADR-0066 PC2b): Phase 0 runs
 `state.mjs autopilot-preflight` once, before any write, and a resumed start
-workflow clears the next step it carried. Each phase's ensemble attempt is
-settled from its run ledger (`peer-runner.mjs settle`) before the next phase,
+workflow clears the next step it carried. Each phase writes the texts of its
+own writes (the phase note, the next action, the settle's summary, an
+owner's decision) into a private text directory of its own, made and marked
+with this block (ADR-0059 Decision 9); note the path it prints. Fill
+`<plugin-root>` with this plugin's installed root, the path you read this
+SKILL.md from, cut before its `/core/skills/` directory:
+
+```bash
+# A private text directory, marked so that the step that reads it
+# last releases it (ADR-0059 Decisions 9 and 10).
+MAKE_KIND='text'
+MAKE_PARENT=''
+# ADR-0059 Decision 9: make and mark the directory MAKE_KIND names (text or
+# op; MAKE_PARENT, when set, for an op nested in it); its path is MADE_DIR.
+# The fallbacks of Decision 10, item 4 make it the old way: an older
+# state.mjs, lacking tmpdir-make, and a platform where the make is unsupported
+# with mktemp -d, a nested op in a parent made the old way with mkdir. A fallback's path is
+# checked for what a single-quoted shell literal cannot carry, as the make
+# checks its own. Each status is read in a condition, so errexit changes
+# nothing here.
+MADE_DIR=''
+if grep -q -e "'tmpdir-make'" "<plugin-root>/scripts/state.mjs" 2>/dev/null; then
+  if [ -n "${MAKE_PARENT:-}" ]; then
+    MADE_DIR="$(node "<plugin-root>/scripts/state.mjs" tmpdir-make --kind op --parent "$MAKE_PARENT")" && MAKE_RC=0 || MAKE_RC=$?
+  else
+    MADE_DIR="$(node "<plugin-root>/scripts/state.mjs" tmpdir-make --kind "$MAKE_KIND")" && MAKE_RC=0 || MAKE_RC=$?
+  fi
+elif [ -r "<plugin-root>/scripts/state.mjs" ]; then
+  MAKE_RC=old
+else
+  echo "✗ Cannot read <plugin-root>/scripts/state.mjs; no directory was made." >&2
+  exit 1
+fi
+case "$MAKE_RC" in
+  0) ;;
+  3|4|old)
+    if [ -n "${MAKE_PARENT:-}" ]; then
+      MADE_DIR="$MAKE_PARENT/op"
+      mkdir -m 700 "$MADE_DIR" || { echo "✗ $MADE_DIR already holds an operation directory, or cannot be made: run from a fresh directory. No directory was made." >&2; exit 1; }
+    else
+      MADE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-$MAKE_KIND.XXXXXX")" || exit 1
+      [ "$MAKE_RC" != 3 ] || echo "agentic-dir make: unsupported on this platform; $MADE_DIR was made with mktemp -d and will not be released" >&2
+    fi
+    node -e 'process.exit(/[\x00-\x1f\x7f\x27]/.test(process.argv[1])?1:0)' "$MADE_DIR" \
+      || { echo "✗ The directory made holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one." >&2; exit 1; }
+    ;;
+  5) echo "✗ TMPDIR (${TMPDIR:-/tmp}) holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one. No directory was made." >&2; exit 1 ;;
+  *) exit 1 ;;
+esac
+[ -n "$MADE_DIR" ] || { echo "✗ The make printed no directory; nothing can be written." >&2; exit 1; }
+printf '%s\n' "$MADE_DIR"
+```
+
+The phase's dispatch is not one of those texts: each dispatch, and each pass
+of a refine that loops, writes its `prompt.xml` and `subject.json` in a
+directory of its own, made as the ensemble protocol's launch step says, where
+the runner writes its result. Each attempt's settle (below) is its dispatch
+directory's last reader, so once that settle has succeeded, release the
+directory with this block, a run launched or not; a settle that fails keeps
+it for the retry. A phase that dispatches more than one ensemble runs it once
+per attempt, and a looping refine's pass settle releases each earlier pass's
+directory itself, so here the refine phase's last pass only (ADR-0059
+Decision 10):
+
+```bash
+# The dispatch directory of the ensemble attempt whose settle succeeded.
+DISPATCH_TEXT_DIR='<the dispatch directory of the attempt whose settle succeeded>'
+case "$DISPATCH_TEXT_DIR" in
+  ''|'<'*) echo "✗ DISPATCH_TEXT_DIR is empty or not filled in; nothing was released." >&2; exit 1 ;;
+esac
+# ADR-0059 Decision 10, item 1 — the attempt's settle succeeded: no block,
+# rerun or continuation reads its dispatch directory again.
+RELEASE_PATH="$DISPATCH_TEXT_DIR"
+# ADR-0059 Decision 10, item 4: release RELEASE_PATH (nothing when it is
+# empty), cleanup only. On standard error the CLI's own line, or one of these
+# when its result cannot be read; the block's standard output and exit status
+# stay what its own work set, errexit or not.
+if [ -n "${RELEASE_PATH:-}" ]; then
+  if grep -q -e "'tmpdir-release'" "<plugin-root>/scripts/state.mjs" 2>/dev/null; then
+    RELEASE_REPORT="$(node "<plugin-root>/scripts/state.mjs" tmpdir-release --path "$RELEASE_PATH")" || :
+    node -e 'let r=null;try{r=JSON.parse(process.argv[1])}catch{}process.exit(r!==null&&typeof r==="object"&&typeof r.outcome==="string"?0:1)' "$RELEASE_REPORT" 2>/dev/null \
+      || echo "agentic-dir release: the result is unknown; the directory may remain at $RELEASE_PATH or at its .removing- path" >&2
+  elif [ -r "<plugin-root>/scripts/state.mjs" ]; then
+    echo "agentic-dir release: no tmpdir-release in this state.mjs; the directory is kept at $RELEASE_PATH" >&2
+  else
+    echo "agentic-dir release: the result is unknown (cannot read <plugin-root>/scripts/state.mjs); the directory may remain at $RELEASE_PATH" >&2
+  fi
+fi
+```
+
+Once the phase's last write has succeeded, release the phase's text
+directory with this block; a write that fails keeps it for the retry. The
+bootstrap's request directory and Phase 7's subject directory are released
+with it too:
+
+```bash
+TEXT_DIR='<the text directory whose last write succeeded>'
+case "$TEXT_DIR" in
+  ''|'<'*) echo "✗ TEXT_DIR is empty or not filled in; nothing was released." >&2; exit 1 ;;
+esac
+# ADR-0059 Decision 10, item 1 — the last write that reads the directory
+# succeeded: no block, rerun or continuation reads it again.
+RELEASE_PATH="$TEXT_DIR"
+# ADR-0059 Decision 10, item 4: release RELEASE_PATH (nothing when it is
+# empty), cleanup only. On standard error the CLI's own line, or one of these
+# when its result cannot be read; the block's standard output and exit status
+# stay what its own work set, errexit or not.
+if [ -n "${RELEASE_PATH:-}" ]; then
+  if grep -q -e "'tmpdir-release'" "<plugin-root>/scripts/state.mjs" 2>/dev/null; then
+    RELEASE_REPORT="$(node "<plugin-root>/scripts/state.mjs" tmpdir-release --path "$RELEASE_PATH")" || :
+    node -e 'let r=null;try{r=JSON.parse(process.argv[1])}catch{}process.exit(r!==null&&typeof r==="object"&&typeof r.outcome==="string"?0:1)' "$RELEASE_REPORT" 2>/dev/null \
+      || echo "agentic-dir release: the result is unknown; the directory may remain at $RELEASE_PATH or at its .removing- path" >&2
+  elif [ -r "<plugin-root>/scripts/state.mjs" ]; then
+    echo "agentic-dir release: no tmpdir-release in this state.mjs; the directory is kept at $RELEASE_PATH" >&2
+  else
+    echo "agentic-dir release: the result is unknown (cannot read <plugin-root>/scripts/state.mjs); the directory may remain at $RELEASE_PATH" >&2
+  fi
+fi
+```
+
+Each phase's
+ensemble attempt is settled from its run ledger (`peer-runner.mjs settle`) before the next phase,
 a repeated phase under a new run id. A refine that loops settles its passes
 in the refine skill: its pass settle (the **Each pass settles its own run**
 step) settles each earlier pass, launched or not, and the refine phase
@@ -155,7 +277,7 @@ critique's `review` or `adversarial-scan`; refine's `refine-verify`), and why
 it never ran: `--ensemble-type <that type>
 --no-run-reason <peer-unavailable|local-only|privacy-gate|owner-skip>
 --subject-file <the paths it read, {"shown": [...], "covered": [...]}, ADR-0069>
---attempt-key <a new text directory for that settle>`, so the workflow records
+--attempt-key <the phase's text directory>`, so the workflow records
 the review's attempt with its outcome (`unavailable` or `skipped`) and a rerun
 of that settle records it once (C163 A1a). A `peer-runner.mjs` that does not
 name `--no-run-reason` in its usage predates the record: settle without those
@@ -370,10 +492,13 @@ the agent dialog between the two CLI invocations):
 3. `phase7-commit.mjs --mode execute --workflow-path "$ACTIVE"
    --repo-root "$REPO_ROOT" --host "$AGENTIC_HOST" --subject-file
    "$TEXT_DIR/subject.txt" --confirm-non-interactive` — the subject the
-   user confirmed, written with the file-writing tool into a private
-   `mktemp -d` directory, never on the command line (ADR-0059, amendment of
+   user confirmed, written with the file-writing tool into a private text
+   directory made with the make block of **Inside the lifecycle** above
+   (ADR-0059 Decision 9), never on the command line (ADR-0059, amendment of
    2026-10-10), or `--suggested-subjects` for a suggestion taken as it
-   stands. The driver stages with explicit pathspecs (`git add <paths>`,
+   stands. Once execute succeeds, that section's text-directory release
+   block releases it; a failed execute keeps it for the retry
+   (ADR-0059 Decision 10). The driver stages with explicit pathspecs (`git add <paths>`,
    never `-A`), commits per package (P8 split via repeated
    `--subject-pkg-file <pkg>=<file>`), runs P11 / no-children /
    clean-after-commit / P10 synchronous `writebackParent` (for a macro

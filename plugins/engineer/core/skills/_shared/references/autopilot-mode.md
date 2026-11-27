@@ -172,14 +172,12 @@ history: it may still say `done`, `commit` or `owner-decision`.
 ## Owner gates
 
 A genuine owner judgment stops the step. A verb records it with the phase
-note the table names, then its last write. Its next action is `next-action.txt`,
-a file the verb wrote with its file-writing tool into the private directory its
-steps created (`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`, the block's
-`TEXT_DIR`), never text on the command line (ADR-0059, amendment of
-2026-10-10):
+note the table names, then its last write: the verb's Phase 2 finalize block,
+with `OWNER_GATE` set to the gate, ends with this write (an excerpt of that
+block, which sets its values and checks them first: run the block, never the
+excerpt alone):
 
 ```bash
-TEXT_DIR='<the directory the verb steps created>'
 # ARCHIVE TIMING — with an owner gate this write is never terminal, so the
 # Stop hook, which fires at EVERY turn end on Claude, leaves the workflow
 # active (it also refuses to archive while a gate is pending); the
@@ -187,10 +185,19 @@ TEXT_DIR='<the directory the verb steps created>'
 # only once the plugin hooks are trusted (`/hooks`).
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-  --next-action-file "$TEXT_DIR/next-action.txt" \
-  --next-step-kind owner-decision --next-step-confidence "<HIGH|MEDIUM|LOW>" \
-  --owner-gate <gate> --owner-gate-anchor <anchor>
+  --operation-dir "$OP_DIR" \
+  --next-action-file "$FINALIZE_DIR/next-action.txt" \
+  --next-step-kind owner-decision --next-step-confidence "$CONFIDENCE" \
+  --owner-gate "$OWNER_GATE" --owner-gate-anchor "$OWNER_GATE_ANCHOR" || exit $?
 ```
+
+Its next action is `next-action.txt`, a file the verb wrote with its
+file-writing tool into the finalize's text directory (`FINALIZE_DIR` above,
+the block's `TEXT_DIR`), never text on the command line (ADR-0059, amendment
+of 2026-10-10); once that write succeeded the block releases the directory
+(ADR-0059 Decision 10). The run's removal of the
+step's temporary directory at the step's end is a backstop for what a stopped
+block kept, not the release.
 
 That records the gate and the next step in one write and leaves the workflow
 open: recording any gate turns an inherited terminal marker off. In a verb's

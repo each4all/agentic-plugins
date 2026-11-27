@@ -281,7 +281,12 @@ attempt, launched or not, as its own step says, and this block settles the
 last pass's only. Left unsettled, a launched
 review stays an open attempt that reads `unknown`, and one that never launched
 leaves no attempt at all. With no active workflow there is nothing to record:
-dispatch with no `--workflow-path`, and skip this step.
+dispatch a manual run, `--kind manual` with no `--workflow-path`, `--phase`,
+`--ensemble-type` or `--run-id` (the runner refuses `--kind ensemble`
+without a workflow), and once the synthesis has read the run's result run this
+step's blocks all the same, `DISPATCH_DIR` empty and `NO_RUN_REASON`
+`local-only`: the settle block finds no workflow, records nothing and
+releases the directories (ADR-0059 Decision 10).
 
 Dispatch the review as the ensemble protocol's Launch step says, through
 `peer-runner.mjs run` with the workflow's accounting flags, all of them:
@@ -290,7 +295,8 @@ Dispatch the review as the ensemble protocol's Launch step says, through
 `peer-runner.mjs new-run-id --prefix <type>`, and the type `plan-verify`, or `review` where this skill picks the Review point type.
 Without `--kind ensemble` the runner records a manual run: no attempt is
 registered, and settle refuses the run. Write the prompt as
-`prompt.xml` in its own `mktemp -d` directory, and send the runner's JSON
+`prompt.xml` in a private directory of its own, made and marked as step 1
+below makes the summary's (ADR-0059 Decision 9), and send the runner's JSON
 result to `prompt.xml.run.json` beside it: that directory is the block's
 `DISPATCH_DIR`. Beside the prompt, with your file-writing tool, write
 `subject.json`, what you put in the reviewer's subject, `{"shown": [...],
@@ -305,17 +311,65 @@ shell source a quote, `$`, backtick or line break of it would be read as code
 1. Create a private directory for it, and note the path it prints:
 
    ```bash
-   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   # Step 1: a private text directory, marked so that the step that reads it
+   # last releases it (ADR-0059 Decisions 9 and 10).
+   MAKE_KIND='text'
+   MAKE_PARENT=''
+   # ADR-0059 Decision 9: make and mark the directory MAKE_KIND names (text or
+   # op; MAKE_PARENT, when set, for an op nested in it); its path is MADE_DIR.
+   # The fallbacks of Decision 10, item 4 make it the old way: an older
+   # state.mjs, lacking tmpdir-make, and a platform where the make is unsupported
+   # with mktemp -d, a nested op in a parent made the old way with mkdir. A fallback's path is
+   # checked for what a single-quoted shell literal cannot carry, as the make
+   # checks its own. Each status is read in a condition, so errexit changes
+   # nothing here.
+   MADE_DIR=''
+   if grep -q -e "'tmpdir-make'" "<plugin-root>/scripts/state.mjs" 2>/dev/null; then
+     if [ -n "${MAKE_PARENT:-}" ]; then
+       MADE_DIR="$(node "<plugin-root>/scripts/state.mjs" tmpdir-make --kind op --parent "$MAKE_PARENT")" && MAKE_RC=0 || MAKE_RC=$?
+     else
+       MADE_DIR="$(node "<plugin-root>/scripts/state.mjs" tmpdir-make --kind "$MAKE_KIND")" && MAKE_RC=0 || MAKE_RC=$?
+     fi
+   elif [ -r "<plugin-root>/scripts/state.mjs" ]; then
+     MAKE_RC=old
+   else
+     echo "✗ Cannot read <plugin-root>/scripts/state.mjs; no directory was made." >&2
+     exit 1
+   fi
+   case "$MAKE_RC" in
+     0) ;;
+     3|4|old)
+       if [ -n "${MAKE_PARENT:-}" ]; then
+         MADE_DIR="$MAKE_PARENT/op"
+         mkdir -m 700 "$MADE_DIR" || { echo "✗ $MADE_DIR already holds an operation directory, or cannot be made: run from a fresh directory. No directory was made." >&2; exit 1; }
+       else
+         MADE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-$MAKE_KIND.XXXXXX")" || exit 1
+         [ "$MAKE_RC" != 3 ] || echo "agentic-dir make: unsupported on this platform; $MADE_DIR was made with mktemp -d and will not be released" >&2
+       fi
+       node -e 'process.exit(/[\x00-\x1f\x7f\x27]/.test(process.argv[1])?1:0)' "$MADE_DIR" \
+         || { echo "✗ The directory made holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one." >&2; exit 1; }
+       ;;
+     5) echo "✗ TMPDIR (${TMPDIR:-/tmp}) holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one. No directory was made." >&2; exit 1 ;;
+     *) exit 1 ;;
+   esac
+   [ -n "$MADE_DIR" ] || { echo "✗ The make printed no directory; nothing can be written." >&2; exit 1; }
+   printf '%s\n' "$MADE_DIR"
    ```
 
 2. With your file-writing tool, not the shell, create `summary.txt` in that
    directory holding a one-line résumé of the synthesis, ending with one
-   newline. Nothing deletes it.
+   newline. Once the attempt is settled, the block releases this directory
+   and the dispatch's, a run launched or not (ADR-0059 Decision 10); a block
+   that stops keeps both for its rerun.
 
 Then run the block with `TEXT_DIR` set to that directory and `<plugin-root>`
 filled with this plugin's installed root, the path you read this SKILL.md
 from, cut before its `/core/skills/` directory:
 
+- whenever a dispatch directory was made, a run launched or not:
+  `DISPATCH_TEXT_DIR` set to it, so that the block releases it once the
+  attempt is settled (a dispatch that stopped before any run, its
+  `prompt.xml.err` saying why, leaves one too); empty when none was made.
 - a run launched: `DISPATCH_DIR` set, `VERDICT` the synthesis verdict, one
   word, this verb's
   `agreed`, `concerns` or `conflict`,
@@ -358,6 +412,8 @@ empty `TEXT_DIR`. The check takes every persona verb's words: settle reads
 ```bash
 TEXT_DIR='<the directory holding summary.txt>'
 DISPATCH_DIR='<the directory the dispatch ran with; empty when no run launched>'
+# The dispatch's directory, a run launched or not; empty when none was made.
+DISPATCH_TEXT_DIR='<the directory the dispatch ran with, a run launched or not; empty when none was made>'
 VERDICT='<the synthesis verdict; empty when no run launched>'
 # The review type the dispatch used, or would have used: this skill's default,
 # or the other type where the skill picked that point type.
@@ -373,11 +429,11 @@ case "$NO_RUN_REASON" in
   ''|peer-unavailable|local-only|privacy-gate|owner-skip) ;;
   *) echo "✗ NO_RUN_REASON is not peer-unavailable, local-only, privacy-gate or owner-skip (empty when a run launched); nothing was settled." >&2; exit 1 ;;
 esac
-# A placeholder left as written opens with "<"; a directory mktemp printed
+# A placeholder left as written opens with "<"; a directory the make printed
 # is an absolute path, which never does, whatever it holds further on.
-for FILLED in "$TEXT_DIR" "$DISPATCH_DIR"; do
+for FILLED in "$TEXT_DIR" "$DISPATCH_DIR" "$DISPATCH_TEXT_DIR"; do
   case "$FILLED" in
-    '<'*) echo "✗ TEXT_DIR or DISPATCH_DIR is not filled in (DISPATCH_DIR empty when no run launched); nothing was settled." >&2; exit 1 ;;
+    '<'*) echo "✗ TEXT_DIR, DISPATCH_DIR or DISPATCH_TEXT_DIR is not filled in (DISPATCH_DIR empty when no run launched, DISPATCH_TEXT_DIR when no dispatch directory was made); nothing was settled." >&2; exit 1 ;;
   esac
 done
 [ -n "$TEXT_DIR" ] || { echo "✗ TEXT_DIR is empty: set it to the directory holding summary.txt; nothing was settled." >&2; exit 1; }
@@ -397,8 +453,9 @@ fi
 # there is nothing to record.
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 ACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
-[ -n "$ACTIVE" ] || { echo "No active workflow on this branch: no review attempt to settle." >&2; exit 0; }
-if [ -n "$DISPATCH_DIR" ]; then
+if [ -z "$ACTIVE" ]; then
+  echo "No active workflow on this branch: no review attempt to settle." >&2
+elif [ -n "$DISPATCH_DIR" ]; then
   # The run's id, from the result the runner wrote beside the prompt, never
   # retyped: a well-formed run id (letters, digits, ".", "_", ":", "-", no "..").
   RUN_ID="$(node -e 'const fs=require("fs"),p=require("path");let r;try{r=JSON.parse(fs.readFileSync(p.join(process.argv[1],"prompt.xml.run.json"),"utf8"))}catch{process.exit(1)}const id=r&&r.run_id;if(typeof id!=="string"||!/^[A-Za-z0-9._:-]+$/.test(id)||id.includes(".."))process.exit(1);process.stdout.write(id)' "$DISPATCH_DIR")" \
@@ -413,6 +470,28 @@ else
     --subject-file "$TEXT_DIR/subject.json" \
     --attempt-key "$TEXT_DIR" || exit $?
 fi
+# ADR-0059 Decision 10, item 1 — the attempt is settled (or there was no
+# workflow to settle it in): no block, rerun or continuation reads the summary
+# or the dispatch's result again. The dispatch's directory is released from
+# DISPATCH_TEXT_DIR, a run launched or not (an already released path is
+# absent, and the release says nothing).
+for RELEASE_PATH in "$TEXT_DIR" "$DISPATCH_DIR" "$DISPATCH_TEXT_DIR"; do
+  # ADR-0059 Decision 10, item 4: release RELEASE_PATH (nothing when it is
+  # empty), cleanup only. On standard error the CLI's own line, or one of these
+  # when its result cannot be read; the block's standard output and exit status
+  # stay what its own work set, errexit or not.
+  if [ -n "${RELEASE_PATH:-}" ]; then
+    if grep -q -e "'tmpdir-release'" "<plugin-root>/scripts/state.mjs" 2>/dev/null; then
+      RELEASE_REPORT="$(node "<plugin-root>/scripts/state.mjs" tmpdir-release --path "$RELEASE_PATH")" || :
+      node -e 'let r=null;try{r=JSON.parse(process.argv[1])}catch{}process.exit(r!==null&&typeof r==="object"&&typeof r.outcome==="string"?0:1)' "$RELEASE_REPORT" 2>/dev/null \
+        || echo "agentic-dir release: the result is unknown; the directory may remain at $RELEASE_PATH or at its .removing- path" >&2
+    elif [ -r "<plugin-root>/scripts/state.mjs" ]; then
+      echo "agentic-dir release: no tmpdir-release in this state.mjs; the directory is kept at $RELEASE_PATH" >&2
+    else
+      echo "agentic-dir release: the result is unknown (cannot read <plugin-root>/scripts/state.mjs); the directory may remain at $RELEASE_PATH" >&2
+    fi
+  fi
+done
 ```
 
 Settle refuses, writing nothing, while the run is still live (collect it
