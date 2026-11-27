@@ -186,9 +186,86 @@ file> --next-step-kind … --next-step-confidence … [--next-step-verb …]
 clears the gate, names the next step and replaces the gate's `Owner: …` next
 action in one write; it refuses, writing nothing, when the gate set on the
 workflow is another one. The decision and the next action are text: each
-reaches `state.mjs` as a file written with the file-writing tool into a
-private `mktemp -d` directory, never on the command line (ADR-0059,
-amendment of 2026-10-10).
+reaches `state.mjs` as a file written with the file-writing tool, never on
+the command line (ADR-0059, amendment of 2026-10-10), into a private text
+directory this block makes and marks (ADR-0059 Decision 9); note the path it
+prints. Fill `<plugin-root>` with this plugin's installed root, the path you
+read this reference from, cut before its `/core/skills/` directory:
+
+```bash
+# A private text directory, marked so that the step that reads it
+# last releases it (ADR-0059 Decisions 9 and 10).
+MAKE_KIND='text'
+MAKE_PARENT=''
+# ADR-0059 Decision 9: make and mark the directory MAKE_KIND names (text or
+# op; MAKE_PARENT, when set, for an op nested in it); its path is MADE_DIR.
+# The fallbacks of Decision 10, item 4 make it the old way: an older
+# state.mjs, lacking tmpdir-make, and a platform where the make is unsupported
+# with mktemp -d, a nested op in a parent made the old way with mkdir. A fallback's path is
+# checked for what a single-quoted shell literal cannot carry, as the make
+# checks its own. Each status is read in a condition, so errexit changes
+# nothing here.
+MADE_DIR=''
+if grep -q -e "'tmpdir-make'" "<plugin-root>/scripts/state.mjs" 2>/dev/null; then
+  if [ -n "${MAKE_PARENT:-}" ]; then
+    MADE_DIR="$(node "<plugin-root>/scripts/state.mjs" tmpdir-make --kind op --parent "$MAKE_PARENT")" && MAKE_RC=0 || MAKE_RC=$?
+  else
+    MADE_DIR="$(node "<plugin-root>/scripts/state.mjs" tmpdir-make --kind "$MAKE_KIND")" && MAKE_RC=0 || MAKE_RC=$?
+  fi
+elif [ -r "<plugin-root>/scripts/state.mjs" ]; then
+  MAKE_RC=old
+else
+  echo "✗ Cannot read <plugin-root>/scripts/state.mjs; no directory was made." >&2
+  exit 1
+fi
+case "$MAKE_RC" in
+  0) ;;
+  3|4|old)
+    if [ -n "${MAKE_PARENT:-}" ]; then
+      MADE_DIR="$MAKE_PARENT/op"
+      mkdir -m 700 "$MADE_DIR" || { echo "✗ $MADE_DIR already holds an operation directory, or cannot be made: run from a fresh directory. No directory was made." >&2; exit 1; }
+    else
+      MADE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-$MAKE_KIND.XXXXXX")" || exit 1
+      [ "$MAKE_RC" != 3 ] || echo "agentic-dir make: unsupported on this platform; $MADE_DIR was made with mktemp -d and will not be released" >&2
+    fi
+    node -e 'process.exit(/[\x00-\x1f\x7f\x27]/.test(process.argv[1])?1:0)' "$MADE_DIR" \
+      || { echo "✗ The directory made holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one." >&2; exit 1; }
+    ;;
+  5) echo "✗ TMPDIR (${TMPDIR:-/tmp}) holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one. No directory was made." >&2; exit 1 ;;
+  *) exit 1 ;;
+esac
+[ -n "$MADE_DIR" ] || { echo "✗ The make printed no directory; nothing can be written." >&2; exit 1; }
+printf '%s\n' "$MADE_DIR"
+```
+
+Once the clear has succeeded, nothing reads the two files again: release
+their directory with this block (Decision 10). A clear that refused keeps it
+for the retry.
+
+```bash
+TEXT_DIR='<the directory holding the decision and the next action>'
+case "$TEXT_DIR" in
+  ''|'<'*) echo "✗ TEXT_DIR is empty or not filled in; nothing was released." >&2; exit 1 ;;
+esac
+# ADR-0059 Decision 10, item 1 — the clear succeeded: no block, rerun or
+# continuation reads the decision or the next action again.
+RELEASE_PATH="$TEXT_DIR"
+# ADR-0059 Decision 10, item 4: release RELEASE_PATH (nothing when it is
+# empty), cleanup only. On standard error the CLI's own line, or one of these
+# when its result cannot be read; the block's standard output and exit status
+# stay what its own work set, errexit or not.
+if [ -n "${RELEASE_PATH:-}" ]; then
+  if grep -q -e "'tmpdir-release'" "<plugin-root>/scripts/state.mjs" 2>/dev/null; then
+    RELEASE_REPORT="$(node "<plugin-root>/scripts/state.mjs" tmpdir-release --path "$RELEASE_PATH")" || :
+    node -e 'let r=null;try{r=JSON.parse(process.argv[1])}catch{}process.exit(r!==null&&typeof r==="object"&&typeof r.outcome==="string"?0:1)' "$RELEASE_REPORT" 2>/dev/null \
+      || echo "agentic-dir release: the result is unknown; the directory may remain at $RELEASE_PATH or at its .removing- path" >&2
+  elif [ -r "<plugin-root>/scripts/state.mjs" ]; then
+    echo "agentic-dir release: no tmpdir-release in this state.mjs; the directory is kept at $RELEASE_PATH" >&2
+  else
+    echo "agentic-dir release: the result is unknown (cannot read <plugin-root>/scripts/state.mjs); the directory may remain at $RELEASE_PATH" >&2
+  fi
+fi
+```
 Inside a `/founder:start` lifecycle, decide's Owner selection records no
 next step instead (`--clear-next-step true`): the lifecycle owns its phase
 order.

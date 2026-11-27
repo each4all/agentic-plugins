@@ -95,9 +95,16 @@ this protocol pins shape only):
    "Failure Handling".
 2. The caller constructs the research-scan prompt per "Prompt
    Construction" below and writes it with its file-writing tool, not the
-   shell, as `prompt.xml` in a private directory
-   (`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`), then passes that
-   file to the runner (ADR-0059, amendment of 2026-10-10). The prompt contains
+   shell, as `prompt.xml` in a private directory that `state.mjs
+   tmpdir-make --kind text` makes and marks (ADR-0059 Decision 9), then passes
+   that file to the runner (ADR-0059, amendment of 2026-10-10). Under a
+   workflow command, the command's finalize, which settles the attempt,
+   releases the directory (its `DISPATCH_TEXT_DIR`), and inside a `start`
+   lifecycle the attempt release block after the phase's settle does;
+   anywhere else (invoked standalone, or on Codex outside a `start`
+   lifecycle, a workflow active or not) no block of the step releases it, so
+   step 5 below does (Decision 10).
+   The prompt contains
    user-controlled material (topic, sub-questions, scope), so it MUST be
    passed via `--prompt-file <path>` per `companions/contract.md` § 2.2 —
    never as a positional argument and never inlined into a shell command.
@@ -116,6 +123,41 @@ this protocol pins shape only):
    `companions/contract.md` § 6.2 and § 6.4.
 4. The local host proceeds immediately to per-sub-question WebSearch /
    WebFetch.
+5. Where neither a workflow command's finalize nor a `start` lifecycle's
+   attempt release takes the directory (invoked standalone, or on Codex
+   outside a `start` lifecycle, a workflow active or not), once the synthesis
+   has read the run's result, the response included (the run ledger keeps
+   it, at the result's `stdout_path`), or its `prompt.xml.err` when no run
+   launched, release the prompt's directory with this block, a run launched
+   or not. Fill `<plugin-root>` with this plugin's installed root, the path
+   you read this reference from, cut before its `/core/skills/` directory.
+   Under a workflow command or inside a `start` lifecycle, skip it: the
+   finalize, or the attempt release, releases the directory.
+
+   ```bash
+   DISPATCH_TEXT_DIR='<the directory holding prompt.xml>'
+   case "$DISPATCH_TEXT_DIR" in
+     ''|'<'*) echo "✗ DISPATCH_TEXT_DIR is empty or not filled in; nothing was released." >&2; exit 1 ;;
+   esac
+   # ADR-0059 Decision 10, item 1 — the synthesis has read the run's result:
+   # no block, rerun or continuation reads the directory again.
+   RELEASE_PATH="$DISPATCH_TEXT_DIR"
+   # ADR-0059 Decision 10, item 4: release RELEASE_PATH (nothing when it is
+   # empty), cleanup only. On standard error the CLI's own line, or one of these
+   # when its result cannot be read; the block's standard output and exit status
+   # stay what its own work set, errexit or not.
+   if [ -n "${RELEASE_PATH:-}" ]; then
+     if grep -q -e "'tmpdir-release'" "<plugin-root>/scripts/state.mjs" 2>/dev/null; then
+       RELEASE_REPORT="$(node "<plugin-root>/scripts/state.mjs" tmpdir-release --path "$RELEASE_PATH")" || :
+       node -e 'let r=null;try{r=JSON.parse(process.argv[1])}catch{}process.exit(r!==null&&typeof r==="object"&&typeof r.outcome==="string"?0:1)' "$RELEASE_REPORT" 2>/dev/null \
+         || echo "agentic-dir release: the result is unknown; the directory may remain at $RELEASE_PATH or at its .removing- path" >&2
+     elif [ -r "<plugin-root>/scripts/state.mjs" ]; then
+       echo "agentic-dir release: no tmpdir-release in this state.mjs; the directory is kept at $RELEASE_PATH" >&2
+     else
+       echo "agentic-dir release: the result is unknown (cannot read <plugin-root>/scripts/state.mjs); the directory may remain at $RELEASE_PATH" >&2
+     fi
+   fi
+   ```
 <!-- pipeline:end brief-ensemble-launch -->
 
 ### Step 2: Collect — before profile synthesis

@@ -106,6 +106,14 @@ to every reader's rule before any write (strict UTF-8, no NUL byte, text left
 once blanks are trimmed), since the append reads the note only after settle
 has written.
 
+Once the last write succeeded, whatever form it took, the block releases its
+text directory and the dispatch's (`DISPATCH_TEXT_DIR`)
+(ADR-0059 Decision 10): no block, rerun or continuation reads them again, so
+nothing runs the block again then. A release that is refused or skipped prints
+one line naming the directory and where it was kept; it never asks for a step
+to be repeated. A stop before the last write keeps them, and the rerun above
+reads the same files.
+
 ## The last write and the Stop hook
 
 `next-action.txt`, which the append and the last write record, holds the
