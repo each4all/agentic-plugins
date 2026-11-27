@@ -26,8 +26,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/companions",
-        "ref": "plugin-companions-v0.4.4",
-        "sha": "aa2af53bfc8289e64b85d105c3fe66a1dafc8981"
+        "ref": "plugin-companions-v0.5.0",
+        "sha": "1453186f680002790c8e34df848f885b50bcf928"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -41,8 +41,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/designer",
-        "ref": "plugin-designer-v0.16.2",
-        "sha": "40368f91adfe0e8764bd775600cfbddd575b8aa9"
+        "ref": "plugin-designer-v0.17.0",
+        "sha": "1453186f680002790c8e34df848f885b50bcf928"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -56,8 +56,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/engineer",
-        "ref": "plugin-engineer-v0.37.1",
-        "sha": "40368f91adfe0e8764bd775600cfbddd575b8aa9"
+        "ref": "plugin-engineer-v0.38.0",
+        "sha": "1453186f680002790c8e34df848f885b50bcf928"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -71,8 +71,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/founder",
-        "ref": "plugin-founder-v0.17.2",
-        "sha": "40368f91adfe0e8764bd775600cfbddd575b8aa9"
+        "ref": "plugin-founder-v0.18.0",
+        "sha": "1453186f680002790c8e34df848f885b50bcf928"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -101,8 +101,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/orchestrator",
-        "ref": "plugin-orchestrator-v0.42.1",
-        "sha": "aa2af53bfc8289e64b85d105c3fe66a1dafc8981"
+        "ref": "plugin-orchestrator-v0.43.0",
+        "sha": "1453186f680002790c8e34df848f885b50bcf928"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -116,8 +116,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/runtime",
-        "ref": "plugin-runtime-v0.104.1",
-        "sha": "aa2af53bfc8289e64b85d105c3fe66a1dafc8981"
+        "ref": "plugin-runtime-v0.105.0",
+        "sha": "1453186f680002790c8e34df848f885b50bcf928"
       },
       "policy": {
         "installation": "AVAILABLE",
