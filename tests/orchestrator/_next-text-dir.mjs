@@ -8,12 +8,14 @@
 
 import { ok } from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const { parseCommandArguments } = await import(
   resolve(fileURLToPath(import.meta.url), '../../../plugins/orchestrator/scripts/lib/command-args.mjs'));
+const ORCH_STATE = resolve(fileURLToPath(import.meta.url), '../../../plugins/orchestrator/scripts/state.mjs');
 
 export const CLAUDE_TEXT_DIR_LINE = "TEXT_DIR='<directory from step 1>'";
 export const CODEX_TEXT_DIR_LINE = "TEXT_DIR='<directory from mktemp>'";
@@ -28,13 +30,24 @@ export const CODEX_TEXT_DIR_LINE = "TEXT_DIR='<directory from mktemp>'";
  * `dispatchMark` names another, ADR-0068 Decision 2, item 5), and, with a
  * mark, the pass Phase 4's check leaves beside it (`dispatch-mark.json.checked`;
  * `checked: false` leaves it out, as when that check refused). A key left out
- * is not written, as when its phase has not run.
+ * is not written, as when its phase has not run. `marked`: the directory is
+ * the one step 1's make prints (the orchestrator's `tmpdir-make --kind text`
+ * under `parent`), which Phase 5's last step can release (ADR-0059
+ * Decision 10, item 1); otherwise a plain mkdtemp directory, which the release
+ * refuses and keeps.
  */
 export const NO_MARK = Object.freeze({ active: false, operation_id: null, reattach: false });
 export function carriedTextDir({
-  repoRoot, macroPath, args = '', subtask, engineerRoot, engineerWorkflow, admission, dispatchMark = admission === undefined ? undefined : NO_MARK, checked = true,
+  repoRoot, macroPath, args = '', subtask, engineerRoot, engineerWorkflow, admission, dispatchMark = admission === undefined ? undefined : NO_MARK, checked = true, marked = false,
 } = {}, parent = tmpdir()) {
-  const dir = mkdtempSync(join(parent, 'agentic-text.'));
+  let dir;
+  if (marked) {
+    const made = spawnSync(process.execPath, [ORCH_STATE, 'tmpdir-make', '--kind', 'text'], { encoding: 'utf8', env: { ...process.env, TMPDIR: parent } });
+    ok(made.status === 0 && made.stdout.trim() !== '', `tmpdir-make: ${made.stderr}`);
+    dir = made.stdout.trim();
+  } else {
+    dir = mkdtempSync(join(parent, 'agentic-text.'));
+  }
   const put = (name, value) => {
     if (value !== undefined) writeFileSync(join(dir, name), value);
   };

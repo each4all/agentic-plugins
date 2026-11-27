@@ -754,8 +754,8 @@ export const MUTATIONS = [
   },
   {
     id: 'N7', file: NEXT_MD, tests: [TN],
-    from: "release_admission() {\n  withdraw_mark\n  node \"$ORCH_PLUGIN_ROOT/scripts/state.mjs\" admission release \\\n",
-    to: "release_admission() {\n  node \"$ORCH_PLUGIN_ROOT/scripts/state.mjs\" admission release \\\n",
+    from: "release_admission() {\n  withdraw_mark\n  ADMISSION_RC=0\n  node \"$ORCH_PLUGIN_ROOT/scripts/state.mjs\" admission release \\\n",
+    to: "release_admission() {\n  ADMISSION_RC=0\n  node \"$ORCH_PLUGIN_ROOT/scripts/state.mjs\" admission release \\\n",
     why: "Phase 5's exits leave a mark no engineer took over: a dispatch whose engineer never ran keeps the lane's operation open",
     killed_by: /an exit before the engineer took the mark over withdraws it/,
   },
@@ -1701,8 +1701,8 @@ export const MUTATIONS = [
   },
   {
     id: 'Y9', file: NEXT_MD, tests: [TN],
-    from: "writer-clear ends it).\" >&2\n  exit 1\n",
-    to: "writer-clear ends it).\" >&2\n",
+    from: "TEXT_DIR ($TEXT_DIR) is kept.\" >&2\n  exit 1\nelif [ ! -f \"$TEXT_DIR/dispatch-mark.json.checked\" ]; then\n  echo \"✗ The hold check before the engineer did not pass for this dispatch; subtask $SUBTASK_ID is not recorded in progress. Rerun /orchestrator:next",
+    to: "TEXT_DIR ($TEXT_DIR) is kept.\" >&2\nelif [ ! -f \"$TEXT_DIR/dispatch-mark.json.checked\" ]; then\n  echo \"✗ The hold check before the engineer did not pass for this dispatch; subtask $SUBTASK_ID is not recorded in progress. Rerun /orchestrator:next",
     why: "Phase 5 records a dispatch whose mark file is gone, which no check passed",
     killed_by: /a dispatch whose mark file is gone is not recorded in progress/,
   },

@@ -143,8 +143,11 @@ the steps stay manual**, and the host-neutral state it reads (`next_step_*`,
   of its own, `<base>/agentic-ap/<run>/s<seq>/` or `v<seq>-<index>/` (`<run>` is the run id
   without its `autopilot-`; the names are short because a unix socket's whole path has
   about a hundred bytes),
-  which the driver removes when it ends, so a runbook's `mktemp -d` directories, a test's
-  repositories and a mutation copy end with the step that made them
+  which the driver removes when it ends, so a runbook's text and operation directories
+  that no release ended (a path that keeps one, a fallback's `mktemp -d` directory), a
+  test's repositories and a mutation copy end with the step that made them: a backstop,
+  since the runbooks release their own directories once no reader is left
+  ([ADR-0059](../../docs/adr/0059-runbook-argument-transport.md) Decision 10)
   (`adapters/claude/autopilot/scratch.mjs`;
   [ADR-0068](../../docs/adr/0068-autopilot-lanes-that-keep-going.md), amendment of
   2026-11-10). `<base>` is the driver's `TMPDIR`, then `/tmp`: the first outside every

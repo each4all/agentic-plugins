@@ -115,7 +115,7 @@ describe('runbook --workflow=<id> resolvers search the read set (ADR-0067 Decisi
       const block = (id) => {
         const textDir = mkdtempSync(join(tmpdir(), 'agentic text.'));
         writeFileSync(join(textDir, 'workflow-id.txt'), `${id}\n`);
-        return runbookBlock('resume', '--workflow-id-file "$TEXT_DIR/workflow-id.txt"').replace("TEXT_DIR='<directory from step 1>'", () => `TEXT_DIR='${textDir}'`);
+        return runbookBlock('resume', '--workflow-id-file "$ID_DIR/workflow-id.txt"').replace("ID_DIR='<directory from step 1>'", () => `ID_DIR='${textDir}'`);
       };
       const r = runIn(shell, lane, block(macroId), {});
       strictEqual(r.status, 0, r.stderr);
@@ -234,13 +234,13 @@ describe('the Codex skills take their arguments from a file (C134(a))', () => {
 
   for (const shell of SHELLS) {
     it(`resume/SKILL.md archive (${shell}): the id in workflow-id.txt resolves the macro from a linked worktree; an id no root holds, or one holding shell syntax, is refused and runs nothing`, () => {
-      const block = codexBlock('resume', '--workflow-id-file "$TEXT_DIR/workflow-id.txt"');
-      const TEXT_DIR_LINE = "TEXT_DIR='<directory from mktemp>'";
+      const block = codexBlock('resume', '--workflow-id-file "$ID_DIR/workflow-id.txt"');
+      const TEXT_DIR_LINE = "ID_DIR='<directory from step 1>'";
       ok(block.startsWith(`${TEXT_DIR_LINE}\n`) && !block.includes('<workflow-id>'), 'the id travels in a file');
       const resolveWith = (id) => {
         const textDir = mkdtempSync(join(dir, 'agentic text.'));
         writeFileSync(join(textDir, 'workflow-id.txt'), `${id}\n`);
-        return runIn(shell, lane, block.replace(TEXT_DIR_LINE, () => `TEXT_DIR='${textDir}'`));
+        return runIn(shell, lane, block.replace(TEXT_DIR_LINE, () => `ID_DIR='${textDir}'`));
       };
       const r = resolveWith(macroId);
       strictEqual(r.status, 0, r.stderr);

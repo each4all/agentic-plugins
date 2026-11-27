@@ -921,3 +921,67 @@ before the fold:
 
 The matching sentence of `AGENTS.md` was folded in the same change. The
 decision's status is unchanged.
+
+## Implementation note 2026-11-27 — the orchestrator's runbooks switch
+
+The orchestrator's commands and Codex skills that make a text directory
+(checkpoint, done, next, peer-now, plan and resume, the command and the skill
+each) make it through verbatim copies of the make snippet and release it
+through verbatim copies of the release snippet; an orchestrator file renders
+no region, so `tests/plugin-shape/test-runbook-cli-contracts.mjs` holds each
+copy equal to its snippet. `persona-pipeline/tmpdir-paths.json` gains groups
+keyed by `files`, each checked whole and strictly (every block of such a file
+shares its step 1's directory, so no head-line placeholder names a fresh
+one). The gate's scope widens to the orchestrator's commands, skills and
+references; an args directory keeps the reader's removal, and the owner's own
+instruct note (`commands/autopilot.md`) is exempted by file and line.
+
+`/orchestrator:next` releases its text directory as the last step of Phase
+5's exit trap (Phase 4's writeback on the Codex skill), under one guard, the
+three results of Decision 10, item 1: the writeback's status, the withdrawal's
+disposition read from `dispatch-mark-withdraw --format json` (shipped in
+orchestrator 0.43.0) and the admission release's status. The trap sets the
+block's status from them. The gate reads that shape as an exit release under
+a guard, which the path list must both keep and release. Phase 3b's rerun
+withdraws a kept mark before it publishes, and publishes only after an
+authorizing disposition (item 3). The recovery messages name each leftover
+with its id, and the missing-mark refusal no longer sends the owner straight
+to `writer-clear`. The persona bootstrap releases the directory its
+`TEXT_DIR` names when `AGENTIC_TOPIC` is empty; next's Phase 4 prose fences
+that from its side (an engineer block's `TEXT_DIR` never names next's
+directory), which a test runs through the real engineer bootstrap in one
+shell. `/orchestrator:done` releases its reason directory from one EXIT trap
+set before the make, after the admission's release. Decision 10, item 1's
+sentence on the helper, which said what the CLI reported before
+`--format json` shipped, read:
+
+> Today the helper reports `carried` for both a carrying child and an
+> unreadable one, `gone` for an unreadable registry (`readOps` returns
+> `unreadable` with no records, and `withdrawDispatchMark` reads that as no
+> record), and exits 0 with no word for a null operation id, so the CLI that
+> ships first (item 8) reports each of them apart.
+
+Tests:
+`tests/orchestrator/test-next-text-dir-release.mjs` (next's matrix, Phase 3b's
+gate, the Codex skill, the shared shell),
+`tests/orchestrator/test-text-dir-release-runbooks.mjs`, the orchestrator
+runbook suites.
+
+## Fold 2026-11-27 — the amendment of 2026-10-10's bullet, for the orchestrator
+
+The orchestrator switched (the implementation note above), the last package
+whose runbooks had not, so the bullet now says every package's runbooks have
+switched, and keeps `mktemp -d` only for a runbook that has not switched or a
+fallback of Decision 10, item 4. The bullet's two sentences on packages read,
+before this fold:
+
+> In a package whose runbooks have switched (Decision 10, item 8: today the
+> persona plugins, designer, engineer and founder), the make marks that
+> directory, and the runbook releases it, with the file, through the CLI's
+> proof once no reader of it is left (Decisions 9 and 10). Until a package
+> switches (today the orchestrator), it is a `mktemp -d` directory and nothing
+> deletes the file.
+
+The Status paragraph's implementation clause and the matching sentence of
+`AGENTS.md` were updated in the same change. The decision's status is
+unchanged.

@@ -13,15 +13,16 @@
 // other (cliCallProblems). A runbook test that executes a block is then left
 // for what only a run can show: the block's effect on the happy path.
 //
-// The release of the persona plugins' text and operation directories (ADR-0059
-// Decision 10) is held here too, by the tests at the end of this file: each
-// region the path list (persona-pipeline/tmpdir-paths.json) names makes and
-// releases exactly what the list says, on the paths it says, after every block
-// that reads the directory, and before no later block that reads it unnamed;
-// no region or authored text makes one outside the make, except what the
-// list's `pending` names (the rollout's remainder); no persona text releases
-// one by hand (item 2), and no shell block calls either subcommand but
-// through its snippet; every region template that names them is in the list.
+// The release of the persona and orchestrator plugins' text and operation
+// directories (ADR-0059 Decision 10) is held here too, by the tests at the end
+// of this file: each region, and each orchestrator command or skill, the path
+// list (persona-pipeline/tmpdir-paths.json) names makes and releases exactly
+// what the list says, on the paths it says, after every block that reads the
+// directory, and before no later block that reads it unnamed; no region or
+// authored text makes one outside the make, except what the list's `pending`
+// names (the rollout's remainder); no text releases one by hand (item 2), and
+// no shell block calls either subcommand but through its snippet; every region
+// template, and every orchestrator file, that names them is in the list.
 //
 // Checked: the state.mjs and peer-runner.mjs of designer, engineer, founder and
 // orchestrator, called from any markdown under a plugin's commands/, core/ or
@@ -214,12 +215,31 @@ test('each contract is read whole: the subcommands the runbooks rely on, with fl
   }
 });
 
-// ── ADR-0059 Decision 10: the persona plugins' directories ──────────────────
+// ── ADR-0059 Decision 10: the persona and orchestrator directories ──────────
 
 const PATHS = JSON.parse(read('persona-pipeline/tmpdir-paths.json'));
-// Each in a command's form and a skill's (the root spelled <plugin-root>).
-const SNIPPETS = { make: [snippetText('tmpdir-make'), snippetText('tmpdir-make-skill')], release: [snippetText('tmpdir-release'), snippetText('tmpdir-release-skill')] };
-const GROUPED = new Set(PATHS.groups.flatMap((g) => g.templates));
+// Each in a command's form and a skill's (the root spelled <plugin-root>), and
+// the skill's form an orchestrator skill copies with its own root placeholder
+// (<orchestrator-plugin-root>, beside the engineer's in next and done). An
+// orchestrator file renders no region: it holds verbatim copies, which this
+// identity check keeps equal to the snippets, so a snippet edit fails here
+// until each copy follows.
+const orchSkill = (name) => snippetText(name).replaceAll('<plugin-root>/', '<orchestrator-plugin-root>/');
+const SNIPPETS = {
+  make: [snippetText('tmpdir-make'), snippetText('tmpdir-make-skill'), orchSkill('tmpdir-make-skill')],
+  release: [snippetText('tmpdir-release'), snippetText('tmpdir-release-skill'), orchSkill('tmpdir-release-skill')],
+};
+// The groups of rendered regions (`templates`), and of orchestrator files,
+// each checked whole (`files`).
+const TEMPLATE_GROUPS = PATHS.groups.filter((g) => g.templates !== undefined);
+const FILE_GROUPS = PATHS.groups.filter((g) => g.files !== undefined);
+const GROUPED = new Set(TEMPLATE_GROUPS.flatMap((g) => g.templates));
+const GROUPED_FILES = FILE_GROUPS.flatMap((g) => g.files);
+// The lines the list exempts from the make, by file and text: prose an owner
+// follows outside any runbook block (the instruct note's directory).
+const EXEMPT = new Set((PATHS.exempt ?? []).map((e) => `${e.file}\0${e.line}`));
+// Each orchestrator file as it ships (commands, skills, references), its change log aside.
+const orchestratorFiles = () => corpus().filter((f) => f.split('/')[1] === 'orchestrator' && !f.endsWith('CHANGELOG.md'));
 
 // Each rendering of a template the list groups: [template, persona, region, text].
 function renderings(templates) {
@@ -236,9 +256,10 @@ function renderings(templates) {
 }
 
 // The text and operation directories made outside the make, per file: in a
-// region template the list does not group, and in a persona's authored text
-// (its region bodies left out, which their templates answer for).
-function legacyMakes() {
+// region template the list does not group, in a persona's authored text (its
+// region bodies left out, which their templates answer for), and in an
+// orchestrator file, read by `text` (as it ships unless a probe plants one).
+function legacyMakes(text = read) {
   const found = new Set();
   const legacyIn = (text) => tmpdirLegacyLines(text, SNIPPETS).length > 0;
   for (const region of MANIFEST.regions) {
@@ -247,7 +268,20 @@ function legacyMakes() {
   for (const file of corpus().filter((f) => PERSONAS.includes(f.split('/')[1]))) {
     if (legacyIn(authoredText(file))) found.add(file);
   }
+  for (const file of orchestratorLegacyMakes(orchestratorFiles(), text)) found.add(file);
   return [...found].sort();
+}
+
+// The orchestrator files of `files` that make a directory outside the make:
+// each read whole (by `text`, the file as it ships unless a probe plants a
+// defect), but for the lines the list exempts by identity (EXEMPT).
+function orchestratorLegacyMakes(files, text = read) {
+  const found = [];
+  for (const file of files) {
+    const lines = text(file).split('\n');
+    if (tmpdirLegacyLines(text(file), SNIPPETS).some((n) => !EXEMPT.has(`${file}\0${lines[n - 1].trim()}`))) found.push(file);
+  }
+  return found;
 }
 
 // A persona file's authored text: its region bodies left out, which their
@@ -261,7 +295,7 @@ function authoredText(file) {
 test('each region the path list groups makes and releases what the list says, on the paths it says (ADR-0059 Decision 10)', () => {
   const problems = [];
   let seen = 0;
-  for (const group of PATHS.groups) {
+  for (const group of TEMPLATE_GROUPS) {
     const all = renderings(group.templates);
     ok(all.length > 0, `no region renders ${group.templates.join(', ')}`);
     for (const [template, persona, region, text] of all) {
@@ -273,9 +307,122 @@ test('each region the path list groups makes and releases what the list says, on
   ok(seen >= 40, `only ${seen} renderings checked`);
 });
 
+// An orchestrator file held to its group: whole, and strictly, since its
+// blocks share the one directory its step 1 made (no placeholder is fresh).
+const fileProblems = (group, file, text) => [
+  ...tmpdirProblems(text, group, { snippets: SNIPPETS, label: file }),
+  ...tmpdirOrderProblems(text, group, { label: file, strict: true }),
+];
+
+test('each orchestrator command and skill the path list groups makes and releases what the list says, after every block that reads it (ADR-0059 Decision 10)', () => {
+  const problems = [];
+  for (const group of FILE_GROUPS) {
+    ok(group.files.length > 0, 'a files group names no file');
+    for (const file of group.files) problems.push(...fileProblems(group, file, read(file)));
+    // Each consumer, an optional one included, reads in one file of the group
+    // at least: a pattern that matches nothing names no reader.
+    for (const d of group.directories) {
+      for (const c of d.consumers ?? []) {
+        const re = new RegExp(group.blocks[c], 'm');
+        if (!group.files.some((f) => fencedBlocks(read(f)).some((b) => SHELL_LANGS.has(b.lang) && re.test(b.lines.join('\n'))))) problems.push(`${group.files[0]}: consumer ${c} matches no block of the group's files`);
+      }
+    }
+  }
+  deepStrictEqual(problems, []);
+  ok(GROUPED_FILES.length >= 10, `only ${GROUPED_FILES.length} orchestrator files grouped`);
+});
+
+test('the files-group check finds a defect planted in a real orchestrator runbook: a release before the write, a reader after the release', () => {
+  const file = 'plugins/orchestrator/commands/plan.md';
+  const group = FILE_GROUPS.find((g) => g.files.includes(file));
+  const text = read(file);
+  const write = 'node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \\';
+  ok(text.includes(write) && text.includes('RELEASE_PATH="$TEXT_DIR"'), 'the probe finds its anchors');
+  // The release moved before the ensemble commit, its last exit after it.
+  const release = text.slice(text.indexOf('RELEASE_PATH="$TEXT_DIR"'), text.indexOf('```', text.indexOf('RELEASE_PATH="$TEXT_DIR"')));
+  const early = text.replace(release, '').replace(write, `${release}${write}`);
+  ok(fileProblems(group, file, early).some((p) => /before the block's last exit/.test(p)), 'a release before the write is refused');
+  // A later block that takes the same step-1 directory reads a released one.
+  const after = `${text}\n\`\`\`bash\nTEXT_DIR='<directory from step 1>'\ncat "$TEXT_DIR/note.md"\n\`\`\`\n`;
+  ok(fileProblems(group, file, after).some((p) => /takes TEXT_DIR as '<directory from step 1>', the directory released there/.test(p)), 'a reader after the release is refused');
+});
+
+test("the files-group check finds a defect planted in /orchestrator:next: a trap release unguarded, one in Phase 3b's trap", () => {
+  const file = 'plugins/orchestrator/commands/next.md';
+  const group = FILE_GROUPS.find((g) => g.files.includes(file));
+  const text = read(file);
+  const { guard } = group.directories[0].release;
+  ok(text.includes(guard), 'the probe finds the guard of the three results');
+  // The release on every exit of Phase 5, whatever the three results.
+  ok(fileProblems(group, file, text.replace(guard, 'if true; then')).some((p) => /writeback:TEXT_DIR:exit under if true; then on a path the path list keeps/.test(p)), 'an unguarded trap release is refused');
+  // Phase 3b's trap releases too, whose rerun reads the directory.
+  const trap = "  mark_kept\n}\ntrap 'release_admission' EXIT";
+  ok(text.split(trap).length === 2, "the probe finds Phase 3b's trap");
+  const release = snippetText('tmpdir-release').replace(/\n$/, '').split('\n').map((l) => `  ${l}`).join('\n');
+  const early = text.replace(trap, `  mark_kept\n  RELEASE_PATH="$TEXT_DIR"\n${release}\n}\ntrap 'release_admission' EXIT`);
+  ok(fileProblems(group, file, early).some((p) => /a releasing step switch:TEXT_DIR:exit on a path the path list keeps/.test(p)), "a release in Phase 3b's trap is refused");
+});
+
+// A test of its own, so the mutation that removes this refusal (C32 of
+// runbook-cli-contracts) is scored by the case it removes, not by its file.
+test("for /orchestrator:next's guarded trap release, a list that keeps it nowhere is refused", () => {
+  const file = 'plugins/orchestrator/commands/next.md';
+  const group = FILE_GROUPS.find((g) => g.files.includes(file));
+  const text = read(file);
+  const { guard } = group.directories[0].release;
+  ok(text.includes(guard), 'the probe finds the guard of the three results');
+  ok(fileProblems(group, file, text).every((p) => !/is released from an EXIT trap under/.test(p)), 'the list as declared, which keeps it on a path, passes this check');
+  // The guarded release declared on a list that keeps the directory on no path.
+  const releasing = { ...group, directories: [{ ...group.directories[0], paths: { 'every exit': 'release' } }] };
+  ok(fileProblems(releasing, file, text).some((p) => /is released from an EXIT trap under .*, and the path list does not both keep it/.test(p)), 'a list that keeps it nowhere is refused');
+});
+
+// A release on the success path holds only when each write before it stops
+// the block on failure: the last-exit rule alone passes a write whose stop was
+// removed, since the block's last exit is then an earlier one (C36 of
+// runbook-cli-contracts).
+test('a release after a write whose failure nothing reads is refused: checkpoint-set, the peer-now note, the plan writes', () => {
+  const planted = [
+    ['plugins/orchestrator/commands/checkpoint.md', '--summary-file "$TEXT_DIR/summary.txt" || exit $?', '--summary-file "$TEXT_DIR/summary.txt"'],
+    ['plugins/orchestrator/commands/peer-now.md', '--event updated || exit $?', '--event updated'],
+    ['plugins/orchestrator/commands/plan.md', '--event updated --require-open --run-id "$RUN_ID" || exit 1', '--event updated --require-open --run-id "$RUN_ID"'],
+    ['plugins/orchestrator/commands/plan.md', '--completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 1', '--completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"'],
+  ];
+  for (const [file, from, to] of planted) {
+    const group = FILE_GROUPS.find((g) => g.files.includes(file));
+    const text = read(file);
+    deepStrictEqual(text.split(from).length, 2, `${file}: the probe finds "${from}" once`);
+    ok(fileProblems(group, file, text).every((p) => !/whose failure nothing reads/.test(p)), `${file}: the file as it ships passes this rule`);
+    ok(fileProblems(group, file, text.replace(from, to)).some((p) => /whose failure nothing reads/.test(p)), `${file}: "${to}" with its stop removed is refused`);
+  }
+  // What reads a failure, and what does not, in one synthetic block each.
+  const group = {
+    blocks: { main: '^node .* write' },
+    directories: [{ variable: 'TEXT_DIR', made: 'step', consumers: ['main'], release: { block: 'main', at: 'end' } }],
+  };
+  const step = ['```bash', "MAKE_KIND='text'", ...SNIPPETS.make[0].split('\n'), "printf '%s\\n' \"$MADE_DIR\"", '```'].join('\n');
+  const main = (body) => [step, '```bash', "TEXT_DIR='<directory from step 1>'", 'ROOT_OVERRIDE=x', ...body, 'RELEASE_PATH="$TEXT_DIR"', ...SNIPPETS.release[0].split('\n'), '```'].join('\n');
+  const w = 'node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" write --file "$TEXT_DIR/a"';
+  const unread = (body) => tmpdirProblems(main(body), group, { snippets: SNIPPETS, label: 'x' }).filter((p) => /whose failure nothing reads/.test(p));
+  for (const body of [[`${w} || exit $?`], [`${w} \\`, '  || { echo no >&2; exit 1; }'], ['RC=1', `${w} && RC=0`, '[ "$RC" -eq 0 ] || exit 1'], [w, 'RC=$?', '[ "$RC" -eq 0 ] || exit "$RC"'], [`if ! ${w}; then`, '  exit 1', 'fi'], [`OUT="$(${w})" || exit 1`], [`${w} 2>&1 || exit $?`], [`${w} --host <claude|codex> || exit $?`], [`${w} && echo written || exit 1`], ["printf '%s\\n' node installed"]]) {
+    deepStrictEqual(unread(body), [], `read: ${body.join(' / ')}`);
+  }
+  // A handler that only logs, and a pipeline whose status is another
+  // command's, let the block go on to the release.
+  for (const body of [[w], [`${w} | cat`], [`${w} | cat || exit $?`], [`${w} && echo written`], [`${w} # || exit 1`], [`${w}; echo '|| exit 1'`], [`${w} || echo failed >&2`], [`${w} || { echo 'exit 1' >&2; }`], [`${w} &`]]) {
+    deepStrictEqual(unread(body).length, 1, `not read: ${body.join(' / ')}`);
+  }
+});
+
+test('each orchestrator file that makes or releases a directory through the snippets is in a files group, once', () => {
+  const found = orchestratorFiles().filter((f) => /\btmpdir-(?:make|release)\b/.test(read(f))).sort();
+  deepStrictEqual(found, [...GROUPED_FILES].sort());
+  deepStrictEqual(GROUPED_FILES.filter((f, i) => GROUPED_FILES.indexOf(f) !== i), []);
+});
+
 test('in each persona runbook, a directory is released only after every block that reads it', () => {
   const problems = [];
-  for (const group of PATHS.groups) {
+  for (const group of TEMPLATE_GROUPS) {
     const dests = new Set(MANIFEST.regions.filter((r) => group.templates.includes(r.template)).flatMap((r) => r.personas.map((p) => `plugins/${p}/${r.dest}`)));
     for (const file of dests) {
       problems.push(...tmpdirOrderProblems(read(file), group, { capabilities: declaration(file.split('/')[1]).capabilities, label: file }));
@@ -286,6 +433,40 @@ test('in each persona runbook, a directory is released only after every block th
 
 test('no persona region or authored text makes a directory outside the make, except what the list keeps pending', () => {
   deepStrictEqual(legacyMakes(), [...PATHS.pending].sort());
+});
+
+// With `pending` empty, the scan above passes on no orchestrator file found
+// as well as on every file clean: this probe plants a make in a real
+// orchestrator command, so a scan that reads nothing fails here (C30 of
+// runbook-cli-contracts).
+test('the orchestrator scan finds a make planted outside the snippet, and the exempt line only where the list keeps it', () => {
+  const file = 'plugins/orchestrator/commands/checkpoint.md';
+  const exempt = (PATHS.exempt ?? [])[0];
+  ok(exempt !== undefined, 'no exemption read');
+  const files = [file, exempt.file];
+  deepStrictEqual(orchestratorLegacyMakes(files), [], 'the files as they ship make nothing outside the snippet');
+  const anchor = "TEXT_DIR='<directory from step 1>'\n";
+  ok(read(file).includes(anchor), 'the probe finds its anchor');
+  const planted = (line) => (f) => (f === file ? read(file).replace(anchor, `${anchor}${line}\n`) : read(f));
+  const raw = planted('D="$(mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX")"');
+  deepStrictEqual(orchestratorLegacyMakes(files, raw), [file], 'a raw make in a block is found');
+  // Through the corpus scan the gate runs, too: the file is found beside what
+  // the list keeps pending.
+  deepStrictEqual(legacyMakes(raw), [...PATHS.pending, file].sort(), 'the gate\'s scan finds the planted make');
+  deepStrictEqual(orchestratorLegacyMakes(files, planted(exempt.line)), [file], 'the exempt line, in another file, is no exemption');
+});
+
+test('each line the path list exempts from the make is found exactly once, where it says, and says why', () => {
+  for (const e of PATHS.exempt ?? []) {
+    const lines = read(e.file).split('\n');
+    const at = tmpdirLegacyLines(read(e.file), SNIPPETS).filter((n) => lines[n - 1].trim() === e.line);
+    deepStrictEqual(at.length, 1, `${e.file}: "${e.line}" is a make line ${at.length} times`);
+    ok(typeof e.why === 'string' && e.why.length > 20, `${e.file}: no reason`);
+  }
+  // A make line elsewhere in the same file is no exemption.
+  const e = (PATHS.exempt ?? [])[0];
+  ok(e !== undefined, 'no exemption read');
+  ok(!EXEMPT.has(`${e.file}\0mktemp -d "\${TMPDIR:-/tmp}/agentic-text.XXXXXX"`));
 });
 
 test('each persona file whose authored text tells the agent to make a directory is in the path list, with the step that releases it', () => {
@@ -300,15 +481,16 @@ test('each persona file whose authored text tells the agent to make a directory 
   }
 });
 
-// Each persona file as it ships (commands, skills, references), its change log aside.
-const personaFiles = () => corpus().filter((f) => PERSONAS.includes(f.split('/')[1]) && !f.endsWith('CHANGELOG.md'));
+// Each persona and orchestrator file as it ships (commands, skills,
+// references), its change log aside.
+const personaFiles = () => corpus().filter((f) => [...PERSONAS, 'orchestrator'].includes(f.split('/')[1]) && !f.endsWith('CHANGELOG.md'));
 
-test('no persona text tells the agent to release a directory by hand: a release is a block of the runbook (ADR-0059 Decision 10, item 2)', () => {
+test('no persona or orchestrator text tells the agent to release a directory by hand: a release is a block of the runbook (ADR-0059 Decision 10, item 2)', () => {
   const found = personaFiles().flatMap((f) => tmpdirHandReleaseLines(read(f), SNIPPETS).map((l) => `${f}:${l}`));
   deepStrictEqual(found, []);
 });
 
-test('no persona shell block calls tmpdir-make or tmpdir-release but through the snippets, grouped or not', () => {
+test('no persona or orchestrator shell block calls tmpdir-make or tmpdir-release but through the snippets, grouped or not', () => {
   const found = [];
   for (const f of personaFiles()) {
     for (const b of fencedBlocks(read(f)).filter((x) => SHELL_LANGS.has(x.lang))) {
@@ -329,7 +511,7 @@ test('each directory of the path list declares its paths, releasing on one at le
   for (const group of PATHS.groups) {
     for (const d of group.directories) {
       const values = Object.values(d.paths ?? {});
-      const where = `${group.templates.join(', ')} ${d.variable}`;
+      const where = `${(group.templates ?? group.files).join(', ')} ${d.variable}`;
       if (values.length === 0) { problems.push(`${where}: no paths`); continue; }
       for (const v of values) if (!/^(release|keep)(: .+)?$/s.test(v) || /^keep$/.test(v)) problems.push(`${where}: "${v}" is neither release nor keep: <reason>`);
       if (Boolean(d.release) !== values.some((v) => v.startsWith('release'))) problems.push(`${where}: its release and its paths disagree`);
@@ -380,7 +562,22 @@ test('the path list check refuses what it is for: a raw make, a release too earl
     ['a failing-exit guard closed before the release', `${step}\n${main(['OWN_RC=0', 'f() {', '  OWN_RC=$?', '  if [ "$OWN_RC" -ne 0 ]; then', '    :', '  fi', ...rel('TEXT_DIR').map((l) => `  ${l}`), '}', 'trap f EXIT', write])}`, /a releasing step main:TEXT_DIR:exit on a path the path list keeps/, { ...group, directories: [{ ...group.directories[0], release: { block: 'main', at: 'exit-failed' }, paths: { 'fails': 'release', 'succeeds': 'keep: x' } }] }],
     ['a release on every exit the paths keep somewhere', `${step}\n${main(['f() {', ...rel('TEXT_DIR').map((l) => `  ${l}`), '}', 'trap f EXIT', write])}`, /released on every exit, and the path list keeps it on a path/, { ...group, directories: [{ ...group.directories[0], release: { block: 'main', at: 'exit' }, paths: { 'any exit': 'release', 'a rerun': 'keep: x' } }] }],
     ['an end release whose paths keep it nowhere', `${step}\n${main([write, ...rel('TEXT_DIR')])}`, /released on the success path only, and the path list keeps it on no path/, { ...group, directories: [{ ...group.directories[0], paths: { 'success': 'release', 'a refusal': 'release' } }] }],
+    // The orchestrator slice of 2026-11-27: a later EXIT trap replaces the one
+    // a release runs from; a release site found twice is refused, not
+    // collapsed; a head line read after the root line is no line the agent
+    // fills.
+    ['an EXIT trap replaced after the releasing one', `${step}\n${main(['f() {', ...rel('TEXT_DIR').map((l) => `  ${l}`), '}', 'trap f EXIT', write, "trap 'other' EXIT"])}`, /the EXIT trap that runs f\(\) \(line \d+\) is replaced at line \d+/, { ...group, directories: [{ ...group.directories[0], release: { block: 'main', at: 'exit' }, paths: { 'any exit': 'release' } }] }],
+    ['a release site found twice', `${step}\n${main([write, ...rel('TEXT_DIR'), ...rel('TEXT_DIR')])}`, /the releasing step main:TEXT_DIR:end is found 2 times/],
+    ['an EXIT trap replaced by signal 0', `${step}\n${main(['f() {', ...rel('TEXT_DIR').map((l) => `  ${l}`), '}', 'trap f EXIT', write, 'trap : 0'])}`, /the EXIT trap that runs f\(\) \(line \d+\) is replaced at line \d+/, { ...group, directories: [{ ...group.directories[0], release: { block: 'main', at: 'exit' }, paths: { 'any exit': 'release' } }] }],
+    ['a releasing trap registered only inside a function', `${step}\n${main(['f() {', ...rel('TEXT_DIR').map((l) => `  ${l}`), '}', 'g() {', 'trap f EXIT', '}', write])}`, /which no EXIT trap of the block runs/, { ...group, directories: [{ ...group.directories[0], release: { block: 'main', at: 'exit' }, paths: { 'any exit': 'release' } }] }],
+    ['a head line after the root line', `${step}\n${['```bash', 'CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"', "TEXT_DIR='<directory from step 1>'", write, ...rel('TEXT_DIR'), '```'].join('\n')}`, /given TEXT_DIR, which is neither a line at the head of the block/],
   ];
+  // A case arm's `fi;;` closes its if: a release after the case is not inside it.
+  const armed = `${step}\n${main([write, 'case "$V" in', '  a) ;;', '  b)', '    if [ -n "$W" ]; then', '      exit 1', '    fi;;', 'esac', ...rel('TEXT_DIR')])}`;
+  deepStrictEqual(tmpdirProblems(armed, group, { snippets: SNIPPETS, label: 'x' }), []);
+  // `trap -p EXIT` prints the trap and replaces nothing.
+  const printed = `${step}\n${main(['f() {', ...rel('TEXT_DIR').map((l) => `  ${l}`), '}', 'trap f EXIT', write, 'trap -p EXIT'])}`;
+  deepStrictEqual(tmpdirProblems(printed, group, { snippets: SNIPPETS, label: 'x' }).filter((p) => /is replaced/.test(p)), []);
   for (const [what, text, re, g = group] of cases) {
     const problems = tmpdirProblems(text, g, { snippets: SNIPPETS, label: 'x' });
     ok(problems.some((p) => re.test(p)), `${what}: ${JSON.stringify(problems)}`);
