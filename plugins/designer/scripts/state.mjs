@@ -5471,11 +5471,15 @@ export async function autopilotPreflight({
       `Clearing it by hand once it is resolved, with the next step the owner chose ` +
       `and its action, which replaces the gate's (PC3b); write the owner's decision ` +
       `and the next step's action each to a file with your file-writing tool, never ` +
-      `on the command line (ADR-0059 amendment (j)): ` +
+      `on the command line (ADR-0059 amendment (j)), in a private directory made ` +
+      `with node "${scriptPath}" tmpdir-make --kind text (ADR-0059 Decision 9): ` +
       `node "${scriptPath}" awaiting-owner-clear --workflow-path "${workflowPath}" ` +
       `--host ${host} --gate ${gate.gate} --next-step-kind <verb|commit|done> ` +
       `--next-step-confidence HIGH [--next-step-verb <verb>] --resolution-file <decision file> ` +
-      `--next-action-file <action file>\n`,
+      `--next-action-file <action file>\n` +
+      `Once the clear succeeded, nothing reads the two files again: release their ` +
+      `directory with the release block of ${join(dirname(dirname(scriptPath)), 'core', 'skills', '_shared', 'references', 'entry-routing-contract.md')} ` +
+      `§ Owner gates, never by hand (ADR-0059 Decision 10); a clear that refused keeps it for the retry.\n`,
     stderr,
   };
 }

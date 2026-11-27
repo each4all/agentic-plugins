@@ -170,8 +170,16 @@ screenshot or image is included; do not request or assume one.
 
 Then write that prompt as a file, never through the shell (ADR-0059,
 amendment of 2026-10-10): create a private directory with
-`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"` and note the path it
-prints; with your file-writing tool write the Frame XML prompt there as
+`node "<plugin-root>/scripts/state.mjs" tmpdir-make --kind text`, which makes
+and marks it (ADR-0059 Decision 9), and note the path it prints. Under
+`/designer:frame`, give the directory to its finalize as its
+`DISPATCH_TEXT_DIR`, and inside a `start` lifecycle to the attempt release
+block that runs after the phase's settle, as its `DISPATCH_TEXT_DIR`: each
+releases it once the attempt is settled. Where neither follows (the dispatch stopped with no active workflow,
+or this skill ran on its own, as `$designer:frame` on Codex does), Step 4's
+release block releases it once the synthesis has read the run's result
+(Decision 10).
+With your file-writing tool write the Frame XML prompt there as
 `prompt.xml` (the privacy gate must have passed; no screenshot bytes); then
 run the dispatch, in the foreground of a host background task, never behind a
 shell `&`. Fill `<plugin-root>` with this plugin's installed root, on either
@@ -182,7 +190,7 @@ for it: on Codex either would run another copy's `state.mjs` and
 `peer-runner.mjs`.
 
 ```bash
-TEXT_DIR='<the directory mktemp printed>'
+TEXT_DIR='<the directory the make printed>'
 # A fresh shell: the workflow is found again here, never carried from an
 # earlier block.
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
@@ -226,6 +234,43 @@ After both sides return:
 4. CONFLICT fields → present both interpretations; the framing conflict
    itself is often the most informative output — it surfaces hidden
    assumptions about the user, the task, or the success metric.
+
+<!-- pipeline:begin frame-dispatch-release -->
+Then, once the synthesis has read the run's result (the run ledger keeps the
+peer's answer, at the result's `stdout_path`), or its `prompt.xml.err` when
+no run launched, release the dispatch's
+directory with this block where nothing else does, a run launched or not: the
+dispatch stopped with no active workflow, or this skill ran on its own (as
+`$designer:frame` on Codex does). Under `/designer:frame` its finalize
+releases the directory (its `DISPATCH_TEXT_DIR`), and inside a `start`
+lifecycle the attempt release block after the phase's settle does: skip this
+block there (ADR-0059 Decision 10).
+
+```bash
+DISPATCH_TEXT_DIR='<the directory the make printed>'
+case "$DISPATCH_TEXT_DIR" in
+  ''|'<'*) echo "✗ DISPATCH_TEXT_DIR is empty or not filled in; nothing was released." >&2; exit 1 ;;
+esac
+# ADR-0059 Decision 10, item 1 — the synthesis has read the run's result: no
+# block, rerun or continuation reads the directory again.
+RELEASE_PATH="$DISPATCH_TEXT_DIR"
+# ADR-0059 Decision 10, item 4: release RELEASE_PATH (nothing when it is
+# empty), cleanup only. On standard error the CLI's own line, or one of these
+# when its result cannot be read; the block's standard output and exit status
+# stay what its own work set, errexit or not.
+if [ -n "${RELEASE_PATH:-}" ]; then
+  if grep -q -e "'tmpdir-release'" "<plugin-root>/scripts/state.mjs" 2>/dev/null; then
+    RELEASE_REPORT="$(node "<plugin-root>/scripts/state.mjs" tmpdir-release --path "$RELEASE_PATH")" || :
+    node -e 'let r=null;try{r=JSON.parse(process.argv[1])}catch{}process.exit(r!==null&&typeof r==="object"&&typeof r.outcome==="string"?0:1)' "$RELEASE_REPORT" 2>/dev/null \
+      || echo "agentic-dir release: the result is unknown; the directory may remain at $RELEASE_PATH or at its .removing- path" >&2
+  elif [ -r "<plugin-root>/scripts/state.mjs" ]; then
+    echo "agentic-dir release: no tmpdir-release in this state.mjs; the directory is kept at $RELEASE_PATH" >&2
+  else
+    echo "agentic-dir release: the result is unknown (cannot read <plugin-root>/scripts/state.mjs); the directory may remain at $RELEASE_PATH" >&2
+  fi
+fi
+```
+<!-- pipeline:end frame-dispatch-release -->
 
 ### Step 5: Present
 
