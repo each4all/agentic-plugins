@@ -91,13 +91,58 @@ the block:
 1. Create a private directory for it, and note the path it prints:
 
    ```bash
-   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   # Step 1: a private text directory, marked so that the step that reads it
+   # last releases it (ADR-0059 Decisions 9 and 10).
+   ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+   CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+   [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+   MAKE_KIND='text'
+   MAKE_PARENT=''
+   # ADR-0059 Decision 9: make and mark the directory MAKE_KIND names (text or
+   # op; MAKE_PARENT, when set, for an op nested in it); its path is MADE_DIR.
+   # The fallbacks of Decision 10, item 4 make it the old way: an older
+   # state.mjs, lacking tmpdir-make, and a platform where the make is unsupported
+   # with mktemp -d, a nested op in a parent made the old way with mkdir. A fallback's path is
+   # checked for what a single-quoted shell literal cannot carry, as the make
+   # checks its own. Each status is read in a condition, so errexit changes
+   # nothing here.
+   MADE_DIR=''
+   if grep -q -e "'tmpdir-make'" "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" 2>/dev/null; then
+     if [ -n "${MAKE_PARENT:-}" ]; then
+       MADE_DIR="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-make --kind op --parent "$MAKE_PARENT")" && MAKE_RC=0 || MAKE_RC=$?
+     else
+       MADE_DIR="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-make --kind "$MAKE_KIND")" && MAKE_RC=0 || MAKE_RC=$?
+     fi
+   elif [ -r "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ]; then
+     MAKE_RC=old
+   else
+     echo "✗ Cannot read $CLAUDE_PLUGIN_ROOT/scripts/state.mjs; no directory was made." >&2
+     exit 1
+   fi
+   case "$MAKE_RC" in
+     0) ;;
+     3|4|old)
+       if [ -n "${MAKE_PARENT:-}" ]; then
+         MADE_DIR="$MAKE_PARENT/op"
+         mkdir -m 700 "$MADE_DIR" || { echo "✗ $MADE_DIR already holds an operation directory, or cannot be made: run from a fresh directory. No directory was made." >&2; exit 1; }
+       else
+         MADE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-$MAKE_KIND.XXXXXX")" || exit 1
+         [ "$MAKE_RC" != 3 ] || echo "agentic-dir make: unsupported on this platform; $MADE_DIR was made with mktemp -d and will not be released" >&2
+       fi
+       node -e 'process.exit(/[\x00-\x1f\x7f\x27]/.test(process.argv[1])?1:0)' "$MADE_DIR" \
+         || { echo "✗ The directory made holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one." >&2; exit 1; }
+       ;;
+     5) echo "✗ TMPDIR (${TMPDIR:-/tmp}) holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one. No directory was made." >&2; exit 1 ;;
+     *) exit 1 ;;
+   esac
+   [ -n "$MADE_DIR" ] || { echo "✗ The make printed no directory; nothing can be written." >&2; exit 1; }
+   printf '%s\n' "$MADE_DIR"
    ```
 
 2. With your file-writing tool, not the shell, write the prompt there as
    `prompt.xml`: the `--prompt-text`, or the text of the `--prompt-file`,
    which you read with your file-reading tool. Write it as given, or as the
-   privacy gate leaves it where the runbook has one. Nothing deletes it.
+   privacy gate leaves it where the runbook has one.
 
 The runner sends the prompt as written, opened by the evidence boundary
 when it does not already open with it (C163 D2a;
@@ -110,7 +155,9 @@ Then run the block with `TEXT_DIR` set to that directory and `PEER` to the
 dispatch. Keep the directory: the block writes the run id there before it
 dispatches, `prompt.xml.run-id`, and the runner its result,
 `prompt.xml.run.json`, and its stderr, `prompt.xml.err`; the `[Peer]` note
-step reads the run from the result.
+step reads the run from the result, and releases the directory once the note
+is written, or, standalone, once the response is printed (ADR-0059 Decision
+10). A failed consultation keeps it: `prompt.xml.err` says why.
 The block also keeps there the workflow the consultation is for,
 `prompt.xml.workflow` (empty for none), to which alone the note step appends,
 and, on a macro's child, the consultation's operation directory, `op`
@@ -155,10 +202,51 @@ ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "
 printf '%s\n' "$ACTIVE" > "$TEXT_DIR/prompt.xml.workflow" || { echo "✗ Could not record the consultation's workflow in TEXT_DIR ($TEXT_DIR); nothing was dispatched." >&2; exit 1; }
 OP_DIR=''
 if [ -n "$ACTIVE" ] && node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" hold-capability >/dev/null 2>&1; then
-  OP_DIR="$TEXT_DIR/op"
   # A fresh directory for each consultation: run again from this one, the
-  # block would launch a second run under the first one's operation.
-  mkdir -m 700 "$OP_DIR" || { echo "✗ TEXT_DIR ($TEXT_DIR) already holds a consultation's operation directory, or op cannot be made there: dispatch each consultation from a fresh directory. Nothing was dispatched." >&2; exit 1; }
+  # block would launch a second run under the first one's operation, so the
+  # make refuses a TEXT_DIR that holds op already. Made and marked inside it
+  # (ADR-0059 Decision 9), it goes with TEXT_DIR's release.
+  MAKE_KIND='op'
+  MAKE_PARENT="$TEXT_DIR"
+  # ADR-0059 Decision 9: make and mark the directory MAKE_KIND names (text or
+  # op; MAKE_PARENT, when set, for an op nested in it); its path is MADE_DIR.
+  # The fallbacks of Decision 10, item 4 make it the old way: an older
+  # state.mjs, lacking tmpdir-make, and a platform where the make is unsupported
+  # with mktemp -d, a nested op in a parent made the old way with mkdir. A fallback's path is
+  # checked for what a single-quoted shell literal cannot carry, as the make
+  # checks its own. Each status is read in a condition, so errexit changes
+  # nothing here.
+  MADE_DIR=''
+  if grep -q -e "'tmpdir-make'" "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" 2>/dev/null; then
+    if [ -n "${MAKE_PARENT:-}" ]; then
+      MADE_DIR="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-make --kind op --parent "$MAKE_PARENT")" && MAKE_RC=0 || MAKE_RC=$?
+    else
+      MADE_DIR="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-make --kind "$MAKE_KIND")" && MAKE_RC=0 || MAKE_RC=$?
+    fi
+  elif [ -r "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ]; then
+    MAKE_RC=old
+  else
+    echo "✗ Cannot read $CLAUDE_PLUGIN_ROOT/scripts/state.mjs; no directory was made." >&2
+    exit 1
+  fi
+  case "$MAKE_RC" in
+    0) ;;
+    3|4|old)
+      if [ -n "${MAKE_PARENT:-}" ]; then
+        MADE_DIR="$MAKE_PARENT/op"
+        mkdir -m 700 "$MADE_DIR" || { echo "✗ $MADE_DIR already holds an operation directory, or cannot be made: run from a fresh directory. No directory was made." >&2; exit 1; }
+      else
+        MADE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-$MAKE_KIND.XXXXXX")" || exit 1
+        [ "$MAKE_RC" != 3 ] || echo "agentic-dir make: unsupported on this platform; $MADE_DIR was made with mktemp -d and will not be released" >&2
+      fi
+      node -e 'process.exit(/[\x00-\x1f\x7f\x27]/.test(process.argv[1])?1:0)' "$MADE_DIR" \
+        || { echo "✗ The directory made holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one." >&2; exit 1; }
+      ;;
+    5) echo "✗ TMPDIR (${TMPDIR:-/tmp}) holds a quote or a control character, which a single-quoted shell literal cannot carry; set TMPDIR to a path without one. No directory was made." >&2; exit 1 ;;
+    *) exit 1 ;;
+  esac
+  [ -n "$MADE_DIR" ] || { echo "✗ The make printed no directory; nothing can be written." >&2; exit 1; }
+  OP_DIR="$MADE_DIR"
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" operation \
     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
     --operation-dir "$OP_DIR" --open-operation peer >/dev/null \
@@ -245,7 +333,8 @@ FIND_RC=$?
 Branch on the result:
 
 - **Exit 0, empty stdout** → no active workflow. Standalone case:
-  print the response from `$STDOUT_PATH` to stdout and skip the
+  run the standalone block below, which prints the response from
+  `$STDOUT_PATH` and releases the dispatch's directory, and skip the
   state mutation step.
 - **Exit 0, single path** → append a `[Peer]` label phase note to
   that workflow's body with the block below. Do NOT pass
@@ -314,7 +403,60 @@ prompt-mode: verbatim
 ### Response
 
 $(head -c 4000 "$STDOUT_PATH")" \
-  --event updated
+  --event updated || exit $?
+# The whole response stays in the run ledger, where this path names it.
+printf 'response: %s\n' "$STDOUT_PATH"
+# ADR-0059 Decision 10, item 1 — the note is the consultation's last write:
+# no block, rerun or continuation reads the dispatch's directory again.
+RELEASE_PATH="$DISPATCH_DIR"
+# ADR-0059 Decision 10, item 4: release RELEASE_PATH (nothing when it is
+# empty), cleanup only. On standard error the CLI's own line, or one of these
+# when its result cannot be read; the block's standard output and exit status
+# stay what its own work set, errexit or not.
+if [ -n "${RELEASE_PATH:-}" ]; then
+  if grep -q -e "'tmpdir-release'" "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" 2>/dev/null; then
+    RELEASE_REPORT="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-release --path "$RELEASE_PATH")" || :
+    node -e 'let r=null;try{r=JSON.parse(process.argv[1])}catch{}process.exit(r!==null&&typeof r==="object"&&typeof r.outcome==="string"?0:1)' "$RELEASE_REPORT" 2>/dev/null \
+      || echo "agentic-dir release: the result is unknown; the directory may remain at $RELEASE_PATH or at its .removing- path" >&2
+  elif [ -r "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ]; then
+    echo "agentic-dir release: no tmpdir-release in this state.mjs; the directory is kept at $RELEASE_PATH" >&2
+  else
+    echo "agentic-dir release: the result is unknown (cannot read $CLAUDE_PLUGIN_ROOT/scripts/state.mjs); the directory may remain at $RELEASE_PATH" >&2
+  fi
+fi
+```
+
+With no active workflow (the standalone case), run this block instead, with
+the same `DISPATCH_DIR`: it prints the response of a run that succeeded, then
+releases the directory, which nothing reads again.
+
+```bash
+DISPATCH_DIR='<the directory the dispatch ran with>'
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+# The response of a run whose own result says it succeeded (ok true).
+STANDALONE_OUT="$(node -e 'let r;try{r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))}catch{process.exit(1)}if(r===null||typeof r!=="object"||r.ok!==true||typeof r.stdout_path!=="string"||r.stdout_path==="")process.exit(1);process.stdout.write(r.stdout_path)' "$DISPATCH_DIR/prompt.xml.run.json")" \
+  || { echo "✗ The run in DISPATCH_DIR ($DISPATCH_DIR) did not succeed, or its result is missing or unreadable (prompt.xml.err there says why); the directory is kept." >&2; exit 1; }
+cat "$STANDALONE_OUT" || exit 1
+# ADR-0059 Decision 10, item 1 — the response is printed: no block, rerun or
+# continuation reads the dispatch's directory again.
+RELEASE_PATH="$DISPATCH_DIR"
+# ADR-0059 Decision 10, item 4: release RELEASE_PATH (nothing when it is
+# empty), cleanup only. On standard error the CLI's own line, or one of these
+# when its result cannot be read; the block's standard output and exit status
+# stay what its own work set, errexit or not.
+if [ -n "${RELEASE_PATH:-}" ]; then
+  if grep -q -e "'tmpdir-release'" "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" 2>/dev/null; then
+    RELEASE_REPORT="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-release --path "$RELEASE_PATH")" || :
+    node -e 'let r=null;try{r=JSON.parse(process.argv[1])}catch{}process.exit(r!==null&&typeof r==="object"&&typeof r.outcome==="string"?0:1)' "$RELEASE_REPORT" 2>/dev/null \
+      || echo "agentic-dir release: the result is unknown; the directory may remain at $RELEASE_PATH or at its .removing- path" >&2
+  elif [ -r "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ]; then
+    echo "agentic-dir release: no tmpdir-release in this state.mjs; the directory is kept at $RELEASE_PATH" >&2
+  else
+    echo "agentic-dir release: the result is unknown (cannot read $CLAUDE_PLUGIN_ROOT/scripts/state.mjs); the directory may remain at $RELEASE_PATH" >&2
+  fi
+fi
 ```
 <!-- pipeline:end peer-now-note -->
 

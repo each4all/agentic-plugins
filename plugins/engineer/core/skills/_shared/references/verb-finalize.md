@@ -106,6 +106,18 @@ to every reader's rule before any write (strict UTF-8, no NUL byte, text left
 once blanks are trimmed), since the append reads the note only after settle
 has written.
 
+Once the last write succeeded, whatever form it took, the block releases its
+text directory and the dispatch's (`DISPATCH_TEXT_DIR`)
+(ADR-0059 Decision 10): no block, rerun or continuation reads them again, so
+nothing runs the block again then. A release that is refused or skipped prints
+one line naming the directory and where it was kept; it never asks for a step
+to be repeated. A stop before the last write keeps them, and the rerun above
+reads the same files.
+The operation directory goes with them: a last write given an operation
+directory that is missing writes nothing and says that it may have been
+released after that write already ran, in which case nothing is to be
+repeated.
+
 ## The verify form: a refused or changed request
 
 The block checks `verify-request.json` before its first write with the last
