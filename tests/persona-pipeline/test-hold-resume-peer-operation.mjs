@@ -249,7 +249,9 @@ function regionBlock(persona, dest, id) {
   // Contract: the region this file runs — gone, the case would run nothing.
   ok(begin >= 0 && end > begin, `${persona}/${dest} holds region ${id}`);
   const body = text.slice(begin, end);
-  const runnable = [...body.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]).filter((b) => !/^\s*mktemp -d /.test(b));
+  // The step's make, and the note region's standalone block (a run with no
+  // workflow), are not the block a case runs.
+  const runnable = [...body.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]).filter((b) => !/^\s*(?:mktemp -d |# Step 1: a private text directory)/.test(b) && !b.includes('STANDALONE_OUT='));
   strictEqual(runnable.length, 1, `${id}: one block to run`);
   return runnable[0];
 }
@@ -300,7 +302,10 @@ for (const shell of SHELLS) {
       "TEXT_DIR='<directory from step 1>'", `TEXT_DIR='${textDir}'`), "PEER='<claude|codex, from --peer>'", "PEER='codex'");
     const noteBlock = (textDir) => fill(regionBlock('engineer', 'commands/peer-now.md', 'peer-now-note'),
       "DISPATCH_DIR='<the directory the dispatch ran with>'", `DISPATCH_DIR='${textDir}'`);
-    const consult = (dir, root, rc = 0, textDir = tempDir('op-text-')) => {
+    // The dispatch's directory as the step makes it, marked (ADR-0059 Decision
+    // 9), inside a directory of the test's: the nested op is made in it.
+    const madeText = () => execFileSync('node', [personaInfo('engineer').path('scripts/state.mjs'), 'tmpdir-make', '--kind', 'text'], { encoding: 'utf8', env: { ...process.env, TMPDIR: tempDir('op-tmp-') } }).trim();
+    const consult = (dir, root, rc = 0, textDir = madeText()) => {
       writeFileSync(join(textDir, 'prompt.xml'), '<task>x</task>\n');
       const seen = join(textDir, 'seen.json');
       const r = runBlock(shell, dir, dispatchBlock(textDir), root, 'engineer', { STUB_OPS: opsDir(dir), STUB_SEEN: seen, STUB_RC: String(rc) });
@@ -319,7 +324,9 @@ for (const shell of SHELLS) {
       const n = runBlock(shell, dir, noteBlock(textDir), root, 'engineer');
       strictEqual(n.status, 0, n.stderr);
       const f = fm(engineer, filePath);
-      deepStrictEqual([f.persona_operations, records(dir), transport(join(textDir, 'op')).state], [undefined, [], 'closed']);
+      // The note closed the operation, then released the dispatch's directory
+      // with its op (ADR-0059 Decision 10): a release refuses an open one.
+      deepStrictEqual([f.persona_operations, records(dir), existsSync(textDir)], [undefined, [], false]);
       ok(readFileSync(filePath, 'utf8').includes('### [Peer] codex consultation'));
     }));
 
@@ -350,7 +357,8 @@ for (const shell of SHELLS) {
       strictEqual(first.r.status, 0, first.r.stderr);
       const again = consult(dir, root, 1, first.textDir);
       strictEqual(again.r.status, 1);
-      ok(again.r.stderr.includes('dispatch each consultation from a fresh directory'), again.r.stderr);
+      // The make refuses an op that is there already (ADR-0059 Decision 9).
+      ok(again.r.stderr.includes('agentic-dir make: exists'), again.r.stderr);
       const id = transport(join(first.textDir, 'op')).operation_id;
       deepStrictEqual([fm(engineer, filePath).persona_operations.ops.map((o) => o.id), records(dir)], [[id], [`${id}.json`]], 'the first one stays open');
     }));

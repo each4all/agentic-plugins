@@ -5,10 +5,19 @@ drift report and the marker (Phase 2b) read it from there. Before the block:
 1. Create the directory, and note the path it prints:
 
    ```bash
-   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   # Step 1: a private text directory, marked so that the step that reads it
+   # last releases it (ADR-0059 Decisions 9 and 10).
+   ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
+   CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+   [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/{{name}} -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+   MAKE_KIND='text'
+   MAKE_PARENT=''
+   {{> tmpdir-make}}
+   printf '%s\n' "$MADE_DIR"
    ```
 
-Then run the block with `READ_DIR` set to that directory. It prints the
+Then run the block with `READ_DIR` set to that directory; the marker
+(Phase 2b), its last reader, releases it. It prints the
 workflow, its baseline and the checkout's current state. It first empties
 `read.json`, so a run that stops (a failed lookup or read) leaves it empty,
 never an earlier read, and the drift report and the marker refuse it.

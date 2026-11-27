@@ -533,7 +533,9 @@ describe('the verb runbooks carry the operation directory (N4)', () => {
         ok(creates[0].includes('--operation-dir "$OP_DIR"'), creates[0]);
         ok(resumes[0].includes('--operation-dir "$OP_DIR" --open-operation verb'), resumes[0]);
         for (const l of finishes) ok(l.includes('--operation-dir "$OP_DIR"'), l);
-        strictEqual((text.match(/^OP_DIR="\$\(mktemp -d "\$\{TMPDIR:-\/tmp\}\/agentic-op\.XXXXXX"\)" \|\| exit 1$/gm) ?? []).length, 2, 'the bootstrap and the resume make it');
+        // Each with the make (ADR-0059 Decision 9), kept in OP_DIR.
+        strictEqual((text.match(/^MAKE_KIND='op'\nMAKE_PARENT=''\n# ADR-0059 Decision 9: make and mark the directory MAKE_KIND names/gm) ?? []).length, 2, 'the bootstrap and the resume make it');
+        strictEqual((text.match(/^OP_DIR="\$MADE_DIR"$/gm) ?? []).length, 2, 'and keep it');
         strictEqual((text.match(/^echo "OP_DIR=\$OP_DIR"$/gm) ?? []).length, 2, 'and print it');
         strictEqual((text.match(/^OP_DIR='<the operation directory the Phase 0 block printed as OP_DIR; empty when it printed none>'$/gm) ?? []).length, 1, 'the finalize takes it');
       });
@@ -567,11 +569,14 @@ describe('the gate resolution blocks carry the operation (N4)', () => {
         const finishes = lines.filter((l) => /state\.mjs" finish-verb /.test(l));
         ok(clears.length >= 1 && finishes.length >= 1, 'a clear and a finish-verb');
         for (const l of clears) ok(l.includes('"${OP_ARGS[@]}"'), l);
-        for (const l of finishes) ok(l.includes('--operation-dir "$OP_DIR"'), l);
-        // Each block opens one when the run passed none: a gate operation the
-        // finish-verb closes, and for refine's Fix now a verb operation its
-        // phases continue.
-        const opens = [...region.matchAll(/OP_ARGS=\(--operation-dir "\$OP_DIR" --open-operation ([a-z]+)\)/g)].map((m) => m[1]);
+        // The finish-verb closes the operation the clear wrote through: the one
+        // the block made (GATE_OP_DIR), or Phase 0's.
+        for (const l of finishes) ok(l.includes('--operation-dir "${GATE_OP_DIR:-$OP_DIR}"'), l);
+        // Each block opens one when the run passed none, in a directory of its
+        // own (ADR-0059 Decision 10: never Phase 0's line reassigned): a gate
+        // operation the finish-verb closes, and for refine's Fix now a verb
+        // operation its phases continue.
+        const opens = [...region.matchAll(/OP_ARGS=\(--operation-dir "\$(?:GATE|FIX)_OP_DIR" --open-operation ([a-z]+)\)/g)].map((m) => m[1]);
         deepStrictEqual(opens, verb === 'refine' ? ['verb', 'gate'] : ['gate']);
         // Inside a /start lifecycle no finish-verb follows: given Phase 0's
         // directory, each clear closes that operation.

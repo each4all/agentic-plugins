@@ -20,7 +20,15 @@ amendment of 2026-10-10). Before the block:
 1. Create a private directory for it, and note the path it prints:
 
    ```bash
-   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   # Step 1: a private text directory, marked so that the step that reads it
+   # last releases it (ADR-0059 Decisions 9 and 10).
+   ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
+   CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+   [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/{{name}} -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+   MAKE_KIND='text'
+   MAKE_PARENT=''
+   {{> tmpdir-make}}
+   printf '%s\n' "$MADE_DIR"
    ```
 
 2. With your file-writing tool, not the shell, create `next-action.txt` in
@@ -32,7 +40,8 @@ amendment of 2026-10-10). Before the block:
    {{next_action}}
    ```
 
-   Nothing deletes the file.
+   The block releases the directory once its last write succeeded; a block
+   that stops keeps it for its rerun.
 
 Then run the block with `TEXT_DIR` set to that directory; a next action left
 unwritten stops it before any write.
@@ -89,6 +98,10 @@ else
     --clear-terminal-marker true --event updated || exit $?
   echo "→ PAUSED (not converged): the workflow stays open, not terminal. Resolve the flagged item, then run the next step recorded above." >&2
 fi
+# ADR-0059 Decision 10, item 1 — the last write succeeded: no block, rerun or
+# continuation reads the directory again.
+RELEASE_PATH="$TEXT_DIR"
+{{> tmpdir-release}}
 ```
 
 The runtime completion footer is **code-emitted** on this terminal write

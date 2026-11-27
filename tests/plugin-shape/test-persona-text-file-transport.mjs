@@ -190,14 +190,15 @@ const FILE_FLAGS = ['--phase-note-file', '--summary-file', '--next-action-file',
 // The variables the retired forms carried agent text in.
 const TEXT_VARS = /^(NOTE|SUMMARY|RESOLUTION|OWNER_RESOLUTION|APPROVED_SUBJECT|SUBJECT|PROMPT_ARG|PROMPT_TEXT|REQUEST)=/;
 // The variables a block may have the agent fill from a placeholder: the
-// directories it created with mktemp (a dispatch's DISPATCH_DIR, a
-// resume's READ_DIR, R4, and a Phase 0's OP_DIR, ADR-0068 Decision 2), enums it validated (a finalize's VERDICT,
+// directories it created with mktemp or the make (a dispatch's DISPATCH_DIR,
+// and its text directory a finalize releases, DISPATCH_TEXT_DIR, ADR-0059
+// Decision 10; a resume's READ_DIR, R4; a Phase 0's OP_DIR, ADR-0068 Decision 2), enums it validated (a finalize's VERDICT,
 // and its CONFIDENCE and RESOLVE_VERB, each checked by a `case` before any
 // write, R4 K3; the refine pass settle's HOST, claude or codex, checked the
 // same way, C163 A1a), and a workflow path a
 // program printed. The user's `archive <workflow-id>` reaches
 // resolve-workflow as a file in TEXT_DIR (C134(a)), never as a variable.
-const PLACEHOLDER_VARS = new Set(['TEXT_DIR', 'ARGS_DIR', 'DISPATCH_DIR', 'OP_DIR', 'READ_DIR', 'VERDICT', 'CONFIDENCE', 'RESOLVE_VERB', 'PEER', 'CONVERGED', 'AGENTIC_DESIGNER_PROFILE', 'WORKFLOW', 'HOST']);
+const PLACEHOLDER_VARS = new Set(['TEXT_DIR', 'ARGS_DIR', 'DISPATCH_DIR', 'DISPATCH_TEXT_DIR', 'OP_DIR', 'READ_DIR', 'VERDICT', 'CONFIDENCE', 'RESOLVE_VERB', 'PEER', 'CONVERGED', 'AGENTIC_DESIGNER_PROFILE', 'WORKFLOW', 'HOST']);
 
 // The inline values a block may give a free-text flag: fixed literals, an
 // enum placeholder (the profile), the expansion of a literal assigned in the
@@ -237,8 +238,14 @@ const ALLOWED = new Set(ALLOWED_INLINE.map(([f, v]) => allowedKey(f, v)));
 
 // A free-text flag followed, in prose, by a placeholder or quoted text.
 const PROSE_TEXT_FLAG = new RegExp(`(?<![\\w-])(${TEXT_FLAGS.filter((f) => f !== '--prompt-text').join('|')})(?![\\w-])(?:=|\\s+)(?:["'][^"'\\n]*["']|<[^>\\n]*>)`, 'g');
-// The private-directory step and the TEXT_DIR line a reading block opens with.
+// The private-directory step and the TEXT_DIR line a reading block opens with:
+// the make of a marked text directory (ADR-0059 Decision 9, the persona
+// plugins), or the mktemp step it replaced (the orchestrator, until it switches).
 const MKTEMP_STEP = 'mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"';
+// A template holds the make as its include, a rendered file the snippet's text.
+const MAKE_FORMS = ['tmpdir-make --kind "$MAKE_KIND"', '{{> tmpdir-make}}', '{{> tmpdir-make-skill}}'];
+// A skill's prose may name the CLI's make itself.
+const hasStep = (section) => section.includes(MKTEMP_STEP) || section.includes('tmpdir-make --kind text') || (section.includes("MAKE_KIND='text'") && MAKE_FORMS.some((s) => section.includes(s)));
 const TEXT_DIR_LINE = /^TEXT_DIR='<[^'>]+>'$/;
 
 /** The offset of the last Markdown heading outside a fence (a shell comment is none), or 0. */
@@ -314,7 +321,7 @@ function violations(kind, label, text) {
       // none of its own: the whole template is the section).
       const preceding = text.slice(0, text.indexOf(block.text));
       const section = preceding.slice(lastHeading(preceding)).replace(/\s+/g, ' ');
-      if (!section.includes(MKTEMP_STEP) || !/with (?:your|its|the) file-writing tool/i.test(section)) out.push(`${label}:${block.start}: R3 no mktemp step or file-writing step in the block's section`);
+      if (!hasStep(section) || !/with (?:your|its|the) file-writing tool/i.test(section)) out.push(`${label}:${block.start}: R3 no mktemp step or file-writing step in the block's section`);
       for (const name of reads.filter((n) => n !== '$TEXT_FILE' && !section.includes(`\`${n}\``))) out.push(`${label}:${block.start}: R3 the section never names ${name}, which the block reads`);
     }
   }
@@ -374,7 +381,7 @@ describe('persona text-file transport (C130, ADR-0059 amendment of 2026-10-10)',
       planted('plugins/engineer/commands/compose.md', '--next-action "Run ${VERB} skill" --event resumed', '--next-action "Run ${VERB} skill now" --event resumed', 'R1 inline text — --next-action "Run ${VERB} skill now"');
     });
     it('skills: a Codex block with a placeholder subject, a prompt spliced unquoted', () => {
-      planted('plugins/engineer/core/skills/commit/SKILL.md', '  --suggested-subjects\n', "  --subject '<confirmed subject>'\n", "R1 inline text — --subject '<confirmed subject>'");
+      planted('plugins/engineer/core/skills/commit/SKILL.md', '  --suggested-subjects || exit $?\n', "  --subject '<confirmed subject>' || exit $?\n", "R1 inline text — --subject '<confirmed subject>'");
       planted('plugins/founder/core/skills/peer-now/SKILL.md', '--prompt-file "$PROMPT_FILE" --output-format text', '$PROMPT_ARG --output-format text', 'R1 unquoted prompt argument — $PROMPT_ARG');
     });
     it('skills and commands: a placeholder the shell writes to the file, a dispatch whose section lost its steps', () => {

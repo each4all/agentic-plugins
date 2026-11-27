@@ -5,7 +5,15 @@ would be read as code (ADR-0059, amendment of 2026-10-10). Before the block:
 1. Create a private directory for it, and note the path it prints:
 
    ```bash
-   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   # Step 1: a private text directory, marked so that the step that reads it
+   # last releases it (ADR-0059 Decisions 9 and 10).
+   ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
+   CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+   [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/{{name}} -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+   MAKE_KIND='text'
+   MAKE_PARENT=''
+   {{> tmpdir-make}}
+   printf '%s\n' "$MADE_DIR"
    ```
 
 2. With your file-writing tool, not the shell, create `note.md` in that
@@ -20,7 +28,9 @@ one Phase 2's read used: it reads the baseline from the `read.json` there.
 Over an invalid baseline it appends nothing, and needs no note; otherwise a
 note left unwritten stops it before the write. A `read.json` missing or
 unreadable, or the read of another workflow than the one the block finds,
-stops it too: run Phase 2 again. Nothing deletes the files.
+stops it too: run Phase 2 again. Once the block ends without an error, with
+or without the marker, it releases both directories (ADR-0059 Decision 10):
+no later step reads them; a block that stops keeps them for its rerun.
 
 ```bash
 TEXT_DIR='<directory from step 1>'
@@ -57,6 +67,11 @@ else
     --once-operation resume \
 {{/capability}}
     --phase-label "Resume" --phase-note-file "$TEXT_DIR/note.md" \
-    --event resumed
+    --event resumed || exit $?
 fi
+# ADR-0059 Decision 10, item 1 — the marker is written, or skipped over an
+# invalid baseline: no block, rerun or continuation reads either directory.
+for RELEASE_PATH in "$TEXT_DIR" "$READ_DIR"; do
+  {{> tmpdir-release}}
+done
 ```

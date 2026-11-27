@@ -1050,8 +1050,8 @@ describe('plugins/designer — the frame skill dispatch block runs <plugin-root>
     }
     ok(!/AGENTIC_[A-Z_]*_ROOT/.test(found[0]), 'the frame dispatch block must not read an AGENTIC_*_ROOT override');
     ok(found[0].includes('ACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active') && found[0].includes('node "<plugin-root>/scripts/peer-runner.mjs" run \\'), 'both calls run <plugin-root>/scripts');
-    ok(found[0].startsWith("TEXT_DIR='<the directory mktemp printed>'\n"), 'the block names the prompt directory first');
-    const fill = (textDir) => found[0].replace("TEXT_DIR='<the directory mktemp printed>'", () => `TEXT_DIR='${textDir}'`).split('<plugin-root>').join(PLUGIN_ROOT);
+    ok(found[0].startsWith("TEXT_DIR='<the directory the make printed>'\n"), 'the block names the prompt directory first');
+    const fill = (textDir) => found[0].replace("TEXT_DIR='<the directory the make printed>'", () => `TEXT_DIR='${textDir}'`).split('<plugin-root>').join(PLUGIN_ROOT);
     for (const shell of SHELLS) {
       withRepo(({ textDir, marker, create, run }) => {
         create();

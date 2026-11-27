@@ -242,7 +242,9 @@ for (const persona of PERSONAS) {
           const f = runBlock(shell, dir, await finalize('compose', { opDir }));
           strictEqual(f.status, 0, f.stderr);
           const fm = (await readWorkflow(wf)).frontmatter;
-          deepStrictEqual([fm.persona_operations, fm.terminal_marker, existsSync(record)], [undefined, true, false]);
+          // The operation closed by the last write, the finalize released its
+          // directory (ADR-0059 Decision 10, item 1).
+          deepStrictEqual([fm.persona_operations, fm.terminal_marker, existsSync(record), existsSync(opDir)], [undefined, true, false, false]);
         });
       });
 
@@ -722,10 +724,13 @@ for (const persona of PERSONAS) {
           // peer findings 2 and 3), so the clear records no next step and
           // replaces the gate's "Owner: …" next action, and the lifecycle
           // makes its one terminal write.
+          // ADR-0059 Decision 10 — the recorded choice released its directory;
+          // the next resolution writes into a new one.
+          strictEqual(existsSync(/^TEXT_DIR='([^']*)'/.exec(block)[1]), false, 'the resolution directory is released');
           const sw = createWorkflow(dir, 'investigate', { type: 'start' });
           state('finish-verb', '--workflow-path', sw, '--host', 'claude', '--next-action', 'Owner: choose a direction', '--next-step-kind', 'owner-decision',
             '--next-step-confidence', 'MEDIUM', '--owner-gate', 'decide-conflict', '--owner-gate-anchor', 'ensemble-synthesis');
-          r = runBlock(shell, dir, block);
+          r = runBlock(shell, dir, await withTexts(raw, { 'resolution.txt': words }));
           strictEqual(r.status, 0, r.stderr);
           ok(r.stderr.includes(`Resume the lifecycle with /${persona}:start`), r.stderr);
           const s = (await readWorkflow(sw)).frontmatter;
@@ -745,13 +750,17 @@ for (const persona of PERSONAS) {
             return withTexts(block, { 'resolution.txt': words, ...files });
           };
           const [rawFix, rawDefer] = writing(section(docs.refine, '## Owner decision (recurring-finding)')).map(dedent).map(gateOpDir);
-          const fixNow = await owner(rawFix, 'Owner decision: fix the cache key now');
-          const deferWords = await owner(rawDefer, 'Owner decision: defer the cache key — tracked in C99');
+          // Each run takes a directory of its own: a resolution that succeeded
+          // released the one it read (ADR-0059 Decision 10).
+          const fixNowBlock = () => owner(rawFix, 'Owner decision: fix the cache key now');
           // A refine that closes only once it converged sets the convergence
           // in the Defer block; converged, the deferral ends the verb.
-          const defer = convergent('refine')
-            ? deferWords.replace(/CONVERGED="<yes\|no[^"\n]*>"/, 'CONVERGED="yes"')
-            : deferWords;
+          const deferBlock = async () => {
+            const deferWords = await owner(rawDefer, 'Owner decision: defer the cache key — tracked in C99');
+            return convergent('refine') ? deferWords.replace(/CONVERGED="<yes\|no[^"\n]*>"/, 'CONVERGED="yes"') : deferWords;
+          };
+          const fixNow = await fixNowBlock();
+          const defer = await deferBlock();
           // Contract: the Defer block's convergence step exists exactly where refine waits for it.
           ok(convergent('refine') === defer.includes('CONVERGED="yes"'), 'the convergence is set exactly where the verb waits for it');
           // The deferral's next action: the commit /<persona>:commit makes
@@ -766,6 +775,7 @@ for (const persona of PERSONAS) {
           gate(wf);
           let r = runBlock(shell, dir, fixNow);
           strictEqual(r.status, 0, r.stderr);
+          strictEqual(existsSync(/^TEXT_DIR='([^']*)'/.exec(fixNow)[1]), false, 'Fix now released the resolution directory');
           let fm = (await readWorkflow(wf)).frontmatter;
           deepStrictEqual([fm.awaiting_owner_gate, fm.next_step_kind, fm.next_step_verb, fm.next_action], [undefined, 'verb', 'refine', 'Fix the recurring finding in this refine, then re-critique']);
           gate(wf);
@@ -798,7 +808,7 @@ for (const persona of PERSONAS) {
           // gate and stops: the lifecycle makes its one terminal write (PC3 U7).
           const sw = createWorkflow(dir, 'investigate', { type: 'start' });
           gate(sw);
-          r = runBlock(shell, dir, defer);
+          r = runBlock(shell, dir, await deferBlock());
           strictEqual(r.status, 0, r.stderr);
           ok(r.stderr.includes(`Resume the lifecycle with /${persona}:start`), r.stderr);
           const s = (await readWorkflow(sw)).frontmatter;
@@ -812,7 +822,7 @@ for (const persona of PERSONAS) {
           archive(dir, sw);
           const sf = createWorkflow(dir, 'refine', { type: 'start' });
           gate(sf);
-          r = runBlock(shell, dir, fixNow);
+          r = runBlock(shell, dir, await fixNowBlock());
           strictEqual(r.status, 0, r.stderr);
           ok(r.stderr.includes(`Resume the lifecycle with /${persona}:start`), r.stderr);
           const sfm = (await readWorkflow(sf)).frontmatter;

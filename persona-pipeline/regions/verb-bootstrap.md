@@ -5,23 +5,32 @@ source a quote, `$`, backtick or line break of it would be read as code
 1. Create a private directory for it, and note the path it prints:
 
    ```bash
-   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   # Step 1: a private text directory, marked so that the step that reads it
+   # last releases it (ADR-0059 Decisions 9 and 10).
+   ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
+   CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+   [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/{{name}} -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+   MAKE_KIND='text'
+   MAKE_PARENT=''
+   {{> tmpdir-make}}
+   printf '%s\n' "$MADE_DIR"
    ```
 
 2. With your file-writing tool, not the shell, create `request.txt` in that
    directory holding a {{request_placeholder}}, ending with one newline.
-   Nothing deletes it.
 
 Then run the block with `TEXT_DIR` set to that directory; a request file left
-unwritten stops it before any write. When `AGENTIC_TOPIC` is set (a dispatched
-run), the block writes it to a file of its own and records that instead, and
-steps 1–2 are not needed.
+unwritten stops it before any write, and the directory is kept for the rerun.
+Once `create` has recorded the request, the block releases the directory. When
+`AGENTIC_TOPIC` is set (a dispatched run), the block writes it to a directory
+of its own, records that instead and releases it on each of its exits; steps
+1–2 are not needed, and the block releases no directory its `TEXT_DIR` names.
 
 {{#capability dispatch_target}}
 The block prints `OP_DIR=<path>`, this command's operation directory: when
 the workflow is a macro's child, its write opens the command's persona
 operation there (ADR-0068 Decision 2, item 7). Keep the path for the finalize
-block's `OP_DIR`.
+block's `OP_DIR`, which releases it after the operation's last write.
 
 {{/capability}}
 ```bash
@@ -61,18 +70,46 @@ elif [ -n "${AGENTIC_DISPATCH_SELECTION:-}" ]; then
   exit 1
 fi
 {{/capability}}
+# The directories this block makes for itself (ADR-0059 Decision 10, item
+# 1), released on each of its exits from the variables their makes printed
+# to: the topic directory always, and, when the block fails, the operation
+# directory, which every run makes afresh.
+TOPIC_DIR=''
+{{#capability dispatch_target}}
+unset OP_DIR
+{{/capability}}
+release_own() {
+  OWN_RC=$?
+  RELEASE_PATH="$TOPIC_DIR"
+  {{> tmpdir-release}}
+{{#capability dispatch_target}}
+  if [ "$OWN_RC" -ne 0 ]; then
+    RELEASE_PATH="$OP_DIR"
+    {{> tmpdir-release}}
+  fi
+{{/capability}}
+  return "$OWN_RC"
+}
+trap release_own EXIT
 # The request, as a file (ADR-0059, amendment of 2026-10-10): the one the
 # agent wrote, or the AGENTIC_TOPIC a dispatcher exports, written here to a
 # private directory of its own.
 REQUEST_FILE="$TEXT_DIR/request.txt"
 if [ -n "${AGENTIC_TOPIC:-}" ]; then
-  REQUEST_FILE="$(mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX")/topic.txt" || exit 1
+  MAKE_KIND='text'
+  MAKE_PARENT=''
+  {{> tmpdir-make}}
+  TOPIC_DIR="$MADE_DIR"
+  REQUEST_FILE="$TOPIC_DIR/topic.txt"
   printf '%s\n' "$AGENTIC_TOPIC" > "$REQUEST_FILE" || exit 1
 fi
 grep -q '[^[:space:]]' "$REQUEST_FILE" 2>/dev/null || { echo "✗ request.txt in TEXT_DIR ($TEXT_DIR) is missing or blank; write it with the file tool first. Nothing was written." >&2; exit 1; }
 {{#capability dispatch_target}}
 # ADR-0068 Decision 2, item 7 — this command's operation directory.
-OP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentic-op.XXXXXX")" || exit 1
+MAKE_KIND='op'
+MAKE_PARENT=''
+{{> tmpdir-make}}
+OP_DIR="$MADE_DIR"
 {{/capability}}
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
   --repo-root "$REPO_ROOT" \
@@ -90,4 +127,10 @@ ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
   "${PARENT_ARGS[@]}")" || exit $?
 echo "OP_DIR=$OP_DIR"
 {{/capability}}
+# ADR-0059 Decision 10, item 1 — the request is recorded, so the directory
+# the agent wrote it in has no reader left; a dispatched run read none.
+if [ -z "$TOPIC_DIR" ]; then
+  RELEASE_PATH="$TEXT_DIR"
+  {{> tmpdir-release}}
+fi
 ```

@@ -1,0 +1,1108 @@
+{
+  "schema": 1,
+  "about": "ADR-0059 Decision 10, items 1 to 3 and 8: each text or operation directory a persona region makes, the blocks that read it, and every path through the command, with the releasing step (release) or the reason it is kept (keep). tests/plugin-shape/test-runbook-cli-contracts.mjs holds the rendered regions to this list both ways (tmpdirProblems in tests/_runbook-checks.mjs). A block is named by a pattern of its text; a directory by the variable the releasing block gives the release. optional_consumers: consumers some runbooks lack (an authored block of one persona). instead_of: blocks that run in place of the releasing block, on another path of the command, never after it. guard: the if condition an end release runs under, when it has one. at: end (on the block's success path, after its last exit and its last other use of the variable), exit (on each of the block's exits, from its EXIT trap), exit-failed (on its failing exits only). authored: each persona file whose authored text (its region bodies aside) tells the agent to make a directory, and the step that releases it (region:<id>, a region the file renders, or the authored sentence); held both ways by the same test file.",
+  "pending": [],
+  "authored": [
+    {
+      "file": "plugins/designer/core/skills/critique/SKILL.md",
+      "released_by": "region:critique-review-settle"
+    },
+    {
+      "file": "plugins/designer/core/skills/frame/SKILL.md",
+      "released_by": "region:frame-dispatch-release"
+    },
+    {
+      "file": "plugins/designer/core/skills/refine/SKILL.md",
+      "released_by": "region:refine-review-settle"
+    }
+  ],
+  "groups": [
+    {
+      "templates": [
+        "regions/verb-bootstrap.md",
+        "regions/verb-bootstrap-profiled.md"
+      ],
+      "blocks": {
+        "bootstrap": "state\\.mjs\" create \\\\$"
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "made": "step",
+          "consumers": [
+            "bootstrap"
+          ],
+          "release": {
+            "block": "bootstrap",
+            "at": "end",
+            "guard": "if [ -z \"$TOPIC_DIR\" ]; then"
+          },
+          "paths": {
+            "create succeeded, the request read from this directory": "release",
+            "create succeeded under AGENTIC_TOPIC (no file read from it; the line may name another command's directory)": "keep: never this block's to release",
+            "request.txt missing or blank": "keep: the message directs writing it and running the block again",
+            "create, or a make before it, failed": "keep: the block's rerun reads request.txt"
+          }
+        },
+        {
+          "variable": "TOPIC_DIR",
+          "made": "bootstrap",
+          "consumers": [
+            "bootstrap"
+          ],
+          "release": {
+            "block": "bootstrap",
+            "at": "exit"
+          },
+          "paths": {
+            "any exit after the make": "release: every run makes it afresh, so no rerun reads it"
+          }
+        },
+        {
+          "variable": "OP_DIR",
+          "capability": "dispatch_target",
+          "made": "bootstrap",
+          "consumers": [
+            "bootstrap"
+          ],
+          "release": {
+            "block": "bootstrap",
+            "at": "exit-failed"
+          },
+          "paths": {
+            "the block fails after the make": "release: every run makes it afresh (an operation create opened is refused, and kept)",
+            "create succeeded": "keep: printed as OP_DIR, the finalize's OP_DIR line releases it after the operation's last write"
+          }
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/verb-resume.md",
+        "regions/verb-resume-profiled.md"
+      ],
+      "blocks": {
+        "resume": "--event resumed"
+      },
+      "directories": [
+        {
+          "variable": "OP_DIR",
+          "capability": "dispatch_target",
+          "made": "resume",
+          "consumers": [
+            "resume"
+          ],
+          "release": {
+            "block": "resume",
+            "at": "exit-failed"
+          },
+          "paths": {
+            "the block fails after the make": "release: every run makes it afresh (an operation append opened is refused, and kept)",
+            "append succeeded": "keep: printed as OP_DIR, the finalize's OP_DIR line releases it after the operation's last write"
+          }
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/verb-dispatch.md"
+      ],
+      "blocks": {
+        "dispatch": "peer-runner\\.mjs\" run \\\\$"
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "made": "step",
+          "consumers": [
+            "dispatch"
+          ],
+          "paths": {
+            "the dispatch ran, a run launched or not": "keep: the agent reads prompt.xml.err and the run's result there, and the finalize reads prompt.xml.run.json; its DISPATCH_TEXT_DIR line releases it",
+            "prompt.xml missing or blank, or no run id allocated": "keep: the message directs writing it and running the block again",
+            "an earlier pass of a multi-pass refine, settled by its pass-settle block": "keep: the refine skill's pass-settle block (skill-refine-pass-settle.md) is the last reader of that pass's dispatch directory and releases it; the finalize sees only the last pass's"
+          }
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/verb-finalize.md",
+        "regions/verb-finalize-convergent.md",
+        "regions/verb-finalize-consensus.md"
+      ],
+      "blocks": {
+        "finalize": "peer-runner\\.mjs\" settle \\\\$",
+        "dispatch": "peer-runner\\.mjs\" run \\\\$"
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "made": "step",
+          "consumers": [
+            "finalize"
+          ],
+          "release": {
+            "block": "finalize",
+            "at": "end"
+          },
+          "paths": {
+            "the last write succeeded (verb, verify, commit or done, owner-decision, or not converged)": "release",
+            "a check before settle stops the block": "keep: the message directs fixing a value or file and running the block again",
+            "settle, the append or the last write fails": "keep: the rerun reads finalize-run.json and finalize-verify.json there"
+          }
+        },
+        {
+          "variable": "DISPATCH_TEXT_DIR",
+          "made": "elsewhere",
+          "consumers": [
+            "dispatch",
+            "finalize"
+          ],
+          "release": {
+            "block": "finalize",
+            "at": "end"
+          },
+          "paths": {
+            "the last write succeeded": "release: the dispatch's text directory, a run launched or not; never a run's ledger directory",
+            "the block stops before its last write": "keep: the rerun reads prompt.xml.run.json there"
+          }
+        },
+        {
+          "variable": "OP_DIR",
+          "capability": "dispatch_target",
+          "made": "elsewhere",
+          "consumers": [
+            "finalize"
+          ],
+          "release": {
+            "block": "finalize",
+            "at": "end"
+          },
+          "paths": {
+            "the last write succeeded and closed the operation": "release",
+            "the block stops before its last write": "keep: the rerun's last write reads it (a closing write given a missing directory refuses, ADR-0059 Decision 10, item 5)"
+          }
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/checkpoint-set.md",
+        "regions/skill-checkpoint-set.md"
+      ],
+      "blocks": {
+        "checkpoint": "state\\.mjs\" checkpoint-set \\\\$"
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "made": "step",
+          "consumers": [
+            "checkpoint"
+          ],
+          "release": {
+            "block": "checkpoint",
+            "at": "end"
+          },
+          "paths": {
+            "the checkpoint is written": "release",
+            "summary.txt missing or blank": "keep: the message directs writing it and running the block again",
+            "find-active or the write fails": "keep: the block's rerun reads summary.txt"
+          }
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/resume-read.md"
+      ],
+      "blocks": {
+        "read": "state\\.mjs\" read --workflow-path"
+      },
+      "directories": [
+        {
+          "variable": "READ_DIR",
+          "made": "step",
+          "consumers": [
+            "read"
+          ],
+          "paths": {
+            "the read lands in read.json": "keep: the drift report and the marker (Phase 2b) read read.json; the marker releases the directory",
+            "the read, or the lookup before it, fails": "keep: the message directs running the read again in it",
+            "the owner stops after the drift report (no marker)": "keep: an abandoned path; the owner lists it (tmpdir-list)"
+          }
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/resume-marker.md"
+      ],
+      "blocks": {
+        "read": "state\\.mjs\" read --workflow-path",
+        "drift": "Determine drift classification",
+        "marker": "--event resumed"
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "made": "step",
+          "consumers": [
+            "marker"
+          ],
+          "release": {
+            "block": "marker",
+            "at": "end"
+          },
+          "paths": {
+            "the marker is written": "release",
+            "the baseline is invalid, so no marker is written (exit 0)": "release: the skip is the block's success; nothing reads note.md",
+            "note.md missing or blank": "keep: the message directs writing it and running the block again",
+            "read.json missing, unreadable or another workflow's, or the append fails": "keep: the block's rerun reads note.md"
+          }
+        },
+        {
+          "variable": "READ_DIR",
+          "made": "elsewhere",
+          "consumers": [
+            "read",
+            "drift",
+            "marker"
+          ],
+          "optional_consumers": [
+            "drift"
+          ],
+          "release": {
+            "block": "marker",
+            "at": "end"
+          },
+          "paths": {
+            "the marker is written, or skipped over an invalid baseline": "release: the marker is read.json's last reader",
+            "the block stops before its end": "keep: its rerun, or Phase 2's read again, uses it"
+          }
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/resume-archive-resolve.md",
+        "regions/skill-resume-archive-resolve.md"
+      ],
+      "blocks": {
+        "resolve": "resolve-workflow --repo-root"
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "made": "step",
+          "consumers": [
+            "resolve"
+          ],
+          "release": {
+            "block": "resolve",
+            "at": "end"
+          },
+          "paths": {
+            "the workflow is printed": "release: the printed path is all the archive step reads",
+            "the id names no single workflow file, or the lookup fails": "keep: the message stops the archive; a rerun reads workflow-id.txt"
+          }
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/commit-execute.md",
+        "regions/skill-commit-execute.md"
+      ],
+      "blocks": {
+        "execute": "phase7-commit\\.mjs\" --mode execute"
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "made": "step",
+          "consumers": [
+            "execute"
+          ],
+          "release": {
+            "block": "execute",
+            "at": "end"
+          },
+          "paths": {
+            "the driver succeeded (the commits landed, or a recovery)": "release: nothing reads the subjects again",
+            "every suggestion was accepted (TEXT_DIR empty, no directory made)": "release: nothing to release",
+            "TEXT_DIR left unfilled, or find-active fails": "keep: the message directs setting it and running the block again",
+            "the driver refuses or fails (a subject or body refused, a failed gate, a split halfway, a refused archive)": "keep: the rerun of /commit resumes from what landed and reads the files again"
+          }
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/commit-autopilot.md"
+      ],
+      "blocks": {
+        "autopilot": "phase7-commit\\.mjs\" --mode autopilot"
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "made": "step",
+          "consumers": [
+            "autopilot"
+          ],
+          "release": {
+            "block": "autopilot",
+            "at": "end"
+          },
+          "paths": {
+            "the driver succeeded: a commit, a recovery, a close, or the stop at the staging-set gate": "release: the owner's interactive commit writes its own files",
+            "a clean tree (TEXT_DIR empty, no directory made)": "release: nothing to release",
+            "a subject or body refused (exit 9 or 2), an unreadable file (exit 1), review-held (exit 10), or any other failure": "keep: the step's rerun reads the files again, or the run's removal of the step's temporary directory takes it"
+          }
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/start-commit.md"
+      ],
+      "blocks": {
+        "execute": "--mode execute \\\\$"
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "made": "step",
+          "consumers": [
+            "execute"
+          ],
+          "release": {
+            "block": "execute",
+            "at": "end"
+          },
+          "paths": {
+            "the driver succeeded": "release: the commit landed and set-terminal is written",
+            "find-active fails, or no workflow": "keep: the block's rerun reads subject.txt",
+            "the driver fails": "keep: the resumed Phase 7 reads the subject again"
+          }
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/start-bootstrap.md"
+      ],
+      "blocks": {
+        "bootstrap": "--workflow-type start \\\\$"
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "capability": "!commit_surface",
+          "made": "step",
+          "consumers": [
+            "bootstrap"
+          ],
+          "release": {
+            "block": "bootstrap",
+            "at": "end",
+            "guard": "if [ -z \"$REQUEST_DIR\" ]; then"
+          },
+          "paths": {
+            "create succeeded, the request read from this directory": "release",
+            "create succeeded under AGENTIC_TOPIC (no file read from it; the line may name another command's directory)": "keep: never this block's to release",
+            "request.txt missing or blank, a dirty tree refused, or create failed": "keep: the block's rerun reads request.txt"
+          }
+        },
+        {
+          "variable": "REQUEST_DIR",
+          "made": "bootstrap",
+          "consumers": [
+            "bootstrap"
+          ],
+          "release": {
+            "block": "bootstrap",
+            "at": "exit"
+          },
+          "paths": {
+            "any exit after the make": "release: every run makes it afresh (from the extractor's description, or AGENTIC_TOPIC), so no rerun reads it"
+          }
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/start-phase-boundary.md"
+      ],
+      "blocks": {
+        "attempt-release": "^DISPATCH_TEXT_DIR='<the dispatch directory of the attempt whose settle succeeded>'$",
+        "phase-release": "^TEXT_DIR='<the text directory of the phase>'$"
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "made": "step",
+          "consumers": [
+            "phase-release"
+          ],
+          "release": {
+            "block": "phase-release",
+            "at": "end"
+          },
+          "paths": {
+            "the phase's last write succeeded (its settle, its append, an owner gate's set or clear)": "release",
+            "TEXT_DIR left unfilled, or a write of the phase fails": "keep: its retry reads the files again",
+            "the lifecycle pauses at an owner gate before the phase's writes end": "keep: the resumed phase writes there"
+          }
+        },
+        {
+          "variable": "DISPATCH_TEXT_DIR",
+          "made": "elsewhere",
+          "consumers": [
+            "attempt-release"
+          ],
+          "release": {
+            "block": "attempt-release",
+            "at": "end"
+          },
+          "paths": {
+            "each ensemble attempt of the phase (every one of a phase that dispatches several, the refine phase's last pass), once its settle succeeded, a run launched or not": "release",
+            "an earlier pass of a looping refine": "keep: not this block's; the refine skill's pass settle releases it",
+            "DISPATCH_TEXT_DIR left unfilled, or the attempt's settle fails": "keep: the settle's retry reads prompt.xml.run.json there"
+          }
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/start-terminal.md",
+        "regions/start-terminal-convergent.md",
+        "regions/skill-start-finish.md",
+        "regions/skill-start-finish-convergent.md"
+      ],
+      "blocks": {
+        "terminal": "--next-step-kind commit --next-step-confidence"
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "made": "step",
+          "consumers": [
+            "terminal"
+          ],
+          "release": {
+            "block": "terminal",
+            "at": "end"
+          },
+          "paths": {
+            "the last write succeeded (finish-verb, or the not-converged append)": "release",
+            "next-action.txt missing or blank, find-active fails, or the last write fails": "keep: the block's rerun reads next-action.txt"
+          }
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/peer-now-dispatch.md",
+        "regions/skill-peer-now-dispatch.md"
+      ],
+      "blocks": {
+        "dispatch": "--kind peer-now \\\\$"
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "made": "step",
+          "consumers": [
+            "dispatch"
+          ],
+          "paths": {
+            "the consultation succeeded": "keep: the [Peer] note step, or the standalone block, reads the run's result there and releases it",
+            "the consultation failed (the runner's exit status)": "keep: the agent surfaces prompt.xml.err there; the owner lists it (tmpdir-list)",
+            "prompt.xml missing or blank, no run id, or the operation refused": "keep: the message directs fixing it and dispatching again, from a fresh directory once op is made"
+          }
+        },
+        {
+          "variable": "OP_DIR",
+          "capability": "dispatch_target",
+          "made": "dispatch",
+          "consumers": [
+            "dispatch"
+          ],
+          "paths": {
+            "any path": "keep: nested in TEXT_DIR, it goes with TEXT_DIR's release; the note's append closes its operation"
+          }
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/peer-now-note.md"
+      ],
+      "blocks": {
+        "dispatch": "--kind peer-now \\\\$",
+        "note": "--phase-label \"\\[Peer\\] \\$PEER consultation\"",
+        "standalone": "STANDALONE_OUT="
+      },
+      "directories": [
+        {
+          "variable": "DISPATCH_DIR",
+          "made": "elsewhere",
+          "consumers": [
+            "dispatch",
+            "note"
+          ],
+          "release": {
+            "block": "note",
+            "at": "end"
+          },
+          "paths": {
+            "the note is appended": "release: the response stays in the run ledger, whose path the block prints",
+            "no workflow, another workflow's consultation, a failed run, or the append fails": "keep: the standalone block, the right workflow's note, or the rerun reads it"
+          },
+          "instead_of": [
+            "standalone"
+          ]
+        },
+        {
+          "variable": "DISPATCH_DIR",
+          "made": "elsewhere",
+          "consumers": [
+            "dispatch",
+            "standalone"
+          ],
+          "release": {
+            "block": "standalone",
+            "at": "end"
+          },
+          "paths": {
+            "the response is printed (no active workflow)": "release",
+            "the run did not succeed, or its result cannot be read": "keep: prompt.xml.err there says why"
+          },
+          "instead_of": [
+            "note"
+          ]
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/critique-scope-close.md"
+      ],
+      "blocks": {
+        "close": "state\\.mjs\" critique-close \\\\$"
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "made": "step",
+          "consumers": [
+            "close"
+          ],
+          "release": {
+            "block": "close",
+            "at": "end"
+          },
+          "paths": {
+            "the close recorded the findings": "release",
+            "the close refused (a stale tree, a replaced ledger, an unknown id, a malformed finding), or no workflow found": "keep: the fixed findings.json is run again, or the next critique is full; the owner lists what is left"
+          }
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/refine-scope-record.md"
+      ],
+      "blocks": {
+        "record": "state\\.mjs\" refine-record \\\\$"
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "made": "step",
+          "consumers": [
+            "record"
+          ],
+          "release": {
+            "block": "record",
+            "at": "end"
+          },
+          "paths": {
+            "the record is written": "release: a later record, after another edit, uses a new directory",
+            "the record failed, or no workflow found": "keep: the fixed targets.txt is run again; the owner lists what is left"
+          }
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/decide-owner-selection.md"
+      ],
+      "blocks": {
+        "selection": "--gate decide-conflict \\\\$"
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "made": "step",
+          "consumers": [
+            "selection"
+          ],
+          "release": {
+            "block": "selection",
+            "at": "end"
+          },
+          "paths": {
+            "the last write succeeded (the clear inside a lifecycle, the terminal write elsewhere)": "release",
+            "resolution.txt missing or blank, or the read, the clear or the terminal write fails": "keep: the block's rerun reads resolution.txt"
+          }
+        },
+        {
+          "variable": "OP_DIR",
+          "capability": "dispatch_target",
+          "made": "elsewhere",
+          "consumers": [
+            "selection"
+          ],
+          "release": {
+            "block": "selection",
+            "at": "end"
+          },
+          "paths": {
+            "the last write succeeded and closed Phase 0's operation": "release",
+            "the block stops before its last write": "keep: the rerun's closing write reads it"
+          }
+        },
+        {
+          "variable": "GATE_OP_DIR",
+          "capability": "dispatch_target",
+          "made": "selection",
+          "consumers": [
+            "selection"
+          ],
+          "release": {
+            "block": "selection",
+            "at": "exit"
+          },
+          "paths": {
+            "any exit after the make": "release: every run makes it afresh; the release keeps one whose operation the clear opened and no write closed"
+          }
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/refine-owner-decision.md",
+        "regions/refine-owner-decision-convergent.md"
+      ],
+      "blocks": {
+        "fix": "its refine phase fixes the finding\\.\" >&2$",
+        "defer": "it continues at its terminal step\\.\" >&2$"
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "made": "step",
+          "consumers": [
+            "fix"
+          ],
+          "release": {
+            "block": "fix",
+            "at": "end"
+          },
+          "paths": {
+            "Fix now: the clear recorded the resolution": "release",
+            "resolution.txt missing or blank, or the read or the clear fails": "keep: the block's rerun reads resolution.txt"
+          },
+          "instead_of": [
+            "defer"
+          ]
+        },
+        {
+          "variable": "TEXT_DIR",
+          "made": "elsewhere",
+          "consumers": [
+            "defer"
+          ],
+          "release": {
+            "block": "defer",
+            "at": "end"
+          },
+          "paths": {
+            "Defer: the last write succeeded (the clear inside a lifecycle, the terminal write elsewhere, or the not-converged clear)": "release",
+            "resolution.txt or next-action.txt missing or blank, or a write fails": "keep: the block's rerun reads them"
+          },
+          "instead_of": [
+            "fix"
+          ]
+        },
+        {
+          "variable": "OP_DIR",
+          "capability": "dispatch_target",
+          "made": "elsewhere",
+          "consumers": [
+            "fix"
+          ],
+          "release": {
+            "block": "fix",
+            "at": "end",
+            "guard": "if [ \"$WF_TYPE\" = start ]; then"
+          },
+          "paths": {
+            "Fix now inside a lifecycle: the clear closed Phase 0's operation": "release",
+            "Fix now elsewhere: the operation goes on through the refine's phases": "keep: the finalize's OP_DIR line releases it after the operation's last write"
+          },
+          "instead_of": [
+            "defer"
+          ]
+        },
+        {
+          "variable": "OP_DIR",
+          "capability": "dispatch_target",
+          "made": "elsewhere",
+          "consumers": [
+            "defer"
+          ],
+          "release": {
+            "block": "defer",
+            "at": "end"
+          },
+          "paths": {
+            "Defer: the last write closed Phase 0's operation": "release",
+            "Defer not converged: the clear leaves the operation open": "keep: the release refuses a directory whose operation is open; the next verb's finalize closes and releases it"
+          },
+          "instead_of": [
+            "fix"
+          ]
+        },
+        {
+          "variable": "FIX_OP_DIR",
+          "capability": "dispatch_target",
+          "made": "fix",
+          "consumers": [
+            "fix"
+          ],
+          "release": {
+            "block": "fix",
+            "at": "exit-failed"
+          },
+          "paths": {
+            "the block fails after the make": "release: every run makes it afresh (an operation the clear opened is refused, and kept)",
+            "the clear succeeded": "keep: printed as OP_DIR, the finalize of the phases this refine runs releases it"
+          },
+          "instead_of": [
+            "defer"
+          ]
+        },
+        {
+          "variable": "GATE_OP_DIR",
+          "capability": "dispatch_target",
+          "made": "defer",
+          "consumers": [
+            "defer"
+          ],
+          "release": {
+            "block": "defer",
+            "at": "exit"
+          },
+          "paths": {
+            "any exit after the make": "release: every run makes it afresh; the release keeps one whose operation is still open"
+          },
+          "instead_of": [
+            "fix"
+          ]
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/skill-review-settle.md"
+      ],
+      "blocks": {
+        "settle": "--workflow-path \"\\$ACTIVE\" --host codex --phase '?[a-z]+'? --run-id '' \\\\$"
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "made": "step",
+          "consumers": [
+            "settle"
+          ],
+          "release": {
+            "block": "settle",
+            "at": "end"
+          },
+          "paths": {
+            "the attempt is settled": "release",
+            "no active workflow on this branch": "release: nothing is recorded, and nothing reads the summary",
+            "a value left unfilled, a type, reason or verdict refused, no run id, or settle refuses": "keep: the block's rerun reads summary.txt (and, with no run launched, the attempt key is this directory)"
+          }
+        },
+        {
+          "variable": "DISPATCH_DIR",
+          "made": "elsewhere",
+          "consumers": [
+            "settle"
+          ],
+          "release": {
+            "block": "settle",
+            "at": "end"
+          },
+          "paths": {
+            "the attempt is settled, or no workflow": "release: the settle is the result's last reader (empty when no run launched)",
+            "the block stops before its end": "keep: the rerun reads prompt.xml.run.json there"
+          }
+        },
+        {
+          "variable": "DISPATCH_TEXT_DIR",
+          "made": "elsewhere",
+          "consumers": [
+            "settle"
+          ],
+          "release": {
+            "block": "settle",
+            "at": "end"
+          },
+          "paths": {
+            "the attempt is settled, or no workflow": "release: the dispatch's directory, a run launched or not (one that stopped before any run leaves prompt.xml.err there)",
+            "the block stops before its end": "keep: the rerun reads prompt.xml.run.json there"
+          }
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/skill-refine-pass-settle.md"
+      ],
+      "blocks": {
+        "settle": "--workflow-path \"\\$ACTIVE\" --host \"\\$HOST\" --phase refine --run-id '' \\\\$"
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "made": "step",
+          "consumers": [
+            "settle"
+          ],
+          "release": {
+            "block": "settle",
+            "at": "end"
+          },
+          "paths": {
+            "the attempt is settled": "release",
+            "no active workflow on this branch": "release: nothing is recorded, and nothing reads the summary",
+            "a value left unfilled, a type, reason or verdict refused, no run id, or settle refuses": "keep: the block's rerun reads summary.txt (and, with no run launched, the attempt key is this directory)"
+          }
+        },
+        {
+          "variable": "DISPATCH_DIR",
+          "made": "elsewhere",
+          "consumers": [
+            "settle"
+          ],
+          "release": {
+            "block": "settle",
+            "at": "end"
+          },
+          "paths": {
+            "the attempt is settled, or no workflow": "release: the settle is the result's last reader (empty when no run launched)",
+            "the block stops before its end": "keep: the rerun reads prompt.xml.run.json there",
+            "an earlier pass of a multi-pass refine": "release: the pass's own dispatch directory; the finalize, or the review settle, sees only the last pass's"
+          }
+        },
+        {
+          "variable": "DISPATCH_TEXT_DIR",
+          "made": "elsewhere",
+          "consumers": [
+            "settle"
+          ],
+          "release": {
+            "block": "settle",
+            "at": "end"
+          },
+          "paths": {
+            "the attempt is settled, or no workflow": "release: the dispatch's directory, a run launched or not (one that stopped before any run leaves prompt.xml.err there)",
+            "the block stops before its end": "keep: the rerun reads prompt.xml.run.json there"
+          }
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/routing-owner-gates.md"
+      ],
+      "blocks": {
+        "release": "^TEXT_DIR='<the directory holding the decision and the next action>'$"
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "made": "step",
+          "consumers": [
+            "release"
+          ],
+          "release": {
+            "block": "release",
+            "at": "end"
+          },
+          "paths": {
+            "the clear succeeded (awaiting-owner-clear, which reads the decision and the next action)": "release",
+            "the clear refused, or TEXT_DIR left unfilled": "keep: the clear's retry reads the two files"
+          }
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/skill-peer-now-label.md"
+      ],
+      "blocks": {
+        "release": "^DISPATCH_TEXT_DIR='<the directory the dispatch ran with>'$"
+      },
+      "directories": [
+        {
+          "variable": "DISPATCH_TEXT_DIR",
+          "made": "elsewhere",
+          "consumers": [
+            "release"
+          ],
+          "release": {
+            "block": "release",
+            "at": "end"
+          },
+          "paths": {
+            "standalone, the response printed from the run ledger": "release",
+            "the [Peer] note appended": "release: the response stays in the run ledger, at the result's stdout_path",
+            "a failed consultation, a failed append, or DISPATCH_TEXT_DIR left unfilled": "keep: prompt.xml.err there says why, or the append's retry reads note.md; the owner lists what is left"
+          }
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/brief-ensemble-launch.md"
+      ],
+      "blocks": {
+        "release": "^DISPATCH_TEXT_DIR='<the directory holding prompt.xml>'$"
+      },
+      "directories": [
+        {
+          "variable": "DISPATCH_TEXT_DIR",
+          "made": "elsewhere",
+          "consumers": [
+            "release"
+          ],
+          "release": {
+            "block": "release",
+            "at": "end"
+          },
+          "paths": {
+            "no workflow command's finalize or start attempt release takes it (standalone; on Codex outside a start lifecycle, a workflow active or not), the synthesis has read the run's result or prompt.xml.err, a run launched or not": "release",
+            "under a workflow command, or inside a start lifecycle": "keep: not this block's; the command's finalize releases it as DISPATCH_TEXT_DIR, or the start lifecycle's attempt release block",
+            "DISPATCH_TEXT_DIR left unfilled": "keep: the message directs filling it and running the block again"
+          }
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/ensemble-launch.md"
+      ],
+      "blocks": {
+        "release": "^DISPATCH_TEXT_DIR='<the directory holding prompt.xml, which no finalize, settle or start release block takes>'$"
+      },
+      "directories": [
+        {
+          "variable": "DISPATCH_TEXT_DIR",
+          "made": "elsewhere",
+          "consumers": [
+            "release"
+          ],
+          "release": {
+            "block": "release",
+            "at": "end"
+          },
+          "paths": {
+            "no finalize, settle block or start attempt release takes it (a skill on its own; on Codex outside a start lifecycle, a verb skill with no settle block, a workflow active or not), the synthesis has read the run's result or prompt.xml.err, a run launched or not": "release",
+            "under a command's finalize, a skill's settle block, or a start lifecycle": "keep: not this block's; the finalize (DISPATCH_TEXT_DIR), the settle block, or the start attempt release block releases it",
+            "DISPATCH_TEXT_DIR left unfilled": "keep: the message directs filling it and running the block again"
+          }
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/skill-start-command-intro.md"
+      ],
+      "blocks": {
+        "attempt-release": "^DISPATCH_TEXT_DIR='<the dispatch directory of the attempt whose settle succeeded>'$",
+        "release": "^TEXT_DIR='<the text directory whose last write succeeded>'$"
+      },
+      "directories": [
+        {
+          "variable": "TEXT_DIR",
+          "made": "step",
+          "consumers": [
+            "release"
+          ],
+          "release": {
+            "block": "release",
+            "at": "end"
+          },
+          "paths": {
+            "a phase's last write succeeded (its settle, its append, an owner gate's set or clear)": "release",
+            "the bootstrap's create recorded the request": "release",
+            "Phase 7's execute succeeded (the subject directory)": "release",
+            "a write fails, or TEXT_DIR left unfilled": "keep: the retry reads the files again",
+            "the lifecycle pauses at an owner gate before the phase's writes end": "keep: the resumed phase writes there"
+          }
+        },
+        {
+          "variable": "DISPATCH_TEXT_DIR",
+          "made": "elsewhere",
+          "consumers": [
+            "attempt-release"
+          ],
+          "release": {
+            "block": "attempt-release",
+            "at": "end"
+          },
+          "paths": {
+            "each ensemble attempt of the phase (every one of a phase that dispatches several, the refine phase's last pass), once its settle succeeded, a run launched or not": "release",
+            "an earlier pass of a looping refine": "keep: not this block's; the refine skill's pass settle releases it",
+            "DISPATCH_TEXT_DIR left unfilled, or the attempt's settle fails": "keep: the settle's retry reads prompt.xml.run.json there"
+          }
+        }
+      ]
+    },
+    {
+      "templates": [
+        "regions/skill-frame-dispatch-release.md"
+      ],
+      "blocks": {
+        "release": "^DISPATCH_TEXT_DIR='<the directory the make printed>'$"
+      },
+      "directories": [
+        {
+          "variable": "DISPATCH_TEXT_DIR",
+          "made": "elsewhere",
+          "consumers": [
+            "release"
+          ],
+          "release": {
+            "block": "release",
+            "at": "end"
+          },
+          "paths": {
+            "no finalize follows (no active workflow, or $designer:frame on its own), the synthesis has read the run's result": "release",
+            "under /designer:frame or a start lifecycle": "keep: not this block's; the finalize releases it as DISPATCH_TEXT_DIR, or the start lifecycle's attempt release block after the phase's settle",
+            "DISPATCH_TEXT_DIR left unfilled": "keep: the message directs filling it and running the block again"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -23,7 +23,7 @@
 import { describe, it } from 'node:test';
 import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
 import { mkdtemp, rm, readFile, writeFile, mkdir, access, realpath } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -98,6 +98,9 @@ for (const persona of PERSONAS) {
     ['assembled from the templates', { command: assembled(persona, COMMAND, committed.command), skill: assembled(persona, SKILL, committed.skill) }],
   ];
 
+  // The interactive execute block's first line, which the agent fills.
+  const EXECUTE_PLACEHOLDER = "TEXT_DIR='<the directory the edited subjects are in; empty when every suggestion was accepted>'\n";
+
   function runBlock(shell, dir, block, extra = {}) {
     const env = { ...process.env, [renderingDeclaration(P.declaration).derived.root_env]: P.root, ...extra };
     delete env.CLAUDE_PLUGIN_ROOT;
@@ -157,25 +160,40 @@ for (const persona of PERSONAS) {
         autopilotPlan: P.capabilities.dispatch_target ? blockWith(section(doc.command, '## Autopilot — the whole step'), /--mode plan\b/) : null,
         plan: blockWith(section(doc.command, '## Phase 1 — Plan (interactive)'), /--mode plan\b/),
         clear: blockWith(section(doc.command, '## Phase 2 — Commit (interactive)'), /state\.mjs" awaiting-owner-clear /),
-        execute: blockWith(section(doc.command, '## Phase 2 — Commit (interactive)'), /--mode execute\b/),
+        // Every suggestion accepted: no directory made, TEXT_DIR left empty.
+        execute: blockWith(section(doc.command, '## Phase 2 — Commit (interactive)'), /--mode execute\b/).replace(EXECUTE_PLACEHOLDER, () => "TEXT_DIR=''\n"),
+        executeEdited: blockWith(section(doc.command, '## Phase 2 — Commit (interactive)'), /--mode execute\b/),
+        // ADR-0059 Decision 9 — the step that makes a marked text directory.
+        make: blockWith(section(doc.command, '## Phase 2 — Commit (interactive)'), /tmpdir-make --kind "\$MAKE_KIND"/),
+        autopilotMake: P.capabilities.dispatch_target ? blockWith(section(doc.command, '## Autopilot — the whole step'), /tmpdir-make --kind "\$MAKE_KIND"/) : null,
         close: blockWith(section(doc.command, '## Phase 3 — Close without a commit (interactive)'), /--mode close\b/),
       });
+      // A private directory the step makes and marks (ADR-0059 Decision 9),
+      // which the block that reads it last releases.
+      const made = async (dir, make) => {
+        const r = runBlock(shell, dir, make);
+        strictEqual(r.status, 0, r.stderr);
+        const text = r.stdout.trim();
+        ok(existsSync(join(text, '.agentic-dir')) || existsSync(text), text);
+        return text;
+      };
       // An edited subject, as the prose before the execute block says: the agent
-      // writes it into a private directory with its file tool, opens the block
-      // with TEXT_DIR, and passes --subject-file in place of --suggested-subjects.
-      const edited = async (execute, subject) => {
-        const text = await realpath(await mkdtemp(join(tmpdir(), `${persona} agentic text.`)));
+      // writes it into the directory step 1 made with its file tool, fills the
+      // block's TEXT_DIR, and passes --subject-file in place of --suggested-subjects.
+      const edited = async (dir, b, subject) => {
+        const text = await made(dir, b.make);
         await writeFile(join(text, 'subject.txt'), `${subject}\n`);
-        ok(execute.includes('  --suggested-subjects\n'), 'the execute block passes the accepted suggestions');
-        return { text, block: `TEXT_DIR='${text}'\n${execute.replace('  --suggested-subjects\n', '  --subject-file "$TEXT_DIR/subject.txt"\n')}` };
+        ok(b.executeEdited.includes('  --suggested-subjects || exit $?\n'), 'the execute block passes the accepted suggestions');
+        ok(b.executeEdited.startsWith(EXECUTE_PLACEHOLDER), 'the execute block opens with the TEXT_DIR placeholder');
+        return { text, block: `TEXT_DIR='${text}'\n${b.executeEdited.slice(EXECUTE_PLACEHOLDER.length).replace('  --suggested-subjects || exit $?\n', '  --subject-file "$TEXT_DIR/subject.txt" || exit $?\n')}` };
       };
       // The Autopilot block with the subject the worker wrote from the plan, as
       // the prose before it says (ADR-0028 §P6, note of 2026-11-04): a private
       // directory, subject.txt, and TEXT_DIR set at the block's first line.
       // Beside it the body (ADR-0028 §P1, note of 2026-11-11), unless `body`
       // is null.
-      const withSubject = async (autopilot, subject = 'feat(engineer): wire the runbook fixture', body = BODY) => {
-        const text = await realpath(await mkdtemp(join(tmpdir(), `${persona} agentic subject.`)));
+      const withSubject = async (dir, autopilot, subject = 'feat(engineer): wire the runbook fixture', body = BODY) => {
+        const text = await made(dir, commandBlocks().autopilotMake);
         await writeFile(join(text, 'subject.txt'), `${subject}\n`);
         if (body !== null) await writeFile(join(text, 'body.txt'), `${body}\n`);
         const placeholder = "TEXT_DIR='<the directory the subjects are in>'\n";
@@ -186,8 +204,8 @@ for (const persona of PERSONAS) {
       // The Autopilot block for a split, as the prose says: subject-<n>.txt per
       // commit, and one SUBJECT_ARGS+= line each where the block shows it;
       // body-<n>.txt likewise, with one BODY_ARGS+= line each.
-      const withSplit = async (autopilot, subjects) => {
-        const text = await realpath(await mkdtemp(join(tmpdir(), `${persona} agentic split.`)));
+      const withSplit = async (dir, autopilot, subjects) => {
+        const text = await made(dir, commandBlocks().autopilotMake);
         const lines = [];
         const bodyLines = [];
         for (const [i, [pkg, subject, body]] of subjects.entries()) {
@@ -218,8 +236,8 @@ for (const persona of PERSONAS) {
       const optIn = (execute) => {
         // Contract: the test splices the owner's opt-in flags in at this line; a
         // block without it would run without them and fail for another reason.
-        ok(execute.includes('  --suggested-subjects\n'), 'the execute block passes the accepted suggestions');
-        return execute.replace('  --suggested-subjects\n', '  --suggested-subjects --confirm-non-interactive --include-extra stray.md\n');
+        ok(execute.includes('  --suggested-subjects || exit $?\n'), 'the execute block passes the accepted suggestions');
+        return execute.replace('  --suggested-subjects || exit $?\n', '  --suggested-subjects --confirm-non-interactive --include-extra stray.md || exit $?\n');
       };
 
       describe(`${persona}/${COMMAND} blocks (${shell}, ${which})`, () => {
@@ -236,9 +254,12 @@ for (const persona of PERSONAS) {
             strictEqual(r.status, 0, r.stderr);
             const [commit] = JSON.parse(r.stdout).commits;
             deepStrictEqual([commit.package, commit.subject_rule.allowed_types, commit.subject_rule.scopes.includes('engineer')], ['plugins/engineer', ['feat', 'fix'], true]);
-            r = runBlock(shell, dir, await withSubject(b.autopilot), { AGENTIC_AUTOPILOT: AUTOPILOT_RUN_ID });
+            const step = await withSubject(dir, b.autopilot);
+            r = runBlock(shell, dir, step, { AGENTIC_AUTOPILOT: AUTOPILOT_RUN_ID });
             strictEqual(r.status, 0, r.stderr);
             strictEqual(JSON.parse(r.stdout).action, 'committed');
+            // ADR-0059 Decision 10 — the commit landed: the block released the subjects' directory.
+            strictEqual(existsSync(/^TEXT_DIR='([^']*)'/.exec(step)[1]), false, 'the subjects directory is released');
             strictEqual(execFileSync('git', ['log', '-1', '--format=%s'], { cwd: dir, encoding: 'utf8' }).trim(), 'feat(engineer): wire the runbook fixture');
             // The body the worker wrote, not the topic; the trailer the driver's.
             strictEqual(message(dir), `feat(engineer): wire the runbook fixture\n\n${BODY}\n\nWorkflow-ID: ${(await readWorkflow(wf)).frontmatter.workflow_id}`);
@@ -251,7 +272,7 @@ for (const persona of PERSONAS) {
             const wf = await readyWorkflow(dir);
             const before = await readFile(wf, 'utf8');
             const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
-            const r = runBlock(shell, dir, await withSubject(commandBlocks().autopilot, undefined, null), { AGENTIC_AUTOPILOT: AUTOPILOT_RUN_ID });
+            const r = runBlock(shell, dir, await withSubject(dir, commandBlocks().autopilot, undefined, null), { AGENTIC_AUTOPILOT: AUTOPILOT_RUN_ID });
             strictEqual(r.status, 9, r.stderr);
             ok(r.stderr.includes('has no body: pass --body-file <file>'), r.stderr);
             strictEqual(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim(), head);
@@ -288,7 +309,7 @@ for (const persona of PERSONAS) {
             const plan = JSON.parse(r.stdout);
             strictEqual(plan.requires_split, true);
             const subjects = plan.commits.map((c) => [c.package, `fix(${c.subject_rule.scopes[0]}): set ${c.files[0].split('/').pop()}`, `Sets ${c.files[0]} for the split fixture.`]);
-            r = runBlock(shell, dir, await withSplit(b.autopilot, subjects), { AGENTIC_AUTOPILOT: AUTOPILOT_RUN_ID });
+            r = runBlock(shell, dir, await withSplit(dir, b.autopilot, subjects), { AGENTIC_AUTOPILOT: AUTOPILOT_RUN_ID });
             strictEqual(r.status, 0, r.stderr);
             strictEqual(JSON.parse(r.stdout).action, 'committed');
             const log = execFileSync('git', ['log', '-2', '--format=%s'], { cwd: dir, encoding: 'utf8' }).trim().split('\n').reverse();
@@ -302,7 +323,7 @@ for (const persona of PERSONAS) {
           await withRepo(async (dir) => {
             const wf = await readyWorkflow(dir, { stray: true });
             const b = commandBlocks();
-            const autopilot = await withSubject(b.autopilot);
+            const autopilot = await withSubject(dir, b.autopilot);
             let r = runBlock(shell, dir, autopilot);
             strictEqual(r.status, 2, r.stderr);
             ok(r.stderr.includes('--mode autopilot runs only under an autopilot run'), r.stderr);
@@ -351,7 +372,7 @@ for (const persona of PERSONAS) {
             const wf = await readyWorkflow(dir, { stray: true });
             const b = commandBlocks();
             if (P.capabilities.dispatch_target) {
-              runBlock(shell, dir, await withSubject(b.autopilot), { AGENTIC_AUTOPILOT: AUTOPILOT_RUN_ID });
+              runBlock(shell, dir, await withSubject(dir, b.autopilot), { AGENTIC_AUTOPILOT: AUTOPILOT_RUN_ID });
             } else {
               state('finish-verb', '--workflow-path', wf, '--host', 'claude', '--next-action', `Owner: confirm the staging set with /${persona}:commit`,
                 '--next-step-kind', 'owner-decision', '--next-step-confidence', 'HIGH', '--owner-gate', 'staging-set', '--owner-gate-anchor', 'phase7-plan');
@@ -378,14 +399,16 @@ for (const persona of PERSONAS) {
             // Contract: the agent editing a subject — the prose before the block names the
             // file transport, the steps and the flag.
             const prose = section(doc.command, '## Phase 2 — Commit (interactive)').replace(/\s+/g, ' ');
-            for (const part of ['An edited subject reaches the driver as a file, never in the block', 'mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"', 'with your file-writing tool, not the shell, write each edited subject there', '--subject-file "$TEXT_DIR/subject.txt"']) ok(prose.includes(part), part);
-            const { text, block } = await edited(b.execute, HOSTILE_SUBJECT);
+            for (const part of ['An edited subject reaches the driver as a file, never in the block', "MAKE_KIND='text'", 'tmpdir-make --kind "$MAKE_KIND"', 'With your file-writing tool, not the shell, write each edited subject there', '--subject-file "$TEXT_DIR/subject.txt"']) ok(prose.includes(part), part);
+            const { text, block } = await edited(dir, b, HOSTILE_SUBJECT);
             try {
               const r = runBlock(shell, dir, block);
               strictEqual(r.status, 0, r.stderr);
               strictEqual(execFileSync('git', ['log', '-1', '--format=%s'], { cwd: dir, encoding: 'utf8' }).trim(), HOSTILE_SUBJECT);
               strictEqual((await readWorkflow(wf)).frontmatter.current_phase, 'commit-complete');
               for (const side of ['pwned', 'pwned2']) strictEqual(await exists(join(dir, side)), false, `${side}: nothing in the subject ran`);
+              // ADR-0059 Decision 10 — the commit landed, so the block released the subject's directory.
+              strictEqual(existsSync(text), false, 'the subject directory is released');
             } finally {
               await rm(text, { recursive: true, force: true });
             }
@@ -416,7 +439,7 @@ for (const persona of PERSONAS) {
           await withRepo(async (dir) => {
             const phase0 = fill(blockWith(section(doc.skill, '## Phase 0'), /state\.mjs" autopilot-preflight /));
             const plan = fill(blockWith(section(doc.skill, '## Phase 1 — Plan'), /--mode plan\b/));
-            const execute = fill(blockWith(section(doc.skill, '## Phase 2 — Commit'), /--mode execute\b/));
+            const execute = fill(blockWith(section(doc.skill, '## Phase 2 — Commit'), /--mode execute\b/)).replace(EXECUTE_PLACEHOLDER, () => "TEXT_DIR=''\n");
             const close = fill(blockWith(section(doc.skill, '## Phase 3 — Close without a commit'), /--mode close\b/));
             const wf = await readyWorkflow(dir, { host: 'codex' });
             await writeFile(join(dir, 'plugins', 'engineer', 'a.mjs'), 'export const a = 3;\n');

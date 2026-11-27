@@ -96,12 +96,16 @@ async function withLaneIn(shared, fn, { ignoreState = true } = {}) {
 
 // --- the runbook transport ---------------------------------------------------
 
+// A block a case runs: not a step's make of a text directory (ADR-0059
+// Decision 9: its path printed for the agent), and not the peer-now note
+// region's standalone block, for a run with no workflow.
+const runnableBlock = (b) => !/^\s*mktemp -d /.test(b) && !/printf '%s\\n' "\$MADE_DIR"\s*$/.test(b) && !b.includes('STANDALONE_OUT=');
 function regionBlocks(dest, id, count) {
   const text = readFileSync(E.path(dest), 'utf8');
   const begin = text.indexOf(`<!-- pipeline:begin ${id} -->`);
   const end = text.indexOf(`<!-- pipeline:end ${id} -->`);
   ok(begin >= 0 && end > begin, `${dest} holds region ${id}`);
-  const runnable = [...text.slice(begin, end).matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]).filter((b) => !/^\s*mktemp -d /.test(b));
+  const runnable = [...text.slice(begin, end).matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]).filter(runnableBlock);
   strictEqual(runnable.length, count, `${id}: ${count} block(s) to run`);
   return runnable;
 }
@@ -141,7 +145,10 @@ const opDirOf = (r) => {
   return m[1];
 };
 const textDir = (files) => {
-  const d = tempDir('hold-text-');
+  // A text directory as a step makes it, marked (ADR-0059 Decision 9), inside
+  // a scratch directory of the test's: a release removes it, and the nested
+  // op of a consultation is made in it.
+  const d = execFileSync(process.execPath, [E.path('scripts/state.mjs'), 'tmpdir-make', '--kind', 'text'], { encoding: 'utf8', env: { ...process.env, TMPDIR: tempDir('hold-text-') } }).trim();
   for (const [name, text] of Object.entries(files)) writeFileSync(join(d, name), `${text}\n`);
   return d;
 };
@@ -189,6 +196,7 @@ function finalize(lane, env, opDir, next = {}, dispatchDir = '', verb = 'compose
   let block = fill(regionBlock(`commands/${verb}.md`, `${verb}-finalize`), [
     ["TEXT_DIR='<directory from step 1>'", `TEXT_DIR='${textDir({ 'note.md': note, 'summary.txt': 'local only', 'next-action.txt': next.gate ? 'Owner: route it' : 'Next' })}'`],
     ["DISPATCH_DIR='<the directory the dispatch block ran with; empty when no run launched; the run ledger directory when a run launched and that directory is gone>'", `DISPATCH_DIR='${dispatchDir}'`],
+    ["DISPATCH_TEXT_DIR='<the directory the dispatch block ran with, a run launched or not; empty when no dispatch block ran>'", "DISPATCH_TEXT_DIR=''"],
     ["VERDICT='<the synthesis verdict>'", "VERDICT='agreed'"],
     ["CONFIDENCE='<HIGH|MEDIUM|LOW>'", "CONFIDENCE='HIGH'"],
     ["OP_DIR='<the operation directory the Phase 0 block printed as OP_DIR; empty when it printed none>'", `OP_DIR='${opDir}'`],
@@ -369,7 +377,8 @@ for (const shared of [false, true]) describe(`the takeover (Decision 2, item 10)
     strictEqual(fm(child).next_step_kind, 'commit');
 
     const base = git('rev-parse', 'HEAD');
-    const commit = runBlock(lane, regionBlock('commands/commit.md', 'commit-execute'), personEnv());
+    // Every suggestion accepted: no subjects' directory, TEXT_DIR empty.
+    const commit = runBlock(lane, fill(regionBlock('commands/commit.md', 'commit-execute'), [["TEXT_DIR='<the directory the edited subjects are in; empty when every suggestion was accepted>'", "TEXT_DIR=''"]]), personEnv());
     strictEqual(commit.status, 0, `${commit.stdout}\n${commit.stderr}`);
     notStrictEqual(git('rev-parse', 'HEAD'), base, 'the person committed');
     const [op] = opsOf(child);
@@ -444,6 +453,9 @@ for (const shared of [false, true]) describe(`the takeover (Decision 2, item 10)
     writeFileSync(barrier, '');
     const d = await running;
     strictEqual(d.status, 0, d.stderr);
+    // The run id the dispatch kept beside the prompt, read before the note
+    // releases that directory (ADR-0059 Decision 10).
+    const runId = readFileSync(join(dispatchDir, 'prompt.xml.run-id'), 'utf8').trim();
     match(orch.release({ subtask: SUBTASK, holdId, lane, childPath: child }).refused, new RegExp(op.id), 'ended, it waits for its note');
     const n = runBlock(lane, fill(regionBlock('commands/peer-now.md', 'peer-now-note'), [["DISPATCH_DIR='<the directory the dispatch ran with>'", `DISPATCH_DIR='${dispatchDir}'`]]), env);
     strictEqual(n.status, 0, n.stderr);
@@ -459,7 +471,7 @@ for (const shared of [false, true]) describe(`the takeover (Decision 2, item 10)
     // The session's run stays in the ledger, naming no workflow; the resumed
     // worker's verb settles its own phase beside it (an empty id: no run of
     // its own launched).
-    const runId = readFileSync(join(dispatchDir, 'prompt.xml.run-id'), 'utf8').trim();
+    strictEqual(existsSync(dispatchDir), false, 'the note released the dispatch directory');
     const handle = JSON.parse(readFileSync(join(resolve(child, '../..'), 'peer-runs', runId, 'handle.json'), 'utf8'));
     deepStrictEqual([handle.status, handle.workflow_path ?? null], ['completed', null]);
     const next = resumeVerb(lane, workerEnv(2), resume.verb);

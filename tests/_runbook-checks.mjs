@@ -443,6 +443,12 @@ export function flagReads(body, param, indent = null) {
     if (!always) partial.push(`required under a condition: ${literals(list).join(', ')}`);
     return '';
   });
+  // A tmpdir subcommand's list of the only flags it takes (ADR-0059 Decision
+  // 9): each is accepted, and any other is refused by the accepted set itself.
+  rest = rest.replace(new RegExp(`\\bcliTmpdirOnly\\(${p}, \\[([^\\]]*)\\]\\)`, 'g'), (m, list) => {
+    for (const n of literals(list)) accepted.add(n);
+    return '';
+  });
   rest = rest.replace(new RegExp(`\\bcliRequire\\(${p}, (\\w+)\\)`, 'g'), (m, list) => {
     for (const re of [new RegExp(`(?:const|let) ${list} = \\[([^\\]]*)\\]`, 'g'), new RegExp(`\\b${list}\\.push\\(([^)]*)\\)`, 'g')]) {
       for (const d of body.matchAll(re)) for (const n of literals(d[1])) accepted.add(n);
@@ -783,7 +789,7 @@ export function peerRunnerContract(source) {
 
 // ── The calls ───────────────────────────────────────────────────────────────
 
-const SHELL_LANGS = new Set(['bash', 'sh', 'shell', 'zsh']);
+export const SHELL_LANGS = new Set(['bash', 'sh', 'shell', 'zsh']);
 // The root is a variable, or a `<placeholder>` a skill names it by (read here
 // after placeholders became `_name_`).
 const INVOCATION = /\bnode(?:\s+-[-\w=]+)*\s+"?(?:\$\{?([A-Z_]+)\}?|_([a-z][a-z-]*)_)\/scripts\/([a-z0-9-]+\.mjs)"?/g;
@@ -1068,4 +1074,346 @@ export function cliCallProblems(call, kind, contract, capabilities = null) {
     }
   }
   return { sub, status: 'checked', problems, partial };
+}
+
+// ── ADR-0059 Decision 10: where a runbook releases its directories ──────────
+//
+// A block makes a text or operation directory only through the make snippet
+// and releases one only through the release snippet (persona-pipeline/
+// snippets/), each found by its exact lines. What a block releases is read
+// from its text: the variable it gives the release (set on the line before,
+// or listed by a `for RELEASE_PATH in …; do`), and when: on its success path
+// (`end`), or from a function its EXIT trap runs, on every exit (`exit`) or,
+// under `if [ "$OWN_RC" -ne 0 ]`, on a failing one (`exit-failed`).
+
+// A text or operation directory made the old way, in a block or as prose
+// telling the agent to (an args directory keeps the reader's removal).
+const LEGACY_MAKE_RE = /\bmktemp\s+(?:-[a-zA-Z]*d[a-zA-Z]*|--directory)\b|\bmkdir\b[^\n]*\bop\b/;
+const legacyLine = (l) => LEGACY_MAKE_RE.test(l) && !/agentic-args\./.test(l);
+const TMPDIR_CALL_RE = /\btmpdir-(?:make|release)\b/;
+
+/**
+ * The lines of `text` (1-based) that name the release subcommand outside the
+ * release snippet's own lines: prose telling the agent to release a directory
+ * by hand, which ADR-0059 Decision 10, item 2 rules out (a releasing step is a
+ * block of the runbook), or a raw call.
+ */
+export function tmpdirHandReleaseLines(text, snippets) {
+  const lines = text.split('\n');
+  const covered = new Set();
+  for (let i = 0; i < lines.length; i++) {
+    for (const release of snippetForms(snippets.release)) {
+      if (snippetAt(lines, i, release) !== null) for (let k = i; k < i + release.length; k++) covered.add(k);
+    }
+  }
+  return lines.flatMap((l, i) => (!covered.has(i) && /\btmpdir-release\b/.test(l) ? [i + 1] : []));
+}
+
+/**
+ * The lines of `text` (1-based) that make a text or operation directory, or
+ * tell the agent to, outside the make snippet's own lines.
+ */
+export function tmpdirLegacyLines(text, snippets) {
+  const lines = text.split('\n');
+  const covered = new Set();
+  for (let i = 0; i < lines.length; i++) {
+    for (const make of snippetForms(snippets.make)) {
+      if (snippetAt(lines, i, make) !== null) for (let k = i; k < i + make.length; k++) covered.add(k);
+    }
+  }
+  return lines.flatMap((l, i) => (!covered.has(i) && legacyLine(l) ? [i + 1] : []));
+}
+
+// A snippet's forms, each as its lines: a command's, and a skill's (the root
+// spelled <plugin-root>), when the caller passes both.
+const snippetForms = (s) => (Array.isArray(s) ? s : [s]).map((x) => x.split('\n'));
+
+/** The indentation at which `snippet` (its lines) starts at line `i`, or null. */
+function snippetAt(lines, i, snippet) {
+  const first = lines[i] ?? '';
+  if (first.trimStart() !== snippet[0]) return null;
+  const indent = first.slice(0, first.length - first.trimStart().length);
+  for (let k = 1; k < snippet.length; k++) {
+    if (lines[i + k] !== (snippet[k] === '' ? '' : `${indent}${snippet[k]}`)) return null;
+  }
+  return indent;
+}
+
+/**
+ * One shell block's makes and releases: `{ makes, releases, legacy, problems }`.
+ * `makes`: `{ line, variable }` (variable null for a step's printed path);
+ * `releases`: `{ line, inputs, at }`; `legacy`: lines that make a directory
+ * outside the make. `snippets` holds the make's and the release's text, each a
+ * string or a list of its forms (a command's and a skill's).
+ */
+export function tmpdirBlockReads(blockText, snippets) {
+  const lines = blockText.split('\n');
+  const forms = [...snippetForms(snippets.make).map((s) => ['make', s]), ...snippetForms(snippets.release).map((s) => ['release', s])];
+  const covered = new Set();
+  const found = [];
+  for (let i = 0; i < lines.length; i++) {
+    for (const [kind, snip] of forms) {
+      const indent = snippetAt(lines, i, snip);
+      if (indent === null) continue;
+      found.push({ kind, start: i, end: i + snip.length, indent });
+      for (let k = i; k < i + snip.length; k++) covered.add(k);
+    }
+  }
+  const problems = [];
+  const legacy = lines.flatMap((l, i) => (!covered.has(i) && legacyLine(l) ? [i + 1] : []));
+  // A make or a release only through the snippets: a raw call of either
+  // subcommand, or a snippet copy one edit away from its source, is no make or
+  // release this reader can hold to the path list (a comment line aside).
+  lines.forEach((l, i) => {
+    if (!covered.has(i) && !/^\s*#/.test(l) && TMPDIR_CALL_RE.test(l)) problems.push(`line ${i + 1}: names tmpdir-make or tmpdir-release outside the make and release snippets (a raw call, or a copy of a snippet that drifted from its source)`);
+  });
+  // The lines the agent fills, at the head of the block.
+  const head = new Set();
+  for (const l of lines) {
+    if (/^ROOT_OVERRIDE=/.test(l.trim())) break;
+    const m = /^([A-Z_][A-Z0-9_]*)='<[^'\n]*>'$/.exec(l.trim());
+    if (m) head.add(m[1]);
+  }
+  const madeAt = new Map();
+  lines.forEach((l, i) => {
+    const m = /^\s*([A-Z_][A-Z0-9_]*)="\$MADE_DIR"$/.exec(l);
+    if (m && !madeAt.has(m[1])) madeAt.set(m[1], i);
+  });
+  const fns = [];
+  lines.forEach((l, i) => {
+    const m = /^([a-z_][a-z0-9_]*)\(\) \{$/.exec(l);
+    if (!m) return;
+    let j = i + 1;
+    while (j < lines.length && lines[j] !== '}') j++;
+    fns.push({ name: m[1], start: i, end: j });
+  });
+  const inFn = (i) => fns.find((f) => i > f.start && i < f.end) ?? null;
+  // The `if` conditions open at each line (a one-line if/fi aside), each with
+  // its branch: an `else` or `elif` turns the open condition into its other
+  // branch, so a release moved there no longer reads as the declared guard.
+  // `blind` marks a line inside a construct whose branch this reader does not
+  // follow (a case arm, a while loop, a brace group after && or ||).
+  const openIfs = [];
+  const blind = [];
+  {
+    const stack = [];
+    lines.forEach((l, i) => {
+      openIfs[i] = stack.filter((s) => s.startsWith('if ') || s.startsWith('else of ') || s.startsWith('elif ')).slice();
+      blind[i] = stack.some((s) => s.startsWith('case ') || s.startsWith('while ') || s === '{');
+      if (covered.has(i)) return;
+      const s = l.replace(/\s+#.*$/, '').trim();
+      if (/^if .*; then$/.test(s)) stack.push(s);
+      else if (s === 'else' && stack.length > 0) stack.push(`else of ${stack.pop()}`);
+      else if (/^elif .*; then$/.test(s) && stack.length > 0) { stack.pop(); stack.push(s); }
+      else if (/^(for|while) .*; do$/.test(s) || /^case .* in$/.test(s)) stack.push(s);
+      else if (/(&&|\|\|)\s*\{$/.test(s) && !inFn(i)) stack.push('{');
+      else if (s === 'fi' || s === 'done' || s === 'esac' || (s === '}' && stack[stack.length - 1] === '{')) stack.pop();
+    });
+  }
+  // Each variable a release is given keeps the value its line or its make set:
+  // any other assignment of it is refused (an empty one or an unset aside).
+  const reassigned = (x) => lines.findIndex((l, i) => {
+    if (covered.has(i)) return false;
+    const m = new RegExp(`^\\s*${x}=(.*)$`).exec(l);
+    return m !== null && m[1] !== '"$MADE_DIR"' && m[1] !== "''" && !/^'<[^'\n]*>'$/.test(m[1]);
+  });
+  const trapAt = new Map();
+  lines.forEach((l, i) => { const m = /^trap ([a-z_][a-z0-9_]*) EXIT$/.exec(l); if (m) trapAt.set(m[1], i); });
+  let lastExit = -1;
+  lines.forEach((l, i) => { if (!covered.has(i) && !inFn(i) && /\bexit\b/.test(l.replace(/#.*$/, ''))) lastExit = i; });
+
+  const makes = [];
+  const releases = [];
+  for (const f of found) {
+    if (f.kind === 'make') {
+      const next = lines.slice(f.end).find((l) => l.trim() !== '' && !l.trim().startsWith('#')) ?? '';
+      const v = /^\s*([A-Z_][A-Z0-9_]*)="\$MADE_DIR"$/.exec(next)?.[1];
+      if (v) makes.push({ line: f.start + 1, variable: v });
+      else if (next.trim() === 'printf \'%s\\n\' "$MADE_DIR"') makes.push({ line: f.start + 1, variable: null });
+      else problems.push(`line ${f.start + 1}: a make whose path is neither printed nor kept in a variable`);
+      continue;
+    }
+    // The input: the line right before the release, comments aside.
+    let k = f.start - 1;
+    while (k >= 0 && lines[k].trim().startsWith('#')) k--;
+    const before = (lines[k] ?? '').trim();
+    let inputs = null;
+    const one = /^RELEASE_PATH="\$([A-Z_][A-Z0-9_]*)"$/.exec(before);
+    const many = /^for RELEASE_PATH in ((?:"\$[A-Z_][A-Z0-9_]*" ?)+); do$/.exec(before);
+    if (one) inputs = [one[1]];
+    else if (many) inputs = [...many[1].matchAll(/\$([A-Z_][A-Z0-9_]*)/g)].map((m) => m[1]);
+    if (inputs === null) {
+      problems.push(`line ${f.start + 1}: a release whose input is not set on the line before it (RELEASE_PATH="$X", or for RELEASE_PATH in "$X" …; do)`);
+      continue;
+    }
+    for (const x of inputs) {
+      const again = reassigned(x);
+      if (again >= 0) problems.push(`line ${f.start + 1}: the release is given ${x}, which line ${again + 1} assigns another value`);
+      if (!head.has(x) && !madeAt.has(x)) problems.push(`line ${f.start + 1}: the release is given ${x}, which is neither a line at the head of the block nor the variable a make in it printed to`);
+    }
+    const fn = inFn(f.start);
+    let at = 'end';
+    if (fn) {
+      if (!trapAt.has(fn.name)) problems.push(`line ${f.start + 1}: a release in ${fn.name}(), which no EXIT trap of the block runs`);
+      // The failing-exit guard holds only while it is open at the release: one
+      // closed before it, or turned into its else, guards nothing.
+      at = openIfs[f.start].includes('if [ "$OWN_RC" -ne 0 ]; then') ? 'exit-failed' : 'exit';
+      for (const x of inputs) {
+        if (madeAt.has(x) && trapAt.has(fn.name) && madeAt.get(x) < trapAt.get(fn.name)) problems.push(`line ${f.start + 1}: ${x} is made before the trap that releases it is set`);
+      }
+    } else {
+      if (blind[f.start]) problems.push(`line ${f.start + 1}: a release of ${inputs.join(', ')} inside a case arm, a while loop or a brace group, whose branch the path list cannot declare`);
+      if (f.start <= lastExit) problems.push(`line ${f.start + 1}: a release of ${inputs.join(', ')} before the block's last exit (line ${lastExit + 1}): a path that stops after it would rerun over a released directory`);
+      for (const x of inputs) {
+        // The variable, and every variable assigned from it (an alias such as
+        // a file path under it), read after the release.
+        const names = [x];
+        for (let n = 0; n < names.length; n++) {
+          const from = new RegExp(`\\$\\{?${names[n]}\\b`);
+          lines.forEach((l, i) => {
+            if (covered.has(i)) return;
+            const m = /^\s*(?:export\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(l);
+            if (m && m[1] !== 'RELEASE_PATH' && !names.includes(m[1]) && from.test(m[2])) names.push(m[1]);
+          });
+        }
+        for (const y of names) {
+          const ref = new RegExp(`\\$\\{?${y}\\b`);
+          const later = lines.findIndex((l, i) => i >= f.end && !covered.has(i) && ref.test(l) && !/^\s*(RELEASE_PATH=|for RELEASE_PATH in )/.test(l));
+          if (later >= 0) problems.push(`line ${f.start + 1}: ${y === x ? x : `${y}, assigned from ${x},`} is used at line ${later + 1}, after its release`);
+        }
+      }
+    }
+    // The conditions the release runs under, its function's own guard aside.
+    const guards = openIfs[f.start].filter((g) => g !== 'if [ "$OWN_RC" -ne 0 ]; then');
+    // stops: the block has an exit (a refusal, a failed write) on which an end
+    // release does not run, so its directory is kept there.
+    releases.push({ line: f.start + 1, inputs, at, guards, stops: lastExit >= 0 });
+  }
+  return { makes, releases, legacy, problems };
+}
+
+// A directory the list names under a capability: `name` when the persona has
+// it on, `!name` when it has it off.
+const capabilityHolds = (d, capabilities) => d.capability === undefined
+  || (d.capability.startsWith('!') ? capabilities[d.capability.slice(1)] !== true : capabilities[d.capability] === true);
+
+/**
+ * A rendered region's makes and releases held to its group of the path list
+ * (persona-pipeline/tmpdir-paths.json), both ways. `capabilities` filters the
+ * directories a capability names. Problems as strings.
+ */
+export function tmpdirProblems(text, group, { snippets, capabilities = {}, label = 'region' }) {
+  const problems = [];
+  for (const l of tmpdirLegacyLines(text, snippets)) problems.push(`${label}: line ${l} makes a directory outside the make, or tells the agent to (ADR-0059 Decision 10, item 8)`);
+  const shell = fencedBlocks(text).filter((b) => SHELL_LANGS.has(b.lang));
+  const named = new Map();
+  for (const [name, pattern] of Object.entries(group.blocks ?? {})) {
+    const re = new RegExp(pattern, 'm');
+    const hits = shell.map((b, i) => (re.test(b.lines.join('\n')) ? i : -1)).filter((i) => i >= 0);
+    if (hits.length === 1) named.set(hits[0], name);
+    else if (hits.length > 1) problems.push(`${label}: block ${name} (${pattern}) matches ${hits.length} blocks`);
+  }
+  const dirs = group.directories.filter((d) => capabilityHolds(d, capabilities));
+  const actual = new Set();
+  const actualMakes = new Set();
+  let stepMakes = 0;
+  shell.forEach((b, i) => {
+    const r = tmpdirBlockReads(b.lines.join('\n'), snippets);
+    const where = named.get(i) ?? null;
+    for (const p of r.problems) problems.push(`${label}: block at line ${b.start}: ${p}`);
+    for (const rel of r.releases) {
+      if (where === null) { problems.push(`${label}: block at line ${b.start}: a release in a block the path list does not name`); continue; }
+      for (const x of rel.inputs) {
+        actual.add(`${where}:${x}:${rel.at}${rel.guards.map((g) => ` under ${g}`).join('')}`);
+        // The directory's paths agree with when the shell releases it: from an
+        // EXIT trap on every exit, no path keeps it; on failing exits only, the
+        // success keeps it; on the success path of a block that can stop
+        // earlier (or under a guard), those stops keep it.
+        const d = dirs.find((e) => e.variable === x && e.release?.block === where);
+        const values = Object.values(d?.paths ?? {});
+        const keeps = values.some((v) => v.startsWith('keep'));
+        const releasesOn = values.some((v) => v.startsWith('release'));
+        if (d === undefined || values.length === 0) continue;
+        if (rel.at === 'exit' && keeps) problems.push(`${label}: ${where}:${x} is released on every exit, and the path list keeps it on a path`);
+        if (rel.at === 'exit-failed' && !(keeps && releasesOn)) problems.push(`${label}: ${where}:${x} is released on failing exits only, and the path list does not both keep it (the success) and release it`);
+        if (rel.at === 'end' && (rel.stops || rel.guards.length > 0) && !keeps) problems.push(`${label}: ${where}:${x} is released on the success path only, and the path list keeps it on no path (the block's earlier exits${rel.guards.length > 0 ? ' and its guard' : ''})`);
+      }
+    }
+    for (const m of r.makes) {
+      if (m.variable === null) { actualMakes.add('step'); stepMakes++; }
+      else if (where === null) problems.push(`${label}: block at line ${b.start}: a make in a block the path list does not name`);
+      else actualMakes.add(`${where}:${m.variable}`);
+    }
+  });
+  const declared = new Set(dirs.filter((d) => d.release).map((d) => `${d.release.block}:${d.variable}:${d.release.at}${d.release.guard ? ` under ${d.release.guard}` : ''}`));
+  for (const k of declared) if (!actual.has(k)) problems.push(`${label}: the path list releases ${k}, and no releasing step does`);
+  for (const k of actual) if (!declared.has(k)) problems.push(`${label}: a releasing step ${k} on a path the path list keeps`);
+  const declaredMakes = new Set(dirs.filter((d) => d.made !== 'elsewhere').map((d) => (d.made === 'step' ? 'step' : `${d.made}:${d.variable}`)));
+  for (const k of declaredMakes) if (!actualMakes.has(k)) problems.push(`${label}: the path list makes ${k}, and no make does`);
+  for (const k of actualMakes) if (!declaredMakes.has(k)) problems.push(`${label}: a make ${k} the path list does not hold`);
+  const declaredSteps = dirs.filter((d) => d.made === 'step').length;
+  if (stepMakes !== declaredSteps) problems.push(`${label}: ${stepMakes} step makes print a directory, and the path list holds ${declaredSteps}`);
+  return problems;
+}
+
+/**
+ * In a rendered runbook, each directory's releasing block comes after every
+ * block that reads it (the group's `consumers`), across regions; a consumer
+ * named in `optional_consumers` may be missing from a runbook.
+ */
+export function tmpdirOrderProblems(text, group, { capabilities = {}, label = 'runbook' } = {}) {
+  const shell = fencedBlocks(text).filter((b) => SHELL_LANGS.has(b.lang)).map((b) => b.lines.join('\n'));
+  const where = (name) => {
+    const re = new RegExp(group.blocks[name], 'm');
+    return shell.map((b, i) => (re.test(b) ? i : -1)).filter((i) => i >= 0);
+  };
+  const problems = [];
+  for (const d of group.directories) {
+    if (!d.release || !capabilityHolds(d, capabilities)) continue;
+    const at = where(d.release.block);
+    if (at.length === 0) { problems.push(`${label}: no ${d.release.block} block releases ${d.variable}`); continue; }
+    for (const c of d.consumers ?? []) {
+      const reads = where(c);
+      // A consumer the list marks optional is a block some runbooks lack (an
+      // authored block of one persona's): absent, it reads nothing.
+      if (reads.length === 0) { if (!(d.optional_consumers ?? []).includes(c)) problems.push(`${label}: no ${c} block, which reads ${d.variable}`); }
+      else if (Math.max(...reads) > Math.min(...at)) problems.push(`${label}: ${d.variable} is released in the ${d.release.block} block before the ${c} block reads it`);
+    }
+    // The readers the list does not name: a later block that uses the
+    // released variable with neither a line of its own for it nor a make
+    // (a value carried from the releasing block's shell, which no fresh shell
+    // has), or whose line for it names the very directory the releasing block
+    // was given (the same placeholder, where that placeholder names another
+    // block's directory rather than a fresh step's).
+    // A block the list names in `instead_of` runs in place of the releasing
+    // block, on another path of the command (peer-now's standalone block, the
+    // Defer beside Fix now), never after it.
+    const first = Math.min(...at);
+    const placeholder = headLines(shell[first]).get(d.variable);
+    const instead = new Set((d.instead_of ?? []).flatMap((n) => where(n)));
+    for (let j = first + 1; j < shell.length; j++) {
+      const code = shell[j].split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
+      if (instead.has(j) || !new RegExp(`\\$\\{?${d.variable}\\b`).test(code)) continue;
+      const own = headLines(shell[j]).get(d.variable);
+      const made = new RegExp(`^\\s*${d.variable}="\\$MADE_DIR"$`, 'm').test(shell[j]);
+      if (own === undefined && !made) problems.push(`${label}: a block after the ${d.release.block} block uses ${d.variable}, which it neither takes on a line of its own nor makes: the directory released there`);
+      else if (own !== undefined && own === placeholder && !FRESH_PLACEHOLDER_RE.test(own)) problems.push(`${label}: a block after the ${d.release.block} block takes ${d.variable} as ${own}, the directory released there`);
+    }
+  }
+  return problems;
+}
+
+// A head line's placeholder that names a directory a step makes for the block
+// (each such step makes a fresh one), not another block's directory.
+const FRESH_PLACEHOLDER_RE = /^'<(?:directory from step 1|directory holding [^>]*|the directory the make printed)>'$/;
+
+// The lines at the head of a block the agent fills: variable -> its value.
+function headLines(block) {
+  const out = new Map();
+  for (const l of (block ?? '').split('\n')) {
+    if (/^ROOT_OVERRIDE=/.test(l.trim())) break;
+    const m = /^([A-Z_][A-Z0-9_]*)=('<[^'\n]*>')$/.exec(l.trim());
+    if (m && !out.has(m[1])) out.set(m[1], m[2]);
+  }
+  return out;
 }

@@ -154,14 +154,17 @@ const RESOLVE_LINE = "RESOLVE_VERB='<refine|decide|investigate — the next step
 // directory Phase 0 printed; empty here, no operation (its runs:
 // test-verb-runbook-runs.mjs, test-persona-operation-lifecycle.mjs).
 const OP_DIR_LINE = "OP_DIR='<the operation directory the Phase 0 block printed as OP_DIR; empty when it printed none>'";
+// ADR-0059 Decision 10, item 1: the dispatch's text directory, which the
+// finalize releases; empty here (the release's runs: the verb runbook files).
+const DISPATCH_TEXT_DIR_LINE = "DISPATCH_TEXT_DIR='<the directory the dispatch block ran with, a run launched or not; empty when no dispatch block ran>'";
 // A gate resolution's blocks take the one this run's Phase 0 printed, or none;
 // filled with `value` (empty: none, so the block opens its own).
 const GATE_OP_DIR_RE = /^OP_DIR='<the operation directory Phase 0 of this run printed as OP_DIR; empty when it printed none or the finalize of this (verb|refine) already ran>'$/m;
 const gateOpDir = (block, value = '') => block.replace(GATE_OP_DIR_RE, () => `OP_DIR='${value}'`);
 function finalizeAs(block, { launched = true, verdict = 'agreed', dir = '"$TEXT_DIR/dispatch"', confidence = 'HIGH', resolve = 'refine' } = {}) {
-  ok(block.includes(`${DISPATCH_DIR_LINE}\n${VERDICT_LINE}\n${CONFIDENCE_LINE}\n`), 'the finalize names the dispatch directory, the verdict and the confidence');
+  ok(block.includes(`${DISPATCH_DIR_LINE}\n${DISPATCH_TEXT_DIR_LINE}\n${VERDICT_LINE}\n${CONFIDENCE_LINE}\n`), 'the finalize names the dispatch directory, its text directory, the verdict and the confidence');
   const value = launched ? `DISPATCH_DIR=${dir}` : "DISPATCH_DIR=''";
-  let s = block.replace(DISPATCH_DIR_LINE, () => value).replace(VERDICT_LINE, () => `VERDICT='${verdict}'`);
+  let s = block.replace(DISPATCH_DIR_LINE, () => value).replace(DISPATCH_TEXT_DIR_LINE, () => "DISPATCH_TEXT_DIR=''").replace(VERDICT_LINE, () => `VERDICT='${verdict}'`);
   if (confidence !== null) s = s.replace(CONFIDENCE_LINE, () => `CONFIDENCE='${confidence}'`);
   if (resolve !== null) s = s.replace(RESOLVE_LINE, () => `RESOLVE_VERB='${resolve}'`);
   return s.replace(OP_DIR_LINE, () => "OP_DIR=''");
@@ -446,7 +449,9 @@ async function runBlock(shell, block, persona, { note = null, texts = {}, failAp
   const dir = mkdtempSync(join(tmpdir(), 'pc2a2b-finalize.'));
   try {
     mkdirSync(join(dir, 'bin'));
-    mkdirSync(join(dir, 'root'));
+    mkdirSync(join(dir, 'root', 'scripts'), { recursive: true });
+    // The make and the release a block probes for (ADR-0059 Decision 10, item 4).
+    writeFileSync(join(dir, 'root', 'scripts', 'state.mjs'), "// 'tmpdir-make' 'tmpdir-release'\n");
     // Phase 0 reads the branch: a repository of its own, on a branch.
     strictEqual((await spawnAsync('git', ['init', '-q', '-b', 'pc2a2b', dir])).status, 0, 'git init');
     const textDir = join(dir, 'agentic text.x');
@@ -467,6 +472,11 @@ async function runBlock(shell, block, persona, { note = null, texts = {}, failAp
       // driver is a script without a subcommand, logged by its mode.
       'case "$1" in */start-args.mjs) printf \'start-args\\n\' >> "$STUB_LOG"; shift; exec "$STUB_REAL_NODE" "$STUB_START_ARGS" "$@";; esac',
       'case "$1" in */phase7-commit.mjs) printf \'phase7 %s\\n\' "$3" >> "$STUB_LOG"; printf \'%s\' "$*" | tr \'\\n\' \' \' >> "$STUB_ARGV"; printf \'\\n\' >> "$STUB_ARGV"; exit "$STUB_PHASE7_RC";; esac',
+      // The make and the release, kept out of the log the order checks read:
+      // the make makes a directory under TMPDIR, the release reports it removed
+      // and leaves it for the checks.
+      'if [ "$2" = tmpdir-make ]; then mktemp -d "$TMPDIR/agentic-$4.XXXXXX"; exit $?; fi',
+      'if [ "$2" = tmpdir-release ]; then printf \'%s\\n\' "$4" >> "$STUB_LOG.releases"; printf \'{"outcome":"removed"}\\n\'; exit 0; fi',
       'printf \'%s\\n\' "$2" >> "$STUB_LOG"',
       // R4 (C119, C26): the run id comes from this persona's own allocator,
       // peer-runner.mjs new-run-id, unless the test gives what it prints.
@@ -675,7 +685,7 @@ describe('each convergent variant is its plain template plus the convergence che
   };
   // R4 (C133): the finalize asks for the not-converged next action in its
   // step 2, before the block runs, as lines of its own after the shared ones.
-  const FINALIZE_STEP2 = ['   scripts remove; nothing deletes the files.\n', '\n   When the re-critique did not converge (below), `next-action.txt` holds the\n   flagged item and the next step that resolves it.\n'];
+  const FINALIZE_STEP2 = ['   succeeded; a block that stops keeps it for its rerun.\n', '\n   When the re-critique did not converge (below), `next-action.txt` holds the\n   flagged item and the next step that resolves it.\n'];
   // R4 K3: the convergence and the resolving step are set at the top of the
   // block, with the other values, and the resolving step is checked with the
   // confidence, before the first write.
@@ -699,8 +709,11 @@ describe('each convergent variant is its plain template plus the convergence che
       ok(variant.indexOf(opening) >= 0 && para.endsWith('.\n\n'), `the convergence paragraph, right before ${before}`);
       const terminalAt = terminalFrom(plain);
       const ownerForm = OWNER_FORM_AT(plain);
-      const terminal = plain.slice(terminalAt, ownerForm >= 0 ? ownerForm : plain.indexOf('\n```\n', terminalAt) + 1);
-      ok(terminalAt > 0 && /\nnode "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" finish-verb \\\n/.test(terminal), 'the plain terminal write, comment and call');
+      // The release after the terminal write (ADR-0059 Decision 10) closes the
+      // block in both, after the convergence check in the variant.
+      const releaseAt = plain.indexOf('# ADR-0059 Decision 10, item 1', terminalAt);
+      const terminal = plain.slice(terminalAt, ownerForm >= 0 ? ownerForm : releaseAt >= 0 ? releaseAt : plain.indexOf('\n```\n', terminalAt) + 1);
+      ok(terminalAt > 0 && /\n *node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" finish-verb \\\n/.test(terminal), 'the plain terminal write, comment and call');
       const indented = terminal.replace(/^(?=.)/gm, '  ');
       const THEN = 'if [ "${CONVERGED:-no}" = "yes" ]; then\n';
       const headAt = variant.indexOf('# FAIL-CLOSED:');
@@ -836,7 +849,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               // (C163 A1a), and with dispatch_target on the verb form's next
               // step kind, verb unless the agent sets commit or done (C176).
               let at = 0;
-              while (/^(ARGS_DIR|TEXT_DIR|DISPATCH_DIR|READ_DIR|VERDICT|CONFIDENCE|RESOLVE_VERB|PEER|PROMPT_FILE|OP_DIR)='<[^'>]+>'$|^OWNER_GATE=''$|^NEXT_STEP_KIND='verb'$|^NO_RUN_REASON=''$|^ATTEMPT_TYPE='[a-z][a-z-]*'$|^CONVERGED="<[^">]+>"$|^# /.test(lines[at] ?? '')) at++;
+              while (/^(ARGS_DIR|TEXT_DIR|DISPATCH_DIR|DISPATCH_TEXT_DIR|READ_DIR|VERDICT|CONFIDENCE|RESOLVE_VERB|PEER|PROMPT_FILE|OP_DIR)='<[^'>]+>'$|^OWNER_GATE=''$|^NEXT_STEP_KIND='verb'$|^NO_RUN_REASON=''$|^ATTEMPT_TYPE='[a-z][a-z-]*'$|^CONVERGED="<[^">]+>"$|^ *# /.test(lines[at] ?? '')) at++;
               // Contract: the agent running a block in a fresh shell — without the
               // persona's own override and cache path the block runs another
               // plugin's scripts, or none. A block nested in a list item is indented.
@@ -1232,10 +1245,14 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
             // The commit surface's runbook. Every block resolves the workflow
             // itself (a shell variable does not outlive a Bash call). The region
             // ids, which the sync reads, are what each case slices its block by.
+            // A region's blocks, its step's make block aside (ADR-0059 Decision 9);
+            // the interactive execute block with every suggestion accepted, so
+            // TEXT_DIR is empty.
+            const driverBlocks = (id) => shellBlocks(region(text, id)).map((b) => b.text).filter((b) => !b.includes('tmpdir-make --kind "$MAKE_KIND"'));
             const only = (id) => {
-              const found = shellBlocks(region(text, id));
+              const found = driverBlocks(id);
               strictEqual(found.length, 1, `${persona}/commit: one block in ${id}`);
-              return found[0].text;
+              return id === 'commit-execute' ? found[0].replace(/^TEXT_DIR='<[^'\n]*>'\n/, () => "TEXT_DIR=''\n") : found[0];
             };
             const dispatch = declaration(persona).capabilities.dispatch_target === true;
 
@@ -1288,7 +1305,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               // The autopilot region holds two blocks (ADR-0028 §P6, note of
               // 2026-11-04): the plan the worker writes the subjects from, then
               // the step, with the subject file in TEXT_DIR. Each is run here.
-              const autopilotBlocks = dispatch ? shellBlocks(region(text, 'commit-autopilot')).map((b) => b.text) : [];
+              const autopilotBlocks = dispatch ? driverBlocks('commit-autopilot') : [];
               if (dispatch) {
                 strictEqual(autopilotBlocks.length, 2, `${persona}/commit: the plan and the step in commit-autopilot`);
                 ok(/ --mode plan \\\n/.test(autopilotBlocks[0]), 'the autopilot region opens with the plan');
@@ -1308,7 +1325,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
                   // Contract: the subject is the worker's, from a file in TEXT_DIR,
                   // never text on the command line (ADR-0059) nor the suggestion.
                   ok(block.startsWith("TEXT_DIR='<the directory the subjects are in>'\n"), 'the step opens with the TEXT_DIR placeholder');
-                  ok(block.endsWith(' \\\n  "${SUBJECT_ARGS[@]}"'), 'the step passes the subject arguments, last');
+                  ok(block.includes(' \\\n  "${SUBJECT_ARGS[@]}" || exit $?\n'), 'the step passes the subject arguments, last');
                   // subject.txt only when it is there: a clean tree (the close,
                   // the recovery) takes no subject (C163 critique F1).
                   ok(block.includes('SUBJECT_ARGS=()\nif [ -n "$TEXT_DIR" ] && [ -e "$TEXT_DIR/subject.txt" ]; then\n  SUBJECT_ARGS+=(--subject-file "$TEXT_DIR/subject.txt")\nfi\n'), 'the step passes subject.txt when it is there');
@@ -1687,7 +1704,15 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               ok(boundary.includes('Each phase boundary writes state via `state.mjs append --verb <verb> --current-phase <phase> --next-action-file <file> --event updated`'), 'the state write at each boundary');
               // Contract (ADR-0059, amendment of 2026-10-10): the agent writing at a
               // boundary — every text a write carries is a file it wrote.
-              ok(boundary.includes('Every text a write carries (a phase note, a next action, a summary, an owner\'s decision) reaches `state.mjs` and `peer-runner.mjs` as a file: write it with the file-writing tool'), 'the boundary writes take files');
+              ok(boundary.includes('Every text a write carries (a phase note, a next action, a summary, an owner\'s decision) reaches `state.mjs` and `peer-runner.mjs` as a file, never the text in a command') && boundary.includes('With the file-writing tool, write each text of the phase\'s own writes into it'), 'the boundary writes take files');
+              // ADR-0059 Decision 10 (critiques of 2026-11-27): a dispatch has a
+              // directory of its own, released once its attempt's settle
+              // succeeded, every attempt of a phase that dispatches several;
+              // the phase release takes the phase's text directory only.
+              ok(boundary.includes('each dispatch, and each pass of a refine that loops, writes its `prompt.xml` and `subject.json` in a directory of its own'), 'each dispatch has its own directory');
+              ok(boundary.includes('so once that settle has succeeded, release the directory with this block, a run launched or not') && boundary.includes('runs it once per attempt'), 'each attempt\'s dispatch directory is released after its settle');
+              ok(boundary.includes("DISPATCH_TEXT_DIR='<the dispatch directory of the attempt whose settle succeeded>' ") && boundary.includes("TEXT_DIR='<the text directory of the phase>' "), 'the attempt release and the phase release are blocks of their own');
+              ok(!boundary.includes('for RELEASE_PATH in "$TEXT_DIR" "$DISPATCH_TEXT_DIR"; do'), 'the phase release no longer stands for the last attempt only');
               ok(boundary.includes('and dispatches the per-phase peer ensemble'), 'the per-phase ensemble');
               for (const rule of [
                 '`peer-runner.mjs settle --phase <verb> --run-id <that attempt\'s run id>`',
@@ -1844,7 +1869,10 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
                   '#   --next-step-kind owner-decision --next-step-confidence "$CONFIDENCE" \\',
                   "#   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' || exit $?",
                 ].join('\n');
-                ok(`${finalize.text.replace(/\n$/, '')}`.endsWith(`\n${ownerForm}`), 'the commented owner-decision form ends the block');
+                // It ends the writes; only the release of the block's directories
+                // follows it (ADR-0059 Decision 10, item 1).
+                const release = finalize.text.indexOf('# ADR-0059 Decision 10, item 1 — the last write succeeded');
+                ok(release > 0 && finalize.text.slice(0, release).replace(/\n$/, '').endsWith(`\n${ownerForm}`), 'the commented owner-decision form ends the writes, before the release');
               }
               // Contract: the --owner-gate and --owner-gate-anchor values that form
               // takes, which state.mjs validates — the gates this verb may end with,
@@ -2286,7 +2314,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
                 let s = block;
                 if (dir) s = s.replace(DISPATCH_DIR_LINE, () => 'DISPATCH_DIR="$TEXT_DIR/dispatch"');
                 if (verdict) s = s.replace(VERDICT_LINE, () => "VERDICT='agreed'");
-                return s.replace(CONFIDENCE_LINE, () => "CONFIDENCE='HIGH'").replace(OP_DIR_LINE, () => "OP_DIR=''");
+                return s.replace(CONFIDENCE_LINE, () => "CONFIDENCE='HIGH'").replace(OP_DIR_LINE, () => "OP_DIR=''").replace(DISPATCH_TEXT_DIR_LINE, () => "DISPATCH_TEXT_DIR=''");
               };
               const result = (content) => ({ ...runResult(), 'dispatch/prompt.xml.run.json': content });
               const cases = [
@@ -2459,7 +2487,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               // The steps before the block: a private directory, and the files
               // written with the file tool.
               const region = text.slice(text.indexOf(`<!-- pipeline:begin ${verb}-finalize`), text.indexOf(finalize.text));
-              ok(region.includes('mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"'), 'the mktemp step');
+              ok(region.includes("   MAKE_KIND='text'\n") && region.includes('tmpdir-make --kind "$MAKE_KIND"') && !region.includes('mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"\n'), 'the make step');
               ok(squash(region).includes('With your file-writing tool, not the shell, create in that directory `note.md`, the phase note above filled in; `summary.txt`, a one-line résumé of its breakdown; and `next-action.txt`'), 'the file-writing step');
               ok(!/PHASE_NOTE|heredoc/.test(region), 'no heredoc rule left');
             });
@@ -2688,8 +2716,10 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
                 deepStrictEqual(carriedStart.log, ['find-active', 'read', 'awaiting-owner-clear']);
                 ok(carriedStart.argv[2].includes(' --operation-dir /op/phase0 --close-operation true '), carriedStart.argv[2]);
               }
-              const stopped = await runBlock('bash', block + AFTER, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
-              deepStrictEqual([stopped.status, stopped.log], [0, ['find-active', 'read', 'awaiting-owner-clear']], 'inside start the block exits: nothing after it runs');
+              // Inside start the block no longer exits after the clear: it skips the
+              // terminal write and goes on to release its directories (ADR-0059
+              // Decision 10), as the run above shows by its log and status.
+              ok(/\nif \[ "\$WF_TYPE" = start \]; then\n {2}echo [^\n]*\nelse\n/.test(block), 'the start branch skips the terminal write');
               const unread = await runBlock('bash', block, persona, { active: '/w/active.md', readOutput: '', readStatus: 5 });
               deepStrictEqual([unread.status, unread.log], [1, ['find-active', 'read']], 'an unreadable type stops the block before any write');
               // A read that fails after printing a parsable type also stops it.
@@ -2806,8 +2836,11 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               deepStrictEqual([fixUnread.status, fixUnread.log], [1, ['find-active', 'read']], 'fix now: an unreadable type stops the block before any write');
               // The stop is an exit: a write after the block runs on the
               // verb-chain path only.
-              const fixStopped = await runBlock('bash', fix + AFTER, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
-              deepStrictEqual([fixStopped.status, fixStopped.log], [0, ['find-active', 'read', 'awaiting-owner-clear']], 'fix now inside start exits: nothing after it runs');
+              // Inside start the blocks no longer exit after the clear: each goes on
+              // to release its directories (ADR-0059 Decision 10), and Defer skips
+              // its terminal write (its log below).
+              const fixStopped = await runBlock('bash', fix, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
+              deepStrictEqual([fixStopped.status, fixStopped.log], [0, ['find-active', 'read', 'awaiting-owner-clear']], 'fix now inside start: the clear alone');
               const fixThrough = await runBlock('bash', fix + AFTER, persona, CHAIN);
               deepStrictEqual([fixThrough.status, fixThrough.log], [0, ['find-active', 'read', 'awaiting-owner-clear', 'append']], 'outside start the block falls through (the sentinel is reachable)');
               for (const [name, b] of [['fix now', fix], ['defer', defer]]) {
@@ -2830,8 +2863,8 @@ describe('runbook regions: the contracts hold for every enrolled persona', { con
               const lifecycle = await runBlock('bash', defer, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
               deepStrictEqual([lifecycle.status, lifecycle.log], [0, ['find-active', 'read', 'awaiting-owner-clear']], 'inside start: no finish-verb');
               ok(lifecycle.argv[2].includes(` --next-action Resume /${persona}:start: the finding is deferred, and the lifecycle continues at its terminal step --next-step-kind commit `), lifecycle.argv[2]);
-              const deferStopped = await runBlock('bash', defer + AFTER, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
-              deepStrictEqual([deferStopped.status, deferStopped.log], [0, ['find-active', 'read', 'awaiting-owner-clear']], 'defer inside start exits: nothing after it runs');
+              const deferStopped = await runBlock('bash', defer, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
+              deepStrictEqual([deferStopped.status, deferStopped.log], [0, ['find-active', 'read', 'awaiting-owner-clear']], 'defer inside start: the clear, and no terminal write');
               const unread = await runBlock('bash', defer, persona, { active: '/w/active.md', readOutput: '', readStatus: 5 });
               deepStrictEqual([unread.status, unread.log], [1, ['find-active', 'read']], 'an unreadable type stops the block before any write');
               // Review of code step 6 (finding 3): deferring a finding does not

@@ -10,7 +10,7 @@ for (const name of Object.keys(process.env)) if (name.startsWith('AGENTIC_')) de
 import { describe, it } from 'node:test';
 import { deepStrictEqual, strictEqual, match } from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { tmpDir } from '../_tmp.mjs';
@@ -26,9 +26,14 @@ for (const persona of personasFor('scripts/lib/review-scope.mjs')) {
         const dir = realpathSync(tmpDir(t, `${persona} review scope `));
         const top = join(dir, 'the repo');
         const filePath = await documentRepo(B.state, dir, top);
-        const texts = join(dir, 'agent text');
-        mkdirSync(texts);
-        const run = (block) => spawnSync(shell, ['-c', block], { cwd: top, encoding: 'utf8', env: { ...baseEnv(), [B.ROOT_ENV]: B.P.root, ACTIVE: filePath } });
+        // The make's TMPDIR is this test's directory, whose name holds spaces.
+        const run = (block) => spawnSync(shell, ['-c', block], { cwd: top, encoding: 'utf8', env: { ...baseEnv(), [B.ROOT_ENV]: B.P.root, ACTIVE: filePath, TMPDIR: dir } });
+        // ADR-0059 Decision 9 — the private directory the step makes and marks.
+        const made = () => {
+          const r = run(B.make);
+          strictEqual(r.status, 0, r.stderr);
+          return r.stdout.trim();
+        };
         const ok0 = (r) => {
           strictEqual(r.status, 0, r.stderr);
           return JSON.parse(r.stdout);
@@ -40,19 +45,24 @@ for (const persona of personasFor('scripts/lib/review-scope.mjs')) {
         const LEDGER = first.ledger;
         match(LEDGER, /^[0-9a-f]{16}$/);
 
+        let texts = made();
         writeFileSync(join(texts, 'findings.json'), `${JSON.stringify({ findings: [
           { id: 'NEW', severity: 'MAJOR', location: 'docs/adr.md:5', text: "a 'quoted' $(not run) finding" },
         ] })}\n`);
         const closed = ok0(run(B.close(texts, 1, LEDGER)));
         deepStrictEqual(closed.carry, ['G1-F1']);
+        // ADR-0059 Decision 10 — the close recorded the findings and released their directory.
+        strictEqual(existsSync(texts), false, 'the findings directory is released');
 
         const before = ok0(run(B.status));
         deepStrictEqual(before.carry, ['G1-F1']);
         deepStrictEqual(before.recurring, []);
 
         writeFileSync(join(top, 'docs', 'adr.md'), '# A\n\nContext.\n\nDecision, revised.\n\nConsequences.\n');
+        texts = made();
         writeFileSync(join(texts, 'targets.txt'), 'G1-F1\n');
         const attempt = ok0(run(B.record(texts)));
+        strictEqual(existsSync(texts), false, 'the targets directory is released');
         strictEqual(attempt.attempt, 'R1');
         deepStrictEqual(attempt.verify, { mode: 'scoped', reason: 'scoped' }, 'Refine-verify may be scoped');
 

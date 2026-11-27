@@ -9,6 +9,7 @@ import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, rejects, strictEqual } from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -833,7 +834,7 @@ for (const persona of personasFor('scripts/lib/review-attempts.mjs')) {
   });
 
   describe(`${persona}: the /start lifecycle`, () => {
-    const FLAGS = ['--ensemble-type <that type>', '--no-run-reason <peer-unavailable|local-only|privacy-gate|owner-skip>', '--attempt-key <a new text directory for that settle>'];
+    const FLAGS = ['--ensemble-type <that type>', '--no-run-reason <peer-unavailable|local-only|privacy-gate|owner-skip>', '--attempt-key <the phase\'s text directory>'];
     // The settle rule each host follows: Claude's command, and the shared
     // skill Codex's $start reads (it writes workflow state too).
     const ruleIn = (text, from, to) => {
@@ -899,6 +900,9 @@ for (const persona of personasFor('scripts/lib/review-attempts.mjs')) {
     // literal the agent edits (the type's default, the empty reason).
     const fill = (block, values) => {
       let out = block.replaceAll('<plugin-root>', P.path(''));
+      // The dispatch's directory, a run launched or not: the run's own unless
+      // the case names another.
+      if (/^DISPATCH_TEXT_DIR='/m.test(out) && !('DISPATCH_TEXT_DIR' in values)) values = { ...values, DISPATCH_TEXT_DIR: values.DISPATCH_DIR ?? '' };
       for (const [k, v] of Object.entries(values)) {
         const re = new RegExp(`^${k}='[^'\\n]*'$`, 'm');
         ok(re.test(out), `${k} is a value line of the block`);
@@ -927,10 +931,18 @@ for (const persona of personasFor('scripts/lib/review-attempts.mjs')) {
           const textDir = await mkdtemp(join(tmpdir(), 'review-settle-'));
           const laterDir = await mkdtemp(join(tmpdir(), 'review-settle-'));
           try {
-            const script = fill(await blockOf(verb), { TEXT_DIR: textDir, DISPATCH_DIR: '', VERDICT: '', ENSEMBLE_TYPE: type, NO_RUN_REASON: 'peer-unavailable' });
+            // The dispatch made its directory before the peer was found away
+            // (its prompt.xml.err says why): no run, and the settle releases
+            // it all the same (the plan-verify review of 2026-11-27).
+            const made = spawnSync('node', [P.path('scripts/state.mjs'), 'tmpdir-make', '--kind', 'text'], { encoding: 'utf8', env: cleanEnv() });
+            strictEqual(made.status, 0, made.stderr);
+            const dispatchDir = made.stdout.trim();
+            ok(existsSync(dispatchDir), dispatchDir);
+            const script = fill(await blockOf(verb), { TEXT_DIR: textDir, DISPATCH_DIR: '', DISPATCH_TEXT_DIR: dispatchDir, VERDICT: '', ENSEMBLE_TYPE: type, NO_RUN_REASON: 'peer-unavailable' });
             for (let i = 0; i < 2; i++) {
               const r = runBlock(script, ctx.repoRoot);
               strictEqual(r.status, 0, r.stderr);
+              ok(!existsSync(dispatchDir), `run ${i + 1}: the dispatch's directory is released`);
             }
             let v = await view(ctx.workflowPath);
             deepStrictEqual(v.attempts.map((a) => [a.phase, a.type, a.outcome, a.reason, a.tree_reason]), [[verb, type, 'unavailable', 'peer-unavailable', 'no-launch']]);
@@ -1075,11 +1087,14 @@ for (const persona of personasFor('scripts/lib/review-attempts.mjs')) {
           // The placeholders as the skill renders them, left unfilled: the
           // unfilled VERDICT with a dispatch directory, and an unfilled
           // TEXT_DIR or DISPATCH_DIR.
-          const raw = (await blockOf('critique')).replaceAll('<plugin-root>', P.path(''));
+          const raw0 = (await blockOf('critique')).replaceAll('<plugin-root>', P.path(''));
+          const raw = raw0.replace(/^DISPATCH_TEXT_DIR='[^'\n]*'$/m, "DISPATCH_TEXT_DIR=''");
+          const unfilled = /TEXT_DIR, DISPATCH_DIR or DISPATCH_TEXT_DIR is not filled in/;
           for (const [script, rule] of [
             [raw.replace(/^TEXT_DIR='[^'\n]*'$/m, `TEXT_DIR='${textDir}'`).replace(/^DISPATCH_DIR='[^'\n]*'$/m, `DISPATCH_DIR='${dispatchDir}'`), /VERDICT is not agreed, resolved/],
-            [raw.replace(/^DISPATCH_DIR='[^'\n]*'$/m, "DISPATCH_DIR=''").replace(/^VERDICT='[^'\n]*'$/m, "VERDICT=''").replace(/^NO_RUN_REASON=''$/m, "NO_RUN_REASON='local-only'"), /TEXT_DIR or DISPATCH_DIR is not filled in/],
-            [raw.replace(/^TEXT_DIR='[^'\n]*'$/m, `TEXT_DIR='${textDir}'`).replace(/^VERDICT='[^'\n]*'$/m, "VERDICT='agreed'"), /TEXT_DIR or DISPATCH_DIR is not filled in/],
+            [raw.replace(/^DISPATCH_DIR='[^'\n]*'$/m, "DISPATCH_DIR=''").replace(/^VERDICT='[^'\n]*'$/m, "VERDICT=''").replace(/^NO_RUN_REASON=''$/m, "NO_RUN_REASON='local-only'"), unfilled],
+            [raw.replace(/^TEXT_DIR='[^'\n]*'$/m, `TEXT_DIR='${textDir}'`).replace(/^VERDICT='[^'\n]*'$/m, "VERDICT='agreed'"), unfilled],
+            [raw0.replace(/^TEXT_DIR='[^'\n]*'$/m, `TEXT_DIR='${textDir}'`).replace(/^DISPATCH_DIR='[^'\n]*'$/m, "DISPATCH_DIR=''").replace(/^VERDICT='[^'\n]*'$/m, "VERDICT=''").replace(/^NO_RUN_REASON=''$/m, "NO_RUN_REASON='local-only'"), unfilled],
           ]) {
             const r = runBlock(script, ctx.repoRoot);
             strictEqual(r.status, 1, r.stderr);
@@ -1236,7 +1251,7 @@ for (const persona of personasFor('scripts/lib/review-attempts.mjs')) {
           await launchRefineVerify(ctx, dispatchDir, 'refine-verify-refused');
           await writeFile(join(textDir, 'summary.txt'), 'the synthesis\n');
           const before = await readFile(ctx.workflowPath, 'utf8');
-          const good = { TEXT_DIR: textDir, DISPATCH_DIR: dispatchDir, VERDICT: 'concerns', NO_RUN_REASON: '', HOST: 'codex' };
+          const good = { TEXT_DIR: textDir, DISPATCH_DIR: dispatchDir, DISPATCH_TEXT_DIR: dispatchDir, VERDICT: 'concerns', NO_RUN_REASON: '', HOST: 'codex' };
           for (const [values, rule] of [
             [{ HOST: 'cluade' }, /HOST is not claude or codex/],
             [{ VERDICT: 'agreed' }, /VERDICT is not resolved, concerns, regression, conflict or degraded/],
@@ -1260,6 +1275,7 @@ for (const persona of personasFor('scripts/lib/review-attempts.mjs')) {
             ['HOST', /HOST is not claude or codex/],
             ['VERDICT', /VERDICT is not resolved/],
             ['DISPATCH_DIR', /DISPATCH_DIR is not filled in/],
+            ['DISPATCH_TEXT_DIR', /DISPATCH_TEXT_DIR is not filled in/],
             ['TEXT_DIR', /TEXT_DIR is empty or not filled in/],
           ]) {
             let script = raw;

@@ -13,13 +13,22 @@
 // expansion, a fence left open, words ending inside an open quote or
 // substitution, a code span read as a fence), and an action word left out. The rule tests
 // must notice each.
+//
+// The release of the persona plugins' directories (ADR-0059 Decision 10) has
+// boundaries of its own (C14 to C19): a directory made outside the make, a
+// release before the block's last exit or a later use, one the path list
+// keeps, one of a value the block read, and a release that, failing under
+// errexit, ends the block with its own status.
 
 const T_RULES = 'tests/scripts/test-runbook-checks.mjs';
 const T_GATE = 'tests/plugin-shape/test-runbook-cli-contracts.mjs';
 const CHECKS = 'tests/_runbook-checks.mjs';
 const WORDS = 'tests/persona-pipeline/_verb-runbooks.mjs';
+const T_SNIPPETS = 'tests/persona-pipeline/test-tmpdir-snippets.mjs';
+const RELEASE = 'persona-pipeline/snippets/tmpdir-release.sh';
+const REFUSES = /the path list check refuses what it is for/;
 
-export const TESTS = [T_RULES, T_GATE];
+export const TESTS = [T_RULES, T_GATE, T_SNIPPETS];
 
 export const MUTATIONS = [
   {
@@ -112,5 +121,97 @@ export const MUTATIONS = [
     to: '',
     why: "a plain ( … ) inside a $( closes the substitution at its own ), so a $( left unterminated after it is read as closed and the call is checked, not cut",
     killed_by: /the call readers fail closed on the spellings they cannot read whole/,
+  },
+  {
+    id: 'C14', file: CHECKS, tests: [T_GATE],
+    from: "const legacyLine = (l) => LEGACY_MAKE_RE.test(l) && !/agentic-args\\./.test(l);",
+    to: 'const legacyLine = () => false;',
+    why: 'a text or operation directory made with mktemp -d again, in a block or as prose, is no longer seen, so nothing releases it',
+    killed_by: REFUSES,
+  },
+  {
+    id: 'C15', file: CHECKS, tests: [T_GATE],
+    from: "      if (f.start <= lastExit) problems.push(",
+    to: "      if (false) problems.push(",
+    why: 'a release before the block\'s last exit passes, so a path that stops after it reruns over a released directory',
+    killed_by: REFUSES,
+  },
+  {
+    id: 'C16', file: CHECKS, tests: [T_GATE],
+    from: "        if (later >= 0) problems.push(",
+    to: "        if (false) problems.push(",
+    why: 'a block that reads a directory after releasing it passes',
+    killed_by: REFUSES,
+  },
+  {
+    id: 'C17', file: CHECKS, tests: [T_GATE],
+    from: "  for (const k of actual) if (!declared.has(k)) problems.push(",
+    to: "  for (const k of actual) if (false) problems.push(",
+    why: 'a release on a path the path list keeps (one a rerun or a continuation reads) passes: the list is held one way only',
+    killed_by: REFUSES,
+  },
+  {
+    id: 'C18', file: CHECKS, tests: [T_GATE],
+    from: "      if (!head.has(x) && !madeAt.has(x)) problems.push(",
+    to: "      if (false) problems.push(",
+    why: 'a release of a value the block read (another command\'s directory, a path from a file) passes',
+    killed_by: REFUSES,
+  },
+  {
+    id: 'C20', file: CHECKS, tests: [T_GATE],
+    from: "      else if (s === 'else' && stack.length > 0) stack.push(`else of ${stack.pop()}`);\n",
+    to: '',
+    why: 'a release moved into the else of its declared guard reads as the guard itself, so a dispatched bootstrap could release the orchestrator\'s TEXT_DIR',
+    killed_by: REFUSES,
+  },
+  {
+    id: 'C21', file: CHECKS, tests: [T_GATE],
+    from: "      if (blind[f.start]) problems.push(",
+    to: "      if (false) problems.push(",
+    why: 'a release inside a case arm or a brace group, whose branch the path list cannot declare, passes',
+    killed_by: REFUSES,
+  },
+  {
+    id: 'C22', file: CHECKS, tests: [T_GATE],
+    from: "            if (m && m[1] !== 'RELEASE_PATH' && !names.includes(m[1]) && from.test(m[2])) names.push(m[1]);\n",
+    to: '',
+    why: 'a variable assigned from a released directory (a file path under it) is read after the release and passes',
+    killed_by: REFUSES,
+  },
+  // The critique of 2026-11-27 (F4-F6, F8).
+  {
+    id: 'C23', file: CHECKS, tests: [T_GATE],
+    from: "      at = openIfs[f.start].includes('if [ \"$OWN_RC\" -ne 0 ]; then') ? 'exit-failed' : 'exit';\n",
+    to: "      at = lines.slice(fn.start + 1, f.start).some((l) => l.trim() === 'if [ \"$OWN_RC\" -ne 0 ]; then') ? 'exit-failed' : 'exit';\n",
+    why: 'a failing-exit guard closed before the release still reads as guarding it, so a release on every exit removes the OP_DIR the finalize reads',
+    killed_by: REFUSES,
+  },
+  {
+    id: 'C24', file: CHECKS, tests: [T_GATE],
+    from: "    if (!covered.has(i) && !/^\\s*#/.test(l) && TMPDIR_CALL_RE.test(l)) problems.push(",
+    to: "    if (false) problems.push(",
+    why: 'a raw tmpdir-release or tmpdir-make, or a snippet copy that drifted, is no release the path list sees, and passes on a kept path',
+    killed_by: REFUSES,
+  },
+  {
+    id: 'C25', file: CHECKS, tests: [T_GATE],
+    from: "      if (own === undefined && !made) problems.push(",
+    to: "      if (false) problems.push(",
+    why: 'a later block reading the released directory with no line of its own, a reader the list does not name, passes',
+    killed_by: REFUSES,
+  },
+  {
+    id: 'C26', file: CHECKS, tests: [T_GATE],
+    from: "  return lines.flatMap((l, i) => (!covered.has(i) && /\\btmpdir-release\\b/.test(l) ? [i + 1] : []));\n",
+    to: '  return [];\n',
+    why: 'prose telling the agent to release a directory by hand, which ADR-0059 Decision 10, item 2 rules out, passes',
+    killed_by: REFUSES,
+  },
+  {
+    id: 'C19', file: RELEASE, tests: [T_SNIPPETS],
+    from: '--path "$RELEASE_PATH")" || :\n',
+    to: '--path "$RELEASE_PATH")"\n',
+    why: 'a release that fails under errexit ends the block with its own status, so a block whose work succeeded reports a failure',
+    killed_by: /under errexit the make still falls back and the release still reports/,
   },
 ];

@@ -772,15 +772,15 @@ export const MUTATIONS = [
   },
   {
     id: 'K6', file: 'plugins/engineer/commands/refine.md', tests: [T_LIFE],
-    from: '  OP_ARGS=(--operation-dir "$OP_DIR" --open-operation verb)',
-    to: '  OP_ARGS=(--operation-dir "$OP_DIR" --open-operation gate)',
+    from: '  OP_ARGS=(--operation-dir "$FIX_OP_DIR" --open-operation verb)',
+    to: '  OP_ARGS=(--operation-dir "$FIX_OP_DIR" --open-operation gate)',
     why: "refine's Fix now opens a gate operation its own phases' finalize then closes as another kind",
     killed_by: /the gate resolution blocks carry the operation \(N4\) > engineer\/refine/,
   },
   {
     id: 'K7', file: 'plugins/engineer/commands/refine.md', tests: [T_LIFE],
-    from: "  --operation-dir \"$OP_DIR\" \\\n  --next-action 'Commit the refined change; the recurring finding is deferred' \\",
-    to: "  --next-action 'Commit the refined change; the recurring finding is deferred' \\",
+    from: "    --operation-dir \"${GATE_OP_DIR:-$OP_DIR}\" \\\n    --next-action 'Commit the refined change; the recurring finding is deferred' \\",
+    to: "    --next-action 'Commit the refined change; the recurring finding is deferred' \\",
     why: "refine's Defer leaves the resolution's operation open after its finish-verb",
     killed_by: /the gate resolution blocks carry the operation \(N4\) > engineer\/refine/,
   },
@@ -926,9 +926,11 @@ export const MUTATIONS = [
     killed_by: /the note goes only to the workflow the dispatch was for/,
   },
   {
-    id: 'R16', file: 'plugins/engineer/commands/peer-now.md', tests: [T_RP],
-    from: '  mkdir -m 700 "$OP_DIR" ||',
-    to: '  mkdir -p -m 700 "$OP_DIR" ||',
+    // ADR-0059 Decision 9: the dispatch makes its op through the make, which
+    // refuses one that is there already.
+    id: 'R16', file: 'plugins/engineer/scripts/lib/agentic-dir.mjs', tests: [T_RP],
+    from: "    sys.mkdir(dirPath, 0o700);\n  } catch (err) {\n    return { ok: false, reason: codeOf(err) === 'EEXIST' ? 'exists' : 'error', code: codeOf(err) };",
+    to: "    sys.mkdir(dirPath, 0o700);\n  } catch (err) {\n    if (codeOf(err) !== 'EEXIST') return { ok: false, reason: 'error', code: codeOf(err) };",
     why: 'a dispatch run again from its directory launches a second consultation under the first one\'s operation',
     killed_by: /a dispatch run again from the same directory launches no second consultation/,
   },
@@ -1362,8 +1364,8 @@ export const MUTATIONS = [
   },
   {
     id: 'T5', file: PEER_NOW_MD, tests: [T_TAKE],
-    from: 'if [ -n "$ACTIVE" ] && node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" hold-capability >/dev/null 2>&1; then\n  OP_DIR="$TEXT_DIR/op"',
-    to: 'if false; then\n  OP_DIR="$TEXT_DIR/op"',
+    from: 'if [ -n "$ACTIVE" ] && node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" hold-capability >/dev/null 2>&1; then\n  # A fresh directory for each consultation',
+    to: 'if false; then\n  # A fresh directory for each consultation',
     why: "the session's own consultation registers no operation, so the release does not wait for it",
     killed_by: /a peer run the session started itself/,
   },

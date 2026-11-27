@@ -861,3 +861,63 @@ through the engineer's CLI with the same outcomes and statuses. A Codex
 session the owner starts directly, with its own TMPDIR, is not measured; the
 rollouts wait for a release carrying the CLI, installed where they run. Tests: `tests/persona-pipeline/test-agentic-dir-*.mjs`;
 mutation spec `scripts/mutation-specs/agentic-dir.mjs`.
+
+**Implementation note 2026-11-27 (`tmpdir-runbooks-persona`, the persona
+plugins' rollout of Decisions 9 and 10).** Every text and operation
+directory a designer, engineer or founder runbook, skill or reference makes
+comes from one make and goes through one release, each a snippet with one
+source (`persona-pipeline/snippets/tmpdir-make.sh`, `tmpdir-release.sh`),
+which a region includes by name (`{{> tmpdir-make}}`, `{{> tmpdir-release}}`,
+and the `-skill` forms naming `<plugin-root>`). Prose may tell the agent to
+make a directory with the CLI, but never to release one: every release is a
+block of the runbook, a release-only block where the text had none (a Codex
+skill's prose step), and a test refuses any persona text that names the
+release outside the snippet. The make takes Decision 10, item 4's fallbacks (an
+older `state.mjs` or an unsupported platform with `mktemp -d`, a nested op in
+a legacy parent with `mkdir -m 700`); the release is cleanup only, prints at
+most one line on standard error and leaves the block's output and status as
+they were. A block releases a directory it read only from its own head line
+or the variable its make printed to, on its success path after its last exit
+and its last use, or from an EXIT trap for a directory every run makes
+afresh (always, or on failure for an operation directory a later block
+closes); a directory a later block, a rerun or a continuation reads is kept,
+and the reason is written beside the path. `persona-pipeline/tmpdir-paths.json`
+lists, per region template, each directory, its make, its consumers and every
+path with its release or keep; `tests/plugin-shape/test-runbook-cli-contracts.mjs`
+holds the rendered regions to it both ways (`tmpdirProblems`,
+`tmpdirOrderProblems` in `tests/_runbook-checks.mjs`), and refuses a
+`mktemp -d` of a text or operation directory anywhere in a persona's regions or
+authored text. Paths keep a directory by design: a failed peer-now
+consultation (its `prompt.xml.err` says why), a resume the owner stops after
+the drift report, and the rare partial write of an owner-gate block (a clear
+that landed before a failed terminal write), whose recovery runs only the
+terminal write; the owner lists what is left (`tmpdir-list`). Inside
+`/<persona>:start` each dispatch, and each pass of a looping refine, has a
+directory of its own: the refine's pass settle releases the earlier passes',
+and the phase's release block the phase's text directory and its last
+attempt's dispatch directory (critique of 2026-11-27). An
+operation directory still open is kept by the release itself (`refused`,
+`operation-not-closed`), which the refine Defer's not-converged path relies
+on. The region blocks that resolved an owner gate inside a `/start`
+lifecycle no longer exit after the clear: they go on to release their
+directories, and skip the terminal write instead. Tests: the persona runbook
+suites (the happy paths assert each release), `tests/persona-pipeline/test-tmpdir-snippets.mjs`.
+
+## Fold 2026-11-27 — the amendment of 2026-10-10's bullet, for the persona plugins
+
+Decision 9, item 6 and Decision 10, item 8 fold the amendment of 2026-10-10's
+bullet on deleting the file for a package once its runbooks switch. The
+persona plugins switched (the implementation note of 2026-11-27 above), so the
+bullet now states both cases: a switched package's directory is made marked
+and released by the runbook through the CLI's proof, and an unswitched one's
+(the orchestrator's) stays a `mktemp -d` directory that nothing deletes. No
+block deletes the file on its own or runs `rm` in either. The bullet read,
+before the fold:
+
+> - The CLI never deletes the file, unlike the args file: one next-action file
+>   can feed both `append` and `finish-verb`. A block does not delete it either,
+>   since a headless run can deny `rm` (the amendment of 2026-09-29 above). The
+>   file lives in a `mktemp -d` directory under `$TMPDIR`.
+
+The matching sentence of `AGENTS.md` was folded in the same change. The
+decision's status is unchanged.

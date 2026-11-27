@@ -37,7 +37,15 @@ block:
 1. Create a private directory for them, and note the path it prints:
 
    ```bash
-   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   # Step 1: a private text directory, marked so that the step that reads it
+   # last releases it (ADR-0059 Decisions 9 and 10).
+   ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
+   CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+   [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/{{name}} -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+   MAKE_KIND='text'
+   MAKE_PARENT=''
+   {{> tmpdir-make}}
+   printf '%s\n' "$MADE_DIR"
    ```
 
 2. With your file-writing tool, not the shell, create in that directory
@@ -54,7 +62,8 @@ block:
    Write another when the verb's result selects a different next step, and
    for an owner gate below `Owner: ` and the judgment in a few words. Each
    file holds its text as written and ends with one newline, which the
-   scripts remove; nothing deletes the files.
+   scripts remove. This block releases the directory once its last write
+   succeeded; a block that stops keeps it for its rerun.
 
 Then run the block with its values set:
 
@@ -75,6 +84,22 @@ Then run the block with its values set:
   and finalize from a fresh `TEXT_DIR`, since this one keeps the empty id.
   Only with neither directory left is it settled by hand, as the reference
   says.
+{{#capability dispatch_target}}
+- `DISPATCH_TEXT_DIR`: the directory the dispatch block ran with, whenever
+  one ran, a run launched or not; empty when no dispatch block ran. It is
+  never a run's ledger directory: set it even when `DISPATCH_DIR` is empty or
+  names the ledger. The block releases it, with its own `TEXT_DIR` and
+  `OP_DIR`, once its last write succeeded (ADR-0059 Decision 10); a block
+  that stops keeps all three for its rerun.
+{{/capability}}
+{{^capability dispatch_target}}
+- `DISPATCH_TEXT_DIR`: the directory the dispatch block ran with, whenever
+  one ran, a run launched or not; empty when no dispatch block ran. It is
+  never a run's ledger directory: set it even when `DISPATCH_DIR` is empty or
+  names the ledger. The block releases it, with its own `TEXT_DIR`, once its
+  last write succeeded (ADR-0059 Decision 10); a block that stops keeps both
+  for its rerun.
+{{/capability}}
 - `VERDICT`: the synthesis's verdict.
 - `CONFIDENCE`: the proposal's confidence (`HIGH`, `MEDIUM` or `LOW`).
 - `NO_RUN_REASON`: empty when a run launched. When none did, why:
@@ -206,6 +231,7 @@ of them; set it rather than editing the last write's flags.
 ```bash
 TEXT_DIR='<directory from step 1>'
 DISPATCH_DIR='<the directory the dispatch block ran with; empty when no run launched; the run ledger directory when a run launched and that directory is gone>'
+DISPATCH_TEXT_DIR='<the directory the dispatch block ran with, a run launched or not; empty when no dispatch block ran>'
 VERDICT='<the synthesis verdict>'
 CONFIDENCE='<HIGH|MEDIUM|LOW>'
 # Why no run launched (peer-unavailable, local-only, privacy-gate or
@@ -236,6 +262,9 @@ case "$OP_DIR" in
   *'<'*) echo "✗ OP_DIR is not set to the operation directory Phase 0 printed (empty when it printed none); nothing was written." >&2; exit 1 ;;
 esac
 {{/capability}}
+case "$DISPATCH_TEXT_DIR" in
+  *'<'*) echo "✗ DISPATCH_TEXT_DIR is not set to the directory the dispatch block ran with (empty when no dispatch block ran); nothing was written." >&2; exit 1 ;;
+esac
 case "$VERDICT" in
   ''|*'<'*) echo "✗ VERDICT is not set to the synthesis verdict; nothing was written." >&2; exit 1 ;;
 esac
@@ -482,4 +511,14 @@ fi
 #   --next-step-kind owner-decision --next-step-confidence "$CONFIDENCE" \
 #   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' || exit $?
 {{/capability}}
+# ADR-0059 Decision 10, item 1 — the last write succeeded, whatever form it
+# took: no block, rerun or continuation reads these directories again.
+{{#capability dispatch_target}}
+for RELEASE_PATH in "$TEXT_DIR" "$DISPATCH_TEXT_DIR" "$OP_DIR"; do
+{{/capability}}
+{{^capability dispatch_target}}
+for RELEASE_PATH in "$TEXT_DIR" "$DISPATCH_TEXT_DIR"; do
+{{/capability}}
+  {{> tmpdir-release}}
+done
 ```

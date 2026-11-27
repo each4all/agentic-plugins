@@ -29,9 +29,35 @@ file> --next-step-kind … --next-step-confidence … [--next-step-verb …]
 clears the gate, names the next step and replaces the gate's `Owner: …` next
 action in one write; it refuses, writing nothing, when the gate set on the
 workflow is another one. The decision and the next action are text: each
-reaches `state.mjs` as a file written with the file-writing tool into a
-private `mktemp -d` directory, never on the command line (ADR-0059,
-amendment of 2026-10-10).
+reaches `state.mjs` as a file written with the file-writing tool, never on
+the command line (ADR-0059, amendment of 2026-10-10), into a private text
+directory this block makes and marks (ADR-0059 Decision 9); note the path it
+prints. Fill `<plugin-root>` with this plugin's installed root, the path you
+read this reference from, cut before its `/core/skills/` directory:
+
+```bash
+# A private text directory, marked so that the step that reads it
+# last releases it (ADR-0059 Decisions 9 and 10).
+MAKE_KIND='text'
+MAKE_PARENT=''
+{{> tmpdir-make-skill}}
+printf '%s\n' "$MADE_DIR"
+```
+
+Once the clear has succeeded, nothing reads the two files again: release
+their directory with this block (Decision 10). A clear that refused keeps it
+for the retry.
+
+```bash
+TEXT_DIR='<the directory holding the decision and the next action>'
+case "$TEXT_DIR" in
+  ''|'<'*) echo "✗ TEXT_DIR is empty or not filled in; nothing was released." >&2; exit 1 ;;
+esac
+# ADR-0059 Decision 10, item 1 — the clear succeeded: no block, rerun or
+# continuation reads the decision or the next action again.
+RELEASE_PATH="$TEXT_DIR"
+{{> tmpdir-release-skill}}
+```
 Inside a `/{{persona}}:start` lifecycle, decide's Owner selection records no
 next step instead (`--clear-next-step true`): the lifecycle owns its phase
 order.

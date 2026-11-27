@@ -14,10 +14,22 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" --mode plan \
 
 Then write each commit's subject (ADR-0028 §P6, note of 2026-11-04). A subject
 reaches the driver as a file, never in the block (ADR-0059, amendment of
-2026-10-10): create a private directory with
-`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`, note the path it prints,
-and with your file-writing tool, not the shell, write there one line ending
-with one newline per entry of the plan's `commits`: `subject.txt` for a single
+2026-10-10). Create a private directory for them, and note the path it prints:
+
+```bash
+# The subjects' private text directory, marked so that the step that reads it
+# last releases it (ADR-0059 Decisions 9 and 10).
+ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/{{name}} -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+MAKE_KIND='text'
+MAKE_PARENT=''
+{{> tmpdir-make}}
+printf '%s\n' "$MADE_DIR"
+```
+
+With your file-writing tool, not the shell, write there one line ending with
+one newline per entry of the plan's `commits`: `subject.txt` for a single
 commit, `subject-<n>.txt` per commit when `requires_split` is true. Each is
 `<type>(<scope>): <summary>`:
 
@@ -41,11 +53,14 @@ subject again. No line of it opens with a trailer key (`Workflow-ID:`,
 (`fix: …`, `feat(x)!: …`), which release-please would read as a changelog
 entry of its own. It is committed as written, up to 4000 characters.
 
-On a clean tree (`branch: no-changes`) write none, and leave `TEXT_DIR` empty:
-the recovery and the close need no subject or body. Nothing in the step
-deletes the files, but they do not outlive it: the run removes the step's
-temporary directory, and when the step stops at the staging-set gate the
-owner's interactive commit composes the body unless the owner passes one.
+On a clean tree (`branch: no-changes`) make no directory, write none, and
+leave `TEXT_DIR` empty: the recovery and the close need no subject or body.
+Once the driver succeeds (a commit, a recovery, a close, or the stop at the
+staging-set gate, where the owner's interactive commit composes the body
+unless the owner passes one) the block releases the directory (ADR-0059
+Decision 10); a refusal keeps it, and the step's rerun reads the files again.
+The run's removal of the step's temporary directory is a backstop, not the
+release.
 
 Writing the subjects is part of this step, and this text governs it. Where an
 older instruction says the step commits with the suggested subject (the
@@ -102,7 +117,11 @@ fi
 node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" --mode autopilot \
   --workflow-path "$ACTIVE" --repo-root "$REPO_ROOT" --host "${AGENTIC_HOST:-claude}" \
   "${BODY_ARGS[@]}" \
-  "${SUBJECT_ARGS[@]}"
+  "${SUBJECT_ARGS[@]}" || exit $?
+# ADR-0059 Decision 10, item 1 — the driver succeeded: no block, rerun or
+# continuation reads the subjects again (nothing when TEXT_DIR is empty).
+RELEASE_PATH="$TEXT_DIR"
+{{> tmpdir-release}}
 ```
 
 Report its JSON `action` in the Completion below. A subject that does not fit

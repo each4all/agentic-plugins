@@ -61,12 +61,19 @@ block: in shell source a quote, `$` or backtick of it would be read as code
 1. Create a private directory for it, and note the path it prints:
 
    ```bash
-   mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"
+   # Step 1: a private text directory, marked so that the step that reads it
+   # last releases it (ADR-0059 Decisions 9 and 10).
+   ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
+   CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+   [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/{{name}} -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+   MAKE_KIND='text'
+   MAKE_PARENT=''
+   {{> tmpdir-make}}
+   printf '%s\n' "$MADE_DIR"
    ```
 
 2. With your file-writing tool, not the shell, create `subject.txt` in that
-   directory holding the subject, one line ending with one newline. Nothing
-   deletes it.
+   directory holding the subject, one line ending with one newline.
 
 Then run the block with `TEXT_DIR` set to that directory. When the user
 accepted the suggested subject as it stands, pass `--suggested-subjects`
@@ -79,7 +86,9 @@ the body (P1, with the P9 trailer allowlist) is shared by every per-package
 commit. Add each extra the user opted in with `--include-extra
 <path>`, or `--accept-current-tree` for the whole tree; when the bootstrap
 accepted the current tree (`ACCEPT_CURRENT_TREE=1`), pass it again here, so
-the driver stages all of `git_changes` rather than the intersection.
+the driver stages all of `git_changes` rather than the intersection. Once the
+driver succeeds the block releases the directory (ADR-0059 Decision 10); a
+failure keeps it, and the resumed Phase 7 reads the subject again.
 
 ARCHIVE TIMING — decide before running execute mode. The driver writes
 `set-terminal` as its last step, and on Claude the Stop hook fires at every
@@ -120,6 +129,10 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" \
 # set-terminal; the Stop hook evaluates the archive gates (ADR-0017
 # §sub-decision 5) and only retries the writeback idempotently, or backstops a
 # driver that died between the two writes.
+# ADR-0059 Decision 10, item 1 — the commit landed: no block, rerun or
+# continuation reads the subject again.
+RELEASE_PATH="$TEXT_DIR"
+{{> tmpdir-release}}
 ```
 
 The runtime completion footer is **code-emitted** on this terminal path

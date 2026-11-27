@@ -61,5 +61,30 @@ prompt-mode: verbatim
 ### Response
 
 $(head -c 4000 "$STDOUT_PATH")" \
-  --event updated
+  --event updated || exit $?
+# The whole response stays in the run ledger, where this path names it.
+printf 'response: %s\n' "$STDOUT_PATH"
+# ADR-0059 Decision 10, item 1 — the note is the consultation's last write:
+# no block, rerun or continuation reads the dispatch's directory again.
+RELEASE_PATH="$DISPATCH_DIR"
+{{> tmpdir-release}}
+```
+
+With no active workflow (the standalone case), run this block instead, with
+the same `DISPATCH_DIR`: it prints the response of a run that succeeded, then
+releases the directory, which nothing reads again.
+
+```bash
+DISPATCH_DIR='<the directory the dispatch ran with>'
+ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/{{name}} -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+# The response of a run whose own result says it succeeded (ok true).
+STANDALONE_OUT="$(node -e 'let r;try{r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))}catch{process.exit(1)}if(r===null||typeof r!=="object"||r.ok!==true||typeof r.stdout_path!=="string"||r.stdout_path==="")process.exit(1);process.stdout.write(r.stdout_path)' "$DISPATCH_DIR/prompt.xml.run.json")" \
+  || { echo "✗ The run in DISPATCH_DIR ($DISPATCH_DIR) did not succeed, or its result is missing or unreadable (prompt.xml.err there says why); the directory is kept." >&2; exit 1; }
+cat "$STANDALONE_OUT" || exit 1
+# ADR-0059 Decision 10, item 1 — the response is printed: no block, rerun or
+# continuation reads the dispatch's directory again.
+RELEASE_PATH="$DISPATCH_DIR"
+{{> tmpdir-release}}
 ```

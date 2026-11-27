@@ -13,6 +13,16 @@
 // other (cliCallProblems). A runbook test that executes a block is then left
 // for what only a run can show: the block's effect on the happy path.
 //
+// The release of the persona plugins' text and operation directories (ADR-0059
+// Decision 10) is held here too, by the tests at the end of this file: each
+// region the path list (persona-pipeline/tmpdir-paths.json) names makes and
+// releases exactly what the list says, on the paths it says, after every block
+// that reads the directory, and before no later block that reads it unnamed;
+// no region or authored text makes one outside the make, except what the
+// list's `pending` names (the rollout's remainder); no persona text releases
+// one by hand (item 2), and no shell block calls either subcommand but
+// through its snippet; every region template that names them is in the list.
+//
 // Checked: the state.mjs and peer-runner.mjs of designer, engineer, founder and
 // orchestrator, called from any markdown under a plugin's commands/, core/ or
 // adapters/, by a root variable or a skill's `<plugin-root>` placeholder. Other
@@ -59,8 +69,10 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { cliCallProblems, cliInvocations, cliUnscannedCalls, peerRunnerContract, stateCliContract } from '../_runbook-checks.mjs';
+import { SHELL_LANGS, cliCallProblems, cliInvocations, cliUnscannedCalls, fencedBlocks, peerRunnerContract, stateCliContract, tmpdirBlockReads, tmpdirHandReleaseLines, tmpdirLegacyLines, tmpdirOrderProblems, tmpdirProblems } from '../_runbook-checks.mjs';
 import { readWord, stripComments, words } from '../persona-pipeline/_verb-runbooks.mjs';
+import { MANIFEST, declaration } from '../persona-pipeline/_personas.mjs';
+import { parseRegions, renderTemplate, renderingDeclaration, replaceRegionBodies, snippetText } from '../../scripts/lib/persona-pipeline.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const PARSE = { stripComments, words, readWord };
@@ -183,6 +195,11 @@ test('the sweep reads the corpus and checks the calls it names', () => {
   }
   // A skill names its root by placeholder (the Codex mirror of a command).
   named.push('plugins/engineer/core/skills/compose/SKILL.md engineer:peer-runner.mjs settle#1', 'plugins/orchestrator/core/skills/abort/SKILL.md orchestrator:state.mjs admission join#1');
+  // The make and the release of a directory (ADR-0059 Decision 9): the
+  // bootstrap's topic and operation directories, the finalize's release.
+  for (const p of PERSONAS) {
+    named.push(`plugins/${p}/commands/compose.md ${p}:state.mjs tmpdir-make#1`, `plugins/${p}/commands/compose.md ${p}:state.mjs tmpdir-release#1`);
+  }
   deepStrictEqual(named.filter((id) => !checked.has(id)), []);
 });
 
@@ -195,4 +212,196 @@ test('each contract is read whole: the subcommands the runbooks rely on, with fl
     const runnerSubs = ['cancel', 'new-run-id', 'run', ...(p === 'orchestrator' ? [] : ['settle']), 'status', 'sweep'];
     deepStrictEqual([...peer.subs.keys()].sort(), runnerSubs);
   }
+});
+
+// ── ADR-0059 Decision 10: the persona plugins' directories ──────────────────
+
+const PATHS = JSON.parse(read('persona-pipeline/tmpdir-paths.json'));
+// Each in a command's form and a skill's (the root spelled <plugin-root>).
+const SNIPPETS = { make: [snippetText('tmpdir-make'), snippetText('tmpdir-make-skill')], release: [snippetText('tmpdir-release'), snippetText('tmpdir-release-skill')] };
+const GROUPED = new Set(PATHS.groups.flatMap((g) => g.templates));
+
+// Each rendering of a template the list groups: [template, persona, region, text].
+function renderings(templates) {
+  const out = [];
+  for (const region of MANIFEST.regions.filter((r) => templates.includes(r.template))) {
+    for (const persona of region.personas) {
+      const text = renderTemplate(read(`persona-pipeline/${region.template}`), {
+        declaration: renderingDeclaration(declaration(persona)), substitutions: region.substitutions ?? {}, label: region.template,
+      });
+      out.push([region.template, persona, region, text]);
+    }
+  }
+  return out;
+}
+
+// The text and operation directories made outside the make, per file: in a
+// region template the list does not group, and in a persona's authored text
+// (its region bodies left out, which their templates answer for).
+function legacyMakes() {
+  const found = new Set();
+  const legacyIn = (text) => tmpdirLegacyLines(text, SNIPPETS).length > 0;
+  for (const region of MANIFEST.regions) {
+    if (!GROUPED.has(region.template) && legacyIn(read(`persona-pipeline/${region.template}`))) found.add(region.template);
+  }
+  for (const file of corpus().filter((f) => PERSONAS.includes(f.split('/')[1]))) {
+    if (legacyIn(authoredText(file))) found.add(file);
+  }
+  return [...found].sort();
+}
+
+// A persona file's authored text: its region bodies left out, which their
+// templates answer for.
+function authoredText(file) {
+  const text = read(file);
+  const parsed = parseRegions(text, file);
+  return parsed.errors.length === 0 ? replaceRegionBodies(text, parsed.regions, Object.fromEntries(parsed.regions.map((r) => [r.id, '']))) : text;
+}
+
+test('each region the path list groups makes and releases what the list says, on the paths it says (ADR-0059 Decision 10)', () => {
+  const problems = [];
+  let seen = 0;
+  for (const group of PATHS.groups) {
+    const all = renderings(group.templates);
+    ok(all.length > 0, `no region renders ${group.templates.join(', ')}`);
+    for (const [template, persona, region, text] of all) {
+      seen++;
+      problems.push(...tmpdirProblems(text, group, { snippets: SNIPPETS, capabilities: declaration(persona).capabilities, label: `${persona} ${region.id} (${template})` }));
+    }
+  }
+  deepStrictEqual(problems, []);
+  ok(seen >= 40, `only ${seen} renderings checked`);
+});
+
+test('in each persona runbook, a directory is released only after every block that reads it', () => {
+  const problems = [];
+  for (const group of PATHS.groups) {
+    const dests = new Set(MANIFEST.regions.filter((r) => group.templates.includes(r.template)).flatMap((r) => r.personas.map((p) => `plugins/${p}/${r.dest}`)));
+    for (const file of dests) {
+      problems.push(...tmpdirOrderProblems(read(file), group, { capabilities: declaration(file.split('/')[1]).capabilities, label: file }));
+    }
+  }
+  deepStrictEqual(problems, []);
+});
+
+test('no persona region or authored text makes a directory outside the make, except what the list keeps pending', () => {
+  deepStrictEqual(legacyMakes(), [...PATHS.pending].sort());
+});
+
+test('each persona file whose authored text tells the agent to make a directory is in the path list, with the step that releases it', () => {
+  const found = corpus().filter((f) => PERSONAS.includes(f.split('/')[1]) && /\btmpdir-make\b/.test(authoredText(f))).sort();
+  deepStrictEqual(found, PATHS.authored.map((a) => a.file).sort());
+  for (const a of PATHS.authored) {
+    // The releasing step: a region the file renders (region:<id>), or the
+    // authored sentence that tells the agent to release.
+    const region = /^region:(.+)$/.exec(a.released_by)?.[1];
+    if (region) ok(read(a.file).includes(`<!-- pipeline:begin ${region} -->`), `${a.file}: no region ${region}`);
+    else ok(authoredText(a.file).includes(a.released_by), `${a.file}: no authored "${a.released_by}"`);
+  }
+});
+
+// Each persona file as it ships (commands, skills, references), its change log aside.
+const personaFiles = () => corpus().filter((f) => PERSONAS.includes(f.split('/')[1]) && !f.endsWith('CHANGELOG.md'));
+
+test('no persona text tells the agent to release a directory by hand: a release is a block of the runbook (ADR-0059 Decision 10, item 2)', () => {
+  const found = personaFiles().flatMap((f) => tmpdirHandReleaseLines(read(f), SNIPPETS).map((l) => `${f}:${l}`));
+  deepStrictEqual(found, []);
+});
+
+test('no persona shell block calls tmpdir-make or tmpdir-release but through the snippets, grouped or not', () => {
+  const found = [];
+  for (const f of personaFiles()) {
+    for (const b of fencedBlocks(read(f)).filter((x) => SHELL_LANGS.has(x.lang))) {
+      for (const p of tmpdirBlockReads(b.lines.join('\n'), SNIPPETS).problems) if (/outside the make and release snippets/.test(p)) found.push(`${f} block at line ${b.start}: ${p}`);
+    }
+  }
+  deepStrictEqual(found, []);
+});
+
+test('each region template that makes, releases or names a directory\'s CLI is in the path list', () => {
+  const ungrouped = MANIFEST.regions.map((r) => r.template)
+    .filter((t, i, all) => all.indexOf(t) === i && /\btmpdir-(?:make|release)\b|\{\{> tmpdir-/.test(read(`persona-pipeline/${t}`)) && !GROUPED.has(t));
+  deepStrictEqual(ungrouped, []);
+});
+
+test('each directory of the path list declares its paths, releasing on one at least exactly when it names a release', () => {
+  const problems = [];
+  for (const group of PATHS.groups) {
+    for (const d of group.directories) {
+      const values = Object.values(d.paths ?? {});
+      const where = `${group.templates.join(', ')} ${d.variable}`;
+      if (values.length === 0) { problems.push(`${where}: no paths`); continue; }
+      for (const v of values) if (!/^(release|keep)(: .+)?$/s.test(v) || /^keep$/.test(v)) problems.push(`${where}: "${v}" is neither release nor keep: <reason>`);
+      if (Boolean(d.release) !== values.some((v) => v.startsWith('release'))) problems.push(`${where}: its release and its paths disagree`);
+    }
+  }
+  deepStrictEqual(problems, []);
+});
+
+test('the path list check refuses what it is for: a raw make, a release too early, of a value read, on a kept path, on the wrong branch, of another block\'s line', () => {
+  const group = {
+    blocks: { main: '^node .* write' },
+    directories: [{ variable: 'TEXT_DIR', made: 'step', consumers: ['main'], release: { block: 'main', at: 'end' } }],
+  };
+  const step = ['```bash', "MAKE_KIND='text'", ...SNIPPETS.make[0].split('\n'), "printf '%s\\n' \"$MADE_DIR\"", '```'].join('\n');
+  const rel = (v) => [`RELEASE_PATH="$${v}"`, ...SNIPPETS.release[0].split('\n')];
+  const main = (body) => ['```bash', "TEXT_DIR='<directory from step 1>'", 'ROOT_OVERRIDE=x', ...body, '```'].join('\n');
+  const write = 'node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" write --file "$TEXT_DIR/a" || exit $?';
+  const check = (text) => tmpdirProblems(text, group, { snippets: SNIPPETS, label: 'x' });
+  deepStrictEqual(check(`${step}\n${main([write, ...rel('TEXT_DIR')])}`), []);
+  const cases = [
+    ['a raw make', `${step}\n${main(['D="$(mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX")"', write, ...rel('TEXT_DIR')])}`, /makes a directory outside the make/],
+    ['prose telling the agent to make one', `1. Create one: \`mktemp -d "\${TMPDIR:-/tmp}/agentic-text.XXXXXX"\`\n${step}\n${main([write, ...rel('TEXT_DIR')])}`, /line 1 makes a directory outside the make, or tells the agent to/],
+    ['a raw nested op', `${step}\n${main(['mkdir -m 700 "$TEXT_DIR/op"', write, ...rel('TEXT_DIR')])}`, /makes a directory outside the make/],
+    ['a release before a later read', `${step}\n${main([write, ...rel('TEXT_DIR'), 'cat "$TEXT_DIR/a"'])}`, /TEXT_DIR is used at line \d+, after its release/],
+    ['a release before the last exit', `${step}\n${main([...rel('TEXT_DIR'), write])}`, /before the block's last exit/],
+    ['a release on the failing branch', `${step}\n${main(['if ! node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" write; then', ...rel('TEXT_DIR').map((l) => `  ${l}`), '  exit 1', 'fi'])}`, /before the block's last exit/],
+    ['a release of a value read', `${step}\n${main([write, 'OTHER="$(cat "$TEXT_DIR/dir")"', ...rel('OTHER')])}`, /given OTHER, which is neither a line at the head of the block nor the variable a make in it printed to/],
+    ['a release on a path the list keeps', `${step}\n${main([write, ...rel('TEXT_DIR')])}`, /a releasing step main:TEXT_DIR:end on a path the path list keeps/, { ...group, directories: [{ ...group.directories[0], release: undefined }] }],
+    ['a release the list declares and no step makes', `${step}\n${main([write])}`, /releases main:TEXT_DIR:end, and no releasing step does/],
+    ['another command\'s line', `${step}\n${main([write, 'ORCH_TEXT_DIR="$TEXT_DIR"', ...rel('ORCH_TEXT_DIR')])}`, /given ORCH_TEXT_DIR/],
+    ['a release under the inverted guard', `${step}\n${main([write, 'if [ -n "$T" ]; then', ...rel('TEXT_DIR').map((l) => `  ${l}`), 'fi'])}`, /a releasing step main:TEXT_DIR:end under if \[ -n "\$T" \]; then on a path the path list keeps/, { ...group, directories: [{ ...group.directories[0], release: { block: 'main', at: 'end', guard: 'if [ -z "$T" ]; then' } }] }],
+    ['a release of a line given another value', `${step}\n${main([write, 'TEXT_DIR="$OP_DIR"', ...rel('TEXT_DIR')])}`, /TEXT_DIR, which line \d+ assigns another value/],
+    ['a make spelled --directory', `${step}\n${main(['D="$(mktemp --directory)"', write, ...rel('TEXT_DIR')])}`, /makes a directory outside the make/],
+    ['a second step make', `${step}\n${step}\n${main([write, ...rel('TEXT_DIR')])}`, /2 step makes print a directory, and the path list holds 1/],
+    ['a release in a function no trap runs', `${step}\n${main(['f() {', ...rel('TEXT_DIR').map((l) => `  ${l}`), '}', write])}`, /which no EXIT trap of the block runs/],
+    // The plan-verify review of 2026-11-27: the other branch of the declared
+    // guard, a case arm, a brace group, and an alias read after the release.
+    ['a release in the else of the declared guard', `${step}\n${main([write, 'if [ -z "$T" ]; then', '  :', 'else', ...rel('TEXT_DIR').map((l) => `  ${l}`), 'fi'])}`, /main:TEXT_DIR:end under else of if \[ -z "\$T" \]; then on a path the path list keeps/, { ...group, directories: [{ ...group.directories[0], release: { block: 'main', at: 'end', guard: 'if [ -z "$T" ]; then' } }] }],
+    ['a release in a case arm', `${step}\n${main([write, 'case "$T" in', '  never)', ...rel('TEXT_DIR').map((l) => `    ${l}`), '    ;;', 'esac'])}`, /inside a case arm, a while loop or a brace group/],
+    ['a release in a brace group', `${step}\n${main([write, '[ -n "$T" ] && {', ...rel('TEXT_DIR').map((l) => `  ${l}`), '}'])}`, /inside a case arm, a while loop or a brace group/],
+    ['an alias read after the release', `${step}\n${main(['ALIAS="$TEXT_DIR"', write, ...rel('TEXT_DIR'), 'cat "$ALIAS/a"'])}`, /ALIAS, assigned from TEXT_DIR, is used at line \d+, after its release/],
+    // The critique of 2026-11-27: a raw call of either subcommand and a
+    // snippet copy one edit away are no make or release; a failing-exit guard
+    // closed before the release guards nothing; the paths agree with `at`.
+    ['a raw release', `${step}\n${main([write, 'node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-release --path "$TEXT_DIR"'])}`, /names tmpdir-make or tmpdir-release outside the make and release snippets/, { ...group, directories: [{ ...group.directories[0], release: undefined }] }],
+    ['a raw make', `${main(['D="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" tmpdir-make --kind op)"', write])}`, /names tmpdir-make or tmpdir-release outside the make and release snippets/, { ...group, directories: [] }],
+    ['a release snippet copy with one edit', `${step}\n${main([write, 'RELEASE_PATH="$TEXT_DIR"', ...SNIPPETS.release[0].replace('|| :', '|| true').split('\n')])}`, /names tmpdir-make or tmpdir-release outside the make and release snippets/],
+    ['a failing-exit guard closed before the release', `${step}\n${main(['OWN_RC=0', 'f() {', '  OWN_RC=$?', '  if [ "$OWN_RC" -ne 0 ]; then', '    :', '  fi', ...rel('TEXT_DIR').map((l) => `  ${l}`), '}', 'trap f EXIT', write])}`, /a releasing step main:TEXT_DIR:exit on a path the path list keeps/, { ...group, directories: [{ ...group.directories[0], release: { block: 'main', at: 'exit-failed' }, paths: { 'fails': 'release', 'succeeds': 'keep: x' } }] }],
+    ['a release on every exit the paths keep somewhere', `${step}\n${main(['f() {', ...rel('TEXT_DIR').map((l) => `  ${l}`), '}', 'trap f EXIT', write])}`, /released on every exit, and the path list keeps it on a path/, { ...group, directories: [{ ...group.directories[0], release: { block: 'main', at: 'exit' }, paths: { 'any exit': 'release', 'a rerun': 'keep: x' } }] }],
+    ['an end release whose paths keep it nowhere', `${step}\n${main([write, ...rel('TEXT_DIR')])}`, /released on the success path only, and the path list keeps it on no path/, { ...group, directories: [{ ...group.directories[0], paths: { 'success': 'release', 'a refusal': 'release' } }] }],
+  ];
+  for (const [what, text, re, g = group] of cases) {
+    const problems = tmpdirProblems(text, g, { snippets: SNIPPETS, label: 'x' });
+    ok(problems.some((p) => re.test(p)), `${what}: ${JSON.stringify(problems)}`);
+  }
+  // Across blocks: a release in a block before one that reads the directory.
+  const order = { blocks: { a: '^A$', b: '^B$' }, directories: [{ variable: 'X', consumers: ['b'], release: { block: 'a', at: 'end' } }] };
+  deepStrictEqual(tmpdirOrderProblems('```bash\nA\n```\n```bash\nB\n```\n', order, {}), ['runbook: X is released in the a block before the b block reads it']);
+  deepStrictEqual(tmpdirOrderProblems('```bash\nB\n```\n```bash\nA\n```\n', order, {}), []);
+  // A reader the list does not name: a later block that uses the released
+  // variable with no line of its own (the peer's probe of 2026-11-27), or one
+  // whose line names the same, non-fresh directory; a block of its own
+  // directory, or one the list runs instead of the releasing block, is no reader.
+  const later = { blocks: { a: '^A$' }, directories: [{ variable: 'X', consumers: [], release: { block: 'a', at: 'end' } }] };
+  const rel2 = "```bash\nX='<the directory the dispatch ran with>'\nA\n```\n";
+  deepStrictEqual(tmpdirOrderProblems(`${rel2}\`\`\`bash\ncat "$X/note.md"\n\`\`\`\n`, later, {}), ['runbook: a block after the a block uses X, which it neither takes on a line of its own nor makes: the directory released there']);
+  deepStrictEqual(tmpdirOrderProblems(`${rel2}\`\`\`bash\nX='<the directory the dispatch ran with>'\ncat "$X/note.md"\n\`\`\`\n`, later, {}), ["runbook: a block after the a block takes X as '<the directory the dispatch ran with>', the directory released there"]);
+  deepStrictEqual(tmpdirOrderProblems(`${rel2}\`\`\`bash\nX='<directory from step 1>'\ncat "$X/note.md"\n\`\`\`\n`, later, {}), []);
+  deepStrictEqual(tmpdirOrderProblems(`${rel2}\`\`\`bash\n# the release of "$X" ran above\ntrue\n\`\`\`\n`, later, {}), []);
+  const instead = { blocks: { a: '^A$', b: '^B$' }, directories: [{ variable: 'X', consumers: [], release: { block: 'a', at: 'end' }, instead_of: ['b'] }] };
+  deepStrictEqual(tmpdirOrderProblems(`${rel2}\`\`\`bash\nX='<the directory the dispatch ran with>'\nB\n\`\`\`\n`, instead, {}), []);
+  // No prose release, and the release snippet's own lines are no prose.
+  deepStrictEqual(tmpdirHandReleaseLines('Then release it with `state.mjs tmpdir-release --path <it>`.\n', SNIPPETS), [1]);
+  deepStrictEqual(tmpdirHandReleaseLines(rel('X').join('\n'), SNIPPETS), []);
 });

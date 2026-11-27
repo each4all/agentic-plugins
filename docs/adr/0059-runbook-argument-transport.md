@@ -7,9 +7,12 @@ Accepted
 Decision 9, which directories a runbook may remove and how (amendment of
 2026-11-25, C175), and Decision 10, when a runbook releases its directories
 (amendment of 2026-11-26, C175): Accepted (2026-11-26, the owner explicitly
-in the main session). Not yet implemented: until a package's runbooks
-switch (Decision 10, item 8), its blocks keep `mktemp -d` and delete
-nothing.
+in the main session). Implemented for the persona plugins (designer,
+engineer, founder; implementation note of 2026-11-27): their runbooks,
+skills and references make each text and operation directory through the
+make and release it on the paths `persona-pipeline/tmpdir-paths.json`
+lists. Not yet implemented for the orchestrator: until its runbooks switch
+(Decision 10, item 8), its blocks keep `mktemp -d` and delete nothing.
 
 <!--
 No supersedure. This decides a mechanism the runbooks never had an explicit
@@ -1420,9 +1423,16 @@ escaping, so no escape that is valid JSON but wrong can change it.
   completed run only after it has brought the run's handle up to date, as it
   does for an inline summary.
 - The CLI never deletes the file, unlike the args file: one next-action file
-  can feed both `append` and `finish-verb`. A block does not delete it either,
-  since a headless run can deny `rm` (the amendment of 2026-09-29 above). The
-  file lives in a `mktemp -d` directory under `$TMPDIR`.
+  can feed both `append` and `finish-verb`. No block deletes the file on its
+  own or runs `rm`, since a headless run can deny `rm` (the amendment of
+  2026-09-29 above). The file lives in a private directory under `$TMPDIR`.
+  In a package whose runbooks have switched (Decision 10, item 8: today the
+  persona plugins, designer, engineer and founder), the make marks that
+  directory, and the runbook releases it, with the file, through the CLI's
+  proof once no reader of it is left (Decisions 9 and 10). Until a package
+  switches (today the orchestrator), it is a `mktemp -d` directory and nothing
+  deletes the file. *Amended 2026-11-27 (folded for the persona plugins, as
+  Decision 9, item 6 and Decision 10, item 8 require): [history](history/0059-runbook-argument-transport.md#fold-2026-11-27--the-amendment-of-2026-10-10s-bullet-for-the-persona-plugins).*
 - After transport each field keeps its existing treatment: a request is
   scrubbed to one line, `settle` collapses a summary's whitespace, a
   resolution is trimmed, and a subject must be one line, with the

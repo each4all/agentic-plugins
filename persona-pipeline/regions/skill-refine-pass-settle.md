@@ -14,14 +14,30 @@ peer not found, the privacy gate, a local-only pass) leaves no attempt at
 all. With no active {{persona}} workflow on this branch there is nothing to
 settle, and the block says so.
 
-Write the pass's one-line synthesis résumé as `summary.txt` in a new
-`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"` directory with your
+Make a new private directory for the pass, and note the path it prints:
+
+```bash
+# A private text directory, marked so that the step that reads it
+# last releases it (ADR-0059 Decisions 9 and 10).
+MAKE_KIND='text'
+MAKE_PARENT=''
+{{> tmpdir-make-skill}}
+printf '%s\n' "$MADE_DIR"
+```
+
+Write the pass's one-line synthesis résumé there as `summary.txt` with your
 file-writing tool, not the shell (ADR-0059, amendment of 2026-10-10): that
-directory is `TEXT_DIR`, a new one for each pass. Set `HOST` to the host you
+directory is `TEXT_DIR`, a new one for each pass. Once the pass is settled,
+the block releases it and the pass's dispatch directory, a run launched or
+not (ADR-0059 Decision 10); a block that stops keeps both for its rerun. Set `HOST` to the host you
 run on, `claude` or `codex`, and fill `<plugin-root>` with this plugin's
 installed root, the path you read this SKILL.md from, cut before its
 `/core/skills/` directory. Then:
 
+- whenever the pass made a dispatch directory, a run launched or not:
+  `DISPATCH_TEXT_DIR` set to it, so that the block releases it once the pass
+  is settled (a dispatch that stopped before any run, its `prompt.xml.err`
+  saying why, leaves one too); empty when none was made.
 - a pass that launched a run: give its dispatch its own directory, as the
   dispatch step says; that directory, holding the runner's
   `prompt.xml.run.json`, is `DISPATCH_DIR`. Set `VERDICT` to the pass's
@@ -43,6 +59,8 @@ reason each stop the block before any write.
 ```bash
 TEXT_DIR='<the directory holding this pass summary.txt>'
 DISPATCH_DIR='<the directory this pass dispatch ran with; empty when the pass launched no run>'
+# The pass's dispatch directory, a run launched or not; empty when none was made.
+DISPATCH_TEXT_DIR='<the directory this pass dispatch ran with, a run launched or not; empty when none was made>'
 VERDICT='<this pass synthesis verdict; empty when the pass launched no run>'
 # Why the pass launched no run (peer-unavailable, local-only, privacy-gate or
 # owner-skip); empty when it launched one.
@@ -56,13 +74,16 @@ case "$NO_RUN_REASON" in
   ''|peer-unavailable|local-only|privacy-gate|owner-skip) ;;
   *) echo "✗ NO_RUN_REASON is not peer-unavailable, local-only, privacy-gate or owner-skip (empty when the pass launched a run); nothing was settled." >&2; exit 1 ;;
 esac
-# A placeholder left as written opens with "<"; a directory mktemp printed
+# A placeholder left as written opens with "<"; a directory the make printed
 # is an absolute path, which never does, whatever it holds further on.
 case "$TEXT_DIR" in
   ''|'<'*) echo "✗ TEXT_DIR is empty or not filled in; nothing was settled." >&2; exit 1 ;;
 esac
 case "$DISPATCH_DIR" in
   '<'*) echo "✗ DISPATCH_DIR is not filled in (empty when the pass launched no run); nothing was settled." >&2; exit 1 ;;
+esac
+case "$DISPATCH_TEXT_DIR" in
+  '<'*) echo "✗ DISPATCH_TEXT_DIR is not filled in (empty when the pass made no dispatch directory); nothing was settled." >&2; exit 1 ;;
 esac
 if [ -n "$DISPATCH_DIR" ]; then
   [ -z "$NO_RUN_REASON" ] || { echo "✗ NO_RUN_REASON is set, but DISPATCH_DIR names a run the pass launched: empty one or the other; nothing was settled." >&2; exit 1; }
@@ -80,8 +101,9 @@ fi
 # there is nothing to settle.
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 ACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
-[ -n "$ACTIVE" ] || { echo "No active workflow on this branch: no review attempt to settle." >&2; exit 0; }
-if [ -n "$DISPATCH_DIR" ]; then
+if [ -z "$ACTIVE" ]; then
+  echo "No active workflow on this branch: no review attempt to settle." >&2
+elif [ -n "$DISPATCH_DIR" ]; then
   # The run's id, from the result the runner wrote beside the prompt, never
   # retyped: a well-formed run id (letters, digits, ".", "_", ":", "-", no "..").
   RUN_ID="$(node -e 'const fs=require("fs"),p=require("path");let r;try{r=JSON.parse(fs.readFileSync(p.join(process.argv[1],"prompt.xml.run.json"),"utf8"))}catch{process.exit(1)}const id=r&&r.run_id;if(typeof id!=="string"||!/^[A-Za-z0-9._:-]+$/.test(id)||id.includes(".."))process.exit(1);process.stdout.write(id)' "$DISPATCH_DIR")" \
@@ -95,6 +117,14 @@ else
     --ensemble-type refine-verify --no-run-reason "$NO_RUN_REASON" \
     --attempt-key "$TEXT_DIR" || exit $?
 fi
+# ADR-0059 Decision 10, item 1 — the attempt is settled (or there was no
+# workflow to settle it in): no block, rerun or continuation reads the summary
+# or the dispatch's result again. The pass's dispatch directory is released
+# from DISPATCH_TEXT_DIR, a run launched or not (an already released path is
+# absent, and the release says nothing).
+for RELEASE_PATH in "$TEXT_DIR" "$DISPATCH_DIR" "$DISPATCH_TEXT_DIR"; do
+  {{> tmpdir-release-skill}}
+done
 ```
 
 Settle refuses, writing nothing, while the run is still live (collect it

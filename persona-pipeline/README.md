@@ -727,7 +727,8 @@ exists for.
 No text an agent writes, or copies from a peer or the user, passes through
 shell source in a generated block (ADR-0059's amendment of 2026-10-10). The
 agent writes it with its file-writing tool, not the shell, into a private
-directory it creates first (`mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`),
+directory a step block makes first, through the make snippet (`{{> tmpdir-make}}`,
+ADR-0059 Decision 9; below),
 and the block opens with `TEXT_DIR='<directory from step 1>'` and passes the
 `-file` form of each flag, which the script reads itself: strict UTF-8, one
 trailing newline removed, nothing else trimmed. So a quote, `$`, backtick,
@@ -767,9 +768,11 @@ dispatcher exports to `topic.txt` (`printf '%s\n'`) and records that file
 instead of `request.txt`; engineer's start writes the description its args
 file held to a file of its own. Fixed literals, enums (a verdict, a gate, a
 confidence, a profile), the run id and a quoted expansion of a value a
-program printed (`$PROPOSED`, `$RESPONSE`) stay inline. Nothing deletes the
-files: one `next-action.txt` feeds both the `append` and the last write, and
-a headless run can deny `rm`. The quoted heredoc this replaced
+program printed (`$PROPOSED`, `$RESPONSE`) stay inline. No script deletes
+a file (one `next-action.txt` feeds both the `append` and the last write),
+and no block runs `rm`, which a headless run can deny: the directory goes
+with the release snippet, on the paths `tmpdir-paths.json` lists, once no
+block, rerun or continuation reads it (ADR-0059 Decision 10). The quoted heredoc this replaced
 (`<<'PHASE_NOTE'`, and `<<'OWNER_RESOLUTION'` for a resolution) ended at a
 line reading its delimiter and ran the rest as commands, and dash's `read`
 read nothing; the file forms have neither limit.
@@ -809,10 +812,13 @@ stderr for any outcome but removed, absent or unsupported) and `tmpdir-list
 [--execute true [--age-days N]]`, the owner's listing and claim-only cleanup;
 either package's CLI judges every kind. An operation's first write records
 `dir_marker_id` only on a fresh open whose directory and marker pass the
-release's checks. No block calls the CLI
-yet: a package's runbooks switch from `mktemp -d` only once a release carrying
-it is installed (Decision 10, item 8), so an older installed CLI never meets
-newer prose. `tests/persona-pipeline/test-agentic-dir-*.mjs` hold it in
+release's checks. A package's runbooks switch from `mktemp -d` only once a
+release carrying it is installed (Decision 10, item 8), so an older installed
+CLI never meets newer prose; the persona runbooks have switched: their
+regions make and release each directory through the snippets in
+`snippets/` (`{{> tmpdir-make}}`, `{{> tmpdir-release}}`), on the paths
+`tmpdir-paths.json` lists, which
+`tests/plugin-shape/test-runbook-cli-contracts.mjs` holds both ways. `tests/persona-pipeline/test-agentic-dir-*.mjs` hold it in
 process, and `scripts/mutation-specs/agentic-dir.mjs` puts its gates' defects
 back.
 

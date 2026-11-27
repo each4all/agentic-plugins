@@ -10,7 +10,7 @@
 for (const name of Object.keys(process.env)) if (name.startsWith('AGENTIC_')) delete process.env[name];
 
 import { describe, it } from 'node:test';
-import { ok, strictEqual, match } from 'node:assert/strict';
+import { deepStrictEqual, ok, strictEqual, match } from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -35,8 +35,12 @@ for (const persona of personasFor('scripts/lib/review-scope.mjs')) {
   describe(`${persona}: the review-scope runbook blocks, run (C120)`, () => {
     it('each region holds the blocks the cycle runs, and no other', () => {
       strictEqual(shellBlocks(region(critique, 'critique-scope-prepare')).length, 1);
-      strictEqual(shellBlocks(region(critique, 'critique-scope-close')).length, 1);
-      strictEqual(shellBlocks(region(refine, 'refine-scope-record')).length, 2);
+      // The close and the record each with the make of their directory before
+      // them (ADR-0059 Decision 9), the same make.
+      strictEqual(shellBlocks(region(critique, 'critique-scope-close')).length, 2);
+      strictEqual(shellBlocks(region(refine, 'refine-scope-record')).length, 3);
+      deepStrictEqual(B.makes.map((m) => m.length), [1, 1]);
+      strictEqual(B.makes[0][0], B.makes[1][0], 'one make for both');
       ok(critique.indexOf('pipeline:begin critique-scope-prepare') < critique.indexOf('pipeline:begin critique-dispatch'), 'the scope opens before the dispatch');
       ok(critique.indexOf('pipeline:begin critique-scope-close') < critique.indexOf('pipeline:begin critique-finalize'), 'the close comes before Phase 2');
       ok(refine.indexOf('pipeline:begin refine-scope-record') < refine.indexOf('pipeline:begin refine-dispatch'), 'the record comes before Refine-verify');

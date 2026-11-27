@@ -715,11 +715,62 @@ export function placeholderPlacements(template) {
 const PLACEHOLDER_RE = /\{\{[ \t]*([^{}\n]*?)[ \t]*\}\}/g;
 const BLOCK_OPEN_RE = /^\{\{([#^])capability ([a-z_]+)\}\}$/;
 const BLOCK_CLOSE_RE = /^\{\{\/capability\}\}$/;
+const INCLUDE_RE = /^( *)\{\{> ([a-z][a-z0-9-]*)\}\}$/;
+
+// The closed set of snippets a template may include (ADR-0059 Decision 10,
+// items 1 and 4): the make and the release of a text or operation directory,
+// one source each in persona-pipeline/snippets/. A `-skill` name is the same
+// source with the command's root variable spelled as a skill's placeholder.
+const SNIPPET_DIR = new URL('../../persona-pipeline/snippets/', import.meta.url);
+export const SNIPPETS = Object.freeze({
+  'tmpdir-make': { file: 'tmpdir-make.sh', skill: false },
+  'tmpdir-release': { file: 'tmpdir-release.sh', skill: false },
+  'tmpdir-make-skill': { file: 'tmpdir-make.sh', skill: true },
+  'tmpdir-release-skill': { file: 'tmpdir-release.sh', skill: true },
+});
+
+/** A snippet's text, as an include renders it (no indentation). */
+export function snippetText(name, readSnippet = (file) => readFileSync(new URL(file, SNIPPET_DIR), 'utf8')) {
+  const entry = Object.hasOwn(SNIPPETS, name) ? SNIPPETS[name] : null;
+  if (entry === null) return null;
+  let text = readSnippet(entry.file);
+  if (text.endsWith('\n')) text = text.slice(0, -1);
+  // Every spelling of the root, a message's included, so a skill names no
+  // variable its shell never set.
+  return entry.skill ? text.replaceAll('$CLAUDE_PLUGIN_ROOT/', '<plugin-root>/') : text;
+}
+
+/**
+ * The template with each include line, `{{> name}}` alone on its line, replaced
+ * by the snippet's lines, each indented as the include line was. Only names in
+ * SNIPPETS; a snippet holds no include, capability block or placeholder of its
+ * own, so the region's checks read it as they read the template's own lines.
+ */
+export function expandIncludes(template, { label = 'template', readSnippet } = {}) {
+  if (!template.includes('{{>')) return template;
+  const out = [];
+  const lines = template.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const m = INCLUDE_RE.exec(lines[i]);
+    if (!m) {
+      if (lines[i].includes('{{>')) throw new PipelineError(`${label}:${i + 1}: an include stands alone on its line: {{> <snippet>}}`);
+      out.push(lines[i]);
+      continue;
+    }
+    const text = snippetText(m[2], readSnippet);
+    if (text === null) throw new PipelineError(`${label}:${i + 1}: unknown snippet ${m[2]} (the snippets are ${Object.keys(SNIPPETS).join(', ')})`);
+    if (text.includes('{{')) throw new PipelineError(`${label}:${i + 1}: snippet ${m[2]} holds "{{"; a snippet includes nothing and takes no placeholder`);
+    for (const line of text.split('\n')) out.push(line === '' ? '' : `${m[1]}${line}`);
+  }
+  return out.join('\n');
+}
 
 /**
  * Render a region template for one persona.
  *
- * Templates hold two constructs and nothing else:
+ * Templates hold three constructs and nothing else:
+ *   - `{{> name}}` — an include of one of the SNIPPETS, alone on its line
+ *     (expandIncludes), expanded before the other two are read;
  *   - `{{name}}` — a substitution the manifest declares for this region, with
  *     a field path into the declaration and a context (`shell`: emitted as a
  *     single-quoted literal; `text` / `markdown`: verbatim — a list of strings
@@ -729,8 +780,8 @@ const BLOCK_CLOSE_RE = /^\{\{\/capability\}\}$/;
  *     marker alone on its line, never nested.
  * An unresolved or undeclared placeholder fails the render.
  */
-export function renderTemplate(template, { declaration, substitutions = {}, label = 'template' }) {
-  const lines = template.split('\n');
+export function renderTemplate(template, { declaration, substitutions = {}, label = 'template', readSnippet } = {}) {
+  const lines = expandIncludes(template, { label, readSnippet }).split('\n');
   const kept = [];
   let block = null;
   for (let i = 0; i < lines.length; i++) {

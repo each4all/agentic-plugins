@@ -47,8 +47,10 @@ follows the same operational sequence inline, in this order, using the same
    <the description's file>`. The description is text the user typed, so it
    reaches `state.mjs` as a file, never on the command line (ADR-0059,
    amendment of 2026-10-10): write it with the file-writing tool as
-   `request.txt` in a directory from
-   `mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`, ending with one newline.
+   `request.txt`, ending with one newline, in a private text directory made
+   with the make block of **Inside the lifecycle** below (ADR-0059 Decision 9).
+   Once `create` has recorded the request, that section's text-directory
+   release block releases it; a failed `create` keeps it for the retry.
 {{/capability}}
 {{#capability commit_surface}}
 3. **No active workflow.** The arguments are read from an args file, twice:
@@ -60,9 +62,11 @@ follows the same operational sequence inline, in this order, using the same
    start --verb investigate --persona {{persona}} --original-request-file
    <the description's file>`: the description the extractor read, program
    data the block writes to a file (`printf '%s\n' "$FEATURE"`) in a
-   directory from `mktemp -d "${TMPDIR:-/tmp}/agentic-text.XXXXXX"`, so a
-   description beginning with `--` is never read as a flag (ADR-0059,
-   amendment of 2026-10-10).
+   private text directory made with the make block of **Inside the
+   lifecycle** below (ADR-0059 Decision 9), so a description beginning with
+   `--` is never read as a flag (ADR-0059, amendment of 2026-10-10). Once
+   `create` has recorded the request, that section's text-directory release
+   block releases it; a failed `create` keeps it for the retry.
 
 Argument parsing is `scripts/start-args.mjs --args-file <path>` on both
 hosts (ADR-0059 Decision 7). The description, with any
@@ -133,8 +137,63 @@ matches what execute commits).
 
 **Inside the lifecycle** (both hosts, ADR-0066 PC2b): Phase 0 runs
 `state.mjs autopilot-preflight` once, before any write, and a resumed start
-workflow clears the next step it carried. Each phase's ensemble attempt is
-settled from its run ledger (`peer-runner.mjs settle`) before the next phase,
+workflow clears the next step it carried. Each phase writes the texts of its
+own writes (the phase note, the next action, the settle's summary, an
+owner's decision) into a private text directory of its own, made and marked
+with this block (ADR-0059 Decision 9); note the path it prints. Fill
+`<plugin-root>` with this plugin's installed root, the path you read this
+SKILL.md from, cut before its `/core/skills/` directory:
+
+```bash
+# A private text directory, marked so that the step that reads it
+# last releases it (ADR-0059 Decisions 9 and 10).
+MAKE_KIND='text'
+MAKE_PARENT=''
+{{> tmpdir-make-skill}}
+printf '%s\n' "$MADE_DIR"
+```
+
+The phase's dispatch is not one of those texts: each dispatch, and each pass
+of a refine that loops, writes its `prompt.xml` and `subject.json` in a
+directory of its own, made as the ensemble protocol's launch step says, where
+the runner writes its result. Each attempt's settle (below) is its dispatch
+directory's last reader, so once that settle has succeeded, release the
+directory with this block, a run launched or not; a settle that fails keeps
+it for the retry. A phase that dispatches more than one ensemble runs it once
+per attempt, and a looping refine's pass settle releases each earlier pass's
+directory itself, so here the refine phase's last pass only (ADR-0059
+Decision 10):
+
+```bash
+# The dispatch directory of the ensemble attempt whose settle succeeded.
+DISPATCH_TEXT_DIR='<the dispatch directory of the attempt whose settle succeeded>'
+case "$DISPATCH_TEXT_DIR" in
+  ''|'<'*) echo "✗ DISPATCH_TEXT_DIR is empty or not filled in; nothing was released." >&2; exit 1 ;;
+esac
+# ADR-0059 Decision 10, item 1 — the attempt's settle succeeded: no block,
+# rerun or continuation reads its dispatch directory again.
+RELEASE_PATH="$DISPATCH_TEXT_DIR"
+{{> tmpdir-release-skill}}
+```
+
+Once the phase's last write has succeeded, release the phase's text
+directory with this block; a write that fails keeps it for the retry. The
+bootstrap's request directory and Phase 7's subject directory are released
+with it too:
+
+```bash
+TEXT_DIR='<the text directory whose last write succeeded>'
+case "$TEXT_DIR" in
+  ''|'<'*) echo "✗ TEXT_DIR is empty or not filled in; nothing was released." >&2; exit 1 ;;
+esac
+# ADR-0059 Decision 10, item 1 — the last write that reads the directory
+# succeeded: no block, rerun or continuation reads it again.
+RELEASE_PATH="$TEXT_DIR"
+{{> tmpdir-release-skill}}
+```
+
+Each phase's
+ensemble attempt is settled from its run ledger (`peer-runner.mjs settle`) before the next phase,
 a repeated phase under a new run id. A refine that loops settles its passes
 in the refine skill: its pass settle (the **Each pass settles its own run**
 step) settles each earlier pass, launched or not, and the refine phase
@@ -148,7 +207,7 @@ critique's `review` or `adversarial-scan`; refine's `refine-verify`), and why
 it never ran: `--ensemble-type <that type>
 --no-run-reason <peer-unavailable|local-only|privacy-gate|owner-skip>
 --subject-file <the paths it read, {"shown": [...], "covered": [...]}, ADR-0069>
---attempt-key <a new text directory for that settle>`, so the workflow records
+--attempt-key <the phase's text directory>`, so the workflow records
 the review's attempt with its outcome (`unavailable` or `skipped`) and a rerun
 of that settle records it once (C163 A1a). A `peer-runner.mjs` that does not
 name `--no-run-reason` in its usage predates the record: settle without those

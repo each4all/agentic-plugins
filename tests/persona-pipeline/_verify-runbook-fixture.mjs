@@ -140,7 +140,7 @@ export async function verifyFixture(persona, tmpDirs) {
     return b;
   };
   const resumeOf = (verb) => blocks(section(text[verb], '## Phase 0')).map(dedent).find((b) => b.includes('state.mjs" append'));
-  const finalizeOf = (verb) => blocks(section(text[verb], '## Phase 2 — State finalize')).filter((b) => !/^\s*mktemp -d /.test(b))[0];
+  const finalizeOf = (verb) => blocks(section(text[verb], '## Phase 2 — State finalize')).filter((b) => !/^\s*(?:mktemp -d |# Step 1: a private text directory)/.test(b))[0];
 
   // Phase 0's resume, as the step runs it: it opens the verb's operation on
   // the macro's child and prints its directory.
@@ -160,7 +160,7 @@ export async function verifyFixture(persona, tmpDirs) {
     return d;
   };
   fx.finalize = (verb, { tdir, opDir, verdict = 'agreed' }) => fill(fill(fill(fill(fill(finalizeOf(verb), TEXT_DIR_LINE, `TEXT_DIR='${tdir}'`),
-    DISPATCH_DIR_LINE, "DISPATCH_DIR=''"), VERDICT_LINE, `VERDICT='${verdict}'`), CONFIDENCE_LINE, "CONFIDENCE='HIGH'"), OP_DIR_LINE, `OP_DIR='${opDir}'`);
+    DISPATCH_DIR_LINE, "DISPATCH_DIR=''").replace("DISPATCH_TEXT_DIR='<the directory the dispatch block ran with, a run launched or not; empty when no dispatch block ran>'", () => "DISPATCH_TEXT_DIR=''"), VERDICT_LINE, `VERDICT='${verdict}'`), CONFIDENCE_LINE, "CONFIDENCE='HIGH'"), OP_DIR_LINE, `OP_DIR='${opDir}'`);
   fx.texts = (extra = {}) => ({ 'note.md': '### Ensemble synthesis: fixture', 'summary.txt': 'fine', 'next-action.txt': 'Verify the change, then critique', ...extra });
   fx.front = async (wf) => (await S.readWorkflow(wf)).frontmatter;
 

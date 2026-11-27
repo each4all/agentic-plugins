@@ -50,11 +50,19 @@ export async function reviewScopeBlocks(persona) {
   const state = await import(pathToFileURL(P.path('scripts/state.mjs')).href);
   const critique = readFileSync(P.path('commands/critique.md'), 'utf8');
   const refine = readFileSync(P.path('commands/refine.md'), 'utf8');
-  const [prepare] = shellBlocks(region(critique, 'critique-scope-prepare')).map((b) => b.text);
-  const [close] = shellBlocks(region(critique, 'critique-scope-close')).map((b) => b.text);
-  const [status, record] = shellBlocks(region(refine, 'refine-scope-record')).map((b) => b.text);
+  // A region's blocks, its step's make apart (ADR-0059 Decision 9): the make
+  // of the private directory the close and the record read, then release.
+  const MAKE = 'tmpdir-make --kind "$MAKE_KIND"';
+  const blocks = (text, id) => shellBlocks(region(text, id)).map((b) => b.text).filter((b) => !b.includes(MAKE));
+  const [prepare] = blocks(critique, 'critique-scope-prepare');
+  const [close] = blocks(critique, 'critique-scope-close');
+  const [status, record] = blocks(refine, 'refine-scope-record');
+  const makes = [critique, 'critique-scope-close', refine, 'refine-scope-record'];
+  const makeOf = (text, id) => shellBlocks(region(text, id)).map((b) => b.text).filter((b) => b.includes(MAKE));
   return {
     P, state, critique, refine, status,
+    makes: [makeOf(makes[0], makes[1]), makeOf(makes[2], makes[3])],
+    make: makeOf(critique, 'critique-scope-close')[0],
     ROOT_ENV: `AGENTIC_${persona.toUpperCase()}_ROOT`,
     prepare: () => fill(prepare, "'<profile, empty for the default>'", "''"),
     close: (texts, generation, ledger) => fill(fill(fill(close, "'<directory holding findings.json>'", `'${texts}'`), "'<generation from critique-scope>'", `'${generation}'`), "'<ledger from critique-scope>'", `'${ledger}'`),

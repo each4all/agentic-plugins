@@ -3474,3 +3474,52 @@ at its clause), and the Status section says so. The text it replaced:
 > locale (`persona-pipeline/files/scripts/lib/process-identity.mjs:34-44`,
 > docket C141, which stays its own item). The sample interval is 10 s, as
 > measured.
+
+## Amendment 2026-11-27 — the persona runbooks release their directories
+
+ADR-0059 Decisions 9 and 10 (Accepted 2026-11-26) made the persona plugins'
+runbooks (designer, engineer and founder) make each text and operation
+directory marked, through `state.mjs tmpdir-make`, and release it through the
+CLI's proof once no reader of it is left. ADR-0059's history recorded that two
+sentences here would need a cascade once the runbooks switched; they did on
+2026-11-27, and this folds both. The orchestrator's runbooks have not
+switched, and keep the old text's case. The status of each decision is
+unchanged.
+
+Decision 5, item 13 opened with:
+
+> ADR-0059 stands as written: a
+> runbook's directories are bounded by where they are made, not by a block
+> that deletes them.
+
+It now keeps the bound (the step's or the check's `TMPDIR`) and states both
+cases: a switched package's block also releases its directories, and the bound
+holds what a release keeps (a refusal, a rerun, a pause); an unswitched one's
+deletes nothing.
+
+Decision 2, item 12, **Persona operations**, read:
+
+> The
+> operation directory is a private directory the first-write block makes
+> (`mktemp -d`) and prints as `OP_DIR=<path>`, which the agent sets in
+> the finalize block as it sets `DISPATCH_DIR`.
+
+It now names the marked make and the release by the block that makes the
+operation's last write, once that write succeeded, for a switched package, and
+`mktemp -d` for one that has not. A last write run again after that release
+meets the gone directory this item already describes, whose refusal text names
+the recovery (ADR-0059 Decision 10, item 5).
+
+In the same bullet, the sentence on a gone operation directory read:
+
+> A directory that is
+> gone refuses the last write, which the person can run with no
+> directory, leaving the operation open for the owner to clear; with no
+> directory at all a write is as before.
+
+Once a switched package releases the directory after a successful last write,
+that text would send a person to repeat a write that already landed. It now
+states the CLI's rule (`closingDirMissing` in the persona `state.mjs`): the
+directory may have been released after the write ran, and the write is run
+again with no directory only once the workflow's record shows it did not
+land.

@@ -13,7 +13,7 @@
 
 import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
 import { mkdtemp, rm, writeFile, mkdir, realpath } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -71,9 +71,11 @@ export function section(text, heading) {
   return text.slice(start, next < 0 ? undefined : next);
 }
 export const blocks = (text) => [...text.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]);
-// The blocks that write: the private-directory step before each (`mktemp -d`)
-// is the agent's, not one a test runs.
-export const writing = (text) => blocks(text).filter((b) => !/^\s*mktemp -d /.test(b));
+// The step that makes a private text directory before a block (ADR-0059
+// Decision 9), by its first line; and the blocks that write, which are the rest.
+export const STEP_HEAD = '# Step 1: a private text directory, marked so that the step that reads it';
+export const isStep = (b) => b.trimStart().startsWith(STEP_HEAD);
+export const writing = (text) => blocks(text).filter((b) => !isStep(b) && !/^\s*mktemp -d /.test(b));
 // ADR-0059's amendment of 2026-10-10: the directory the agent wrote its text
 // files into, named on a block's first line; the test fills it as the agent does.
 export const TEXT_DIR_LINE = "TEXT_DIR='<directory from step 1>'";
@@ -81,6 +83,9 @@ export const TEXT_DIR_LINE = "TEXT_DIR='<directory from step 1>'";
 // agent fills; the block finds the workflow itself, and reads the run's id
 // from the result the runner wrote in that directory.
 export const DISPATCH_DIR_LINE = "DISPATCH_DIR='<the directory the dispatch block ran with; empty when no run launched; the run ledger directory when a run launched and that directory is gone>'";
+// ADR-0059 Decision 10, item 1: the dispatch's text directory, which the
+// finalize releases, apart from DISPATCH_DIR (which may name a run's ledger).
+export const DISPATCH_TEXT_DIR_LINE = "DISPATCH_TEXT_DIR='<the directory the dispatch block ran with, a run launched or not; empty when no dispatch block ran>'";
 export const VERDICT_LINE = "VERDICT='<the synthesis verdict>'";
 // R4 K3: the last write's confidence, and, where the verb closes only once it
 // converged, the step that resolves what is still open — set at the top of the
@@ -154,12 +159,24 @@ export async function verbRunbookFixture(persona) {
   const state = (...args) => execFileSync('node', [STATE, ...args], { encoding: 'utf8', env: { ...process.env, AGENTIC_AUTOPILOT: '' } });
 
   // The files the agent writes before a block, each ending with one newline as
-  // the file-writing tool leaves it, in a fresh directory whose name holds a
-  // space; the block's TEXT_DIR line is filled with it. withRepo removes it.
+  // the file-writing tool leaves it, in a directory the runbook's own step
+  // makes (ADR-0059 Decision 9: marked, so a block may release it) under a
+  // root whose name holds a space; the block's TEXT_DIR line is filled with
+  // it. withRepo removes what is left.
   const TEXT_DIRS = [];
-  async function withTexts(block, files) {
-    const dir = await realpath(await mkdtemp(join(tmpdir(), `${persona} agentic text.`)));
+  const STEP = dedent(blocks(committed.compose).find(isStep));
+  async function makeTextDir() {
+    const root = await realpath(await mkdtemp(join(tmpdir(), `${persona} agentic text.`)));
+    TEXT_DIRS.push(root);
+    const r = runBlock('bash', root, STEP, { TMPDIR: root });
+    strictEqual(r.status, 0, r.stderr);
+    const dir = r.stdout.trim();
+    ok(dir.startsWith(`${root}/agentic-text.`), dir);
     TEXT_DIRS.push(dir);
+    return dir;
+  }
+  async function withTexts(block, files) {
+    const dir = await makeTextDir();
     for (const [name, content] of Object.entries(files)) await writeFile(join(dir, name), `${content}\n`);
     return fill(block, TEXT_DIR_LINE, `TEXT_DIR='${dir}'`);
   }
@@ -168,8 +185,7 @@ export async function verbRunbookFixture(persona) {
   // The dispatch's directory: the result `peer-runner run` printed, which the
   // dispatch block redirects to prompt.xml.run.json there.
   async function dispatched(run) {
-    const dir = await realpath(await mkdtemp(join(tmpdir(), `${persona} agentic dispatch.`)));
-    TEXT_DIRS.push(dir);
+    const dir = await makeTextDir();
     await writeFile(join(dir, 'prompt.xml.run.json'), run.stdout);
     return dir;
   }
@@ -178,8 +194,10 @@ export async function verbRunbookFixture(persona) {
   // when no run launched) and the verdict. With dispatch_target on, also the
   // operation directory (empty when Phase 0 printed none); with it off the
   // block has none.
-  const filled = (b, runDir = '', verdict = 'agreed', opDir = '') => {
-    const s = fill(fill(fill(b, DISPATCH_DIR_LINE, runDir ? `DISPATCH_DIR='${runDir}'` : "DISPATCH_DIR=''"), VERDICT_LINE, `VERDICT='${verdict}'`), CONFIDENCE_LINE, "CONFIDENCE='HIGH'");
+  // The dispatch's text directory defaults to the run directory when the
+  // fixture made it (a dispatch's TEXT_DIR), and to none for a run's ledger.
+  const filled = (b, runDir = '', verdict = 'agreed', opDir = '', dispatchTextDir = TEXT_DIRS.includes(runDir) ? runDir : '') => {
+    const s = fill(fill(fill(fill(b, DISPATCH_DIR_LINE, runDir ? `DISPATCH_DIR='${runDir}'` : "DISPATCH_DIR=''"), DISPATCH_TEXT_DIR_LINE, `DISPATCH_TEXT_DIR='${dispatchTextDir}'`), VERDICT_LINE, `VERDICT='${verdict}'`), CONFIDENCE_LINE, "CONFIDENCE='HIGH'");
     if (dispatchOn) return fill(s, OP_DIR_LINE, `OP_DIR='${opDir}'`);
     ok(!s.includes('OP_DIR'), 'no operation directory with dispatch_target off');
     return s;
@@ -322,6 +340,10 @@ export async function verbRunbookFixture(persona) {
     deepStrictEqual([result.status, typeof result.run_id === 'string' && result.run_id.startsWith(`${type}-`)], ['completed', true], JSON.stringify(result));
     r = runBlock(shell, dir, await finalize(docs, verb, { runDir }), vars);
     strictEqual(r.status, 0, r.stderr);
+    // ADR-0059 Decision 10, item 1: the last write succeeded, so the finalize
+    // released its own text directory and the dispatch's, each in silence.
+    const finalizeDir = lastTextDir();
+    deepStrictEqual([existsSync(runDir), existsSync(finalizeDir), r.stderr.includes('agentic-dir release')], [false, false, false], r.stderr);
     const fm = (await readWorkflow(wf)).frontmatter;
     deepStrictEqual((fm.ensemble_results ?? []).map((e) => [e.run_id, e.verdict, e.ensemble_type]), [[result.run_id, 'agreed', type]]);
     deepStrictEqual([(fm.pending_ensemble ?? []).length, fm.current_phase, fm.terminal_marker, fm.next_step_kind, fm.next_step_verb, fm.next_step_confidence, fm.next_action],
@@ -332,7 +354,7 @@ export async function verbRunbookFixture(persona) {
   return {
     P, STATE, PEER_RUNNER, ROOT_ENV, readWorkflow, dispatchOn, commitOn, convergent,
     committed, fresh, DOCUMENTS,
-    runBlock, state, withTexts, lastTextDir, dispatched, filled, withRepo, createWorkflow, archive,
+    runBlock, state, withTexts, makeTextDir, lastTextDir, dispatched, filled, withRepo, createWorkflow, archive,
     stubCompanions, launch, statusOf, verbBlocks, finalize, completedFinalize,
   };
 }

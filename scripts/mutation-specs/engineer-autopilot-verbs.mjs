@@ -264,8 +264,8 @@ export const MUTATIONS = [
   },
   {
     id: 'R5', file: COMMIT_MD, tests: [T_CR],
-    from: '  "${SUBJECT_ARGS[@]}"\n```\n\nReport its JSON `action`',
-    to: '  "${SUBJECT_ARGS[@]}" --confirm-non-interactive\n```\n\nReport its JSON `action`',
+    from: '  "${SUBJECT_ARGS[@]}" || exit $?\n',
+    to: '  "${SUBJECT_ARGS[@]}" --confirm-non-interactive || exit $?\n',
     why: 'the autopilot block passes a confirm flag',
   },
   {
