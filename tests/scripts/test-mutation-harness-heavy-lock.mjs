@@ -78,13 +78,15 @@ describe('the go line', () => {
     const root = scoringRepo({ marker });
     const supFile = join(S, 'sup');
     const harness = spawnNode(['--input-type=module', '-e', [
-      "import { writeFileSync } from 'node:fs';",
+      "import { renameSync, writeFileSync } from 'node:fs';",
       `import { acquireRunLock, runTests } from ${JSON.stringify(pathToFileURL(HARNESS).href)};`,
       `import { ownershipGroups } from ${JSON.stringify(pathToFileURL(LOCK_MODULE).href)};`,
       `const lock = await acquireRunLock(${JSON.stringify(root)}, { log: () => {} });`,
       `await runTests(${JSON.stringify(root)}, ['tests/test-value.mjs'], { ownership: lock.ownership, scope: { plan: () => ({ kind: 'direct' }) }, beforeGo: (child) => {`,
       '  const registered = ownershipGroups(lock.path, lock.ownership.token).map((g) => g.pgid);',
-      `  writeFileSync(${JSON.stringify(supFile)}, JSON.stringify({ pid: child.pid, registered }));`,
+      // Written aside and renamed, so the file the test waits for is whole.
+      `  writeFileSync(${JSON.stringify(`${supFile}.part`)}, JSON.stringify({ pid: child.pid, registered }));`,
+      `  renameSync(${JSON.stringify(`${supFile}.part`)}, ${JSON.stringify(supFile)});`,
       '  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);',
       '} });',
     ].join('\n')], { track: t });
