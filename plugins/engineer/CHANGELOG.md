@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.39.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.38.0...plugin-engineer-v0.39.0) (2026-11-27)
+
+
+### Features
+
+* **engineer:** release runbook text and operation directories through tmpdir-release ([b2a39c7](https://github.com/each4all/agentic-plugins/commit/b2a39c74e1e12fa143e9ff2857bdca6f8892b78d))
+
 ## [0.38.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.37.1...plugin-engineer-v0.38.0) (2026-11-26)
 
 

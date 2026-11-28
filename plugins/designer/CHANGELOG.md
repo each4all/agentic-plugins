@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.17.0...plugin-designer-v0.18.0) (2026-11-27)
+
+
+### Features
+
+* **designer:** release runbook text and operation directories through tmpdir-release ([706eda0](https://github.com/each4all/agentic-plugins/commit/706eda017082bdb54d406be03c85f3b3f5db9844))
+
 ## [0.17.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.16.2...plugin-designer-v0.17.0) (2026-11-26)
 
 
